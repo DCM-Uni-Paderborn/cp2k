@@ -162,15 +162,15 @@ CONTAINS
       full_slope = MAX(0.0_dp, final_slope)
       missing_fresh_quadratic = MAX(0.0_dp, fresh_slope - MAX(0.0_dp, partial_slope))
       full_quadratic = MAX(0.0_dp, partial_quadratic) + missing_fresh_quadratic
-      IF (previous_valid .AND. beta > 0.0_dp .AND. previous_curvature > 0.0_dp) then
-        full_quadratic = full_quadratic + beta*beta*previous_curvature
-      end if
+      IF (previous_valid .AND. beta > 0.0_dp .AND. previous_curvature > 0.0_dp) THEN
+         full_quadratic = full_quadratic + beta*beta*previous_curvature
+      END IF
       full_drop = full_slope - 0.5_dp*full_quadratic
       optimum_position = 0.0_dp
       IF (full_slope > EPSILON(MAX(1.0_dp, full_slope)) .AND. &
-          full_quadratic > EPSILON(MAX(1.0_dp, full_quadratic))) then
-        optimum_position = full_slope/full_quadratic
-      end if
+          full_quadratic > EPSILON(MAX(1.0_dp, full_quadratic))) THEN
+         optimum_position = full_slope/full_quadratic
+      END IF
 
    END SUBROUTINE ot_kpoint_mermin_full_direction_model
 
@@ -1226,6 +1226,7 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_density_quality_ema)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_pending)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_quality_samples)
+      CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_baseline_quadratic)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_quadratic)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_quality)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_quality_ema)
@@ -4682,6 +4683,9 @@ CONTAINS
          qs_ot_env(1)%schur_model_quadratic = rayleigh_model_quadratic_factor* &
                                               qs_ot_env(1)%schur_model_quadratic
          IF (qs_ot_env(1)%schur_closure_shadow_pending) THEN
+            qs_ot_env(1)%schur_closure_shadow_baseline_quadratic = &
+               rayleigh_model_quadratic_factor* &
+               qs_ot_env(1)%schur_closure_shadow_baseline_quadratic
             qs_ot_env(1)%schur_closure_shadow_quadratic = rayleigh_model_quadratic_factor* &
                                                           qs_ot_env(1)%schur_closure_shadow_quadratic
          END IF

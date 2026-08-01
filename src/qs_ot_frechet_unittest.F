@@ -84,7 +84,9 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_multimode_blend, &
         qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
         qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_projector_density_response, &
-        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_closure_response_history_ready, &
+        qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
+        qs_scf_kp_coupled_closure_response, qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
         qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
         qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
@@ -249,6 +251,11 @@ PROGRAM qs_ot_frechet_unittest
                                              5.0E-15_dp, nfail)
    CALL check_kpoint_energy_closure_ready("k-point OT fixed-N energy closure gate", nfail)
    CALL check_kpoint_energy_closure_preferred("k-point OT fixed-N energy closure competition", nfail)
+   CALL check_kpoint_closure_response_preferred("k-point OT coupled closure response gate", nfail)
+   CALL check_kpoint_closure_response_history_ready( &
+      "k-point OT coupled closure accepted-history gate", nfail)
+   CALL check_kpoint_closure_response_model_adjustments( &
+      "k-point OT coupled closure active-model calibration", 5.0E-15_dp, nfail)
    CALL check_kpoint_density_closure_model_ready("k-point OT coupled density closure gate", nfail)
    CALL check_kpoint_canonical_density_residual("k-point OT canonical density residual", &
                                                 5.0E-14_dp, nfail)
@@ -5684,6 +5691,107 @@ CONTAINS
    END SUBROUTINE check_kpoint_energy_closure_preferred
 
 ! **************************************************************************************************
+!> \brief Check that a coupled closure fit must improve on the reduced or identity baseline.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_closure_response_preferred(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_closure_response_preferred( &
+               .TRUE., .TRUE., 4.24793549E-2_dp, 4.14359353E-2_dp, 5.0E-2_dp)
+      ! Fresh-start history may not promote a response that is worse than no correction.
+      failed = failed .OR. qs_scf_kp_closure_response_preferred( &
+               .TRUE., .FALSE., 1.08898104E1_dp, 1.03713219E1_dp, 0.0_dp)
+      failed = failed .OR. qs_scf_kp_closure_response_preferred( &
+               .TRUE., .FALSE., 1.2_dp, 2.0E-1_dp, 0.0_dp)
+      failed = failed .OR. qs_scf_kp_closure_response_preferred( &
+               .TRUE., .TRUE., 2.0E-1_dp, 3.0E-1_dp, 2.5E-1_dp)
+      failed = failed .OR. qs_scf_kp_closure_response_preferred( &
+               .FALSE., .FALSE., 2.0E-1_dp, 1.0E-1_dp, 0.0_dp)
+      failed = failed .OR. .NOT. qs_scf_kp_closure_response_preferred( &
+               .TRUE., .FALSE., 7.0E-1_dp, 6.0E-1_dp, 0.0_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_closure_response_preferred
+
+! **************************************************************************************************
+!> \brief Check that closure response needs repeated positive accepted-drop evidence.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_closure_response_history_ready(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_closure_response_history_ready(4, 2.0E-2_dp)
+      failed = failed .OR. qs_scf_kp_closure_response_history_ready(3, 2.0E-2_dp)
+      ! These values bracket the negative Fresh-Na history and the positive plateau evidence.
+      failed = failed .OR. qs_scf_kp_closure_response_history_ready(49, -2.25144423E-2_dp)
+      failed = failed .OR. .NOT. qs_scf_kp_closure_response_history_ready(21, 5.97762901E-2_dp)
+      failed = failed .OR. qs_scf_kp_closure_response_history_ready(20, 0.0_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_closure_response_history_ready
+
+! **************************************************************************************************
+!> \brief Check baseline/candidate calibration for inactive, reduced-active, and coupled-active models.
+!> \param label ...
+!> \param tolerance ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_closure_response_model_adjustments(label, tolerance, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tolerance
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: baseline_adjustment, candidate_adjustment
+
+      failed = .FALSE.
+      CALL qs_scf_kp_closure_response_model_adjustments( &
+         2.0_dp, 5.0_dp, .FALSE., .FALSE., baseline_adjustment, candidate_adjustment)
+      failed = failed .OR. ABS(baseline_adjustment - 2.0_dp) > tolerance
+      failed = failed .OR. ABS(candidate_adjustment - 5.0_dp) > tolerance
+      failed = failed .OR. ABS(candidate_adjustment - baseline_adjustment - 3.0_dp) > tolerance
+
+      CALL qs_scf_kp_closure_response_model_adjustments( &
+         2.0_dp, 5.0_dp, .TRUE., .FALSE., baseline_adjustment, candidate_adjustment)
+      failed = failed .OR. ABS(baseline_adjustment) > tolerance
+      failed = failed .OR. ABS(candidate_adjustment - 3.0_dp) > tolerance
+
+      CALL qs_scf_kp_closure_response_model_adjustments( &
+         2.0_dp, 5.0_dp, .TRUE., .TRUE., baseline_adjustment, candidate_adjustment)
+      failed = failed .OR. ABS(baseline_adjustment + 3.0_dp) > tolerance
+      failed = failed .OR. ABS(candidate_adjustment) > tolerance
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_closure_response_model_adjustments
+
+! **************************************************************************************************
 !> \brief Check that stale history may be bypassed only by a trust-safe coupled closure model.
 !> \param label ...
 !> \param nfail ...
@@ -6762,47 +6870,56 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
 
-      LOGICAL :: direct_ready, projected_ready, ready, scaled_direct_ready, scaled_ready, &
-         scaled_subspace_ready, scaled_transport_ready, subspace_ready, transport_ready
-      REAL(KIND=dp) :: analytic_det, compatibility, correction_norm, cross_correction_ratio, &
-         direct_compatibility, direct_correction_norm, direct_correction_ratio, &
-         direct_independence, direct_residual_norm, direct_updated_residual_norm, &
-         energy_correction_ratio, error, independence, projected_compatibility, &
-         projected_correction_norm, projected_correction_ratio, projected_independence, &
-         projected_residual_norm, projected_updated_residual_norm, reference_norm, residual_norm, &
-         response_det, rotation_correction_ratio, scaled_compatibility, scaled_correction_norm, &
-         scaled_cross_correction_ratio
-      REAL(KIND=dp) :: scaled_direct_compatibility, scaled_direct_correction_norm, &
-         scaled_direct_correction_ratio, scaled_direct_independence, scaled_direct_residual_norm, &
-         scaled_direct_updated_residual_norm, scaled_energy_correction_ratio, scaled_independence, &
-         scaled_reference_norm, scaled_residual_norm, scaled_rotation_correction_ratio, &
-         scaled_subspace_capture, scaled_subspace_compatibility, scaled_subspace_correction_norm, &
-         scaled_subspace_cross_correction_ratio, scaled_subspace_energy_correction_ratio, &
-         scaled_subspace_independence, scaled_subspace_projected_residual_norm
-      REAL(KIND=dp) :: scaled_subspace_residual_norm, scaled_subspace_rotation_correction_ratio, &
-         scaled_subspace_updated_residual_norm, scaled_transport_ratio, &
-         scaled_updated_residual_norm, subspace_capture, subspace_compatibility, &
-         subspace_correction_norm, subspace_cross_correction_ratio, &
-         subspace_energy_correction_ratio, subspace_independence, &
+      LOGICAL :: closure_ready, direct_ready, projected_ready, ready, scaled_closure_ready, &
+         scaled_direct_ready, scaled_ready, scaled_subspace_ready, scaled_transport_ready, &
+         subspace_ready, transport_ready
+      REAL(KIND=dp) :: analytic_det, closure_capture, closure_compatibility, closure_cross_ratio, &
+         closure_energy_ratio, closure_independence, closure_residual_ratio, &
+         closure_rotation_ratio, closure_transport_ratio, compatibility, correction_norm, &
+         cross_correction_ratio, direct_compatibility, direct_correction_norm, &
+         direct_correction_ratio, direct_independence, direct_residual_norm, &
+         direct_updated_residual_norm, energy_correction_ratio, error, independence, &
+         projected_compatibility, projected_correction_norm, projected_correction_ratio, &
+         projected_independence, projected_residual_norm
+      REAL(KIND=dp) :: projected_updated_residual_norm, reference_norm, residual_norm, &
+         response_det, rotation_correction_ratio, scaled_closure_capture, &
+         scaled_closure_compatibility, scaled_closure_cross_ratio, scaled_closure_energy_ratio, &
+         scaled_closure_independence, scaled_closure_residual_ratio, &
+         scaled_closure_rotation_ratio, scaled_closure_transport_ratio, scaled_compatibility, &
+         scaled_correction_norm, scaled_cross_correction_ratio, scaled_direct_compatibility, &
+         scaled_direct_correction_norm, scaled_direct_correction_ratio, &
+         scaled_direct_independence, scaled_direct_residual_norm
+      REAL(KIND=dp) :: scaled_direct_updated_residual_norm, scaled_energy_correction_ratio, &
+         scaled_independence, scaled_reference_norm, scaled_residual_norm, &
+         scaled_rotation_correction_ratio, scaled_subspace_capture, scaled_subspace_compatibility, &
+         scaled_subspace_correction_norm, scaled_subspace_cross_correction_ratio, &
+         scaled_subspace_energy_correction_ratio, scaled_subspace_independence, &
+         scaled_subspace_projected_residual_norm, scaled_subspace_residual_norm, &
+         scaled_subspace_rotation_correction_ratio, scaled_subspace_updated_residual_norm, &
+         scaled_transport_ratio, scaled_updated_residual_norm
+      REAL(KIND=dp) :: subspace_capture, subspace_compatibility, subspace_correction_norm, &
+         subspace_cross_correction_ratio, subspace_energy_correction_ratio, subspace_independence, &
          subspace_projected_residual_norm, subspace_residual_norm, &
          subspace_rotation_correction_ratio, subspace_updated_residual_norm, transport_ratio, &
          updated_residual_norm
-      REAL(KIND=dp), DIMENSION(2, 2) :: analytic_response, direct_energy_response, &
+      REAL(KIND=dp), DIMENSION(2, 2) :: analytic_response, closure_energy_targets, &
+         closure_response, closure_rotation_targets, direct_energy_response, &
          direct_energy_targets, direct_rotation_targets, direct_true_schur, &
          direct_updated_rotation_hessian, energy_cross, energy_hessian, energy_steps, &
          energy_targets, expected_transport, projected_energy_response, projected_energy_targets, &
          projected_expected_rotation_hessian, projected_response_metric, &
          projected_rotation_targets, projected_true_schur, projected_updated_rotation_hessian, &
-         response_response, rotation_hessian, rotation_steps, rotation_targets, &
-         scaled_direct_energy_targets
-      REAL(KIND=dp), DIMENSION(2, 2) :: scaled_direct_updated_rotation_hessian, &
-         scaled_energy_cross, scaled_energy_hessian, scaled_energy_steps, scaled_energy_targets, &
-         scaled_subspace_energy_cross, scaled_subspace_energy_hessian, &
-         scaled_subspace_rotation_hessian, scaled_transport, scaled_updated_energy_cross, &
-         scaled_updated_energy_hessian, scaled_updated_rotation_hessian, subspace_energy_cross, &
-         subspace_energy_hessian, subspace_rotation_hessian, transport, true_energy_cross, &
-         true_energy_hessian, true_rotation_hessian, updated_energy_cross, updated_energy_hessian, &
-         updated_rotation_hessian
+         response_response, rotation_hessian, rotation_steps
+      REAL(KIND=dp), DIMENSION(2, 2) :: rotation_targets, scaled_closure_energy_targets, &
+         scaled_closure_response, scaled_direct_energy_targets, &
+         scaled_direct_updated_rotation_hessian, scaled_energy_cross, scaled_energy_hessian, &
+         scaled_energy_steps, scaled_energy_targets, scaled_subspace_energy_cross, &
+         scaled_subspace_energy_hessian, scaled_subspace_rotation_hessian, scaled_transport, &
+         scaled_updated_energy_cross, scaled_updated_energy_hessian, &
+         scaled_updated_rotation_hessian, subspace_energy_cross, subspace_energy_hessian, &
+         subspace_rotation_hessian, transport, true_energy_cross
+      REAL(KIND=dp), DIMENSION(2, 2) :: true_energy_hessian, true_rotation_hessian, &
+         updated_energy_cross, updated_energy_hessian, updated_rotation_hessian
 
       rotation_hessian(:, :) = RESHAPE([0.9_dp, 0.05_dp, 0.05_dp, -0.2_dp], [2, 2])
       energy_hessian(:, :) = RESHAPE([0.65_dp, 0.02_dp, 0.02_dp, 0.55_dp], [2, 2])
@@ -6953,6 +7070,35 @@ CONTAINS
               MAXVAL(ABS(projected_updated_rotation_hessian - &
                          TRANSPOSE(projected_updated_rotation_hessian)))
 
+      closure_rotation_targets(:, :) = rotation_targets - &
+                                       MATMUL(rotation_hessian, rotation_steps) + &
+                                       MATMUL(TRANSPOSE(energy_cross), energy_steps)
+      closure_energy_targets(:, :) = energy_targets - MATMUL(energy_hessian, energy_steps) + &
+                                     MATMUL(energy_cross, rotation_steps)
+      scaled_closure_energy_targets(:, :) = closure_energy_targets/energy_coordinate_scale
+      CALL qs_scf_kp_coupled_closure_response( &
+         rotation_hessian, energy_hessian, energy_cross, rotation_steps, energy_steps, &
+         closure_rotation_targets, closure_energy_targets, closure_response, closure_ready, &
+         closure_independence, closure_compatibility, closure_capture, closure_residual_ratio, &
+         closure_transport_ratio, closure_rotation_ratio, closure_energy_ratio, closure_cross_ratio)
+      CALL qs_scf_kp_coupled_closure_response( &
+         rotation_hessian, scaled_energy_hessian, scaled_energy_cross, rotation_steps, &
+         scaled_energy_steps, closure_rotation_targets, scaled_closure_energy_targets, &
+         scaled_closure_response, scaled_closure_ready, scaled_closure_independence, &
+         scaled_closure_compatibility, scaled_closure_capture, scaled_closure_residual_ratio, &
+         scaled_closure_transport_ratio, scaled_closure_rotation_ratio, &
+         scaled_closure_energy_ratio, scaled_closure_cross_ratio)
+      error = error + MAXVAL(ABS(closure_response - TRANSPOSE(closure_response))) + &
+              MAXVAL(ABS(scaled_closure_response - closure_response)) + &
+              ABS(scaled_closure_independence - closure_independence) + &
+              ABS(scaled_closure_compatibility - closure_compatibility) + &
+              ABS(scaled_closure_capture - closure_capture) + &
+              ABS(scaled_closure_residual_ratio - closure_residual_ratio) + &
+              ABS(scaled_closure_transport_ratio - closure_transport_ratio) + &
+              ABS(scaled_closure_rotation_ratio - closure_rotation_ratio) + &
+              ABS(scaled_closure_energy_ratio - closure_energy_ratio) + &
+              ABS(scaled_closure_cross_ratio - closure_cross_ratio)
+
       CALL qs_scf_kp_coupled_schur_transport( &
          rotation_hessian, energy_hessian, energy_cross, updated_rotation_hessian, &
          updated_energy_hessian, updated_energy_cross, transport, transport_ready, transport_ratio)
@@ -6976,11 +7122,14 @@ CONTAINS
 
       IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. subspace_ready .OR. &
           .NOT. scaled_subspace_ready .OR. .NOT. direct_ready .OR. .NOT. projected_ready .OR. &
-          .NOT. scaled_direct_ready .OR. .NOT. transport_ready .OR. &
+          .NOT. scaled_direct_ready .OR. .NOT. closure_ready .OR. &
+          .NOT. scaled_closure_ready .OR. .NOT. transport_ready .OR. &
           .NOT. scaled_transport_ready .OR. independence <= 0.0_dp .OR. &
           direct_independence <= 0.0_dp .OR. reference_norm <= 0.0_dp .OR. &
           projected_independence <= 0.0_dp .OR. &
           subspace_capture <= 0.0_dp .OR. subspace_capture > 1.0_dp + tol .OR. &
+          closure_capture <= 0.0_dp .OR. closure_capture > 1.0_dp + tol .OR. &
+          closure_residual_ratio > 1.0_dp + tol .OR. &
           correction_norm <= 0.0_dp .OR. &
           direct_correction_norm <= 0.0_dp .OR. projected_correction_norm <= 0.0_dp .OR. &
           residual_norm <= updated_residual_norm .OR. &
@@ -7204,32 +7353,35 @@ CONTAINS
       INTEGER, PARAMETER                                 :: nmode = 3, nrot = 5
 
       INTEGER :: averaged_negative_modes, averaged_positive_modes, averaged_unsupported_modes, &
-         base_negative_modes, base_positive_modes, base_unsupported_modes, history_negative_modes, &
-         history_positive_modes, history_unsupported_modes, incompatible_negative_modes, &
-         incompatible_positive_modes, incompatible_unsupported_modes, negative_modes, &
-         positive_modes, prior_negative_modes, prior_positive_modes, prior_unsupported_modes, &
-         rank_deficient_negative_modes, rank_deficient_positive_modes, &
-         rank_deficient_unsupported_modes, scaled_negative_modes, scaled_positive_modes, &
-         scaled_unsupported_modes
-      INTEGER :: transverse_negative_modes, transverse_positive_modes, &
-         transverse_unsupported_modes, unsupported_modes
-      LOGICAL :: averaged_ready, history_ready, incompatible_ready, prior_ready, &
+         base_negative_modes, base_positive_modes, base_unsupported_modes, &
+         baseline_negative_modes, baseline_positive_modes, baseline_unsupported_modes, &
+         history_negative_modes, history_positive_modes, history_unsupported_modes, &
+         incompatible_negative_modes, incompatible_positive_modes, incompatible_unsupported_modes, &
+         negative_modes, positive_modes, prior_negative_modes, prior_positive_modes, &
+         prior_unsupported_modes, rank_deficient_negative_modes, rank_deficient_positive_modes, &
+         rank_deficient_unsupported_modes
+      INTEGER :: scaled_negative_modes, scaled_positive_modes, scaled_unsupported_modes, &
+         transverse_negative_modes, transverse_positive_modes, transverse_unsupported_modes, &
+         unsupported_modes
+      LOGICAL :: averaged_ready, baseline_ready, history_ready, incompatible_ready, prior_ready, &
          rank_deficient_ready, ready, scaled_ready, transverse_ready
       REAL(KIND=dp) :: averaged_compatibility, averaged_fitted_residual_ratio, &
          averaged_independence, averaged_pair_fitted_residual_ratio, averaged_residual_ratio, &
-         compatibility, error, history_compatibility, history_independence, &
-         history_residual_ratio, incompatible_compatibility, incompatible_independence, &
-         incompatible_residual_ratio, independence, prior_compatibility, prior_independence, &
-         prior_residual_ratio, rank_deficient_compatibility, rank_deficient_independence, &
-         rank_deficient_residual_ratio, residual_ratio, scaled_compatibility, scaled_independence, &
-         scaled_residual_ratio
-      REAL(KIND=dp) :: transverse_compatibility, transverse_independence, transverse_residual_ratio
+         baseline_compatibility, baseline_independence, baseline_residual_ratio, compatibility, &
+         error, history_compatibility, history_independence, history_residual_ratio, &
+         incompatible_compatibility, incompatible_independence, incompatible_residual_ratio, &
+         independence, prior_compatibility, prior_independence, prior_residual_ratio, &
+         rank_deficient_compatibility, rank_deficient_independence, rank_deficient_residual_ratio, &
+         residual_ratio
+      REAL(KIND=dp) :: scaled_compatibility, scaled_independence, scaled_residual_ratio, &
+         transverse_compatibility, transverse_independence, transverse_residual_ratio
       REAL(KIND=dp), DIMENSION(nrot, 2) :: incompatible_targets, rank_deficient_steps, &
          rank_deficient_targets, response_steps, response_targets, transverse_targets
       REAL(KIND=dp), DIMENSION(nrot, 3)                  :: averaged_steps, averaged_targets, &
                                                             history_steps, history_targets
       REAL(KIND=dp), DIMENSION(nrot, nmode)              :: scaled_tangent_modes, tangent_modes
       REAL(KIND=dp), DIMENSION(nrot, nrot) :: averaged_correction, averaged_fullrank_correction, &
+         baseline_averaged_correction, baseline_correction, baseline_fullrank_correction, &
          correction, expected, history_correction, incompatible_correction, prior, &
          prior_correction, prior_expected_correction, rank_deficient_correction, &
          scaled_correction, transverse_correction
@@ -7290,6 +7442,22 @@ CONTAINS
           prior_compatibility > tol .OR. prior_residual_ratio > tol) &
          error = HUGE(1.0_dp)
 
+      ! A separately fitted physical prior replaces only the response represented by the
+      ! candidate baseline.  This is the path used by the full rotation/energy closure fit:
+      ! return the complete physical-prior minus Direct-baseline correction, not merely the
+      ! residual needed to satisfy the same secants.
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, response_steps, response_targets, baseline_correction, baseline_ready, &
+         baseline_positive_modes, baseline_negative_modes, baseline_unsupported_modes, &
+         baseline_independence, baseline_compatibility, baseline_residual_ratio, &
+         response_prior=expected, response_baseline=prior)
+      IF (.NOT. baseline_ready .OR. &
+          MAXVAL(ABS(baseline_correction - prior_expected_correction)) > tol .OR. &
+          baseline_positive_modes /= 1 .OR. baseline_negative_modes /= 1 .OR. &
+          baseline_unsupported_modes /= 1 .OR. baseline_independence <= tol .OR. &
+          baseline_compatibility > tol .OR. baseline_residual_ratio > tol) &
+         error = HUGE(1.0_dp)
+
       ! Three equal-scale accepted directions overdetermine a two-mode symmetric response.
       ! The full-rank least-squares shadow fit must improve over the active pair response,
       ! while the returned correction remains the independently validated pair model.
@@ -7308,6 +7476,12 @@ CONTAINS
          response_prior=prior, fitted_residual_ratio=averaged_fitted_residual_ratio, &
          pair_fitted_residual_ratio=averaged_pair_fitted_residual_ratio, &
          fullrank_response_correction=averaged_fullrank_correction)
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, averaged_steps, averaged_targets, baseline_averaged_correction, &
+         baseline_ready, baseline_positive_modes, baseline_negative_modes, &
+         baseline_unsupported_modes, baseline_independence, baseline_compatibility, &
+         baseline_residual_ratio, response_prior=expected, &
+         fullrank_response_correction=baseline_fullrank_correction, response_baseline=prior)
       IF (.NOT. averaged_ready .OR. averaged_positive_modes /= 1 .OR. &
           averaged_negative_modes /= 1 .OR. averaged_unsupported_modes /= 1 .OR. &
           averaged_fitted_residual_ratio >= averaged_pair_fitted_residual_ratio .OR. &
@@ -7315,6 +7489,8 @@ CONTAINS
           MAXVAL(ABS(averaged_correction - TRANSPOSE(averaged_correction))) > tol .OR. &
           MAXVAL(ABS(averaged_fullrank_correction - &
                      TRANSPOSE(averaged_fullrank_correction))) > tol .OR. &
+          .NOT. baseline_ready .OR. &
+          MAXVAL(ABS(baseline_fullrank_correction - averaged_fullrank_correction)) > tol .OR. &
           MAXVAL(ABS(averaged_fullrank_correction - averaged_correction)) <= tol .OR. &
           MAXVAL(ABS(averaged_correction(2:2, :))) > tol .OR. &
           MAXVAL(ABS(averaged_correction(4:5, :))) > tol .OR. &
