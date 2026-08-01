@@ -88,37 +88,38 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
         qs_scf_kp_coupled_closure_response, qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
-        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
-        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
-        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
-        qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
-        qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_pair_activation_ready, qs_scf_kp_density_replaced_response, &
-        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
-        qs_scf_kp_directional_subspace_curvature_update, qs_scf_kp_energy_closure_preferred, &
-        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_tail_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_coupled_response_quadratic, qs_scf_kp_coupled_schur_transport, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
+        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
+        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
+        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_history_refresh_ready, &
+        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
+        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
+        qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_full_residual_completion, qs_scf_kp_indefinite_residual_balanced_step, &
-        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
-        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
-        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
-        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_density_response
+        qs_scf_kp_full_closure_response_model_adjustments, qs_scf_kp_full_residual_completion, &
+        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_measured_residual_subspace_step, &
+        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_quadratic_descent_scale, &
+        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_secant_prediction, &
+        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -5782,6 +5783,16 @@ CONTAINS
       failed = failed .OR. ABS(baseline_adjustment + 3.0_dp) > tolerance
       failed = failed .OR. ABS(candidate_adjustment) > tolerance
 
+      CALL qs_scf_kp_full_closure_response_model_adjustments( &
+         2.0_dp, 5.0_dp, .FALSE., baseline_adjustment, candidate_adjustment)
+      failed = failed .OR. ABS(baseline_adjustment) > tolerance
+      failed = failed .OR. ABS(candidate_adjustment - 5.0_dp) > tolerance
+
+      CALL qs_scf_kp_full_closure_response_model_adjustments( &
+         2.0_dp, 5.0_dp, .TRUE., baseline_adjustment, candidate_adjustment)
+      failed = failed .OR. ABS(baseline_adjustment) > tolerance
+      failed = failed .OR. ABS(candidate_adjustment - 3.0_dp) > tolerance
+
       IF (failed) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A)') TRIM(label), "failed"
@@ -6873,53 +6884,59 @@ CONTAINS
       LOGICAL :: closure_ready, direct_ready, projected_ready, ready, scaled_closure_ready, &
          scaled_direct_ready, scaled_ready, scaled_subspace_ready, scaled_transport_ready, &
          subspace_ready, transport_ready
-      REAL(KIND=dp) :: analytic_det, closure_capture, closure_compatibility, closure_cross_ratio, &
+      REAL(KIND=dp) :: analytic_det, closure_capture, closure_compatibility, &
+         closure_cross_quadratic, closure_cross_ratio, closure_energy_quadratic, &
          closure_energy_ratio, closure_independence, closure_residual_ratio, &
-         closure_rotation_ratio, closure_transport_ratio, compatibility, correction_norm, &
-         cross_correction_ratio, direct_compatibility, direct_correction_norm, &
-         direct_correction_ratio, direct_independence, direct_residual_norm, &
-         direct_updated_residual_norm, energy_correction_ratio, error, independence, &
-         projected_compatibility, projected_correction_norm, projected_correction_ratio, &
-         projected_independence, projected_residual_norm
-      REAL(KIND=dp) :: projected_updated_residual_norm, reference_norm, residual_norm, &
-         response_det, rotation_correction_ratio, scaled_closure_capture, &
-         scaled_closure_compatibility, scaled_closure_cross_ratio, scaled_closure_energy_ratio, &
+         closure_response_quadratic, closure_rotation_quadratic, closure_rotation_ratio, &
+         closure_transport_ratio, compatibility, correction_norm, cross_correction_ratio, &
+         direct_compatibility, direct_correction_norm, direct_correction_ratio, &
+         direct_independence, direct_residual_norm, direct_updated_residual_norm, &
+         energy_correction_ratio, error, independence, projected_compatibility
+      REAL(KIND=dp) :: projected_correction_norm, projected_correction_ratio, &
+         projected_independence, projected_residual_norm, projected_updated_residual_norm, &
+         reference_norm, residual_norm, response_det, rotation_correction_ratio, &
+         scaled_closure_capture, scaled_closure_compatibility, scaled_closure_cross_quadratic, &
+         scaled_closure_cross_ratio, scaled_closure_energy_quadratic, scaled_closure_energy_ratio, &
          scaled_closure_independence, scaled_closure_residual_ratio, &
-         scaled_closure_rotation_ratio, scaled_closure_transport_ratio, scaled_compatibility, &
-         scaled_correction_norm, scaled_cross_correction_ratio, scaled_direct_compatibility, &
+         scaled_closure_response_quadratic, scaled_closure_rotation_quadratic, &
+         scaled_closure_rotation_ratio, scaled_closure_transport_ratio
+      REAL(KIND=dp) :: scaled_compatibility, scaled_correction_norm, &
+         scaled_cross_correction_ratio, scaled_direct_compatibility, &
          scaled_direct_correction_norm, scaled_direct_correction_ratio, &
-         scaled_direct_independence, scaled_direct_residual_norm
-      REAL(KIND=dp) :: scaled_direct_updated_residual_norm, scaled_energy_correction_ratio, &
-         scaled_independence, scaled_reference_norm, scaled_residual_norm, &
-         scaled_rotation_correction_ratio, scaled_subspace_capture, scaled_subspace_compatibility, &
-         scaled_subspace_correction_norm, scaled_subspace_cross_correction_ratio, &
-         scaled_subspace_energy_correction_ratio, scaled_subspace_independence, &
-         scaled_subspace_projected_residual_norm, scaled_subspace_residual_norm, &
-         scaled_subspace_rotation_correction_ratio, scaled_subspace_updated_residual_norm, &
-         scaled_transport_ratio, scaled_updated_residual_norm
-      REAL(KIND=dp) :: subspace_capture, subspace_compatibility, subspace_correction_norm, &
-         subspace_cross_correction_ratio, subspace_energy_correction_ratio, subspace_independence, &
+         scaled_direct_independence, scaled_direct_residual_norm, &
+         scaled_direct_updated_residual_norm, scaled_energy_correction_ratio, scaled_independence, &
+         scaled_reference_norm, scaled_residual_norm, scaled_rotation_correction_ratio, &
+         scaled_subspace_capture, scaled_subspace_compatibility, scaled_subspace_correction_norm, &
+         scaled_subspace_cross_correction_ratio, scaled_subspace_energy_correction_ratio
+      REAL(KIND=dp) :: scaled_subspace_independence, scaled_subspace_projected_residual_norm, &
+         scaled_subspace_residual_norm, scaled_subspace_rotation_correction_ratio, &
+         scaled_subspace_updated_residual_norm, scaled_transport_ratio, &
+         scaled_updated_residual_norm, subspace_capture, subspace_compatibility, &
+         subspace_correction_norm, subspace_cross_correction_ratio, &
+         subspace_energy_correction_ratio, subspace_independence, &
          subspace_projected_residual_norm, subspace_residual_norm, &
          subspace_rotation_correction_ratio, subspace_updated_residual_norm, transport_ratio, &
          updated_residual_norm
-      REAL(KIND=dp), DIMENSION(2, 2) :: analytic_response, closure_energy_targets, &
-         closure_response, closure_rotation_targets, direct_energy_response, &
+      REAL(KIND=dp), DIMENSION(2, 2) :: analytic_response, closure_cross_correction, &
+         closure_energy_correction, closure_energy_targets, closure_response, &
+         closure_rotation_correction, closure_rotation_targets, direct_energy_response, &
          direct_energy_targets, direct_rotation_targets, direct_true_schur, &
          direct_updated_rotation_hessian, energy_cross, energy_hessian, energy_steps, &
          energy_targets, expected_transport, projected_energy_response, projected_energy_targets, &
          projected_expected_rotation_hessian, projected_response_metric, &
-         projected_rotation_targets, projected_true_schur, projected_updated_rotation_hessian, &
-         response_response, rotation_hessian, rotation_steps
-      REAL(KIND=dp), DIMENSION(2, 2) :: rotation_targets, scaled_closure_energy_targets, &
-         scaled_closure_response, scaled_direct_energy_targets, &
+         projected_rotation_targets, projected_true_schur
+      REAL(KIND=dp), DIMENSION(2, 2) :: projected_updated_rotation_hessian, response_response, &
+         rotation_hessian, rotation_steps, rotation_targets, scaled_closure_cross_correction, &
+         scaled_closure_energy_correction, scaled_closure_energy_targets, scaled_closure_response, &
+         scaled_closure_rotation_correction, scaled_direct_energy_targets, &
          scaled_direct_updated_rotation_hessian, scaled_energy_cross, scaled_energy_hessian, &
          scaled_energy_steps, scaled_energy_targets, scaled_subspace_energy_cross, &
-         scaled_subspace_energy_hessian, scaled_subspace_rotation_hessian, scaled_transport, &
-         scaled_updated_energy_cross, scaled_updated_energy_hessian, &
-         scaled_updated_rotation_hessian, subspace_energy_cross, subspace_energy_hessian, &
-         subspace_rotation_hessian, transport, true_energy_cross
-      REAL(KIND=dp), DIMENSION(2, 2) :: true_energy_hessian, true_rotation_hessian, &
-         updated_energy_cross, updated_energy_hessian, updated_rotation_hessian
+         scaled_subspace_energy_hessian, scaled_subspace_rotation_hessian, scaled_transport
+      REAL(KIND=dp), DIMENSION(2, 2) :: scaled_updated_energy_cross, &
+         scaled_updated_energy_hessian, scaled_updated_rotation_hessian, subspace_energy_cross, &
+         subspace_energy_hessian, subspace_rotation_hessian, transport, true_energy_cross, &
+         true_energy_hessian, true_rotation_hessian, updated_energy_cross, updated_energy_hessian, &
+         updated_rotation_hessian
 
       rotation_hessian(:, :) = RESHAPE([0.9_dp, 0.05_dp, 0.05_dp, -0.2_dp], [2, 2])
       energy_hessian(:, :) = RESHAPE([0.65_dp, 0.02_dp, 0.02_dp, 0.55_dp], [2, 2])
@@ -7080,16 +7097,52 @@ CONTAINS
          rotation_hessian, energy_hessian, energy_cross, rotation_steps, energy_steps, &
          closure_rotation_targets, closure_energy_targets, closure_response, closure_ready, &
          closure_independence, closure_compatibility, closure_capture, closure_residual_ratio, &
-         closure_transport_ratio, closure_rotation_ratio, closure_energy_ratio, closure_cross_ratio)
+         closure_transport_ratio, closure_rotation_ratio, closure_energy_ratio, closure_cross_ratio, &
+         full_rotation_correction=closure_rotation_correction, &
+         full_energy_correction=closure_energy_correction, &
+         full_cross_correction=closure_cross_correction)
       CALL qs_scf_kp_coupled_closure_response( &
          rotation_hessian, scaled_energy_hessian, scaled_energy_cross, rotation_steps, &
          scaled_energy_steps, closure_rotation_targets, scaled_closure_energy_targets, &
          scaled_closure_response, scaled_closure_ready, scaled_closure_independence, &
          scaled_closure_compatibility, scaled_closure_capture, scaled_closure_residual_ratio, &
          scaled_closure_transport_ratio, scaled_closure_rotation_ratio, &
-         scaled_closure_energy_ratio, scaled_closure_cross_ratio)
+         scaled_closure_energy_ratio, scaled_closure_cross_ratio, &
+         full_rotation_correction=scaled_closure_rotation_correction, &
+         full_energy_correction=scaled_closure_energy_correction, &
+         full_cross_correction=scaled_closure_cross_correction)
+      closure_response_quadratic = qs_scf_kp_coupled_response_quadratic( &
+                                   rotation_steps(:, 1), energy_steps(:, 1), &
+                                   closure_rotation_correction, closure_energy_correction, &
+                                   closure_cross_correction, closure_rotation_quadratic, &
+                                   closure_energy_quadratic, closure_cross_quadratic)
+      scaled_closure_response_quadratic = qs_scf_kp_coupled_response_quadratic( &
+                                          rotation_steps(:, 1), scaled_energy_steps(:, 1), &
+                                          scaled_closure_rotation_correction, &
+                                          scaled_closure_energy_correction, &
+                                          scaled_closure_cross_correction, &
+                                          scaled_closure_rotation_quadratic, &
+                                          scaled_closure_energy_quadratic, &
+                                          scaled_closure_cross_quadratic)
       error = error + MAXVAL(ABS(closure_response - TRANSPOSE(closure_response))) + &
               MAXVAL(ABS(scaled_closure_response - closure_response)) + &
+              MAXVAL(ABS(closure_rotation_correction - &
+                         (subspace_rotation_hessian - rotation_hessian))) + &
+              MAXVAL(ABS(closure_energy_correction - &
+                         (subspace_energy_hessian - energy_hessian))) + &
+              MAXVAL(ABS(closure_cross_correction - &
+                         (subspace_energy_cross - energy_cross))) + &
+              MAXVAL(ABS(scaled_closure_rotation_correction - closure_rotation_correction)) + &
+              MAXVAL(ABS(energy_coordinate_scale**2*scaled_closure_energy_correction - &
+                         closure_energy_correction)) + &
+              MAXVAL(ABS(energy_coordinate_scale*scaled_closure_cross_correction - &
+                         closure_cross_correction)) + &
+              ABS(closure_response_quadratic - closure_rotation_quadratic - &
+                  closure_energy_quadratic - closure_cross_quadratic) + &
+              ABS(scaled_closure_rotation_quadratic - closure_rotation_quadratic) + &
+              ABS(scaled_closure_energy_quadratic - closure_energy_quadratic) + &
+              ABS(scaled_closure_cross_quadratic - closure_cross_quadratic) + &
+              ABS(scaled_closure_response_quadratic - closure_response_quadratic) + &
               ABS(scaled_closure_independence - closure_independence) + &
               ABS(scaled_closure_compatibility - closure_compatibility) + &
               ABS(scaled_closure_capture - closure_capture) + &
