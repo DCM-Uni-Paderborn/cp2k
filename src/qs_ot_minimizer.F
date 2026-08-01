@@ -1538,6 +1538,8 @@ CONTAINS
                qs_ot_env(ichannel)%ener_mermin_closure_y_anchor(:) = &
                   qs_ot_env(ichannel)%ener_mermin_closure_y_previous(:)
             END IF
+            qs_ot_env(ichannel)%mermin_secant_work_ratio_anchor = &
+               qs_ot_env(ichannel)%mermin_secant_work_ratio_previous
          END DO
       END IF
 
@@ -1586,6 +1588,8 @@ CONTAINS
                qs_ot_env(ichannel)%ener_mermin_y_previous(:) = &
                   qs_ot_env(ichannel)%ener_mermin_y(:)
             END IF
+            qs_ot_env(ichannel)%mermin_secant_work_ratio_previous = &
+               qs_ot_env(ichannel)%mermin_secant_work_ratio
          END DO
       END IF
 
@@ -1905,6 +1909,7 @@ CONTAINS
          qs_ot_env(ichannel)%mermin_secant_ynorm = secant_ynorm
          qs_ot_env(ichannel)%mermin_secant_alignment = secant_alignment
          qs_ot_env(ichannel)%mermin_secant_orthogonal_fraction = secant_orthogonal_fraction
+         qs_ot_env(ichannel)%mermin_secant_work_ratio = energy_curvature/total_curvature
       END DO
 
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN

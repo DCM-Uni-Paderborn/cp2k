@@ -227,6 +227,11 @@ MODULE qs_ot_types
       REAL(KIND=dp)    :: mermin_secant_ynorm = 0.0_dp
       REAL(KIND=dp)    :: mermin_secant_alignment = 0.0_dp
       REAL(KIND=dp)    :: mermin_secant_orthogonal_fraction = 0.0_dp
+      ! The accepted finite-energy curvature divided by the endpoint-gradient
+      ! curvature follows the runtime-only current/previous/anchor secants.
+      REAL(KIND=dp)    :: mermin_secant_work_ratio = 1.0_dp
+      REAL(KIND=dp)    :: mermin_secant_work_ratio_previous = 1.0_dp
+      REAL(KIND=dp)    :: mermin_secant_work_ratio_anchor = 1.0_dp
       ! Curvature of the complete accepted matrix/rotation/energy direction.
       ! This is runtime-only because it is meaningful only with the current CG history.
       LOGICAL          :: mermin_direction_curvature_valid = .FALSE.
@@ -1191,6 +1196,9 @@ CONTAINS
       qs_ot_env%mermin_secant_ynorm = 0.0_dp
       qs_ot_env%mermin_secant_alignment = 0.0_dp
       qs_ot_env%mermin_secant_orthogonal_fraction = 0.0_dp
+      qs_ot_env%mermin_secant_work_ratio = 1.0_dp
+      qs_ot_env%mermin_secant_work_ratio_previous = 1.0_dp
+      qs_ot_env%mermin_secant_work_ratio_anchor = 1.0_dp
       qs_ot_env%mermin_direction_curvature_valid = .FALSE.
       qs_ot_env%mermin_direction_curvature = 0.0_dp
 

@@ -284,6 +284,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_full_closure_response_model_adjustments, &
              qs_scf_kp_closure_response_history_ready, &
              qs_scf_kp_shadow_prediction_quality, &
+             qs_scf_kp_work_consistent_response, &
              qs_scf_kp_closure_response_preferred, &
              qs_scf_kp_coupled_schur_transport, &
              qs_scf_kp_coupled_secant_model, &
@@ -1130,10 +1131,12 @@ CONTAINS
 !> \brief Decide whether canonical-density mismatch must enlarge the active Schur pair space.
 !>
 !>        The raw OT residual is the scale already represented by the current minimizer model.
-!>        In the calibrated coupled tail, once a valid canonical-density residual is larger,
-!>        omitting its off-diagonal pairs makes the reduced response blind to physically dominant
-!>        occupied-projector relabeling modes.  A positive raw residual is required so a freshly
-!>        rebuilt MO space cannot activate pairs from stale or uncalibrated residual history.
+!>        In the calibrated coupled tail, omitting a larger individual canonical-density pair makes
+!>        the reduced response blind to a physically dominant occupied-projector relabeling mode.
+!>        The aggregate density residual is an RMS over a different number of variables and must
+!>        therefore not be compared with the raw residual before the elementwise pair test.  A
+!>        positive raw residual is still required so a freshly rebuilt MO space cannot activate
+!>        pairs from stale or uncalibrated residual history.
 !> \param density_ready canonical fixed-N density audit is valid for the current orbitals
 !> \param density_delta RMS canonical-density residual in energy units
 !> \param raw_delta unprojected residual of the previous accepted OT state
@@ -1148,7 +1151,7 @@ CONTAINS
 
       ready = density_ready .AND. eps_scf > 0.0_dp .AND. raw_delta > 0.0_dp .AND. &
               raw_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
-              density_delta > MAX(eps_scf, raw_delta)
+              density_delta > eps_scf
 
    END FUNCTION qs_scf_kp_density_pair_activation_ready
 
@@ -2223,7 +2226,7 @@ CONTAINS
                                                             candidate_error, advantage
       LOGICAL, INTENT(OUT)                               :: ready
 
-      REAL(KIND=dp)                                      :: scale
+      REAL(KIND=dp)                                      :: correction, resolution, scale
 
       quality = 0.0_dp
       baseline_error = 1.0_dp
@@ -2237,17 +2240,72 @@ CONTAINS
           ABS(measured_drop) >= HUGE(measured_drop)) RETURN
       IF (baseline_drop <= EPSILON(baseline_drop) .OR. measured_drop <= 0.0_dp) RETURN
 
-      scale = MAX(measured_drop, ABS(baseline_drop), TINY(1.0_dp))
+      scale = MAX(measured_drop, ABS(baseline_drop), ABS(candidate_drop), TINY(1.0_dp))
       baseline_error = ABS(measured_drop - baseline_drop)/scale
-      scale = MAX(measured_drop, ABS(candidate_drop), TINY(1.0_dp))
       candidate_error = ABS(measured_drop - candidate_drop)/scale
       IF (candidate_drop > EPSILON(candidate_drop)) quality = measured_drop/candidate_drop
       advantage = baseline_error - candidate_error
+      correction = ABS(candidate_drop - baseline_drop)
+      resolution = 64.0_dp*EPSILON(1.0_dp)*MAX(scale, 1.0_dp)
       ready = quality == quality .AND. baseline_error == baseline_error .AND. &
               candidate_error == candidate_error .AND. advantage == advantage .AND. &
-              ABS(quality) < HUGE(quality) .AND. ABS(advantage) < HUGE(advantage)
+              ABS(quality) < HUGE(quality) .AND. ABS(advantage) < HUGE(advantage) .AND. &
+              correction > resolution
 
    END SUBROUTINE qs_scf_kp_shadow_prediction_quality
+
+! **************************************************************************************************
+!> \brief Project a finite gradient secant onto its accepted Mermin-energy work.
+!>
+!>        This least-norm longitudinal update makes the response work agree exactly with the
+!>        finite accepted Mermin-energy curvature.  It preserves all response components
+!>        orthogonal to the joint complex-rotation/fixed-N auxiliary-energy step.
+!> \param rotation_step accepted complex-rotation step
+!> \param energy_step accepted fixed-N auxiliary-energy step
+!> \param rotation_response total rotation-gradient secant, updated in place
+!> \param energy_response total auxiliary-energy-gradient secant, updated in place
+!> \param work_ratio finite-energy curvature divided by endpoint-gradient curvature
+!> \param applied whether a numerically resolved longitudinal correction was applied
+!> \param work_before response work before projection
+!> \param work_after response work after projection
+! **************************************************************************************************
+   PURE SUBROUTINE qs_scf_kp_work_consistent_response( &
+      rotation_step, energy_step, rotation_response, energy_response, work_ratio, applied, &
+      work_before, work_after)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: rotation_step, energy_step
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: rotation_response, energy_response
+      REAL(KIND=dp), INTENT(IN)                          :: work_ratio
+      LOGICAL, INTENT(OUT)                               :: applied
+      REAL(KIND=dp), INTENT(OUT)                         :: work_before, work_after
+
+      REAL(KIND=dp)                                      :: correction, longitudinal_scale, &
+                                                            resolution, step_norm_sq
+
+      applied = .FALSE.
+      work_before = 0.0_dp
+      work_after = 0.0_dp
+      IF (SIZE(rotation_step) /= SIZE(rotation_response) .OR. &
+          SIZE(energy_step) /= SIZE(energy_response)) RETURN
+      work_before = DOT_PRODUCT(rotation_step, rotation_response) + &
+                    DOT_PRODUCT(energy_step, energy_response)
+      work_after = work_before
+      IF (.NOT. (work_ratio == work_ratio) .OR. work_ratio <= 0.0_dp .OR. &
+          ABS(work_ratio) >= HUGE(work_ratio)) RETURN
+      step_norm_sq = DOT_PRODUCT(rotation_step, rotation_step) + &
+                     DOT_PRODUCT(energy_step, energy_step)
+      IF (step_norm_sq <= EPSILON(1.0_dp)) RETURN
+      correction = (work_ratio - 1.0_dp)*work_before
+      resolution = 64.0_dp*EPSILON(1.0_dp)*MAX(ABS(work_before), 1.0_dp)
+      IF (ABS(correction) <= resolution) RETURN
+      longitudinal_scale = correction/step_norm_sq
+      rotation_response(:) = rotation_response + longitudinal_scale*rotation_step
+      energy_response(:) = energy_response + longitudinal_scale*energy_step
+      work_after = DOT_PRODUCT(rotation_step, rotation_response) + &
+                   DOT_PRODUCT(energy_step, energy_response)
+      applied = ALL(rotation_response == rotation_response) .AND. &
+                ALL(energy_response == energy_response) .AND. work_after == work_after
+
+   END SUBROUTINE qs_scf_kp_work_consistent_response
 
 ! **************************************************************************************************
 !> \brief Express reduced-baseline and coupled-candidate curvatures relative to the active model.
@@ -6658,6 +6716,7 @@ CONTAINS
       target_fraction = eps/MAX(density_delta, eps)
       ready = qs_scf_kp_density_pair_activation_ready( &
               density_ready, density_delta, raw_delta, eps_scf) .AND. &
+              density_delta > raw_delta .AND. &
               density_delta > 10.0_dp*eps .AND. &
               quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
               quality_ema <= target_fraction
@@ -18098,9 +18157,11 @@ CONTAINS
             target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_occ_min, schur_energy_window
          IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
              logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8))') &
-            " OT Schur density-pair activation group selected candidates capacity:", &
-            target_group, nrot_density/2, density_pair_candidates, density_pair_available
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8),1X,L1,3(1X,ES16.8))') &
+            " OT Schur density-pair activation group selected candidates capacity ready density raw threshold:", &
+            target_group, nrot_density/2, density_pair_candidates, density_pair_available, &
+            density_pair_activation_ready, local_ot_env(1)%kpoint_density_stationarity_delta, &
+            response_raw_delta, density_pair_activation_threshold
 
          ALLOCATE (canonical_occ_curv(ne), curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), &
                    z_e(ne), accepted_z_e(ne), &
@@ -34725,7 +34786,7 @@ CONTAINS
          closure_coupled_capture, closure_coupled_residual_ratio, closure_coupled_transport_ratio
 
       INTEGER :: active_energy_count, directional_subspace_correction_rank, &
-         directional_subspace_rank, global_channel, global_spin, group, ie, ifull, imo, jmo, &
+         directional_subspace_rank, global_channel, global_spin, group, ie, ifull, imo, iobs, jmo, &
          local_channel, nclosure_observations, nener, nmo, nrot, nrot_full, r, valid_i
       LOGICAL :: closure_anchor_valid, closure_coupled_fit_ready, closure_coupled_transport_ready, &
          closure_previous_valid, closure_secant_valid, coupled_multisecant_finite, &
@@ -34739,6 +34800,7 @@ CONTAINS
          reduced_multisecant_finite, reduced_prediction_consistent, reduced_prediction_finite, &
          reduced_prediction_reverse_finite, rotation_multisecant_ready, update_finite, valid
       LOGICAL, DIMENSION(2)                              :: frozen_prediction_finite
+      LOGICAL, DIMENSION(3)                              :: work_projection_applied
       REAL(KIND=dp) :: alignment, base_hessian_norm, closure_coupled_cross_ratio, &
          closure_coupled_energy_ratio, closure_coupled_rotation_ratio, closure_model_alignment, &
          closure_reduced_curvature, closure_reduced_norm, component_cross_curvature, &
@@ -34807,7 +34869,8 @@ CONTAINS
       REAL(KIND=dp) :: rotation_model_norm, rotation_residual_norm, rotation_stbs, rotation_sty, &
          rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, total_model_alignment, &
          total_reduced_curvature, total_reduced_norm, total_reduced_residual_norm, &
-         updated_rotation_residual_norm, y_norm, ynorm
+         updated_rotation_residual_norm, work_ratio_anchor, work_ratio_current, &
+         work_ratio_previous, y_norm, ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: anchor_closure_reduced_target, &
          anchor_closure_secant_energy, anchor_closure_secant_rotation, anchor_secant_energy, &
          anchor_secant_rotation, anchor_step_energy, anchor_step_rotation, closure_reduced_target, &
@@ -34844,6 +34907,7 @@ CONTAINS
          frozen_prediction_curvature, frozen_prediction_curvature_ratio, &
          frozen_prediction_overlap, frozen_prediction_predicted_residual_norm, &
          frozen_prediction_quality, frozen_prediction_residual_norm
+      REAL(KIND=dp), DIMENSION(3)                        :: work_after, work_before, work_ratio
 
          nrot = SIZE(var_channel)
          nrot_full = SIZE(reduced_secant_full_targets, 1)
@@ -34975,6 +35039,9 @@ CONTAINS
          full_secant_rotation_norm = 0.0_dp
          previous_full_step_rotation_norm = 0.0_dp
          previous_full_secant_rotation_norm = 0.0_dp
+         work_ratio_current = 1.0_dp
+         work_ratio_previous = 1.0_dp
+         work_ratio_anchor = 1.0_dp
 
          valid = .TRUE.
          previous_valid = .TRUE.
@@ -34990,6 +35057,9 @@ CONTAINS
             global_spin = MOD(global_channel - 1, nspin_ot) + 1
             group = MERGE(global_spin, 1, ngroups == nspin_ot)
             IF (group /= target_group) CYCLE
+            work_ratio_current = local_ot_env(local_channel)%mermin_secant_work_ratio
+            work_ratio_previous = local_ot_env(local_channel)%mermin_secant_work_ratio_previous
+            work_ratio_anchor = local_ot_env(local_channel)%mermin_secant_work_ratio_anchor
             valid = valid .AND. local_ot_env(local_channel)%mermin_secant_ready .AND. &
                     ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_s) .AND. &
                     ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_s_im) .AND. &
@@ -35561,6 +35631,25 @@ CONTAINS
                closure_coupled_rotation_targets(:, 3) = anchor_secant_rotation
                closure_coupled_energy_targets(:, 3) = anchor_secant_energy
             END IF
+            work_ratio(:) = [work_ratio_previous, work_ratio_current, work_ratio_anchor]
+            work_projection_applied(:) = .FALSE.
+            work_before(:) = 0.0_dp
+            work_after(:) = 0.0_dp
+            DO iobs = 1, nclosure_observations
+               CALL qs_scf_kp_work_consistent_response( &
+                  closure_coupled_rotation_steps(:, iobs), &
+                  closure_coupled_energy_steps(:, iobs), &
+                  closure_coupled_rotation_targets(:, iobs), &
+                  closure_coupled_energy_targets(:, iobs), work_ratio(iobs), &
+                  work_projection_applied(iobs), work_before(iobs), work_after(iobs))
+               IF (logger%iter_info%print_level >= high_print_level .AND. &
+                   logger%para_env%is_source()) &
+                  WRITE (cp_logger_get_default_unit_nr(logger), &
+                         '(A,2(1X,I3),1X,L1,4(1X,ES16.8))') &
+                  " OT Schur finite-Mermin work projection group obs applied ratio before after correction:", &
+                  target_group, iobs, work_projection_applied(iobs), work_ratio(iobs), &
+                  work_before(iobs), work_after(iobs), work_after(iobs) - work_before(iobs)
+            END DO
             CALL qs_scf_kp_coupled_residual_prediction( &
                rotation_hessian, energy_hessian, energy_cross, &
                closure_coupled_rotation_steps, closure_coupled_energy_steps, &

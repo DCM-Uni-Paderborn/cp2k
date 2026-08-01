@@ -123,7 +123,7 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
         qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
         qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_density_response
+        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -263,6 +263,8 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT coupled closure accepted-history gate", nfail)
    CALL check_kpoint_shadow_prediction_quality( &
       "k-point OT signed response-shadow calibration", 5.0E-15_dp, nfail)
+   CALL check_kpoint_work_consistent_response( &
+      "k-point OT finite Mermin response work", 5.0E-15_dp, nfail)
    CALL check_kpoint_closure_response_model_adjustments( &
       "k-point OT coupled closure active-model calibration", 5.0E-15_dp, nfail)
    CALL check_kpoint_density_closure_model_ready("k-point OT coupled density closure gate", nfail)
@@ -5893,13 +5895,17 @@ CONTAINS
       CALL qs_scf_kp_shadow_prediction_quality( &
          1.0_dp, 0.8_dp, 0.75_dp, quality, baseline_error, candidate_error, advantage, ready)
       error = ABS(quality - 0.9375_dp) + ABS(baseline_error - 0.25_dp) + &
-              ABS(candidate_error - 0.0625_dp) + ABS(advantage - 0.1875_dp)
+              ABS(candidate_error - 0.05_dp) + ABS(advantage - 0.20_dp)
       IF (.NOT. ready) error = error + 1.0_dp
       CALL qs_scf_kp_shadow_prediction_quality( &
          1.0_dp, -0.4_dp, 0.75_dp, quality, baseline_error, candidate_error, advantage, ready)
       error = error + ABS(quality) + ABS(baseline_error - 0.25_dp) + &
-              ABS(candidate_error - 23.0_dp/15.0_dp) + ABS(advantage + 77.0_dp/60.0_dp)
+              ABS(candidate_error - 1.15_dp) + ABS(advantage + 0.90_dp)
       IF (.NOT. ready) error = error + 1.0_dp
+      CALL qs_scf_kp_shadow_prediction_quality( &
+         1.0_dp, 1.0_dp + EPSILON(1.0_dp), 0.75_dp, quality, baseline_error, candidate_error, &
+         advantage, ready)
+      IF (ready) error = error + 1.0_dp
       CALL qs_scf_kp_shadow_prediction_quality( &
          0.0_dp, 0.8_dp, 0.75_dp, quality, baseline_error, candidate_error, advantage, ready)
       IF (ready) error = error + 1.0_dp
@@ -5912,6 +5918,50 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_shadow_prediction_quality
+
+! **************************************************************************************************
+!> \brief Check the least-norm finite-Mermin work projection.
+!> \param label ...
+!> \param tolerance ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_work_consistent_response(label, tolerance, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tolerance
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: applied
+      REAL(KIND=dp)                                      :: error, work_after, work_before
+      REAL(KIND=dp), DIMENSION(1)                        :: energy_response, energy_step
+      REAL(KIND=dp), DIMENSION(2)                        :: rotation_response, rotation_step
+
+      rotation_step(:) = [1.0_dp, 2.0_dp]
+      energy_step(:) = [3.0_dp]
+      rotation_response(:) = [4.0_dp, -1.0_dp]
+      energy_response(:) = [2.0_dp]
+      CALL qs_scf_kp_work_consistent_response( &
+         rotation_step, energy_step, rotation_response, energy_response, 1.25_dp, applied, &
+         work_before, work_after)
+      error = ABS(work_before - 8.0_dp) + ABS(work_after - 10.0_dp) + &
+              ABS(rotation_response(1) - 29.0_dp/7.0_dp) + &
+              ABS(rotation_response(2) + 5.0_dp/7.0_dp) + &
+              ABS(energy_response(1) - 17.0_dp/7.0_dp)
+      IF (.NOT. applied) error = error + 1.0_dp
+
+      CALL qs_scf_kp_work_consistent_response( &
+         rotation_step, energy_step, rotation_response, energy_response, 1.0_dp, applied, &
+         work_before, work_after)
+      IF (applied) error = error + 1.0_dp
+      error = error + ABS(work_before - 10.0_dp) + ABS(work_after - 10.0_dp)
+
+      IF (error > tolerance) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" FAILED with error", error
+      ELSE
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" OK with error", error
+      END IF
+
+   END SUBROUTINE check_kpoint_work_consistent_response
 
 ! **************************************************************************************************
 !> \brief Check baseline/candidate calibration for inactive, reduced-active, and coupled-active models.
@@ -6114,7 +6164,10 @@ CONTAINS
                .TRUE., 4.90667085E-4_dp, 2.13340580E-5_dp, 1.0E-7_dp)
       failed = failed .OR. qs_scf_kp_density_pair_activation_ready( &
                .TRUE., 8.95600000E-4_dp, 0.0_dp, 1.0E-7_dp)
-      failed = failed .OR. qs_scf_kp_density_pair_activation_ready( &
+      ! The aggregate density RMS may be smaller than the raw minimizer RMS while
+      ! one localized pair still exceeds both.  Let the subsequent elementwise
+      ! threshold decide that case.
+      failed = failed .OR. .NOT. qs_scf_kp_density_pair_activation_ready( &
                .TRUE., 2.0E-5_dp, 2.1E-5_dp, 1.0E-7_dp)
       failed = failed .OR. qs_scf_kp_density_pair_activation_ready( &
                .TRUE., 1.05E-3_dp, 8.8E-4_dp, 1.0E-7_dp)
