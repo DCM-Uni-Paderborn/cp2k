@@ -1,0 +1,68 @@
+! Slow/manual companion for converged metallic k-point OT physics.  This input
+! is intentionally not listed in TEST_FILES.toml so the default regression
+! suite remains inexpensive.  It exercises a common fixed-N chemical
+! potential, nontrivial irreducible k-point weights, ADDED_MOS AUTO, complex
+! rotations, auxiliary energies, and the occupation preconditioner.
+! Local MPI-2 reference: 628 final-stage steps, F = -9.01953179977656 Ha.
+! Restarting the resulting checkpoint converges in one step at
+! F = -9.01953179977664 Ha.
+&GLOBAL
+  PRINT_LEVEL HIGH
+  PROJECT Na_kp_ot_added_auto_sym333_converge
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_SET
+    POTENTIAL_FILE_NAME POTENTIAL
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 3 3
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 50
+    &END MGRID
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-7
+      MAX_SCF 850
+      SCF_GUESS ATOMIC
+      &OT
+        ALGORITHM IRAC
+        ENERGIES
+        LINESEARCH 2PNT
+        MINIMIZER CG
+        OCCUPATION_PRECONDITIONER
+        PRECONDITIONER FULL_SINGLE_INVERSE
+        ROTATION
+      &END OT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 300
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 4.23 4.23 4.23
+    &END CELL
+    &COORD
+      Na 0.000 0.000 0.000
+      Na 2.115 2.115 2.115
+    &END COORD
+    &KIND Na
+      BASIS_SET DZVP-GTH-PADE
+      POTENTIAL GTH-PADE-q9
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL
