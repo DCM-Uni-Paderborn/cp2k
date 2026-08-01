@@ -295,6 +295,8 @@ MODULE qs_ot_types
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_previous_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_s_anchor => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_s_anchor_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_y_anchor => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_y_anchor_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_anchor => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_anchor_im => NULL()
 
@@ -907,6 +909,7 @@ MODULE qs_ot_types
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_closure_y => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_closure_y_previous => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_s_anchor => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_y_anchor => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_closure_y_anchor => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x_trust_weight => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: matrix_occ_precond_scale => NULL()
@@ -2469,6 +2472,7 @@ CONTAINS
                qs_ot_env%rot_mat_mermin_closure_y_previous, &
                qs_ot_env%rot_mat_mermin_closure_y_previous_im, &
                qs_ot_env%rot_mat_mermin_s_anchor, qs_ot_env%rot_mat_mermin_s_anchor_im, &
+               qs_ot_env%rot_mat_mermin_y_anchor, qs_ot_env%rot_mat_mermin_y_anchor_im, &
                qs_ot_env%rot_mat_mermin_closure_y_anchor, &
                qs_ot_env%rot_mat_mermin_closure_y_anchor_im, &
                qs_ot_env%rot_mat_evals, qs_ot_env%rot_mat_dedu, &
@@ -2707,6 +2711,12 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_anchor_im)) THEN
             CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_anchor_im)
          END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_anchor)) THEN
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_anchor)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_anchor_im)) THEN
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_anchor_im)
+         END IF
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_anchor)) THEN
             CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_closure_y_anchor)
          END IF
@@ -2736,6 +2746,7 @@ CONTAINS
             DEALLOCATE (qs_ot_env%ener_mermin_closure_y_previous)
          END IF
          IF (ASSOCIATED(qs_ot_env%ener_mermin_s_anchor)) DEALLOCATE (qs_ot_env%ener_mermin_s_anchor)
+         IF (ASSOCIATED(qs_ot_env%ener_mermin_y_anchor)) DEALLOCATE (qs_ot_env%ener_mermin_y_anchor)
          IF (ASSOCIATED(qs_ot_env%ener_mermin_closure_y_anchor)) THEN
             DEALLOCATE (qs_ot_env%ener_mermin_closure_y_anchor)
          END IF

@@ -90,21 +90,22 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
         qs_scf_kp_coupled_closure_prediction, qs_scf_kp_coupled_closure_response, &
         qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
-        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_response_quadratic, &
-        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
-        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
-        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
-        qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
-        qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_pair_activation_ready, qs_scf_kp_density_replaced_response, &
-        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
-        qs_scf_kp_directional_subspace_curvature_update, qs_scf_kp_energy_closure_preferred, &
-        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_tail_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_residual_prediction, &
+        qs_scf_kp_coupled_response_quadratic, qs_scf_kp_coupled_schur_transport, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
+        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
+        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
+        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_history_refresh_ready, &
+        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
+        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
+        qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
@@ -7332,8 +7333,10 @@ CONTAINS
                                            prediction_energy_correction, prediction_energy_steps, prediction_energy_targets, &
                                            prediction_rotation_correction, prediction_rotation_steps, prediction_rotation_targets
          REAL(KIND=dp), DIMENSION(2, 3) :: multisecant_energy_steps, &
-                                           multisecant_energy_targets, multisecant_rotation_steps, &
-                                           multisecant_rotation_targets
+                                           multisecant_energy_targets, &
+                                           multisecant_rotation_steps, multisecant_rotation_targets, &
+                                           multisecant_total_energy_targets, &
+                                           multisecant_total_rotation_targets
 
          prediction_rotation_steps(:, 1) = [0.2_dp, -0.1_dp]
          prediction_energy_steps(:, 1) = [0.04_dp, -0.04_dp]
@@ -7523,6 +7526,34 @@ CONTAINS
              .NOT. prediction_work_consistent .OR. &
              prediction_overlap <= 0.0_dp) error = error + 1.0_dp
 
+         ! Fit only the part of the measured total secant that is not already represented by the
+         ! analytic coupled fixed-N Hessian.  This must recover the same low-rank correction instead
+         ! of adding the analytic curvature a second time.
+         multisecant_total_rotation_targets(:, :) = &
+            MATMUL(rotation_hessian, multisecant_rotation_steps) - &
+            MATMUL(TRANSPOSE(energy_cross), multisecant_energy_steps) + &
+            multisecant_rotation_targets
+         multisecant_total_energy_targets(:, :) = &
+            MATMUL(energy_hessian, multisecant_energy_steps) - &
+            MATMUL(energy_cross, multisecant_rotation_steps) + multisecant_energy_targets
+         CALL qs_scf_kp_coupled_residual_prediction( &
+            rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
+            multisecant_energy_steps, multisecant_total_rotation_targets, &
+            multisecant_total_energy_targets, prediction_rotation_correction, &
+            prediction_energy_correction, prediction_cross_correction, prediction_finite, &
+            prediction_consistent, prediction_overlap, prediction_capture, prediction_quality, &
+            prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+            prediction_curvature_min, prediction_curvature_max, &
+            observable_work_quality=prediction_work_quality, &
+            observable_consistent=prediction_work_consistent)
+         error = error + MAXVAL(ABS(prediction_rotation_correction - &
+                                    expected_rotation_correction)) + &
+                 MAXVAL(ABS(prediction_energy_correction - expected_energy_correction)) + &
+                 MAXVAL(ABS(prediction_cross_correction - expected_cross_correction)) + &
+                 ABS(prediction_work_quality - 1.0_dp)
+         IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent .OR. &
+             .NOT. prediction_work_consistent) error = error + 1.0_dp
+
          ! Endpoint closure can contain a nonconservative gauge component normal to every accepted
          ! step.  It must lower the response-prediction quality, but it must not alter the symmetric
          ! work operator inferred from S^T*Y.
@@ -7543,6 +7574,32 @@ CONTAINS
             prediction_rotation_correction, prediction_energy_correction, &
             prediction_cross_correction, prediction_finite, prediction_consistent, &
             prediction_overlap, prediction_capture, prediction_quality, &
+            prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+            prediction_curvature_min, prediction_curvature_max, &
+            observable_work_quality=prediction_work_quality, &
+            observable_consistent=prediction_work_consistent)
+         error = error + MAXVAL(ABS(prediction_rotation_correction - &
+                                    expected_rotation_correction)) + &
+                 MAXVAL(ABS(prediction_energy_correction - expected_energy_correction)) + &
+                 MAXVAL(ABS(prediction_cross_correction - expected_cross_correction)) + &
+                 ABS(prediction_work_quality - 1.0_dp)
+         IF (.NOT. prediction_finite .OR. prediction_consistent .OR. &
+             .NOT. prediction_work_consistent .OR. &
+             prediction_quality >= 1.0_dp - tol) error = error + 1.0_dp
+
+         multisecant_total_rotation_targets(:, :) = &
+            MATMUL(rotation_hessian, multisecant_rotation_steps) - &
+            MATMUL(TRANSPOSE(energy_cross), multisecant_energy_steps) + &
+            multisecant_rotation_targets
+         multisecant_total_energy_targets(:, :) = &
+            MATMUL(energy_hessian, multisecant_energy_steps) - &
+            MATMUL(energy_cross, multisecant_rotation_steps) + multisecant_energy_targets
+         CALL qs_scf_kp_coupled_residual_prediction( &
+            rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
+            multisecant_energy_steps, multisecant_total_rotation_targets, &
+            multisecant_total_energy_targets, prediction_rotation_correction, &
+            prediction_energy_correction, prediction_cross_correction, prediction_finite, &
+            prediction_consistent, prediction_overlap, prediction_capture, prediction_quality, &
             prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
             prediction_curvature_min, prediction_curvature_max, &
             observable_work_quality=prediction_work_quality, &

@@ -4288,6 +4288,12 @@ CONTAINS
          CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_s_anchor_im)
          CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_s_anchor_im, template=matrix_s, &
                                             m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_y_anchor)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_y_anchor, template=matrix_s, &
+                                            m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_y_anchor_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_y_anchor_im, template=matrix_s, &
+                                            m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
          CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_closure_y_anchor)
          CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_closure_y_anchor, template=matrix_s, &
                                             m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
@@ -4318,6 +4324,7 @@ CONTAINS
                    qs_ot_env%ener_mermin_frozen_g1(nmo), qs_ot_env%ener_mermin_closure_y(nmo), &
                    qs_ot_env%ener_mermin_closure_y_previous(nmo), &
                    qs_ot_env%ener_mermin_s_anchor(nmo), &
+                   qs_ot_env%ener_mermin_y_anchor(nmo), &
                    qs_ot_env%ener_mermin_closure_y_anchor(nmo))
          qs_ot_env%ener_mermin_g0(:) = 0.0_dp
          qs_ot_env%ener_mermin_x0(:) = 0.0_dp
@@ -4330,6 +4337,7 @@ CONTAINS
          qs_ot_env%ener_mermin_closure_y(:) = 0.0_dp
          qs_ot_env%ener_mermin_closure_y_previous(:) = 0.0_dp
          qs_ot_env%ener_mermin_s_anchor(:) = 0.0_dp
+         qs_ot_env%ener_mermin_y_anchor(:) = 0.0_dp
          qs_ot_env%ener_mermin_closure_y_anchor(:) = 0.0_dp
       END IF
 

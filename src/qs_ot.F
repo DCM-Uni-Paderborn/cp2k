@@ -991,6 +991,12 @@ CONTAINS
                                            qs_ot_env%rot_mat_mermin_s_anchor, &
                                            qs_ot_env%rot_mat_mermin_s_anchor_im)
          END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_anchor) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_y_anchor_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_y_anchor, &
+                                           qs_ot_env%rot_mat_mermin_y_anchor_im)
+         END IF
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_anchor) .AND. &
              ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_anchor_im)) THEN
             CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &

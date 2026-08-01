@@ -1493,14 +1493,20 @@ CONTAINS
                            ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous_im) .AND. &
                            ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_anchor) .AND. &
                            ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_anchor_im) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y_previous) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y_previous_im) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y_anchor) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y_anchor_im) .AND. &
                            ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_anchor) .AND. &
                            ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_anchor_im)
          END IF
          IF (qs_ot_env(1)%settings%do_ener) THEN
             anchor_valid = anchor_valid .AND. &
                            ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_s_previous) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_y_previous) .AND. &
                            ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_closure_y_previous) .AND. &
                            ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_s_anchor) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_y_anchor) .AND. &
                            ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_closure_y_anchor)
          END IF
       END DO
@@ -1515,6 +1521,10 @@ CONTAINS
                                qs_ot_env(ichannel)%rot_mat_mermin_s_previous)
                CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_s_anchor_im, &
                                qs_ot_env(ichannel)%rot_mat_mermin_s_previous_im)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_y_anchor, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_y_previous)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_y_anchor_im, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_y_previous_im)
                CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_anchor, &
                                qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous)
                CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_anchor_im, &
@@ -1523,6 +1533,8 @@ CONTAINS
             IF (qs_ot_env(1)%settings%do_ener) THEN
                qs_ot_env(ichannel)%ener_mermin_s_anchor(:) = &
                   qs_ot_env(ichannel)%ener_mermin_s_previous(:)
+               qs_ot_env(ichannel)%ener_mermin_y_anchor(:) = &
+                  qs_ot_env(ichannel)%ener_mermin_y_previous(:)
                qs_ot_env(ichannel)%ener_mermin_closure_y_anchor(:) = &
                   qs_ot_env(ichannel)%ener_mermin_closure_y_previous(:)
             END IF

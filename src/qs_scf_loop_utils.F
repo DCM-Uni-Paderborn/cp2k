@@ -278,6 +278,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_residual_compatible_scale, &
              qs_scf_kp_coupled_closure_response, &
              qs_scf_kp_coupled_closure_prediction, &
+             qs_scf_kp_coupled_residual_prediction, &
              qs_scf_kp_coupled_response_quadratic, &
              qs_scf_kp_closure_response_model_adjustments, &
              qs_scf_kp_full_closure_response_model_adjustments, &
@@ -6126,6 +6127,108 @@ CONTAINS
                   reverse_energy_cross, reverse_energy_hessian, reverse_rotation_hessian)
 
    END SUBROUTINE qs_scf_kp_coupled_closure_prediction
+
+! **************************************************************************************************
+!> \brief Cross-validate a low-rank correction to the analytic coupled fixed-N Hessian.
+!>
+!>        The measured total finite secants are reduced to residual responses
+!>
+!>          R = Y - [H_RR,-B^T;-B,H_ee] S .
+!>
+!>        Fitting R rather than the raw self-consistent closure preserves the analytic Hessian in
+!>        the unobserved complement and prevents an already represented curvature from being added
+!>        a second time.  The returned blocks are corrections, not complete Hessian blocks.
+!> \param rotation_hessian analytic complex-rotation block
+!> \param energy_hessian analytic fixed-N auxiliary-energy block
+!> \param energy_cross analytic signed cross block
+!> \param rotation_steps accepted complex-rotation steps
+!> \param energy_steps accepted auxiliary-energy steps
+!> \param total_rotation_targets measured total rotation-gradient secants
+!> \param total_energy_targets measured total auxiliary-energy-gradient secants
+!> \param rotation_correction fitted residual rotation block
+!> \param energy_correction fitted residual auxiliary-energy block
+!> \param cross_correction fitted residual signed cross block
+!> \param finite whether all prediction audits are finite
+!> \param consistent whether strict residual-vector prediction is consistent
+!> \param overlap minimum step observability
+!> \param capture minimum residual-response capture
+!> \param quality bounded full-residual prediction quality
+!> \param rotation_quality bounded rotation-residual prediction quality
+!> \param energy_quality bounded auxiliary-energy-residual prediction quality
+!> \param alignment minimum residual-response alignment
+!> \param curvature_ratio_min minimum residual-work ratio
+!> \param curvature_ratio_max maximum residual-work ratio
+!> \param promotion_quality optional strict full-residual promotion quality
+!> \param promotion_rotation_quality optional strict rotation-residual promotion quality
+!> \param promotion_energy_quality optional strict auxiliary-energy-residual promotion quality
+!> \param observable_work_quality optional minimum observable residual-work quality
+!> \param observable_consistent optional consistency of observable residual work
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_coupled_residual_prediction( &
+      rotation_hessian, energy_hessian, energy_cross, rotation_steps, energy_steps, &
+      total_rotation_targets, total_energy_targets, rotation_correction, energy_correction, &
+      cross_correction, finite, consistent, overlap, capture, quality, rotation_quality, &
+      energy_quality, alignment, curvature_ratio_min, curvature_ratio_max, promotion_quality, &
+      promotion_rotation_quality, promotion_energy_quality, observable_work_quality, &
+      observable_consistent)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rotation_hessian, energy_hessian, &
+         energy_cross, rotation_steps, energy_steps, total_rotation_targets, total_energy_targets
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: rotation_correction, energy_correction, &
+                                                            cross_correction
+      LOGICAL, INTENT(OUT)                               :: finite, consistent
+      REAL(KIND=dp), INTENT(OUT) :: overlap, capture, quality, rotation_quality, energy_quality, &
+         alignment, curvature_ratio_min, curvature_ratio_max
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: promotion_quality, &
+                                                            promotion_rotation_quality, &
+                                                            promotion_energy_quality, &
+                                                            observable_work_quality
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: observable_consistent
+
+      INTEGER                                            :: iobs, nener, nobs, nrot
+      LOGICAL                                            :: work_consistent
+      REAL(KIND=dp)                                      :: strict_energy_quality, strict_quality, &
+                                                            strict_rotation_quality, work_quality
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: residual_energy_targets, &
+                                                            residual_rotation_targets
+
+      nrot = SIZE(rotation_hessian, 1)
+      nener = SIZE(energy_hessian, 1)
+      nobs = SIZE(rotation_steps, 2)
+      CPASSERT(ALL(SHAPE(rotation_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_hessian) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(energy_cross) == [nener, nrot]))
+      CPASSERT(ALL(SHAPE(rotation_steps) == [nrot, nobs]))
+      CPASSERT(ALL(SHAPE(energy_steps) == [nener, nobs]))
+      CPASSERT(ALL(SHAPE(total_rotation_targets) == [nrot, nobs]))
+      CPASSERT(ALL(SHAPE(total_energy_targets) == [nener, nobs]))
+      CPASSERT(ALL(SHAPE(rotation_correction) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_correction) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(cross_correction) == [nener, nrot]))
+
+      ALLOCATE (residual_rotation_targets(nrot, nobs), residual_energy_targets(nener, nobs))
+      DO iobs = 1, nobs
+         residual_rotation_targets(:, iobs) = total_rotation_targets(:, iobs) - &
+                                              MATMUL(rotation_hessian, rotation_steps(:, iobs)) + &
+                                              MATMUL(TRANSPOSE(energy_cross), energy_steps(:, iobs))
+         residual_energy_targets(:, iobs) = total_energy_targets(:, iobs) - &
+                                            MATMUL(energy_hessian, energy_steps(:, iobs)) + &
+                                            MATMUL(energy_cross, rotation_steps(:, iobs))
+      END DO
+      CALL qs_scf_kp_coupled_closure_prediction( &
+         rotation_hessian, energy_hessian, energy_cross, rotation_steps, energy_steps, &
+         residual_rotation_targets, residual_energy_targets, rotation_correction, &
+         energy_correction, cross_correction, finite, consistent, overlap, capture, quality, &
+         rotation_quality, energy_quality, alignment, curvature_ratio_min, curvature_ratio_max, &
+         strict_quality, strict_rotation_quality, strict_energy_quality, work_quality, &
+         work_consistent)
+      IF (PRESENT(promotion_quality)) promotion_quality = strict_quality
+      IF (PRESENT(promotion_rotation_quality)) promotion_rotation_quality = strict_rotation_quality
+      IF (PRESENT(promotion_energy_quality)) promotion_energy_quality = strict_energy_quality
+      IF (PRESENT(observable_work_quality)) observable_work_quality = work_quality
+      IF (PRESENT(observable_consistent)) observable_consistent = work_consistent
+      DEALLOCATE (residual_rotation_targets, residual_energy_targets)
+
+   END SUBROUTINE qs_scf_kp_coupled_residual_prediction
 
 ! **************************************************************************************************
 !> \brief Return a scale-invariant quality for an observed/predicted scalar Hessian work ratio.
@@ -30523,7 +30626,7 @@ CONTAINS
                    logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), &
                          '(A,1X,I3,2(1X,L1),9(1X,ES16.8))') &
-                  " OT Schur predictive closure accepted-step group finite consistent base_drop "// &
+                  " OT Schur residual-H accepted-step group finite consistent base_drop "// &
                   "rotation energy cross sum active adjustment candidate_drop ratio:", &
                   target_group, closure_coupled_predictive_finite, &
                   closure_coupled_predictive_consistent, accepted_model_drop, &
@@ -34516,9 +34619,9 @@ CONTAINS
 !> \param closure_coupled_full_rotation full-space fitted rotation-block correction
 !> \param closure_coupled_full_energy full-space fitted auxiliary-energy-block correction
 !> \param closure_coupled_full_cross full-space fitted signed cross-block correction
-!> \param closure_predictive_rotation newest-trained rank-one rotation-block correction
-!> \param closure_predictive_energy newest-trained rank-one auxiliary-energy-block correction
-!> \param closure_predictive_cross newest-trained rank-one signed cross-block correction
+!> \param closure_predictive_rotation newest-trained analytic-Hessian residual rotation correction
+!> \param closure_predictive_energy newest-trained analytic-Hessian residual energy correction
+!> \param closure_predictive_cross newest-trained analytic-Hessian residual cross correction
 !> \param closure_predictive_finite whether both directional prediction audits are finite
 !> \param closure_predictive_consistent whether both predictions pass the physical-response gate
 !> \param closure_predictive_work_consistent whether observable Hessian work is reproducible
@@ -34706,18 +34809,18 @@ CONTAINS
          total_reduced_curvature, total_reduced_norm, total_reduced_residual_norm, &
          updated_rotation_residual_norm, y_norm, ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: anchor_closure_reduced_target, &
-         anchor_closure_secant_energy, anchor_closure_secant_rotation, anchor_step_energy, &
-         anchor_step_rotation, closure_reduced_target, closure_secant_energy, &
-         closure_secant_rotation, frozen_reduced_target, frozen_secant_energy, &
-         frozen_secant_rotation, model_energy, model_energy_base, model_energy_cross, &
-         model_rotation, model_rotation_base, model_rotation_cross, &
+         anchor_closure_secant_energy, anchor_closure_secant_rotation, anchor_secant_energy, &
+         anchor_secant_rotation, anchor_step_energy, anchor_step_rotation, closure_reduced_target, &
+         closure_secant_energy, closure_secant_rotation, frozen_reduced_target, &
+         frozen_secant_energy, frozen_secant_rotation, model_energy, model_energy_base, &
+         model_energy_cross, model_rotation, model_rotation_base, model_rotation_cross, &
          previous_closure_reduced_target, previous_closure_secant_energy, &
-         previous_closure_secant_rotation, previous_frozen_reduced_target, &
-         previous_frozen_secant_energy
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: previous_frozen_secant_rotation, &
-         previous_secant_energy, previous_secant_rotation, previous_step_energy, &
-         previous_step_rotation, reduced_model, secant_energy, secant_rotation, step_energy, &
-         step_rotation, target_rotation, total_reduced_prediction, total_reduced_target
+         previous_closure_secant_rotation
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: previous_frozen_reduced_target, &
+         previous_frozen_secant_energy, previous_frozen_secant_rotation, previous_secant_energy, &
+         previous_secant_rotation, previous_step_energy, previous_step_rotation, reduced_model, &
+         secant_energy, secant_rotation, step_energy, step_rotation, target_rotation, &
+         total_reduced_prediction, total_reduced_target
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: closure_coupled_energy_steps, &
          closure_coupled_energy_targets, closure_coupled_rotation_steps, &
          closure_coupled_rotation_targets, coupled_energy_cross, coupled_energy_hessian, &
@@ -34813,11 +34916,13 @@ CONTAINS
          reduced_secant_replacement_ready = .FALSE.
          closure_response_pair_ready = .FALSE.
          IF (nrot <= 0 .OR. nener <= 0) RETURN
-         ALLOCATE (anchor_step_rotation(nrot), anchor_closure_secant_rotation(nrot), &
+         ALLOCATE (anchor_step_rotation(nrot), anchor_secant_rotation(nrot), &
+                   anchor_closure_secant_rotation(nrot), &
                    anchor_closure_reduced_target(nrot), step_rotation(nrot), &
                    secant_rotation(nrot), closure_secant_rotation(nrot), &
                    frozen_secant_rotation(nrot), model_rotation(nrot), &
-                   anchor_step_energy(nener), anchor_closure_secant_energy(nener), &
+                   anchor_step_energy(nener), anchor_secant_energy(nener), &
+                   anchor_closure_secant_energy(nener), &
                    step_energy(nener), secant_energy(nener), closure_secant_energy(nener), &
                    frozen_secant_energy(nener), model_energy(nener), &
                    model_rotation_base(nrot), model_rotation_cross(nrot), &
@@ -34831,6 +34936,7 @@ CONTAINS
                    total_reduced_target(nrot), frozen_reduced_target(nrot), &
                    closure_reduced_target(nrot), reduced_model(nrot), total_reduced_prediction(nrot))
          anchor_step_rotation(:) = 0.0_dp
+         anchor_secant_rotation(:) = 0.0_dp
          anchor_closure_secant_rotation(:) = 0.0_dp
          anchor_closure_reduced_target(:) = 0.0_dp
          step_rotation(:) = 0.0_dp
@@ -34839,6 +34945,7 @@ CONTAINS
          frozen_secant_rotation(:) = 0.0_dp
          model_rotation(:) = 0.0_dp
          anchor_step_energy(:) = 0.0_dp
+         anchor_secant_energy(:) = 0.0_dp
          anchor_closure_secant_energy(:) = 0.0_dp
          step_energy(:) = 0.0_dp
          secant_energy(:) = 0.0_dp
@@ -34912,9 +35019,12 @@ CONTAINS
                                    local_ot_env(local_channel)%mermin_closure_secant_anchor_ready .AND. &
                                    ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_s_anchor) .AND. &
                                    ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_s_anchor_im) .AND. &
+                                   ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_y_anchor) .AND. &
+                                   ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_y_anchor_im) .AND. &
                                    ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor) .AND. &
                                    ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor_im) .AND. &
                                    ASSOCIATED(local_ot_env(local_channel)%ener_mermin_s_anchor) .AND. &
+                                   ASSOCIATED(local_ot_env(local_channel)%ener_mermin_y_anchor) .AND. &
                                    ASSOCIATED(local_ot_env(local_channel)%ener_mermin_closure_y_anchor)
             previous_frozen_reduced_valid = previous_frozen_reduced_valid .AND. &
                                             local_ot_env(local_channel)%mermin_frozen_reduced_target_ready .AND. &
@@ -35068,6 +35178,21 @@ CONTAINS
                   END SELECT
                END DO
                CALL dbcsr_square_to_dense( &
+                  local_ot_env(local_channel)%rot_mat_mermin_y_anchor, dense_re)
+               CALL dbcsr_square_to_dense( &
+                  local_ot_env(local_channel)%rot_mat_mermin_y_anchor_im, dense_im)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_re)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_im)
+               DO r = 1, nrot
+                  IF (var_channel(r) /= global_channel) CYCLE
+                  SELECT CASE (var_kind(r))
+                  CASE (1)
+                     anchor_secant_rotation(r) = 2.0_dp*dense_re(var_i(r), var_j(r))
+                  CASE (2)
+                     anchor_secant_rotation(r) = 2.0_dp*dense_im(var_i(r), var_j(r))
+                  END SELECT
+               END DO
+               CALL dbcsr_square_to_dense( &
                   local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor, dense_re)
                CALL dbcsr_square_to_dense( &
                   local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor_im, dense_im)
@@ -35119,6 +35244,7 @@ CONTAINS
                END IF
                IF (closure_anchor_valid) THEN
                   anchor_step_energy(ie) = local_ot_env(local_channel)%ener_mermin_s_anchor(imo)
+                  anchor_secant_energy(ie) = local_ot_env(local_channel)%ener_mermin_y_anchor(imo)
                   anchor_closure_secant_energy(ie) = &
                      local_ot_env(local_channel)%ener_mermin_closure_y_anchor(imo)
                END IF
@@ -35152,11 +35278,13 @@ CONTAINS
                IF (group == target_group) &
                   local_ot_env(local_channel)%mermin_frozen_reduced_target_ready = .FALSE.
             END DO
-            DEALLOCATE (anchor_step_rotation, anchor_closure_secant_rotation, &
+            DEALLOCATE (anchor_step_rotation, anchor_secant_rotation, &
+                        anchor_closure_secant_rotation, &
                         anchor_closure_reduced_target, step_rotation, secant_rotation, &
                         closure_secant_rotation, &
                         frozen_secant_rotation, model_rotation, step_energy, secant_energy, &
-                        anchor_step_energy, anchor_closure_secant_energy, closure_secant_energy, &
+                        anchor_step_energy, anchor_secant_energy, anchor_closure_secant_energy, &
+                        closure_secant_energy, &
                         frozen_secant_energy, model_energy, model_rotation_base, &
                         model_rotation_cross, model_energy_base, model_energy_cross, previous_step_rotation, &
                         previous_secant_rotation, previous_step_energy, previous_secant_energy, &
@@ -35195,8 +35323,10 @@ CONTAINS
             END IF
             IF (closure_anchor_valid) THEN
                CALL para_env_inter_kp%sum(anchor_step_rotation)
+               CALL para_env_inter_kp%sum(anchor_secant_rotation)
                CALL para_env_inter_kp%sum(anchor_closure_secant_rotation)
                CALL para_env_inter_kp%sum(anchor_step_energy)
+               CALL para_env_inter_kp%sum(anchor_secant_energy)
                CALL para_env_inter_kp%sum(anchor_closure_secant_energy)
             END IF
          END IF
@@ -35247,6 +35377,7 @@ CONTAINS
                previous_closure_secant_energy(ie) = 0.0_dp
                previous_frozen_secant_energy(ie) = 0.0_dp
                anchor_step_energy(ie) = 0.0_dp
+               anchor_secant_energy(ie) = 0.0_dp
                anchor_closure_secant_energy(ie) = 0.0_dp
             END IF
          END DO
@@ -35295,6 +35426,10 @@ CONTAINS
                energy_mean = SUM(anchor_step_energy)/REAL(active_energy_count, KIND=dp)
                WHERE (occ_curv + tether_curv > EPSILON(MAXVAL(occ_curv + tether_curv)))
                   anchor_step_energy = anchor_step_energy - energy_mean
+               END WHERE
+               energy_mean = SUM(anchor_secant_energy)/REAL(active_energy_count, KIND=dp)
+               WHERE (occ_curv + tether_curv > EPSILON(MAXVAL(occ_curv + tether_curv)))
+                  anchor_secant_energy = anchor_secant_energy - energy_mean
                END WHERE
                energy_mean = SUM(anchor_closure_secant_energy)/ &
                              REAL(active_energy_count, KIND=dp)
@@ -35418,7 +35553,15 @@ CONTAINS
                full_rotation_correction=closure_coupled_full_rotation, &
                full_energy_correction=closure_coupled_full_energy, &
                full_cross_correction=closure_coupled_full_cross)
-            CALL qs_scf_kp_coupled_closure_prediction( &
+            closure_coupled_rotation_targets(:, 1) = previous_secant_rotation
+            closure_coupled_rotation_targets(:, 2) = secant_rotation
+            closure_coupled_energy_targets(:, 1) = previous_secant_energy
+            closure_coupled_energy_targets(:, 2) = secant_energy
+            IF (closure_anchor_valid) THEN
+               closure_coupled_rotation_targets(:, 3) = anchor_secant_rotation
+               closure_coupled_energy_targets(:, 3) = anchor_secant_energy
+            END IF
+            CALL qs_scf_kp_coupled_residual_prediction( &
                rotation_hessian, energy_hessian, energy_cross, &
                closure_coupled_rotation_steps, closure_coupled_energy_steps, &
                closure_coupled_rotation_targets, closure_coupled_energy_targets, &
@@ -35437,7 +35580,7 @@ CONTAINS
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
                       '(A,1X,I3,3(1X,L1),9(1X,ES16.8))') &
-               " OT Schur coupled closure prediction group finite consistent work_consistent "// &
+               " OT Schur coupled residual prediction group finite consistent work_consistent "// &
                "overlap capture quality rquality equality work_quality alignment "// &
                "cratio_min cratio_max:", target_group, closure_predictive_finite, &
                closure_predictive_consistent, closure_predictive_work_consistent, &
@@ -36282,11 +36425,13 @@ CONTAINS
             reduced_multisecant_residual_norm, reduced_multisecant_updated_residual_norm, &
             reduced_multisecant_correction_norm, reduced_multisecant_correction_ratio
 
-         DEALLOCATE (anchor_step_rotation, anchor_closure_secant_rotation, &
+         DEALLOCATE (anchor_step_rotation, anchor_secant_rotation, &
+                     anchor_closure_secant_rotation, &
                      anchor_closure_reduced_target, step_rotation, secant_rotation, &
                      closure_secant_rotation, &
                      frozen_secant_rotation, model_rotation, step_energy, secant_energy, &
-                     anchor_step_energy, anchor_closure_secant_energy, closure_secant_energy, &
+                     anchor_step_energy, anchor_secant_energy, anchor_closure_secant_energy, &
+                     closure_secant_energy, &
                      frozen_secant_energy, model_energy, &
                      model_rotation_base, model_rotation_cross, &
                      model_energy_base, model_energy_cross, previous_step_rotation, &
