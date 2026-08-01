@@ -691,6 +691,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector covariant finite difference", 5.0E-8_dp, nfail)
    CALL check_canonical_fixed_n_occ_projector_derivative( &
       "canonical fixed-N occupation-projector derivative", 5.0E-7_dp, nfail)
+   CALL check_canonical_global_fixed_n_occ_projector_derivative( &
+      "canonical global fixed-N occupation-projector derivative", 5.0E-7_dp, nfail)
    CALL check_canonical_projector_density_response_fd( &
       "canonical projector density-response finite difference", 5.0E-7_dp, nfail)
    CALL check_canonical_projector_similarity_gauge( &
@@ -5410,7 +5412,7 @@ CONTAINS
       LOGICAL                                            :: failed
 
       failed = .NOT. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 2.6E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
+               .TRUE., 8.0E-8_dp, 1.8E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
       failed = failed .OR. .NOT. qs_scf_kp_orbital_tail_rebase_ready( &
                .TRUE., 1.3E-7_dp, 1.5E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
@@ -5420,13 +5422,13 @@ CONTAINS
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
                .TRUE., 8.0E-8_dp, 9.0E-8_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 5.1E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
+               .TRUE., 8.0E-8_dp, 2.1E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
                .TRUE., 1.8E-7_dp, 1.6E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 2.6E-7_dp, 1.0E-7_dp, 3, 3.1E-2_dp)
+               .TRUE., 8.0E-8_dp, 1.8E-7_dp, 1.0E-7_dp, 3, 3.1E-2_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 2.6E-7_dp, 1.0E-7_dp, 139, 1.1E-1_dp)
+               .TRUE., 8.0E-8_dp, 1.8E-7_dp, 1.0E-7_dp, 139, 1.1E-1_dp)
 
       IF (failed) THEN
          nfail = nfail + 1
@@ -26617,6 +26619,98 @@ CONTAINS
    END SUBROUTINE check_canonical_fixed_n_occ_projector_derivative
 
 ! **************************************************************************************************
+!> \brief Check that a local k-point perturbation uses the common fixed-N chemical potential.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_global_fixed_n_occ_projector_derivative(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4, nk = 2
+      REAL(KIND=dp), PARAMETER :: active_tol = 5.0E-5_dp, fd_step = 1.0E-5_dp, &
+         gauge_gap = 1.0E-6_dp, maxocc = 1.0_dp, nel = 2.15_dp, projector_weight = 0.43_dp, &
+         sigma = 0.08_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_global, &
+                                                            docc_local, evec, occ_mat_m, occ_mat_p
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: cross_trace, err, global_curv_sum, kTS, &
+                                                            local_gap, mu, trace_closure
+      REAL(KIND=dp), DIMENSION(n)                        :: canonical_curv, canonical_scale, &
+                                                            evals_m, evals_p, occ_scale_m, &
+                                                            occ_scale_p
+      REAL(KIND=dp), DIMENSION(n, nk)                    :: eps, eps_m, eps_p, occ, occ_m, occ_p
+      REAL(KIND=dp), DIMENSION(nk)                       :: weights
+
+      weights(:) = [0.35_dp, 0.65_dp]
+      eps(:, 1) = [-0.25_dp, -0.04_dp, 0.07_dp, 0.31_dp]
+      eps(:, 2) = [-0.22_dp, -0.02_dp, 0.11_dp, 0.36_dp]
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(eps(i, 1), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 1) = CMPLX(0.13_dp, 0.0_dp, KIND=dp)
+      dchc(2, 2) = CMPLX(-0.08_dp, 0.0_dp, KIND=dp)
+      dchc(3, 3) = CMPLX(0.05_dp, 0.0_dp, KIND=dp)
+      dchc(4, 4) = CMPLX(-0.03_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.17_dp, -0.11_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+      dchc(2, 3) = CMPLX(0.21_dp, -0.14_dp, KIND=dp)
+      dchc(3, 2) = CONJG(dchc(2, 3))
+      dchc(3, 4) = CMPLX(0.12_dp, 0.09_dp, KIND=dp)
+      dchc(4, 3) = CONJG(dchc(3, 4))
+
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, weights, sigma, maxocc)
+      canonical_scale(:) = 2.0_dp*weights(1)*occ(:, 1)
+      canonical_curv(:) = weights(1)*maxocc*(occ(:, 1)/maxocc)*(1.0_dp - occ(:, 1)/maxocc)/sigma
+      global_curv_sum = SUM(weights(1)*maxocc*(occ(:, 1)/maxocc)* &
+                            (1.0_dp - occ(:, 1)/maxocc)/sigma) + &
+                        SUM(weights(2)*maxocc*(occ(:, 2)/maxocc)* &
+                            (1.0_dp - occ(:, 2)/maxocc)/sigma)
+      CALL dense_history_safe_occ_projector_derivative_chc( &
+         chc, dchc, canonical_scale, projector_weight, docc_global, canonical_curv, gauge_gap, &
+         fixed_n_curvature_sum=global_curv_sum)
+      CALL dense_history_safe_occ_projector_derivative_chc( &
+         chc, dchc, canonical_scale, projector_weight, docc_local, canonical_curv, gauge_gap)
+
+      CALL diag_complex(chc + fd_step*dchc, evec, evals_p)
+      eps_p(:, :) = eps(:, :)
+      eps_p(:, 1) = evals_p(:)
+      CALL dense_fermi_kpoint(occ_p, mu, kTS, eps_p, nel, weights, sigma, maxocc)
+      occ_scale_p(:) = 2.0_dp*weights(1)*occ_p(:, 1)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_scale_p, occ_mat_p)
+
+      CALL diag_complex(chc - fd_step*dchc, evec, evals_m)
+      eps_m(:, :) = eps(:, :)
+      eps_m(:, 1) = evals_m(:)
+      CALL dense_fermi_kpoint(occ_m, mu, kTS, eps_m, nel, weights, sigma, maxocc)
+      occ_scale_m(:) = 2.0_dp*weights(1)*occ_m(:, 1)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_scale_m, occ_mat_m)
+      docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+
+      err = MAXVAL(ABS(docc_global(:, :) - docc_fd(:, :)))
+      cross_trace = 2.0_dp*projector_weight*weights(2)* &
+                    SUM(occ_p(:, 2) - occ_m(:, 2))/(2.0_dp*fd_step)
+      trace_closure = ABS(REAL(SUM([(docc_global(i, i), i=1, n)]), KIND=dp) + cross_trace)
+      local_gap = MAXVAL(ABS(docc_local(:, :) - docc_global(:, :)))
+
+      IF (err > tol .OR. trace_closure > tol .OR. local_gap < active_tol .OR. &
+          ABS(cross_trace) < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with fd/trace/local-gap/cross", err, trace_closure, local_gap, cross_trace
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with fd/trace/local-gap/cross", err, trace_closure, local_gap, cross_trace
+      END IF
+
+   END SUBROUTINE check_canonical_global_fixed_n_occ_projector_derivative
+
+! **************************************************************************************************
 !> \brief Check the matched canonical dP/occupation-curvature response at fixed electron number.
 !> \param label ...
 !> \param tol ...
@@ -29462,15 +29556,18 @@ CONTAINS
 !> \param gauge_gap ...
 !> \param projector_window_gap ...
 !> \param cluster_projector_response ...
+!> \param fixed_n_curvature_sum ...
 ! **************************************************************************************************
    SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv, gauge_gap, &
-                                                          projector_window_gap, cluster_projector_response)
+                                                          projector_window_gap, cluster_projector_response, &
+                                                          fixed_n_curvature_sum)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap, projector_window_gap
       LOGICAL, INTENT(IN), OPTIONAL                      :: cluster_projector_response
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: fixed_n_curvature_sum
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
@@ -29499,7 +29596,12 @@ CONTAINS
                diag_response_shift = diag_response_shift + &
                                      MAX(0.0_dp, occ_curv(i))*REAL(work(i, i), KIND=dp)
             END DO
-            diag_response_shift = diag_response_shift/occ_curv_sum
+            IF (PRESENT(fixed_n_curvature_sum)) THEN
+               diag_response_shift = qs_scf_kp_fixed_n_response_mu_shift( &
+                                     diag_response_shift, occ_curv_sum, fixed_n_curvature_sum)
+            ELSE
+               diag_response_shift = diag_response_shift/occ_curv_sum
+            END IF
          END IF
       END IF
       kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -29557,7 +29659,8 @@ CONTAINS
 
       IF (use_cluster_projector_response .AND. PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) &
          CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_work, gauge_gap, 1.0_dp, &
-                                                     kernel, projector_window_gap)
+                                                     kernel, projector_window_gap, &
+                                                     fixed_n_curvature_sum=fixed_n_curvature_sum)
 
       docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
       docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
@@ -29576,10 +29679,11 @@ CONTAINS
 !> \param gauge_gap ...
 !> \param fd_cluster_used ...
 !> \param projector_window_gap ...
+!> \param fixed_n_curvature_sum ...
 ! **************************************************************************************************
    SUBROUTINE dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
                                                               docc_mat, occ_curv, gauge_gap, fd_cluster_used, &
-                                                              projector_window_gap)
+                                                              projector_window_gap, fixed_n_curvature_sum)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       REAL(KIND=dp), INTENT(IN)                          :: projector_weight
@@ -29587,7 +29691,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
       LOGICAL, INTENT(OUT), OPTIONAL                     :: fd_cluster_used
-      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap, &
+                                                            fixed_n_curvature_sum
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, occ_mat_m, occ_mat_p, work
       INTEGER                                            :: i, idx, j, n
@@ -29654,7 +29759,8 @@ CONTAINS
             CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_work, &
                                                           projector_window_gap)
             CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_work, gauge_gap, &
-                                                        projector_weight, kernel, projector_window_gap)
+                                                        projector_weight, kernel, projector_window_gap, &
+                                                        fixed_n_curvature_sum=fixed_n_curvature_sum)
             docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
             docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
             DEALLOCATE (evec, evals, kernel, work, occ_mat_p, occ_mat_m, occ_work)
@@ -29667,7 +29773,8 @@ CONTAINS
       IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
          CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat, occ_curv, gauge_gap, &
                                                           projector_window_gap, &
-                                                          cluster_projector_response=.TRUE.)
+                                                          cluster_projector_response=.TRUE., &
+                                                          fixed_n_curvature_sum=fixed_n_curvature_sum)
       ELSE
          CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat)
       END IF
@@ -29796,10 +29903,11 @@ CONTAINS
 !> \param kernel ...
 !> \param projector_window_gap ...
 !> \param cluster_groups_used ...
+!> \param fixed_n_curvature_sum ...
 ! **************************************************************************************************
    SUBROUTINE dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
                                                      projector_weight, kernel, projector_window_gap, &
-                                                     cluster_groups_used)
+                                                     cluster_groups_used, fixed_n_curvature_sum)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: work
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, occ_slope
@@ -29807,6 +29915,7 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: kernel
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
       INTEGER, INTENT(OUT), OPTIONAL                     :: cluster_groups_used
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: fixed_n_curvature_sum
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: cluster_curv, cluster_evec, &
@@ -29869,7 +29978,11 @@ CONTAINS
          first = last + 1
       END DO
       mu_shift = 0.0_dp
-      IF (mu_den > EPSILON(mu_den)) mu_shift = mu_num/mu_den
+      IF (PRESENT(fixed_n_curvature_sum)) THEN
+         mu_shift = qs_scf_kp_fixed_n_response_mu_shift(mu_num, mu_den, fixed_n_curvature_sum)
+      ELSE IF (mu_den > EPSILON(mu_den)) THEN
+         mu_shift = mu_num/mu_den
+      END IF
 
       first = 1
       DO WHILE (first <= n)

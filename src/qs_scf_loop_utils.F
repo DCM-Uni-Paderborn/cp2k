@@ -154,7 +154,7 @@ MODULE qs_scf_loop_utils
                                   ot_kp_occ_metric_continuation_samples = 8, &
                                   ot_kp_schur_quality_min_samples = 3
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_orbital_tail_rebase_density_eps_factor = 2.0_dp, &
-                                        ot_kp_orbital_tail_rebase_eps_factor = 5.0_dp, &
+                                        ot_kp_orbital_tail_rebase_eps_factor = 2.0_dp, &
                                         ot_kp_orbital_tail_rebase_quality_max = 1.0E-1_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
                                         ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp, &
@@ -17102,14 +17102,14 @@ CONTAINS
          canonical_density_tangent_alpha, canonical_density_tangent_cross, &
          canonical_density_tangent_gain, canonical_density_tangent_gdot, &
          canonical_density_tangent_norm, canonical_density_tangent_raw_norm, &
-         canonical_density_tangent_scalar_gain, canonical_mu_channel, channel_occ_curv_max
-      REAL(KIND=dp) :: channel_projector_weight, closure_candidate_base_blend_scale, &
-         closure_candidate_direction_scale, closure_candidate_expected_drop, &
-         closure_candidate_history_quality, closure_candidate_model_calibrated_drop, &
-         closure_candidate_model_drop, closure_candidate_model_gap, &
-         closure_candidate_model_gap_drop, closure_candidate_model_gap_ratio, &
-         closure_candidate_model_quadratic, closure_candidate_model_slope, &
-         closure_candidate_predicted_residual_delta_dot, &
+         canonical_density_tangent_scalar_gain, canonical_fixed_n_curv_sum, canonical_mu_channel
+      REAL(KIND=dp) :: channel_occ_curv_max, channel_projector_weight, &
+         closure_candidate_base_blend_scale, closure_candidate_direction_scale, &
+         closure_candidate_expected_drop, closure_candidate_history_quality, &
+         closure_candidate_model_calibrated_drop, closure_candidate_model_drop, &
+         closure_candidate_model_gap, closure_candidate_model_gap_drop, &
+         closure_candidate_model_gap_ratio, closure_candidate_model_quadratic, &
+         closure_candidate_model_slope, closure_candidate_predicted_residual_delta_dot, &
          closure_candidate_predicted_residual_delta_sq, closure_candidate_predicted_residual_ratio
       REAL(KIND=dp) :: closure_candidate_predicted_residual_start_sq, &
          closure_candidate_reference_drop, closure_candidate_reference_residual_ratio, &
@@ -19674,6 +19674,68 @@ CONTAINS
          projector_fd_cluster_replacements = 0
          projector_kernel_cluster_groups = 0
          split_selected_attempt = 0
+
+         ! A rotation perturbation is local to one irreducible k point, while
+         ! its fixed-N chemical-potential response is shared by the complete
+         ! spin/k-point group.  Build that global susceptibility before any
+         ! channel-local finite Projector derivative is formed.
+         canonical_fixed_n_curv_sum = 0.0_dp
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               group = MERGE(ispin, 1, ngroups == nspin_ot)
+               IF (group /= target_group) CYCLE
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+               ALLOCATE (canonical_eigenvalue_channel(nmo), canonical_occupation_channel(nmo), &
+                         canonical_occ_curv_channel(nmo))
+               canonical_eigenvalue_channel(:) = trial_eigenvalues(1:nmo, ikpoint, ispin)
+               canonical_occupation_channel(:) = trial_occupation(1:nmo, ikpoint, ispin)
+               canonical_mu_channel = trial_mu(ispin)
+               IF (local_ot_env(local_channel)%kpoint_canonical_occupation_ready) THEN
+                  density_pair_shape_ok = &
+                     ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_occupation)
+                  CPASSERT(density_pair_shape_ok)
+                  density_pair_shape_ok = &
+                     SIZE(local_ot_env(local_channel)%kpoint_canonical_occupation) == nmo
+                  CPASSERT(density_pair_shape_ok)
+                  density_pair_shape_ok = &
+                     ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_eigenvalue)
+                  CPASSERT(density_pair_shape_ok)
+                  density_pair_shape_ok = &
+                     SIZE(local_ot_env(local_channel)%kpoint_canonical_eigenvalue) == nmo
+                  CPASSERT(density_pair_shape_ok)
+                  canonical_occupation_channel(:) = &
+                     local_ot_env(local_channel)%kpoint_canonical_occupation(:)
+                  canonical_eigenvalue_channel(:) = &
+                     local_ot_env(local_channel)%kpoint_canonical_eigenvalue(:)
+                  canonical_mu_channel = local_ot_env(local_channel)%kpoint_canonical_mu
+               END IF
+               canonical_occ_curv_channel(:) = 0.0_dp
+               IF (kpoint_ot_monotone_smearing(smear%method) .AND. sigma > EPSILON(sigma) .AND. &
+                   maxocc > EPSILON(maxocc)) THEN
+                  DO imo = 1, nmo
+                     canonical_occ_curv_channel(imo) = wkp(ikpoint)* &
+                                                       SmearingDerivative(canonical_occupation_channel(imo), &
+                                                                          canonical_eigenvalue_channel(imo), &
+                                                                          canonical_mu_channel, sigma, maxocc, &
+                                                                          smear%method)
+                  END DO
+               END IF
+               WHERE (canonical_occ_curv_channel <= &
+                      SQRT(EPSILON(1.0_dp))*MAXVAL(canonical_occ_curv_channel))
+                  canonical_occ_curv_channel = 0.0_dp
+               END WHERE
+               canonical_fixed_n_curv_sum = canonical_fixed_n_curv_sum + &
+                                            SUM(canonical_occ_curv_channel)
+               DEALLOCATE (canonical_eigenvalue_channel, canonical_occupation_channel, &
+                           canonical_occ_curv_channel)
+            END DO
+         END DO
+         IF (global_schur_replicated) &
+            CALL para_env_inter_kp%sum(canonical_fixed_n_curv_sum)
+
          ivar = 0
          constrained_sol(:) = 0.0_dp
          constrained_z_e(:) = 0.0_dp
@@ -19914,6 +19976,7 @@ CONTAINS
                                                     occ_curv(e_offset(global_channel):e_offset(global_channel) + nmo - 1), &
                                                     canonical_occupation_channel, &
                                                     canonical_occ_curv_channel, &
+                                                    canonical_fixed_n_curv_sum, &
                                                     var_i, var_j, var_kind, &
                                                     projector_physical_shadow_enabled, &
                                                     projector_density_full_audit_enabled, &
@@ -41431,6 +41494,7 @@ CONTAINS
 !> \param occ_curv_channel ...
 !> \param canonical_occupation_numbers ...
 !> \param canonical_occ_curv_channel ...
+!> \param fixed_n_occ_curv_sum global occupation susceptibility of the fixed-N spin/k group
 !> \param var_i ...
 !> \param var_j ...
 !> \param var_kind ...
@@ -41471,6 +41535,7 @@ CONTAINS
                                                  occupation_numbers, kpoint_weight, &
                                                  projector_window_gap, occ_curv_channel, &
                                                  canonical_occupation_numbers, canonical_occ_curv_channel, &
+                                                 fixed_n_occ_curv_sum, &
                                                  var_i, var_j, var_kind, &
                                                  compute_projector_shadow, &
                                                  compute_density_full_audit, compute_projector_plateau_audit, &
@@ -41501,6 +41566,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv_channel, &
                                                             canonical_occupation_numbers, &
                                                             canonical_occ_curv_channel
+      REAL(KIND=dp), INTENT(IN)                          :: fixed_n_occ_curv_sum
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
       LOGICAL, INTENT(IN) :: compute_projector_shadow, compute_density_full_audit, &
          compute_projector_plateau_audit
@@ -41781,7 +41847,7 @@ CONTAINS
                                                                 canonical_occ_curv_channel, &
                                                                 ot_kp_projector_occupation_gauge_gap, &
                                                                 fd_cluster_used, projector_window_gap, &
-                                                                kernel_cluster_groups)
+                                                                kernel_cluster_groups, fixed_n_occ_curv_sum)
                projector_fd_cluster_derivatives = projector_fd_cluster_derivatives + 1
                projector_kernel_cluster_groups = projector_kernel_cluster_groups + kernel_cluster_groups
                IF (fd_cluster_used) &
@@ -42174,11 +42240,12 @@ CONTAINS
 !> \param fd_cluster_used ...
 !> \param projector_window_gap ...
 !> \param cluster_groups_used ...
+!> \param fixed_n_curvature_sum global occupation susceptibility of the fixed-N spin/k group
 ! **************************************************************************************************
       SUBROUTINE dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
                                                              delta, docc_mat, occ_curv_channel, gauge_gap, &
                                                              fd_cluster_used, projector_window_gap, &
-                                                             cluster_groups_used)
+                                                             cluster_groups_used, fixed_n_curvature_sum)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
@@ -42188,6 +42255,7 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL                     :: fd_cluster_used
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
       INTEGER, INTENT(OUT), OPTIONAL                     :: cluster_groups_used
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: fixed_n_curvature_sum
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, occ_mat_m, occ_mat_p, work
       INTEGER                                            :: cluster_groups, i, idx, j, n
@@ -42273,7 +42341,7 @@ CONTAINS
                cluster_groups = 0
                CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, occ_slope, gauge_gap, &
                                                            projector_weight, kernel, projector_window_gap, &
-                                                           cluster_groups)
+                                                           cluster_groups, fixed_n_curvature_sum)
                IF (PRESENT(cluster_groups_used)) cluster_groups_used = cluster_groups
                docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
                docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
@@ -42293,7 +42361,12 @@ CONTAINS
                   diag_response_shift = diag_response_shift + &
                                         MAX(0.0_dp, occ_curv_channel(i))*REAL(work(i, i), KIND=dp)
                END DO
-               diag_response_shift = diag_response_shift/occ_curv_sum
+               IF (PRESENT(fixed_n_curvature_sum)) THEN
+                  diag_response_shift = qs_scf_kp_fixed_n_response_mu_shift( &
+                                        diag_response_shift, occ_curv_sum, fixed_n_curvature_sum)
+               ELSE
+                  diag_response_shift = diag_response_shift/occ_curv_sum
+               END IF
             END IF
          END IF
          kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -42354,7 +42427,8 @@ CONTAINS
          IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN
             cluster_groups = 0
             CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, occ_slope, gauge_gap, &
-                                                        1.0_dp, kernel, projector_window_gap, cluster_groups)
+                                                        1.0_dp, kernel, projector_window_gap, cluster_groups, &
+                                                        fixed_n_curvature_sum)
             IF (PRESENT(cluster_groups_used)) cluster_groups_used = cluster_groups
          END IF
 
@@ -42487,10 +42561,11 @@ CONTAINS
 !> \param kernel ...
 !> \param projector_window_gap ...
 !> \param cluster_groups_used ...
+!> \param fixed_n_curvature_sum global occupation susceptibility of the fixed-N spin/k group
 ! **************************************************************************************************
       SUBROUTINE dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, occ_slope, gauge_gap, &
                                                         projector_weight, kernel, projector_window_gap, &
-                                                        cluster_groups_used)
+                                                        cluster_groups_used, fixed_n_curvature_sum)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: work
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv_channel, occ_slope
@@ -42498,6 +42573,7 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: kernel
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
       INTEGER, INTENT(OUT), OPTIONAL                     :: cluster_groups_used
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: fixed_n_curvature_sum
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: cluster_curv, cluster_evec, &
@@ -42563,7 +42639,11 @@ CONTAINS
             first = last + 1
          END DO
          mu_shift = 0.0_dp
-         IF (mu_den > EPSILON(mu_den)) mu_shift = mu_num/mu_den
+         IF (PRESENT(fixed_n_curvature_sum)) THEN
+            mu_shift = qs_scf_kp_fixed_n_response_mu_shift(mu_num, mu_den, fixed_n_curvature_sum)
+         ELSE IF (mu_den > EPSILON(mu_den)) THEN
+            mu_shift = mu_num/mu_den
+         END IF
 
          first = 1
          DO WHILE (first <= n)
