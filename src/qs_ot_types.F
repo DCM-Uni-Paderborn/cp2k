@@ -197,6 +197,10 @@ MODULE qs_ot_types
       REAL(KIND=dp)    :: mermin_ls_model_quality = 0.0_dp, mermin_ls_best_sample_pos = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_next_pos = 0.0_dp
       INTEGER          :: mermin_ls_accepted_quality_samples = 0
+      ! Accepted Mermin endpoints in the current k-point orbital subspace.
+      ! Unlike response calibration, this runtime-only counter is deliberately
+      ! not restored across an ADDED_MOS AUTO rebuild or external restart.
+      INTEGER          :: kpoint_subspace_accepted_samples = 0
       REAL(KIND=dp)    :: mermin_ls_accepted_quality = 1.0_dp
       REAL(KIND=dp)    :: mermin_ls_accepted_quality_ema = 1.0_dp
       REAL(KIND=dp)    :: mermin_ls_accepted_gap = 0.0_dp
@@ -1178,6 +1182,7 @@ CONTAINS
       qs_ot_env%mermin_ls_best_sample_pos = 0.0_dp
       qs_ot_env%mermin_ls_next_pos = 0.0_dp
       qs_ot_env%mermin_ls_accepted_quality_samples = 0
+      qs_ot_env%kpoint_subspace_accepted_samples = 0
       qs_ot_env%mermin_ls_accepted_quality = 1.0_dp
       qs_ot_env%mermin_ls_accepted_quality_ema = 1.0_dp
       qs_ot_env%mermin_ls_accepted_gap = 0.0_dp
@@ -2787,6 +2792,7 @@ CONTAINS
       qs_ot_env%has_complex_kpoint_state = .FALSE.
       qs_ot_env%kpoint_occ_preconditioner_active = .FALSE.
       qs_ot_env%kpoint_occ_preconditioner_ready_samples = 0
+      qs_ot_env%kpoint_subspace_accepted_samples = 0
       qs_ot_env%kpoint_occ_metric_residual_quality_ema = 0.0_dp
       qs_ot_env%orbital_schur_response_ready = .FALSE.
       qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.

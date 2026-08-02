@@ -6890,7 +6890,7 @@ CONTAINS
 !> \brief require accepted post-rebase history before another k-point OT subspace refresh
 !> \param restart_valid whether the supplied state is an unevaluated restart boundary
 !> \param ot_count accepted minimizer directions since the last state reset
-!> \param accepted_samples accepted Mermin line-search samples since the last state reset
+!> \param accepted_samples accepted Mermin line-search samples in the current orbital subspace
 !> \param min_steps minimum independent progress samples before a repeated refresh
 !> \return true when a refresh has enough post-rebase evidence
 ! **************************************************************************************************
@@ -8844,7 +8844,7 @@ CONTAINS
       residual_delta = MAX(scf_residual, local_ot_env(1)%delta)
       step_ready = qs_scf_kp_subspace_refresh_step_ready( &
                    restart_valid, local_ot_env(1)%OT_count, &
-                   local_ot_env(1)%mermin_ls_accepted_quality_samples, &
+                   local_ot_env(1)%kpoint_subspace_accepted_samples, &
                    ot_kp_subspace_refresh_min_steps)
       base_state = local_ot_env(1)%line_search_count == 0 .OR. accepted_sample .OR. &
                    (restart_valid .AND. scf_iteration <= 1)
@@ -8882,10 +8882,12 @@ CONTAINS
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
           (collapsed .OR. density_closure_stagnant .OR. orbital_tail_rebase) .AND. step_ready) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,L1),1X,I6,5(1X,ES16.8))') &
-        " OT k-point subspace refresh ready restart stagnant buffer closure history orbital step residual density qema frac max:", &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,L1),2(1X,I6),5(1X,ES16.8))') &
+         " OT k-point subspace refresh ready restart stagnant buffer closure history "// &
+         "orbital step epoch residual density qema frac max:", &
          refresh, restart_valid, high_residual_stagnant, density_buffer_ready, density_closure_stagnant, &
-         density_history_stagnant, orbital_tail_rebase, local_ot_env(1)%OT_count, residual_delta, &
+         density_history_stagnant, orbital_tail_rebase, local_ot_env(1)%OT_count, &
+         local_ot_env(1)%kpoint_subspace_accepted_samples, residual_delta, &
          local_ot_env(1)%kpoint_density_stationarity_delta, &
          local_ot_env(1)%schur_density_stationarity_quality_ema, fractional_weight, max_partial_fraction
 
@@ -13069,6 +13071,8 @@ CONTAINS
                local_ot_env(1)%mermin_ls_accepted_gap = sample_gap_ratio
                samples = MIN(local_ot_env(1)%mermin_ls_accepted_quality_samples + 1, HUGE(samples) - 1)
                local_ot_env(1)%mermin_ls_accepted_quality_samples = samples
+               local_ot_env(1)%kpoint_subspace_accepted_samples = &
+                  MIN(local_ot_env(1)%kpoint_subspace_accepted_samples + 1, HUGE(samples) - 1)
                metric_residual_quality = MAX(0.0_dp, MIN(1.0_dp, raw_residual_quality_ratio))
                IF (samples == 1) THEN
                   local_ot_env(1)%mermin_ls_accepted_quality_ema = sample_quality

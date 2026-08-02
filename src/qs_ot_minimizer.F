@@ -1223,6 +1223,7 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_best_sample_pos)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_next_pos)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality_samples)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_subspace_accepted_samples)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality_ema)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_gap)
