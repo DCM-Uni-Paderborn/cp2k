@@ -85,7 +85,8 @@ MODULE qs_scf_loop_utils
                                               qs_ot_rot_mat_derivative_complex
    USE qs_ot_minimizer,                 ONLY: ot_kpoint_physical_residual_split,&
                                               ot_kpoint_secant_geometry,&
-                                              ot_mini
+                                              ot_mini,&
+                                              sync_kpoint_minimizer_control
    USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
                                               ot_scf_mini
    USE qs_ot_types,                     ONLY: qs_ot_channel_index,&
@@ -144,6 +145,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_fermi_window_outer_factor = 8.0_dp, &
                                         ot_kp_fermi_window_release_start = 5.0E-1_dp, &
                                         ot_kp_fermi_window_release_end = 9.0E-1_dp, &
+                                        ot_kp_schur_residual_pair_tail_eps_factor = 1.0E1_dp, &
                                         ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_min_steps = 80, &
                                   ot_kp_added_mos_auto_tail_probe_steps = 20, &
@@ -307,6 +309,9 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_fermi_guard_transition, &
              qs_scf_kp_fixed_n_frozen_energy_gradient, &
              qs_scf_kp_fixed_n_response_mu_shift, &
+             qs_scf_kp_complete_physical_audit_ready, &
+             qs_scf_kp_complete_physical_gradient_norm, &
+             qs_scf_kp_residual_pair_omission_limit, &
              qs_scf_kp_canonical_projector_density_response, &
              qs_scf_kp_full_all_spin_normalization, &
              qs_scf_kp_orbital_schur_correction, &
@@ -350,6 +355,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_closure_history_refresh_ready, &
              qs_scf_kp_density_closure_refresh_ready, &
              qs_scf_kp_orbital_tail_rebase_ready, &
+             qs_scf_kp_subspace_refresh_step_ready, &
              qs_scf_kp_subspace_refresh_gate, &
              qs_scf_kp_secant_bootstrap_probe, &
              qs_scf_kp_secant_calibration_probe, &
@@ -386,6 +392,75 @@ CONTAINS
          mu_shift = weighted_energy_response/response_denominator
 
    END FUNCTION qs_scf_kp_fixed_n_response_mu_shift
+
+! **************************************************************************************************
+!> \brief complete physical gradient norm for a reduced k-point OT rotation space
+!>
+!>        A dense Schur model may retain only a thermal/density-selected subset of all complex
+!>        rotations. That subset is sufficient for constructing a search direction, but the
+!>        omitted physical rotations must remain part of the convergence residual.
+!> \param active_rotation_norm physical rotation-gradient norm represented by the Schur model
+!> \param full_rotation_norm physical rotation-gradient norm over every complex MO pair
+!> \param energy_norm fixed-N auxiliary-energy gradient norm
+!> \param reduced_rotation_space whether the Schur rotation space is incomplete
+!> \return complete nonnegative physical gradient norm
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_complete_physical_gradient_norm( &
+      active_rotation_norm, full_rotation_norm, energy_norm, reduced_rotation_space) RESULT(gradient_norm)
+      REAL(KIND=dp), INTENT(IN)                          :: active_rotation_norm, &
+                                                            full_rotation_norm, energy_norm
+      LOGICAL, INTENT(IN)                                :: reduced_rotation_space
+      REAL(KIND=dp)                                      :: gradient_norm
+
+      gradient_norm = MAX(0.0_dp, energy_norm) + &
+                      MAX(0.0_dp, MERGE(full_rotation_norm, active_rotation_norm, &
+                                        reduced_rotation_space))
+
+   END FUNCTION qs_scf_kp_complete_physical_gradient_norm
+
+! **************************************************************************************************
+!> \brief decide convergence directly from a complete fixed-N physical-gradient audit
+!>
+!>        Model-quality history calibrates a reduced Schur search direction, but it is not part
+!>        of the variational stationarity condition.  Once every complex rotation and auxiliary
+!>        energy has contributed to the direct RMS, that norm is independently conclusive.
+!> \param physical_delta_norm complete fixed-N physical-gradient RMS
+!> \param physical_delta_norm_limit requested convergence limit for that RMS
+!> \param physical_delta_nvar full-grid-equivalent number of audited variables
+!> \return true when a nonempty complete audit is below its limit
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_complete_physical_audit_ready( &
+      physical_delta_norm, physical_delta_norm_limit, physical_delta_nvar) RESULT(ready)
+      REAL(KIND=dp), INTENT(IN)                          :: physical_delta_norm, &
+                                                            physical_delta_norm_limit, &
+                                                            physical_delta_nvar
+      LOGICAL                                            :: ready
+
+      ready = physical_delta_norm_limit > 0.0_dp .AND. physical_delta_nvar > 0.0_dp .AND. &
+              physical_delta_norm >= 0.0_dp .AND. &
+              physical_delta_norm <= physical_delta_norm_limit
+
+   END FUNCTION qs_scf_kp_complete_physical_audit_ready
+
+! **************************************************************************************************
+!> \brief squared-gradient budget left outside a reduced complex rotation space
+!>
+!>        Reserve half of EPS_SCF for omitted rotations; the remaining half is available for
+!>        represented rotations, auxiliary energies, and the orbital gradient.  The argument is
+!>        the full-grid-equivalent number of complex rotation variables used by the physical RMS.
+!> \param eps_scf requested SCF threshold
+!> \param rotation_nvar full-grid-equivalent number of complex rotation variables
+!> \return maximum omitted physical rotation-gradient norm squared
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_residual_pair_omission_limit(eps_scf, rotation_nvar) RESULT(norm_limit)
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf, rotation_nvar
+      REAL(KIND=dp)                                      :: norm_limit
+
+      norm_limit = 0.0_dp
+      IF (eps_scf > 0.0_dp .AND. rotation_nvar > 0.0_dp) &
+         norm_limit = (0.5_dp*eps_scf)**2*rotation_nvar
+
+   END FUNCTION qs_scf_kp_residual_pair_omission_limit
 
 ! **************************************************************************************************
 !> \brief canonical band-energy response represented by a covariant density derivative
@@ -6812,6 +6887,25 @@ CONTAINS
    END FUNCTION qs_scf_kp_subspace_refresh_gate
 
 ! **************************************************************************************************
+!> \brief require accepted post-rebase history before another k-point OT subspace refresh
+!> \param restart_valid whether the supplied state is an unevaluated restart boundary
+!> \param ot_count accepted minimizer directions since the last state reset
+!> \param accepted_samples accepted Mermin line-search samples since the last state reset
+!> \param min_steps minimum independent progress samples before a repeated refresh
+!> \return true when a refresh has enough post-rebase evidence
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_subspace_refresh_step_ready( &
+      restart_valid, ot_count, accepted_samples, min_steps) RESULT(ready)
+      LOGICAL, INTENT(IN)                                :: restart_valid
+      INTEGER, INTENT(IN)                                :: ot_count, accepted_samples, min_steps
+      LOGICAL                                            :: ready
+
+      ready = restart_valid .OR. ot_count >= MAX(1, min_steps) .OR. &
+              accepted_samples >= MAX(1, min_steps)
+
+   END FUNCTION qs_scf_kp_subspace_refresh_step_ready
+
+! **************************************************************************************************
 !> \brief computes properties for a given hamiltonian using the current wfn
 !> \param scf_env ...
 !> \param diis_step ...
@@ -7717,6 +7811,13 @@ CONTAINS
             local_ot_env(local_channel)%delta = &
                MAX(local_ot_env(local_channel)%delta, 10.0_dp*scf_control%eps_scf)
             local_ot_env(local_channel)%energy_only = .FALSE.
+            IF (local_ot_env(local_channel)%settings%occupation_preconditioner .AND. &
+                scf_control%smear%do_smear .AND. &
+                (scf_control%smear%method == smear_fermi_dirac .OR. &
+                 scf_control%smear%method == smear_gaussian)) &
+               local_ot_env(local_channel)%kpoint_occ_preconditioner_ready_samples = &
+               MAX(local_ot_env(local_channel)%kpoint_occ_preconditioner_ready_samples, &
+                   ot_kp_occ_preconditioner_bootstrap_samples - 1)
          END DO
          protect_mermin_ls_sample = .FALSE.
          update_ot_energy_state_after = .TRUE.
@@ -7737,6 +7838,10 @@ CONTAINS
          minimizer_step_taken = .TRUE.
          CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im, &
                       para_env_inter_kp=para_env_inter_kp)
+         ! ot_mini constructs globally reduced scalar residuals on the
+         ! distributed channel roots.  Propagate the accepted endpoint before
+         ! the outer SCF exit test consumes readiness and its matching delta.
+         CALL sync_kpoint_minimizer_control(local_ot_env, para_env_inter_kp)
          protect_mermin_ls_sample = local_ot_env(1)%mermin_ls_sample_pending .AND. &
                                     local_ot_env(1)%line_search_might_be_done .AND. &
                                     .NOT. local_ot_env(1)%energy_only
@@ -8141,20 +8246,24 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: eps_scf
       REAL(KIND=dp), INTENT(INOUT)                       :: residual_delta
 
-      INTEGER                                            :: density_stationarity_ready_i, &
-                                                            line_search_pending_i, &
-                                                            physical_delta_ready_i, quality_samples
+      INTEGER :: density_stationarity_ready_i, line_search_pending_i, physical_audit_required_i, &
+         physical_delta_ready_i, quality_samples
       LOGICAL                                            :: density_stationarity_ready, &
                                                             physical_delta_ready
       REAL(KIND=dp) :: calibrated_floor_delta, density_stationarity_delta, model_delta, ot_delta, &
          physical_delta, quality_ema, quality_gap_ema, raw_delta, raw_floor_ratio
+      TYPE(cp_logger_type), POINTER                      :: logger
 
       ot_delta = 0.0_dp
       raw_delta = 0.0_dp
       physical_delta = 0.0_dp
       density_stationarity_delta = 0.0_dp
+      ! These flags mark availability of audits whose metrics have already
+      ! been reduced over every spin/k-point channel.  Process replicas that
+      ! do not execute the audit therefore contribute the neutral false value.
       physical_delta_ready_i = 0
       density_stationarity_ready_i = 0
+      physical_audit_required_i = 0
       line_search_pending_i = 0
       quality_samples = 0
       quality_ema = 0.0_dp
@@ -8167,9 +8276,15 @@ CONTAINS
             IF (local_ot_env(1)%kpoint_density_stationarity_ready) &
                density_stationarity_delta = &
                MAX(0.0_dp, local_ot_env(1)%kpoint_density_stationarity_delta)
-            physical_delta_ready_i = MERGE(1, 0, local_ot_env(1)%kpoint_physical_delta_ready)
-            density_stationarity_ready_i = &
-               MERGE(1, 0, local_ot_env(1)%kpoint_density_stationarity_ready)
+            physical_audit_required_i = MERGE( &
+                                        1, 0, local_ot_env(1)%has_complex_kpoint_state .AND. &
+                                        local_ot_env(1)%settings%occupation_preconditioner .AND. &
+                                        local_ot_env(1)%settings%do_rotation .AND. local_ot_env(1)%settings%do_ener)
+            IF (physical_audit_required_i > 0) THEN
+               physical_delta_ready_i = MERGE(1, 0, local_ot_env(1)%kpoint_physical_delta_ready)
+               density_stationarity_ready_i = &
+                  MERGE(1, 0, local_ot_env(1)%kpoint_density_stationarity_ready)
+            END IF
             line_search_pending_i = MERGE(1, 0, &
                                           local_ot_env(1)%has_complex_kpoint_state .AND. &
                                           qs_ot_occupation_preconditioner_active(local_ot_env(1)) .AND. &
@@ -8188,6 +8303,7 @@ CONTAINS
       CALL para_env_inter_kp%max(density_stationarity_delta)
       CALL para_env_inter_kp%max(physical_delta_ready_i)
       CALL para_env_inter_kp%max(density_stationarity_ready_i)
+      CALL para_env_inter_kp%max(physical_audit_required_i)
       CALL para_env_inter_kp%max(line_search_pending_i)
       CALL para_env_inter_kp%max(quality_samples)
       CALL para_env_inter_kp%max(quality_ema)
@@ -8224,11 +8340,29 @@ CONTAINS
                        density_stationarity_delta, &
                        density_stationarity_ready, &
                        calibrated_floor_delta)
+      ! A subspace refresh invalidates the reduced Schur audit until the new
+      ! gradient has traversed every fixed-N group.  Missing physical data is
+      ! therefore a convergence veto for metallic complex OT, not a zero
+      ! residual.  The same rule applies to the canonical-density audit.
+      IF (physical_audit_required_i > 0 .AND. &
+          (.NOT. physical_delta_ready .OR. .NOT. density_stationarity_ready) .AND. &
+          eps_scf > 0.0_dp) &
+         residual_delta = MAX(residual_delta, eps_scf*(1.0_dp + 10.0_dp*EPSILON(1.0_dp)))
       ! A residual sampled at an unfinished Mermin line-search probe is not an
       ! accepted variational state. Complete the interpolation before allowing
       ! the outer SCF loop to declare convergence.
       IF (line_search_pending_i > 0 .AND. eps_scf > 0.0_dp) &
          residual_delta = MAX(residual_delta, eps_scf*(1.0_dp + 10.0_dp*EPSILON(1.0_dp)))
+
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),8(1X,ES16.8),3(1X,I6))') &
+         " OT k-point outer exit audit physical density required pending search raw physical density floor exit eps "// &
+         "qema samples pready dready:", &
+         physical_delta_ready, density_stationarity_ready, physical_audit_required_i > 0, &
+         line_search_pending_i > 0, ot_delta, raw_delta, physical_delta, density_stationarity_delta, &
+         calibrated_floor_delta, residual_delta, eps_scf, quality_ema, quality_samples, &
+         physical_delta_ready_i, density_stationarity_ready_i
 
    END SUBROUTINE qs_scf_loop_ot_kp_exit_delta
 
@@ -8708,8 +8842,10 @@ CONTAINS
 
       collapsed = qs_scf_kp_subspace_is_collapsed(max_partial_fraction)
       residual_delta = MAX(scf_residual, local_ot_env(1)%delta)
-      step_ready = restart_valid .OR. local_ot_env(1)%OT_count >= ot_kp_subspace_refresh_min_steps .OR. &
-                   scf_iteration >= ot_kp_subspace_refresh_min_steps
+      step_ready = qs_scf_kp_subspace_refresh_step_ready( &
+                   restart_valid, local_ot_env(1)%OT_count, &
+                   local_ot_env(1)%mermin_ls_accepted_quality_samples, &
+                   ot_kp_subspace_refresh_min_steps)
       base_state = local_ot_env(1)%line_search_count == 0 .OR. accepted_sample .OR. &
                    (restart_valid .AND. scf_iteration <= 1)
       high_residual_stagnant = residual_delta > SQRT(MAX(eps_scf, EPSILON(1.0_dp))) .AND. &
@@ -12134,7 +12270,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_diag, gdotv, gsum, &
                                                             nondiag_diag, precond_count, &
                                                             precond_shift, precond_sum
-      LOGICAL                                            :: active_preconditioner, global_schur_replicated
+      LOGICAL :: active_preconditioner, audit_preconditioner, global_schur_replicated
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: schur_group_done
       REAL(KIND=dp), DIMENSION(:), POINTER               :: vector_swap
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -12159,6 +12295,10 @@ CONTAINS
                               smear%do_smear .AND. &
                               (smear%method == smear_fermi_dirac .OR. &
                                smear%method == smear_gaussian)
+      audit_preconditioner = local_ot_env(1)%settings%occupation_preconditioner .AND. &
+                             smear%do_smear .AND. &
+                             (smear%method == smear_fermi_dirac .OR. &
+                              smear%method == smear_gaussian)
       global_schur_replicated = para_env_inter_kp%num_pe > 1
 
       CALL audit_kpoint_ot_canonical_density()
@@ -12322,7 +12462,7 @@ CONTAINS
 
       CALL prepare_kpoint_mermin_frozen_energy_gradient()
 
-      IF (active_preconditioner) THEN
+      IF (audit_preconditioner) THEN
          DO local_channel = 1, SIZE(local_ot_env)
             local_ot_env(local_channel)%kpoint_preconditioned_direction_ready = .FALSE.
             IF (local_ot_env(local_channel)%settings%do_rotation) THEN
@@ -12355,7 +12495,7 @@ CONTAINS
                local_ot_env(local_channel)%ener_gx => local_ot_env(local_channel)%ener_pgx
                local_ot_env(local_channel)%ener_pgx => vector_swap
             END IF
-            local_ot_env(local_channel)%kpoint_preconditioned_direction_ready = .TRUE.
+            local_ot_env(local_channel)%kpoint_preconditioned_direction_ready = active_preconditioner
          END DO
       END IF
 
@@ -16981,15 +17121,16 @@ CONTAINS
          gauge_projected_count, global_channel, global_kpoint, global_spin, group, ie, ifull, &
          ikpoint, imo, info, ispin, ivar, jmo, local_channel
       INTEGER :: local_kpoint, max_channel_nmo, nchannels, ne, nmo, nrot, nrot_active, &
-         nrot_density, nrot_full, projector_fd_cluster_derivatives, &
-         projector_fd_cluster_replacements, projector_kernel_cluster_groups, r, reject_reason, s, &
-         schur_attempt, schur_used_attempt, selected_attempt, selected_flavor, &
-         split_selected_attempt
+         nrot_density, nrot_full, nrot_residual, projector_fd_cluster_derivatives, &
+         projector_fd_cluster_replacements, projector_kernel_cluster_groups, r, reject_reason, &
+         residual_pair_available, residual_pair_candidates, s, schur_attempt, schur_used_attempt, &
+         selected_attempt, selected_flavor, split_selected_attempt
       INTEGER, ALLOCATABLE, DIMENSION(:) :: canonical_density_cauchy_channel, &
          channel_full_var_offset, channel_multiplicity, channel_nmo, channel_nrot, &
          channel_var_offset, e_offset, ipiv, ipiv_energy, var_channel, var_ei, var_ej, &
          var_full_index, var_i, var_j, var_kind
-      INTEGER, DIMENSION(3)                              :: density_pair_location
+      INTEGER, DIMENSION(3)                              :: density_pair_location, &
+                                                            residual_pair_location
       LOGICAL :: accepted_reduced_secant_shadow_ready, active_pair, attempt_failed, &
          channel_canonical_cauchy_used, closure_candidate_enabled, &
          closure_candidate_measured_response, closure_candidate_probe_selected, &
@@ -17064,13 +17205,14 @@ CONTAINS
          reduced_secant_candidate_enabled, reduced_secant_candidate_ready, &
          reduced_secant_candidate_selected, reduced_secant_measured_response, &
          reduced_secant_probe_selected, reduced_secant_replacement_eligible, &
-         reduced_secant_update_eligible, relative_energy_metric_ready, response_model_available, &
-         schur_active_subspace, solved, split_candidate_diagnostic, split_candidate_enabled, &
-         split_candidate_ready, split_candidate_selected
-      LOGICAL :: split_residual_competitive, trust_rejected, vector_secant_update_eligible, &
-         vector_secant_update_ready, vector_secant_update_used
-      LOGICAL, ALLOCATABLE, DIMENSION(:, :, :)           :: channel_density_pair_active, &
-                                                            channel_density_pair_candidate
+         reduced_secant_update_eligible, relative_energy_metric_ready, &
+         residual_pair_selection_ready, response_model_available, schur_active_subspace, solved, &
+         split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready
+      LOGICAL :: split_candidate_selected, split_residual_competitive, trust_rejected, &
+         vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
+      LOGICAL, ALLOCATABLE, DIMENSION(:, :, :) :: channel_density_pair_active, &
+         channel_density_pair_candidate, channel_fermi_pair_active, channel_residual_pair_active, &
+         channel_residual_pair_candidate
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
          accepted_model_drop, accepted_model_gap_ratio, accepted_occgap_shadow_drop, &
          accepted_occgap_shadow_gap_ratio, accepted_pair_residual, &
@@ -17801,40 +17943,41 @@ CONTAINS
          reduced_secant_reference_residual_ratio, reduced_secant_response_abs_step, &
          reduced_secant_response_abs_trust_ratio, reduced_secant_response_weighted_step, &
          reduced_secant_response_weighted_trust_ratio, reduced_secant_trust_quality, &
-         residual_delta, residual_reference_quality, response_abs_step, response_abs_trust, &
-         response_abs_trust_ratio, response_mixed_diag_avg, response_penalty_diag_sum, &
-         response_penalty_term, response_shift, response_step_max, response_trust, &
-         response_trust_base
-      REAL(KIND=dp) :: response_trust_factor, response_trust_ratio, response_weighted_step, &
+         residual_delta, residual_pair_full_nvar, residual_pair_omitted_limit, &
+         residual_pair_omitted_score, residual_pair_total_score, residual_reference_quality, &
+         response_abs_step, response_abs_trust, response_abs_trust_ratio, response_mixed_diag_avg, &
+         response_penalty_diag_sum
+      REAL(KIND=dp) :: response_penalty_term, response_shift, response_step_max, response_trust, &
+         response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, rot_grad_active_fraction_avg, &
          rot_grad_active_fraction_max, rot_grad_active_im, rot_grad_active_re, &
          rot_grad_active_weight_sum, rot_grad_energy_norm, rot_grad_fermi_weight, &
          rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, rot_grad_gap_weight, &
          rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, rot_grad_gauge_weight, &
-         rot_grad_inactive_im, rot_grad_inactive_re, rot_grad_inactive_weight_sum, &
-         rot_grad_norm_weight
-      REAL(KIND=dp) :: rot_grad_pair_fraction, rot_grad_physical_norm, rot_grad_rest_fraction, &
-         rot_grad_sq, rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg, &
-         row_floor_max, row_floor_shift_drop, row_floor_shift_quad, row_floor_shifted_step, &
+         rot_grad_inactive_im
+      REAL(KIND=dp) :: rot_grad_inactive_re, rot_grad_inactive_weight_sum, rot_grad_norm_weight, &
+         rot_grad_pair_fraction, rot_grad_physical_norm, rot_grad_rest_fraction, rot_grad_sq, &
+         rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg, row_floor_max, &
+         row_floor_shift_drop, row_floor_shift_quad, row_floor_shifted_step, &
          row_floor_step_fraction, row_floor_step_norm, rx_shift, rx_weight, scale_quality, &
          schur_active_occ_min, schur_diag_min, schur_energy_window, spectral_resp_correction_drop, &
-         spectral_resp_correction_negative, spectral_resp_cross_drop, &
-         spectral_resp_negative_coeff, spectral_resp_negative_drop, spectral_resp_positive_coeff
-      REAL(KIND=dp) :: spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, &
-         spectral_resp_weight, split_curvature_scale, split_dense_expected_ratio, &
-         split_density_projector_fraction, split_diag_shift_max, split_diag_shift_sum, &
-         split_direction_scale, split_expected_drop, split_gdot_energy, split_gdot_rotation, &
-         split_gdotp, split_model_calibrated_drop, split_model_drop, split_model_gap_ratio, &
-         split_norm_energy, split_norm_ratio, split_norm_rotation, split_normp, &
-         split_occgap_shadow_drop, split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
-         split_quality_for_selection
-      REAL(KIND=dp) :: split_residual_delta, split_residual_quality, split_response_abs_step, &
+         spectral_resp_correction_negative, spectral_resp_cross_drop, spectral_resp_negative_coeff
+      REAL(KIND=dp) :: spectral_resp_negative_drop, spectral_resp_positive_coeff, &
+         spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, spectral_resp_weight, &
+         split_curvature_scale, split_dense_expected_ratio, split_density_projector_fraction, &
+         split_diag_shift_max, split_diag_shift_sum, split_direction_scale, split_expected_drop, &
+         split_gdot_energy, split_gdot_rotation, split_gdotp, split_model_calibrated_drop, &
+         split_model_drop, split_model_gap_ratio, split_norm_energy, split_norm_ratio, &
+         split_norm_rotation, split_normp, split_occgap_shadow_drop, split_occgap_shadow_gap_ratio
+      REAL(KIND=dp) :: split_quality_for_calibration, split_quality_for_selection, &
+         split_residual_delta, split_residual_quality, split_response_abs_step, &
          split_response_abs_trust, split_response_abs_trust_ratio, split_response_step, &
          split_response_trust, split_response_trust_factor, split_response_weighted_step, &
          split_response_weighted_trust_ratio, split_rot_floor_min, split_scale_quality, &
          split_schur_diag_min, split_trust_quality, step_gauge_quality, tether_curv_diag_max, &
          tether_curv_diag_sum, tether_projected_term, tether_response, tether_response_diag_sum, &
-         tether_strength, tether_weight, total_curv_diag_max, total_curv_diag_sum, z_weight
+         tether_strength, tether_weight
+      REAL(KIND=dp) :: total_curv_diag_max, total_curv_diag_sum, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, &
          canonical_density_mode_alpha, canonical_density_mode_curvature, &
          canonical_density_mode_linear, canonical_density_tangent, &
@@ -17929,7 +18072,8 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: &
          rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_reduced_secant, &
          rot_hessian_secant, schur, schur_metric
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: channel_density_pair_residual
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: channel_density_pair_residual, &
+                                                            channel_residual_pair_score
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -18070,10 +18214,18 @@ CONTAINS
          max_channel_nmo = MAX(1, MAXVAL(channel_nmo))
          ALLOCATE (channel_density_pair_residual(max_channel_nmo, max_channel_nmo, nchannels), &
                    channel_density_pair_active(max_channel_nmo, max_channel_nmo, nchannels), &
-                   channel_density_pair_candidate(max_channel_nmo, max_channel_nmo, nchannels))
+                   channel_density_pair_candidate(max_channel_nmo, max_channel_nmo, nchannels), &
+                   channel_fermi_pair_active(max_channel_nmo, max_channel_nmo, nchannels), &
+                   channel_residual_pair_active(max_channel_nmo, max_channel_nmo, nchannels), &
+                   channel_residual_pair_candidate(max_channel_nmo, max_channel_nmo, nchannels), &
+                   channel_residual_pair_score(max_channel_nmo, max_channel_nmo, nchannels))
          channel_density_pair_residual(:, :, :) = 0.0_dp
          channel_density_pair_active(:, :, :) = .FALSE.
          channel_density_pair_candidate(:, :, :) = .FALSE.
+         channel_fermi_pair_active(:, :, :) = .FALSE.
+         channel_residual_pair_active(:, :, :) = .FALSE.
+         channel_residual_pair_candidate(:, :, :) = .FALSE.
+         channel_residual_pair_score(:, :, :) = 0.0_dp
          DO local_kpoint = 1, SIZE(kpoints%kp_env)
             kp => kpoints%kp_env(local_kpoint)%kpoint_env
             ikpoint = kp%nkpoint
@@ -18093,16 +18245,71 @@ CONTAINS
                CPASSERT(density_pair_shape_ok)
                channel_density_pair_residual(1:nmo, 1:nmo, global_channel) = &
                   local_ot_env(local_channel)%kpoint_density_pair_residual(:, :)
+
+               ! Score every complex MO pair in the same physical metric used
+               ! by the final fixed-N convergence audit.  This score is kept
+               ! separate from canonical-density pair selection: it completes
+               ! the reduced rotation basis when an omitted physical gradient,
+               ! rather than density stationarity, controls the tail.
+               ALLOCATE (canonical_occ_curv_channel(nmo), grad_re(nmo, nmo), grad_im(nmo, nmo))
+               canonical_occ_curv_channel(:) = 0.0_dp
+               IF (kpoint_ot_monotone_smearing(smear%method) .AND. sigma > EPSILON(sigma) .AND. &
+                   maxocc > EPSILON(maxocc)) THEN
+                  DO imo = 1, nmo
+                     canonical_occ_curv_channel(imo) = wkp(ikpoint)* &
+                                                       SmearingDerivative( &
+                                                       trial_occupation(imo, ikpoint, ispin), &
+                                                       trial_eigenvalues(imo, ikpoint, ispin), &
+                                                       trial_mu(ispin), sigma, maxocc, smear%method)
+                  END DO
+               END IF
+               channel_occ_curv_max = MAXVAL(canonical_occ_curv_channel)
+               channel_projector_weight = &
+                  kpoint_ot_canonical_projector_weight(local_ot_env(local_channel)%delta, &
+                                                       ot_kp_canonical_projector_max_weight)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_gx, grad_re)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_gx_im, grad_im)
+               CALL local_ot_env(local_channel)%para_env%sum(grad_re)
+               CALL local_ot_env(local_channel)%para_env%sum(grad_im)
+               rot_grad_norm_weight = 1.0_dp/ &
+                                      REAL(MAX(1, local_ot_env(local_channel)%kpoint_multiplicity), KIND=dp)
+               DO imo = 1, nmo - 1
+                  DO jmo = imo + 1, nmo
+                     pair_projector_weight = kpoint_ot_pair_projector_weight( &
+                                             channel_projector_weight, &
+                                             canonical_occ_curv_channel(imo), &
+                                             canonical_occ_curv_channel(jmo), channel_occ_curv_max)
+                     pair_occ_gap = MIN(1.0_dp, &
+                                        ABS(trial_occupation(imo, ikpoint, ispin) - &
+                                            trial_occupation(jmo, ikpoint, ispin))/ &
+                                        MAX(maxocc, EPSILON(maxocc)))
+                     rot_grad_pair_fraction = 0.0_dp
+                     IF (channel_projector_weight > EPSILON(channel_projector_weight)) &
+                        rot_grad_pair_fraction = pair_projector_weight/channel_projector_weight
+                     rot_grad_pair_fraction = MIN(1.0_dp, MAX(0.0_dp, rot_grad_pair_fraction))
+                     rot_grad_gap_fraction = kpoint_ot_residual_occ_gap_weight(pair_occ_gap)
+                     channel_residual_pair_score(imo, jmo, global_channel) = &
+                        rot_grad_norm_weight* &
+                        (rot_grad_pair_fraction + &
+                         (1.0_dp - rot_grad_pair_fraction)*rot_grad_gap_fraction)* &
+                        ((2.0_dp*grad_re(imo, jmo))**2 + (2.0_dp*grad_im(imo, jmo))**2)
+                  END DO
+               END DO
+               DEALLOCATE (canonical_occ_curv_channel, grad_re, grad_im)
             END DO
          END DO
-         IF (global_schur_replicated) &
+         IF (global_schur_replicated) THEN
             CALL para_env_inter_kp%sum(channel_density_pair_residual)
+            CALL para_env_inter_kp%sum(channel_residual_pair_score)
+         END IF
 
          ne = 0
          nrot = 0
          nrot_active = 0
          nrot_density = 0
          nrot_full = 0
+         nrot_residual = 0
+         residual_pair_full_nvar = 0.0_dp
          schur_active_occ_min = ot_kp_fermi_window_min_frac
          schur_active_subspace = .FALSE.
          schur_energy_window = ot_kp_fermi_window_outer_factor*MAX(sigma, EPSILON(sigma))
@@ -18130,6 +18337,9 @@ CONTAINS
             ne = ne + nmo
             channel_full_var_offset(global_channel) = nrot_full + 1
             nrot_full = nrot_full + nmo*(nmo - 1)
+            residual_pair_full_nvar = residual_pair_full_nvar + &
+                                      REAL(MAX(1, channel_multiplicity(global_channel)), KIND=dp)* &
+                                      REAL(nmo*(nmo - 1), KIND=dp)
             DO imo = 1, nmo - 1
                DO jmo = imo + 1, nmo
                   occ_tail_i = MAX(0.0_dp, MIN(trial_occupation(imo, global_kpoint, global_spin), &
@@ -18141,16 +18351,17 @@ CONTAINS
                                           trial_mu(global_spin)) <= schur_energy_window .OR. &
                                       ABS(trial_eigenvalues(jmo, global_kpoint, global_spin) - &
                                           trial_mu(global_spin)) <= schur_energy_window
-                  IF (fermi_active_pair) THEN
-                     nrot_active = nrot_active + 2
-                  ELSE IF (density_pair_activation_ready .AND. &
-                           channel_density_pair_residual(imo, jmo, global_channel) > &
-                           density_pair_activation_threshold) THEN
+                  channel_fermi_pair_active(imo, jmo, global_channel) = fermi_active_pair
+                  IF (.NOT. fermi_active_pair .AND. density_pair_activation_ready .AND. &
+                      channel_density_pair_residual(imo, jmo, global_channel) > &
+                      density_pair_activation_threshold) THEN
                      channel_density_pair_candidate(imo, jmo, global_channel) = .TRUE.
                   END IF
                END DO
             END DO
          END DO
+         nrot_active = 2*COUNT(channel_fermi_pair_active)
+         schur_active_subspace = nrot_full > max_schur_rot
          density_pair_available = MAX(0, (max_schur_rot - nrot_active)/2)
          density_pair_candidates = COUNT(channel_density_pair_candidate)
          IF (density_pair_candidates <= density_pair_available) THEN
@@ -18167,7 +18378,47 @@ CONTAINS
          END IF
          nrot_density = 2*COUNT(channel_density_pair_active)
          nrot_active = nrot_active + nrot_density
-         schur_active_subspace = nrot_full > max_schur_rot
+
+         residual_pair_selection_ready = schur_active_subspace .AND. eps_scf_channel > 0.0_dp .AND. &
+                                         response_raw_delta <= &
+                                         ot_kp_schur_residual_pair_tail_eps_factor*eps_scf_channel
+         IF (residual_pair_selection_ready) THEN
+            DO global_channel = 1, nchannels
+               nmo = channel_nmo(global_channel)
+               IF (nmo <= 0) CYCLE
+               DO imo = 1, nmo - 1
+                  DO jmo = imo + 1, nmo
+                     channel_residual_pair_candidate(imo, jmo, global_channel) = &
+                        .NOT. channel_fermi_pair_active(imo, jmo, global_channel) .AND. &
+                        .NOT. channel_density_pair_active(imo, jmo, global_channel) .AND. &
+                        channel_residual_pair_score(imo, jmo, global_channel) > 0.0_dp
+                  END DO
+               END DO
+            END DO
+         END IF
+         residual_pair_available = MAX(0, (max_schur_rot - nrot_active)/2)
+         residual_pair_candidates = COUNT(channel_residual_pair_candidate)
+         residual_pair_total_score = SUM(channel_residual_pair_score, &
+                                         MASK=channel_residual_pair_candidate)
+         residual_pair_omitted_score = residual_pair_total_score
+         residual_pair_omitted_limit = qs_scf_kp_residual_pair_omission_limit( &
+                                       eps_scf_channel, residual_pair_full_nvar)
+         DO r = 1, MIN(residual_pair_candidates, residual_pair_available)
+            IF (residual_pair_omitted_score <= residual_pair_omitted_limit) EXIT
+            residual_pair_location = MAXLOC(channel_residual_pair_score, &
+                                            MASK=channel_residual_pair_candidate)
+            channel_residual_pair_active(residual_pair_location(1), residual_pair_location(2), &
+                                         residual_pair_location(3)) = .TRUE.
+            channel_residual_pair_candidate(residual_pair_location(1), residual_pair_location(2), &
+                                            residual_pair_location(3)) = .FALSE.
+            residual_pair_omitted_score = MAX( &
+                                          0.0_dp, residual_pair_omitted_score - &
+                                          channel_residual_pair_score(residual_pair_location(1), &
+                                                                      residual_pair_location(2), &
+                                                                      residual_pair_location(3)))
+         END DO
+         nrot_residual = 2*COUNT(channel_residual_pair_active)
+         nrot_active = nrot_active + nrot_residual
          nrot = MERGE(nrot_active, nrot_full, schur_active_subspace)
 
          ivar = 0
@@ -18192,7 +18443,8 @@ CONTAINS
                                        trial_mu(global_spin)) <= schur_energy_window .OR. &
                                    ABS(trial_eigenvalues(jmo, global_kpoint, global_spin) - &
                                        trial_mu(global_spin)) <= schur_energy_window .OR. &
-                                   channel_density_pair_active(imo, jmo, global_channel)
+                                   channel_density_pair_active(imo, jmo, global_channel) .OR. &
+                                   channel_residual_pair_active(imo, jmo, global_channel)
                      IF (.NOT. active_pair) CYCLE
                   END IF
                   channel_nrot(global_channel) = channel_nrot(global_channel) + 2
@@ -18211,7 +18463,9 @@ CONTAINS
                         channel_multiplicity, channel_nmo, &
                         channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
                         channel_density_pair_residual, &
-                        channel_density_pair_active, channel_density_pair_candidate)
+                        channel_density_pair_active, channel_density_pair_candidate, &
+                        channel_fermi_pair_active, channel_residual_pair_active, &
+                        channel_residual_pair_candidate, channel_residual_pair_score)
             RETURN
          END IF
          IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
@@ -18226,6 +18480,13 @@ CONTAINS
             target_group, nrot_density/2, density_pair_candidates, density_pair_available, &
             density_pair_activation_ready, local_ot_env(1)%kpoint_density_stationarity_delta, &
             response_raw_delta, density_pair_activation_threshold
+         IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
+             logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8),1X,L1,3(1X,ES16.8))') &
+            " OT Schur residual-pair completion group selected candidates capacity ready total omitted limit:", &
+            target_group, nrot_residual/2, residual_pair_candidates, residual_pair_available, &
+            residual_pair_selection_ready, residual_pair_total_score, residual_pair_omitted_score, &
+            residual_pair_omitted_limit
 
          ALLOCATE (canonical_occ_curv(ne), curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), &
                    z_e(ne), accepted_z_e(ne), &
@@ -19898,7 +20159,8 @@ CONTAINS
                                       schur_energy_window .OR. &
                                       ABS(trial_eigenvalues(jmo, ikpoint, ispin) - trial_mu(ispin)) <= &
                                       schur_energy_window .OR. &
-                                      channel_density_pair_active(imo, jmo, global_channel)
+                                      channel_density_pair_active(imo, jmo, global_channel) .OR. &
+                                      channel_residual_pair_active(imo, jmo, global_channel)
                         IF (.NOT. active_pair) CYCLE
                      END IF
                      ivar = ivar + 1
@@ -20083,11 +20345,21 @@ CONTAINS
          rot_grad_gauge_weight = 0.0_dp
          rot_grad_active_fraction_max = 0.0_dp
          physical_delta_nvar = 0.0_dp
+         IF (schur_active_subspace) THEN
+            DO global_channel = 1, nchannels
+               IF (channel_nmo(global_channel) <= 0) CYCLE
+               physical_delta_nvar = physical_delta_nvar + &
+                                     REAL(MAX(1, channel_multiplicity(global_channel)), KIND=dp)* &
+                                     REAL(channel_nmo(global_channel)* &
+                                          (channel_nmo(global_channel) - 1), KIND=dp)
+            END DO
+         END IF
          DO r = 1, nrot
             rot_grad_norm_weight = 1.0_dp/ &
                                    REAL(MAX(1, channel_multiplicity(var_channel(r))), KIND=dp)
-            physical_delta_nvar = physical_delta_nvar + &
-                                  REAL(MAX(1, channel_multiplicity(var_channel(r))), KIND=dp)
+            IF (.NOT. schur_active_subspace) &
+               physical_delta_nvar = physical_delta_nvar + &
+                                     REAL(MAX(1, channel_multiplicity(var_channel(r))), KIND=dp)
             rot_grad_pair_fraction = 0.0_dp
             IF (var_projector_weight(r) > EPSILON(var_projector_weight(r))) &
                rot_grad_pair_fraction = var_projector_active_weight(r)/var_projector_weight(r)
@@ -20172,7 +20444,9 @@ CONTAINS
             CALL para_env_inter_kp%sum(rot_grad_energy_norm)
          IF (.NOT. global_schur_replicated) &
             CALL para_env_inter_kp%sum(physical_delta_nvar)
-         rot_grad_total_physical_norm = rot_grad_physical_norm + rot_grad_energy_norm
+         rot_grad_total_physical_norm = qs_scf_kp_complete_physical_gradient_norm( &
+                                        rot_grad_physical_norm, full_rot_grad_physical_norm, &
+                                        rot_grad_energy_norm, schur_active_subspace)
          ! With a complete rotation audit the raw physical gradient is a safer
          ! convergence metric than the preconditioned Schur search direction.
          physical_delta_raw_tail_ready = eps_scf_channel > 0.0_dp .AND. &
@@ -20190,13 +20464,9 @@ CONTAINS
          physical_delta_norm_limit = &
             ot_kp_schur_physical_norm_tail_factor*ot_kp_schur_physical_tail_eps_factor* &
             eps_scf_channel
-         physical_delta_norm_ready = eps_scf_channel > 0.0_dp .AND. &
-                                     physical_delta_norm <= physical_delta_norm_limit .AND. &
-                                     local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
-                                     ot_kp_schur_calibration_min_samples .AND. &
-                                     local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp .AND. &
-                                     local_ot_env(1)%mermin_ls_accepted_gap_ema <= &
-                                     ot_kp_schur_residual_tail_plateau_slack
+         physical_delta_norm_ready = qs_scf_kp_complete_physical_audit_ready( &
+                                     physical_delta_norm, physical_delta_norm_limit, &
+                                     physical_delta_nvar)
          physical_delta_plateau_ready = residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
                                         physical_delta_norm <= physical_delta_norm_limit .AND. &
                                         rot_grad_total_physical_norm <= &
@@ -20356,7 +20626,9 @@ CONTAINS
                         channel_multiplicity, channel_nmo, &
                         channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
                         channel_density_pair_residual, channel_density_pair_active, &
-                        channel_density_pair_candidate)
+                        channel_density_pair_candidate, channel_fermi_pair_active, &
+                        channel_residual_pair_active, channel_residual_pair_candidate, &
+                        channel_residual_pair_score)
             RETURN
          END IF
 
@@ -33506,7 +33778,9 @@ CONTAINS
                      channel_multiplicity, channel_nmo, &
                      channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
                      channel_density_pair_residual, channel_density_pair_active, &
-                     channel_density_pair_candidate)
+                     channel_density_pair_candidate, channel_fermi_pair_active, &
+                     channel_residual_pair_active, channel_residual_pair_candidate, &
+                     channel_residual_pair_score)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
 ! **************************************************************************************************

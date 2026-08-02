@@ -50,6 +50,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_mermin_closure_response_quality, &
               ot_kpoint_mermin_full_direction_model, &
               ot_kpoint_mermin_current_guard_delta, &
+              ot_kpoint_mermin_endpoint_status, &
               ot_kpoint_mermin_secant_consistent, &
               ot_kpoint_multiplicity_direction_scale, &
               ot_kpoint_physical_residual_split, &
@@ -64,6 +65,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_rayleigh_model_factor, &
               ot_kpoint_rayleigh_response_scale, &
               ot_kpoint_secant_geometry, &
+              sync_kpoint_minimizer_control, &
               ot_mini
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot_minimizer'
@@ -125,6 +127,43 @@ MODULE qs_ot_minimizer
    END TYPE ot_cg_history_snapshot_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Evaluate convergence of an accepted complex fixed-N Mermin endpoint.
+!> \param search_delta residual retained by the minimizer
+!> \param physical_delta complete fixed-N rotation/energy residual
+!> \param physical_ready whether the physical residual covers every channel and rotation mode
+!> \param projected_delta projected fixed-N residual
+!> \param density_delta canonical-density stationarity residual
+!> \param density_ready whether the canonical-density audit is complete
+!> \param eps_scf requested SCF threshold
+!> \param exit_delta largest complete endpoint residual
+!> \param converged whether every required residual is complete and below threshold
+! **************************************************************************************************
+   PURE SUBROUTINE ot_kpoint_mermin_endpoint_status( &
+      search_delta, physical_delta, physical_ready, projected_delta, density_delta, density_ready, &
+      eps_scf, exit_delta, converged)
+      REAL(KIND=dp), INTENT(IN)                          :: search_delta, physical_delta
+      LOGICAL, INTENT(IN)                                :: physical_ready
+      REAL(KIND=dp), INTENT(IN)                          :: projected_delta, density_delta
+      LOGICAL, INTENT(IN)                                :: density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf
+      REAL(KIND=dp), INTENT(OUT)                         :: exit_delta
+      LOGICAL, INTENT(OUT)                               :: converged
+
+      exit_delta = MAX(0.0_dp, search_delta)
+      converged = .FALSE.
+      IF (eps_scf <= 0.0_dp) RETURN
+
+      ! An incomplete reduced Schur audit is not evidence of convergence.  In
+      ! particular, a restart may carry a small density/model residual while
+      ! most complex rotation modes have not yet entered the active subspace.
+      IF (.NOT. physical_ready .OR. .NOT. density_ready) RETURN
+      exit_delta = MAX(exit_delta, MAX(0.0_dp, physical_delta), &
+                       MAX(0.0_dp, projected_delta), MAX(0.0_dp, density_delta))
+      converged = exit_delta < eps_scf
+
+   END SUBROUTINE ot_kpoint_mermin_endpoint_status
 
 ! **************************************************************************************************
 !> \brief Complete a rotation/energy Schur model for the actual nonlinear-CG direction.
@@ -956,17 +995,12 @@ CONTAINS
       IF (use_three_point_mermin_search(qs_ot_env) .AND. &
           qs_ot_env(1)%kpoint_eps_scf > 0.0_dp .AND. &
           current_point_is_fine(qs_ot_env)) THEN
-         current_exit_delta = qs_ot_env(1)%delta
-         IF (qs_ot_env(1)%kpoint_physical_delta_ready) THEN
-            current_exit_delta = MAX(current_exit_delta, &
-                                     qs_ot_env(1)%kpoint_physical_delta, &
-                                     qs_ot_env(1)%kpoint_projected_delta)
-         END IF
-         IF (qs_ot_env(1)%kpoint_density_stationarity_ready) THEN
-            current_exit_delta = MAX(current_exit_delta, &
-                                     qs_ot_env(1)%kpoint_density_stationarity_delta)
-         END IF
-         current_state_converged = current_exit_delta < qs_ot_env(1)%kpoint_eps_scf
+         CALL ot_kpoint_mermin_endpoint_status( &
+            qs_ot_env(1)%delta, qs_ot_env(1)%kpoint_physical_delta, &
+            qs_ot_env(1)%kpoint_physical_delta_ready, qs_ot_env(1)%kpoint_projected_delta, &
+            qs_ot_env(1)%kpoint_density_stationarity_delta, &
+            qs_ot_env(1)%kpoint_density_stationarity_ready, qs_ot_env(1)%kpoint_eps_scf, &
+            current_exit_delta, current_state_converged)
       END IF
       IF (current_state_converged) THEN
          ! Do not launch another Mermin line search from an already converged,
@@ -4316,7 +4350,7 @@ CONTAINS
          qs_ot_env(1)%kpoint_raw_delta = raw_delta
          qs_ot_env(1)%kpoint_physical_delta = -1.0_dp
          qs_ot_env(1)%kpoint_projected_delta = -1.0_dp
-         IF (complex_kpoint_history .AND. qs_ot_occupation_preconditioner_active(qs_ot_env(1)) .AND. &
+         IF (complex_kpoint_history .AND. qs_ot_env(1)%settings%occupation_preconditioner .AND. &
              qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
              qs_ot_env(1)%kpoint_physical_delta_groups > 0) THEN
             matrix_gnorm_metric = MAX(0.0_dp, raw_matrix_gnorm_metric_re) + &

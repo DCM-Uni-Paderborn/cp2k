@@ -64,13 +64,14 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_fermi_window_direction_scale, &
         ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
         ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
-        ot_kpoint_mermin_full_direction_model, ot_kpoint_mermin_recovery_active_tail, &
-        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
-        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
-        ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
-        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
-        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
-        ot_kpoint_rayleigh_response_scale, ot_kpoint_secant_geometry
+        ot_kpoint_mermin_endpoint_status, ot_kpoint_mermin_full_direction_model, &
+        ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
+        ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
+        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
+        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
+        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
+        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_response_scale, &
+        ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
@@ -88,6 +89,7 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_projector_density_response, &
         qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_closure_response_history_ready, &
         qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
+        qs_scf_kp_complete_physical_audit_ready, qs_scf_kp_complete_physical_gradient_norm, &
         qs_scf_kp_coupled_closure_prediction, qs_scf_kp_coupled_closure_response, &
         qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
         qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_residual_prediction, &
@@ -118,11 +120,12 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
         qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
         qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_pair_omission_limit, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
         qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response, &
         qs_scf_kp_work_consistent_response
    USE scf_control_types,               ONLY: smear_type
@@ -242,6 +245,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_added_mos_integer_density("k-point ADDED_MOS integer-density bootstrap", nfail)
    CALL check_kpoint_added_mos_fractional_tail_gate("k-point ADDED_MOS fractional-tail gate", nfail)
    CALL check_kpoint_subspace_refresh_gate("k-point OT subspace refresh gate", nfail)
+   CALL check_kpoint_subspace_refresh_step_ready( &
+      "k-point OT post-rebase refresh maturity", nfail)
    CALL check_kpoint_density_closure_history_refresh( &
       "k-point OT accepted density-closure refresh", nfail)
    CALL check_kpoint_orbital_tail_rebase("k-point OT orbital-tail rebase", nfail)
@@ -251,6 +256,7 @@ PROGRAM qs_ot_frechet_unittest
                                            5.0E-15_dp, nfail)
    CALL check_kpoint_residual_split("k-point OT model/exit residual split", 5.0E-15_dp, nfail)
    CALL check_kpoint_exit_residual("k-point OT exit-only physical residual", 5.0E-15_dp, nfail)
+   CALL check_kpoint_mermin_endpoint_status("k-point OT complete Mermin endpoint", 5.0E-15_dp, nfail)
    CALL check_kpoint_raw_exit_floor("k-point OT raw exit floor completeness", 5.0E-15_dp, nfail)
    CALL check_kpoint_raw_exit_floor_ratio("k-point OT bootstrap raw exit floor", 5.0E-15_dp, nfail)
    CALL check_kpoint_canonical_tether_tail_scale("k-point OT canonical tether tail release", &
@@ -275,6 +281,12 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_canonical_density_residual("k-point OT canonical density residual", &
                                                 5.0E-14_dp, nfail)
    CALL check_kpoint_density_pair_activation("k-point OT canonical density pair activation", nfail)
+   CALL check_kpoint_complete_physical_gradient_norm( &
+      "k-point OT complete reduced-space physical gradient", 5.0E-15_dp, nfail)
+   CALL check_kpoint_complete_physical_audit_ready( &
+      "k-point OT direct complete physical audit", nfail)
+   CALL check_kpoint_residual_pair_omission_limit( &
+      "k-point OT reduced-space omission budget", 5.0E-27_dp, nfail)
    CALL check_kpoint_density_stationarity_history( &
       "k-point OT accepted canonical density history", 5.0E-14_dp, nfail)
    CALL check_kpoint_physical_residual_split("k-point OT physical model/exit residual", &
@@ -5549,6 +5561,32 @@ CONTAINS
    END SUBROUTINE check_kpoint_subspace_refresh_gate
 
 ! **************************************************************************************************
+!> \brief Check that a subspace rebase receives independent accepted history before repetition.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_subspace_refresh_step_ready(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_subspace_refresh_step_ready(.TRUE., -1, 0, 12)
+      failed = failed .OR. qs_scf_kp_subspace_refresh_step_ready(.FALSE., -1, 11, 12)
+      failed = failed .OR. qs_scf_kp_subspace_refresh_step_ready(.FALSE., 11, 0, 12)
+      failed = failed .OR. .NOT. qs_scf_kp_subspace_refresh_step_ready(.FALSE., -1, 12, 12)
+      failed = failed .OR. .NOT. qs_scf_kp_subspace_refresh_step_ready(.FALSE., 12, 0, 12)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_subspace_refresh_step_ready
+
+! **************************************************************************************************
 !> \brief Check accepted-progress detection for density-dominant subspace refreshes.
 !> \param label ...
 !> \param nfail ...
@@ -5798,6 +5836,46 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_exit_residual
+
+! **************************************************************************************************
+!> \brief Check that accepted endpoints require complete physical and density audits.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_endpoint_status(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: converged, failed
+      REAL(KIND=dp)                                      :: exit_delta
+
+      CALL ot_kpoint_mermin_endpoint_status( &
+         4.0E-8_dp, 8.0E-8_dp, .TRUE., 7.0E-8_dp, 6.0E-8_dp, .TRUE., &
+         1.0E-7_dp, exit_delta, converged)
+      failed = .NOT. converged .OR. ABS(exit_delta - 8.0E-8_dp) > tol
+      CALL ot_kpoint_mermin_endpoint_status( &
+         4.0E-8_dp, 8.0E-8_dp, .FALSE., 7.0E-8_dp, 6.0E-8_dp, .TRUE., &
+         1.0E-7_dp, exit_delta, converged)
+      failed = failed .OR. converged
+      CALL ot_kpoint_mermin_endpoint_status( &
+         4.0E-8_dp, 8.0E-8_dp, .TRUE., 7.0E-8_dp, 6.0E-8_dp, .FALSE., &
+         1.0E-7_dp, exit_delta, converged)
+      failed = failed .OR. converged
+      CALL ot_kpoint_mermin_endpoint_status( &
+         4.0E-8_dp, 2.0E-7_dp, .TRUE., 7.0E-8_dp, 6.0E-8_dp, .TRUE., &
+         1.0E-7_dp, exit_delta, converged)
+      failed = failed .OR. converged .OR. ABS(exit_delta - 2.0E-7_dp) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,L1,1X,ES16.8)') TRIM(label), "failed", converged, exit_delta
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_endpoint_status
 
 ! **************************************************************************************************
 !> \brief Check that complete fixed-N residuals replace the gauge-dependent raw search floor.
@@ -6410,6 +6488,91 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_density_pair_activation
+
+! **************************************************************************************************
+!> \brief Check that reduced Schur spaces retain omitted physical rotations in the exit norm.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_complete_physical_gradient_norm(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: complete_norm, full_norm
+
+      complete_norm = qs_scf_kp_complete_physical_gradient_norm( &
+                      0.1_dp, 0.6_dp, 0.2_dp, .TRUE.)
+      full_norm = qs_scf_kp_complete_physical_gradient_norm( &
+                  0.1_dp, 0.6_dp, 0.2_dp, .FALSE.)
+      failed = ABS(complete_norm - 0.8_dp) > tol .OR. ABS(full_norm - 0.3_dp) > tol
+      failed = failed .OR. qs_scf_kp_complete_physical_gradient_norm( &
+               -0.1_dp, -0.6_dp, -0.2_dp, .TRUE.) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,ES16.8))') TRIM(label)//" failed reduced/full", &
+            complete_norm, full_norm
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_complete_physical_gradient_norm
+
+! **************************************************************************************************
+!> \brief Check that a complete variational residual does not depend on line-search history.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_complete_physical_audit_ready(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_complete_physical_audit_ready(8.0E-8_dp, 1.0E-7_dp, 2400.0_dp)
+      failed = failed .OR. qs_scf_kp_complete_physical_audit_ready(1.1E-7_dp, 1.0E-7_dp, 2400.0_dp)
+      failed = failed .OR. qs_scf_kp_complete_physical_audit_ready(0.0_dp, 1.0E-7_dp, 0.0_dp)
+      failed = failed .OR. qs_scf_kp_complete_physical_audit_ready(-1.0_dp, 1.0E-7_dp, 2400.0_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_complete_physical_audit_ready
+
+! **************************************************************************************************
+!> \brief Check the physical residual budget used by adaptive complex-pair selection.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_residual_pair_omission_limit(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: norm_limit
+
+      norm_limit = qs_scf_kp_residual_pair_omission_limit(1.0E-7_dp, 2400.0_dp)
+      failed = ABS(norm_limit - 6.0E-12_dp) > tol
+      failed = failed .OR. qs_scf_kp_residual_pair_omission_limit(-1.0_dp, 2400.0_dp) > tol
+      failed = failed .OR. qs_scf_kp_residual_pair_omission_limit(1.0E-7_dp, 0.0_dp) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES16.8)') TRIM(label), "failed", norm_limit
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_residual_pair_omission_limit
 
 ! **************************************************************************************************
 !> \brief Check accepted-step canonical-density quality.
