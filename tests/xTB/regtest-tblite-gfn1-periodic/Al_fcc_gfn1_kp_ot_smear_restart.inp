@@ -1,11 +1,14 @@
+! Restart companion for the adaptive metallic k-point OT/tblite path.
+! The source input is immediately before this test in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL MEDIUM
-  PROJECT Al_fcc_gfn1_kp_ot_smear
+  PROJECT Al_fcc_gfn1_kp_ot_smear_restart
   RUN_TYPE ENERGY
 &END GLOBAL
 
 &FORCE_EVAL
   &DFT
+    WFN_RESTART_FILE_NAME Al_fcc_gfn1_kp_ot_smear-RESTART.kp
     &KPOINTS
       EPS_GEO 1.0E-8
       FULL_GRID OFF
@@ -25,8 +28,8 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 120
-      SCF_GUESS MOPAC
+      MAX_SCF 5
+      SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC
         ENERGIES
@@ -37,8 +40,7 @@
         ROTATION
       &END OT
       &PRINT
-        &RESTART ON
-          BACKUP_COPIES 0
+        &RESTART OFF
         &END RESTART
       &END PRINT
       &SMEAR
