@@ -1098,6 +1098,10 @@ CONTAINS
             "K-point OT: rebuilding physical virtual subspace by full KS diagonalization."
       END IF
 
+      ! Capture the bounded scalar prior while the old channels still exist.
+      ! Everything that depends on their orbital basis is destroyed below.
+      CALL qs_scf_save_kpoint_ot_density_calibration(scf_env, subspace_refresh_prior=.TRUE.)
+
       ! The next outer-loop initialization performs do_general_diag_kp on the
       ! current Hamiltonian before allocating new channel-local OT state.  Old
       ! line-search/history and restart data refer to the collapsed subspace and
@@ -1115,7 +1119,6 @@ CONTAINS
          END IF
       END IF
       CALL qs_scf_ot_restart_clear(scf_env)
-      CALL qs_scf_save_kpoint_ot_density_calibration(scf_env, subspace_refresh_prior=.TRUE.)
       reuse_precond = .FALSE.
 
    END SUBROUTINE qs_scf_refresh_ot_kp_subspace
