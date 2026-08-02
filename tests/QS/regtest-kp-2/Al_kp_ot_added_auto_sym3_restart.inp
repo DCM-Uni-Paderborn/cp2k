@@ -1,17 +1,11 @@
-! Slow/manual full-grid companion to the cheap explicit 3-k-point ADDED_MOS
-! AUTO k-point OT smoke test. This input is intentionally not listed in
-! TEST_FILES.toml so the default regtest stays cheap. It targets the converged
-! 1E-6 Mermin path without k-point symmetry reduction against the
-! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference: AUTO grows 4->8->16 and
-! converges in 51 final-stage OT steps at -8.15998707972665 Ha. It prints no
-! first/last-band, AUTO-exhausted, MAX-ITER, or unsupported-content warning.
-! The endpoint agrees with the symmetry-reduced companion within 1.6E-10 Ha
-! and therefore guards explicit-grid versus irreducible-weight consistency
-! without requiring identical local virtual-space growth histories.
+! Manual restart companion for Al_kp_ot_added_auto_sym3_converge.inp.
+! Run the source input first in the same directory. The two irreducible
+! k-point channels and adaptive 16-MO virtual space are restored in one SCF
+! step with Mermin F -8.15998707957435 Ha and kTS -0.000908404153 Ha.
+! This input is intentionally not listed in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL HIGH
-  PROJECT Al_kp_ot_added_auto_full3_converge
+  PROJECT Al_kp_ot_added_auto_sym3_restart
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -20,10 +14,11 @@
   &DFT
     BASIS_SET_FILE_NAME BASIS_SET
     POTENTIAL_FILE_NAME POTENTIAL
+    WFN_RESTART_FILE_NAME Al_kp_ot_added_auto_sym3_converge-RESTART.kp
     &KPOINTS
-      FULL_GRID ON
+      FULL_GRID OFF
       SCHEME MONKHORST-PACK 3 1 1
-      SYMMETRY OFF
+      SYMMETRY ON
     &END KPOINTS
     &MGRID
       CUTOFF 40
@@ -38,8 +33,8 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 120
-      SCF_GUESS ATOMIC
+      MAX_SCF 40
+      SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC
         ENERGIES

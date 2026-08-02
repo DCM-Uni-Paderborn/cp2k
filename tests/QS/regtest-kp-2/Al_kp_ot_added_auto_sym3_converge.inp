@@ -2,16 +2,14 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-07 MPI-2 references after hierarchical directional-response and
-! energy-dominant fixed-N closure calibration: AUTO grows 4->8->16 after
-! 21-24/21-31 stage steps and converges in 32-41 final-stage OT steps between
-! -8.1599870769 and -8.1599870779 Ha.
+! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference: AUTO grows 4->8->16 and
+! converges in 60 final-stage OT steps at -8.15998707957435 Ha.
 ! At 16 MOs the weighted upper-edge occupation is below 6E-97 and the basis
 ! signal is only 0.803, so AUTO correctly retains the adequate virtual space
 ! instead of masking the intrinsic minimizer tail by growing to the AO limit.
 ! No first/last-band, AUTO-exhausted, MAX-ITER, or unsupported-content warning
-! is printed. Together with the full-grid companion this guards weighted
-! symmetry reduction.
+! is printed. A restart restores this state in one step. Together with the
+! full-grid companion this guards weighted symmetry reduction.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge
