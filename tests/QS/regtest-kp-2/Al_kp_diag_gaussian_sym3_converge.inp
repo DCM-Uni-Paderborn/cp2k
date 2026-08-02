@@ -1,7 +1,7 @@
 ! Slow/manual diagonalization reference for the Gaussian-smearing k-point OT
 ! companion. This input is intentionally not listed in TEST_FILES.toml.
-! Local 2026-07 MPI-2 reference: converged in 33 steps at
-! -8.15946102834761 Ha with a -3.5733645379E-4 Ha smearing free-energy
+! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference: converged in 33 steps at
+! -8.15946102807869 Ha with a -3.5733645379E-4 Ha smearing free-energy
 ! correction.
 &GLOBAL
   PRINT_LEVEL MEDIUM

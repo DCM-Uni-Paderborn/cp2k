@@ -74,8 +74,11 @@
 # Al_kp_ot_uks_common_mu_sym3_restart.inp also restores the four-channel state
 # in one step.
 # The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
-# provide the converged symmetry-reduced Gaussian path; the restart closes in
-# one step.  Al_kp_ot_gaussian_gamma_converge.inp is the complete-space Gamma
+# provide the converged symmetry-reduced Gaussian path at
+# -8.15946107404605 Ha; the restart closes in one step and diagonalization is
+# within 4.6E-8 Ha. Gaussian prints the variational smearing free energy but
+# deliberately not the Fermi-Dirac-only Mermin label.
+# Al_kp_ot_gaussian_gamma_converge.inp is the complete-space Gamma
 # companion and converges in 121 final-space MPI-2 steps without flat-tail
 # recovery. Their matching unlisted Al_kp_diag_gaussian_* inputs are
 # independent diagonalization references.
