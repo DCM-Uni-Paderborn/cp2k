@@ -332,6 +332,7 @@ MODULE qs_scf_types
 
    TYPE qs_ot_schur_density_calibration_channel_type
       LOGICAL :: valid = .FALSE.
+      LOGICAL :: subspace_refresh_prior = .FALSE.
       LOGICAL :: ener_x_fermi_frontier_armed = .FALSE., &
                  occupation_preconditioner_active = .FALSE.
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: ener_x
@@ -351,6 +352,7 @@ MODULE qs_scf_types
       INTEGER :: density_full_global_quality_samples = 0
       INTEGER :: density_full_global_sel_quality_samples = 0
       INTEGER :: mermin_ls_accepted_quality_samples = 0
+      INTEGER :: coupled_quality_samples = 0
       INTEGER :: physical_selected_quality_samples = 0
       REAL(KIND=dp) :: density_quality = 0.0_dp, density_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_drop_sum = 0.0_dp, density_measured_sum = 0.0_dp
@@ -455,6 +457,13 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: mermin_ls_accepted_quality_ema = 1.0_dp
       REAL(KIND=dp) :: mermin_ls_accepted_gap = 0.0_dp
       REAL(KIND=dp) :: mermin_ls_accepted_gap_ema = 0.0_dp
+      REAL(KIND=dp) :: coupled_quality = 0.0_dp, coupled_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: coupled_calibrated_quality = 0.0_dp
+      REAL(KIND=dp) :: coupled_calibrated_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: coupled_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: coupled_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: coupled_drop_sum = 0.0_dp, coupled_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: coupled_calibrated_drop_sum = 0.0_dp
       LOGICAL :: density_descent_support_ready = .FALSE.
    END TYPE qs_ot_schur_density_calibration_channel_type
 

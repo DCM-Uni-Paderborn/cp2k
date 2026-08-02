@@ -193,8 +193,9 @@ MODULE qs_scf
    USE qs_scf_initialization,           ONLY: qs_scf_env_initialize
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_check_inner_exit, qs_scf_check_outer_exit, qs_scf_density_mixing, &
-        qs_scf_inner_finalize, qs_scf_kp_added_mos_auto_post_resize_steps, qs_scf_new_mos, &
-        qs_scf_new_mos_kp, qs_scf_rho_update, qs_scf_set_loop_flags
+        qs_scf_inner_finalize, qs_scf_kp_added_mos_auto_post_resize_steps, &
+        qs_scf_kp_rebased_calibration_samples, qs_scf_new_mos, qs_scf_new_mos_kp, &
+        qs_scf_rho_update, qs_scf_set_loop_flags
    USE qs_scf_output,                   ONLY: qs_scf_cdft_info,&
                                               qs_scf_cdft_initial_info,&
                                               qs_scf_gce_info,&
@@ -1114,7 +1115,7 @@ CONTAINS
          END IF
       END IF
       CALL qs_scf_ot_restart_clear(scf_env)
-      CALL qs_scf_clear_kpoint_ot_density_calibration(scf_env)
+      CALL qs_scf_save_kpoint_ot_density_calibration(scf_env, subspace_refresh_prior=.TRUE.)
       reuse_precond = .FALSE.
 
    END SUBROUTINE qs_scf_refresh_ot_kp_subspace
@@ -1590,15 +1591,22 @@ CONTAINS
    END SUBROUTINE qs_scf_detect_kpoint_ot_frontier_loss
 
 ! **************************************************************************************************
-!> \brief cache accepted density-response calibration and energy coordinates across AUTO rebuilds
+!> \brief cache accepted response calibration and energy coordinates across k-point OT rebuilds
 !> \param scf_env ...
 !> \param restore_ener_x channels whose accepted auxiliary-energy prefix must be restored
+!> \param subspace_refresh_prior retain only a bounded scalar prior after an orbital rebase
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_save_kpoint_ot_density_calibration(scf_env, restore_ener_x)
+   SUBROUTINE qs_scf_save_kpoint_ot_density_calibration( &
+      scf_env, restore_ener_x, subspace_refresh_prior)
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       LOGICAL, DIMENSION(:), INTENT(IN), OPTIONAL        :: restore_ener_x
+      LOGICAL, INTENT(IN), OPTIONAL                      :: subspace_refresh_prior
 
       INTEGER                                            :: ot_channel
+      LOGICAL                                            :: refresh_prior
+
+      refresh_prior = .FALSE.
+      IF (PRESENT(subspace_refresh_prior)) refresh_prior = subspace_refresh_prior
 
       IF (ASSOCIATED(scf_env%qs_ot_schur_density_calibration%channel)) THEN
          DEALLOCATE (scf_env%qs_ot_schur_density_calibration%channel)
@@ -1619,28 +1627,57 @@ CONTAINS
       DO ot_channel = 1, SIZE(scf_env%qs_ot_env)
          ASSOCIATE (cache => scf_env%qs_ot_schur_density_calibration%channel(ot_channel), &
                     ot_env => scf_env%qs_ot_env(ot_channel))
-            cache%valid = ot_env%has_kpoint_context .AND. &
-                          (ot_env%ener_x_fermi_frontier_armed .OR. &
-                           ot_env%schur_projector_density_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_density_audit_samples > 0 .OR. &
-                           ot_env%schur_projector_density_descent_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_physical_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_physical_selected_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_physical_direct_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_physical_direct_selected_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_phys_direct_density_sel_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_density_full_selected_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_density_full_direct_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_density_fdir_sel_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_density_full_global_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_density_full_global_sel_quality_samples > 0 .OR. &
-                           ot_env%schur_density_stationarity_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_density_full_selected_stationarity_samples > 0 .OR. &
-                           ot_env%mermin_ls_accepted_quality_samples > 0 .OR. &
-                           ot_env%schur_projector_mixed_direct_quality_samples > 0)
+            cache%subspace_refresh_prior = refresh_prior
+            IF (refresh_prior) THEN
+               cache%valid = ot_env%has_kpoint_context .AND. &
+                             (ot_env%schur_coupled_quality_samples > 0 .OR. &
+                              ot_env%mermin_ls_accepted_quality_samples > 0)
+            ELSE
+               cache%valid = ot_env%has_kpoint_context .AND. &
+                             (ot_env%ener_x_fermi_frontier_armed .OR. &
+                              ot_env%schur_projector_density_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_density_audit_samples > 0 .OR. &
+                              ot_env%schur_projector_density_descent_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_physical_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_physical_selected_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_physical_direct_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_physical_direct_selected_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_phys_direct_density_sel_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_density_full_selected_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_density_full_direct_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_density_fdir_sel_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_density_full_global_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_density_full_global_sel_quality_samples > 0 .OR. &
+                              ot_env%schur_density_stationarity_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_density_full_selected_stationarity_samples > 0 .OR. &
+                              ot_env%mermin_ls_accepted_quality_samples > 0 .OR. &
+                              ot_env%schur_projector_mixed_direct_quality_samples > 0)
+            END IF
             IF (.NOT. cache%valid) CYCLE
             cache%spin_index = ot_env%spin_index
             cache%kpoint_index = ot_env%kpoint_index
+            IF (refresh_prior) THEN
+               cache%coupled_quality_samples = qs_scf_kp_rebased_calibration_samples( &
+                                               ot_env%schur_coupled_quality_samples)
+               cache%coupled_quality = ot_env%schur_coupled_quality
+               cache%coupled_quality_ema = ot_env%schur_coupled_quality_ema
+               cache%coupled_calibrated_quality = ot_env%schur_coupled_calibrated_quality
+               cache%coupled_calibrated_quality_ema = &
+                  ot_env%schur_coupled_calibrated_quality_ema
+               cache%coupled_residual_quality = ot_env%schur_coupled_residual_quality
+               cache%coupled_residual_quality_ema = ot_env%schur_coupled_residual_quality_ema
+               cache%coupled_drop_sum = 0.0_dp
+               cache%coupled_measured_sum = 0.0_dp
+               cache%coupled_calibrated_drop_sum = 0.0_dp
+               cache%mermin_ls_accepted_quality_samples = &
+                  qs_scf_kp_rebased_calibration_samples( &
+                  ot_env%mermin_ls_accepted_quality_samples)
+               cache%mermin_ls_accepted_quality = ot_env%mermin_ls_accepted_quality
+               cache%mermin_ls_accepted_quality_ema = ot_env%mermin_ls_accepted_quality_ema
+               cache%mermin_ls_accepted_gap = ot_env%mermin_ls_accepted_gap
+               cache%mermin_ls_accepted_gap_ema = ot_env%mermin_ls_accepted_gap_ema
+               CYCLE
+            END IF
             cache%ener_x_fermi_frontier_armed = ot_env%ener_x_fermi_frontier_armed
             cache%occupation_preconditioner_active = &
                ot_env%kpoint_occ_preconditioner_active
@@ -1908,6 +1945,28 @@ CONTAINS
             IF (.NOT. cache%valid) CYCLE
             IF (cache%spin_index /= qs_ot_env%spin_index) CYCLE
             IF (cache%kpoint_index /= qs_ot_env%kpoint_index) CYCLE
+
+            IF (cache%subspace_refresh_prior) THEN
+               qs_ot_env%schur_coupled_quality_samples = cache%coupled_quality_samples
+               qs_ot_env%schur_coupled_quality = cache%coupled_quality
+               qs_ot_env%schur_coupled_quality_ema = cache%coupled_quality_ema
+               qs_ot_env%schur_coupled_calibrated_quality = cache%coupled_calibrated_quality
+               qs_ot_env%schur_coupled_calibrated_quality_ema = &
+                  cache%coupled_calibrated_quality_ema
+               qs_ot_env%schur_coupled_residual_quality = cache%coupled_residual_quality
+               qs_ot_env%schur_coupled_residual_quality_ema = &
+                  cache%coupled_residual_quality_ema
+               qs_ot_env%schur_coupled_drop_sum = 0.0_dp
+               qs_ot_env%schur_coupled_measured_sum = 0.0_dp
+               qs_ot_env%schur_coupled_calibrated_drop_sum = 0.0_dp
+               qs_ot_env%mermin_ls_accepted_quality_samples = &
+                  cache%mermin_ls_accepted_quality_samples
+               qs_ot_env%mermin_ls_accepted_quality = cache%mermin_ls_accepted_quality
+               qs_ot_env%mermin_ls_accepted_quality_ema = cache%mermin_ls_accepted_quality_ema
+               qs_ot_env%mermin_ls_accepted_gap = cache%mermin_ls_accepted_gap
+               qs_ot_env%mermin_ls_accepted_gap_ema = cache%mermin_ls_accepted_gap_ema
+               RETURN
+            END IF
 
             qs_ot_env%schur_projector_density_pending = .FALSE.
             qs_ot_env%schur_projector_density_audit_pending = .FALSE.

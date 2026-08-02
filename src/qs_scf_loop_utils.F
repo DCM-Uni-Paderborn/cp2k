@@ -355,6 +355,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_closure_history_refresh_ready, &
              qs_scf_kp_density_closure_refresh_ready, &
              qs_scf_kp_orbital_tail_rebase_ready, &
+             qs_scf_kp_rebased_calibration_samples, &
              qs_scf_kp_subspace_refresh_step_ready, &
              qs_scf_kp_subspace_refresh_gate, &
              qs_scf_kp_secant_bootstrap_probe, &
@@ -6904,6 +6905,24 @@ CONTAINS
               accepted_samples >= MAX(1, min_steps)
 
    END FUNCTION qs_scf_kp_subspace_refresh_step_ready
+
+! **************************************************************************************************
+!> \brief retain only a bootstrap prior when a unitary k-point OT basis is rebuilt
+!>
+!>        Scalar accepted-drop quality is basis independent, but carrying its full statistical
+!>        weight would prevent the refreshed model from adapting.  Keep exactly the maturity
+!>        needed to evaluate the first covariant candidate; vector and accumulated-drop history
+!>        remain invalid across the rebuild.
+!> \param accepted_samples accepted quality samples in the previous orbital basis
+!> \return bounded number of scalar prior samples retained in the refreshed basis
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_rebased_calibration_samples(accepted_samples) RESULT(prior_samples)
+      INTEGER, INTENT(IN)                                :: accepted_samples
+      INTEGER                                            :: prior_samples
+
+      prior_samples = MIN(MAX(0, accepted_samples), ot_kp_schur_calibration_min_samples)
+
+   END FUNCTION qs_scf_kp_rebased_calibration_samples
 
 ! **************************************************************************************************
 !> \brief computes properties for a given hamiltonian using the current wfn

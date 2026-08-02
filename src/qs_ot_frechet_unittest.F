@@ -118,16 +118,16 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
         qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
         qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
-        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
-        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_pair_omission_limit, &
-        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
-        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response, &
-        qs_scf_kp_work_consistent_response
+        qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
+        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
+        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -287,6 +287,8 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT direct complete physical audit", nfail)
    CALL check_kpoint_residual_pair_omission_limit( &
       "k-point OT reduced-space omission budget", 5.0E-27_dp, nfail)
+   CALL check_kpoint_rebased_calibration_samples( &
+      "k-point OT rebased scalar calibration prior", nfail)
    CALL check_kpoint_density_stationarity_history( &
       "k-point OT accepted canonical density history", 5.0E-14_dp, nfail)
    CALL check_kpoint_physical_residual_split("k-point OT physical model/exit residual", &
@@ -6573,6 +6575,32 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_residual_pair_omission_limit
+
+! **************************************************************************************************
+!> \brief Check that a refreshed orbital basis retains only a bounded scalar model prior.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_rebased_calibration_samples(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = qs_scf_kp_rebased_calibration_samples(-1) /= 0
+      failed = failed .OR. qs_scf_kp_rebased_calibration_samples(0) /= 0
+      failed = failed .OR. qs_scf_kp_rebased_calibration_samples(2) /= 2
+      failed = failed .OR. qs_scf_kp_rebased_calibration_samples(4) /= 4
+      failed = failed .OR. qs_scf_kp_rebased_calibration_samples(91) /= 4
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_rebased_calibration_samples
 
 ! **************************************************************************************************
 !> \brief Check accepted-step canonical-density quality.
