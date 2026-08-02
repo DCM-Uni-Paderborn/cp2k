@@ -751,16 +751,17 @@ CONTAINS
                   END IF
                END IF
             ELSE
-               ! Write wavefunction restart file
-               IF (scf_env%method == ot_method_nr) THEN
-                  ! With OT: provide the Kohn-Sham matrix for the calculation of the MO eigenvalues
-                  CALL get_ks_env(ks_env=ks_env, matrix_ks=matrix_ks)
-                  CALL write_mo_set_to_restart(mos, particle_set, dft_section=dft_section, qs_kind_set=qs_kind_set, &
-                                               matrix_ks=matrix_ks)
-               ELSE
-                  CALL write_mo_set_to_restart(mos, particle_set, dft_section=dft_section, qs_kind_set=qs_kind_set)
+               IF (.NOT. dft_control%mtlr_dft_with_perturbation) THEN
+                  ! Write wavefunction restart file
+                  IF (scf_env%method == ot_method_nr) THEN
+                     ! With OT: provide the Kohn-Sham matrix for the calculation of the MO eigenvalues
+                     CALL get_ks_env(ks_env=ks_env, matrix_ks=matrix_ks)
+                     CALL write_mo_set_to_restart(mos, particle_set, dft_section=dft_section, qs_kind_set=qs_kind_set, &
+                                                  matrix_ks=matrix_ks)
+                  ELSE
+                     CALL write_mo_set_to_restart(mos, particle_set, dft_section=dft_section, qs_kind_set=qs_kind_set)
+                  END IF
                END IF
-
             END IF
 
             ! Exit if we have finished with the SCF inner loop

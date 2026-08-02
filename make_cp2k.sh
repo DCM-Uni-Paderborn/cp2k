@@ -139,6 +139,8 @@ CMAKE_FEATURE_FLAGS="-DCP2K_BLAS_VENDOR=OpenBLAS" # LAPACK/BLAS from OpenBLAS by
 CMAKE_FEATURE_FLAGS+=" -DCP2K_USE_FFTW3=ON"       # FFTW3 is always activated unless explicitly disabled
 CMAKE_FEATURE_FLAG_MPI="-DCP2K_USE_MPI=ON"        # MPI is switched on by default
 CMAKE_FEATURE_FLAGS_GPU="-DCP2K_USE_SPLA_GEMM_OFFLOADING=ON"
+CMAKE_PRESET="native-gnu-x86_64"
+CMAKE_PRESET_ARGS=(--preset "${CMAKE_PRESET}")
 CRAY="no"
 CUDA_SM_CODE=0
 GCC_VERSION="auto"
@@ -160,6 +162,7 @@ RUN_TEST="no"
 SED_PATTERN_LIST=""
 TESTOPTS=""
 USE_CACHE="folder"
+USE_CUSOLVER_MP=""
 USE_EXTERNALS="no"
 USE_OPENCL="no"
 VERBOSE=0
@@ -387,7 +390,12 @@ while [[ $# -gt 0 ]]; do
             SED_PATTERN_LIST+=" -e '/\s*-\s+\"spla@/ ${SUBST}"
             SED_PATTERN_LIST+=" -e '/\s*-\s+\"sirius@/ ${SUBST}"
             ;;
-          cray_pm_accel_energy | cusolver_mp | spla_gemm_offloading | unified_memory)
+          cusolver_mp)
+            USE_CUSOLVER_MP="${ON_OFF}"
+            CMAKE_FEATURE_FLAGS_GPU+=" -DCP2K_USE_${2^^}=${ON_OFF}"
+            SED_PATTERN_LIST+=" -e '/\s*-\s+\"cusolvermp@/ ${SUBST}"
+            ;;
+          cray_pm_accel_energy | spla_gemm_offloading | unified_memory)
             CMAKE_FEATURE_FLAGS_GPU+=" -DCP2K_USE_${2^^}=${ON_OFF}"
             ;;
           dbm_gpu | elpa_gpu | grid_gpu | pw_gpu)
@@ -545,6 +553,21 @@ while [[ $# -gt 0 ]]; do
         shift 1
       fi
       ;;
+    -ps | --preset)
+      if (($# > 1)); then
+        if [[ "${2}" == "none" ]]; then
+          CMAKE_PRESET=""
+          CMAKE_PRESET_ARGS=()
+        else
+          CMAKE_PRESET="${2}"
+          CMAKE_PRESET_ARGS=(--preset "${CMAKE_PRESET}")
+        fi
+      else
+        echo "ERROR: No CMake preset found for flag \"${1}\""
+        ${EXIT_CMD} 1
+      fi
+      shift 2
+      ;;
     -opencl)
       USE_OPENCL="yes"
       shift 1
@@ -674,6 +697,7 @@ if [[ "${HELP}" == "yes" ]]; then
   echo "                    [-j #PROCESSES]"
   echo "                    [-mpi | --mpi_mode (mpich | no | openmpi)]"
   echo "                    [-np | --num_packages #PACKAGES]"
+  echo "                    [-ps | --preset (PRESET | none)]"
   echo "                    [-rc | --rebuild_cp2k]"
   echo "                    [-t | --test \"TESTOPTS\"]"
   echo "                    [-uc | --use_cache (folder | minio | no | none)]"
@@ -697,6 +721,7 @@ if [[ "${HELP}" == "yes" ]]; then
   echo " -j                    : Maximum number of processes used in parallel"
   echo " --mpi_mode            : Set preferred MPI mode (default: \"mpich\")"
   echo " --num_packages        : Maximum number of packages built by spack in parallel (default: 4)"
+  echo " --preset              : Use a CMake configure preset (see 'cmake --list-presets'). (default: native-gnu-x86_64)"
   echo " -opencl               : Perform build with OpenCL support"
   echo " --rebuild_cp2k        : Rebuild CP2K: removes the build folder (default: no)"
   echo " --test                : Perform a regression test run after a successful build"
@@ -731,6 +756,7 @@ echo "BUILD_DEPS_ONLY     = ${BUILD_DEPS_ONLY}"
 echo "BUILD_PATH          = ${BUILD_PATH}"
 echo "BUILD_SHARED_LIBS   = ${BUILD_SHARED_LIBS}"
 echo "CP2K_BUILD_TYPE     = ${CP2K_BUILD_TYPE}"
+echo "CMAKE_PRESET        = ${CMAKE_PRESET:-none}"
 echo "CP2K_VERSION        = ${CP2K_VERSION}"
 echo "CRAY                = ${CRAY}"
 echo "DEPS_BUILD_TYPE     = ${DEPS_BUILD_TYPE}"
@@ -817,13 +843,13 @@ esac
 # Check if a valid MPI type is selected
 case "${MPI_MODE}" in
   mpich | openmpi)
-    if [[ "${CP2K_VERSION}" == "ssmp"* ]]; then
+    if [[ "${CP2K_VERSION}" == "sdbg" || "${CP2K_VERSION}" == "ssmp"* ]]; then
       echo "ERROR: MPI type \"${MPI_MODE}\" specified for building a serial CP2K binary"
       ${EXIT_CMD} 1
     fi
     ;;
   no)
-    if [[ "${CP2K_VERSION}" == "psmp" ]]; then
+    if [[ "${CP2K_VERSION}" == "pdbg" || "${CP2K_VERSION}" == "psmp" ]]; then
       echo "ERROR: MPI type \"${MPI_MODE}\" specified for building an MPI-parallel CP2K binary"
       ${EXIT_CMD} 1
     fi
@@ -834,6 +860,18 @@ case "${MPI_MODE}" in
     ${EXIT_CMD} 1
     ;;
 esac
+
+# cuSOLVERMp requires both CUDA and MPI support.
+if [[ "${USE_CUSOLVER_MP}" == "ON" ]]; then
+  if [[ "${MPI_MODE}" == "no" ]]; then
+    echo -e "ERROR: The feature CUSOLVER_MP is not available for building serial CP2K binaries (${CP2K_VERSION})\n"
+    ${EXIT_CMD} 1
+  fi
+  if ((CUDA_SM_CODE == 0)); then
+    echo -e "ERROR: The feature CUSOLVER_MP requires CUDA support (specify --gpu_model)\n"
+    ${EXIT_CMD} 1
+  fi
+fi
 
 # Check if CP2K_VERSION and the selected features are compatible
 case "${CP2K_VERSION}" in
@@ -1114,7 +1152,6 @@ if [[ ! -f "${SPACK_BUILD_PATH}/BUILD_DEPENDENCIES_COMPLETED" ]]; then
       -e "0,/~cuda/s//+cuda cuda_arch=${CUDA_SM_CODE}/" \
       -e 's/"~cuda\s+~gpu_direct"/"\+cuda \+gpu_direct"/' \
       -e '/\s*#\s*-\s+"fabrics=efa,ucx"/ s/#/ /' \
-      -e '/\s*#\s*-\s+"libxstream@/ s/#/ /' \
       -i "${CP2K_CONFIG_FILE}"
     # Building libfabric with CUDA causes problems
     # sed -E -e 's/"~cuda\s+~gdrcopy"/"\+cuda \+gdrcopy"/' -i "${CP2K_CONFIG_FILE}"
@@ -1359,6 +1396,7 @@ if [[ ! -d "${CMAKE_BUILD_PATH}" ]]; then
     pdbg | psmp)
       # shellcheck disable=SC2086
       cmake -S "${CP2K_ROOT}" -B "${CMAKE_BUILD_PATH}" \
+        "${CMAKE_PRESET_ARGS[@]}" \
         -GNinja \
         -DBUILD_SHARED_LIBS=${BUILD_SHARED_LIBS} \
         -DCMAKE_BUILD_TYPE="${CP2K_BUILD_TYPE}" \
@@ -1377,6 +1415,7 @@ if [[ ! -d "${CMAKE_BUILD_PATH}" ]]; then
     sdbg | ssmp)
       # shellcheck disable=SC2086
       cmake -S "${CP2K_ROOT}" -B "${CMAKE_BUILD_PATH}" \
+        "${CMAKE_PRESET_ARGS[@]}" \
         -GNinja \
         -DBUILD_SHARED_LIBS=${BUILD_SHARED_LIBS} \
         -DCMAKE_BUILD_TYPE="${CP2K_BUILD_TYPE}" \
@@ -1397,6 +1436,7 @@ if [[ ! -d "${CMAKE_BUILD_PATH}" ]]; then
       LIBM="$(find /usr -name libm.a 2> /dev/null)"
       # shellcheck disable=SC2086
       cmake -S "${CP2K_ROOT}" -B "${CMAKE_BUILD_PATH}" \
+        "${CMAKE_PRESET_ARGS[@]}" \
         -GNinja \
         -DBUILD_SHARED_LIBS="OFF" \
         -DCMAKE_BUILD_TYPE="${CP2K_BUILD_TYPE}" \

@@ -183,7 +183,10 @@ def main() -> None:
     with OutputFile(f"Dockerfile.test_spack_ssmp", args.check) as f:
         f.write(
             install_cp2k_spack(
-                version="ssmp", mpi_mode="no", testopts=testopts, image_tag=f.image_tag
+                version="ssmp",
+                mpi_mode="no",
+                testopts=testopts,
+                image_tag=f.image_tag,
             )
         )
 
@@ -461,6 +464,7 @@ COPY ./data ./data
 COPY ./tools/build_utils ./tools/build_utils
 COPY ./cmake ./cmake
 COPY ./CMakeLists.txt .
+COPY ./CMakePresets.json .
 
 # Compile CP2K.
 COPY ./tools/docker/scripts/build_cp2k.sh ./tools/docker/scripts/cmake_cp2k.sh ./
@@ -764,6 +768,7 @@ COPY ./data ./data
 COPY ./tools/build_utils ./tools/build_utils
 COPY ./cmake ./cmake
 COPY ./CMakeLists.txt .
+COPY ./CMakePresets.json .
 
 RUN ./make_cp2k.sh -cv {version} {gcc_version_flag} -gpu {gpu_model} -mpi {mpi_mode} {feature_flags}
 """
