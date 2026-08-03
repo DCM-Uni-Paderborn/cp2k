@@ -1,15 +1,15 @@
 ! Slow/manual companion to the cheap ADDED_MOS AUTO k-point OT smoke test.
 ! This input is intentionally not listed in TEST_FILES.toml so the default
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
-! Local 2026-07 MPI-2 reference from an isolated working directory: initial
-! AUTO buffer 4, growth stages of 37 steps to 8 and 37 steps to 16, then
-! convergence in 21 final-stage OT steps at -8.14585310802196 Ha. No
+! Local 2026-08 MPI-2/OMP-2 reference from an isolated working directory:
+! convergence in 106 SCF steps at -8.14585308870838 Ha. The LOW print level is
+! intentional: production convergence must not require HIGH diagnostics. No
 ! first/last-band warning, AUTO-exhausted warning, MAX-ITER signature, or
 ! "Unsupported content type" signature occurs.
 ! Run this companion from a fresh CWD because PROJECT files are written there
 ! and stale Al_kp_ot_added_auto* files make diagnosis ambiguous.
 &GLOBAL
-  PRINT_LEVEL HIGH
+  PRINT_LEVEL LOW
   PROJECT Al_kp_ot_added_auto
   RUN_TYPE ENERGY
 &END GLOBAL

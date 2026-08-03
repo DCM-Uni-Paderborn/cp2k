@@ -7924,8 +7924,7 @@ CONTAINS
                                                             ener_nondiag)
 
             local_ot_env(local_channel)%orbital_schur_response_ready = .FALSE.
-            IF (logger%iter_info%print_level >= high_print_level .AND. &
-                qs_ot_occupation_preconditioner_active(local_ot_env(local_channel)) .AND. &
+            IF (qs_ot_occupation_preconditioner_active(local_ot_env(local_channel)) .AND. &
                 ASSOCIATED(local_ot_env(local_channel)%preconditioner) .AND. &
                 ASSOCIATED(local_ot_env(local_channel)%preconditioner%complex_fm) .AND. &
                 ASSOCIATED(local_ot_env(local_channel)%matrix_occ_precond_scale)) THEN
@@ -16236,7 +16235,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_selected_measured_sum, &
                projector_response_selected_predicted_drop
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,11(1X,ES16.8))') &
-               " OT Schur LS projector plateau-gap n ratio ema pred meas latest weight wema neg nema step sema:", &
+               " OT Schur LS projector Frechet-gap n ratio ema pred meas latest weight wema neg nema step sema:", &
                local_ot_env(1)%schur_projector_plateau_gap_quality_samples, &
                local_ot_env(1)%schur_projector_plateau_gap_quality, &
                local_ot_env(1)%schur_projector_plateau_gap_quality_ema, &
@@ -18386,8 +18385,6 @@ CONTAINS
                                                        projector_physical_direct_promoted
          projector_density_full_history_enabled = projector_physical_shadow_enabled
          projector_density_full_audit_enabled = projector_density_full_history_enabled
-         IF (logger%iter_info%print_level >= high_print_level) &
-            projector_density_full_audit_enabled = .TRUE.
 
          ! Dense Schur variables use one replicated global ordering.  A local
          ! k-point group contributes only its owned channel blocks; the
@@ -24214,7 +24211,7 @@ CONTAINS
                IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
                    schur_attempt == 3 .AND. exact_attempt_response) &
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),2(1X,ES16.8))') &
-                  " OT Schur projector plateau-gap coupled-delta mix group att weight diag:", &
+                  " OT Schur projector Frechet-gap coupled-delta mix group att weight diag:", &
                   target_group, schur_attempt, projector_plateau_gap_delta_weight, &
                   projector_plateau_gap_delta_diag_avg
                IF (schur_attempt <= 2) THEN
@@ -32680,7 +32677,7 @@ CONTAINS
                      inactive_offdiag_mode_quad_abs_ratio, &
                      inactive_offdiag_mode_positive_quad, inactive_offdiag_mode_negative_quad
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
-                     " OT Schur projector physical offdiag-dP plateau-gap modes neg stepneg emin emax quad absq "// &
+                     " OT Schur projector physical offdiag-dP Frechet-gap modes neg stepneg emin emax quad absq "// &
                      "qratio aratio pquad nquad:", &
                      plateau_gap_mode_negative_fraction, &
                      plateau_gap_mode_step_negative_fraction, &
@@ -32906,13 +32903,13 @@ CONTAINS
                      projector_physical_direct_response_positive_coeff, &
                      projector_physical_direct_response_negative_coeff
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
-                     " OT Schur projector phys direct plateau-gap response w drop sneg rneg pdrop ndrop xdrop cpos cneg:", &
+                     " OT Schur projector phys direct Frechet-gap response w drop sneg rneg pdrop ndrop xdrop cpos cneg:", &
                      direct_pg_response_weight, direct_pg_correction_drop, &
                      direct_pg_correction_negative, direct_pg_raw_negative_fraction, &
                      direct_pg_positive_drop, direct_pg_negative_drop, direct_pg_cross_drop, &
                      direct_pg_positive_coeff, direct_pg_negative_coeff
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
-                     " OT Schur projector phys direct plateau-gap metric pdrop pstep ratio:", &
+                     " OT Schur projector phys direct Frechet-gap metric pdrop pstep ratio:", &
                      direct_pg_metric_drop, direct_pg_metric_step, direct_pg_metric_ratio
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                      " OT Schur projector phys direct diag-ref-response w drop sneg rneg pdrop ndrop xdrop cpos cneg:", &
@@ -41067,10 +41064,10 @@ CONTAINS
       END FUNCTION kpoint_ot_projector_tail_active_delta_weight
 
 ! **************************************************************************************************
-!> \brief accepted-drop audit source for finite projector plateau-gap modes
+!> \brief accepted-drop audit source for finite projector Frechet-gap modes
 !> \param direct_metric_drop projected direct-response Mermin metric drop
-!> \param mode_abs_quad absolute accepted-step quadratic in the plateau-gap Hessian delta
-!> \return positive drop used to calibrate plateau-gap history
+!> \param mode_abs_quad absolute accepted-step quadratic in the Frechet-gap Hessian delta
+!> \return positive drop used to calibrate finite-response history
 ! **************************************************************************************************
       FUNCTION kpoint_ot_projector_plateau_gap_audit_drop(direct_metric_drop, mode_abs_quad) &
          RESULT(audit_drop)
@@ -41084,14 +41081,14 @@ CONTAINS
       END FUNCTION kpoint_ot_projector_plateau_gap_audit_drop
 
 ! **************************************************************************************************
-!> \brief accepted-history weight for mixing plateau-gap Projector curvature into Direct Hessian
+!> \brief accepted-history weight for mixing Frechet-gap Projector curvature into Direct Hessian
 !> \param residual_delta current effective OT residual
-!> \param history_quality accepted-drop quality for plateau-gap Hessian modes
+!> \param history_quality accepted-drop quality for Frechet-gap Hessian modes
 !> \param history_quality_ema smoothed measured/predicted quality
 !> \param mode_weight_ema smoothed accepted modal quadratic weight
 !> \param mode_negative_ema smoothed negative-mode fraction
 !> \param mode_step_ema smoothed accepted-step fraction in those modes
-!> \param samples number of accepted plateau-gap audit samples
+!> \param samples number of accepted Frechet-gap audit samples
 !> \return small curvature-mix weight in [0,max_weight]
 ! **************************************************************************************************
       FUNCTION kpoint_ot_projector_plateau_gap_mix_weight(residual_delta, history_quality, &
@@ -42185,8 +42182,7 @@ CONTAINS
          canonical_cauchy_selected = .FALSE.
          IF (failed) RETURN
          IF (first_var > last_var) RETURN
-         compute_frechet_shadow = compute_density_full_audit .AND. &
-                                  logger%iter_info%print_level >= high_print_level
+         compute_frechet_shadow = compute_projector_plateau_audit
          CPASSERT(first_full_var > 0)
          CPASSERT(first_full_var + nmo*(nmo - 1) - 1 <= SIZE(full_rot_hessian_coupled, 1))
          CPASSERT(SIZE(full_rot_hessian_coupled, 2) == SIZE(rot_hessian_coupled, 2))
@@ -42475,8 +42471,8 @@ CONTAINS
                   IF (compute_density_full_audit .AND. &
                       canonical_occ_curv_channel(ie) > EPSILON(canonical_occ_curv_channel(ie))) THEN
                      ! Project the active covariant dP on the matching
-                     ! canonical band. The exact Frechet derivative is audited
-                     ! separately and cannot alter candidate weights.
+                     ! canonical band. The exact Frechet derivative enters the
+                     ! separately calibrated complex rotation-Hessian shadow.
                      CALL dense_history_safe_occ_projector_basis(projector_evec_base, 1.0_dp, ie, &
                                                                  occ_basis)
                      density_basis_response = &
@@ -42608,10 +42604,10 @@ CONTAINS
                      END SELECT
                   END DO
                   IF (compute_projector_plateau_audit) THEN
-                     ! Keep the active Hessian plateau-filtered, but expose the
-                     ! raw off-diagonal projector response as an audit/candidate
-                     ! gap against that filtered physical model.
-                     CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_mat, &
+                     ! Keep the history-safe projector response active, while
+                     ! the exact fixed-N Frechet derivative supplies a separate
+                     ! accepted-step-calibrated complex Hessian candidate.
+                     CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_frechet, &
                                                       grad_p_re, grad_p_im, eps_p)
                      DO r = first_var, last_var
                         imo = var_i(r)
@@ -42683,7 +42679,8 @@ CONTAINS
             END DO
          END DO
 
-         IF (compute_frechet_shadow .AND. logger%para_env%is_source()) &
+         IF (compute_frechet_shadow .AND. logger%iter_info%print_level >= high_print_level .AND. &
+             logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,4(1X,ES16.8))') &
             " OT Schur fixed-N Frechet shadow channel norm active_gap trace hermitian:", &
             local_channel, SQRT(shadow_frechet_norm_sq), SQRT(shadow_active_gap_norm_sq), &
