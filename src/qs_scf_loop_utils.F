@@ -160,8 +160,6 @@ MODULE qs_scf_loop_utils
                                   ot_kp_occ_metric_continuation_samples = 8, &
                                   ot_kp_schur_quality_min_samples = 3
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_orbital_tail_rebase_density_eps_factor = 2.0_dp, &
-                                        ot_kp_orbital_tail_rebase_eps_factor = 2.0_dp, &
-                                        ot_kp_orbital_tail_rebase_quality_max = 1.0E-1_dp, &
                                         ot_kp_density_closure_tail_density_max = 5.0E-6_dp, &
                                         ot_kp_density_closure_tail_density_eps_factor = 5.0E1_dp, &
                                         ot_kp_density_closure_tail_raw_max = 2.0E-6_dp, &
@@ -427,6 +425,7 @@ CONTAINS
 
       qs_ot_env%kpoint_physical_delta_ready = .TRUE.
       qs_ot_env%kpoint_physical_delta_groups = 0
+      qs_ot_env%kpoint_complete_physical_delta = -1.0_dp
       qs_ot_env%kpoint_eps_scf = eps_scf
       qs_ot_env%kpoint_physical_gnorm = 0.0_dp
       qs_ot_env%kpoint_physical_rot_gnorm = 0.0_dp
@@ -7265,11 +7264,12 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Detect an asymptotic orbital tail after canonical density closure.
 !>
-!>        Once the canonical fixed-N density and physical residual are both within a few
-!>        EPS_SCF, a larger physical residual identifies the represented orbital subspace as the
-!>        limiting block.  If several accepted Mermin steps reduce that residual slowly,
-!>        rebuilding the canonical subspace and its spectral preconditioner is the in-memory
-!>        equivalent of the successful wavefunction restart.
+!>        Once the canonical fixed-N density is converged, a larger physical residual identifies
+!>        the represented orbital subspace as the limiting block.  A complete accepted-history
+!>        window is used to project the measured geometric contraction to EPS_SCF.  Rebuild only
+!>        when that projection takes longer than another complete window.  The broad sqrt(EPS_SCF)
+!>        upper bound keeps the decision in the asymptotic basin without delaying it until the
+!>        orbital residual is already within a small scalar multiple of EPS_SCF.
 !> \param density_ready canonical fixed-N density audit is valid for the current orbitals
 !> \param density_delta canonical fixed-N density stationarity residual
 !> \param physical_delta complete physical OT residual
@@ -7288,18 +7288,30 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: quality_ema
       LOGICAL                                            :: ready
 
-      LOGICAL                                            :: age_limited
-      REAL(KIND=dp)                                      :: eps
+      LOGICAL                                            :: history_mature, rate_limited
+      REAL(KIND=dp)                                      :: asymptotic_delta, contraction, eps, &
+                                                            projected_steps
 
       eps = MAX(eps_scf, EPSILON(1.0_dp))
-      age_limited = quality_samples >= ot_kp_orbital_tail_max_samples
+      asymptotic_delta = MAX(eps, SQRT(eps))
+      history_mature = quality_samples >= ot_kp_orbital_tail_max_samples
+      projected_steps = 0.0_dp
+      rate_limited = .FALSE.
+      IF (physical_delta > eps .AND. history_mature) THEN
+         contraction = 1.0_dp - quality_ema
+         IF (contraction >= 1.0_dp) THEN
+            rate_limited = .TRUE.
+         ELSE IF (contraction > EPSILON(contraction)) THEN
+            projected_steps = LOG(eps/physical_delta)/LOG(contraction)
+            rate_limited = projected_steps > REAL(ot_kp_orbital_tail_max_samples, KIND=dp)
+         END IF
+      END IF
       ready = density_ready .AND. density_delta >= 0.0_dp .AND. &
               density_delta <= ot_kp_orbital_tail_rebase_density_eps_factor*eps .AND. &
               physical_delta > eps .AND. &
-              physical_delta <= ot_kp_orbital_tail_rebase_eps_factor*eps .AND. &
+              physical_delta <= asymptotic_delta .AND. &
               physical_delta >= density_delta .AND. &
-              quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
-              (quality_ema <= ot_kp_orbital_tail_rebase_quality_max .OR. age_limited)
+              history_mature .AND. rate_limited
 
    END FUNCTION qs_scf_kp_orbital_tail_rebase_ready
 
@@ -9344,10 +9356,11 @@ CONTAINS
                                  local_ot_env(1)%schur_density_stationarity_quality_samples, &
                                  local_ot_env(1)%schur_density_stationarity_quality_ema)
       orbital_tail_rebase = density_buffer_ready .AND. &
+                            local_ot_env(1)%kpoint_complete_physical_delta >= 0.0_dp .AND. &
                             qs_scf_kp_orbital_tail_rebase_ready( &
                             local_ot_env(1)%kpoint_density_stationarity_ready, &
                             local_ot_env(1)%kpoint_density_stationarity_delta, &
-                            residual_delta, eps_scf, &
+                            local_ot_env(1)%kpoint_complete_physical_delta, eps_scf, &
                             local_ot_env(1)%schur_closure_response_samples, &
                             local_ot_env(1)%schur_closure_response_quality_ema)
       density_closure_stagnant = density_closure_stagnant .OR. density_history_stagnant
@@ -9362,14 +9375,16 @@ CONTAINS
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
           (collapsed .OR. density_closure_stagnant .OR. orbital_tail_rebase) .AND. step_ready) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,L1),2(1X,I6),5(1X,ES16.8))') &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,L1),2(1X,I6),7(1X,ES16.8))') &
          " OT k-point subspace refresh ready restart stagnant buffer closure history "// &
-         "orbital step epoch residual density qema frac max:", &
+         "orbital step epoch residual physical density dqema pqema frac max:", &
          refresh, restart_valid, high_residual_stagnant, density_buffer_ready, density_closure_stagnant, &
          density_history_stagnant, orbital_tail_rebase, local_ot_env(1)%OT_count, &
          local_ot_env(1)%kpoint_subspace_accepted_samples, residual_delta, &
+         local_ot_env(1)%kpoint_complete_physical_delta, &
          local_ot_env(1)%kpoint_density_stationarity_delta, &
-         local_ot_env(1)%schur_density_stationarity_quality_ema, fractional_weight, max_partial_fraction
+         local_ot_env(1)%schur_density_stationarity_quality_ema, &
+         local_ot_env(1)%schur_closure_response_quality_ema, fractional_weight, max_partial_fraction
 
    END FUNCTION qs_scf_loop_ot_kp_subspace_refresh_needed
 
@@ -17458,6 +17473,7 @@ CONTAINS
             local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
             local_ot_env(1)%kpoint_raw_delta = -1.0_dp
             local_ot_env(1)%kpoint_physical_delta = -1.0_dp
+            local_ot_env(1)%kpoint_complete_physical_delta = -1.0_dp
             local_ot_env(1)%kpoint_projected_delta = -1.0_dp
             local_ot_env(1)%schur_constrained_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_calibrated_drop = 0.0_dp
@@ -20997,6 +21013,8 @@ CONTAINS
          IF (physical_delta_nvar > 0.0_dp) &
             physical_delta_norm = SQRT(MAX(0.0_dp, rot_grad_total_physical_norm)/ &
                                        physical_delta_nvar)
+         local_ot_env(1)%kpoint_complete_physical_delta = &
+            MAX(local_ot_env(1)%kpoint_complete_physical_delta, physical_delta_norm)
          energy_closure_tail_ready = qs_scf_kp_energy_closure_tail_ready( &
                                      residual_delta, physical_delta_norm, &
                                      local_ot_env(1)%kpoint_density_stationarity_delta, &

@@ -5721,26 +5721,28 @@ CONTAINS
 
       LOGICAL                                            :: failed
 
+      ! Measured fresh Na tails: density is closed, while the complete physical
+      ! residual projects beyond another 16-sample window.
       failed = .NOT. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 1.8E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
+               .TRUE., 1.9771E-7_dp, 1.4440E-6_dp, 1.0E-7_dp, 27, 1.0693E-1_dp)
       failed = failed .OR. .NOT. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 1.3E-7_dp, 1.5E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
+               .TRUE., 1.6691E-8_dp, 7.2045E-7_dp, 1.0E-7_dp, 16, -3.3783E-2_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .FALSE., 8.0E-8_dp, 2.6E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
+               .FALSE., 8.0E-8_dp, 2.6E-7_dp, 1.0E-7_dp, 139, 3.1E-3_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 2.1E-7_dp, 2.6E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
+               .TRUE., 2.1E-7_dp, 2.6E-7_dp, 1.0E-7_dp, 139, 3.1E-3_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 9.0E-8_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
+               .TRUE., 8.0E-8_dp, 9.0E-8_dp, 1.0E-7_dp, 139, 3.1E-3_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 2.1E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
+               .TRUE., 8.0E-8_dp, 4.0E-4_dp, 1.0E-7_dp, 139, 3.1E-3_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 1.8E-7_dp, 1.6E-7_dp, 1.0E-7_dp, 139, 3.1E-2_dp)
+               .TRUE., 1.8E-7_dp, 1.6E-7_dp, 1.0E-7_dp, 139, 3.1E-3_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 1.8E-7_dp, 1.0E-7_dp, 3, 3.1E-2_dp)
+               .TRUE., 8.0E-8_dp, 1.8E-7_dp, 1.0E-7_dp, 15, 3.1E-3_dp)
       failed = failed .OR. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 1.8E-7_dp, 1.0E-7_dp, 15, 1.1E-1_dp)
+               .TRUE., 8.0E-8_dp, 1.5E-7_dp, 1.0E-7_dp, 16, 2.0E-1_dp)
       failed = failed .OR. .NOT. qs_scf_kp_orbital_tail_rebase_ready( &
-               .TRUE., 8.0E-8_dp, 1.8E-7_dp, 1.0E-7_dp, 16, 1.1E-1_dp)
+               .TRUE., 8.0E-8_dp, 1.8E-7_dp, 1.0E-7_dp, 16, 0.0_dp)
 
       IF (failed) THEN
          nfail = nfail + 1

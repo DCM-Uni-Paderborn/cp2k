@@ -495,6 +495,7 @@ MODULE qs_ot_types
       LOGICAL :: kpoint_density_stationarity_ready = .FALSE.
       INTEGER :: kpoint_physical_delta_groups = 0
       REAL(KIND=dp) :: kpoint_raw_delta = -1.0_dp, kpoint_physical_delta = -1.0_dp
+      REAL(KIND=dp) :: kpoint_complete_physical_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_projected_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_density_stationarity_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_density_stationarity_max = -1.0_dp
@@ -1399,6 +1400,7 @@ CONTAINS
       qs_ot_env%kpoint_physical_delta_groups = 0
       qs_ot_env%kpoint_raw_delta = -1.0_dp
       qs_ot_env%kpoint_physical_delta = -1.0_dp
+      qs_ot_env%kpoint_complete_physical_delta = -1.0_dp
       qs_ot_env%kpoint_projected_delta = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_delta = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_max = -1.0_dp

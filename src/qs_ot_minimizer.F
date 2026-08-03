@@ -1310,6 +1310,7 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%kpoint_physical_delta_groups)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_raw_delta)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_physical_delta)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_complete_physical_delta)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_projected_delta)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_density_stationarity_delta)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_density_stationarity_max)
@@ -2585,9 +2586,11 @@ CONTAINS
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),2(1X,ES16.8),1X,I5,4(1X,ES16.8))') &
-            " OT Mermin LS recovery collapsed active exhausted stagnant ds floor count pos pmax delta restart:", &
-            active_tail, history_exhausted, stagnant_history, qs_ot_env(1)%ds_min, step_floor, count, pos_floor, pos_max, &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),2(1X,ES16.8),1X,I5,4(1X,ES16.8))') &
+            " OT Mermin LS recovery step_collapsed sample_collapsed active exhausted stagnant "// &
+            "ds floor count pos pmax delta restart:", &
+            collapsed_step, collapsed_sample, active_tail, history_exhausted, stagnant_history, &
+            qs_ot_env(1)%ds_min, step_floor, count, pos_floor, pos_max, &
             mermin_tail_delta, restart_step
       END IF
 

@@ -74,9 +74,10 @@
 # Al_kp_ot_uks_common_mu_sym3_restart.inp also restores the four-channel state
 # in one step.
 # The unlisted Na_kp_ot_added_auto_sym333_converge.inp is the stricter atomic
-# 3x3x3 fixed-N companion. It grows AUTO 4->8->16 and converges in 350 steps
-# at -9.01953181284991 Ha. Na_kp_ot_added_auto_sym333_restart.inp restores
-# the converged state in one step within 2.1E-8 Ha.
+# 3x3x3 fixed-N companion. It grows AUTO 4->8->16 and converges in 315 steps
+# at -9.01953180115599 Ha. Na_kp_ot_added_auto_sym333_restart.inp restores
+# the converged state in one step within 6E-12 Ha; its strict 1E-8 companion
+# reaches -9.01953181739052 Ha in 104 steps.
 # The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
 # provide the converged symmetry-reduced Gaussian path at
 # -8.15946107404605 Ha; the restart closes in one step and diagonalization is

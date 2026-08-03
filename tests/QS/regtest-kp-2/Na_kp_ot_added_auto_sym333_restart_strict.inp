@@ -1,12 +1,11 @@
-! Manual restart companion for Na_kp_ot_added_auto_sym333_converge.inp.
-! Run the source input first in the same directory. The symmetry-reduced
-! 3x3x3 channels and adaptive 16-MO virtual space are restored in one SCF
-! step. Current MPI-2/OMP-2 source and restart Mermin energies are
-! -9.01953180115599 and -9.01953180115058 Ha, respectively.
-! This input is intentionally not listed in TEST_FILES.toml.
+! Strict manual residual-tail companion for
+! Na_kp_ot_added_auto_sym333_converge.inp. Run the source input first in the
+! same directory. Local MPI-2/OMP-2 reference: 104 OT steps at EPS_SCF 1E-8,
+! with F = -9.01953181739052 Ha and no band-edge warning. This input is
+! intentionally not listed in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL HIGH
-  PROJECT Na_kp_ot_added_auto_sym333_restart
+  PROJECT Na_kp_ot_added_auto_sym333_restart_strict
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -29,8 +28,8 @@
     &END QS
     &SCF
       ADDED_MOS AUTO
-      EPS_SCF 1.0E-7
-      MAX_SCF 40
+      EPS_SCF 1.0E-8
+      MAX_SCF 240
       SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC
