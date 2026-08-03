@@ -125,6 +125,7 @@ MODULE qs_scf_loop_utils
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_scf_loop_utils'
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_electron_tolerance = 1.0E-14_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_canonical_density_max_weight = 2.0E-2_dp, &
                                         ot_kp_canonical_density_branch_max_weight = 1.0E-1_dp, &
                                         ot_kp_canonical_projector_delta = 5.0E-3_dp, &
@@ -8296,7 +8297,8 @@ CONTAINS
       END DO
       CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
                                     added_mos_auto=scf_control%added_mos_auto, &
-                                    added_mos_auto_grow=added_mos_auto_grow)
+                                    added_mos_auto_grow=added_mos_auto_grow, &
+                                    electron_tolerance=ot_kp_electron_tolerance)
       IF (.NOT. added_mos_auto_grow .AND. update_ot_energy_state_after) THEN
          IF (.NOT. added_mos_auto_grow) &
             added_mos_auto_grow = qs_scf_loop_ot_kp_added_mos_auto_tail_grow(kpoints, scf_env, &
@@ -9580,21 +9582,21 @@ CONTAINS
       IF (nspin_ot == 1) THEN
          nel = REAL(nelectron, KIND=dp)
          CALL Smearkp(trial_occupation(:, :, 1), mus(1), kTS, trial_eigenvalues(:, :, 1), nel, wkp, &
-                      sigma, 2.0_dp, method)
+                      sigma, 2.0_dp, method, electron_tolerance=ot_kp_electron_tolerance)
          kTS_total = kTS
       ELSE IF (smear%fixed_mag_mom >= 0.0_dp .OR. .NOT. smear%do_smear) THEN
          nel = nel_a_target
          CALL Smearkp(trial_occupation(:, :, 1), mus(1), kTS, trial_eigenvalues(:, :, 1), nel, wkp, &
-                      sigma, 1.0_dp, method)
+                      sigma, 1.0_dp, method, electron_tolerance=ot_kp_electron_tolerance)
          kTS_total = kTS_total + kTS
          nel = nel_b_target
          CALL Smearkp(trial_occupation(:, :, 2), mus(2), kTS, trial_eigenvalues(:, :, 2), nel, wkp, &
-                      sigma, 1.0_dp, method)
+                      sigma, 1.0_dp, method, electron_tolerance=ot_kp_electron_tolerance)
          kTS_total = kTS_total + kTS
       ELSE
          nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
          CALL Smearkp2(trial_occupation(:, :, :), mu, kTS, trial_eigenvalues(:, :, :), nel, wkp, &
-                       sigma, method)
+                       sigma, method, electron_tolerance=ot_kp_electron_tolerance)
          mus(1:2) = mu
          kTS_total = kTS
       END IF
@@ -17629,8 +17631,8 @@ CONTAINS
          closure_response_baseline_quad, closure_response_candidate_quad, &
          closure_response_compatibility, closure_response_coupled_quad, &
          closure_response_fitted_residual_ratio, closure_response_independence, &
-         closure_response_mode_fullrank_curvature, closure_response_mode_norm, &
-         closure_response_mode_baseline_curvature, closure_response_mode_pair_curvature, &
+         closure_response_mode_baseline_curvature, closure_response_mode_fullrank_curvature, &
+         closure_response_mode_norm, closure_response_mode_pair_curvature, &
          closure_response_pair_fitted_residual_ratio, closure_response_reduced_quad
       REAL(KIND=dp) :: closure_response_residual_ratio, constrained_diag_shift_avg, &
          constrained_direction_scale, constrained_expected_drop, constrained_expected_drop_ratio, &
@@ -18403,16 +18405,16 @@ CONTAINS
          response_density_plateau_exact, response_exact, response_exact_active, &
          response_exact_physical, response_exact_raw, response_multisecant, response_occ, &
          response_occ_canonical, response_occ_physical, response_physical_model, &
-         response_prediction, response_split, rot_hessian, rot_hessian_closure_candidate, &
-         rot_hessian_closure_coupled_fullrank_response
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: rot_hessian_closure_coupled_response, &
-         rot_hessian_closure_baseline, rot_hessian_closure_fullrank_response, &
-         rot_hessian_closure_probe_response, rot_hessian_closure_reduced_response, &
-         rot_hessian_closure_response, rot_hessian_coupled, rot_hessian_multisecant, &
-         rot_hessian_orbital_schur, rot_hessian_prediction, rot_hessian_projector, &
-         rot_hessian_projector_physical, rot_hessian_projector_physical_active, &
-         rot_hessian_projector_physical_diagref, rot_hessian_projector_physical_offdiag, &
-         rot_hessian_projector_physical_offdiag_active
+         response_prediction, response_split, rot_hessian, rot_hessian_closure_baseline, &
+         rot_hessian_closure_candidate
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: &
+         rot_hessian_closure_coupled_fullrank_response, rot_hessian_closure_coupled_response, &
+         rot_hessian_closure_fullrank_response, rot_hessian_closure_probe_response, &
+         rot_hessian_closure_reduced_response, rot_hessian_closure_response, rot_hessian_coupled, &
+         rot_hessian_multisecant, rot_hessian_orbital_schur, rot_hessian_prediction, &
+         rot_hessian_projector, rot_hessian_projector_physical, &
+         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
+         rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_active
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: &
          rot_hessian_projector_physical_offdiag_plateau, &
          rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_reduced_secant, &
@@ -26846,10 +26848,10 @@ CONTAINS
                                                            canonical_density_tangent_modes(:, global_channel))
                               IF (closure_response_mode_norm <= TINY(1.0_dp)) CYCLE
                               closure_response_mode_baseline_curvature = DOT_PRODUCT( &
-                                                                      canonical_density_tangent_modes(:, global_channel), &
-                                                                      MATMUL(rot_hessian_closure_baseline, &
+                                                                         canonical_density_tangent_modes(:, global_channel), &
+                                                                         MATMUL(rot_hessian_closure_baseline, &
                                                                              canonical_density_tangent_modes(:, global_channel)))/ &
-                                                                      closure_response_mode_norm
+                                                                         closure_response_mode_norm
                               closure_response_mode_pair_curvature = DOT_PRODUCT( &
                                                                      canonical_density_tangent_modes(:, global_channel), &
                                                                      MATMUL(rot_hessian_closure_response, &

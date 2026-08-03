@@ -9,6 +9,7 @@
 !> \brief finite-difference checks for the complex OT rotation Frechet kernel
 ! **************************************************************************************************
 PROGRAM qs_ot_frechet_unittest
+   USE bibliography,                    ONLY: add_all_references
    USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
                                               cp_blacs_env_release,&
                                               cp_blacs_env_type
@@ -130,9 +131,11 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
         qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response, &
         qs_scf_kp_work_consistent_response
+   USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
-                                              SmearingDerivative
+                                              SmearingDerivative,&
+                                              Smearkp
 
    IMPLICIT NONE
 
@@ -154,6 +157,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL cp_logger_create(logger, para_env=para_env, default_global_unit_nr=io_unit, &
                          close_global_unit_on_dealloc=.FALSE.)
    CALL cp_add_default_logger(logger)
+   CALL add_all_references()
    CALL dbcsr_init_lib(mp_comm%get_handle(), io_unit)
 
    CALL check_offdiag("separated offdiag", 1.3_dp, -0.4_dp, &
@@ -179,6 +183,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_complex_full_all_orbital_schur("complex FULL_ALL orbital Schur correction", &
                                              5.0E-7_dp, nfail)
    CALL check_smearing_derivative("smearing occupation derivative", 2.0E-7_dp, nfail)
+   CALL check_strict_fixed_n_smearing("strict fixed-N k-point smearing", 5.0E-13_dp, nfail)
    CALL check_global_fixed_n_mu_response("global fixed-N k-point mu response", 2.0E-7_dp, nfail)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
    CALL check_kpoint_symmetry_preconditioned_metric("k-point symmetry preconditioned metric", &
@@ -770,6 +775,7 @@ PROGRAM qs_ot_frechet_unittest
    IF (nfail == 0) PRINT *, "qs_ot_frechet_unittest: OK"
 
    CALL dbcsr_finalize_lib()
+   CALL remove_all_references()
    CALL cp_rm_default_logger()
    CALL cp_logger_release(logger)
    CALL mp_para_env_release(para_env)
@@ -825,6 +831,58 @@ CONTAINS
       END DO
 
    END SUBROUTINE check_smearing_derivative
+
+! **************************************************************************************************
+!> \brief Check the production k-point chemical-potential solve at the strict OT tolerance.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_strict_fixed_n_smearing(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nkp = 3, nmo = 4
+      REAL(KIND=dp), PARAMETER                           :: maxocc = 2.0_dp, nel = 3.65_dp, &
+                                                            sigma = 0.03_dp
+
+      INTEGER                                            :: ik
+      REAL(KIND=dp)                                      :: electron_error, kTS, kTS_error, kTS_ref, &
+                                                            mu, mu_error, mu_ref, &
+                                                            occupation_error, weighted_n
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wkp
+      REAL(KIND=dp), DIMENSION(nmo, nkp)                 :: eigenvalues, occupation, occupation_ref
+
+      wkp(:) = [5.0_dp/9.0_dp, 3.0_dp/9.0_dp, 1.0_dp/9.0_dp]
+      eigenvalues(:, 1) = [-0.25_dp, -0.030_dp, 0.040_dp, 0.200_dp]
+      eigenvalues(:, 2) = [-0.21_dp, -0.015_dp, 0.070_dp, 0.180_dp]
+      eigenvalues(:, 3) = [-0.28_dp, -0.040_dp, 0.095_dp, 0.250_dp]
+
+      CALL Smearkp(occupation, mu, kTS, eigenvalues, nel, wkp, sigma, maxocc, &
+                   smear_fermi_dirac, electron_tolerance=1.0E-14_dp)
+      CALL dense_fermi_kpoint(occupation_ref, mu_ref, kTS_ref, eigenvalues, nel, wkp, &
+                              sigma, maxocc)
+
+      weighted_n = 0.0_dp
+      DO ik = 1, nkp
+         weighted_n = weighted_n + wkp(ik)*SUM(occupation(:, ik))
+      END DO
+      electron_error = ABS(weighted_n - nel)
+      mu_error = ABS(mu - mu_ref)
+      kTS_error = ABS(kTS - kTS_ref)
+      occupation_error = MAXVAL(ABS(occupation - occupation_ref))
+
+      IF (MAX(electron_error, mu_error, kTS_error, occupation_error) > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "failed with errors", &
+            electron_error, mu_error, kTS_error, occupation_error
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "OK with errors", &
+            electron_error, mu_error, kTS_error, occupation_error
+      END IF
+
+   END SUBROUTINE check_strict_fixed_n_smearing
 
 ! **************************************************************************************************
 !> \brief Check that a local k-point perturbation uses the global fixed-N mu response.
@@ -31532,7 +31590,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
       REAL(KIND=dp), INTENT(IN)                          :: sigma, maxocc
 
-      REAL(KIND=dp), PARAMETER                           :: epsocc = 1.0E-12_dp
+      REAL(KIND=dp), PARAMETER                           :: epsocc = 1.0E-14_dp
 
       INTEGER                                            :: iter
       REAL(KIND=dp)                                      :: de, mu_max, mu_min, n_now

@@ -535,8 +535,9 @@ CONTAINS
 !> \param sigma   smearing width (input)
 !> \param maxocc  maximum occupation (input)
 !> \param method  smearing method selector (input)
+!> \param electron_tolerance optional relative electron-count tolerance
 ! **************************************************************************************************
-   SUBROUTINE Smearkp(f, mu, kTS, e, nel, wk, sigma, maxocc, method)
+   SUBROUTINE Smearkp(f, mu, kTS, e, nel, wk, sigma, maxocc, method, electron_tolerance)
 
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: f
       REAL(KIND=dp), INTENT(OUT)                         :: mu, kTS
@@ -545,18 +546,23 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
       REAL(KIND=dp), INTENT(IN)                          :: sigma, maxocc
       INTEGER, INTENT(IN)                                :: method
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: electron_tolerance
 
-      REAL(KIND=dp), PARAMETER                           :: epsocc = 1.0e-12_dp
+      REAL(KIND=dp), PARAMETER                           :: default_epsocc = 1.0e-12_dp
 
       INTEGER                                            :: bisect_method, iback, ik, is, iter, nkp, &
                                                             nmo
-      REAL(KIND=dp)                                      :: de, dNdmu, expu2, expx2, mu_best, &
-                                                            mu_max, mu_min, N_now, N_trial, &
-                                                            res_best, res_now, res_trial, step, &
-                                                            step_try, u, x
+      REAL(KIND=dp)                                      :: de, dNdmu, epsocc, expu2, expx2, &
+                                                            mu_best, mu_max, mu_min, N_now, &
+                                                            N_trial, res_best, res_now, res_trial, &
+                                                            step, step_try, u, x
 
       nmo = SIZE(e, 1)
       nkp = SIZE(e, 2)
+      epsocc = default_epsocc
+      IF (PRESENT(electron_tolerance)) then
+        epsocc = MAX(64.0_dp*EPSILON(1.0_dp), electron_tolerance)
+      end if
 
       CALL cite_smearing(method)
 
@@ -679,8 +685,9 @@ CONTAINS
 !> \param wk      k-point weights (input)
 !> \param sigma   smearing width (input)
 !> \param method  smearing method selector (input)
+!> \param electron_tolerance optional relative electron-count tolerance
 ! **************************************************************************************************
-   SUBROUTINE Smearkp2(f, mu, kTS, e, nel, wk, sigma, method)
+   SUBROUTINE Smearkp2(f, mu, kTS, e, nel, wk, sigma, method, electron_tolerance)
 
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(OUT)     :: f
       REAL(KIND=dp), INTENT(OUT)                         :: mu, kTS
@@ -689,18 +696,23 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
       REAL(KIND=dp), INTENT(IN)                          :: sigma
       INTEGER, INTENT(IN)                                :: method
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: electron_tolerance
 
-      REAL(KIND=dp), PARAMETER                           :: epsocc = 1.0e-12_dp
+      REAL(KIND=dp), PARAMETER                           :: default_epsocc = 1.0e-12_dp
 
       INTEGER                                            :: bisect_method, iback, ik, is, ispin, &
                                                             iter, nkp, nmo
-      REAL(KIND=dp) :: de, dNdmu, expu2, expx2, kTSa, kTSb, mu_best, mu_max, mu_min, N_now, &
-         N_trial, na, nb, res_best, res_now, res_trial, step, step_try, u, x
+      REAL(KIND=dp) :: de, dNdmu, epsocc, expu2, expx2, kTSa, kTSb, mu_best, mu_max, mu_min, &
+         N_now, N_trial, na, nb, res_best, res_now, res_trial, step, step_try, u, x
 
       CPASSERT(SIZE(f, 3) == 2 .AND. SIZE(e, 3) == 2)
 
       nmo = SIZE(e, 1)
       nkp = SIZE(e, 2)
+      epsocc = default_epsocc
+      IF (PRESENT(electron_tolerance)) then
+        epsocc = MAX(64.0_dp*EPSILON(1.0_dp), electron_tolerance)
+      end if
 
       CALL cite_smearing(method)
 

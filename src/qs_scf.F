@@ -639,7 +639,8 @@ CONTAINS
                IF (do_kpoints) THEN
                   CALL qs_scf_grow_added_mos_auto_kp( &
                      qs_env, scf_env, scf_control, output_unit, &
-                     reseed_global_basis=ot_kp_subspace_refresh_count > 0, &
+                     reseed_global_basis=ot_kp_subspace_refresh_count > 0 .OR. &
+                     scf_env%qs_ot_restart%valid, &
                      settle_frontier=settle_added_mos_frontier)
                ELSE
                   CALL qs_scf_grow_added_mos_auto(qs_env, scf_env, scf_control, output_unit)

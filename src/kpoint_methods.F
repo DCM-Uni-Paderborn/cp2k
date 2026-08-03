@@ -1263,8 +1263,10 @@ CONTAINS
 !> \param probe ...
 !> \param added_mos_auto ...
 !> \param added_mos_auto_grow ...
+!> \param electron_tolerance optional relative electron-count tolerance
 ! **************************************************************************************************
-   SUBROUTINE kpoint_set_mo_occupation(kpoint, smear, probe, added_mos_auto, added_mos_auto_grow)
+   SUBROUTINE kpoint_set_mo_occupation(kpoint, smear, probe, added_mos_auto, added_mos_auto_grow, &
+                                       electron_tolerance)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(smear_type)                                   :: smear
@@ -1272,6 +1274,7 @@ CONTAINS
          POINTER                                         :: probe
       LOGICAL, DIMENSION(:), INTENT(IN), OPTIONAL        :: added_mos_auto
       LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: electron_tolerance
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_set_mo_occupation'
 
@@ -1280,8 +1283,8 @@ CONTAINS
                                                             nelectron, nkp, nmo, nrow_global, nspin
       INTEGER, DIMENSION(2)                              :: kp_range
       LOGICAL                                            :: my_added_mos_auto_grow
-      REAL(KIND=dp)                                      :: kTS, kTS_spin(2), mu, mus(2), nel, &
-                                                            nel_a_target, nel_b_target
+      REAL(KIND=dp)                                      :: fixed_n_tolerance, kTS, kTS_spin(2), mu, &
+                                                            mus(2), nel, nel_a_target, nel_b_target
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: smatrix
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: weig, wocc
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :, :)  :: icoeff, rcoeff
@@ -1295,6 +1298,8 @@ CONTAINS
 
       my_added_mos_auto_grow = .FALSE.
       IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
+      fixed_n_tolerance = 1.0E-12_dp
+      IF (PRESENT(electron_tolerance)) fixed_n_tolerance = electron_tolerance
       kTS_spin(:) = 0.0_dp
 
       ! first collect all the eigenvalues
@@ -1310,9 +1315,10 @@ CONTAINS
       END IF
       nel_a_target = REAL(ne_a, KIND=dp)
       nel_b_target = REAL(ne_b, KIND=dp)
-      IF (nspin == 2 .AND. smear%fixed_mag_mom >= 0.0_dp) &
-         CALL kpoint_fixed_spin_targets(REAL(ne_a + ne_b, KIND=dp), smear%fixed_mag_mom, &
+      IF (nspin == 2 .AND. smear%fixed_mag_mom >= 0.0_dp) then
+        CALL kpoint_fixed_spin_targets(REAL(ne_a + ne_b, KIND=dp), smear%fixed_mag_mom, &
                                         nel_a_target, nel_b_target)
+      end if
       ALLOCATE (weig(nmo, nkp, nspin), wocc(nmo, nkp, nspin))
       weig = 0.0_dp
       wocc = 0.0_dp
@@ -1439,18 +1445,22 @@ CONTAINS
                IF (nspin == 1) THEN
                   nel = REAL(nelectron, KIND=dp)
                   CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
-                               smear%electronic_temperature, 2.0_dp, smear_fermi_dirac)
+                               smear%electronic_temperature, 2.0_dp, smear_fermi_dirac, &
+                               electron_tolerance=fixed_n_tolerance)
                ELSE IF (smear%fixed_mag_mom >= 0.0_dp) THEN
                   nel = nel_a_target
                   CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
-                               smear%electronic_temperature, 1.0_dp, smear_fermi_dirac)
+                               smear%electronic_temperature, 1.0_dp, smear_fermi_dirac, &
+                               electron_tolerance=fixed_n_tolerance)
                   nel = nel_b_target
                   CALL Smearkp(wocc(:, :, 2), mus(2), kTS_spin(2), weig(:, :, 2), nel, wkp, &
-                               smear%electronic_temperature, 1.0_dp, smear_fermi_dirac)
+                               smear%electronic_temperature, 1.0_dp, smear_fermi_dirac, &
+                               electron_tolerance=fixed_n_tolerance)
                ELSE
                   nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
                   CALL Smearkp2(wocc(:, :, :), mu, kTS, weig(:, :, :), nel, wkp, &
-                                smear%electronic_temperature, smear_fermi_dirac)
+                                smear%electronic_temperature, smear_fermi_dirac, &
+                                electron_tolerance=fixed_n_tolerance)
                   kTS_spin(1:2) = 0.5_dp*kTS
                   mus(1:2) = mu
                END IF
@@ -1458,18 +1468,22 @@ CONTAINS
                IF (nspin == 1) THEN
                   nel = REAL(nelectron, KIND=dp)
                   CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
-                               smear%smearing_width, 2.0_dp, smear%method)
+                               smear%smearing_width, 2.0_dp, smear%method, &
+                               electron_tolerance=fixed_n_tolerance)
                ELSE IF (smear%fixed_mag_mom >= 0.0_dp) THEN
                   nel = nel_a_target
                   CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
-                               smear%smearing_width, 1.0_dp, smear%method)
+                               smear%smearing_width, 1.0_dp, smear%method, &
+                               electron_tolerance=fixed_n_tolerance)
                   nel = nel_b_target
                   CALL Smearkp(wocc(:, :, 2), mus(2), kTS_spin(2), weig(:, :, 2), nel, wkp, &
-                               smear%smearing_width, 1.0_dp, smear%method)
+                               smear%smearing_width, 1.0_dp, smear%method, &
+                               electron_tolerance=fixed_n_tolerance)
                ELSE
                   nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
                   CALL Smearkp2(wocc(:, :, :), mu, kTS, weig(:, :, :), nel, wkp, &
-                                smear%smearing_width, smear%method)
+                                smear%smearing_width, smear%method, &
+                                electron_tolerance=fixed_n_tolerance)
                   kTS_spin(1:2) = 0.5_dp*kTS
                   mus(1:2) = mu
                END IF
@@ -1481,14 +1495,17 @@ CONTAINS
             IF (nspin == 1) THEN
                nel = REAL(nelectron, KIND=dp)
                CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
-                            0.0_dp, 2.0_dp, smear_gaussian)
+                            0.0_dp, 2.0_dp, smear_gaussian, &
+                            electron_tolerance=fixed_n_tolerance)
             ELSE
                nel = nel_a_target
                CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
-                            0.0_dp, 1.0_dp, smear_gaussian)
+                            0.0_dp, 1.0_dp, smear_gaussian, &
+                            electron_tolerance=fixed_n_tolerance)
                nel = nel_b_target
                CALL Smearkp(wocc(:, :, 2), mus(2), kTS_spin(2), weig(:, :, 2), nel, wkp, &
-                            0.0_dp, 1.0_dp, smear_gaussian)
+                            0.0_dp, 1.0_dp, smear_gaussian, &
+                            electron_tolerance=fixed_n_tolerance)
             END IF
          END IF
          IF (smear%do_smear) THEN
@@ -1496,8 +1513,9 @@ CONTAINS
                CALL kpoint_check_added_mos_auto_occupation(wocc, wkp, smear, nspin, &
                                                            added_mos_auto, nao, my_added_mos_auto_grow)
             END IF
-            IF (.NOT. my_added_mos_auto_grow) &
-               CALL kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
+            IF (.NOT. my_added_mos_auto_grow) then
+              CALL kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
+            end if
          END IF
          IF (my_added_mos_auto_grow) THEN
             IF (PRESENT(added_mos_auto_grow)) THEN
