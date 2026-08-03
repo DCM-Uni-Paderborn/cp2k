@@ -813,7 +813,9 @@ CONTAINS
          keyword, __LOCATION__, name="PRECONDITIONER", &
          description="Type of preconditioner to be used with all minimization schemes. "// &
          "They differ in effectiveness, cost of construction, cost of application. "// &
-         "Properly preconditioned minimization can be orders of magnitude faster than doing nothing.", &
+         "Properly preconditioned minimization can be orders of magnitude faster than doing nothing. "// &
+         "FULL_SINGLE_INVERSE is selected automatically for K-point OT with smearing when this "// &
+         "keyword is omitted; other OT calculations retain the FULL_KINETIC default.", &
          usage="PRECONDITIONER FULL_ALL", &
          default_i_val=ot_precond_full_kinetic, &
          enum_c_vals=s2a("FULL_ALL", "FULL_SINGLE_INVERSE", "FULL_SINGLE", "FULL_KINETIC", "FULL_S_INVERSE", &
