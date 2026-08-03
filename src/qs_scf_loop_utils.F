@@ -151,13 +151,19 @@ MODULE qs_scf_loop_utils
                                   ot_kp_added_mos_auto_tail_probe_steps = 20, &
                                   ot_kp_added_mos_auto_fractional_density_min_steps = 35, &
                                   ot_kp_added_mos_auto_direct_veto_max_added = 4, &
+                                  ot_kp_density_closure_tail_max_samples = 64, &
+                                  ot_kp_orbital_tail_max_samples = 16, &
                                   ot_kp_subspace_refresh_min_steps = 12, &
                                   ot_kp_occ_preconditioner_bootstrap_samples = 2, &
                                   ot_kp_occ_metric_continuation_samples = 8, &
                                   ot_kp_schur_quality_min_samples = 3
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_orbital_tail_rebase_density_eps_factor = 2.0_dp, &
                                         ot_kp_orbital_tail_rebase_eps_factor = 2.0_dp, &
-                                        ot_kp_orbital_tail_rebase_quality_max = 1.0E-1_dp
+                                        ot_kp_orbital_tail_rebase_quality_max = 1.0E-1_dp, &
+                                        ot_kp_density_closure_tail_density_max = 5.0E-6_dp, &
+                                        ot_kp_density_closure_tail_density_eps_factor = 5.0E1_dp, &
+                                        ot_kp_density_closure_tail_raw_max = 2.0E-6_dp, &
+                                        ot_kp_density_closure_tail_raw_eps_factor = 2.0E1_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
                                         ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp, &
                                         ot_kp_added_mos_auto_edge_probe_factor = 5.0_dp, &
@@ -6842,9 +6848,9 @@ CONTAINS
 !>        Density stationarity quality is the accepted fractional reduction
 !>        (density_old-density_new)/density_old. Once its EMA is no larger than
 !>        EPS_SCF/density_delta, another accepted step is expected to remove at most one
-!>        convergence tolerance. Four calibrated Mermin-descent samples, a complete density
-!>        audit, and a raw residual already inside the coupled tail are required before replacing
-!>        the represented subspace by a canonical diagonalization.
+!>        convergence tolerance. A complete density audit and a raw residual already inside the
+!>        coupled tail are required. A bounded accepted-sample budget also catches a persistently
+!>        density-dominant asymptotic tail when the noisy fractional-progress EMA stays positive.
 !> \param density_ready canonical fixed-N density audit is valid for the current orbitals
 !> \param density_delta canonical fixed-N density stationarity residual
 !> \param raw_delta raw residual of the previous accepted OT state
@@ -6862,16 +6868,25 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: quality_ema
       LOGICAL                                            :: ready
 
+      LOGICAL                                            :: age_limited
       REAL(KIND=dp)                                      :: eps, target_fraction
 
       eps = MAX(eps_scf, EPSILON(1.0_dp))
       target_fraction = eps/MAX(density_delta, eps)
+      ! A long accepted tail is independent evidence that the represented
+      ! orbital subspace cannot close a bounded, density-dominant residual.
+      ! Keep the budget inactive outside the asymptotic fixed-N basin.
+      age_limited = quality_samples >= ot_kp_density_closure_tail_max_samples .AND. &
+                    raw_delta <= MIN(ot_kp_density_closure_tail_raw_eps_factor*eps, &
+                                     ot_kp_density_closure_tail_raw_max) .AND. &
+                    density_delta <= MIN(ot_kp_density_closure_tail_density_eps_factor*eps, &
+                                         ot_kp_density_closure_tail_density_max)
       ready = qs_scf_kp_density_pair_activation_ready( &
               density_ready, density_delta, raw_delta, eps_scf) .AND. &
               density_delta > raw_delta .AND. &
               density_delta > 10.0_dp*eps .AND. &
               quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
-              quality_ema <= target_fraction
+              (quality_ema <= target_fraction .OR. age_limited)
 
    END FUNCTION qs_scf_kp_density_closure_history_refresh_ready
 
@@ -6901,16 +6916,18 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: quality_ema
       LOGICAL                                            :: ready
 
+      LOGICAL                                            :: age_limited
       REAL(KIND=dp)                                      :: eps
 
       eps = MAX(eps_scf, EPSILON(1.0_dp))
+      age_limited = quality_samples >= ot_kp_orbital_tail_max_samples
       ready = density_ready .AND. density_delta >= 0.0_dp .AND. &
               density_delta <= ot_kp_orbital_tail_rebase_density_eps_factor*eps .AND. &
               physical_delta > eps .AND. &
               physical_delta <= ot_kp_orbital_tail_rebase_eps_factor*eps .AND. &
               physical_delta >= density_delta .AND. &
               quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
-              quality_ema <= ot_kp_orbital_tail_rebase_quality_max
+              (quality_ema <= ot_kp_orbital_tail_rebase_quality_max .OR. age_limited)
 
    END FUNCTION qs_scf_kp_orbital_tail_rebase_ready
 
@@ -9518,16 +9535,12 @@ CONTAINS
          CALL para_env_inter_kp%max(current_max_partial(group))
          CALL para_env_inter_kp%max(maxocc_group(group))
          CALL para_env_inter_kp%max(frontier_armed(group))
-         IF (smear%method == smear_gaussian) THEN
-            IF (qs_scf_kp_fermi_frontier_armed(current_max_partial(group), &
-                                               canonical_max_partial(group), &
-                                               maxocc_group(group), frontier_armed(group) > 0, &
-                                               calibration_samples > 0)) &
-               frontier_armed(group) = 1
-         ELSE IF (current_max_partial(group) >= &
-                  maxocc_group(group)*ot_kp_fermi_window_min_frac) THEN
+         IF (qs_scf_kp_fermi_frontier_armed(current_max_partial(group), &
+                                            canonical_max_partial(group), &
+                                            maxocc_group(group), frontier_armed(group) > 0, &
+                                            smear%method /= smear_gaussian .OR. &
+                                            calibration_samples > 0)) &
             frontier_armed(group) = 1
-         END IF
       END DO
       DO local_channel = 1, SIZE(local_ot_env)
          group = MAX(1, MIN(ngroups, local_ot_env(local_channel)%spin_index))

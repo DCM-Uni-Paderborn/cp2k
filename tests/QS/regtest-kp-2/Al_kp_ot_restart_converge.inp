@@ -3,12 +3,13 @@
 ! not listed in TEST_FILES.toml so the default restart/smearing regtest stays
 ! cheap.
 ! The fresh write/read/continue chain now reaches the physical finite-entropy
-! branch after one residual-tail subspace refresh and converges below 1E-6.
+! branch after bounded residual-tail subspace refreshes and converges below 1E-6.
 ! Keep this HIGH-print input as a manual diagnostic/restart guard for that
-! endpoint. A fresh OMP_NUM_THREADS=1 write/read/continue chain converges in
-! 88 continuation steps with Mermin free energy -8.14585311819770 Ha serially
-! and 75 steps at -8.14585310514794 Ha with MPI-2. Both are within 2.5E-8 Ha of the
-! tightly converged diagonalization reference -8.14585309375351 Ha. No
+! endpoint. A fresh MPI-2/OMP-2 write/read/continue chain converges in 166
+! continuation steps with Mermin free energy -8.14585310803023 Ha; HIGH
+! diagnostics converge in 168 steps at -8.14585310801479 Ha. Both are within
+! 2.5E-8 Ha of the tightly converged diagonalization reference
+! -8.14585309375351 Ha. No
 ! first/last-band warning or "Unsupported content type" signature occurred.
 &GLOBAL
   PRINT_LEVEL HIGH
@@ -38,7 +39,7 @@
       ! companion is intentionally not part of the default regtest list.
       EPS_SCF 1.0E-6
       IGNORE_CONVERGENCE_FAILURE
-      MAX_SCF 180
+      MAX_SCF 220
       SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC

@@ -84,9 +84,9 @@
 # independent diagonalization references.
 # Keep these physics checks manual so the registered restart/AUTO coverage
 # remains inexpensive.
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-8.11587961821005},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11587961821005},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.004898018E-5},
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-8.10818697731132},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.10818697731132},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-8.688467097E-5},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
@@ -98,12 +98,12 @@
 # one-k-point smoke references strict.  Their current values include the
 # line-search-consistent adaptive canonical tether, which is fixed for all
 # trial points belonging to one accepted gradient. Continue converges in
-# 75 MPI-2 steps; the most recent serial reference used 88 steps. Both layouts
+# 166 MPI-2 steps in a fresh chain (168 with HIGH diagnostics). Both layouts
 # remain within 2.5E-8 Ha of the tightly converged diagonalization reference
 # -8.14585309375351 Ha.
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.11824884393091},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11824884393091},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.77476998E-6},
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.10880890527871},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.10880890527871},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-8.019430867E-5},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
