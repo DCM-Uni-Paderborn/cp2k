@@ -102,7 +102,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
         qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
         qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_response_probe, &
+        qs_scf_kp_density_response_tail_ready, qs_scf_kp_density_stationarity_quality, &
         qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
@@ -8348,8 +8349,9 @@ CONTAINS
       INTEGER :: scaled_negative_modes, scaled_positive_modes, scaled_unsupported_modes, &
          transverse_negative_modes, transverse_positive_modes, transverse_unsupported_modes, &
          unsupported_modes
-      LOGICAL :: averaged_ready, baseline_ready, history_ready, incompatible_ready, prior_ready, &
-         rank_deficient_ready, ready, scaled_ready, transverse_ready
+      LOGICAL :: averaged_ready, baseline_ready, density_probe_ready, history_ready, &
+         incompatible_ready, prior_ready, rank_deficient_ready, ready, scaled_ready, &
+         transverse_ready
       REAL(KIND=dp) :: averaged_compatibility, averaged_fitted_residual_ratio, &
          averaged_independence, averaged_pair_fitted_residual_ratio, averaged_residual_ratio, &
          baseline_compatibility, baseline_independence, baseline_residual_ratio, compatibility, &
@@ -8362,8 +8364,8 @@ CONTAINS
          transverse_compatibility, transverse_independence, transverse_residual_ratio
       REAL(KIND=dp), DIMENSION(nrot, 2) :: incompatible_targets, rank_deficient_steps, &
          rank_deficient_targets, response_steps, response_targets, transverse_targets
-      REAL(KIND=dp), DIMENSION(nrot, 3)                  :: averaged_steps, averaged_targets, &
-                                                            history_steps, history_targets
+      REAL(KIND=dp), DIMENSION(nrot, 3) :: averaged_steps, averaged_targets, density_probe_steps, &
+         density_probe_targets, history_steps, history_targets
       REAL(KIND=dp), DIMENSION(nrot, nmode)              :: scaled_tangent_modes, tangent_modes
       REAL(KIND=dp), DIMENSION(nrot, nrot) :: averaged_correction, averaged_fullrank_correction, &
          baseline_averaged_correction, baseline_correction, baseline_fullrank_correction, &
@@ -8499,6 +8501,43 @@ CONTAINS
       IF (.NOT. scaled_ready .OR. scaled_positive_modes /= positive_modes .OR. &
           scaled_negative_modes /= negative_modes .OR. &
           scaled_unsupported_modes /= unsupported_modes) error = HUGE(1.0_dp)
+
+      ! A density-aware accepted candidate contributes one endpoint-local secant.  Filtering it
+      ! away from mixed CG history must retain a usable rank-one physical response, while an
+      ! ordinary dense candidate contributes no density probe.
+      history_steps(:, :) = 0.0_dp
+      history_targets(:, :) = 0.0_dp
+      history_steps(1, 2) = 1.0_dp
+      history_targets(1, 2) = 3.0_dp
+      IF (qs_scf_kp_density_response_tail_ready(-1.0_dp, 1.2E-5_dp) .OR. &
+          qs_scf_kp_density_response_tail_ready(3.3E-3_dp, 1.2E-5_dp) .OR. &
+          .NOT. qs_scf_kp_density_response_tail_ready(1.9E-6_dp, 1.2E-5_dp)) &
+         error = HUGE(1.0_dp)
+      CALL qs_scf_kp_density_response_probe( &
+         30, .TRUE., history_steps, history_targets, &
+         density_probe_steps, density_probe_targets, &
+         density_probe_ready)
+      IF (density_probe_ready .OR. MAXVAL(ABS(density_probe_steps)) > tol .OR. &
+          MAXVAL(ABS(density_probe_targets)) > tol) error = HUGE(1.0_dp)
+      CALL qs_scf_kp_density_response_probe( &
+         32, .FALSE., history_steps, history_targets, &
+         density_probe_steps, density_probe_targets, density_probe_ready)
+      IF (density_probe_ready .OR. MAXVAL(ABS(density_probe_steps)) > tol .OR. &
+          MAXVAL(ABS(density_probe_targets)) > tol) error = HUGE(1.0_dp)
+      CALL qs_scf_kp_density_response_probe( &
+         32, .TRUE., history_steps, history_targets, &
+         density_probe_steps, density_probe_targets, &
+         density_probe_ready)
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, density_probe_steps, density_probe_targets, rank_deficient_correction, &
+         rank_deficient_ready, rank_deficient_positive_modes, rank_deficient_negative_modes, &
+         rank_deficient_unsupported_modes, rank_deficient_independence, &
+         rank_deficient_compatibility, rank_deficient_residual_ratio)
+      IF (.NOT. density_probe_ready .OR. .NOT. rank_deficient_ready .OR. &
+          ABS(rank_deficient_correction(1, 1) - 3.0_dp) > tol .OR. &
+          MAXVAL(ABS(rank_deficient_correction(2:, :))) > tol .OR. &
+          rank_deficient_positive_modes /= 1 .OR. rank_deficient_negative_modes /= 0 .OR. &
+          rank_deficient_unsupported_modes /= 2) error = HUGE(1.0_dp)
 
       ! A third accepted secant recovers an independent physical direction when the latest
       ! pair is collinear; all three samples must remain consistent with the selected fit.

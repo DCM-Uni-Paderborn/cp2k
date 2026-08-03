@@ -373,8 +373,10 @@ MODULE qs_ot_types
       LOGICAL :: schur_projector_phys_direct_density_fshadow_ready = .FALSE.
       LOGICAL :: schur_projector_phys_direct_density_cshadow_ready = .FALSE.
       LOGICAL :: schur_history_mixed = .FALSE., schur_split_candidate_enabled = .FALSE.
+      LOGICAL :: schur_density_probe_tail_armed = .FALSE.
       INTEGER :: schur_model_attempt = 0, schur_cg_attempt = 0, schur_model_flavor = 0, &
-                 schur_cg_flavor = 0, schur_model_quality_samples = 0
+                 schur_last_accepted_flavor = 0, schur_cg_flavor = 0, &
+                 schur_model_quality_samples = 0
       INTEGER :: schur_constrained_quality_samples = 0
       INTEGER :: schur_split_quality_samples = 0, schur_coupled_quality_samples = 0
       INTEGER :: schur_split_shadow_quality_samples = 0
@@ -1259,9 +1261,11 @@ CONTAINS
       qs_ot_env%schur_projector_phys_direct_density_cshadow_ready = .FALSE.
       qs_ot_env%schur_history_mixed = .FALSE.
       qs_ot_env%schur_split_candidate_enabled = .FALSE.
+      qs_ot_env%schur_density_probe_tail_armed = .FALSE.
       qs_ot_env%schur_model_attempt = 0
       qs_ot_env%schur_cg_attempt = 0
       qs_ot_env%schur_model_flavor = 0
+      qs_ot_env%schur_last_accepted_flavor = 0
       qs_ot_env%schur_cg_flavor = 0
       qs_ot_env%schur_model_quality_samples = 0
       qs_ot_env%schur_constrained_quality_samples = 0
@@ -1924,6 +1928,7 @@ CONTAINS
       qs_ot_env%schur_model_quality_ready = .FALSE.
       qs_ot_env%schur_model_attempt = 0
       qs_ot_env%schur_model_flavor = 0
+      qs_ot_env%schur_last_accepted_flavor = 0
       qs_ot_env%schur_model_drop = 0.0_dp
       qs_ot_env%schur_model_calibrated_drop = 0.0_dp
       qs_ot_env%schur_model_slope = 0.0_dp
