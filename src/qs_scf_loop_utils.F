@@ -23631,10 +23631,8 @@ CONTAINS
             ! one scalar Mermin functional.  Use its symmetric part for both
             ! the Gaussian model metric and solve; an antisymmetric remainder
             ! from its finite occupation/projector response must not rotate
-            ! the complex Re/Im Newton direction. Keep the established
-            ! Fermi-Dirac solve until its response is transformed to the same
-            ! finite-coordinate metric.
-            IF (smear%method == smear_gaussian) schur(:, :) = schur_metric(:, :)
+            ! the complex Re/Im Newton direction.
+            schur(:, :) = schur_metric(:, :)
             IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),8(1X,ES16.8))') &
                " OT Schur hypothetical row-floor audit group ne nrot att preavg premin premax "// &
