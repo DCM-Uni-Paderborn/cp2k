@@ -13,6 +13,7 @@
 "Al_1_4_mv.inp"                         = [{matcher="E_total", tol=4.0E-12, ref=-8.27916163440613},
                                            {matcher="Variational_smearing_free_energy", tol=4.0E-12, ref=-8.27916163440613}]
 "Al_kp_ot_added_auto.inp"               = [{matcher="N_kpoints", tol=0.0, ref=1},
+                                           {matcher="OT_KPOINT_DEFAULT_IRAC"},
                                            {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},

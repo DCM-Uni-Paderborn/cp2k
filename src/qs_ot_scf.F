@@ -72,10 +72,12 @@ CONTAINS
 !> \brief ...
 !> \param qs_ot_env ...
 !> \param scf_section ...
+!> \param do_kpoints ...
 ! **************************************************************************************************
-   SUBROUTINE ot_scf_read_input(qs_ot_env, scf_section)
+   SUBROUTINE ot_scf_read_input(qs_ot_env, scf_section, do_kpoints)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(section_vals_type), POINTER                   :: scf_section
+      LOGICAL, INTENT(IN)                                :: do_kpoints
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_scf_read_input'
 
@@ -97,7 +99,8 @@ CONTAINS
       ot_section => section_vals_get_subs_vals(scf_section, "OT")
       CALL section_vals_get(ot_section, explicit=explicit)
 
-      CALL ot_readwrite_input(qs_ot_env(1)%settings, ot_section, output_unit)
+      CALL ot_readwrite_input(qs_ot_env(1)%settings, ot_section, output_unit, &
+                              kpoint_default_irac=do_kpoints)
 
       CALL cp_print_key_finished_output(output_unit, logger, scf_section, &
                                         "PRINT%PROGRAM_RUN_INFO")
@@ -204,8 +207,9 @@ CONTAINS
             IF (qs_ot_env(1)%settings%do_ener) THEN
                DO ispin = 1, SIZE(mo_array)
                   CALL dbcsr_get_diag(qs_ot_env(ispin)%rot_mat_chc, expectation_values(ispin)%array)
-                  IF (ASSOCIATED(qs_ot_env(ispin)%para_env)) &
+                  IF (ASSOCIATED(qs_ot_env(ispin)%para_env)) THEN
                      CALL qs_ot_env(ispin)%para_env%sum(expectation_values(ispin)%array)
+                  END IF
                   qs_ot_env(ispin)%ener_gx = expectation_values(ispin)%array
                   CALL set_mo_occupation(mo_set=mo_array(ispin), &
                                          smear=smear, eval_deriv=qs_ot_env(ispin)%ener_gx, &
@@ -241,8 +245,9 @@ CONTAINS
 
             ! subtract the current ener_x from the diagonal
             CALL dbcsr_get_diag(qs_ot_env(ispin)%matrix_buf2, expectation_values(ispin)%array)
-            IF (ASSOCIATED(qs_ot_env(ispin)%para_env)) &
+            IF (ASSOCIATED(qs_ot_env(ispin)%para_env)) THEN
                CALL qs_ot_env(ispin)%para_env%sum(expectation_values(ispin)%array)
+            END IF
             expectation_values(ispin)%array = expectation_values(ispin)%array - qs_ot_env(ispin)%ener_x
             CALL dbcsr_set_diag(qs_ot_env(ispin)%matrix_buf2, expectation_values(ispin)%array)
 
@@ -266,8 +271,9 @@ CONTAINS
          END DO
       END IF
 
-      IF (qs_ot_occupation_preconditioner_active(qs_ot_env(1))) &
+      IF (qs_ot_occupation_preconditioner_active(qs_ot_env(1))) THEN
          CALL precondition_ot_energy_gradient(qs_ot_env, mo_array, occupation_numbers, smear)
+      END IF
 
       ! this is kind of a hack so far (costly memory wise), we locally recreate the scaled matrix_hc, and
       ! use it in the following, eventually, as occupations numbers get more integrated, it should become possible
@@ -442,8 +448,9 @@ CONTAINS
             occ_denom = occupation_numbers(ispin)%array(imo)* &
                         (mo_array(ispin)%maxocc - occupation_numbers(ispin)%array(imo))
             curvature = occ_denom/thermal_scale
-            IF (curvature > EPSILON(curvature)) &
+            IF (curvature > EPSILON(curvature)) THEN
                qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo) - precond_shift(group)
+            END IF
          END DO
       END DO
 
@@ -626,8 +633,8 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL                     :: seeded
 
       INTEGER                                            :: frontier
-      REAL(KIND=dp)                                      :: electron_target, midpoint, target_tol
       LOGICAL                                            :: changed
+      REAL(KIND=dp)                                      :: electron_target, midpoint, target_tol
 
       changed = .FALSE.
       IF (PRESENT(seeded)) seeded = changed

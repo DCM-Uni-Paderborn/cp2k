@@ -247,6 +247,9 @@ registry["XTB_reference_cli_failed"] = TextPresenceMatcher(
 registry["SCF_guess_restart"] = TextPresenceMatcher(
     "Density guess:                                   RESTART"
 )
+registry["OT_KPOINT_DEFAULT_IRAC"] = TextPresenceMatcher(
+    "K-point OT default: ALGORITHM IRAC"
+)
 registry["NO_TEXT"] = TextAbsenceMatcher()
 registry["M083"] = GenericMatcher(r"1[   1] - 2[   1]", col=7)
 registry["M084"] = GenericMatcher(r"Ionization potential of the excited atom:", col=7)

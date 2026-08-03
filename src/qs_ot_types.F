@@ -2824,21 +2824,32 @@ CONTAINS
 !> \param settings ...
 !> \param ot_section ...
 !> \param output_unit ...
+!> \param kpoint_default_irac Select IRAC when ALGORITHM was not explicitly given.
 ! **************************************************************************************************
-   SUBROUTINE ot_readwrite_input(settings, ot_section, output_unit)
+   SUBROUTINE ot_readwrite_input(settings, ot_section, output_unit, kpoint_default_irac)
       TYPE(qs_ot_settings_type)                          :: settings
       TYPE(section_vals_type), POINTER                   :: ot_section
       INTEGER, INTENT(IN)                                :: output_unit
+      LOGICAL, INTENT(IN), OPTIONAL                      :: kpoint_default_irac
 
       CHARACTER(len=*), PARAMETER :: routineN = 'ot_readwrite_input'
 
       INTEGER                                            :: handle, ls_method, ot_algorithm, &
                                                             ot_method, ot_ortho_irac
+      LOGICAL                                            :: algorithm_explicit, &
+                                                            selected_kpoint_default
 
       CALL timeset(routineN, handle)
 
       ! choose algorithm
-      CALL section_vals_val_get(ot_section, "ALGORITHM", i_val=ot_algorithm)
+      selected_kpoint_default = .FALSE.
+      CALL section_vals_val_get(ot_section, "ALGORITHM", i_val=ot_algorithm, explicit=algorithm_explicit)
+      IF (PRESENT(kpoint_default_irac)) THEN
+         IF (kpoint_default_irac .AND. .NOT. algorithm_explicit) THEN
+            ot_algorithm = ot_algo_irac
+            selected_kpoint_default = .TRUE.
+         END IF
+      END IF
       SELECT CASE (ot_algorithm)
       CASE (ot_algo_taylor_or_diag)
          settings%ot_algorithm = "TOD"
@@ -3025,6 +3036,9 @@ CONTAINS
 
       IF (output_unit > 0) THEN
          WRITE (output_unit, '(/,A)') "  ----------------------------------- OT ---------------------------------------"
+         IF (selected_kpoint_default) THEN
+            WRITE (output_unit, '(A)') "  K-point OT default: ALGORITHM IRAC"
+         END IF
          IF (settings%do_rotation) THEN
             WRITE (output_unit, '(A)') "  Allowing for rotations "
          END IF

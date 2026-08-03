@@ -31,7 +31,6 @@
       MAX_SCF 12
       SCF_GUESS ATOMIC
       &OT
-        ALGORITHM IRAC
         ENERGIES
         LINESEARCH 2PNT
         MINIMIZER CG

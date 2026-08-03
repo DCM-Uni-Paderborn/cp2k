@@ -567,7 +567,10 @@ CONTAINS
                           "If preconditioned correctly, method guaranteed to find minimum. "//newline//newline// &
                           "**Disadvantages:** "// &
                           "Sensitive to preconditioning. A good preconditioner can be expensive. "// &
-                          "No smearing, or advanced SCF mixing possible: POOR convergence for metallic systems.", &
+                          "Advanced SCF mixing is not available. Metallic calculations can use "// &
+                          "variational finite-temperature OT with FERMI_DIRAC or GAUSSIAN smearing, "// &
+                          "orbital-energy optimization, and rotations. Non-monotone smearing methods "// &
+                          "are not supported by the OT occupation response.", &
                           n_keywords=27, n_subsections=0, repeats=.FALSE., &
                           citations=[VandeVondele2003, Weber2008])
 
@@ -582,7 +585,9 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="ALGORITHM", &
-                          description="Algorithm to be used for OT", &
+                          description="Algorithm to be used for OT. K-point OT requires IRAC; "// &
+                          "IRAC is selected automatically for K-point calculations when this "// &
+                          "keyword is omitted.", &
                           usage="ALGORITHM STRICT", &
                           default_i_val=ot_algo_taylor_or_diag, &
                           enum_c_vals=s2a("STRICT", "IRAC"), &
