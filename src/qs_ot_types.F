@@ -2827,14 +2827,17 @@ CONTAINS
 !> \param kpoint_default_irac Select IRAC when ALGORITHM was not explicitly given.
 !> \param smearing_default_occupation_preconditioner Select the fixed-N preconditioner when omitted.
 !> \param smearing_default_preconditioner Select the orbital preconditioner when omitted.
+!> \param smearing_default_full_all Select the unrestricted orbital preconditioner.
 ! **************************************************************************************************
    SUBROUTINE ot_readwrite_input(settings, ot_section, output_unit, kpoint_default_irac, &
-                                 smearing_default_occupation_preconditioner, smearing_default_preconditioner)
+                                 smearing_default_occupation_preconditioner, smearing_default_preconditioner, &
+                                 smearing_default_full_all)
       TYPE(qs_ot_settings_type)                          :: settings
       TYPE(section_vals_type), POINTER                   :: ot_section
       INTEGER, INTENT(IN)                                :: output_unit
       LOGICAL, INTENT(IN), OPTIONAL :: kpoint_default_irac, &
-         smearing_default_occupation_preconditioner, smearing_default_preconditioner
+         smearing_default_occupation_preconditioner, smearing_default_preconditioner, &
+         smearing_default_full_all
 
       CHARACTER(len=*), PARAMETER :: routineN = 'ot_readwrite_input'
 
@@ -2978,6 +2981,9 @@ CONTAINS
       IF (PRESENT(smearing_default_preconditioner)) THEN
          IF (smearing_default_preconditioner .AND. .NOT. preconditioner_explicit) THEN
             settings%preconditioner_type = ot_precond_full_single_inverse
+            IF (PRESENT(smearing_default_full_all)) THEN
+               IF (smearing_default_full_all) settings%preconditioner_type = ot_precond_full_all
+            END IF
             selected_preconditioner_default = .TRUE.
          END IF
       END IF
@@ -3067,7 +3073,7 @@ CONTAINS
          END IF
          IF (selected_preconditioner_default) THEN
             WRITE (output_unit, '(A)') &
-               "  K-point OT smearing default: PRECONDITIONER FULL_SINGLE_INVERSE"
+               "  K-point OT smearing default: PRECONDITIONER "//TRIM(settings%preconditioner_name)
          END IF
          IF (settings%do_rotation) THEN
             WRITE (output_unit, '(A)') "  Allowing for rotations "

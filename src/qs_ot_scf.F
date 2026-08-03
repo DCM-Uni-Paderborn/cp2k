@@ -74,11 +74,13 @@ CONTAINS
 !> \param scf_section ...
 !> \param do_kpoints ...
 !> \param do_smear ...
+!> \param nspin_ot Number of independent OT spin channels.
 ! **************************************************************************************************
-   SUBROUTINE ot_scf_read_input(qs_ot_env, scf_section, do_kpoints, do_smear)
+   SUBROUTINE ot_scf_read_input(qs_ot_env, scf_section, do_kpoints, do_smear, nspin_ot)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(section_vals_type), POINTER                   :: scf_section
       LOGICAL, INTENT(IN)                                :: do_kpoints, do_smear
+      INTEGER, INTENT(IN)                                :: nspin_ot
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_scf_read_input'
 
@@ -103,7 +105,8 @@ CONTAINS
       CALL ot_readwrite_input(qs_ot_env(1)%settings, ot_section, output_unit, &
                               kpoint_default_irac=do_kpoints, &
                               smearing_default_occupation_preconditioner=do_kpoints .AND. do_smear, &
-                              smearing_default_preconditioner=do_kpoints .AND. do_smear)
+                              smearing_default_preconditioner=do_kpoints .AND. do_smear, &
+                              smearing_default_full_all=nspin_ot == 2)
 
       CALL cp_print_key_finished_output(output_unit, logger, scf_section, &
                                         "PRINT%PROGRAM_RUN_INFO")

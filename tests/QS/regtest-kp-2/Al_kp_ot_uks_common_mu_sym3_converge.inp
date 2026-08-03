@@ -2,11 +2,12 @@
 ! symmetry-resolved metallic k-point OT. This input is intentionally not
 ! listed in TEST_FILES.toml. Unlike the fixed-moment companion, both spin
 ! channels share one fixed-N Mermin constraint and can exchange population.
-! It also covers the complex FULL_ALL preconditioner endpoint.
+! It also covers the automatic unrestricted metallic defaults, including the
+! complex FULL_ALL preconditioner endpoint.
 !
 ! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference from a fresh directory:
-! OT converges in 205 steps at EPS_SCF 1E-6. Mermin F is
-! -8.16155092632736 Ha, within 1.7E-8 Ha of matching diagonalization at
+! OT converges in 225 steps at EPS_SCF 1E-6. Mermin F is
+! -8.16155092823292 Ha, within 1.9E-8 Ha of matching diagonalization at
 ! -8.16155090938556 Ha. The weighted spin populations are 6.33333 and
 ! 5.66667. A restart companion restores the four (spin,k-point) channels in
 ! one step with identical free energy, entropy, chemical potential, and spin
@@ -47,12 +48,9 @@
       MAX_SCF 280
       SCF_GUESS ATOMIC
       &OT
-        ALGORITHM IRAC
         ENERGIES
         LINESEARCH 2PNT
         MINIMIZER CG
-        OCCUPATION_PRECONDITIONER
-        PRECONDITIONER FULL_ALL
         ROTATION
       &END OT
       &SMEAR

@@ -256,6 +256,9 @@ registry["OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"] = TextPresenceMatcher(
 registry["OT_KPOINT_DEFAULT_PRECONDITIONER"] = TextPresenceMatcher(
     "K-point OT smearing default: PRECONDITIONER FULL_SINGLE_INVERSE"
 )
+registry["OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"] = TextPresenceMatcher(
+    "K-point OT smearing default: PRECONDITIONER FULL_ALL"
+)
 registry["NO_TEXT"] = TextAbsenceMatcher()
 registry["M083"] = GenericMatcher(r"1[   1] - 2[   1]", col=7)
 registry["M084"] = GenericMatcher(r"Ionization potential of the excited atom:", col=7)

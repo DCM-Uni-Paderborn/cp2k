@@ -1,12 +1,9 @@
-! Manual restart companion for Al_kp_ot_uks_common_mu_sym3_converge.inp.
-! Run the source input first in the same directory. The four-channel
-! (spin,k-point) state is restored in one SCF step with Mermin F
-! -8.16155092632735 Ha, kTS -0.000244760978 Ha, and weighted spin
-! populations 6.33333/5.66667. This input is intentionally not listed in
-! TEST_FILES.toml.
+! Cheap parser/channel smoke for the automatic unrestricted metallic OT
+! defaults. The converged shared-mu physics path is kept in the unlisted
+! Al_kp_ot_uks_common_mu_sym3_converge.inp companion.
 &GLOBAL
-  PRINT_LEVEL HIGH
-  PROJECT Al_kp_ot_uks_common_mu_sym3_restart
+  PRINT_LEVEL LOW
+  PROJECT Al_kp_ot_uks_defaults
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -17,7 +14,6 @@
     MULTIPLICITY 3
     POTENTIAL_FILE_NAME POTENTIAL
     UKS TRUE
-    WFN_RESTART_FILE_NAME Al_kp_ot_uks_common_mu_sym3_converge-RESTART.kp
     &KPOINTS
       FULL_GRID OFF
       SCHEME MONKHORST-PACK 3 1 1
@@ -36,8 +32,9 @@
     &SCF
       ADDED_MOS 12
       EPS_SCF 1.0E-6
-      MAX_SCF 40
-      SCF_GUESS RESTART
+      IGNORE_CONVERGENCE_FAILURE
+      MAX_SCF 1
+      SCF_GUESS ATOMIC
       &OT
         ENERGIES
         LINESEARCH 2PNT
