@@ -269,6 +269,9 @@ registry["SIRIUS_Mermin_free_energy"] = GenericMatcher(
     col=1,
     regex=True,
 )
+registry["SIRIUS_Mermin_free_energy_present"] = TextPresenceMatcher(
+    "ENERGY| Mermin FORCE_EVAL ( SIRIUS ) free energy"
+)
 registry["M086"] = GenericMatcher(r"DIPOLE : CheckSum  =", col=5)
 registry["M087"] = GenericMatcher(r"POLAR : CheckSum  =", col=5)
 registry["XAS_excit_ener"] = GenericMatcher(r"XAS excitation energy (eV):", col=7)
