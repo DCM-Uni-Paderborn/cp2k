@@ -3,7 +3,7 @@
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
 ! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference: AUTO grows 4->8->16 and
-! converges in 61 final-space OT steps at -8.15998707957708 Ha.
+! converges in 94 final-space OT steps at -8.15998707946533 Ha.
 ! At 16 MOs the weighted upper-edge occupation is below 6E-97 and the basis
 ! signal is only 0.803, so AUTO correctly retains the adequate virtual space
 ! instead of masking the intrinsic minimizer tail by growing to the AO limit.

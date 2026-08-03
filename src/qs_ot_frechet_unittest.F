@@ -66,13 +66,13 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
         ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
         ot_kpoint_mermin_endpoint_status, ot_kpoint_mermin_full_direction_model, &
-        ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
-        ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
-        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
-        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
-        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
-        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_response_scale, &
-        ot_kpoint_secant_geometry
+        ot_kpoint_mermin_projected_reference_ready, ot_kpoint_mermin_recovery_active_tail, &
+        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
+        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
+        ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
+        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
+        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
+        ot_kpoint_rayleigh_response_scale, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
@@ -118,7 +118,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
         qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_quadratic_descent_scale, &
+        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_physical_audit_add_group, &
+        qs_scf_kp_physical_audit_begin, qs_scf_kp_quadratic_descent_scale, &
         qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
         qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
         qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
@@ -292,6 +293,8 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT complete reduced-space physical gradient", 5.0E-15_dp, nfail)
    CALL check_kpoint_complete_physical_audit_ready( &
       "k-point OT direct complete physical audit", nfail)
+   CALL check_kpoint_physical_audit_lifecycle( &
+      "k-point OT physical-audit endpoint lifecycle", 5.0E-15_dp, nfail)
    CALL check_kpoint_residual_pair_omission_limit( &
       "k-point OT reduced-space omission budget", 5.0E-27_dp, nfail)
    CALL check_kpoint_rebased_calibration_samples( &
@@ -6619,6 +6622,59 @@ CONTAINS
    END SUBROUTINE check_kpoint_complete_physical_audit_ready
 
 ! **************************************************************************************************
+!> \brief Check that repeated full endpoint audits do not accumulate line-search history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_physical_audit_lifecycle(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      TYPE(qs_ot_type)                                   :: ot_env
+
+      ot_env%kpoint_raw_delta = 3.0E-6_dp
+      ot_env%kpoint_physical_delta = 2.0E-6_dp
+      ot_env%kpoint_projected_delta = 1.0E-6_dp
+      CALL qs_scf_kp_physical_audit_begin(ot_env, 1.0E-7_dp)
+      CALL qs_scf_kp_physical_audit_add_group( &
+         ot_env, .FALSE., 9.0_dp, 4.0_dp, 5.0_dp, 3.0_dp, 2.0_dp)
+      failed = ot_env%kpoint_physical_delta_ready .OR. &
+               ot_env%kpoint_physical_delta_groups /= 1
+
+      ! A new line-search endpoint keeps the prior model residuals available
+      ! until the minimizer replaces them, but starts a fresh physical audit.
+      CALL qs_scf_kp_physical_audit_begin(ot_env, 2.0E-8_dp)
+      CALL qs_scf_kp_physical_audit_add_group( &
+         ot_env, .TRUE., 9.0_dp, 4.0_dp, 5.0_dp, 3.0_dp, 2.0_dp)
+      failed = failed .OR. .NOT. ot_env%kpoint_physical_delta_ready .OR. &
+               ot_env%kpoint_physical_delta_groups /= 1 .OR. &
+               ABS(ot_env%kpoint_physical_gnorm - 9.0_dp) > tol .OR. &
+               ABS(ot_env%kpoint_physical_rot_gnorm - 4.0_dp) > tol .OR. &
+               ABS(ot_env%kpoint_full_physical_rot_gnorm - 5.0_dp) > tol .OR. &
+               ABS(ot_env%kpoint_physical_energy_gnorm - 3.0_dp) > tol .OR. &
+               ABS(ot_env%kpoint_gauge_gnorm - 2.0_dp) > tol .OR. &
+               ABS(ot_env%kpoint_eps_scf - 2.0E-8_dp) > tol .OR. &
+               ABS(ot_env%kpoint_raw_delta - 3.0E-6_dp) > tol .OR. &
+               ABS(ot_env%kpoint_physical_delta - 2.0E-6_dp) > tol .OR. &
+               ABS(ot_env%kpoint_projected_delta - 1.0E-6_dp) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I4,6(1X,ES16.8))') TRIM(label), "failed", &
+            ot_env%kpoint_physical_delta_groups, ot_env%kpoint_physical_gnorm, &
+            ot_env%kpoint_physical_rot_gnorm, ot_env%kpoint_full_physical_rot_gnorm, &
+            ot_env%kpoint_physical_energy_gnorm, ot_env%kpoint_gauge_gnorm, &
+            ot_env%kpoint_eps_scf
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_physical_audit_lifecycle
+
+! **************************************************************************************************
 !> \brief Check the physical residual budget used by adaptive complex-pair selection.
 !> \param label ...
 !> \param tol ...
@@ -6884,7 +6940,11 @@ CONTAINS
                ABS(projected_reference - 1.66958285E-2_dp) > tol .OR. &
                .NOT. ot_kpoint_mermin_shared_spin_group(uks_spins, common_group) .OR. &
                ot_kpoint_mermin_shared_spin_group(uks_spins, fixed_groups) .OR. &
-               ot_kpoint_mermin_shared_spin_group(rks_spins, common_group)
+               ot_kpoint_mermin_shared_spin_group(rks_spins, common_group) .OR. &
+               .NOT. ot_kpoint_mermin_projected_reference_ready(.FALSE., 1, .TRUE.) .OR. &
+               ot_kpoint_mermin_projected_reference_ready(.FALSE., 0, .TRUE.) .OR. &
+               ot_kpoint_mermin_projected_reference_ready(.FALSE., 1, .FALSE.) .OR. &
+               .NOT. ot_kpoint_mermin_projected_reference_ready(.TRUE., 1, .FALSE.)
 
       ! Regression from the common-chemical-potential Al path: the raw search
       ! residual remains in trust, while the mature projected fixed-N residual

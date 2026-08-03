@@ -57,6 +57,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_mermin_candidate_restart_step, &
               ot_kpoint_mermin_recovery_active_tail, &
               ot_kpoint_mermin_recovery_deferred, &
+              ot_kpoint_mermin_projected_reference_ready, &
               ot_kpoint_mermin_reference_guard_delta, &
               ot_kpoint_mermin_search_stagnant, &
               ot_kpoint_mermin_restart_step, &
@@ -579,6 +580,26 @@ CONTAINS
       END DO
 
    END FUNCTION ot_kpoint_mermin_shared_spin_group
+
+! **************************************************************************************************
+!> \brief whether a projected physical residual is a valid immutable line-search reference
+!> \param physical_ready complete physical audit already satisfies its stationarity gate
+!> \param physical_groups number of complete fixed-N groups in the current endpoint audit
+!> \param shared_spin_group whether distinct spin channels share one fixed-N group
+!> \return whether the projected residual has the required physical group coverage
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_mermin_projected_reference_ready(physical_ready, physical_groups, &
+                                                            shared_spin_group) RESULT(ready)
+      LOGICAL, INTENT(IN)                                :: physical_ready
+      INTEGER, INTENT(IN)                                :: physical_groups
+      LOGICAL, INTENT(IN)                                :: shared_spin_group
+      LOGICAL                                            :: ready
+
+      ! Common-mu UKS has one fixed-N group containing both spin channels.  Group count is endpoint
+      ! coverage, not line-search history, so one rebuilt group is sufficient for that coupling.
+      ready = physical_ready .OR. (physical_groups > 0 .AND. shared_spin_group)
+
+   END FUNCTION ot_kpoint_mermin_projected_reference_ready
 
 ! **************************************************************************************************
 !> \brief calibrate a fixed-N Schur energy response against the exact fixed-orbital Rayleigh target
@@ -3316,10 +3337,11 @@ CONTAINS
       CASE (1)
          qs_ot_env(1)%mermin_ls_closure_rejected = .FALSE.
          IF (kpoint_projected_tail_delta(qs_ot_env) > 0.0_dp .AND. &
-             (qs_ot_env(1)%kpoint_physical_delta_ready .OR. &
-              (qs_ot_env(1)%kpoint_physical_delta_groups >= 2 .AND. &
-               ot_kpoint_mermin_shared_spin_group( &
-               qs_ot_env%spin_index, qs_ot_env%occupation_group_index)))) THEN
+             ot_kpoint_mermin_projected_reference_ready( &
+             qs_ot_env(1)%kpoint_physical_delta_ready, &
+             qs_ot_env(1)%kpoint_physical_delta_groups, &
+             ot_kpoint_mermin_shared_spin_group( &
+             qs_ot_env%spin_index, qs_ot_env%occupation_group_index))) THEN
             qs_ot_env(1)%mermin_ls_reference_delta = kpoint_projected_tail_delta(qs_ot_env)
          ELSE
             qs_ot_env(1)%mermin_ls_reference_delta = &

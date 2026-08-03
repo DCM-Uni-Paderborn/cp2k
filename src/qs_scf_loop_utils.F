@@ -319,6 +319,8 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_fermi_guard_transition, &
              qs_scf_kp_fixed_n_frozen_energy_gradient, &
              qs_scf_kp_fixed_n_response_mu_shift, &
+             qs_scf_kp_physical_audit_begin, &
+             qs_scf_kp_physical_audit_add_group, &
              qs_scf_kp_complete_physical_audit_ready, &
              qs_scf_kp_complete_physical_gradient_norm, &
              qs_scf_kp_residual_pair_omission_limit, &
@@ -404,6 +406,63 @@ CONTAINS
          mu_shift = weighted_energy_response/response_denominator
 
    END FUNCTION qs_scf_kp_fixed_n_response_mu_shift
+
+! **************************************************************************************************
+!> \brief begin one complete fixed-N k-point physical-gradient audit
+!>
+!>        The audit accumulators describe the current Hamiltonian/orbital endpoint.  They must be
+!>        rebuilt for every full gradient evaluation, including evaluations that close or restart
+!>        a line search.  Accepted-step calibration and minimizer history have a longer lifetime
+!>        and are deliberately not modified here.
+!> \param qs_ot_env first k-point OT channel carrying the globally reduced audit state
+!> \param eps_scf requested SCF threshold for this endpoint
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_physical_audit_begin(qs_ot_env, eps_scf)
+      TYPE(qs_ot_type), INTENT(INOUT)                    :: qs_ot_env
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf
+
+      qs_ot_env%kpoint_physical_delta_ready = .TRUE.
+      qs_ot_env%kpoint_physical_delta_groups = 0
+      qs_ot_env%kpoint_eps_scf = eps_scf
+      qs_ot_env%kpoint_physical_gnorm = 0.0_dp
+      qs_ot_env%kpoint_physical_rot_gnorm = 0.0_dp
+      qs_ot_env%kpoint_full_physical_rot_gnorm = 0.0_dp
+      qs_ot_env%kpoint_physical_energy_gnorm = 0.0_dp
+      qs_ot_env%kpoint_gauge_gnorm = 0.0_dp
+
+   END SUBROUTINE qs_scf_kp_physical_audit_begin
+
+! **************************************************************************************************
+!> \brief add one independent fixed-N spin group to the current physical-gradient audit
+!> \param qs_ot_env first k-point OT channel carrying the globally reduced audit state
+!> \param group_ready whether this complete spin-group audit satisfies its stationarity gate
+!> \param physical_norm complete physical gradient norm squared for this group
+!> \param rotation_norm active physical rotation-gradient norm squared
+!> \param full_rotation_norm complete physical rotation-gradient norm squared
+!> \param energy_norm fixed-N auxiliary-energy gradient norm squared
+!> \param gauge_norm occupation-gauge rotation-gradient norm squared
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_physical_audit_add_group(qs_ot_env, group_ready, physical_norm, &
+                                                 rotation_norm, full_rotation_norm, energy_norm, &
+                                                 gauge_norm)
+      TYPE(qs_ot_type), INTENT(INOUT)                    :: qs_ot_env
+      LOGICAL, INTENT(IN)                                :: group_ready
+      REAL(KIND=dp), INTENT(IN)                          :: physical_norm, rotation_norm, &
+                                                            full_rotation_norm, energy_norm, &
+                                                            gauge_norm
+
+      qs_ot_env%kpoint_physical_delta_groups = qs_ot_env%kpoint_physical_delta_groups + 1
+      qs_ot_env%kpoint_physical_gnorm = qs_ot_env%kpoint_physical_gnorm + physical_norm
+      qs_ot_env%kpoint_physical_rot_gnorm = qs_ot_env%kpoint_physical_rot_gnorm + rotation_norm
+      qs_ot_env%kpoint_full_physical_rot_gnorm = &
+         qs_ot_env%kpoint_full_physical_rot_gnorm + full_rotation_norm
+      qs_ot_env%kpoint_physical_energy_gnorm = &
+         qs_ot_env%kpoint_physical_energy_gnorm + energy_norm
+      qs_ot_env%kpoint_gauge_gnorm = qs_ot_env%kpoint_gauge_gnorm + gauge_norm
+      qs_ot_env%kpoint_physical_delta_ready = &
+         qs_ot_env%kpoint_physical_delta_ready .AND. group_ready
+
+   END SUBROUTINE qs_scf_kp_physical_audit_add_group
 
 ! **************************************************************************************************
 !> \brief complete physical gradient norm for a reduced k-point OT rotation space
@@ -17286,17 +17345,9 @@ CONTAINS
             local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .FALSE.
             local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
-            local_ot_env(1)%kpoint_physical_delta_ready = .TRUE.
-            local_ot_env(1)%kpoint_physical_delta_groups = 0
             local_ot_env(1)%kpoint_raw_delta = -1.0_dp
             local_ot_env(1)%kpoint_physical_delta = -1.0_dp
             local_ot_env(1)%kpoint_projected_delta = -1.0_dp
-            local_ot_env(1)%kpoint_eps_scf = eps_scf_channel
-            local_ot_env(1)%kpoint_physical_gnorm = 0.0_dp
-            local_ot_env(1)%kpoint_physical_rot_gnorm = 0.0_dp
-            local_ot_env(1)%kpoint_full_physical_rot_gnorm = 0.0_dp
-            local_ot_env(1)%kpoint_physical_energy_gnorm = 0.0_dp
-            local_ot_env(1)%kpoint_gauge_gnorm = 0.0_dp
             local_ot_env(1)%schur_constrained_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_calibrated_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_gap_ratio = 0.0_dp
@@ -17396,6 +17447,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_spectral_floor = 0.0_dp
             local_ot_env(1)%schur_projector_spectral_emin = 0.0_dp
          END IF
+         CALL qs_scf_kp_physical_audit_begin(local_ot_env(1), eps_scf_channel)
          IF (global_schur_replicated .AND. &
              logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A)') &
@@ -20840,20 +20892,10 @@ CONTAINS
                                        MAX(rot_grad_total_physical_norm, EPSILON(1.0_dp)) .OR. &
                                        physical_delta_norm_ready .OR. &
                                        physical_delta_plateau_ready)
-         local_ot_env(1)%kpoint_physical_delta_groups = &
-            local_ot_env(1)%kpoint_physical_delta_groups + 1
-         local_ot_env(1)%kpoint_physical_gnorm = &
-            local_ot_env(1)%kpoint_physical_gnorm + rot_grad_total_physical_norm
-         local_ot_env(1)%kpoint_physical_rot_gnorm = &
-            local_ot_env(1)%kpoint_physical_rot_gnorm + rot_grad_physical_norm
-         local_ot_env(1)%kpoint_full_physical_rot_gnorm = &
-            local_ot_env(1)%kpoint_full_physical_rot_gnorm + full_rot_grad_physical_norm
-         local_ot_env(1)%kpoint_physical_energy_gnorm = &
-            local_ot_env(1)%kpoint_physical_energy_gnorm + rot_grad_energy_norm
-         local_ot_env(1)%kpoint_gauge_gnorm = &
-            local_ot_env(1)%kpoint_gauge_gnorm + rot_grad_gauge_norm
-         local_ot_env(1)%kpoint_physical_delta_ready = &
-            local_ot_env(1)%kpoint_physical_delta_ready .AND. physical_delta_group_ready
+         CALL qs_scf_kp_physical_audit_add_group( &
+            local_ot_env(1), physical_delta_group_ready, rot_grad_total_physical_norm, &
+            rot_grad_physical_norm, full_rot_grad_physical_norm, rot_grad_energy_norm, &
+            rot_grad_gauge_norm)
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
             " OT Schur physical rotation residual group active full ratio:", &
