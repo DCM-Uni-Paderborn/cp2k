@@ -57,8 +57,8 @@
 # cheap while the adaptive AUTO grow path can still be checked against the
 # 1E-6 Mermin path. The LOW 2x1x1 reference converges in 111 final-space
 # MPI-2 steps and reaches -8.14585308840704 Ha. The symmetry-reduced
-# 3x1x1 reference takes 61 MPI-2/OMP-2 final-space steps and reaches
-# -8.15998707955088 Ha without overgrowing its empty virtual edge. The
+# 3x1x1 reference takes roughly 60-75 MPI-2/OMP-2 final-space steps and reaches
+# -8.1599870795 Ha within 4E-10 Ha without overgrowing its empty virtual edge. The
 # explicit full-grid 3x1x1 companion takes 57 final-space steps and reaches
 # -8.15998707954940 Ha. Their endpoints agree within 2E-12 Ha even though
 # their local virtual-space growth histories differ.

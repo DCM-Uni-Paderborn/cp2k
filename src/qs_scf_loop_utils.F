@@ -32,7 +32,7 @@ MODULE qs_scf_loop_utils
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type,&
                                               cp_to_string
-   USE cp_output_handling,              ONLY: high_print_level
+   USE cp_output_handling,              ONLY: debug_print_level
    USE input_constants,                 ONLY: smear_fermi_dirac,&
                                               smear_gaussian,&
                                               smear_mp,&
@@ -7943,7 +7943,7 @@ CONTAINS
          ! preconditioner come from the physical Hamiltonian rather than the
          ! zero/placeholder matrices.
          ot_kp_subspace_refresh = .TRUE.
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A)') &
             " OT k-point initial physical-subspace rebuild requested."
          CALL timestop(handle)
@@ -8014,7 +8014,7 @@ CONTAINS
                                .NOT. protect_mermin_ls_sample
       IF (protect_mermin_ls_sample) THEN
          logger => cp_get_default_logger()
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,4(1X,ES16.8))') &
                " OT Mermin LS accepted-sample projection guard idx ref best bdrop bpos:", &
                local_ot_env(1)%mermin_ls_best_sample_index, &
@@ -8135,7 +8135,7 @@ CONTAINS
                                allow_ot_kp_subspace_refresh, allow_ot_kp_orbital_tail_rebase)
       IF (ot_kp_subspace_refresh) GOTO 900
       CALL qs_scf_loop_update_ot_kp_occ_preconditioner(local_ot_env)
-      IF (logger%iter_info%print_level >= high_print_level) THEN
+      IF (logger%iter_info%print_level >= debug_print_level) THEN
          ALLOCATE (unweighted_residual_sq(2, nkpoint, nspin_ot), &
                    unweighted_residual_mult(nkpoint, nspin_ot))
          unweighted_residual_sq(:, :, :) = 0.0_dp
@@ -8179,7 +8179,7 @@ CONTAINS
                END DO
             END IF
 
-            IF (logger%iter_info%print_level >= high_print_level) THEN
+            IF (logger%iter_info%print_level >= debug_print_level) THEN
                CALL qs_ot_get_derivative_ref_complex(matrix_hc(local_channel)%matrix, &
                                                      matrix_hc_im(local_channel)%matrix, &
                                                      local_ot_env(local_channel))
@@ -8237,7 +8237,7 @@ CONTAINS
             DEALLOCATE (orbital_scaling_factor)
          END DO
       END DO
-      IF (logger%iter_info%print_level >= high_print_level) THEN
+      IF (logger%iter_info%print_level >= debug_print_level) THEN
          CALL para_env_inter_kp%sum(unweighted_residual_sq)
          CALL para_env_inter_kp%sum(unweighted_residual_mult)
          IF (logger%para_env%is_source()) THEN
@@ -8377,7 +8377,7 @@ CONTAINS
       END IF
       IF (ref_guarded) THEN
          logger => cp_get_default_logger()
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I4,3(1X,ES16.8))') &
                " OT k-point REF-overlap guard attempts scale min max:", &
                ref_guard_attempt, ref_guard_scale, ref_guard_min, ref_guard_max
@@ -8844,7 +8844,7 @@ CONTAINS
          residual_delta = MAX(residual_delta, eps_scf*(1.0_dp + 10.0_dp*EPSILON(1.0_dp)))
 
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),8(1X,ES16.8),3(1X,I6))') &
          " OT k-point outer exit audit physical density required pending search raw physical density floor exit eps "// &
          "qema samples pready dready:", &
@@ -9118,7 +9118,7 @@ CONTAINS
 
       IF (changed .OR. samples /= previous_samples) THEN
          logger => cp_get_default_logger()
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),2(1X,I3),1X,ES16.8)') &
             " OT k-point occupation preconditioner boundary active changed ready previous delta:", &
             at_search_boundary, active, changed, samples, previous_samples, local_ot_env(1)%delta
@@ -9370,7 +9370,7 @@ CONTAINS
                                                    density_closure_stagnant=.TRUE.)
 
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source() .AND. &
           (collapsed .OR. density_closure_stagnant .OR. orbital_tail_rebase) .AND. step_ready) &
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,L1),2(1X,I6),7(1X,ES16.8))') &
          " OT k-point subspace refresh ready restart stagnant buffer closure history "// &
@@ -9594,7 +9594,7 @@ CONTAINS
       IF (scf_env%iter_count < trigger_step) RETURN
 
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,12(1X,ES20.10E3),14(1X,L1))') &
             " OT k-point ADDED_MOS AUTO tail:", &
             scf_env%iter_count, scf_env%iter_delta, residual_model_delta, grow_limit, edge_grow_limit, basis_signal, &
@@ -10014,7 +10014,7 @@ CONTAINS
       END IF
 
       logger => cp_get_default_logger()
-      IF (guarded .AND. logger%iter_info%print_level >= high_print_level .AND. &
+      IF (guarded .AND. logger%iter_info%print_level >= debug_print_level .AND. &
           logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),1X,I5)') &
             " OT k-point trial frontier-window guard sigma anchor frac min_abs current trial release adjusted:", &
@@ -11470,7 +11470,7 @@ CONTAINS
    END SUBROUTINE qs_scf_loop_prepare_ot_kp_final_chc
 
 ! **************************************************************************************************
-!> \brief high-print diagnostic for k-point OT smearing quality
+!> \brief debug-print diagnostic for k-point OT smearing quality
 !> \param kpoints ...
 !> \param local_ot_env ...
 !> \param wkp ...
@@ -11499,7 +11499,7 @@ CONTAINS
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level < high_print_level) RETURN
+      IF (logger%iter_info%print_level < debug_print_level) RETURN
 
       fractional_weight = 0.0_dp
       weighted_electrons = 0.0_dp
@@ -12446,7 +12446,7 @@ CONTAINS
          CALL para_env_inter_kp%sum(rot_generator_re)
          CALL para_env_inter_kp%sum(rot_generator_im)
          rot_generator_norm = SQRT(MAX(0.0_dp, rot_generator_re + rot_generator_im))
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
             " OT k-point accumulated complex rotation norm re2 im2 total:", &
             rot_generator_re, rot_generator_im, rot_generator_norm
@@ -12941,11 +12941,11 @@ CONTAINS
             local_ot_env(local_channel)%kpoint_density_stationarity_delta = density_delta
             local_ot_env(local_channel)%kpoint_density_stationarity_max = density_max
          END DO
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
             " OT k-point canonical density stationarity rms max mu kTS:", &
             density_delta, density_max, canonical_mu(1), canonical_kTS
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             DO ispin = 1, nspin_ot
                DO ikpoint = 1, SIZE(wkp)
                   channel_metric = 0.0_dp
@@ -13141,7 +13141,7 @@ CONTAINS
              local_ot_env(1)%schur_model_flavor > 0) &
             local_ot_env(1)%schur_last_accepted_flavor = local_ot_env(1)%schur_model_flavor
          logger => cp_get_default_logger()
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I4,6(1X,ES16.8))') &
             " OT Schur accepted-position model flavor pos slope quad unit_drop pos_drop scale:", &
             local_ot_env(1)%schur_model_flavor, line_search_model_position, &
@@ -13224,7 +13224,7 @@ CONTAINS
 
                IF (sample_gap > 0.0_dp) residual_quality_ratio = MIN(residual_quality_ratio, sample_quality)
                logger => cp_get_default_logger()
-               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8))') &
                      " OT Schur Mermin LS accepted-state calibration n q qema gap gema raw_res rema resid adrop bdrop:", &
                      local_ot_env(1)%mermin_ls_accepted_quality_samples, &
@@ -13304,7 +13304,7 @@ CONTAINS
                   local_ot_env(1)%schur_closure_shadow_measured_sum + measured_drop
             END IF
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
                       '(A,1X,I6,9(1X,ES16.8))') &
@@ -13370,7 +13370,7 @@ CONTAINS
                END IF
             END IF
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
                       '(A,1X,I6,9(1X,ES16.8))') &
@@ -13461,7 +13461,7 @@ CONTAINS
                END IF
             END IF
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
                       '(A,1X,I6,3(1X,L1),9(1X,ES16.8))') &
@@ -13479,7 +13479,7 @@ CONTAINS
                closure_vector_shadow_baseline_error, closure_vector_shadow_candidate_error, &
                closure_vector_shadow_advantage, &
                local_ot_env(1)%schur_closure_vector_shadow_advantage_ema
-            IF (logger%iter_info%print_level >= high_print_level .AND. &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
                       '(A,1X,I6,2(1X,L1),4(1X,ES16.8))') &
@@ -13503,7 +13503,7 @@ CONTAINS
             residual_quality_ratio = ot_kp_schur_residual_tail_plateau_quality* &
                                      MIN(sample_quality, local_ot_env(1)%mermin_ls_accepted_quality_ema)
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
                   " OT Schur residual-tail plateau quality q raw_q delta current mermin_q:", &
                   residual_quality_ratio, raw_residual_quality_ratio, &
@@ -13519,7 +13519,7 @@ CONTAINS
             local_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
             local_ot_env(1)%schur_residual_history_quality = residual_quality_ratio
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                   " OT Schur residual-aware CG reset marked q raw_q delta current:", &
                   residual_quality_ratio, raw_residual_quality_ratio, &
@@ -13528,7 +13528,7 @@ CONTAINS
          END IF
          IF (local_ot_env(1)%schur_history_mixed) THEN
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,3(1X,ES16.8))') &
                   " OT Schur LS quality skipped mixed CG history attempt pred cal meas:", &
                   local_ot_env(1)%schur_model_attempt, predicted_drop, &
@@ -13876,7 +13876,7 @@ CONTAINS
                local_ot_env(1)%schur_vector_secant_residual_quality_ema, &
                ot_kp_schur_calibrated_quality_min_ratio)
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,7(1X,ES16.8))') &
                " OT Schur LS vector-secant history samples promoted q qema rq rqema pred meas ratio:", &
                samples, local_ot_env(1)%schur_vector_secant_candidate_enabled, &
@@ -13933,7 +13933,7 @@ CONTAINS
                local_ot_env(1)%schur_multisecant_residual_quality_ema, &
                ot_kp_schur_calibrated_quality_min_ratio)
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,7(1X,ES16.8))') &
                " OT Schur LS multisecant history samples promoted q qema rq rqema pred meas ratio:", &
                samples, local_ot_env(1)%schur_multisecant_candidate_enabled, &
@@ -13989,7 +13989,7 @@ CONTAINS
                local_ot_env(1)%schur_prediction_residual_quality_ema, &
                ot_kp_schur_calibrated_quality_min_ratio)
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,7(1X,ES16.8))') &
                " OT Schur LS prediction history samples promoted q qema rq rqema pred meas ratio:", &
                samples, local_ot_env(1)%schur_prediction_candidate_enabled, &
@@ -16034,7 +16034,7 @@ CONTAINS
             projector_physical_shift_quality = &
             local_ot_env(1)%schur_projector_physical_shift_quality_ema/ &
             local_ot_env(1)%schur_projector_physical_shift_ema
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8),1X,I6,2(1X,L1))') &
                " OT Schur LS quality attempt raw_pred cal_pred meas raw_ratio raw_ema cal_ratio cal_ema "// &
                "gap_ratio delta samples ready enabled:", &
@@ -16580,14 +16580,14 @@ CONTAINS
          aggregate_ratio = local_ot_env(1)%schur_reduced_secant_measured_sum/ &
                            MAX(local_ot_env(1)%schur_reduced_secant_drop_sum, EPSILON(1.0_dp))
          logger => cp_get_default_logger()
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), &
                    '(A,1X,L1,3(1X,I4),6(1X,ES16.8))') &
             " OT Schur LS reduced-secant accepted residual ready selected model actual groups "// &
             "start delta_dot delta_sq pos pred actual:", &
             quality_ready, selected_groups, model_groups, actual_groups, start_norm_sq, delta_dot, &
             delta_norm_sq, position, predicted_ratio, actual_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,7(1X,ES16.8))') &
             " OT Schur LS reduced-secant accepted history samples validated q qema rq rqema pred meas ratio:", &
             samples, local_ot_env(1)%schur_reduced_secant_shadow_validated, &
@@ -16698,14 +16698,14 @@ CONTAINS
          aggregate_ratio = local_ot_env(1)%schur_closure_candidate_measured_sum/ &
                            MAX(local_ot_env(1)%schur_closure_candidate_drop_sum, EPSILON(1.0_dp))
          logger => cp_get_default_logger()
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), &
                    '(A,1X,L1,3(1X,I4),6(1X,ES16.8))') &
             " OT Schur LS closure candidate accepted residual ready selected model actual groups "// &
             "start delta_dot delta_sq pos pred actual:", &
             quality_ready, selected_groups, model_groups, actual_groups, start_norm_sq, delta_dot, &
             delta_norm_sq, position, predicted_ratio, actual_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,12(1X,ES16.8))') &
             " OT Schur LS closure candidate accepted history samples validated "// &
             "q qema rf rfema rg rgema rc rcema fullr pred meas ratio:", &
@@ -16884,7 +16884,7 @@ CONTAINS
          END DO
 
          logger => cp_get_default_logger()
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             DO group = 1, ngroups
                IF (skip_group(group)) CYCLE
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,6(1X,ES16.8))') &
@@ -17208,7 +17208,7 @@ CONTAINS
          END IF
          CALL qs_scf_kp_physical_audit_begin(local_ot_env(1), eps_scf_channel)
          IF (global_schur_replicated .AND. &
-             logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+             logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A)') &
             " OT k-point distributed preconditioner: using global replicated Schur response"
          DO group = 1, ngroups
@@ -18624,7 +18624,7 @@ CONTAINS
          CPASSERT(ivar == nrot)
 
          IF (ne == 0 .OR. nrot == 0 .OR. nrot > max_schur_rot) THEN
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,I8),1(1X,L1))') &
                " OT Schur skipped group ne nrot full max active:", &
                target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_subspace
@@ -18637,26 +18637,26 @@ CONTAINS
                         channel_residual_pair_candidate, channel_residual_pair_score)
             RETURN
          END IF
-         IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
+         IF (schur_active_subspace .AND. logger%iter_info%print_level >= debug_print_level .AND. &
              logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,I8),2(1X,ES16.8))') &
             " OT Schur active subspace group ne nrot full max occ ewin:", &
             target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_occ_min, schur_energy_window
-         IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
+         IF (schur_active_subspace .AND. logger%iter_info%print_level >= debug_print_level .AND. &
              logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8),1X,L1,3(1X,ES16.8))') &
             " OT Schur density-pair activation group selected candidates capacity ready density raw threshold:", &
             target_group, nrot_density/2, density_pair_candidates, density_pair_available, &
             density_pair_activation_ready, local_ot_env(1)%kpoint_density_stationarity_delta, &
             response_raw_delta, density_pair_activation_threshold
-         IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
+         IF (schur_active_subspace .AND. logger%iter_info%print_level >= debug_print_level .AND. &
              logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8),2(1X,L1),4(1X,ES16.8))') &
             " OT Schur residual-pair completion group selected candidates capacity ready strict represented total omitted limit:", &
             target_group, nrot_residual/2, residual_pair_candidates, residual_pair_available, &
             residual_pair_selection_ready, residual_pair_strict_tail, residual_pair_active_score, &
             residual_pair_total_score, residual_pair_omitted_score, residual_pair_omitted_limit
-         IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
+         IF (schur_active_subspace .AND. logger%iter_info%print_level >= debug_print_level .AND. &
              logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I18),1X,L1)') &
             " OT Schur active-pair identity group count moment square new_search:", &
@@ -20676,29 +20676,29 @@ CONTAINS
             local_ot_env(1), physical_delta_group_ready, rot_grad_total_physical_norm, &
             rot_grad_physical_norm, full_rot_grad_physical_norm, rot_grad_energy_norm, &
             rot_grad_gauge_norm)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
             " OT Schur physical rotation residual group active full ratio:", &
             target_group, rot_grad_physical_norm, full_rot_grad_physical_norm, &
             rot_grad_physical_norm/MAX(full_rot_grad_physical_norm, EPSILON(1.0_dp))
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
             " OT Schur rotation gradient active audit group re im inactive_re inactive_im favg fmax wact winact:", &
             target_group, rot_grad_active_re, rot_grad_active_im, rot_grad_inactive_re, &
             rot_grad_inactive_im, rot_grad_active_fraction_avg, rot_grad_active_fraction_max, &
             rot_grad_active_weight_sum, rot_grad_inactive_weight_sum
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
             " OT Schur rotgrad occ audit grp gap_re gap_im gauge_re gauge_im wgap wgauge fermi_re fermi_im:", &
             target_group, rot_grad_gap_re, rot_grad_gap_im, rot_grad_gauge_re, &
             rot_grad_gauge_im, rot_grad_gap_weight, rot_grad_gauge_weight, &
             rot_grad_active_re, rot_grad_active_im
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,5(1X,ES16.8))') &
             " OT Schur physical residual audit group ready energy rot gauge total raw_delta:", &
             target_group, physical_delta_group_ready, rot_grad_energy_norm, rot_grad_physical_norm, &
             rot_grad_gauge_norm, rot_grad_total_physical_norm, residual_delta
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,L1),8(1X,ES16.8),1X,I6)') &
             " OT Schur physical residual plateau audit group ready plateau norm rawtail qema gema "// &
             "phys pdelta raw resp neps eps samples:", &
@@ -20839,7 +20839,7 @@ CONTAINS
          energy_curvature_floor = ot_kp_energy_curvature_absolute_cap
          IF (relative_energy_metric_ready) &
             energy_curvature_floor = qs_scf_kp_energy_curvature_floor(total_curv_diag_max)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,6(1X,ES16.8))') &
                " OT Schur occupation preconditioner group occ_sum occ_max tether_sum tether_max total_sum total_max:", &
                target_group, occ_curv_diag_sum, occ_curv_diag_max, tether_curv_diag_sum, &
@@ -20881,7 +20881,7 @@ CONTAINS
             CALL para_env_inter_kp%sum(energy_floor_count)
          IF (.NOT. global_schur_replicated) &
             CALL para_env_inter_kp%sum(energy_floor_curv_sum)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
             " OT Schur occupation preconditioner energy-floor group count curv_sum floor:", &
             target_group, energy_floor_count, energy_floor_curv_sum, energy_curvature_floor
@@ -20909,7 +20909,7 @@ CONTAINS
          END DO
          orbital_schur_diag_max = MAXVAL([(rot_hessian_orbital_schur(r, r), r=1, nrot)])
          orbital_schur_abs_avg = SUM(ABS(rot_hessian_orbital_schur))/REAL(nrot*nrot, KIND=dp)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
             " OT Schur orbital-complement shadow group diag_sum diag_max abs_avg:", &
             target_group, orbital_schur_diag_sum, orbital_schur_diag_max, orbital_schur_abs_avg
@@ -21994,7 +21994,7 @@ CONTAINS
                projector_physical_direct_density_fshadow_promotion_weight* &
                response_density_basis_filtered_audit_exact(:, :)
          END IF
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,17(1X,ES16.8),1X,L1,1(1X,ES16.8),2(1X,I8))') &
             " OT Schur projector phys direct density mix group weight boot mature qhist tqhist absavg "// &
             "selw selq selrq selmixrq gselq gselrq gscale rchavg rchmax rchfrac fshadow fready fprom "// &
@@ -22579,26 +22579,26 @@ CONTAINS
          IF (.NOT. vector_secant_update_ready) rot_hessian_secant(:, :) = rot_hessian_coupled(:, :)
          IF (.NOT. multisecant_update_ready) &
             rot_hessian_multisecant(:, :) = rot_hessian_coupled(:, :)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),1X,I6)') &
             " OT Schur vector-secant candidate group eligible apply promoted samples:", &
             target_group, vector_secant_update_eligible, vector_secant_update_ready, &
             local_ot_env(1)%schur_vector_secant_candidate_enabled, &
             local_ot_env(1)%schur_vector_secant_quality_samples
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,L1),1X,I6)') &
             " OT Schur multisecant candidate group eligible response apply promoted samples:", &
             target_group, multisecant_update_eligible, multisecant_response_ready, &
             multisecant_update_ready, &
             local_ot_env(1)%schur_multisecant_candidate_enabled, &
             local_ot_env(1)%schur_multisecant_quality_samples
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,L1),1X,ES16.8,1X,I6)') &
             " OT Schur prediction candidate group eligible transport apply promoted correction samples:", &
             target_group, prediction_update_eligible, prediction_transport_ready, &
             prediction_update_ready, local_ot_env(1)%schur_prediction_candidate_enabled, &
             prediction_transport_correction_ratio, local_ot_env(1)%schur_prediction_quality_samples
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),1X,I6)') &
             " OT Schur reduced-secant shadow group eligible replacement validated samples:", &
             target_group, reduced_secant_update_eligible, &
@@ -23844,11 +23844,6 @@ CONTAINS
             END IF
             IF (schur_attempt == 3 .AND. multisecant_update_ready) &
                z_e(:) = z_multisecant(:)
-            IF (schur_attempt == 1 .AND. logger%iter_info%print_level < high_print_level .AND. &
-                .NOT. split_candidate_enabled .AND. .NOT. constrained_candidate_enabled) THEN
-               constrained_reject_reason = reject_quality_gate
-               CYCLE
-            END IF
             IF (schur_attempt <= 2 .AND. .NOT. split_candidate_diagnostic) THEN
                IF (schur_attempt == 1) THEN
                   constrained_reject_reason = reject_quality_gate
@@ -24117,13 +24112,13 @@ CONTAINS
             ! Fermi-Dirac solve until its response is transformed to the same
             ! finite-coordinate metric.
             IF (smear%method == smear_gaussian) schur(:, :) = schur_metric(:, :)
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),8(1X,ES16.8))') &
                " OT Schur hypothetical row-floor audit group ne nrot att preavg premin premax "// &
                "flooravg floormax sfrac dsum dmax:", &
                target_group, ne, nrot, schur_attempt, diag_prefloor_avg, diag_prefloor_min, diag_prefloor_max, &
                row_floor_avg, row_floor_max, diag_shift_fraction, diag_shift_sum, diag_shift_max
-            IF (inactive_gauge_projection_used .AND. logger%iter_info%print_level >= high_print_level .AND. &
+            IF (inactive_gauge_projection_used .AND. logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,ES16.8))') &
                " OT Schur inactive gauge projection group att count gauge_grad phys_grad ratio:", &
@@ -24149,12 +24144,12 @@ CONTAINS
                row_floor_step_fraction = 0.0_dp
                IF (row_floor_step_norm > EPSILON(row_floor_step_norm)) &
                   row_floor_step_fraction = row_floor_shifted_step/row_floor_step_norm
-               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),5(1X,ES16.8))') &
                   " OT Schur row-floor step audit group att shifted_frac shift_quad step_norm dsum dmax:", &
                   target_group, schur_attempt, row_floor_step_fraction, row_floor_shift_quad, &
                   row_floor_step_norm, diag_shift_sum, diag_shift_max
-               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source() .AND. &
                    schur_attempt == 3 .AND. exact_attempt_response) &
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),5(1X,ES16.8))') &
                   " OT Schur projector tail active-delta mix group att weight absw rawdiag actdiag mixdiag:", &
@@ -24162,7 +24157,7 @@ CONTAINS
                   projector_coupled_weight*projector_tail_active_delta_weight, &
                   projector_hessian_delta_diag_avg, projector_tail_active_delta_diag_avg, &
                   projector_tail_delta_diag_avg
-               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source() .AND. &
                    schur_attempt == 3 .AND. exact_attempt_response) &
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),2(1X,ES16.8))') &
                   " OT Schur projector Frechet-gap coupled-delta mix group att weight diag:", &
@@ -24481,7 +24476,7 @@ CONTAINS
                      MATMUL(response_physical_model, canonical_density_trial_sol)
                   CALL project_kpoint_ot_schur_response(projector_physical_model_e, occ_curv, tether_curv, &
                                                         occ_curv_projection_sum, channel_nmo, e_offset)
-                  IF (logger%iter_info%print_level >= high_print_level .AND. &
+                  IF (logger%iter_info%print_level >= debug_print_level .AND. &
                       logger%para_env%is_source()) &
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,7(1X,ES16.8))') &
                      " OT Schur canonical density tangent blend group alpha gdot cross curv "// &
@@ -24490,7 +24485,7 @@ CONTAINS
                      canonical_density_tangent_cross, canonical_density_tangent_norm, &
                      canonical_density_tangent_scalar_gain, canonical_density_tangent_gain, &
                      canonical_density_tangent_raw_norm
-                  IF (logger%iter_info%print_level >= high_print_level .AND. &
+                  IF (logger%iter_info%print_level >= debug_print_level .AND. &
                       logger%para_env%is_source()) THEN
                      DO global_channel = 1, nchannels
                         IF (canonical_density_cauchy_channel(global_channel) > 0) THEN
@@ -24733,7 +24728,7 @@ CONTAINS
                            EPSILON(projector_physical_model_drop) .AND. &
                            projector_physical_response_weighted_step <= response_trust .AND. &
                            projector_physical_response_abs_step <= response_abs_trust
-                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             logger%para_env%is_source()) &
                            WRITE (cp_logger_get_default_unit_nr(logger), &
                                   '(A,1X,I3,1X,L1,7(1X,ES16.8))') &
@@ -25751,7 +25746,7 @@ CONTAINS
                      projector_physical_direct_curv_clip_avg = &
                         projector_physical_direct_curv_clip_sum/REAL(MAX(1, nrot), KIND=dp)
                   END IF
-                  IF (logger%iter_info%print_level >= high_print_level .OR. &
+                  IF (logger%iter_info%print_level >= debug_print_level .OR. &
                       projector_physical_direct_spectral_enabled) THEN
                      projector_physical_direct_curv_evec(:, :) = &
                         0.5_dp*(projector_physical_direct_delta(:, :) + &
@@ -25832,14 +25827,14 @@ CONTAINS
                      projector_physical_direct_diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                   projector_physical_direct_schur_mat(:, :) = &
                      0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
-                  IF (logger%iter_info%print_level >= high_print_level .AND. &
+                  IF (logger%iter_info%print_level >= debug_print_level .AND. &
                       logger%para_env%is_source()) &
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I4),3(1X,ES16.8))') &
                      " OT Schur density-mode projected floor group rank direct_trace density_trace max:", &
                      target_group, canonical_density_floor_rank, SUM(rhs), &
                      projector_physical_direct_density_floor_trace, &
                      projector_physical_direct_diag_shift_max
-                  IF (logger%iter_info%print_level >= high_print_level .OR. &
+                  IF (logger%iter_info%print_level >= debug_print_level .OR. &
                       projector_physical_direct_spectral_enabled) THEN
                      projector_physical_direct_schur_evec(:, :) = &
                         projector_physical_direct_schur_mat(:, :)
@@ -25911,7 +25906,7 @@ CONTAINS
                            EPSILON(projector_physical_direct_spectral_norm)
                         IF (projector_physical_direct_spectral_ready) &
                            projector_physical_direct_spectral_sol(:) = rhs(:)
-                        IF (logger%iter_info%print_level >= high_print_level) &
+                        IF (logger%iter_info%print_level >= debug_print_level) &
                            WRITE (cp_logger_get_default_unit_nr(logger), &
                                   '(A,5(1X,ES16.8))') &
                            " OT Schur projector phys direct spectral subspace dot fdot norm floor emin:", &
@@ -25921,7 +25916,7 @@ CONTAINS
                      END IF
                      projector_physical_direct_sol(:) = &
                         projector_physical_direct_history_scale*projector_physical_direct_sol(:)
-                     IF (logger%iter_info%print_level >= high_print_level) THEN
+                     IF (logger%iter_info%print_level >= debug_print_level) THEN
                         projector_physical_direct_trace_active_quad = 0.0_dp
                         projector_physical_direct_trace_actual_quad = 0.0_dp
                         projector_physical_direct_trace_full_quad = 0.0_dp
@@ -26057,7 +26052,7 @@ CONTAINS
                            projector_physical_direct_delta_negative_fraction = &
                            projector_physical_direct_delta_negative_norm/rx_weight
                      END IF
-                     IF (logger%iter_info%print_level < high_print_level) THEN
+                     IF (logger%iter_info%print_level < debug_print_level) THEN
                         projector_physical_direct_trace_active_quad = 0.0_dp
                         projector_physical_direct_trace_actual_quad = 0.0_dp
                         projector_physical_direct_trace_full_quad = 0.0_dp
@@ -26457,7 +26452,7 @@ CONTAINS
                         END IF
                      END IF
                      ! Feed the low-rank density-response shadow in normal
-                     ! runs as well; only its printed diagnostics stay HIGH-only.
+                     ! runs as well; only its detailed diagnostics require DEBUG print.
                      ! Its accepted step uses the same total physical+density
                      ! response that enters the Schur/RHS model.
                      IF (exact_density_direct_response_ready) THEN
@@ -26549,7 +26544,7 @@ CONTAINS
                            closure_response_fitted_residual_ratio = closure_density_probe_residual_ratio
                            closure_response_pair_fitted_residual_ratio = closure_density_probe_residual_ratio
                         END IF
-                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             logger%para_env%is_source()) &
                            WRITE (cp_logger_get_default_unit_nr(logger), &
                                   '(A,2(1X,I4),3(1X,L1),6(1X,ES16.8))') &
@@ -26627,7 +26622,7 @@ CONTAINS
                               projector_physical_direct_schur_vec(:, :) + &
                               rot_hessian_closure_response(:, :)
                         END IF
-                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             logger%para_env%is_source()) &
                            WRITE (cp_logger_get_default_unit_nr(logger), &
                                   '(A,1X,I3,1X,L1,3(1X,I4),8(1X,ES16.8))') &
@@ -26643,7 +26638,7 @@ CONTAINS
                            SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_baseline**2))), &
                            SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_response**2))), &
                            local_ot_env(1)%schur_closure_response_density_quality_ema
-                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             logger%para_env%is_source()) &
                            WRITE (cp_logger_get_default_unit_nr(logger), &
                                   '(A,1X,I3,4(1X,L1),1X,I6,10(1X,ES16.8))') &
@@ -26662,7 +26657,7 @@ CONTAINS
                            closure_coupled_validation_fitted_residual, &
                            closure_coupled_independence, closure_coupled_compatibility, &
                            closure_coupled_response_capture, closure_coupled_transport_ratio
-                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             logger%para_env%is_source()) THEN
                            DO global_channel = 1, nchannels
                               closure_response_mode_norm = DOT_PRODUCT( &
@@ -26702,7 +26697,7 @@ CONTAINS
                            projector_physical_direct_sol, canonical_density_tangent_modes, &
                            0.0_dp, canonical_density_mode_alpha, canonical_density_mode_linear, &
                            canonical_density_mode_curvature, canonical_density_tangent_gain)
-                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             logger%para_env%is_source()) THEN
                            DO global_channel = 1, nchannels
                               IF (MAXVAL(ABS(canonical_density_tangent_modes(:, global_channel))) <= &
@@ -26775,7 +26770,7 @@ CONTAINS
                                                          projector_physical_direct_density_sol - projector_physical_direct_sol, &
                                                          projector_physical_direct_density_sol - projector_physical_direct_sol, &
                                                          var_step_weight)
-                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             logger%para_env%is_source()) &
                            WRITE (cp_logger_get_default_unit_nr(logger), &
                                   '(A,1X,I3,4(1X,ES16.8))') &
@@ -26991,7 +26986,7 @@ CONTAINS
                               response_abs_trust
                         END IF
                      END IF
-                     IF (logger%iter_info%print_level >= high_print_level .AND. &
+                     IF (logger%iter_info%print_level >= debug_print_level .AND. &
                          logger%para_env%is_source()) &
                         WRITE (cp_logger_get_default_unit_nr(logger), &
                                '(A,1X,I3,3(1X,L1),8(1X,ES16.8))') &
@@ -27452,7 +27447,7 @@ CONTAINS
                                  ot_kp_schur_projector_density_full_min_drop .AND. &
                                  density_full_direct_response_weighted_step <= response_trust .AND. &
                                  density_full_direct_response_abs_step <= response_abs_trust
-                              IF (logger%iter_info%print_level >= high_print_level .AND. &
+                              IF (logger%iter_info%print_level >= debug_print_level .AND. &
                                   logger%para_env%is_source()) &
                                  WRITE (cp_logger_get_default_unit_nr(logger), &
                                         '(A,1X,I3,2(1X,L1),7(1X,ES16.8))') &
@@ -28227,7 +28222,7 @@ CONTAINS
                               END IF
                            END IF
                         END IF
-                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             projector_physical_direct_shadow_enabled) THEN
                            projector_physical_direct_curv_vec(:, :) = &
                               0.5_dp*((rot_hessian(:, :) + projector_physical_direct_delta(:, :)) + &
@@ -28284,7 +28279,7 @@ CONTAINS
                         IF (projector_physical_direct_effective_response_ready) &
                            projector_physical_direct_effective_rx_e(:) = &
                            projector_physical_direct_model_e(:)
-                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             logger%para_env%is_source()) THEN
                            rx_shift = MAXVAL(ABS(projector_physical_direct_model_e - &
                                                  projector_physical_direct_rx_e))
@@ -28383,7 +28378,7 @@ CONTAINS
                         projector_physical_direct_metric_norm_ratio = &
                         projector_physical_direct_metric_normp/ &
                         projector_physical_direct_normp
-                     IF (logger%iter_info%print_level >= high_print_level .AND. &
+                     IF (logger%iter_info%print_level >= debug_print_level .AND. &
                          projector_physical_direct_norm_rotation > &
                          EPSILON(projector_physical_direct_norm_rotation) .AND. &
                          projector_physical_direct_metric_norm_rotation > &
@@ -28991,7 +28986,7 @@ CONTAINS
                         END IF
                         IF (.NOT. metric_attempt_selectable) &
                            model_calibrated_drop = MAX(0.0_dp, model_calibrated_drop - row_floor_shift_drop)
-                        IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
+                        IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source() .AND. &
                             row_floor_shift_drop > EPSILON(row_floor_shift_drop)) &
                            WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),4(1X,ES16.8))') &
                            " OT Schur row-floor model audit group att drop gap_drop floor_drop cdrop:", &
@@ -29113,21 +29108,21 @@ CONTAINS
                         attempt_failed = .TRUE.
                         reject_reason = reject_quality_gate
                      END IF
-                     IF (logger%iter_info%print_level >= high_print_level .AND. &
+                     IF (logger%iter_info%print_level >= debug_print_level .AND. &
                          logger%para_env%is_source() .AND. metric_attempt_response) &
                         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),1(1X,L1),8(1X,ES16.8))') &
                         " OT Schur dense metric attempt group att select scale trust men mrot mp nratio cdrop:", &
                         target_group, schur_attempt, metric_attempt_selectable, direction_scale, dense_metric_trust_scale, &
                         dense_metric_norm_energy, dense_metric_norm_rotation, dense_metric_normp, &
                         norm_ratio, model_calibrated_drop
-                     IF (logger%iter_info%print_level >= high_print_level .AND. &
+                     IF (logger%iter_info%print_level >= debug_print_level .AND. &
                          logger%para_env%is_source() .AND. metric_attempt_response) &
                         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),7(1X,ES16.8))') &
                         " OT Schur dense metric residual shadow group att ew men mp scale drop gapdrop gratio:", &
                         target_group, schur_attempt, dense_metric_shadow_weight, dense_metric_shadow_norm_energy, &
                         dense_metric_shadow_normp, dense_metric_shadow_scale, dense_metric_shadow_bridge_drop, &
                         dense_metric_shadow_gap_drop, dense_metric_shadow_gap_drop_ratio
-                     IF (logger%iter_info%print_level >= high_print_level .AND. &
+                     IF (logger%iter_info%print_level >= debug_print_level .AND. &
                          logger%para_env%is_source() .AND. metric_attempt_response) &
                         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),5(1X,ES16.8))') &
                         " OT Schur dense metric step character group att gap gauge fermi gratio q:", &
@@ -29160,7 +29155,7 @@ CONTAINS
                END IF
             END IF
 
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),1(1X,L1),13(1X,ES16.8))') &
                " OT Schur attempt decision group att failed code scale sq drop cdrop gapdrop floordrop "// &
                "wtrust atrust mgap normratio gdotp normp:", &
@@ -30614,7 +30609,7 @@ CONTAINS
                                           prediction_model_calibrated_drop, &
                                           prediction_history_quality, prediction_trust_quality)
             END IF
-            IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= high_print_level .AND. &
+            IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),16(1X,ES16.8))') &
                " OT Schur coupled-prediction direct candidate group eligible ready slope quad "// &
@@ -30708,7 +30703,7 @@ CONTAINS
                   response_step_max = response_abs_step
                   dense_expected_drop = prediction_expected_drop
                END IF
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
                    logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), &
                          '(A,1X,I3,2(1X,L1),4(1X,ES16.8))') &
@@ -30773,7 +30768,7 @@ CONTAINS
                                               reduced_secant_history_quality, &
                                               reduced_secant_trust_quality)
             END IF
-            IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= high_print_level .AND. &
+            IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),13(1X,ES16.8))') &
                " OT Schur reduced-secant affine candidate group enabled ready slope quad scale "// &
@@ -30867,7 +30862,7 @@ CONTAINS
                   response_step_max = response_abs_step
                   dense_expected_drop = reduced_secant_expected_drop
                END IF
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
                    logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), &
                          '(A,1X,I3,2(1X,L1),4(1X,ES16.8))') &
@@ -30934,7 +30929,7 @@ CONTAINS
                                                  closure_candidate_history_quality, &
                                                  closure_candidate_trust_quality)
             END IF
-            IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= high_print_level .AND. &
+            IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
                       '(A,1X,I3,3(1X,L1),14(1X,ES16.8))') &
@@ -31044,7 +31039,7 @@ CONTAINS
                   response_step_max = response_abs_step
                   dense_expected_drop = closure_candidate_expected_drop
                END IF
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
                    logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), &
                          '(A,1X,I3,3(1X,L1),6(1X,ES16.8))') &
@@ -31064,7 +31059,7 @@ CONTAINS
             ! gradient is the dominant physical block.  Solve that block in its own Hessian metric
             ! instead of shrinking it with the orbital Euclidean norm.  The resulting direction
             ! still passes through the ordinary Mermin line search and accepted residual closure.
-            IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= high_print_level .AND. &
+            IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,L1),3(1X,ES16.8))') &
                " OT Schur energy closure gate group ready new density_ready tail physical density eps:", &
@@ -31088,7 +31083,7 @@ CONTAINS
                                                    occ_curv_projection_sum, channel_nmo, e_offset, &
                                                    energy_closure_metric_norm_energy)
                energy_closure_metric_norm_energy = MAX(0.0_dp, energy_closure_metric_norm_energy)
-               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,ES16.8))') &
                   " OT Schur energy closure raw group slope curvature max_step max_grad:", &
                   target_group, energy_closure_gdot_energy, energy_closure_metric_norm_energy, &
@@ -31105,7 +31100,7 @@ CONTAINS
                   energy_closure_candidate_selected = qs_scf_kp_energy_closure_preferred( &
                                                       energy_closure_model_drop, energy_closure_reference_drop, &
                                                       energy_closure_competing_ready)
-                  IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+                  IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),5(1X,ES16.8))') &
                      " OT Schur energy closure model group selected competing slope curvature scale drop ref:", &
                      target_group, energy_closure_candidate_selected, &
@@ -31224,7 +31219,7 @@ CONTAINS
                   closure_response_accepted_drop = MAX(0.0_dp, accepted_model_drop - &
                                                        0.5_dp*closure_response_candidate_quad)
                END IF
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
                    logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), &
                          '(A,1X,I3,2(1X,L1),6(1X,ES16.8))') &
@@ -31265,7 +31260,7 @@ CONTAINS
                   closure_full_response_accepted_drop = MAX(0.0_dp, accepted_model_drop - &
                                                             0.5_dp*closure_full_response_candidate_quad)
                END IF
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
                    logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), &
                          '(A,1X,I3,2(1X,L1),6(1X,ES16.8))') &
@@ -31277,7 +31272,7 @@ CONTAINS
                   closure_full_response_accepted_drop, &
                   closure_full_response_accepted_drop/ &
                   MAX(accepted_model_drop, EPSILON(1.0_dp))
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
                    logger%para_env%is_source() .AND. closure_coupled_response_ready) &
                   WRITE (cp_logger_get_default_unit_nr(logger), &
                          '(A,1X,I3,5(1X,ES16.8))') &
@@ -31312,7 +31307,7 @@ CONTAINS
                   closure_predictive_response_accepted_drop = MAX( &
                                                         0.0_dp, accepted_model_drop - 0.5_dp*closure_predictive_response_adjustment)
                END IF
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
                    logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), &
                          '(A,1X,I3,2(1X,L1),9(1X,ES16.8))') &
@@ -31326,7 +31321,7 @@ CONTAINS
                   closure_predictive_response_adjustment, closure_predictive_response_accepted_drop, &
                   closure_predictive_response_accepted_drop/ &
                   MAX(accepted_model_drop, EPSILON(1.0_dp))
-               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                   accepted_pair_var = 0
                   accepted_pair_re_var = 0
                   accepted_pair_im_var = 0
@@ -31384,7 +31379,7 @@ CONTAINS
                   IF (accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) &
                      accepted_reduced_secant_shadow_ratio = &
                      accepted_reduced_secant_shadow_drop/accepted_model_calibrated_drop
-                  IF (logger%iter_info%print_level >= high_print_level .AND. &
+                  IF (logger%iter_info%print_level >= debug_print_level .AND. &
                       logger%para_env%is_source()) &
                      WRITE (cp_logger_get_default_unit_nr(logger), &
                             '(A,1X,I3,2(1X,L1),4(1X,ES16.8))') &
@@ -31401,13 +31396,13 @@ CONTAINS
                orbital_schur_drop_ratio = 0.0_dp
                IF (model_calibrated_drop > EPSILON(model_calibrated_drop)) &
                   orbital_schur_drop_ratio = 0.5_dp*orbital_schur_step_quad/model_calibrated_drop
-               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
                   " OT Schur orbital-complement accepted shadow group quad add_drop ratio:", &
                   target_group, orbital_schur_step_quad, 0.5_dp*orbital_schur_step_quad, &
                   orbital_schur_drop_ratio
                IF (split_candidate_selected) accepted_projector_coupled_weight = 1.0_dp
-               IF (logger%iter_info%print_level >= high_print_level .OR. projector_physical_shadow_enabled .OR. &
+               IF (logger%iter_info%print_level >= debug_print_level .OR. projector_physical_shadow_enabled .OR. &
                    projector_plateau_gap_model_enabled) THEN
                   CALL audit_kpoint_ot_hessian_delta_modes(rot_hessian_projector_physical_offdiag_active, sol, &
                                                            model_calibrated_drop, &
@@ -32376,7 +32371,7 @@ CONTAINS
             energy_split_ratio = 0.0_dp
             IF (energy_independent_gdot > EPSILON(energy_independent_gdot)) &
                energy_split_ratio = energy_selected_gdot/energy_independent_gdot
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
                " OT Schur energy split audit group gsum gabs phys ind_gdot sel_gdot ratio ind_norm sel_norm:", &
                target_group, energy_gradient_sum, energy_gradient_abs_sum, rot_grad_energy_norm, &
@@ -32498,7 +32493,7 @@ CONTAINS
             local_ot_env(1)%schur_step_gauge_norm = accepted_step_gauge_norm
             local_ot_env(1)%schur_step_fermi_norm = accepted_step_fermi_norm
             local_ot_env(1)%schur_step_gauge_ratio = accepted_step_gauge_ratio
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                response_abs_trust_ratio = 0.0_dp
                IF (response_abs_trust > EPSILON(response_abs_trust)) &
@@ -33753,7 +33748,7 @@ CONTAINS
                                                                 dense_trust_quality*projector_physical_direct_density_audit_quality)
                            END IF
                         END IF
-                        ! Keep this HIGH-only active/full Direct probe diagnostic.
+                        ! Keep this DEBUG-only active/full Direct probe diagnostic.
                         ! Promotion must be learned from print-level-neutral
                         ! accepted steps, otherwise PRINT_LEVEL changes the
                         ! k-point OT minimizer path.
@@ -33774,7 +33769,7 @@ CONTAINS
          ! exact-response dense step, including the row-floor fallback that
          ! dominates the metallic residual tail. Waiting for an already selected
          ! Direct candidate makes promotion circular.
-         ! Keep this outside the HIGH print block so PRINT_LEVEL cannot change
+         ! Keep this outside the DEBUG print block so PRINT_LEVEL cannot change
          ! the k-point OT minimizer path.
          IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop) .AND. &
              (selected_attempt == 3 .OR. selected_attempt == 4 .OR. &
@@ -34764,7 +34759,7 @@ CONTAINS
                ELSE
                   measured_model_ready = .FALSE.
                END IF
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
                    logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I2,3(1X,L1),13(1X,ES16.8))') &
                   " OT Schur measured-residual affine candidate rank base subspace model bratio bcapture "// &
@@ -34858,7 +34853,7 @@ CONTAINS
             current_residual_ready, weight=rotation_residual_weight)
          IF (residual_step_ready) direction_scale = residual_direction_scale
          floor_quadratic = modal_shift*DOT_PRODUCT(correction_rotation, correction_rotation)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I2,1X,L1,10(1X,ES16.8))') &
             " OT Schur reduced-secant KKT rank replacement sres refres gfrac floor bdrop "// &
             "ilinear iquad alpha rnorm enorm:", &
@@ -34867,7 +34862,7 @@ CONTAINS
             base_drop, increment_slope, correction_quadratic, direction_scale, &
             SQRT(MAX(0.0_dp, DOT_PRODUCT(correction_rotation, correction_rotation))), &
             SQRT(MAX(0.0_dp, DOT_PRODUCT(correction_energy, correction_energy)))
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,6(1X,ES16.8))') &
             " OT Schur reduced-secant affine rotation residual ready base delta alpha scale ratio dot:", &
             residual_step_ready, &
@@ -34877,7 +34872,7 @@ CONTAINS
             residual_direction_scale, rotation_residual_ratio, &
             DOT_PRODUCT(rotation_residual_weight, &
                         base_rotation_residual*correction_rotation_residual)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,5(1X,ES16.8))') &
             " OT Schur reduced-secant measured rotation residual ready current delta alpha scale ratio:", &
             current_residual_ready, &
@@ -36059,7 +36054,7 @@ CONTAINS
          IF (previous_full_secant_rotation_norm > EPSILON(previous_full_secant_rotation_norm)) &
             previous_response_coverage = DOT_PRODUCT(previous_secant_rotation, previous_secant_rotation)/ &
                                          previous_full_secant_rotation_norm
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,8(1X,ES16.8))') &
             " OT Schur accepted secant active coverage group history step response pstep presponse "// &
             "full_step full_response pfull_step pfull_response:", &
@@ -36282,7 +36277,7 @@ CONTAINS
                   closure_coupled_rotation_targets(:, iobs), &
                   closure_coupled_energy_targets(:, iobs), work_ratio(iobs), &
                   work_projection_applied(iobs), work_before(iobs), work_after(iobs))
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
                    logger%para_env%is_source()) &
                   WRITE (cp_logger_get_default_unit_nr(logger), &
                          '(A,2(1X,I3),1X,L1,4(1X,ES16.8))') &
@@ -36305,7 +36300,7 @@ CONTAINS
                observable_consistent=closure_predictive_work_consistent)
             closure_coupled_fit_ready = closure_coupled_ready
             closure_coupled_transport_ready = closure_coupled_ready
-            IF (logger%iter_info%print_level >= high_print_level .AND. &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
                       '(A,1X,I3,3(1X,L1),9(1X,ES16.8))') &
@@ -36978,14 +36973,14 @@ CONTAINS
             END IF
          END IF
 
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,12(1X,ES16.8))') &
      " OT Schur accepted vector model group selected_sty global_sty sths ratio ynorm mnorm rnorm rrot rener align ym_align orth:", &
             target_group, sty, stored_sty, sths, curvature_ratio, SQRT(MAX(0.0_dp, y_norm)), &
             SQRT(MAX(0.0_dp, model_norm)), SQRT(MAX(0.0_dp, residual_norm)), &
             SQRT(MAX(0.0_dp, residual_rotation_norm)), SQRT(MAX(0.0_dp, residual_energy_norm)), &
             alignment, model_alignment, orthogonal_fraction
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,12(1X,ES16.8))') &
             " OT Schur accepted response components group sr se Hrr HrE HEe HrespR HrespE "// &
             "qrr qrE qee qrespR qrespE:", &
@@ -36995,12 +36990,12 @@ CONTAINS
             component_energy_norm, component_rotation_response_norm, component_energy_response_norm, &
             component_rotation_curvature, component_cross_curvature, component_energy_curvature, &
             component_rotation_response_curvature, component_energy_response_curvature
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,ES16.8))') &
             " OT Schur accepted response alignments group Hrr HEe responseR responseE:", &
             target_group, component_rotation_alignment, component_energy_alignment, &
             component_rotation_response_alignment, component_energy_response_alignment
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,13(1X,ES16.8))') &
             " OT Schur frozen-H closure reduced group valid tnorm fnorm cnorm mnorm fres "// &
             "tcurv fcurv ccurv mcurv talign falign calign decomp:", &
@@ -37010,7 +37005,7 @@ CONTAINS
             reduced_model_curvature, total_model_alignment, frozen_model_alignment, &
             closure_model_alignment, &
             decomposition_error
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),8(1X,ES16.8))') &
             " OT Schur coupled closure response group fit transport independence compatibility "// &
             "capture residual_ratio transport_ratio rot_ratio ener_ratio cross_ratio:", &
@@ -37018,7 +37013,7 @@ CONTAINS
             closure_coupled_independence, closure_coupled_compatibility, closure_coupled_capture, &
             closure_coupled_residual_ratio, closure_coupled_transport_ratio, &
             closure_coupled_rotation_ratio, closure_coupled_energy_ratio, closure_coupled_cross_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),6(1X,ES16.8))') &
             " OT Schur endpoint-local frozen-H multisecant group history finite indep compat "// &
             "rnorm unorm corr cratio:", &
@@ -37026,7 +37021,7 @@ CONTAINS
             frozen_endpoint_multisecant_independence, frozen_endpoint_multisecant_compatibility, &
             frozen_endpoint_multisecant_residual_norm, frozen_endpoint_multisecant_updated_residual_norm, &
             frozen_endpoint_multisecant_correction_norm, frozen_endpoint_multisecant_correction_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),16(1X,ES16.8))') &
             " OT Schur frozen-H prediction group finite overlap capture quality align cratio "// &
             "rnorm pnorm curvature reverse_overlap reverse_capture reverse_quality reverse_align "// &
@@ -37040,7 +37035,7 @@ CONTAINS
             frozen_prediction_alignment(2), frozen_prediction_curvature_ratio(2), &
             frozen_prediction_residual_norm(2), frozen_prediction_predicted_residual_norm(2), &
             frozen_prediction_curvature(2)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),6(1X,ES16.8))') &
             " OT Schur frozen-H held-out total group consistent eligible quality align base_rnorm "// &
             "candidate_rnorm curvature cratio:", &
@@ -37049,7 +37044,7 @@ CONTAINS
             frozen_total_prediction_alignment, total_reduced_residual_norm, &
             frozen_total_prediction_residual_norm, frozen_total_prediction_curvature, &
             frozen_total_prediction_curvature_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,10(1X,ES16.8))') &
             " OT Schur coupled leave-one-out response group finite overlap capture quality "// &
             "qrot qener align cratio rnorm pnorm curvature:", &
@@ -37059,7 +37054,7 @@ CONTAINS
             coupled_prediction_alignment, coupled_prediction_curvature_ratio, &
             coupled_prediction_residual_norm, coupled_prediction_predicted_residual_norm, &
             coupled_prediction_curvature
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,10(1X,ES16.8))') &
             " OT Schur coupled reverse response group finite overlap capture quality "// &
             "qrot qener align cratio rnorm pnorm curvature:", &
@@ -37069,7 +37064,7 @@ CONTAINS
             coupled_prediction_reverse_alignment, coupled_prediction_reverse_curvature_ratio, &
             coupled_prediction_reverse_residual_norm, &
             coupled_prediction_reverse_predicted_residual_norm, coupled_prediction_reverse_curvature
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,8(1X,ES16.8))') &
             " OT Schur reduced leave-one-out response group finite overlap capture quality "// &
             "align cratio rnorm pnorm curvature:", &
@@ -37077,7 +37072,7 @@ CONTAINS
             reduced_prediction_capture, reduced_prediction_quality, reduced_prediction_alignment, &
             reduced_prediction_curvature_ratio, reduced_prediction_residual_norm, &
             reduced_prediction_predicted_residual_norm, reduced_prediction_curvature
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,8(1X,ES16.8))') &
             " OT Schur reduced reverse response group finite overlap capture quality "// &
             "align cratio rnorm pnorm curvature:", &
@@ -37087,23 +37082,23 @@ CONTAINS
             reduced_prediction_reverse_residual_norm, &
             reduced_prediction_reverse_predicted_residual_norm, &
             reduced_prediction_reverse_curvature
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1))') &
             " OT Schur coupled/reduced prediction mutually validated group eligible:", &
             target_group, prediction_update_ready, reduced_prediction_consistent
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),9(1X,ES16.8))') &
            " OT Schur accepted rotation secant shadow group finite eligible sty stbs ratio ynorm mnorm align rnorm unorm cratio:", &
             target_group, update_finite, update_ready, rotation_sty, rotation_stbs, rotation_curvature_ratio, &
             SQRT(MAX(0.0_dp, rotation_y_norm)), SQRT(MAX(0.0_dp, rotation_model_norm)), &
             rotation_model_alignment, rotation_residual_norm, updated_rotation_residual_norm, correction_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),5(1X,ES16.8))') &
             " OT Schur accepted directional curvature group finite eligible full model measured correction norm cratio:", &
             target_group, directional_update_finite, directional_update_ready, full_update_ready, &
             directional_model_curvature, total_reduced_curvature, directional_correction_curvature, &
             directional_correction_norm, directional_correction_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), &
                    '(A,1X,I3,3(1X,L1),2(1X,I2),5(1X,ES16.8))') &
             " OT Schur directional subspace group history finite eligible rank crank indep compat norm cratio error:", &
@@ -37112,17 +37107,17 @@ CONTAINS
             directional_subspace_independence, directional_subspace_compatibility, &
             directional_subspace_correction_norm, directional_subspace_correction_ratio, &
             directional_subspace_curvature_error
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,ES16.8)') &
             " OT Schur accepted rotation secant correction group Frobenius:", &
             target_group, correction_norm
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),6(1X,ES16.8))') &
             " OT Schur rotation multisecant shadow group hist finite eligible indep compat rnorm unorm corr cratio:", &
             target_group, previous_valid, multisecant_finite, rotation_multisecant_ready, &
             multisecant_independence, multisecant_compatibility, multisecant_residual_norm, &
             multisecant_updated_residual_norm, multisecant_correction_norm, multisecant_correction_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),9(1X,ES16.8))') &
             " OT Schur coupled multisecant shadow group hist finite eligible indep compat "// &
             "rnorm unorm corr cratio rcratio ecratio ccratio:", &
@@ -37132,7 +37127,7 @@ CONTAINS
             coupled_multisecant_correction_norm, coupled_multisecant_correction_ratio, &
             coupled_multisecant_rotation_correction_ratio, coupled_multisecant_energy_correction_ratio, &
             coupled_multisecant_cross_correction_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),10(1X,ES16.8))') &
             " OT Schur coupled subspace shadow group hist finite eligible indep compat capture "// &
             "rnorm unorm prnorm corr rcratio ecratio ccratio:", &
@@ -37142,11 +37137,11 @@ CONTAINS
             coupled_subspace_updated_residual_norm, coupled_subspace_projected_residual_norm, &
             coupled_subspace_correction_norm, coupled_subspace_rotation_correction_ratio, &
             coupled_subspace_energy_correction_ratio, coupled_subspace_cross_correction_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),1X,ES16.8)') &
             " OT Schur coupled reduced shadow group finite eligible correction ratio:", &
             target_group, coupled_schur_finite, coupled_schur_eligible, coupled_schur_correction_ratio
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),6(1X,ES16.8))') &
             " OT Schur direct reduced multisecant group finite eligible indep compat rnorm unorm corr cratio:", &
             target_group, reduced_multisecant_finite, reduced_multisecant_eligible, &
@@ -42112,7 +42107,7 @@ CONTAINS
                   canonical_density_tangent(r) = -REAL(tangent_im_complex(imo, jmo), KIND=dp)
                END SELECT
             END DO
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,6(1X,ES16.8))') &
                " OT Schur canonical density tangent channel cauchy target newton_linear ratio norm "// &
                "newton_gdot cauchy_gdot:", &
@@ -42500,7 +42495,7 @@ CONTAINS
             END DO
          END DO
 
-         IF (compute_frechet_shadow .AND. logger%iter_info%print_level >= high_print_level .AND. &
+         IF (compute_frechet_shadow .AND. logger%iter_info%print_level >= debug_print_level .AND. &
              logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,4(1X,ES16.8))') &
             " OT Schur fixed-N Frechet shadow channel norm active_gap trace hermitian:", &

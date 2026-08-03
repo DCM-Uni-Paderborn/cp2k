@@ -23,7 +23,7 @@ MODULE qs_ot_minimizer
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
-   USE cp_output_handling,              ONLY: high_print_level
+   USE cp_output_handling,              ONLY: debug_print_level
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE mathlib,                         ONLY: diamat_all
@@ -863,7 +863,7 @@ CONTAINS
 
       IF (qs_ot_env(1)%has_complex_kpoint_state) THEN
          logger => cp_get_default_logger()
-         IF (logger%iter_info%print_level >= high_print_level) THEN
+         IF (logger%iter_info%print_level >= debug_print_level) THEN
             direction_matrix_re2 = 0.0_dp
             direction_matrix_im2 = 0.0_dp
             direction_rotation_re2 = 0.0_dp
@@ -1029,7 +1029,7 @@ CONTAINS
          ! stale pre-step residual to the outer SCF convergence check.
          CALL reset_kpoint_mermin_search(qs_ot_env, qs_ot_env(1)%settings%ds_min)
          qs_ot_env(1)%OT_METHOD_FULL = "OT FIN"
-         IF (logger%iter_info%print_level >= high_print_level .AND. &
+         IF (logger%iter_info%print_level >= debug_print_level .AND. &
              logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,ES16.8))') &
                " OT Mermin accepted endpoint converged delta eps:", &
@@ -1183,7 +1183,7 @@ CONTAINS
       END IF
 
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,8(1X,ES16.8))') &
             " OT Mermin closed-response audit n model current q qema dmodel dcurrent dq dqema:", &
             samples, qs_ot_env(1)%schur_closure_response_model_delta, current_delta, &
@@ -1420,7 +1420,7 @@ CONTAINS
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, rotation_slope)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, energy_slope)
       slope_sum = matrix_slope + rotation_slope + energy_slope
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
             " OT Mermin direction component slopes matrix rotation energy sum:", &
             matrix_slope, rotation_slope, energy_slope, slope_sum
@@ -1983,7 +1983,7 @@ CONTAINS
          qs_ot_env(ichannel)%mermin_secant_work_ratio = energy_curvature/total_curvature
       END DO
 
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,8(1X,ES16.8))') &
             " OT Mermin accepted secant slopes valid alpha imat irot iener cmat crot cener current:", &
             valid, alpha, initial_matrix, initial_rotation, initial_energy, &
@@ -2501,7 +2501,7 @@ CONTAINS
       restart_step = MAX(step_floor, restart_step)
 
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,4(1X,ES16.8))') &
             " OT Mermin LS flat residual-preflight restart count delta old_step new_step floor:", &
             count, mermin_tail_delta, qs_ot_env(1)%ds_min, restart_step, step_floor
@@ -2585,7 +2585,7 @@ CONTAINS
       END IF
 
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),2(1X,ES16.8),1X,I5,4(1X,ES16.8))') &
             " OT Mermin LS recovery step_collapsed sample_collapsed active exhausted stagnant "// &
             "ds floor count pos pmax delta restart:", &
@@ -2936,7 +2936,7 @@ CONTAINS
       END DO
 
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          DO group = 1, ngroups
             combined_probe_max = direction_max(group)
             target_rms = SQRT(MAX(0.0_dp, target_norm2(group))/ &
@@ -3142,7 +3142,7 @@ CONTAINS
    END SUBROUTINE take_energy_step
 
 ! **************************************************************************************************
-!> \brief high-print diagnostic for auxiliary-energy trust-region steps
+!> \brief debug-print diagnostic for auxiliary-energy trust-region steps
 !> \param qs_ot_env ...
 ! **************************************************************************************************
    SUBROUTINE print_energy_step_diagnostic(qs_ot_env)
@@ -3155,7 +3155,7 @@ CONTAINS
       TYPE(cp_logger_type), POINTER                      :: logger
 
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level < high_print_level) RETURN
+      IF (logger%iter_info%print_level < debug_print_level) RETURN
 
       raw_step_max = 0.0_dp
       trusted_step_max = 0.0_dp
@@ -3422,7 +3422,7 @@ CONTAINS
          END IF
          IF (mermin_search) THEN
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,10(1X,ES16.8))') &
                   " OT Mermin LS model idx pos model best mdrop bdrop q slope0 fit mismatch next:", &
                   best_index, pos, val, best_energy, model_drop, best_drop, model_quality, &
@@ -3467,7 +3467,7 @@ CONTAINS
                   MIN(qs_ot_env(1)%schur_residual_history_quality, residual_quality)
             END IF
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,1X,L1,7(1X,ES16.8))') &
                   " OT Mermin LS residual backtrack count reset ref current ratio quality pos next floor:", &
                   closure_backtracks, mermin_closure_reset, &
@@ -3508,7 +3508,7 @@ CONTAINS
                qs_ot_env(1)%mermin_ls_next_pos = qs_ot_env(1)%OT_pos(count + 1)
             END IF
             logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,1X,L1,5(1X,ES16.8))') &
                   " OT Mermin LS closure backtrack count reset ref current pos next:", &
                   closure_backtracks, mermin_closure_reset, &
@@ -3954,13 +3954,13 @@ CONTAINS
       INTEGER :: catastrophic_reset_any, direction_ready_all, growth_reset_any, handle, ispin, &
          matrix_cols, matrix_rows, nspin, schur_attempt, schur_flavor, schur_last_attempt, &
          schur_last_flavor
-      LOGICAL :: complex_kpoint_history, do_ener, do_ks, high_diagnostic, high_diagnostic_source, &
-         history_spike_reset, kpoint_preconditioned_direction, mermin_residual_catastrophic_reset, &
-         mermin_residual_growth_reset, negative_beta, physical_raw_gap_guard, preflight_only, &
-         projected_raw_tail_release, reset_to_sd, residual_history_reset, &
-         residual_spike_history_reset, residual_tail_spike_reset, schur_calibration_change, &
-         schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
-         schur_projector_tail_reset
+      LOGICAL :: complex_kpoint_history, debug_diagnostic, debug_diagnostic_source, do_ener, &
+         do_ks, history_spike_reset, kpoint_preconditioned_direction, &
+         mermin_residual_catastrophic_reset, mermin_residual_growth_reset, negative_beta, &
+         physical_raw_gap_guard, preflight_only, projected_raw_tail_release, reset_to_sd, &
+         residual_history_reset, residual_spike_history_reset, residual_tail_spike_reset, &
+         schur_calibration_change, schur_history_change, schur_history_mixed, &
+         schur_projector_jump_reset, schur_projector_tail_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, full_direction_drop, full_direction_optimum, &
          full_direction_quadratic, full_direction_slope, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_metric, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, &
@@ -3990,8 +3990,8 @@ CONTAINS
 
       nspin = SIZE(qs_ot_env)
       logger => cp_get_default_logger()
-      high_diagnostic = logger%iter_info%print_level >= high_print_level
-      high_diagnostic_source = high_diagnostic .AND. logger%para_env%is_source()
+      debug_diagnostic = logger%iter_info%print_level >= debug_print_level
+      debug_diagnostic_source = debug_diagnostic .AND. logger%para_env%is_source()
 
       do_ks = qs_ot_env(1)%settings%ks
       do_ener = qs_ot_env(1)%settings%do_ener
@@ -4189,7 +4189,7 @@ CONTAINS
                      gnorm_metric = gnorm_metric + norm_weight*tmp
                   END IF
                END IF
-               IF (high_diagnostic) THEN
+               IF (debug_diagnostic) THEN
                   CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_old, &
                                  qs_ot_env(ispin)%matrix_gx_old, tmp)
                   channel_direction_metric(ispin) = channel_direction_metric(ispin) + tmp
@@ -4293,7 +4293,7 @@ CONTAINS
                   gnorm_matrix_im = gnorm_matrix_im + tmp
                   gnorm_metric = gnorm_metric + tmp
                END IF
-               IF (high_diagnostic) THEN
+               IF (debug_diagnostic) THEN
                   CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_old, &
                                  qs_ot_env(ispin)%matrix_gx_old, tmp)
                   channel_direction_metric(ispin) = channel_direction_metric(ispin) + tmp
@@ -4339,7 +4339,7 @@ CONTAINS
          END IF
       END IF
 
-      IF (high_diagnostic .AND. do_ks) THEN
+      IF (debug_diagnostic .AND. do_ks) THEN
          DO ispin = 1, nspin
             CALL dbcsr_get_info(qs_ot_env(ispin)%matrix_gx, &
                                 nfullrows_total=matrix_rows, nfullcols_total=matrix_cols)
@@ -4360,7 +4360,7 @@ CONTAINS
                                REAL(MAX(1, SIZE(qs_ot_env(ispin)%matrix_occ_precond_scale)), KIND=dp)
                occ_scale_max = MAXVAL(qs_ot_env(ispin)%matrix_occ_precond_scale)
             END IF
-            IF (high_diagnostic_source) THEN
+            IF (debug_diagnostic_source) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I4),1X,L1,1X,I4,6(1X,ES16.8))') &
                   " OT CG matrix channel spin k mult occ-active samples raw search direction omin oavg omax:", &
                   qs_ot_env(ispin)%spin_index, qs_ot_env(ispin)%kpoint_index, &
@@ -4453,7 +4453,7 @@ CONTAINS
             IF (raw_guard_delta > qs_ot_env(1)%delta) THEN
                qs_ot_env(1)%delta = raw_guard_delta
                qs_ot_env(1)%kpoint_physical_delta = MAX(qs_ot_env(1)%kpoint_physical_delta, raw_guard_delta)
-               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
                      " OT CG physical residual raw-gap guard raw floor projected adrop gdrop mdrop mq delta:", &
                      qs_ot_env(1)%kpoint_raw_delta, raw_guard_delta, &
@@ -4503,7 +4503,7 @@ CONTAINS
             qs_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
             qs_ot_env(1)%schur_residual_history_quality = &
                MIN(qs_ot_env(1)%schur_residual_history_quality, mermin_residual_growth_quality)
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,6(1X,ES16.8))') &
                   " OT Mermin LS residual growth reset catastrophic prev next ratio quality adrop bdrop:", &
                   mermin_residual_catastrophic_reset, &
@@ -4512,7 +4512,7 @@ CONTAINS
                   qs_ot_env(1)%mermin_ls_best_sample_drop
             END IF
          END IF
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,12(1X,ES16.8))') &
                " OT Mermin LS accepted-state audit idx ref best accepted bdrop adrop gap q mdrop mq bpos next delta:", &
                qs_ot_env(1)%mermin_ls_best_sample_index, qs_ot_env(1)%mermin_ls_reference_energy, &
@@ -4542,7 +4542,7 @@ CONTAINS
          CALL timestop(handle)
          RETURN
       END IF
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
             " OT CG channel norms C_re C_im R_re R_im eps total:", &
             gnorm_matrix_re, gnorm_matrix_im, gnorm_rot_re, gnorm_rot_im, &
@@ -4641,7 +4641,7 @@ CONTAINS
          qs_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
          qs_ot_env(1)%schur_residual_history_quality = &
             MIN(qs_ot_env(1)%schur_residual_history_quality, residual_spike_quality)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8),2(1X,I6))') &
                " OT CG residual spike trust reset q ratio delta rscale flavor last:", &
                residual_spike_quality, gnorm_ratio, physical_tail_delta, &
@@ -4803,7 +4803,7 @@ CONTAINS
             -test_down, beta_pr, qs_ot_env(1)%mermin_direction_curvature, &
             qs_ot_env(1)%mermin_direction_curvature_valid, full_direction_slope, &
             full_direction_quadratic, full_direction_drop, full_direction_optimum)
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,8(1X,ES16.8))') &
                " OT Mermin full-direction model history base_s base_q final_s final_q drop opt beta prev_q:", &
                qs_ot_env(1)%mermin_direction_curvature_valid, partial_direction_slope, &
@@ -4814,7 +4814,7 @@ CONTAINS
       END IF
       schur_history_mixed = schur_history_change .AND. beta_pr > 0.0_dp
       qs_ot_env(1)%schur_history_mixed = schur_history_mixed
-      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8),4(1X,I6),6(1X,L1))') &
             " OT CG beta raw used gnorm old cross down ratio rscale schur_att last flavor last neg "// &
             "hist_change mixed reset spike resid_reset:", &
