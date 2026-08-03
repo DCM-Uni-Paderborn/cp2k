@@ -1,9 +1,9 @@
 ! Slow/manual diagonalization reference for the symmetry-reduced metallic
 ! k-point OT force companion. This input is intentionally not listed in
 ! TEST_FILES.toml so that the default regtest remains cheap.
-! Local 2026-07 MPI-2 reference: converged in 35 steps at
-! -8.15998707765426 Ha. The matching OT restart differs by 2.29E-9 Ha and
-! its largest force-component difference is 5.644E-7 Ha/bohr.
+! Local 2026-08 MPI-2/OMP-2 reference: converged in 35 steps at
+! -8.15998707765502 Ha. The matching OT restart differs by 2.29E-9 Ha and
+! its largest force-component difference is 4.612E-7 Ha/bohr.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Al_kp_diag_fermi_sym3_force

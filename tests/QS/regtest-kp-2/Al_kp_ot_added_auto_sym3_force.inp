@@ -3,9 +3,9 @@
 ! project restart is available. This input is intentionally not listed in
 ! TEST_FILES.toml and therefore does not make the default regtest expensive.
 !
-! The 2026-07 MPI-2 reference converges in 91 steps at EPS_SCF 1E-8 to Mermin
-! F = -8.15998707994348 Ha. The largest force-component difference from
-! Al_kp_diag_fermi_sym3_force.inp is 5.644E-7 Ha/bohr.
+! The 2026-08 MPI-2/OMP-2 reference converges in 62 steps at EPS_SCF 1E-8 to
+! Mermin F = -8.15998707994925 Ha. The largest force-component difference
+! from Al_kp_diag_fermi_sym3_force.inp is 4.612E-7 Ha/bohr.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Al_kp_ot_added_auto_sym3_converge

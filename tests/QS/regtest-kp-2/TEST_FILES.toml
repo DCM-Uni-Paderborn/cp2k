@@ -57,17 +57,17 @@
 # cheap while the adaptive AUTO grow path can still be checked against the
 # 1E-6 Mermin path. The LOW 2x1x1 reference converges in 111 final-space
 # MPI-2 steps and reaches -8.14585308840704 Ha. The symmetry-reduced
-# 3x1x1 reference takes 64 MPI-2/OMP-2 or 148 MPI-2/OMP-1 final-space steps
-# and reaches -8.15998707939595 Ha without overgrowing its empty virtual edge. The
-# explicit full-grid 3x1x1 companion takes 118 final-space steps and reaches
-# -8.15998707944646 Ha. Their endpoints agree within 6E-11 Ha even though
+# 3x1x1 reference takes 61 MPI-2/OMP-2 final-space steps and reaches
+# -8.15998707955088 Ha without overgrowing its empty virtual edge. The
+# explicit full-grid 3x1x1 companion takes 57 final-space steps and reaches
+# -8.15998707954940 Ha. Their endpoints agree within 2E-12 Ha even though
 # their local virtual-space growth histories differ.
 # No first/last-band, AUTO-exhausted, MAX-ITER, or "Unsupported content type"
 # signature is printed. Al_kp_ot_added_auto_sym3_restart.inp restores the
 # converged reduced-grid state in one step.
 # Al_kp_ot_added_auto_sym3_force.inp is an unlisted EPS_SCF=1E-8 force
 # companion that reads the reduced-grid converged restart. Its force components
-# agree with Al_kp_diag_fermi_sym3_force.inp within 5.7E-7 Ha/bohr.
+# agree with Al_kp_diag_fermi_sym3_force.inp within 4.7E-7 Ha/bohr.
 # Al_kp_ot_uks_full_all_sym3_converge.inp is the unlisted four-channel UKS
 # physics companion.  With two spins, two irreducible k-points, and fixed
 # magnetization it converges in 91 uninterrupted MPI-2/OMP-2 OT steps to
