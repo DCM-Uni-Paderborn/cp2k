@@ -321,6 +321,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_complete_physical_gradient_norm, &
              qs_scf_kp_residual_pair_omission_limit, &
              qs_scf_kp_canonical_projector_density_response, &
+             qs_scf_kp_fixed_n_projector_frechet, &
              qs_scf_kp_full_all_spin_normalization, &
              qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
@@ -493,6 +494,98 @@ CONTAINS
          response = 0.5_dp*projected_density_derivative/canonical_occ_curv
 
    END FUNCTION qs_scf_kp_canonical_projector_density_response
+
+! **************************************************************************************************
+!> \brief Fixed-N Frechet derivative of a smooth canonical occupation projector.
+!>
+!>        For P(H)=2*w*f(H-mu), the divided-difference kernel is invariant under rotations inside
+!>        a degenerate eigenspace.  Evaluating that kernel directly avoids differentiated sorted
+!>        eigenvectors and their arbitrary cluster gauge.  The diagonal response includes the
+!>        chemical-potential shift of the complete fixed-N spin/k-point group.
+!> \param chc projected Hermitian Hamiltonian in the current REF basis
+!> \param dchc Hermitian Hamiltonian perturbation in the same basis
+!> \param occupation_numbers canonical occupations, without spin or k-point weight
+!> \param kpoint_weight irreducible-k-point weight
+!> \param occupation_curvature positive weighted -df/de for each canonical band
+!> \param fixed_n_curvature_sum susceptibility summed over the complete fixed-N group
+!> \param projector_weight fraction of the canonical projector used by the response model
+!> \param projector_derivative derivative of the weighted occupation projector in the REF basis
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_fixed_n_projector_frechet( &
+      chc, dchc, occupation_numbers, kpoint_weight, occupation_curvature, &
+      fixed_n_curvature_sum, projector_weight, projector_derivative)
+
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
+      REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_curvature
+      REAL(KIND=dp), INTENT(IN)                          :: fixed_n_curvature_sum, projector_weight
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: projector_derivative
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: eigenvectors, kernel, work
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp)                                      :: coefficient, denominator, gap_tolerance, &
+                                                            local_curvature_sum, mu_numerator, &
+                                                            mu_shift, scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues, weighted_occupation
+
+      n = SIZE(chc, 1)
+      CPASSERT(n > 0)
+      CPASSERT(ALL(SHAPE(chc) == [n, n]))
+      CPASSERT(ALL(SHAPE(dchc) == [n, n]))
+      CPASSERT(SIZE(occupation_numbers) == n)
+      CPASSERT(SIZE(occupation_curvature) == n)
+      CPASSERT(ALL(SHAPE(projector_derivative) == [n, n]))
+
+      projector_derivative(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      IF (projector_weight <= 0.0_dp .OR. kpoint_weight <= 0.0_dp) RETURN
+
+      ALLOCATE (eigenvectors(n, n), kernel(n, n), work(n, n), eigenvalues(n), &
+                weighted_occupation(n))
+      CALL diag_complex(chc, eigenvectors, eigenvalues)
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(eigenvectors)), MATMUL(dchc, eigenvectors))
+      weighted_occupation(:) = 2.0_dp*kpoint_weight*occupation_numbers(:)
+
+      local_curvature_sum = SUM(MAX(0.0_dp, occupation_curvature(:)))
+      mu_numerator = 0.0_dp
+      DO i = 1, n
+         mu_numerator = mu_numerator + MAX(0.0_dp, occupation_curvature(i))* &
+                        REAL(work(i, i), KIND=dp)
+      END DO
+      mu_shift = qs_scf_kp_fixed_n_response_mu_shift( &
+                 mu_numerator, local_curvature_sum, fixed_n_curvature_sum)
+
+      scale = MAX(1.0_dp, MAXVAL(ABS(eigenvalues(:))))
+      gap_tolerance = SQRT(EPSILON(1.0_dp))*scale
+      kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO j = 1, n
+         DO i = 1, n
+            IF (i == j) THEN
+               coefficient = -2.0_dp*MAX(0.0_dp, occupation_curvature(i))
+               kernel(i, i) = CMPLX(coefficient*(REAL(work(i, i), KIND=dp) - mu_shift), &
+                                    0.0_dp, KIND=dp)
+            ELSE
+               denominator = eigenvalues(i) - eigenvalues(j)
+               IF (ABS(denominator) > gap_tolerance) THEN
+                  coefficient = (weighted_occupation(i) - weighted_occupation(j))/denominator
+               ELSE
+                  coefficient = -2.0_dp*SQRT(MAX(0.0_dp, occupation_curvature(i))* &
+                                             MAX(0.0_dp, occupation_curvature(j)))
+               END IF
+               kernel(i, j) = coefficient*work(i, j)
+            END IF
+         END DO
+      END DO
+
+      projector_derivative(:, :) = projector_weight* &
+                                   MATMUL(eigenvectors, &
+                                          MATMUL(kernel, CONJG(TRANSPOSE(eigenvectors))))
+      projector_derivative(:, :) = 0.5_dp*(projector_derivative + &
+                                           CONJG(TRANSPOSE(projector_derivative)))
+
+      DEALLOCATE (eigenvectors, kernel, work, eigenvalues, weighted_occupation)
+
+   END SUBROUTINE qs_scf_kp_fixed_n_projector_frechet
 
 ! **************************************************************************************************
 !> \brief Fixed-N auxiliary-energy gradient for a Hamiltonian frozen at a line-search start.
@@ -42063,20 +42156,23 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: base, chc, chc_m, chc_p, dchc, docc_mat, &
-         docc_plateau, occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, orbital_occ_m, &
-         orbital_occ_p, projector_evec_base, projector_evec_trial, u
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: base, chc, chc_m, chc_p, dchc, &
+         docc_frechet, docc_mat, docc_plateau, occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, &
+         occ_mat_p, orbital_occ_m, orbital_occ_p, projector_evec_base, projector_evec_trial, u
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: orbital_occ_response
       INTEGER                                            :: ie, ifull, imo, jmo, &
                                                             kernel_cluster_groups, r, s
-      LOGICAL                                            :: compute_orbital_schur, fd_cluster_used
+      LOGICAL                                            :: compute_frechet_shadow, &
+                                                            compute_orbital_schur, fd_cluster_used
       REAL(KIND=dp) :: canonical_cauchy_alignment, canonical_newton_alignment, &
          channel_occ_curv_max, density_basis_response, density_global_lift_weight, &
          density_plateau_full_response, density_plateau_response, density_response, &
          density_response_alignment, projector_centered_shift, projector_response, &
          projector_response_norm, projector_safe_response_dot, projector_weight, raw_response, &
-         safe_centered_shift, safe_response_norm, tangent_linear_norm, tangent_norm, &
-         tangent_target_norm, weighted_curv_sum
+         safe_centered_shift, safe_response_norm, shadow_active_gap_norm_sq, &
+         shadow_frechet_norm_sq, shadow_hermitian_max, shadow_trace, shadow_trace_max, &
+         tangent_linear_norm, tangent_norm, tangent_target_norm
+      REAL(KIND=dp) :: weighted_curv_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_basis_column, &
          density_floor_audit_column, density_floor_safe_audit_column, &
          density_full_centered_column, density_full_column, density_mixed_column, &
@@ -42089,6 +42185,8 @@ CONTAINS
          canonical_cauchy_selected = .FALSE.
          IF (failed) RETURN
          IF (first_var > last_var) RETURN
+         compute_frechet_shadow = compute_density_full_audit .AND. &
+                                  logger%iter_info%print_level >= high_print_level
          CPASSERT(first_full_var > 0)
          CPASSERT(first_full_var + nmo*(nmo - 1) - 1 <= SIZE(full_rot_hessian_coupled, 1))
          CPASSERT(SIZE(full_rot_hessian_coupled, 2) == SIZE(rot_hessian_coupled, 2))
@@ -42110,8 +42208,8 @@ CONTAINS
          CALL local_ot_env(local_channel)%para_env%sum(u_im)
 
          ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), &
-                   chc_p(nmo, nmo), chc_m(nmo, nmo), dchc(nmo, nmo), docc_mat(nmo, nmo), &
-                   docc_plateau(nmo, nmo), &
+                   chc_p(nmo, nmo), chc_m(nmo, nmo), dchc(nmo, nmo), docc_frechet(nmo, nmo), &
+                   docc_mat(nmo, nmo), docc_plateau(nmo, nmo), &
                    occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
                    occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), &
                    projector_evec_base(nmo, nmo), projector_evec_trial(nmo, nmo))
@@ -42231,6 +42329,10 @@ CONTAINS
             END DO
          END DO
 
+         shadow_active_gap_norm_sq = 0.0_dp
+         shadow_frechet_norm_sq = 0.0_dp
+         shadow_hermitian_max = 0.0_dp
+         shadow_trace_max = 0.0_dp
          DO s = first_var, last_var
             x_p_re(:, :) = x_re(:, :)
             x_p_im(:, :) = x_im(:, :)
@@ -42325,6 +42427,22 @@ CONTAINS
                                                                 ot_kp_projector_occupation_gauge_gap, &
                                                                 fd_cluster_used, projector_window_gap, &
                                                                 kernel_cluster_groups, fixed_n_occ_curv_sum)
+               IF (compute_frechet_shadow) THEN
+                  CALL qs_scf_kp_fixed_n_projector_frechet( &
+                     chc, dchc, canonical_occupation_numbers, kpoint_weight, &
+                     canonical_occ_curv_channel, fixed_n_occ_curv_sum, projector_weight, docc_frechet)
+                  shadow_frechet_norm_sq = shadow_frechet_norm_sq + SUM(ABS(docc_frechet(:, :))**2)
+                  shadow_active_gap_norm_sq = shadow_active_gap_norm_sq + &
+                                              SUM(ABS(docc_frechet(:, :) - docc_plateau(:, :))**2)
+                  shadow_hermitian_max = MAX(shadow_hermitian_max, &
+                                             MAXVAL(ABS(docc_frechet(:, :) - &
+                                                        CONJG(TRANSPOSE(docc_frechet(:, :))))))
+                  shadow_trace = 0.0_dp
+                  DO ie = 1, nmo
+                     shadow_trace = shadow_trace + REAL(docc_frechet(ie, ie), KIND=dp)
+                  END DO
+                  shadow_trace_max = MAX(shadow_trace_max, ABS(shadow_trace))
+               END IF
                projector_fd_cluster_derivatives = projector_fd_cluster_derivatives + 1
                projector_kernel_cluster_groups = projector_kernel_cluster_groups + kernel_cluster_groups
                IF (fd_cluster_used) &
@@ -42356,10 +42474,9 @@ CONTAINS
                   END IF
                   IF (compute_density_full_audit .AND. &
                       canonical_occ_curv_channel(ie) > EPSILON(canonical_occ_curv_channel(ie))) THEN
-                     ! docc_plateau is a canonical covariant dP.  Project it
-                     ! on the matching canonical band and divide by that
-                     ! band's curvature; using a REF-labelled curvature here
-                     ! creates an unbounded response after a subspace refresh.
+                     ! Project the active covariant dP on the matching
+                     ! canonical band. The exact Frechet derivative is audited
+                     ! separately and cannot alter candidate weights.
                      CALL dense_history_safe_occ_projector_basis(projector_evec_base, 1.0_dp, ie, &
                                                                  occ_basis)
                      density_basis_response = &
@@ -42566,6 +42683,12 @@ CONTAINS
             END DO
          END DO
 
+         IF (compute_frechet_shadow .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,4(1X,ES16.8))') &
+            " OT Schur fixed-N Frechet shadow channel norm active_gap trace hermitian:", &
+            local_channel, SQRT(shadow_frechet_norm_sq), SQRT(shadow_active_gap_norm_sq), &
+            shadow_trace_max, shadow_hermitian_max
+
          IF (compute_orbital_schur) THEN
             ALLOCATE (orbital_schur_local(last_var - first_var + 1, last_var - first_var + 1))
             CALL qs_scf_kp_orbital_schur_correction( &
@@ -42576,7 +42699,8 @@ CONTAINS
             DEALLOCATE (orbital_schur_local, orbital_occ_m, orbital_occ_p, orbital_occ_response)
          END IF
 
-         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, docc_plateau, &
+         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_frechet, docc_mat, &
+                     docc_plateau, &
                      occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, &
                      projector_evec_base, projector_evec_trial)
          DEALLOCATE (density_floor_audit_column, density_floor_safe_audit_column, &
