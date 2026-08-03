@@ -325,6 +325,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_complete_physical_audit_ready, &
              qs_scf_kp_complete_physical_gradient_norm, &
              qs_scf_kp_pair_mask_moments, &
+             qs_scf_kp_residual_history_reset_needed, &
              qs_scf_kp_residual_pair_capture_limit, &
              qs_scf_kp_residual_pair_omission_limit, &
              qs_scf_kp_canonical_projector_density_response, &
@@ -608,6 +609,24 @@ CONTAINS
       END DO
 
    END SUBROUTINE qs_scf_kp_pair_mask_moments
+
+! **************************************************************************************************
+!> \brief whether accepted residual growth exceeds the local plateau tolerance
+!> \param previous_delta residual represented by the accepted search model
+!> \param current_delta residual at the accepted endpoint
+!> \param relative_slack nonnegative relative plateau tolerance
+!> \return true only for residual growth beyond the tolerated plateau
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_residual_history_reset_needed( &
+      previous_delta, current_delta, relative_slack) RESULT(reset_needed)
+      REAL(KIND=dp), INTENT(IN)                          :: previous_delta, current_delta, &
+                                                            relative_slack
+      LOGICAL                                            :: reset_needed
+
+      reset_needed = previous_delta > EPSILON(previous_delta) .AND. &
+                     current_delta > (1.0_dp + MAX(0.0_dp, relative_slack))*previous_delta
+
+   END FUNCTION qs_scf_kp_residual_history_reset_needed
 
 ! **************************************************************************************************
 !> \brief canonical band-energy response represented by a covariant density derivative
@@ -13846,9 +13865,10 @@ CONTAINS
             END IF
          END IF
          IF (mermin_search .AND. measured_drop > 0.0_dp .AND. &
-             local_ot_env(1)%schur_model_delta > EPSILON(local_ot_env(1)%schur_model_delta) .AND. &
              local_ot_env(1)%schur_model_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
-             residual_current_delta >= local_ot_env(1)%schur_model_delta) THEN
+             qs_scf_kp_residual_history_reset_needed( &
+             local_ot_env(1)%schur_model_delta, residual_current_delta, &
+             ot_kp_schur_residual_tail_plateau_slack)) THEN
             local_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
             local_ot_env(1)%schur_residual_history_quality = residual_quality_ratio
             logger => cp_get_default_logger()

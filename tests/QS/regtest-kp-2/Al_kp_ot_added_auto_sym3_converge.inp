@@ -2,13 +2,14 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference: AUTO grows 4->8->16 and
-! converges in 94 final-space OT steps at -8.15998707946533 Ha.
+! Local 2026-08 MPI-2 references: AUTO grows 4->8->16 and converges in 64
+! final-space OT steps with OMP_NUM_THREADS=2 and 148 steps with one thread.
+! The two Mermin free energies agree within 7E-10 Ha.
 ! At 16 MOs the weighted upper-edge occupation is below 6E-97 and the basis
 ! signal is only 0.803, so AUTO correctly retains the adequate virtual space
 ! instead of masking the intrinsic minimizer tail by growing to the AO limit.
 ! No first/last-band, AUTO-exhausted, MAX-ITER, or unsupported-content warning
-! is printed. A restart restores this state in one step. Together with the
+! is printed. A restart restores either state in one step. Together with the
 ! full-grid companion this guards weighted symmetry reduction.
 &GLOBAL
   PRINT_LEVEL HIGH

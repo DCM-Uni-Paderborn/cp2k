@@ -5,10 +5,10 @@
 ! support through the complete fixed-N Mermin minimization.
 !
 ! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference from a fresh directory:
-! the uninterrupted OT run converges in 80 steps at EPS_SCF 1E-6, with
-! Mermin F = -8.14036046163929 Ha and kTS = -0.000169165806 Ha. A matching
+! the uninterrupted OT run converges in 91 steps at EPS_SCF 1E-6, with
+! Mermin F = -8.14036045443613 Ha and kTS = -0.000168745538 Ha. A matching
 ! diagonalization run converges to -8.14036093712786 Ha, so the free-energy
-! difference is 4.7E-7 Ha. The weighted spin populations remain 7 and 5;
+! difference is 4.8E-7 Ha. The weighted spin populations remain 7 and 5;
 ! its restart companion restores all four channels in one step with identical
 ! free energy, entropy, chemical potential, and fixed magnetic moment.
 &GLOBAL
