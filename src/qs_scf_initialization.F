@@ -11,6 +11,7 @@
 MODULE qs_scf_initialization
    USE atom_kind_orbitals,              ONLY: calculate_atomic_orbitals
    USE atomic_kind_types,               ONLY: atomic_kind_type
+   USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_create,&
                                               dbcsr_init_p,&
@@ -781,11 +782,13 @@ CONTAINS
       INTEGER                                            :: ispin, nao, nmo
       LOGICAL                                            :: do_kpoints, need_coeff_b, not_se_or_tb, &
                                                             ot_energies, ot_rotation
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
 
-      CALL get_qs_env(qs_env=qs_env, do_kpoints=do_kpoints, dft_control=dft_control, mos=mos)
+      CALL get_qs_env(qs_env=qs_env, cell=cell, do_kpoints=do_kpoints, &
+                      dft_control=dft_control, mos=mos)
       not_se_or_tb = .NOT. (dft_control%qs_control%dftb .OR. dft_control%qs_control%xtb .OR. &
                             dft_control%qs_control%semi_empirical)
       need_coeff_b = .FALSE.
@@ -915,6 +918,11 @@ CONTAINS
             IF (scf_control%smear%method /= smear_fermi_dirac .AND. &
                 scf_control%smear%method /= smear_gaussian) THEN
                CPABORT("OT smearing supports only FERMI_DIRAC or GAUSSIAN.")
+            END IF
+            IF (.NOT. do_kpoints .AND. ANY(cell%perd == 1)) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "Periodic OT with smearing requires an explicit KPOINTS section. "// &
+                             "Use a 1 1 1 mesh for a Gamma-only calculation.")
             END IF
             IF (scf_control%smear%method == smear_gaussian .AND. .NOT. do_kpoints) THEN
                CPABORT("Gaussian smearing with OT currently requires KPOINTS.")

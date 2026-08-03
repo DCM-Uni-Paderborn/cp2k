@@ -40,9 +40,13 @@
 "C_ot.inp"                              = [{matcher="E_total", tol=1e-13, ref=-5.33746454516253}]
 # use of the fermi distribution
 "C_fermi.inp"                           = [{matcher="E_total", tol=1e-13, ref=-5.34109284627944}]
-"Al_ot_fermi.inp"                       = [{matcher="E_total", tol=1.0E-10, ref=-7.98037216646660},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.98037216646660},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-12, ref=-9.89332E-9}]
+"Al_ot_fermi.inp"                       = [{matcher="E_total", tol=1.0E-10, ref=-8.08437895157388},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.08437895157388},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-12, ref=-5.902617E-8},
+                                           {matcher="OT_KPOINT_DEFAULT_IRAC"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the first band"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_fermi.inp"                          = [{matcher="E_total", tol=5e-14, ref=-8.17296838715160}]
 # go through planned FFTs, but don't check results, they will depend on the selected plan
 "H2O-plan-2.inp"                        = []

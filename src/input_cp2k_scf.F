@@ -569,8 +569,10 @@ CONTAINS
                           "Sensitive to preconditioning. A good preconditioner can be expensive. "// &
                           "Advanced SCF mixing is not available. Metallic calculations can use "// &
                           "variational finite-temperature OT with FERMI_DIRAC or GAUSSIAN smearing, "// &
-                          "orbital-energy optimization, and rotations. Non-monotone smearing methods "// &
-                          "are not supported by the OT occupation response.", &
+                          "orbital-energy optimization, and rotations. Periodic smearing calculations "// &
+                          "must use an explicit KPOINTS section, including a 1x1x1 mesh for Gamma-only "// &
+                          "calculations. Non-monotone smearing methods are not supported by the OT "// &
+                          "occupation response.", &
                           n_keywords=27, n_subsections=0, repeats=.FALSE., &
                           citations=[VandeVondele2003, Weber2008])
 
