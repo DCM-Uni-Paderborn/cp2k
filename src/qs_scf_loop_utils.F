@@ -7108,11 +7108,13 @@ CONTAINS
 !> \brief Detect a density-dominant accepted tail which the current OT subspace cannot close.
 !>
 !>        Density stationarity quality is the accepted fractional reduction
-!>        (density_old-density_new)/density_old. Once its EMA is no larger than
-!>        EPS_SCF/density_delta, another accepted step is expected to remove at most one
-!>        convergence tolerance. A complete density audit and a raw residual already inside the
-!>        coupled tail are required. A bounded accepted-sample budget also catches a persistently
-!>        density-dominant asymptotic tail when the noisy fractional-progress EMA stays positive.
+!>        (density_old-density_new)/density_old. After one complete accepted-history window, an EMA
+!>        no larger than EPS_SCF/density_delta means that another step is expected to remove at most
+!>        one convergence tolerance. The same mature history is extrapolated geometrically to
+!>        EPS_SCF: history is stale when closing the density would take longer than another complete
+!>        window. A complete density audit and a raw residual already inside the coupled tail are
+!>        required. The full window rejects noisy restart transients while still catching a positive
+!>        but unusably slow density rate.
 !> \param density_ready canonical fixed-N density audit is valid for the current orbitals
 !> \param density_delta canonical fixed-N density stationarity residual
 !> \param raw_delta raw residual of the previous accepted OT state
@@ -7130,15 +7132,28 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: quality_ema
       LOGICAL                                            :: ready
 
-      LOGICAL                                            :: age_limited
-      REAL(KIND=dp)                                      :: eps, target_fraction
+      LOGICAL                                            :: age_limited, history_mature, rate_limited
+      REAL(KIND=dp)                                      :: contraction, eps, projected_steps, &
+                                                            target_fraction
 
       eps = MAX(eps_scf, EPSILON(1.0_dp))
       target_fraction = eps/MAX(density_delta, eps)
+      projected_steps = 0.0_dp
+      rate_limited = .FALSE.
+      history_mature = quality_samples >= ot_kp_density_closure_tail_max_samples
+      IF (density_delta > eps .AND. history_mature) THEN
+         contraction = 1.0_dp - quality_ema
+         IF (contraction >= 1.0_dp) THEN
+            rate_limited = .TRUE.
+         ELSE IF (contraction > EPSILON(contraction)) THEN
+            projected_steps = LOG(eps/density_delta)/LOG(contraction)
+            rate_limited = projected_steps > REAL(ot_kp_density_closure_tail_max_samples, KIND=dp)
+         END IF
+      END IF
       ! A long accepted tail is independent evidence that the represented
       ! orbital subspace cannot close a bounded, density-dominant residual.
       ! Keep the budget inactive outside the asymptotic fixed-N basin.
-      age_limited = quality_samples >= ot_kp_density_closure_tail_max_samples .AND. &
+      age_limited = history_mature .AND. &
                     raw_delta <= MIN(ot_kp_density_closure_tail_raw_eps_factor*eps, &
                                      ot_kp_density_closure_tail_raw_max) .AND. &
                     density_delta <= MIN(ot_kp_density_closure_tail_density_eps_factor*eps, &
@@ -7147,8 +7162,8 @@ CONTAINS
               density_ready, density_delta, raw_delta, eps_scf) .AND. &
               density_delta > raw_delta .AND. &
               density_delta > 10.0_dp*eps .AND. &
-              quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
-              (quality_ema <= target_fraction .OR. age_limited)
+              history_mature .AND. &
+              (quality_ema <= target_fraction .OR. rate_limited .OR. age_limited)
 
    END FUNCTION qs_scf_kp_density_closure_history_refresh_ready
 

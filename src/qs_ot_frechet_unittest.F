@@ -5662,10 +5662,20 @@ CONTAINS
 
       failed = .NOT. qs_scf_kp_density_closure_history_refresh_ready( &
                .TRUE., 4.41810212E-4_dp, 2.18590918E-5_dp, 1.0E-7_dp, 139, 9.93223361E-5_dp)
-      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+      failed = failed .OR. .NOT. qs_scf_kp_density_closure_history_refresh_ready( &
                .TRUE., 4.41810212E-4_dp, 2.18590918E-5_dp, 1.0E-7_dp, 139, 1.0E-2_dp)
       failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
                .TRUE., 4.41810212E-4_dp, 2.18590918E-5_dp, 1.0E-7_dp, 3, 9.93223361E-5_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 1.066E-7_dp, 8.49E-8_dp, 1.0E-8_dp, 4, 3.39E-2_dp)
+      failed = failed .OR. .NOT. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 6.02E-4_dp, 7.6E-5_dp, 1.0E-7_dp, 64, 1.5E-3_dp)
+      failed = failed .OR. .NOT. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 6.02E-4_dp, 7.6E-5_dp, 1.0E-7_dp, 64, -1.0E-3_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 6.02E-4_dp, 7.6E-5_dp, 1.0E-7_dp, 63, 1.5E-3_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 6.02E-4_dp, 7.6E-5_dp, 1.0E-7_dp, 64, 2.0E-1_dp)
       failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
                .TRUE., 8.0E-7_dp, 2.0E-7_dp, 1.0E-7_dp, 20, 1.0E-2_dp)
       failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
