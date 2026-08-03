@@ -43133,8 +43133,8 @@ CONTAINS
             block_end(nblock) = i
             block_level(nblock) = occ_scale(i)
             block_weight(nblock) = 1.0_dp
-            DO WHILE (nblock > 1 .AND. &
-                      block_level(nblock - 1) + occ_tol < block_level(nblock))
+            DO WHILE (nblock > 1)
+               IF (block_level(nblock - 1) + occ_tol >= block_level(nblock)) EXIT
                block_level(nblock - 1) = &
                   (block_weight(nblock - 1)*block_level(nblock - 1) + &
                    block_weight(nblock)*block_level(nblock))/ &
