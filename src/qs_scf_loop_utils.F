@@ -13072,8 +13072,8 @@ CONTAINS
 
       INTEGER                                            :: local_channel, samples
       LOGICAL :: closure_vector_shadow_quality_ready, density_stationarity_quality_ready, &
-         mermin_search, spectral_selected_ema_ok, spectral_selected_recent_ok, &
-         spectral_shadow_probe_quality_ready
+         mermin_search, projector_plateau_gap_quality_ready, spectral_selected_ema_ok, &
+         spectral_selected_recent_ok, spectral_shadow_probe_quality_ready
       REAL(KIND=dp) :: calibrated_predicted_drop, calibrated_quality_ratio, &
          closure_candidate_predicted_drop, closure_candidate_quality_ratio, &
          closure_full_shadow_advantage, closure_full_shadow_baseline_error, &
@@ -13163,18 +13163,20 @@ CONTAINS
          projector_physical_trace_raw_diag_avg, projector_physical_trace_raw_diag_quality, &
          projector_physical_trace_raw_free_avg, projector_physical_trace_raw_free_quality, &
          projector_physical_trace_raw_quality, projector_physical_weight_quality, &
-         projector_plateau_gap_predicted_drop, projector_plateau_gap_quality_ratio, &
-         projector_response_predicted_drop, projector_response_quality_ratio
-      REAL(KIND=dp) :: projector_response_selected_predicted_drop, &
-         projector_response_selected_quality_ratio, projector_spectral_predicted_drop, &
-         projector_spectral_quality_ratio, projector_spectral_selected_predicted_drop, &
-         projector_spectral_selected_quality_ratio, quality_ratio, raw_residual_quality_ratio, &
-         reduced_secant_predicted_drop, reduced_secant_quality_ratio, residual_current_delta, &
-         residual_drop, residual_quality_ratio, sample_accepted_drop, sample_gap, &
-         sample_gap_ratio, sample_quality, sample_reference_drop, &
-         split_shadow_calibrated_predicted_drop, split_shadow_calibrated_quality_ratio
-      REAL(KIND=dp) :: split_shadow_predicted_drop, split_shadow_quality_ratio, &
-         vector_secant_predicted_drop, vector_secant_quality_ratio
+         projector_plateau_gap_advantage, projector_plateau_gap_baseline_error, &
+         projector_plateau_gap_baseline_predicted_drop, projector_plateau_gap_candidate_error
+      REAL(KIND=dp) :: projector_plateau_gap_predicted_drop, projector_plateau_gap_quality_ratio, &
+         projector_response_predicted_drop, projector_response_quality_ratio, &
+         projector_response_selected_predicted_drop, projector_response_selected_quality_ratio, &
+         projector_spectral_predicted_drop, projector_spectral_quality_ratio, &
+         projector_spectral_selected_predicted_drop, projector_spectral_selected_quality_ratio, &
+         quality_ratio, raw_residual_quality_ratio, reduced_secant_predicted_drop, &
+         reduced_secant_quality_ratio, residual_current_delta, residual_drop, &
+         residual_quality_ratio, sample_accepted_drop
+      REAL(KIND=dp) :: sample_gap, sample_gap_ratio, sample_quality, sample_reference_drop, &
+         split_shadow_calibrated_predicted_drop, split_shadow_calibrated_quality_ratio, &
+         split_shadow_predicted_drop, split_shadow_quality_ratio, vector_secant_predicted_drop, &
+         vector_secant_quality_ratio
       TYPE(cp_logger_type), POINTER                      :: logger
 
          IF (.NOT. local_ot_env(1)%schur_model_pending) RETURN
@@ -14512,17 +14514,35 @@ CONTAINS
             local_ot_env(1)%schur_projector_response_measured_sum, &
             local_ot_env(1)%schur_projector_response_negative_ema)
 
-         projector_plateau_gap_predicted_drop = local_ot_env(1)%schur_projector_plateau_gap_drop
+         projector_plateau_gap_baseline_predicted_drop = qs_scf_kp_quadratic_position_drop( &
+                                                         local_ot_env(1)%schur_model_slope, &
+                                                         local_ot_env(1)%schur_model_quadratic, &
+                                                         line_search_model_position)
+         projector_plateau_gap_predicted_drop = qs_scf_kp_quadratic_position_drop( &
+                                                local_ot_env(1)%schur_model_slope, &
+                                                local_ot_env(1)%schur_model_quadratic + &
+                                                local_ot_env(1)%schur_projector_plateau_gap_quadratic, &
+                                                line_search_model_position)
          projector_plateau_gap_quality_ratio = 0.0_dp
-         IF (mermin_search .AND. local_ot_env(1)%schur_projector_plateau_gap_pending .AND. &
-             projector_plateau_gap_predicted_drop > EPSILON(projector_plateau_gap_predicted_drop) .AND. &
-             measured_drop > 0.0_dp) THEN
-            projector_plateau_gap_quality_ratio = measured_drop/projector_plateau_gap_predicted_drop
+         projector_plateau_gap_baseline_error = 1.0_dp
+         projector_plateau_gap_candidate_error = 1.0_dp
+         projector_plateau_gap_advantage = 0.0_dp
+         projector_plateau_gap_quality_ready = .FALSE.
+         IF (mermin_search .AND. local_ot_env(1)%schur_projector_plateau_gap_pending) &
+            CALL qs_scf_kp_shadow_prediction_quality( &
+            projector_plateau_gap_baseline_predicted_drop, &
+            projector_plateau_gap_predicted_drop, measured_drop, &
+            projector_plateau_gap_quality_ratio, projector_plateau_gap_baseline_error, &
+            projector_plateau_gap_candidate_error, projector_plateau_gap_advantage, &
+            projector_plateau_gap_quality_ready)
+         IF (projector_plateau_gap_quality_ready) THEN
             local_ot_env(1)%schur_projector_plateau_gap_quality = projector_plateau_gap_quality_ratio
+            local_ot_env(1)%schur_projector_plateau_gap_advantage = projector_plateau_gap_advantage
             samples = MIN(local_ot_env(1)%schur_projector_plateau_gap_quality_samples + 1, HUGE(samples) - 1)
             local_ot_env(1)%schur_projector_plateau_gap_quality_samples = samples
             IF (samples == 1) THEN
                local_ot_env(1)%schur_projector_plateau_gap_quality_ema = projector_plateau_gap_quality_ratio
+               local_ot_env(1)%schur_projector_plateau_gap_advantage_ema = projector_plateau_gap_advantage
                local_ot_env(1)%schur_projector_plateau_gap_weight_ema = &
                   local_ot_env(1)%schur_projector_plateau_gap_weight
                local_ot_env(1)%schur_projector_plateau_gap_negative_ema = &
@@ -14534,6 +14554,10 @@ CONTAINS
                   (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                   local_ot_env(1)%schur_projector_plateau_gap_quality_ema + &
                   ot_kp_schur_quality_ema_alpha*projector_plateau_gap_quality_ratio
+               local_ot_env(1)%schur_projector_plateau_gap_advantage_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_plateau_gap_advantage_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_plateau_gap_advantage
                local_ot_env(1)%schur_projector_plateau_gap_weight_ema = &
                   (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                   local_ot_env(1)%schur_projector_plateau_gap_weight_ema + &
@@ -16234,14 +16258,20 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_selected_drop_sum, &
                local_ot_env(1)%schur_projector_response_selected_measured_sum, &
                projector_response_selected_predicted_drop
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,11(1X,ES16.8))') &
-               " OT Schur LS projector Frechet-gap n ratio ema pred meas latest weight wema neg nema step sema:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,16(1X,ES16.8))') &
+               " OT Schur LS projector Frechet-gap n ratio ema pred meas base cand berr cerr adv aema"// &
+               " weight wema neg nema step sema:", &
                local_ot_env(1)%schur_projector_plateau_gap_quality_samples, &
                local_ot_env(1)%schur_projector_plateau_gap_quality, &
                local_ot_env(1)%schur_projector_plateau_gap_quality_ema, &
                local_ot_env(1)%schur_projector_plateau_gap_drop_sum, &
                local_ot_env(1)%schur_projector_plateau_gap_measured_sum, &
+               projector_plateau_gap_baseline_predicted_drop, &
                projector_plateau_gap_predicted_drop, &
+               projector_plateau_gap_baseline_error, &
+               projector_plateau_gap_candidate_error, &
+               local_ot_env(1)%schur_projector_plateau_gap_advantage, &
+               local_ot_env(1)%schur_projector_plateau_gap_advantage_ema, &
                local_ot_env(1)%schur_projector_plateau_gap_weight, &
                local_ot_env(1)%schur_projector_plateau_gap_weight_ema, &
                local_ot_env(1)%schur_projector_plateau_gap_negative, &
@@ -17195,7 +17225,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_response_weight = 0.0_dp
             local_ot_env(1)%schur_projector_response_correction_drop = 0.0_dp
             local_ot_env(1)%schur_projector_response_negative = 0.0_dp
-            local_ot_env(1)%schur_projector_plateau_gap_drop = 0.0_dp
+            local_ot_env(1)%schur_projector_plateau_gap_quadratic = 0.0_dp
             local_ot_env(1)%schur_projector_plateau_gap_weight = 0.0_dp
             local_ot_env(1)%schur_projector_plateau_gap_negative = 0.0_dp
             local_ot_env(1)%schur_projector_plateau_gap_step = 0.0_dp
@@ -17441,8 +17471,8 @@ CONTAINS
          accepted_projector_mode_step_negative_fraction, accepted_projector_mode_trust_quality, &
          accepted_projector_offdiag_abs_ratio, accepted_projector_offdiag_drop, &
          accepted_projector_offdiag_negative, accepted_projector_offdiag_signed_ratio, &
-         accepted_projector_offdiag_step_negative, accepted_projector_plateau_gap_drop, &
-         accepted_projector_plateau_gap_negative, accepted_projector_plateau_gap_step, &
+         accepted_projector_offdiag_step_negative, accepted_projector_plateau_gap_negative, &
+         accepted_projector_plateau_gap_quadratic, accepted_projector_plateau_gap_step, &
          accepted_projector_plateau_gap_weight, accepted_projector_response_drop, &
          accepted_projector_response_negative
       REAL(KIND=dp) :: accepted_projector_response_weight, accepted_reduced_secant_shadow_drop, &
@@ -19443,7 +19473,7 @@ CONTAINS
          accepted_projector_response_drop = 0.0_dp
          accepted_projector_response_negative = 0.0_dp
          accepted_projector_response_weight = 0.0_dp
-         accepted_projector_plateau_gap_drop = 0.0_dp
+         accepted_projector_plateau_gap_quadratic = 0.0_dp
          accepted_projector_plateau_gap_negative = 0.0_dp
          accepted_projector_plateau_gap_step = 0.0_dp
          accepted_projector_plateau_gap_weight = 0.0_dp
@@ -23957,7 +23987,7 @@ CONTAINS
                   projector_plateau_gap_delta_weight = &
                      kpoint_ot_projector_plateau_gap_mix_weight( &
                      residual_delta, projector_plateau_gap_quality_for_selection, &
-                     local_ot_env(1)%schur_projector_plateau_gap_quality_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_advantage_ema, &
                      local_ot_env(1)%schur_projector_plateau_gap_weight_ema, &
                      local_ot_env(1)%schur_projector_plateau_gap_negative_ema, &
                      local_ot_env(1)%schur_projector_plateau_gap_step_ema, &
@@ -25539,7 +25569,7 @@ CONTAINS
                      projector_physical_direct_plateau_gap_mix_weight = &
                      kpoint_ot_projector_plateau_gap_mix_weight( &
                      residual_delta, projector_plateau_gap_quality_for_selection, &
-                     local_ot_env(1)%schur_projector_plateau_gap_quality_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_advantage_ema, &
                      local_ot_env(1)%schur_projector_plateau_gap_weight_ema, &
                      local_ot_env(1)%schur_projector_plateau_gap_negative_ema, &
                      local_ot_env(1)%schur_projector_plateau_gap_step_ema, &
@@ -31545,11 +31575,9 @@ CONTAINS
                   accepted_projector_response_negative = projector_mode_response_correction_negative
                END IF
                IF (projector_plateau_gap_model_enabled) THEN
-                  accepted_projector_plateau_gap_drop = &
-                     kpoint_ot_projector_plateau_gap_audit_drop(direct_pg_metric_drop, &
-                                                                plateau_gap_mode_abs_quad)
-                  IF (accepted_projector_plateau_gap_drop > &
-                      EPSILON(accepted_projector_plateau_gap_drop)) THEN
+                  accepted_projector_plateau_gap_quadratic = plateau_gap_mode_quad
+                  IF (ABS(accepted_projector_plateau_gap_quadratic) > &
+                      64.0_dp*EPSILON(MAX(1.0_dp, plateau_gap_mode_abs_quad))) THEN
                      accepted_projector_plateau_gap_weight = &
                         MAX(direct_pg_response_weight, MIN(1.0_dp, MAX(0.0_dp, &
                                                                        plateau_gap_mode_quad_abs_ratio)))
@@ -31781,10 +31809,12 @@ CONTAINS
                   local_ot_env(1)%schur_projector_response_selected = &
                   local_ot_env(1)%schur_projector_response_selected + accepted_projector_response_drop
             END IF
-            IF (accepted_projector_plateau_gap_drop > EPSILON(accepted_projector_plateau_gap_drop)) THEN
+            IF (ABS(accepted_projector_plateau_gap_quadratic) > &
+                64.0_dp*EPSILON(MAX(1.0_dp, ABS(accepted_projector_plateau_gap_quadratic)))) THEN
                local_ot_env(1)%schur_projector_plateau_gap_pending = .TRUE.
-               local_ot_env(1)%schur_projector_plateau_gap_drop = &
-                  local_ot_env(1)%schur_projector_plateau_gap_drop + accepted_projector_plateau_gap_drop
+               local_ot_env(1)%schur_projector_plateau_gap_quadratic = &
+                  local_ot_env(1)%schur_projector_plateau_gap_quadratic + &
+                  accepted_projector_plateau_gap_quadratic
                local_ot_env(1)%schur_projector_plateau_gap_weight = &
                   MAX(local_ot_env(1)%schur_projector_plateau_gap_weight, accepted_projector_plateau_gap_weight)
                local_ot_env(1)%schur_projector_plateau_gap_negative = &
@@ -41064,27 +41094,10 @@ CONTAINS
       END FUNCTION kpoint_ot_projector_tail_active_delta_weight
 
 ! **************************************************************************************************
-!> \brief accepted-drop audit source for finite projector Frechet-gap modes
-!> \param direct_metric_drop projected direct-response Mermin metric drop
-!> \param mode_abs_quad absolute accepted-step quadratic in the Frechet-gap Hessian delta
-!> \return positive drop used to calibrate finite-response history
-! **************************************************************************************************
-      FUNCTION kpoint_ot_projector_plateau_gap_audit_drop(direct_metric_drop, mode_abs_quad) &
-         RESULT(audit_drop)
-      REAL(KIND=dp), INTENT(IN)                          :: direct_metric_drop, mode_abs_quad
-      REAL(KIND=dp)                                      :: audit_drop
-
-         audit_drop = MAX(0.0_dp, direct_metric_drop)
-         IF (mode_abs_quad > EPSILON(mode_abs_quad)) &
-            audit_drop = MAX(audit_drop, 0.5_dp*MAX(0.0_dp, mode_abs_quad))
-
-      END FUNCTION kpoint_ot_projector_plateau_gap_audit_drop
-
-! **************************************************************************************************
 !> \brief accepted-history weight for mixing Frechet-gap Projector curvature into Direct Hessian
 !> \param residual_delta current effective OT residual
 !> \param history_quality accepted-drop quality for Frechet-gap Hessian modes
-!> \param history_quality_ema smoothed measured/predicted quality
+!> \param history_advantage_ema smoothed prediction-error advantage over the active Hessian
 !> \param mode_weight_ema smoothed accepted modal quadratic weight
 !> \param mode_negative_ema smoothed negative-mode fraction
 !> \param mode_step_ema smoothed accepted-step fraction in those modes
@@ -41092,17 +41105,18 @@ CONTAINS
 !> \return small curvature-mix weight in [0,max_weight]
 ! **************************************************************************************************
       FUNCTION kpoint_ot_projector_plateau_gap_mix_weight(residual_delta, history_quality, &
-                                                          history_quality_ema, mode_weight_ema, &
+                                                          history_advantage_ema, mode_weight_ema, &
                                                           mode_negative_ema, mode_step_ema, samples) &
          RESULT(mix_weight)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality, &
-                                                            history_quality_ema, mode_weight_ema, &
-                                                            mode_negative_ema, mode_step_ema
+                                                            history_advantage_ema, &
+                                                            mode_weight_ema, mode_negative_ema, &
+                                                            mode_step_ema
       INTEGER, INTENT(IN)                                :: samples
       REAL(KIND=dp)                                      :: mix_weight
 
-      REAL(KIND=dp)                                      :: maturity, mode_signal, negative_quality, &
-                                                            quality_signal, underprediction_signal
+      REAL(KIND=dp)                                      :: advantage_signal, maturity, mode_signal, &
+                                                            negative_quality, quality_signal
 
          mix_weight = 0.0_dp
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
@@ -41111,10 +41125,8 @@ CONTAINS
          quality_signal = MIN(1.0_dp, MAX(0.0_dp, history_quality))
          IF (quality_signal < ot_kp_schur_projector_response_quality_min_ratio) RETURN
 
-         underprediction_signal = LOG(MAX(1.0_dp, history_quality_ema))/ &
-                                  LOG(ot_kp_schur_projector_response_underpredict_max_ratio)
-         underprediction_signal = MIN(1.0_dp, MAX(0.0_dp, underprediction_signal))
-         IF (underprediction_signal <= EPSILON(underprediction_signal)) RETURN
+         advantage_signal = MIN(1.0_dp, MAX(0.0_dp, history_advantage_ema))
+         IF (advantage_signal <= 64.0_dp*EPSILON(1.0_dp)) RETURN
 
          mode_signal = MAX(SQRT(MAX(0.0_dp, mode_weight_ema)), &
                            0.5_dp*SQRT(MAX(0.0_dp, mode_step_ema)))
@@ -41127,7 +41139,7 @@ CONTAINS
          maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
 
          mix_weight = ot_kp_schur_projector_plateau_gap_mix_max_weight*maturity* &
-                      quality_signal*underprediction_signal*mode_signal*negative_quality
+                      quality_signal*SQRT(advantage_signal)*mode_signal*negative_quality
          mix_weight = MIN(ot_kp_schur_projector_plateau_gap_mix_max_weight, &
                           MAX(0.0_dp, mix_weight))
 

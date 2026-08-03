@@ -1,7 +1,7 @@
 ! Manual restart companion for Al_kp_ot_uks_common_mu_sym3_converge.inp.
 ! Run the source input first in the same directory. The four-channel
 ! (spin,k-point) state is restored in one SCF step with Mermin F
-! -8.16155092922364 Ha, kTS -0.000244671531 Ha, and weighted spin
+! -8.16155092754538 Ha, kTS -0.000244686855 Ha, and weighted spin
 ! populations 6.33333/5.66667. This input is intentionally not listed in
 ! TEST_FILES.toml.
 &GLOBAL

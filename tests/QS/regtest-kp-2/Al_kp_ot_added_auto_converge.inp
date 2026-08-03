@@ -2,7 +2,7 @@
 ! This input is intentionally not listed in TEST_FILES.toml so the default
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
 ! Local 2026-08 MPI-2/OMP-2 reference from an isolated working directory:
-! convergence in 106 SCF steps at -8.14585308870838 Ha. The LOW print level is
+! convergence in 111 SCF steps at -8.14585308840704 Ha. The LOW print level is
 ! intentional: production convergence must not require HIGH diagnostics. No
 ! first/last-band warning, AUTO-exhausted warning, MAX-ITER signature, or
 ! "Unsupported content type" signature occurs.

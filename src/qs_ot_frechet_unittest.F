@@ -451,8 +451,6 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector physical pair weight", 5.0E-14_dp, nfail)
    CALL check_projector_response_character_scale( &
       "complex projector response character scale", 5.0E-14_dp, nfail)
-   CALL check_projector_plateau_gap_audit_drop( &
-      "complex projector plateau-gap audit drop", 5.0E-14_dp, nfail)
    CALL check_projector_plateau_gap_mix_weight( &
       "complex projector plateau-gap mix weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_gap_projection( &
@@ -13662,39 +13660,6 @@ CONTAINS
    END SUBROUTINE check_projector_response_character_scale
 
 ! **************************************************************************************************
-!> \brief Check that plateau-gap history can learn from nonzero Hessian-mode audit.
-!> \param label ...
-!> \param tol ...
-!> \param nfail ...
-! **************************************************************************************************
-   SUBROUTINE check_projector_plateau_gap_audit_drop(label, tol, nfail)
-      CHARACTER(LEN=*), INTENT(IN)                       :: label
-      REAL(KIND=dp), INTENT(IN)                          :: tol
-      INTEGER, INTENT(INOUT)                             :: nfail
-
-      REAL(KIND=dp)                                      :: direct_dominates, err, mode_dominates, &
-                                                            NONE
-
-      NONE = dense_projector_plateau_gap_audit_drop(0.0_dp, 0.0_dp)
-      mode_dominates = dense_projector_plateau_gap_audit_drop(1.0E-30_dp, 4.0E-10_dp)
-      direct_dominates = dense_projector_plateau_gap_audit_drop(3.0E-8_dp, 4.0E-10_dp)
-
-      err = ABS(NONE)
-      err = MAX(err, ABS(mode_dominates - 2.0E-10_dp))
-      err = MAX(err, ABS(direct_dominates - 3.0E-8_dp))
-
-      IF (err > tol .OR. mode_dominates <= NONE .OR. direct_dominates <= mode_dominates) THEN
-         nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/none/mode/direct", err, NONE, mode_dominates, direct_dominates
-      ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/none/mode/direct", err, NONE, mode_dominates, direct_dominates
-      END IF
-
-   END SUBROUTINE check_projector_plateau_gap_audit_drop
-
-! **************************************************************************************************
 !> \brief Check that plateau-gap curvature enters Direct Hessian only from mature accepted history.
 !> \param label ...
 !> \param tol ...
@@ -13706,34 +13671,34 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       REAL(KIND=dp)                                      :: clean, err, high_residual, immature, &
-                                                            mature, negative, no_underprediction
+                                                            mature, negative, no_advantage
 
-      immature = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 20.0_dp, &
+      immature = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 0.25_dp, &
                                                         4.0E-3_dp, 0.50_dp, 2.0E-2_dp, 4)
-      high_residual = dense_projector_plateau_gap_mix_weight(2.0E-4_dp, 1.0_dp, 20.0_dp, &
+      high_residual = dense_projector_plateau_gap_mix_weight(2.0E-4_dp, 1.0_dp, 0.25_dp, &
                                                              4.0E-3_dp, 0.50_dp, 2.0E-2_dp, 20)
-      no_underprediction = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 1.0_dp, &
-                                                                  4.0E-3_dp, 0.50_dp, 2.0E-2_dp, 20)
-      mature = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 20.0_dp, &
+      no_advantage = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 0.0_dp, &
+                                                            4.0E-3_dp, 0.50_dp, 2.0E-2_dp, 20)
+      mature = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 0.04_dp, &
                                                       4.0E-3_dp, 0.50_dp, 2.0E-2_dp, 20)
-      clean = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 20.0_dp, &
+      clean = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 0.25_dp, &
                                                      4.0E-2_dp, 0.0_dp, 1.6E-1_dp, 20)
-      negative = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 20.0_dp, &
+      negative = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 0.25_dp, &
                                                         4.0E-2_dp, 1.0_dp, 1.6E-1_dp, 20)
 
-      err = ABS(immature) + ABS(high_residual) + ABS(no_underprediction)
+      err = ABS(immature) + ABS(high_residual) + ABS(no_advantage)
       err = MAX(err, ABS(negative - 0.5_dp*clean))
 
       IF (err > tol .OR. mature <= 0.0_dp .OR. clean <= mature .OR. &
           negative <= 0.0_dp .OR. negative >= clean) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with error/immature/highres/nounder/mature/clean/negative", err, &
-            immature, high_residual, no_underprediction, mature, clean, negative
+            "failed with error/immature/highres/noadv/mature/clean/negative", err, &
+            immature, high_residual, no_advantage, mature, clean, negative
       ELSE
          WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with error/immature/highres/nounder/mature/clean/negative", err, &
-            immature, high_residual, no_underprediction, mature, clean, negative
+            "OK with error/immature/highres/noadv/mature/clean/negative", err, &
+            immature, high_residual, no_advantage, mature, clean, negative
       END IF
 
    END SUBROUTINE check_projector_plateau_gap_mix_weight
@@ -29725,26 +29690,10 @@ CONTAINS
    END FUNCTION dense_projector_response_character_scale
 
 ! **************************************************************************************************
-!> \brief Dense mirror of plateau-gap accepted-drop audit source.
-!> \param direct_metric_drop ...
-!> \param mode_abs_quad ...
-!> \return ...
-! **************************************************************************************************
-   FUNCTION dense_projector_plateau_gap_audit_drop(direct_metric_drop, mode_abs_quad) RESULT(audit_drop)
-      REAL(KIND=dp), INTENT(IN)                          :: direct_metric_drop, mode_abs_quad
-      REAL(KIND=dp)                                      :: audit_drop
-
-      audit_drop = MAX(0.0_dp, direct_metric_drop)
-      IF (mode_abs_quad > EPSILON(mode_abs_quad)) &
-         audit_drop = MAX(audit_drop, 0.5_dp*MAX(0.0_dp, mode_abs_quad))
-
-   END FUNCTION dense_projector_plateau_gap_audit_drop
-
-! **************************************************************************************************
 !> \brief Dense mirror of plateau-gap Direct-Hessian curvature mix weight.
 !> \param residual_delta ...
 !> \param history_quality ...
-!> \param history_quality_ema ...
+!> \param history_advantage_ema ...
 !> \param mode_weight_ema ...
 !> \param mode_negative_ema ...
 !> \param mode_step_ema ...
@@ -29752,21 +29701,23 @@ CONTAINS
 !> \return ...
 ! **************************************************************************************************
    FUNCTION dense_projector_plateau_gap_mix_weight(residual_delta, history_quality, &
-                                                   history_quality_ema, mode_weight_ema, &
+                                                   history_advantage_ema, mode_weight_ema, &
                                                    mode_negative_ema, mode_step_ema, samples) &
       RESULT(mix_weight)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality, &
-                                                            history_quality_ema, mode_weight_ema, &
-                                                            mode_negative_ema, mode_step_ema
+                                                            history_advantage_ema, &
+                                                            mode_weight_ema, mode_negative_ema, &
+                                                            mode_step_ema
       INTEGER, INTENT(IN)                                :: samples
       REAL(KIND=dp)                                      :: mix_weight
 
       INTEGER, PARAMETER                                 :: min_samples = 8
-      REAL(KIND=dp), PARAMETER :: max_weight = 3.0E-2_dp, quality_min = 1.0E-1_dp, &
-         tail_delta = 1.0E-4_dp, underpredict_max_ratio = 2.0E1_dp
+      REAL(KIND=dp), PARAMETER                           :: max_weight = 3.0E-2_dp, &
+                                                            quality_min = 1.0E-1_dp, &
+                                                            tail_delta = 1.0E-4_dp
 
-      REAL(KIND=dp)                                      :: maturity, mode_signal, negative_quality, &
-                                                            quality_signal, underprediction_signal
+      REAL(KIND=dp)                                      :: advantage_signal, maturity, mode_signal, &
+                                                            negative_quality, quality_signal
 
       mix_weight = 0.0_dp
       IF (residual_delta > tail_delta) RETURN
@@ -29775,9 +29726,8 @@ CONTAINS
       quality_signal = MIN(1.0_dp, MAX(0.0_dp, history_quality))
       IF (quality_signal < quality_min) RETURN
 
-      underprediction_signal = LOG(MAX(1.0_dp, history_quality_ema))/LOG(underpredict_max_ratio)
-      underprediction_signal = MIN(1.0_dp, MAX(0.0_dp, underprediction_signal))
-      IF (underprediction_signal <= EPSILON(underprediction_signal)) RETURN
+      advantage_signal = MIN(1.0_dp, MAX(0.0_dp, history_advantage_ema))
+      IF (advantage_signal <= 64.0_dp*EPSILON(1.0_dp)) RETURN
 
       mode_signal = MAX(SQRT(MAX(0.0_dp, mode_weight_ema)), &
                         0.5_dp*SQRT(MAX(0.0_dp, mode_step_ema)))
@@ -29788,7 +29738,7 @@ CONTAINS
       maturity = REAL(samples - min_samples + 1, KIND=dp)/REAL(min_samples, KIND=dp)
       maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
 
-      mix_weight = max_weight*maturity*quality_signal*underprediction_signal* &
+      mix_weight = max_weight*maturity*quality_signal*SQRT(advantage_signal)* &
                    mode_signal*negative_quality
       mix_weight = MIN(max_weight, MAX(0.0_dp, mix_weight))
 

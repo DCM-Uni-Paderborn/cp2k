@@ -1,11 +1,11 @@
-! Manual restart companion for Al_kp_ot_added_auto_sym3_converge.inp.
-! Run the source input first in the same directory. The two irreducible
-! k-point channels and adaptive 16-MO virtual space are restored in one SCF
-! step with Mermin F -8.15998707956602 Ha and kTS -0.000908404805 Ha.
+! Manual restart companion for Na_kp_ot_added_auto_sym333_converge.inp.
+! Run the source input first in the same directory. The symmetry-reduced
+! 3x3x3 channels and adaptive 16-MO virtual space are restored in one SCF
+! step with Mermin F -9.01953180117147 Ha and kTS -0.000960694986 Ha.
 ! This input is intentionally not listed in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL HIGH
-  PROJECT Al_kp_ot_added_auto_sym3_restart
+  PROJECT Na_kp_ot_added_auto_sym333_restart
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -14,25 +14,21 @@
   &DFT
     BASIS_SET_FILE_NAME BASIS_SET
     POTENTIAL_FILE_NAME POTENTIAL
-    WFN_RESTART_FILE_NAME Al_kp_ot_added_auto_sym3_converge-RESTART.kp
+    WFN_RESTART_FILE_NAME Na_kp_ot_added_auto_sym333_converge-RESTART.kp
     &KPOINTS
       FULL_GRID OFF
-      SCHEME MONKHORST-PACK 3 1 1
+      SCHEME MONKHORST-PACK 3 3 3
       SYMMETRY ON
     &END KPOINTS
     &MGRID
-      CUTOFF 40
+      CUTOFF 50
     &END MGRID
-    &PRINT
-      &KPOINTS ON
-      &END KPOINTS
-    &END PRINT
     &QS
       EPS_DEFAULT 1.0E-8
     &END QS
     &SCF
       ADDED_MOS AUTO
-      EPS_SCF 1.0E-6
+      EPS_SCF 1.0E-7
       MAX_SCF 40
       SCF_GUESS RESTART
       &OT
@@ -56,17 +52,15 @@
   &END DFT
   &SUBSYS
     &CELL
-      ABC 6.0 6.0 6.0
+      ABC 4.23 4.23 4.23
     &END CELL
     &COORD
-      Al        -0.4201082476       -0.4201082770       -0.4201082658
-      Al         2.1120503717        0.1540265147        0.1540265525
-      Al         0.1540266214        2.1120506065        0.1540265605
-      Al         0.1540266183        0.1540265196        2.1120505165
+      Na 0.000 0.000 0.000
+      Na 2.115 2.115 2.115
     &END COORD
-    &KIND Al
-      BASIS_SET DZVP-GTH-PADE-CONFINED
-      POTENTIAL GTH-PADE-q3
+    &KIND Na
+      BASIS_SET DZVP-GTH-PADE
+      POTENTIAL GTH-PADE-q9
     &END KIND
   &END SUBSYS
 &END FORCE_EVAL

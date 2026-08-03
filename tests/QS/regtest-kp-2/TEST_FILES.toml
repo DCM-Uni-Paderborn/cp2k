@@ -47,12 +47,12 @@
 # Al_kp_ot_added_auto_converge.inp and Al_kp_ot_added_auto_sym3_converge.inp
 # by hand. They are intentionally not listed here, so the default regtest stays
 # cheap while the adaptive AUTO grow path can still be checked against the
-# 1E-6 Mermin path.  The 2x1x1 reference grows AUTO 4->8->16 in 37/37/21
-# MPI-2 stage steps and reaches -8.14585310802196 Ha. The symmetry-reduced
-# 3x1x1 reference currently takes 60 final-space steps and reaches
-# -8.15998707957435 Ha without overgrowing its empty virtual edge. The
-# explicit full-grid 3x1x1 companion takes 51 final-space steps and reaches
-# -8.15998707972665 Ha. Their endpoints agree within 1.6E-10 Ha even though
+# 1E-6 Mermin path. The LOW 2x1x1 reference converges in 111 final-space
+# MPI-2 steps and reaches -8.14585308840704 Ha. The symmetry-reduced
+# 3x1x1 reference currently takes 63 final-space steps and reaches
+# -8.15998707956602 Ha without overgrowing its empty virtual edge. The
+# explicit full-grid 3x1x1 companion takes 55 final-space steps and reaches
+# -8.15998707968194 Ha. Their endpoints agree within 1.2E-10 Ha even though
 # their local virtual-space growth histories differ.
 # No first/last-band, AUTO-exhausted, MAX-ITER, or "Unsupported content type"
 # signature is printed. Al_kp_ot_added_auto_sym3_restart.inp restores the
@@ -62,17 +62,21 @@
 # agree with Al_kp_diag_fermi_sym3_force.inp within 5.7E-7 Ha/bohr.
 # Al_kp_ot_uks_full_all_sym3_converge.inp is the unlisted four-channel UKS
 # physics companion.  With two spins, two irreducible k-points, and fixed
-# magnetization it converges in 109 uninterrupted MPI-2 OT steps to
-# -8.14036050082808 Ha, within 4.4E-7 Ha of diagonalization while retaining
+# magnetization it converges in 80 uninterrupted MPI-2 OT steps to
+# -8.14036046397811 Ha, within 4.7E-7 Ha of diagonalization while retaining
 # weighted spin populations 7/5 and finite entropy.
 # Al_kp_ot_uks_full_all_sym3_restart.inp restores all four (spin,k-point)
 # channels in one step.
 # Al_kp_ot_uks_common_mu_sym3_converge.inp is the complementary shared-mu
-# four-channel anchor. FULL_ALL converges in 93 MPI-2 steps to
-# -8.16155092922365 Ha, within 2.0E-8 Ha of diagonalization, and reproduces
+# four-channel anchor. FULL_ALL converges in 99 MPI-2 steps to
+# -8.16155092754538 Ha, within 1.9E-8 Ha of diagonalization, and reproduces
 # the unconstrained spin populations 6.33333/5.66667.
 # Al_kp_ot_uks_common_mu_sym3_restart.inp also restores the four-channel state
 # in one step.
+# The unlisted Na_kp_ot_added_auto_sym333_converge.inp is the stricter atomic
+# 3x3x3 fixed-N companion. It grows AUTO 4->8->16 and converges at
+# -9.01953180117150 Ha. Na_kp_ot_added_auto_sym333_restart.inp restores the
+# converged state in one step.
 # The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
 # provide the converged symmetry-reduced Gaussian path at
 # -8.15946107404605 Ha; the restart closes in one step and diagonalization is
