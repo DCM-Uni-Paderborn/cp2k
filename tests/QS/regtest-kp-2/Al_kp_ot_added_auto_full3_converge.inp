@@ -4,9 +4,9 @@
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
 ! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference: AUTO grows 4->8->16 and
-! converges in 55 final-space OT steps at -8.15998707968194 Ha. It prints no
+! converges in 113 final-space OT steps at -8.15998707506017 Ha. It prints no
 ! first/last-band, AUTO-exhausted, MAX-ITER, or unsupported-content warning.
-! The endpoint agrees with the symmetry-reduced companion within 1.2E-10 Ha
+! The endpoint agrees with the symmetry-reduced companion within 4.7E-9 Ha
 ! and therefore guards explicit-grid versus irreducible-weight consistency
 ! without requiring identical local virtual-space growth histories.
 &GLOBAL

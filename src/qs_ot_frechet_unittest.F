@@ -101,14 +101,14 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_history_refresh_ready, &
         qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
         qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
-        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_response_probe, &
-        qs_scf_kp_density_response_tail_ready, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
-        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_density_full_direct_tail_probe, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_pair_activation_ready, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_response_probe, qs_scf_kp_density_response_tail_ready, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
+        qs_scf_kp_directional_subspace_curvature_update, qs_scf_kp_energy_closure_preferred, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_tail_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_projector_frechet, qs_scf_kp_fixed_n_response_mu_shift, &
@@ -8416,9 +8416,8 @@ CONTAINS
       IF (.NOT. ready .OR. positive_modes /= 1 .OR. negative_modes /= 1 .OR. &
           unsupported_modes /= 1 .OR. independence <= 0.0_dp) error = HUGE(1.0_dp)
 
-      ! An analytic finite-complex projector/occupation prior is already present in the
-      ! Direct candidate.  The accepted response fit must return only the missing physical
-      ! correction while auditing the complete prior-plus-correction secant model.
+      ! When a response prior already belongs to the same measured channel, the fit returns only
+      ! its missing correction while auditing the complete prior-plus-correction secant model.
       prior(:, :) = 0.0_dp
       prior(1, 1) = 2.0_dp
       prior(1, 3) = 0.5_dp
@@ -8441,17 +8440,16 @@ CONTAINS
           prior_compatibility > tol .OR. prior_residual_ratio > tol) &
          error = HUGE(1.0_dp)
 
-      ! A separately fitted physical prior replaces only the response represented by the
-      ! candidate baseline.  This is the path used by the full rotation/energy closure fit:
-      ! return the complete physical-prior minus Direct-baseline correction, not merely the
-      ! residual needed to satisfy the same secants.
+      ! A separately fitted physical closure prior is additive to a frozen-H candidate.  Its
+      ! baseline is therefore zero: return the complete closure response instead of subtracting
+      ! the analytic frozen-H projector response from it.
       CALL qs_scf_kp_validated_density_response( &
          tangent_modes, response_steps, response_targets, baseline_correction, baseline_ready, &
          baseline_positive_modes, baseline_negative_modes, baseline_unsupported_modes, &
          baseline_independence, baseline_compatibility, baseline_residual_ratio, &
-         response_prior=expected, response_baseline=prior)
+         response_prior=expected, response_baseline=0.0_dp*prior)
       IF (.NOT. baseline_ready .OR. &
-          MAXVAL(ABS(baseline_correction - prior_expected_correction)) > tol .OR. &
+          MAXVAL(ABS(baseline_correction - expected)) > tol .OR. &
           baseline_positive_modes /= 1 .OR. baseline_negative_modes /= 1 .OR. &
           baseline_unsupported_modes /= 1 .OR. baseline_independence <= tol .OR. &
           baseline_compatibility > tol .OR. baseline_residual_ratio > tol) &
@@ -17707,70 +17705,75 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       LOGICAL :: active_recovery, inactive_recovery, low_drop, low_quality, low_samples, ready, &
-         selected_bad, selected_bootstrap, selected_bootstrap_bad, selected_floor, selected_ok, &
-         selected_recent_bad, selected_sparse_bootstrap, stale_interval_veto, stale_refresh, &
-         tail_veto, weak_drop
+         selected_absolute_bad, selected_bad, selected_bootstrap, selected_bootstrap_bad, &
+         selected_floor, selected_ok, selected_recent_bad, selected_sparse_bootstrap, &
+         stale_interval_veto, stale_refresh, tail_veto, weak_drop
       REAL(KIND=dp)                                      :: err
 
-      ready = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                   0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
-      tail_veto = dense_density_full_direct_tail_probe(2.0E-4_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                       0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
-      low_samples = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                         0.20_dp, 7, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
-      low_quality = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                         0.09_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
-      low_drop = dense_density_full_direct_tail_probe(5.0E-5_dp, 1.0E-13_dp, 1.0E-7_dp, &
-                                                      0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
-      weak_drop = dense_density_full_direct_tail_probe(5.0E-5_dp, 7.9E-8_dp, 1.0E-7_dp, &
-                                                       0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
-      selected_ok = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                         0.20_dp, 8, 0.40_dp, 0.40_dp, 4, .TRUE., 0.40_dp)
-      selected_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                          0.20_dp, 8, 0.40_dp, 0.20_dp, 4, .TRUE., 0.70_dp)
-      selected_recent_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                                 0.20_dp, 8, 0.05_dp, 0.40_dp, 4, .TRUE., 0.40_dp)
-      selected_floor = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                            0.20_dp, 8, 0.21_dp, 0.21_dp, 4, .TRUE., 0.0_dp)
-      selected_bootstrap = dense_density_full_direct_tail_probe(5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
-                                                                0.20_dp, 8, 0.30_dp, 0.50_dp, 1, .TRUE., 0.70_dp)
-      selected_bootstrap_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
-                                                                    0.20_dp, 8, 0.10_dp, 0.10_dp, 1, .TRUE., 0.70_dp)
-      selected_sparse_bootstrap = dense_density_full_direct_tail_probe( &
+      ready = qs_scf_kp_density_full_direct_tail_probe( &
+              5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, 0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
+      tail_veto = qs_scf_kp_density_full_direct_tail_probe( &
+                  2.0E-4_dp, 8.5E-8_dp, 1.0E-7_dp, 0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
+      low_samples = qs_scf_kp_density_full_direct_tail_probe( &
+                    5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, 0.20_dp, 7, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
+      low_quality = qs_scf_kp_density_full_direct_tail_probe( &
+                    5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, 0.09_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
+      low_drop = qs_scf_kp_density_full_direct_tail_probe( &
+                 5.0E-5_dp, 1.0E-13_dp, 1.0E-7_dp, 0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
+      weak_drop = qs_scf_kp_density_full_direct_tail_probe( &
+                  5.0E-5_dp, 7.9E-8_dp, 1.0E-7_dp, 0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
+      selected_ok = qs_scf_kp_density_full_direct_tail_probe( &
+                    5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, 0.20_dp, 8, 0.40_dp, 0.40_dp, 4, .TRUE., 0.40_dp)
+      selected_bad = qs_scf_kp_density_full_direct_tail_probe( &
+                     5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, 0.20_dp, 8, 0.40_dp, 0.20_dp, 4, .TRUE., 0.70_dp)
+      selected_recent_bad = qs_scf_kp_density_full_direct_tail_probe( &
+                            5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, 0.20_dp, 8, 0.05_dp, 0.40_dp, 4, .TRUE., 0.40_dp)
+      selected_floor = qs_scf_kp_density_full_direct_tail_probe( &
+                       5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, 0.20_dp, 8, 0.21_dp, 0.21_dp, 4, .TRUE., 0.0_dp)
+      selected_absolute_bad = qs_scf_kp_density_full_direct_tail_probe( &
+                              5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, 0.20_dp, 9, 0.05_dp, 0.10_dp, 4, .TRUE., 0.0_dp)
+      selected_bootstrap = qs_scf_kp_density_full_direct_tail_probe( &
+                           5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, 0.20_dp, 8, 0.30_dp, 0.50_dp, 1, .TRUE., 0.70_dp)
+      selected_bootstrap_bad = qs_scf_kp_density_full_direct_tail_probe( &
+                               5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, 0.20_dp, 8, 0.10_dp, 0.10_dp, 1, .TRUE., 0.70_dp)
+      selected_sparse_bootstrap = qs_scf_kp_density_full_direct_tail_probe( &
                                   5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
                                   0.25_dp, 1, 0.30_dp, 0.50_dp, 2, .TRUE., 0.70_dp)
-      stale_refresh = dense_density_full_direct_tail_probe(5.0E-5_dp, 2.5E-8_dp, 1.0E-7_dp, &
-                                                           0.25_dp, 8, 0.05_dp, 0.10_dp, 4, .TRUE., 0.25_dp)
-      stale_interval_veto = dense_density_full_direct_tail_probe(5.0E-5_dp, 2.5E-8_dp, 1.0E-7_dp, &
-                                                                 0.25_dp, 9, 0.05_dp, 0.10_dp, 4, .TRUE., 0.25_dp)
-      active_recovery = dense_density_full_direct_tail_probe(5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
-                                                             0.25_dp, 8, 0.15_dp, 0.60_dp, 4, .TRUE., 0.25_dp)
-      inactive_recovery = dense_density_full_direct_tail_probe(5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
-                                                               0.25_dp, 8, 0.15_dp, 0.60_dp, 4, .FALSE., 0.25_dp)
+      stale_refresh = qs_scf_kp_density_full_direct_tail_probe( &
+                      5.0E-5_dp, 2.5E-8_dp, 1.0E-7_dp, 0.25_dp, 8, 0.05_dp, 0.10_dp, 4, .TRUE., 0.25_dp)
+      stale_interval_veto = qs_scf_kp_density_full_direct_tail_probe( &
+                            5.0E-5_dp, 2.5E-8_dp, 1.0E-7_dp, 0.25_dp, 9, 0.05_dp, 0.10_dp, 4, .TRUE., 0.25_dp)
+      active_recovery = qs_scf_kp_density_full_direct_tail_probe( &
+                        5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, 0.25_dp, 8, 0.15_dp, 0.60_dp, 4, .TRUE., 0.25_dp)
+      inactive_recovery = qs_scf_kp_density_full_direct_tail_probe( &
+                          5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, 0.25_dp, 8, 0.15_dp, 0.60_dp, 4, .FALSE., 0.25_dp)
 
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_samples .OR. low_quality .OR. low_drop .OR. &
           weak_drop .OR. .NOT. selected_ok .OR. selected_bad .OR. selected_recent_bad .OR. &
-          .NOT. selected_floor .OR. .NOT. selected_bootstrap .OR. selected_bootstrap_bad .OR. &
+          .NOT. selected_floor .OR. selected_absolute_bad .OR. .NOT. selected_bootstrap .OR. &
+          selected_bootstrap_bad .OR. &
           .NOT. selected_sparse_bootstrap .OR. .NOT. stale_refresh .OR. stale_interval_veto .OR. &
           .NOT. active_recovery .OR. inactive_recovery) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,17(1X,L1))') TRIM(label), &
-            "failed with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/boot/bbad/sboot/stale/int/ "// &
+         WRITE (*, '(A,1X,A,18(1X,L1))') TRIM(label), &
+            "failed with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/absbad/boot/bbad/sboot/stale/int/ "// &
             "active/inactive", ready, &
             tail_veto, &
             low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_recent_bad, &
-            selected_floor, selected_bootstrap, selected_bootstrap_bad, selected_sparse_bootstrap, &
+            selected_floor, selected_absolute_bad, selected_bootstrap, selected_bootstrap_bad, &
+            selected_sparse_bootstrap, &
             stale_refresh, stale_interval_veto, active_recovery, inactive_recovery
       ELSE
-         WRITE (*, '(A,1X,A,17(1X,L1))') TRIM(label), &
-            "OK with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/boot/bbad/sboot/stale/int/ "// &
+         WRITE (*, '(A,1X,A,18(1X,L1))') TRIM(label), &
+            "OK with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/absbad/boot/bbad/sboot/stale/int/ "// &
             "active/inactive", ready, &
             tail_veto, &
             low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_recent_bad, &
-            selected_floor, selected_bootstrap, selected_bootstrap_bad, selected_sparse_bootstrap, &
+            selected_floor, selected_absolute_bad, selected_bootstrap, selected_bootstrap_bad, &
+            selected_sparse_bootstrap, &
             stale_refresh, stale_interval_veto, active_recovery, inactive_recovery
       END IF
 
@@ -22534,84 +22537,6 @@ CONTAINS
                    direct_response_ready, direct_floor_weight, direct_filtered_shadow_ready)
 
    END FUNCTION dense_modal_density_response_use_direct
-
-! **************************************************************************************************
-!> \brief Dense mirror of the full-density Direct residual-tail close-call gate.
-!> \param residual_delta ...
-!> \param candidate_expected_drop ...
-!> \param reference_expected_drop ...
-!> \param quality_ema ...
-!> \param samples ...
-!> \param selected_residual_quality ...
-!> \param selected_residual_quality_ema ...
-!> \param selected_samples ...
-!> \param density_tail_active ...
-!> \param dense_residual_quality ...
-!> \return true if the candidate is a calibrated residual-tail close call
-! **************************************************************************************************
-   FUNCTION dense_density_full_direct_tail_probe(residual_delta, candidate_expected_drop, &
-                                                 reference_expected_drop, quality_ema, samples, &
-                                                 selected_residual_quality, selected_residual_quality_ema, &
-                                                 selected_samples, &
-                                                 density_tail_active, &
-                                                 dense_residual_quality) RESULT(do_probe)
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
-                                                            reference_expected_drop, quality_ema
-      INTEGER, INTENT(IN)                                :: samples
-      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
-                                                            selected_residual_quality_ema
-      INTEGER, INTENT(IN)                                :: selected_samples
-      LOGICAL, INTENT(IN)                                :: density_tail_active
-      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
-      LOGICAL                                            :: do_probe
-
-      LOGICAL                                            :: residual_recovery_probe, &
-                                                            selected_bootstrap_probe, &
-                                                            stale_residual_probe
-      REAL(KIND=dp)                                      :: required_drop_ratio, residual_reference
-
-      do_probe = .FALSE.
-      IF (residual_delta > 1.0E-4_dp) RETURN
-      IF (samples < 8 .AND. selected_samples <= 0) RETURN
-      IF (quality_ema < 1.0E-1_dp) RETURN
-      IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
-
-      residual_reference = MAX(dense_residual_quality, 2.5E-1_dp)
-      residual_recovery_probe = .FALSE.
-      selected_bootstrap_probe = .FALSE.
-      stale_residual_probe = .FALSE.
-      IF (selected_samples >= 4) THEN
-         residual_recovery_probe = density_tail_active .AND. &
-                                   selected_residual_quality_ema >= 1.6_dp*residual_reference .AND. &
-                                   selected_residual_quality >= 4.0E-1_dp*residual_reference
-         stale_residual_probe = dense_residual_quality <= 5.0E-1_dp .AND. &
-                                selected_residual_quality_ema < 8.0E-1_dp* &
-                                residual_reference .AND. &
-                                quality_ema >= 2.0E-1_dp .AND. &
-                                MOD(samples, 8) == 0
-      ELSE IF (selected_samples > 0) THEN
-         selected_bootstrap_probe = selected_residual_quality_ema >= 4.0E-1_dp* &
-                                    residual_reference .AND. quality_ema >= 2.0E-1_dp
-      END IF
-
-      required_drop_ratio = 8.0E-1_dp
-      IF (stale_residual_probe) required_drop_ratio = MIN(required_drop_ratio, 2.0E-1_dp)
-      IF (selected_bootstrap_probe) required_drop_ratio = MIN(required_drop_ratio, 3.5E-1_dp)
-      IF (residual_recovery_probe) required_drop_ratio = MIN(required_drop_ratio, 3.5E-1_dp)
-      IF (candidate_expected_drop < required_drop_ratio*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
-
-      IF (selected_samples >= 4) THEN
-         IF (.NOT. stale_residual_probe) THEN
-            IF (selected_residual_quality_ema < 8.0E-1_dp*residual_reference) &
-               RETURN
-            IF (selected_residual_quality < 4.0E-1_dp*residual_reference) &
-               RETURN
-         END IF
-      END IF
-
-      do_probe = .TRUE.
-
-   END FUNCTION dense_density_full_direct_tail_probe
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected Direct-density tail-probe override protection.
@@ -27474,7 +27399,7 @@ CONTAINS
    END SUBROUTINE check_density_candidate_history_scale
 
 ! **************************************************************************************************
-!> \brief Check the relative density-baseline test for mature candidate history.
+!> \brief Check the relative residual test for mature density-candidate history.
 !> \param label ...
 !> \param nfail ...
 ! **************************************************************************************************

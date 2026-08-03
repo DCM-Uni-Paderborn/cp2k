@@ -49,10 +49,10 @@
 # cheap while the adaptive AUTO grow path can still be checked against the
 # 1E-6 Mermin path. The LOW 2x1x1 reference converges in 111 final-space
 # MPI-2 steps and reaches -8.14585308840704 Ha. The symmetry-reduced
-# 3x1x1 reference currently takes 63 final-space steps and reaches
-# -8.15998707956602 Ha without overgrowing its empty virtual edge. The
-# explicit full-grid 3x1x1 companion takes 55 final-space steps and reaches
-# -8.15998707968194 Ha. Their endpoints agree within 1.2E-10 Ha even though
+# 3x1x1 reference currently takes 240 final-space steps and reaches
+# -8.15998707976516 Ha without overgrowing its empty virtual edge. The
+# explicit full-grid 3x1x1 companion takes 113 final-space steps and reaches
+# -8.15998707506017 Ha. Their endpoints agree within 4.7E-9 Ha even though
 # their local virtual-space growth histories differ.
 # No first/last-band, AUTO-exhausted, MAX-ITER, or "Unsupported content type"
 # signature is printed. Al_kp_ot_added_auto_sym3_restart.inp restores the
@@ -75,7 +75,7 @@
 # in one step.
 # The unlisted Na_kp_ot_added_auto_sym333_converge.inp is the stricter atomic
 # 3x3x3 fixed-N companion. It grows AUTO 4->8->16 and converges at
-# -9.01953180117150 Ha. Na_kp_ot_added_auto_sym333_restart.inp restores the
+# -9.01953184601602 Ha. Na_kp_ot_added_auto_sym333_restart.inp restores the
 # converged state in one step.
 # The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
 # provide the converged symmetry-reduced Gaussian path at

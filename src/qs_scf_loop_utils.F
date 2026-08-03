@@ -305,6 +305,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_candidate_residual_quality, &
              qs_scf_kp_density_candidate_history_scale, &
              qs_scf_kp_density_candidate_residual_bad, &
+             qs_scf_kp_density_full_direct_tail_probe, &
              qs_scf_kp_density_response_probe, &
              qs_scf_kp_density_response_tail_ready, &
              qs_scf_kp_density_control_delta, &
@@ -900,6 +901,105 @@ CONTAINS
             0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference
 
    END FUNCTION qs_scf_kp_density_candidate_residual_bad
+
+! **************************************************************************************************
+!> \brief whether a full-density Direct candidate may collect tail line-search history
+!> \param residual_delta current OT residual
+!> \param candidate_expected_drop calibrated candidate Mermin drop
+!> \param reference_expected_drop currently selected dense-coupled expected drop
+!> \param quality_ema accepted shadow-history Mermin quality
+!> \param samples number of accepted shadow-history samples
+!> \param selected_residual_quality latest residual quality of already selected Direct probes
+!> \param selected_residual_quality_ema residual quality of already selected Direct probes
+!> \param selected_samples number of selected Direct probes
+!> \param density_tail_active whether the canonical density residual still exceeds EPS_SCF
+!> \param dense_residual_quality residual quality of the dense-coupled baseline
+!> \return true if the candidate is a calibrated residual-tail close call
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_density_full_direct_tail_probe( &
+      residual_delta, candidate_expected_drop, reference_expected_drop, quality_ema, samples, &
+      selected_residual_quality, selected_residual_quality_ema, selected_samples, &
+      density_tail_active, dense_residual_quality) RESULT(do_probe)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            reference_expected_drop, quality_ema
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      LOGICAL, INTENT(IN)                                :: density_tail_active
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      LOGICAL                                            :: do_probe
+
+      LOGICAL                                            :: residual_recovery_probe, &
+                                                            selected_bootstrap_probe, &
+                                                            stale_residual_probe
+      REAL(KIND=dp)                                      :: required_drop_ratio, residual_reference
+
+      do_probe = .FALSE.
+      IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+      IF (samples < ot_kp_schur_projector_response_min_samples .AND. &
+          selected_samples <= 0) RETURN
+      IF (quality_ema < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+      IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+
+      ! A nearly stationary dense baseline is not enough evidence that a weak selected candidate
+      ! is useful.  Keep the accepted residual contraction tied to the calibrated physical floor.
+      residual_reference = MAX(0.0_dp, dense_residual_quality, &
+                               ot_kp_schur_calibrated_quality_min_ratio)
+      residual_recovery_probe = .FALSE.
+      selected_bootstrap_probe = .FALSE.
+      stale_residual_probe = .FALSE.
+      IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
+         ! The Mermin prediction alone cannot distinguish a direction that repeatedly reduces the
+         ! exact fixed-N density residual from a formally larger dense step that leaves it stationary.
+         residual_recovery_probe = density_tail_active .AND. &
+                                   selected_residual_quality_ema >= &
+                                   2.0_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                                   residual_reference .AND. &
+                                   selected_residual_quality >= &
+                                   0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                                   residual_reference
+         stale_residual_probe = &
+            dense_residual_quality <= 2.0_dp*ot_kp_schur_calibrated_quality_min_ratio .AND. &
+            selected_residual_quality_ema < &
+            ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference .AND. &
+            quality_ema >= 2.0_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+            MOD(samples, MAX(1, 2*ot_kp_schur_calibration_min_samples)) == 0
+      ELSE IF (selected_samples > 0) THEN
+         selected_bootstrap_probe = &
+            selected_residual_quality_ema >= &
+            0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference .AND. &
+            quality_ema >= 2.0_dp*ot_kp_schur_projector_response_quality_min_ratio
+      END IF
+
+      required_drop_ratio = ot_kp_schur_projector_density_fdir_probe_ratio
+      IF (stale_residual_probe) &
+         required_drop_ratio = MIN(required_drop_ratio, &
+                                   ot_kp_schur_projector_density_fdir_refresh_ratio)
+      IF (selected_bootstrap_probe) &
+         required_drop_ratio = MIN(required_drop_ratio, &
+                                   MAX(ot_kp_schur_projector_density_fdir_refresh_ratio, &
+                                       ot_kp_schur_branch_loss_density_recovery))
+      IF (residual_recovery_probe) &
+         required_drop_ratio = MIN(required_drop_ratio, &
+                                   MAX(ot_kp_schur_projector_density_fdir_refresh_ratio, &
+                                       ot_kp_schur_branch_loss_density_recovery))
+      IF (candidate_expected_drop < required_drop_ratio* &
+          MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+
+      IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
+         IF (.NOT. stale_residual_probe) THEN
+            IF (selected_residual_quality_ema < &
+                ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference) RETURN
+            IF (selected_residual_quality < &
+                0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                residual_reference) RETURN
+         END IF
+      END IF
+
+      do_probe = .TRUE.
+
+   END FUNCTION qs_scf_kp_density_full_direct_tail_probe
 
 ! **************************************************************************************************
 !> \brief Quadratic Mermin-model decrease at a finite line-search position.
@@ -17530,7 +17630,7 @@ CONTAINS
          closure_response_compatibility, closure_response_coupled_quad, &
          closure_response_fitted_residual_ratio, closure_response_independence, &
          closure_response_mode_fullrank_curvature, closure_response_mode_norm, &
-         closure_response_mode_pair_curvature, closure_response_mode_prior_curvature, &
+         closure_response_mode_baseline_curvature, closure_response_mode_pair_curvature, &
          closure_response_pair_fitted_residual_ratio, closure_response_reduced_quad
       REAL(KIND=dp) :: closure_response_residual_ratio, constrained_diag_shift_avg, &
          constrained_direction_scale, constrained_expected_drop, constrained_expected_drop_ratio, &
@@ -18306,7 +18406,7 @@ CONTAINS
          response_prediction, response_split, rot_hessian, rot_hessian_closure_candidate, &
          rot_hessian_closure_coupled_fullrank_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: rot_hessian_closure_coupled_response, &
-         rot_hessian_closure_fullrank_response, rot_hessian_closure_prior, &
+         rot_hessian_closure_baseline, rot_hessian_closure_fullrank_response, &
          rot_hessian_closure_probe_response, rot_hessian_closure_reduced_response, &
          rot_hessian_closure_response, rot_hessian_coupled, rot_hessian_multisecant, &
          rot_hessian_orbital_schur, rot_hessian_prediction, rot_hessian_projector, &
@@ -18860,7 +18960,7 @@ CONTAINS
                    rot_hessian_closure_candidate(nrot, nrot), &
                    rot_hessian_closure_coupled_fullrank_response(nrot, nrot), &
                    rot_hessian_closure_fullrank_response(nrot, nrot), &
-                   rot_hessian_closure_prior(nrot, nrot), &
+                   rot_hessian_closure_baseline(nrot, nrot), &
                    rot_hessian_closure_probe_response(nrot, nrot), &
                    rot_hessian_closure_reduced_response(nrot, nrot), &
                    rot_hessian_closure_response(nrot, nrot), &
@@ -19072,7 +19172,7 @@ CONTAINS
          rot_hessian_closure_candidate(:, :) = 0.0_dp
          rot_hessian_closure_coupled_fullrank_response(:, :) = 0.0_dp
          rot_hessian_closure_fullrank_response(:, :) = 0.0_dp
-         rot_hessian_closure_prior(:, :) = 0.0_dp
+         rot_hessian_closure_baseline(:, :) = 0.0_dp
          rot_hessian_closure_probe_response(:, :) = 0.0_dp
          rot_hessian_closure_reduced_response(:, :) = 0.0_dp
          rot_hessian_closure_response(:, :) = 0.0_dp
@@ -20863,7 +20963,7 @@ CONTAINS
                         closure_response_steps, closure_response_targets, &
                         closure_density_probe_steps, closure_density_probe_targets, &
                         closure_response_metric, &
-                        rot_hessian_closure_candidate, rot_hessian_closure_prior, &
+                        rot_hessian_closure_baseline, rot_hessian_closure_candidate, &
                         rot_hessian_closure_probe_response, rot_hessian_closure_response, &
                         rot_hessian_coupled, &
                         full_rot_hessian_coupled, &
@@ -26565,17 +26665,10 @@ CONTAINS
                         closure_response_metric(:, :) = 0.5_dp* &
                                                         (closure_response_metric + &
                                                          TRANSPOSE(closure_response_metric))
-                        ! The accepted closure secant measures the full self-consistent
-                        ! contribution relative to the frozen-H response.  The Direct candidate
-                        ! already contains the analytic finite-complex projector/occupation
-                        ! contribution.  Fit only the remaining physical delta, otherwise that
-                        ! analytic response is counted twice.
-                        rot_hessian_closure_prior(:, :) = &
-                           projector_coupled_weight*projector_physical_direct_delta(:, :) - &
-                           closure_response_metric(:, :) + reduced_response_metric(:, :)
-                        rot_hessian_closure_prior(:, :) = 0.5_dp* &
-                                                          (rot_hessian_closure_prior + &
-                                                           TRANSPOSE(rot_hessian_closure_prior))
+                        ! The accepted closure secant is y_SCF-y_frozen-H.  Direct already models
+                        ! the frozen-H projector/occupation response, so the fitted Hartree/XC
+                        ! closure is an additive response with a zero candidate baseline.
+                        rot_hessian_closure_baseline(:, :) = 0.0_dp
                         rot_hessian_closure_response(:, :) = 0.0_dp
                         rot_hessian_closure_fullrank_response(:, :) = 0.0_dp
                         closure_response_subspace_ready = .FALSE.
@@ -26597,7 +26690,6 @@ CONTAINS
                            closure_response_negative_modes, closure_response_unsupported_modes, &
                            closure_response_independence, closure_response_compatibility, &
                            closure_response_residual_ratio, &
-                           response_prior=rot_hessian_closure_prior, &
                            fitted_residual_ratio=closure_response_fitted_residual_ratio, &
                            pair_fitted_residual_ratio= &
                            closure_response_pair_fitted_residual_ratio, &
@@ -26613,7 +26705,7 @@ CONTAINS
                            closure_density_probe_response_ready, closure_density_probe_positive_modes, &
                            closure_density_probe_negative_modes, closure_density_probe_unsupported_modes, &
                            closure_density_probe_independence, closure_density_probe_compatibility, &
-                           closure_density_probe_residual_ratio, response_prior=rot_hessian_closure_prior)
+                           closure_density_probe_residual_ratio)
                         IF (closure_density_probe_response_ready) THEN
                            ! The last accepted density-aware finite step is an endpoint-local
                            ! measurement of dH/dP.  Use its supported low-rank response in the
@@ -26638,13 +26730,13 @@ CONTAINS
                            WRITE (cp_logger_get_default_unit_nr(logger), &
                                   '(A,2(1X,I4),3(1X,L1),6(1X,ES16.8))') &
                            " OT Schur density-probe closure response group flavor armed sample fit "// &
-                           "independence compatibility residual prior_norm correction_norm:", &
+                           "independence compatibility residual baseline_norm response_norm:", &
                            target_group, local_ot_env(1)%schur_last_accepted_flavor, &
                            local_ot_env(1)%schur_density_probe_tail_armed, &
                            closure_density_probe_sample_ready, closure_density_probe_response_ready, &
                            closure_density_probe_independence, closure_density_probe_compatibility, &
                            closure_density_probe_residual_ratio, &
-                           SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_prior**2))), &
+                           SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_baseline**2))), &
                            SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_probe_response**2))), &
                            SQRT(MAX(0.0_dp, SUM(closure_density_probe_steps**2)))
                         closure_reduced_response_ready = closure_response_subspace_ready
@@ -26677,7 +26769,7 @@ CONTAINS
                            pair_fitted_residual_ratio=closure_coupled_validation_pair_residual, &
                            fullrank_response_correction= &
                            rot_hessian_closure_coupled_fullrank_response, &
-                           response_baseline=rot_hessian_closure_prior)
+                           response_baseline=rot_hessian_closure_baseline)
                         closure_coupled_response_history_ready = &
                            qs_scf_kp_closure_response_history_ready( &
                            local_ot_env(1)%schur_closure_shadow_quality_samples, &
@@ -26717,14 +26809,14 @@ CONTAINS
                                   '(A,1X,I3,1X,L1,3(1X,I4),8(1X,ES16.8))') &
                            " OT Schur canonical density closure response group ready pos neg unsupported "// &
                            "independence compatibility validation_residual pair_fit_residual "// &
-                           "fullrank_fit_residual prior_norm correction_norm density_ema:", &
+                           "fullrank_fit_residual baseline_norm response_norm density_ema:", &
                            target_group, closure_response_subspace_ready, &
                            closure_response_positive_modes, closure_response_negative_modes, &
                            closure_response_unsupported_modes, closure_response_independence, &
                            closure_response_compatibility, closure_response_residual_ratio, &
                            closure_response_pair_fitted_residual_ratio, &
                            closure_response_fitted_residual_ratio, &
-                           SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_prior**2))), &
+                           SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_baseline**2))), &
                            SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_response**2))), &
                            local_ot_env(1)%schur_closure_response_density_quality_ema
                         IF (logger%iter_info%print_level >= high_print_level .AND. &
@@ -26753,9 +26845,9 @@ CONTAINS
                                                            canonical_density_tangent_modes(:, global_channel), &
                                                            canonical_density_tangent_modes(:, global_channel))
                               IF (closure_response_mode_norm <= TINY(1.0_dp)) CYCLE
-                              closure_response_mode_prior_curvature = DOT_PRODUCT( &
+                              closure_response_mode_baseline_curvature = DOT_PRODUCT( &
                                                                       canonical_density_tangent_modes(:, global_channel), &
-                                                                      MATMUL(rot_hessian_closure_prior, &
+                                                                      MATMUL(rot_hessian_closure_baseline, &
                                                                              canonical_density_tangent_modes(:, global_channel)))/ &
                                                                       closure_response_mode_norm
                               closure_response_mode_pair_curvature = DOT_PRODUCT( &
@@ -26771,9 +26863,9 @@ CONTAINS
                               WRITE (cp_logger_get_default_unit_nr(logger), &
                                      '(A,2(1X,I4),4(1X,ES16.8))') &
                                  " OT Schur canonical density closure mode group channel "// &
-                                 "prior pair_delta fullrank_delta fullrank_minus_pair:", &
+                                 "baseline pair_response fullrank_response fullrank_minus_pair:", &
                                  target_group, global_channel, &
-                                 closure_response_mode_prior_curvature, &
+                                 closure_response_mode_baseline_curvature, &
                                  closure_response_mode_pair_curvature, &
                                  closure_response_mode_fullrank_curvature, &
                                  closure_response_mode_fullrank_curvature - &
@@ -29499,7 +29591,7 @@ CONTAINS
                      ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                         EPSILON(dense_expected_drop))) .OR. &
                     (projector_physical_direct_density_tail_probe_ready .AND. &
-                     kpoint_ot_density_full_direct_tail_probe( &
+                     qs_scf_kp_density_full_direct_tail_probe( &
                      residual_delta, projector_physical_direct_density_probe_expected_drop, dense_expected_drop, &
                      projector_physical_direct_floor_density_quality, &
                      local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
@@ -29771,7 +29863,7 @@ CONTAINS
                       projector_physical_direct_density_residual_bad) .AND. &
                      .NOT. density_full_candidate_selected .AND. &
                      .NOT. density_full_global_candidate_selected .AND. &
-                     kpoint_ot_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
+                     qs_scf_kp_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
                                                               dense_expected_drop, &
                                                               local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
                                                               local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
@@ -30150,7 +30242,7 @@ CONTAINS
                      ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                         EPSILON(dense_expected_drop))) .OR. &
                     (projector_physical_direct_density_tail_probe_ready .AND. &
-                     kpoint_ot_density_full_direct_tail_probe( &
+                     qs_scf_kp_density_full_direct_tail_probe( &
                      residual_delta, projector_physical_direct_density_probe_expected_drop, dense_expected_drop, &
                      projector_physical_direct_floor_density_quality, &
                      local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
@@ -30418,7 +30510,7 @@ CONTAINS
                       projector_physical_direct_density_residual_bad) .AND. &
                      .NOT. density_full_candidate_selected .AND. &
                      .NOT. density_full_global_candidate_selected .AND. &
-                     kpoint_ot_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
+                     qs_scf_kp_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
                                                               dense_expected_drop, &
                                                               local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
                                                               local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
@@ -34070,7 +34162,7 @@ CONTAINS
                      rot_hessian_closure_candidate, &
                      rot_hessian_closure_coupled_fullrank_response, &
                      rot_hessian_closure_fullrank_response, &
-                     rot_hessian_closure_prior, rot_hessian_closure_probe_response, &
+                     rot_hessian_closure_baseline, rot_hessian_closure_probe_response, &
                      rot_hessian_closure_reduced_response, &
                      rot_hessian_closure_response, &
                      rot_hessian_closure_coupled_response, rot_hessian_coupled, &
@@ -39757,113 +39849,6 @@ CONTAINS
          probe_drop = MAX(probe_drop, model_calibrated_drop)
 
       END FUNCTION kpoint_ot_density_descent_tail_probe_drop
-
-! **************************************************************************************************
-!> \brief whether a full-density Direct candidate may collect tail line-search history
-!> \param residual_delta current OT residual
-!> \param candidate_expected_drop calibrated candidate Mermin drop
-!> \param reference_expected_drop currently selected dense-coupled expected drop
-!> \param quality_ema accepted shadow-history Mermin quality
-!> \param samples number of accepted shadow-history samples
-!> \param selected_residual_quality latest residual quality of already selected Direct probes
-!> \param selected_residual_quality_ema residual quality of already selected Direct probes
-!> \param selected_samples number of selected Direct probes
-!> \param density_tail_active whether the canonical density residual still exceeds EPS_SCF
-!> \param dense_residual_quality residual quality of the dense-coupled baseline
-!> \return true if the candidate is a calibrated residual-tail close call
-! **************************************************************************************************
-      FUNCTION kpoint_ot_density_full_direct_tail_probe(residual_delta, candidate_expected_drop, &
-                                                        reference_expected_drop, quality_ema, samples, &
-                                                        selected_residual_quality, &
-                                                        selected_residual_quality_ema, selected_samples, &
-                                                        density_tail_active, &
-                                                        dense_residual_quality) RESULT(do_probe)
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
-                                                            reference_expected_drop, quality_ema
-      INTEGER, INTENT(IN)                                :: samples
-      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
-                                                            selected_residual_quality_ema
-      INTEGER, INTENT(IN)                                :: selected_samples
-      LOGICAL, INTENT(IN)                                :: density_tail_active
-      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
-      LOGICAL                                            :: do_probe
-
-      LOGICAL                                            :: residual_recovery_probe, &
-                                                            selected_bootstrap_probe, &
-                                                            stale_residual_probe
-      REAL(KIND=dp)                                      :: required_drop_ratio, residual_reference
-
-         do_probe = .FALSE.
-         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
-         IF (samples < ot_kp_schur_projector_response_min_samples .AND. &
-             selected_samples <= 0) RETURN
-         IF (quality_ema < ot_kp_schur_projector_response_quality_min_ratio) RETURN
-         IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
-
-         residual_reference = MAX(0.0_dp, dense_residual_quality, EPSILON(1.0_dp))
-         residual_recovery_probe = .FALSE.
-         selected_bootstrap_probe = .FALSE.
-         stale_residual_probe = .FALSE.
-         IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
-            ! The Mermin prediction alone cannot distinguish a direction that
-            ! repeatedly reduces the exact fixed-N density residual from a
-            ! formally larger dense step that leaves that residual stationary.
-            ! Retain both objectives in the candidate comparison, while the
-            ! ordinary line search remains the final free-energy acceptance.
-            residual_recovery_probe = density_tail_active .AND. &
-                                      selected_residual_quality_ema >= &
-                                      2.0_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-                                      residual_reference .AND. &
-                                      selected_residual_quality >= &
-                                      0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-                                      residual_reference
-            stale_residual_probe = &
-               dense_residual_quality <= 2.0_dp*ot_kp_schur_calibrated_quality_min_ratio .AND. &
-               selected_residual_quality_ema < ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-               residual_reference .AND. &
-               quality_ema >= 2.0_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
-               MOD(samples, MAX(1, 2*ot_kp_schur_calibration_min_samples)) == 0
-         ELSE IF (selected_samples > 0) THEN
-            ! Before the selected candidate has enough samples for a
-            ! statistically meaningful residual comparison, any accumulated
-            ! positive density-stationarity response is useful calibration
-            ! evidence.  Its accepted Mermin history now scales the next step
-            ! directly, so do not veto that smaller probe with the mature
-            ! relative-residual threshold.
-            selected_bootstrap_probe = &
-               selected_residual_quality_ema > EPSILON(selected_residual_quality_ema) .AND. &
-               quality_ema >= 2.0_dp*ot_kp_schur_projector_response_quality_min_ratio
-         END IF
-
-         required_drop_ratio = ot_kp_schur_projector_density_fdir_probe_ratio
-         IF (stale_residual_probe) &
-            required_drop_ratio = MIN(required_drop_ratio, &
-                                      ot_kp_schur_projector_density_fdir_refresh_ratio)
-         IF (selected_bootstrap_probe) &
-            required_drop_ratio = MIN(required_drop_ratio, &
-                                      MAX(ot_kp_schur_projector_density_fdir_refresh_ratio, &
-                                          ot_kp_schur_branch_loss_density_recovery))
-         IF (residual_recovery_probe) &
-            required_drop_ratio = MIN(required_drop_ratio, &
-                                      MAX(ot_kp_schur_projector_density_fdir_refresh_ratio, &
-                                          ot_kp_schur_branch_loss_density_recovery))
-         IF (candidate_expected_drop < required_drop_ratio* &
-             MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
-
-         IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
-            IF (.NOT. stale_residual_probe) THEN
-               IF (selected_residual_quality_ema < &
-                   ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-                   residual_reference) RETURN
-               IF (selected_residual_quality < &
-                   0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-                   residual_reference) RETURN
-            END IF
-         END IF
-
-         do_probe = .TRUE.
-
-      END FUNCTION kpoint_ot_density_full_direct_tail_probe
 
 ! **************************************************************************************************
 !> \brief whether a fixed-N density-descent response may collect residual-tail history

@@ -1,7 +1,7 @@
 ! Manual restart companion for Al_kp_ot_added_auto_sym3_converge.inp.
 ! Run the source input first in the same directory. The two irreducible
 ! k-point channels and adaptive 16-MO virtual space are restored in one SCF
-! step with Mermin F -8.15998707956602 Ha and kTS -0.000908404805 Ha.
+! step with Mermin F -8.15998707976516 Ha and kTS -0.000908404873 Ha.
 ! This input is intentionally not listed in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL HIGH

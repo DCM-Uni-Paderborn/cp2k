@@ -1,7 +1,7 @@
 ! Manual restart companion for Na_kp_ot_added_auto_sym333_converge.inp.
 ! Run the source input first in the same directory. The symmetry-reduced
 ! 3x3x3 channels and adaptive 16-MO virtual space are restored in one SCF
-! step with Mermin F -9.01953180117147 Ha and kTS -0.000960694986 Ha.
+! step with Mermin F -9.01953181619381 Ha and kTS -0.000960743887 Ha.
 ! This input is intentionally not listed in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL HIGH
