@@ -323,6 +323,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_physical_audit_add_group, &
              qs_scf_kp_complete_physical_audit_ready, &
              qs_scf_kp_complete_physical_gradient_norm, &
+             qs_scf_kp_residual_pair_capture_limit, &
              qs_scf_kp_residual_pair_omission_limit, &
              qs_scf_kp_canonical_projector_density_response, &
              qs_scf_kp_fixed_n_projector_frechet, &
@@ -532,6 +533,29 @@ CONTAINS
          norm_limit = (0.5_dp*eps_scf)**2*rotation_nvar
 
    END FUNCTION qs_scf_kp_residual_pair_omission_limit
+
+! **************************************************************************************************
+!> \brief squared-gradient omission limit for adaptive complex-pair capture
+!>
+!>        Outside the final convergence tail, require the reduced rotation space to represent at
+!>        least as much physical gradient norm as it omits.  Once the raw residual reaches the
+!>        final tail, retain the strict EPS_SCF omission budget.
+!> \param eps_scf requested SCF threshold
+!> \param rotation_nvar full-grid-equivalent number of complex rotation variables
+!> \param represented_score physical rotation-gradient norm squared already in the reduced space
+!> \param strict_tail whether the endpoint is in the final convergence tail
+!> \return maximum omitted physical rotation-gradient norm squared
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_residual_pair_capture_limit( &
+      eps_scf, rotation_nvar, represented_score, strict_tail) RESULT(norm_limit)
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf, rotation_nvar, represented_score
+      LOGICAL, INTENT(IN)                                :: strict_tail
+      REAL(KIND=dp)                                      :: norm_limit
+
+      norm_limit = qs_scf_kp_residual_pair_omission_limit(eps_scf, rotation_nvar)
+      IF (.NOT. strict_tail) norm_limit = MAX(norm_limit, represented_score, 0.0_dp)
+
+   END FUNCTION qs_scf_kp_residual_pair_capture_limit
 
 ! **************************************************************************************************
 !> \brief canonical band-energy response represented by a covariant density derivative
@@ -17620,11 +17644,11 @@ CONTAINS
          reduced_secant_candidate_ready, reduced_secant_candidate_selected, &
          reduced_secant_measured_response, reduced_secant_probe_selected, &
          reduced_secant_replacement_eligible, reduced_secant_update_eligible, &
-         relative_energy_metric_ready, residual_pair_selection_ready, response_model_available, &
-         schur_active_subspace, solved, split_candidate_diagnostic
-      LOGICAL :: split_candidate_enabled, split_candidate_ready, split_candidate_selected, &
-         split_residual_competitive, trust_rejected, vector_secant_update_eligible, &
-         vector_secant_update_ready, vector_secant_update_used
+         relative_energy_metric_ready, residual_pair_selection_ready, residual_pair_strict_tail, &
+         response_model_available, schur_active_subspace, solved
+      LOGICAL :: split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
+         split_candidate_selected, split_residual_competitive, trust_rejected, &
+         vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
       LOGICAL, ALLOCATABLE, DIMENSION(:, :, :) :: channel_density_pair_active, &
          channel_density_pair_candidate, channel_fermi_pair_active, channel_residual_pair_active, &
          channel_residual_pair_candidate
@@ -18354,43 +18378,42 @@ CONTAINS
          reduced_secant_reference_residual_ratio, reduced_secant_response_abs_step, &
          reduced_secant_response_abs_trust_ratio, reduced_secant_response_weighted_step, &
          reduced_secant_response_weighted_trust_ratio, reduced_secant_trust_quality, &
-         residual_delta, residual_pair_full_nvar, residual_pair_omitted_limit, &
-         residual_pair_omitted_score, residual_pair_total_score, residual_reference_quality, &
-         response_abs_step, response_abs_trust, response_abs_trust_ratio
-      REAL(KIND=dp) :: response_mixed_diag_avg, response_penalty_diag_sum, response_penalty_term, &
-         response_shift, response_step_max, response_trust, response_trust_base, &
-         response_trust_factor, response_trust_ratio, response_weighted_step, &
-         response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, rot_grad_active_fraction_avg, &
-         rot_grad_active_fraction_max, rot_grad_active_im, rot_grad_active_re, &
-         rot_grad_active_weight_sum, rot_grad_energy_norm, rot_grad_fermi_weight, &
-         rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, rot_grad_gap_weight, &
-         rot_grad_gauge_im, rot_grad_gauge_norm
-      REAL(KIND=dp) :: rot_grad_gauge_re, rot_grad_gauge_weight, rot_grad_inactive_im, &
-         rot_grad_inactive_re, rot_grad_inactive_weight_sum, rot_grad_norm_weight, &
-         rot_grad_pair_fraction, rot_grad_physical_norm, rot_grad_rest_fraction, rot_grad_sq, &
-         rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg, row_floor_max, &
-         row_floor_shift_drop, row_floor_shift_quad, row_floor_shifted_step, &
-         row_floor_step_fraction, row_floor_step_norm, rx_shift, rx_weight, scale_quality, &
-         schur_active_occ_min, schur_diag_min, schur_energy_window, spectral_resp_correction_drop, &
-         spectral_resp_correction_negative
-      REAL(KIND=dp) :: spectral_resp_cross_drop, spectral_resp_negative_coeff, &
-         spectral_resp_negative_drop, spectral_resp_positive_coeff, spectral_resp_positive_drop, &
-         spectral_resp_raw_negative_fraction, spectral_resp_weight, split_curvature_scale, &
-         split_dense_expected_ratio, split_density_projector_fraction, split_diag_shift_max, &
-         split_diag_shift_sum, split_direction_scale, split_expected_drop, split_gdot_energy, &
-         split_gdot_rotation, split_gdotp, split_model_calibrated_drop, split_model_drop, &
-         split_model_gap_ratio, split_norm_energy, split_norm_ratio, split_norm_rotation, &
-         split_normp
-      REAL(KIND=dp) :: split_occgap_shadow_drop, split_occgap_shadow_gap_ratio, &
-         split_quality_for_calibration, split_quality_for_selection, split_residual_delta, &
-         split_residual_quality, split_response_abs_step, split_response_abs_trust, &
-         split_response_abs_trust_ratio, split_response_step, split_response_trust, &
-         split_response_trust_factor, split_response_weighted_step, &
-         split_response_weighted_trust_ratio, split_rot_floor_min, split_scale_quality, &
-         split_schur_diag_min, split_trust_quality, step_gauge_quality, tether_curv_diag_max, &
-         tether_curv_diag_sum, tether_projected_term, tether_response
-      REAL(KIND=dp) :: tether_response_diag_sum, tether_strength, tether_weight, &
-         total_curv_diag_max, total_curv_diag_sum, z_weight
+         residual_delta, residual_pair_active_score, residual_pair_full_nvar, &
+         residual_pair_omitted_limit, residual_pair_omitted_score, residual_pair_total_score, &
+         residual_reference_quality, response_abs_step, response_abs_trust
+      REAL(KIND=dp) :: response_abs_trust_ratio, response_mixed_diag_avg, &
+         response_penalty_diag_sum, response_penalty_term, response_shift, response_step_max, &
+         response_trust, response_trust_base, response_trust_factor, response_trust_ratio, &
+         response_weighted_step, response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, &
+         rot_grad_active_fraction_avg, rot_grad_active_fraction_max, rot_grad_active_im, &
+         rot_grad_active_re, rot_grad_active_weight_sum, rot_grad_energy_norm, &
+         rot_grad_fermi_weight, rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, &
+         rot_grad_gap_weight, rot_grad_gauge_im
+      REAL(KIND=dp) :: rot_grad_gauge_norm, rot_grad_gauge_re, rot_grad_gauge_weight, &
+         rot_grad_inactive_im, rot_grad_inactive_re, rot_grad_inactive_weight_sum, &
+         rot_grad_norm_weight, rot_grad_pair_fraction, rot_grad_physical_norm, &
+         rot_grad_rest_fraction, rot_grad_sq, rot_grad_total_physical_norm, row_abs, row_floor, &
+         row_floor_avg, row_floor_max, row_floor_shift_drop, row_floor_shift_quad, &
+         row_floor_shifted_step, row_floor_step_fraction, row_floor_step_norm, rx_shift, &
+         rx_weight, scale_quality, schur_active_occ_min, schur_diag_min, schur_energy_window, &
+         spectral_resp_correction_drop
+      REAL(KIND=dp) :: spectral_resp_correction_negative, spectral_resp_cross_drop, &
+         spectral_resp_negative_coeff, spectral_resp_negative_drop, spectral_resp_positive_coeff, &
+         spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, spectral_resp_weight, &
+         split_curvature_scale, split_dense_expected_ratio, split_density_projector_fraction, &
+         split_diag_shift_max, split_diag_shift_sum, split_direction_scale, split_expected_drop, &
+         split_gdot_energy, split_gdot_rotation, split_gdotp, split_model_calibrated_drop, &
+         split_model_drop, split_model_gap_ratio, split_norm_energy, split_norm_ratio
+      REAL(KIND=dp) :: split_norm_rotation, split_normp, split_occgap_shadow_drop, &
+         split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
+         split_quality_for_selection, split_residual_delta, split_residual_quality, &
+         split_response_abs_step, split_response_abs_trust, split_response_abs_trust_ratio, &
+         split_response_step, split_response_trust, split_response_trust_factor, &
+         split_response_weighted_step, split_response_weighted_trust_ratio, split_rot_floor_min, &
+         split_scale_quality, split_schur_diag_min, split_trust_quality, step_gauge_quality, &
+         tether_curv_diag_max, tether_curv_diag_sum
+      REAL(KIND=dp) :: tether_projected_term, tether_response, tether_response_diag_sum, &
+         tether_strength, tether_weight, total_curv_diag_max, total_curv_diag_sum, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, &
          canonical_density_mode_alpha, canonical_density_mode_curvature, &
          canonical_density_mode_linear, canonical_density_tangent, &
@@ -18791,9 +18814,10 @@ CONTAINS
          nrot_density = 2*COUNT(channel_density_pair_active)
          nrot_active = nrot_active + nrot_density
 
-         residual_pair_selection_ready = schur_active_subspace .AND. eps_scf_channel > 0.0_dp .AND. &
-                                         response_raw_delta <= &
-                                         ot_kp_schur_residual_pair_tail_eps_factor*eps_scf_channel
+         residual_pair_selection_ready = schur_active_subspace .AND. eps_scf_channel > 0.0_dp
+         residual_pair_strict_tail = residual_pair_selection_ready .AND. &
+                                     response_raw_delta <= &
+                                     ot_kp_schur_residual_pair_tail_eps_factor*eps_scf_channel
          IF (residual_pair_selection_ready) THEN
             DO global_channel = 1, nchannels
                nmo = channel_nmo(global_channel)
@@ -18810,11 +18834,15 @@ CONTAINS
          END IF
          residual_pair_available = MAX(0, (max_schur_rot - nrot_active)/2)
          residual_pair_candidates = COUNT(channel_residual_pair_candidate)
+         residual_pair_active_score = SUM(channel_residual_pair_score, &
+                                          MASK=channel_fermi_pair_active .OR. &
+                                          channel_density_pair_active)
          residual_pair_total_score = SUM(channel_residual_pair_score, &
                                          MASK=channel_residual_pair_candidate)
          residual_pair_omitted_score = residual_pair_total_score
-         residual_pair_omitted_limit = qs_scf_kp_residual_pair_omission_limit( &
-                                       eps_scf_channel, residual_pair_full_nvar)
+         residual_pair_omitted_limit = qs_scf_kp_residual_pair_capture_limit( &
+                                       eps_scf_channel, residual_pair_full_nvar, &
+                                       residual_pair_active_score, residual_pair_strict_tail)
          DO r = 1, MIN(residual_pair_candidates, residual_pair_available)
             IF (residual_pair_omitted_score <= residual_pair_omitted_limit) EXIT
             residual_pair_location = MAXLOC(channel_residual_pair_score, &
@@ -18894,11 +18922,11 @@ CONTAINS
             response_raw_delta, density_pair_activation_threshold
          IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
              logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8),1X,L1,3(1X,ES16.8))') &
-            " OT Schur residual-pair completion group selected candidates capacity ready total omitted limit:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8),2(1X,L1),4(1X,ES16.8))') &
+            " OT Schur residual-pair completion group selected candidates capacity ready strict represented total omitted limit:", &
             target_group, nrot_residual/2, residual_pair_candidates, residual_pair_available, &
-            residual_pair_selection_ready, residual_pair_total_score, residual_pair_omitted_score, &
-            residual_pair_omitted_limit
+            residual_pair_selection_ready, residual_pair_strict_tail, residual_pair_active_score, &
+            residual_pair_total_score, residual_pair_omitted_score, residual_pair_omitted_limit
 
          ALLOCATE (canonical_occ_curv(ne), curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), &
                    z_e(ne), accepted_z_e(ne), &

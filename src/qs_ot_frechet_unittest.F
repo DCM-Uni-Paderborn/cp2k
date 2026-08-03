@@ -124,14 +124,14 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
         qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
         qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_pair_omission_limit, &
-        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
-        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response, &
-        qs_scf_kp_work_consistent_response
+        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_pair_capture_limit, &
+        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
+        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -297,6 +297,8 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT physical-audit endpoint lifecycle", 5.0E-15_dp, nfail)
    CALL check_kpoint_residual_pair_omission_limit( &
       "k-point OT reduced-space omission budget", 5.0E-27_dp, nfail)
+   CALL check_kpoint_residual_pair_capture_limit( &
+      "k-point OT adaptive residual-pair capture", 5.0E-27_dp, nfail)
    CALL check_kpoint_rebased_calibration_samples( &
       "k-point OT rebased scalar calibration prior", nfail)
    CALL check_kpoint_density_stationarity_history( &
@@ -6711,6 +6713,40 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_residual_pair_omission_limit
+
+! **************************************************************************************************
+!> \brief Check adaptive residual-pair capture outside and inside the final convergence tail.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_residual_pair_capture_limit(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: relaxed_limit, strict_limit
+
+      relaxed_limit = qs_scf_kp_residual_pair_capture_limit( &
+                      1.0E-7_dp, 2400.0_dp, 3.0E-4_dp, .FALSE.)
+      strict_limit = qs_scf_kp_residual_pair_capture_limit( &
+                     1.0E-7_dp, 2400.0_dp, 3.0E-4_dp, .TRUE.)
+      failed = ABS(relaxed_limit - 3.0E-4_dp) > tol
+      failed = failed .OR. ABS(strict_limit - 6.0E-12_dp) > tol
+      failed = failed .OR. ABS(qs_scf_kp_residual_pair_capture_limit( &
+                               1.0E-7_dp, 2400.0_dp, -1.0_dp, .FALSE.) - &
+                               6.0E-12_dp) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES16.8))') TRIM(label), "failed", &
+            relaxed_limit, strict_limit
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_residual_pair_capture_limit
 
 ! **************************************************************************************************
 !> \brief Check that a refreshed orbital basis retains only a bounded scalar model prior.
