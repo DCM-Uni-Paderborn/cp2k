@@ -3,10 +3,10 @@
 ! suite remains inexpensive.  It exercises a common fixed-N chemical
 ! potential, nontrivial irreducible k-point weights, ADDED_MOS AUTO, complex
 ! rotations, auxiliary energies, and the occupation preconditioner.
-! Local MPI-2/OMP-2 reference: 655 final-stage steps,
-! F = -9.01953180126479 Ha.
+! Local MPI-2/OMP-2 reference: 645 final-stage steps,
+! F = -9.01953180099395 Ha.
 ! Restarting the resulting checkpoint converges in one step at
-! F = -9.01953180126479 Ha.
+! F = -9.01953180099178 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Na_kp_ot_added_auto_sym333_converge

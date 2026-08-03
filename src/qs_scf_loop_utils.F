@@ -685,30 +685,34 @@ CONTAINS
    END FUNCTION qs_scf_kp_density_response_tail_ready
 
 ! **************************************************************************************************
-!> \brief Isolate an accepted finite density-response direction from mixed minimizer history.
+!> \brief Isolate accepted finite density-response directions from mixed minimizer history.
 !>
-!>        The current closure secant is column two.  Only candidates whose finite step explicitly
-!>        contains a canonical-density response may calibrate this endpoint-local response model;
-!>        ordinary coupled/CG directions remain in the general closure fit.  Keeping the other
-!>        columns zero deliberately requests the rank-one branch of the validated response fit.
-!> \param flavor accepted k-point OT candidate flavor
+!>        Only candidates whose finite step explicitly contains a canonical-density response may
+!>        calibrate this endpoint-local response model.  The flavor identity follows every
+!>        transported current/previous/anchor closure secant.  The newest valid density-specific
+!>        sample is retained across intervening ordinary CG steps without combining response maps
+!>        measured at different self-consistent endpoints.
+!> \param flavors accepted k-point OT candidate flavor for every history column
 !> \param tail_armed the minimizer has reached the finite-response residual tail
 !> \param closure_steps accepted closure-secants in rotation coordinates
 !> \param closure_targets measured self-consistent closure-gradient changes
-!> \param probe_steps density-specific rank-one secant history
-!> \param probe_targets density-specific rank-one response targets
+!> \param probe_steps density-specific accepted secant history
+!> \param probe_targets density-specific accepted response targets
 !> \param ready a finite, nonzero density-response sample was selected
 ! **************************************************************************************************
    PURE SUBROUTINE qs_scf_kp_density_response_probe( &
-      flavor, tail_armed, closure_steps, closure_targets, &
+      flavors, tail_armed, closure_steps, closure_targets, &
       probe_steps, probe_targets, ready)
 
-      INTEGER, INTENT(IN)                                :: flavor
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: flavors
       LOGICAL, INTENT(IN)                                :: tail_armed
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: closure_steps, closure_targets
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: probe_steps, probe_targets
       LOGICAL, INTENT(OUT)                               :: ready
 
+      INTEGER, DIMENSION(3), PARAMETER                   :: newest_first = [2, 1, 3]
+
+      INTEGER                                            :: ihistory, isample
       LOGICAL                                            :: density_flavor
 
       probe_steps(:, :) = 0.0_dp
@@ -717,24 +721,29 @@ CONTAINS
       IF (ANY(SHAPE(closure_targets) /= SHAPE(closure_steps))) RETURN
       IF (ANY(SHAPE(probe_steps) /= SHAPE(closure_steps))) RETURN
       IF (ANY(SHAPE(probe_targets) /= SHAPE(closure_steps))) RETURN
-      IF (SIZE(closure_steps, 2) < 2) RETURN
+      IF (SIZE(flavors) /= SIZE(closure_steps, 2)) RETURN
+      IF (SIZE(flavors) /= SIZE(newest_first)) RETURN
       IF (.NOT. tail_armed) RETURN
 
-      SELECT CASE (flavor)
-      CASE (32, 33, 38, 39, 40)
-         density_flavor = .TRUE.
-      CASE DEFAULT
-         density_flavor = .FALSE.
-      END SELECT
-      IF (.NOT. density_flavor) RETURN
-      IF (.NOT. ALL(closure_steps(:, 2) == closure_steps(:, 2)) .OR. &
-          .NOT. ALL(closure_targets(:, 2) == closure_targets(:, 2))) RETURN
-      IF (DOT_PRODUCT(closure_steps(:, 2), closure_steps(:, 2)) <= TINY(1.0_dp)) RETURN
-      IF (DOT_PRODUCT(closure_targets(:, 2), closure_targets(:, 2)) <= TINY(1.0_dp)) RETURN
+      DO ihistory = 1, SIZE(newest_first)
+         isample = newest_first(ihistory)
+         SELECT CASE (flavors(isample))
+         CASE (32, 33, 38, 39, 40)
+            density_flavor = .TRUE.
+         CASE DEFAULT
+            density_flavor = .FALSE.
+         END SELECT
+         IF (.NOT. density_flavor) CYCLE
+         IF (.NOT. ALL(closure_steps(:, isample) == closure_steps(:, isample)) .OR. &
+             .NOT. ALL(closure_targets(:, isample) == closure_targets(:, isample))) CYCLE
+         IF (DOT_PRODUCT(closure_steps(:, isample), closure_steps(:, isample)) <= TINY(1.0_dp)) CYCLE
+         IF (DOT_PRODUCT(closure_targets(:, isample), closure_targets(:, isample)) <= TINY(1.0_dp)) CYCLE
 
-      probe_steps(:, 1) = closure_steps(:, 2)
-      probe_targets(:, 1) = closure_targets(:, 2)
-      ready = .TRUE.
+         probe_steps(:, 1) = closure_steps(:, isample)
+         probe_targets(:, 1) = closure_targets(:, isample)
+         ready = .TRUE.
+         RETURN
+      END DO
 
    END SUBROUTINE qs_scf_kp_density_response_probe
 
@@ -22482,7 +22491,9 @@ CONTAINS
             local_ot_env(1)%schur_density_probe_tail_armed = .TRUE.
          IF (new_search_point) &
             CALL qs_scf_kp_density_response_probe( &
-            local_ot_env(1)%schur_last_accepted_flavor, &
+            [local_ot_env(1)%mermin_closure_secant_previous_flavor, &
+             local_ot_env(1)%mermin_closure_secant_flavor, &
+             local_ot_env(1)%mermin_closure_secant_anchor_flavor], &
             local_ot_env(1)%schur_density_probe_tail_armed, closure_response_steps, &
             closure_response_targets, closure_density_probe_steps, &
             closure_density_probe_targets, closure_density_probe_sample_ready)

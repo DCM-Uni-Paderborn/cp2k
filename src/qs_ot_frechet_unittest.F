@@ -8361,6 +8361,7 @@ CONTAINS
       INTEGER :: scaled_negative_modes, scaled_positive_modes, scaled_unsupported_modes, &
          transverse_negative_modes, transverse_positive_modes, transverse_unsupported_modes, &
          unsupported_modes
+      INTEGER, DIMENSION(3)                              :: history_flavors
       LOGICAL :: averaged_ready, baseline_ready, density_probe_ready, history_ready, &
          incompatible_ready, prior_ready, rank_deficient_ready, ready, scaled_ready, &
          transverse_ready
@@ -8521,23 +8522,25 @@ CONTAINS
       history_targets(:, :) = 0.0_dp
       history_steps(1, 2) = 1.0_dp
       history_targets(1, 2) = 3.0_dp
+      history_flavors(:) = [0, 30, 0]
       IF (qs_scf_kp_density_response_tail_ready(-1.0_dp, 1.2E-5_dp) .OR. &
           qs_scf_kp_density_response_tail_ready(3.3E-3_dp, 1.2E-5_dp) .OR. &
           .NOT. qs_scf_kp_density_response_tail_ready(1.9E-6_dp, 1.2E-5_dp)) &
          error = HUGE(1.0_dp)
       CALL qs_scf_kp_density_response_probe( &
-         30, .TRUE., history_steps, history_targets, &
+         history_flavors, .TRUE., history_steps, history_targets, &
          density_probe_steps, density_probe_targets, &
          density_probe_ready)
       IF (density_probe_ready .OR. MAXVAL(ABS(density_probe_steps)) > tol .OR. &
           MAXVAL(ABS(density_probe_targets)) > tol) error = HUGE(1.0_dp)
+      history_flavors(2) = 32
       CALL qs_scf_kp_density_response_probe( &
-         32, .FALSE., history_steps, history_targets, &
+         history_flavors, .FALSE., history_steps, history_targets, &
          density_probe_steps, density_probe_targets, density_probe_ready)
       IF (density_probe_ready .OR. MAXVAL(ABS(density_probe_steps)) > tol .OR. &
           MAXVAL(ABS(density_probe_targets)) > tol) error = HUGE(1.0_dp)
       CALL qs_scf_kp_density_response_probe( &
-         32, .TRUE., history_steps, history_targets, &
+         history_flavors, .TRUE., history_steps, history_targets, &
          density_probe_steps, density_probe_targets, &
          density_probe_ready)
       CALL qs_scf_kp_validated_density_response( &
@@ -8550,6 +8553,27 @@ CONTAINS
           MAXVAL(ABS(rank_deficient_correction(2:, :))) > tol .OR. &
           rank_deficient_positive_modes /= 1 .OR. rank_deficient_negative_modes /= 0 .OR. &
           rank_deficient_unsupported_modes /= 2) error = HUGE(1.0_dp)
+
+      ! A density sample remains available after a generic accepted step moves it to the previous
+      ! slot.  The previous sample is newer than an independent density sample in the anchor slot.
+      history_steps(:, :) = 0.0_dp
+      history_targets(:, :) = 0.0_dp
+      history_steps(1, 1) = 1.0_dp
+      history_steps(2, 2) = 2.0_dp
+      history_steps(3, 3) = 3.0_dp
+      history_targets(:, :) = 4.0_dp*history_steps
+      history_flavors(:) = [32, 30, 33]
+      CALL qs_scf_kp_density_response_probe( &
+         history_flavors, .TRUE., history_steps, history_targets, &
+         density_probe_steps, density_probe_targets, density_probe_ready)
+      IF (.NOT. density_probe_ready .OR. &
+          MAXVAL(ABS(density_probe_steps(:, 1) - history_steps(:, 1))) > tol .OR. &
+          MAXVAL(ABS(density_probe_targets(:, 1) - history_targets(:, 1))) > tol .OR. &
+          MAXVAL(ABS(density_probe_steps(:, 2))) > tol .OR. &
+          MAXVAL(ABS(density_probe_targets(:, 2))) > tol .OR. &
+          MAXVAL(ABS(density_probe_steps(:, 3))) > tol .OR. &
+          MAXVAL(ABS(density_probe_targets(:, 3))) > tol) &
+         error = HUGE(1.0_dp)
 
       ! A third accepted secant recovers an independent physical direction when the latest
       ! pair is collinear; all three samples must remain consistent with the selected fit.

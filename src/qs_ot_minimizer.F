@@ -1924,6 +1924,20 @@ CONTAINS
       closure_valid = closure_valid .AND. vector_valid
       DO ichannel = 1, SIZE(qs_ot_env)
          IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+         IF (anchor_valid .AND. closure_valid) THEN
+            qs_ot_env(ichannel)%mermin_closure_secant_anchor_flavor = &
+               qs_ot_env(ichannel)%mermin_closure_secant_previous_flavor
+         ELSE
+            qs_ot_env(ichannel)%mermin_closure_secant_anchor_flavor = 0
+         END IF
+         IF (previous_valid .AND. closure_valid) THEN
+            qs_ot_env(ichannel)%mermin_closure_secant_previous_flavor = &
+               qs_ot_env(ichannel)%mermin_closure_secant_flavor
+         ELSE
+            qs_ot_env(ichannel)%mermin_closure_secant_previous_flavor = 0
+         END IF
+         qs_ot_env(ichannel)%mermin_closure_secant_flavor = &
+            MERGE(qs_ot_env(1)%schur_model_flavor, 0, closure_valid)
          qs_ot_env(ichannel)%mermin_secant_previous_ready = previous_valid .AND. vector_valid
          qs_ot_env(ichannel)%mermin_secant_ready = vector_valid
          qs_ot_env(ichannel)%mermin_closure_secant_previous_ready = &

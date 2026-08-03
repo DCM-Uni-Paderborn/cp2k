@@ -220,6 +220,11 @@ MODULE qs_ot_types
       ! One older accepted closure secant is runtime-only and provides an
       ! independent density-response direction when the latest pair is collinear.
       LOGICAL          :: mermin_closure_secant_anchor_ready = .FALSE.
+      ! Candidate identities follow the runtime-only current/previous/anchor
+      ! closure secants so density-specific response samples survive intervening CG steps.
+      INTEGER          :: mermin_closure_secant_flavor = 0
+      INTEGER          :: mermin_closure_secant_previous_flavor = 0
+      INTEGER          :: mermin_closure_secant_anchor_flavor = 0
       ! Endpoint-local reduced frozen-H response.  This runtime history is
       ! relearned after restart or a change of the channel MO dimension.
       LOGICAL          :: mermin_frozen_reduced_target_ready = .FALSE.
@@ -1197,6 +1202,9 @@ CONTAINS
       qs_ot_env%mermin_closure_secant_ready = .FALSE.
       qs_ot_env%mermin_closure_secant_previous_ready = .FALSE.
       qs_ot_env%mermin_closure_secant_anchor_ready = .FALSE.
+      qs_ot_env%mermin_closure_secant_flavor = 0
+      qs_ot_env%mermin_closure_secant_previous_flavor = 0
+      qs_ot_env%mermin_closure_secant_anchor_flavor = 0
       qs_ot_env%mermin_frozen_reduced_target_ready = .FALSE.
       qs_ot_env%mermin_secant_sty = 0.0_dp
       qs_ot_env%mermin_secant_snorm = 0.0_dp
