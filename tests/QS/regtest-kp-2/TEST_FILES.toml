@@ -65,9 +65,10 @@
 # No first/last-band, AUTO-exhausted, MAX-ITER, or "Unsupported content type"
 # signature is printed. Al_kp_ot_added_auto_sym3_restart.inp restores the
 # converged reduced-grid state in one step.
-# Al_kp_ot_added_auto_sym3_force.inp is an unlisted EPS_SCF=1E-8 force
-# companion that reads the reduced-grid converged restart. Its force components
-# agree with Al_kp_diag_fermi_sym3_force.inp within 4.7E-7 Ha/bohr.
+# Al_kp_ot_added_auto_sym3_force.inp is an unlisted EPS_SCF=1E-8 force/stress
+# companion that reads the reduced-grid converged restart. Relative to
+# Al_kp_diag_fermi_sym3_force.inp, energy agrees within 1E-10 Ha, force
+# components within 4.3E-7 Ha/bohr, and analytical stress within 0.52 bar.
 # Al_kp_ot_uks_full_all_sym3_converge.inp is the unlisted four-channel UKS
 # physics companion.  With two spins, two irreducible k-points, and fixed
 # magnetization it converges in 91 uninterrupted MPI-2/OMP-2 OT steps to

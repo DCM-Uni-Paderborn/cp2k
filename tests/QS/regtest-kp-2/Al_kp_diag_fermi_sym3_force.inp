@@ -2,8 +2,9 @@
 ! k-point OT force companion. This input is intentionally not listed in
 ! TEST_FILES.toml so that the default regtest remains cheap.
 ! Local 2026-08 MPI-2/OMP-2 reference: converged in 35 steps at
-! -8.15998707765502 Ha. The matching OT restart differs by 2.29E-9 Ha and
-! its largest force-component difference is 4.612E-7 Ha/bohr.
+! -8.15998707765498 Ha. The matching OT restart differs by 9.3E-11 Ha;
+! force components agree within 4.3E-7 Ha/bohr and analytical stress
+! components within 0.52 bar.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Al_kp_diag_fermi_sym3_force
@@ -12,6 +13,7 @@
 
 &FORCE_EVAL
   METHOD Quickstep
+  STRESS_TENSOR ANALYTICAL
   &DFT
     BASIS_SET_FILE_NAME BASIS_SET
     POTENTIAL_FILE_NAME POTENTIAL
@@ -53,6 +55,8 @@
   &PRINT
     &FORCES ON
     &END FORCES
+    &STRESS_TENSOR ON
+    &END STRESS_TENSOR
   &END PRINT
   &SUBSYS
     &CELL
