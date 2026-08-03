@@ -1315,10 +1315,10 @@ CONTAINS
       END IF
       nel_a_target = REAL(ne_a, KIND=dp)
       nel_b_target = REAL(ne_b, KIND=dp)
-      IF (nspin == 2 .AND. smear%fixed_mag_mom >= 0.0_dp) then
-        CALL kpoint_fixed_spin_targets(REAL(ne_a + ne_b, KIND=dp), smear%fixed_mag_mom, &
+      IF (nspin == 2 .AND. smear%fixed_mag_mom >= 0.0_dp) THEN
+         CALL kpoint_fixed_spin_targets(REAL(ne_a + ne_b, KIND=dp), smear%fixed_mag_mom, &
                                         nel_a_target, nel_b_target)
-      end if
+      END IF
       ALLOCATE (weig(nmo, nkp, nspin), wocc(nmo, nkp, nspin))
       weig = 0.0_dp
       wocc = 0.0_dp
@@ -1513,9 +1513,9 @@ CONTAINS
                CALL kpoint_check_added_mos_auto_occupation(wocc, wkp, smear, nspin, &
                                                            added_mos_auto, nao, my_added_mos_auto_grow)
             END IF
-            IF (.NOT. my_added_mos_auto_grow) then
-              CALL kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
-            end if
+            IF (.NOT. my_added_mos_auto_grow) THEN
+               CALL kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
+            END IF
          END IF
          IF (my_added_mos_auto_grow) THEN
             IF (PRESENT(added_mos_auto_grow)) THEN
@@ -1953,7 +1953,7 @@ CONTAINS
          CALL cp_cfm_gemm("C", "N", nmo, nmo, nao, zone, coeff_c, hc_c, zzero, hblock_c)
 
          ALLOCATE (occupation_complex(nmo))
-         occupation_complex = CMPLX(occupation(1:nmo), 0.0_dp, KIND=dp)
+         occupation_complex(:) = CMPLX(occupation(1:nmo), 0.0_dp, KIND=dp)
          CALL cp_cfm_column_scale(hblock_c, occupation_complex)
          DEALLOCATE (occupation_complex)
          CALL cp_cfm_transpose(hblock_c, "C", hblock_h_c)

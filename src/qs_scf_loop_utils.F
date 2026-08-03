@@ -3438,8 +3438,8 @@ CONTAINS
       gram_inverse(1, 2) = -gram(1, 2)/det
       gram_inverse(2, 1) = -gram(2, 1)/det
       gram_inverse(2, 2) = gram(1, 1)/det
-      skew(:, :) = 0.5_dp*(MATMUL(TRANSPOSE(steps), secant_targets) - &
-                           TRANSPOSE(MATMUL(TRANSPOSE(steps), secant_targets)))
+      step_residual(:, :) = MATMUL(TRANSPOSE(steps), secant_targets)
+      skew(:, :) = 0.5_dp*(step_residual - TRANSPOSE(step_residual))
 
       ALLOCATE (compatible_targets(n, 2), correction(n, n), model(n, 2), residual(n, 2), &
                 step_inverse(n, 2), updated_residual(n, 2))
@@ -33895,10 +33895,10 @@ CONTAINS
          correction_cross, correction_direction_scale, correction_drop, correction_quadratic, &
          correction_slope, current_residual_alpha, current_residual_ratio, current_residual_scale, &
          floor_quadratic, increment_slope, modal_shift, model_increment, pareto_delta_dot, &
-         pareto_delta_sq, pareto_drop, pareto_residual_ratio, pareto_scale, pareto_start_sq, &
-         replacement_reference_residual_ratio, residual_direction_scale
-      REAL(KIND=dp) :: residual_minimum_position, response_abs_unit, response_cross, &
-         response_weighted_unit, rotation_residual_alpha, rotation_residual_ratio, &
+         pareto_delta_sq, pareto_drop, pareto_reference_drop, pareto_residual_ratio, pareto_scale, &
+         pareto_start_sq, replacement_reference_residual_ratio
+      REAL(KIND=dp) :: residual_direction_scale, residual_minimum_position, response_abs_unit, &
+         response_cross, response_weighted_unit, rotation_residual_alpha, rotation_residual_ratio, &
          schur_gradient_fraction, schur_model_residual, trial_drop, trial_quadratic, trial_slope
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: base_response, base_rotation_residual, &
          correction_energy, correction_rotation, correction_rotation_residual, model_response, &
@@ -34602,10 +34602,11 @@ CONTAINS
                   pareto_delta_sq = DOT_PRODUCT(rotation_residual_weight, &
                                                 correction_rotation_residual**2)
                END IF
-               pareto_drop = base_drop
-               IF (rebase_established_requested) pareto_drop = established_model_calibrated_drop
+               pareto_reference_drop = base_drop
+               IF (rebase_established_requested) &
+                  pareto_reference_drop = established_model_calibrated_drop
                CALL qs_scf_kp_mermin_residual_pareto_blend( &
-                  pareto_drop, increment_slope, correction_quadratic, pareto_start_sq, &
+                  pareto_reference_drop, increment_slope, correction_quadratic, pareto_start_sq, &
                   pareto_delta_dot, pareto_delta_sq, 1.0_dp, 1.0_dp, pareto_scale, pareto_drop, &
                   pareto_residual_ratio, pareto_ready)
                IF (PRESENT(base_blend_scale) .AND. pareto_ready) &
@@ -41553,9 +41554,9 @@ CONTAINS
                    density_full_column(nmo), density_mixed_column(nmo), &
                    density_plateau_centered_column(nmo), density_plateau_column(nmo), &
                    density_projector_column(nmo))
-         chc = CMPLX(chc_re, chc_im, KIND=dp)
-         u = CMPLX(u_re, u_im, KIND=dp)
-         base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
+         chc(:, :) = CMPLX(chc_re, chc_im, KIND=dp)
+         u(:, :) = CMPLX(u_re, u_im, KIND=dp)
+         base(:, :) = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
          projector_weight = kpoint_ot_canonical_projector_weight( &
                             local_ot_env(local_channel)%delta, ot_kp_canonical_projector_max_weight)
          CALL dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, &

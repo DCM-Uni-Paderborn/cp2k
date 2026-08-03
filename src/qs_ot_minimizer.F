@@ -261,8 +261,7 @@ CONTAINS
             END IF
          END IF
          IF (do_ener) THEN
-            ALLOCATE (snapshot(ispin)%ener_gx_old(SIZE(qs_ot_env(ispin)%ener_gx_old)))
-            snapshot(ispin)%ener_gx_old = qs_ot_env(ispin)%ener_gx_old
+            ALLOCATE (snapshot(ispin)%ener_gx_old, SOURCE=qs_ot_env(ispin)%ener_gx_old)
          END IF
       END DO
 
@@ -306,7 +305,7 @@ CONTAINS
             DEALLOCATE (snapshot(ispin)%rot_mat_gx_old_im)
          END IF
          IF (ALLOCATED(snapshot(ispin)%ener_gx_old)) THEN
-            qs_ot_env(ispin)%ener_gx_old = snapshot(ispin)%ener_gx_old
+            qs_ot_env(ispin)%ener_gx_old(:) = snapshot(ispin)%ener_gx_old
          END IF
       END DO
       DEALLOCATE (snapshot)

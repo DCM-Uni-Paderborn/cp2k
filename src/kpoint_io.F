@@ -1300,7 +1300,7 @@ CONTAINS
       IF (channel_source) THEN
          CPASSERT(ASSOCIATED(vector))
          CPASSERT(SIZE(vector) == n)
-         buffer = vector
+         buffer(:) = vector
       END IF
       CALL para_env%sum(buffer)
       IF (ires > 0) WRITE (ires) buffer
@@ -1332,7 +1332,7 @@ CONTAINS
       IF (channel_source) THEN
          CPASSERT(ASSOCIATED(matrix))
          CPASSERT(SIZE(matrix, 1) == nrow .AND. SIZE(matrix, 2) == ncol)
-         buffer = matrix
+         buffer(:, :) = matrix
       END IF
       CALL para_env%sum(buffer)
       IF (ires > 0) WRITE (ires) buffer
@@ -1363,7 +1363,7 @@ CONTAINS
       IF (channel_source) THEN
          CPASSERT(ASSOCIATED(vector))
          CPASSERT(SIZE(vector) == n)
-         buffer = vector
+         buffer(:) = vector
       END IF
       CALL para_env%sum(buffer)
       IF (ires > 0) WRITE (ires) buffer
