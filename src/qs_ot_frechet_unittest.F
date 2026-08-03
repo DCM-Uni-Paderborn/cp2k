@@ -39,7 +39,8 @@ PROGRAM qs_ot_frechet_unittest
                                               smear_gaussian,&
                                               smear_mp,&
                                               smear_mv
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE kpoint_io,                       ONLY: kpoint_ot_restart_geometry_compatible
    USE kpoint_methods,                  ONLY: kpoint_fixed_spin_targets,&
                                               kpoint_ot_energy_weighted_density
@@ -118,20 +119,21 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
         qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_physical_audit_add_group, &
-        qs_scf_kp_physical_audit_begin, qs_scf_kp_quadratic_descent_scale, &
-        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
-        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
-        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_pair_capture_limit, &
-        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
+        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
+        qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
+        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
+        qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
+        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_pair_capture_limit, qs_scf_kp_residual_pair_omission_limit, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response, &
+        qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -299,6 +301,7 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT reduced-space omission budget", 5.0E-27_dp, nfail)
    CALL check_kpoint_residual_pair_capture_limit( &
       "k-point OT adaptive residual-pair capture", 5.0E-27_dp, nfail)
+   CALL check_kpoint_pair_mask_moments("k-point OT active-pair identity", nfail)
    CALL check_kpoint_rebased_calibration_samples( &
       "k-point OT rebased scalar calibration prior", nfail)
    CALL check_kpoint_density_stationarity_history( &
@@ -6747,6 +6750,47 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_residual_pair_capture_limit
+
+! **************************************************************************************************
+!> \brief Check that pair-set moments use valid upper-triangle union membership exactly once.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_pair_mask_moments(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER(KIND=int_8)                                :: pair_count, pair_moment, &
+                                                            pair_square_moment
+      INTEGER, DIMENSION(2)                              :: channel_nmo
+      LOGICAL, DIMENSION(3, 3, 2)                        :: density_active, fermi_active, &
+                                                            residual_active
+
+      fermi_active(:, :, :) = .FALSE.
+      density_active(:, :, :) = .FALSE.
+      residual_active(:, :, :) = .FALSE.
+      channel_nmo(:) = [3, 2]
+      fermi_active(1, 2, 1) = .TRUE.
+      density_active(1, 3, 1) = .TRUE.
+      residual_active(1, 2, 1) = .TRUE.
+      residual_active(1, 2, 2) = .TRUE.
+      residual_active(2, 1, 1) = .TRUE.
+      residual_active(2, 3, 2) = .TRUE.
+
+      CALL qs_scf_kp_pair_mask_moments( &
+         fermi_active, density_active, residual_active, channel_nmo, &
+         pair_count, pair_moment, pair_square_moment)
+      IF (pair_count /= 3_int_8 .OR. pair_moment /= 16_int_8 .OR. &
+          pair_square_moment /= 134_int_8) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,I0))') TRIM(label), "failed", pair_count, &
+            pair_moment, pair_square_moment
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,I0))') TRIM(label), "OK", pair_count, &
+            pair_moment, pair_square_moment
+      END IF
+
+   END SUBROUTINE check_kpoint_pair_mask_moments
 
 ! **************************************************************************************************
 !> \brief Check that a refreshed orbital basis retains only a bounded scalar model prior.

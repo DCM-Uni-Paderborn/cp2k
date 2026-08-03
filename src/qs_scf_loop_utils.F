@@ -41,7 +41,8 @@ MODULE qs_scf_loop_utils
                                               smear_mv
    USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: default_string_length,&
-                                              dp
+                                              dp,&
+                                              int_8
    USE kpoint_methods,                  ONLY: kpoint_density_matrices,&
                                               kpoint_density_transform,&
                                               kpoint_fixed_spin_targets,&
@@ -323,6 +324,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_physical_audit_add_group, &
              qs_scf_kp_complete_physical_audit_ready, &
              qs_scf_kp_complete_physical_gradient_norm, &
+             qs_scf_kp_pair_mask_moments, &
              qs_scf_kp_residual_pair_capture_limit, &
              qs_scf_kp_residual_pair_omission_limit, &
              qs_scf_kp_canonical_projector_density_response, &
@@ -556,6 +558,56 @@ CONTAINS
       IF (.NOT. strict_tail) norm_limit = MAX(norm_limit, represented_score, 0.0_dp)
 
    END FUNCTION qs_scf_kp_residual_pair_capture_limit
+
+! **************************************************************************************************
+!> \brief deterministic moments identifying a channel-resolved upper-triangle pair set
+!>
+!>        The three moments are intended for diagnostics, not cryptographic identity.  Duplicate
+!>        membership across the Fermi, density, and residual masks is counted once.  Padding,
+!>        diagonal entries, lower triangles, and entries beyond a channel's current MO count are
+!>        ignored.
+!> \param fermi_active Fermi-window pair mask
+!> \param density_active canonical-density pair mask
+!> \param residual_active physical-residual completion mask
+!> \param channel_nmo valid MO count for every channel
+!> \param pair_count number of unique valid pairs
+!> \param pair_moment sum of deterministic pair indices
+!> \param pair_square_moment sum of squared deterministic pair indices
+! **************************************************************************************************
+   PURE SUBROUTINE qs_scf_kp_pair_mask_moments( &
+      fermi_active, density_active, residual_active, channel_nmo, &
+      pair_count, pair_moment, pair_square_moment)
+      LOGICAL, DIMENSION(:, :, :), INTENT(IN)            :: fermi_active, density_active, &
+                                                            residual_active
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo
+      INTEGER(KIND=int_8), INTENT(OUT)                   :: pair_count, pair_moment, &
+                                                            pair_square_moment
+
+      INTEGER                                            :: channel, imo, jmo, nmo, nmo_max
+      INTEGER(KIND=int_8)                                :: pair_index
+
+      pair_count = 0_int_8
+      pair_moment = 0_int_8
+      pair_square_moment = 0_int_8
+      nmo_max = MIN(SIZE(fermi_active, 1), SIZE(fermi_active, 2))
+      DO channel = 1, MIN(SIZE(fermi_active, 3), SIZE(channel_nmo))
+         nmo = MIN(nmo_max, MAX(0, channel_nmo(channel)))
+         DO imo = 1, nmo - 1
+            DO jmo = imo + 1, nmo
+               IF (.NOT. (fermi_active(imo, jmo, channel) .OR. &
+                          density_active(imo, jmo, channel) .OR. &
+                          residual_active(imo, jmo, channel))) CYCLE
+               pair_index = (INT(channel - 1, KIND=int_8)*INT(nmo_max, KIND=int_8) + &
+                             INT(imo - 1, KIND=int_8))*INT(nmo_max, KIND=int_8) + &
+                            INT(jmo, KIND=int_8)
+               pair_count = pair_count + 1_int_8
+               pair_moment = pair_moment + pair_index
+               pair_square_moment = pair_square_moment + pair_index*pair_index
+            END DO
+         END DO
+      END DO
+
+   END SUBROUTINE qs_scf_kp_pair_mask_moments
 
 ! **************************************************************************************************
 !> \brief canonical band-energy response represented by a covariant density derivative
@@ -17562,6 +17614,9 @@ CONTAINS
          projector_fd_cluster_replacements, projector_kernel_cluster_groups, r, reject_reason, &
          residual_pair_available, residual_pair_candidates, s, schur_attempt, schur_used_attempt, &
          selected_attempt, selected_flavor, split_selected_attempt
+      INTEGER(KIND=int_8)                                :: pair_identity_count, &
+                                                            pair_identity_moment, &
+                                                            pair_identity_square_moment
       INTEGER, ALLOCATABLE, DIMENSION(:) :: canonical_density_cauchy_channel, &
          channel_full_var_offset, channel_multiplicity, channel_nmo, channel_nrot, &
          channel_var_offset, e_offset, ipiv, ipiv_energy, var_channel, var_ei, var_ej, &
@@ -18860,6 +18915,12 @@ CONTAINS
          nrot_residual = 2*COUNT(channel_residual_pair_active)
          nrot_active = nrot_active + nrot_residual
          nrot = MERGE(nrot_active, nrot_full, schur_active_subspace)
+         IF (schur_active_subspace) THEN
+            CALL qs_scf_kp_pair_mask_moments( &
+               channel_fermi_pair_active, channel_density_pair_active, &
+               channel_residual_pair_active, channel_nmo, pair_identity_count, &
+               pair_identity_moment, pair_identity_square_moment)
+         END IF
 
          ivar = 0
          DO global_channel = 1, nchannels
@@ -18927,6 +18988,12 @@ CONTAINS
             target_group, nrot_residual/2, residual_pair_candidates, residual_pair_available, &
             residual_pair_selection_ready, residual_pair_strict_tail, residual_pair_active_score, &
             residual_pair_total_score, residual_pair_omitted_score, residual_pair_omitted_limit
+         IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
+             logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I18),1X,L1)') &
+            " OT Schur active-pair identity group count moment square new_search:", &
+            target_group, pair_identity_count, pair_identity_moment, &
+            pair_identity_square_moment, new_search_point
 
          ALLOCATE (canonical_occ_curv(ne), curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), &
                    z_e(ne), accepted_z_e(ne), &
