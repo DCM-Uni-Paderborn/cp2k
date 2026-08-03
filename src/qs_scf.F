@@ -2674,7 +2674,8 @@ CONTAINS
          END IF
       END IF
 
-      CALL ot_scf_read_input(scf_env%qs_ot_env, scf_section, do_kpoints)
+      CALL ot_scf_read_input(scf_env%qs_ot_env, scf_section, do_kpoints, &
+                             scf_control%smear%do_smear)
 
       IF (scf_env%outer_scf%iter_count > 0) THEN
          IF (scf_env%qs_ot_env(1)%settings%ot_state == 1) THEN

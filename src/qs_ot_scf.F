@@ -73,11 +73,12 @@ CONTAINS
 !> \param qs_ot_env ...
 !> \param scf_section ...
 !> \param do_kpoints ...
+!> \param do_smear ...
 ! **************************************************************************************************
-   SUBROUTINE ot_scf_read_input(qs_ot_env, scf_section, do_kpoints)
+   SUBROUTINE ot_scf_read_input(qs_ot_env, scf_section, do_kpoints, do_smear)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(section_vals_type), POINTER                   :: scf_section
-      LOGICAL, INTENT(IN)                                :: do_kpoints
+      LOGICAL, INTENT(IN)                                :: do_kpoints, do_smear
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_scf_read_input'
 
@@ -100,7 +101,8 @@ CONTAINS
       CALL section_vals_get(ot_section, explicit=explicit)
 
       CALL ot_readwrite_input(qs_ot_env(1)%settings, ot_section, output_unit, &
-                              kpoint_default_irac=do_kpoints)
+                              kpoint_default_irac=do_kpoints, &
+                              smearing_default_occupation_preconditioner=do_kpoints .AND. do_smear)
 
       CALL cp_print_key_finished_output(output_unit, logger, scf_section, &
                                         "PRINT%PROGRAM_RUN_INFO")

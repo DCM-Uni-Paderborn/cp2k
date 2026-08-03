@@ -2825,24 +2825,28 @@ CONTAINS
 !> \param ot_section ...
 !> \param output_unit ...
 !> \param kpoint_default_irac Select IRAC when ALGORITHM was not explicitly given.
+!> \param smearing_default_occupation_preconditioner Select the fixed-N preconditioner when omitted.
 ! **************************************************************************************************
-   SUBROUTINE ot_readwrite_input(settings, ot_section, output_unit, kpoint_default_irac)
+   SUBROUTINE ot_readwrite_input(settings, ot_section, output_unit, kpoint_default_irac, &
+                                 smearing_default_occupation_preconditioner)
       TYPE(qs_ot_settings_type)                          :: settings
       TYPE(section_vals_type), POINTER                   :: ot_section
       INTEGER, INTENT(IN)                                :: output_unit
-      LOGICAL, INTENT(IN), OPTIONAL                      :: kpoint_default_irac
+      LOGICAL, INTENT(IN), OPTIONAL :: kpoint_default_irac, &
+         smearing_default_occupation_preconditioner
 
       CHARACTER(len=*), PARAMETER :: routineN = 'ot_readwrite_input'
 
       INTEGER                                            :: handle, ls_method, ot_algorithm, &
                                                             ot_method, ot_ortho_irac
-      LOGICAL                                            :: algorithm_explicit, &
-                                                            selected_kpoint_default
+      LOGICAL :: algorithm_explicit, occupation_preconditioner_explicit, selected_kpoint_default, &
+         selected_occupation_preconditioner_default
 
       CALL timeset(routineN, handle)
 
       ! choose algorithm
       selected_kpoint_default = .FALSE.
+      selected_occupation_preconditioner_default = .FALSE.
       CALL section_vals_val_get(ot_section, "ALGORITHM", i_val=ot_algorithm, explicit=algorithm_explicit)
       IF (PRESENT(kpoint_default_irac)) THEN
          IF (kpoint_default_irac .AND. .NOT. algorithm_explicit) THEN
@@ -3001,7 +3005,15 @@ CONTAINS
       CALL section_vals_val_get(ot_section, "ROTATION", l_val=settings%do_rotation)
       CALL section_vals_val_get(ot_section, "ENERGIES", l_val=settings%do_ener)
       CALL section_vals_val_get(ot_section, "OCCUPATION_PRECONDITIONER", &
-                                l_val=settings%occupation_preconditioner)
+                                l_val=settings%occupation_preconditioner, &
+                                explicit=occupation_preconditioner_explicit)
+      IF (PRESENT(smearing_default_occupation_preconditioner)) THEN
+         IF (smearing_default_occupation_preconditioner .AND. &
+             .NOT. occupation_preconditioner_explicit) THEN
+            settings%occupation_preconditioner = .TRUE.
+            selected_occupation_preconditioner_default = .TRUE.
+         END IF
+      END IF
       CALL section_vals_val_get(ot_section, "NONDIAG_ENERGY", l_val=settings%add_nondiag_energy)
       CALL section_vals_val_get(ot_section, "NONDIAG_ENERGY_STRENGTH", &
                                 r_val=settings%nondiag_energy_strength)
@@ -3038,6 +3050,10 @@ CONTAINS
          WRITE (output_unit, '(/,A)') "  ----------------------------------- OT ---------------------------------------"
          IF (selected_kpoint_default) THEN
             WRITE (output_unit, '(A)') "  K-point OT default: ALGORITHM IRAC"
+         END IF
+         IF (selected_occupation_preconditioner_default) THEN
+            WRITE (output_unit, '(A)') &
+               "  K-point OT smearing default: OCCUPATION_PRECONDITIONER ON"
          END IF
          IF (settings%do_rotation) THEN
             WRITE (output_unit, '(A)') "  Allowing for rotations "

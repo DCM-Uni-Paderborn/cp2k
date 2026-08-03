@@ -910,8 +910,8 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="ENERGIES", &
-                          description="Optimize orbital energies for use in Fermi-Dirac smearing "// &
-                          "(requires ROTATION and FD smearing to be active).", &
+                          description="Optimize orbital energies for finite-temperature occupations "// &
+                          "(requires ROTATION and a supported smearing method).", &
                           usage="ENERGIES", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
@@ -920,7 +920,8 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="OCCUPATION_PRECONDITIONER", &
                           description="Apply a diagonal fixed-electron-number Mermin curvature "// &
                           "preconditioner and remove the constant energy-shift null mode for OT energy "// &
-                          "variables (FD smearing).", &
+                          "variables. It is enabled automatically for K-point OT with smearing when "// &
+                          "this keyword is omitted.", &
                           usage="OCCUPATION_PRECONDITIONER", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)

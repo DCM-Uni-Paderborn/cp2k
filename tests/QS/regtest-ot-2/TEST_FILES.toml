@@ -44,6 +44,7 @@
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.08437895157388},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-12, ref=-5.902617E-8},
                                            {matcher="OT_KPOINT_DEFAULT_IRAC"},
+                                           {matcher="OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
