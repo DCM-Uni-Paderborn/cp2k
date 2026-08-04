@@ -1756,6 +1756,7 @@ CONTAINS
       CHARACTER(LEN=default_path_length)                 :: filename
       INTEGER                                            :: handle, unit_nr
       REAL(KIND=dp)                                      :: q_max
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(section_vals_type), POINTER                   :: print_key
 
       CALL timeset(routineN, handle)
@@ -1764,6 +1765,12 @@ CONTAINS
                                               subsection_name="DFT%PRINT%XRAY_DIFFRACTION_SPECTRUM")
 
       IF (BTEST(cp_print_key_should_output(logger%iter_info, print_key), cp_p_file)) THEN
+         CALL get_qs_env(qs_env, cell=cell)
+         IF (.NOT. cell%orthorhombic) THEN
+            CPWARN("XRAY_DIFFRACTION_SPECTRUM not implemented for non-orthorhombic cells")
+            CALL timestop(handle)
+            RETURN
+         END IF
          q_max = section_get_rval(section_vals=dft_section, &
                                   keyword_name="PRINT%XRAY_DIFFRACTION_SPECTRUM%Q_MAX")
          unit_nr = cp_print_key_unit_nr(logger=logger, &
