@@ -148,7 +148,6 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_scf_mini'
-      REAL(KIND=dp), PARAMETER :: rotation_preconditioner_scale = 2.0_dp
 
       INTEGER                                            :: handle, ispin, k, n, nspin
       REAL(KIND=dp)                                      :: ener_nondiag, trace
@@ -289,12 +288,10 @@ CONTAINS
          ALLOCATE (matrix_dedc_scaled(ispin)%matrix)
          CALL dbcsr_copy(matrix_dedc_scaled(ispin)%matrix, matrix_dedc(ispin)%matrix)
 
-         ! Keep the rotation scale separate from the occupation-curvature
-         ! scale used for the energy variables.  The occupation Hessian is
-         ! preconditioned in precondition_ot_energy_gradient.
-         IF (qs_ot_occupation_preconditioner_active(qs_ot_env(1))) THEN
-            orbital_scaling_factor(ispin)%array = rotation_preconditioner_scale
-         END IF
+         ! The physical orbital derivative contains 2*f_i.  Occupation
+         ! curvature is preconditioned separately in
+         ! precondition_ot_energy_gradient; removing f_i here would turn
+         ! thermally empty virtual-orbital gauge motion into an SCF residual.
          CALL dbcsr_scale_by_vector(matrix_dedc_scaled(ispin)%matrix, alpha=orbital_scaling_factor(ispin)%array, &
                                     side='right')
       END DO

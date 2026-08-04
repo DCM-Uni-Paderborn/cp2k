@@ -919,6 +919,11 @@ CONTAINS
                 scf_control%smear%method /= smear_gaussian) THEN
                CPABORT("OT smearing supports only FERMI_DIRAC or GAUSSIAN.")
             END IF
+            IF (.NOT. do_kpoints .AND. not_se_or_tb) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "Quickstep DFT OT with smearing requires an explicit KPOINTS section. "// &
+                             "Use a 1 1 1 mesh for a Gamma-only calculation.")
+            END IF
             IF (.NOT. do_kpoints .AND. ANY(cell%perd == 1)) THEN
                CALL cp_abort(__LOCATION__, &
                              "Periodic OT with smearing requires an explicit KPOINTS section. "// &
