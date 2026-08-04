@@ -315,8 +315,10 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_coupled_step_model, &
              qs_scf_kp_decouple_inactive_gauge, &
              qs_scf_kp_density_stationarity_quality, &
+             qs_scf_kp_accepted_physical_residual_quality, &
              qs_scf_kp_density_candidate_residual_quality, &
              qs_scf_kp_density_candidate_history_scale, &
+             qs_scf_kp_density_candidate_relevant, &
              qs_scf_kp_density_candidate_residual_bad, &
              qs_scf_kp_density_full_direct_tail_probe, &
              qs_scf_kp_density_response_probe, &
@@ -337,6 +339,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_complete_physical_gradient_norm, &
              qs_scf_kp_pair_mask_moments, &
              qs_scf_kp_residual_history_reset_needed, &
+             qs_scf_kp_residual_pair_full_capture_ready, &
              qs_scf_kp_residual_pair_capture_limit, &
              qs_scf_kp_residual_pair_omission_limit, &
              qs_scf_kp_canonical_projector_density_response, &
@@ -576,6 +579,74 @@ CONTAINS
       IF (.NOT. strict_tail) norm_limit = MAX(norm_limit, represented_score, 0.0_dp)
 
    END FUNCTION qs_scf_kp_residual_pair_capture_limit
+
+! **************************************************************************************************
+!> \brief request a stable full residual-pair basis in the final fixed-N tail
+!>
+!>        A threshold-selected pair set can change after every accepted step even when all
+!>        remaining physical pairs fit in the dense Schur budget.  Once the search residual and
+!>        canonical density are converged, retain every residual pair together until the complete
+!>        fixed-N gradient also reaches EPS_SCF.
+!> \param selection_ready whether residual-pair completion is available
+!> \param strict_tail whether the raw residual is in the final tail
+!> \param candidates number of residual-pair candidates
+!> \param capacity number of residual pairs that still fit in the Schur model
+!> \param raw_delta preconditioned search residual
+!> \param represented_score physical rotation-gradient norm already represented
+!> \param candidate_score physical rotation-gradient norm in candidate pairs
+!> \param rotation_nvar full-grid-equivalent number of complex rotation variables
+!> \param density_delta canonical-density stationarity residual
+!> \param eps_scf requested SCF threshold
+!> \param density_ready whether density_delta is complete
+!> \param accepted_samples accepted Mermin model-quality samples
+!> \return true when all candidates should be retained as one stable tail basis
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_residual_pair_full_capture_ready( &
+      selection_ready, strict_tail, candidates, capacity, raw_delta, represented_score, &
+      candidate_score, rotation_nvar, density_delta, eps_scf, density_ready, accepted_samples) &
+      RESULT(ready)
+      LOGICAL, INTENT(IN)                                :: selection_ready, strict_tail
+      INTEGER, INTENT(IN)                                :: candidates, capacity
+      REAL(KIND=dp), INTENT(IN)                          :: raw_delta, represented_score, &
+                                                            candidate_score, rotation_nvar, &
+                                                            density_delta, eps_scf
+      LOGICAL, INTENT(IN)                                :: density_ready
+      INTEGER, INTENT(IN)                                :: accepted_samples
+      LOGICAL                                            :: ready
+
+      REAL(KIND=dp)                                      :: pair_physical_delta
+
+      pair_physical_delta = 0.0_dp
+      IF (rotation_nvar > 0.0_dp) &
+         pair_physical_delta = SQRT(MAX(0.0_dp, represented_score + candidate_score)/rotation_nvar)
+      ready = selection_ready .AND. strict_tail .AND. density_ready .AND. &
+              candidates > 0 .AND. candidates <= capacity .AND. eps_scf > 0.0_dp .AND. &
+              raw_delta >= 0.0_dp .AND. raw_delta <= eps_scf .AND. &
+              density_delta >= 0.0_dp .AND. density_delta <= eps_scf .AND. &
+              pair_physical_delta > MAX(eps_scf, raw_delta) .AND. &
+              accepted_samples >= ot_kp_schur_calibration_min_samples
+
+   END FUNCTION qs_scf_kp_residual_pair_full_capture_ready
+
+! **************************************************************************************************
+!> \brief retain density-specific candidates only while canonical density needs correction
+!> \param density_ready whether the canonical-density audit is complete
+!> \param density_delta canonical-density stationarity residual
+!> \param eps_scf requested SCF threshold
+!> \param physical_pair_tail whether a complete residual-pair basis is closing the remaining tail
+!> \return true when a density-specific candidate remains relevant
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_density_candidate_relevant( &
+      density_ready, density_delta, eps_scf, physical_pair_tail) RESULT(relevant)
+      LOGICAL, INTENT(IN)                                :: density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_delta, eps_scf
+      LOGICAL, INTENT(IN)                                :: physical_pair_tail
+      LOGICAL                                            :: relevant
+
+      relevant = .NOT. physical_pair_tail .OR. .NOT. density_ready .OR. eps_scf <= 0.0_dp .OR. &
+                 density_delta < 0.0_dp .OR. density_delta > eps_scf
+
+   END FUNCTION qs_scf_kp_density_candidate_relevant
 
 ! **************************************************************************************************
 !> \brief deterministic moments identifying a channel-resolved upper-triangle pair set
@@ -933,6 +1004,34 @@ CONTAINS
       candidate_quality = MAX(0.0_dp, candidate_quality)
 
    END FUNCTION qs_scf_kp_density_candidate_residual_quality
+
+! **************************************************************************************************
+!> \brief Fractional reduction of the complete fixed-N physical residual after an accepted step.
+!>
+!>        Candidate calibration normally falls back to the internal minimizer residual while the
+!>        complete physical audit is unavailable. Once both endpoint audits exist, use the
+!>        group-complete residual that guards final metallic OT convergence so inactive physical
+!>        rotation modes cannot promote a candidate on an unrelated internal metric.
+!> \param fallback_quality internal accepted-step residual quality
+!> \param model_physical_delta complete physical residual at the model start
+!> \param current_physical_delta complete physical residual at the accepted endpoint
+!> \return bounded physical reduction fraction, or fallback_quality without complete endpoints
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_accepted_physical_residual_quality( &
+      fallback_quality, model_physical_delta, current_physical_delta) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: fallback_quality, model_physical_delta, &
+                                                            current_physical_delta
+      REAL(KIND=dp)                                      :: quality
+
+      quality = MAX(0.0_dp, MIN(1.0_dp, fallback_quality))
+      IF (model_physical_delta /= model_physical_delta .OR. &
+          current_physical_delta /= current_physical_delta .OR. &
+          model_physical_delta <= EPSILON(MAX(1.0_dp, ABS(model_physical_delta))) .OR. &
+          current_physical_delta < 0.0_dp) RETURN
+      quality = (model_physical_delta - current_physical_delta)/model_physical_delta
+      quality = MAX(0.0_dp, MIN(1.0_dp, quality))
+
+   END FUNCTION qs_scf_kp_accepted_physical_residual_quality
 
 ! **************************************************************************************************
 !> \brief Decide whether an accepted physical residual has reached the density-response tail.
@@ -13509,10 +13608,10 @@ CONTAINS
          gauge_residual_quality_ratio, line_search_model_drop, line_search_model_position
       REAL(KIND=dp) :: line_search_model_scale, measured_drop, metric_residual_quality, &
          multisecant_predicted_drop, multisecant_quality_ratio, occgap_shadow_predicted_drop, &
-         occgap_shadow_quality_ratio, predicted_drop, prediction_predicted_drop, &
-         prediction_quality_ratio, projector_density_audit_amplification_quality, &
-         projector_density_audit_lowcurv_quality, projector_density_audit_quality_ratio, &
-         projector_density_descent_base_predicted_drop, &
+         occgap_shadow_quality_ratio, physical_current_delta, physical_model_delta, &
+         predicted_drop, prediction_predicted_drop, prediction_quality_ratio, &
+         projector_density_audit_amplification_quality, projector_density_audit_lowcurv_quality, &
+         projector_density_audit_quality_ratio, projector_density_descent_base_predicted_drop, &
          projector_density_descent_incremental_measured_drop, &
          projector_density_descent_incremental_predicted_drop
       REAL(KIND=dp) :: projector_density_descent_incremental_quality_ratio, &
@@ -13652,6 +13751,20 @@ CONTAINS
          residual_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_model_delta > EPSILON(residual_current_delta)) &
             residual_quality_ratio = residual_drop/local_ot_env(1)%schur_model_delta
+         raw_residual_quality_ratio = residual_quality_ratio
+         physical_model_delta = local_ot_env(1)%schur_model_physical_delta
+         physical_current_delta = local_ot_env(1)%kpoint_complete_physical_delta
+         CALL para_env_inter_kp%max(physical_model_delta)
+         CALL para_env_inter_kp%max(physical_current_delta)
+         IF (mermin_search) &
+            residual_quality_ratio = qs_scf_kp_accepted_physical_residual_quality( &
+                                     raw_residual_quality_ratio, physical_model_delta, &
+                                     physical_current_delta)
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+            " OT Schur accepted residual quality raw physical pstart pcurrent rstart rcurrent:", &
+            raw_residual_quality_ratio, residual_quality_ratio, physical_model_delta, &
+            physical_current_delta, local_ot_env(1)%schur_model_delta, residual_current_delta
          density_stationarity_quality_ready = mermin_search .AND. measured_drop > 0.0_dp .AND. &
                                               local_ot_env(1)%kpoint_density_stationarity_ready .AND. &
                                               local_ot_env(1)%schur_model_density_stationarity_delta > &
@@ -13680,7 +13793,6 @@ CONTAINS
             qs_scf_kp_density_candidate_residual_quality( &
             residual_quality_ratio, density_stationarity_quality_ratio, &
             density_stationarity_quality_ready)
-         raw_residual_quality_ratio = residual_quality_ratio
          sample_gap = 0.0_dp
          sample_quality = 1.0_dp
          sample_reference_drop = 0.0_dp
@@ -17111,6 +17223,7 @@ CONTAINS
             local_ot_env(1)%schur_model_delta = 0.0_dp
             local_ot_env(1)%schur_model_control_delta = 0.0_dp
             local_ot_env(1)%schur_model_density_stationarity_delta = -1.0_dp
+            local_ot_env(1)%schur_model_physical_delta = -1.0_dp
             local_ot_env(1)%schur_model_residual_drop = 0.0_dp
             local_ot_env(1)%schur_closure_shadow_pending = .FALSE.
             local_ot_env(1)%schur_closure_shadow_baseline_quadratic = 0.0_dp
@@ -17325,10 +17438,11 @@ CONTAINS
          closure_reduced_response_ready, closure_response_pair_ready, &
          closure_response_shadow_ready, closure_response_subspace_ready, &
          constrained_candidate_enabled, constrained_candidate_ready, &
-         constrained_candidate_selected, dense_exact_scale_ready, density_descent_bootstrap_ready, &
-         density_descent_candidate_ready, density_descent_candidate_selected, &
-         density_descent_tail_probe_ready, density_full_candidate_ready, &
-         density_full_candidate_selected, density_full_direct_candidate_ready
+         constrained_candidate_selected, dense_exact_scale_ready, density_candidate_relevant, &
+         density_descent_bootstrap_ready, density_descent_candidate_ready, &
+         density_descent_candidate_selected, density_descent_tail_probe_ready, &
+         density_full_candidate_ready, density_full_candidate_selected, &
+         density_full_direct_candidate_ready
       LOGICAL :: density_full_direct_candidate_selected, density_full_direct_closure_ready, &
          density_full_direct_coupled_model_ready, density_full_direct_tail_probe_ready, &
          density_full_global_bootstrap_ready, density_full_global_candidate_ready, &
@@ -17391,7 +17505,7 @@ CONTAINS
          reduced_secant_candidate_ready, reduced_secant_candidate_selected, &
          reduced_secant_measured_response
       LOGICAL :: reduced_secant_probe_selected, reduced_secant_replacement_eligible, &
-         reduced_secant_update_eligible, relative_energy_metric_ready, &
+         reduced_secant_update_eligible, relative_energy_metric_ready, residual_pair_full_capture, &
          residual_pair_selection_ready, residual_pair_strict_tail, response_model_available, &
          schur_active_subspace, solved, split_candidate_diagnostic, split_candidate_enabled, &
          split_candidate_ready, split_candidate_selected, split_residual_competitive, &
@@ -18600,8 +18714,18 @@ CONTAINS
          residual_pair_omitted_limit = qs_scf_kp_residual_pair_capture_limit( &
                                        eps_scf_channel, residual_pair_full_nvar, &
                                        residual_pair_active_score, residual_pair_strict_tail)
+         residual_pair_full_capture = qs_scf_kp_residual_pair_full_capture_ready( &
+                                      residual_pair_selection_ready, residual_pair_strict_tail, &
+                                      residual_pair_candidates, residual_pair_available, &
+                                      response_raw_delta, residual_pair_active_score, &
+                                      residual_pair_total_score, residual_pair_full_nvar, &
+                                      local_ot_env(1)%kpoint_density_stationarity_delta, &
+                                      eps_scf_channel, &
+                                      local_ot_env(1)%kpoint_density_stationarity_ready, &
+                                      local_ot_env(1)%mermin_ls_accepted_quality_samples)
          DO r = 1, MIN(residual_pair_candidates, residual_pair_available)
-            IF (residual_pair_omitted_score <= residual_pair_omitted_limit) EXIT
+            IF (.NOT. residual_pair_full_capture .AND. &
+                residual_pair_omitted_score <= residual_pair_omitted_limit) EXIT
             residual_pair_location = MAXLOC(channel_residual_pair_score, &
                                             MASK=channel_residual_pair_candidate)
             channel_residual_pair_active(residual_pair_location(1), residual_pair_location(2), &
@@ -18685,11 +18809,13 @@ CONTAINS
             response_raw_delta, density_pair_activation_threshold
          IF (schur_active_subspace .AND. logger%iter_info%print_level >= debug_print_level .AND. &
              logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8),2(1X,L1),4(1X,ES16.8))') &
-            " OT Schur residual-pair completion group selected candidates capacity ready strict represented total omitted limit:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8),3(1X,L1),4(1X,ES16.8))') &
+            " OT Schur residual-pair completion group selected candidates capacity ready strict full "// &
+            "represented total omitted limit:", &
             target_group, nrot_residual/2, residual_pair_candidates, residual_pair_available, &
-            residual_pair_selection_ready, residual_pair_strict_tail, residual_pair_active_score, &
-            residual_pair_total_score, residual_pair_omitted_score, residual_pair_omitted_limit
+            residual_pair_selection_ready, residual_pair_strict_tail, residual_pair_full_capture, &
+            residual_pair_active_score, residual_pair_total_score, residual_pair_omitted_score, &
+            residual_pair_omitted_limit
          IF (schur_active_subspace .AND. logger%iter_info%print_level >= debug_print_level .AND. &
              logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I18),1X,L1)') &
@@ -29071,6 +29197,30 @@ CONTAINS
                response_weighted_trust_ratio, response_abs_trust_ratio, model_gap_ratio, norm_ratio, &
                gdotp, normp
 
+            density_candidate_relevant = qs_scf_kp_density_candidate_relevant( &
+                                         local_ot_env(1)%kpoint_density_stationarity_ready, &
+                                         local_ot_env(1)%kpoint_density_stationarity_delta, &
+                                         eps_scf_channel, residual_pair_full_capture)
+            IF (schur_attempt >= 3 .AND. .NOT. density_candidate_relevant) THEN
+               projector_physical_direct_density_candidate_ready = .FALSE.
+               projector_physical_direct_density_expected_drop = 0.0_dp
+               projector_physical_direct_density_probe_expected_drop = 0.0_dp
+               density_descent_candidate_ready = .FALSE.
+               density_descent_expected_drop = 0.0_dp
+               density_descent_probe_expected_drop = 0.0_dp
+               density_full_candidate_ready = .FALSE.
+               density_full_expected_drop = 0.0_dp
+               density_full_direct_candidate_ready = .FALSE.
+               density_full_direct_expected_drop = 0.0_dp
+               density_full_global_candidate_ready = .FALSE.
+               density_full_global_expected_drop = 0.0_dp
+               IF (logger%iter_info%print_level >= debug_print_level .AND. &
+                   logger%para_env%is_source()) &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,ES16.8))') &
+                  " OT Schur density candidates suppressed in physical residual-pair tail group density eps:", &
+                  target_group, local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel
+            END IF
+
             IF (schur_attempt == 1 .AND. .NOT. attempt_failed) THEN
                constrained_candidate_ready = .TRUE.
                constrained_sol(:) = sol(:)
@@ -31616,6 +31766,9 @@ CONTAINS
                local_ot_env(1)%schur_model_density_stationarity_delta = &
                MAX(local_ot_env(1)%schur_model_density_stationarity_delta, &
                    local_ot_env(1)%kpoint_density_stationarity_delta)
+            IF (physical_delta_norm >= 0.0_dp) &
+               local_ot_env(1)%schur_model_physical_delta = &
+               MAX(local_ot_env(1)%schur_model_physical_delta, physical_delta_norm)
             IF (vector_secant_update_used .AND. schur_used_attempt == 3 .AND. &
                 accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) THEN
                local_ot_env(1)%schur_vector_secant_pending = .TRUE.
@@ -38677,7 +38830,10 @@ CONTAINS
 
          residual_support = kpoint_ot_selected_tail_residual_quality( &
                             selected_residual_quality, selected_residual_quality_ema)
-         IF (residual_support <= EPSILON(residual_support)) RETURN
+         IF (residual_support <= EPSILON(residual_support)) THEN
+            quality = 0.0_dp
+            RETURN
+         END IF
 
          trace_cap = MAX(0.0_dp, MIN(1.0_dp, trace_quality))
          trace_cap = MAX(trace_cap, ot_kp_schur_projector_response_quality_min_ratio)

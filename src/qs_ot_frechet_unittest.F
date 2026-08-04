@@ -84,27 +84,28 @@ PROGRAM qs_ot_frechet_unittest
         qs_ot_settings_type, qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_active_residual_affine, qs_scf_kp_add_full_response_complement, &
-        qs_scf_kp_add_measured_response_complement, qs_scf_kp_added_mos_basis_bootstrap_ready, &
-        qs_scf_kp_added_mos_fractional_density_ready, qs_scf_kp_added_mos_fractional_tail_ready, &
-        qs_scf_kp_added_mos_integer_density_ready, qs_scf_kp_affine_correction_model, &
-        qs_scf_kp_affine_rebased_drop, qs_scf_kp_affine_residual_calibration, &
-        qs_scf_kp_affine_residual_minimum, qs_scf_kp_affine_residual_quality, &
-        qs_scf_kp_candidate_position_drop, qs_scf_kp_canonical_density_blend, &
-        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_group_metrics, &
-        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
-        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
-        qs_scf_kp_canonical_projector_density_response, qs_scf_kp_canonical_tether_tail_scale, &
-        qs_scf_kp_closure_response_history_ready, qs_scf_kp_closure_response_model_adjustments, &
-        qs_scf_kp_closure_response_preferred, qs_scf_kp_complete_physical_audit_ready, &
-        qs_scf_kp_complete_physical_gradient_norm, qs_scf_kp_coupled_closure_prediction, &
-        qs_scf_kp_coupled_closure_response, qs_scf_kp_coupled_multisecant_update, &
-        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
-        qs_scf_kp_coupled_residual_prediction, qs_scf_kp_coupled_response_quadratic, &
-        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
-        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_accepted_physical_residual_quality, qs_scf_kp_active_residual_affine, &
+        qs_scf_kp_add_full_response_complement, qs_scf_kp_add_measured_response_complement, &
+        qs_scf_kp_added_mos_basis_bootstrap_ready, qs_scf_kp_added_mos_fractional_density_ready, &
+        qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_added_mos_integer_density_ready, &
+        qs_scf_kp_affine_correction_model, qs_scf_kp_affine_rebased_drop, &
+        qs_scf_kp_affine_residual_calibration, qs_scf_kp_affine_residual_minimum, &
+        qs_scf_kp_affine_residual_quality, qs_scf_kp_candidate_position_drop, &
+        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
+        qs_scf_kp_canonical_density_group_metrics, qs_scf_kp_canonical_density_multimode_blend, &
+        qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
+        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_projector_density_response, &
+        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_closure_response_history_ready, &
+        qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
+        qs_scf_kp_complete_physical_audit_ready, qs_scf_kp_complete_physical_gradient_norm, &
+        qs_scf_kp_coupled_closure_prediction, qs_scf_kp_coupled_closure_response, &
+        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
+        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_residual_prediction, &
+        qs_scf_kp_coupled_response_quadratic, qs_scf_kp_coupled_schur_transport, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
+        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
+        qs_scf_kp_density_candidate_relevant, qs_scf_kp_density_candidate_residual_bad, &
         qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
         qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
         qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
@@ -137,13 +138,14 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
         qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
         qs_scf_kp_residual_history_reset_needed, qs_scf_kp_residual_pair_capture_limit, &
-        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
+        qs_scf_kp_residual_pair_full_capture_ready, qs_scf_kp_residual_pair_omission_limit, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response, &
+        qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -321,6 +323,10 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT reduced-space omission budget", 5.0E-27_dp, nfail)
    CALL check_kpoint_residual_pair_capture_limit( &
       "k-point OT adaptive residual-pair capture", 5.0E-27_dp, nfail)
+   CALL check_kpoint_residual_pair_full_capture( &
+      "k-point OT stable final residual-pair basis", nfail)
+   CALL check_kpoint_accepted_physical_residual_quality( &
+      "k-point OT accepted complete physical residual", 5.0E-15_dp, nfail)
    CALL check_kpoint_pair_mask_moments("k-point OT active-pair identity", nfail)
    CALL check_kpoint_residual_history_reset("k-point OT residual plateau history", nfail)
    CALL check_kpoint_rebased_calibration_samples( &
@@ -7005,6 +7011,88 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_residual_pair_capture_limit
+
+! **************************************************************************************************
+!> \brief Check that a complete affordable pair basis is retained only for a physical-only tail.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_residual_pair_full_capture(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_residual_pair_full_capture_ready( &
+               .TRUE., .TRUE., 299, 329, 4.45E-8_dp, 4.0E-13_dp, &
+               5.0E-11_dp, 2400.0_dp, 6.1E-9_dp, 1.0E-7_dp, .TRUE., 20)
+      failed = failed .OR. qs_scf_kp_residual_pair_full_capture_ready( &
+               .TRUE., .TRUE., 330, 329, 4.45E-8_dp, 4.0E-13_dp, &
+               5.0E-11_dp, 2400.0_dp, 6.1E-9_dp, 1.0E-7_dp, .TRUE., 20)
+      failed = failed .OR. qs_scf_kp_residual_pair_full_capture_ready( &
+               .TRUE., .TRUE., 299, 329, 4.45E-8_dp, 4.0E-13_dp, &
+               1.0E-11_dp, 2400.0_dp, 6.1E-9_dp, 1.0E-7_dp, .TRUE., 20)
+      failed = failed .OR. qs_scf_kp_residual_pair_full_capture_ready( &
+               .TRUE., .TRUE., 299, 329, 1.1E-7_dp, 4.0E-13_dp, &
+               5.0E-11_dp, 2400.0_dp, 6.1E-9_dp, 1.0E-7_dp, .TRUE., 20)
+      failed = failed .OR. qs_scf_kp_residual_pair_full_capture_ready( &
+               .TRUE., .TRUE., 299, 329, 4.45E-8_dp, 4.0E-13_dp, &
+               5.0E-11_dp, 2400.0_dp, 1.1E-7_dp, 1.0E-7_dp, .TRUE., 20)
+      failed = failed .OR. qs_scf_kp_residual_pair_full_capture_ready( &
+               .TRUE., .TRUE., 299, 329, 4.45E-8_dp, 4.0E-13_dp, &
+               5.0E-11_dp, 2400.0_dp, 6.1E-9_dp, 1.0E-7_dp, .TRUE., 3)
+      failed = failed .OR. qs_scf_kp_density_candidate_relevant( &
+               .TRUE., 6.1E-9_dp, 1.0E-7_dp, .TRUE.)
+      failed = failed .OR. .NOT. qs_scf_kp_density_candidate_relevant( &
+               .TRUE., 1.1E-7_dp, 1.0E-7_dp, .TRUE.)
+      failed = failed .OR. .NOT. qs_scf_kp_density_candidate_relevant( &
+               .TRUE., 6.1E-9_dp, 1.0E-7_dp, .FALSE.)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_residual_pair_full_capture
+
+! **************************************************************************************************
+!> \brief Check complete physical accepted-step calibration and audit-unavailable fallback.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_accepted_physical_residual_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err, expected, measured
+
+      expected = 4.4299008095323797E-4_dp
+      measured = qs_scf_kp_accepted_physical_residual_quality( &
+                 1.59E-1_dp, 1.36346168E-7_dp, 1.36285768E-7_dp)
+      err = ABS(measured - expected)
+      err = MAX(err, ABS(qs_scf_kp_accepted_physical_residual_quality( &
+                         1.59E-1_dp, 1.0E-7_dp, 1.1E-7_dp)))
+      err = MAX(err, ABS(qs_scf_kp_accepted_physical_residual_quality( &
+                         1.59E-1_dp, 2.0E-7_dp, 1.0E-7_dp) - 5.0E-1_dp))
+      err = MAX(err, ABS(qs_scf_kp_accepted_physical_residual_quality( &
+                         1.59E-1_dp, -1.0_dp, 1.0E-7_dp) - 1.59E-1_dp))
+      err = MAX(err, ABS(qs_scf_kp_accepted_physical_residual_quality( &
+                         1.59E-1_dp, 1.0E-7_dp, -1.0_dp) - 1.59E-1_dp))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed err/measured/expected", err, measured, expected
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK err/measured/expected", err, measured, expected
+      END IF
+
+   END SUBROUTINE check_kpoint_accepted_physical_residual_quality
 
 ! **************************************************************************************************
 !> \brief Check that pair-set moments use valid upper-triangle union membership exactly once.
@@ -19503,8 +19591,8 @@ CONTAINS
 
       REAL(KIND=dp) :: err, expected_shadow, expected_stale, no_history, product_collapse, &
          residual_cap_quality, residual_damp_quality, residual_floor_quality, &
-         residual_no_history_quality, residual_veto_quality, shadow_floor, shadow_quality, &
-         stale_floor, stale_selected_quality, trace_quality
+         residual_no_history_quality, residual_veto_quality, residual_zero_support_quality, &
+         shadow_floor, shadow_quality, stale_floor, stale_selected_quality, trace_quality
 
       trace_quality = 7.55E-2_dp
       shadow_quality = 7.53E-2_dp
@@ -19532,6 +19620,9 @@ CONTAINS
       residual_no_history_quality = dense_direct_tail_residual_selection_quality( &
                                     1.90E-1_dp, 5.00E-1_dp, 1.51E-1_dp, 6.38E-1_dp, &
                                     4.83E-1_dp, 2.58E-1_dp, 3, 4)
+      residual_zero_support_quality = dense_direct_tail_residual_selection_quality( &
+                                      1.90E-1_dp, 5.00E-1_dp, 1.51E-1_dp, 6.38E-1_dp, &
+                                      0.00E+0_dp, 1.43E-1_dp, 15, 4)
 
       err = ABS(shadow_floor - expected_shadow)
       err = MAX(err, ABS(stale_floor - expected_stale))
@@ -19541,6 +19632,7 @@ CONTAINS
       err = MAX(err, ABS(residual_veto_quality - 1.90E-1_dp))
       err = MAX(err, ABS(residual_damp_quality - SQRT(1.90E-1_dp*8.00E-3_dp)))
       err = MAX(err, ABS(residual_no_history_quality - 1.90E-1_dp))
+      err = MAX(err, ABS(residual_zero_support_quality))
 
       IF (err > tol .OR. stale_floor <= 100.0_dp*product_collapse .OR. &
           stale_floor >= shadow_floor .OR. shadow_floor > trace_quality .OR. &
@@ -19548,17 +19640,20 @@ CONTAINS
           residual_cap_quality > 2.20E-1_dp + tol .OR. &
           residual_veto_quality > 1.90E-1_dp + tol .OR. &
           residual_damp_quality >= residual_veto_quality .OR. &
-          residual_no_history_quality > 1.90E-1_dp + tol) THEN
+          residual_no_history_quality > 1.90E-1_dp + tol .OR. &
+          residual_zero_support_quality > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
-            "failed err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rdamp/rno", err, trace_quality, &
+         WRITE (*, '(A,1X,A,12(1X,ES12.5))') TRIM(label), &
+            "failed err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rdamp/rno/rzero", err, trace_quality, &
             shadow_floor, stale_floor, stale_selected_quality, product_collapse, residual_floor_quality, &
-            residual_cap_quality, residual_veto_quality, residual_damp_quality, residual_no_history_quality
+            residual_cap_quality, residual_veto_quality, residual_damp_quality, residual_no_history_quality, &
+            residual_zero_support_quality
       ELSE
-         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
-            "OK err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rdamp/rno", err, trace_quality, &
+         WRITE (*, '(A,1X,A,12(1X,ES12.5))') TRIM(label), &
+            "OK err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rdamp/rno/rzero", err, trace_quality, &
             shadow_floor, stale_floor, stale_selected_quality, product_collapse, residual_floor_quality, &
-            residual_cap_quality, residual_veto_quality, residual_damp_quality, residual_no_history_quality
+            residual_cap_quality, residual_veto_quality, residual_damp_quality, residual_no_history_quality, &
+            residual_zero_support_quality
       END IF
 
    END SUBROUTINE check_projector_direct_tail_selection_quality
@@ -24615,7 +24710,10 @@ CONTAINS
 
       residual_support = dense_selected_tail_residual_quality(selected_residual_quality, &
                                                               selected_residual_quality_ema)
-      IF (residual_support <= EPSILON(residual_support)) RETURN
+      IF (residual_support <= EPSILON(residual_support)) THEN
+         quality = 0.0_dp
+         RETURN
+      END IF
 
       trace_cap = MAX(0.0_dp, MIN(1.0_dp, trace_quality))
       trace_cap = MAX(trace_cap, 1.0E-1_dp)

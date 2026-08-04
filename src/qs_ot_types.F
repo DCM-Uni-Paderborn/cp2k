@@ -440,6 +440,7 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_model_gap_ratio = 0.0_dp
       REAL(KIND=dp) :: schur_model_delta = 0.0_dp, schur_model_control_delta = 0.0_dp
       REAL(KIND=dp) :: schur_model_density_stationarity_delta = -1.0_dp
+      REAL(KIND=dp) :: schur_model_physical_delta = -1.0_dp
       REAL(KIND=dp) :: schur_model_residual_drop = 0.0_dp
       INTEGER :: schur_density_stationarity_quality_samples = 0
       REAL(KIND=dp) :: schur_density_stationarity_quality = 0.0_dp
@@ -1433,6 +1434,7 @@ CONTAINS
       qs_ot_env%schur_model_delta = 0.0_dp
       qs_ot_env%schur_model_control_delta = 0.0_dp
       qs_ot_env%schur_model_density_stationarity_delta = -1.0_dp
+      qs_ot_env%schur_model_physical_delta = -1.0_dp
       qs_ot_env%schur_model_residual_drop = 0.0_dp
       qs_ot_env%schur_density_stationarity_quality_samples = 0
       qs_ot_env%schur_density_stationarity_quality = 0.0_dp
