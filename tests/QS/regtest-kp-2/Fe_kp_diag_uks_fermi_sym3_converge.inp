@@ -1,0 +1,78 @@
+! Slow/manual diagonalization reference for the spin-polarized bcc-Fe
+! metallic OT companion. Run Fe_kp_ot_uks_added_auto_sym3_converge.inp
+! first in the same directory. Starting both methods from its converged
+! WFN isolates stationarity from the difficult atomic-start mixing path.
+! This input is intentionally not listed in TEST_FILES.toml.
+! Current MPI-2/OMP-2 reference: EPS_SCF=1E-7 converges in 47 steps at
+! F=-123.63311711346923 Ha and mu=0.40331703125650 Ha, 1.39E-6 Ha below
+! the EPS_SCF=1E-6 OT endpoint.
+&GLOBAL
+  PRINT_LEVEL MEDIUM
+  PROJECT Fe_kp_diag_uks_fermi_sym3_converge
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_MOLOPT
+    MULTIPLICITY 3
+    POTENTIAL_FILE_NAME POTENTIAL
+    UKS TRUE
+    WFN_RESTART_FILE_NAME Fe_kp_ot_uks_added_auto_sym3_converge-RESTART.kp
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 300
+    &END MGRID
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS 16
+      EPS_SCF 1.0E-7
+      MAX_SCF 100
+      SCF_GUESS RESTART
+      &DIAGONALIZATION
+        ALGORITHM STANDARD
+      &END DIAGONALIZATION
+      &MIXING
+        ALPHA 0.05
+        BETA 1.5
+        METHOD BROYDEN_MIXING
+        NBUFFER 100
+      &END MIXING
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 1000
+        FIXED_MAGNETIC_MOMENT 2.0
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &PROPERTIES
+    &FIT_CHARGE OFF
+    &END FIT_CHARGE
+  &END PROPERTIES
+  &SUBSYS
+    &CELL
+      A -1.435  1.435  1.435
+      B  1.435 -1.435  1.435
+      C  1.435  1.435 -1.435
+    &END CELL
+    &COORD
+      Fe 0.000 0.000 0.000
+    &END COORD
+    &KIND Fe
+      BASIS_SET DZVP-MOLOPT-SR-GTH-q16
+      MAGNETIZATION 2.0
+      POTENTIAL GTH-PADE-q16
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL

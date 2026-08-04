@@ -1,0 +1,78 @@
+! Slow/manual spin-polarized transition-metal companion. This input is
+! intentionally not listed in TEST_FILES.toml so the default regression
+! suite remains inexpensive. It exercises four complex (spin,k-point)
+! channels, a fixed magnetic moment, dense d-band Fermi support, symmetry
+! weights, ADDED_MOS AUTO, and FULL_ALL occupation preconditioning.
+! Current MPI-2/OMP-2 reference at 1000 K: AUTO grows 4->8->16 and the
+! final space converges in 137 steps at F=-123.63311571914022 Ha,
+! -T*S=-0.00485891362130 Ha, and mu=0.40331788648348 Ha. The higher
+! temperature keeps the deliberately sparse 3x1x1 Fe mesh differentiable;
+! 300 K is retained in the local research log as an unresolved stress case.
+&GLOBAL
+  PRINT_LEVEL MEDIUM
+  PROJECT Fe_kp_ot_uks_added_auto_sym3_converge
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_MOLOPT
+    MULTIPLICITY 3
+    POTENTIAL_FILE_NAME POTENTIAL
+    UKS TRUE
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 300
+    &END MGRID
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-6
+      MAX_SCF 400
+      SCF_GUESS ATOMIC
+      &OT
+        ENERGIES
+        LINESEARCH 2PNT
+        MINIMIZER CG
+        OCCUPATION_PRECONDITIONER
+        PRECONDITIONER FULL_ALL
+        ROTATION
+      &END OT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 1000
+        FIXED_MAGNETIC_MOMENT 2.0
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &PROPERTIES
+    &FIT_CHARGE OFF
+    &END FIT_CHARGE
+  &END PROPERTIES
+  &SUBSYS
+    &CELL
+      A -1.435  1.435  1.435
+      B  1.435 -1.435  1.435
+      C  1.435  1.435 -1.435
+    &END CELL
+    &COORD
+      Fe 0.000 0.000 0.000
+    &END COORD
+    &KIND Fe
+      BASIS_SET DZVP-MOLOPT-SR-GTH-q16
+      MAGNETIZATION 2.0
+      POTENTIAL GTH-PADE-q16
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL
