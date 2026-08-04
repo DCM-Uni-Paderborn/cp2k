@@ -2013,6 +2013,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_scf_post_molopt'
 
       INTEGER                                            :: handle, nao, unit_nr
+      LOGICAL                                            :: do_kpoints
       REAL(KIND=dp)                                      :: S_cond_number
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues
       TYPE(cp_fm_struct_type), POINTER                   :: ao_ao_fmstruct
@@ -2029,6 +2030,13 @@ CONTAINS
                                               subsection_name="DFT%PRINT%BASIS_MOLOPT_QUANTITIES")
       IF (BTEST(cp_print_key_should_output(logger%iter_info, print_key), &
                 cp_p_file)) THEN
+
+         CALL get_qs_env(qs_env, do_kpoints=do_kpoints)
+         IF (do_kpoints) THEN
+            CPWARN("BASIS_MOLOPT_QUANTITIES not implemented for k-point calculations")
+            CALL timestop(handle)
+            RETURN
+         END IF
 
          CALL get_qs_env(qs_env, energy=energy, matrix_s=matrix_s, mos=mos)
 
