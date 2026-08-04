@@ -2233,7 +2233,8 @@ CONTAINS
 
       IF (dft_control%nspins == 2) THEN
          ! Check and set number of added (unoccupied) orbitals for beta spin
-         IF (scf_control%added_mos(2) < 0) THEN
+         IF (scf_control%added_mos(2) < 0 .OR. &
+             (scf_control%added_mos(2) == 0 .AND. scf_control%added_mos(1) < 0)) THEN
             n_mo_add = n_ao - n_mo(2)  ! use all available MOs
          ELSE IF (scf_control%added_mos(2) > 0) THEN
             n_mo_add = scf_control%added_mos(2)

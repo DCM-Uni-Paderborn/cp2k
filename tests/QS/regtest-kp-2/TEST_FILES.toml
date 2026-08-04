@@ -51,6 +51,9 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
+"Al_kp_diag_uks_added_all.inp"          = [{matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="NO_TEXT", text="CPASSERT failed"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 # Slow/manual ADDED_MOS AUTO tail companions: run
 # Al_kp_ot_added_auto_converge.inp and Al_kp_ot_added_auto_sym3_converge.inp
 # by hand. They are intentionally not listed here, so the default regtest stays
