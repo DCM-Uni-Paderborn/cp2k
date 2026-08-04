@@ -88,28 +88,28 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_affine_rebased_drop, qs_scf_kp_affine_residual_calibration, &
         qs_scf_kp_affine_residual_minimum, qs_scf_kp_affine_residual_quality, &
         qs_scf_kp_candidate_position_drop, qs_scf_kp_canonical_density_blend, &
-        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_multimode_blend, &
-        qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
-        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_projector_density_response, &
-        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_closure_response_history_ready, &
-        qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
-        qs_scf_kp_complete_physical_audit_ready, qs_scf_kp_complete_physical_gradient_norm, &
-        qs_scf_kp_coupled_closure_prediction, qs_scf_kp_coupled_closure_response, &
-        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
-        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_residual_prediction, &
-        qs_scf_kp_coupled_response_quadratic, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
-        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
-        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_history_refresh_ready, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
-        qs_scf_kp_density_full_direct_tail_probe, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_pair_activation_ready, qs_scf_kp_density_replaced_response, &
-        qs_scf_kp_density_response_probe, qs_scf_kp_density_response_tail_ready, &
-        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
-        qs_scf_kp_directional_subspace_curvature_update, &
+        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_group_metrics, &
+        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
+        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
+        qs_scf_kp_canonical_projector_density_response, qs_scf_kp_canonical_tether_tail_scale, &
+        qs_scf_kp_closure_response_history_ready, qs_scf_kp_closure_response_model_adjustments, &
+        qs_scf_kp_closure_response_preferred, qs_scf_kp_complete_physical_audit_ready, &
+        qs_scf_kp_complete_physical_gradient_norm, qs_scf_kp_coupled_closure_prediction, &
+        qs_scf_kp_coupled_closure_response, qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
+        qs_scf_kp_coupled_residual_prediction, qs_scf_kp_coupled_response_quadratic, &
+        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
+        qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_full_direct_tail_probe, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_response_probe, &
+        qs_scf_kp_density_response_tail_ready, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_bootstrap_curvature_floor, qs_scf_kp_energy_closure_preferred, &
         qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
@@ -302,6 +302,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_density_closure_model_ready("k-point OT coupled density closure gate", nfail)
    CALL check_kpoint_canonical_density_residual("k-point OT canonical density residual", &
                                                 5.0E-14_dp, nfail)
+   CALL check_kpoint_canonical_density_group_metrics( &
+      "k-point OT fixed-N canonical density groups", 5.0E-14_dp, nfail)
    CALL check_kpoint_density_pair_activation("k-point OT canonical density pair activation", nfail)
    CALL check_kpoint_complete_physical_gradient_norm( &
       "k-point OT complete reduced-space physical gradient", 5.0E-15_dp, nfail)
@@ -6675,6 +6677,68 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_canonical_density_residual
+
+! **************************************************************************************************
+!> \brief Check that fixed-spin canonical-density closure is classified per fixed-N group.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_canonical_density_group_metrics(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, DIMENSION(2)                              :: spin_group
+      LOGICAL                                            :: failed, fixed_group_1, fixed_group_2, &
+                                                            shared_group
+      REAL(KIND=dp), DIMENSION(1)                        :: shared_delta, shared_diag, shared_offdiag
+      REAL(KIND=dp), DIMENSION(2)                        :: group_delta, group_diag, group_offdiag
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: channel_diag, channel_metric, &
+                                                            channel_offdiag, channel_weight
+
+      channel_diag(:, 1) = [9.0_dp, 3.0_dp]
+      channel_offdiag(:, 1) = [1.0_dp, 1.0_dp]
+      channel_diag(:, 2) = [0.25_dp, 0.75_dp]
+      channel_offdiag(:, 2) = [4.0_dp, 8.0_dp]
+      channel_metric(:, :) = channel_diag(:, :) + channel_offdiag(:, :)
+      channel_weight(:, 1) = [1.0_dp, 2.0_dp]
+      channel_weight(:, 2) = [1.0_dp, 2.0_dp]
+
+      spin_group(:) = [1, 2]
+      CALL qs_scf_kp_canonical_density_group_metrics( &
+         channel_metric, channel_diag, channel_offdiag, channel_weight, spin_group, &
+         group_delta, group_diag, group_offdiag)
+      fixed_group_1 = qs_scf_kp_energy_occupation_plateau_ready( &
+                      .TRUE., group_diag(1), group_offdiag(1), 4)
+      fixed_group_2 = qs_scf_kp_energy_occupation_plateau_ready( &
+                      .TRUE., group_diag(2), group_offdiag(2), 4)
+
+      spin_group(:) = 1
+      CALL qs_scf_kp_canonical_density_group_metrics( &
+         channel_metric, channel_diag, channel_offdiag, channel_weight, spin_group, &
+         shared_delta, shared_diag, shared_offdiag)
+      shared_group = qs_scf_kp_energy_occupation_plateau_ready( &
+                     .TRUE., shared_diag(1), shared_offdiag(1), 4)
+
+      failed = ABS(group_delta(1) - SQRT(14.0_dp/3.0_dp)) > tol .OR. &
+               ABS(group_diag(1) - 2.0_dp) > tol .OR. &
+               ABS(group_offdiag(1) - SQRT(2.0_dp/3.0_dp)) > tol .OR. &
+               ABS(group_delta(2) - SQRT(13.0_dp/3.0_dp)) > tol .OR. &
+               ABS(group_diag(2) - SQRT(1.0_dp/3.0_dp)) > tol .OR. &
+               ABS(group_offdiag(2) - 2.0_dp) > tol .OR. &
+               ABS(shared_delta(1) - SQRT(27.0_dp/6.0_dp)) > tol .OR. &
+               .NOT. fixed_group_1 .OR. fixed_group_2 .OR. shared_group
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES16.8),3(1X,L1))') TRIM(label), "failed", &
+            group_delta, group_diag, group_offdiag, fixed_group_1, fixed_group_2, shared_group
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_canonical_density_group_metrics
 
 ! **************************************************************************************************
 !> \brief Check residual-scaled activation of canonical-density relabeling pairs.
