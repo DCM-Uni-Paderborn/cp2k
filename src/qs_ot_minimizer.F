@@ -50,6 +50,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_mermin_closure_response_quality, &
               ot_kpoint_mermin_full_direction_model, &
               ot_kpoint_mermin_current_guard_delta, &
+              ot_kpoint_mermin_energy_curvature_resolved, &
               ot_kpoint_mermin_endpoint_status, &
               ot_kpoint_mermin_secant_consistent, &
               ot_kpoint_multiplicity_direction_scale, &
@@ -1541,19 +1542,18 @@ CONTAINS
 
       INTEGER :: anchor_valid_i, closure_valid_i, ichannel, previous_closure_valid_i, &
          previous_valid_i, valid_i, vector_valid_i
-      LOGICAL                                            :: anchor_valid, closure_valid, &
-                                                            previous_closure_valid, &
-                                                            previous_valid, valid, vector_valid
-      REAL(KIND=dp) :: alpha, auxiliary_curvature, current_energy, current_matrix, &
-         current_rotation, current_total, energy_curvature, frozen_energy_sty, frozen_energy_y2, &
-         frozen_rotation_sty, frozen_rotation_y2, initial_energy, initial_matrix, &
-         initial_rotation, initial_total, matrix_curvature, matrix_fraction, rotation_curvature, &
-         secant_alignment, secant_closure_energy_sty, secant_closure_energy_y2, &
-         secant_closure_rotation_sty, secant_closure_rotation_y2, secant_consistency, &
-         secant_energy_s2, secant_energy_sty, secant_energy_y2, secant_orthogonal_fraction, &
-         secant_rotation_s2, secant_rotation_sty
-      REAL(KIND=dp) :: secant_rotation_y2, secant_s2, secant_snorm, secant_sty, secant_y2, &
-         secant_ynorm, tmp, total_curvature
+      LOGICAL :: anchor_valid, block_secant_consistent, closure_valid, energy_curvature_resolved, &
+         energy_secant_consistent, previous_closure_valid, previous_valid, valid, vector_valid
+      REAL(KIND=dp) :: alpha, auxiliary_curvature, block_curvature, current_energy, &
+         current_matrix, current_rotation, current_total, energy_curvature, frozen_energy_sty, &
+         frozen_energy_y2, frozen_rotation_sty, frozen_rotation_y2, initial_energy, &
+         initial_matrix, initial_rotation, initial_total, matrix_curvature, matrix_fraction, &
+         rotation_curvature, secant_alignment, secant_closure_energy_sty, &
+         secant_closure_energy_y2, secant_closure_rotation_sty, secant_closure_rotation_y2, &
+         secant_consistency, secant_energy_s2, secant_energy_sty, secant_energy_y2, &
+         secant_orthogonal_fraction, secant_rotation_s2
+      REAL(KIND=dp) :: secant_rotation_sty, secant_rotation_y2, secant_s2, secant_snorm, &
+         secant_sty, secant_y2, secant_ynorm, tmp, total_curvature, vector_secant_curvature
       TYPE(cp_logger_type), POINTER                      :: logger
 
       IF (.NOT. qs_ot_env(1)%mermin_ls_sample_pending) RETURN
@@ -1965,6 +1965,11 @@ CONTAINS
       energy_curvature = 0.0_dp
       matrix_fraction = 0.0_dp
       secant_consistency = 0.0_dp
+      block_curvature = 0.0_dp
+      vector_secant_curvature = 0.0_dp
+      block_secant_consistent = .FALSE.
+      energy_curvature_resolved = .FALSE.
+      energy_secant_consistent = .TRUE.
       secant_s2 = secant_rotation_s2 + secant_energy_s2
       secant_y2 = secant_rotation_y2 + secant_energy_y2
       secant_sty = secant_rotation_sty + secant_energy_sty
@@ -1988,33 +1993,50 @@ CONTAINS
          END IF
          secant_consistency = ABS(total_curvature - energy_curvature)/ &
                               MAX(ABS(total_curvature), ABS(energy_curvature), EPSILON(1.0_dp))
+         block_curvature = rotation_curvature + auxiliary_curvature
+         vector_secant_curvature = secant_sty/(alpha*alpha)
+         block_secant_consistent = &
+            ot_kpoint_mermin_secant_consistent(block_curvature, vector_secant_curvature)
+         energy_curvature_resolved = ot_kpoint_mermin_energy_curvature_resolved( &
+                                     alpha, qs_ot_env(1)%mermin_ls_reference_energy, &
+                                     qs_ot_env(1)%etotal, initial_total, energy_curvature)
+         IF (energy_curvature_resolved) then
+           energy_secant_consistent = &
+            ot_kpoint_mermin_secant_consistent(total_curvature, energy_curvature)
+         end if
       END IF
 
-      vector_valid = vector_valid .AND. valid .AND. &
-                     ot_kpoint_mermin_secant_consistent(total_curvature, energy_curvature)
+      ! The stored vector secant contains only the complex rotation and auxiliary-energy
+      ! coordinates.  Validate it against the endpoint derivative curvature of that same block;
+      ! the matrix contribution can dominate the total line-search curvature without being part
+      ! of the response fit.  Retain the finite Mermin-energy veto only while its O(alpha**2)
+      ! remainder is numerically resolved.  Accepted-drop calibration still validates every
+      ! resulting response candidate against the actual Mermin line search before promotion.
+      vector_valid = vector_valid .AND. valid .AND. block_secant_consistent .AND. &
+                     energy_secant_consistent
       closure_valid = closure_valid .AND. vector_valid
       DO ichannel = 1, SIZE(qs_ot_env)
          IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
-         IF (anchor_valid .AND. closure_valid) THEN
+         ! The current/previous/anchor buffers form a history of valid accepted secants, not
+         ! of every line-search endpoint.  A zero-position or unresolved endpoint may overwrite
+         ! the current work buffers, but it must not erase an older valid response sample.
+         IF (anchor_valid) THEN
             qs_ot_env(ichannel)%mermin_closure_secant_anchor_flavor = &
                qs_ot_env(ichannel)%mermin_closure_secant_previous_flavor
-         ELSE
-            qs_ot_env(ichannel)%mermin_closure_secant_anchor_flavor = 0
          END IF
-         IF (previous_valid .AND. closure_valid) THEN
+         IF (previous_closure_valid) THEN
             qs_ot_env(ichannel)%mermin_closure_secant_previous_flavor = &
                qs_ot_env(ichannel)%mermin_closure_secant_flavor
-         ELSE
-            qs_ot_env(ichannel)%mermin_closure_secant_previous_flavor = 0
          END IF
          qs_ot_env(ichannel)%mermin_closure_secant_flavor = &
             MERGE(qs_ot_env(1)%schur_model_flavor, 0, closure_valid)
-         qs_ot_env(ichannel)%mermin_secant_previous_ready = previous_valid .AND. vector_valid
+         qs_ot_env(ichannel)%mermin_secant_previous_ready = &
+            qs_ot_env(ichannel)%mermin_secant_previous_ready .OR. previous_valid
          qs_ot_env(ichannel)%mermin_secant_ready = vector_valid
          qs_ot_env(ichannel)%mermin_closure_secant_previous_ready = &
-            previous_closure_valid .AND. closure_valid
+            qs_ot_env(ichannel)%mermin_closure_secant_previous_ready .OR. previous_closure_valid
          qs_ot_env(ichannel)%mermin_closure_secant_anchor_ready = &
-            anchor_valid .AND. closure_valid
+            qs_ot_env(ichannel)%mermin_closure_secant_anchor_ready .OR. anchor_valid
          qs_ot_env(ichannel)%mermin_closure_secant_ready = closure_valid
          qs_ot_env(ichannel)%mermin_frozen_h_valid = .FALSE.
          qs_ot_env(ichannel)%mermin_frozen_endpoint_valid = .FALSE.
@@ -2046,6 +2068,11 @@ CONTAINS
             vector_valid, secant_rotation_s2, secant_energy_s2, secant_rotation_y2, &
             secant_energy_y2, secant_rotation_sty, secant_energy_sty, secant_snorm, &
             secant_ynorm, secant_alignment, secant_orthogonal_fraction
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),3(1X,ES16.8))') &
+            " OT Mermin accepted secant validation block energy_resolved energy_ok vector "// &
+            "block_curvature vector_curvature finite_curvature:", &
+            block_secant_consistent, energy_curvature_resolved, energy_secant_consistent, &
+            vector_valid, block_curvature, vector_secant_curvature, energy_curvature
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,8(1X,ES16.8))') &
             " OT Mermin frozen-H closure valid yfrot yfener ycrot ycener sfrot sfener scrot scener:", &
             closure_valid, frozen_rotation_y2, frozen_energy_y2, &
@@ -2077,6 +2104,33 @@ CONTAINS
    END FUNCTION ot_kpoint_mermin_secant_consistent
 
 ! **************************************************************************************************
+!> \brief test whether a finite Mermin-energy curvature is above subtraction noise
+!> \param alpha accepted line-search position
+!> \param reference_energy Mermin energy at the line-search origin
+!> \param endpoint_energy Mermin energy at the accepted endpoint
+!> \param reference_slope directional derivative at the line-search origin
+!> \param energy_curvature curvature reconstructed from the finite energy difference
+!> \return true when the O(alpha**2) energy remainder is numerically resolved
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION ot_kpoint_mermin_energy_curvature_resolved( &
+      alpha, reference_energy, endpoint_energy, reference_slope, energy_curvature) RESULT(resolved)
+      REAL(KIND=dp), INTENT(IN)                          :: alpha, reference_energy, &
+                                                            endpoint_energy, reference_slope, &
+                                                            energy_curvature
+
+      REAL(KIND=dp)                                      :: energy_scale, quadratic_remainder, &
+                                                            resolution
+
+      energy_scale = MAX(1.0_dp, ABS(reference_energy), ABS(endpoint_energy), &
+                         ABS(alpha*reference_slope))
+      quadratic_remainder = 0.5_dp*ABS(alpha*alpha*energy_curvature)
+      resolution = 64.0_dp*EPSILON(1.0_dp)*energy_scale
+      resolved = quadratic_remainder > resolution .AND. &
+                 quadratic_remainder == quadratic_remainder
+
+   END FUNCTION ot_kpoint_mermin_energy_curvature_resolved
+
+! **************************************************************************************************
 !> \brief Euclidean geometry of an accepted vector secant
 !> \param s2 squared step norm
 !> \param y2 squared gradient-difference norm
@@ -2094,8 +2148,11 @@ CONTAINS
       snorm = SQRT(MAX(0.0_dp, s2))
       ynorm = SQRT(MAX(0.0_dp, y2))
       alignment = 0.0_dp
-      IF (snorm*ynorm > EPSILON(1.0_dp)) THEN
+      IF (snorm > SQRT(TINY(1.0_dp)) .AND. ynorm > SQRT(TINY(1.0_dp))) THEN
          alignment = MAX(-1.0_dp, MIN(1.0_dp, sty/(snorm*ynorm)))
+         IF (ABS(1.0_dp - ABS(alignment)) <= 16.0_dp*EPSILON(1.0_dp)) then
+           alignment = SIGN(1.0_dp, alignment)
+         end if
       END IF
       orthogonal_fraction = SQRT(MAX(0.0_dp, 1.0_dp - alignment*alignment))
 
@@ -2667,7 +2724,8 @@ CONTAINS
                                                             ispin, ngroups, nspins
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: frontier_group_found
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: frontier_found
-      LOGICAL                                            :: active, has_rayleigh_target, residual_aware_probe
+      LOGICAL                                            :: active, has_rayleigh_target, &
+                                                            residual_aware_probe
       REAL(KIND=dp) :: alignment, combined_probe_max, coupled_probe, coupled_rms, &
          frontier_candidate, maximum_direction, minimum_target_norm2, norm_product, probe_pos, &
          rayleigh_correction, scale, shift, slope, target_rms, weight
@@ -2994,7 +3052,7 @@ CONTAINS
                IF (ABS(qs_ot_env(ispin)%ener_dx(i)) > maximum_direction) THEN
                   scale = MIN(scale, maximum_direction/ABS(qs_ot_env(ispin)%ener_dx(i)))
                   qs_ot_env(ispin)%ener_dx(i) = SIGN(maximum_direction, &
-                                                      qs_ot_env(ispin)%ener_dx(i))
+                                                     qs_ot_env(ispin)%ener_dx(i))
                END IF
             END DO
          ELSE

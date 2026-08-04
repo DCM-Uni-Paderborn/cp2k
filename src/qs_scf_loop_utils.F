@@ -351,6 +351,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_quadratic_position_drop, &
              qs_scf_kp_quadratic_descent_scale, &
              qs_scf_kp_candidate_position_drop, &
+             qs_scf_kp_candidate_calibration_exposure, &
              qs_scf_kp_canonical_density_group_metrics, &
              qs_scf_kp_affine_rebased_drop, &
              qs_scf_kp_canonical_density_residual, &
@@ -1356,6 +1357,32 @@ CONTAINS
       position_drop = MAX(0.0_dp, position_drop)
 
    END FUNCTION qs_scf_kp_candidate_position_drop
+
+! **************************************************************************************************
+!> \brief Candidate decrease used to calibrate an accepted line-search outcome.
+!>
+!>        A candidate that drives the line search back to its origin has been exposed and rejected,
+!>        even though its quadratic decrease at position zero is identically zero.  Use the stored
+!>        full-direction decrease for that outcome so repeated zero-step collapses count as
+!>        zero-quality samples and disable an unsuccessful bootstrap candidate.
+!> \param position_drop candidate decrease at the accepted line-search position
+!> \param candidate_drop stored candidate decrease for the complete direction
+!> \param position accepted cumulative line-search coordinate
+!> \return decrease against which the accepted Mermin decrease is calibrated
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_candidate_calibration_exposure( &
+      position_drop, candidate_drop, position) RESULT(exposure_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: position_drop, candidate_drop, position
+      REAL(KIND=dp)                                      :: exposure_drop
+
+      exposure_drop = MAX(0.0_dp, position_drop)
+      IF (candidate_drop > EPSILON(candidate_drop) .AND. &
+          ABS(position) <= SQRT(EPSILON(1.0_dp))) &
+         exposure_drop = candidate_drop
+      IF (exposure_drop /= exposure_drop .OR. ABS(exposure_drop) >= HUGE(exposure_drop)) &
+         exposure_drop = 0.0_dp
+
+   END FUNCTION qs_scf_kp_candidate_calibration_exposure
 
 ! **************************************************************************************************
 !> \brief Rebase a calibrated affine-candidate decrease onto its exact base-direction slope.
@@ -14447,6 +14474,10 @@ CONTAINS
                                         local_ot_env(1)%schur_model_slope, &
                                         local_ot_env(1)%schur_model_quadratic, &
                                         line_search_model_position)
+         vector_secant_predicted_drop = qs_scf_kp_candidate_calibration_exposure( &
+                                        vector_secant_predicted_drop, &
+                                        local_ot_env(1)%schur_vector_secant_drop, &
+                                        line_search_model_position)
          vector_secant_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_vector_secant_pending .AND. &
              vector_secant_predicted_drop > EPSILON(vector_secant_predicted_drop)) THEN
@@ -14503,6 +14534,10 @@ CONTAINS
                                       local_ot_env(1)%schur_model_drop, &
                                       local_ot_env(1)%schur_model_slope, &
                                       local_ot_env(1)%schur_model_quadratic, &
+                                      line_search_model_position)
+         multisecant_predicted_drop = qs_scf_kp_candidate_calibration_exposure( &
+                                      multisecant_predicted_drop, &
+                                      local_ot_env(1)%schur_multisecant_drop, &
                                       line_search_model_position)
          multisecant_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_multisecant_pending .AND. &
@@ -14561,6 +14596,10 @@ CONTAINS
                                      local_ot_env(1)%schur_model_slope, &
                                      local_ot_env(1)%schur_model_quadratic, &
                                      line_search_model_position)
+         prediction_predicted_drop = qs_scf_kp_candidate_calibration_exposure( &
+                                     prediction_predicted_drop, &
+                                     local_ot_env(1)%schur_prediction_drop, &
+                                     line_search_model_position)
          prediction_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_prediction_pending .AND. &
              prediction_predicted_drop > EPSILON(prediction_predicted_drop)) THEN
@@ -14617,6 +14656,10 @@ CONTAINS
                                          local_ot_env(1)%schur_model_slope, &
                                          local_ot_env(1)%schur_model_quadratic, &
                                          line_search_model_position)
+         reduced_secant_predicted_drop = qs_scf_kp_candidate_calibration_exposure( &
+                                         reduced_secant_predicted_drop, &
+                                         local_ot_env(1)%schur_reduced_secant_drop, &
+                                         line_search_model_position)
          reduced_secant_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_reduced_secant_pending .AND. &
              reduced_secant_predicted_drop > EPSILON(reduced_secant_predicted_drop)) THEN
@@ -14643,6 +14686,10 @@ CONTAINS
                                             local_ot_env(1)%schur_model_drop, &
                                             local_ot_env(1)%schur_model_slope, &
                                             local_ot_env(1)%schur_model_quadratic, &
+                                            line_search_model_position)
+         closure_candidate_predicted_drop = qs_scf_kp_candidate_calibration_exposure( &
+                                            closure_candidate_predicted_drop, &
+                                            local_ot_env(1)%schur_closure_candidate_drop, &
                                             line_search_model_position)
          closure_candidate_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_closure_candidate_pending .AND. &
@@ -31350,12 +31397,12 @@ CONTAINS
                IF (.NOT. split_candidate_selected) THEN
                   IF (selected_attempt == 3) selected_flavor = 30
                   IF (selected_attempt == 3 .AND. inactive_gauge_projection_used) selected_flavor = 42
-                  IF (selected_attempt == 3 .AND. vector_secant_update_used .AND. &
-                      .NOT. inactive_gauge_projection_used) selected_flavor = 43
-                  IF (selected_attempt == 3 .AND. multisecant_update_used .AND. &
-                      .NOT. inactive_gauge_projection_used) selected_flavor = 44
-                  IF (selected_attempt == 3 .AND. prediction_update_used .AND. &
-                      .NOT. inactive_gauge_projection_used) selected_flavor = 47
+                  ! Candidate identity takes precedence over generic inactive-gauge projection:
+                  ! it changes the Hessian and therefore owns accepted-drop calibration and the
+                  ! nonlinear-CG history transition even when the gauge modifier is also active.
+                  IF (selected_attempt == 3 .AND. vector_secant_update_used) selected_flavor = 43
+                  IF (selected_attempt == 3 .AND. multisecant_update_used) selected_flavor = 44
+                  IF (selected_attempt == 3 .AND. prediction_update_used) selected_flavor = 47
                   IF (selected_attempt == 3 .AND. reduced_secant_candidate_selected) &
                      selected_flavor = 46
                   IF (selected_attempt == 3 .AND. closure_candidate_selected) &

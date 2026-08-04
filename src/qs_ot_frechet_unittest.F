@@ -67,15 +67,16 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_fermi_window_direction_scale, &
         ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
         ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
-        ot_kpoint_mermin_endpoint_status, ot_kpoint_mermin_full_direction_model, &
-        ot_kpoint_mermin_projected_reference_ready, ot_kpoint_mermin_recovery_active_tail, &
-        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
-        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
-        ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
-        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
-        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
-        ot_kpoint_rayleigh_probe_position, ot_kpoint_rayleigh_response_scale, &
-        ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
+        ot_kpoint_mermin_endpoint_status, ot_kpoint_mermin_energy_curvature_resolved, &
+        ot_kpoint_mermin_full_direction_model, ot_kpoint_mermin_projected_reference_ready, &
+        ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
+        ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
+        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
+        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
+        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
+        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_probe_position, &
+        ot_kpoint_rayleigh_response_scale, ot_kpoint_residual_aware_rayleigh_model, &
+        ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: &
         qs_ot_reset_accepted_model_calibration, qs_ot_restart_signature_nchar, &
@@ -90,30 +91,31 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_added_mos_integer_density_ready, &
         qs_scf_kp_affine_correction_model, qs_scf_kp_affine_rebased_drop, &
         qs_scf_kp_affine_residual_calibration, qs_scf_kp_affine_residual_minimum, &
-        qs_scf_kp_affine_residual_quality, qs_scf_kp_candidate_position_drop, &
-        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
-        qs_scf_kp_canonical_density_group_metrics, qs_scf_kp_canonical_density_multimode_blend, &
-        qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
-        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_projector_density_response, &
-        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_closure_response_history_ready, &
-        qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
-        qs_scf_kp_complete_physical_audit_ready, qs_scf_kp_complete_physical_gradient_norm, &
-        qs_scf_kp_coupled_closure_prediction, qs_scf_kp_coupled_closure_response, &
-        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
-        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_residual_prediction, &
-        qs_scf_kp_coupled_response_quadratic, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
-        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
-        qs_scf_kp_density_candidate_relevant, qs_scf_kp_density_candidate_residual_bad, &
-        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
-        qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
-        qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_full_direct_tail_probe, &
-        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_response_probe, &
-        qs_scf_kp_density_response_tail_ready, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
+        qs_scf_kp_affine_residual_quality, qs_scf_kp_candidate_calibration_exposure, &
+        qs_scf_kp_candidate_position_drop, qs_scf_kp_canonical_density_blend, &
+        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_group_metrics, &
+        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
+        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
+        qs_scf_kp_canonical_projector_density_response, qs_scf_kp_canonical_tether_tail_scale, &
+        qs_scf_kp_closure_response_history_ready, qs_scf_kp_closure_response_model_adjustments, &
+        qs_scf_kp_closure_response_preferred, qs_scf_kp_complete_physical_audit_ready, &
+        qs_scf_kp_complete_physical_gradient_norm, qs_scf_kp_coupled_closure_prediction, &
+        qs_scf_kp_coupled_closure_response, qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
+        qs_scf_kp_coupled_residual_prediction, qs_scf_kp_coupled_response_quadratic, &
+        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_relevant, &
+        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
+        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_history_refresh_ready, &
+        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
+        qs_scf_kp_density_full_direct_tail_probe, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_pair_activation_ready, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_response_probe, qs_scf_kp_density_response_tail_ready, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
+        qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_bootstrap_curvature_floor, qs_scf_kp_energy_closure_preferred, &
         qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
@@ -7694,26 +7696,31 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: consistent_negative, &
-                                                            consistent_positive, no_signal, &
-                                                            nonlinear, opposite_sign
+      LOGICAL :: consistent_negative, consistent_positive, energy_resolved, energy_unresolved, &
+         no_signal, nonlinear, opposite_sign
 
       consistent_positive = ot_kpoint_mermin_secant_consistent(1.00E-5_dp, 0.95E-5_dp)
       consistent_negative = ot_kpoint_mermin_secant_consistent(-2.00E-6_dp, -1.75E-6_dp)
       nonlinear = ot_kpoint_mermin_secant_consistent(1.00E-6_dp, 0.60E-6_dp)
       opposite_sign = ot_kpoint_mermin_secant_consistent(-1.00E-6_dp, 1.00E-6_dp)
       no_signal = ot_kpoint_mermin_secant_consistent(0.0_dp, 0.0_dp)
+      energy_resolved = ot_kpoint_mermin_energy_curvature_resolved( &
+                        0.1_dp, -100.0_dp, -100.0_dp, -1.0_dp, 1.0_dp)
+      energy_unresolved = ot_kpoint_mermin_energy_curvature_resolved( &
+                          1.0E-9_dp, -1000.0_dp, -1000.0_dp, -1.0E-10_dp, 1.0E5_dp)
 
       IF (.NOT. consistent_positive .OR. .NOT. consistent_negative .OR. nonlinear .OR. &
-          opposite_sign .OR. no_signal) THEN
+          opposite_sign .OR. no_signal .OR. .NOT. energy_resolved .OR. energy_unresolved) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
-            "failed with positive/negative/nonlinear/opposite/no-signal", &
-            consistent_positive, consistent_negative, nonlinear, opposite_sign, no_signal
+         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
+            "failed with positive/negative/nonlinear/opposite/no-signal/resolved/unresolved", &
+            consistent_positive, consistent_negative, nonlinear, opposite_sign, no_signal, &
+            energy_resolved, energy_unresolved
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
-            "OK with positive/negative/nonlinear/opposite/no-signal", &
-            consistent_positive, consistent_negative, nonlinear, opposite_sign, no_signal
+         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
+            "OK with positive/negative/nonlinear/opposite/no-signal/resolved/unresolved", &
+            consistent_positive, consistent_negative, nonlinear, opposite_sign, no_signal, &
+            energy_resolved, energy_unresolved
       END IF
 
    END SUBROUTINE check_kpoint_mermin_secant_consistency
@@ -7806,13 +7813,17 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: alignment, error, orthogonal_fraction, &
-                                                            snorm, ynorm
+      REAL(KIND=dp) :: alignment, error, orthogonal_fraction, small_alignment, &
+         small_orthogonal_fraction, small_snorm, small_ynorm, snorm, ynorm
 
       CALL ot_kpoint_secant_geometry(4.0_dp, 25.0_dp, 6.0_dp, snorm, ynorm, &
                                      alignment, orthogonal_fraction)
       error = MAX(ABS(snorm - 2.0_dp), ABS(ynorm - 5.0_dp), ABS(alignment - 0.6_dp), &
                   ABS(orthogonal_fraction - 0.8_dp))
+      CALL ot_kpoint_secant_geometry(1.0E-30_dp, 4.0E-28_dp, 2.0E-29_dp, &
+                                     small_snorm, small_ynorm, small_alignment, &
+                                     small_orthogonal_fraction)
+      error = MAX(error, ABS(small_alignment - 1.0_dp), ABS(small_orthogonal_fraction))
       IF (error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" FAILED with error", error
@@ -10290,10 +10301,11 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
 
       LOGICAL                                            :: ready, scaled_ready
-      REAL(KIND=dp) :: candidate_position_drop, eliminated_drop, eliminated_quadratic, &
-         eliminated_slope, error, expected_eliminated_quadratic, expected_eliminated_slope, &
-         invalid_position_drop, model_drop, model_quadratic, model_slope, position_drop, &
-         scaled_model_drop, scaled_model_quadratic, scaled_model_slope, zero_position_drop
+      REAL(KIND=dp) :: candidate_position_drop, collapsed_exposure_drop, eliminated_drop, &
+         eliminated_quadratic, eliminated_slope, error, expected_eliminated_quadratic, &
+         expected_eliminated_slope, invalid_position_drop, model_drop, model_quadratic, &
+         model_slope, near_collapsed_exposure_drop, position_drop, scaled_model_drop, &
+         scaled_model_quadratic, scaled_model_slope, zero_position_drop
       REAL(KIND=dp), DIMENSION(2) :: energy_gradient, energy_step, independent_energy_step, &
          rotation_gradient, rotation_step, scaled_energy_gradient, scaled_energy_step
       REAL(KIND=dp), DIMENSION(2, 2) :: energy_cross, energy_hessian, energy_response, &
@@ -10347,6 +10359,10 @@ CONTAINS
                            4.0_dp, 1.5_dp, 2.0_dp, 1.0_dp, 0.0_dp)
       invalid_position_drop = qs_scf_kp_candidate_position_drop( &
                               4.0_dp, 0.0_dp, 2.0_dp, 1.0_dp, 0.25_dp)
+      collapsed_exposure_drop = qs_scf_kp_candidate_calibration_exposure( &
+                                zero_position_drop, 4.0_dp, 0.0_dp)
+      near_collapsed_exposure_drop = qs_scf_kp_candidate_calibration_exposure( &
+                                     1.0E-20_dp, 4.0_dp, 0.5_dp*SQRT(EPSILON(1.0_dp)))
 
       error = ABS(model_slope - 0.355_dp) + ABS(model_quadratic - 0.058725_dp) + &
               ABS(model_drop - 0.3256375_dp) + ABS(scaled_model_slope - model_slope) + &
@@ -10357,7 +10373,8 @@ CONTAINS
               ABS(eliminated_drop - MAX(0.0_dp, eliminated_slope - 0.5_dp*eliminated_quadratic)) + &
               ABS(position_drop - 0.46875_dp) + &
               ABS(candidate_position_drop - 1.25_dp) + ABS(zero_position_drop) + &
-              ABS(invalid_position_drop) + &
+              ABS(invalid_position_drop) + ABS(collapsed_exposure_drop - 4.0_dp) + &
+              ABS(near_collapsed_exposure_drop - 4.0_dp) + &
               ABS(qs_scf_kp_quadratic_position_drop(2.0_dp, 1.0_dp, -0.25_dp)) + &
               ABS(qs_scf_kp_quadratic_descent_scale(1.0_dp, 2.0_dp, 1.0_dp) - 0.5_dp) + &
               ABS(qs_scf_kp_quadratic_descent_scale(1.0_dp, 2.0_dp, 0.25_dp) - 0.25_dp) + &
