@@ -386,6 +386,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_closure_buffer_ready, &
              qs_scf_kp_density_closure_history_refresh_ready, &
              qs_scf_kp_density_closure_refresh_ready, &
+             qs_scf_kp_expandable_mixed_tail_rebase_ready, &
              qs_scf_kp_orbital_tail_rebase_ready, &
              qs_scf_kp_rebased_calibration_samples, &
              qs_scf_kp_subspace_refresh_step_ready, &
@@ -7624,6 +7625,50 @@ CONTAINS
    END FUNCTION qs_scf_kp_orbital_tail_rebase_ready
 
 ! **************************************************************************************************
+!> \brief Detect a bounded mixed residual tail in an expandable ADDED_MOS AUTO subspace.
+!>
+!>        A stale minimizer history can keep both the canonical density and complete physical
+!>        residual just above EPS_SCF while the raw search metric and complete physical audit
+!>        disagree substantially.
+!>        In that state the response-derived AUTO basis signal is never sampled, so the represented
+!>        MO space cannot grow.  Rebase only after a mature accepted history, inside a tightly
+!>        bounded asymptotic basin, and only while an AUTO channel can still add orbitals.
+!> \param expandable at least one ADDED_MOS AUTO channel has unrepresented AO states
+!> \param density_ready canonical fixed-N density audit is valid for the current orbitals
+!> \param density_delta canonical fixed-N density stationarity residual
+!> \param physical_delta complete physical OT residual
+!> \param raw_delta raw minimizer residual in the represented subspace
+!> \param eps_scf requested SCF threshold
+!> \param accepted_samples accepted Mermin line-search samples in the current orbital subspace
+!> \return true when a history-free canonical rebase should expose the missing-space response
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+      expandable, density_ready, density_delta, physical_delta, raw_delta, eps_scf, &
+      accepted_samples) RESULT(ready)
+
+      LOGICAL, INTENT(IN)                                :: expandable, density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_delta, physical_delta, &
+                                                            raw_delta, eps_scf
+      INTEGER, INTENT(IN)                                :: accepted_samples
+      LOGICAL                                            :: ready
+
+      REAL(KIND=dp)                                      :: density_upper, eps, physical_upper, &
+                                                            raw_upper
+
+      eps = MAX(eps_scf, EPSILON(1.0_dp))
+      density_upper = MIN(50.0_dp*eps, SQRT(eps))
+      physical_upper = MIN(100.0_dp*eps, SQRT(eps))
+      raw_upper = MIN(100.0_dp*eps, SQRT(eps))
+      ready = expandable .AND. density_ready .AND. &
+              accepted_samples >= 32 .AND. &
+              density_delta > eps .AND. density_delta <= density_upper .AND. &
+              physical_delta > eps .AND. physical_delta <= physical_upper .AND. &
+              raw_delta > eps .AND. raw_delta <= raw_upper .AND. &
+              MAX(raw_delta, physical_delta) >= 2.0_dp*MIN(raw_delta, physical_delta)
+
+   END FUNCTION qs_scf_kp_expandable_mixed_tail_rebase_ready
+
+! **************************************************************************************************
 !> \brief scalar decision gate for a collapsed metallic k-point OT subspace refresh
 !> \param allow_refresh whether this SCF invocation may still refresh once
 !> \param fermi_window_guarded whether the current state is a projected Fermi-window sample
@@ -9598,11 +9643,12 @@ CONTAINS
                                                             allow_orbital_tail_rebase
       LOGICAL                                            :: refresh
 
-      INTEGER                                            :: density_buffer_ready_i, ikpoint, imo, &
-                                                            ispin, local_kpoint, nmo
-      LOGICAL :: base_state, collapsed, defer_energy_closure, density_buffer_ready, &
-         density_closure_stagnant, density_history_stagnant, high_residual_stagnant, &
-         orbital_tail_rebase, step_ready
+      INTEGER                                            :: auto_expandable_i, &
+                                                            density_buffer_ready_i, ikpoint, imo, &
+                                                            ispin, local_kpoint, nao, nmo
+      LOGICAL :: auto_expandable, base_state, collapsed, defer_energy_closure, &
+         density_buffer_ready, density_closure_stagnant, density_history_stagnant, &
+         high_residual_stagnant, mixed_tail_rebase, orbital_tail_rebase, step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
                                                             maxocc, occ_tail, residual_delta, &
                                                             weight
@@ -9619,12 +9665,16 @@ CONTAINS
 
       fractional_weight = 0.0_dp
       max_partial_fraction = 0.0_dp
+      auto_expandable_i = 0
       density_buffer_ready_i = 1
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
          DO ispin = 1, nspin_ot
-            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nao=nao, nmo=nmo)
+            IF (ispin <= SIZE(added_mos_auto)) THEN
+               IF (added_mos_auto(ispin) .AND. nmo < nao) auto_expandable_i = 1
+            END IF
             IF (maxocc <= EPSILON(maxocc)) CYCLE
             IF (ispin <= SIZE(added_mos_auto) .AND. ispin <= SIZE(added_mos)) THEN
                IF (.NOT. qs_scf_kp_density_closure_buffer_ready( &
@@ -9641,7 +9691,9 @@ CONTAINS
       END DO
       CALL para_env_inter_kp%sum(fractional_weight)
       CALL para_env_inter_kp%max(max_partial_fraction)
+      CALL para_env_inter_kp%max(auto_expandable_i)
       CALL para_env_inter_kp%min(density_buffer_ready_i)
+      auto_expandable = auto_expandable_i > 0
       density_buffer_ready = density_buffer_ready_i > 0
 
       collapsed = qs_scf_kp_subspace_is_collapsed(max_partial_fraction)
@@ -9682,10 +9734,17 @@ CONTAINS
                             local_ot_env(1)%kpoint_complete_physical_delta, eps_scf, &
                             local_ot_env(1)%schur_closure_response_samples, &
                             local_ot_env(1)%schur_closure_response_quality_ema)
+      mixed_tail_rebase = qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+                          auto_expandable, &
+                          local_ot_env(1)%kpoint_density_stationarity_ready, &
+                          local_ot_env(1)%kpoint_density_stationarity_delta, &
+                          local_ot_env(1)%kpoint_complete_physical_delta, &
+                          local_ot_env(1)%kpoint_raw_delta, eps_scf, &
+                          local_ot_env(1)%mermin_ls_accepted_quality_samples)
       density_closure_stagnant = density_closure_stagnant .OR. density_history_stagnant
       ! Reserve one search direction for the diagonal fixed-N energy closure before
       ! replacing the orbital subspace; a later refresh re-arms this one-shot attempt.
-      IF (defer_energy_closure) RETURN
+      IF (defer_energy_closure .AND. .NOT. mixed_tail_rebase) RETURN
       refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
                                                 residual_delta, eps_scf, step_ready, base_state, &
                                                 high_residual_stagnant, density_closure_stagnant)
@@ -9693,16 +9752,24 @@ CONTAINS
          refresh = qs_scf_kp_subspace_refresh_gate(.TRUE., fermi_window_guarded, .FALSE., &
                                                    residual_delta, eps_scf, step_ready, base_state, &
                                                    density_closure_stagnant=.TRUE.)
+      IF (.NOT. refresh .AND. allow_orbital_tail_rebase .AND. mixed_tail_rebase) &
+         refresh = qs_scf_kp_subspace_refresh_gate(.TRUE., fermi_window_guarded, .FALSE., &
+                                                   residual_delta, eps_scf, step_ready, base_state, &
+                                                   density_closure_stagnant=.TRUE.)
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source() .AND. &
-          (collapsed .OR. density_closure_stagnant .OR. orbital_tail_rebase) .AND. step_ready) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,L1),2(1X,I6),7(1X,ES16.8))') &
+          (collapsed .OR. density_closure_stagnant .OR. orbital_tail_rebase .OR. mixed_tail_rebase .OR. &
+           (auto_expandable .AND. local_ot_env(1)%mermin_ls_accepted_quality_samples >= 32)) .AND. &
+          step_ready) &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,L1),3(1X,I6),7(1X,ES16.8))') &
          " OT k-point subspace refresh ready restart stagnant buffer closure history "// &
-         "orbital step epoch residual physical density dqema pqema frac max:", &
+         "orbital expandable mixed step epoch samples residual physical density dqema pqema frac max:", &
          refresh, restart_valid, high_residual_stagnant, density_buffer_ready, density_closure_stagnant, &
-         density_history_stagnant, orbital_tail_rebase, local_ot_env(1)%OT_count, &
-         local_ot_env(1)%kpoint_subspace_accepted_samples, residual_delta, &
+         density_history_stagnant, orbital_tail_rebase, auto_expandable, mixed_tail_rebase, &
+         local_ot_env(1)%OT_count, &
+         local_ot_env(1)%kpoint_subspace_accepted_samples, &
+         local_ot_env(1)%mermin_ls_accepted_quality_samples, residual_delta, &
          local_ot_env(1)%kpoint_complete_physical_delta, &
          local_ot_env(1)%kpoint_density_stationarity_delta, &
          local_ot_env(1)%schur_density_stationarity_quality_ema, &
@@ -9863,7 +9930,7 @@ CONTAINS
                                       density_stationarity_delta, scf_control%eps_scf, &
                                       edge_grow_limit, &
                                       edge_grow_limit, expandable, active_tail, coherent_fractional_tail, &
-                                      edge_limited .OR. &
+                                      edge_limited .OR. accepted_response_tail_support .OR. &
                                       basis_signal >= ot_kp_added_mos_auto_fractional_tail_basis_frac* &
                                       ot_kp_added_mos_auto_basis_signal_min, &
                                       edge_limited .OR. nonedge_residual_probe)

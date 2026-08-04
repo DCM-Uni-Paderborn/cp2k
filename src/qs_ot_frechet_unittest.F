@@ -117,7 +117,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
         qs_scf_kp_energy_occupation_plateau_ready, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_exit_residual, qs_scf_kp_expandable_mixed_tail_rebase_ready, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_energy_hessian, &
         qs_scf_kp_fixed_n_frozen_energy_gradient, qs_scf_kp_fixed_n_projector_frechet, &
@@ -269,6 +270,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_density_closure_history_refresh( &
       "k-point OT accepted density-closure refresh", nfail)
    CALL check_kpoint_orbital_tail_rebase("k-point OT orbital-tail rebase", nfail)
+   CALL check_kpoint_expandable_mixed_tail_rebase( &
+      "k-point OT expandable mixed-tail rebase", nfail)
    CALL check_kpoint_occ_preconditioner_transition("k-point OT occupation-preconditioner bootstrap", nfail)
    CALL check_kpoint_fixed_spin_targets("k-point fixed-spin electron targets", 5.0E-15_dp, nfail)
    CALL check_kpoint_density_control_delta("k-point OT accepted density-projector tail", &
@@ -5792,6 +5795,56 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_orbital_tail_rebase
+
+! **************************************************************************************************
+!> \brief Check history-safe rebasing of a bounded mixed tail before ADDED_MOS AUTO growth.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_expandable_mixed_tail_rebase(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      ! Measured Fe restart endpoint: stale small-space history kept all three audits above 1e-6,
+      ! while the complete physical audit and raw metric disagreed by a factor of five.
+      failed = .NOT. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+               .TRUE., .TRUE., 2.67896426E-6_dp, 8.95122317E-5_dp, &
+               1.55960595E-5_dp, 1.0E-6_dp, 33)
+      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+               .FALSE., .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+               1.55960595E-5_dp, 1.0E-6_dp, 33)
+      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+               .TRUE., .FALSE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+               1.55960595E-5_dp, 1.0E-6_dp, 33)
+      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+               .TRUE., .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+               1.55960595E-5_dp, 1.0E-6_dp, 31)
+      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+               .TRUE., .TRUE., 8.0E-7_dp, 3.01513481E-6_dp, &
+               1.55960595E-5_dp, 1.0E-6_dp, 33)
+      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+               .TRUE., .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+               5.9E-6_dp, 1.0E-6_dp, 33)
+      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+               .TRUE., .TRUE., 5.1E-5_dp, 3.01513481E-6_dp, &
+               1.55960595E-5_dp, 1.0E-6_dp, 33)
+      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+               .TRUE., .TRUE., 2.73493076E-6_dp, 1.01E-4_dp, &
+               1.55960595E-5_dp, 1.0E-6_dp, 33)
+      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
+               .TRUE., .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+               1.01E-4_dp, 1.0E-6_dp, 33)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_expandable_mixed_tail_rebase
 
 ! **************************************************************************************************
 !> \brief Check that the coupled response is switched only at stable search boundaries.
