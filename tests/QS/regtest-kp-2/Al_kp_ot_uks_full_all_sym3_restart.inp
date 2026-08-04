@@ -1,9 +1,10 @@
 ! Manual restart companion for Al_kp_ot_uks_full_all_sym3_converge.inp.
 ! Run the source input first in the same directory. The four-channel
-! (spin,k-point) state is restored in one SCF step with Mermin F
-! -8.14036045443613 Ha, kTS -0.000168745538 Ha, weighted spin populations
-! 7/5, and fixed magnetic moment 2. This input is intentionally not listed in
-! TEST_FILES.toml.
+! (spin,k-point) state is restored in one SCF step. The runtime-check OMP-2
+! reference exactly reproduces Mermin F -8.14036043923571 Ha,
+! -T*S -0.00016884786056 Ha, mu -0.02250546977047 Ha, weighted spin
+! populations 7/5, and fixed magnetic moment 2. This input is intentionally
+! not listed in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_uks_full_all_sym3_restart

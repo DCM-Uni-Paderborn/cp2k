@@ -8,6 +8,10 @@
 ! step. Relative to Al_kp_diag_fermi_sym3_force.inp, the energy differs by
 ! 9.3E-11 Ha, the largest force-component difference is 4.3E-7 Ha/bohr, and
 ! the largest analytical-stress-component difference is 0.52 bar.
+! A runtime-check OMP-2 continuation from the EPS_SCF 1E-6 AUTO restart reaches
+! F = -8.15998707994740 Ha in 136 steps; against its matching diagonalization
+! run the energy, force-component, and stress-component differences are
+! 2.3E-9 Ha, 5.24E-7 Ha/bohr, and 0.52 bar, respectively.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Al_kp_ot_added_auto_sym3_converge

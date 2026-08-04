@@ -1,8 +1,9 @@
 ! Manual restart companion for Al_kp_ot_added_auto_sym3_converge.inp.
 ! Run the source input first in the same directory. The two irreducible
 ! k-point channels and adaptive 16-MO virtual space are restored in one SCF
-! step. Current MPI-2/OMP-2 reference: Mermin F -8.15998707939595 Ha and
-! kTS -0.000908406318 Ha.
+! step. Current runtime-check OMP-2 reference: Mermin F -8.15998707939880 Ha,
+! -T*S -0.00090840574509 Ha, and chemical potential -0.04008313684687 Ha;
+! the fresh read process reproduces all three values exactly in one OT step.
 ! This input is intentionally not listed in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL HIGH

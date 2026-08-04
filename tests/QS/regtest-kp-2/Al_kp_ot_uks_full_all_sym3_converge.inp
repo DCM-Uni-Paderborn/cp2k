@@ -7,8 +7,10 @@
 ! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference from a fresh directory:
 ! the uninterrupted OT run converges in 91 steps at EPS_SCF 1E-6, with
 ! Mermin F = -8.14036045443613 Ha and kTS = -0.000168745538 Ha. A matching
+! runtime-check OMP-2 run converges in 98 steps at F = -8.14036043923571 Ha,
+! -T*S = -0.00016884786056 Ha, and mu = -0.02250546977047 Ha. A matching
 ! diagonalization run converges to -8.14036093712786 Ha, so the free-energy
-! difference is 4.8E-7 Ha. The weighted spin populations remain 7 and 5;
+! difference remains below 5.0E-7 Ha. The weighted spin populations remain 7 and 5;
 ! its restart companion restores all four channels in one step with identical
 ! free energy, entropy, chemical potential, and fixed magnetic moment.
 &GLOBAL
