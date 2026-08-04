@@ -741,7 +741,7 @@ CONTAINS
 
             IF (do_kpoints) THEN
                CALL write_kpoints_restart(rho_ao_kp, kpoints, scf_env, dft_section, &
-                                          particle_set, qs_kind_set, cell)
+                                          particle_set, qs_kind_set, cell, scf_control%smear)
                IF (exit_inner_loop .AND. ASSOCIATED(scf_env%qs_ot_env)) THEN
                   IF (ANY(scf_env%qs_ot_env(:)%kpoint_index > 0)) THEN
                      DO ispin = 1, SIZE(scf_env%qs_ot_env)

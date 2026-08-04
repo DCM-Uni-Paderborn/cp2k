@@ -41,7 +41,8 @@ PROGRAM qs_ot_frechet_unittest
                                               smear_mv
    USE kinds,                           ONLY: dp,&
                                               int_8
-   USE kpoint_io,                       ONLY: kpoint_ot_restart_geometry_compatible
+   USE kpoint_io,                       ONLY: kpoint_ot_restart_geometry_compatible,&
+                                              kpoint_ot_restart_smearing_compatible
    USE kpoint_methods,                  ONLY: kpoint_fixed_spin_targets,&
                                               kpoint_ot_energy_weighted_density
    USE machine,                         ONLY: default_output_unit
@@ -73,9 +74,8 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
         ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
         ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
-        ot_kpoint_residual_aware_rayleigh_model, &
-        ot_kpoint_rayleigh_probe_position, &
-        ot_kpoint_rayleigh_response_scale, ot_kpoint_secant_geometry
+        ot_kpoint_rayleigh_probe_position, ot_kpoint_rayleigh_response_scale, &
+        ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
@@ -112,22 +112,20 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_bootstrap_curvature_floor, qs_scf_kp_energy_closure_preferred, &
         qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
-        qs_scf_kp_energy_closure_tail_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_occupation_plateau_ready, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_occupation_plateau_ready, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_energy_hessian, &
-        qs_scf_kp_fixed_n_frozen_energy_gradient, &
-        qs_scf_kp_fixed_n_projector_frechet, qs_scf_kp_fixed_n_response_mu_shift, &
-        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_full_closure_response_model_adjustments, &
-        qs_scf_kp_full_residual_completion, qs_scf_kp_indefinite_residual_balanced_step, &
-        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
-        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
-        qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
-        qs_scf_kp_project_symmetric_subspace_correction, &
+        qs_scf_kp_fixed_n_frozen_energy_gradient, qs_scf_kp_fixed_n_projector_frechet, &
+        qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
+        qs_scf_kp_full_closure_response_model_adjustments, qs_scf_kp_full_residual_completion, &
+        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_measured_residual_subspace_step, &
+        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
+        qs_scf_kp_pair_mask_moments, qs_scf_kp_physical_audit_add_group, &
+        qs_scf_kp_physical_audit_begin, qs_scf_kp_project_symmetric_subspace_correction, &
         qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
         qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
         qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
@@ -776,6 +774,8 @@ PROGRAM qs_ot_frechet_unittest
       "accepted model restart-calibration reset", 2.0E-13_dp, nfail)
    CALL check_kpoint_ot_restart_geometry_signature( &
       "k-point OT restart geometry signature", nfail)
+   CALL check_kpoint_ot_restart_smearing_signature( &
+      "k-point OT restart smearing signature", nfail)
    CALL check_shared_ref_update_control("shared k-point REF update control", nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_response( &
       "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
@@ -6302,7 +6302,7 @@ CONTAINS
       bad_work = qs_scf_kp_energy_closure_response_ready( &
                  .TRUE., .FALSE., .TRUE., 0.99_dp, 0.95_dp, 0.98_dp, 0.9_dp, 1.1_dp)
       bad_curvature = qs_scf_kp_energy_closure_response_ready( &
-                       .TRUE., .TRUE., .TRUE., 0.99_dp, 0.95_dp, 0.98_dp, -0.1_dp, 1.1_dp)
+                      .TRUE., .TRUE., .TRUE., 0.99_dp, 0.95_dp, 0.98_dp, -0.1_dp, 1.1_dp)
       not_finite = qs_scf_kp_energy_closure_response_ready( &
                    .FALSE., .TRUE., .TRUE., 0.99_dp, 0.95_dp, 0.98_dp, 0.9_dp, 1.1_dp)
 
@@ -9333,9 +9333,9 @@ CONTAINS
       INTEGER, PARAMETER                                 :: n = 6
 
       INTEGER                                            :: first_energy, local_channel, nmo
+      INTEGER, DIMENSION(2)                              :: channel_nmo, e_offset
       REAL(KIND=dp)                                      :: bilinear, error, expected, occ_sum, &
                                                             weight_sum
-      INTEGER, DIMENSION(2)                              :: channel_nmo, e_offset
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, ones, tether_curv, x, y
       REAL(KIND=dp), DIMENSION(n, n)                     :: hessian
 
@@ -9395,16 +9395,17 @@ CONTAINS
       INTEGER                                            :: rank, zero_rank
       LOGICAL                                            :: ready, zero_ready
       REAL(KIND=dp)                                      :: error
-      REAL(KIND=dp), DIMENSION(n, 3)                     :: modes, zero_modes
       REAL(KIND=dp), DIMENSION(n, 2)                     :: basis
-      REAL(KIND=dp), DIMENSION(n, n) :: correction, expected, projected, projector, &
-         symmetric_correction, zero_projected
+      REAL(KIND=dp), DIMENSION(n, 3)                     :: modes, zero_modes
+      REAL(KIND=dp), DIMENSION(n, n)                     :: correction, expected, projected, &
+                                                            projector, symmetric_correction, &
+                                                            zero_projected
 
       correction(:, :) = RESHAPE([ &
-                                  4.0_dp, 1.0_dp, -2.0_dp, 0.5_dp, &
-                                  3.0_dp, 2.0_dp, 0.25_dp, -1.0_dp, &
-                                  -1.0_dp, 0.75_dp, 5.0_dp, 2.0_dp, &
-                                  -0.5_dp, 1.5_dp, 4.0_dp, 3.0_dp], [n, n])
+                                 4.0_dp, 1.0_dp, -2.0_dp, 0.5_dp, &
+                                 3.0_dp, 2.0_dp, 0.25_dp, -1.0_dp, &
+                                 -1.0_dp, 0.75_dp, 5.0_dp, 2.0_dp, &
+                                 -0.5_dp, 1.5_dp, 4.0_dp, 3.0_dp], [n, n])
       modes(:, 1) = [1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp]
       modes(:, 2) = [0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp]
       modes(:, 3) = 2.0_dp*modes(:, 1)
@@ -28829,6 +28830,67 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_ot_restart_geometry_signature
+
+! **************************************************************************************************
+!> \brief Check that OT minimizer history is reused only for the same smearing objective.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_ot_restart_smearing_signature(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL :: changed_activation, changed_common_mu, changed_fixed_moment, changed_method, &
+         changed_temperature, changed_width, inactive, roundoff_match, same
+      TYPE(smear_type)                                   :: smear
+
+      smear%do_smear = .TRUE.
+      smear%common_mu = .FALSE.
+      smear%method = smear_fermi_dirac
+      smear%electronic_temperature = 1.0E-3_dp
+      smear%smearing_width = 2.0E-3_dp
+      smear%fixed_mag_mom = 2.0_dp
+
+      same = kpoint_ot_restart_smearing_compatible( &
+             smear, .TRUE., .FALSE., smear_fermi_dirac, 1.0E-3_dp, 2.0E-3_dp, 2.0_dp)
+      roundoff_match = kpoint_ot_restart_smearing_compatible( &
+                       smear, .TRUE., .FALSE., smear_fermi_dirac, &
+                       1.0E-3_dp + 1.0E-13_dp, 2.0E-3_dp, 2.0_dp)
+      changed_temperature = kpoint_ot_restart_smearing_compatible( &
+                            smear, .TRUE., .FALSE., smear_fermi_dirac, &
+                            1.1E-3_dp, 2.0E-3_dp, 2.0_dp)
+      changed_width = kpoint_ot_restart_smearing_compatible( &
+                      smear, .TRUE., .FALSE., smear_fermi_dirac, &
+                      1.0E-3_dp, 2.1E-3_dp, 2.0_dp)
+      changed_method = kpoint_ot_restart_smearing_compatible( &
+                       smear, .TRUE., .FALSE., smear_gaussian, &
+                       1.0E-3_dp, 2.0E-3_dp, 2.0_dp)
+      changed_common_mu = kpoint_ot_restart_smearing_compatible( &
+                          smear, .TRUE., .TRUE., smear_fermi_dirac, &
+                          1.0E-3_dp, 2.0E-3_dp, 2.0_dp)
+      changed_fixed_moment = kpoint_ot_restart_smearing_compatible( &
+                             smear, .TRUE., .FALSE., smear_fermi_dirac, &
+                             1.0E-3_dp, 2.0E-3_dp, 1.0_dp)
+      changed_activation = kpoint_ot_restart_smearing_compatible( &
+                           smear, .FALSE., .FALSE., smear_fermi_dirac, &
+                           1.0E-3_dp, 2.0E-3_dp, 2.0_dp)
+      smear%do_smear = .FALSE.
+      inactive = kpoint_ot_restart_smearing_compatible( &
+                 smear, .FALSE., .TRUE., smear_gaussian, 3.0_dp, 4.0_dp, 5.0_dp)
+
+      IF (.NOT. same .OR. .NOT. roundoff_match .OR. .NOT. inactive .OR. &
+          changed_temperature .OR. changed_width .OR. changed_method .OR. &
+          changed_common_mu .OR. changed_fixed_moment .OR. changed_activation) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "failed with same/roundoff/inactive/temperature/width/method/common-mu/fixed-moment/activation", &
+            same, roundoff_match, inactive, changed_temperature, changed_width, changed_method, &
+            changed_common_mu, changed_fixed_moment, changed_activation
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_ot_restart_smearing_signature
 
 ! **************************************************************************************************
 !> \brief Check that every local k-point channel follows the synchronized REF-absorption decision.

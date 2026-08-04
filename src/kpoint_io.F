@@ -62,6 +62,7 @@ MODULE kpoint_io
                                               qs_ot_restart_dense_matrix_type,&
                                               qs_scf_env_type,&
                                               qs_scf_ot_restart_clear
+   USE scf_control_types,               ONLY: smear_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -71,13 +72,15 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 31
+   INTEGER, PARAMETER                   :: ot_restart_version = 32
    REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
+   REAL(KIND=dp), PARAMETER             :: ot_restart_objective_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
              write_kpoints_restart
-   PUBLIC :: kpoint_ot_restart_geometry_compatible
+   PUBLIC :: kpoint_ot_restart_geometry_compatible, &
+             kpoint_ot_restart_smearing_compatible
    PUBLIC :: get_cell, write_kpoints_file_header
 
 ! **************************************************************************************************
@@ -93,9 +96,10 @@ CONTAINS
 !> \param particle_set ...
 !> \param qs_kind_set ...
 !> \param cell current simulation cell
+!> \param smear current smearing objective
 ! **************************************************************************************************
    SUBROUTINE write_kpoints_restart(denmat, kpoints, scf_env, dft_section, &
-                                    particle_set, qs_kind_set, cell)
+                                    particle_set, qs_kind_set, cell, smear)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: denmat
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -104,6 +108,7 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(smear_type), INTENT(IN)                       :: smear
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'write_kpoints_restart'
       CHARACTER(LEN=30), DIMENSION(2), PARAMETER :: &
@@ -177,7 +182,7 @@ CONTAINS
                END DO
                IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
                   CALL write_kpoint_ot_restart_payload(scf_env%qs_ot_env, fmat, ires, &
-                                                       cell, particle_set)
+                                                       cell, particle_set, smear)
                END IF
 
                CALL cp_print_key_finished_output(ires, logger, dft_section, TRIM(keys(ikey)))
@@ -219,6 +224,49 @@ CONTAINS
       compatible = geometry_delta <= ot_restart_geometry_tolerance*geometry_scale
 
    END FUNCTION kpoint_ot_restart_geometry_compatible
+
+! **************************************************************************************************
+!> \brief test whether serialized OT history belongs to the current smearing objective
+!> \param current current smearing settings
+!> \param restart_do_smear serialized smearing activation
+!> \param restart_common_mu serialized common-chemical-potential setting
+!> \param restart_method serialized smearing method
+!> \param restart_temperature serialized electronic temperature
+!> \param restart_width serialized smearing width
+!> \param restart_fixed_mag_mom serialized fixed magnetic moment
+!> \return true when the Mermin objective and fixed-N grouping are unchanged
+! **************************************************************************************************
+   PURE FUNCTION kpoint_ot_restart_smearing_compatible( &
+      current, restart_do_smear, restart_common_mu, restart_method, restart_temperature, &
+      restart_width, restart_fixed_mag_mom) RESULT(compatible)
+      TYPE(smear_type), INTENT(IN)                       :: current
+      LOGICAL, INTENT(IN)                                :: restart_do_smear, restart_common_mu
+      INTEGER, INTENT(IN)                                :: restart_method
+      REAL(KIND=dp), INTENT(IN)                          :: restart_temperature, restart_width, &
+                                                            restart_fixed_mag_mom
+      LOGICAL                                            :: compatible
+
+      REAL(KIND=dp)                                      :: scale
+
+      compatible = current%do_smear .EQV. restart_do_smear
+      IF (.NOT. compatible .OR. .NOT. current%do_smear) RETURN
+
+      compatible = current%common_mu .EQV. restart_common_mu
+      compatible = compatible .AND. current%method == restart_method
+      scale = MAX(1.0_dp, ABS(current%electronic_temperature), ABS(restart_temperature))
+      compatible = compatible .AND. &
+                   ABS(current%electronic_temperature - restart_temperature) <= &
+                   ot_restart_objective_tolerance*scale
+      scale = MAX(1.0_dp, ABS(current%smearing_width), ABS(restart_width))
+      compatible = compatible .AND. &
+                   ABS(current%smearing_width - restart_width) <= &
+                   ot_restart_objective_tolerance*scale
+      scale = MAX(1.0_dp, ABS(current%fixed_mag_mom), ABS(restart_fixed_mag_mom))
+      compatible = compatible .AND. &
+                   ABS(current%fixed_mag_mom - restart_fixed_mag_mom) <= &
+                   ot_restart_objective_tolerance*scale
+
+   END FUNCTION kpoint_ot_restart_smearing_compatible
 
 ! **************************************************************************************************
 !> \brief ...
@@ -379,10 +427,11 @@ CONTAINS
 !> \param scf_env ...
 !> \param cell current simulation cell when an OT payload may be restored
 !> \param particle_set current atomic geometry when an OT payload may be restored
+!> \param smear current smearing objective
 ! **************************************************************************************************
    SUBROUTINE read_kpoints_restart(denmat, kpoints, fmwork, natom, &
                                    para_env, id_nr, dft_section, natom_mismatch, scf_env, &
-                                   cell, particle_set)
+                                   cell, particle_set, smear)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: denmat
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -396,6 +445,7 @@ CONTAINS
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
       TYPE(particle_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: particle_set
+      TYPE(smear_type), INTENT(IN)                       :: smear
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'read_kpoints_restart'
 
@@ -433,7 +483,7 @@ CONTAINS
          CPASSERT(ASSOCIATED(particle_set))
          CALL read_kpoints_restart_low(denmat, kpoints, fmwork(1), para_env, &
                                        natom, restart_unit, natom_mismatch, scf_env=scf_env, &
-                                       cell=cell, particle_set=particle_set)
+                                       cell=cell, particle_set=particle_set, smear=smear)
       ELSE
          CALL read_kpoints_restart_low(denmat, kpoints, fmwork(1), para_env, &
                                        natom, restart_unit, natom_mismatch)
@@ -461,12 +511,13 @@ CONTAINS
 !> \param scf_env ...
 !> \param cell ...
 !> \param particle_set ...
+!> \param smear current smearing objective
 !> \par History
 !>      12.2007 created [MI]
 !> \author MI
 ! **************************************************************************************************
    SUBROUTINE read_kpoints_restart_low(denmat, kpoints, fmat, para_env, &
-                                       natom, rst_unit, natom_mismatch, scf_env, cell, particle_set)
+                                       natom, rst_unit, natom_mismatch, scf_env, cell, particle_set, smear)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: denmat
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -478,6 +529,7 @@ CONTAINS
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
       TYPE(particle_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: particle_set
+      TYPE(smear_type), INTENT(IN), OPTIONAL             :: smear
 
       INTEGER                                            :: ic, image, ispin, nao, nao_read, &
                                                             natom_read, ni, nimages, nset_max, &
@@ -562,8 +614,9 @@ CONTAINS
          IF (PRESENT(scf_env)) THEN
             CPASSERT(PRESENT(cell))
             CPASSERT(PRESENT(particle_set))
+            CPASSERT(PRESENT(smear))
             CALL read_kpoint_ot_restart_payload(rst_unit, para_env, fmat, scf_env, &
-                                                cell, particle_set)
+                                                cell, particle_set, smear)
          END IF
 
       END IF
@@ -577,19 +630,22 @@ CONTAINS
 !> \param ires restart unit
 !> \param cell current simulation cell
 !> \param particle_set current atomic geometry
+!> \param smear smearing objective associated with the minimizer history
 ! **************************************************************************************************
-   SUBROUTINE write_kpoint_ot_restart_payload(qs_ot_env, fmat_template, ires, cell, particle_set)
+   SUBROUTINE write_kpoint_ot_restart_payload(qs_ot_env, fmat_template, ires, cell, particle_set, smear)
       TYPE(qs_ot_type), DIMENSION(:), INTENT(IN)         :: qs_ot_env
       TYPE(cp_fm_type), INTENT(IN)                       :: fmat_template
       INTEGER, INTENT(IN)                                :: ires
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
+      TYPE(smear_type), INTENT(IN)                       :: smear
 
       INTEGER                                            :: iatom, ichannel, ihist, nchannel, ndiis, &
                                                             nener, nmo, nmo_ortho, source_count
       INTEGER, DIMENSION(15)                             :: int_payload
       INTEGER, DIMENSION(19)                             :: schur_int_payload
       INTEGER, DIMENSION(29)                             :: log_payload_int
+      INTEGER, DIMENSION(3)                              :: smear_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload_int
       LOGICAL :: channel_source, has_diis_scalars, has_ener_dx, has_ener_gx_old, has_ener_history, &
@@ -602,6 +658,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: restart_positions
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(20)                       :: real_payload
+      REAL(KIND=dp), DIMENSION(3)                        :: smear_real_payload
       REAL(KIND=dp), DIMENSION(53)                       :: ot_energy_payload, ot_grad_payload, &
                                                             ot_pos_payload
       REAL(KIND=dp), &
@@ -618,12 +675,16 @@ CONTAINS
       DO iatom = 1, SIZE(particle_set)
          restart_positions(:, iatom) = particle_set(iatom)%r
       END DO
+      smear_int_payload = [MERGE(1, 0, smear%do_smear), MERGE(1, 0, smear%common_mu), smear%method]
+      smear_real_payload = [smear%electronic_temperature, smear%smearing_width, smear%fixed_mag_mom]
       IF (ires > 0) THEN
          WRITE (ires) ot_restart_marker
          WRITE (ires) ot_restart_version, nchannel
          WRITE (ires) SIZE(particle_set)
          WRITE (ires) cell%hmat
          WRITE (ires) restart_positions
+         WRITE (ires) smear_int_payload
+         WRITE (ires) smear_real_payload
       END IF
       DEALLOCATE (restart_positions)
       DO ichannel = 1, nchannel
@@ -1379,14 +1440,16 @@ CONTAINS
 !> \param scf_env SCF environment receiving the cache
 !> \param cell current simulation cell
 !> \param particle_set current atomic geometry
+!> \param smear current smearing objective
 ! **************************************************************************************************
-   SUBROUTINE read_kpoint_ot_restart_payload(rst_unit, para_env, fmat, scf_env, cell, particle_set)
+   SUBROUTINE read_kpoint_ot_restart_payload(rst_unit, para_env, fmat, scf_env, cell, particle_set, smear)
       INTEGER, INTENT(IN)                                :: rst_unit
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(cp_fm_type), INTENT(INOUT)                    :: fmat
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
+      TYPE(smear_type), INTENT(IN)                       :: smear
 
       CHARACTER(LEN=LEN(ot_restart_marker))              :: marker
       INTEGER                                            :: adaptive_ios, iatom, ichannel, ihist, &
@@ -1402,8 +1465,10 @@ CONTAINS
       INTEGER, DIMENSION(17)                             :: schur_int_payload_v12
       INTEGER, DIMENSION(18)                             :: schur_int_payload_v13
       INTEGER, DIMENSION(19)                             :: schur_int_payload
+      INTEGER, DIMENSION(3)                              :: smear_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
-      LOGICAL                                            :: geometry_compatible, payload_found
+      LOGICAL                                            :: geometry_compatible, payload_found, &
+                                                            smearing_compatible
       LOGICAL, DIMENSION(11)                             :: adaptive_log_payload_v20
       LOGICAL, DIMENSION(12)                             :: adaptive_log_payload_v21
       LOGICAL, DIMENSION(27)                             :: log_payload_v10
@@ -1418,6 +1483,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload_v26
       REAL(KIND=dp), DIMENSION(20)                       :: real_payload, real_payload_v16
+      REAL(KIND=dp), DIMENSION(3)                        :: smear_real_payload
       REAL(KIND=dp), DIMENSION(3, 3)                     :: restart_hmat
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
@@ -1455,6 +1521,11 @@ CONTAINS
                       "Ignoring k-point OT minimizer payload without a geometry signature")
          RETURN
       END IF
+      IF (version_read < 32) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "Ignoring k-point OT minimizer payload without a smearing signature")
+         RETURN
+      END IF
 
       CPASSERT(ASSOCIATED(cell))
       CPASSERT(ASSOCIATED(particle_set))
@@ -1475,13 +1546,19 @@ CONTAINS
       ALLOCATE (restart_positions(3, natom_restart))
       restart_hmat(:, :) = 0.0_dp
       restart_positions(:, :) = 0.0_dp
+      smear_int_payload(:) = 0
+      smear_real_payload(:) = 0.0_dp
       IF (para_env%is_source()) THEN
          READ (rst_unit, IOSTAT=ios) restart_hmat
          IF (ios == 0) READ (rst_unit, IOSTAT=ios) restart_positions
+         IF (ios == 0) READ (rst_unit, IOSTAT=ios) smear_int_payload
+         IF (ios == 0) READ (rst_unit, IOSTAT=ios) smear_real_payload
       END IF
       CALL para_env%bcast(ios)
       CALL para_env%bcast(restart_hmat)
       CALL para_env%bcast(restart_positions)
+      CALL para_env%bcast(smear_int_payload)
+      CALL para_env%bcast(smear_real_payload)
       IF (ios /= 0) THEN
          DEALLOCATE (restart_positions)
          CALL cp_warn(__LOCATION__, "Ignoring malformed k-point OT restart geometry signature")
@@ -1499,6 +1576,20 @@ CONTAINS
       IF (.NOT. geometry_compatible) THEN
          CALL cp_warn(__LOCATION__, &
                       "Ignoring k-point OT minimizer payload from a different cell or geometry")
+         RETURN
+      END IF
+
+      smearing_compatible = ALL(smear_int_payload(1:2) >= 0 .AND. &
+                                smear_int_payload(1:2) <= 1)
+      IF (smearing_compatible) then
+        smearing_compatible = kpoint_ot_restart_smearing_compatible( &
+                               smear, smear_int_payload(1) == 1, smear_int_payload(2) == 1, &
+                               smear_int_payload(3), smear_real_payload(1), &
+                               smear_real_payload(2), smear_real_payload(3))
+      end if
+      IF (.NOT. smearing_compatible) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "Ignoring k-point OT minimizer payload from a different smearing objective")
          RETURN
       END IF
 
