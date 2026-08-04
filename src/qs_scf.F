@@ -173,14 +173,10 @@ MODULE qs_scf
                                               ot_scf_destroy,&
                                               ot_scf_init,&
                                               ot_scf_read_input
-   USE qs_ot_types,                     ONLY: qs_ot_allocate,&
-                                              qs_ot_channel_index,&
-                                              qs_ot_check_channel_context,&
-                                              qs_ot_init,&
-                                              qs_ot_number_of_channels,&
-                                              qs_ot_reset_accepted_model_calibration,&
-                                              qs_ot_set_context,&
-                                              qs_ot_type
+   USE qs_ot_types,                     ONLY: &
+        qs_ot_allocate, qs_ot_channel_index, qs_ot_check_channel_context, qs_ot_init, &
+        qs_ot_number_of_channels, qs_ot_reset_accepted_model_calibration, qs_ot_set_context, &
+        qs_ot_settings_restart_compatible, qs_ot_type
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
                                               outer_loop_optimize,&
                                               outer_loop_purge_history,&
@@ -2809,6 +2805,14 @@ CONTAINS
       restart_compatible = scf_env%qs_ot_restart%valid .AND. &
                            ASSOCIATED(scf_env%qs_ot_restart%channel)
       IF (restart_compatible) THEN
+         restart_compatible = qs_ot_settings_restart_compatible( &
+                              scf_env%qs_ot_env(1)%settings, &
+                              scf_env%qs_ot_restart%settings_char, &
+                              scf_env%qs_ot_restart%settings_int, &
+                              scf_env%qs_ot_restart%settings_log, &
+                              scf_env%qs_ot_restart%settings_real)
+      END IF
+      IF (restart_compatible) THEN
          restart_compatible = SIZE(scf_env%qs_ot_restart%channel) == SIZE(scf_env%qs_ot_env)
       END IF
       IF (restart_compatible) THEN
@@ -2833,7 +2837,7 @@ CONTAINS
       CALL kpoints%para_env%min(restart_compatible_int)
       IF (scf_env%qs_ot_restart%valid .AND. restart_compatible_int == 0) THEN
          CALL cp_warn(__LOCATION__, &
-                      "Ignoring k-point OT restart payload incompatible with the current channel layout")
+                      "Ignoring k-point OT restart payload incompatible with the current settings or channel layout")
       END IF
       scf_env%qs_ot_restart%valid = restart_compatible_int /= 0
 

@@ -77,8 +77,11 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_rayleigh_probe_position, ot_kpoint_rayleigh_response_scale, &
         ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
-   USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
-                                              qs_ot_type
+   USE qs_ot_types,                     ONLY: &
+        qs_ot_reset_accepted_model_calibration, qs_ot_restart_signature_nchar, &
+        qs_ot_restart_signature_nint, qs_ot_restart_signature_nlog, qs_ot_restart_signature_nreal, &
+        qs_ot_settings_init, qs_ot_settings_restart_compatible, qs_ot_settings_restart_signature, &
+        qs_ot_settings_type, qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_active_residual_affine, qs_scf_kp_add_full_response_complement, &
@@ -778,6 +781,8 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT restart geometry signature", nfail)
    CALL check_kpoint_ot_restart_smearing_signature( &
       "k-point OT restart smearing signature", nfail)
+   CALL check_kpoint_ot_restart_settings_signature( &
+      "k-point OT restart settings signature", nfail)
    CALL check_shared_ref_update_control("shared k-point REF update control", nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_response( &
       "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
@@ -28955,6 +28960,84 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_ot_restart_smearing_signature
+
+! **************************************************************************************************
+!> \brief Check that OT history is reused only for the same minimizer coordinate model.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_ot_restart_settings_signature(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      CHARACTER(LEN=20), &
+         DIMENSION(qs_ot_restart_signature_nchar)        :: char_signature
+      INTEGER, DIMENSION(qs_ot_restart_signature_nint)   :: int_signature
+      LOGICAL :: changed_algorithm, changed_diis, changed_method, changed_occupation, &
+         changed_preconditioner, changed_rotation, changed_tether, roundoff_match, same
+      LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: log_signature
+      REAL(KIND=dp), &
+         DIMENSION(qs_ot_restart_signature_nreal)        :: real_signature
+      TYPE(qs_ot_settings_type)                          :: settings
+
+      CALL qs_ot_settings_init(settings)
+      settings%ot_algorithm = "REF"
+      settings%do_rotation = .TRUE.
+      settings%do_ener = .TRUE.
+      settings%occupation_preconditioner = .TRUE.
+      CALL qs_ot_settings_restart_signature(settings, char_signature, int_signature, &
+                                            log_signature, real_signature)
+
+      same = qs_ot_settings_restart_compatible(settings, char_signature, int_signature, &
+                                               log_signature, real_signature)
+      real_signature(3) = real_signature(3) + 1.0E-13_dp
+      roundoff_match = qs_ot_settings_restart_compatible( &
+                       settings, char_signature, int_signature, log_signature, real_signature)
+      real_signature(3) = real_signature(3) - 1.0E-13_dp
+
+      char_signature(1) = "DIIS"
+      changed_method = qs_ot_settings_restart_compatible( &
+                       settings, char_signature, int_signature, log_signature, real_signature)
+      char_signature(1) = settings%ot_method
+      char_signature(2) = "TOD"
+      changed_algorithm = qs_ot_settings_restart_compatible( &
+                          settings, char_signature, int_signature, log_signature, real_signature)
+      char_signature(2) = settings%ot_algorithm
+
+      int_signature(1) = int_signature(1) + 1
+      changed_preconditioner = qs_ot_settings_restart_compatible( &
+                               settings, char_signature, int_signature, log_signature, real_signature)
+      int_signature(1) = int_signature(1) - 1
+      int_signature(4) = int_signature(4) + 1
+      changed_diis = qs_ot_settings_restart_compatible( &
+                     settings, char_signature, int_signature, log_signature, real_signature)
+      int_signature(4) = int_signature(4) - 1
+
+      log_signature(1) = .FALSE.
+      changed_rotation = qs_ot_settings_restart_compatible( &
+                         settings, char_signature, int_signature, log_signature, real_signature)
+      log_signature(1) = .TRUE.
+      log_signature(3) = .FALSE.
+      changed_occupation = qs_ot_settings_restart_compatible( &
+                           settings, char_signature, int_signature, log_signature, real_signature)
+      log_signature(3) = .TRUE.
+      real_signature(3) = real_signature(3) + 1.0E-4_dp
+      changed_tether = qs_ot_settings_restart_compatible( &
+                       settings, char_signature, int_signature, log_signature, real_signature)
+
+      IF (.NOT. same .OR. .NOT. roundoff_match .OR. changed_method .OR. changed_algorithm .OR. &
+          changed_preconditioner .OR. changed_diis .OR. changed_rotation .OR. &
+          changed_occupation .OR. changed_tether) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "failed with same/roundoff/method/algorithm/preconditioner/diis/rotation/occupation/tether", &
+            same, roundoff_match, changed_method, changed_algorithm, changed_preconditioner, &
+            changed_diis, changed_rotation, changed_occupation, changed_tether
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_ot_restart_settings_signature
 
 ! **************************************************************************************************
 !> \brief Check that every local k-point channel follows the synchronized REF-absorption decision.

@@ -60,6 +60,12 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_reset_accepted_model_calibration
    PUBLIC  :: qs_ot_number_of_channels
    PUBLIC  :: qs_ot_occupation_preconditioner_active
+   PUBLIC  :: qs_ot_restart_signature_nchar
+   PUBLIC  :: qs_ot_restart_signature_nint
+   PUBLIC  :: qs_ot_restart_signature_nlog
+   PUBLIC  :: qs_ot_restart_signature_nreal
+   PUBLIC  :: qs_ot_settings_restart_compatible
+   PUBLIC  :: qs_ot_settings_restart_signature
    PUBLIC  :: qs_ot_settings_init
    PUBLIC  :: qs_ot_set_context
    PUBLIC  :: ot_readwrite_input
@@ -943,8 +949,94 @@ MODULE qs_ot_types
    END TYPE qs_ot_type
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot_types'
+   INTEGER, PARAMETER :: qs_ot_restart_signature_nchar = 3, &
+                         qs_ot_restart_signature_nint = 4, &
+                         qs_ot_restart_signature_nlog = 6, &
+                         qs_ot_restart_signature_nreal = 4
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief pack settings that define the meaning of serialized OT minimizer history
+!> \param settings current OT settings
+!> \param char_signature character-valued signature fields
+!> \param int_signature integer-valued signature fields
+!> \param log_signature logical-valued signature fields
+!> \param real_signature real-valued signature fields
+! **************************************************************************************************
+   PURE SUBROUTINE qs_ot_settings_restart_signature(settings, char_signature, int_signature, &
+                                                    log_signature, real_signature)
+      TYPE(qs_ot_settings_type), INTENT(IN)              :: settings
+      CHARACTER(LEN=20), &
+         DIMENSION(qs_ot_restart_signature_nchar), &
+         INTENT(OUT)                                     :: char_signature
+      INTEGER, DIMENSION(qs_ot_restart_signature_nint), &
+         INTENT(OUT)                                     :: int_signature
+      LOGICAL, DIMENSION(qs_ot_restart_signature_nlog), &
+         INTENT(OUT)                                     :: log_signature
+      REAL(KIND=dp), &
+         DIMENSION(qs_ot_restart_signature_nreal), &
+         INTENT(OUT)                                     :: real_signature
+
+      char_signature = [CHARACTER(LEN=20) :: settings%ot_method, settings%ot_algorithm, &
+                        settings%line_search_method]
+      int_signature = [settings%preconditioner_type, settings%cholesky_type, &
+                       settings%precond_solver_type, settings%diis_m]
+      log_signature = [settings%do_rotation, settings%do_ener, &
+                       settings%occupation_preconditioner, settings%add_nondiag_energy, &
+                       settings%canonical_tether, settings%canonical_tether_adaptive]
+      real_signature = [settings%energy_gap, settings%nondiag_energy_strength, &
+                        settings%canonical_tether_strength, settings%canonical_tether_max_strength]
+
+   END SUBROUTINE qs_ot_settings_restart_signature
+
+! **************************************************************************************************
+!> \brief test whether serialized minimizer history has the same OT coordinate model
+!> \param settings current OT settings
+!> \param restart_char serialized character-valued signature fields
+!> \param restart_int serialized integer-valued signature fields
+!> \param restart_log serialized logical-valued signature fields
+!> \param restart_real serialized real-valued signature fields
+!> \return true when the history can be continued without changing its mathematical meaning
+! **************************************************************************************************
+   PURE FUNCTION qs_ot_settings_restart_compatible(settings, restart_char, restart_int, &
+                                                   restart_log, restart_real) RESULT(compatible)
+      TYPE(qs_ot_settings_type), INTENT(IN)              :: settings
+      CHARACTER(LEN=20), &
+         DIMENSION(qs_ot_restart_signature_nchar), &
+         INTENT(IN)                                      :: restart_char
+      INTEGER, DIMENSION(qs_ot_restart_signature_nint), &
+         INTENT(IN)                                      :: restart_int
+      LOGICAL, DIMENSION(qs_ot_restart_signature_nlog), &
+         INTENT(IN)                                      :: restart_log
+      REAL(KIND=dp), &
+         DIMENSION(qs_ot_restart_signature_nreal), &
+         INTENT(IN)                                      :: restart_real
+      LOGICAL                                            :: compatible
+
+      CHARACTER(LEN=20), &
+         DIMENSION(qs_ot_restart_signature_nchar)        :: current_char
+      INTEGER                                            :: i
+      INTEGER, DIMENSION(qs_ot_restart_signature_nint)   :: current_int
+      LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: current_log
+      REAL(KIND=dp)                                      :: scale
+      REAL(KIND=dp), &
+         DIMENSION(qs_ot_restart_signature_nreal)        :: current_real
+
+      CALL qs_ot_settings_restart_signature(settings, current_char, current_int, &
+                                            current_log, current_real)
+      compatible = ALL(current_char == restart_char) .AND. &
+                   ALL(current_int == restart_int) .AND. &
+                   ALL(current_log .EQV. restart_log)
+      IF (.NOT. compatible) RETURN
+
+      DO i = 1, qs_ot_restart_signature_nreal
+         scale = MAX(1.0_dp, ABS(current_real(i)), ABS(restart_real(i)))
+         compatible = compatible .AND. &
+                      ABS(current_real(i) - restart_real(i)) <= 1.0E-12_dp*scale
+      END DO
+
+   END FUNCTION qs_ot_settings_restart_compatible
 
 ! **************************************************************************************************
 !> \brief Return whether the occupation preconditioner belongs to the current runtime model.

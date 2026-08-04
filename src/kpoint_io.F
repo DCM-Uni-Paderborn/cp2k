@@ -55,6 +55,12 @@ MODULE kpoint_io
                                               qs_kind_type
    USE qs_mo_io,                        ONLY: wfn_restart_file_name
    USE qs_ot_types,                     ONLY: qs_ot_check_channel_context,&
+                                              qs_ot_restart_signature_nchar,&
+                                              qs_ot_restart_signature_nint,&
+                                              qs_ot_restart_signature_nlog,&
+                                              qs_ot_restart_signature_nreal,&
+                                              qs_ot_settings_restart_compatible,&
+                                              qs_ot_settings_restart_signature,&
                                               qs_ot_type
    USE qs_scf_types,                    ONLY: qs_ot_restart_adaptive_nint,&
                                               qs_ot_restart_adaptive_nlog,&
@@ -72,7 +78,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 32
+   INTEGER, PARAMETER                   :: ot_restart_version = 33
    REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
    REAL(KIND=dp), PARAMETER             :: ot_restart_objective_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
@@ -640,6 +646,8 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(smear_type), INTENT(IN)                       :: smear
 
+      CHARACTER(LEN=20), &
+         DIMENSION(qs_ot_restart_signature_nchar)        :: settings_char_payload
       INTEGER                                            :: iatom, ichannel, ihist, nchannel, ndiis, &
                                                             nener, nmo, nmo_ortho, source_count
       INTEGER, DIMENSION(15)                             :: int_payload
@@ -648,13 +656,16 @@ CONTAINS
       INTEGER, DIMENSION(3)                              :: smear_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload_int
+      INTEGER, DIMENSION(qs_ot_restart_signature_nint)   :: settings_int_payload
       LOGICAL :: channel_source, has_diis_scalars, has_ener_dx, has_ener_gx_old, has_ener_history, &
          has_ener_x, has_matrix_dx, has_matrix_dx_im, has_matrix_gx_old, has_matrix_gx_old_im, &
          has_matrix_history, has_matrix_history_im, has_matrix_x, has_matrix_x_im, &
          has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
-         has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
+         has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im, &
+         settings_compatible
       LOGICAL, DIMENSION(29)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
+      LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: settings_log_payload
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: restart_positions
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(20)                       :: real_payload
@@ -663,6 +674,8 @@ CONTAINS
                                                             ot_pos_payload
       REAL(KIND=dp), &
          DIMENSION(qs_ot_restart_adaptive_nreal)         :: adaptive_real_payload
+      REAL(KIND=dp), &
+         DIMENSION(qs_ot_restart_signature_nreal)        :: settings_real_payload
       TYPE(dbcsr_type), POINTER                          :: restart_matrix
       TYPE(mp_para_env_type), POINTER                    :: global_para_env
 
@@ -677,6 +690,16 @@ CONTAINS
       END DO
       smear_int_payload = [MERGE(1, 0, smear%do_smear), MERGE(1, 0, smear%common_mu), smear%method]
       smear_real_payload = [smear%electronic_temperature, smear%smearing_width, smear%fixed_mag_mom]
+      CPASSERT(nchannel > 0)
+      CALL qs_ot_settings_restart_signature(qs_ot_env(1)%settings, settings_char_payload, &
+                                            settings_int_payload, settings_log_payload, &
+                                            settings_real_payload)
+      DO ichannel = 2, nchannel
+         settings_compatible = qs_ot_settings_restart_compatible( &
+                               qs_ot_env(ichannel)%settings, settings_char_payload, &
+                               settings_int_payload, settings_log_payload, settings_real_payload)
+         CPASSERT(settings_compatible)
+      END DO
       IF (ires > 0) THEN
          WRITE (ires) ot_restart_marker
          WRITE (ires) ot_restart_version, nchannel
@@ -685,6 +708,10 @@ CONTAINS
          WRITE (ires) restart_positions
          WRITE (ires) smear_int_payload
          WRITE (ires) smear_real_payload
+         WRITE (ires) settings_char_payload
+         WRITE (ires) settings_int_payload
+         WRITE (ires) settings_log_payload
+         WRITE (ires) settings_real_payload
       END IF
       DEALLOCATE (restart_positions)
       DO ichannel = 1, nchannel
@@ -1451,6 +1478,8 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(smear_type), INTENT(IN)                       :: smear
 
+      CHARACTER(LEN=20), &
+         DIMENSION(qs_ot_restart_signature_nchar)        :: settings_char_payload
       CHARACTER(LEN=LEN(ot_restart_marker))              :: marker
       INTEGER                                            :: adaptive_ios, iatom, ichannel, ihist, &
                                                             ios, natom_restart, nchannel, ndiis, &
@@ -1467,6 +1496,7 @@ CONTAINS
       INTEGER, DIMENSION(19)                             :: schur_int_payload
       INTEGER, DIMENSION(3)                              :: smear_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
+      INTEGER, DIMENSION(qs_ot_restart_signature_nint)   :: settings_int_payload
       LOGICAL                                            :: geometry_compatible, payload_found, &
                                                             smearing_compatible
       LOGICAL, DIMENSION(11)                             :: adaptive_log_payload_v20
@@ -1475,6 +1505,7 @@ CONTAINS
       LOGICAL, DIMENSION(28)                             :: log_payload_v18
       LOGICAL, DIMENSION(29)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
+      LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: settings_log_payload
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: current_positions, restart_positions
       REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload_v9
       REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload_v11
@@ -1497,6 +1528,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(96)                       :: adaptive_real_payload_v24
       REAL(KIND=dp), &
          DIMENSION(qs_ot_restart_adaptive_nreal)         :: adaptive_real_payload
+      REAL(KIND=dp), &
+         DIMENSION(qs_ot_restart_signature_nreal)        :: settings_real_payload
 
       payload_found = .FALSE.
       marker = ""
@@ -1521,9 +1554,9 @@ CONTAINS
                       "Ignoring k-point OT minimizer payload without a geometry signature")
          RETURN
       END IF
-      IF (version_read < 32) THEN
+      IF (version_read < 33) THEN
          CALL cp_warn(__LOCATION__, &
-                      "Ignoring k-point OT minimizer payload without a smearing signature")
+                      "Ignoring k-point OT minimizer payload without a settings signature")
          RETURN
       END IF
 
@@ -1548,17 +1581,29 @@ CONTAINS
       restart_positions(:, :) = 0.0_dp
       smear_int_payload(:) = 0
       smear_real_payload(:) = 0.0_dp
+      settings_char_payload(:) = ""
+      settings_int_payload(:) = 0
+      settings_log_payload(:) = .FALSE.
+      settings_real_payload(:) = 0.0_dp
       IF (para_env%is_source()) THEN
          READ (rst_unit, IOSTAT=ios) restart_hmat
          IF (ios == 0) READ (rst_unit, IOSTAT=ios) restart_positions
          IF (ios == 0) READ (rst_unit, IOSTAT=ios) smear_int_payload
          IF (ios == 0) READ (rst_unit, IOSTAT=ios) smear_real_payload
+         IF (ios == 0) READ (rst_unit, IOSTAT=ios) settings_char_payload
+         IF (ios == 0) READ (rst_unit, IOSTAT=ios) settings_int_payload
+         IF (ios == 0) READ (rst_unit, IOSTAT=ios) settings_log_payload
+         IF (ios == 0) READ (rst_unit, IOSTAT=ios) settings_real_payload
       END IF
       CALL para_env%bcast(ios)
       CALL para_env%bcast(restart_hmat)
       CALL para_env%bcast(restart_positions)
       CALL para_env%bcast(smear_int_payload)
       CALL para_env%bcast(smear_real_payload)
+      CALL para_env%bcast(settings_char_payload)
+      CALL para_env%bcast(settings_int_payload)
+      CALL para_env%bcast(settings_log_payload)
+      CALL para_env%bcast(settings_real_payload)
       IF (ios /= 0) THEN
          DEALLOCATE (restart_positions)
          CALL cp_warn(__LOCATION__, "Ignoring malformed k-point OT restart geometry signature")
@@ -1581,12 +1626,12 @@ CONTAINS
 
       smearing_compatible = ALL(smear_int_payload(1:2) >= 0 .AND. &
                                 smear_int_payload(1:2) <= 1)
-      IF (smearing_compatible) then
-        smearing_compatible = kpoint_ot_restart_smearing_compatible( &
+      IF (smearing_compatible) THEN
+         smearing_compatible = kpoint_ot_restart_smearing_compatible( &
                                smear, smear_int_payload(1) == 1, smear_int_payload(2) == 1, &
                                smear_int_payload(3), smear_real_payload(1), &
                                smear_real_payload(2), smear_real_payload(3))
-      end if
+      END IF
       IF (.NOT. smearing_compatible) THEN
          CALL cp_warn(__LOCATION__, &
                       "Ignoring k-point OT minimizer payload from a different smearing objective")
@@ -1597,6 +1642,10 @@ CONTAINS
       scf_env%qs_ot_restart%valid = .TRUE.
       scf_env%qs_ot_restart%format_version = version_read
       scf_env%qs_ot_restart%nchannel = nchannel
+      scf_env%qs_ot_restart%settings_char = settings_char_payload
+      scf_env%qs_ot_restart%settings_int = settings_int_payload
+      scf_env%qs_ot_restart%settings_log = settings_log_payload
+      scf_env%qs_ot_restart%settings_real = settings_real_payload
       ALLOCATE (scf_env%qs_ot_restart%channel(nchannel))
       DO ichannel = 1, nchannel
          adaptive_int_payload(:) = 0

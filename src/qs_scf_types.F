@@ -38,6 +38,10 @@ MODULE qs_scf_types
                                               fb_env_obj,&
                                               fb_env_release
    USE qs_ot_types,                     ONLY: qs_ot_destroy,&
+                                              qs_ot_restart_signature_nchar,&
+                                              qs_ot_restart_signature_nint,&
+                                              qs_ot_restart_signature_nlog,&
+                                              qs_ot_restart_signature_nreal,&
                                               qs_ot_type
 #include "./base/base_uses.f90"
 
@@ -327,6 +331,10 @@ MODULE qs_scf_types
    TYPE qs_ot_restart_cache_type
       LOGICAL :: valid = .FALSE.
       INTEGER :: format_version = 0, nchannel = 0
+      CHARACTER(LEN=20), DIMENSION(qs_ot_restart_signature_nchar) :: settings_char = ""
+      INTEGER, DIMENSION(qs_ot_restart_signature_nint) :: settings_int = 0
+      LOGICAL, DIMENSION(qs_ot_restart_signature_nlog) :: settings_log = .FALSE.
+      REAL(KIND=dp), DIMENSION(qs_ot_restart_signature_nreal) :: settings_real = 0.0_dp
       TYPE(qs_ot_restart_channel_type), DIMENSION(:), POINTER :: channel => NULL()
    END TYPE qs_ot_restart_cache_type
 
@@ -559,6 +567,10 @@ CONTAINS
       scf_env%qs_ot_restart%valid = .FALSE.
       scf_env%qs_ot_restart%format_version = 0
       scf_env%qs_ot_restart%nchannel = 0
+      scf_env%qs_ot_restart%settings_char = ""
+      scf_env%qs_ot_restart%settings_int = 0
+      scf_env%qs_ot_restart%settings_log = .FALSE.
+      scf_env%qs_ot_restart%settings_real = 0.0_dp
       NULLIFY (scf_env%qs_ot_restart%channel)
       scf_env%qs_ot_schur_density_calibration%valid = .FALSE.
       scf_env%qs_ot_schur_density_calibration%nchannel = 0
@@ -868,6 +880,10 @@ CONTAINS
       scf_env%qs_ot_restart%valid = .FALSE.
       scf_env%qs_ot_restart%format_version = 0
       scf_env%qs_ot_restart%nchannel = 0
+      scf_env%qs_ot_restart%settings_char = ""
+      scf_env%qs_ot_restart%settings_int = 0
+      scf_env%qs_ot_restart%settings_log = .FALSE.
+      scf_env%qs_ot_restart%settings_real = 0.0_dp
       NULLIFY (scf_env%qs_ot_restart%channel)
 
    END SUBROUTINE qs_scf_ot_restart_clear
