@@ -123,6 +123,7 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
         qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
         qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
+        qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
         qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
         qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
         qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
@@ -559,6 +560,7 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density audit trust quality", 5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
                                                   5.0E-14_dp, nfail)
+   CALL check_projector_trace_metrics("complex projector trace metrics", 5.0E-14_dp, nfail)
    CALL check_projector_trace_split_history_quality("complex projector trace-split Direct quality", &
                                                     5.0E-14_dp, nfail)
    CALL check_projector_trace_invariant_history_quality( &
@@ -17105,6 +17107,128 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_direct_trace_compensation
+
+! **************************************************************************************************
+!> \brief Check the physical Projector trace quadratic and its diagonal/off-diagonal split.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_trace_metrics(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err, sol_norm
+      REAL(KIND=dp), DIMENSION(21)                       :: got, got_antisymmetric, got_zero, want
+      REAL(KIND=dp), DIMENSION(3)                        :: sol, zero_sol
+      REAL(KIND=dp), DIMENSION(3, 3) :: active_delta, active_hessian, actual_delta, antisymmetric, &
+         base_hessian, full_delta, full_hessian, invariant_delta, invariant_hessian, &
+         symmetric_delta
+      TYPE(qs_scf_kp_projector_trace_metrics_type)       :: antisymmetric_metrics, metrics, &
+                                                            zero_metrics
+
+      sol(:) = [0.7_dp, -1.1_dp, 0.4_dp]
+      zero_sol(:) = 0.0_dp
+      actual_delta(:, :) = RESHAPE( &
+                           [0.30_dp, -0.20_dp, 0.10_dp, &
+                            0.55_dp, -0.40_dp, 0.25_dp, &
+                            -0.35_dp, 0.60_dp, 0.20_dp], [3, 3])
+      base_hessian(:, :) = RESHAPE( &
+                           [0.80_dp, -0.10_dp, 0.20_dp, &
+                            0.30_dp, 1.10_dp, -0.40_dp, &
+                            -0.20_dp, 0.50_dp, 0.60_dp], [3, 3])
+      full_delta(:, :) = RESHAPE( &
+                         [-0.15_dp, 0.45_dp, -0.25_dp, &
+                          0.10_dp, 0.35_dp, 0.30_dp, &
+                          0.50_dp, -0.20_dp, 0.05_dp], [3, 3])
+      invariant_delta(:, :) = RESHAPE( &
+                              [-0.05_dp, 0.20_dp, 0.15_dp, &
+                               0.40_dp, 0.25_dp, -0.10_dp, &
+                               -0.30_dp, 0.35_dp, 0.12_dp], [3, 3])
+      active_delta(:, :) = RESHAPE( &
+                           [-0.08_dp, 0.12_dp, -0.18_dp, &
+                            0.28_dp, 0.18_dp, 0.22_dp, &
+                            0.32_dp, -0.14_dp, 0.03_dp], [3, 3])
+      antisymmetric(:, :) = RESHAPE( &
+                            [0.0_dp, -0.20_dp, 0.40_dp, &
+                             0.20_dp, 0.0_dp, -0.70_dp, &
+                             -0.40_dp, 0.70_dp, 0.0_dp], [3, 3])
+      full_hessian(:, :) = base_hessian(:, :) + full_delta(:, :)
+      invariant_hessian(:, :) = base_hessian(:, :) + invariant_delta(:, :)
+      active_hessian(:, :) = base_hessian(:, :) + active_delta(:, :)
+
+      metrics = qs_scf_kp_projector_trace_metrics(sol, actual_delta, base_hessian, &
+                                                  full_hessian, invariant_hessian, active_hessian)
+      antisymmetric_metrics = qs_scf_kp_projector_trace_metrics( &
+                              sol, actual_delta + antisymmetric, base_hessian, &
+                              full_hessian + antisymmetric, invariant_hessian + antisymmetric, &
+                              active_hessian + antisymmetric)
+      zero_metrics = qs_scf_kp_projector_trace_metrics( &
+                     zero_sol, actual_delta, base_hessian, full_hessian, &
+                     invariant_hessian, active_hessian)
+
+      symmetric_delta(:, :) = 0.5_dp*(actual_delta(:, :) + TRANSPOSE(actual_delta))
+      want(1) = DOT_PRODUCT(sol, MATMUL(symmetric_delta, sol))
+      symmetric_delta(:, :) = 0.5_dp*(full_delta(:, :) + TRANSPOSE(full_delta))
+      want(2) = DOT_PRODUCT(sol, MATMUL(symmetric_delta, sol))
+      symmetric_delta(:, :) = 0.5_dp*(invariant_delta(:, :) + TRANSPOSE(invariant_delta))
+      want(3) = DOT_PRODUCT(sol, MATMUL(symmetric_delta, sol))
+      symmetric_delta(:, :) = 0.5_dp*(active_delta(:, :) + TRANSPOSE(active_delta))
+      want(4) = DOT_PRODUCT(sol, MATMUL(symmetric_delta, sol))
+      want(5) = SUM(sol*sol*[actual_delta(1, 1), actual_delta(2, 2), actual_delta(3, 3)])
+      want(6) = SUM(sol*sol*[full_delta(1, 1), full_delta(2, 2), full_delta(3, 3)])
+      want(7) = SUM(sol*sol*[invariant_delta(1, 1), invariant_delta(2, 2), invariant_delta(3, 3)])
+      want(8) = SUM(sol*sol*[active_delta(1, 1), active_delta(2, 2), active_delta(3, 3)])
+      want(9:12) = want(1:4) - want(5:8)
+      sol_norm = DOT_PRODUCT(sol, sol)
+      want(13:16) = want(1:4)/sol_norm
+      want(17) = want(4)/want(2)
+      want(18) = want(4)/want(1)
+      want(19) = want(2)/want(3)
+      want(20) = want(2) - want(4)
+      want(21) = want(3) - want(2)
+
+      got(:) = [metrics%actual_quad, metrics%full_quad, metrics%invariant_quad, metrics%active_quad, &
+                metrics%actual_diag_quad, metrics%full_diag_quad, metrics%invariant_diag_quad, &
+                metrics%active_diag_quad, metrics%actual_free_quad, metrics%full_free_quad, &
+                metrics%invariant_free_quad, metrics%active_free_quad, metrics%actual_norm, &
+                metrics%full_norm, metrics%invariant_norm, metrics%active_norm, &
+                metrics%active_full_ratio, metrics%active_actual_ratio, &
+                metrics%full_invariant_ratio, metrics%excess_quad, metrics%invariant_gap_quad]
+      got_antisymmetric(:) = [ &
+                             antisymmetric_metrics%actual_quad, antisymmetric_metrics%full_quad, &
+                             antisymmetric_metrics%invariant_quad, antisymmetric_metrics%active_quad, &
+                             antisymmetric_metrics%actual_diag_quad, antisymmetric_metrics%full_diag_quad, &
+                             antisymmetric_metrics%invariant_diag_quad, antisymmetric_metrics%active_diag_quad, &
+                             antisymmetric_metrics%actual_free_quad, antisymmetric_metrics%full_free_quad, &
+                             antisymmetric_metrics%invariant_free_quad, antisymmetric_metrics%active_free_quad, &
+                             antisymmetric_metrics%actual_norm, antisymmetric_metrics%full_norm, &
+                             antisymmetric_metrics%invariant_norm, antisymmetric_metrics%active_norm, &
+                             antisymmetric_metrics%active_full_ratio, antisymmetric_metrics%active_actual_ratio, &
+                             antisymmetric_metrics%full_invariant_ratio, antisymmetric_metrics%excess_quad, &
+                             antisymmetric_metrics%invariant_gap_quad]
+      got_zero(:) = [zero_metrics%actual_quad, zero_metrics%full_quad, &
+                     zero_metrics%invariant_quad, zero_metrics%active_quad, &
+                     zero_metrics%actual_diag_quad, zero_metrics%full_diag_quad, &
+                     zero_metrics%invariant_diag_quad, zero_metrics%active_diag_quad, &
+                     zero_metrics%actual_free_quad, zero_metrics%full_free_quad, &
+                     zero_metrics%invariant_free_quad, zero_metrics%active_free_quad, &
+                     zero_metrics%actual_norm, zero_metrics%full_norm, zero_metrics%invariant_norm, &
+                     zero_metrics%active_norm, zero_metrics%active_full_ratio, &
+                     zero_metrics%active_actual_ratio, zero_metrics%full_invariant_ratio, &
+                     zero_metrics%excess_quad, zero_metrics%invariant_gap_quad]
+      err = MAXVAL(ABS(got - want))
+      err = MAX(err, MAXVAL(ABS(got_antisymmetric - got)), MAXVAL(ABS(got_zero)))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_projector_trace_metrics
 
 ! **************************************************************************************************
 !> \brief Check that diagonal-dominated Direct traces do not masquerade as failed split histories.

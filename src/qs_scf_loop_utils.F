@@ -257,6 +257,20 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_mode_trust_max_penalty = 2.5E-1_dp, &
                                         ot_kp_schur_projector_coupled_tail_max_weight = 0.10_dp, &
                                         ot_kp_schur_projector_coupled_tail_delta = 1.0E-4_dp
+   TYPE, PUBLIC :: qs_scf_kp_projector_trace_metrics_type
+      REAL(KIND=dp) :: actual_quad = 0.0_dp, full_quad = 0.0_dp, &
+                       invariant_quad = 0.0_dp, active_quad = 0.0_dp
+      REAL(KIND=dp) :: actual_diag_quad = 0.0_dp, full_diag_quad = 0.0_dp, &
+                       invariant_diag_quad = 0.0_dp, active_diag_quad = 0.0_dp
+      REAL(KIND=dp) :: actual_free_quad = 0.0_dp, full_free_quad = 0.0_dp, &
+                       invariant_free_quad = 0.0_dp, active_free_quad = 0.0_dp
+      REAL(KIND=dp) :: actual_norm = 0.0_dp, full_norm = 0.0_dp, &
+                       invariant_norm = 0.0_dp, active_norm = 0.0_dp
+      REAL(KIND=dp) :: active_full_ratio = 0.0_dp, active_actual_ratio = 0.0_dp, &
+                       full_invariant_ratio = 0.0_dp
+      REAL(KIND=dp) :: excess_quad = 0.0_dp, invariant_gap_quad = 0.0_dp
+   END TYPE qs_scf_kp_projector_trace_metrics_type
+   PUBLIC :: qs_scf_kp_projector_trace_metrics
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
              qs_scf_density_mixing, qs_scf_check_inner_exit, &
@@ -11373,6 +11387,78 @@ CONTAINS
    END FUNCTION kpoint_ot_direct_trace_compensation
 
 ! **************************************************************************************************
+!> \brief Quadratic trace metrics for physical Projector Schur response models.
+!> \param sol rotation-space trial direction
+!> \param actual_delta measured finite Projector curvature relative to the base model
+!> \param base_hessian base rotation Hessian
+!> \param full_hessian full physical Projector Hessian
+!> \param invariant_hessian gauge-invariant Projector Hessian
+!> \param active_hessian active-pair physical Projector Hessian
+!> \return total, diagonal, off-diagonal, and normalized quadratic metrics
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_projector_trace_metrics( &
+      sol, actual_delta, base_hessian, full_hessian, invariant_hessian, active_hessian) &
+      RESULT(metrics)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: sol
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: actual_delta, base_hessian, &
+                                                            full_hessian, invariant_hessian, &
+                                                            active_hessian
+      TYPE(qs_scf_kp_projector_trace_metrics_type)       :: metrics
+
+      INTEGER                                            :: r, s
+      REAL(KIND=dp)                                      :: active_term, actual_term, full_term, &
+                                                            invariant_term, sol_norm, sol_sq
+
+      DO s = 1, SIZE(sol)
+         DO r = 1, SIZE(sol)
+            actual_term = 0.5_dp*(actual_delta(r, s) + actual_delta(s, r))
+            full_term = 0.5_dp*((full_hessian(r, s) - base_hessian(r, s)) + &
+                                (full_hessian(s, r) - base_hessian(s, r)))
+            invariant_term = 0.5_dp*((invariant_hessian(r, s) - base_hessian(r, s)) + &
+                                     (invariant_hessian(s, r) - base_hessian(s, r)))
+            active_term = 0.5_dp*((active_hessian(r, s) - base_hessian(r, s)) + &
+                                  (active_hessian(s, r) - base_hessian(s, r)))
+            metrics%actual_quad = metrics%actual_quad + sol(r)*actual_term*sol(s)
+            metrics%full_quad = metrics%full_quad + sol(r)*full_term*sol(s)
+            metrics%invariant_quad = metrics%invariant_quad + sol(r)*invariant_term*sol(s)
+            metrics%active_quad = metrics%active_quad + sol(r)*active_term*sol(s)
+         END DO
+      END DO
+
+      metrics%excess_quad = metrics%full_quad - metrics%active_quad
+      IF (ABS(metrics%full_quad) > EPSILON(metrics%full_quad)) &
+         metrics%active_full_ratio = metrics%active_quad/metrics%full_quad
+      IF (ABS(metrics%actual_quad) > EPSILON(metrics%actual_quad)) &
+         metrics%active_actual_ratio = metrics%active_quad/metrics%actual_quad
+      metrics%invariant_gap_quad = metrics%invariant_quad - metrics%full_quad
+      IF (ABS(metrics%invariant_quad) > EPSILON(metrics%invariant_quad)) &
+         metrics%full_invariant_ratio = metrics%full_quad/metrics%invariant_quad
+
+      sol_norm = DOT_PRODUCT(sol, sol)
+      IF (sol_norm > EPSILON(sol_norm)) THEN
+         DO r = 1, SIZE(sol)
+            sol_sq = sol(r)*sol(r)
+            metrics%actual_diag_quad = metrics%actual_diag_quad + sol_sq*actual_delta(r, r)
+            metrics%full_diag_quad = metrics%full_diag_quad + &
+                                     sol_sq*(full_hessian(r, r) - base_hessian(r, r))
+            metrics%invariant_diag_quad = metrics%invariant_diag_quad + &
+                                          sol_sq*(invariant_hessian(r, r) - base_hessian(r, r))
+            metrics%active_diag_quad = metrics%active_diag_quad + &
+                                       sol_sq*(active_hessian(r, r) - base_hessian(r, r))
+         END DO
+         metrics%actual_free_quad = metrics%actual_quad - metrics%actual_diag_quad
+         metrics%full_free_quad = metrics%full_quad - metrics%full_diag_quad
+         metrics%invariant_free_quad = metrics%invariant_quad - metrics%invariant_diag_quad
+         metrics%active_free_quad = metrics%active_quad - metrics%active_diag_quad
+         metrics%actual_norm = metrics%actual_quad/sol_norm
+         metrics%full_norm = metrics%full_quad/sol_norm
+         metrics%invariant_norm = metrics%invariant_quad/sol_norm
+         metrics%active_norm = metrics%active_quad/sol_norm
+      END IF
+
+   END FUNCTION qs_scf_kp_projector_trace_metrics
+
+! **************************************************************************************************
 !> \brief quadratic model uncertainty from a mismatched Direct trace curvature
 !> \param trace_actual_quad ...
 !> \param trace_model_quad ...
@@ -17835,6 +17921,7 @@ CONTAINS
                                                             channel_residual_pair_score
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(qs_scf_kp_projector_trace_metrics_type)       :: projector_trace_metrics
 
          group_done = .FALSE.
          logger => cp_get_default_logger()
@@ -25520,109 +25607,36 @@ CONTAINS
                      projector_physical_direct_sol(:) = &
                         projector_physical_direct_history_scale*projector_physical_direct_sol(:)
                      IF (logger%iter_info%print_level >= debug_print_level) THEN
-                        projector_physical_direct_trace_active_quad = 0.0_dp
-                        projector_physical_direct_trace_actual_quad = 0.0_dp
-                        projector_physical_direct_trace_full_quad = 0.0_dp
-                        projector_physical_direct_trace_invariant_quad = 0.0_dp
-                        DO s = 1, nrot
-                           DO r = 1, nrot
-                              projected_term = 0.5_dp* &
-                                               ((rot_hessian_projector_physical(r, s) - rot_hessian(r, s)) + &
-                                                (rot_hessian_projector_physical(s, r) - rot_hessian(s, r)))
-                              projector_physical_direct_trace_invariant_term = 0.5_dp* &
-                                                                              ((rot_hessian_projector(r, s) - rot_hessian(r, s)) + &
-                                                                                (rot_hessian_projector(s, r) - rot_hessian(s, r)))
-                              tether_projected_term = 0.5_dp* &
-                                                      ((rot_hessian_projector_physical_active(r, s) - rot_hessian(r, s)) + &
-                                                       (rot_hessian_projector_physical_active(s, r) - rot_hessian(s, r)))
-                              rx_shift = 0.5_dp*(projector_physical_direct_delta(r, s) + &
-                                                 projector_physical_direct_delta(s, r))
-                              projector_physical_direct_trace_actual_quad = &
-                                 projector_physical_direct_trace_actual_quad + &
-                                 projector_physical_direct_sol(r)*rx_shift* &
-                                 projector_physical_direct_sol(s)
-                              projector_physical_direct_trace_full_quad = &
-                                 projector_physical_direct_trace_full_quad + &
-                                 projector_physical_direct_sol(r)*projected_term* &
-                                 projector_physical_direct_sol(s)
-                              projector_physical_direct_trace_invariant_quad = &
-                                 projector_physical_direct_trace_invariant_quad + &
-                                 projector_physical_direct_sol(r)* &
-                                 projector_physical_direct_trace_invariant_term* &
-                                 projector_physical_direct_sol(s)
-                              projector_physical_direct_trace_active_quad = &
-                                 projector_physical_direct_trace_active_quad + &
-                                 projector_physical_direct_sol(r)*tether_projected_term* &
-                                 projector_physical_direct_sol(s)
-                           END DO
-                        END DO
-                        projector_physical_direct_trace_excess_quad = &
-                           projector_physical_direct_trace_full_quad - &
-                           projector_physical_direct_trace_active_quad
-                        IF (ABS(projector_physical_direct_trace_full_quad) > &
-                            EPSILON(projector_physical_direct_trace_full_quad)) &
-                           projector_physical_direct_trace_ratio = &
-                           projector_physical_direct_trace_active_quad/ &
-                           projector_physical_direct_trace_full_quad
-                        IF (ABS(projector_physical_direct_trace_actual_quad) > &
-                            EPSILON(projector_physical_direct_trace_actual_quad)) &
-                           projector_physical_direct_trace_active_actual_ratio = &
-                           projector_physical_direct_trace_active_quad/ &
-                           projector_physical_direct_trace_actual_quad
+                        projector_trace_metrics = qs_scf_kp_projector_trace_metrics( &
+                                                  projector_physical_direct_sol, projector_physical_direct_delta, &
+                                                  rot_hessian, rot_hessian_projector_physical, rot_hessian_projector, &
+                                                  rot_hessian_projector_physical_active)
+                        projector_physical_direct_trace_actual_quad = projector_trace_metrics%actual_quad
+                        projector_physical_direct_trace_full_quad = projector_trace_metrics%full_quad
+                        projector_physical_direct_trace_invariant_quad = projector_trace_metrics%invariant_quad
+                        projector_physical_direct_trace_active_quad = projector_trace_metrics%active_quad
+                        projector_physical_direct_trace_actual_diag_quad = projector_trace_metrics%actual_diag_quad
+                        projector_physical_direct_trace_full_diag_quad = projector_trace_metrics%full_diag_quad
+                        projector_physical_direct_trace_invariant_diag_quad = &
+                           projector_trace_metrics%invariant_diag_quad
+                        projector_physical_direct_trace_active_diag_quad = projector_trace_metrics%active_diag_quad
+                        projector_physical_direct_trace_actual_free_quad = projector_trace_metrics%actual_free_quad
+                        projector_physical_direct_trace_full_free_quad = projector_trace_metrics%full_free_quad
+                        projector_physical_direct_trace_invariant_free_quad = &
+                           projector_trace_metrics%invariant_free_quad
+                        projector_physical_direct_trace_active_free_quad = projector_trace_metrics%active_free_quad
+                        projector_physical_direct_trace_actual_norm = projector_trace_metrics%actual_norm
+                        projector_physical_direct_trace_full_norm = projector_trace_metrics%full_norm
+                        projector_physical_direct_trace_invariant_norm = projector_trace_metrics%invariant_norm
+                        projector_physical_direct_trace_active_norm = projector_trace_metrics%active_norm
+                        projector_physical_direct_trace_ratio = projector_trace_metrics%active_full_ratio
+                        projector_physical_direct_trace_active_actual_ratio = &
+                           projector_trace_metrics%active_actual_ratio
+                        projector_physical_direct_trace_invariant_ratio = &
+                           projector_trace_metrics%full_invariant_ratio
+                        projector_physical_direct_trace_excess_quad = projector_trace_metrics%excess_quad
                         projector_physical_direct_trace_invariant_gap_quad = &
-                           projector_physical_direct_trace_invariant_quad - &
-                           projector_physical_direct_trace_full_quad
-                        IF (ABS(projector_physical_direct_trace_invariant_quad) > &
-                            EPSILON(projector_physical_direct_trace_invariant_quad)) &
-                           projector_physical_direct_trace_invariant_ratio = &
-                           projector_physical_direct_trace_full_quad/ &
-                           projector_physical_direct_trace_invariant_quad
-                        rx_weight = DOT_PRODUCT(projector_physical_direct_sol, &
-                                                projector_physical_direct_sol)
-                        IF (rx_weight > EPSILON(rx_weight)) THEN
-                           projector_physical_direct_trace_actual_diag_quad = 0.0_dp
-                           projector_physical_direct_trace_full_diag_quad = 0.0_dp
-                           projector_physical_direct_trace_invariant_diag_quad = 0.0_dp
-                           projector_physical_direct_trace_active_diag_quad = 0.0_dp
-                           DO r = 1, nrot
-                              rx_shift = projector_physical_direct_sol(r)* &
-                                         projector_physical_direct_sol(r)
-                              projector_physical_direct_trace_actual_diag_quad = &
-                                 projector_physical_direct_trace_actual_diag_quad + &
-                                 rx_shift*projector_physical_direct_delta(r, r)
-                              projector_physical_direct_trace_full_diag_quad = &
-                                 projector_physical_direct_trace_full_diag_quad + &
-                                 rx_shift*(rot_hessian_projector_physical(r, r) - &
-                                           rot_hessian(r, r))
-                              projector_physical_direct_trace_invariant_diag_quad = &
-                                 projector_physical_direct_trace_invariant_diag_quad + &
-                                 rx_shift*(rot_hessian_projector(r, r) - rot_hessian(r, r))
-                              projector_physical_direct_trace_active_diag_quad = &
-                                 projector_physical_direct_trace_active_diag_quad + &
-                                 rx_shift*(rot_hessian_projector_physical_active(r, r) - &
-                                           rot_hessian(r, r))
-                           END DO
-                           projector_physical_direct_trace_actual_free_quad = &
-                              projector_physical_direct_trace_actual_quad - &
-                              projector_physical_direct_trace_actual_diag_quad
-                           projector_physical_direct_trace_full_free_quad = &
-                              projector_physical_direct_trace_full_quad - &
-                              projector_physical_direct_trace_full_diag_quad
-                           projector_physical_direct_trace_invariant_free_quad = &
-                              projector_physical_direct_trace_invariant_quad - &
-                              projector_physical_direct_trace_invariant_diag_quad
-                           projector_physical_direct_trace_active_free_quad = &
-                              projector_physical_direct_trace_active_quad - &
-                              projector_physical_direct_trace_active_diag_quad
-                           projector_physical_direct_trace_actual_norm = &
-                              projector_physical_direct_trace_actual_quad/rx_weight
-                           projector_physical_direct_trace_full_norm = &
-                              projector_physical_direct_trace_full_quad/rx_weight
-                           projector_physical_direct_trace_invariant_norm = &
-                              projector_physical_direct_trace_invariant_quad/rx_weight
-                           projector_physical_direct_trace_active_norm = &
-                              projector_physical_direct_trace_active_quad/rx_weight
-                        END IF
+                           projector_trace_metrics%invariant_gap_quad
                         projector_physical_direct_delta_negative_norm = 0.0_dp
                         projector_physical_direct_delta_positive_norm = 0.0_dp
                         projector_physical_direct_step_negative_fraction = 0.0_dp
@@ -25656,109 +25670,36 @@ CONTAINS
                            projector_physical_direct_delta_negative_norm/rx_weight
                      END IF
                      IF (logger%iter_info%print_level < debug_print_level) THEN
-                        projector_physical_direct_trace_active_quad = 0.0_dp
-                        projector_physical_direct_trace_actual_quad = 0.0_dp
-                        projector_physical_direct_trace_full_quad = 0.0_dp
-                        projector_physical_direct_trace_invariant_quad = 0.0_dp
-                        DO s = 1, nrot
-                           DO r = 1, nrot
-                              projected_term = 0.5_dp* &
-                                               ((rot_hessian_projector_physical(r, s) - rot_hessian(r, s)) + &
-                                                (rot_hessian_projector_physical(s, r) - rot_hessian(s, r)))
-                              projector_physical_direct_trace_invariant_term = 0.5_dp* &
-                                                                              ((rot_hessian_projector(r, s) - rot_hessian(r, s)) + &
-                                                                                (rot_hessian_projector(s, r) - rot_hessian(s, r)))
-                              tether_projected_term = 0.5_dp* &
-                                                      ((rot_hessian_projector_physical_active(r, s) - rot_hessian(r, s)) + &
-                                                       (rot_hessian_projector_physical_active(s, r) - rot_hessian(s, r)))
-                              rx_shift = 0.5_dp*(projector_physical_direct_delta(r, s) + &
-                                                 projector_physical_direct_delta(s, r))
-                              projector_physical_direct_trace_actual_quad = &
-                                 projector_physical_direct_trace_actual_quad + &
-                                 projector_physical_direct_sol(r)*rx_shift* &
-                                 projector_physical_direct_sol(s)
-                              projector_physical_direct_trace_full_quad = &
-                                 projector_physical_direct_trace_full_quad + &
-                                 projector_physical_direct_sol(r)*projected_term* &
-                                 projector_physical_direct_sol(s)
-                              projector_physical_direct_trace_invariant_quad = &
-                                 projector_physical_direct_trace_invariant_quad + &
-                                 projector_physical_direct_sol(r)* &
-                                 projector_physical_direct_trace_invariant_term* &
-                                 projector_physical_direct_sol(s)
-                              projector_physical_direct_trace_active_quad = &
-                                 projector_physical_direct_trace_active_quad + &
-                                 projector_physical_direct_sol(r)*tether_projected_term* &
-                                 projector_physical_direct_sol(s)
-                           END DO
-                        END DO
-                        projector_physical_direct_trace_excess_quad = &
-                           projector_physical_direct_trace_full_quad - &
-                           projector_physical_direct_trace_active_quad
-                        IF (ABS(projector_physical_direct_trace_full_quad) > &
-                            EPSILON(projector_physical_direct_trace_full_quad)) &
-                           projector_physical_direct_trace_ratio = &
-                           projector_physical_direct_trace_active_quad/ &
-                           projector_physical_direct_trace_full_quad
-                        IF (ABS(projector_physical_direct_trace_actual_quad) > &
-                            EPSILON(projector_physical_direct_trace_actual_quad)) &
-                           projector_physical_direct_trace_active_actual_ratio = &
-                           projector_physical_direct_trace_active_quad/ &
-                           projector_physical_direct_trace_actual_quad
+                        projector_trace_metrics = qs_scf_kp_projector_trace_metrics( &
+                                                  projector_physical_direct_sol, projector_physical_direct_delta, &
+                                                  rot_hessian, rot_hessian_projector_physical, rot_hessian_projector, &
+                                                  rot_hessian_projector_physical_active)
+                        projector_physical_direct_trace_actual_quad = projector_trace_metrics%actual_quad
+                        projector_physical_direct_trace_full_quad = projector_trace_metrics%full_quad
+                        projector_physical_direct_trace_invariant_quad = projector_trace_metrics%invariant_quad
+                        projector_physical_direct_trace_active_quad = projector_trace_metrics%active_quad
+                        projector_physical_direct_trace_actual_diag_quad = projector_trace_metrics%actual_diag_quad
+                        projector_physical_direct_trace_full_diag_quad = projector_trace_metrics%full_diag_quad
+                        projector_physical_direct_trace_invariant_diag_quad = &
+                           projector_trace_metrics%invariant_diag_quad
+                        projector_physical_direct_trace_active_diag_quad = projector_trace_metrics%active_diag_quad
+                        projector_physical_direct_trace_actual_free_quad = projector_trace_metrics%actual_free_quad
+                        projector_physical_direct_trace_full_free_quad = projector_trace_metrics%full_free_quad
+                        projector_physical_direct_trace_invariant_free_quad = &
+                           projector_trace_metrics%invariant_free_quad
+                        projector_physical_direct_trace_active_free_quad = projector_trace_metrics%active_free_quad
+                        projector_physical_direct_trace_actual_norm = projector_trace_metrics%actual_norm
+                        projector_physical_direct_trace_full_norm = projector_trace_metrics%full_norm
+                        projector_physical_direct_trace_invariant_norm = projector_trace_metrics%invariant_norm
+                        projector_physical_direct_trace_active_norm = projector_trace_metrics%active_norm
+                        projector_physical_direct_trace_ratio = projector_trace_metrics%active_full_ratio
+                        projector_physical_direct_trace_active_actual_ratio = &
+                           projector_trace_metrics%active_actual_ratio
+                        projector_physical_direct_trace_invariant_ratio = &
+                           projector_trace_metrics%full_invariant_ratio
+                        projector_physical_direct_trace_excess_quad = projector_trace_metrics%excess_quad
                         projector_physical_direct_trace_invariant_gap_quad = &
-                           projector_physical_direct_trace_invariant_quad - &
-                           projector_physical_direct_trace_full_quad
-                        IF (ABS(projector_physical_direct_trace_invariant_quad) > &
-                            EPSILON(projector_physical_direct_trace_invariant_quad)) &
-                           projector_physical_direct_trace_invariant_ratio = &
-                           projector_physical_direct_trace_full_quad/ &
-                           projector_physical_direct_trace_invariant_quad
-                        rx_weight = DOT_PRODUCT(projector_physical_direct_sol, &
-                                                projector_physical_direct_sol)
-                        IF (rx_weight > EPSILON(rx_weight)) THEN
-                           projector_physical_direct_trace_actual_diag_quad = 0.0_dp
-                           projector_physical_direct_trace_full_diag_quad = 0.0_dp
-                           projector_physical_direct_trace_invariant_diag_quad = 0.0_dp
-                           projector_physical_direct_trace_active_diag_quad = 0.0_dp
-                           DO r = 1, nrot
-                              rx_shift = projector_physical_direct_sol(r)* &
-                                         projector_physical_direct_sol(r)
-                              projector_physical_direct_trace_actual_diag_quad = &
-                                 projector_physical_direct_trace_actual_diag_quad + &
-                                 rx_shift*projector_physical_direct_delta(r, r)
-                              projector_physical_direct_trace_full_diag_quad = &
-                                 projector_physical_direct_trace_full_diag_quad + &
-                                 rx_shift*(rot_hessian_projector_physical(r, r) - &
-                                           rot_hessian(r, r))
-                              projector_physical_direct_trace_invariant_diag_quad = &
-                                 projector_physical_direct_trace_invariant_diag_quad + &
-                                 rx_shift*(rot_hessian_projector(r, r) - rot_hessian(r, r))
-                              projector_physical_direct_trace_active_diag_quad = &
-                                 projector_physical_direct_trace_active_diag_quad + &
-                                 rx_shift*(rot_hessian_projector_physical_active(r, r) - &
-                                           rot_hessian(r, r))
-                           END DO
-                           projector_physical_direct_trace_actual_free_quad = &
-                              projector_physical_direct_trace_actual_quad - &
-                              projector_physical_direct_trace_actual_diag_quad
-                           projector_physical_direct_trace_full_free_quad = &
-                              projector_physical_direct_trace_full_quad - &
-                              projector_physical_direct_trace_full_diag_quad
-                           projector_physical_direct_trace_invariant_free_quad = &
-                              projector_physical_direct_trace_invariant_quad - &
-                              projector_physical_direct_trace_invariant_diag_quad
-                           projector_physical_direct_trace_active_free_quad = &
-                              projector_physical_direct_trace_active_quad - &
-                              projector_physical_direct_trace_active_diag_quad
-                           projector_physical_direct_trace_actual_norm = &
-                              projector_physical_direct_trace_actual_quad/rx_weight
-                           projector_physical_direct_trace_full_norm = &
-                              projector_physical_direct_trace_full_quad/rx_weight
-                           projector_physical_direct_trace_invariant_norm = &
-                              projector_physical_direct_trace_invariant_quad/rx_weight
-                           projector_physical_direct_trace_active_norm = &
-                              projector_physical_direct_trace_active_quad/rx_weight
-                        END IF
+                           projector_trace_metrics%invariant_gap_quad
                      END IF
                      projector_physical_direct_rx_e(:) = &
                         MATMUL(response_exact_raw, projector_physical_direct_sol)
