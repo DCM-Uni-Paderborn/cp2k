@@ -346,8 +346,10 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_canonical_tether_tail_scale, &
              qs_scf_kp_density_closure_model_ready, &
              qs_scf_kp_energy_closure_preferred, &
+             qs_scf_kp_energy_occupation_plateau_ready, &
              qs_scf_kp_energy_closure_ready, &
              qs_scf_kp_energy_closure_tail_ready, &
+             qs_scf_kp_energy_bootstrap_curvature_floor, &
              qs_scf_kp_energy_curvature_floor, &
              qs_scf_kp_energy_relative_metric_ready, &
              qs_scf_kp_exit_residual, &
@@ -1268,6 +1270,28 @@ CONTAINS
    END FUNCTION qs_scf_kp_affine_rebased_drop
 
 ! **************************************************************************************************
+!> \brief Numerical floor for the exact fixed-N auxiliary-energy Newton bootstrap.
+!>
+!>        The energy gradient and Hessian both contain the Fermi susceptibility.  Dividing by a
+!>        macroscopic floor leaves nearly empty frontier states frozen in an integer occupation.
+!>        Keep only a roundoff-scale floor here so that the susceptibility cancels analytically;
+!>        the separate thermal trust region bounds the resulting energy step on the kT scale.
+!> \param curvature_max largest diagonal occupation curvature in the fixed-N group
+!> \return roundoff-scale bootstrap regularization floor
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_energy_bootstrap_curvature_floor(curvature_max) RESULT(curvature_floor)
+      REAL(KIND=dp), INTENT(IN)                          :: curvature_max
+      REAL(KIND=dp)                                      :: curvature_floor
+
+      curvature_floor = 0.0_dp
+      IF (curvature_max <= 0.0_dp) RETURN
+      curvature_floor = ot_kp_energy_curvature_numerical_factor*EPSILON(1.0_dp)* &
+                        MAX(1.0_dp, curvature_max)
+      curvature_floor = MIN(ot_kp_energy_curvature_absolute_cap, curvature_floor)
+
+   END FUNCTION qs_scf_kp_energy_bootstrap_curvature_floor
+
+! **************************************************************************************************
 !> \brief Regularization floor for the fixed-N auxiliary-energy Hessian of one spin group.
 !>
 !>        The physical diagonal is the weighted occupation susceptibility.  An absolute 1 Ha floor
@@ -1309,6 +1333,32 @@ CONTAINS
    END FUNCTION qs_scf_kp_energy_relative_metric_ready
 
 ! **************************************************************************************************
+!> \brief Identify a canonical-density defect dominated by occupation coordinates.
+!>
+!>        A diagonal mismatch in the canonical Hamiltonian frame is repaired by the fixed-N
+!>        auxiliary-energy block.  An off-diagonal mismatch instead needs orbital rotation or a
+!>        subspace rebuild.  Require accepted Mermin history before classifying the former as a
+!>        closure plateau.
+!> \param density_ready whether the canonical-density decomposition is complete
+!> \param density_diag RMS diagonal canonical-density mismatch
+!> \param density_offdiag RMS off-diagonal canonical-density mismatch
+!> \param accepted_samples accepted Mermin calibration samples in the current subspace
+!> \return whether an exact fixed-N occupation-closure candidate may be considered
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_energy_occupation_plateau_ready( &
+      density_ready, density_diag, density_offdiag, accepted_samples) RESULT(ready)
+      LOGICAL, INTENT(IN)                                :: density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_diag, density_offdiag
+      INTEGER, INTENT(IN)                                :: accepted_samples
+      LOGICAL                                            :: ready
+
+      ready = density_ready .AND. density_diag > 0.0_dp .AND. &
+              density_offdiag >= 0.0_dp .AND. density_diag > density_offdiag .AND. &
+              accepted_samples >= ot_kp_schur_calibration_min_samples
+
+   END FUNCTION qs_scf_kp_energy_occupation_plateau_ready
+
+! **************************************************************************************************
 !> \brief Require a complete, calibrated physical residual before blockwise energy closure.
 !> \param residual_delta current global OT residual
 !> \param physical_delta_norm complete fixed-N energy/rotation RMS
@@ -1344,16 +1394,18 @@ CONTAINS
 !> \param rotation_residual physical rotation-gradient norm squared
 !> \param gauge_residual gauge-like rotation-gradient norm squared
 !> \param tail_ready whether the current MO space has mature accepted tail history
+!> \param occupation_plateau_ready whether the density defect is diagonal occupation mismatch
 !> \return whether an energy-only fixed-N closure candidate is required
 ! **************************************************************************************************
    PURE FUNCTION qs_scf_kp_energy_closure_ready(new_search_point, density_ready, physical_delta, &
                                                 density_delta, eps_scf, energy_residual, &
-                                                rotation_residual, gauge_residual, tail_ready) RESULT(ready)
+                                                rotation_residual, gauge_residual, tail_ready, &
+                                                occupation_plateau_ready) RESULT(ready)
       LOGICAL, INTENT(IN)                                :: new_search_point, density_ready
       REAL(KIND=dp), INTENT(IN)                          :: physical_delta, density_delta, eps_scf, &
                                                             energy_residual, rotation_residual, &
                                                             gauge_residual
-      LOGICAL, INTENT(IN)                                :: tail_ready
+      LOGICAL, INTENT(IN)                                :: tail_ready, occupation_plateau_ready
       LOGICAL                                            :: ready
 
       REAL(KIND=dp)                                      :: energy_signal, nonenergy_signal
@@ -1369,7 +1421,7 @@ CONTAINS
       energy_signal = MAX(0.0_dp, energy_residual)
       nonenergy_signal = MAX(0.0_dp, rotation_residual) + MAX(0.0_dp, gauge_residual)
       ready = energy_signal > MAX(nonenergy_signal, EPSILON(energy_signal)) .AND. &
-              physical_delta <= density_delta
+              (physical_delta <= density_delta .OR. occupation_plateau_ready)
 
    END FUNCTION qs_scf_kp_energy_closure_ready
 
@@ -8133,7 +8185,10 @@ CONTAINS
                                trial_occupation, scf_env%iter_count, scf_env%iter_delta, scf_control%eps_scf, &
                                scf_env%qs_ot_restart%valid, protect_mermin_ls_sample, fermi_window_guarded, &
                                allow_ot_kp_subspace_refresh, allow_ot_kp_orbital_tail_rebase)
-      IF (ot_kp_subspace_refresh) GOTO 900
+      IF (ot_kp_subspace_refresh) THEN
+         local_ot_env(:)%kpoint_energy_closure_attempted = .FALSE.
+         GOTO 900
+      END IF
       CALL qs_scf_loop_update_ot_kp_occ_preconditioner(local_ot_env)
       IF (logger%iter_info%print_level >= debug_print_level) THEN
          ALLOCATE (unweighted_residual_sq(2, nkpoint, nspin_ot), &
@@ -9286,8 +9341,9 @@ CONTAINS
 
       INTEGER                                            :: density_buffer_ready_i, ikpoint, imo, &
                                                             ispin, local_kpoint, nmo
-      LOGICAL :: base_state, collapsed, density_buffer_ready, density_closure_stagnant, &
-         density_history_stagnant, high_residual_stagnant, orbital_tail_rebase, step_ready
+      LOGICAL :: base_state, collapsed, defer_energy_closure, density_buffer_ready, &
+         density_closure_stagnant, density_history_stagnant, high_residual_stagnant, &
+         orbital_tail_rebase, step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
                                                             maxocc, occ_tail, residual_delta, &
                                                             weight
@@ -9340,6 +9396,13 @@ CONTAINS
       high_residual_stagnant = residual_delta > SQRT(MAX(eps_scf, EPSILON(1.0_dp))) .AND. &
                                local_ot_env(1)%ds_min <= &
                                MAX(eps_scf, SQRT(EPSILON(1.0_dp)))
+      defer_energy_closure = qs_scf_kp_energy_occupation_plateau_ready( &
+                             local_ot_env(1)%kpoint_density_stationarity_ready, &
+                             local_ot_env(1)%kpoint_density_stationarity_diag, &
+                             local_ot_env(1)%kpoint_density_stationarity_offdiag, &
+                             local_ot_env(1)%mermin_ls_accepted_quality_samples) .AND. &
+                             .NOT. local_ot_env(1)%kpoint_energy_closure_attempted .AND. &
+                             .NOT. high_residual_stagnant
       density_closure_stagnant = local_ot_env(1)%kpoint_density_stationarity_ready .AND. &
                                  density_buffer_ready .AND. &
                                  qs_scf_kp_density_closure_refresh_ready( &
@@ -9361,6 +9424,9 @@ CONTAINS
                             local_ot_env(1)%schur_closure_response_samples, &
                             local_ot_env(1)%schur_closure_response_quality_ema)
       density_closure_stagnant = density_closure_stagnant .OR. density_history_stagnant
+      ! Reserve one search direction for the diagonal fixed-N energy closure before
+      ! replacing the orbital subspace; a later refresh re-arms this one-shot attempt.
+      IF (defer_energy_closure) RETURN
       refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
                                                 residual_delta, eps_scf, step_ready, base_state, &
                                                 high_residual_stagnant, density_closure_stagnant)
@@ -12772,8 +12838,8 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: channel_pair_i, channel_pair_j
       LOGICAL                                            :: audit_ready
       REAL(KIND=dp) :: canonical_kTS, channel_max, channel_metric, channel_metric_diag, &
-         channel_metric_offdiag, channel_pair_max, channel_weight, density_delta, density_max, &
-         density_metric, density_weight, maxocc, sigma
+         channel_metric_offdiag, channel_pair_max, channel_weight, density_delta, density_diag, &
+         density_max, density_metric, density_offdiag, density_weight, maxocc, sigma
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_mu, evals
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: channel_density_diag, channel_density_max, &
          channel_density_metric, channel_density_offdiag, channel_density_weight, h_im, h_re
@@ -12788,6 +12854,8 @@ CONTAINS
          DO local_channel = 1, SIZE(local_ot_env)
             local_ot_env(local_channel)%kpoint_density_stationarity_ready = .FALSE.
             local_ot_env(local_channel)%kpoint_density_stationarity_delta = -1.0_dp
+            local_ot_env(local_channel)%kpoint_density_stationarity_diag = -1.0_dp
+            local_ot_env(local_channel)%kpoint_density_stationarity_offdiag = -1.0_dp
             local_ot_env(local_channel)%kpoint_density_stationarity_max = -1.0_dp
             local_ot_env(local_channel)%kpoint_canonical_occupation_ready = .FALSE.
             local_ot_env(local_channel)%kpoint_canonical_mu = 0.0_dp
@@ -12934,17 +13002,25 @@ CONTAINS
             END DO
          END DO
          density_delta = 0.0_dp
-         IF (density_weight > 0.0_dp) density_delta = SQRT(MAX(0.0_dp, density_metric)/density_weight)
+         density_diag = 0.0_dp
+         density_offdiag = 0.0_dp
+         IF (density_weight > 0.0_dp) THEN
+            density_delta = SQRT(MAX(0.0_dp, density_metric)/density_weight)
+            density_diag = SQRT(MAX(0.0_dp, SUM(channel_density_diag))/density_weight)
+            density_offdiag = SQRT(MAX(0.0_dp, SUM(channel_density_offdiag))/density_weight)
+         END IF
 
          DO local_channel = 1, SIZE(local_ot_env)
             local_ot_env(local_channel)%kpoint_density_stationarity_ready = .TRUE.
             local_ot_env(local_channel)%kpoint_density_stationarity_delta = density_delta
+            local_ot_env(local_channel)%kpoint_density_stationarity_diag = density_diag
+            local_ot_env(local_channel)%kpoint_density_stationarity_offdiag = density_offdiag
             local_ot_env(local_channel)%kpoint_density_stationarity_max = density_max
          END DO
          IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
-            " OT k-point canonical density stationarity rms max mu kTS:", &
-            density_delta, density_max, canonical_mu(1), canonical_kTS
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+            " OT k-point canonical density stationarity rms diag offdiag max mu kTS:", &
+            density_delta, density_diag, density_offdiag, density_max, canonical_mu(1), canonical_kTS
          IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
             DO ispin = 1, nspin_ot
                DO ikpoint = 1, SIZE(wkp)
@@ -16332,10 +16408,9 @@ CONTAINS
             CALL para_env_inter_kp%max(occ_curv_max(group))
             CALL para_env_inter_kp%max(tether_curv_max(group))
             CALL para_env_inter_kp%max(total_curv_max(group))
-            ! The diagonal bootstrap must remain able to rebuild a fractional
-            ! Fermi edge from an atomic or integer-like initial occupation.
-            ! Relative curvature is enabled only in the complete dense
-            ! fixed-N tail below.
+            ! Keep the ordinary coupled bootstrap conservative.  A separate
+            ! energy-closure candidate below uses the exact susceptibility
+            ! pseudoinverse once a physical occupation plateau is established.
             energy_curvature_floor(group) = ot_kp_energy_curvature_absolute_cap
          END DO
 
@@ -16837,33 +16912,33 @@ CONTAINS
          density_full_global_tail_prefer, density_full_global_tail_probe_ready, &
          density_full_tail_probe_ready, density_pair_activation_ready, density_pair_shape_ok, &
          energy_closure_candidate_selected, energy_closure_competing_ready, &
-         energy_closure_tail_ready, exact_active_response_ready
-      LOGICAL :: exact_attempt_response, exact_density_basis_audit_ready, &
-         exact_density_basis_curvfloor_audit_ready, exact_density_basis_damped_audit_ready, &
-         exact_density_basis_filtered_audit_ready, exact_density_basis_selective_audit_ready, &
-         exact_density_direct_response_ready, exact_density_floor_audit_ready, &
-         exact_density_floor_safe_audit_ready, exact_density_full_audit_ready, &
-         exact_density_full_response_ready, exact_density_plateau_response_ready, &
-         exact_density_response_ready, exact_energy_model_ready, exact_physical_response_ready, &
-         failed, fermi_active_pair, inactive_gauge_projection_used
-      LOGICAL :: metric_attempt_current_bridge, metric_attempt_response, &
-         metric_attempt_selectable, metric_attempt_tail_bridge, multisecant_response_ready, &
-         multisecant_update_eligible, multisecant_update_ready, multisecant_update_used, &
-         new_search_point, physical_delta_group_ready, physical_delta_norm_ready, &
-         physical_delta_plateau_ready, physical_delta_raw_tail_ready, prediction_candidate_ready, &
-         prediction_candidate_selected, prediction_probe_selected, prediction_transport_ready, &
-         prediction_update_eligible, prediction_update_ready, prediction_update_used, &
-         projector_density_full_audit_enabled
-      LOGICAL :: projector_density_full_history_enabled, &
+         energy_closure_tail_ready, energy_occupation_plateau_ready
+      LOGICAL :: exact_active_response_ready, exact_attempt_response, &
+         exact_density_basis_audit_ready, exact_density_basis_curvfloor_audit_ready, &
+         exact_density_basis_damped_audit_ready, exact_density_basis_filtered_audit_ready, &
+         exact_density_basis_selective_audit_ready, exact_density_direct_response_ready, &
+         exact_density_floor_audit_ready, exact_density_floor_safe_audit_ready, &
+         exact_density_full_audit_ready, exact_density_full_response_ready, &
+         exact_density_plateau_response_ready, exact_density_response_ready, &
+         exact_energy_model_ready, exact_physical_response_ready, failed, fermi_active_pair
+      LOGICAL :: inactive_gauge_projection_used, metric_attempt_current_bridge, &
+         metric_attempt_response, metric_attempt_selectable, metric_attempt_tail_bridge, &
+         multisecant_response_ready, multisecant_update_eligible, multisecant_update_ready, &
+         multisecant_update_used, new_search_point, physical_delta_group_ready, &
+         physical_delta_norm_ready, physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
+         prediction_candidate_ready, prediction_candidate_selected, prediction_probe_selected, &
+         prediction_transport_ready, prediction_update_eligible, prediction_update_ready, &
+         prediction_update_used
+      LOGICAL :: projector_density_full_audit_enabled, projector_density_full_history_enabled, &
          projector_inactive_offdiag_candidate_ready, &
          projector_inactive_offdiag_tail_refresh_probe, &
          projector_inactive_offdiag_tail_refresh_ready, projector_offdiag_candidate_inactive, &
          projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
          projector_physical_candidate_ready, projector_physical_candidate_selected, &
          projector_physical_coupled_model_ready, projector_physical_direct_basis_tail_limited, &
-         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
-         projector_physical_direct_candidate_used
-      LOGICAL :: projector_physical_direct_density_candidate_ready, &
+         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected
+      LOGICAL :: projector_physical_direct_candidate_used, &
+         projector_physical_direct_density_candidate_ready, &
          projector_physical_direct_density_candidate_selected, &
          projector_physical_direct_density_fshadow_ready, &
          projector_physical_direct_density_override_protected, &
@@ -16872,29 +16947,30 @@ CONTAINS
          projector_physical_direct_density_selected_probe_ready, &
          projector_physical_direct_density_tail_probe_ready, &
          projector_physical_direct_diagref_candidate_ready, &
-         projector_physical_direct_effective_response_ready, &
-         projector_physical_direct_mixed_enabled
-      LOGICAL :: projector_physical_direct_mixed_promoted, &
-         projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
-         projector_physical_direct_shadow_enabled, &
+         projector_physical_direct_effective_response_ready
+      LOGICAL :: projector_physical_direct_mixed_enabled, &
+         projector_physical_direct_mixed_promoted, projector_physical_direct_normcap_shadow_ready, &
+         projector_physical_direct_promoted, projector_physical_direct_shadow_enabled, &
          projector_physical_direct_spectral_candidate_ready, &
          projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
          projector_physical_direct_spectral_probe_quality_ready, &
          projector_physical_direct_spectral_probe_ready, &
          projector_physical_direct_spectral_probe_selected, &
-         projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready
-      LOGICAL :: projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
+         projector_physical_direct_spectral_ready
+      LOGICAL :: projector_physical_direct_tail_probe_ready, &
+         projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
          projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
          projector_response_candidate_selected, reduced_secant_candidate_enabled, &
          reduced_secant_candidate_ready, reduced_secant_candidate_selected, &
          reduced_secant_measured_response, reduced_secant_probe_selected, &
          reduced_secant_replacement_eligible, reduced_secant_update_eligible, &
          relative_energy_metric_ready, residual_pair_selection_ready, residual_pair_strict_tail, &
-         response_model_available, schur_active_subspace, solved
-      LOGICAL :: split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
-         split_candidate_selected, split_residual_competitive, trust_rejected, &
-         vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
+         response_model_available
+      LOGICAL :: schur_active_subspace, solved, split_candidate_diagnostic, &
+         split_candidate_enabled, split_candidate_ready, split_candidate_selected, &
+         split_residual_competitive, trust_rejected, vector_secant_update_eligible, &
+         vector_secant_update_ready, vector_secant_update_used
       LOGICAL, ALLOCATABLE, DIMENSION(:, :, :) :: channel_density_pair_active, &
          channel_density_pair_candidate, channel_fermi_pair_active, channel_residual_pair_active, &
          channel_residual_pair_candidate
@@ -20174,6 +20250,12 @@ CONTAINS
                                      residual_delta, physical_delta_norm, &
                                      local_ot_env(1)%kpoint_density_stationarity_delta, &
                                      local_ot_env(1)%mermin_ls_accepted_quality_samples)
+         energy_occupation_plateau_ready = qs_scf_kp_energy_occupation_plateau_ready( &
+                                           local_ot_env(1)%kpoint_density_stationarity_ready, &
+                                           local_ot_env(1)%kpoint_density_stationarity_diag, &
+                                           local_ot_env(1)%kpoint_density_stationarity_offdiag, &
+                                           local_ot_env(1)%mermin_ls_accepted_quality_samples)
+         energy_closure_tail_ready = energy_closure_tail_ready .OR. energy_occupation_plateau_ready
          physical_delta_norm_limit = &
             ot_kp_schur_physical_norm_tail_factor*ot_kp_schur_physical_tail_eps_factor* &
             eps_scf_channel
@@ -26941,7 +27023,7 @@ CONTAINS
                                  local_ot_env(1)%kpoint_density_stationarity_delta, &
                                  eps_scf_channel, rot_grad_energy_norm, &
                                  rot_grad_physical_norm, rot_grad_gauge_norm, &
-                                 energy_closure_tail_ready), &
+                                 energy_closure_tail_ready, energy_occupation_plateau_ready), &
                                  density_full_direct_coupled_model_ready, &
                                  density_full_direct_model_calibrated_drop, &
                                  density_full_direct_response_weighted_trust_ratio, &
@@ -30588,7 +30670,7 @@ CONTAINS
                new_search_point, local_ot_env(1)%kpoint_density_stationarity_ready, residual_delta, &
                local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel, &
                rot_grad_energy_norm, rot_grad_physical_norm, rot_grad_gauge_norm, &
-               energy_closure_tail_ready), &
+               energy_closure_tail_ready, energy_occupation_plateau_ready), &
                new_search_point, local_ot_env(1)%kpoint_density_stationarity_ready, &
                energy_closure_tail_ready, residual_delta, &
                local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel
@@ -30596,9 +30678,39 @@ CONTAINS
                 new_search_point, local_ot_env(1)%kpoint_density_stationarity_ready, residual_delta, &
                 local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel, &
                 rot_grad_energy_norm, rot_grad_physical_norm, rot_grad_gauge_norm, &
-                energy_closure_tail_ready)) THEN
+                energy_closure_tail_ready, energy_occupation_plateau_ready)) THEN
+               local_ot_env(:)%kpoint_energy_closure_attempted = .TRUE.
                energy_closure_competing_ready = .NOT. attempt_failed
                energy_closure_reference_drop = dense_expected_drop
+               ! Solve the diagonal fixed-N occupation block in its physical
+               ! susceptibility metric.  This is an independent closure
+               ! candidate, not a replacement for the coupled base direction:
+               ! the ordinary energy trust radius and Mermin line search still
+               ! bound and accept the finite auxiliary-energy step.
+               energy_curvature_floor = &
+                  qs_scf_kp_energy_bootstrap_curvature_floor(total_curv_diag_max)
+               z_trial(:) = 0.0_dp
+               energy_active_occ_sum = 0.0_dp
+               energy_active_shift = 0.0_dp
+               DO ie = 1, ne
+                  IF (curv(ie) <= EPSILON(curv(ie))) CYCLE
+                  z_trial(ie) = grad_e(ie)/MAX(curv(ie), energy_curvature_floor)
+                  energy_active_occ_sum = energy_active_occ_sum + occ_curv(ie)
+                  energy_active_shift = energy_active_shift + occ_curv(ie)*z_trial(ie)
+               END DO
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%sum(energy_active_occ_sum)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%sum(energy_active_shift)
+               IF (energy_active_occ_sum > EPSILON(energy_active_occ_sum)) THEN
+                  energy_active_shift = energy_active_shift/energy_active_occ_sum
+                  DO ie = 1, ne
+                     IF (curv(ie) > EPSILON(curv(ie))) &
+                        z_trial(ie) = z_trial(ie) - energy_active_shift
+                  END DO
+               ELSE
+                  z_trial(:) = 0.0_dp
+               END IF
                energy_closure_gdot_energy = DOT_PRODUCT(grad_e, z_trial)
                CALL kpoint_ot_mixed_projected_term(z_trial, z_trial, occ_curv, tether_curv, &
                                                    occ_curv_projection_sum, channel_nmo, e_offset, &

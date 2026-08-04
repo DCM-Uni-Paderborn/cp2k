@@ -498,7 +498,10 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: kpoint_complete_physical_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_projected_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_density_stationarity_delta = -1.0_dp
+      REAL(KIND=dp) :: kpoint_density_stationarity_diag = -1.0_dp
+      REAL(KIND=dp) :: kpoint_density_stationarity_offdiag = -1.0_dp
       REAL(KIND=dp) :: kpoint_density_stationarity_max = -1.0_dp
+      LOGICAL :: kpoint_energy_closure_attempted = .FALSE.
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: kpoint_density_pair_residual
       LOGICAL :: kpoint_canonical_occupation_ready = .FALSE.
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: kpoint_canonical_occupation
@@ -1403,7 +1406,10 @@ CONTAINS
       qs_ot_env%kpoint_complete_physical_delta = -1.0_dp
       qs_ot_env%kpoint_projected_delta = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_delta = -1.0_dp
+      qs_ot_env%kpoint_density_stationarity_diag = -1.0_dp
+      qs_ot_env%kpoint_density_stationarity_offdiag = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_max = -1.0_dp
+      qs_ot_env%kpoint_energy_closure_attempted = .FALSE.
       IF (ALLOCATED(qs_ot_env%kpoint_density_pair_residual)) THEN
          qs_ot_env%kpoint_density_pair_residual(:, :) = 0.0_dp
       END IF
