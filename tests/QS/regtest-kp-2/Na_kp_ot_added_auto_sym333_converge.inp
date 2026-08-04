@@ -3,12 +3,13 @@
 ! suite remains inexpensive.  It exercises a common fixed-N chemical
 ! potential, nontrivial irreducible k-point weights, ADDED_MOS AUTO, complex
 ! rotations, auxiliary energies, and the occupation preconditioner.
-! Local MPI-2/OMP-2 reference: AUTO grows 4->8->16 and converges in 315
-! final-space steps at F = -9.01953180115599 Ha.  Rate-aware orbital-tail
+! Local MPI-2/OMP-2 reference: AUTO grows 4->8->16 and converges in 288
+! final-space steps at F = -9.01953180111325 Ha.  Rate-aware orbital-tail
 ! rebases use the complete fixed-N physical residual; the same case required
 ! 528 steps before that residual was available to the refresh gate.
 ! Restarting the resulting checkpoint at EPS_SCF 1E-7 converges in one step at
-! F = -9.01953180115058 Ha.  The strict 1E-8 companion converges in 104 steps.
+! the same printed endpoint.  The strict 1E-8 companion converges in 121 steps
+! at F = -9.01953179953748 Ha, within 6.3E-9 Ha of diagonalization.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Na_kp_ot_added_auto_sym333_converge

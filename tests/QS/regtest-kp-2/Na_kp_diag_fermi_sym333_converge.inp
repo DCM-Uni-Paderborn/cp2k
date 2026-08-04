@@ -1,11 +1,13 @@
-! Strict manual residual-tail companion for
-! Na_kp_ot_added_auto_sym333_converge.inp. Run the source input first in the
-! same directory. Local MPI-2/OMP-2 reference: 121 OT steps at EPS_SCF 1E-8,
-! with F = -9.01953179953748 Ha and no band-edge warning. This input is
-! intentionally not listed in TEST_FILES.toml.
+! Slow/manual diagonalization reference for the symmetry-reduced metallic
+! k-point OT companion. This input is intentionally not listed in
+! TEST_FILES.toml so the default regression suite remains inexpensive.
+! It uses the same 3x3x3 mesh, 16-MO space, temperature, basis, potential,
+! and fixed total electron number as Na_kp_ot_added_auto_sym333_converge.inp.
+! Local MPI-2/OMP-2 reference: 25 SCF steps at
+! F = -9.01953179333602 Ha and chemical potential -0.07884967802581 Ha.
 &GLOBAL
-  PRINT_LEVEL HIGH
-  PROJECT Na_kp_ot_added_auto_sym333_restart_strict
+  PRINT_LEVEL MEDIUM
+  PROJECT Na_kp_diag_fermi_sym333_converge
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -14,7 +16,6 @@
   &DFT
     BASIS_SET_FILE_NAME BASIS_SET
     POTENTIAL_FILE_NAME POTENTIAL
-    WFN_RESTART_FILE_NAME Na_kp_ot_added_auto_sym333_converge-RESTART.kp
     &KPOINTS
       FULL_GRID OFF
       SCHEME MONKHORST-PACK 3 3 3
@@ -27,19 +28,19 @@
       EPS_DEFAULT 1.0E-8
     &END QS
     &SCF
-      ADDED_MOS AUTO
+      ADDED_MOS 16
       EPS_SCF 1.0E-8
       MAX_SCF 240
-      SCF_GUESS RESTART
-      &OT
-        ALGORITHM IRAC
-        ENERGIES
-        LINESEARCH 2PNT
-        MINIMIZER CG
-        OCCUPATION_PRECONDITIONER
-        PRECONDITIONER FULL_SINGLE_INVERSE
-        ROTATION
-      &END OT
+      SCF_GUESS ATOMIC
+      &DIAGONALIZATION
+        ALGORITHM STANDARD
+      &END DIAGONALIZATION
+      &MIXING
+        ALPHA 0.2
+        BETA 1.5
+        METHOD BROYDEN_MIXING
+        NBUFFER 8
+      &END MIXING
       &SMEAR
         ELECTRONIC_TEMPERATURE 300
         METHOD FERMI_DIRAC

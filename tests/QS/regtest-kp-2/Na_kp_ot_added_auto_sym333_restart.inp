@@ -2,7 +2,7 @@
 ! Run the source input first in the same directory. The symmetry-reduced
 ! 3x3x3 channels and adaptive 16-MO virtual space are restored in one SCF
 ! step. Current MPI-2/OMP-2 source and restart Mermin energies are
-! -9.01953180115599 and -9.01953180115058 Ha, respectively.
+! -9.01953180111325 and -9.01953180111314 Ha, respectively.
 ! This input is intentionally not listed in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL HIGH
