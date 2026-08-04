@@ -26293,6 +26293,15 @@ CONTAINS
                            closure_response_fitted_residual_ratio = closure_density_probe_residual_ratio
                            closure_response_pair_fitted_residual_ratio = closure_density_probe_residual_ratio
                         END IF
+                        ! A finite symmetric fit is not necessarily a useful closure model.  In
+                        ! particular, nearly collinear accepted steps can amplify endpoint noise
+                        ! while still passing the algebraic rank test.  Before a reduced baseline
+                        ! exists, require the learned response to improve on the zero correction.
+                        closure_response_subspace_ready = &
+                           qs_scf_kp_closure_response_preferred( &
+                           closure_response_subspace_ready, .FALSE., &
+                           closure_response_residual_ratio, &
+                           closure_response_pair_fitted_residual_ratio, 0.0_dp)
                         IF (logger%iter_info%print_level >= debug_print_level .AND. &
                             logger%para_env%is_source()) &
                            WRITE (cp_logger_get_default_unit_nr(logger), &
