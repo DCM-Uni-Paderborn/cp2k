@@ -294,6 +294,8 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_mermin_residual_pareto_scale, &
              qs_scf_kp_reduced_subspace_step, &
              qs_scf_kp_reduced_subspace_replacement_step, &
+             qs_scf_kp_fixed_n_energy_hessian, &
+             qs_scf_kp_project_symmetric_subspace_correction, &
              qs_scf_kp_full_residual_completion, &
              qs_scf_kp_active_residual_affine, &
              qs_scf_kp_affine_residual_minimum, &
@@ -360,6 +362,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_canonical_tether_tail_scale, &
              qs_scf_kp_density_closure_model_ready, &
              qs_scf_kp_energy_closure_preferred, &
+             qs_scf_kp_energy_closure_response_ready, &
              qs_scf_kp_energy_occupation_plateau_ready, &
              qs_scf_kp_energy_closure_ready, &
              qs_scf_kp_energy_closure_tail_ready, &
@@ -1462,6 +1465,42 @@ CONTAINS
                   MAX(competing_drop, EPSILON(competing_drop))
 
    END FUNCTION qs_scf_kp_energy_closure_preferred
+
+! **************************************************************************************************
+!> \brief Admit a cross-validated self-consistent response in the fixed-N energy closure.
+!>
+!>        An energy-only closure has no rotation response by construction. Requiring the full
+!>        coupled predictor's rotation quality therefore discards precisely the accepted secants
+!>        which resolve a diagonal occupation plateau. Retain the independently validated
+!>        auxiliary-energy block only when its held-out response, observable Hessian work and
+!>        directional curvature are all physical.
+!> \param finite all response-prediction audits are finite
+!> \param work_consistent accepted-step Hessian work is reproducible
+!> \param energy_history_ready current and previous secants are energy-only closure steps
+!> \param energy_quality held-out auxiliary-energy response quality
+!> \param work_quality held-out observable-work quality
+!> \param alignment response-vector alignment
+!> \param curvature_min minimum bidirectional measured/predicted curvature ratio
+!> \param curvature_max maximum bidirectional measured/predicted curvature ratio
+!> \return whether the response correction may enter the energy-only Hessian
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_energy_closure_response_ready( &
+      finite, work_consistent, energy_history_ready, energy_quality, work_quality, alignment, &
+      curvature_min, curvature_max) RESULT(ready)
+      LOGICAL, INTENT(IN)                                :: finite, work_consistent, &
+                                                            energy_history_ready
+      REAL(KIND=dp), INTENT(IN)                          :: energy_quality, work_quality, alignment, &
+                                                            curvature_min, curvature_max
+      LOGICAL                                            :: ready
+
+      ready = finite .AND. work_consistent .AND. energy_history_ready .AND. &
+              energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
+              work_quality >= ot_kp_schur_prediction_quality_min .AND. &
+              alignment >= ot_kp_schur_prediction_alignment_min .AND. &
+              curvature_min >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
+              curvature_max <= ot_kp_schur_prediction_curvature_ratio_max
+
+   END FUNCTION qs_scf_kp_energy_closure_response_ready
 
 ! **************************************************************************************************
 !> \brief Admit a fresh coupled density-closure model after the projected Mermin residual converged.
@@ -4871,6 +4910,153 @@ CONTAINS
                   orthonormal_modes, work_mode)
 
    END SUBROUTINE qs_scf_kp_reduced_subspace_replacement_step
+
+! **************************************************************************************************
+!> \brief Build the ungauged fixed-N Mermin Hessian in auxiliary-energy coordinates.
+!>
+!>        The occupation and canonical-tether terms are projected before they are combined.  This
+!>        matrix is singular along the corresponding constant-energy gauges by construction; it
+!>        is intended for tangent-space models, not a direct unconstrained LAPACK solve.
+!> \param occ_curv occupation susceptibility for the global fixed-N projector
+!> \param tether_curv channel-local canonical tether susceptibility
+!> \param occ_curv_sum global sum of the occupation susceptibility
+!> \param channel_nmo number of auxiliary energies in each channel
+!> \param e_offset first auxiliary-energy index of each channel
+!> \param hessian ungauged constrained physical Hessian
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_fixed_n_energy_hessian(occ_curv, tether_curv, occ_curv_sum, &
+                                                channel_nmo, e_offset, hessian)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
+      REAL(KIND=dp), INTENT(IN)                          :: occ_curv_sum
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: hessian
+
+      INTEGER                                            :: first_energy, ie, je, local_channel, &
+                                                            ne, nmo
+      REAL(KIND=dp)                                      :: weight_sum
+
+      ne = SIZE(occ_curv)
+      CPASSERT(SIZE(tether_curv) == ne)
+      CPASSERT(ALL(SHAPE(hessian) == [ne, ne]))
+      CPASSERT(SIZE(channel_nmo) == SIZE(e_offset))
+
+      hessian(:, :) = 0.0_dp
+      DO ie = 1, ne
+         hessian(ie, ie) = occ_curv(ie) + tether_curv(ie)
+      END DO
+      IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+         DO je = 1, ne
+            DO ie = 1, ne
+               hessian(ie, je) = hessian(ie, je) - &
+                                  occ_curv(ie)*occ_curv(je)/occ_curv_sum
+            END DO
+         END DO
+      END IF
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         IF (nmo <= 0) CYCLE
+         first_energy = e_offset(local_channel)
+         CPASSERT(first_energy >= 1 .AND. first_energy + nmo - 1 <= ne)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+         DO je = first_energy, first_energy + nmo - 1
+            DO ie = first_energy, first_energy + nmo - 1
+               hessian(ie, je) = hessian(ie, je) - &
+                                  tether_curv(ie)*tether_curv(je)/weight_sum
+            END DO
+         END DO
+      END DO
+      hessian(:, :) = 0.5_dp*(hessian + TRANSPOSE(hessian))
+
+   END SUBROUTINE qs_scf_kp_fixed_n_energy_hessian
+
+! **************************************************************************************************
+!> \brief Restrict a symmetric Hessian correction to the measured step subspace.
+!>
+!>        A minimum-norm multisecant correction is dense even though only its action on the
+!>        accepted steps is identifiable. Applying that dense completion in an inverse solve can
+!>        create arbitrary response in the unobserved complement. This routine returns
+!>
+!>          P * 0.5*(correction + correction^T) * P,
+!>
+!>        where P is the orthogonal projector onto the numerically independent supplied modes.
+!> \param correction symmetric correction before subspace restriction
+!> \param modes measured step vectors spanning the identifiable response
+!> \param projected_correction correction with zero action outside the measured subspace
+!> \param rank numerical rank of the measured modes
+!> \param ready whether a finite nonempty projection was built
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_project_symmetric_subspace_correction( &
+      correction, modes, projected_correction, rank, ready)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: correction, modes
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: projected_correction
+      INTEGER, INTENT(OUT)                               :: rank
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      INTEGER                                            :: i, j, mode_count, n, pass
+      REAL(KIND=dp)                                      :: mode_norm, mode_scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: work_mode
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: modal_correction, &
+                                                            orthonormal_modes, symmetric_correction
+
+      n = SIZE(correction, 1)
+      mode_count = SIZE(modes, 2)
+      CPASSERT(ALL(SHAPE(correction) == [n, n]))
+      CPASSERT(SIZE(modes, 1) == n)
+      CPASSERT(ALL(SHAPE(projected_correction) == [n, n]))
+
+      projected_correction(:, :) = 0.0_dp
+      rank = 0
+      ready = .FALSE.
+      IF (n <= 0 .OR. mode_count <= 0) RETURN
+      IF (.NOT. ALL(correction == correction) .OR. .NOT. ALL(modes == modes)) RETURN
+
+      ALLOCATE (orthonormal_modes(n, mode_count), work_mode(n))
+      orthonormal_modes(:, :) = 0.0_dp
+      mode_scale = 0.0_dp
+      DO j = 1, mode_count
+         mode_scale = MAX(mode_scale, SQRT(MAX(0.0_dp, DOT_PRODUCT(modes(:, j), modes(:, j)))))
+      END DO
+      IF (mode_scale <= TINY(1.0_dp)) THEN
+         DEALLOCATE (orthonormal_modes, work_mode)
+         RETURN
+      END IF
+
+      DO j = 1, mode_count
+         work_mode(:) = modes(:, j)
+         DO pass = 1, 2
+            DO i = 1, rank
+               work_mode(:) = work_mode - &
+                              DOT_PRODUCT(orthonormal_modes(:, i), work_mode)* &
+                              orthonormal_modes(:, i)
+            END DO
+         END DO
+         mode_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(work_mode, work_mode)))
+         IF (mode_norm <= 64.0_dp*SQRT(EPSILON(1.0_dp))*mode_scale) CYCLE
+         rank = rank + 1
+         orthonormal_modes(:, rank) = work_mode/mode_norm
+      END DO
+      IF (rank <= 0) THEN
+         DEALLOCATE (orthonormal_modes, work_mode)
+         RETURN
+      END IF
+
+      ALLOCATE (symmetric_correction(n, n), modal_correction(rank, rank))
+      symmetric_correction(:, :) = 0.5_dp*(correction + TRANSPOSE(correction))
+      modal_correction(:, :) = MATMUL(TRANSPOSE(orthonormal_modes(:, 1:rank)), &
+                                      MATMUL(symmetric_correction, &
+                                             orthonormal_modes(:, 1:rank)))
+      modal_correction(:, :) = 0.5_dp*(modal_correction + TRANSPOSE(modal_correction))
+      projected_correction(:, :) = &
+         MATMUL(orthonormal_modes(:, 1:rank), &
+                MATMUL(modal_correction, TRANSPOSE(orthonormal_modes(:, 1:rank))))
+      projected_correction(:, :) = 0.5_dp* &
+                                    (projected_correction + TRANSPOSE(projected_correction))
+      ready = ALL(projected_correction == projected_correction)
+      IF (.NOT. ready) projected_correction(:, :) = 0.0_dp
+      DEALLOCATE (modal_correction, orthonormal_modes, symmetric_correction, work_mode)
+
+   END SUBROUTINE qs_scf_kp_project_symmetric_subspace_correction
 
 ! **************************************************************************************************
 !> \brief Build a sign-aware step for an indefinite reduced Schur model.
@@ -16946,6 +17132,7 @@ CONTAINS
       INTEGER, PARAMETER :: max_schur_rot = ot_kp_schur_max_rot, reject_dgesv = 1, &
          reject_model_gap = 6, reject_model_mismatch = 8, reject_nondescent = 2, reject_norm = 3, &
          reject_quality_gate = 7, reject_response = 4, reject_scale = 5
+      INTEGER, PARAMETER :: schur_flavor_energy_closure = 45
       REAL(KIND=dp), PARAMETER :: max_norm_ratio = 1.0E6_dp, &
          schur_frontier_curvature_floor = 5.0E-1_dp, schur_gauge_curvature_floor = 1.5_dp, &
          schur_gauge_occ_gap_max = 5.0E-2_dp, schur_min_coupled_scale = 5.0E-1_dp, &
@@ -16959,7 +17146,8 @@ CONTAINS
          closure_density_probe_unsupported_modes, closure_response_negative_modes, &
          closure_response_positive_modes, closure_response_unsupported_modes, &
          constrained_reject_reason, coupled_reject_reason, dense_reject_reason, &
-         density_pair_available, density_pair_candidates, failed_i, gauge_projected_count
+         density_pair_available, density_pair_candidates, energy_closure_response_model_rank, &
+         energy_closure_response_rank, failed_i, gauge_projected_count
       INTEGER :: global_channel, global_kpoint, global_spin, group, ie, ifull, ikpoint, imo, info, &
          ispin, ivar, jmo, local_channel, local_kpoint, max_channel_nmo, nchannels, ne, nmo, nrot, &
          nrot_active, nrot_density, nrot_full, nrot_residual, projector_fd_cluster_derivatives, &
@@ -16998,6 +17186,10 @@ CONTAINS
          density_full_global_tail_prefer, density_full_global_tail_probe_ready, &
          density_full_tail_probe_ready, density_pair_activation_ready, density_pair_shape_ok, &
          energy_closure_candidate_selected, energy_closure_competing_ready, &
+         energy_closure_exact_reference_ready, &
+         energy_closure_response_history_ready, &
+         energy_closure_response_model_ready, energy_closure_response_projection_ready, &
+         energy_closure_response_selected, &
          energy_closure_tail_ready, energy_occupation_plateau_ready
       LOGICAL :: exact_active_response_ready, exact_attempt_response, &
          exact_density_basis_audit_ready, exact_density_basis_curvfloor_audit_ready, &
@@ -17297,8 +17489,13 @@ CONTAINS
          direct_pg_raw_negative_fraction, direct_pg_response_weight, direction_scale, &
          energy_active_occ_sum, energy_active_shift, energy_closure_direction_scale, &
          energy_closure_gdot_energy, energy_closure_metric_norm_energy, energy_closure_model_drop, &
-         energy_closure_reference_drop, energy_curvature_floor, energy_floor_count, &
-         energy_floor_curv_sum, energy_gauge_weight, energy_gradient_abs_sum, energy_gradient_sum
+         energy_closure_reference_drop, energy_closure_response_gdot, &
+         energy_closure_response_metric, energy_closure_response_modal_shift, &
+         energy_closure_response_projected_residual, &
+         energy_closure_response_reference_residual, energy_closure_response_driving_fraction, &
+         energy_closure_exact_reference_residual, &
+         energy_curvature_floor, energy_floor_count, energy_floor_curv_sum, energy_gauge_weight, &
+         energy_gradient_abs_sum, energy_gradient_sum
       REAL(KIND=dp) :: energy_independent_gdot, energy_independent_norm, energy_selected_gdot, &
          energy_selected_norm, energy_split_ratio, exact_response_diag_avg, &
          full_rot_grad_physical_norm, gdot_energy, gdot_rotation, gdotp, gnorm, gvalue, &
@@ -17870,9 +18067,10 @@ CONTAINS
          closure_coupled_full_rotation_correction, closure_coupled_predictive_cross_correction, &
          closure_coupled_predictive_energy_correction, &
          closure_coupled_predictive_rotation_correction, closure_coupled_response_metric, &
-         closure_density_probe_steps, closure_density_probe_targets, closure_response_metric, &
-         closure_response_steps, closure_response_targets, energy_cross, energy_cross_active, &
-         energy_cross_canonical, energy_cross_density
+         closure_density_probe_steps, closure_density_probe_targets, &
+         closure_energy_response_steps, closure_response_metric, closure_response_steps, &
+         closure_response_targets, energy_cross, energy_cross_active, energy_cross_canonical, &
+         energy_cross_density
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross_density_basis_audit, &
          energy_cross_density_basis_curvfloor_audit, energy_cross_density_basis_damped_audit, &
          energy_cross_density_basis_filtered_audit, energy_cross_density_basis_selective_audit, &
@@ -17882,8 +18080,9 @@ CONTAINS
          energy_cross_density_plateau, energy_cross_multisecant, energy_cross_physical_model, &
          energy_cross_prediction, energy_cross_raw, energy_hessian
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_hessian_multisecant, &
-         energy_hessian_prediction, energy_hessian_reference, full_rot_hessian_coupled, grad_im, &
-         grad_re, h_im, h_re, projector_physical_direct_base_delta, &
+         energy_hessian_prediction, energy_hessian_reference, energy_hessian_response_correction, &
+         full_rot_hessian_coupled, grad_im, grad_re, h_im, h_re, &
+         projector_physical_direct_base_delta, &
          projector_physical_direct_curv_evec, projector_physical_direct_curv_vec, &
          projector_physical_direct_delta, projector_physical_direct_schur_evec, &
          projector_physical_direct_schur_mat, projector_physical_direct_schur_vec, &
@@ -18436,7 +18635,7 @@ CONTAINS
                    energy_cross_physical_model(ne, nrot), &
                    energy_cross_raw(ne, nrot), energy_hessian(ne, ne), &
                    energy_hessian_multisecant(ne, ne), energy_hessian_prediction(ne, ne), &
-                   energy_hessian_reference(ne, ne), &
+                   energy_hessian_reference(ne, ne), energy_hessian_response_correction(ne, ne), &
                    response(ne, nrot), response_coupled(ne, nrot), &
                    response_density_direct_exact(ne, nrot), &
                    response_density_exact(ne, nrot), response_density_physical(ne, nrot), &
@@ -18464,7 +18663,8 @@ CONTAINS
                    response_physical_model(ne, nrot), &
                    response_prediction(ne, nrot), &
                    response_split(ne, nrot), &
-                   rot_hessian(nrot, nrot), closure_response_steps(nrot, 3), &
+                   rot_hessian(nrot, nrot), closure_energy_response_steps(ne, 3), &
+                   closure_response_steps(nrot, 3), &
                    closure_response_targets(nrot, 3), closure_density_probe_steps(nrot, 3), &
                    closure_density_probe_targets(nrot, 3), &
                    closure_coupled_full_cross_correction(ne, nrot), &
@@ -18638,6 +18838,7 @@ CONTAINS
          energy_hessian(:, :) = 0.0_dp
          energy_hessian_multisecant(:, :) = 0.0_dp
          energy_hessian_prediction(:, :) = 0.0_dp
+         energy_hessian_response_correction(:, :) = 0.0_dp
          response(:, :) = 0.0_dp
          response_coupled(:, :) = 0.0_dp
          response_density_direct_exact(:, :) = 0.0_dp
@@ -18675,6 +18876,7 @@ CONTAINS
          response_physical_model(:, :) = 0.0_dp
          response_split(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
+         closure_energy_response_steps(:, :) = 0.0_dp
          closure_response_steps(:, :) = 0.0_dp
          closure_response_targets(:, :) = 0.0_dp
          closure_density_probe_steps(:, :) = 0.0_dp
@@ -20463,7 +20665,8 @@ CONTAINS
                         energy_cross_multisecant, energy_cross_prediction, &
                         energy_cross_physical_model, energy_cross_raw, &
                         energy_hessian, energy_hessian_multisecant, energy_hessian_prediction, &
-                        energy_hessian_reference, response, response_coupled, response_multisecant, &
+                        energy_hessian_reference, energy_hessian_response_correction, &
+                        response, response_coupled, response_multisecant, &
                         response_density_exact, &
                         response_density_floor_audit, response_density_floor_audit_exact, &
                         response_density_floor_safe_audit, response_density_floor_safe_audit_exact, &
@@ -20476,7 +20679,8 @@ CONTAINS
                         response_prediction, response_split, rot_hessian, &
                         projector_physical_direct_base_delta, projector_physical_direct_curv_vec, &
                         projector_physical_direct_delta, &
-                        closure_response_steps, closure_response_targets, &
+                        closure_energy_response_steps, closure_response_steps, &
+                        closure_response_targets, &
                         closure_density_probe_steps, closure_density_probe_targets, &
                         closure_response_metric, &
                         rot_hessian_closure_baseline, rot_hessian_closure_candidate, &
@@ -22194,6 +22398,7 @@ CONTAINS
                                                      prediction_predicted_residual_ratio, &
                                                      reduced_secant_update_eligible, &
                                                      reduced_secant_replacement_eligible, &
+                                                     closure_energy_response_steps, &
                                                      closure_response_steps, &
                                                      closure_response_targets, &
                                                      closure_response_pair_ready, &
@@ -30623,11 +30828,13 @@ CONTAINS
                local_ot_env(:)%kpoint_energy_closure_attempted = .TRUE.
                energy_closure_competing_ready = .NOT. attempt_failed
                energy_closure_reference_drop = dense_expected_drop
-               ! Solve the diagonal fixed-N occupation block in its physical
-               ! susceptibility metric.  This is an independent closure
-               ! candidate, not a replacement for the coupled base direction:
-               ! the ordinary energy trust radius and Mermin line search still
-               ! bound and accept the finite auxiliary-energy step.
+               energy_closure_response_selected = .FALSE.
+               ! Solve the diagonal susceptibility metric and then impose the
+               ! coupled fixed-N/tether constraints as a KKT projection.  The
+               ! ungauged dense matrix below describes that same tangent-space
+               ! quadratic form.  A gauge-lifted direct solve cannot be used as
+               ! the reference because removing its gauge afterward invalidates
+               ! the lifted linear equation.
                energy_curvature_floor = &
                   qs_scf_kp_energy_bootstrap_curvature_floor(total_curv_diag_max)
                z_trial(:) = 0.0_dp
@@ -30652,17 +30859,118 @@ CONTAINS
                ELSE
                   z_trial(:) = 0.0_dp
                END IF
+               CALL project_kpoint_ot_schur_response( &
+                  z_trial, occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+               CALL qs_scf_kp_fixed_n_energy_hessian( &
+                  occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset, &
+                  energy_hessian_prediction)
                energy_closure_gdot_energy = DOT_PRODUCT(grad_e, z_trial)
-               CALL kpoint_ot_mixed_projected_term(z_trial, z_trial, occ_curv, tether_curv, &
-                                                   occ_curv_projection_sum, channel_nmo, e_offset, &
-                                                   energy_closure_metric_norm_energy)
+               energy_closure_metric_norm_energy = DOT_PRODUCT( &
+                                                     z_trial, &
+                                                     MATMUL(energy_hessian_prediction, z_trial))
                energy_closure_metric_norm_energy = MAX(0.0_dp, energy_closure_metric_norm_energy)
+               energy_closure_exact_reference_residual = &
+                  ABS(energy_closure_gdot_energy - energy_closure_metric_norm_energy)/ &
+                  MAX(ABS(energy_closure_gdot_energy), ABS(energy_closure_metric_norm_energy), &
+                      EPSILON(1.0_dp))
+               energy_closure_exact_reference_ready = &
+                  energy_closure_gdot_energy > EPSILON(energy_closure_gdot_energy) .AND. &
+                  energy_closure_metric_norm_energy > EPSILON(energy_closure_metric_norm_energy) .AND. &
+                  energy_closure_exact_reference_residual == energy_closure_exact_reference_residual
                IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,ES16.8))') &
-                  " OT Schur energy closure raw group slope curvature max_step max_grad:", &
-                  target_group, energy_closure_gdot_energy, energy_closure_metric_norm_energy, &
-                  MAXVAL(ABS(z_trial)), MAXVAL(ABS(grad_e))
-               IF (energy_closure_gdot_energy > EPSILON(energy_closure_gdot_energy) .AND. &
+                  WRITE (cp_logger_get_default_unit_nr(logger), &
+                         '(A,1X,I3,1X,L1,5(1X,ES16.8))') &
+                  " OT Schur energy closure raw group exact slope curvature residual max_step max_grad:", &
+                  target_group, energy_closure_exact_reference_ready, &
+                  energy_closure_gdot_energy, energy_closure_metric_norm_energy, &
+                  energy_closure_exact_reference_residual, MAXVAL(ABS(z_trial)), MAXVAL(ABS(grad_e))
+               energy_closure_response_history_ready = &
+                  local_ot_env(1)%mermin_closure_secant_flavor == &
+                  schur_flavor_energy_closure .AND. &
+                  local_ot_env(1)%mermin_closure_secant_previous_flavor == &
+                  schur_flavor_energy_closure
+               energy_closure_response_model_ready = &
+                  qs_scf_kp_energy_closure_response_ready( &
+                  closure_coupled_predictive_finite, closure_coupled_predictive_work_consistent, &
+                  energy_closure_response_history_ready, &
+                  closure_predictive_energy_quality, closure_predictive_work_quality, &
+                  closure_predictive_alignment, closure_predictive_curvature_min, &
+                  closure_predictive_curvature_max)
+               energy_closure_response_model_ready = energy_closure_response_model_ready .AND. &
+                                                     ALL(closure_coupled_predictive_energy_correction == &
+                                                         closure_coupled_predictive_energy_correction)
+               IF (energy_closure_response_model_ready) THEN
+                  ! The fitted correction is low rank, but its dense completion is unconstrained
+                  ! outside the accepted auxiliary-energy steps.  Replace only the measured
+                  ! component of the physical fixed-N closure direction.  The modal floor keeps
+                  ! the finite Mermin model convex in that span and leaves the analytic
+                  ! susceptibility step untouched in the unobserved complement.
+                  IF (local_ot_env(1)%mermin_closure_secant_anchor_flavor /= &
+                      schur_flavor_energy_closure) &
+                     closure_energy_response_steps(:, 3) = 0.0_dp
+                  CALL qs_scf_kp_project_symmetric_subspace_correction( &
+                     closure_coupled_predictive_energy_correction, &
+                     closure_energy_response_steps, energy_hessian_response_correction, &
+                     energy_closure_response_model_rank, &
+                     energy_closure_response_projection_ready)
+                  energy_closure_response_model_ready = &
+                     energy_closure_response_projection_ready
+                  multisecant_response_ready = .FALSE.
+                  energy_closure_response_rank = 0
+                  energy_closure_response_modal_shift = 0.0_dp
+                  energy_closure_response_projected_residual = 0.0_dp
+                  energy_closure_response_reference_residual = 0.0_dp
+                  energy_closure_response_driving_fraction = 0.0_dp
+                  energy_closure_response_gdot = 0.0_dp
+                  energy_closure_response_metric = 0.0_dp
+                  IF (energy_closure_response_model_ready) THEN
+                     energy_hessian_prediction(:, :) = energy_hessian_prediction(:, :) + &
+                                                        energy_hessian_response_correction(:, :)
+                     energy_hessian_prediction(:, :) = 0.5_dp* &
+                                                        (energy_hessian_prediction(:, :) + &
+                                                         TRANSPOSE(energy_hessian_prediction(:, :)))
+                     CALL qs_scf_kp_reduced_subspace_replacement_step( &
+                        energy_hessian_prediction, grad_e, closure_energy_response_steps, curv, &
+                        z_trial, z_multisecant, multisecant_response_ready, &
+                        energy_closure_response_rank, energy_closure_response_modal_shift, &
+                        energy_closure_response_projected_residual, &
+                        energy_closure_response_reference_residual, &
+                        energy_closure_response_driving_fraction)
+                     IF (multisecant_response_ready) THEN
+                        energy_closure_response_gdot = DOT_PRODUCT(grad_e, z_multisecant)
+                        energy_closure_response_metric = DOT_PRODUCT( &
+                                                         z_multisecant, &
+                                                         MATMUL(energy_hessian_prediction, z_multisecant))
+                        energy_closure_response_selected = &
+                           energy_closure_response_gdot > EPSILON(energy_closure_response_gdot) .AND. &
+                           energy_closure_response_metric > EPSILON(energy_closure_response_metric)
+                        IF (energy_closure_response_selected) THEN
+                           z_trial(:) = z_multisecant(:)
+                           energy_closure_gdot_energy = energy_closure_response_gdot
+                           energy_closure_metric_norm_energy = energy_closure_response_metric
+                        END IF
+                     END IF
+                  END IF
+                  IF (logger%iter_info%print_level >= debug_print_level .AND. &
+                      logger%para_env%is_source()) &
+                     WRITE (cp_logger_get_default_unit_nr(logger), &
+                            '(A,1X,I3,4(1X,L1),2(1X,I3),11(1X,ES16.8))') &
+                     " OT Schur energy closure response group ready project solve selected mrank rank equality workq "// &
+                     "align cmin cmax shift pres rres drive slope curvature:", target_group, &
+                     energy_closure_response_model_ready, energy_closure_response_projection_ready, &
+                     multisecant_response_ready, energy_closure_response_selected, &
+                     energy_closure_response_model_rank, energy_closure_response_rank, &
+                     closure_predictive_energy_quality, &
+                     closure_predictive_work_quality, closure_predictive_alignment, &
+                     closure_predictive_curvature_min, closure_predictive_curvature_max, &
+                     energy_closure_response_modal_shift, &
+                     energy_closure_response_projected_residual, &
+                     energy_closure_response_reference_residual, &
+                     energy_closure_response_driving_fraction, &
+                     energy_closure_response_gdot, energy_closure_response_metric
+               END IF
+               IF (energy_closure_exact_reference_ready .AND. &
+                   energy_closure_gdot_energy > EPSILON(energy_closure_gdot_energy) .AND. &
                    energy_closure_metric_norm_energy > EPSILON(energy_closure_metric_norm_energy)) THEN
                   energy_closure_direction_scale = &
                      MIN(1.0_dp, energy_closure_gdot_energy/energy_closure_metric_norm_energy)
@@ -30760,7 +31068,8 @@ CONTAINS
                   IF (projector_offdiag_candidate_selected) selected_flavor = 37
                   IF (projector_offdiag_candidate_selected .AND. &
                       projector_offdiag_candidate_inactive) selected_flavor = 41
-                  IF (energy_closure_candidate_selected) selected_flavor = 45
+                  IF (energy_closure_candidate_selected) &
+                     selected_flavor = schur_flavor_energy_closure
                END IF
                accepted_model_drop = model_drop
                accepted_model_calibrated_drop = model_calibrated_drop
@@ -33521,7 +33830,7 @@ CONTAINS
                      energy_cross_density_full, energy_cross_density_full_audit, &
                      energy_cross_density_full_global, energy_cross_density_plateau, &
                      energy_hessian, energy_hessian_multisecant, energy_hessian_prediction, &
-                     energy_hessian_reference, &
+                     energy_hessian_reference, energy_hessian_response_correction, &
                      response, response_coupled, response_multisecant, &
                      response_density_direct_exact, &
                      response_density_exact, &
@@ -33542,7 +33851,8 @@ CONTAINS
                      projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
                      projector_physical_direct_curv_vec, &
                      projector_physical_direct_delta, &
-                     closure_response_steps, closure_response_targets, &
+                     closure_energy_response_steps, closure_response_steps, &
+                     closure_response_targets, &
                      closure_density_probe_steps, closure_density_probe_targets, &
                      closure_coupled_full_cross_correction, &
                      closure_coupled_full_energy_correction, &
@@ -34877,6 +35187,7 @@ CONTAINS
 !> \param prediction_residual_ratio worst held-out residual ratio of the bidirectional prediction
 !> \param reduced_secant_shadow_ready whether the reduced coupled shadow passed its geometry gate
 !> \param reduced_secant_replacement_ready whether the shadow is the validated frozen-H replacement
+!> \param closure_energy_response_steps accepted auxiliary-energy steps for the closure response
 !> \param closure_response_steps accepted rotation steps for the closure response
 !> \param closure_response_targets measured fixed-N closure response for those steps
 !> \param closure_response_pair_ready whether at least two accepted closure secants are available
@@ -34924,6 +35235,7 @@ CONTAINS
                                                      prediction_residual_ratio, &
                                                      reduced_secant_shadow_ready, &
                                                      reduced_secant_replacement_ready, &
+                                                     closure_energy_response_steps, &
                                                      closure_response_steps, &
                                                      closure_response_targets, &
                                                      closure_response_pair_ready, &
@@ -34970,7 +35282,8 @@ CONTAINS
                                                             prediction_update_ready
       REAL(KIND=dp), INTENT(OUT)                         :: prediction_residual_ratio
       LOGICAL, INTENT(OUT) :: reduced_secant_shadow_ready, reduced_secant_replacement_ready
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: closure_response_steps, &
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: closure_energy_response_steps, &
+                                                            closure_response_steps, &
                                                             closure_response_targets
       LOGICAL, INTENT(OUT)                               :: closure_response_pair_ready
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT) :: closure_coupled_full_rotation, &
@@ -35118,6 +35431,7 @@ CONTAINS
          CPASSERT(ALL(SHAPE(rotation_hessian_secant) == SHAPE(rotation_hessian)))
          CPASSERT(ALL(SHAPE(rotation_hessian_multisecant) == SHAPE(rotation_hessian)))
          CPASSERT(ALL(SHAPE(rotation_hessian_reduced_secant) == SHAPE(rotation_hessian)))
+         CPASSERT(ALL(SHAPE(closure_energy_response_steps) == [nener, 3]))
          CPASSERT(ALL(SHAPE(closure_response_steps) == [nrot, 3]))
          CPASSERT(ALL(SHAPE(closure_response_targets) == [nrot, 3]))
          CPASSERT(ALL(SHAPE(closure_coupled_full_rotation) == [nrot, nrot]))
@@ -35142,6 +35456,7 @@ CONTAINS
          reduced_secant_modes(:, :) = 0.0_dp
          reduced_secant_targets(:, :) = 0.0_dp
          reduced_secant_full_targets(:, :) = 0.0_dp
+         closure_energy_response_steps(:, :) = 0.0_dp
          closure_response_steps(:, :) = 0.0_dp
          closure_response_targets(:, :) = 0.0_dp
          closure_coupled_full_rotation(:, :) = 0.0_dp
@@ -35767,6 +36082,7 @@ CONTAINS
          ! sample needed by the general multisecant fit is immature.  The
          ! density-specific probe deliberately consumes only this column.
          IF (closure_secant_valid) THEN
+            closure_energy_response_steps(:, 2) = step_energy
             closure_response_steps(:, 2) = step_rotation
             closure_response_targets(:, 2) = closure_reduced_target
          END IF
@@ -35775,18 +36091,24 @@ CONTAINS
             previous_closure_reduced_target(:) = previous_closure_secant_rotation + &
                                                  MATMUL(TRANSPOSE(energy_response), &
                                                         previous_closure_secant_energy)
+            closure_energy_response_steps(:, 1) = previous_step_energy
             closure_response_steps(:, 1) = previous_step_rotation
             closure_response_targets(:, 1) = previous_closure_reduced_target
             IF (closure_anchor_valid) THEN
                anchor_closure_reduced_target(:) = anchor_closure_secant_rotation + &
                                                   MATMUL(TRANSPOSE(energy_response), &
                                                          anchor_closure_secant_energy)
+               closure_energy_response_steps(:, 3) = anchor_step_energy
                closure_response_steps(:, 3) = anchor_step_rotation
                closure_response_targets(:, 3) = anchor_closure_reduced_target
             END IF
-            closure_response_pair_ready = ALL(closure_response_steps == closure_response_steps) .AND. &
-                                          ALL(closure_response_targets == closure_response_targets)
+            closure_response_pair_ready = &
+               ALL(closure_energy_response_steps == closure_energy_response_steps) .AND. &
+               ALL(closure_response_steps == closure_response_steps) .AND. &
+               ALL(closure_response_targets == closure_response_targets)
             IF (.NOT. closure_response_pair_ready) THEN
+               closure_energy_response_steps(:, 1) = 0.0_dp
+               closure_energy_response_steps(:, 3) = 0.0_dp
                closure_response_steps(:, 1) = 0.0_dp
                closure_response_steps(:, 3) = 0.0_dp
                closure_response_targets(:, 1) = 0.0_dp

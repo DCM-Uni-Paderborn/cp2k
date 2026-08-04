@@ -73,6 +73,8 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
         ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
         ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
+        ot_kpoint_residual_aware_rayleigh_model, &
+        ot_kpoint_rayleigh_probe_position, &
         ot_kpoint_rayleigh_response_scale, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
@@ -109,12 +111,14 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
         qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_bootstrap_curvature_floor, qs_scf_kp_energy_closure_preferred, &
-        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_tail_ready, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
+        qs_scf_kp_energy_closure_tail_ready, &
         qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_occupation_plateau_ready, &
         qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
         qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
-        qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
+        qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_energy_hessian, &
+        qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_projector_frechet, qs_scf_kp_fixed_n_response_mu_shift, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_full_closure_response_model_adjustments, &
         qs_scf_kp_full_residual_completion, qs_scf_kp_indefinite_residual_balanced_step, &
@@ -123,6 +127,7 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
         qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
         qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
+        qs_scf_kp_project_symmetric_subspace_correction, &
         qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
         qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
         qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
@@ -284,6 +289,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_response_corrected_step("k-point OT response-only trust scaling", &
                                              5.0E-15_dp, nfail)
    CALL check_kpoint_energy_closure_ready("k-point OT fixed-N energy closure gate", nfail)
+   CALL check_kpoint_energy_closure_response( &
+      "k-point OT fixed-N energy closure response", nfail)
    CALL check_kpoint_energy_closure_preferred("k-point OT fixed-N energy closure competition", nfail)
    CALL check_kpoint_closure_response_preferred("k-point OT coupled closure response gate", nfail)
    CALL check_kpoint_closure_response_history_ready( &
@@ -361,6 +368,10 @@ PROGRAM qs_ot_frechet_unittest
                                            5.0E-13_dp, nfail)
    CALL check_kpoint_reduced_subspace_replacement_step( &
       "k-point OT reduced secant subspace replacement", 5.0E-13_dp, nfail)
+   CALL check_kpoint_fixed_n_energy_hessian( &
+      "k-point OT ungauged fixed-N energy Hessian", 5.0E-13_dp, nfail)
+   CALL check_kpoint_project_symmetric_subspace_correction( &
+      "k-point OT identifiable energy-Hessian projection", 5.0E-13_dp, nfail)
    CALL check_kpoint_indefinite_residual_balanced_step( &
       "k-point OT indefinite residual-balanced step", 5.0E-13_dp, nfail)
    CALL check_kpoint_residual_compatible_scale("k-point OT residual-compatible affine scale", &
@@ -2625,6 +2636,20 @@ CONTAINS
                                                            2.0E-280_dp, 0.999_dp, 1.0E-279_dp) - 1.0_dp))
       err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(16.0_dp, 4.0_dp, 8.0_dp, &
                                                            0.99_dp, 0.0_dp) - 1.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(1600.0_dp, 1.0_dp, 40.0_dp, &
+                                                           0.999_dp, 0.0_dp, &
+                                                           maximum_scale=50.0_dp) - 40.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_probe_position(0.006_dp, 0.08_dp, .TRUE.) - &
+                         0.024_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_probe_position(0.006_dp, 0.08_dp, .FALSE.) - &
+                         0.32_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_probe_position(0.0_dp, 0.08_dp, .TRUE.) - &
+                         0.32_dp))
+      IF (.NOT. ot_kpoint_residual_aware_rayleigh_model(.TRUE., .TRUE., 42)) err = 1.0_dp
+      IF (.NOT. ot_kpoint_residual_aware_rayleigh_model(.TRUE., .TRUE., 45)) err = 1.0_dp
+      IF (ot_kpoint_residual_aware_rayleigh_model(.TRUE., .FALSE., 42)) err = 1.0_dp
+      IF (ot_kpoint_residual_aware_rayleigh_model(.FALSE., .TRUE., 45)) err = 1.0_dp
+      IF (ot_kpoint_residual_aware_rayleigh_model(.TRUE., .TRUE., 30)) err = 1.0_dp
       err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(16.0_dp, 4.0_dp, 8.0_dp, &
                                                            0.75_dp, 0.0_dp) - 1.0_dp))
       err = MAX(err, ABS(ot_kpoint_rayleigh_model_factor( &
@@ -6257,6 +6282,43 @@ CONTAINS
    END SUBROUTINE check_kpoint_energy_closure_ready
 
 ! **************************************************************************************************
+!> \brief Check that an energy-only accepted response does not require a spurious rotation fit.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_energy_closure_response(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: accepted, bad_curvature, bad_energy, &
+                                                            bad_history, bad_work, not_finite
+
+      accepted = qs_scf_kp_energy_closure_response_ready( &
+                 .TRUE., .TRUE., .TRUE., 0.99_dp, 0.95_dp, 0.98_dp, 0.9_dp, 1.1_dp)
+      bad_energy = qs_scf_kp_energy_closure_response_ready( &
+                   .TRUE., .TRUE., .TRUE., -0.5_dp, 0.95_dp, 0.98_dp, 0.9_dp, 1.1_dp)
+      bad_history = qs_scf_kp_energy_closure_response_ready( &
+                    .TRUE., .TRUE., .FALSE., 0.99_dp, 0.95_dp, 0.98_dp, 0.9_dp, 1.1_dp)
+      bad_work = qs_scf_kp_energy_closure_response_ready( &
+                 .TRUE., .FALSE., .TRUE., 0.99_dp, 0.95_dp, 0.98_dp, 0.9_dp, 1.1_dp)
+      bad_curvature = qs_scf_kp_energy_closure_response_ready( &
+                       .TRUE., .TRUE., .TRUE., 0.99_dp, 0.95_dp, 0.98_dp, -0.1_dp, 1.1_dp)
+      not_finite = qs_scf_kp_energy_closure_response_ready( &
+                   .FALSE., .TRUE., .TRUE., 0.99_dp, 0.95_dp, 0.98_dp, 0.9_dp, 1.1_dp)
+
+      IF (.NOT. accepted .OR. bad_energy .OR. bad_history .OR. bad_work .OR. bad_curvature .OR. &
+          not_finite) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
+            "failed with accepted/energy/history/work/curvature/finite", accepted, bad_energy, &
+            bad_history, bad_work, bad_curvature, not_finite
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_energy_closure_response
+
+! **************************************************************************************************
 !> \brief Check that energy-only closure cannot displace a better coupled density candidate.
 !> \param label ...
 !> \param nfail ...
@@ -9256,6 +9318,121 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_reduced_subspace_replacement_step
+
+! **************************************************************************************************
+!> \brief Check the ungauged physical fixed-N/tether auxiliary-energy Hessian.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_fixed_n_energy_hessian(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 6
+
+      INTEGER                                            :: first_energy, local_channel, nmo
+      REAL(KIND=dp)                                      :: bilinear, error, expected, occ_sum, &
+                                                            weight_sum
+      INTEGER, DIMENSION(2)                              :: channel_nmo, e_offset
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, ones, tether_curv, x, y
+      REAL(KIND=dp), DIMENSION(n, n)                     :: hessian
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.31_dp, 0.74_dp, 0.16_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      tether_curv(:) = [0.05_dp, 0.02_dp, 0.08_dp, 0.07_dp, 0.03_dp, 0.0_dp]
+      x(:) = [0.4_dp, -0.2_dp, 0.7_dp, -0.3_dp, 0.1_dp, 0.5_dp]
+      y(:) = [-0.1_dp, 0.6_dp, 0.2_dp, 0.8_dp, -0.4_dp, 0.3_dp]
+      ones(:) = 1.0_dp
+      occ_sum = SUM(occ_curv)
+
+      CALL qs_scf_kp_fixed_n_energy_hessian( &
+         occ_curv, tether_curv, occ_sum, channel_nmo, e_offset, hessian)
+      bilinear = DOT_PRODUCT(x, MATMUL(hessian, y))
+      expected = DOT_PRODUCT((occ_curv + tether_curv)*x, y) - &
+                 DOT_PRODUCT(occ_curv, x)*DOT_PRODUCT(occ_curv, y)/occ_sum
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+         expected = expected - &
+                    DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                x(first_energy:first_energy + nmo - 1))* &
+                    DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                y(first_energy:first_energy + nmo - 1))/weight_sum
+      END DO
+      error = ABS(bilinear - expected) + &
+              MAXVAL(ABS(hessian - TRANSPOSE(hessian))) + &
+              MAXVAL(ABS(MATMUL(hessian, ones)))
+
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,3(1X,ES16.8))') TRIM(label)// &
+            " FAILED with error/bilinear/expected", error, bilinear, expected
+      ELSE
+         WRITE (*, '(A,3(1X,ES16.8))') TRIM(label)// &
+            " OK with error/bilinear/expected", error, bilinear, expected
+      END IF
+
+   END SUBROUTINE check_kpoint_fixed_n_energy_hessian
+
+! **************************************************************************************************
+!> \brief Check that a learned Hessian correction has no action outside measured energy modes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_project_symmetric_subspace_correction(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+
+      INTEGER                                            :: rank, zero_rank
+      LOGICAL                                            :: ready, zero_ready
+      REAL(KIND=dp)                                      :: error
+      REAL(KIND=dp), DIMENSION(n, 3)                     :: modes, zero_modes
+      REAL(KIND=dp), DIMENSION(n, 2)                     :: basis
+      REAL(KIND=dp), DIMENSION(n, n) :: correction, expected, projected, projector, &
+         symmetric_correction, zero_projected
+
+      correction(:, :) = RESHAPE([ &
+                                  4.0_dp, 1.0_dp, -2.0_dp, 0.5_dp, &
+                                  3.0_dp, 2.0_dp, 0.25_dp, -1.0_dp, &
+                                  -1.0_dp, 0.75_dp, 5.0_dp, 2.0_dp, &
+                                  -0.5_dp, 1.5_dp, 4.0_dp, 3.0_dp], [n, n])
+      modes(:, 1) = [1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp]
+      modes(:, 2) = [0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp]
+      modes(:, 3) = 2.0_dp*modes(:, 1)
+      basis(:, 1) = modes(:, 1)/SQRT(2.0_dp)
+      basis(:, 2) = modes(:, 2)
+      projector(:, :) = MATMUL(basis, TRANSPOSE(basis))
+      symmetric_correction(:, :) = 0.5_dp*(correction + TRANSPOSE(correction))
+      expected(:, :) = MATMUL(projector, MATMUL(symmetric_correction, projector))
+
+      CALL qs_scf_kp_project_symmetric_subspace_correction( &
+         correction, modes, projected, rank, ready)
+      zero_modes(:, :) = 0.0_dp
+      CALL qs_scf_kp_project_symmetric_subspace_correction( &
+         correction, zero_modes, zero_projected, zero_rank, zero_ready)
+      error = MAXVAL(ABS(projected - expected)) + &
+              MAXVAL(ABS(projected - TRANSPOSE(projected))) + &
+              MAXVAL(ABS(MATMUL(projected, [1.0_dp, 0.0_dp, -1.0_dp, 0.0_dp]))) + &
+              MAXVAL(ABS(zero_projected))
+
+      IF (.NOT. ready .OR. zero_ready .OR. rank /= 2 .OR. zero_rank /= 0 .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,L1),2(1X,I3),1X,ES16.8)') TRIM(label)// &
+            " FAILED with ready/zero/rank/zrank/error", ready, zero_ready, rank, zero_rank, error
+      ELSE
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" OK with error", error
+      END IF
+
+   END SUBROUTINE check_kpoint_project_symmetric_subspace_correction
 
 ! **************************************************************************************************
 !> \brief Check sign-aware negative-curvature use against an established residual reference.
