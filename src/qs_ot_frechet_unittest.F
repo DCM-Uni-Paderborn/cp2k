@@ -65,19 +65,20 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_ot_minimizer,                 ONLY: &
         ot_kpoint_cg_metric_history_reset, ot_kpoint_cg_residual_growth_guard, &
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_diis_mermin_step_rejected, &
-        ot_kpoint_diis_residual_step_rejected, ot_kpoint_fermi_window_direction_scale, &
-        ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
-        ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
-        ot_kpoint_mermin_endpoint_status, ot_kpoint_mermin_energy_curvature_resolved, &
-        ot_kpoint_mermin_full_direction_model, ot_kpoint_mermin_projected_reference_ready, &
-        ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
-        ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
-        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
-        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
-        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_exit_delta, &
-        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
-        ot_kpoint_rayleigh_probe_position, ot_kpoint_rayleigh_response_scale, &
-        ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
+        ot_kpoint_diis_rejected_step, ot_kpoint_diis_residual_step_rejected, &
+        ot_kpoint_fermi_window_direction_scale, ot_kpoint_fermi_window_energy_coordinate, &
+        ot_kpoint_mermin_candidate_restart_step, ot_kpoint_mermin_closure_response_quality, &
+        ot_kpoint_mermin_current_guard_delta, ot_kpoint_mermin_endpoint_status, &
+        ot_kpoint_mermin_energy_curvature_resolved, ot_kpoint_mermin_full_direction_model, &
+        ot_kpoint_mermin_projected_reference_ready, ot_kpoint_mermin_recovery_active_tail, &
+        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
+        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
+        ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
+        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
+        ot_kpoint_physical_exit_delta, ot_kpoint_physical_residual_split, &
+        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_probe_position, &
+        ot_kpoint_rayleigh_response_scale, ot_kpoint_residual_aware_rayleigh_model, &
+        ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: &
         qs_ot_reset_accepted_model_calibration, qs_ot_restart_signature_nchar, &
@@ -6132,6 +6133,14 @@ CONTAINS
       failed = failed .OR. ot_kpoint_diis_residual_step_rejected( &
                -123.6302668563_dp, -123.6302668563_dp, &
                8.0E-6_dp, 4.0E-6_dp, 1.0E-8_dp)
+      ! A failed Pulay extrapolation keeps the independently validated base step.
+      failed = failed .OR. ABS(ot_kpoint_diis_rejected_step( &
+                               0.15_dp, 0.15_dp, 1.0E-16_dp, .FALSE.) - 0.15_dp) > 1.0E-15_dp
+      ! A failed base-direction candidate contracts before it is retried.
+      failed = failed .OR. ABS(ot_kpoint_diis_rejected_step( &
+                               0.15_dp, 0.15_dp, 1.0E-16_dp, .TRUE.) - 0.0375_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_rejected_step( &
+                               -0.08_dp, 0.08_dp, 1.0E-16_dp, .TRUE.) + 0.02_dp) > 1.0E-15_dp
 
       IF (failed) THEN
          nfail = nfail + 1

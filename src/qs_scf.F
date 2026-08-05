@@ -392,7 +392,7 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: total_scf_steps
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'scf_env_do_scf'
-      INTEGER, PARAMETER :: max_ot_kp_subspace_refreshes = 3, max_ot_kp_total_refreshes = 4
+      INTEGER, PARAMETER :: max_ot_kp_subspace_refreshes = 3, max_ot_kp_total_refreshes = 8
 
       CHARACTER(LEN=default_string_length)               :: description, name
       INTEGER :: ext_master_id, handle, handle2, i_tmp, ic, ispin, iter_count, &
@@ -428,8 +428,9 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: dft_section, input, scf_section
 
 ! One rebuild seeds k-point OT from the first physical Hamiltonian; retain
-! two later adaptive rebuilds for collapsed metallic subspaces and reserve
-! one final canonical rebase for a calibrated orbital-dominated tail.
+! two later adaptive rebuilds for collapsed metallic subspaces.  Retain five
+! additional canonical tail rebases: each still needs fresh accepted history
+! and a calibrated orbital- or density-dominated closure signal.
 
       CALL timeset(routineN, handle)
 

@@ -256,6 +256,10 @@ MODULE qs_ot_types
       REAL(KIND=dp)    :: delta = -1.0_dp, gnorm = -1.0_dp, gnorm_old = -1.0_dp, etotal = -1.0_dp, gradient = -1.0_dp
       LOGICAL          :: energy_only = .FALSE.
       INTEGER          :: diis_iter = -1
+      ! A rejected Pulay extrapolation invalidates its history, but must not
+      ! shrink the underlying SD trust step.  Only a rejected candidate built
+      ! from the base preconditioned direction contracts that step.
+      LOGICAL          :: diis_last_candidate_sd = .TRUE.
       CHARACTER(LEN=8) :: OT_METHOD_FULL = ""
       INTEGER          :: OT_count = -1
       REAL(KIND=dp)    :: ds_min = -1.0_dp
@@ -1322,6 +1326,7 @@ CONTAINS
       qs_ot_env%energy_only = .FALSE.
       qs_ot_env%gnorm_old = 1.0_dp
       qs_ot_env%diis_iter = 0
+      qs_ot_env%diis_last_candidate_sd = .TRUE.
       qs_ot_env%ds_min = qs_ot_env%settings%ds_min
       qs_ot_env%os_valid = .FALSE.
       qs_ot_env%kpoint_occ_preconditioner_active = .FALSE.

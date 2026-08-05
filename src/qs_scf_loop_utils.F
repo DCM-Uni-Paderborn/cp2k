@@ -9933,6 +9933,7 @@ CONTAINS
          ! otherwise the projected endpoint is compared with the pre-projection
          ! DIIS energy and can enter an exact projection/rejection cycle.
          local_ot_env(local_channel)%diis_iter = 0
+         local_ot_env(local_channel)%diis_last_candidate_sd = .TRUE.
          local_ot_env(local_channel)%broyden_adaptive_sigma = -1.0_dp
          IF (ASSOCIATED(local_ot_env(local_channel)%ls_diis)) &
             local_ot_env(local_channel)%ls_diis(:, :) = 0.0_dp
@@ -10122,6 +10123,15 @@ CONTAINS
       refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
                                                 residual_delta, eps_scf, step_ready, base_state, &
                                                 high_residual_stagnant, density_closure_stagnant)
+      ! The ordinary refresh budget seeds the physical subspace and repairs the
+      ! early metallic basis.  Let the separately reserved tail-rebase budget
+      ! close a density-dominant fixed-N state as well; otherwise DIIS can leave
+      ! a converged variational residual coupled to a slowly decaying canonical
+      ! density defect after the ordinary budget has been consumed.
+      IF (.NOT. refresh .AND. allow_orbital_tail_rebase .AND. density_closure_stagnant) &
+         refresh = qs_scf_kp_subspace_refresh_gate(.TRUE., fermi_window_guarded, .FALSE., &
+                                                   residual_delta, eps_scf, step_ready, base_state, &
+                                                   density_closure_stagnant=.TRUE.)
       IF (.NOT. refresh .AND. allow_orbital_tail_rebase .AND. orbital_tail_rebase) &
          refresh = qs_scf_kp_subspace_refresh_gate(.TRUE., fermi_window_guarded, .FALSE., &
                                                    residual_delta, eps_scf, step_ready, base_state, &

@@ -45,6 +45,7 @@ MODULE qs_ot_minimizer
    PUBLIC  :: ot_kpoint_cg_residual_growth_guard, &
               ot_kpoint_cg_metric_history_reset, &
               ot_kpoint_cg_tail_metric_tracked, &
+              ot_kpoint_diis_rejected_step, &
               ot_kpoint_diis_mermin_step_rejected, &
               ot_kpoint_diis_residual_step_rejected, &
               ot_kpoint_fermi_window_energy_coordinate, &
@@ -205,6 +206,35 @@ CONTAINS
                  current_delta/reference_delta > ot_cg_kp_mermin_residual_growth_ratio
 
    END FUNCTION ot_kpoint_diis_residual_step_rejected
+
+! **************************************************************************************************
+!> \brief update the base DIIS/SD trust step after rejecting an evaluated candidate
+!>
+!>        Pulay extrapolation and the preconditioned SD direction have separate trust semantics.
+!>        A failed extrapolation discards its Pulay history but leaves the validated base step
+!>        unchanged.  A failed base-direction candidate contracts that step before retrying.
+!> \param previous_step current signed base step
+!> \param initial_step user-requested signed base step used to define the numerical floor
+!> \param eps_taylor Taylor threshold used by the minimizer
+!> \param base_candidate true when the rejected candidate was generated from the SD base direction
+!> \return retained or contracted signed base step
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_diis_rejected_step( &
+      previous_step, initial_step, eps_taylor, base_candidate) RESULT(next_step)
+      REAL(KIND=dp), INTENT(IN)                          :: previous_step, initial_step, eps_taylor
+      LOGICAL, INTENT(IN)                                :: base_candidate
+      REAL(KIND=dp)                                      :: next_step
+
+      REAL(KIND=dp)                                      :: step_floor
+
+      next_step = previous_step
+      IF (.NOT. base_candidate) RETURN
+
+      step_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), eps_taylor)* &
+                   MAX(1.0_dp, ABS(initial_step))
+      next_step = SIGN(MAX(step_floor, 0.25_dp*ABS(previous_step)), previous_step)
+
+   END FUNCTION ot_kpoint_diis_rejected_step
 
 ! **************************************************************************************************
 !> \brief Evaluate convergence of an accepted complex fixed-N Mermin endpoint.
@@ -5135,13 +5165,16 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_diis_step'
 
-      INTEGER                                            :: diis_bound, diis_m, handle, i, info, &
-                                                            ispin, j, last_index, nspin
-      LOGICAL :: current_state_converged, do_ener, do_ks, do_ot_sd, mermin_energy_rejected, &
-         mermin_residual_rejected, mermin_step_rejected
+      INTEGER                                            :: diis_bound, diis_m, direction_ready_all, &
+                                                            handle, i, info, ispin, j, last_index, &
+                                                            nspin
+      LOGICAL :: current_state_converged, do_ener, do_ks, do_ot_sd, &
+         kpoint_preconditioned_direction, kpoint_preconditioned_energy, &
+         kpoint_preconditioned_rotation, mermin_energy_rejected, mermin_residual_rejected, &
+         mermin_step_rejected
       REAL(KIND=dp) :: contracted_step, current_exit_delta, current_physical_delta, norm_weight, &
          nvar, overlap, previous_step, reference_energy, reference_physical_delta, &
-         rejected_energy, step_floor, tmp, tr_xnew_gx, tr_xold_gx
+         rejected_energy, tmp, tr_xnew_gx, tr_xold_gx
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -5151,6 +5184,25 @@ CONTAINS
       do_ks = qs_ot_env(1)%settings%ks
       do_ener = qs_ot_env(1)%settings%do_ener
       nspin = SIZE(qs_ot_env)
+
+      kpoint_preconditioned_direction = .FALSE.
+      IF (ANY(qs_ot_env(:)%has_complex_kpoint_state)) THEN
+         kpoint_preconditioned_direction = .TRUE.
+         DO ispin = 1, nspin
+            IF (qs_ot_env(ispin)%has_complex_kpoint_state .AND. &
+                .NOT. qs_ot_env(ispin)%kpoint_preconditioned_direction_ready) THEN
+               kpoint_preconditioned_direction = .FALSE.
+            END IF
+         END DO
+      END IF
+      direction_ready_all = MERGE(1, 0, kpoint_preconditioned_direction)
+      CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, direction_ready_all)
+      kpoint_preconditioned_direction = direction_ready_all == 1
+      ! The fixed-N energy Schur direction is a positive projected block and is
+      ! safe in a Pulay history.  The finite complex rotation block remains
+      ! indefinite and needs CG's accepted line-search model before promotion.
+      kpoint_preconditioned_rotation = .FALSE.
+      kpoint_preconditioned_energy = kpoint_preconditioned_direction
 
       diis_m = qs_ot_env(1)%settings%diis_m
 
@@ -5179,10 +5231,10 @@ CONTAINS
       END IF
       IF (mermin_step_rejected) THEN
          previous_step = qs_ot_env(1)%ds_min
-         step_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), qs_ot_env(1)%settings%eps_taylor)* &
-                      MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min))
-         contracted_step = MAX(step_floor, 0.25_dp*ABS(previous_step))
-         contracted_step = SIGN(contracted_step, previous_step)
+         contracted_step = ot_kpoint_diis_rejected_step( &
+                           previous_step, qs_ot_env(1)%settings%ds_min, &
+                           qs_ot_env(1)%settings%eps_taylor, &
+                           qs_ot_env(1)%diis_last_candidate_sd)
          IF (do_ks) THEN
             DO ispin = 1, nspin
                CALL dbcsr_copy(qs_ot_env(ispin)%matrix_x, &
@@ -5214,6 +5266,7 @@ CONTAINS
          qs_ot_env(1)%lss_diis(:, :) = 0.0_dp
          qs_ot_env(1)%c_diis(:) = 0.0_dp
          qs_ot_env(1)%energy_h(:) = 0.0_dp
+         qs_ot_env(1)%diis_last_candidate_sd = .TRUE.
          qs_ot_env(1)%kpoint_physical_delta_ready = .FALSE.
          qs_ot_env(1)%kpoint_density_stationarity_ready = .FALSE.
          qs_ot_env(1)%kpoint_complete_physical_delta = -1.0_dp
@@ -5232,6 +5285,15 @@ CONTAINS
          END IF
          CALL timestop(handle)
          RETURN
+      END IF
+
+      IF (qs_ot_env(1)%has_complex_kpoint_state .AND. &
+          qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+          qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
+          qs_ot_env(1)%diis_iter > 0) THEN
+         qs_ot_env(1)%kpoint_subspace_accepted_samples = &
+            MIN(qs_ot_env(1)%kpoint_subspace_accepted_samples + 1, &
+                HUGE(qs_ot_env(1)%kpoint_subspace_accepted_samples) - 1)
       END IF
 
       IF (qs_ot_env(1)%diis_iter < diis_m) THEN
@@ -5290,13 +5352,28 @@ CONTAINS
                                                qs_ot_env(ispin)%matrix_h_e_im(j)%matrix)
                   END IF
                END IF
+               IF (qs_ot_env(ispin)%has_complex_kpoint_state .AND. &
+                   ASSOCIATED(qs_ot_env(ispin)%matrix_occ_precond_scale)) THEN
+                  CALL dbcsr_scale_by_vector(qs_ot_env(ispin)%matrix_h_e(j)%matrix, &
+                                             alpha=qs_ot_env(ispin)%matrix_occ_precond_scale, &
+                                             side='right')
+                  CALL dbcsr_scale_by_vector(qs_ot_env(ispin)%matrix_h_e_im(j)%matrix, &
+                                             alpha=qs_ot_env(ispin)%matrix_occ_precond_scale, &
+                                             side='right')
+               END IF
+               IF (qs_ot_env(ispin)%has_kpoint_context) THEN
+                  CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e(j)%matrix, norm_weight)
+                  IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                     CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e_im(j)%matrix, norm_weight)
+                  END IF
+               END IF
                CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_h_e(j)%matrix, &
                               tmp)
-               qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*tmp
+               qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                   CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, &
                                  qs_ot_env(ispin)%matrix_h_e_im(j)%matrix, tmp)
-                  qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*tmp
+                  qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
                END IF
             END DO
             IF (qs_ot_env(1)%gnorm < 0.0_dp) THEN
@@ -5311,16 +5388,33 @@ CONTAINS
             IF (qs_ot_env(1)%settings%do_rotation) THEN
                DO ispin = 1, nspin
                   norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
-                  CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, qs_ot_env(ispin)%rot_mat_gx)
+                  IF (kpoint_preconditioned_rotation) THEN
+                     CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx))
+                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, &
+                                     qs_ot_env(ispin)%rot_mat_pgx)
+                  ELSE
+                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, &
+                                     qs_ot_env(ispin)%rot_mat_gx)
+                     IF (qs_ot_env(ispin)%has_kpoint_context) THEN
+                        CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, norm_weight)
+                     END IF
+                  END IF
                   CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, &
                                  tmp)
-                  qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*0.5_dp*tmp
+                  qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, &
-                                     qs_ot_env(ispin)%rot_mat_gx_im)
+                     IF (kpoint_preconditioned_rotation) THEN
+                        CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx_im))
+                        CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, &
+                                        qs_ot_env(ispin)%rot_mat_pgx_im)
+                     ELSE
+                        CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, &
+                                        qs_ot_env(ispin)%rot_mat_gx_im)
+                        CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, norm_weight)
+                     END IF
                      CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, &
                                     qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, tmp)
-                     qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*0.5_dp*tmp
+                     qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
                   END IF
                END DO
                DO ispin = 1, nspin
@@ -5334,9 +5428,17 @@ CONTAINS
          IF (do_ener) THEN
             DO ispin = 1, nspin
                norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
-               qs_ot_env(ispin)%ener_h_e(j, :) = qs_ot_env(ispin)%ener_gx(:)
+               IF (kpoint_preconditioned_energy) THEN
+                  CPASSERT(ASSOCIATED(qs_ot_env(ispin)%ener_pgx))
+                  qs_ot_env(ispin)%ener_h_e(j, :) = qs_ot_env(ispin)%ener_pgx(:)
+               ELSE
+                  qs_ot_env(ispin)%ener_h_e(j, :) = qs_ot_env(ispin)%ener_gx(:)
+                  IF (qs_ot_env(ispin)%has_kpoint_context) THEN
+                     qs_ot_env(ispin)%ener_h_e(j, :) = norm_weight*qs_ot_env(ispin)%ener_h_e(j, :)
+                  END IF
+               END IF
                tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_h_e(j, :), qs_ot_env(ispin)%ener_gx(:))
-               qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*tmp
+               qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
                qs_ot_env(ispin)%ener_h_e(j, :) = -qs_ot_env(1)%ds_min*qs_ot_env(ispin)%ener_h_e(j, :)
             END DO
          END IF
@@ -5345,31 +5447,42 @@ CONTAINS
          IF (do_ks) THEN
             DO ispin = 1, nspin
                norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
-               CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx, tmp)
-               qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*tmp
-               CALL dbcsr_add(qs_ot_env(ispin)%matrix_h_e(j)%matrix, &
-                              qs_ot_env(ispin)%matrix_gx, alpha_scalar=0.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+               CALL dbcsr_copy(qs_ot_env(ispin)%matrix_h_e(j)%matrix, qs_ot_env(ispin)%matrix_gx)
+               IF (qs_ot_env(ispin)%has_kpoint_context) THEN
+                  CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e(j)%matrix, norm_weight)
+               END IF
+               CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_h_e(j)%matrix, tmp)
+               qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
+               CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e(j)%matrix, -qs_ot_env(1)%ds_min)
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                  CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_gx_im, tmp)
-                  qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*tmp
-                  CALL dbcsr_add(qs_ot_env(ispin)%matrix_h_e_im(j)%matrix, &
-                                 qs_ot_env(ispin)%matrix_gx_im, alpha_scalar=0.0_dp, &
-                                 beta_scalar=-qs_ot_env(1)%ds_min)
+                  CALL dbcsr_copy(qs_ot_env(ispin)%matrix_h_e_im(j)%matrix, &
+                                  qs_ot_env(ispin)%matrix_gx_im)
+                  CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e_im(j)%matrix, norm_weight)
+                  CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, &
+                                 qs_ot_env(ispin)%matrix_h_e_im(j)%matrix, tmp)
+                  qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
+                  CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e_im(j)%matrix, -qs_ot_env(1)%ds_min)
                END IF
             END DO
             IF (qs_ot_env(1)%settings%do_rotation) THEN
                DO ispin = 1, nspin
                   norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
-                  CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_gx, tmp)
-                  qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*0.5_dp*tmp
-                  CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, &
-                                 qs_ot_env(ispin)%rot_mat_gx, alpha_scalar=0.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+                  CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, qs_ot_env(ispin)%rot_mat_gx)
+                  IF (qs_ot_env(ispin)%has_kpoint_context) THEN
+                     CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, norm_weight)
+                  END IF
+                  CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, &
+                                 qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, tmp)
+                  qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
+                  CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, -qs_ot_env(1)%ds_min)
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                     CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_gx_im, tmp)
-                     qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*0.5_dp*tmp
-                     CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, &
-                                    qs_ot_env(ispin)%rot_mat_gx_im, alpha_scalar=0.0_dp, &
-                                    beta_scalar=-qs_ot_env(1)%ds_min)
+                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, &
+                                     qs_ot_env(ispin)%rot_mat_gx_im)
+                     CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, norm_weight)
+                     CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, &
+                                    qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, tmp)
+                     qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
+                     CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, -qs_ot_env(1)%ds_min)
                   END IF
                END DO
             END IF
@@ -5377,9 +5490,13 @@ CONTAINS
          IF (do_ener) THEN
             DO ispin = 1, nspin
                norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
-               tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx(:), qs_ot_env(ispin)%ener_gx(:))
-               qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + norm_weight*tmp
-               qs_ot_env(ispin)%ener_h_e(j, :) = -qs_ot_env(1)%ds_min*qs_ot_env(ispin)%ener_gx(:)
+               qs_ot_env(ispin)%ener_h_e(j, :) = qs_ot_env(ispin)%ener_gx(:)
+               IF (qs_ot_env(ispin)%has_kpoint_context) THEN
+                  qs_ot_env(ispin)%ener_h_e(j, :) = norm_weight*qs_ot_env(ispin)%ener_h_e(j, :)
+               END IF
+               tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx(:), qs_ot_env(ispin)%ener_h_e(j, :))
+               qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
+               qs_ot_env(ispin)%ener_h_e(j, :) = -qs_ot_env(1)%ds_min*qs_ot_env(ispin)%ener_h_e(j, :)
             END DO
          END IF
       END IF
@@ -5441,39 +5558,37 @@ CONTAINS
             qs_ot_env(1)%ls_diis(i, j) = 0.0_dp
             IF (do_ks) THEN
                DO ispin = 1, nspin
-                  norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
                   CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, &
                                  qs_ot_env(ispin)%matrix_h_e(i)%matrix, &
                                  tmp)
                   qs_ot_env(1)%ls_diis(i, j) = qs_ot_env(1)%ls_diis(i, j) - &
-                                               norm_weight*qs_ot_env(1)%ds_min*tmp
+                                               qs_ot_env(1)%ds_min*tmp
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                      CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, &
                                     qs_ot_env(ispin)%matrix_h_e_im(i)%matrix, tmp)
                      qs_ot_env(1)%ls_diis(i, j) = qs_ot_env(1)%ls_diis(i, j) - &
-                                                  norm_weight*qs_ot_env(1)%ds_min*tmp
+                                                  qs_ot_env(1)%ds_min*tmp
                   END IF
                   IF (qs_ot_env(ispin)%settings%do_rotation) THEN
                      CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, &
                                     qs_ot_env(ispin)%rot_mat_h_e(i)%matrix, &
                                     tmp)
                      qs_ot_env(1)%ls_diis(i, j) = qs_ot_env(1)%ls_diis(i, j) - &
-                                                  norm_weight*qs_ot_env(1)%ds_min*0.5_dp*tmp
+                                                  qs_ot_env(1)%ds_min*0.5_dp*tmp
                      IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                         CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, &
                                        qs_ot_env(ispin)%rot_mat_h_e_im(i)%matrix, tmp)
                         qs_ot_env(1)%ls_diis(i, j) = qs_ot_env(1)%ls_diis(i, j) - &
-                                                     norm_weight*qs_ot_env(1)%ds_min*0.5_dp*tmp
+                                                     qs_ot_env(1)%ds_min*0.5_dp*tmp
                      END IF
                   END IF
                END DO
             END IF
             IF (do_ener) THEN
                DO ispin = 1, nspin
-                  norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
                   tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx(:), qs_ot_env(ispin)%ener_h_e(i, :))
                   qs_ot_env(1)%ls_diis(i, j) = qs_ot_env(1)%ls_diis(i, j) - &
-                                               norm_weight*qs_ot_env(1)%ds_min*tmp
+                                               qs_ot_env(1)%ds_min*tmp
                END DO
             END IF
          END IF
@@ -5601,46 +5716,44 @@ CONTAINS
             tr_xnew_gx = 0.0_dp
             IF (do_ks) THEN
                DO ispin = 1, nspin
-                  norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
                   CALL dbcsr_dot(qs_ot_env(ispin)%matrix_h_x(j)%matrix, &
                                  qs_ot_env(ispin)%matrix_gx, tmp)
-                  tr_xold_gx = tr_xold_gx + norm_weight*tmp
+                  tr_xold_gx = tr_xold_gx + tmp
                   CALL dbcsr_dot(qs_ot_env(ispin)%matrix_x, &
                                  qs_ot_env(ispin)%matrix_gx, tmp)
-                  tr_xnew_gx = tr_xnew_gx + norm_weight*tmp
+                  tr_xnew_gx = tr_xnew_gx + tmp
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                      CALL dbcsr_dot(qs_ot_env(ispin)%matrix_h_x_im(j)%matrix, &
                                     qs_ot_env(ispin)%matrix_gx_im, tmp)
-                     tr_xold_gx = tr_xold_gx + norm_weight*tmp
+                     tr_xold_gx = tr_xold_gx + tmp
                      CALL dbcsr_dot(qs_ot_env(ispin)%matrix_x_im, &
                                     qs_ot_env(ispin)%matrix_gx_im, tmp)
-                     tr_xnew_gx = tr_xnew_gx + norm_weight*tmp
+                     tr_xnew_gx = tr_xnew_gx + tmp
                   END IF
                   IF (qs_ot_env(ispin)%settings%do_rotation) THEN
                      CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_h_x(j)%matrix, &
                                     qs_ot_env(ispin)%rot_mat_gx, tmp)
-                     tr_xold_gx = tr_xold_gx + norm_weight*0.5_dp*tmp
+                     tr_xold_gx = tr_xold_gx + 0.5_dp*tmp
                      CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_x, &
                                     qs_ot_env(ispin)%rot_mat_gx, tmp)
-                     tr_xnew_gx = tr_xnew_gx + norm_weight*0.5_dp*tmp
+                     tr_xnew_gx = tr_xnew_gx + 0.5_dp*tmp
                      IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                         CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_h_x_im(j)%matrix, &
                                        qs_ot_env(ispin)%rot_mat_gx_im, tmp)
-                        tr_xold_gx = tr_xold_gx + norm_weight*0.5_dp*tmp
+                        tr_xold_gx = tr_xold_gx + 0.5_dp*tmp
                         CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_x_im, &
                                        qs_ot_env(ispin)%rot_mat_gx_im, tmp)
-                        tr_xnew_gx = tr_xnew_gx + norm_weight*0.5_dp*tmp
+                        tr_xnew_gx = tr_xnew_gx + 0.5_dp*tmp
                      END IF
                   END IF
                END DO
             END IF
             IF (do_ener) THEN
                DO ispin = 1, nspin
-                  norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
                   tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_h_x(j, :), qs_ot_env(ispin)%ener_gx(:))
-                  tr_xold_gx = tr_xold_gx + norm_weight*tmp
+                  tr_xold_gx = tr_xold_gx + tmp
                   tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_x(:), qs_ot_env(ispin)%ener_gx(:))
-                  tr_xnew_gx = tr_xnew_gx + norm_weight*tmp
+                  tr_xnew_gx = tr_xnew_gx + tmp
                END DO
             END IF
             CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, tr_xold_gx)
@@ -5709,6 +5822,10 @@ CONTAINS
             END DO
          END IF
       END IF
+
+      DO ispin = 1, nspin
+         qs_ot_env(ispin)%diis_last_candidate_sd = do_ot_sd .OR. diis_bound == 1
+      END DO
 
       CALL timestop(handle)
 
