@@ -1542,8 +1542,9 @@ CONTAINS
 
       INTEGER :: anchor_valid_i, closure_valid_i, ichannel, previous_closure_valid_i, &
          previous_valid_i, valid_i, vector_valid_i
-      LOGICAL :: anchor_valid, block_secant_consistent, closure_valid, energy_curvature_resolved, &
-         energy_secant_consistent, previous_closure_valid, previous_valid, valid, vector_valid
+      LOGICAL :: anchor_replaced, anchor_valid, block_secant_consistent, closure_valid, &
+         energy_curvature_resolved, energy_secant_consistent, previous_closure_valid, &
+         previous_valid, valid, vector_valid
       REAL(KIND=dp) :: alpha, auxiliary_curvature, block_curvature, current_energy, &
          current_matrix, current_rotation, current_total, energy_curvature, frozen_energy_sty, &
          frozen_energy_y2, frozen_rotation_sty, frozen_rotation_y2, initial_energy, &
@@ -1619,7 +1620,12 @@ CONTAINS
       anchor_valid_i = MERGE(1, 0, anchor_valid)
       CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, anchor_valid_i)
       anchor_valid = anchor_valid_i > 0
-      IF (anchor_valid) THEN
+      ! Current and previous follow the two newest accepted observations.  Keep rolling the older
+      ! anchor until the causal response audit validates it; after that, preserve the demonstrated
+      ! response direction across collapsed tail line-search steps until structural invalidation.
+      anchor_replaced = anchor_valid .AND. &
+                        .NOT. qs_ot_env(1)%mermin_closure_secant_anchor_validated
+      IF (anchor_replaced) THEN
          DO ichannel = 1, SIZE(qs_ot_env)
             IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
             IF (qs_ot_env(1)%settings%do_rotation) THEN
@@ -2000,10 +2006,10 @@ CONTAINS
          energy_curvature_resolved = ot_kpoint_mermin_energy_curvature_resolved( &
                                      alpha, qs_ot_env(1)%mermin_ls_reference_energy, &
                                      qs_ot_env(1)%etotal, initial_total, energy_curvature)
-         IF (energy_curvature_resolved) then
-           energy_secant_consistent = &
-            ot_kpoint_mermin_secant_consistent(total_curvature, energy_curvature)
-         end if
+         IF (energy_curvature_resolved) THEN
+            energy_secant_consistent = &
+               ot_kpoint_mermin_secant_consistent(total_curvature, energy_curvature)
+         END IF
       END IF
 
       ! The stored vector secant contains only the complex rotation and auxiliary-energy
@@ -2020,7 +2026,7 @@ CONTAINS
          ! The current/previous/anchor buffers form a history of valid accepted secants, not
          ! of every line-search endpoint.  A zero-position or unresolved endpoint may overwrite
          ! the current work buffers, but it must not erase an older valid response sample.
-         IF (anchor_valid) THEN
+         IF (anchor_replaced) THEN
             qs_ot_env(ichannel)%mermin_closure_secant_anchor_flavor = &
                qs_ot_env(ichannel)%mermin_closure_secant_previous_flavor
          END IF
@@ -2150,9 +2156,9 @@ CONTAINS
       alignment = 0.0_dp
       IF (snorm > SQRT(TINY(1.0_dp)) .AND. ynorm > SQRT(TINY(1.0_dp))) THEN
          alignment = MAX(-1.0_dp, MIN(1.0_dp, sty/(snorm*ynorm)))
-         IF (ABS(1.0_dp - ABS(alignment)) <= 16.0_dp*EPSILON(1.0_dp)) then
-           alignment = SIGN(1.0_dp, alignment)
-         end if
+         IF (ABS(1.0_dp - ABS(alignment)) <= 16.0_dp*EPSILON(1.0_dp)) THEN
+            alignment = SIGN(1.0_dp, alignment)
+         END IF
       END IF
       orthogonal_fraction = SQRT(MAX(0.0_dp, 1.0_dp - alignment*alignment))
 

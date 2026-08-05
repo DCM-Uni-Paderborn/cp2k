@@ -226,6 +226,8 @@ MODULE qs_ot_types
       ! One older accepted closure secant is runtime-only and provides an
       ! independent density-response direction when the latest pair is collinear.
       LOGICAL          :: mermin_closure_secant_anchor_ready = .FALSE.
+      ! A causally cross-validated anchor is retained until structural history invalidation.
+      LOGICAL          :: mermin_closure_secant_anchor_validated = .FALSE.
       ! Candidate identities follow the runtime-only current/previous/anchor
       ! closure secants so density-specific response samples survive intervening CG steps.
       INTEGER          :: mermin_closure_secant_flavor = 0
@@ -1301,6 +1303,7 @@ CONTAINS
       qs_ot_env%mermin_closure_secant_ready = .FALSE.
       qs_ot_env%mermin_closure_secant_previous_ready = .FALSE.
       qs_ot_env%mermin_closure_secant_anchor_ready = .FALSE.
+      qs_ot_env%mermin_closure_secant_anchor_validated = .FALSE.
       qs_ot_env%mermin_closure_secant_flavor = 0
       qs_ot_env%mermin_closure_secant_previous_flavor = 0
       qs_ot_env%mermin_closure_secant_anchor_flavor = 0

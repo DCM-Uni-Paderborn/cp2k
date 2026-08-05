@@ -132,7 +132,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
         qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
         qs_scf_kp_pair_mask_moments, qs_scf_kp_physical_audit_add_group, &
-        qs_scf_kp_physical_audit_begin, qs_scf_kp_project_symmetric_subspace_correction, &
+        qs_scf_kp_physical_audit_begin, qs_scf_kp_prediction_candidate_evaluation_ready, &
+        qs_scf_kp_prediction_candidate_selected, qs_scf_kp_project_symmetric_subspace_correction, &
         qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
         qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
         qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
@@ -146,8 +147,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
         qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
         qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response, &
-        qs_scf_kp_work_consistent_response
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_anchor_action, &
+        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -413,6 +414,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_coupled_step_model("k-point OT coupled accepted-step model", &
                                         5.0E-14_dp, nfail)
    CALL check_kpoint_secant_candidate_promotion("k-point OT secant candidate promotion", nfail)
+   CALL check_kpoint_prediction_candidate_rescue( &
+      "k-point OT independent response-candidate rescue", nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -10729,6 +10732,49 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_secant_candidate_promotion
+
+! **************************************************************************************************
+!> \brief Check independent response-candidate rescue and validated-anchor lifecycle decisions.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_prediction_candidate_rescue(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER                                            :: promote_action, retain_action
+      LOGICAL                                            :: bad_stage, disabled_rescue, evaluate, &
+                                                            failed_base_rescue, no_model, &
+                                                            normal_competition, probe_rescue
+
+      evaluate = qs_scf_kp_prediction_candidate_evaluation_ready(3, .TRUE.)
+      bad_stage = qs_scf_kp_prediction_candidate_evaluation_ready(2, .TRUE.)
+      no_model = qs_scf_kp_prediction_candidate_evaluation_ready(3, .FALSE.)
+      failed_base_rescue = qs_scf_kp_prediction_candidate_selected( &
+                           .TRUE., .FALSE., .TRUE., .TRUE., 0.5_dp, 1.0_dp, 1.1_dp)
+      disabled_rescue = qs_scf_kp_prediction_candidate_selected( &
+                        .TRUE., .FALSE., .FALSE., .TRUE., 0.5_dp, 1.0_dp, 1.1_dp)
+      normal_competition = qs_scf_kp_prediction_candidate_selected( &
+                           .TRUE., .FALSE., .TRUE., .FALSE., 0.5_dp, 1.0_dp, 1.1_dp)
+      probe_rescue = qs_scf_kp_prediction_candidate_selected( &
+                     .TRUE., .TRUE., .FALSE., .FALSE., 0.5_dp, 1.0_dp, 1.1_dp)
+      promote_action = qs_scf_kp_validated_anchor_action(2, .TRUE., .TRUE.)
+      retain_action = qs_scf_kp_validated_anchor_action(3, .TRUE., .TRUE.)
+
+      IF (.NOT. evaluate .OR. bad_stage .OR. no_model .OR. .NOT. failed_base_rescue .OR. &
+          disabled_rescue .OR. normal_competition .OR. .NOT. probe_rescue .OR. &
+          promote_action /= 2 .OR. retain_action /= 1 .OR. &
+          qs_scf_kp_validated_anchor_action(3, .TRUE., .FALSE.) /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,7(1X,L1),2(1X,I3))') TRIM(label)// &
+            " FAILED with evaluate/stage/model/rescue/disabled/competition/probe/promote/retain", &
+            evaluate, bad_stage, no_model, failed_base_rescue, disabled_rescue, &
+            normal_competition, probe_rescue, promote_action, retain_action
+      ELSE
+         WRITE (*, '(A)') TRIM(label)//" OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_prediction_candidate_rescue
 
 ! **************************************************************************************************
 !> \brief Check that an irreducible representative takes a one-member search direction.

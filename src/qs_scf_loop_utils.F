@@ -352,6 +352,9 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_quadratic_descent_scale, &
              qs_scf_kp_candidate_position_drop, &
              qs_scf_kp_candidate_calibration_exposure, &
+             qs_scf_kp_prediction_candidate_evaluation_ready, &
+             qs_scf_kp_prediction_candidate_selected, &
+             qs_scf_kp_validated_anchor_action, &
              qs_scf_kp_canonical_density_group_metrics, &
              qs_scf_kp_affine_rebased_drop, &
              qs_scf_kp_canonical_density_residual, &
@@ -400,6 +403,73 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_secant_candidate_promoted
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief whether an independently validated response candidate must be evaluated
+!>
+!>        Evaluation is deliberately independent of the base Schur attempt status: the response
+!>        model has its own trust, residual and Mermin-descent checks and can rescue a failed base
+!>        attempt.
+!> \param schur_attempt current Schur fallback level
+!> \param prediction_update_ready whether the causal response audit accepted the model
+!> \return whether to build and validate the independent candidate
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_prediction_candidate_evaluation_ready( &
+      schur_attempt, prediction_update_ready) RESULT(ready)
+      INTEGER, INTENT(IN)                                :: schur_attempt
+      LOGICAL, INTENT(IN)                                :: prediction_update_ready
+      LOGICAL                                            :: ready
+
+      ready = schur_attempt == 3 .AND. prediction_update_ready
+
+   END FUNCTION qs_scf_kp_prediction_candidate_evaluation_ready
+
+! **************************************************************************************************
+!> \brief select an independently validated response candidate against the current base direction
+!> \param candidate_ready whether candidate construction and intrinsic checks succeeded
+!> \param probe_selected whether accepted-step calibration requests a probe
+!> \param candidate_enabled whether accepted history promoted regular use
+!> \param base_attempt_failed whether no competing base direction survived
+!> \param expected_drop calibrated candidate Mermin decrease
+!> \param reference_drop calibrated competing decrease
+!> \param advantage_ratio required advantage over a surviving base direction
+!> \return whether the candidate should replace or rescue the base direction
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_prediction_candidate_selected( &
+      candidate_ready, probe_selected, candidate_enabled, base_attempt_failed, &
+      expected_drop, reference_drop, advantage_ratio) RESULT(selected)
+      LOGICAL, INTENT(IN)                                :: candidate_ready, probe_selected, &
+                                                            candidate_enabled, base_attempt_failed
+      REAL(KIND=dp), INTENT(IN)                          :: expected_drop, reference_drop, &
+                                                            advantage_ratio
+      LOGICAL                                            :: selected
+
+      selected = candidate_ready .AND. expected_drop > EPSILON(expected_drop) .AND. &
+                 (probe_selected .OR. &
+                  (candidate_enabled .AND. &
+                   (base_attempt_failed .OR. expected_drop >= &
+                    advantage_ratio*MAX(reference_drop, EPSILON(reference_drop)))))
+
+   END FUNCTION qs_scf_kp_prediction_candidate_selected
+
+! **************************************************************************************************
+!> \brief action for retaining a causally validated closure-response anchor
+!> \param nobs number of accepted response observations in the audit
+!> \param prediction_consistent whether held-out residual prediction succeeded
+!> \param work_consistent whether held-out finite-Mermin work prediction succeeded
+!> \return 0: unchanged, 1: validate existing anchor, 2: promote previous observation and validate
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_validated_anchor_action( &
+      nobs, prediction_consistent, work_consistent) RESULT(action)
+      INTEGER, INTENT(IN)                                :: nobs
+      LOGICAL, INTENT(IN)                                :: prediction_consistent, work_consistent
+      INTEGER                                            :: action
+
+      action = 0
+      IF (prediction_consistent .AND. work_consistent .AND. nobs >= 2) &
+         action = MERGE(2, 1, nobs == 2)
+
+   END FUNCTION qs_scf_kp_validated_anchor_action
 
 ! **************************************************************************************************
 !> \brief chemical-potential response for a fixed-N spin/k-point group
@@ -30834,8 +30904,11 @@ CONTAINS
                END IF
             END IF
 
-            IF (schur_attempt == 3 .AND. prediction_update_ready .AND. &
-                .NOT. attempt_failed) THEN
+            IF (qs_scf_kp_prediction_candidate_evaluation_ready( &
+                schur_attempt, prediction_update_ready)) THEN
+               ! This is an independently cross-validated response model and may rescue a base
+               ! attempt rejected by response trust.  Its builder applies the same absolute,
+               ! weighted-response, residual and Mermin-descent checks before the selection below.
                CALL build_kpoint_ot_coupled_prediction_candidate( &
                   rot_hessian_prediction, reduced_response_metric, response_prediction, &
                   prediction_z_base, response_exact, grad_rot, grad_e, sol, &
@@ -30911,13 +30984,13 @@ CONTAINS
                                            prediction_candidate_residual_ratio, &
                                            prediction_expected_drop, prediction_reference_drop, &
                                            ot_kp_schur_calibrated_quality_min_ratio)
-               prediction_candidate_selected = &
-                  prediction_expected_drop > EPSILON(prediction_expected_drop) .AND. &
-                  (prediction_probe_selected .OR. &
-                   (local_ot_env(1)%schur_prediction_candidate_enabled .AND. &
-                    (attempt_failed .OR. prediction_expected_drop >= &
-                     ot_kp_schur_projector_response_advantage_ratio* &
-                     MAX(prediction_reference_drop, EPSILON(prediction_reference_drop)))))
+               prediction_candidate_selected = qs_scf_kp_prediction_candidate_selected( &
+                                               prediction_candidate_ready, &
+                                               prediction_probe_selected, &
+                                               local_ot_env(1)%schur_prediction_candidate_enabled, &
+                                               attempt_failed, prediction_expected_drop, &
+                                               prediction_reference_drop, &
+                                               ot_kp_schur_projector_response_advantage_ratio)
                IF (prediction_candidate_selected) THEN
                   attempt_failed = .FALSE.
                   split_candidate_selected = .FALSE.
@@ -35821,7 +35894,8 @@ CONTAINS
 
       INTEGER :: active_energy_count, directional_subspace_correction_rank, &
          directional_subspace_rank, global_channel, global_spin, group, ie, ifull, imo, iobs, jmo, &
-         local_channel, nclosure_observations, nener, nmo, nrot, nrot_full, r, valid_i
+         local_channel, nclosure_observations, nener, nmo, nrot, nrot_full, r, valid_i, &
+         validated_anchor_action
       LOGICAL :: closure_anchor_valid, closure_coupled_fit_ready, closure_coupled_transport_ready, &
          closure_previous_valid, closure_secant_valid, coupled_multisecant_finite, &
          coupled_multisecant_ready, coupled_prediction_finite, coupled_prediction_reverse_finite, &
@@ -36724,6 +36798,47 @@ CONTAINS
                closure_predictive_curvature_max, &
                observable_work_quality=closure_predictive_work_quality, &
                observable_consistent=closure_predictive_work_consistent)
+            validated_anchor_action = qs_scf_kp_validated_anchor_action( &
+                                      nclosure_observations, closure_predictive_consistent, &
+                                      closure_predictive_work_consistent)
+            IF (validated_anchor_action > 0) THEN
+               ! Preserve only an anchor that participated in a causal held-out success.  With
+               ! two observations, promote the older (previous) endpoint into the anchor slot;
+               ! with three, the existing oldest endpoint already formed the training pair.
+               DO local_channel = 1, SIZE(local_ot_env)
+                  global_channel = first_channel + local_channel - 1
+                  IF (global_channel < 1 .OR. global_channel > SIZE(channel_nmo)) CYCLE
+                  global_spin = MOD(global_channel - 1, nspin_ot) + 1
+                  group = MERGE(global_spin, 1, ngroups == nspin_ot)
+                  IF (group /= target_group) CYCLE
+                  IF (validated_anchor_action == 2) THEN
+                     CALL dbcsr_copy(local_ot_env(local_channel)%rot_mat_mermin_s_anchor, &
+                                     local_ot_env(local_channel)%rot_mat_mermin_s_previous)
+                     CALL dbcsr_copy(local_ot_env(local_channel)%rot_mat_mermin_s_anchor_im, &
+                                     local_ot_env(local_channel)%rot_mat_mermin_s_previous_im)
+                     CALL dbcsr_copy(local_ot_env(local_channel)%rot_mat_mermin_y_anchor, &
+                                     local_ot_env(local_channel)%rot_mat_mermin_y_previous)
+                     CALL dbcsr_copy(local_ot_env(local_channel)%rot_mat_mermin_y_anchor_im, &
+                                     local_ot_env(local_channel)%rot_mat_mermin_y_previous_im)
+                     CALL dbcsr_copy(local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor, &
+                                     local_ot_env(local_channel)%rot_mat_mermin_closure_y_previous)
+                     CALL dbcsr_copy(local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor_im, &
+                                     local_ot_env(local_channel)%rot_mat_mermin_closure_y_previous_im)
+                     local_ot_env(local_channel)%ener_mermin_s_anchor(:) = &
+                        local_ot_env(local_channel)%ener_mermin_s_previous(:)
+                     local_ot_env(local_channel)%ener_mermin_y_anchor(:) = &
+                        local_ot_env(local_channel)%ener_mermin_y_previous(:)
+                     local_ot_env(local_channel)%ener_mermin_closure_y_anchor(:) = &
+                        local_ot_env(local_channel)%ener_mermin_closure_y_previous(:)
+                     local_ot_env(local_channel)%mermin_secant_work_ratio_anchor = &
+                        local_ot_env(local_channel)%mermin_secant_work_ratio_previous
+                     local_ot_env(local_channel)%mermin_closure_secant_anchor_flavor = &
+                        local_ot_env(local_channel)%mermin_closure_secant_previous_flavor
+                     local_ot_env(local_channel)%mermin_closure_secant_anchor_ready = .TRUE.
+                  END IF
+                  local_ot_env(local_channel)%mermin_closure_secant_anchor_validated = .TRUE.
+               END DO
+            END IF
             closure_coupled_fit_ready = closure_coupled_ready
             closure_coupled_transport_ready = closure_coupled_ready
             IF (logger%iter_info%print_level >= debug_print_level .AND. &
