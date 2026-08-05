@@ -40,14 +40,18 @@
 "C_ot.inp"                              = [{matcher="E_total", tol=1e-13, ref=-5.33746454516253}]
 # use of the fermi distribution
 "C_fermi.inp"                           = [{matcher="E_total", tol=1e-13, ref=-5.34109284627944}]
-"Al_ot_fermi.inp"                       = [{matcher="E_total", tol=1.0E-10, ref=-8.08437895157388},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.08437895157388},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-12, ref=-5.902617E-8},
+"Al_ot_fermi.inp"                       = [{matcher="E_total", tol=1.0E-10, ref=-8.09932090932086},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.09932090932086},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-12, ref=-5.173194E-8},
+                                           {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
                                            {matcher="OT_KPOINT_DEFAULT_IRAC"},
                                            {matcher="OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"},
                                            {matcher="OT_KPOINT_DEFAULT_PRECONDITIONER"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_fermi.inp"                          = [{matcher="E_total", tol=5e-14, ref=-8.17296838715160}]
 # go through planned FFTs, but don't check results, they will depend on the selected plan
