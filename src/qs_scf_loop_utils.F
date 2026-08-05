@@ -81,7 +81,8 @@ MODULE qs_scf_loop_utils
                                               qs_ot_get_orbitals_ref_complex,&
                                               qs_ot_ref_update_required,&
                                               qs_ot_rot_mat_derivative_complex
-   USE qs_ot_minimizer,                 ONLY: ot_kpoint_physical_residual_split,&
+   USE qs_ot_minimizer,                 ONLY: ot_kpoint_physical_exit_delta,&
+                                              ot_kpoint_physical_residual_split,&
                                               ot_kpoint_secant_geometry,&
                                               ot_mini,&
                                               sync_kpoint_minimizer_control
@@ -9454,7 +9455,9 @@ CONTAINS
          IF (SIZE(local_ot_env) > 0) THEN
             ot_delta = MAX(0.0_dp, local_ot_env(1)%delta)
             raw_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_raw_delta)
-            physical_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_physical_delta)
+            physical_delta = ot_kpoint_physical_exit_delta( &
+                             local_ot_env(1)%kpoint_physical_delta, &
+                             local_ot_env(1)%kpoint_complete_physical_delta)
             IF (local_ot_env(1)%kpoint_density_stationarity_ready) &
                density_stationarity_delta = &
                MAX(0.0_dp, local_ot_env(1)%kpoint_density_stationarity_delta)

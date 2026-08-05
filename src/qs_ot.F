@@ -724,10 +724,11 @@ CONTAINS
       !
       TYPE(qs_ot_type)                                   :: qs_ot_env
 
-      ! CG history was transported into the absorbed REF coordinates immediately before this
-      ! call. Preserve its step-length/conjugacy memory; resetting it makes metallic k-point OT
-      ! revert to slow steepest-descent-like progress.
-      IF (qs_ot_env%settings%ot_method == "CG") RETURN
+      ! CG and DIIS history was transported into the absorbed REF coordinates immediately before
+      ! this call. Preserve the resulting conjugacy/Pulay memory; resetting DIIS on every finite
+      ! metallic rotation reduces it to a fixed-step steepest-descent iteration.
+      IF (qs_ot_env%settings%ot_method == "CG" .OR. &
+          qs_ot_env%settings%ot_method == "DIIS") RETURN
 
       qs_ot_env%OT_energy(:) = 0.0_dp
       qs_ot_env%OT_pos(:) = 0.0_dp
@@ -901,6 +902,24 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_ot_transport_ref_rotation_history(qs_ot_env)
       TYPE(qs_ot_type)                                   :: qs_ot_env
+
+      INTEGER                                            :: ihist
+
+      IF (qs_ot_env%settings%ot_method == "DIIS") THEN
+         IF (.NOT. qs_ot_env%settings%do_rotation) RETURN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_h_e) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_h_e_im)) THEN
+            DO ihist = 1, SIZE(qs_ot_env%rot_mat_h_e)
+               ! Pulay errors are endpoint-frame tangents, already trivialized at the accepted
+               ! state. Parallel transport is therefore the unitary adjoint map, which preserves
+               ! the Frobenius metric used by the existing DIIS matrix.
+               CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                              qs_ot_env%rot_mat_h_e(ihist)%matrix, &
+                                              qs_ot_env%rot_mat_h_e_im(ihist)%matrix)
+            END DO
+         END IF
+         RETURN
+      END IF
 
       IF (qs_ot_env%settings%ot_method /= "CG") RETURN
       IF (.NOT. qs_ot_env%settings%do_rotation) RETURN

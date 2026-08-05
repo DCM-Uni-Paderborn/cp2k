@@ -64,7 +64,8 @@ PROGRAM qs_ot_frechet_unittest
                                               qs_ot_ref_update_required
    USE qs_ot_minimizer,                 ONLY: &
         ot_kpoint_cg_metric_history_reset, ot_kpoint_cg_residual_growth_guard, &
-        ot_kpoint_cg_tail_metric_tracked, ot_kpoint_fermi_window_direction_scale, &
+        ot_kpoint_cg_tail_metric_tracked, ot_kpoint_diis_mermin_step_rejected, &
+        ot_kpoint_diis_residual_step_rejected, ot_kpoint_fermi_window_direction_scale, &
         ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
         ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
         ot_kpoint_mermin_endpoint_status, ot_kpoint_mermin_energy_curvature_resolved, &
@@ -73,10 +74,10 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
         ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
         ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
-        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
-        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_probe_position, &
-        ot_kpoint_rayleigh_response_scale, ot_kpoint_residual_aware_rayleigh_model, &
-        ot_kpoint_secant_geometry
+        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_exit_delta, &
+        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
+        ot_kpoint_rayleigh_probe_position, ot_kpoint_rayleigh_response_scale, &
+        ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: &
         qs_ot_reset_accepted_model_calibration, qs_ot_restart_signature_nchar, &
@@ -320,6 +321,10 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT complete reduced-space physical gradient", 5.0E-15_dp, nfail)
    CALL check_kpoint_complete_physical_audit_ready( &
       "k-point OT direct complete physical audit", nfail)
+   CALL check_kpoint_physical_exit_delta( &
+      "k-point OT minimizer-independent physical exit", 5.0E-15_dp, nfail)
+   CALL check_kpoint_diis_mermin_rejection( &
+      "k-point OT DIIS accepted-Mermin trust", nfail)
    CALL check_kpoint_physical_audit_lifecycle( &
       "k-point OT physical-audit endpoint lifecycle", 5.0E-15_dp, nfail)
    CALL check_kpoint_residual_pair_omission_limit( &
@@ -6033,6 +6038,75 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_exit_residual
+
+! **************************************************************************************************
+!> \brief Check that the complete audit survives a minimizer with no projected residual.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_physical_exit_delta(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: physical_delta
+
+      physical_delta = ot_kpoint_physical_exit_delta(0.0_dp, 8.2E-8_dp)
+      failed = ABS(physical_delta - 8.2E-8_dp) > tol
+      physical_delta = ot_kpoint_physical_exit_delta(1.3E-7_dp, 8.2E-8_dp)
+      failed = failed .OR. ABS(physical_delta - 1.3E-7_dp) > tol
+      physical_delta = ot_kpoint_physical_exit_delta(6.0E-8_dp, -1.0_dp)
+      failed = failed .OR. ABS(physical_delta - 6.0E-8_dp) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES16.8)') TRIM(label), "failed", physical_delta
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_physical_exit_delta
+
+! **************************************************************************************************
+!> \brief Check the finite-Mermin acceptance window used by complex k-point DIIS.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_diis_mermin_rejection(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. ot_kpoint_diis_mermin_step_rejected(-100.0_dp + 2.0E-9_dp, -100.0_dp)
+      failed = failed .OR. ot_kpoint_diis_mermin_step_rejected(-100.0_dp + 5.0E-10_dp, -100.0_dp)
+      failed = failed .OR. ot_kpoint_diis_mermin_step_rejected(-100.0_dp - 2.0E-9_dp, -100.0_dp)
+      ! Fe tail regression: the free-energy change is below numerical resolution while the
+      ! complete fixed-N residual grows by almost a factor of two.
+      failed = failed .OR. .NOT. ot_kpoint_diis_residual_step_rejected( &
+               -123.6302668563_dp + 4.95958830E-12_dp, &
+               -123.6302668563_dp, 1.52804783E-7_dp, &
+               8.20704737E-8_dp, 1.0E-8_dp)
+      failed = failed .OR. ot_kpoint_diis_residual_step_rejected( &
+               -123.6302668563_dp + 4.95958830E-12_dp, &
+               -123.6302668563_dp, 1.10E-7_dp, 8.20704737E-8_dp, 1.0E-8_dp)
+      failed = failed .OR. ot_kpoint_diis_residual_step_rejected( &
+               -123.6302678563_dp, -123.6302668563_dp, &
+               1.52804783E-7_dp, 8.20704737E-8_dp, 1.0E-8_dp)
+      failed = failed .OR. ot_kpoint_diis_residual_step_rejected( &
+               -123.6302668563_dp, -123.6302668563_dp, &
+               8.0E-6_dp, 4.0E-6_dp, 1.0E-8_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_diis_mermin_rejection
 
 ! **************************************************************************************************
 !> \brief Check that accepted endpoints require complete physical and density audits.
