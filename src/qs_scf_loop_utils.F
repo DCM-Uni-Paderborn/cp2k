@@ -3441,7 +3441,10 @@ CONTAINS
       IF (n <= 0) RETURN
 
       step_norm_sq = DOT_PRODUCT(step, step)
-      IF (step_norm_sq <= EPSILON(1.0_dp)) RETURN
+      ! The secant equation is invariant under (s,y) -> lambda*(s,y).  Reject only when the
+      ! squared norm cannot safely appear twice in the denominator, not when a physically small
+      ! accepted line-search step happens to be below a unit-scale epsilon.
+      IF (step_norm_sq <= SQRT(TINY(1.0_dp))) RETURN
       update_weight = MIN(1.0_dp, MAX(0.0_dp, weight))
       IF (update_weight <= EPSILON(1.0_dp)) RETURN
 
@@ -3720,7 +3723,9 @@ CONTAINS
       IF (update_weight <= EPSILON(1.0_dp)) RETURN
       gram(:, :) = MATMUL(TRANSPOSE(steps), steps)
       gram_scale = gram(1, 1)*gram(2, 2)
-      IF (gram_scale <= EPSILON(1.0_dp)) RETURN
+      ! Independence is relative to the two column norms.  Their absolute line-search scale must
+      ! not decide whether the same two-dimensional secant geometry is usable.
+      IF (gram_scale <= TINY(1.0_dp)) RETURN
       det = gram_scale - gram(1, 2)*gram(2, 1)
       independence = MAX(0.0_dp, det/gram_scale)
       IF (det <= SQRT(EPSILON(1.0_dp))*gram_scale) RETURN
@@ -3737,7 +3742,7 @@ CONTAINS
       step_inverse(:, :) = MATMUL(steps, gram_inverse)
       compatible_targets(:, :) = secant_targets - MATMUL(step_inverse, skew)
       compatibility_norm = SQRT(MAX(0.0_dp, SUM((compatible_targets - secant_targets)**2)))/ &
-                           MAX(SQRT(MAX(0.0_dp, SUM(secant_targets**2))), EPSILON(1.0_dp))
+                           MAX(SQRT(MAX(0.0_dp, SUM(secant_targets**2))), SQRT(TINY(1.0_dp)))
 
       model(:, :) = MATMUL(hessian, steps)
       residual(:, :) = compatible_targets - model
@@ -3969,7 +3974,7 @@ CONTAINS
       INTEGER                                            :: i, j, nener, nfull, nrot
       REAL(KIND=dp)                                      :: block_floor, block_max, det, gram_scale, &
                                                             qnorm, update_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: coordinate_scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: coordinate_scale, sample_norm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: correction, full_hessian, full_steps, &
          full_targets, model_residual, projected_residual, q, updated_full_hessian, &
          updated_model_residual
@@ -4009,7 +4014,8 @@ CONTAINS
       update_weight = MIN(1.0_dp, MAX(0.0_dp, weight))
       IF (update_weight <= EPSILON(1.0_dp)) RETURN
 
-      ALLOCATE (coordinate_scale(nfull), correction(nfull, nfull), full_hessian(nfull, nfull), &
+      ALLOCATE (coordinate_scale(nfull), sample_norm(2), correction(nfull, nfull), &
+                full_hessian(nfull, nfull), &
                 full_steps(nfull, 2), full_targets(nfull, 2), model_residual(nfull, 2), &
                 projected_residual(nfull, 2), q(nfull, 2), updated_full_hessian(nfull, nfull), &
                 updated_model_residual(nfull, 2))
@@ -4054,10 +4060,26 @@ CONTAINS
          full_targets(i, :) = full_targets(i, :)/coordinate_scale(i)
       END DO
 
+      ! Each secant equation is unchanged by scaling its step and target by the same factor.
+      ! Normalize the two accepted samples before testing their geometry so that a resolved
+      ! residual-tail step is not rejected merely because its absolute norm is below unit-scale
+      ! machine epsilon.  The fitted Hessian and all dimensionless quality metrics are invariant.
+      DO j = 1, 2
+         sample_norm(j) = SQRT(MAX(0.0_dp, DOT_PRODUCT(full_steps(:, j), full_steps(:, j))))
+         IF (sample_norm(j) <= SQRT(TINY(1.0_dp))) THEN
+            DEALLOCATE (coordinate_scale, sample_norm, correction, full_hessian, full_steps, &
+                        full_targets, model_residual, projected_residual, q, &
+                        updated_full_hessian, updated_model_residual)
+            RETURN
+         END IF
+         full_steps(:, j) = full_steps(:, j)/sample_norm(j)
+         full_targets(:, j) = full_targets(:, j)/sample_norm(j)
+      END DO
+
       gram(:, :) = MATMUL(TRANSPOSE(full_steps), full_steps)
       gram_scale = gram(1, 1)*gram(2, 2)
-      IF (gram_scale <= EPSILON(1.0_dp)) THEN
-         DEALLOCATE (coordinate_scale, correction, full_hessian, full_steps, full_targets, &
+      IF (gram_scale <= TINY(1.0_dp)) THEN
+         DEALLOCATE (coordinate_scale, sample_norm, correction, full_hessian, full_steps, full_targets, &
                      model_residual, projected_residual, q, updated_full_hessian, &
                      updated_model_residual)
          RETURN
@@ -4065,7 +4087,7 @@ CONTAINS
       det = gram_scale - gram(1, 2)*gram(2, 1)
       independence = MAX(0.0_dp, det/gram_scale)
       IF (det <= SQRT(EPSILON(1.0_dp))*gram_scale) THEN
-         DEALLOCATE (coordinate_scale, correction, full_hessian, full_steps, full_targets, &
+         DEALLOCATE (coordinate_scale, sample_norm, correction, full_hessian, full_steps, full_targets, &
                      model_residual, projected_residual, q, updated_full_hessian, &
                      updated_model_residual)
          RETURN
@@ -4075,7 +4097,7 @@ CONTAINS
       q(:, 2) = full_steps(:, 2) - DOT_PRODUCT(q(:, 1), full_steps(:, 2))*q(:, 1)
       qnorm = SQRT(MAX(0.0_dp, DOT_PRODUCT(q(:, 2), q(:, 2))))
       IF (qnorm <= SQRT(EPSILON(1.0_dp))*SQRT(gram(2, 2))) THEN
-         DEALLOCATE (coordinate_scale, correction, full_hessian, full_steps, full_targets, &
+         DEALLOCATE (coordinate_scale, sample_norm, correction, full_hessian, full_steps, full_targets, &
                      model_residual, projected_residual, q, updated_full_hessian, &
                      updated_model_residual)
          RETURN
@@ -4084,9 +4106,8 @@ CONTAINS
       step_coordinates(:, :) = MATMUL(TRANSPOSE(q), full_steps)
       det = step_coordinates(1, 1)*step_coordinates(2, 2) - &
             step_coordinates(1, 2)*step_coordinates(2, 1)
-      IF (ABS(det) <= SQRT(EPSILON(1.0_dp))* &
-          MAX(1.0_dp, SQRT(MAX(0.0_dp, SUM(step_coordinates**2))))) THEN
-         DEALLOCATE (coordinate_scale, correction, full_hessian, full_steps, full_targets, &
+      IF (ABS(det) <= SQRT(TINY(1.0_dp))) THEN
+         DEALLOCATE (coordinate_scale, sample_norm, correction, full_hessian, full_steps, full_targets, &
                      model_residual, projected_residual, q, updated_full_hessian, &
                      updated_model_residual)
          RETURN
@@ -4141,7 +4162,7 @@ CONTAINS
          updated_energy_cross(:, :) = -updated_full_hessian(nrot + 1:nfull, 1:nrot)
          updated_energy_hessian(:, :) = updated_full_hessian(nrot + 1:nfull, nrot + 1:nfull)
       END IF
-      DEALLOCATE (coordinate_scale, correction, full_hessian, full_steps, full_targets, &
+      DEALLOCATE (coordinate_scale, sample_norm, correction, full_hessian, full_steps, full_targets, &
                   model_residual, projected_residual, q, updated_full_hessian, &
                   updated_model_residual)
 
@@ -4297,8 +4318,8 @@ CONTAINS
 
       training_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_step, training_step)))
       validation_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(validation_step, validation_step)))
-      IF (training_norm <= SQRT(EPSILON(1.0_dp)) .OR. &
-          validation_norm <= SQRT(EPSILON(1.0_dp))) THEN
+      IF (training_norm <= SQRT(TINY(1.0_dp)) .OR. &
+          validation_norm <= SQRT(TINY(1.0_dp))) THEN
          DEALLOCATE (coordinate_scale, full_hessian, updated_full_hessian, predicted_response, &
                      predicted_validation_residual, q, training_residual, training_step, &
                      training_target, validation_residual, validation_step, validation_target)
@@ -4318,7 +4339,7 @@ CONTAINS
                                          response_curvature*q(i)*q(j)
          END DO
       END DO
-      IF (training_residual_norm > EPSILON(training_residual_norm)) &
+      IF (training_residual_norm > SQRT(TINY(1.0_dp))) &
          training_response_capture = ABS(DOT_PRODUCT(q, training_residual))/training_residual_norm
 
       validation_residual(:) = validation_target(:) - MATMUL(full_hessian, validation_step)
@@ -4329,7 +4350,7 @@ CONTAINS
       predicted_residual_norm = &
          SQRT(MAX(0.0_dp, DOT_PRODUCT(predicted_validation_residual, &
                                       predicted_validation_residual)))
-      IF (validation_residual_sq > EPSILON(validation_residual_sq)) &
+      IF (validation_residual_sq > TINY(1.0_dp)) &
          validation_quality = 1.0_dp - predicted_residual_norm**2/validation_residual_sq
 
       rotation_residual_sq = MAX(0.0_dp, &
@@ -4338,7 +4359,7 @@ CONTAINS
       predicted_rotation_residual_sq = MAX(0.0_dp, &
                                            DOT_PRODUCT(predicted_validation_residual(1:nrot), &
                                                        predicted_validation_residual(1:nrot)))
-      IF (rotation_residual_sq > EPSILON(rotation_residual_sq)) &
+      IF (rotation_residual_sq > TINY(1.0_dp)) &
          validation_rotation_quality = 1.0_dp - &
                                        predicted_rotation_residual_sq/rotation_residual_sq
       energy_residual_sq = MAX(0.0_dp, &
@@ -4347,12 +4368,12 @@ CONTAINS
       predicted_energy_residual_sq = MAX(0.0_dp, &
                                          DOT_PRODUCT(predicted_validation_residual(nrot + 1:nfull), &
                                                      predicted_validation_residual(nrot + 1:nfull)))
-      IF (energy_residual_sq > EPSILON(energy_residual_sq)) &
+      IF (energy_residual_sq > TINY(1.0_dp)) &
          validation_energy_quality = 1.0_dp - predicted_energy_residual_sq/energy_residual_sq
 
       correction_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response)))
-      IF (validation_residual_norm > EPSILON(validation_residual_norm) .AND. &
-          correction_norm > EPSILON(correction_norm)) &
+      IF (validation_residual_norm > SQRT(TINY(1.0_dp)) .AND. &
+          correction_norm > SQRT(TINY(1.0_dp))) &
          validation_alignment = DOT_PRODUCT(validation_residual, predicted_response)/ &
                                 (validation_residual_norm*correction_norm)
       IF (ABS(projected_step) > SQRT(EPSILON(1.0_dp))*validation_norm .AND. &
@@ -4517,8 +4538,8 @@ CONTAINS
 
       training_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_step, training_step)))
       validation_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(validation_step, validation_step)))
-      IF (training_norm <= SQRT(EPSILON(1.0_dp)) .OR. &
-          validation_norm <= SQRT(EPSILON(1.0_dp))) THEN
+      IF (training_norm <= SQRT(TINY(1.0_dp)) .OR. &
+          validation_norm <= SQRT(TINY(1.0_dp))) THEN
          DEALLOCATE (coordinate_scale, predicted_response, predicted_validation_residual, q, &
                      reduced_hessian, training_residual, training_step, training_target, &
                      updated_reduced_hessian, validation_residual, validation_step, validation_target)
@@ -4539,8 +4560,8 @@ CONTAINS
       END IF
       response_curvature = DOT_PRODUCT( &
                            training_step, MATMUL(updated_reduced_hessian - reduced_hessian, &
-                                                 training_step))/MAX(training_norm**2, EPSILON(1.0_dp))
-      IF (training_residual_norm > EPSILON(training_residual_norm)) &
+                                                 training_step))/MAX(training_norm**2, TINY(1.0_dp))
+      IF (training_residual_norm > SQRT(TINY(1.0_dp))) &
          training_response_capture = MIN(1.0_dp, MAX(0.0_dp, &
                                                      1.0_dp - updated_training_residual_norm/ &
                                                      training_residual_norm))
@@ -4553,18 +4574,18 @@ CONTAINS
       predicted_residual_norm = SQRT(MAX(0.0_dp, &
                                          DOT_PRODUCT(predicted_validation_residual, &
                                                      predicted_validation_residual)))
-      IF (validation_residual_sq > EPSILON(validation_residual_sq)) &
+      IF (validation_residual_sq > TINY(1.0_dp)) &
          validation_quality = 1.0_dp - predicted_residual_norm**2/validation_residual_sq
       predicted_response_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response)))
-      IF (validation_residual_norm > EPSILON(validation_residual_norm) .AND. &
-          predicted_response_norm > EPSILON(predicted_response_norm)) &
+      IF (validation_residual_norm > SQRT(TINY(1.0_dp)) .AND. &
+          predicted_response_norm > SQRT(TINY(1.0_dp))) &
          validation_alignment = DOT_PRODUCT(validation_residual, predicted_response)/ &
                                 (validation_residual_norm*predicted_response_norm)
       predicted_curvature = DOT_PRODUCT(validation_step, predicted_response)/ &
-                            MAX(validation_norm**2, EPSILON(1.0_dp))
-      IF (ABS(predicted_curvature) > SQRT(EPSILON(1.0_dp))) THEN
+                            MAX(validation_norm**2, TINY(1.0_dp))
+      IF (ABS(predicted_curvature) > SQRT(TINY(1.0_dp))) THEN
          observed_curvature = DOT_PRODUCT(validation_step, validation_residual)/ &
-                              MAX(validation_norm**2, EPSILON(1.0_dp))
+                              MAX(validation_norm**2, TINY(1.0_dp))
          validation_curvature_ratio = observed_curvature/predicted_curvature
       END IF
       ready = update_ready .AND. step_overlap == step_overlap .AND. &
@@ -6308,7 +6329,7 @@ CONTAINS
             full_energy_correction(:, :) = fitted_energy_hessian - energy_hessian
          IF (PRESENT(full_cross_correction)) &
             full_cross_correction(:, :) = fitted_energy_cross - energy_cross
-         residual_ratio = updated_residual_norm/MAX(residual_norm, EPSILON(1.0_dp))
+         residual_ratio = updated_residual_norm/MAX(residual_norm, SQRT(TINY(1.0_dp)))
       END IF
       DEALLOCATE (fitted_energy_cross, fitted_energy_hessian, fitted_rotation_hessian, &
                   full_energy_targets, full_rotation_targets, transported_rotation_hessian)
@@ -6460,9 +6481,9 @@ CONTAINS
       validation_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(validation_step, validation_step)))
       response_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_response, training_response)))
       secant_curvature = DOT_PRODUCT(training_step, training_response)
-      IF (step_norm <= SQRT(EPSILON(1.0_dp)) .OR. &
-          validation_norm <= SQRT(EPSILON(1.0_dp)) .OR. &
-          response_norm <= SQRT(EPSILON(1.0_dp)) .OR. &
+      IF (step_norm <= SQRT(TINY(1.0_dp)) .OR. &
+          validation_norm <= SQRT(TINY(1.0_dp)) .OR. &
+          response_norm <= SQRT(TINY(1.0_dp)) .OR. &
           ABS(secant_curvature) <= SQRT(EPSILON(1.0_dp))*step_norm*response_norm) THEN
          DEALLOCATE (coordinate_scale, predicted_response, predicted_residual, response_hessian, &
                      training_response, training_step, validation_response, validation_step)
@@ -6480,11 +6501,10 @@ CONTAINS
       predicted_residual(:) = validation_response - predicted_response
       predicted_residual_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_residual, predicted_residual))
       predicted_response_norm_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response))
-      IF (MAX(validation_residual_sq, predicted_response_norm_sq) > &
-          EPSILON(MAX(validation_residual_sq, predicted_response_norm_sq))) &
+      IF (MAX(validation_residual_sq, predicted_response_norm_sq) > TINY(1.0_dp)) &
          validation_quality = 1.0_dp - predicted_residual_sq/ &
                               MAX(validation_residual_sq, predicted_response_norm_sq)
-      IF (validation_residual_sq > EPSILON(validation_residual_sq)) &
+      IF (validation_residual_sq > TINY(1.0_dp)) &
          strict_validation_quality = 1.0_dp - predicted_residual_sq/validation_residual_sq
       predicted_rotation_residual_sq = MAX(0.0_dp, &
                                            DOT_PRODUCT(predicted_residual(1:nrot), &
@@ -6501,7 +6521,7 @@ CONTAINS
       ELSE
          validation_rotation_quality = 1.0_dp
       END IF
-      IF (rotation_residual_sq > EPSILON(rotation_residual_sq)) &
+      IF (rotation_residual_sq > TINY(1.0_dp)) &
          strict_validation_rotation_quality = 1.0_dp - &
                                               predicted_rotation_residual_sq/rotation_residual_sq
       predicted_energy_residual_sq = MAX(0.0_dp, &
@@ -6530,14 +6550,14 @@ CONTAINS
                                             predicted_energy_residual_sq/strict_component_floor
       END IF
       predicted_norm = SQRT(predicted_response_norm_sq)
-      IF (validation_residual_sq > EPSILON(validation_residual_sq) .AND. &
-          predicted_norm > EPSILON(predicted_norm)) &
+      IF (validation_residual_sq > TINY(1.0_dp) .AND. &
+          predicted_norm > SQRT(TINY(1.0_dp))) &
          validation_alignment = DOT_PRODUCT(validation_response, predicted_response)/ &
                                 (SQRT(validation_residual_sq)*predicted_norm)
       predicted_curvature = DOT_PRODUCT(validation_step, predicted_response)
       validation_curvature = DOT_PRODUCT(validation_step, validation_response)
       IF (ABS(predicted_curvature) > SQRT(EPSILON(1.0_dp))* &
-          validation_norm*MAX(predicted_norm, EPSILON(1.0_dp))) &
+          validation_norm*MAX(predicted_norm, SQRT(TINY(1.0_dp)))) &
          validation_curvature_ratio = validation_curvature/predicted_curvature
 
       ready = ALL(response_hessian == response_hessian) .AND. &
@@ -6603,6 +6623,8 @@ CONTAINS
 !> \param strict_validation_energy_quality ...
 !> \param validation_alignment ...
 !> \param validation_curvature_ratio ...
+!> \param include_transverse_response include the conservative response normal to the sampled
+!>        step plane; otherwise retain only the observable in-plane Hessian work
 ! **************************************************************************************************
    SUBROUTINE qs_scf_kp_coupled_response_multisecant_prediction( &
       rotation_hessian, energy_hessian, training_rotation_steps, training_energy_steps, &
@@ -6612,7 +6634,7 @@ CONTAINS
       training_quality, validation_quality, validation_rotation_quality, &
       validation_energy_quality, strict_validation_quality, &
       strict_validation_rotation_quality, strict_validation_energy_quality, &
-      validation_alignment, validation_curvature_ratio)
+      validation_alignment, validation_curvature_ratio, include_transverse_response)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rotation_hessian, energy_hessian, &
          training_rotation_steps, training_energy_steps, training_rotation_responses, &
          training_energy_responses
@@ -6625,23 +6647,24 @@ CONTAINS
          validation_rotation_quality, validation_energy_quality, strict_validation_quality, &
          strict_validation_rotation_quality, strict_validation_energy_quality, &
          validation_alignment, validation_curvature_ratio
+      LOGICAL, INTENT(IN), OPTIONAL                      :: include_transverse_response
 
       INTEGER                                            :: i, j, nener, nfull, nrot
-      LOGICAL                                            :: fit_ready
-      REAL(KIND=dp) :: block_floor, block_max, component_floor, determinant, &
-         energy_response_norm_sq, gram_scale, predicted_curvature, predicted_energy_residual_sq, &
-         predicted_energy_response_sq, predicted_norm, predicted_residual_sq, &
-         predicted_response_norm_sq, predicted_rotation_residual_sq, &
-         predicted_rotation_response_sq, rotation_response_norm_sq, strict_component_floor, &
-         training_energy_response_sq, training_predicted_norm_sq, training_residual_sq, &
-         training_response_norm_sq, training_rotation_response_sq, validation_curvature, &
-         validation_norm_sq
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: coordinate_scale, predicted_residual, &
-                                                            predicted_response, &
-                                                            validation_response, validation_step
+      LOGICAL                                            :: fit_ready, transverse_response
+      REAL(KIND=dp) :: block_floor, block_max, component_floor, energy_response_norm_sq, &
+         fit_compatibility, fit_correction_norm, fit_residual_norm, fit_updated_residual_norm, &
+         predicted_curvature, predicted_energy_residual_sq, predicted_energy_response_sq, &
+         predicted_norm, predicted_residual_sq, predicted_response_norm_sq, &
+         predicted_rotation_residual_sq, predicted_rotation_response_sq, &
+         rotation_response_norm_sq, strict_component_floor, training_energy_response_sq, &
+         training_predicted_norm_sq, training_residual_sq, training_response_norm_sq, &
+         training_rotation_response_sq, validation_curvature
+      REAL(KIND=dp) :: validation_norm_sq
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: coordinate_scale, predicted_residual, &
+         predicted_response, sample_norm, validation_response, validation_step
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: response_hessian, training_residual, &
                                                             training_responses, training_steps, &
-                                                            work_steps
+                                                            work_steps, zero_hessian
       REAL(KIND=dp), DIMENSION(2, 2)                     :: gram, gram_inverse, work_matrix, &
                                                             work_operator
 
@@ -6676,12 +6699,17 @@ CONTAINS
       strict_validation_energy_quality = 0.0_dp
       validation_alignment = 0.0_dp
       validation_curvature_ratio = 0.0_dp
+      transverse_response = .TRUE.
+      IF (PRESENT(include_transverse_response)) &
+         transverse_response = include_transverse_response
       IF (nrot <= 0 .OR. nener <= 0) RETURN
 
-      ALLOCATE (coordinate_scale(nfull), predicted_residual(nfull), predicted_response(nfull), &
-                response_hessian(nfull, nfull), training_residual(nfull, 2), &
+      ALLOCATE (coordinate_scale(nfull), sample_norm(2), predicted_residual(nfull), &
+                predicted_response(nfull), response_hessian(nfull, nfull), &
+                training_residual(nfull, 2), &
                 training_responses(nfull, 2), training_steps(nfull, 2), &
-                validation_response(nfull), validation_step(nfull), work_steps(nfull, 2))
+                validation_response(nfull), validation_step(nfull), work_steps(nfull, 2), &
+                zero_hessian(nfull, nfull))
       block_max = MAXVAL(ABS([(rotation_hessian(i, i), i=1, nrot)]))
       IF (block_max > TINY(1.0_dp)) THEN
          block_floor = SQRT(EPSILON(1.0_dp))*block_max
@@ -6715,6 +6743,18 @@ CONTAINS
          validation_step(i) = coordinate_scale(i)*validation_step(i)
          validation_response(i) = validation_response(i)/coordinate_scale(i)
       END DO
+      DO j = 1, 2
+         sample_norm(j) = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_steps(:, j), &
+                                                       training_steps(:, j))))
+         IF (sample_norm(j) <= SQRT(TINY(1.0_dp))) THEN
+            DEALLOCATE (coordinate_scale, sample_norm, predicted_residual, predicted_response, &
+                        response_hessian, training_residual, training_responses, training_steps, &
+                        validation_response, validation_step, work_steps, zero_hessian)
+            RETURN
+         END IF
+         training_steps(:, j) = training_steps(:, j)/sample_norm(j)
+         training_responses(:, j) = training_responses(:, j)/sample_norm(j)
+      END DO
 
       work_steps(:, :) = training_steps
       training_response_norm_sq = MAX(0.0_dp, SUM(training_responses**2))
@@ -6726,35 +6766,78 @@ CONTAINS
       IF (training_rotation_response_sq <= component_floor) work_steps(1:nrot, :) = 0.0_dp
       IF (training_energy_response_sq <= component_floor) work_steps(nrot + 1:nfull, :) = 0.0_dp
 
-      gram(:, :) = MATMUL(TRANSPOSE(work_steps), work_steps)
-      determinant = gram(1, 1)*gram(2, 2) - gram(1, 2)*gram(2, 1)
-      gram_scale = MAX(gram(1, 1)*gram(2, 2), TINY(1.0_dp))
-      independence = SQRT(MAX(0.0_dp, determinant/gram_scale))
-      fit_ready = determinant > SQRT(EPSILON(1.0_dp))*gram_scale
-      IF (fit_ready) THEN
-         gram_inverse(1, 1) = gram(2, 2)/determinant
-         gram_inverse(1, 2) = -gram(1, 2)/determinant
-         gram_inverse(2, 1) = -gram(2, 1)/determinant
-         gram_inverse(2, 2) = gram(1, 1)/determinant
-         work_matrix(:, :) = MATMUL(TRANSPOSE(work_steps), training_responses)
-         work_matrix(:, :) = 0.5_dp*(work_matrix + TRANSPOSE(work_matrix))
-         work_operator(:, :) = MATMUL(gram_inverse, MATMUL(work_matrix, gram_inverse))
-         response_hessian(:, :) = MATMUL(work_steps, &
-                                         MATMUL(work_operator, TRANSPOSE(work_steps)))
-         fit_ready = ALL(response_hessian == response_hessian)
+      IF (transverse_response) THEN
+         ! The closest symmetric multisecant operator first removes only the antisymmetric work
+         ! that cannot be a Mermin Hessian, then retains reproducible response normal to span(S).
+         ! A later chronological held-out secant decides whether that transverse response is
+         ! physical; an uncorrelated orbital gauge component therefore cannot be promoted.
+         zero_hessian(:, :) = 0.0_dp
+         CALL qs_scf_kp_symmetric_multisecant_update( &
+            zero_hessian, work_steps, training_responses, 1.0_dp, response_hessian, fit_ready, &
+            independence, fit_compatibility, fit_correction_norm, fit_residual_norm, &
+            fit_updated_residual_norm)
+         independence = SQRT(MAX(0.0_dp, independence))
+         IF (.NOT. fit_ready) THEN
+            ! At a residual plateau consecutive accepted line-search steps often collapse onto
+            ! one physical direction.  The newest secant still determines a conservative
+            ! minimum-change response in that rank-one subspace, including a reproducible
+            ! transverse component.  Chronological validation below remains mandatory.
+            CALL qs_scf_kp_symmetric_secant_update( &
+               zero_hessian, work_steps(:, 2), training_responses(:, 2), 1.0_dp, &
+               response_hessian, fit_ready, fit_correction_norm, fit_residual_norm, &
+               fit_updated_residual_norm)
+            independence = 0.0_dp
+         END IF
+      ELSE
+         ! Observable-work fallback.  It contains only Q^T H Q and is insensitive to response
+         ! normal to the accepted-step plane, including arbitrary projector-basis gauge motion.
+         gram(:, :) = MATMUL(TRANSPOSE(work_steps), work_steps)
+         fit_correction_norm = gram(1, 1)*gram(2, 2) - gram(1, 2)*gram(2, 1)
+         fit_residual_norm = MAX(gram(1, 1)*gram(2, 2), TINY(1.0_dp))
+         independence = SQRT(MAX(0.0_dp, fit_correction_norm/fit_residual_norm))
+         fit_ready = fit_correction_norm > SQRT(EPSILON(1.0_dp))*fit_residual_norm
+         IF (fit_ready) THEN
+            gram_inverse(1, 1) = gram(2, 2)/fit_correction_norm
+            gram_inverse(1, 2) = -gram(1, 2)/fit_correction_norm
+            gram_inverse(2, 1) = -gram(2, 1)/fit_correction_norm
+            gram_inverse(2, 2) = gram(1, 1)/fit_correction_norm
+            work_matrix(:, :) = MATMUL(TRANSPOSE(work_steps), training_responses)
+            work_matrix(:, :) = 0.5_dp*(work_matrix + TRANSPOSE(work_matrix))
+            work_operator(:, :) = MATMUL(gram_inverse, MATMUL(work_matrix, gram_inverse))
+            response_hessian(:, :) = MATMUL(work_steps, &
+                                            MATMUL(work_operator, TRANSPOSE(work_steps)))
+            fit_ready = ALL(response_hessian == response_hessian)
+         ELSE
+            ! Rank-one observable-work model from the newest accepted secant.  It preserves only
+            ! s^T*y and cannot import response normal to s; this is the safe gauge-insensitive
+            ! fallback when the two-step Gram matrix is singular.
+            fit_residual_norm = DOT_PRODUCT(work_steps(:, 2), work_steps(:, 2))
+            IF (fit_residual_norm > SQRT(TINY(1.0_dp))) THEN
+               fit_updated_residual_norm = DOT_PRODUCT(work_steps(:, 2), &
+                                                       training_responses(:, 2))/ &
+                                           (fit_residual_norm*fit_residual_norm)
+               DO j = 1, nfull
+                  DO i = 1, nfull
+                     response_hessian(i, j) = fit_updated_residual_norm* &
+                                              work_steps(i, 2)*work_steps(j, 2)
+                  END DO
+               END DO
+               fit_ready = ALL(response_hessian == response_hessian)
+               independence = 0.0_dp
+            END IF
+         END IF
       END IF
       IF (.NOT. fit_ready) THEN
-         DEALLOCATE (coordinate_scale, predicted_residual, predicted_response, response_hessian, &
-                     training_residual, training_responses, training_steps, validation_response, &
-                     validation_step, work_steps)
+         DEALLOCATE (coordinate_scale, sample_norm, predicted_residual, predicted_response, &
+                     response_hessian, training_residual, training_responses, training_steps, &
+                     validation_response, validation_step, work_steps, zero_hessian)
          RETURN
       END IF
 
       training_residual(:, :) = training_responses - MATMUL(response_hessian, training_steps)
       training_residual_sq = MAX(0.0_dp, SUM(training_residual**2))
       training_predicted_norm_sq = MAX(0.0_dp, SUM((training_responses - training_residual)**2))
-      IF (MAX(training_response_norm_sq, training_predicted_norm_sq) > &
-          EPSILON(MAX(training_response_norm_sq, training_predicted_norm_sq))) &
+      IF (MAX(training_response_norm_sq, training_predicted_norm_sq) > TINY(1.0_dp)) &
          training_quality = 1.0_dp - training_residual_sq/ &
                             MAX(training_response_norm_sq, training_predicted_norm_sq)
       predicted_response(:) = MATMUL(response_hessian, validation_step)
@@ -6762,11 +6845,10 @@ CONTAINS
       validation_norm_sq = MAX(0.0_dp, DOT_PRODUCT(validation_response, validation_response))
       predicted_residual_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_residual, predicted_residual))
       predicted_response_norm_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response))
-      IF (MAX(validation_norm_sq, predicted_response_norm_sq) > &
-          EPSILON(MAX(validation_norm_sq, predicted_response_norm_sq))) &
+      IF (MAX(validation_norm_sq, predicted_response_norm_sq) > TINY(1.0_dp)) &
          validation_quality = 1.0_dp - predicted_residual_sq/ &
                               MAX(validation_norm_sq, predicted_response_norm_sq)
-      IF (validation_norm_sq > EPSILON(validation_norm_sq)) &
+      IF (validation_norm_sq > TINY(1.0_dp)) &
          strict_validation_quality = 1.0_dp - predicted_residual_sq/validation_norm_sq
       rotation_response_norm_sq = MAX(0.0_dp, &
                                       DOT_PRODUCT(validation_response(1:nrot), &
@@ -6786,7 +6868,7 @@ CONTAINS
       ELSE
          validation_rotation_quality = 1.0_dp
       END IF
-      IF (rotation_response_norm_sq > EPSILON(rotation_response_norm_sq)) &
+      IF (rotation_response_norm_sq > TINY(1.0_dp)) &
          strict_validation_rotation_quality = 1.0_dp - &
                                               predicted_rotation_residual_sq/ &
                                               rotation_response_norm_sq
@@ -6816,15 +6898,15 @@ CONTAINS
                                             predicted_energy_residual_sq/strict_component_floor
       END IF
       predicted_norm = SQRT(predicted_response_norm_sq)
-      IF (validation_norm_sq > EPSILON(validation_norm_sq) .AND. &
-          predicted_norm > EPSILON(predicted_norm)) &
+      IF (validation_norm_sq > TINY(1.0_dp) .AND. &
+          predicted_norm > SQRT(TINY(1.0_dp))) &
          validation_alignment = DOT_PRODUCT(validation_response, predicted_response)/ &
                                 (SQRT(validation_norm_sq)*predicted_norm)
       predicted_curvature = DOT_PRODUCT(validation_step, predicted_response)
       validation_curvature = DOT_PRODUCT(validation_step, validation_response)
       IF (ABS(predicted_curvature) > SQRT(EPSILON(1.0_dp))* &
           SQRT(MAX(0.0_dp, DOT_PRODUCT(validation_step, validation_step)))* &
-          MAX(predicted_norm, EPSILON(1.0_dp))) &
+          MAX(predicted_norm, SQRT(TINY(1.0_dp)))) &
          validation_curvature_ratio = validation_curvature/predicted_curvature
 
       ready = ALL(response_hessian == response_hessian) .AND. &
@@ -6848,18 +6930,21 @@ CONTAINS
          energy_correction(:, :) = response_hessian(nrot + 1:nfull, nrot + 1:nfull)
          cross_correction(:, :) = -response_hessian(nrot + 1:nfull, 1:nrot)
       END IF
-      DEALLOCATE (coordinate_scale, predicted_residual, predicted_response, response_hessian, &
-                  training_residual, training_responses, training_steps, validation_response, &
-                  validation_step, work_steps)
+      DEALLOCATE (coordinate_scale, sample_norm, predicted_residual, predicted_response, &
+                  response_hessian, training_residual, training_responses, training_steps, &
+                  validation_response, validation_step, work_steps, zero_hessian)
 
    END SUBROUTINE qs_scf_kp_coupled_response_multisecant_prediction
 
 ! **************************************************************************************************
 !> \brief Cross-validate a local full-space self-consistent closure response.
 !>
-!>        Three accepted secants use a symmetric two-secant observable-work fit with leave-one-out
-!>        validation.  With only two secants the bounded response-vector model remains the bootstrap
-!>        fallback.  All fits use the dimensionally scaled fixed-N rotation/auxiliary-energy space.
+!>        Three accepted secants use a symmetric two-secant observable-work fit.  The oldest and
+!>        middle secants predict the newest one, while the correction returned for the next step is
+!>        fitted from the middle and newest secants.  This chronological validation avoids requiring
+!>        a locally varying SCF response to predict backward onto an older Hamiltonian.  With only
+!>        two secants the bounded response-vector model remains the bootstrap fallback.  All fits use
+!>        the dimensionally scaled fixed-N rotation/auxiliary-energy space.
 !> \param rotation_hessian analytic complex-rotation block
 !> \param energy_hessian analytic fixed-N auxiliary-energy block
 !> \param energy_cross analytic signed cross block
@@ -7012,42 +7097,95 @@ CONTAINS
             third_overlap, third_capture, third_quality, third_rotation_quality, &
             third_energy_quality, third_strict_quality, third_strict_rotation_quality, &
             third_strict_energy_quality, third_alignment, third_curvature_ratio)
-         finite = forward_finite .AND. reverse_finite .AND. third_finite
+         ! Columns are ordered middle/newest/oldest by the caller.  The third fold is therefore the
+         ! causal held-out test: it fits oldest+middle and predicts newest.  The forward fold builds
+         ! the candidate from middle+newest for the next step.  The reverse fold remains an audit,
+         ! but rejecting a candidate because it cannot predict backward in SCF time biases the
+         ! response model precisely where the Hamiltonian changes most rapidly.
+         finite = forward_finite .AND. third_finite
          IF (finite) THEN
-            overlap = MIN(forward_overlap, reverse_overlap, third_overlap)
-            capture = MIN(forward_capture, reverse_capture, third_capture)
-            quality = MIN(forward_quality, reverse_quality, third_quality)
-            rotation_quality = MIN(forward_rotation_quality, reverse_rotation_quality, &
-                                   third_rotation_quality)
-            energy_quality = MIN(forward_energy_quality, reverse_energy_quality, third_energy_quality)
-            strict_quality = MIN(forward_strict_quality, reverse_strict_quality, &
-                                 third_strict_quality)
-            strict_rotation_quality = MIN(forward_strict_rotation_quality, &
-                                          reverse_strict_rotation_quality, &
-                                          third_strict_rotation_quality)
-            strict_energy_quality = MIN(forward_strict_energy_quality, &
-                                        reverse_strict_energy_quality, &
-                                        third_strict_energy_quality)
-            alignment = MIN(forward_alignment, reverse_alignment, third_alignment)
-            curvature_ratio_min = MIN(forward_curvature_ratio, reverse_curvature_ratio, &
-                                      third_curvature_ratio)
-            curvature_ratio_max = MAX(forward_curvature_ratio, reverse_curvature_ratio, &
-                                      third_curvature_ratio)
-            work_quality = MIN(qs_scf_kp_observable_work_quality(forward_curvature_ratio), &
-                               qs_scf_kp_observable_work_quality(reverse_curvature_ratio), &
-                               qs_scf_kp_observable_work_quality(third_curvature_ratio))
+            overlap = MIN(forward_overlap, third_overlap)
+            capture = MIN(forward_capture, third_capture)
+            quality = third_quality
+            rotation_quality = third_rotation_quality
+            energy_quality = third_energy_quality
+            strict_quality = third_strict_quality
+            strict_rotation_quality = third_strict_rotation_quality
+            strict_energy_quality = third_strict_energy_quality
+            alignment = third_alignment
+            curvature_ratio_min = third_curvature_ratio
+            curvature_ratio_max = third_curvature_ratio
+            work_quality = qs_scf_kp_observable_work_quality(third_curvature_ratio)
             consistent = strict_quality >= ot_kp_schur_prediction_quality_min .AND. &
                          strict_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
                          strict_energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
                          alignment >= ot_kp_schur_prediction_alignment_min .AND. &
-                         curvature_ratio_min >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
-                         curvature_ratio_max <= ot_kp_schur_prediction_curvature_ratio_max
+                         third_curvature_ratio >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
+                         third_curvature_ratio <= ot_kp_schur_prediction_curvature_ratio_max
             IF (PRESENT(observable_consistent)) &
                observable_consistent = work_quality >= ot_kp_schur_prediction_quality_min .AND. &
-                                       curvature_ratio_min >= &
+                                       third_curvature_ratio >= &
                                        ot_kp_schur_prediction_curvature_ratio_min .AND. &
-                                       curvature_ratio_max <= &
+                                       third_curvature_ratio <= &
                                        ot_kp_schur_prediction_curvature_ratio_max
+         END IF
+         IF (.NOT. finite .OR. .NOT. consistent) THEN
+            ! An unresolved or causally inconsistent response normal to span(S) must not suppress
+            ! the observable Hessian work.  Rebuild both the prospective middle+newest candidate
+            ! and its oldest+middle -> newest validation from Q^T H Q only.  This path is also the
+            ! clean fallback for rank-deficient tiny transverse response.
+            consistent = .FALSE.
+            IF (PRESENT(observable_consistent)) observable_consistent = .FALSE.
+            CALL qs_scf_kp_coupled_response_multisecant_prediction( &
+               rotation_hessian, energy_hessian, rotation_steps(:, 1:2), energy_steps(:, 1:2), &
+               closure_rotation_targets(:, 1:2), closure_energy_targets(:, 1:2), &
+               rotation_steps(:, 3), energy_steps(:, 3), closure_rotation_targets(:, 3), &
+               closure_energy_targets(:, 3), forward_rotation_hessian, forward_energy_hessian, &
+               forward_energy_cross, forward_finite, forward_overlap, forward_capture, &
+               forward_quality, forward_rotation_quality, forward_energy_quality, &
+               forward_strict_quality, forward_strict_rotation_quality, &
+               forward_strict_energy_quality, forward_alignment, forward_curvature_ratio, &
+               include_transverse_response=.FALSE.)
+            CALL qs_scf_kp_coupled_response_multisecant_prediction( &
+               rotation_hessian, energy_hessian, fold_rotation_steps, fold_energy_steps, &
+               fold_rotation_responses, fold_energy_responses, rotation_steps(:, 2), &
+               energy_steps(:, 2), closure_rotation_targets(:, 2), closure_energy_targets(:, 2), &
+               third_rotation_hessian, third_energy_hessian, third_energy_cross, third_finite, &
+               third_overlap, third_capture, third_quality, third_rotation_quality, &
+               third_energy_quality, third_strict_quality, third_strict_rotation_quality, &
+               third_strict_energy_quality, third_alignment, third_curvature_ratio, &
+               include_transverse_response=.FALSE.)
+            finite = forward_finite .AND. third_finite
+            IF (finite) THEN
+               overlap = MIN(forward_overlap, third_overlap)
+               capture = MIN(forward_capture, third_capture)
+               quality = third_quality
+               rotation_quality = third_rotation_quality
+               energy_quality = third_energy_quality
+               strict_quality = third_strict_quality
+               strict_rotation_quality = third_strict_rotation_quality
+               strict_energy_quality = third_strict_energy_quality
+               alignment = third_alignment
+               curvature_ratio_min = third_curvature_ratio
+               curvature_ratio_max = third_curvature_ratio
+               work_quality = qs_scf_kp_observable_work_quality(third_curvature_ratio)
+               consistent = strict_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                            strict_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                            strict_energy_quality >= &
+                            ot_kp_schur_prediction_energy_quality_min .AND. &
+                            alignment >= ot_kp_schur_prediction_alignment_min .AND. &
+                            third_curvature_ratio >= &
+                            ot_kp_schur_prediction_curvature_ratio_min .AND. &
+                            third_curvature_ratio <= &
+                            ot_kp_schur_prediction_curvature_ratio_max
+               IF (PRESENT(observable_consistent)) &
+                  observable_consistent = &
+                  work_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                  third_curvature_ratio >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
+                  third_curvature_ratio <= ot_kp_schur_prediction_curvature_ratio_max
+            END IF
+         END IF
+         IF (finite) THEN
             rotation_correction(:, :) = forward_rotation_hessian
             energy_correction(:, :) = forward_energy_hessian
             cross_correction(:, :) = forward_energy_cross
@@ -22760,7 +22898,29 @@ CONTAINS
             local_ot_env(1)%schur_density_probe_tail_armed, closure_response_steps, &
             closure_response_targets, closure_density_probe_steps, &
             closure_density_probe_targets, closure_density_probe_sample_ready)
-         IF (prediction_update_eligible) THEN
+         IF (closure_coupled_predictive_consistent) THEN
+            ! Promote the causally validated finite response through the existing direct
+            ! prediction candidate.  The fitted objects are residual Hessian blocks, so add them
+            ! exactly once to the analytic fixed-N model before the full rotation/energy Schur
+            ! transport.  Candidate trust, negative-curvature handling and accepted Mermin-drop
+            ! calibration remain owned by the ordinary prediction/line-search path below.
+            CALL qs_scf_kp_coupled_schur_transport( &
+               rot_hessian_coupled, energy_hessian_reference, energy_cross, &
+               rot_hessian_coupled + closure_coupled_predictive_rotation_correction, &
+               energy_hessian_reference + closure_coupled_predictive_energy_correction, &
+               energy_cross + closure_coupled_predictive_cross_correction, schur_metric, &
+               prediction_transport_ready, prediction_transport_correction_ratio)
+            prediction_update_eligible = prediction_transport_ready
+            IF (prediction_update_eligible) THEN
+               rot_hessian_prediction(:, :) = schur_metric(:, :)
+               energy_hessian_prediction(:, :) = energy_hessian_reference(:, :)
+               energy_cross_prediction(:, :) = energy_cross(:, :)
+               response_prediction(:, :) = response_exact(:, :)
+               prediction_z_base(:) = z_exact_trial(:)
+               prediction_predicted_residual_ratio = &
+                  SQRT(MAX(0.0_dp, 1.0_dp - closure_predictive_quality))
+            END IF
+         ELSE IF (prediction_update_eligible) THEN
             CALL qs_scf_kp_coupled_schur_transport( &
                rot_hessian_coupled, energy_hessian_reference, energy_cross, &
                rot_hessian_multisecant, energy_hessian_multisecant, &
@@ -36216,14 +36376,10 @@ CONTAINS
          IF (global_schur_replicated) CALL para_env_inter_kp%min(valid_i)
          previous_frozen_reduced_valid = valid_i > 0 .AND. previous_valid
          IF (.NOT. valid) THEN
-            DO local_channel = 1, SIZE(local_ot_env)
-               global_channel = first_channel + local_channel - 1
-               IF (global_channel < 1 .OR. global_channel > SIZE(channel_nmo)) CYCLE
-               global_spin = MOD(global_channel - 1, nspin_ot) + 1
-               group = MERGE(global_spin, 1, ngroups == nspin_ot)
-               IF (group == target_group) &
-                  local_ot_env(local_channel)%mermin_frozen_reduced_target_ready = .FALSE.
-            END DO
+            ! This audit can be entered after a zero-position or numerically unresolved endpoint.
+            ! The minimizer retains the last valid accepted secant in that case, so retain its
+            ! endpoint-local reduced target as well.  Restart, resize, and allocation teardown
+            ! invalidate both objects through qs_ot_reset_kpoint_minimizer_history.
             DEALLOCATE (anchor_step_rotation, anchor_secant_rotation, &
                         anchor_closure_secant_rotation, &
                         anchor_closure_reduced_target, step_rotation, secant_rotation, &
@@ -36491,15 +36647,30 @@ CONTAINS
             closure_coupled_rotation_steps(:, 2) = step_rotation
             closure_coupled_energy_steps(:, 1) = previous_step_energy
             closure_coupled_energy_steps(:, 2) = step_energy
-            closure_coupled_rotation_targets(:, 1) = previous_closure_secant_rotation
-            closure_coupled_rotation_targets(:, 2) = closure_secant_rotation
-            closure_coupled_energy_targets(:, 1) = previous_closure_secant_energy
-            closure_coupled_energy_targets(:, 2) = closure_secant_energy
+            ! Fit the complete response missing from the analytic fixed-N Hessian.  The older
+            ! frozen/closure decomposition is useful diagnostically, but the Fe residual tail
+            ! shows that the analytic Hessian already reproduces almost all of the frozen-H
+            ! target.  Adding a fitted frozen term therefore counts that curvature twice.  The
+            ! exact residual y_total - H_analytic*s is decomposition independent and contains only
+            ! the rotation/occupation response that the coupled model still needs to learn.
+            CALL qs_scf_kp_coupled_secant_model( &
+               rotation_hessian, energy_hessian, energy_cross, previous_step_rotation, &
+               previous_step_energy, model_rotation, model_energy)
+            closure_coupled_rotation_targets(:, 1) = previous_secant_rotation - model_rotation
+            closure_coupled_energy_targets(:, 1) = previous_secant_energy - model_energy
+            CALL qs_scf_kp_coupled_secant_model( &
+               rotation_hessian, energy_hessian, energy_cross, step_rotation, step_energy, &
+               model_rotation, model_energy)
+            closure_coupled_rotation_targets(:, 2) = secant_rotation - model_rotation
+            closure_coupled_energy_targets(:, 2) = secant_energy - model_energy
             IF (closure_anchor_valid) THEN
                closure_coupled_rotation_steps(:, 3) = anchor_step_rotation
                closure_coupled_energy_steps(:, 3) = anchor_step_energy
-               closure_coupled_rotation_targets(:, 3) = anchor_closure_secant_rotation
-               closure_coupled_energy_targets(:, 3) = anchor_closure_secant_energy
+               CALL qs_scf_kp_coupled_secant_model( &
+                  rotation_hessian, energy_hessian, energy_cross, anchor_step_rotation, &
+                  anchor_step_energy, model_rotation, model_energy)
+               closure_coupled_rotation_targets(:, 3) = anchor_secant_rotation - model_rotation
+               closure_coupled_energy_targets(:, 3) = anchor_secant_energy - model_energy
             END IF
             CALL qs_scf_kp_coupled_closure_response( &
                rotation_hessian, energy_hessian, energy_cross, &
@@ -36558,10 +36729,11 @@ CONTAINS
             IF (logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
-                      '(A,1X,I3,3(1X,L1),9(1X,ES16.8))') &
-               " OT Schur coupled residual prediction group finite consistent work_consistent "// &
+                      '(A,2(1X,I3),3(1X,L1),9(1X,ES16.8))') &
+               " OT Schur coupled residual prediction group nobs finite consistent work_consistent "// &
                "overlap capture quality rquality equality work_quality alignment "// &
-               "cratio_min cratio_max:", target_group, closure_predictive_finite, &
+               "cratio_min cratio_max:", target_group, nclosure_observations, &
+               closure_predictive_finite, &
                closure_predictive_consistent, closure_predictive_work_consistent, &
                closure_predictive_overlap, closure_predictive_capture, closure_predictive_quality, &
                closure_predictive_rotation_quality, closure_predictive_energy_quality, &
@@ -36583,10 +36755,16 @@ CONTAINS
             global_spin = MOD(global_channel - 1, nspin_ot) + 1
             group = MERGE(global_spin, 1, ngroups == nspin_ot)
             IF (group /= target_group) CYCLE
-            local_ot_env(local_channel)%mermin_frozen_reduced_target_ready = .FALSE.
+            ! A non-sample does not replace the valid secant history and therefore must not erase
+            ! the reduced target paired with it.  Only overwrite readiness once a new valid target
+            ! is available; structural invalidation is owned by the minimizer-history reset paths.
             IF (.NOT. closure_secant_valid) CYCLE
             IF (.NOT. ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_frozen_reduced_y) .OR. &
-                .NOT. ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_frozen_reduced_y_im)) CYCLE
+                .NOT. ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_frozen_reduced_y_im)) THEN
+               local_ot_env(local_channel)%mermin_frozen_reduced_target_ready = .FALSE.
+               CYCLE
+            END IF
+            local_ot_env(local_channel)%mermin_frozen_reduced_target_ready = .FALSE.
             ALLOCATE (dense_re(nmo, nmo), dense_im(nmo, nmo))
             dense_re(:, :) = 0.0_dp
             dense_im(:, :) = 0.0_dp

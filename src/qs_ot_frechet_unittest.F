@@ -8000,11 +8000,14 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: ready
-      REAL(KIND=dp)                                      :: correction_norm, error, residual_norm, &
-                                                            updated_residual_norm
+      REAL(KIND=dp), PARAMETER                           :: tiny_scale = 1.0E-12_dp
+
+      LOGICAL                                            :: ready, tiny_ready
+      REAL(KIND=dp) :: correction_norm, error, residual_norm, tiny_correction_norm, &
+         tiny_residual_norm, tiny_updated_residual_norm, updated_residual_norm
       REAL(KIND=dp), DIMENSION(3)                        :: step, TARGET
-      REAL(KIND=dp), DIMENSION(3, 3)                     :: hessian, updated_hessian
+      REAL(KIND=dp), DIMENSION(3, 3)                     :: hessian, tiny_updated_hessian, &
+                                                            updated_hessian
 
       hessian(:, :) = RESHAPE([2.0_dp, 0.2_dp, -0.1_dp, &
                                0.2_dp, -0.5_dp, 0.3_dp, &
@@ -8014,9 +8017,15 @@ CONTAINS
       CALL qs_scf_kp_symmetric_secant_update(hessian, step, TARGET, 1.0_dp, &
                                              updated_hessian, ready, correction_norm, &
                                              residual_norm, updated_residual_norm)
+      CALL qs_scf_kp_symmetric_secant_update( &
+         hessian, tiny_scale*step, tiny_scale*TARGET, 1.0_dp, tiny_updated_hessian, tiny_ready, &
+         tiny_correction_norm, tiny_residual_norm, tiny_updated_residual_norm)
       error = MAX(MAXVAL(ABS(MATMUL(updated_hessian, step) - TARGET)), &
-                  MAXVAL(ABS(updated_hessian - TRANSPOSE(updated_hessian))))
-      IF (.NOT. ready .OR. correction_norm <= 0.0_dp .OR. residual_norm <= 0.0_dp .OR. &
+                  MAXVAL(ABS(updated_hessian - TRANSPOSE(updated_hessian))), &
+                  MAXVAL(ABS(tiny_updated_hessian - updated_hessian)), &
+                  ABS(tiny_correction_norm - correction_norm))
+      IF (.NOT. ready .OR. .NOT. tiny_ready .OR. correction_norm <= 0.0_dp .OR. &
+          residual_norm <= 0.0_dp .OR. &
           updated_residual_norm > tol .OR. error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,4(1X,ES16.8),1X,L1)') TRIM(label)//" FAILED with error/residual/update/correction/ready", &
@@ -8039,14 +8048,18 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
+      REAL(KIND=dp), PARAMETER                           :: tiny_scale = 1.0E-12_dp
+
       LOGICAL                                            :: dependent_ready, incompatible_ready, &
-                                                            ready
+                                                            ready, tiny_ready
       REAL(KIND=dp) :: compatibility, compatible_correction_norm, correction_norm, &
          dependent_independence, error, incompatible_compatibility, independence, residual_norm, &
-         updated_residual_norm
+         tiny_compatibility, tiny_correction_norm, tiny_independence, tiny_residual_norm, &
+         tiny_updated_residual_norm, updated_residual_norm
       REAL(KIND=dp), DIMENSION(4, 2)                     :: dependent_steps, incompatible_targets, &
                                                             steps, targets
-      REAL(KIND=dp), DIMENSION(4, 4)                     :: hessian, true_hessian, updated_hessian
+      REAL(KIND=dp), DIMENSION(4, 4)                     :: hessian, tiny_updated_hessian, &
+                                                            true_hessian, updated_hessian
 
       hessian(:, :) = 0.0_dp
       hessian(1, 1) = -1.0_dp
@@ -8069,9 +8082,16 @@ CONTAINS
       CALL qs_scf_kp_symmetric_multisecant_update( &
          hessian, steps, targets, 1.0_dp, updated_hessian, ready, independence, compatibility, &
          correction_norm, residual_norm, updated_residual_norm)
+      CALL qs_scf_kp_symmetric_multisecant_update( &
+         hessian, tiny_scale*steps, tiny_scale*targets, 1.0_dp, tiny_updated_hessian, tiny_ready, &
+         tiny_independence, tiny_compatibility, tiny_correction_norm, tiny_residual_norm, &
+         tiny_updated_residual_norm)
       compatible_correction_norm = correction_norm
       error = MAXVAL(ABS(MATMUL(updated_hessian, steps) - targets)) + &
-              MAXVAL(ABS(updated_hessian - TRANSPOSE(updated_hessian))) + compatibility
+              MAXVAL(ABS(updated_hessian - TRANSPOSE(updated_hessian))) + compatibility + &
+              MAXVAL(ABS(tiny_updated_hessian - updated_hessian)) + &
+              ABS(tiny_independence - independence) + ABS(tiny_compatibility - compatibility) + &
+              ABS(tiny_correction_norm - correction_norm)
 
       incompatible_targets(:, :) = targets
       incompatible_targets(1, 2) = incompatible_targets(1, 2) + 0.08_dp
@@ -8087,7 +8107,7 @@ CONTAINS
          updated_hessian, dependent_ready, dependent_independence, compatibility, correction_norm, &
          residual_norm, updated_residual_norm)
 
-      IF (.NOT. ready .OR. .NOT. incompatible_ready .OR. dependent_ready .OR. &
+      IF (.NOT. ready .OR. .NOT. tiny_ready .OR. .NOT. incompatible_ready .OR. dependent_ready .OR. &
           independence <= 0.0_dp .OR. dependent_independence > tol .OR. &
           incompatible_compatibility <= 0.0_dp .OR. error > tol) THEN
          nfail = nfail + 1
@@ -8114,7 +8134,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
+      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp, tiny_scale = 1.0E-12_dp
 
       LOGICAL :: closure_ready, direct_ready, projected_ready, ready, scaled_closure_ready, &
          scaled_direct_ready, scaled_ready, scaled_subspace_ready, scaled_transport_ready, &
@@ -8346,6 +8366,37 @@ CONTAINS
          full_rotation_correction=scaled_closure_rotation_correction, &
          full_energy_correction=scaled_closure_energy_correction, &
          full_cross_correction=scaled_closure_cross_correction)
+      BLOCK
+         LOGICAL :: tiny_closure_ready
+         REAL(KIND=dp) :: tiny_capture, tiny_compatibility, tiny_cross_ratio, &
+                          tiny_energy_ratio, tiny_independence, tiny_residual_ratio, tiny_rotation_ratio, &
+                          tiny_transport_ratio
+         REAL(KIND=dp), DIMENSION(2, 2) :: tiny_cross_correction, tiny_energy_correction, &
+                                           tiny_response, tiny_rotation_correction
+
+         CALL qs_scf_kp_coupled_closure_response( &
+            rotation_hessian, energy_hessian, energy_cross, tiny_scale*rotation_steps, &
+            tiny_scale*energy_steps, tiny_scale*closure_rotation_targets, &
+            tiny_scale*closure_energy_targets, tiny_response, tiny_closure_ready, &
+            tiny_independence, tiny_compatibility, tiny_capture, tiny_residual_ratio, &
+            tiny_transport_ratio, tiny_rotation_ratio, tiny_energy_ratio, tiny_cross_ratio, &
+            full_rotation_correction=tiny_rotation_correction, &
+            full_energy_correction=tiny_energy_correction, &
+            full_cross_correction=tiny_cross_correction)
+         error = error + MAXVAL(ABS(tiny_response - closure_response)) + &
+                 MAXVAL(ABS(tiny_rotation_correction - closure_rotation_correction)) + &
+                 MAXVAL(ABS(tiny_energy_correction - closure_energy_correction)) + &
+                 MAXVAL(ABS(tiny_cross_correction - closure_cross_correction)) + &
+                 ABS(tiny_independence - closure_independence) + &
+                 ABS(tiny_compatibility - closure_compatibility) + &
+                 ABS(tiny_capture - closure_capture) + &
+                 ABS(tiny_residual_ratio - closure_residual_ratio) + &
+                 ABS(tiny_transport_ratio - closure_transport_ratio) + &
+                 ABS(tiny_rotation_ratio - closure_rotation_ratio) + &
+                 ABS(tiny_energy_ratio - closure_energy_ratio) + &
+                 ABS(tiny_cross_ratio - closure_cross_ratio)
+         IF (.NOT. tiny_closure_ready) error = error + 1.0_dp
+      END BLOCK
       closure_response_quadratic = qs_scf_kp_coupled_response_quadratic( &
                                    rotation_steps(:, 1), energy_steps(:, 1), &
                                    closure_rotation_correction, closure_energy_correction, &
@@ -8456,6 +8507,36 @@ CONTAINS
                  ABS(prediction_curvature_min - 1.0_dp) + &
                  ABS(prediction_curvature_max - 1.0_dp)
          IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent) error = error + 1.0_dp
+         BLOCK
+            LOGICAL :: tiny_consistent, tiny_finite
+            REAL(KIND=dp) :: tiny_alignment, tiny_capture, tiny_curvature_max, &
+                             tiny_curvature_min, tiny_energy_quality, tiny_overlap, tiny_quality, &
+                             tiny_rotation_quality
+            REAL(KIND=dp), DIMENSION(2, 2) :: tiny_cross_correction, &
+                                              tiny_energy_correction, tiny_rotation_correction
+
+            CALL qs_scf_kp_coupled_closure_prediction( &
+               rotation_hessian, energy_hessian, energy_cross, &
+               tiny_scale*prediction_rotation_steps, tiny_scale*prediction_energy_steps, &
+               tiny_scale*prediction_rotation_targets, tiny_scale*prediction_energy_targets, &
+               tiny_rotation_correction, tiny_energy_correction, tiny_cross_correction, &
+               tiny_finite, tiny_consistent, tiny_overlap, tiny_capture, tiny_quality, &
+               tiny_rotation_quality, tiny_energy_quality, tiny_alignment, &
+               tiny_curvature_min, tiny_curvature_max)
+            error = error + MAXVAL(ABS(tiny_rotation_correction - &
+                                       prediction_rotation_correction)) + &
+                    MAXVAL(ABS(tiny_energy_correction - prediction_energy_correction)) + &
+                    MAXVAL(ABS(tiny_cross_correction - prediction_cross_correction)) + &
+                    ABS(tiny_overlap - prediction_overlap) + &
+                    ABS(tiny_capture - prediction_capture) + &
+                    ABS(tiny_quality - prediction_quality) + &
+                    ABS(tiny_rotation_quality - prediction_rotation_quality) + &
+                    ABS(tiny_energy_quality - prediction_energy_quality) + &
+                    ABS(tiny_alignment - prediction_alignment) + &
+                    ABS(tiny_curvature_min - prediction_curvature_min) + &
+                    ABS(tiny_curvature_max - prediction_curvature_max)
+            IF (.NOT. tiny_finite .OR. .NOT. tiny_consistent) error = error + 1.0_dp
+         END BLOCK
 
          ! A nonzero auxiliary-energy displacement must not create energy or cross curvature when
          ! the measured self-consistent closure response is purely orbital.
@@ -8563,6 +8644,52 @@ CONTAINS
          expected_rotation_correction(:, :) = full_correction(1:2, 1:2)
          expected_energy_correction(:, :) = full_correction(3:4, 3:4)
          expected_cross_correction(:, :) = -full_correction(3:4, 1:2)
+
+         ! A residual-tail history can contain three differently sized steps along only one
+         ! coupled direction.  It still determines a rank-one conservative response and must not
+         ! disappear merely because the nominal two-secant Gram matrix has rank one.
+         scaled_multisecant_steps(:, 1) = 0.7_dp*mode
+         scaled_multisecant_steps(:, 2) = 1.1_dp*mode
+         scaled_multisecant_steps(:, 3) = -0.4_dp*mode
+         DO i = 1, 3
+            multisecant_rotation_steps(:, i) = &
+               scaled_multisecant_steps(1:2, i)/coordinate_scale(1:2)
+            multisecant_energy_steps(:, i) = &
+               scaled_multisecant_steps(3:4, i)/coordinate_scale(3:4)
+         END DO
+         multisecant_rotation_targets(:, :) = &
+            MATMUL(expected_rotation_correction, multisecant_rotation_steps) - &
+            MATMUL(TRANSPOSE(expected_cross_correction), multisecant_energy_steps)
+         multisecant_energy_targets(:, :) = &
+            MATMUL(expected_energy_correction, multisecant_energy_steps) - &
+            MATMUL(expected_cross_correction, multisecant_rotation_steps)
+         CALL qs_scf_kp_coupled_closure_prediction( &
+            rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
+            multisecant_energy_steps, multisecant_rotation_targets, multisecant_energy_targets, &
+            prediction_rotation_correction, prediction_energy_correction, &
+            prediction_cross_correction, prediction_finite, prediction_consistent, &
+            prediction_overlap, prediction_capture, prediction_quality, &
+            prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+            prediction_curvature_min, prediction_curvature_max, &
+            observable_work_quality=prediction_work_quality, &
+            observable_consistent=prediction_work_consistent)
+         error = error + MAXVAL(ABS(prediction_rotation_correction - &
+                                    expected_rotation_correction)) + &
+                 MAXVAL(ABS(prediction_energy_correction - expected_energy_correction)) + &
+                 MAXVAL(ABS(prediction_cross_correction - expected_cross_correction)) + &
+                 ABS(prediction_quality - 1.0_dp) + &
+                 ABS(prediction_rotation_quality - 1.0_dp) + &
+                 ABS(prediction_energy_quality - 1.0_dp) + &
+                 ABS(prediction_work_quality - 1.0_dp) + &
+                 ABS(prediction_alignment - 1.0_dp) + &
+                 ABS(prediction_curvature_min - 1.0_dp) + &
+                 ABS(prediction_curvature_max - 1.0_dp)
+         IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent .OR. &
+             .NOT. prediction_work_consistent) error = error + 1.0_dp
+
+         scaled_multisecant_steps(:, 1) = mode + 0.4_dp*vmode
+         scaled_multisecant_steps(:, 2) = 0.8_dp*mode - 0.6_dp*vmode
+         scaled_multisecant_steps(:, 3) = 1.3_dp*mode + 0.2_dp*vmode
          DO i = 1, 3
             multisecant_rotation_steps(:, i) = &
                scaled_multisecant_steps(1:2, i)/coordinate_scale(1:2)
@@ -8599,6 +8726,107 @@ CONTAINS
          IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent .OR. &
              .NOT. prediction_work_consistent .OR. &
              prediction_overlap <= 0.0_dp) error = error + 1.0_dp
+         BLOCK
+            LOGICAL :: tiny_consistent, tiny_finite, tiny_work_consistent
+            REAL(KIND=dp) :: tiny_alignment, tiny_capture, tiny_curvature_max, &
+                             tiny_curvature_min, tiny_energy_quality, tiny_overlap, tiny_quality, &
+                             tiny_rotation_quality, tiny_work_quality
+            REAL(KIND=dp), DIMENSION(2, 2) :: tiny_cross_correction, &
+                                              tiny_energy_correction, tiny_rotation_correction
+
+            CALL qs_scf_kp_coupled_closure_prediction( &
+               rotation_hessian, energy_hessian, energy_cross, &
+               tiny_scale*multisecant_rotation_steps, tiny_scale*multisecant_energy_steps, &
+               tiny_scale*multisecant_rotation_targets, tiny_scale*multisecant_energy_targets, &
+               tiny_rotation_correction, tiny_energy_correction, tiny_cross_correction, &
+               tiny_finite, tiny_consistent, tiny_overlap, tiny_capture, tiny_quality, &
+               tiny_rotation_quality, tiny_energy_quality, tiny_alignment, &
+               tiny_curvature_min, tiny_curvature_max, observable_work_quality=tiny_work_quality, &
+               observable_consistent=tiny_work_consistent)
+            error = error + MAXVAL(ABS(tiny_rotation_correction - &
+                                       prediction_rotation_correction)) + &
+                    MAXVAL(ABS(tiny_energy_correction - prediction_energy_correction)) + &
+                    MAXVAL(ABS(tiny_cross_correction - prediction_cross_correction)) + &
+                    ABS(tiny_overlap - prediction_overlap) + &
+                    ABS(tiny_capture - prediction_capture) + &
+                    ABS(tiny_quality - prediction_quality) + &
+                    ABS(tiny_rotation_quality - prediction_rotation_quality) + &
+                    ABS(tiny_energy_quality - prediction_energy_quality) + &
+                    ABS(tiny_work_quality - prediction_work_quality) + &
+                    ABS(tiny_alignment - prediction_alignment) + &
+                    ABS(tiny_curvature_min - prediction_curvature_min) + &
+                    ABS(tiny_curvature_max - prediction_curvature_max)
+            IF (.NOT. tiny_finite .OR. .NOT. tiny_consistent .OR. &
+                .NOT. tiny_work_consistent) error = error + 1.0_dp
+         END BLOCK
+
+         ! A conservative Hessian can map the accepted-step plane into a physical response normal
+         ! to that plane.  The causal third secant must retain this finite projector/occupation
+         ! response; a Q^T*H*Q-only fit would silently discard it.
+         BLOCK
+            REAL(KIND=dp), PARAMETER                     :: transverse_curvature = 0.23_dp
+            REAL(KIND=dp)                                :: physical_error
+            REAL(KIND=dp), DIMENSION(4)                  :: physical_mode
+            REAL(KIND=dp), DIMENSION(4, 4)               :: physical_correction
+            REAL(KIND=dp), DIMENSION(2, 2) :: physical_cross_correction, &
+                                              physical_energy_correction, physical_rotation_correction
+            REAL(KIND=dp), DIMENSION(2, 3)               :: physical_energy_targets, &
+                                                            physical_rotation_targets
+
+            physical_mode(:) = [0.5_dp, -0.4_dp, 0.2_dp, 0.7_dp]
+            physical_mode(:) = physical_mode - DOT_PRODUCT(mode, physical_mode)*mode
+            physical_mode(:) = physical_mode - DOT_PRODUCT(vmode, physical_mode)*vmode
+            physical_mode(:) = physical_mode/SQRT(DOT_PRODUCT(physical_mode, physical_mode))
+            physical_correction(:, :) = full_correction(:, :)
+            DO i = 1, 4
+               physical_correction(i, :) = physical_correction(i, :) + &
+                                           transverse_curvature*coordinate_scale(i)* &
+                                           (physical_mode(i)*coordinate_scale*mode + &
+                                            mode(i)*coordinate_scale*physical_mode)
+            END DO
+            physical_rotation_correction(:, :) = physical_correction(1:2, 1:2)
+            physical_energy_correction(:, :) = physical_correction(3:4, 3:4)
+            physical_cross_correction(:, :) = -physical_correction(3:4, 1:2)
+            physical_rotation_targets(:, :) = &
+               MATMUL(physical_rotation_correction, multisecant_rotation_steps) - &
+               MATMUL(TRANSPOSE(physical_cross_correction), multisecant_energy_steps)
+            physical_energy_targets(:, :) = &
+               MATMUL(physical_energy_correction, multisecant_energy_steps) - &
+               MATMUL(physical_cross_correction, multisecant_rotation_steps)
+            CALL qs_scf_kp_coupled_closure_prediction( &
+               rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
+               multisecant_energy_steps, physical_rotation_targets, physical_energy_targets, &
+               prediction_rotation_correction, prediction_energy_correction, &
+               prediction_cross_correction, prediction_finite, prediction_consistent, &
+               prediction_overlap, prediction_capture, prediction_quality, &
+               prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+               prediction_curvature_min, prediction_curvature_max, &
+               observable_work_quality=prediction_work_quality, &
+               observable_consistent=prediction_work_consistent)
+            physical_error = MAXVAL(ABS(prediction_rotation_correction - &
+                                        physical_rotation_correction)) + &
+                             MAXVAL(ABS(prediction_energy_correction - &
+                                        physical_energy_correction)) + &
+                             MAXVAL(ABS(prediction_cross_correction - &
+                                        physical_cross_correction)) + &
+                             ABS(prediction_quality - 1.0_dp) + &
+                             ABS(prediction_rotation_quality - 1.0_dp) + &
+                             ABS(prediction_energy_quality - 1.0_dp) + &
+                             ABS(prediction_alignment - 1.0_dp) + &
+                             ABS(prediction_curvature_min - 1.0_dp) + &
+                             ABS(prediction_curvature_max - 1.0_dp)
+            IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent .OR. &
+                .NOT. prediction_work_consistent) physical_error = physical_error + 1.0_dp
+            IF (physical_error > tol) &
+               WRITE (*, '(A,3(1X,L1),8(1X,ES16.8))') &
+               " transverse response regression FAILED finite consistent work quality "// &
+               "rotation energy alignment cmin cmax error", prediction_finite, &
+               prediction_consistent, prediction_work_consistent, prediction_quality, &
+               prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+               prediction_curvature_min, prediction_curvature_max, physical_error, &
+               MAXVAL(ABS(prediction_rotation_correction - physical_rotation_correction))
+            error = error + physical_error
+         END BLOCK
 
          ! Fit only the part of the measured total secant that is not already represented by the
          ! analytic coupled fixed-N Hessian.  This must recover the same low-rank correction instead
@@ -8635,7 +8863,7 @@ CONTAINS
          gauge_mode(:) = gauge_mode - DOT_PRODUCT(mode, gauge_mode)*mode
          gauge_mode(:) = gauge_mode - DOT_PRODUCT(vmode, gauge_mode)*vmode
          gauge_mode(:) = gauge_mode/SQRT(DOT_PRODUCT(gauge_mode, gauge_mode))
-         gauge_coefficient(:) = [0.8_dp, -0.6_dp, 0.7_dp]
+         gauge_coefficient(:) = [0.8_dp, -2.0_dp, 0.7_dp]
          DO i = 1, 3
             multisecant_rotation_targets(:, i) = multisecant_rotation_targets(:, i) + &
                                                  gauge_coefficient(i)*coordinate_scale(1:2)*gauge_mode(1:2)
@@ -8752,20 +8980,23 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
+      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp, tiny_scale = 1.0E-12_dp
 
-      LOGICAL                                            :: ready, scaled_ready
+      LOGICAL                                            :: ready, scaled_ready, tiny_ready
       REAL(KIND=dp) :: alignment, capture, curvature, curvature_ratio, energy_quality, error, &
          overlap, predicted_residual_norm, quality, residual_norm, rotation_quality, &
          scaled_alignment, scaled_capture, scaled_curvature, scaled_curvature_ratio, &
          scaled_energy_quality, scaled_overlap, scaled_predicted_residual_norm, scaled_quality, &
-         scaled_residual_norm, scaled_rotation_quality
+         scaled_residual_norm, scaled_rotation_quality, tiny_alignment, tiny_capture, &
+         tiny_curvature, tiny_curvature_ratio, tiny_energy_quality, tiny_overlap, &
+         tiny_predicted_residual_norm, tiny_quality, tiny_residual_norm, tiny_rotation_quality
       REAL(KIND=dp), DIMENSION(1) :: training_energy_step, training_energy_target, &
          training_rotation_step, training_rotation_target, validation_energy_step, &
          validation_energy_target, validation_rotation_step, validation_rotation_target
       REAL(KIND=dp), DIMENSION(1, 1) :: energy_cross, energy_hessian, rotation_hessian, &
          scaled_updated_energy_cross, scaled_updated_energy_hessian, &
-         scaled_updated_rotation_hessian, updated_energy_cross, updated_energy_hessian, &
+         scaled_updated_rotation_hessian, tiny_updated_energy_cross, tiny_updated_energy_hessian, &
+         tiny_updated_rotation_hessian, updated_energy_cross, updated_energy_hessian, &
          updated_rotation_hessian
 
       rotation_hessian(1, 1) = 1.0_dp
@@ -8798,6 +9029,15 @@ CONTAINS
          scaled_overlap, scaled_capture, scaled_quality, scaled_rotation_quality, &
          scaled_energy_quality, scaled_alignment, scaled_curvature_ratio, &
          scaled_residual_norm, scaled_predicted_residual_norm, scaled_curvature)
+      CALL qs_scf_kp_coupled_secant_prediction( &
+         rotation_hessian, energy_hessian, energy_cross, tiny_scale*training_rotation_step, &
+         tiny_scale*training_energy_step, tiny_scale*training_rotation_target, &
+         tiny_scale*training_energy_target, tiny_scale*validation_rotation_step, &
+         tiny_scale*validation_energy_step, tiny_scale*validation_rotation_target, &
+         tiny_scale*validation_energy_target, tiny_updated_rotation_hessian, &
+         tiny_updated_energy_hessian, tiny_updated_energy_cross, tiny_ready, tiny_overlap, &
+         tiny_capture, tiny_quality, tiny_rotation_quality, tiny_energy_quality, tiny_alignment, &
+         tiny_curvature_ratio, tiny_residual_norm, tiny_predicted_residual_norm, tiny_curvature)
       error = ABS(overlap - 3.0_dp/SQRT(58.0_dp)) + ABS(capture - 1.0_dp) + &
               ABS(quality - 1.0_dp) + ABS(rotation_quality - 1.0_dp) + &
               ABS(energy_quality - 1.0_dp) + ABS(alignment - 1.0_dp) + &
@@ -8815,9 +9055,20 @@ CONTAINS
               ABS(energy_coordinate_scale*scaled_updated_energy_cross(1, 1) - &
                   updated_energy_cross(1, 1)) + &
               ABS(energy_coordinate_scale**2*scaled_updated_energy_hessian(1, 1) - &
-                  updated_energy_hessian(1, 1))
+                  updated_energy_hessian(1, 1)) + &
+              ABS(tiny_overlap - overlap) + ABS(tiny_capture - capture) + &
+              ABS(tiny_quality - quality) + ABS(tiny_rotation_quality - rotation_quality) + &
+              ABS(tiny_energy_quality - energy_quality) + ABS(tiny_alignment - alignment) + &
+              ABS(tiny_curvature_ratio - curvature_ratio) + &
+              ABS(tiny_residual_norm/tiny_scale - residual_norm) + &
+              ABS(tiny_predicted_residual_norm/tiny_scale - predicted_residual_norm) + &
+              ABS(tiny_curvature - curvature) + &
+              ABS(tiny_updated_rotation_hessian(1, 1) - updated_rotation_hessian(1, 1)) + &
+              ABS(tiny_updated_energy_cross(1, 1) - updated_energy_cross(1, 1)) + &
+              ABS(tiny_updated_energy_hessian(1, 1) - updated_energy_hessian(1, 1))
 
-      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. residual_norm <= 0.0_dp .OR. error > tol) THEN
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. tiny_ready .OR. &
+          residual_norm <= 0.0_dp .OR. error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,2(1X,L1),10(1X,ES16.8))') TRIM(label)// &
             " FAILED with ready/scaled/error/overlap/capture/quality/rquality/equality/ "// &
@@ -8844,21 +9095,25 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
+      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp, tiny_scale = 1.0E-12_dp
 
-      LOGICAL                                            :: endpoint_ready, ready, scaled_ready
+      LOGICAL                                            :: endpoint_ready, ready, scaled_ready, &
+                                                            tiny_ready
       REAL(KIND=dp) :: alignment, capture, curvature, curvature_ratio, endpoint_alignment, &
          endpoint_capture, endpoint_curvature, endpoint_curvature_ratio, endpoint_overlap, &
          endpoint_predicted_residual_norm, endpoint_quality, endpoint_residual_norm, error, &
          overlap, predicted_residual_norm, quality, residual_norm, scaled_alignment, &
          scaled_capture, scaled_curvature, scaled_curvature_ratio, scaled_overlap, &
-         scaled_predicted_residual_norm, scaled_quality, scaled_residual_norm
+         scaled_predicted_residual_norm, scaled_quality, scaled_residual_norm, tiny_alignment, &
+         tiny_capture, tiny_curvature, tiny_curvature_ratio, tiny_overlap, &
+         tiny_predicted_residual_norm, tiny_quality
+      REAL(KIND=dp) :: tiny_residual_norm
       REAL(KIND=dp), DIMENSION(1) :: endpoint_training_target, endpoint_validation_target, &
          training_energy_target, training_rotation_step, training_rotation_target, &
          validation_energy_target, validation_rotation_step, validation_rotation_target
       REAL(KIND=dp), DIMENSION(1, 1) :: endpoint_updated_rotation_hessian, energy_response, &
          response_metric, rotation_hessian, scaled_updated_rotation_hessian, &
-         updated_rotation_hessian
+         tiny_updated_rotation_hessian, updated_rotation_hessian
 
       rotation_hessian(1, 1) = 1.2_dp
       response_metric(1, 1) = 0.2_dp
@@ -8894,6 +9149,13 @@ CONTAINS
          endpoint_curvature_ratio, endpoint_residual_norm, endpoint_predicted_residual_norm, &
          endpoint_curvature, training_reduced_target=endpoint_training_target, &
          validation_reduced_target=endpoint_validation_target)
+      CALL qs_scf_kp_reduced_secant_prediction( &
+         rotation_hessian, response_metric, energy_response, tiny_scale*training_rotation_step, &
+         tiny_scale*training_rotation_target, tiny_scale*training_energy_target, &
+         tiny_scale*validation_rotation_step, tiny_scale*validation_rotation_target, &
+         tiny_scale*validation_energy_target, tiny_updated_rotation_hessian, tiny_ready, &
+         tiny_overlap, tiny_capture, tiny_quality, tiny_alignment, tiny_curvature_ratio, &
+         tiny_residual_norm, tiny_predicted_residual_norm, tiny_curvature)
       error = ABS(updated_rotation_hessian(1, 1) - 1.6_dp) + &
               ABS(scaled_updated_rotation_hessian(1, 1) - updated_rotation_hessian(1, 1)) + &
               ABS(endpoint_updated_rotation_hessian(1, 1) - updated_rotation_hessian(1, 1)) + &
@@ -8911,9 +9173,16 @@ CONTAINS
               ABS(endpoint_curvature_ratio - curvature_ratio) + &
               ABS(endpoint_residual_norm - residual_norm) + &
               ABS(endpoint_predicted_residual_norm - predicted_residual_norm) + &
-              ABS(endpoint_curvature - curvature)
+              ABS(endpoint_curvature - curvature) + &
+              ABS(tiny_updated_rotation_hessian(1, 1) - updated_rotation_hessian(1, 1)) + &
+              ABS(tiny_overlap - overlap) + ABS(tiny_capture - capture) + &
+              ABS(tiny_quality - quality) + ABS(tiny_alignment - alignment) + &
+              ABS(tiny_curvature_ratio - curvature_ratio) + &
+              ABS(tiny_residual_norm/tiny_scale - residual_norm) + &
+              ABS(tiny_predicted_residual_norm/tiny_scale - predicted_residual_norm) + &
+              ABS(tiny_curvature - curvature)
 
-      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. endpoint_ready .OR. &
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. endpoint_ready .OR. .NOT. tiny_ready .OR. &
           residual_norm <= 0.0_dp .OR. error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,2(1X,L1),8(1X,ES16.8))') TRIM(label)// &
