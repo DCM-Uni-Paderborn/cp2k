@@ -10172,8 +10172,8 @@ CONTAINS
          density_stationarity_ready_i, edge_start, edge_width, ikpoint, imo, ispin, local_kpoint, &
          nmo, nonedge_probe_limit, trigger_step, trust_stagnant_i
       LOGICAL :: accepted_response_tail_support, active_tail, basis_limited, basis_probe_limited, &
-         coherent_fractional_tail, edge_limited, expandable, fractional_density_enrichment, &
-         fractional_tail_limited, history_minimizer, integer_density_enrichment, &
+         coherent_fractional_tail, diis_minimizer, edge_limited, expandable, &
+         fractional_density_enrichment, fractional_tail_limited, integer_density_enrichment, &
          nonedge_bootstrap_probe, nonedge_residual_probe, nonedge_tail_supported, &
          relaxed_nonedge_probe, residual_ready, residual_spike, residual_tail_limited, &
          strong_tail_limited, trust_stagnant
@@ -10190,10 +10190,9 @@ CONTAINS
       IF (.NOT. ANY(scf_control%added_mos_auto)) RETURN
       IF (.NOT. scf_control%smear%do_smear) RETURN
       IF (scf_control%eps_scf <= 0.0_dp) RETURN
-      history_minimizer = .FALSE.
+      diis_minimizer = .FALSE.
       IF (ASSOCIATED(scf_env%qs_ot_env)) &
-         history_minimizer = scf_env%qs_ot_env(1)%settings%ot_method == "DIIS" .OR. &
-                             scf_env%qs_ot_env(1)%settings%ot_method == "BROY"
+         diis_minimizer = scf_env%qs_ot_env(1)%settings%ot_method == "DIIS"
       grow_limit = MAX(ot_kp_added_mos_auto_tail_eps_factor*scf_control%eps_scf, &
                        ot_kp_added_mos_auto_tail_probe_factor*SQRT(scf_control%eps_scf))
       edge_grow_limit = MAX(grow_limit, ot_kp_added_mos_auto_edge_probe_factor*SQRT(scf_control%eps_scf))
@@ -10319,7 +10318,7 @@ CONTAINS
                                       edge_grow_limit, expandable, active_tail, coherent_fractional_tail, &
                                       edge_limited .OR. trust_stagnant .OR. &
                                       accepted_response_tail_support .OR. &
-                                      (history_minimizer .AND. nonedge_residual_probe) .OR. &
+                                      (diis_minimizer .AND. nonedge_residual_probe) .OR. &
                                       basis_signal >= ot_kp_added_mos_auto_fractional_tail_basis_frac* &
                                       ot_kp_added_mos_auto_basis_signal_min, &
                                       edge_limited .OR. nonedge_residual_probe)
@@ -10387,7 +10386,7 @@ CONTAINS
             fractional_tail_limited, residual_spike, trust_stagnant, &
             nonedge_residual_probe, nonedge_bootstrap_probe, &
             accepted_response_tail_support, &
-            relaxed_nonedge_probe, nonedge_tail_supported, history_minimizer, expandable
+            relaxed_nonedge_probe, nonedge_tail_supported, diis_minimizer, expandable
       END IF
 
       IF (.NOT. expandable) RETURN
