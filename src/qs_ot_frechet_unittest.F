@@ -90,33 +90,33 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_add_full_response_complement, qs_scf_kp_add_measured_response_complement, &
         qs_scf_kp_added_mos_basis_bootstrap_ready, qs_scf_kp_added_mos_fractional_density_ready, &
         qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_added_mos_integer_density_ready, &
-        qs_scf_kp_affine_correction_model, qs_scf_kp_affine_rebased_drop, &
-        qs_scf_kp_affine_residual_calibration, qs_scf_kp_affine_residual_minimum, &
-        qs_scf_kp_affine_residual_quality, qs_scf_kp_candidate_calibration_exposure, &
-        qs_scf_kp_candidate_position_drop, qs_scf_kp_canonical_density_blend, &
-        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_group_metrics, &
-        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
-        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
-        qs_scf_kp_canonical_projector_density_response, qs_scf_kp_canonical_tether_tail_scale, &
-        qs_scf_kp_closure_response_history_ready, qs_scf_kp_closure_response_model_adjustments, &
-        qs_scf_kp_closure_response_preferred, qs_scf_kp_complete_physical_audit_ready, &
-        qs_scf_kp_complete_physical_gradient_norm, qs_scf_kp_coupled_closure_prediction, &
-        qs_scf_kp_coupled_closure_response, qs_scf_kp_coupled_multisecant_update, &
-        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
-        qs_scf_kp_coupled_residual_prediction, qs_scf_kp_coupled_response_quadratic, &
-        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
-        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_relevant, &
-        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_history_refresh_ready, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
-        qs_scf_kp_density_full_direct_tail_probe, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_pair_activation_ready, qs_scf_kp_density_replaced_response, &
-        qs_scf_kp_density_response_probe, qs_scf_kp_density_response_tail_ready, &
-        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
-        qs_scf_kp_directional_subspace_curvature_update, &
+        qs_scf_kp_added_mos_trust_stagnant, qs_scf_kp_affine_correction_model, &
+        qs_scf_kp_affine_rebased_drop, qs_scf_kp_affine_residual_calibration, &
+        qs_scf_kp_affine_residual_minimum, qs_scf_kp_affine_residual_quality, &
+        qs_scf_kp_candidate_calibration_exposure, qs_scf_kp_candidate_position_drop, &
+        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
+        qs_scf_kp_canonical_density_group_metrics, qs_scf_kp_canonical_density_multimode_blend, &
+        qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
+        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_projector_density_response, &
+        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_closure_response_history_ready, &
+        qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
+        qs_scf_kp_complete_physical_audit_ready, qs_scf_kp_complete_physical_gradient_norm, &
+        qs_scf_kp_coupled_closure_prediction, qs_scf_kp_coupled_closure_response, &
+        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
+        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_residual_prediction, &
+        qs_scf_kp_coupled_response_quadratic, qs_scf_kp_coupled_schur_transport, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
+        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
+        qs_scf_kp_density_candidate_relevant, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
+        qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_full_direct_tail_probe, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_response_probe, &
+        qs_scf_kp_density_response_tail_ready, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_bootstrap_curvature_floor, qs_scf_kp_energy_closure_preferred, &
         qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
@@ -270,6 +270,7 @@ PROGRAM qs_ot_frechet_unittest
       "k-point ADDED_MOS fractional-density bootstrap", nfail)
    CALL check_kpoint_added_mos_integer_density("k-point ADDED_MOS integer-density bootstrap", nfail)
    CALL check_kpoint_added_mos_fractional_tail_gate("k-point ADDED_MOS fractional-tail gate", nfail)
+   CALL check_kpoint_added_mos_trust_stagnation("k-point ADDED_MOS trust-stagnation gate", nfail)
    CALL check_kpoint_subspace_refresh_gate("k-point OT subspace refresh gate", nfail)
    CALL check_kpoint_subspace_refresh_step_ready( &
       "k-point OT post-rebase refresh maturity", nfail)
@@ -5545,6 +5546,39 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_added_mos_fractional_density
+
+! **************************************************************************************************
+!> \brief Check that a numerically exhausted trust radius can enrich only an unresolved AUTO tail.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_added_mos_trust_stagnation(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: eps_scf = 1.0E-6_dp, residual = 1.6545456440E-4_dp, &
+         residual_limit = 5.0E-3_dp, trust_floor_step = 2.22044605E-12_dp
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_added_mos_trust_stagnant( &
+               residual, trust_floor_step, eps_scf, residual_limit) .OR. &
+               qs_scf_kp_added_mos_trust_stagnant( &
+               residual, 1.0E-4_dp, eps_scf, residual_limit) .OR. &
+               qs_scf_kp_added_mos_trust_stagnant( &
+               0.5_dp*eps_scf, trust_floor_step, eps_scf, residual_limit) .OR. &
+               qs_scf_kp_added_mos_trust_stagnant( &
+               2.0_dp*residual_limit, trust_floor_step, eps_scf, residual_limit) .OR. &
+               qs_scf_kp_added_mos_trust_stagnant( &
+               residual, trust_floor_step, 0.0_dp, residual_limit)
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_added_mos_trust_stagnation
 
 ! **************************************************************************************************
 !> \brief Check the canonical-density escape from a converged integer AUTO subspace.

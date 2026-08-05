@@ -390,6 +390,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_added_mos_fractional_density_ready, &
              qs_scf_kp_added_mos_fractional_tail_ready, &
              qs_scf_kp_added_mos_integer_density_ready, &
+             qs_scf_kp_added_mos_trust_stagnant, &
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_density_closure_buffer_ready, &
              qs_scf_kp_density_closure_history_refresh_ready, &
@@ -1053,6 +1054,26 @@ CONTAINS
       ready = residual_delta <= residual_limit
 
    END FUNCTION qs_scf_kp_added_mos_fractional_tail_ready
+
+! **************************************************************************************************
+!> \brief whether a contracted minimizer trust radius can no longer resolve an AUTO subspace
+!> \param residual_delta current physical/model residual
+!> \param ds_min current minimizer step scale
+!> \param eps_scf requested SCF accuracy
+!> \param residual_limit largest residual admitted for subspace enrichment
+!> \return true when the search is unresolved but its step has reached the numerical trust floor
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_added_mos_trust_stagnant( &
+      residual_delta, ds_min, eps_scf, residual_limit) RESULT(stagnant)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, ds_min, eps_scf, &
+                                                            residual_limit
+      LOGICAL                                            :: stagnant
+
+      stagnant = eps_scf > 0.0_dp .AND. residual_limit >= eps_scf .AND. &
+                 residual_delta > eps_scf .AND. residual_delta <= residual_limit .AND. &
+                 ABS(ds_min) <= MAX(eps_scf, SQRT(EPSILON(1.0_dp)))
+
+   END FUNCTION qs_scf_kp_added_mos_trust_stagnant
 
 ! **************************************************************************************************
 !> \brief Residual-quality metric for an accepted density-response candidate.
@@ -9907,6 +9928,22 @@ CONTAINS
       local_ot_env(1)%gnorm = 0.0_dp
       local_ot_env(1)%gnorm_old = 1.0_dp
       DO local_channel = 1, SIZE(local_ot_env)
+         ! A projection changes the accepted coordinates outside the minimizer.
+         ! Invalidate Pulay/Broyden anchors as well as CG/line-search history;
+         ! otherwise the projected endpoint is compared with the pre-projection
+         ! DIIS energy and can enter an exact projection/rejection cycle.
+         local_ot_env(local_channel)%diis_iter = 0
+         local_ot_env(local_channel)%broyden_adaptive_sigma = -1.0_dp
+         IF (ASSOCIATED(local_ot_env(local_channel)%ls_diis)) &
+            local_ot_env(local_channel)%ls_diis(:, :) = 0.0_dp
+         IF (ASSOCIATED(local_ot_env(local_channel)%lss_diis)) &
+            local_ot_env(local_channel)%lss_diis(:, :) = 0.0_dp
+         IF (ASSOCIATED(local_ot_env(local_channel)%c_diis)) &
+            local_ot_env(local_channel)%c_diis(:) = 0.0_dp
+         IF (ASSOCIATED(local_ot_env(local_channel)%c_broy)) &
+            local_ot_env(local_channel)%c_broy(:) = 0.0_dp
+         IF (ASSOCIATED(local_ot_env(local_channel)%energy_h)) &
+            local_ot_env(local_channel)%energy_h(:) = 0.0_dp
          IF (ASSOCIATED(local_ot_env(local_channel)%matrix_dx)) &
             CALL dbcsr_set(local_ot_env(local_channel)%matrix_dx, 0.0_dp)
          IF (ASSOCIATED(local_ot_env(local_channel)%matrix_dx_im)) &
@@ -10133,12 +10170,13 @@ CONTAINS
 
       INTEGER :: accepted_response_support_i, base_nmo, current_added, &
          density_stationarity_ready_i, edge_start, edge_width, ikpoint, imo, ispin, local_kpoint, &
-         nmo, nonedge_probe_limit, trigger_step
+         nmo, nonedge_probe_limit, trigger_step, trust_stagnant_i
       LOGICAL :: accepted_response_tail_support, active_tail, basis_limited, basis_probe_limited, &
          coherent_fractional_tail, edge_limited, expandable, fractional_density_enrichment, &
-         fractional_tail_limited, integer_density_enrichment, nonedge_bootstrap_probe, &
-         nonedge_residual_probe, nonedge_tail_supported, relaxed_nonedge_probe, residual_ready, &
-         residual_spike, residual_tail_limited, strong_tail_limited
+         fractional_tail_limited, history_minimizer, integer_density_enrichment, &
+         nonedge_bootstrap_probe, nonedge_residual_probe, nonedge_tail_supported, &
+         relaxed_nonedge_probe, residual_ready, residual_spike, residual_tail_limited, &
+         strong_tail_limited, trust_stagnant
       REAL(KIND=dp) :: accepted_response_quality, accepted_response_residual_gap, basis_signal, &
          density_stationarity_delta, edge_fractional_weight, edge_grow_limit, edge_tail_occ_min, &
          fractional_weight, grow_limit, max_edge_fractional, max_fractional, maxocc, occ_tail, &
@@ -10152,6 +10190,10 @@ CONTAINS
       IF (.NOT. ANY(scf_control%added_mos_auto)) RETURN
       IF (.NOT. scf_control%smear%do_smear) RETURN
       IF (scf_control%eps_scf <= 0.0_dp) RETURN
+      history_minimizer = .FALSE.
+      IF (ASSOCIATED(scf_env%qs_ot_env)) &
+         history_minimizer = scf_env%qs_ot_env(1)%settings%ot_method == "DIIS" .OR. &
+                             scf_env%qs_ot_env(1)%settings%ot_method == "BROY"
       grow_limit = MAX(ot_kp_added_mos_auto_tail_eps_factor*scf_control%eps_scf, &
                        ot_kp_added_mos_auto_tail_probe_factor*SQRT(scf_control%eps_scf))
       edge_grow_limit = MAX(grow_limit, ot_kp_added_mos_auto_edge_probe_factor*SQRT(scf_control%eps_scf))
@@ -10166,6 +10208,14 @@ CONTAINS
       IF (ASSOCIATED(scf_env%qs_ot_env)) &
          residual_model_delta = kpoint_ot_canonical_density_projector_delta(scf_env%qs_ot_env(1), scf_env%iter_delta)
       CALL para_env_inter_kp%max(residual_model_delta)
+      trust_stagnant_i = 0
+      IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
+         IF (qs_scf_kp_added_mos_trust_stagnant( &
+             MAX(scf_env%iter_delta, residual_model_delta), scf_env%qs_ot_env(1)%ds_min, &
+             scf_control%eps_scf, edge_grow_limit)) trust_stagnant_i = 1
+      END IF
+      CALL para_env_inter_kp%max(trust_stagnant_i)
+      trust_stagnant = trust_stagnant_i > 0
       density_stationarity_delta = 0.0_dp
       density_stationarity_ready_i = 0
       IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
@@ -10267,11 +10317,14 @@ CONTAINS
                                       density_stationarity_delta, scf_control%eps_scf, &
                                       edge_grow_limit, &
                                       edge_grow_limit, expandable, active_tail, coherent_fractional_tail, &
-                                      edge_limited .OR. accepted_response_tail_support .OR. &
+                                      edge_limited .OR. trust_stagnant .OR. &
+                                      accepted_response_tail_support .OR. &
+                                      (history_minimizer .AND. nonedge_residual_probe) .OR. &
                                       basis_signal >= ot_kp_added_mos_auto_fractional_tail_basis_frac* &
                                       ot_kp_added_mos_auto_basis_signal_min, &
                                       edge_limited .OR. nonedge_residual_probe)
       basis_probe_limited = integer_density_enrichment .OR. fractional_density_enrichment .OR. &
+                            trust_stagnant .OR. &
                             (basis_signal >= 0.6_dp*ot_kp_added_mos_auto_basis_signal_min .AND. &
                              scf_env%iter_delta <= edge_grow_limit)
       relaxed_nonedge_probe = .NOT. nonedge_bootstrap_probe .AND. .NOT. edge_limited .AND. &
@@ -10315,7 +10368,8 @@ CONTAINS
                             scf_env%iter_delta <= edge_grow_limit
       IF (integer_density_enrichment .OR. &
           basis_signal >= 0.6_dp*ot_kp_added_mos_auto_basis_signal_min .OR. &
-          strong_tail_limited .OR. fractional_tail_limited) THEN
+          strong_tail_limited .OR. fractional_tail_limited .OR. trust_stagnant .OR. &
+          (fractional_density_enrichment .AND. nonedge_bootstrap_probe)) THEN
          trigger_step = MIN(trigger_step, ot_kp_added_mos_auto_tail_probe_steps)
       END IF
       IF (fractional_density_enrichment .AND. .NOT. nonedge_bootstrap_probe) &
@@ -10324,15 +10378,16 @@ CONTAINS
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,12(1X,ES20.10E3),14(1X,L1))') &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,12(1X,ES20.10E3),16(1X,L1))') &
             " OT k-point ADDED_MOS AUTO tail:", &
             scf_env%iter_count, scf_env%iter_delta, residual_model_delta, grow_limit, edge_grow_limit, basis_signal, &
             density_stationarity_delta, accepted_response_quality, accepted_response_residual_gap, fractional_weight, &
             edge_fractional_weight, max_fractional, max_edge_fractional, active_tail, edge_limited, &
             basis_probe_limited, basis_limited, integer_density_enrichment, fractional_density_enrichment, &
-            fractional_tail_limited, residual_spike, nonedge_residual_probe, nonedge_bootstrap_probe, &
+            fractional_tail_limited, residual_spike, trust_stagnant, &
+            nonedge_residual_probe, nonedge_bootstrap_probe, &
             accepted_response_tail_support, &
-            relaxed_nonedge_probe, nonedge_tail_supported, expandable
+            relaxed_nonedge_probe, nonedge_tail_supported, history_minimizer, expandable
       END IF
 
       IF (.NOT. expandable) RETURN

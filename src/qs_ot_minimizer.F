@@ -5070,6 +5070,61 @@ CONTAINS
    END SUBROUTINE ot_new_cg_direction
 
 ! **************************************************************************************************
+!> \brief restart Pulay history from the current accepted endpoint after a singular solve
+!> \param qs_ot_env local OT channels
+!> \param current_index circular-history slot containing the current endpoint and SD direction
+! **************************************************************************************************
+   SUBROUTINE ot_diis_restart_current_anchor(qs_ot_env, current_index)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      INTEGER, INTENT(IN)                                :: current_index
+
+      INTEGER                                            :: ispin
+      LOGICAL                                            :: do_ener, do_ks
+
+      do_ks = qs_ot_env(1)%settings%ks
+      do_ener = qs_ot_env(1)%settings%do_ener
+      IF (current_index /= 1) THEN
+         DO ispin = 1, SIZE(qs_ot_env)
+            IF (do_ks) THEN
+               CALL dbcsr_copy(qs_ot_env(ispin)%matrix_h_x(1)%matrix, &
+                               qs_ot_env(ispin)%matrix_h_x(current_index)%matrix)
+               CALL dbcsr_copy(qs_ot_env(ispin)%matrix_h_e(1)%matrix, &
+                               qs_ot_env(ispin)%matrix_h_e(current_index)%matrix)
+               IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                  CALL dbcsr_copy(qs_ot_env(ispin)%matrix_h_x_im(1)%matrix, &
+                                  qs_ot_env(ispin)%matrix_h_x_im(current_index)%matrix)
+                  CALL dbcsr_copy(qs_ot_env(ispin)%matrix_h_e_im(1)%matrix, &
+                                  qs_ot_env(ispin)%matrix_h_e_im(current_index)%matrix)
+               END IF
+               IF (qs_ot_env(ispin)%settings%do_rotation) THEN
+                  CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_x(1)%matrix, &
+                                  qs_ot_env(ispin)%rot_mat_h_x(current_index)%matrix)
+                  CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e(1)%matrix, &
+                                  qs_ot_env(ispin)%rot_mat_h_e(current_index)%matrix)
+                  IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_x_im(1)%matrix, &
+                                     qs_ot_env(ispin)%rot_mat_h_x_im(current_index)%matrix)
+                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e_im(1)%matrix, &
+                                     qs_ot_env(ispin)%rot_mat_h_e_im(current_index)%matrix)
+                  END IF
+               END IF
+            END IF
+            IF (do_ener) THEN
+               qs_ot_env(ispin)%ener_h_x(1, :) = qs_ot_env(ispin)%ener_h_x(current_index, :)
+               qs_ot_env(ispin)%ener_h_e(1, :) = qs_ot_env(ispin)%ener_h_e(current_index, :)
+            END IF
+         END DO
+      END IF
+      qs_ot_env(1)%diis_iter = 1
+      qs_ot_env(1)%ls_diis(:, :) = 0.0_dp
+      qs_ot_env(1)%lss_diis(:, :) = 0.0_dp
+      qs_ot_env(1)%c_diis(:) = 0.0_dp
+      qs_ot_env(1)%energy_h(:) = 0.0_dp
+      qs_ot_env(1)%energy_h(1) = qs_ot_env(1)%etotal
+
+   END SUBROUTINE ot_diis_restart_current_anchor
+
+! **************************************************************************************************
 !> \brief ...
 !> \param qs_ot_env ...
 !> \param para_env_inter_kp communicator spanning distributed k-point groups
@@ -5132,17 +5187,17 @@ CONTAINS
             DO ispin = 1, nspin
                CALL dbcsr_copy(qs_ot_env(ispin)%matrix_x, &
                                qs_ot_env(ispin)%matrix_h_x(last_index)%matrix)
-               IF (qs_ot_env(ispin)%has_complex_kpoint_state) then
-                 CALL dbcsr_copy(qs_ot_env(ispin)%matrix_x_im, &
+               IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                  CALL dbcsr_copy(qs_ot_env(ispin)%matrix_x_im, &
                                   qs_ot_env(ispin)%matrix_h_x_im(last_index)%matrix)
-               end if
+               END IF
                IF (qs_ot_env(ispin)%settings%do_rotation) THEN
                   CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_x, &
                                   qs_ot_env(ispin)%rot_mat_h_x(last_index)%matrix)
-                  IF (qs_ot_env(ispin)%has_complex_kpoint_state) then
-                    CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_x_im, &
+                  IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_x_im, &
                                      qs_ot_env(ispin)%rot_mat_h_x_im(last_index)%matrix)
-                  end if
+                  END IF
                END IF
             END DO
          END IF
@@ -5162,19 +5217,19 @@ CONTAINS
          qs_ot_env(1)%kpoint_physical_delta_ready = .FALSE.
          qs_ot_env(1)%kpoint_density_stationarity_ready = .FALSE.
          qs_ot_env(1)%kpoint_complete_physical_delta = -1.0_dp
-         IF (qs_ot_env(1)%kpoint_eps_scf > 0.0_dp) then
-           qs_ot_env(1)%delta = MAX(qs_ot_env(1)%delta, &
+         IF (qs_ot_env(1)%kpoint_eps_scf > 0.0_dp) THEN
+            qs_ot_env(1)%delta = MAX(qs_ot_env(1)%delta, &
                                      qs_ot_env(1)%kpoint_eps_scf* &
                                      (1.0_dp + 10.0_dp*EPSILON(1.0_dp)))
-         end if
+         END IF
          qs_ot_env(1)%OT_METHOD_FULL = "OT REJ"
-         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) then
-           WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),2(1X,L1))') &
-            " OT DIIS Mermin candidate rejected energy reference residual reference_residual "// &
-            "old_step new_step energy_reject residual_reject:", &
-            rejected_energy, reference_energy, current_physical_delta, reference_physical_delta, &
-            previous_step, contracted_step, mermin_energy_rejected, mermin_residual_rejected
-         end if
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),2(1X,L1))') &
+               " OT DIIS Mermin candidate rejected energy reference residual reference_residual "// &
+               "old_step new_step energy_reject residual_reject:", &
+               rejected_energy, reference_energy, current_physical_delta, reference_physical_delta, &
+               previous_step, contracted_step, mermin_energy_rejected, mermin_residual_rejected
+         END IF
          CALL timestop(handle)
          RETURN
       END IF
@@ -5433,24 +5488,24 @@ CONTAINS
 
       current_state_converged = .FALSE.
       current_exit_delta = HUGE(1.0_dp)
-      IF (qs_ot_env(1)%has_complex_kpoint_state .AND. qs_ot_env(1)%kpoint_eps_scf > 0.0_dp) then
-        CALL ot_kpoint_mermin_endpoint_status( &
-         qs_ot_env(1)%delta, ot_kpoint_physical_exit_delta( &
-         qs_ot_env(1)%kpoint_physical_delta, qs_ot_env(1)%kpoint_complete_physical_delta), &
-         qs_ot_env(1)%kpoint_physical_delta_ready, qs_ot_env(1)%kpoint_projected_delta, &
-         qs_ot_env(1)%kpoint_density_stationarity_delta, &
-         qs_ot_env(1)%kpoint_density_stationarity_ready, qs_ot_env(1)%kpoint_eps_scf, &
-         current_exit_delta, current_state_converged)
-      end if
+      IF (qs_ot_env(1)%has_complex_kpoint_state .AND. qs_ot_env(1)%kpoint_eps_scf > 0.0_dp) THEN
+         CALL ot_kpoint_mermin_endpoint_status( &
+            qs_ot_env(1)%delta, ot_kpoint_physical_exit_delta( &
+            qs_ot_env(1)%kpoint_physical_delta, qs_ot_env(1)%kpoint_complete_physical_delta), &
+            qs_ot_env(1)%kpoint_physical_delta_ready, qs_ot_env(1)%kpoint_projected_delta, &
+            qs_ot_env(1)%kpoint_density_stationarity_delta, &
+            qs_ot_env(1)%kpoint_density_stationarity_ready, qs_ot_env(1)%kpoint_eps_scf, &
+            current_exit_delta, current_state_converged)
+      END IF
       IF (current_state_converged) THEN
          ! Retain the audited endpoint in DIIS history, but do not generate a
          ! post-convergence state that could later be written to a restart.
          qs_ot_env(1)%OT_METHOD_FULL = "OT FIN"
-         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) then
-           WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,ES16.8))') &
-            " OT DIIS accepted endpoint converged delta eps:", &
-            current_exit_delta, qs_ot_env(1)%kpoint_eps_scf
-         end if
+         IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,ES16.8))') &
+               " OT DIIS accepted endpoint converged delta eps:", &
+               current_exit_delta, qs_ot_env(1)%kpoint_eps_scf
+         END IF
          CALL timestop(handle)
          RETURN
       END IF
@@ -5464,6 +5519,9 @@ CONTAINS
       IF (info /= 0) THEN
          do_ot_sd = .TRUE.
          WRITE (cp_logger_get_default_unit_nr(logger), *) "Singular DIIS matrix"
+         ! Keep one physical endpoint and its preconditioned SD direction.  Leaving
+         ! diis_iter unchanged retries the same singular Pulay system forever.
+         CALL ot_diis_restart_current_anchor(qs_ot_env, j)
       ELSE
          do_ot_sd = .FALSE.
          IF (do_ks) THEN
