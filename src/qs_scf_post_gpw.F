@@ -3750,13 +3750,14 @@ CONTAINS
          mpi_io = .TRUE.
          unit_nr = cp_print_key_unit_nr(logger, input, "DFT%PRINT%LOCAL_ENERGY_CUBE", &
                                         extension=".cube", middle_name="local_energy", &
-                                        file_position=my_pos_cube, mpi_io=mpi_io)
+                                        file_position=my_pos_cube, mpi_io=mpi_io, fout=filename)
          CALL cp_pw_to_cube(eden, unit_nr, "LOCAL ENERGY", particles=particles, &
                             stride=section_get_ivals(dft_section, "PRINT%LOCAL_ENERGY_CUBE%STRIDE"), &
                             max_file_size_mb=section_get_rval(dft_section, "PRINT%LOCAL_ENERGY_CUBE%MAX_FILE_SIZE_MB"), &
                             mpi_io=mpi_io)
          IF (io_unit > 0) THEN
-            INQUIRE (UNIT=unit_nr, NAME=filename)
+            ! An MPI-IO handle is not a Fortran unit and cannot be queried with INQUIRE.
+            IF (.NOT. mpi_io) INQUIRE (UNIT=unit_nr, NAME=filename)
             IF (gapw .OR. gapw_xc) THEN
                WRITE (UNIT=io_unit, FMT="(/,T3,A,A)") &
                   "The soft part of the local energy is written to the file: ", TRIM(ADJUSTL(filename))
@@ -3830,13 +3831,14 @@ CONTAINS
          mpi_io = .TRUE.
          unit_nr = cp_print_key_unit_nr(logger, input, "DFT%PRINT%LOCAL_STRESS_CUBE", &
                                         extension=".cube", middle_name="local_stress", &
-                                        file_position=my_pos_cube, mpi_io=mpi_io)
+                                        file_position=my_pos_cube, mpi_io=mpi_io, fout=filename)
          CALL cp_pw_to_cube(stress, unit_nr, "LOCAL STRESS", particles=particles, &
                             stride=section_get_ivals(dft_section, "PRINT%LOCAL_STRESS_CUBE%STRIDE"), &
                             max_file_size_mb=section_get_rval(dft_section, "PRINT%LOCAL_STRESS_CUBE%MAX_FILE_SIZE_MB"), &
                             mpi_io=mpi_io)
          IF (io_unit > 0) THEN
-            INQUIRE (UNIT=unit_nr, NAME=filename)
+            ! An MPI-IO handle is not a Fortran unit and cannot be queried with INQUIRE.
+            IF (.NOT. mpi_io) INQUIRE (UNIT=unit_nr, NAME=filename)
             WRITE (UNIT=io_unit, FMT="(/,T3,A)") "Write 1/3*Tr(sigma) to cube file"
             IF (gapw .OR. gapw_xc) THEN
                WRITE (UNIT=io_unit, FMT="(T3,A,A)") &
