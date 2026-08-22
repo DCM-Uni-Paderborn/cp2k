@@ -5365,6 +5365,10 @@ CONTAINS
 !>        curvature only as a search metric, while their signed curvature remains in the Mermin
 !>        model. Their common scale is the largest value for which the predicted reduced fixed-N
 !>        residual is no worse than both the current residual and a supplied reference candidate.
+!>        If explicitly enabled for an observed residual tail and a zero-step reference leaves no
+!>        such scale, the full absolute-curvature direction is retained as a saddle-escape
+!>        candidate. Its linearized residual amplification is bounded by two; the ordinary response
+!>        trust and Mermin line search still control the actual step.
 !>        Diagonalizing D_floor^(-1/2) H D_floor^(-1/2) makes the unit modal floor invariant under
 !>        coordinate rescaling and rotations inside a degenerate complex response subspace.
 !> \param hessian signed symmetric reduced Schur Hessian
@@ -5377,10 +5381,12 @@ CONTAINS
 !> \param negative_gradient_fraction gradient fraction carried by negative modes
 !> \param predicted_residual_ratio predicted step residual divided by the current residual
 !> \param reference_residual_ratio corresponding ratio for the reference candidate
+!> \param allow_saddle_escape permit an absolute-curvature negative-mode fallback
 ! **************************************************************************************************
    SUBROUTINE qs_scf_kp_indefinite_residual_balanced_step( &
       hessian, gradient, coordinate_floor, reference_step, step, ready, negative_scale, &
-      negative_gradient_fraction, predicted_residual_ratio, reference_residual_ratio)
+      negative_gradient_fraction, predicted_residual_ratio, reference_residual_ratio, &
+      allow_saddle_escape)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: gradient, coordinate_floor, &
                                                             reference_step
@@ -5390,8 +5396,10 @@ CONTAINS
                                                             negative_gradient_fraction, &
                                                             predicted_residual_ratio, &
                                                             reference_residual_ratio
+      LOGICAL, INTENT(IN), OPTIONAL                      :: allow_saddle_escape
 
       INTEGER                                            :: i, nrot
+      LOGICAL                                            :: saddle_escape, saddle_escape_enabled
       REAL(KIND=dp) :: discriminant, gradient_norm_sq, mode_floor, negative_gradient_norm_sq, &
          numerical_floor, residual_a, residual_b, residual_c, residual_norm_sq, &
          target_residual_norm_sq, tolerance
@@ -5408,6 +5416,9 @@ CONTAINS
 
       step(:) = 0.0_dp
       ready = .FALSE.
+      saddle_escape = .FALSE.
+      saddle_escape_enabled = .FALSE.
+      IF (PRESENT(allow_saddle_escape)) saddle_escape_enabled = allow_saddle_escape
       negative_scale = 0.0_dp
       negative_gradient_fraction = 0.0_dp
       predicted_residual_ratio = 1.0_dp
@@ -5490,11 +5501,23 @@ CONTAINS
       END IF
       IF (negative_gradient_fraction > SQRT(EPSILON(1.0_dp)) .AND. &
           negative_scale <= SQRT(EPSILON(1.0_dp))) THEN
-         DEALLOCATE (coordinate_scale, eval, gradient_scaled, hessian_modes, hessian_scaled, &
-                     mode_gradient, mode_step_negative, mode_step_positive, reference_residual, &
-                     reference_step_scaled, residual_delta, residual_positive, residual_trial, &
-                     step_scaled)
-         RETURN
+         ! At a genuine negative-curvature tail no positive displacement can
+         ! reduce that modal gradient in the local linear model.  Rejecting the
+         ! entire coupled direction then leaves only the scalar fallback and
+         ! stalls the full physical audit.  For a zero-step-quality reference,
+         ! retain the saddle-free |H| inverse; each negative mode amplifies the
+         ! linearized residual by at most two before the external trust scaling.
+         IF (saddle_escape_enabled .AND. &
+             reference_residual_ratio >= 1.0_dp - 256.0_dp*EPSILON(1.0_dp)) THEN
+            negative_scale = 1.0_dp
+            saddle_escape = .TRUE.
+         ELSE
+            DEALLOCATE (coordinate_scale, eval, gradient_scaled, hessian_modes, hessian_scaled, &
+                        mode_gradient, mode_step_negative, mode_step_positive, reference_residual, &
+                        reference_step_scaled, residual_delta, residual_positive, residual_trial, &
+                        step_scaled)
+            RETURN
+         END IF
       END IF
 
       step_scaled(:) = MATMUL(hessian_modes, &
@@ -5504,8 +5527,11 @@ CONTAINS
                                                               residual_trial))/gradient_norm_sq)
       step(:) = step_scaled/coordinate_scale
       ready = DOT_PRODUCT(gradient, step) > EPSILON(DOT_PRODUCT(gradient, step)) .AND. &
-              predicted_residual_ratio <= MIN(1.0_dp, reference_residual_ratio) + &
-              256.0_dp*EPSILON(1.0_dp) .AND. &
+              ((.NOT. saddle_escape .AND. &
+                predicted_residual_ratio <= MIN(1.0_dp, reference_residual_ratio) + &
+                256.0_dp*EPSILON(1.0_dp)) .OR. &
+               (saddle_escape .AND. &
+                predicted_residual_ratio <= 2.0_dp + 256.0_dp*EPSILON(1.0_dp))) .AND. &
               ALL(step == step) .AND. negative_scale == negative_scale .AND. &
               predicted_residual_ratio == predicted_residual_ratio
       IF (.NOT. ready) step(:) = 0.0_dp
@@ -24624,7 +24650,8 @@ CONTAINS
                   row_floor = kpoint_ot_raw_tail_rotation_floor(row_floor, rot_floor(r), residual_delta)
                END IF
                rot_floor_min = MIN(rot_floor_min, row_floor)
-               IF (schur_attempt == 3 .AND. exact_attempt_response) rtd(r) = row_floor
+               IF (SIZE(wkp) > 1 .AND. schur_attempt == 3 .AND. exact_attempt_response .AND. &
+                   residual_delta > EPSILON(residual_delta)) rtd(r) = row_floor
                diag_prefloor_avg = diag_prefloor_avg + schur(r, r)
                diag_prefloor_min = MIN(diag_prefloor_min, schur(r, r))
                diag_prefloor_max = MAX(diag_prefloor_max, schur(r, r))
@@ -24671,7 +24698,8 @@ CONTAINS
                target_group, schur_attempt, gauge_projected_count, rot_grad_gauge_norm, &
                rot_grad_physical_norm, rot_grad_gauge_norm/MAX(rot_grad_physical_norm, EPSILON(1.0_dp))
 
-            IF (schur_attempt == 3 .AND. exact_attempt_response) THEN
+            IF (SIZE(wkp) > 1 .AND. schur_attempt == 3 .AND. exact_attempt_response .AND. &
+                residual_delta > EPSILON(residual_delta)) THEN
                BLOCK
                   LOGICAL                            :: modal_ready
                   REAL(KIND=dp) :: modal_negative_fraction, modal_negative_scale, &
@@ -24682,7 +24710,8 @@ CONTAINS
                   CALL qs_scf_kp_indefinite_residual_balanced_step( &
                      schur_metric, rhs, rtd, modal_reference_step, sol, modal_ready, &
                      modal_negative_scale, modal_negative_fraction, &
-                     modal_predicted_residual_ratio, modal_reference_residual_ratio)
+                     modal_predicted_residual_ratio, modal_reference_residual_ratio, &
+                     allow_saddle_escape=.TRUE.)
                   exact_modal_used = modal_ready
                END BLOCK
             END IF

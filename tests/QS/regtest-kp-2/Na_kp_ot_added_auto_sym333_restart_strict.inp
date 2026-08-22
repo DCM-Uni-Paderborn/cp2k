@@ -1,9 +1,11 @@
 ! Strict manual residual-tail companion for
 ! Na_kp_ot_added_auto_sym333_converge.inp. Run the source input first in the
-! same directory. At EPS_SCF 1E-8 the printed residual can fall below the
-! target and then rebound when the coupled physical-residual audit starts a
-! new search. Consequently this bounded 240-step input is an intentionally
-! unlisted diagnostic, not a claimed converged regression.
+! same directory. The sign-aware dense Schur model retains an absolute-
+! curvature saddle-escape direction when no negative-mode mixture can lower
+! the local linear residual. Three independent MPI-2/OMP-2 trajectories reached
+! complete fixed-N Mermin endpoints in 105, 279, and 296 steps, and the
+! resulting checkpoints restarted in one step. This remains an intentionally
+! unlisted physics companion so the default regression suite stays inexpensive.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Na_kp_ot_added_auto_sym333_restart_strict
@@ -30,7 +32,7 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-8
-      MAX_SCF 240
+      MAX_SCF 360
       SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC

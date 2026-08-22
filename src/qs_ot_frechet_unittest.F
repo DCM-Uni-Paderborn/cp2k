@@ -10161,15 +10161,18 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3
 
-      LOGICAL                                            :: near_ready, ready, scaled_ready
+      LOGICAL                                            :: near_ready, ready, saddle_ready, &
+                                                            scaled_ready
       REAL(KIND=dp) :: error, near_negative_fraction, near_negative_scale, near_predicted_ratio, &
          near_reference_ratio, negative_fraction, negative_scale, predicted_ratio, &
-         reference_ratio, scaled_negative_fraction, scaled_negative_scale, scaled_predicted_ratio, &
-         scaled_reference_ratio
+         reference_ratio, saddle_negative_fraction, saddle_negative_scale, saddle_predicted_ratio, &
+         saddle_reference_ratio, scaled_negative_fraction, scaled_negative_scale, &
+         scaled_predicted_ratio, scaled_reference_ratio
       REAL(KIND=dp), DIMENSION(n) :: coordinate_floor, gradient, near_floor, near_gradient, &
-         near_reference_step, near_step, reference_step, scale, scaled_coordinate_floor, &
-         scaled_gradient, scaled_reference_step, scaled_step, step
-      REAL(KIND=dp), DIMENSION(n, n)                     :: hessian, near_hessian, scaled_hessian
+         near_reference_step, near_step, reference_step, saddle_gradient, saddle_step, scale, &
+         scaled_coordinate_floor, scaled_gradient, scaled_reference_step, scaled_step, step
+      REAL(KIND=dp), DIMENSION(n, n)                     :: hessian, near_hessian, saddle_hessian, &
+                                                            scaled_hessian
 
       hessian(:, :) = 0.0_dp
       hessian(1, 1) = 2.0_dp
@@ -10211,24 +10214,40 @@ CONTAINS
          near_hessian, near_gradient, near_floor, near_reference_step, near_step, near_ready, &
          near_negative_scale, near_negative_fraction, near_predicted_ratio, near_reference_ratio)
 
+      saddle_hessian(:, :) = 0.0_dp
+      saddle_hessian(1, 1) = -2.0_dp
+      saddle_hessian(2, 2) = -1.0_dp
+      saddle_hessian(3, 3) = -0.5_dp
+      saddle_gradient(:) = [0.8_dp, -0.5_dp, 0.3_dp]
+      CALL qs_scf_kp_indefinite_residual_balanced_step( &
+         saddle_hessian, saddle_gradient, coordinate_floor, 0.0_dp*reference_step, &
+         saddle_step, saddle_ready, saddle_negative_scale, saddle_negative_fraction, &
+         saddle_predicted_ratio, saddle_reference_ratio, allow_saddle_escape=.TRUE.)
+
       error = MAXVAL(ABS(step - scale*scaled_step)) + &
               ABS(negative_scale - scaled_negative_scale) + &
               ABS(negative_fraction - scaled_negative_fraction) + &
               ABS(predicted_ratio - scaled_predicted_ratio) + &
               ABS(reference_ratio - scaled_reference_ratio) + &
               ABS(predicted_ratio - reference_ratio) + &
-              MAXVAL(ABS(near_step - [10.0_dp, -10.0_dp, 0.25_dp]))
-      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. near_ready .OR. &
+              MAXVAL(ABS(near_step - [10.0_dp, -10.0_dp, 0.25_dp])) + &
+              MAXVAL(ABS(saddle_step - [0.4_dp, -0.5_dp, 0.6_dp])) + &
+              ABS(saddle_negative_scale - 1.0_dp) + &
+              ABS(saddle_negative_fraction - 1.0_dp) + &
+              ABS(saddle_predicted_ratio - 2.0_dp)
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. near_ready .OR. .NOT. saddle_ready .OR. &
           negative_scale <= tol .OR. &
           negative_scale >= 1.0_dp - tol .OR. negative_fraction <= tol .OR. &
           predicted_ratio > 1.0_dp + tol .OR. near_negative_fraction > tol .OR. &
-          near_predicted_ratio >= near_reference_ratio .OR. error > tol) THEN
+          near_predicted_ratio >= near_reference_ratio .OR. &
+          ABS(saddle_reference_ratio - 1.0_dp) > tol .OR. &
+          error > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,3(1X,L1),8(1X,ES16.8))') TRIM(label)// &
-            " FAILED with ready/scaled/near/error/nscale/nfrac/pred/ref/near_scale/near_frac/near_pred/near_ref", &
-            ready, scaled_ready, near_ready, error, negative_scale, negative_fraction, predicted_ratio, &
+         WRITE (*, '(A,4(1X,L1),9(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/scaled/near/saddle/error/nscale/nfrac/pred/ref/near_scale/near_frac/near_pred/spred", &
+            ready, scaled_ready, near_ready, saddle_ready, error, negative_scale, negative_fraction, predicted_ratio, &
             reference_ratio, near_negative_scale, near_negative_fraction, near_predicted_ratio, &
-            near_reference_ratio
+            saddle_predicted_ratio
       ELSE
          WRITE (*, '(A,8(1X,ES16.8))') TRIM(label)// &
             " OK with error/nscale/nfrac/pred/ref/near_scale/near_pred/near_ref", &

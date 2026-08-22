@@ -95,9 +95,10 @@
 # The unlisted Na_kp_ot_added_auto_sym333_converge.inp is the stricter atomic
 # 3x3x3 fixed-N companion. It grows AUTO 4->8->16 and converges in roughly
 # 285-385 steps near -9.0195318012 Ha. Its ordinary restart restores the
-# converged state in one step. The strict 1E-8 companion remains an unlisted,
-# bounded residual-tail diagnostic because some trajectories revisit the
-# coupled physical-residual plateau after first crossing the printed target.
+# converged state in one step. The strict 1E-8 companion is also unlisted; three
+# independent MPI-2/OMP-2 paths reached complete fixed-N Mermin endpoints in
+# 105-296 steps with the sign-aware dense Schur saddle-escape path, and the
+# resulting checkpoints restarted in one step.
 # The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
 # provide the converged symmetry-reduced Gaussian path at
 # -8.15946107404605 Ha; the restart closes in one step and diagonalization is
