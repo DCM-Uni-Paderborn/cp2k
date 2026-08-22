@@ -4,8 +4,8 @@
 ! channels, a fixed magnetic moment, symmetry weights, ADDED_MOS AUTO, and the
 ! FULL_ALL fixed-N occupation preconditioner with Pulay history.
 ! Current MPI-2/OMP-2 reference at 1000 K: AUTO grows 4->8->16 and converges
-! in 172 steps at F=-123.63311571661103 Ha, -T*S=-0.00485895717992 Ha,
-! and mu=0.40331704480961 Ha.
+! in 154 final-space steps at F=-123.63311572006516 Ha, -T*S=-0.00485895850479 Ha,
+! and mu=0.40331704208105 Ha.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Fe_kp_ot_uks_added_auto_sym3_diis_converge

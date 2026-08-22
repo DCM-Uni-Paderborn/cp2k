@@ -46,6 +46,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_cg_metric_history_reset, &
               ot_kpoint_cg_tail_metric_tracked, &
               ot_kpoint_diis_rejected_step, &
+              ot_kpoint_diis_rotation_response_ready, &
               ot_kpoint_diis_mermin_step_rejected, &
               ot_kpoint_diis_residual_step_rejected, &
               ot_kpoint_fermi_window_energy_coordinate, &
@@ -235,6 +236,33 @@ CONTAINS
       next_step = SIGN(MAX(step_floor, 0.25_dp*ABS(previous_step)), previous_step)
 
    END FUNCTION ot_kpoint_diis_rejected_step
+
+! **************************************************************************************************
+!> \brief decide whether a current Schur rotation response is a valid DIIS descent correction
+!>
+!>        The Pulay metric retains the raw complex rotation residual.  A finite Schur response is
+!>        applied only as a current-coordinate correction and only when its complete distributed
+!>        contraction with the raw gradient is a finite strict descent direction.  The correction
+!>        remains disabled while the canonical Fermi-frontier guard owns the trial state.
+!> \param direction_ready every distributed k-point channel supplied the current Schur response
+!> \param response_slope weighted gradient-response contraction
+!> \param raw_slope weighted squared raw rotation-gradient norm
+!> \param fermi_guard_active canonical frontier projection still controls accepted trials
+!> \return true when the response can replace the current raw rotation shift
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_diis_rotation_response_ready( &
+      direction_ready, response_slope, raw_slope, fermi_guard_active) RESULT(ready)
+      LOGICAL, INTENT(IN)                                :: direction_ready
+      REAL(KIND=dp), INTENT(IN)                          :: response_slope, raw_slope
+      LOGICAL, INTENT(IN)                                :: fermi_guard_active
+      LOGICAL                                            :: ready
+
+      ready = direction_ready .AND. .NOT. fermi_guard_active .AND. &
+              ABS(response_slope) < HUGE(response_slope) .AND. &
+              ABS(raw_slope) < HUGE(raw_slope) .AND. raw_slope > EPSILON(1.0_dp) .AND. &
+              response_slope > EPSILON(1.0_dp)*MAX(raw_slope, ABS(response_slope))
+
+   END FUNCTION ot_kpoint_diis_rotation_response_ready
 
 ! **************************************************************************************************
 !> \brief Evaluate convergence of an accepted complex fixed-N Mermin endpoint.
@@ -5174,7 +5202,7 @@ CONTAINS
          mermin_step_rejected
       REAL(KIND=dp) :: contracted_step, current_exit_delta, current_physical_delta, norm_weight, &
          nvar, overlap, previous_step, reference_energy, reference_physical_delta, &
-         rejected_energy, tmp, tr_xnew_gx, tr_xold_gx
+         rejected_energy, rotation_raw_slope, rotation_response_slope, tmp, tr_xnew_gx, tr_xold_gx
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -5198,11 +5226,42 @@ CONTAINS
       direction_ready_all = MERGE(1, 0, kpoint_preconditioned_direction)
       CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, direction_ready_all)
       kpoint_preconditioned_direction = direction_ready_all == 1
-      ! The fixed-N energy Schur direction is a positive projected block and is
-      ! safe in a Pulay history.  The finite complex rotation block remains
-      ! indefinite and needs CG's accepted line-search model before promotion.
-      kpoint_preconditioned_rotation = .FALSE.
+      ! Keep the raw complex rotation residual in the Pulay metric.  The
+      ! sign-aware Schur response is admitted separately as the current
+      ! coordinate correction, so indefinite directions never enter history.
+      rotation_raw_slope = 0.0_dp
+      rotation_response_slope = 0.0_dp
+      IF (kpoint_preconditioned_direction .AND. qs_ot_env(1)%settings%do_rotation) THEN
+         DO ispin = 1, nspin
+            norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
+            CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx))
+            CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_gx, tmp)
+            rotation_raw_slope = rotation_raw_slope + 0.5_dp*norm_weight*tmp
+            CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_pgx, tmp)
+            rotation_response_slope = rotation_response_slope + 0.5_dp*tmp
+            IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+               CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx_im))
+               CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, &
+                              qs_ot_env(ispin)%rot_mat_gx_im, tmp)
+               rotation_raw_slope = rotation_raw_slope + 0.5_dp*norm_weight*tmp
+               CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, &
+                              qs_ot_env(ispin)%rot_mat_pgx_im, tmp)
+               rotation_response_slope = rotation_response_slope + 0.5_dp*tmp
+            END IF
+         END DO
+         CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, rotation_raw_slope)
+         CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, rotation_response_slope)
+      END IF
+      kpoint_preconditioned_rotation = ot_kpoint_diis_rotation_response_ready( &
+                                       kpoint_preconditioned_direction, &
+                                       rotation_response_slope, rotation_raw_slope, &
+                                       qs_ot_env(1)%ener_x_fermi_guard_active)
       kpoint_preconditioned_energy = kpoint_preconditioned_direction
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,2(1X,ES16.8))') &
+            " OT DIIS current rotation response ready raw_slope response_slope:", &
+            kpoint_preconditioned_rotation, rotation_raw_slope, rotation_response_slope
+      END IF
 
       diis_m = qs_ot_env(1)%settings%diis_m
 
@@ -5388,30 +5447,18 @@ CONTAINS
             IF (qs_ot_env(1)%settings%do_rotation) THEN
                DO ispin = 1, nspin
                   norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
-                  IF (kpoint_preconditioned_rotation) THEN
-                     CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx))
-                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, &
-                                     qs_ot_env(ispin)%rot_mat_pgx)
-                  ELSE
-                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, &
-                                     qs_ot_env(ispin)%rot_mat_gx)
-                     IF (qs_ot_env(ispin)%has_kpoint_context) THEN
-                        CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, norm_weight)
-                     END IF
+                  CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, &
+                                  qs_ot_env(ispin)%rot_mat_gx)
+                  IF (qs_ot_env(ispin)%has_kpoint_context) THEN
+                     CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, norm_weight)
                   END IF
                   CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_h_e(j)%matrix, &
                                  tmp)
                   qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                     IF (kpoint_preconditioned_rotation) THEN
-                        CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx_im))
-                        CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, &
-                                        qs_ot_env(ispin)%rot_mat_pgx_im)
-                     ELSE
-                        CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, &
-                                        qs_ot_env(ispin)%rot_mat_gx_im)
-                        CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, norm_weight)
-                     END IF
+                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, &
+                                     qs_ot_env(ispin)%rot_mat_gx_im)
+                     CALL dbcsr_scale(qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, norm_weight)
                      CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, &
                                     qs_ot_env(ispin)%rot_mat_h_e_im(j)%matrix, tmp)
                      qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
@@ -5691,6 +5738,23 @@ CONTAINS
                                        alpha_scalar=1.0_dp, beta_scalar=qs_ot_env(1)%c_diis(i))
                      END IF
                   END DO
+                  IF (kpoint_preconditioned_rotation) THEN
+                     norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
+                     CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x, &
+                                    qs_ot_env(ispin)%rot_mat_pgx, &
+                                    alpha_scalar=1.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+                     CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x, &
+                                    qs_ot_env(ispin)%rot_mat_gx, alpha_scalar=1.0_dp, &
+                                    beta_scalar=qs_ot_env(1)%ds_min*norm_weight)
+                     IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                        CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x_im, &
+                                       qs_ot_env(ispin)%rot_mat_pgx_im, &
+                                       alpha_scalar=1.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+                        CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x_im, &
+                                       qs_ot_env(ispin)%rot_mat_gx_im, alpha_scalar=1.0_dp, &
+                                       beta_scalar=qs_ot_env(1)%ds_min*norm_weight)
+                     END IF
+                  END IF
                END IF
             END DO
          END IF
@@ -5810,6 +5874,23 @@ CONTAINS
                      CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x_im, &
                                     qs_ot_env(ispin)%rot_mat_h_x_im(j)%matrix, &
                                     1.0_dp, 1.0_dp)
+                  END IF
+                  IF (kpoint_preconditioned_rotation) THEN
+                     norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
+                     CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x, &
+                                    qs_ot_env(ispin)%rot_mat_pgx, &
+                                    alpha_scalar=1.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+                     CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x, &
+                                    qs_ot_env(ispin)%rot_mat_gx, alpha_scalar=1.0_dp, &
+                                    beta_scalar=qs_ot_env(1)%ds_min*norm_weight)
+                     IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                        CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x_im, &
+                                       qs_ot_env(ispin)%rot_mat_pgx_im, &
+                                       alpha_scalar=1.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+                        CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x_im, &
+                                       qs_ot_env(ispin)%rot_mat_gx_im, alpha_scalar=1.0_dp, &
+                                       beta_scalar=qs_ot_env(1)%ds_min*norm_weight)
+                     END IF
                   END IF
                END IF
             END DO

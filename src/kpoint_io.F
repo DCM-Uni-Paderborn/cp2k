@@ -78,7 +78,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 34
+   INTEGER, PARAMETER                   :: ot_restart_version = 35
    REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
    REAL(KIND=dp), PARAMETER             :: ot_restart_objective_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
@@ -1559,9 +1559,9 @@ CONTAINS
                       "Ignoring k-point OT minimizer payload without a settings signature")
          RETURN
       END IF
-      IF (version_read < 34) THEN
+      IF (version_read < 35) THEN
          CALL cp_warn(__LOCATION__, &
-                      "Ignoring k-point OT minimizer payload with legacy DIIS direction history")
+                      "Ignoring k-point OT minimizer payload with legacy DIIS rotation history")
          RETURN
       END IF
 

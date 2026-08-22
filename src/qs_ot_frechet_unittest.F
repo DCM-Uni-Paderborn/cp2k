@@ -66,19 +66,19 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_cg_metric_history_reset, ot_kpoint_cg_residual_growth_guard, &
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_diis_mermin_step_rejected, &
         ot_kpoint_diis_rejected_step, ot_kpoint_diis_residual_step_rejected, &
-        ot_kpoint_fermi_window_direction_scale, ot_kpoint_fermi_window_energy_coordinate, &
-        ot_kpoint_mermin_candidate_restart_step, ot_kpoint_mermin_closure_response_quality, &
-        ot_kpoint_mermin_current_guard_delta, ot_kpoint_mermin_endpoint_status, &
-        ot_kpoint_mermin_energy_curvature_resolved, ot_kpoint_mermin_full_direction_model, &
-        ot_kpoint_mermin_projected_reference_ready, ot_kpoint_mermin_recovery_active_tail, &
-        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
-        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
-        ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
-        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
-        ot_kpoint_physical_exit_delta, ot_kpoint_physical_residual_split, &
-        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_probe_position, &
-        ot_kpoint_rayleigh_response_scale, ot_kpoint_residual_aware_rayleigh_model, &
-        ot_kpoint_secant_geometry
+        ot_kpoint_diis_rotation_response_ready, ot_kpoint_fermi_window_direction_scale, &
+        ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
+        ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
+        ot_kpoint_mermin_endpoint_status, ot_kpoint_mermin_energy_curvature_resolved, &
+        ot_kpoint_mermin_full_direction_model, ot_kpoint_mermin_projected_reference_ready, &
+        ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
+        ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
+        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
+        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
+        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_exit_delta, &
+        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
+        ot_kpoint_rayleigh_probe_position, ot_kpoint_rayleigh_response_scale, &
+        ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: &
         ot_metallic_variable_defaults, qs_ot_reset_accepted_model_calibration, &
@@ -6142,6 +6142,25 @@ CONTAINS
                                0.15_dp, 0.15_dp, 1.0E-16_dp, .TRUE.) - 0.0375_dp) > 1.0E-15_dp
       failed = failed .OR. ABS(ot_kpoint_diis_rejected_step( &
                                -0.08_dp, 0.08_dp, 1.0E-16_dp, .TRUE.) + 0.02_dp) > 1.0E-15_dp
+      ! The current finite-complex response must be globally finite and a strict descent.
+      failed = failed .OR. .NOT. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., 2.0_dp, 1.0_dp, .FALSE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., 2.0_dp, 1.0_dp, .TRUE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .FALSE., 2.0_dp, 1.0_dp, .FALSE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., 0.0_dp, 1.0_dp, .FALSE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., -1.0_dp, 1.0_dp, .FALSE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., 1.0_dp, 0.0_dp, .FALSE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., HUGE(1.0_dp), 1.0_dp, .FALSE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., 1.0_dp, HUGE(1.0_dp), .FALSE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., EPSILON(1.0_dp), 2.0_dp, .FALSE.)
 
       IF (failed) THEN
          nfail = nfail + 1
