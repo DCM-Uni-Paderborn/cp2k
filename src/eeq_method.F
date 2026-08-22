@@ -1171,8 +1171,8 @@ CONTAINS
 
       CALL apply_sparse_pbc_response(response, ewald_env, ewald_pw, cell, particle_set, &
                                      charges, aq, work)
-      gradient = aq + chia
-      residual = -gradient
+      gradient(:) = aq + chia
+      residual(:) = -gradient
       CALL project_eeq_charge_tangent(residual)
       res = SQRT(SUM(residual*residual))
       res_initial = MAX(res, SQRT(EPSILON(1.0_dp)))
@@ -1180,7 +1180,7 @@ CONTAINS
 
       IF (res >= eps_solver) THEN
          CALL apply_eeq_constrained_diagonal_preconditioner(residual, precond_diag, z)
-         p = z
+         p(:) = z
          rz = SUM(residual*z)
 
          DO iter = 1, max_iter
@@ -1199,7 +1199,7 @@ CONTAINS
                EXIT
             END IF
             charges = charges + alpha_cg*p
-            residual = residual - alpha_cg*ap
+            residual(:) = residual - alpha_cg*ap
             ! Remove accumulated roundoff from both constrained spaces.
             charges = charges + (qtot - SUM(charges))/REAL(natom, KIND=dp)
             CALL project_eeq_charge_tangent(residual)
@@ -1217,7 +1217,7 @@ CONTAINS
                EXIT
             END IF
             beta_cg = rz_new/rz
-            p = z + beta_cg*p
+            p(:) = z + beta_cg*p
             rz = rz_new
          END DO
          IF (iter > max_iter) ierror = 1
@@ -1226,7 +1226,7 @@ CONTAINS
       IF (ierror == 0) THEN
          CALL apply_sparse_pbc_response(response, ewald_env, ewald_pw, cell, particle_set, &
                                         charges, aq, work)
-         gradient = aq + chia
+         gradient(:) = aq + chia
          lambda = -SUM(gradient)/REAL(natom, KIND=dp)
          eeq_energy = 0.5_dp*SUM(charges*aq) + SUM(charges*chia)
       END IF
@@ -1385,7 +1385,11 @@ CONTAINS
       IF (n_pairs_alloc > 0) CALL sort(pair_key, n_pairs_alloc, pair_order)
       n_unique = 0
       DO iatom = 1, n_pairs_alloc
-         IF (iatom == 1 .OR. pair_key(iatom) /= pair_key(iatom - 1)) n_unique = n_unique + 1
+         IF (iatom == 1) THEN
+            n_unique = n_unique + 1
+         ELSE IF (pair_key(iatom) /= pair_key(iatom - 1)) THEN
+            n_unique = n_unique + 1
+         END IF
       END DO
       ALLOCATE (response%row(n_unique), response%col(n_unique), response%value(n_unique))
       n_pairs = 0

@@ -66,15 +66,18 @@ CONTAINS
 
       CALL keyword_create(keyword, __LOCATION__, name="SPARSE", &
                           description="Use the matrix-free projected-CG solver for periodic EEQ. "// &
-                          "The short-range response is stored sparsely and the long-range response "// &
-                          "is applied with SPME.", &
+                          "The short-range response is stored sparsely and the translationally invariant "// &
+                          "long-range Coulomb response is applied by the FFT-based SPME operator. "// &
+                          "This path is shared by methods using CP2K EEQ charges, including GFN0-xTB "// &
+                          "and the internal DFT-D4 implementation.", &
                           usage="SPARSE", default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="SPARSE_THRESHOLD", &
                           description="Automatically use the sparse periodic EEQ solver at or above "// &
-                          "this number of atoms. A non-positive value disables automatic selection.", &
+                          "this number of atoms for every method using CP2K EEQ charges. A non-positive "// &
+                          "value disables automatic selection.", &
                           usage="SPARSE_THRESHOLD 256", default_i_val=256)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
