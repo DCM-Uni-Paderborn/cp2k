@@ -64,6 +64,7 @@ MODULE qs_kind_types
         gapw_1c_orb, gapw_1c_small, gapw_1c_very_large, plus_u_lowdin, plus_u_tensorial
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
+                                              section_vals_get_subs_vals2,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: default_path_length,&
@@ -110,6 +111,10 @@ MODULE qs_kind_types
                                               se_param_set_default
    USE soft_basis_set,                  ONLY: create_soft_basis
    USE string_utilities,                ONLY: uppercase
+   USE xc_input_constants,              ONLY: skala_gapw_cp2k_default,&
+                                              skala_gapw_direct_valence,&
+                                              skala_gapw_paw_one_center,&
+                                              skala_gapw_paw_one_center_split
    USE xtb_parameters,                  ONLY: xtb_set_kab
    USE xtb_types,                       ONLY: deallocate_xtb_atom_param,&
                                               get_xtb_atom_param,&
@@ -1456,6 +1461,47 @@ CONTAINS
    END SUBROUTINE init_qs_kind_set
 
 ! **************************************************************************************************
+!> \brief Resolve the active model's pseudopotential GAPW representation.
+!> \param force_env_section ...
+!> \return CP2K default when no GauXC model replaces the XC functional
+! **************************************************************************************************
+   FUNCTION skala_gapw_representation_from_input(force_env_section) RESULT(representation)
+      TYPE(section_vals_type), POINTER                   :: force_env_section
+      INTEGER                                            :: representation
+
+      CHARACTER(LEN=default_path_length)                 :: model_key, model_name
+      CHARACTER(LEN=default_string_length)               :: functional_key, functional_name
+      INTEGER                                            :: ifun
+      TYPE(section_vals_type), POINTER                   :: functional, functionals
+
+      representation = skala_gapw_cp2k_default
+      functionals => section_vals_get_subs_vals(force_env_section, "DFT%XC%XC_FUNCTIONAL")
+      IF (.NOT. ASSOCIATED(functionals)) RETURN
+
+      ifun = 0
+      DO
+         ifun = ifun + 1
+         functional => section_vals_get_subs_vals2(functionals, i_section=ifun)
+         IF (.NOT. ASSOCIATED(functional)) EXIT
+         IF (functional%section%name /= "GAUXC") CYCLE
+
+         CALL section_vals_val_get(functional, "MODEL", c_val=model_name)
+         CALL section_vals_val_get(functional, "FUNCTIONAL", c_val=functional_name)
+         model_key = ADJUSTL(model_name)
+         functional_key = ADJUSTL(functional_name)
+         CALL uppercase(model_key)
+         CALL uppercase(functional_key)
+         IF (TRIM(model_key) /= "" .AND. TRIM(model_key) /= "NONE" .AND. &
+             TRIM(model_key) /= TRIM(functional_key)) THEN
+            CALL section_vals_val_get(functional, "PSEUDOPOTENTIAL_GAPW_REPRESENTATION", &
+                                      i_val=representation)
+         END IF
+         RETURN
+      END DO
+
+   END FUNCTION skala_gapw_representation_from_input
+
+! **************************************************************************************************
 !> \brief ...
 !> \param qs_kind_set ...
 !> \param qs_control ...
@@ -1470,17 +1516,23 @@ CONTAINS
       LOGICAL, OPTIONAL                                  :: modify_qs_control
 
       CHARACTER(LEN=default_string_length)               :: bsname
-      INTEGER                                            :: bas1c, ikind, ilevel, nkind
-      LOGICAL                                            :: gpw, my_mod_control, paw_atom
+      INTEGER                                            :: bas1c, ikind, ilevel, nkind, &
+                                                            representation
+      LOGICAL                                            :: effective_force_paw, effective_gpw, gpw, &
+                                                            has_pseudopotential, my_mod_control, &
+                                                            paw_atom
       REAL(dp)                                           :: max_rad_local_type, rc
+      TYPE(gth_potential_type), POINTER                  :: gth_potential
       TYPE(gto_basis_set_type), POINTER                  :: basis_1c, orb_basis, soft_basis
       TYPE(paw_proj_set_type), POINTER                   :: paw_proj
       TYPE(qs_kind_type), POINTER                        :: qs_kind
+      TYPE(sgp_potential_type), POINTER                  :: sgp_potential
 
       my_mod_control = .TRUE.
       IF (PRESENT(modify_qs_control)) THEN
          my_mod_control = modify_qs_control
       END IF
+      representation = skala_gapw_representation_from_input(force_env_section)
 
       IF (ASSOCIATED(qs_kind_set)) THEN
 
@@ -1492,8 +1544,34 @@ CONTAINS
             qs_kind => qs_kind_set(ikind)
 
             CALL get_qs_kind(qs_kind=qs_kind, basis_set=orb_basis)
+            NULLIFY (gth_potential, sgp_potential)
             CALL get_qs_kind(qs_kind=qs_kind, hard_radius=rc, &
-                             max_rad_local=max_rad_local_type, gpw_type_forced=gpw)
+                             max_rad_local=max_rad_local_type, gpw_type_forced=gpw, &
+                             gth_potential=gth_potential, sgp_potential=sgp_potential)
+
+            has_pseudopotential = ASSOCIATED(gth_potential) .OR. ASSOCIATED(sgp_potential)
+            effective_gpw = gpw
+            effective_force_paw = qs_control%gapw_control%force_paw .OR. &
+                                  ASSOCIATED(qs_kind%cneo_potential)
+            IF (has_pseudopotential) THEN
+               SELECT CASE (representation)
+               CASE (skala_gapw_direct_valence)
+                  effective_gpw = .TRUE.
+                  effective_force_paw = .FALSE.
+               CASE (skala_gapw_paw_one_center, skala_gapw_paw_one_center_split)
+                  effective_gpw = .FALSE.
+                  effective_force_paw = .TRUE.
+               CASE (skala_gapw_cp2k_default)
+                  CONTINUE
+               CASE DEFAULT
+                  CPABORT("Unknown GAUXC PSEUDOPOTENTIAL_GAPW_REPRESENTATION value")
+               END SELECT
+               IF (ASSOCIATED(qs_kind%cneo_potential)) THEN
+                  effective_gpw = .FALSE.
+                  effective_force_paw = .TRUE.
+               END IF
+               qs_kind%gpw_type_forced = effective_gpw
+            END IF
 
             NULLIFY (soft_basis)
             CALL allocate_gto_basis_set(soft_basis)
@@ -1502,8 +1580,7 @@ CONTAINS
             ! because the local Hartree potential is needed.
             CALL create_soft_basis(orb_basis, soft_basis, &
                                    qs_control%gapw_control%eps_fit, rc, paw_atom, &
-                                   (qs_control%gapw_control%force_paw .OR. &
-                                    ASSOCIATED(qs_kind%cneo_potential)), gpw)
+                                   effective_force_paw, effective_gpw)
             CALL add_basis_set_to_container(qs_kind%basis_sets, soft_basis, "ORB_SOFT")
             CALL set_qs_kind(qs_kind=qs_kind, paw_atom=paw_atom)
 
@@ -1687,6 +1764,32 @@ CONTAINS
    END SUBROUTINE init_cneo_basis_set
 
 ! **************************************************************************************************
+!> \brief Select the DFT potential-file list or a per-kind override.
+!> \param potential_file_names ...
+!> \param dft_potential_file_names ...
+!> \param kind_potential_file_name ...
+! **************************************************************************************************
+   SUBROUTINE set_potential_file_names(potential_file_names, dft_potential_file_names, &
+                                       kind_potential_file_name)
+
+      CHARACTER(LEN=default_path_length), DIMENSION(:), &
+         INTENT(INOUT), POINTER                          :: potential_file_names
+      CHARACTER(LEN=default_path_length), DIMENSION(:), &
+         INTENT(IN)                                      :: dft_potential_file_names
+      CHARACTER(LEN=*), INTENT(IN)                       :: kind_potential_file_name
+
+      IF (ASSOCIATED(potential_file_names)) DEALLOCATE (potential_file_names)
+      IF (kind_potential_file_name == "-") THEN
+         ALLOCATE (potential_file_names(SIZE(dft_potential_file_names)))
+         potential_file_names(:) = dft_potential_file_names(:)
+      ELSE
+         ALLOCATE (potential_file_names(1))
+         potential_file_names(1) = kind_potential_file_name
+      END IF
+
+   END SUBROUTINE set_potential_file_names
+
+! **************************************************************************************************
 !> \brief Read an atomic kind data set from the input file.
 !> \param qs_kind ...
 !> \param kind_section ...
@@ -1715,8 +1818,10 @@ CONTAINS
       INTEGER, PARAMETER                                 :: maxbas = 20
 
       CHARACTER(LEN=2)                                   :: element_symbol
-      CHARACTER(len=default_path_length)                 :: kg_potential_fn_kind, &
-                                                            potential_file_name, potential_fn_kind
+      CHARACTER(len=default_path_length)                 :: kg_potential_fn_kind, potential_fn_kind
+      CHARACTER(LEN=default_path_length), DIMENSION(:), &
+         POINTER                                         :: dft_potential_file_names, &
+                                                            potential_file_names
       CHARACTER(LEN=default_string_length)               :: akind_name, basis_type, keyword, &
                                                             kgpot_name, kgpot_type, &
                                                             potential_name, potential_type, tmp
@@ -1726,9 +1831,9 @@ CONTAINS
       CHARACTER(LEN=default_string_length), &
          DIMENSION(maxbas)                               :: basis_set_form, basis_set_name, &
                                                             basis_set_type
-      INTEGER :: handle, i, i_rep, iounit, ipaodesc, ipaopot, ipos, j, jj, k_rep, l, m, n_rep, &
-         nb_rep, nexp, ngauss, nlcc, nloc, nnl, norbitals, npaodesc, npaopot, nppnl, nspin, nu, &
-         plus_u_method_id, z
+      INTEGER :: handle, i, i_rep, iounit, ipaodesc, ipaopot, ipos, j, jj, k_rep, l, m, &
+         n_potential_files, n_rep, nb_rep, nexp, ngauss, nlcc, nloc, nnl, norbitals, npaodesc, &
+         npaopot, nppnl, nspin, nu, plus_u_method_id, z
       INTEGER, DIMENSION(:), POINTER                     :: add_el, elec_conf, orbitals
       LOGICAL :: check, ecp_semi_local, explicit, explicit_basis, explicit_J, explicit_kgpot, &
          explicit_potential, explicit_U, explicit_u_m_j, l_explicit, n_explicit, nobasis, &
@@ -1759,7 +1864,7 @@ CONTAINS
       logger => cp_get_default_logger()
       iounit = cp_logger_get_default_io_unit(logger)
 
-      NULLIFY (elec_conf)
+      NULLIFY (dft_potential_file_names, elec_conf, potential_file_names)
 
       update_input = .TRUE.
       basis_set_name(:) = ""
@@ -1769,6 +1874,8 @@ CONTAINS
       potential_type = ""
       kgpot_name = ""
       kgpot_type = ""
+      kg_potential_fn_kind = "-"
+      potential_fn_kind = "-"
       z = -1
       zeff_correction = 0.0_dp
       explicit = .FALSE.
@@ -1780,6 +1887,13 @@ CONTAINS
       explicit_u_m_j = .FALSE.
 
       dft_section => section_vals_get_subs_vals(force_env_section, "DFT")
+      CALL section_vals_val_get(dft_section, "POTENTIAL_FILE_NAME", n_rep_val=n_potential_files)
+      CPASSERT(n_potential_files > 0)
+      ALLOCATE (dft_potential_file_names(n_potential_files))
+      DO i = 1, n_potential_files
+         CALL section_vals_val_get(dft_section, "POTENTIAL_FILE_NAME", i_rep_val=i, &
+                                   c_val=dft_potential_file_names(i))
+      END DO
       CALL section_vals_get(kind_section, n_repetition=n_rep)
       k_rep = -1
       akind_name = qs_kind%name
@@ -2390,6 +2504,8 @@ CONTAINS
          CALL section_vals_get(kgpot_section, explicit=explicit_kgpot)
       END IF
 
+      CALL set_potential_file_names(potential_file_names, dft_potential_file_names, potential_fn_kind)
+
       SELECT CASE (method_id)
       CASE (do_method_rm1, do_method_am1, do_method_mndo, do_method_pdg, do_method_pm3, do_method_pm6, &
             do_method_pm6fm, do_method_mndod, do_method_pnnl)
@@ -2533,15 +2649,10 @@ CONTAINS
                              " <"//TRIM(potential_type)//"> was specified "// &
                              "for the atomic kind <"//TRIM(qs_kind%name))
             CASE ("GTH")
-               IF (potential_fn_kind == "-") THEN
-                  CALL section_vals_val_get(dft_section, "POTENTIAL_FILE_NAME", c_val=potential_file_name)
-               ELSE
-                  potential_file_name = potential_fn_kind
-               END IF
                CALL allocate_potential(qs_kind%gth_potential)
                CALL read_potential(qs_kind%element_symbol, potential_name, &
                                    qs_kind%gth_potential, zeff_correction, para_env, &
-                                   potential_file_name, potential_section, update_input, &
+                                   potential_file_names, potential_section, update_input, &
                                    monovalent=qs_kind%monovalent)
                CALL set_potential(qs_kind%gth_potential, z=z)
                CALL get_qs_kind(qs_kind, elec_conf=elec_conf)
@@ -2657,19 +2768,12 @@ CONTAINS
          ELSE
             ! Allocate and initialise the potential data set structure
             IF ((potential_name /= '') .OR. explicit_potential) THEN
-               ! determine the pseudopotential file to search
-               IF (potential_fn_kind == "-") THEN
-                  CALL section_vals_val_get(dft_section, "POTENTIAL_FILE_NAME", c_val=potential_file_name)
-               ELSE
-                  potential_file_name = potential_fn_kind
-               END IF
-               !
                SELECT CASE (TRIM(potential_type))
                CASE ("ALL")
                   CALL allocate_potential(qs_kind%all_potential)
                   CALL read_potential(qs_kind%element_symbol, potential_name, &
                                       qs_kind%all_potential, zeff_correction, para_env, &
-                                      potential_file_name, potential_section, update_input)
+                                      potential_file_names, potential_section, update_input)
                   CALL set_potential(qs_kind%all_potential, z=z)
                   CALL get_qs_kind(qs_kind, elec_conf=elec_conf)
                   IF (.NOT. ASSOCIATED(elec_conf)) THEN
@@ -2682,7 +2786,7 @@ CONTAINS
                   CALL allocate_potential(qs_kind%gth_potential)
                   CALL read_potential(qs_kind%element_symbol, potential_name, &
                                       qs_kind%gth_potential, zeff_correction, para_env, &
-                                      potential_file_name, potential_section, update_input, &
+                                      potential_file_names, potential_section, update_input, &
                                       monovalent=qs_kind%monovalent)
                   CALL set_potential(qs_kind%gth_potential, z=z)
                   CALL get_qs_kind(qs_kind, elec_conf=elec_conf)
@@ -2696,7 +2800,7 @@ CONTAINS
                   CALL allocate_potential(qs_kind%sgp_potential)
                   CALL get_potential(qs_kind%sgp_potential, description=description)
                   CALL read_ecp_potential(ptable(z)%symbol, ecppot, &
-                                          potential_name, potential_file_name, potential_section)
+                                          potential_name, potential_file_names, potential_section)
                   IF (ecp_semi_local) THEN
                      description(1) = "Semi-local Gaussian pseudopotential                     "
                      description(2) = "ECP "//TRIM(potential_name)
@@ -2900,16 +3004,12 @@ CONTAINS
 
                SELECT CASE (TRIM(kgpot_type))
                CASE ("TNADD")
-                  ! determine the pseudopotential file to search
-                  IF (kg_potential_fn_kind == "-") THEN
-                     CALL section_vals_val_get(dft_section, "POTENTIAL_FILE_NAME", c_val=potential_file_name)
-                  ELSE
-                     potential_file_name = kg_potential_fn_kind
-                  END IF
+                  CALL set_potential_file_names(potential_file_names, dft_potential_file_names, &
+                                                kg_potential_fn_kind)
                   CALL allocate_potential(qs_kind%tnadd_potential)
                   CALL read_potential(qs_kind%element_symbol, kgpot_name, &
                                       qs_kind%tnadd_potential, para_env, &
-                                      potential_file_name, kgpot_section, update_input)
+                                      potential_file_names, kgpot_section, update_input)
                CASE ("NONE")
                   NULLIFY (qs_kind%tnadd_potential)
                CASE DEFAULT
@@ -2945,6 +3045,7 @@ CONTAINS
          END IF
       END SELECT
 
+      DEALLOCATE (dft_potential_file_names, potential_file_names)
       CALL timestop(handle)
 
    END SUBROUTINE read_qs_kind

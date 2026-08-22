@@ -1015,7 +1015,8 @@ CONTAINS
                           usage="ALGORITHM STANDARD", &
                           default_i_val=diag_standard, &
                           enum_c_vals=s2a("STANDARD", "OT", "LANCZOS", "DAVIDSON", "FILTER_MATRIX"), &
-                          enum_desc=s2a("Standard diagonalization: LAPACK methods or Jacobi.", &
+                          enum_desc=s2a("AO-basis Kohn-Sham diagonalization using LAPACK-compatible methods"// &
+                                        " or a late-SCF Jacobi sweep.", &
                                         "Iterative diagonalization using OT method", &
                                         "Block Krylov-space approach to self-consistent diagonalisation", &
                                         "Preconditioned blocked Davidson", &
@@ -1521,7 +1522,9 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="FRAGMENT_A_FILE_NAME", variants=["FRAGMENT_A_FILE"], &
                           description="Name of the reference total electron density cube file for fragment A."// &
                           " May include a path. The reference electron density needs to be outputted"// &
-                          " on the same grid as the full system (same cutoff and cell, output stride 1).", &
+                          " on the same grid as the full system (same cutoff and cell, output stride 1)."// &
+                          " For GAPW, generate the cube with E_DENSITY_CUBE% DENSITY_INCLUDE TOTAL_DENSITY;"// &
+                          " a regular GAPW electron-density cube contains only the soft density and is rejected.", &
                           usage="FRAGMENT_A_FILE_NAME <FILENAME>", &
                           default_lc_val="fragment_a.cube")
       CALL section_add_keyword(section, keyword)
@@ -1530,7 +1533,9 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="FRAGMENT_B_FILE_NAME", variants=["FRAGMENT_B_FILE"], &
                           description="Name of the reference total electron density cube file for fragment B."// &
                           " May include a path. The reference electron density needs to be outputted"// &
-                          " on the same grid as the full system (same cutoff and cell, output stride 1).", &
+                          " on the same grid as the full system (same cutoff and cell, output stride 1)."// &
+                          " For GAPW, generate the cube with E_DENSITY_CUBE% DENSITY_INCLUDE TOTAL_DENSITY;"// &
+                          " a regular GAPW electron-density cube contains only the soft density and is rejected.", &
                           usage="FRAGMENT_B_FILE_NAME <FILENAME>", &
                           default_lc_val="fragment_b.cube")
       CALL section_add_keyword(section, keyword)
@@ -1540,7 +1545,9 @@ CONTAINS
                           variants=["FRAGMENT_A_SPIN_FILE_NAME"], &
                           description="Name of the reference spin density cube file for fragment A."// &
                           " May include a path. The reference spin density needs to be outputted"// &
-                          " on the same grid as the full system (same cutoff and cell, output stride 1).", &
+                          " on the same grid as the full system (same cutoff and cell, output stride 1)."// &
+                          " For GAPW, use the TOTAL_SPIN_DENSITY cube generated together with"// &
+                          " E_DENSITY_CUBE% DENSITY_INCLUDE TOTAL_DENSITY.", &
                           usage="FRAGMENT_A_SPIN_FILE <FILENAME>", &
                           default_lc_val="fragment_a_spin.cube")
       CALL section_add_keyword(section, keyword)
@@ -1550,7 +1557,9 @@ CONTAINS
                           variants=["FRAGMENT_B_SPIN_FILE_NAME"], &
                           description="Name of the reference spin density cube file for fragment B."// &
                           " May include a path. The reference spin density needs to be outputted"// &
-                          " on the same grid as the full system (same cutoff and cell, output stride 1).", &
+                          " on the same grid as the full system (same cutoff and cell, output stride 1)."// &
+                          " For GAPW, use the TOTAL_SPIN_DENSITY cube generated together with"// &
+                          " E_DENSITY_CUBE% DENSITY_INCLUDE TOTAL_DENSITY.", &
                           usage="FRAGMENT_B_SPIN_FILE <FILENAME>", &
                           default_lc_val="fragment_b_spin.cube")
       CALL section_add_keyword(section, keyword)

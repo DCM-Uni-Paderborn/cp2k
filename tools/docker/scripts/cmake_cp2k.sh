@@ -160,7 +160,6 @@ elif [[ "${PROFILE}" == "toolchain_cuda_"* ]] && [[ "${VERSION}" == "psmp" ]]; t
     -DCP2K_USE_LIBSMEAGOL=OFF \
     -DCP2K_USE_LIBTORCH=OFF \
     -DCP2K_USE_GREENX=OFF \
-    -DCP2K_USE_SPGLIB=OFF \
     -DCP2K_USE_VORI=OFF \
     -DCP2K_USE_TREXIO=OFF \
     -DCP2K_USE_MIMIC=OFF \
@@ -192,10 +191,7 @@ elif [[ "${PROFILE}" == "toolchain_generic" ]] && [[ "${VERSION}" == "psmp" ]]; 
     -DCP2K_USE_EVERYTHING=ON \
     -DCP2K_USE_DLAF=OFF \
     -DCP2K_USE_PEXSI=OFF \
-    -DCP2K_USE_DEEPMD=OFF \
-    -DCP2K_USE_LIBTORCH=OFF \
     -DCP2K_USE_OPENPMD=OFF \
-    -DCP2K_USE_GAUXC=OFF \
     -Werror=dev \
     .. |& tee ./cmake.log
   CMAKE_EXIT_CODE=$?

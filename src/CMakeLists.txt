@@ -199,6 +199,7 @@ list(
   fist_nonbond_force.F
   fist_pol_scf.F
   floquet_main.F
+  floquet_types.F
   floquet_utils.F
   force_env_methods.F
   force_env_types.F
@@ -433,10 +434,12 @@ list(
   negf_subgroup_types.F
   negf_vectors.F
   nnp_acsf.F
+  nnp_cell_list.F
   nnp_environment.F
   nnp_environment_types.F
   nnp_force.F
   nnp_model.F
+  nnp_neighbor_interface.F
   local_gemm_api.F
   offload/offload_api.F
   optbas_fenv_manipulation.F
@@ -533,6 +536,7 @@ list(
   qs_basis_gradient.F
   qs_basis_rotation_methods.F
   qs_block_davidson_types.F
+  qs_cdft_grid.F
   qs_cdft_methods.F
   qs_cdft_opt_types.F
   qs_cdft_scf_utils.F
@@ -608,6 +612,7 @@ list(
   qs_force.F
   qs_force_types.F
   qs_fxc.F
+  qs_fgxc.F
   qs_gamma2kp.F
   qs_gapw_densities.F
   qs_gcp_method.F
@@ -617,6 +622,7 @@ list(
   qs_gspace_mixing.F
   qs_harris_types.F
   qs_harris_utils.F
+  qs_harris_methods.F
   qs_harmonics_atom.F
   qs_hash_table_functions.F
   qs_initial_guess.F
@@ -884,6 +890,7 @@ list(
   xas_tdp_types.F
   xas_tdp_utils.F
   xas_tp_scf.F
+  gapw_gspace_reconstruction.F
   xray_diffraction.F
   xtb_qresp.F
   xtb_coulomb.F
@@ -1540,6 +1547,8 @@ set(CP2K_PROGS_F
     common/gemm_square_unittest.F
     common/memory_utilities_unittest.F
     common/parallel_rng_types_unittest.F
+    qs_charge_mixing_unittest.F
+    subsys/cell_types_unittest.F
     pw/realspace_grid_cube_unittest.F
     kpoint_lattice_fft_unittest.F
     ot_preconditioner_models_unittest.F
@@ -1549,6 +1558,12 @@ set(CP2K_PROGS_F
     nequip_unittest.F
     gx_ac_unittest.F
     qs_ot_frechet_unittest.F)
+
+if(CP2K_USE_MPI)
+  list(APPEND CP2K_PROGS_F mpiwrap/message_passing_thread_unittest.F)
+else()
+  list(APPEND CP2K_EXCLUDED_SRCS_F mpiwrap/message_passing_thread_unittest.F)
+endif()
 
 if(CP2K_USE_CUDA
    OR CP2K_USE_HIP
@@ -1785,7 +1800,7 @@ target_link_libraries(
     $<$<BOOL:${CP2K_USE_ACE}>:pace::pace>
     $<$<BOOL:${CP2K_USE_TBLITE}>:cp2k::tblite>
     $<$<BOOL:${CP2K_USE_TBLITE}>:s-dftd3::s-dftd3>
-    $<$<BOOL:${CP2K_USE_SIRIUS}>:sirius::sirius>
+    $<$<BOOL:${CP2K_USE_SIRIUS}>:cp2k::sirius>
     $<$<BOOL:${CP2K_USE_VORI}>:cp2k::VORI::vori>
     $<$<BOOL:${CP2K_USE_SPGLIB}>:Spglib::symspg>
     $<$<BOOL:${CP2K_USE_LIBSMEAGOL}>:cp2k::libsmeagol::smeagol>
@@ -1856,14 +1871,15 @@ target_compile_definitions(
     # Developer-only manual flag: __TBLITE_DEBUG_DIAGNOSTICS
     $<$<BOOL:${CP2K_USE_TBLITE}>:__DFTD4>
     $<$<BOOL:${CP2K_USE_DFTD4}>:__DFTD4>
-    $<$<BOOL:${CP2K_USE_DFTD4_V3}>:__DFTD4_V3>
-    $<$<BOOL:${CP2K_USE_DFTD4_V4_2}>:__DFTD4_V4_2>
     $<$<BOOL:${CP2K_USE_DEEPMD}>:__DEEPMD>
     $<$<BOOL:${CP2K_USE_PEXSI}>:__PEXSI>
     $<$<BOOL:${CP2K_USE_ACE}>:__ACE>
     $<$<BOOL:${CP2K_USE_SIRIUS}>:__SIRIUS>
     $<$<BOOL:${CP2K_USE_LIBVDWXC}>:__LIBVDWXC>
     $<$<BOOL:${CP2K_USE_GAUXC}>:__GAUXC>
+    # GauXC's CMake package exports CUTLASS even when its Fortran config does
+    # not.
+    $<$<AND:$<BOOL:${CP2K_USE_GAUXC}>,$<BOOL:${GAUXC_HAS_CUTLASS}>>:GAUXC_HAS_CUTLASS>
     # GauXC feature flags GAUXC_HAS_MPI, GAUXC_HAS_ONEDFT, GAUXC_HAS_HOST,
     # GAUXC_HAS_DEVICE, GAUXC_HAS_CUDA, and GAUXC_HAS_HDF5 are provided by
     # gauxc/gauxc_config.f in the Fortran sources.
@@ -1881,6 +1897,7 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_USE_LIBGINT}>:__LIBGINT>
     $<$<BOOL:${CP2K_USE_LIBFCI}>:__LIBFCI>
     $<$<BOOL:${CP2K_USE_LIBTORCH}>:__LIBTORCH>
+    $<$<BOOL:${CP2K_USE_LIBTORCH_CUDA}>:__LIBTORCH_CUDA>
     $<$<BOOL:${CP2K_USE_COSMA}>:__COSMA>
     $<$<BOOL:${CP2K_USE_LIBXS}>:__LIBXS>
     $<$<BOOL:${CP2K_USE_LIBXS}>:__BLAS>
@@ -1895,6 +1912,7 @@ target_compile_definitions(
     $<$<STREQUAL:"${CP2K_BLAS_VENDOR}","Apple">:__ACCELERATE>
     $<$<BOOL:${CP2K_USE_CUSOLVER_MP}>:__CUSOLVERMP>
     $<$<BOOL:${CP2K_CUSOLVERMP_USE_NCCL}>:__CUSOLVERMP_NCCL>
+    $<$<AND:$<STREQUAL:"${CP2K_BLAS_VENDOR}","OpenBLAS">,$<STREQUAL:"${CP2K_BLAS_INTERFACE}","32bits">>:__OPENBLAS>
     $<$<BOOL:${CP2K_USE_CRAY_PM_ENERGY}>:__CRAY_PM_ENERGY>
     $<$<BOOL:${CP2K_USE_CRAY_PM_ACCEL_ENERGY}>:__CRAY_PM_ACCEL_ENERGY>
     ${CP2K_GPU_DFLAGS})
@@ -1940,6 +1958,8 @@ list(
   "gemm_square_unittest"
   "memory_utilities_unittest"
   "parallel_rng_types_unittest"
+  "qs_charge_mixing_unittest"
+  "cell_types_unittest"
   "realspace_grid_cube_unittest"
   "kpoint_lattice_fft_unittest"
   "ot_preconditioner_models_unittest"
@@ -1953,6 +1973,10 @@ list(
   "gx_ac_unittest"
   "qs_ot_frechet_unittest")
 
+if(CP2K_USE_MPI)
+  list(APPEND __CP2K_APPS "message_passing_thread_unittest")
+endif()
+
 add_executable(cp2k-bin start/cp2k.F)
 # for linking
 
@@ -1961,6 +1985,8 @@ add_executable(orbital_transformation_matrices_unittest
 add_executable(gemm_square_unittest common/gemm_square_unittest.F)
 add_executable(memory_utilities_unittest common/memory_utilities_unittest.F)
 add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
+add_executable(qs_charge_mixing_unittest qs_charge_mixing_unittest.F)
+add_executable(cell_types_unittest subsys/cell_types_unittest.F)
 add_executable(realspace_grid_cube_unittest pw/realspace_grid_cube_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
 add_executable(ot_preconditioner_models_unittest
@@ -1974,6 +2000,10 @@ add_executable(dbt_unittest dbt/dbt_unittest.F)
 add_executable(dbt_tas_unittest dbt/tas/dbt_tas_unittest.F)
 add_executable(gx_ac_unittest gx_ac_unittest.F)
 add_executable(qs_ot_frechet_unittest qs_ot_frechet_unittest.F)
+if(CP2K_USE_MPI)
+  add_executable(message_passing_thread_unittest
+                 mpiwrap/message_passing_thread_unittest.F)
+endif()
 
 set_target_properties(
   cp2k-bin

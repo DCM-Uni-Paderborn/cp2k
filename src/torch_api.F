@@ -78,17 +78,19 @@ MODULE torch_api
              torch_tensor_narrow, torch_tensor_release
    PUBLIC :: torch_tensor_reset_from_array
    PUBLIC :: torch_tensor_data_ptr, torch_tensor_backward, torch_tensor_backward_scalar
-   PUBLIC :: torch_tensor_grad
+   PUBLIC :: torch_tensor_grad, torch_tensor_grad_batch3
    PUBLIC :: torch_tensor_to_device_leaf
    PUBLIC :: torch_tensor_item_double, torch_tensor_weighted_sum
    PUBLIC :: torch_dict_type, torch_dict_clone, torch_dict_create, torch_dict_insert
    PUBLIC :: torch_dict_get, torch_dict_release
    PUBLIC :: torch_model_type, torch_model_load, torch_model_load_with_metadata, &
              torch_model_forward, torch_model_release
-   PUBLIC :: torch_model_forward_mol_tensor, torch_model_remap_device_constants
+   PUBLIC :: torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
+             torch_model_remap_device_constants
    PUBLIC :: torch_model_get_attr, torch_model_read_metadata
    PUBLIC :: torch_cuda_device_count, torch_cuda_is_available
-   PUBLIC :: torch_allow_tf32, torch_model_freeze, torch_use_cuda
+   PUBLIC :: torch_allow_tf32, torch_model_freeze, torch_model_freeze_preserving_method, &
+             torch_use_cuda
 
 CONTAINS
 
@@ -462,6 +464,46 @@ CONTAINS
    END SUBROUTINE torch_tensor_grad
 
 ! **************************************************************************************************
+!> \brief Copies three autograd gradients to CPU memory.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_grad_batch3(tensor1, tensor2, tensor3, grad1, grad2, grad3)
+      TYPE(torch_tensor_type), INTENT(IN)                :: tensor1, tensor2, tensor3
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: grad1, grad2, grad3
+
+#if defined(__LIBTORCH)
+      INTERFACE
+         SUBROUTINE torch_c_tensor_grad_batch3(tensor1, tensor2, tensor3, grad1, grad2, grad3) &
+            BIND(C, name="torch_c_tensor_grad_batch3")
+            IMPORT :: C_PTR
+            TYPE(C_PTR), VALUE                           :: tensor1, tensor2, tensor3
+            TYPE(C_PTR)                                  :: grad1, grad2, grad3
+         END SUBROUTINE torch_c_tensor_grad_batch3
+      END INTERFACE
+
+      CPASSERT(C_ASSOCIATED(tensor1%c_ptr))
+      CPASSERT(C_ASSOCIATED(tensor2%c_ptr))
+      CPASSERT(C_ASSOCIATED(tensor3%c_ptr))
+      CPASSERT(.NOT. C_ASSOCIATED(grad1%c_ptr))
+      CPASSERT(.NOT. C_ASSOCIATED(grad2%c_ptr))
+      CPASSERT(.NOT. C_ASSOCIATED(grad3%c_ptr))
+      CALL torch_c_tensor_grad_batch3(tensor1=tensor1%c_ptr, tensor2=tensor2%c_ptr, &
+                                      tensor3=tensor3%c_ptr, grad1=grad1%c_ptr, &
+                                      grad2=grad2%c_ptr, grad3=grad3%c_ptr)
+      CPASSERT(C_ASSOCIATED(grad1%c_ptr))
+      CPASSERT(C_ASSOCIATED(grad2%c_ptr))
+      CPASSERT(C_ASSOCIATED(grad3%c_ptr))
+#else
+      CPABORT("CP2K compiled without the Torch library.")
+      MARK_USED(tensor1)
+      MARK_USED(tensor2)
+      MARK_USED(tensor3)
+      MARK_USED(grad1)
+      MARK_USED(grad2)
+      MARK_USED(grad3)
+#endif
+   END SUBROUTINE torch_tensor_grad_batch3
+
+! **************************************************************************************************
 !> \brief Returns the weighted sum of two Torch tensors.
 ! **************************************************************************************************
    SUBROUTINE torch_tensor_weighted_sum(values, weights, result)
@@ -791,6 +833,29 @@ CONTAINS
    END SUBROUTINE torch_model_remap_device_constants
 
 ! **************************************************************************************************
+!> \brief Disable gradients for inference-only model parameters.
+! **************************************************************************************************
+   SUBROUTINE torch_model_disable_parameter_gradients(model)
+      TYPE(torch_model_type), INTENT(INOUT)              :: model
+
+#if defined(__LIBTORCH)
+      INTERFACE
+         SUBROUTINE torch_c_model_disable_parameter_gradients(model) &
+            BIND(C, name="torch_c_model_disable_parameter_gradients")
+            IMPORT :: C_PTR
+            TYPE(C_PTR), VALUE                           :: model
+         END SUBROUTINE torch_c_model_disable_parameter_gradients
+      END INTERFACE
+
+      CPASSERT(C_ASSOCIATED(model%c_ptr))
+      CALL torch_c_model_disable_parameter_gradients(model=model%c_ptr)
+#else
+      CPABORT("CP2K was compiled without Torch library.")
+      MARK_USED(model)
+#endif
+   END SUBROUTINE torch_model_disable_parameter_gradients
+
+! **************************************************************************************************
 !> \brief Evaluates the given Torch model.
 !> \author Ole Schuett
 ! **************************************************************************************************
@@ -1074,6 +1139,41 @@ CONTAINS
       MARK_USED(model)
 #endif
    END SUBROUTINE torch_model_freeze
+
+! **************************************************************************************************
+!> \brief Freeze a Torch model while preserving one exported method.
+!> \param model ...
+!> \param method_name ...
+! **************************************************************************************************
+   SUBROUTINE torch_model_freeze_preserving_method(model, method_name)
+      TYPE(torch_model_type), INTENT(INOUT)              :: model
+      CHARACTER(len=*), INTENT(IN)                       :: method_name
+
+#if defined(__LIBTORCH)
+      CHARACTER(len=*), PARAMETER                        :: routineN = &
+                                                            'torch_model_freeze_preserving_method'
+      INTEGER                                            :: handle
+
+      INTERFACE
+         SUBROUTINE torch_c_model_freeze_preserving_method(model, method_name) &
+            BIND(C, name="torch_c_model_freeze_preserving_method")
+            IMPORT :: C_CHAR, C_PTR
+            TYPE(C_PTR), VALUE                        :: model
+            CHARACTER(kind=C_CHAR), DIMENSION(*)      :: method_name
+         END SUBROUTINE torch_c_model_freeze_preserving_method
+      END INTERFACE
+
+      CALL timeset(routineN, handle)
+      CPASSERT(C_ASSOCIATED(model%c_ptr))
+      CALL torch_c_model_freeze_preserving_method( &
+         model=model%c_ptr, method_name=TRIM(method_name)//C_NULL_CHAR)
+      CALL timestop(handle)
+#else
+      CPABORT("CP2K was compiled without Torch library.")
+      MARK_USED(method_name)
+      MARK_USED(model)
+#endif
+   END SUBROUTINE torch_model_freeze_preserving_method
 
    #:set typenames = ['int64', 'double', 'string']
    #:set types_f = ['INTEGER(kind=int_8)', 'REAL(dp)', 'CHARACTER(LEN=default_string_length)']
