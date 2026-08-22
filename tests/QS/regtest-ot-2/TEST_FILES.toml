@@ -53,6 +53,17 @@
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
+"H2_ot_fermi_defaults.inp"              = [{matcher="E_total", tol=1.0E-10, ref=-1.11423883234233},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-1.11423883234233},
+                                           {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
+                                           {matcher="OT_SMEARING_DEFAULT_ROTATION"},
+                                           {matcher="OT_SMEARING_DEFAULT_ENERGIES"},
+                                           {matcher="OT_SMEARING_DEFAULT_OCCUPATION_PRECONDITIONER"},
+                                           {matcher="OT_SMEARING_DEFAULT_PRECONDITIONER"},
+                                           {matcher="NO_TEXT", text="Smearing includes the first MO"},
+                                           {matcher="NO_TEXT", text="Smearing includes the last MO"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_fermi.inp"                          = [{matcher="E_total", tol=5e-14, ref=-8.17296838715160}]
 # go through planned FFTs, but don't check results, they will depend on the selected plan
 "H2O-plan-2.inp"                        = []

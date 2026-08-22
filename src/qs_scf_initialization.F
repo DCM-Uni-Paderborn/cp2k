@@ -781,8 +781,9 @@ CONTAINS
       LOGICAL                                            :: has_unit_metric
 
       INTEGER                                            :: ispin, nao, nmo
-      LOGICAL :: do_kpoints, need_coeff_b, not_se_or_tb, ot_energies, ot_energies_default, &
-         ot_energies_explicit, ot_rotation, ot_rotation_default, ot_rotation_explicit
+      LOGICAL :: added_mos_requested, do_kpoints, need_coeff_b, not_se_or_tb, ot_energies, &
+         ot_energies_default, ot_energies_explicit, ot_rotation, ot_rotation_default, &
+         ot_rotation_explicit
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -911,26 +912,20 @@ CONTAINS
                                    explicit=ot_energies_explicit)
          CALL section_vals_val_get(scf_section, "OT%ROTATION", l_val=ot_rotation, &
                                    explicit=ot_rotation_explicit)
-         IF (do_kpoints .AND. scf_control%smear%do_smear) THEN
+         IF (scf_control%smear%do_smear) THEN
             CALL ot_metallic_variable_defaults( &
                ot_rotation, ot_energies, ot_rotation_explicit, ot_energies_explicit, &
                ot_rotation_default, ot_energies_default)
          END IF
          IF (scf_control%smear%do_smear) THEN
-            IF (.NOT. ot_energies) THEN
-               CPABORT("OT with smearing requires OT%ENERGIES.")
-            END IF
-            IF (.NOT. ot_rotation) THEN
-               CPABORT("OT with smearing requires OT%ROTATION.")
+            IF (.NOT. (ot_energies .AND. ot_rotation)) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "OT with smearing requires the coupled OT%ROTATION and OT%ENERGIES "// &
+                             "variables. Remove an explicit OFF setting or enable both keywords.")
             END IF
             IF (scf_control%smear%method /= smear_fermi_dirac .AND. &
                 scf_control%smear%method /= smear_gaussian) THEN
                CPABORT("OT smearing supports only FERMI_DIRAC or GAUSSIAN.")
-            END IF
-            IF (.NOT. do_kpoints .AND. not_se_or_tb) THEN
-               CALL cp_abort(__LOCATION__, &
-                             "Quickstep DFT OT with smearing requires an explicit KPOINTS section. "// &
-                             "Use a 1 1 1 mesh for a Gamma-only calculation.")
             END IF
             IF (.NOT. do_kpoints .AND. ANY(cell%perd == 1)) THEN
                CALL cp_abort(__LOCATION__, &
@@ -941,8 +936,18 @@ CONTAINS
                CPABORT("Gaussian smearing with OT currently requires KPOINTS.")
             END IF
          END IF
-         IF (SUM(ABS(scf_control%added_mos)) > 0 .AND. .NOT. ot_energies) THEN
-            CPABORT("OT with ADDED_MOS requires OT%ENERGIES.")
+         added_mos_requested = SUM(ABS(scf_control%added_mos)) > 0 .OR. &
+                               ANY(scf_control%added_mos_auto)
+         IF (added_mos_requested .AND. .NOT. scf_control%smear%do_smear) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "OT with ADDED_MOS requires SCF%SMEAR. Without smearing, the extra "// &
+                          "zero-occupation orbitals are not variationally determined; use "// &
+                          "DIAGONALIZATION when canonical virtual orbitals are required.")
+         END IF
+         IF (ot_energies .AND. .NOT. scf_control%smear%do_smear) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "OT%ENERGIES requires active SCF%SMEAR. At zero temperature the "// &
+                          "auxiliary energies have no differentiable occupation objective.")
          END IF
          IF (dft_control%restricted .AND. dft_control%nspins /= 2) THEN
             CPABORT("nspin must be 2 for restricted (ROKS)")

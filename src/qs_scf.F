@@ -2694,13 +2694,17 @@ CONTAINS
          scf_env%qs_ot_env(:)%restricted = .FALSE.
       END IF
 
-      ! This will rotate the MOs to be eigen states, which is not compatible with rotation.
-      ! e.g. mo_derivs here do not yet include potentially different occupation numbers.
+      ! The historical real FULL_ALL construction canonicalizes C0 before building
+      ! the state-selective metric.  That changes the gauge represented by explicit
+      ! rotation variables, and mo_derivs do not carry the occupation-weighted
+      ! co-rotation.  The k-point builder preserves C0 and does not have this limit.
       do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
-      ! Only full all needs rotation.
       is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all
       IF (do_rotation .AND. is_full_all .AND. .NOT. do_kpoints) THEN
-         CPABORT('PRECONDITIONER FULL_ALL is not compatible with ROTATION.')
+         CALL cp_abort(__LOCATION__, &
+                       "The real Gamma-point FULL_ALL builder is not gauge-compatible with OT%ROTATION. "// &
+                       "Use FULL_SINGLE_INVERSE or FULL_KINETIC, or select an explicit 1x1x1 KPOINTS "// &
+                       "mesh for the gauge-preserving builder.")
       END IF
 
       DO ikpoint = 1, nkpoint

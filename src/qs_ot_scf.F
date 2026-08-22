@@ -104,10 +104,10 @@ CONTAINS
 
       CALL ot_readwrite_input(qs_ot_env(1)%settings, ot_section, output_unit, &
                               kpoint_default_irac=do_kpoints, &
-                              smearing_default_metallic_variables=do_kpoints .AND. do_smear, &
-                              smearing_default_occupation_preconditioner=do_kpoints .AND. do_smear, &
-                              smearing_default_preconditioner=do_kpoints .AND. do_smear, &
-                              smearing_default_full_all=nspin_ot == 2)
+                              smearing_default_metallic_variables=do_smear, &
+                              smearing_default_occupation_preconditioner=do_smear, &
+                              smearing_default_preconditioner=do_smear, &
+                              smearing_default_full_all=do_kpoints .AND. nspin_ot == 2)
 
       CALL cp_print_key_finished_output(output_unit, logger, scf_section, &
                                         "PRINT%PROGRAM_RUN_INFO")

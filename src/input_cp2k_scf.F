@@ -239,7 +239,8 @@ CONTAINS
                           description="Number of additional molecular orbitals added for each spin channel. "// &
                           "This is commonly needed for smearing, excited-state, or post-Hartree-Fock calculations. "// &
                           "Use -1 to add all available orbitals. Use AUTO to let CP2K choose an experimental "// &
-                          "automatic buffer for smearing.", &
+                          "automatic buffer for smearing. OT with smearing also selects this automatic buffer "// &
+                          "when ADDED_MOS is omitted. OT does not produce canonical virtual orbitals without smearing.", &
                           usage="ADDED_MOS {integer|AUTO}", default_c_val="0", n_var=-1)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -814,9 +815,8 @@ CONTAINS
          description="Type of preconditioner to be used with all minimization schemes. "// &
          "They differ in effectiveness, cost of construction, cost of application. "// &
          "Properly preconditioned minimization can be orders of magnitude faster than doing nothing. "// &
-         "For K-point OT with smearing, an omitted keyword selects FULL_SINGLE_INVERSE for restricted "// &
-         "calculations and FULL_ALL for unrestricted calculations; other OT calculations retain the "// &
-         "FULL_KINETIC default.", &
+         "For OT with smearing, an omitted keyword selects FULL_SINGLE_INVERSE. Unrestricted K-point "// &
+         "smearing selects FULL_ALL instead; other OT calculations retain the FULL_KINETIC default.", &
          usage="PRECONDITIONER FULL_ALL", &
          default_i_val=ot_precond_full_kinetic, &
          enum_c_vals=s2a("FULL_ALL", "FULL_SINGLE_INVERSE", "FULL_SINGLE", "FULL_KINETIC", "FULL_S_INVERSE", &
@@ -906,7 +906,8 @@ CONTAINS
                           description="Introduce additional variables so that rotations of the occupied"// &
                           " subspace are allowed as well, only needed for cases where the energy is not invariant under"// &
                           " a rotation of the occupied subspace such as non-singlet restricted calculations"// &
-                          " or fractional occupations.", &
+                          " or fractional occupations. It is selected automatically together with ENERGIES when"// &
+                          " OT smearing is active and both keywords are omitted.", &
                           usage="ROTATION", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
@@ -914,7 +915,8 @@ CONTAINS
 
       CALL keyword_create(keyword, __LOCATION__, name="ENERGIES", &
                           description="Optimize orbital energies for finite-temperature occupations "// &
-                          "(requires ROTATION and a supported smearing method).", &
+                          "(requires ROTATION and a supported smearing method). It is selected automatically"// &
+                          " together with ROTATION when OT smearing is active and both keywords are omitted.", &
                           usage="ENERGIES", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
@@ -923,7 +925,7 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="OCCUPATION_PRECONDITIONER", &
                           description="Apply a diagonal fixed-electron-number Mermin curvature "// &
                           "preconditioner and remove the constant energy-shift null mode for OT energy "// &
-                          "variables. It is enabled automatically for K-point OT with smearing when "// &
+                          "variables. It is enabled automatically for OT with smearing when "// &
                           "this keyword is omitted.", &
                           usage="OCCUPATION_PRECONDITIONER", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)

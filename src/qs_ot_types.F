@@ -2988,10 +2988,11 @@ CONTAINS
 
       INTEGER                                            :: handle, ls_method, ot_algorithm, &
                                                             ot_method, ot_ortho_irac
-      LOGICAL :: algorithm_explicit, energies_explicit, occupation_preconditioner_explicit, &
-         preconditioner_explicit, rotation_explicit, selected_energies_default, &
-         selected_kpoint_default, selected_occupation_preconditioner_default, &
-         selected_preconditioner_default, selected_rotation_default
+      LOGICAL :: algorithm_explicit, energies_explicit, kpoint_smearing_context, &
+         occupation_preconditioner_explicit, preconditioner_explicit, rotation_explicit, &
+         selected_energies_default, selected_kpoint_default, &
+         selected_occupation_preconditioner_default, selected_preconditioner_default, &
+         selected_rotation_default
 
       CALL timeset(routineN, handle)
 
@@ -3001,6 +3002,8 @@ CONTAINS
       selected_energies_default = .FALSE.
       selected_occupation_preconditioner_default = .FALSE.
       selected_preconditioner_default = .FALSE.
+      kpoint_smearing_context = .FALSE.
+      IF (PRESENT(kpoint_default_irac)) kpoint_smearing_context = kpoint_default_irac
       CALL section_vals_val_get(ot_section, "ALGORITHM", i_val=ot_algorithm, explicit=algorithm_explicit)
       IF (PRESENT(kpoint_default_irac)) THEN
          IF (kpoint_default_irac .AND. .NOT. algorithm_explicit) THEN
@@ -3226,18 +3229,36 @@ CONTAINS
             WRITE (output_unit, '(A)') "  K-point OT default: ALGORITHM IRAC"
          END IF
          IF (selected_rotation_default) THEN
-            WRITE (output_unit, '(A)') "  K-point OT smearing default: ROTATION ON"
+            IF (kpoint_smearing_context) THEN
+               WRITE (output_unit, '(A)') "  K-point OT smearing default: ROTATION ON"
+            ELSE
+               WRITE (output_unit, '(A)') "  OT smearing default: ROTATION ON"
+            END IF
          END IF
          IF (selected_energies_default) THEN
-            WRITE (output_unit, '(A)') "  K-point OT smearing default: ENERGIES ON"
+            IF (kpoint_smearing_context) THEN
+               WRITE (output_unit, '(A)') "  K-point OT smearing default: ENERGIES ON"
+            ELSE
+               WRITE (output_unit, '(A)') "  OT smearing default: ENERGIES ON"
+            END IF
          END IF
          IF (selected_occupation_preconditioner_default) THEN
-            WRITE (output_unit, '(A)') &
-               "  K-point OT smearing default: OCCUPATION_PRECONDITIONER ON"
+            IF (kpoint_smearing_context) THEN
+               WRITE (output_unit, '(A)') &
+                  "  K-point OT smearing default: OCCUPATION_PRECONDITIONER ON"
+            ELSE
+               WRITE (output_unit, '(A)') &
+                  "  OT smearing default: OCCUPATION_PRECONDITIONER ON"
+            END IF
          END IF
          IF (selected_preconditioner_default) THEN
-            WRITE (output_unit, '(A)') &
-               "  K-point OT smearing default: PRECONDITIONER "//TRIM(settings%preconditioner_name)
+            IF (kpoint_smearing_context) THEN
+               WRITE (output_unit, '(A)') &
+                  "  K-point OT smearing default: PRECONDITIONER "//TRIM(settings%preconditioner_name)
+            ELSE
+               WRITE (output_unit, '(A)') &
+                  "  OT smearing default: PRECONDITIONER "//TRIM(settings%preconditioner_name)
+            END IF
          END IF
          IF (settings%do_rotation) THEN
             WRITE (output_unit, '(A)') "  Allowing for rotations "
