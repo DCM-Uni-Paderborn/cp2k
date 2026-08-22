@@ -2,7 +2,7 @@
 ! k-point. This input is intentionally not listed in TEST_FILES.toml while
 ! the common Gamma/k-point driver path is being validated.
 ! Local 2026-08 MPI-2/OMP-2 reference: ADDED_MOS AUTO grows 4->8->16 and
-! converges in about 350 steps at F = -8.14303707698 Ha. The complete physical
+! converges in roughly 280-350 steps at F = -8.14303707698 Ha. The complete physical
 ! fixed-N residual controls the last 28 steps after the raw search and density
 ! residuals are already below 1E-6. The smearing correction is about
 ! -1.07200936E-3 Ha and the physical Fermi energy about -5.38694E-2 Ha.

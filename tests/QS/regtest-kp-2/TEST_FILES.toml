@@ -104,7 +104,7 @@
 # within 4.6E-8 Ha. Gaussian prints the variational smearing free energy but
 # deliberately not the Fermi-Dirac-only Mermin label.
 # Al_kp_ot_gaussian_gamma_converge.inp is the explicit-Gamma companion. The
-# adaptive 16-MO space converges in about 350 MPI-2 steps; its complete physical
+# adaptive 16-MO space converges in roughly 280-350 MPI-2 steps; its complete physical
 # residual, rather than its already small search or density residual, controls
 # the final tail. Their matching unlisted Al_kp_diag_gaussian_* inputs are
 # independent diagonalization references.
