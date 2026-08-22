@@ -3,9 +3,9 @@
 ! suite remains inexpensive. It exercises four complex (spin,k-point)
 ! channels, a fixed magnetic moment, dense d-band Fermi support, symmetry
 ! weights, ADDED_MOS AUTO, and FULL_ALL occupation preconditioning.
-! Current MPI-2/OMP-2 reference at 1000 K: AUTO grows 4->8->16 and the
-! final space converges in 137 steps at F=-123.63311571914022 Ha,
-! -T*S=-0.00485891362130 Ha, and mu=0.40331788648348 Ha. The higher
+! Current MPI-2/OMP-2 references at 1000 K: AUTO grows 4->8->16 and the
+! final space converges in roughly 130-140 steps near F=-123.63311572 Ha,
+! -T*S=-0.0048589 Ha, and mu=0.403318 Ha. The higher
 ! temperature keeps the deliberately sparse 3x1x1 Fe mesh differentiable;
 ! 300 K is retained in the local research log as an unresolved stress case.
 &GLOBAL
@@ -62,9 +62,9 @@
   &END PROPERTIES
   &SUBSYS
     &CELL
-      A -1.435  1.435  1.435
-      B  1.435 -1.435  1.435
-      C  1.435  1.435 -1.435
+      A -1.435 1.435 1.435
+      B 1.435 -1.435 1.435
+      C 1.435 1.435 -1.435
     &END CELL
     &COORD
       Fe 0.000 0.000 0.000

@@ -2,8 +2,9 @@
 ! in TEST_FILES.toml so that the default regtest remains cheap. The isolated C
 ! atom has a threefold-degenerate p frontier: at 300 K the converged solution
 ! must retain fractional occupations instead of freezing an integer branch.
-! Local 2026-08 O3 reference: ADDED_MOS AUTO grows 4->8->11 and converges in
-! 245 OT steps to F = -5.342248855018 Ha with -T*S = -0.003628301102 Ha.
+! Local 2026-08 O3 references: ADDED_MOS AUTO grows 4->8->11 and converges in
+! roughly 245-250 OT steps to F = -5.342248855018 Ha with
+! -T*S = -0.003628301102 Ha.
 ! Independent diagonalization gives the same values within 4E-12 Ha and
 ! 2E-14 Ha, respectively. No first/last-band warning is printed.
 &GLOBAL

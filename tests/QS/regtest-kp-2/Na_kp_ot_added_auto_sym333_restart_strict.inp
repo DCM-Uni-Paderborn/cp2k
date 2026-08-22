@@ -1,8 +1,9 @@
 ! Strict manual residual-tail companion for
 ! Na_kp_ot_added_auto_sym333_converge.inp. Run the source input first in the
-! same directory. Local MPI-2/OMP-2 reference: 121 OT steps at EPS_SCF 1E-8,
-! with F = -9.01953179953748 Ha and no band-edge warning. This input is
-! intentionally not listed in TEST_FILES.toml.
+! same directory. At EPS_SCF 1E-8 the printed residual can fall below the
+! target and then rebound when the coupled physical-residual audit starts a
+! new search. Consequently this bounded 240-step input is an intentionally
+! unlisted diagnostic, not a claimed converged regression.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Na_kp_ot_added_auto_sym333_restart_strict

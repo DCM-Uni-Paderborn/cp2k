@@ -87,16 +87,17 @@
 # channels in one step.
 # Al_kp_ot_uks_common_mu_sym3_converge.inp is the complementary shared-mu
 # four-channel anchor and exercises the automatic unrestricted metallic
-# defaults. FULL_ALL converges in 225 MPI-2/OMP-2 steps to
-# -8.16155092823292 Ha, within 1.9E-8 Ha of diagonalization, and reproduces
+# defaults. FULL_ALL converges in roughly 165-225 MPI-2/OMP-2 steps near
+# -8.1615509284 Ha, within 2E-8 Ha of diagonalization, and reproduces
 # the unconstrained spin populations 6.33333/5.66667.
 # Al_kp_ot_uks_common_mu_sym3_restart.inp also restores the four-channel state
 # in one step.
 # The unlisted Na_kp_ot_added_auto_sym333_converge.inp is the stricter atomic
-# 3x3x3 fixed-N companion. It grows AUTO 4->8->16 and converges in 315 steps
-# at -9.01953180115599 Ha. Na_kp_ot_added_auto_sym333_restart.inp restores
-# the converged state in one step within 6E-12 Ha; its strict 1E-8 companion
-# reaches -9.01953181739052 Ha in 104 steps.
+# 3x3x3 fixed-N companion. It grows AUTO 4->8->16 and converges in roughly
+# 285-385 steps near -9.0195318012 Ha. Its ordinary restart restores the
+# converged state in one step. The strict 1E-8 companion remains an unlisted,
+# bounded residual-tail diagnostic because some trajectories revisit the
+# coupled physical-residual plateau after first crossing the printed target.
 # The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
 # provide the converged symmetry-reduced Gaussian path at
 # -8.15946107404605 Ha; the restart closes in one step and diagonalization is
@@ -109,7 +110,7 @@
 # independent diagonalization references.
 # Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp is the unlisted four-channel
 # transition-metal Pulay companion. It grows AUTO 4->8->16 and converges in
-# 172 steps at -123.63311571661103 Ha, within 5E-9 Ha of the CG endpoint.
+# roughly 150-180 steps near -123.63311572 Ha, within 5E-9 Ha of the CG endpoint.
 # Keep these physics checks manual so the registered restart/AUTO coverage
 # remains inexpensive.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-8.12746952989461},

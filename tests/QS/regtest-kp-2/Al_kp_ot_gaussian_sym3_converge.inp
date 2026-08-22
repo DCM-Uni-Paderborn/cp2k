@@ -2,8 +2,8 @@
 ! metallic k-point OT. This input is intentionally not listed in
 ! TEST_FILES.toml so the default regression remains inexpensive.
 ! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference: ADDED_MOS AUTO grows
-! 4->8->16, the final stage converges in 65 OT steps, and reaches
-! -8.15946107404605 Ha. The variational smearing free-energy correction is
+! 4->8->16, the final stage converges in roughly 55-65 OT steps, and reaches
+! about -8.1594610740 Ha. The variational smearing free-energy correction is
 ! -3.5733645376E-4 Ha and the Fermi energy is -4.0103008598E-2 Ha. The
 ! corresponding diagonalization reference differs by 4.6E-8 Ha. Gaussian
 ! smearing is variational but not a physical Mermin entropy, so this path
