@@ -209,7 +209,8 @@ CONTAINS
                              "Invalid ADDED_MOS value '"//TRIM(added_mos_values(1))// &
                              "'. Use an integer for ALMO smearing.")
             END IF
-            tot_isize = last_atom_of_frag(nfrags) - first_atom_of_frag(1) + 1 !! Get total number of atoms (assume consecutive atoms)
+            !! Get total number of atoms (assume consecutive atoms)
+            tot_isize = last_atom_of_frag(nfrags) - first_atom_of_frag(1) + 1
             !! Check that number of added MOs matches the number of atoms
             !! (to ensure compatibility, since each fragment will be computed with such parameters)
             IF (tot_isize /= tot_added_mos) THEN

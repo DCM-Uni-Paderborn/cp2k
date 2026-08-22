@@ -560,9 +560,9 @@ CONTAINS
       nmo = SIZE(e, 1)
       nkp = SIZE(e, 2)
       epsocc = default_epsocc
-      IF (PRESENT(electron_tolerance)) then
-        epsocc = MAX(64.0_dp*EPSILON(1.0_dp), electron_tolerance)
-      end if
+      IF (PRESENT(electron_tolerance)) THEN
+         epsocc = MAX(64.0_dp*EPSILON(1.0_dp), electron_tolerance)
+      END IF
 
       CALL cite_smearing(method)
 
@@ -710,9 +710,9 @@ CONTAINS
       nmo = SIZE(e, 1)
       nkp = SIZE(e, 2)
       epsocc = default_epsocc
-      IF (PRESENT(electron_tolerance)) then
-        epsocc = MAX(64.0_dp*EPSILON(1.0_dp), electron_tolerance)
-      end if
+      IF (PRESENT(electron_tolerance)) THEN
+         epsocc = MAX(64.0_dp*EPSILON(1.0_dp), electron_tolerance)
+      END IF
 
       CALL cite_smearing(method)
 

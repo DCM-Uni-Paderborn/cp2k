@@ -103,9 +103,9 @@ CONTAINS
 
       nkp_local = 0
       DO ikp = 1, nkp
-         IF (MODULO(ikp, bs_env%para_env%num_pe) == bs_env%para_env%mepos) then
-           nkp_local = nkp_local + 1
-         end if
+         IF (MODULO(ikp, bs_env%para_env%num_pe) == bs_env%para_env%mepos) THEN
+            nkp_local = nkp_local + 1
+         END IF
       END DO
       IF (nkp_local == 0) RETURN
 
