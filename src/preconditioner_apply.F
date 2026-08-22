@@ -14,9 +14,9 @@
 ! **************************************************************************************************
 MODULE preconditioner_apply
    USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_add, dbcsr_copy, dbcsr_get_info, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
-        dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, &
-        dbcsr_release, dbcsr_set, dbcsr_type
+        dbcsr_add, dbcsr_copy, dbcsr_get_info, dbcsr_iterator_blocks_left, &
+        dbcsr_iterator_next_block, dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, &
+        dbcsr_multiply, dbcsr_release, dbcsr_set, dbcsr_type
    USE cp_fm_basic_linalg,              ONLY: cp_fm_scale,&
                                               cp_fm_scale_and_add
    USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_restore
@@ -26,9 +26,10 @@ MODULE preconditioner_apply
                                               cp_fm_to_fm,&
                                               cp_fm_type
    USE input_constants,                 ONLY: &
-        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, ot_precond_full_single, &
-        ot_precond_full_single_inverse, ot_precond_s_inverse, ot_precond_solver_chebyshev, &
-        ot_precond_solver_direct, ot_precond_solver_inv_chol, ot_precond_solver_update
+        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, &
+        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_s_inverse, &
+        ot_precond_solver_chebyshev, ot_precond_solver_direct, ot_precond_solver_inv_chol, &
+        ot_precond_solver_update
    USE kinds,                           ONLY: dp
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE preconditioner_types,            ONLY: preconditioner_type
