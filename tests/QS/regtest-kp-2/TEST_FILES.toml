@@ -44,6 +44,10 @@
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_diis_complex.inp"             = [{matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
+"Al_kp_ot_fermi_low_rank.inp"           = [{matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="NO_TEXT", text="CPASSERT failed"},
+                                           {matcher="NO_TEXT", text="Preconditioner matrix is not positive definite"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_uks_defaults.inp"             = [{matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="OT_KPOINT_DEFAULT_IRAC"},
                                            {matcher="OT_KPOINT_DEFAULT_ROTATION"},

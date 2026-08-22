@@ -36,7 +36,8 @@ MODULE preconditioner_solvers
                                               cp_fm_release,&
                                               cp_fm_set_all,&
                                               cp_fm_type
-   USE input_constants,                 ONLY: ot_precond_solver_default,&
+   USE input_constants,                 ONLY: ot_precond_solver_chebyshev,&
+                                              ot_precond_solver_default,&
                                               ot_precond_solver_direct,&
                                               ot_precond_solver_inv_chol,&
                                               ot_precond_solver_update
@@ -105,6 +106,27 @@ CONTAINS
          ELSE
             preconditioner_env%solver = ot_precond_solver_update
             CALL make_inverse_update(preconditioner_env, matrix_h)
+         END IF
+      CASE (ot_precond_solver_chebyshev)
+         preconditioner_env%solver = ot_precond_solver_chebyshev
+         CPASSERT(ASSOCIATED(preconditioner_env%sparse_matrix))
+         CALL estimate_cond_num(preconditioner_env%sparse_matrix, preconditioner_env%condition_num, &
+                                max_eigenvalue=preconditioner_env%polynomial_max, &
+                                min_eigenvalue=preconditioner_env%polynomial_min)
+         ! Extremal Ritz values can converge from inside the exact spectrum.
+         ! Enlarge the interval so that the Chebyshev recurrence remains bounded.
+         preconditioner_env%polynomial_min = 0.5_dp*preconditioner_env%polynomial_min
+         preconditioner_env%polynomial_max = 1.2_dp*preconditioner_env%polynomial_max
+         IF (preconditioner_env%polynomial_min <= SQRT(EPSILON(1.0_dp)) .OR. &
+             preconditioner_env%polynomial_max <= preconditioner_env%polynomial_min) THEN
+            CPWARN("Invalid Chebyshev bounds; using Cholesky inverse")
+            preconditioner_env%solver = ot_precond_solver_inv_chol
+            CALL make_full_inverse_cholesky(preconditioner_env, matrix_s)
+         ELSE
+            ! Keep the SPD operator itself; its output representation is selected
+            ! by make_preconditioner after this routine returns.
+            CALL transfer_dbcsr_to_fm(preconditioner_env%sparse_matrix, preconditioner_env%fm, &
+                                      preconditioner_env%para_env, preconditioner_env%ctxt)
          END IF
       CASE (ot_precond_solver_default)
          preconditioner_env%solver = ot_precond_solver_default
@@ -259,10 +281,13 @@ CONTAINS
 !>        arnoldi iterations
 !> \param matrix ...
 !> \param cond_num ...
+!> \param max_eigenvalue ...
+!> \param min_eigenvalue ...
 ! **************************************************************************************************
-   SUBROUTINE estimate_cond_num(matrix, cond_num)
+   SUBROUTINE estimate_cond_num(matrix, cond_num, max_eigenvalue, min_eigenvalue)
       TYPE(dbcsr_type), POINTER                          :: matrix
       REAL(KIND=dp)                                      :: cond_num
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: max_eigenvalue, min_eigenvalue
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'estimate_cond_num'
 
@@ -290,6 +315,8 @@ CONTAINS
       CALL deallocate_arnoldi_env(arnoldi_env)
 
       cond_num = max_ev/min_ev
+      IF (PRESENT(max_eigenvalue)) max_eigenvalue = max_ev
+      IF (PRESENT(min_eigenvalue)) min_eigenvalue = min_ev
       DEALLOCATE (matrices)
 
       CALL timestop(handle)

@@ -30,14 +30,10 @@ MODULE preconditioner
                                               cp_fm_release,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
-   USE input_constants,                 ONLY: cholesky_reduce,&
-                                              ot_precond_full_all,&
-                                              ot_precond_full_kinetic,&
-                                              ot_precond_full_single,&
-                                              ot_precond_full_single_inverse,&
-                                              ot_precond_none,&
-                                              ot_precond_s_inverse,&
-                                              ot_precond_solver_update
+   USE input_constants,                 ONLY: &
+        cholesky_reduce, ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, &
+        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
+        ot_precond_s_inverse, ot_precond_solver_update
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE message_passing,                 ONLY: mp_para_env_type
@@ -158,7 +154,7 @@ CONTAINS
       needs_homo = .FALSE.
 
       SELECT CASE (precon_type)
-      CASE (ot_precond_full_all)
+      CASE (ot_precond_full_all, ot_precond_fermi_low_rank)
          needs_full_spectrum = .TRUE.
          ! both of them need the coefficients as fm's, more matrix mess
          IF (use_mo_coeff_b) THEN
@@ -208,6 +204,11 @@ CONTAINS
       ! This will give the matrices for later use
       my_solver_type = solver_type
       preconditioner_env%in_use = precon_type
+      IF (precon_type == ot_precond_fermi_low_rank) THEN
+         preconditioner_env%spectral_rank = MIN(48, MAX(0, nao - nhomo))
+         preconditioner_env%spectral_window = MAX(1.0_dp, 4.0_dp*energy_gap)
+         preconditioner_env%spectral_base_scale = 1.0_dp/preconditioner_env%spectral_window
+      END IF
       preconditioner_env%cholesky_use = cholesky_reduce
       IF (PRESENT(chol_type)) preconditioner_env%cholesky_use = chol_type
       preconditioner_env%in_use = precon_type
@@ -258,17 +259,19 @@ CONTAINS
 !> \param mo_set_re real part of the reference orbitals and their eigenvalues
 !> \param mo_set_im imaginary part of the reference orbitals
 !> \param energy_gap denominator floor
+!> \param precon_type ...
 ! **************************************************************************************************
    SUBROUTINE make_preconditioner_complex_full_all(preconditioner_env, &
                                                    matrix_h_re, matrix_h_im, &
                                                    matrix_s_re, matrix_s_im, &
-                                                   mo_set_re, mo_set_im, energy_gap)
+                                                   mo_set_re, mo_set_im, energy_gap, precon_type)
 
       TYPE(preconditioner_type)                          :: preconditioner_env
       TYPE(dbcsr_type), POINTER                          :: matrix_h_re, matrix_h_im, matrix_s_re, &
                                                             matrix_s_im
       TYPE(mo_set_type), INTENT(IN)                      :: mo_set_re, mo_set_im
       REAL(KIND=dp), INTENT(IN)                          :: energy_gap
+      INTEGER, INTENT(IN), OPTIONAL                      :: precon_type
 
       CHARACTER(len=*), PARAMETER :: routineN = 'make_preconditioner_complex_full_all'
 
@@ -315,7 +318,7 @@ CONTAINS
       CALL cp_fm_to_cfm(mo_coeff_re, mo_coeff_im, matrix_c)
 
       CALL make_complex_full_all(preconditioner_env, matrix_c, matrix_h, matrix_s, &
-                                 eigenvalues(1:nmo), energy_gap)
+                                 eigenvalues(1:nmo), energy_gap, precon_type)
 
       CALL cp_cfm_release(matrix_c)
       CALL cp_cfm_release(matrix_s)
@@ -351,7 +354,7 @@ CONTAINS
       CALL get_qs_env(qs_env, para_env=para_env, blacs_env=blacs_env)
 
       SELECT CASE (prec_type)
-      CASE (ot_precond_full_all, ot_precond_full_single_inverse)
+      CASE (ot_precond_full_all, ot_precond_fermi_low_rank, ot_precond_full_single_inverse)
          npreconditioners = nspins
       CASE DEFAULT
          npreconditioners = 1
@@ -370,7 +373,7 @@ CONTAINS
 
       IF (ASSOCIATED(preconditioner)) THEN
          SELECT CASE (prec_type)
-         CASE (ot_precond_full_all, ot_precond_full_single) ! these depend on the ks matrix
+         CASE (ot_precond_full_all, ot_precond_fermi_low_rank, ot_precond_full_single) ! these depend on the ks matrix
             DO ispin = 1, SIZE(preconditioner)
                CALL destroy_preconditioner(preconditioner(ispin)%preconditioner)
                DEALLOCATE (preconditioner(ispin)%preconditioner)
@@ -486,7 +489,7 @@ CONTAINS
       IF (prec_type == ot_precond_full_single_inverse) n_loops = nspins
       ! check whether we need the ev and rotate the MOs
       SELECT CASE (prec_type)
-      CASE (ot_precond_full_all)
+      CASE (ot_precond_full_all, ot_precond_fermi_low_rank)
          ! if one of these preconditioners is used every spin needs to call make_preconditioner
          n_loops = nspins
 

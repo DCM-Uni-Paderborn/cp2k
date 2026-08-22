@@ -92,10 +92,10 @@ MODULE qs_scf
    USE input_constants,                 ONLY: &
         broyden_type_1, broyden_type_1_explicit, broyden_type_1_explicit_ls, broyden_type_1_ls, &
         broyden_type_2, broyden_type_2_explicit, broyden_type_2_explicit_ls, broyden_type_2_ls, &
-        cdft2ot, history_guess, ot2cdft, ot_precond_full_all, ot_precond_full_single, &
-        ot_precond_full_single_inverse, ot_precond_none, ot_precond_s_inverse, &
-        outer_scf_becke_constraint, outer_scf_hirshfeld_constraint, outer_scf_optimizer_broyden, &
-        outer_scf_optimizer_newton_ls, tblite_scc_mixer_tblite
+        cdft2ot, history_guess, ot2cdft, ot_precond_fermi_low_rank, ot_precond_full_all, &
+        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
+        ot_precond_s_inverse, outer_scf_becke_constraint, outer_scf_hirshfeld_constraint, &
+        outer_scf_optimizer_broyden, outer_scf_optimizer_newton_ls, tblite_scc_mixer_tblite
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: default_path_length,&
@@ -2586,7 +2586,7 @@ CONTAINS
 
             SELECT CASE (scf_env%qs_ot_env(1)%settings%preconditioner_type)
             CASE (ot_precond_none)
-            CASE (ot_precond_full_all, ot_precond_full_single_inverse)
+            CASE (ot_precond_full_all, ot_precond_fermi_low_rank, ot_precond_full_single_inverse)
                DO ispin = 1, SIZE(scf_env%qs_ot_env)
                   CALL qs_ot_new_preconditioner(scf_env%qs_ot_env(ispin), &
                                                 scf_env%ot_preconditioner(ispin)%preconditioner)
@@ -2699,12 +2699,13 @@ CONTAINS
       ! rotation variables, and mo_derivs do not carry the occupation-weighted
       ! co-rotation.  The k-point builder preserves C0 and does not have this limit.
       do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
-      is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all
+      is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all .OR. &
+                    scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_fermi_low_rank
       IF (do_rotation .AND. is_full_all .AND. .NOT. do_kpoints) THEN
          CALL cp_abort(__LOCATION__, &
-                       "The real Gamma-point FULL_ALL builder is not gauge-compatible with OT%ROTATION. "// &
-                       "Use FULL_SINGLE_INVERSE or FULL_KINETIC, or select an explicit 1x1x1 KPOINTS "// &
-                       "mesh for the gauge-preserving builder.")
+                       "The real Gamma-point FULL_ALL/FERMI_LOW_RANK builder is not gauge-compatible "// &
+                       "with OT%ROTATION. Use FULL_SINGLE_INVERSE or FULL_KINETIC, or select an "// &
+                       "explicit 1x1x1 KPOINTS mesh for the gauge-preserving builder.")
       END IF
 
       DO ikpoint = 1, nkpoint
@@ -3080,7 +3081,7 @@ CONTAINS
          ! Complex k-point channels are promoted below to the exact Hermitian
          ! FULL_ALL construction.  Applying a real-part inverse separately to
          ! the real and imaginary gradients is not rank invariant.
-      CASE (ot_precond_full_all)
+      CASE (ot_precond_full_all, ot_precond_fermi_low_rank)
          ! Built directly from complex H(k), S(k), and C(k), without rotating
          ! the OT reference gauge.
       CASE DEFAULT
@@ -3151,12 +3152,13 @@ CONTAINS
                CALL copy_fm_to_dbcsr_bc(kp%ot_hmat(2, ispin), matrix_k_im)
             END IF
             IF ((prec_type == ot_precond_full_all .OR. &
+                 prec_type == ot_precond_fermi_low_rank .OR. &
                  prec_type == ot_precond_full_single_inverse) .AND. .NOT. use_real_wfn) THEN
                CALL make_preconditioner_complex_full_all( &
                   scf_env%ot_preconditioner(ot_channel)%preconditioner, &
                   matrix_k_re, matrix_k_im, matrix_s_re, matrix_s_im, &
                   kp%mos(1, ispin), kp%mos(2, ispin), &
-                  scf_env%qs_ot_env(1)%settings%energy_gap)
+                  scf_env%qs_ot_env(1)%settings%energy_gap, prec_type)
             ELSE
                CALL make_preconditioner(scf_env%ot_preconditioner(ot_channel)%preconditioner, &
                                         prec_type, &

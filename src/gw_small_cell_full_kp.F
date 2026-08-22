@@ -48,6 +48,8 @@ MODULE gw_small_cell_full_kp
                                               fm_add_kp_to_all_rs,&
                                               fm_rs_to_kp,&
                                               rs_to_kp
+   USE kpoint_lattice_fft,              ONLY: cell_to_k_grid_fft,&
+                                              regular_kpoint_grid
    USE machine,                         ONLY: m_walltime
    USE mathconstants,                   ONLY: z_one,&
                                               z_zero
@@ -63,10 +65,75 @@ MODULE gw_small_cell_full_kp
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'gw_small_cell_full_kp'
+   INTEGER(KIND=int_8), PARAMETER       :: max_lattice_fft_batch_bytes = 512_int_8*1024_int_8**2
 
    PUBLIC :: gw_calc_small_cell_full_kp
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Batch two real-space operators onto the MPI-local subset of a complete regular k grid.
+!>        A memory guard retains the direct streaming path for unusually large local batches.
+!> \param first_rs ...
+!> \param second_rs ...
+!> \param bs_env ...
+!> \param first_k ...
+!> \param second_k ...
+!> \param use_batch ...
+! **************************************************************************************************
+   SUBROUTINE batch_local_cell_to_k(first_rs, second_rs, bs_env, first_k, second_k, use_batch)
+
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: first_rs, second_rs
+      TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
+      COMPLEX(KIND=dp), ALLOCATABLE, &
+         DIMENSION(:, :, :), INTENT(OUT)                 :: first_k, second_k
+      LOGICAL, INTENT(OUT)                               :: use_batch
+
+      INTEGER                                            :: ikp, ikp_local, nkp, nkp_local
+      INTEGER(KIND=int_8)                                :: required_bytes
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: local_kpoints
+
+      use_batch = .FALSE.
+      nkp = bs_env%kpoints_scf_desymm%nkp
+      IF (.NOT. regular_kpoint_grid(bs_env%kpoints_scf_desymm%xkp, &
+                                    bs_env%kpoints_scf_desymm%nkp_grid)) RETURN
+      CPASSERT(SIZE(first_rs, 1) == SIZE(second_rs, 1))
+      CPASSERT(SIZE(first_rs, 2) == SIZE(second_rs, 2))
+      CPASSERT(SIZE(first_rs, 3) == SIZE(second_rs, 3))
+
+      nkp_local = 0
+      DO ikp = 1, nkp
+         IF (MODULO(ikp, bs_env%para_env%num_pe) == bs_env%para_env%mepos) then
+           nkp_local = nkp_local + 1
+         end if
+      END DO
+      IF (nkp_local == 0) RETURN
+
+      required_bytes = 2_int_8*16_int_8*INT(SIZE(first_rs, 1), int_8)* &
+                       INT(SIZE(first_rs, 2), int_8)*INT(nkp_local, int_8)
+      IF (required_bytes > max_lattice_fft_batch_bytes) RETURN
+
+      ALLOCATE (local_kpoints(nkp_local))
+      ikp_local = 0
+      DO ikp = 1, nkp
+         IF (MODULO(ikp, bs_env%para_env%num_pe) /= bs_env%para_env%mepos) CYCLE
+         ikp_local = ikp_local + 1
+         local_kpoints(ikp_local) = ikp
+      END DO
+      ALLOCATE (first_k(SIZE(first_rs, 1), SIZE(first_rs, 2), nkp_local))
+      ALLOCATE (second_k(SIZE(second_rs, 1), SIZE(second_rs, 2), nkp_local))
+      CALL cell_to_k_grid_fft(first_rs, bs_env%kpoints_scf_desymm%index_to_cell, &
+                              bs_env%kpoints_scf_desymm%xkp, &
+                              bs_env%kpoints_scf_desymm%nkp_grid, first_k, &
+                              selected_kpoints=local_kpoints)
+      CALL cell_to_k_grid_fft(second_rs, bs_env%kpoints_scf_desymm%index_to_cell, &
+                              bs_env%kpoints_scf_desymm%xkp, &
+                              bs_env%kpoints_scf_desymm%nkp_grid, second_k, &
+                              selected_kpoints=local_kpoints)
+      DEALLOCATE (local_kpoints)
+      use_batch = .TRUE.
+
+   END SUBROUTINE batch_local_cell_to_k
 
 ! **************************************************************************************************
 !> \brief Perform GW band structure calculation
@@ -805,7 +872,9 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'mult_W_with_Minv'
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: M_inv, W_k, work
-      INTEGER                                            :: handle, ikp, n_RI
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: M_k_grid, W_k_grid
+      INTEGER                                            :: handle, ikp, ikp_local, n_RI
+      LOGICAL                                            :: use_batch
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: M_R
 
       CALL timeset(routineN, handle)
@@ -816,24 +885,31 @@ CONTAINS
       n_RI = bs_env%n_RI
       ALLOCATE (M_inv(n_RI, n_RI), W_k(n_RI, n_RI), work(n_RI, n_RI))
       MWM_R(:, :, :) = 0.0_dp
+      CALL batch_local_cell_to_k(M_R, W_R, bs_env, M_k_grid, W_k_grid, use_batch)
 
+      ikp_local = 0
       DO ikp = 1, bs_env%nkp_scf_desymm
 
          ! trivial parallelization
          IF (MODULO(ikp, bs_env%para_env%num_pe) /= bs_env%para_env%mepos) CYCLE
+         ikp_local = ikp_local + 1
+         IF (use_batch) THEN
+            M_inv(:, :) = M_k_grid(:, :, ikp_local)
+            W_k(:, :) = W_k_grid(:, :, ikp_local)
+         ELSE
+            ! M(k) = sum_R e^ikR M^R
+            CALL rs_to_kp(M_R, M_inv, &
+                          bs_env%kpoints_scf_desymm%index_to_cell, &
+                          bs_env%kpoints_scf_desymm%xkp(1:3, ikp))
 
-         ! M(k) = sum_R e^ikR M^R
-         CALL rs_to_kp(M_R, M_inv, &
-                       bs_env%kpoints_scf_desymm%index_to_cell, &
-                       bs_env%kpoints_scf_desymm%xkp(1:3, ikp))
+            ! W(k) = sum_R e^ikR W^R [only R in the SCF-k-mesh supercell]
+            CALL rs_to_kp(W_R, W_k, &
+                          bs_env%kpoints_scf_desymm%index_to_cell, &
+                          bs_env%kpoints_scf_desymm%xkp(1:3, ikp))
+         END IF
 
          ! invert M_PQ(k)
          CALL power(M_inv, -1.0_dp, 0.0_dp)
-
-         ! W(k) = sum_R e^ikR W^R [only R in the supercell that is determined by the SCF k-mesh]
-         CALL rs_to_kp(W_R, W_k, &
-                       bs_env%kpoints_scf_desymm%index_to_cell, &
-                       bs_env%kpoints_scf_desymm%xkp(1:3, ikp))
 
          ! Ŵ(k) = M^-1(k)*W^trunc(k)*M^-1(k)
          CALL gemm_square(M_inv, 'N', W_k, 'N', M_inv, 'N', work)
@@ -846,6 +922,8 @@ CONTAINS
 
       CALL bs_env%para_env%sync()
       CALL bs_env%para_env%sum(MWM_R)
+      IF (ALLOCATED(M_k_grid)) DEALLOCATE (M_k_grid)
+      IF (ALLOCATED(W_k_grid)) DEALLOCATE (W_k_grid)
 
       CALL timestop(handle)
 
@@ -1035,8 +1113,10 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'get_Minv_Vtr_Minv_R'
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: M_kp, Mi_Vtr_Mi_kp, V_tr_kp
-      INTEGER                                            :: handle, i_cell_R, ikp, n_RI, &
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: M_k_grid, V_tr_k_grid
+      INTEGER                                            :: handle, i_cell_R, ikp, ikp_local, n_RI, &
                                                             nimages_scf, nkp_scf
+      LOGICAL                                            :: use_batch
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: M_R, Mi_Vtr_Mi_R_arr, V_tr_R
 
       CALL timeset(routineN, handle)
@@ -1051,16 +1131,24 @@ CONTAINS
       ALLOCATE (V_tr_kp(n_RI, n_RI), M_kp(n_RI, n_RI), &
                 Mi_Vtr_Mi_kp(n_RI, n_RI), Mi_Vtr_Mi_R_arr(n_RI, n_RI, nimages_scf))
       Mi_Vtr_Mi_R_arr(:, :, :) = 0.0_dp
+      CALL batch_local_cell_to_k(V_tr_R, M_R, bs_env, V_tr_k_grid, M_k_grid, use_batch)
 
+      ikp_local = 0
       DO ikp = 1, nkp_scf
          ! trivial parallelization
          IF (MODULO(ikp, bs_env%para_env%num_pe) /= bs_env%para_env%mepos) CYCLE
-         ! V_tr(k) = sum_R e^ikR V_tr^R
-         CALL rs_to_kp(V_tr_R, V_tr_kp, bs_env%kpoints_scf_desymm%index_to_cell, &
-                       bs_env%kpoints_scf_desymm%xkp(1:3, ikp))
-         ! M(k)    = sum_R e^ikR M^R
-         CALL rs_to_kp(M_R, M_kp, bs_env%kpoints_scf_desymm%index_to_cell, &
-                       bs_env%kpoints_scf_desymm%xkp(1:3, ikp))
+         ikp_local = ikp_local + 1
+         IF (use_batch) THEN
+            V_tr_kp(:, :) = V_tr_k_grid(:, :, ikp_local)
+            M_kp(:, :) = M_k_grid(:, :, ikp_local)
+         ELSE
+            ! V_tr(k) = sum_R e^ikR V_tr^R
+            CALL rs_to_kp(V_tr_R, V_tr_kp, bs_env%kpoints_scf_desymm%index_to_cell, &
+                          bs_env%kpoints_scf_desymm%xkp(1:3, ikp))
+            ! M(k)    = sum_R e^ikR M^R
+            CALL rs_to_kp(M_R, M_kp, bs_env%kpoints_scf_desymm%index_to_cell, &
+                          bs_env%kpoints_scf_desymm%xkp(1:3, ikp))
+         END IF
          ! M(k) -> M^-1(k)
          CALL power(M_kp, -1.0_dp, 0.0_dp)
          ! Ṽ(k) = M^-1(k) * V_tr(k) * M^-1(k)
@@ -1070,6 +1158,8 @@ CONTAINS
       END DO
       CALL bs_env%para_env%sync()
       CALL bs_env%para_env%sum(Mi_Vtr_Mi_R_arr)
+      IF (ALLOCATED(M_k_grid)) DEALLOCATE (M_k_grid)
+      IF (ALLOCATED(V_tr_k_grid)) DEALLOCATE (V_tr_k_grid)
 
       ! use bs_env%fm_chi_R_t for temporary storage
       CALL local_array_to_fm(Mi_Vtr_Mi_R_arr, bs_env%fm_chi_R_t(:, 1))

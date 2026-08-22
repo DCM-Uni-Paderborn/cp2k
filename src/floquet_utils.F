@@ -29,6 +29,8 @@ MODULE floquet_utils
                                               dp
    USE kpoint_k_r_trafo_simple,         ONLY: replicate_rs_matrices,&
                                               rs_to_kp
+   USE kpoint_lattice_fft,              ONLY: cell_to_k_grid_fft,&
+                                              regular_kpoint_grid
    USE kpoint_methods,                  ONLY: kpoint_init_cell_index
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_create,&
@@ -88,11 +90,15 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: C_dH_C, C_dS_C, C_k, dH_dk_i, dS_dk_i, &
                                                             H_k, S_k
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: S_k_grid
+      COMPLEX(KIND=dp), ALLOCATABLE, &
+         DIMENSION(:, :, :, :)                           :: H_k_grid
       INTEGER                                            :: handle, i_dir, ikp, ispin, n, n_img_all, &
                                                             n_spin, nao, nkp
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell_all
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index_all
-      LOGICAL                                            :: present_dedk, present_ek
+      LOGICAL                                            :: present_dedk, present_ek, spin_fft, &
+                                                            use_lattice_fft
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvals
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :, :)  :: H_rs, S_rs
       REAL(KIND=dp), DIMENSION(3, 3)                     :: hmat
@@ -139,13 +145,34 @@ CONTAINS
       CALL replicate_rs_matrices(matrix_s_kp, kpoints_scf, S_rs, cell_to_index_all)
       CALL replicate_rs_matrices(matrix_ks_kp, kpoints_scf, H_rs, cell_to_index_all)
 
+      ! A complete regular reciprocal grid can be transformed as a batch.  Arbitrary band paths
+      ! and symmetry-reduced point lists retain the direct per-k phase sum below.
+      use_lattice_fft = regular_kpoint_grid(xkp, kpoints_scf%nkp_grid)
+      IF (use_lattice_fft) THEN
+         ALLOCATE (S_k_grid(nao, nao, nkp))
+         CALL cell_to_k_grid_fft(S_rs(1, :, :, :), index_to_cell_all, xkp, &
+                                 kpoints_scf%nkp_grid, S_k_grid, use_lattice_fft)
+      END IF
+      IF (use_lattice_fft) THEN
+         ALLOCATE (H_k_grid(nao, nao, nkp, n_spin))
+         DO ispin = 1, n_spin
+            CALL cell_to_k_grid_fft(H_rs(ispin, :, :, :), index_to_cell_all, xkp, &
+                                    kpoints_scf%nkp_grid, H_k_grid(:, :, :, ispin), spin_fft)
+            use_lattice_fft = use_lattice_fft .AND. spin_fft
+         END DO
+      END IF
+      IF (.NOT. use_lattice_fft) THEN
+         IF (ALLOCATED(S_k_grid)) DEALLOCATE (S_k_grid)
+         IF (ALLOCATED(H_k_grid)) DEALLOCATE (H_k_grid)
+      END IF
+
       IF (present_dedk) ALLOCATE (de_dk(n_spin, nkp, 3, nao), source=0.0_dp)
       IF (present_ek) ALLOCATE (e_k(n_spin, nkp, nao), source=0.0_dp)
 
 !$OMP PARALLEL DEFAULT(NONE) &
 !$OMP PRIVATE(ikp, ispin, S_k, H_k, eigenvals, C_k, dS_dk_i, dH_dk_i, C_dS_C, C_dH_C) &
 !$OMP SHARED(nao, n_spin, de_dk, e_k, present_ek, present_dedk, &
-!$OMP nkp, xkp, S_rs, H_rs, index_to_cell_all, hmat)
+!$OMP nkp, xkp, S_rs, H_rs, index_to_cell_all, hmat, use_lattice_fft, S_k_grid, H_k_grid)
       IF (present_dedk) ALLOCATE (dS_dk_i(nao, nao), C_dS_C(nao, nao), &
                                   dH_dk_i(nao, nao), C_dH_C(nao, nao), source=z_zero)
       ALLOCATE (C_k(nao, nao), S_k(nao, nao), H_k(nao, nao), source=z_zero)
@@ -157,8 +184,13 @@ CONTAINS
             ! S^R -> S(k), H^R -> H(k)
             S_k = 0
             H_k = 0
-            CALL rs_to_kp(S_rs(1, :, :, :), S_k, index_to_cell_all, xkp(:, ikp))
-            CALL rs_to_kp(H_rs(ispin, :, :, :), H_k, index_to_cell_all, xkp(:, ikp))
+            IF (use_lattice_fft) THEN
+               S_k = S_k_grid(:, :, ikp)
+               H_k = H_k_grid(:, :, ikp, ispin)
+            ELSE
+               CALL rs_to_kp(S_rs(1, :, :, :), S_k, index_to_cell_all, xkp(:, ikp))
+               CALL rs_to_kp(H_rs(ispin, :, :, :), H_k, index_to_cell_all, xkp(:, ikp))
+            END IF
 
             ! Diagonalize H(k)C(k) = S(k)C(k)ε(k)
             CALL geeig_right(H_k, S_k, eigenvals, C_k)
@@ -186,6 +218,8 @@ CONTAINS
       DEALLOCATE (S_k, H_k, C_k, eigenvals)
 !$OMP END PARALLEL
       DEALLOCATE (S_rs, H_rs)
+      IF (ALLOCATED(S_k_grid)) DEALLOCATE (S_k_grid)
+      IF (ALLOCATED(H_k_grid)) DEALLOCATE (H_k_grid)
       CALL kpoint_release(kpoints_all)
 
       CALL timestop(handle)

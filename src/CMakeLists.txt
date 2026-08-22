@@ -327,6 +327,7 @@ list(
   kpoint_coulomb_2c.F
   kpoint_io.F
   kpoint_k_r_trafo_simple.F
+  kpoint_lattice_fft.F
   kpoint_methods.F
   kpoint_mo_dump.F
   kpoint_mo_symmetry_methods.F
@@ -446,6 +447,7 @@ list(
   optimize_dmfet_potential.F
   optimize_embedding_potential.F
   optimize_input.F
+  ot_preconditioner_models.F
   outer_scf_control_types.F
   paw_proj_set_types.F
   pair_potential_coulomb.F
@@ -1539,6 +1541,8 @@ set(CP2K_PROGS_F
     common/memory_utilities_unittest.F
     common/parallel_rng_types_unittest.F
     pw/realspace_grid_cube_unittest.F
+    kpoint_lattice_fft_unittest.F
+    ot_preconditioner_models_unittest.F
     metadyn_tools/graph.F
     motion/dumpdcd.F
     motion/xyz2dcd.F
@@ -1937,6 +1941,8 @@ list(
   "memory_utilities_unittest"
   "parallel_rng_types_unittest"
   "realspace_grid_cube_unittest"
+  "kpoint_lattice_fft_unittest"
+  "ot_preconditioner_models_unittest"
   "graph"
   "dumpdcd"
   "xyz2dcd"
@@ -1956,6 +1962,9 @@ add_executable(gemm_square_unittest common/gemm_square_unittest.F)
 add_executable(memory_utilities_unittest common/memory_utilities_unittest.F)
 add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
 add_executable(realspace_grid_cube_unittest pw/realspace_grid_cube_unittest.F)
+add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
+add_executable(ot_preconditioner_models_unittest
+               ot_preconditioner_models_unittest.F)
 add_executable(graph metadyn_tools/graph.F)
 add_executable(dumpdcd motion/dumpdcd.F)
 add_executable(xyz2dcd motion/xyz2dcd.F)

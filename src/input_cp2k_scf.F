@@ -33,18 +33,18 @@ MODULE input_cp2k_scf
         jacobian_fd2, jacobian_fd2_backward, ls_2pnt, ls_3pnt, ls_adapt, ls_gold, ls_none, &
         mopac_guess, no_guess, numerical, ot_algo_irac, ot_algo_taylor_or_diag, ot_chol_irac, &
         ot_lwdn_irac, ot_mini_broyden, ot_mini_cg, ot_mini_diis, ot_mini_sd, ot_poly_irac, &
-        ot_precond_full_all, ot_precond_full_kinetic, ot_precond_full_single, &
-        ot_precond_full_single_inverse, ot_precond_none, ot_precond_s_inverse, &
-        ot_precond_solver_default, ot_precond_solver_direct, ot_precond_solver_inv_chol, &
-        ot_precond_solver_update, outer_scf_basis_center_opt, outer_scf_becke_constraint, &
-        outer_scf_cdft_constraint, outer_scf_ddapc_constraint, outer_scf_hirshfeld_constraint, &
-        outer_scf_none, outer_scf_optimizer_bisect, outer_scf_optimizer_broyden, &
-        outer_scf_optimizer_diis, outer_scf_optimizer_newton, outer_scf_optimizer_newton_ls, &
-        outer_scf_optimizer_none, outer_scf_optimizer_sd, outer_scf_optimizer_secant, &
-        outer_scf_s2_constraint, radius_covalent, radius_default, radius_single, radius_user, &
-        radius_vdw, random_guess, restart_guess, shape_function_density, shape_function_gaussian, &
-        smear_energy_window, smear_fermi_dirac, smear_gaussian, smear_list, smear_mp, smear_mv, &
-        sparse_guess
+        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, &
+        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
+        ot_precond_s_inverse, ot_precond_solver_chebyshev, ot_precond_solver_default, &
+        ot_precond_solver_direct, ot_precond_solver_inv_chol, ot_precond_solver_update, &
+        outer_scf_basis_center_opt, outer_scf_becke_constraint, outer_scf_cdft_constraint, &
+        outer_scf_ddapc_constraint, outer_scf_hirshfeld_constraint, outer_scf_none, &
+        outer_scf_optimizer_bisect, outer_scf_optimizer_broyden, outer_scf_optimizer_diis, &
+        outer_scf_optimizer_newton, outer_scf_optimizer_newton_ls, outer_scf_optimizer_none, &
+        outer_scf_optimizer_sd, outer_scf_optimizer_secant, outer_scf_s2_constraint, &
+        radius_covalent, radius_default, radius_single, radius_user, radius_vdw, random_guess, &
+        restart_guess, shape_function_density, shape_function_gaussian, smear_energy_window, &
+        smear_fermi_dirac, smear_gaussian, smear_list, smear_mp, smear_mv, sparse_guess
    USE input_keyword_types,             ONLY: keyword_create,&
                                               keyword_release,&
                                               keyword_type
@@ -819,12 +819,15 @@ CONTAINS
          "smearing selects FULL_ALL instead; other OT calculations retain the FULL_KINETIC default.", &
          usage="PRECONDITIONER FULL_ALL", &
          default_i_val=ot_precond_full_kinetic, &
-         enum_c_vals=s2a("FULL_ALL", "FULL_SINGLE_INVERSE", "FULL_SINGLE", "FULL_KINETIC", "FULL_S_INVERSE", &
-                         "NONE"), &
+         enum_c_vals=s2a("FULL_ALL", "FERMI_LOW_RANK", "FULL_SINGLE_INVERSE", "FULL_SINGLE", &
+                         "FULL_KINETIC", "FULL_S_INVERSE", "NONE"), &
          enum_desc=s2a("Most effective state selective preconditioner based on diagonalization, "// &
                        "requires the ENERGY_GAP parameter to be an underestimate of the HOMO-LUMO gap. "// &
                        "This preconditioner is recommended for almost all systems, except very large systems where "// &
                        "make_preconditioner would dominate the total computational cost.", &
+                       "Approximate state-selective preconditioner: exact denominators are retained for up to "// &
+                       "48 complementary states within 1.0 hartree of the Fermi window, while the remaining "// &
+                       "space uses a bounded overlap-inverse scale. Intended for metallic OT experiments.", &
                        "Based on H-eS cholesky inversion, similar to FULL_SINGLE in preconditioning efficiency "// &
                        "but cheaper to construct, "// &
                        "might be somewhat less robust. Recommended for large systems.", &
@@ -833,8 +836,8 @@ CONTAINS
                        "use for very large systems.", &
                        "Cholesky inversion of S, not as good as FULL_KINETIC, yet equally expensive.", &
                        "skip preconditioning"), &
-         enum_i_vals=[ot_precond_full_all, ot_precond_full_single_inverse, ot_precond_full_single, &
-                      ot_precond_full_kinetic, ot_precond_s_inverse, ot_precond_none], &
+         enum_i_vals=[ot_precond_full_all, ot_precond_fermi_low_rank, ot_precond_full_single_inverse, &
+                      ot_precond_full_single, ot_precond_full_kinetic, ot_precond_s_inverse, ot_precond_none], &
          citations=[VandeVondele2003, Weber2008, Schiffmann2015])
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -857,17 +860,20 @@ CONTAINS
          description="How the preconditioner is applied to the residual.", &
          usage="PRECOND_SOLVER DIRECT", &
          default_i_val=ot_precond_solver_default, &
-         enum_c_vals=s2a("DEFAULT", "DIRECT", "INVERSE_CHOLESKY", "INVERSE_UPDATE"), &
+         enum_c_vals=s2a("DEFAULT", "DIRECT", "INVERSE_CHOLESKY", "INVERSE_UPDATE", "CHEBYSHEV"), &
          enum_desc=s2a("the default", "Cholesky decomposition followed by triangular solve "// &
                        "(works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)", &
                        "Cholesky decomposition followed by explicit inversion "// &
                        "(works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)", &
                        "Performs a Hotelling update of the inverse if a previous preconditioner is present. "// &
-                       "Mainly useful for GPU accelerated systems (works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)"), &
+                       "Mainly useful for GPU accelerated systems (works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)", &
+                       "Applies a bounded Chebyshev approximation to the inverse using matrix products only "// &
+                       "(works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)."), &
          enum_i_vals=[ot_precond_solver_default, &
                       ot_precond_solver_direct, &
                       ot_precond_solver_inv_chol, &
-                      ot_precond_solver_update])
+                      ot_precond_solver_update, &
+                      ot_precond_solver_chebyshev])
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

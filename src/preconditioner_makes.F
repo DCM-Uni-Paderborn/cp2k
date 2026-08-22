@@ -21,7 +21,10 @@ MODULE preconditioner_makes
                                               set_arnoldi_initial_vector,&
                                               setup_arnoldi_env
    USE cp_cfm_basic_linalg,             ONLY: cp_cfm_column_scale,&
-                                              cp_cfm_gemm
+                                              cp_cfm_gemm,&
+                                              cp_cfm_uplo_to_full
+   USE cp_cfm_cholesky,                 ONLY: cp_cfm_cholesky_decompose,&
+                                              cp_cfm_cholesky_invert
    USE cp_cfm_diag,                     ONLY: cp_cfm_geeig
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_info,&
@@ -54,9 +57,9 @@ MODULE preconditioner_makes
                                               cp_fm_to_fm,&
                                               cp_fm_type
    USE input_constants,                 ONLY: &
-        cholesky_inverse, cholesky_reduce, ot_precond_full_all, ot_precond_full_kinetic, &
-        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_s_inverse, &
-        ot_precond_solver_default, ot_precond_solver_inv_chol
+        cholesky_inverse, cholesky_reduce, ot_precond_fermi_low_rank, ot_precond_full_all, &
+        ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
+        ot_precond_s_inverse, ot_precond_solver_default, ot_precond_solver_inv_chol
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: z_one,&
                                               z_zero
@@ -131,7 +134,7 @@ CONTAINS
          IF (my_solver_type == ot_precond_solver_default) my_solver_type = ot_precond_solver_inv_chol
          CALL make_full_single_inverse(preconditioner_env, mo_coeff, matrix_h, energy_gap, &
                                        matrix_s=matrix_s)
-      CASE (ot_precond_full_all)
+      CASE (ot_precond_full_all, ot_precond_fermi_low_rank)
          IF (my_solver_type /= ot_precond_solver_default) THEN
             CPABORT("Only PRECOND_SOLVER DEFAULT for the moment")
          END IF
@@ -838,24 +841,37 @@ CONTAINS
 !> \param matrix_s complex Hermitian k-point overlap
 !> \param c0_evals reference-orbital energies in the current OT gauge
 !> \param energy_gap denominator floor
+!> \param precon_type ...
 ! **************************************************************************************************
    SUBROUTINE make_complex_full_all(preconditioner_env, matrix_c0, matrix_h, matrix_s, &
-                                    c0_evals, energy_gap)
+                                    c0_evals, energy_gap, precon_type)
 
       TYPE(preconditioner_type)                          :: preconditioner_env
       TYPE(cp_cfm_type), INTENT(IN)                      :: matrix_c0, matrix_h, matrix_s
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: c0_evals
       REAL(KIND=dp), INTENT(IN)                          :: energy_gap
+      INTEGER, INTENT(IN), OPTIONAL                      :: precon_type
 
       CHARACTER(len=*), PARAMETER :: routineN = 'make_complex_full_all'
       REAL(KIND=dp), PARAMETER                           :: lambda_base = 10.0_dp
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: shifted_evals
-      INTEGER                                            :: handle, k, n
+      INTEGER                                            :: handle, k, model_type, n
+      LOGICAL                                            :: valid_model
       TYPE(cp_cfm_type) :: matrix_chc, matrix_diag_work, matrix_hc0, matrix_s_copy, matrix_sc0, &
          matrix_sc_chc, matrix_shifted_sc, matrix_tmp
 
       CALL timeset(routineN, handle)
+
+      model_type = ot_precond_full_all
+      IF (PRESENT(precon_type)) THEN
+         ! Complex k-point FULL_SINGLE_INVERSE has historically used this exact
+         ! state-selective construction.  Only the explicit low-rank choice
+         ! changes its spectral weights; all other callers retain FULL_ALL.
+         IF (precon_type == ot_precond_fermi_low_rank) model_type = ot_precond_fermi_low_rank
+      END IF
+      valid_model = model_type == ot_precond_full_all .OR. model_type == ot_precond_fermi_low_rank
+      CPASSERT(valid_model)
 
       CALL cp_cfm_get_info(matrix_c0, nrow_global=n, ncol_global=k)
       CPASSERT(n > 0)
@@ -866,6 +882,10 @@ CONTAINS
       IF (ASSOCIATED(preconditioner_env%complex_fm)) THEN
          CALL cp_cfm_release(preconditioner_env%complex_fm)
          DEALLOCATE (preconditioner_env%complex_fm)
+      END IF
+      IF (ASSOCIATED(preconditioner_env%complex_base_fm)) THEN
+         CALL cp_cfm_release(preconditioner_env%complex_base_fm)
+         DEALLOCATE (preconditioner_env%complex_base_fm)
       END IF
       IF (ASSOCIATED(preconditioner_env%occ_evals)) DEALLOCATE (preconditioner_env%occ_evals)
       IF (ASSOCIATED(preconditioner_env%full_evals)) DEALLOCATE (preconditioner_env%full_evals)
@@ -921,8 +941,24 @@ CONTAINS
       preconditioner_env%full_evals(1:k) = c0_evals(1:k)
       CALL cp_cfm_to_cfm(matrix_c0, preconditioner_env%complex_fm, k)
       preconditioner_env%energy_gap = energy_gap
-      preconditioner_env%in_use = ot_precond_full_all
+      preconditioner_env%in_use = model_type
       preconditioner_env%solver = ot_precond_solver_default
+      IF (model_type == ot_precond_fermi_low_rank) THEN
+         preconditioner_env%spectral_rank = MIN(48, MAX(0, n - k))
+         preconditioner_env%spectral_window = MAX(1.0_dp, 4.0_dp*energy_gap)
+         preconditioner_env%spectral_base_scale = 1.0_dp/preconditioner_env%spectral_window
+         ! The bounded complement is exactly base*S^-1 plus a correction in
+         ! the retained Ritz space.  Keeping S^-1 explicitly makes the normal
+         ! application one full GEMM plus two rank-r GEMMs instead of two full
+         ! spectral transformations.
+         ALLOCATE (preconditioner_env%complex_base_fm)
+         CALL cp_cfm_create(preconditioner_env%complex_base_fm, matrix_s%matrix_struct, &
+                            name='complex FERMI_LOW_RANK overlap inverse')
+         CALL cp_cfm_to_cfm(matrix_s, preconditioner_env%complex_base_fm)
+         CALL cp_cfm_cholesky_decompose(preconditioner_env%complex_base_fm)
+         CALL cp_cfm_cholesky_invert(preconditioner_env%complex_base_fm)
+         CALL cp_cfm_uplo_to_full(preconditioner_env%complex_base_fm)
+      END IF
 
       DEALLOCATE (shifted_evals)
       CALL cp_cfm_release(matrix_diag_work)
