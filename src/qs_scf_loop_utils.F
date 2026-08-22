@@ -29231,9 +29231,16 @@ CONTAINS
                        kpoint_ot_weighted_vector_dot(grad_rot, grad_rot, var_grad_metric_weight)
                normp = norm_energy + norm_rotation
                norm_ratio = normp/MAX(gnorm, EPSILON(1.0_dp))
+               ! A successful sign-aware modal solve already defines a
+               ! positive absolute-curvature metric for the coupled Mermin
+               ! direction.  Keep that metric even when the optional physical
+               ! projector shadow has zero mixing weight; falling back to the
+               ! Euclidean OT normalization would otherwise collapse a valid
+               ! multi-k-point step by several orders of magnitude.
                metric_attempt_response = schur_attempt == 3 .AND. exact_attempt_response .AND. &
-                                         projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
-                                         response_model_available
+                                         response_model_available .AND. &
+                                         (projector_coupled_weight > EPSILON(projector_coupled_weight) .OR. &
+                                          exact_modal_used)
                metric_attempt_current_bridge = .FALSE.
                metric_attempt_tail_bridge = .FALSE.
                metric_attempt_selectable = metric_attempt_response .AND. dense_exact_scale_ready .AND. &
