@@ -288,8 +288,7 @@ static inline void ortho_cxy_to_grid(
 
   const int jstart = *((*sphere_bounds_iter)++);
   const size_t cx_size = (lp + 1) * 4;
-  double *cx = malloc(cx_size * sizeof(double));
-  assert(cx != NULL);
+  double cx[cx_size];
   for (int j1 = jstart; j1 <= 0; j1++) {
     const int j2 = 1 - j1;
     const int jg1 = map[1][j1 + cmax];
@@ -313,7 +312,6 @@ static inline void ortho_cxy_to_grid(
                             grid);
     }
   }
-  free(cx);
 }
 
 /*******************************************************************************
@@ -408,14 +406,8 @@ ortho_cxyz_to_grid(const int lp, const double zetp, const double dh[3][3],
   // cmax = MAXVAL(ub_cube)
   const int cmax = imax(imax(ub_cube[0], ub_cube[1]), ub_cube[2]);
 
-  // Precompute (x-xp)**lp*exp(..) for each direction. The cube radius can be
-  // large for diffuse products, so keep these scratch buffers off the OpenMP
-  // worker stack.
-  const size_t pol_size = 3 * (lp + 1) * (2 * cmax + 1);
-  double *pol_mutable_data = malloc(pol_size * sizeof(double));
-  assert(pol_mutable_data != NULL);
-  double(*pol_mutable)[lp + 1][2 * cmax + 1] =
-      (double(*)[lp + 1][2 * cmax + 1])pol_mutable_data;
+  // Precompute (x-xp)**lp*exp(..) for each direction.
+  double pol_mutable[3][lp + 1][2 * cmax + 1];
   for (int idir = 0; idir < 3; idir++) {
     const double dr = dh[idir][idir];
     const double ro = roffset[idir];
@@ -453,11 +445,7 @@ ortho_cxyz_to_grid(const int lp, const double zetp, const double dh[3][3],
       (const double(*)[lp + 1][2 * cmax + 1]) pol_mutable;
 
   // Precompute mapping from cube to grid indices for each direction
-  const size_t cube_range_size = 3 * (2 * cmax + 1);
-  int *map_mutable_data = malloc(cube_range_size * sizeof(int));
-  assert(map_mutable_data != NULL);
-  int(*map_mutable)[2 * cmax + 1] =
-      (int(*)[2 * cmax + 1])map_mutable_data;
+  int map_mutable[3][2 * cmax + 1];
   for (int i = 0; i < 3; i++) {
     for (int k = -cmax; k <= +cmax; k++) {
       map_mutable[i][k + cmax] =
@@ -467,10 +455,7 @@ ortho_cxyz_to_grid(const int lp, const double zetp, const double dh[3][3],
   const int(*map)[2 * cmax + 1] = (const int(*)[2 * cmax + 1]) map_mutable;
 
   // Precompute length of sections with homogeneous cube to grid mapping.
-  int *sections_mutable_data = malloc(cube_range_size * sizeof(int));
-  assert(sections_mutable_data != NULL);
-  int(*sections_mutable)[2 * cmax + 1] =
-      (int(*)[2 * cmax + 1])sections_mutable_data;
+  int sections_mutable[3][2 * cmax + 1];
   for (int i = 0; i < 3; i++) {
     for (int kg = 2 * cmax; kg >= 0; kg--) {
       if (kg == 2 * cmax || map[i][kg] != map[i][kg + 1] - 1) {
@@ -486,8 +471,7 @@ ortho_cxyz_to_grid(const int lp, const double zetp, const double dh[3][3],
   // Loop over k dimension of the cube.
   const int kstart = *((*sphere_bounds_iter)++);
   const size_t cxy_size = (lp + 1) * (lp + 1) * 2;
-  double *cxy = malloc(cxy_size * sizeof(double));
-  assert(cxy != NULL);
+  double cxy[cxy_size];
   for (int k1 = kstart; k1 <= 0; k1++) {
     const int k2 = 1 - k1;
     const int kg1 = map[2][k1 + cmax];
@@ -507,10 +491,6 @@ ortho_cxyz_to_grid(const int lp, const double zetp, const double dh[3][3],
     ortho_cxyz_to_cxy(lp, k1, k2, cmax, pol, cxyz, cxy);
 #endif
   }
-  free(cxy);
-  free(sections_mutable_data);
-  free(map_mutable_data);
-  free(pol_mutable_data);
 }
 
 /*******************************************************************************

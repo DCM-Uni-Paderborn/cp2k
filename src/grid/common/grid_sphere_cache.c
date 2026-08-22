@@ -56,37 +56,17 @@ static int single_sphere_bounds(const double disr_radius, const double dh[3][3],
 }
 
 /*******************************************************************************
- * \brief Keep old cache entry storage alive until the cache is finalized.
- ******************************************************************************/
-static void retire_cache_entry_storage(grid_sphere_cache *cache,
-                                       grid_sphere_cache_entry *entry) {
-  if (entry->max_imr > 0) {
-    if (cache->nretired == cache->retired_capacity) {
-      cache->retired_capacity = imax(8, 2 * cache->retired_capacity);
-      cache->retired_offsets =
-          realloc(cache->retired_offsets,
-                  cache->retired_capacity * sizeof(int *));
-      assert(cache->retired_offsets != NULL);
-      cache->retired_storage =
-          realloc(cache->retired_storage,
-                  cache->retired_capacity * sizeof(int *));
-      assert(cache->retired_storage != NULL);
-    }
-    cache->retired_offsets[cache->nretired] = entry->offsets;
-    cache->retired_storage[cache->nretired] = entry->storage;
-    cache->nretired++;
-  }
-}
-
-/*******************************************************************************
  * \brief Rebuild a cache entry for a given cell and max radius.
  * \author Ole Schuett
  ******************************************************************************/
-static void rebuild_cache_entry(grid_sphere_cache *cache, const int max_imr,
-                                const double drmin, const double dh[3][3],
+static void rebuild_cache_entry(const int max_imr, const double drmin,
+                                const double dh[3][3],
                                 const double dh_inv[3][3],
                                 grid_sphere_cache_entry *entry) {
-  retire_cache_entry_storage(cache, entry);
+  if (entry->max_imr > 0) {
+    free(entry->offsets);
+    free(entry->storage);
+  }
   entry->max_imr = max_imr;
 
   // Compute required storage size.
@@ -119,11 +99,6 @@ void grid_sphere_cache_lookup(const double radius, const double dh[3][3],
                               const double dh_inv[3][3], int **sphere_bounds,
                               double *discr_radius) {
 
-// The returned sphere_bounds pointer is consumed after this routine returns.  In
-// mixed OpenMP-runtime builds the same cache slot can be observed by multiple
-// worker teams, so cache growth is serialized and old storage is retained.
-#pragma omp critical(grid_sphere_cache_lookup)
-  {
   // Prepare the cache.
   grid_sphere_cache *cache = grid_library_get_sphere_cache();
 
@@ -180,11 +155,10 @@ void grid_sphere_cache_lookup(const double radius, const double dh[3][3],
 
   // Rebuild cache entry if requested radius is too large.
   if (entry->max_imr < imr) {
-    rebuild_cache_entry(cache, imr, entry->drmin, dh, dh_inv, entry);
+    rebuild_cache_entry(imr, entry->drmin, dh, dh_inv, entry);
   }
   const int offset = entry->offsets[imr - 1];
   *sphere_bounds = &entry->storage[offset];
-  }
 }
 
 /*******************************************************************************
@@ -198,18 +172,8 @@ void grid_sphere_cache_free(grid_sphere_cache *cache) {
       free(cache->entries[i].storage);
     }
   }
-  for (int i = 0; i < cache->nretired; i++) {
-    free(cache->retired_offsets[i]);
-    free(cache->retired_storage[i]);
-  }
-  free(cache->retired_offsets);
-  free(cache->retired_storage);
   free(cache->entries);
   cache->size = 0;
-  cache->nretired = 0;
-  cache->retired_capacity = 0;
-  cache->retired_offsets = NULL;
-  cache->retired_storage = NULL;
 }
 
 // EOF

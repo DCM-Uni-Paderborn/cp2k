@@ -646,36 +646,6 @@ message("------------------------------------------------------------\n")
 # PACKAGE DISCOVERY (compiler configuration can impact package discovery)
 find_package(OpenMP REQUIRED COMPONENTS Fortran C CXX)
 
-set(cp2k_openmp_runtime_names)
-set(cp2k_openmp_runtime_report)
-foreach(cp2k_openmp_lang IN ITEMS C CXX Fortran)
-  foreach(cp2k_openmp_lib IN LISTS OpenMP_${cp2k_openmp_lang}_LIB_NAMES)
-    get_filename_component(cp2k_openmp_lib_base "${cp2k_openmp_lib}" NAME_WE)
-    string(REGEX REPLACE "^lib" "" cp2k_openmp_lib_base
-                         "${cp2k_openmp_lib_base}")
-    string(TOLOWER "${cp2k_openmp_lib_base}" cp2k_openmp_lib_base)
-    if(cp2k_openmp_lib_base STREQUAL "gomp"
-       OR cp2k_openmp_lib_base STREQUAL "omp"
-       OR cp2k_openmp_lib_base STREQUAL "iomp5")
-      list(APPEND cp2k_openmp_runtime_names "${cp2k_openmp_lib_base}")
-      list(APPEND cp2k_openmp_runtime_report
-           "${cp2k_openmp_lang}:${cp2k_openmp_lib_base}")
-    endif()
-  endforeach()
-endforeach()
-list(REMOVE_DUPLICATES cp2k_openmp_runtime_names)
-list(LENGTH cp2k_openmp_runtime_names cp2k_openmp_runtime_count)
-if(cp2k_openmp_runtime_count GREATER 1)
-  string(JOIN ", " cp2k_openmp_runtime_report_text
-         ${cp2k_openmp_runtime_report})
-  message(
-    WARNING
-      "Mixed OpenMP runtimes detected (${cp2k_openmp_runtime_report_text}). "
-      "Threaded CP2K runs can become non-deterministic or crash when C/CXX "
-      "and Fortran code link different OpenMP runtimes; use one compiler "
-      "family/runtime consistently, for example libgomp for all languages.")
-endif()
-
 # Discover OpenCL backend via LIBXSTREAM.
 if(CP2K_USE_ACCEL MATCHES "OPENCL")
   if(NOT CP2K_USE_LIBXS)

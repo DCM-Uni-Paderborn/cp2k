@@ -8,18 +8,6 @@
 /obj/
 /regtesting/
 
-# CP2K run artifacts commonly produced when smoke inputs are executed from
-# the repository root.  Keep this root-scoped so committed test fixtures under
-# tests/ remain visible to git.
-/*-ELECTRON_DENSITY-*.cube
-/*-TOTAL_DENSITY-*.cube
-/*-ELF_S*-*.cube
-/*-efield_*-*.cube
-/*-v_hartree-*.cube
-/*-RESTART.kp
-/*-RESTART.kp.bak-*
-/*-nonbonded_nl_p*-*.out
-
 # ignore former git submodules
 /tools/prettify/fprettify
 
