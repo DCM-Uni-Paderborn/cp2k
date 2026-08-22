@@ -2581,7 +2581,13 @@ CONTAINS
       INTEGER                                            :: ispin
 
       res = .FALSE.
-      IF (.NOT. qs_ot_occupation_preconditioner_active(qs_ot_env(1))) RETURN
+      ! The occupation-preconditioner metric is deliberately bootstrapped
+      ! after a subspace refresh.  That transient readiness state must not
+      ! switch a running coupled Mermin search between 2PNT and 3PNT or expose
+      ! the large conventional 2PNT interpolation step in the metallic tail.
+      IF (.NOT. qs_ot_env(1)%settings%occupation_preconditioner .OR. &
+          .NOT. qs_ot_env(1)%settings%do_rotation .OR. &
+          .NOT. qs_ot_env(1)%settings%do_ener) RETURN
       DO ispin = 1, SIZE(qs_ot_env)
          IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
             res = .TRUE.

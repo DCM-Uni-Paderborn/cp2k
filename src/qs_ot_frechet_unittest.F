@@ -129,28 +129,29 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fixed_n_frozen_energy_gradient, qs_scf_kp_fixed_n_projector_frechet, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
         qs_scf_kp_full_closure_response_model_adjustments, qs_scf_kp_full_residual_completion, &
-        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_measured_residual_subspace_step, &
-        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
-        qs_scf_kp_pair_mask_moments, qs_scf_kp_physical_audit_add_group, &
-        qs_scf_kp_physical_audit_begin, qs_scf_kp_prediction_candidate_evaluation_ready, &
-        qs_scf_kp_prediction_candidate_selected, qs_scf_kp_project_symmetric_subspace_correction, &
-        qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
-        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
-        qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
-        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
-        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
-        qs_scf_kp_residual_history_reset_needed, qs_scf_kp_residual_pair_capture_limit, &
-        qs_scf_kp_residual_pair_full_capture_ready, qs_scf_kp_residual_pair_omission_limit, &
-        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
-        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_anchor_action, &
-        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
+        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_line_search_exit_pending, &
+        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
+        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
+        qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
+        qs_scf_kp_prediction_candidate_evaluation_ready, qs_scf_kp_prediction_candidate_selected, &
+        qs_scf_kp_project_symmetric_subspace_correction, qs_scf_kp_projector_trace_metrics, &
+        qs_scf_kp_projector_trace_metrics_type, qs_scf_kp_quadratic_descent_scale, &
+        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
+        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
+        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
+        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_history_reset_needed, &
+        qs_scf_kp_residual_pair_capture_limit, qs_scf_kp_residual_pair_full_capture_ready, &
+        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
+        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_validated_anchor_action, qs_scf_kp_validated_density_response, &
+        qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -287,6 +288,7 @@ PROGRAM qs_ot_frechet_unittest
                                            5.0E-15_dp, nfail)
    CALL check_kpoint_residual_split("k-point OT model/exit residual split", 5.0E-15_dp, nfail)
    CALL check_kpoint_exit_residual("k-point OT exit-only physical residual", 5.0E-15_dp, nfail)
+   CALL check_kpoint_line_search_exit_pending("k-point OT pending endpoint exit guard", nfail)
    CALL check_kpoint_mermin_endpoint_status("k-point OT complete Mermin endpoint", 5.0E-15_dp, nfail)
    CALL check_kpoint_raw_exit_floor("k-point OT raw exit floor completeness", 5.0E-15_dp, nfail)
    CALL check_kpoint_raw_exit_floor_ratio("k-point OT bootstrap raw exit floor", 5.0E-15_dp, nfail)
@@ -6076,6 +6078,33 @@ CONTAINS
    END SUBROUTINE check_kpoint_exit_residual
 
 ! **************************************************************************************************
+!> \brief Check that bootstrap line-search endpoints cannot leave the SCF loop.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_line_search_exit_pending(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_line_search_exit_pending(.TRUE., .TRUE., .TRUE., .TRUE., 1)
+      failed = failed .OR. qs_scf_kp_line_search_exit_pending(.TRUE., .TRUE., .TRUE., .TRUE., 0)
+      failed = failed .OR. qs_scf_kp_line_search_exit_pending(.FALSE., .TRUE., .TRUE., .TRUE., 1)
+      failed = failed .OR. qs_scf_kp_line_search_exit_pending(.TRUE., .FALSE., .TRUE., .TRUE., 1)
+      failed = failed .OR. qs_scf_kp_line_search_exit_pending(.TRUE., .TRUE., .FALSE., .TRUE., 1)
+      failed = failed .OR. qs_scf_kp_line_search_exit_pending(.TRUE., .TRUE., .TRUE., .FALSE., 1)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_line_search_exit_pending
+
+! **************************************************************************************************
 !> \brief Check that the complete audit survives a minimizer with no projected residual.
 !> \param label ...
 !> \param tol ...
@@ -10132,13 +10161,15 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3
 
-      LOGICAL                                            :: ready, scaled_ready
-      REAL(KIND=dp) :: error, negative_fraction, negative_scale, predicted_ratio, reference_ratio, &
-         scaled_negative_fraction, scaled_negative_scale, scaled_predicted_ratio, &
+      LOGICAL                                            :: near_ready, ready, scaled_ready
+      REAL(KIND=dp) :: error, near_negative_fraction, near_negative_scale, near_predicted_ratio, &
+         near_reference_ratio, negative_fraction, negative_scale, predicted_ratio, &
+         reference_ratio, scaled_negative_fraction, scaled_negative_scale, scaled_predicted_ratio, &
          scaled_reference_ratio
-      REAL(KIND=dp), DIMENSION(n) :: coordinate_floor, gradient, reference_step, scale, &
-         scaled_coordinate_floor, scaled_gradient, scaled_reference_step, scaled_step, step
-      REAL(KIND=dp), DIMENSION(n, n)                     :: hessian, scaled_hessian
+      REAL(KIND=dp), DIMENSION(n) :: coordinate_floor, gradient, near_floor, near_gradient, &
+         near_reference_step, near_step, reference_step, scale, scaled_coordinate_floor, &
+         scaled_gradient, scaled_reference_step, scaled_step, step
+      REAL(KIND=dp), DIMENSION(n, n)                     :: hessian, near_hessian, scaled_hessian
 
       hessian(:, :) = 0.0_dp
       hessian(1, 1) = 2.0_dp
@@ -10167,23 +10198,42 @@ CONTAINS
          scaled_step, scaled_ready, scaled_negative_scale, scaled_negative_fraction, &
          scaled_predicted_ratio, scaled_reference_ratio)
 
+      near_hessian(:, :) = 0.0_dp
+      near_hessian(1, 1) = 1.0_dp
+      near_hessian(1, 2) = 1.0_dp - 1.0E-6_dp
+      near_hessian(2, 1) = near_hessian(1, 2)
+      near_hessian(2, 2) = 1.0_dp
+      near_hessian(3, 3) = 2.0_dp
+      near_gradient(:) = [1.0_dp, -1.0_dp, 0.5_dp]
+      near_floor(:) = 0.1_dp
+      near_reference_step(:) = 0.0_dp
+      CALL qs_scf_kp_indefinite_residual_balanced_step( &
+         near_hessian, near_gradient, near_floor, near_reference_step, near_step, near_ready, &
+         near_negative_scale, near_negative_fraction, near_predicted_ratio, near_reference_ratio)
+
       error = MAXVAL(ABS(step - scale*scaled_step)) + &
               ABS(negative_scale - scaled_negative_scale) + &
               ABS(negative_fraction - scaled_negative_fraction) + &
               ABS(predicted_ratio - scaled_predicted_ratio) + &
               ABS(reference_ratio - scaled_reference_ratio) + &
-              ABS(predicted_ratio - reference_ratio)
-      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. negative_scale <= tol .OR. &
+              ABS(predicted_ratio - reference_ratio) + &
+              MAXVAL(ABS(near_step - [10.0_dp, -10.0_dp, 0.25_dp]))
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. near_ready .OR. &
+          negative_scale <= tol .OR. &
           negative_scale >= 1.0_dp - tol .OR. negative_fraction <= tol .OR. &
-          predicted_ratio > 1.0_dp + tol .OR. error > tol) THEN
+          predicted_ratio > 1.0_dp + tol .OR. near_negative_fraction > tol .OR. &
+          near_predicted_ratio >= near_reference_ratio .OR. error > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,2(1X,L1),5(1X,ES16.8))') TRIM(label)// &
-            " FAILED with ready/scaled/error/nscale/nfrac/pred/ref", ready, scaled_ready, error, &
-            negative_scale, negative_fraction, predicted_ratio, reference_ratio
+         WRITE (*, '(A,3(1X,L1),8(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/scaled/near/error/nscale/nfrac/pred/ref/near_scale/near_frac/near_pred/near_ref", &
+            ready, scaled_ready, near_ready, error, negative_scale, negative_fraction, predicted_ratio, &
+            reference_ratio, near_negative_scale, near_negative_fraction, near_predicted_ratio, &
+            near_reference_ratio
       ELSE
-         WRITE (*, '(A,5(1X,ES16.8))') TRIM(label)// &
-            " OK with error/nscale/nfrac/pred/ref", error, negative_scale, negative_fraction, &
-            predicted_ratio, reference_ratio
+         WRITE (*, '(A,8(1X,ES16.8))') TRIM(label)// &
+            " OK with error/nscale/nfrac/pred/ref/near_scale/near_pred/near_ref", &
+            error, negative_scale, negative_fraction, predicted_ratio, reference_ratio, &
+            near_negative_scale, near_predicted_ratio, near_reference_ratio
       END IF
 
    END SUBROUTINE check_kpoint_indefinite_residual_balanced_step

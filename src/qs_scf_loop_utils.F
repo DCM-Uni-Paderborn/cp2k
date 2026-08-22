@@ -379,6 +379,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_energy_curvature_floor, &
              qs_scf_kp_energy_relative_metric_ready, &
              qs_scf_kp_exit_residual, &
+             qs_scf_kp_line_search_exit_pending, &
              qs_scf_kp_raw_exit_floor, &
              qs_scf_kp_raw_exit_floor_ratio, &
              qs_scf_kp_residual_split, &
@@ -5364,6 +5365,8 @@ CONTAINS
 !>        curvature only as a search metric, while their signed curvature remains in the Mermin
 !>        model. Their common scale is the largest value for which the predicted reduced fixed-N
 !>        residual is no worse than both the current residual and a supplied reference candidate.
+!>        Diagonalizing D_floor^(-1/2) H D_floor^(-1/2) makes the unit modal floor invariant under
+!>        coordinate rescaling and rotations inside a degenerate complex response subspace.
 !> \param hessian signed symmetric reduced Schur Hessian
 !> \param gradient reduced fixed-N gradient/right-hand side
 !> \param coordinate_floor nonnegative curvature floor in the original coordinates
@@ -5390,7 +5393,8 @@ CONTAINS
 
       INTEGER                                            :: i, nrot
       REAL(KIND=dp) :: discriminant, gradient_norm_sq, mode_floor, negative_gradient_norm_sq, &
-         residual_a, residual_b, residual_c, residual_norm_sq, target_residual_norm_sq, tolerance
+         numerical_floor, residual_a, residual_b, residual_c, residual_norm_sq, &
+         target_residual_norm_sq, tolerance
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: coordinate_scale, eval, gradient_scaled, &
          mode_gradient, mode_step_negative, mode_step_positive, reference_residual, &
          reference_step_scaled, residual_delta, residual_positive, residual_trial, step_scaled
@@ -5416,8 +5420,8 @@ CONTAINS
                 reference_step_scaled(nrot), residual_delta(nrot), residual_positive(nrot), &
                 residual_trial(nrot), step_scaled(nrot))
       DO i = 1, nrot
-         coordinate_scale(i) = SQRT(MAX(ABS(hessian(i, i)), MAX(0.0_dp, coordinate_floor(i)), &
-                                        SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, ABS(hessian(i, i)))))
+         numerical_floor = 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(hessian(i, i)))
+         coordinate_scale(i) = SQRT(MAX(MAX(0.0_dp, coordinate_floor(i)), numerical_floor))
       END DO
       DO i = 1, nrot
          hessian_scaled(i, :) = hessian(i, :)/(coordinate_scale(i)*coordinate_scale(:))
@@ -5440,11 +5444,9 @@ CONTAINS
       mode_step_positive(:) = 0.0_dp
       mode_step_negative(:) = 0.0_dp
       negative_gradient_norm_sq = 0.0_dp
+      mode_floor = MAX(1.0_dp, 64.0_dp*EPSILON(1.0_dp)* &
+                       MAX(1.0_dp, MAXVAL(ABS(eval))))
       DO i = 1, nrot
-         mode_floor = DOT_PRODUCT(hessian_modes(:, i)**2, &
-                                  MAX(0.0_dp, coordinate_floor)/coordinate_scale**2)
-         mode_floor = MAX(mode_floor, 64.0_dp*EPSILON(1.0_dp)* &
-                          MAX(1.0_dp, MAXVAL(ABS(eval))))
          IF (eval(i) >= 0.0_dp) THEN
             mode_step_positive(i) = mode_gradient(i)/MAX(eval(i), mode_floor)
          ELSE
@@ -9302,6 +9304,34 @@ CONTAINS
    END FUNCTION qs_scf_kp_exit_residual
 
 ! **************************************************************************************************
+!> \brief identify an unevaluated complex Mermin line-search endpoint
+!> \param has_complex_kpoint_state complex spin/k-point channel is present
+!> \param occupation_preconditioner occupation variables were requested
+!> \param do_rotation orbital rotations are optimized
+!> \param do_ener auxiliary orbital energies are optimized
+!> \param line_search_count current minimizer line-search counter
+!> \return true while a prepared endpoint still needs an SCF evaluation
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_line_search_exit_pending(has_complex_kpoint_state, &
+                                                    occupation_preconditioner, &
+                                                    do_rotation, do_ener, &
+                                                    line_search_count) RESULT(pending)
+      LOGICAL, INTENT(IN)                                :: has_complex_kpoint_state, &
+                                                            occupation_preconditioner, &
+                                                            do_rotation, do_ener
+      INTEGER, INTENT(IN)                                :: line_search_count
+      LOGICAL                                            :: pending
+
+      ! The requested-variable contract is deliberately used here instead of
+      ! qs_ot_occupation_preconditioner_active. The latter is transiently
+      ! false after a subspace refresh, although take_step has already prepared
+      ! the next 2PNT/3PNT endpoint in the coupled Mermin minimizer.
+      pending = has_complex_kpoint_state .AND. occupation_preconditioner .AND. &
+                do_rotation .AND. do_ener .AND. line_search_count > 0
+
+   END FUNCTION qs_scf_kp_line_search_exit_pending
+
+! **************************************************************************************************
 !> \brief Calibrate the conservative raw-residual guard used before fixed-N audits are complete.
 !> \param accepted_samples accepted Mermin model-quality samples
 !> \param accepted_quality_ema accepted/predicted Mermin-drop quality
@@ -9492,11 +9522,12 @@ CONTAINS
                   MERGE(1, 0, local_ot_env(1)%kpoint_density_stationarity_ready)
             END IF
             line_search_pending_i = MERGE(1, 0, &
-                                          local_ot_env(1)%has_complex_kpoint_state .AND. &
-                                          qs_ot_occupation_preconditioner_active(local_ot_env(1)) .AND. &
-                                          local_ot_env(1)%settings%do_rotation .AND. &
-                                          local_ot_env(1)%settings%do_ener .AND. &
-                                          local_ot_env(1)%line_search_count > 0)
+                                          qs_scf_kp_line_search_exit_pending( &
+                                          local_ot_env(1)%has_complex_kpoint_state, &
+                                          local_ot_env(1)%settings%occupation_preconditioner, &
+                                          local_ot_env(1)%settings%do_rotation, &
+                                          local_ot_env(1)%settings%do_ener, &
+                                          local_ot_env(1)%line_search_count))
             quality_samples = local_ot_env(1)%mermin_ls_accepted_quality_samples
             quality_ema = MAX(0.0_dp, local_ot_env(1)%mermin_ls_accepted_quality_ema)
             quality_gap_ema = MAX(0.0_dp, local_ot_env(1)%mermin_ls_accepted_gap_ema)
@@ -17783,31 +17814,31 @@ CONTAINS
          exact_density_floor_safe_audit_ready
       LOGICAL :: exact_density_full_audit_ready, exact_density_full_response_ready, &
          exact_density_plateau_response_ready, exact_density_response_ready, &
-         exact_energy_model_ready, exact_physical_response_ready, failed, fermi_active_pair, &
-         inactive_gauge_projection_used, metric_attempt_current_bridge, metric_attempt_response, &
-         metric_attempt_selectable, metric_attempt_tail_bridge, multisecant_response_ready, &
-         multisecant_update_eligible, multisecant_update_ready, multisecant_update_used, &
-         new_search_point, physical_delta_group_ready, physical_delta_norm_ready, &
-         physical_delta_plateau_ready
-      LOGICAL :: physical_delta_raw_tail_ready, prediction_candidate_ready, &
-         prediction_candidate_selected, prediction_probe_selected, prediction_transport_ready, &
-         prediction_update_eligible, prediction_update_ready, prediction_update_used, &
-         projector_density_full_audit_enabled, projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready, &
+         exact_energy_model_ready, exact_modal_used, exact_physical_response_ready, failed, &
+         fermi_active_pair, inactive_gauge_projection_used, metric_attempt_current_bridge, &
+         metric_attempt_response, metric_attempt_selectable, metric_attempt_tail_bridge, &
+         multisecant_response_ready, multisecant_update_eligible, multisecant_update_ready, &
+         multisecant_update_used, new_search_point, physical_delta_group_ready, &
+         physical_delta_norm_ready
+      LOGICAL :: physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
+         prediction_candidate_ready, prediction_candidate_selected, prediction_probe_selected, &
+         prediction_transport_ready, prediction_update_eligible, prediction_update_ready, &
+         prediction_update_used, projector_density_full_audit_enabled, &
+         projector_density_full_history_enabled, projector_inactive_offdiag_candidate_ready, &
          projector_inactive_offdiag_tail_refresh_probe, &
          projector_inactive_offdiag_tail_refresh_ready, projector_offdiag_candidate_inactive, &
-         projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
-         projector_physical_candidate_ready
-      LOGICAL :: projector_physical_candidate_selected, projector_physical_coupled_model_ready, &
-         projector_physical_direct_basis_tail_limited, projector_physical_direct_candidate_ready, &
-         projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
+         projector_offdiag_candidate_ready, projector_offdiag_candidate_selected
+      LOGICAL :: projector_physical_candidate_ready, projector_physical_candidate_selected, &
+         projector_physical_coupled_model_ready, projector_physical_direct_basis_tail_limited, &
+         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
+         projector_physical_direct_candidate_used, &
          projector_physical_direct_density_candidate_ready, &
          projector_physical_direct_density_candidate_selected, &
          projector_physical_direct_density_fshadow_ready, &
          projector_physical_direct_density_override_protected, &
-         projector_physical_direct_density_quality_ready, &
-         projector_physical_direct_density_residual_bad
-      LOGICAL :: projector_physical_direct_density_selected_probe_ready, &
+         projector_physical_direct_density_quality_ready
+      LOGICAL :: projector_physical_direct_density_residual_bad, &
+         projector_physical_direct_density_selected_probe_ready, &
          projector_physical_direct_density_tail_probe_ready, &
          projector_physical_direct_diagref_candidate_ready, &
          projector_physical_direct_effective_response_ready, &
@@ -17815,24 +17846,23 @@ CONTAINS
          projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
          projector_physical_direct_shadow_enabled, &
          projector_physical_direct_spectral_candidate_ready, &
-         projector_physical_direct_spectral_candidate_selected, &
-         projector_physical_direct_spectral_enabled
-      LOGICAL :: projector_physical_direct_spectral_probe_quality_ready, &
+         projector_physical_direct_spectral_candidate_selected
+      LOGICAL :: projector_physical_direct_spectral_enabled, &
+         projector_physical_direct_spectral_probe_quality_ready, &
          projector_physical_direct_spectral_probe_ready, &
          projector_physical_direct_spectral_probe_selected, &
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
          projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
          projector_response_candidate_selected, reduced_secant_candidate_enabled, &
-         reduced_secant_candidate_ready, reduced_secant_candidate_selected, &
-         reduced_secant_measured_response
-      LOGICAL :: reduced_secant_probe_selected, reduced_secant_replacement_eligible, &
-         reduced_secant_update_eligible, relative_energy_metric_ready, residual_pair_full_capture, &
-         residual_pair_selection_ready, residual_pair_strict_tail, response_model_available, &
-         schur_active_subspace, solved, split_candidate_diagnostic, split_candidate_enabled, &
-         split_candidate_ready, split_candidate_selected, split_residual_competitive, &
-         trust_rejected, vector_secant_update_eligible, vector_secant_update_ready, &
-         vector_secant_update_used
+         reduced_secant_candidate_ready, reduced_secant_candidate_selected
+      LOGICAL :: reduced_secant_measured_response, reduced_secant_probe_selected, &
+         reduced_secant_replacement_eligible, reduced_secant_update_eligible, &
+         relative_energy_metric_ready, residual_pair_full_capture, residual_pair_selection_ready, &
+         residual_pair_strict_tail, response_model_available, schur_active_subspace, solved, &
+         split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
+         split_candidate_selected, split_residual_competitive, trust_rejected, &
+         vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
       LOGICAL, ALLOCATABLE, DIMENSION(:, :, :) :: channel_density_pair_active, &
          channel_density_pair_candidate, channel_fermi_pair_active, channel_residual_pair_active, &
          channel_residual_pair_candidate
@@ -23920,6 +23950,7 @@ CONTAINS
             norm_ratio = 0.0_dp
             normp = 0.0_dp
             exact_attempt_response = exact_energy_model_ready .AND. schur_attempt <= 3
+            exact_modal_used = .FALSE.
             response_model_available = schur_attempt <= 2 .OR. &
                                        (schur_attempt == 3 .AND. exact_attempt_response)
             projector_coupled_weight = 0.0_dp
@@ -24593,6 +24624,7 @@ CONTAINS
                   row_floor = kpoint_ot_raw_tail_rotation_floor(row_floor, rot_floor(r), residual_delta)
                END IF
                rot_floor_min = MIN(rot_floor_min, row_floor)
+               IF (schur_attempt == 3 .AND. exact_attempt_response) rtd(r) = row_floor
                diag_prefloor_avg = diag_prefloor_avg + schur(r, r)
                diag_prefloor_min = MIN(diag_prefloor_min, schur(r, r))
                diag_prefloor_max = MAX(diag_prefloor_max, schur(r, r))
@@ -24639,8 +24671,27 @@ CONTAINS
                target_group, schur_attempt, gauge_projected_count, rot_grad_gauge_norm, &
                rot_grad_physical_norm, rot_grad_gauge_norm/MAX(rot_grad_physical_norm, EPSILON(1.0_dp))
 
-            sol(:) = rhs(:)
-            CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
+            IF (schur_attempt == 3 .AND. exact_attempt_response) THEN
+               BLOCK
+                  LOGICAL                            :: modal_ready
+                  REAL(KIND=dp) :: modal_negative_fraction, modal_negative_scale, &
+                                   modal_predicted_residual_ratio, modal_reference_residual_ratio
+                  REAL(KIND=dp), DIMENSION(nrot)     :: modal_reference_step
+
+                  modal_reference_step(:) = 0.0_dp
+                  CALL qs_scf_kp_indefinite_residual_balanced_step( &
+                     schur_metric, rhs, rtd, modal_reference_step, sol, modal_ready, &
+                     modal_negative_scale, modal_negative_fraction, &
+                     modal_predicted_residual_ratio, modal_reference_residual_ratio)
+                  exact_modal_used = modal_ready
+               END BLOCK
+            END IF
+            IF (exact_modal_used) THEN
+               info = 0
+            ELSE
+               sol(:) = rhs(:)
+               CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
+            END IF
             IF (info /= 0) THEN
                attempt_failed = .TRUE.
                reject_reason = reject_dgesv
@@ -29207,7 +29258,7 @@ CONTAINS
                   END IF
                END IF
                IF (.NOT. attempt_failed .AND. norm_ratio > max_norm_ratio .AND. &
-                   .NOT. metric_attempt_selectable) THEN
+                   .NOT. metric_attempt_selectable .AND. .NOT. exact_modal_used) THEN
                   attempt_failed = .TRUE.
                   reject_reason = reject_norm
                END IF
@@ -29300,6 +29351,13 @@ CONTAINS
                            local_ot_env(1)%schur_dense_metric_shadow_quality_samples)
                         IF (metric_attempt_current_bridge) metric_attempt_selectable = .TRUE.
                      END IF
+                     ! The sign-aware modal solve has already verified the
+                     ! signed-Hessian residual against the zero-step reference.
+                     ! Normalize that direction in the corresponding positive
+                     ! absolute-curvature metric; applying the generic
+                     ! Euclidean z.z=g.z normalization a second time makes the
+                     ! result coordinate-scale dependent and collapses it.
+                     IF (exact_modal_used) metric_attempt_selectable = .TRUE.
                   END IF
                   IF (metric_attempt_selectable) THEN
                      direction_scale = MIN(1.0_dp, dense_metric_trust_scale, &
@@ -29312,6 +29370,14 @@ CONTAINS
                      END IF
                   ELSE
                      direction_scale = gdotp/MAX(normp, EPSILON(normp))
+                     IF (exact_modal_used) THEN
+                        norm_ratio = direction_scale*direction_scale*normp/MAX(gnorm, EPSILON(1.0_dp))
+                        IF (norm_ratio > max_norm_ratio .AND. max_norm_ratio > 0.0_dp) THEN
+                           direction_scale = direction_scale*SQRT(max_norm_ratio/ &
+                                                                  MAX(norm_ratio, EPSILON(norm_ratio)))
+                           norm_ratio = direction_scale*direction_scale*normp/MAX(gnorm, EPSILON(1.0_dp))
+                        END IF
+                     END IF
                   END IF
                   IF (direction_scale <= 0.0_dp .OR. direction_scale /= direction_scale) THEN
                      attempt_failed = .TRUE.
