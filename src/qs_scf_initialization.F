@@ -904,7 +904,7 @@ CONTAINS
                CPABORT("No subspace diagonlization with kpoint calculation")
             END IF
          END IF
-         ! OT: check if OT is used instead of diagonalization. Not possible with added MOS at the moment
+         ! Check whether OT is used instead of diagonalization.
       ELSE IF (scf_control%use_ot) THEN
          scf_env%method = ot_method_nr
          need_coeff_b = .TRUE.
@@ -952,7 +952,6 @@ CONTAINS
          IF (dft_control%restricted .AND. dft_control%nspins /= 2) THEN
             CPABORT("nspin must be 2 for restricted (ROKS)")
          END IF
-         ! K-point OT is allowed to reach the spin/k-point channel allocation stub.
       ELSE IF (scf_env%method /= smeagol_method_nr) THEN
          CPABORT("OT or DIAGONALIZATION have to be set")
       END IF

@@ -4,9 +4,9 @@
 ! TEST_FILES.toml and therefore does not make the default regtest expensive.
 !
 ! The 2026-08 MPI-2/OMP-2 reference reaches Mermin
-! F = -8.15998707756201 Ha at EPS_SCF 1E-8; a converged restart closes in one
+! F = -8.15998707995 Ha at EPS_SCF 1E-8; a converged restart closes in one
 ! step. Relative to Al_kp_diag_fermi_sym3_force.inp, the energy differs by
-! 9.3E-11 Ha, the largest force-component difference is 4.3E-7 Ha/bohr, and
+! 2.3E-9 Ha, the largest force-component difference is 4.9E-7 Ha/bohr, and
 ! the largest analytical-stress-component difference is 0.52 bar.
 ! A runtime-check OMP-2 continuation from the EPS_SCF 1E-6 AUTO restart reaches
 ! F = -8.15998707994740 Ha in 136 steps; against its matching diagonalization

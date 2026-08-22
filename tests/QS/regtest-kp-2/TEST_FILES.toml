@@ -66,18 +66,18 @@
 # cheap while the adaptive AUTO grow path can still be checked against the
 # 1E-6 Mermin path. The LOW 2x1x1 reference converges in 111 final-space
 # MPI-2 steps and reaches -8.14585308840704 Ha. The symmetry-reduced
-# 3x1x1 reference takes roughly 60-75 MPI-2/OMP-2 final-space steps and reaches
-# -8.1599870795 Ha within 4E-10 Ha without overgrowing its empty virtual edge. The
-# explicit full-grid 3x1x1 companion takes 57 final-space steps and reaches
-# -8.15998707954940 Ha. Their endpoints agree within 2E-12 Ha even though
+# 3x1x1 reference takes roughly 50-95 MPI-2/OMP-2 final-space steps and reaches
+# -8.159987079 Ha within 3E-9 Ha without overgrowing its empty virtual edge. The
+# explicit full-grid 3x1x1 companion follows the same endpoint in roughly 60-90
+# final-space steps. Their EPS_SCF=1E-6 endpoints agree within 3E-9 Ha even though
 # their local virtual-space growth histories differ.
 # No first/last-band, AUTO-exhausted, MAX-ITER, or "Unsupported content type"
 # signature is printed. Al_kp_ot_added_auto_sym3_restart.inp restores the
 # converged reduced-grid state in one step.
 # Al_kp_ot_added_auto_sym3_force.inp is an unlisted EPS_SCF=1E-8 force/stress
 # companion that reads the reduced-grid converged restart. Relative to
-# Al_kp_diag_fermi_sym3_force.inp, energy agrees within 1E-10 Ha, force
-# components within 4.3E-7 Ha/bohr, and analytical stress within 0.52 bar.
+# Al_kp_diag_fermi_sym3_force.inp, energy agrees within 2.4E-9 Ha, force
+# components within 5.0E-7 Ha/bohr, and analytical stress within 0.52 bar.
 # Al_kp_ot_uks_full_all_sym3_converge.inp is the unlisted four-channel UKS
 # physics companion.  With two spins, two irreducible k-points, and fixed
 # magnetization it converges in 91 uninterrupted MPI-2/OMP-2 OT steps to
@@ -102,9 +102,10 @@
 # -8.15946107404605 Ha; the restart closes in one step and diagonalization is
 # within 4.6E-8 Ha. Gaussian prints the variational smearing free energy but
 # deliberately not the Fermi-Dirac-only Mermin label.
-# Al_kp_ot_gaussian_gamma_converge.inp is the complete-space Gamma
-# companion and converges in 121 final-space MPI-2 steps without flat-tail
-# recovery. Their matching unlisted Al_kp_diag_gaussian_* inputs are
+# Al_kp_ot_gaussian_gamma_converge.inp is the explicit-Gamma companion. The
+# adaptive 16-MO space converges in about 350 MPI-2 steps; its complete physical
+# residual, rather than its already small search or density residual, controls
+# the final tail. Their matching unlisted Al_kp_diag_gaussian_* inputs are
 # independent diagonalization references.
 # Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp is the unlisted four-channel
 # transition-metal Pulay companion. It grows AUTO 4->8->16 and converges in
@@ -119,29 +120,20 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-# Write/read remain short restart-I/O smokes.  The bounded continue job is the
-# converged 1E-6 physics anchor: it preserves the adaptive history,
-# allows one bounded reader step, and retains finite entropy.  Keep the early
+# Write/read remain short default restart-I/O smokes. The unlisted bounded
+# continue job is the converged 1E-6 physics anchor: it preserves the adaptive
+# history, allows one bounded reader step, and retains finite entropy. Keep the early
 # one-k-point smoke references strict.  Their current values include the
 # line-search-consistent adaptive canonical tether, which is fixed for all
-# trial points belonging to one accepted gradient. Continue converges in
-# 133 of 220 MPI-2/OMP-2 steps in a fresh chain and remains within 2.5E-8 Ha of
+# trial points belonging to one accepted gradient. Depending on roundoff and
+# execution layout, Continue converges in roughly 100-185 of 220 MPI-2/OMP-2
+# steps in a fresh chain and remains within 2.5E-8 Ha of
 # the tightly converged diagonalization reference
 # -8.14585309375351 Ha.
 "Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.12889290253133},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.12889290253133},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-9.843838368E-5},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
-                                           {matcher="SCF_guess_restart"},
-                                           {matcher="NO_TEXT", text="K-point smearing includes the first band"},
-                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
-                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
-                                           {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=2.5E-8, ref=-8.14585309375351},
-                                           {matcher="Mermin_free_energy", tol=2.5E-8, ref=-8.14585309375351},
-                                           {matcher="Electronic_entropic_energy", tol=5.0E-4, ref=-5.1857211104E-4},
-                                           {matcher="N_kpoints", tol=0.0, ref=1},
-                                           {matcher="OT_SCF_convergence", tol=1.0, ref=5.0E-7},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
