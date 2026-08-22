@@ -36,7 +36,7 @@
                                              {matcher="Mermin_free_energy", tol=1.0E-9, ref=-1.14691758428414},
                                              {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-1.14691758428414},
                                              {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.1232462562E-4},
-                                             {matcher="N_special_kpoints", tol=0.0, ref=3},
+                                             {matcher="N_kpoints", tol=0.0, ref=3},
                                              {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                              {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                              {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},

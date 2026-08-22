@@ -4245,11 +4245,12 @@ CONTAINS
          schur_last_flavor
       LOGICAL :: complex_kpoint_history, debug_diagnostic, debug_diagnostic_source, do_ener, &
          do_ks, history_spike_reset, kpoint_preconditioned_direction, &
-         mermin_residual_catastrophic_reset, mermin_residual_growth_reset, negative_beta, &
-         physical_raw_gap_guard, preflight_only, projected_raw_tail_release, reset_to_sd, &
-         residual_history_reset, residual_spike_history_reset, residual_tail_spike_reset, &
-         schur_calibration_change, schur_history_change, schur_history_mixed, &
-         schur_projector_jump_reset, schur_projector_tail_reset
+         legacy_preconditioned_gradient, mermin_residual_catastrophic_reset, &
+         mermin_residual_growth_reset, negative_beta, physical_raw_gap_guard, preflight_only, &
+         projected_raw_tail_release, reset_to_sd, residual_history_reset, &
+         residual_spike_history_reset, residual_tail_spike_reset, schur_calibration_change, &
+         schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
+         schur_projector_tail_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, full_direction_drop, full_direction_optimum, &
          full_direction_quadratic, full_direction_slope, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_metric, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, &
@@ -4293,6 +4294,8 @@ CONTAINS
       DO ispin = 1, nspin
          complex_kpoint_history = complex_kpoint_history .OR. qs_ot_env(ispin)%has_complex_kpoint_state
       END DO
+      legacy_preconditioned_gradient = .NOT. complex_kpoint_history .AND. &
+                                       .NOT. qs_ot_env(1)%settings%do_rotation .AND. .NOT. do_ener
       IF (complex_kpoint_history) THEN
          kpoint_preconditioned_direction = .TRUE.
          DO ispin = 1, nspin
@@ -4491,6 +4494,13 @@ CONTAINS
             END DO
             IF (qs_ot_env(1)%gnorm < 0.0_dp) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), *) "WARNING Preconditioner not positive definite !"
+            END IF
+            IF (legacy_preconditioned_gradient) THEN
+               ! Preserve the established Gamma-point CG metric after computing g.P^-1.g.
+               ! Coupled metallic OT keeps the raw gradient for its physical Mermin slope.
+               DO ispin = 1, nspin
+                  CALL dbcsr_copy(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx_old)
+               END DO
             END IF
             IF (qs_ot_env(1)%settings%do_rotation) THEN
                DO ispin = 1, nspin
@@ -5113,7 +5123,11 @@ CONTAINS
             schur_history_change, schur_history_mixed, reset_to_sd, history_spike_reset, residual_history_reset
       END IF
       ! since we change the direction we have to adjust the gradient
-      qs_ot_env(1)%gradient = test_down
+      IF (legacy_preconditioned_gradient) THEN
+         qs_ot_env(1)%gradient = beta_pr*qs_ot_env(1)%gradient - qs_ot_env(1)%gnorm
+      ELSE
+         qs_ot_env(1)%gradient = test_down
+      END IF
       qs_ot_env(1)%gnorm_old = qs_ot_env(1)%gnorm
       qs_ot_env(1)%schur_cg_attempt = schur_attempt
       qs_ot_env(1)%schur_cg_flavor = schur_flavor
