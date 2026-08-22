@@ -57,7 +57,7 @@ MODULE preconditioner_types
       REAL(KIND=dp), DIMENSION(:), POINTER :: occ_evals => NULL(), full_evals => NULL()
       REAL(KIND=dp) :: energy_gap = -1.0_dp
       REAL(KIND=dp) :: condition_num = -1.0_dp
-      INTEGER :: polynomial_degree = 12
+      INTEGER :: polynomial_degree = 8
       REAL(KIND=dp) :: polynomial_min = -1.0_dp, polynomial_max = -1.0_dp
       INTEGER :: spectral_rank = 48
       REAL(KIND=dp) :: spectral_window = 1.0_dp, spectral_base_scale = 1.0_dp
@@ -112,7 +112,7 @@ CONTAINS
       !inverse is used for filtering in update set it to something huge to
       ! avoid filtering if the information is not available
       preconditioner_env%condition_num = -1.0_dp
-      preconditioner_env%polynomial_degree = 12
+      preconditioner_env%polynomial_degree = 8
       preconditioner_env%polynomial_min = -1.0_dp
       preconditioner_env%polynomial_max = -1.0_dp
       preconditioner_env%spectral_rank = 48

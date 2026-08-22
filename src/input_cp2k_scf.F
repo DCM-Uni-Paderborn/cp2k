@@ -878,6 +878,15 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create( &
+         keyword, __LOCATION__, name="CHEBYSHEV_DEGREE", &
+         description="Polynomial degree of the positive Chebyshev semi-iterative inverse used by "// &
+         "PRECOND_SOLVER CHEBYSHEV.", &
+         usage="CHEBYSHEV_DEGREE 8", &
+         default_i_val=8)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
          keyword, __LOCATION__, name="ENERGY_GAP", &
          description="Should be an estimate for the energy gap [a.u.] (HOMO-LUMO) and is used in preconditioning, "// &
          "especially effective with the FULL_ALL preconditioner, in which case it should be an underestimate "// &

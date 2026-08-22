@@ -87,6 +87,7 @@ MODULE qs_ot_types
       INTEGER           :: ot_state = 0
       CHARACTER(LEN=20) :: precond_solver_name = ""
       INTEGER           :: precond_solver_type = -1
+      INTEGER           :: chebyshev_degree = 8
       LOGICAL           :: safer_diis = .FALSE.
       REAL(KIND=dp)     :: ds_min = -1.0_dp
       REAL(KIND=dp)     :: energy_gap = -1.0_dp
@@ -1114,6 +1115,7 @@ CONTAINS
       settings%cholesky_type = cholesky_reduce
       settings%precond_solver_name = "CHOLESKY_INVERSE"
       settings%precond_solver_type = ot_precond_solver_inv_chol
+      settings%chebyshev_degree = 8
       settings%line_search_method = "2PNT"
       settings%ds_min = 0.15_dp
       settings%safer_diis = .TRUE.
@@ -3123,6 +3125,10 @@ CONTAINS
       CASE DEFAULT
          CPABORT("READ OTSCF SOLVER: Value unknown")
       END SELECT
+      CALL section_vals_val_get(ot_section, "CHEBYSHEV_DEGREE", i_val=settings%chebyshev_degree)
+      IF (settings%chebyshev_degree < 1 .OR. settings%chebyshev_degree > 100) THEN
+         CPABORT("READ OT CHEBYSHEV_DEGREE: Value must be between 1 and 100")
+      END IF
 
       CALL section_vals_val_get(ot_section, "MAX_SCF_DIIS", i_val=settings%max_scf_diis)
 
@@ -3337,6 +3343,9 @@ CONTAINS
          END SELECT
 
          WRITE (output_unit, '(A)') "  Precond_solver : "//TRIM(settings%precond_solver_name)
+         IF (settings%precond_solver_type == ot_precond_solver_chebyshev) THEN
+            WRITE (output_unit, '(A,I14)') "  Chebyshev degree:", settings%chebyshev_degree
+         END IF
 
          IF (settings%OT_METHOD == "SD" .OR. settings%OT_METHOD == "CG") THEN
             SELECT CASE (settings%line_search_method)

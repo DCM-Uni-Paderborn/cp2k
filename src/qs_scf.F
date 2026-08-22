@@ -2472,7 +2472,8 @@ CONTAINS
          CALL prepare_preconditioner(qs_env, mos, matrix_ks, matrix_s, scf_env%ot_preconditioner, &
                                      scf_control%diagonalization%ot_settings%preconditioner_type, &
                                      scf_control%diagonalization%ot_settings%precond_solver_type, &
-                                     scf_control%diagonalization%ot_settings%energy_gap, dft_control%nspins)
+                                     scf_control%diagonalization%ot_settings%energy_gap, dft_control%nspins, &
+                                     chebyshev_degree=scf_control%diagonalization%ot_settings%chebyshev_degree)
 
       CASE (block_davidson_diag_method_nr)
          ! Preconditioner initialized within the loop, when required
@@ -2582,7 +2583,8 @@ CONTAINS
                                            scf_env%qs_ot_env(1)%settings%precond_solver_type, &
                                            scf_env%qs_ot_env(1)%settings%energy_gap, dft_control%nspins, &
                                            has_unit_metric=has_unit_metric, &
-                                           chol_type=scf_env%qs_ot_env(1)%settings%cholesky_type)
+                                           chol_type=scf_env%qs_ot_env(1)%settings%cholesky_type, &
+                                           chebyshev_degree=scf_env%qs_ot_env(1)%settings%chebyshev_degree)
             END IF
             IF (reuse_precond) reuse_precond = .FALSE.
 
@@ -3161,12 +3163,16 @@ CONTAINS
             IF ((prec_type == ot_precond_full_all .OR. &
                  prec_type == ot_precond_fermi_low_rank .OR. &
                  prec_type == ot_precond_full_single_inverse) .AND. .NOT. use_real_wfn) THEN
+               scf_env%ot_preconditioner(ot_channel)%preconditioner%polynomial_degree = &
+                  scf_env%qs_ot_env(1)%settings%chebyshev_degree
                CALL make_preconditioner_complex_full_all( &
                   scf_env%ot_preconditioner(ot_channel)%preconditioner, &
                   matrix_k_re, matrix_k_im, matrix_s_re, matrix_s_im, &
                   kp%mos(1, ispin), kp%mos(2, ispin), &
                   scf_env%qs_ot_env(1)%settings%energy_gap, prec_type)
             ELSE
+               scf_env%ot_preconditioner(ot_channel)%preconditioner%polynomial_degree = &
+                  scf_env%qs_ot_env(1)%settings%chebyshev_degree
                CALL make_preconditioner(scf_env%ot_preconditioner(ot_channel)%preconditioner, &
                                         prec_type, &
                                         scf_env%qs_ot_env(1)%settings%precond_solver_type, &
