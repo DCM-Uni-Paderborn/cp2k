@@ -43,7 +43,9 @@ MODULE preconditioner_types
 !    PRIVATE
       TYPE(dbcsr_type), POINTER :: sparse_matrix => NULL()
       TYPE(cp_fm_type), POINTER :: fm => NULL()
+      TYPE(cp_fm_type), POINTER :: base_fm => NULL()
       TYPE(dbcsr_type), POINTER           :: dbcsr_matrix => NULL()
+      TYPE(dbcsr_type), POINTER           :: base_dbcsr_matrix => NULL()
       TYPE(dbcsr_type), POINTER           :: max_ev_vector => NULL()
       TYPE(dbcsr_type), POINTER           :: min_ev_vector => NULL()
       TYPE(dbcsr_p_type), POINTER, DIMENSION(:) :: inverse_history => NULL()
@@ -55,6 +57,8 @@ MODULE preconditioner_types
       REAL(KIND=dp) :: condition_num = -1.0_dp
       INTEGER :: polynomial_degree = 8
       REAL(KIND=dp) :: polynomial_min = -1.0_dp, polynomial_max = -1.0_dp
+      INTEGER :: spectral_rank = 0
+      REAL(KIND=dp) :: spectral_window = 1.0_dp, spectral_base_scale = 1.0_dp
    END TYPE preconditioner_type
 
 ! **************************************************************************************************
@@ -92,7 +96,9 @@ CONTAINS
 
       NULLIFY (preconditioner_env%sparse_matrix)
       NULLIFY (preconditioner_env%fm)
+      NULLIFY (preconditioner_env%base_fm)
       NULLIFY (preconditioner_env%dbcsr_matrix)
+      NULLIFY (preconditioner_env%base_dbcsr_matrix)
       NULLIFY (preconditioner_env%occ_evals)
       NULLIFY (preconditioner_env%full_evals)
       NULLIFY (preconditioner_env%inverse_history)
@@ -107,6 +113,9 @@ CONTAINS
       preconditioner_env%polynomial_degree = 8
       preconditioner_env%polynomial_min = -1.0_dp
       preconditioner_env%polynomial_max = -1.0_dp
+      preconditioner_env%spectral_rank = 0
+      preconditioner_env%spectral_window = 1.0_dp
+      preconditioner_env%spectral_base_scale = 1.0_dp
       preconditioner_env%ihistory = 0
 
       CALL preconditioner_env%para_env%retain()
@@ -138,8 +147,16 @@ CONTAINS
          DEALLOCATE (preconditioner_env%fm)
          NULLIFY (preconditioner_env%fm)
       END IF
+      IF (ASSOCIATED(preconditioner_env%base_fm)) THEN
+         CALL cp_fm_release(preconditioner_env%base_fm)
+         DEALLOCATE (preconditioner_env%base_fm)
+         NULLIFY (preconditioner_env%base_fm)
+      END IF
       IF (ASSOCIATED(preconditioner_env%dbcsr_matrix)) THEN
          CALL dbcsr_release_p(preconditioner_env%dbcsr_matrix)
+      END IF
+      IF (ASSOCIATED(preconditioner_env%base_dbcsr_matrix)) THEN
+         CALL dbcsr_release_p(preconditioner_env%base_dbcsr_matrix)
       END IF
       IF (ASSOCIATED(preconditioner_env%max_ev_vector)) THEN
          CALL dbcsr_release_p(preconditioner_env%max_ev_vector)
