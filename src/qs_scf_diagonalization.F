@@ -68,6 +68,9 @@ MODULE qs_scf_diagonalization
    USE input_constants,                 ONLY: &
         cholesky_dbcsr, cholesky_inverse, cholesky_off, cholesky_reduce, cholesky_restore, &
         core_guess, general_roks, high_spin_roks, restart_guess
+   USE input_cp2k_kpoints,              ONLY: lattice_fft_auto,&
+                                              lattice_fft_off,&
+                                              lattice_fft_on
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: dp,&
@@ -473,8 +476,8 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: coeffs
       INTEGER                                            :: handle, ib, ic, igroup, ik, ikp, indx, &
-                                                            ispin, jb, kplocal, nb, nkp, &
-                                                            nkp_groups, nspin, ot_components
+                                                            ispin, jb, kplocal, lattice_fft, nb, &
+                                                            nkp, nkp_groups, nspin, ot_components
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(3)                              :: nkp_grid
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
@@ -514,7 +517,7 @@ CONTAINS
       NULLIFY (sab_nl)
       CALL get_kpoint_info(kpoints, nkp=nkp, xkp=xkp, use_real_wfn=use_real_wfn, kp_range=kp_range, &
                            nkp_groups=nkp_groups, kp_dist=kp_dist, sab_nl=sab_nl, &
-                           cell_to_index=cell_to_index, nkp_grid=nkp_grid)
+                           cell_to_index=cell_to_index, nkp_grid=nkp_grid, lattice_fft=lattice_fft)
       CPASSERT(ASSOCIATED(sab_nl))
       kplocal = kp_range(2) - kp_range(1) + 1
 
@@ -561,12 +564,24 @@ CONTAINS
       nspin = SIZE(matrix_ks, 1)
 
       ! For a complete Monkhorst-Pack grid, transform every MPI-local DBCSR block over all k points
-      ! in one lattice FFT.  The established per-k phase sum remains the exact memory/irregular-grid
-      ! fallback.  Divide the conservative memory budget between H spins and S.
+      ! in one lattice FFT. The established per-k phase sum remains the exact memory/irregular-grid
+      ! fallback. Divide the conservative memory budget between H spins and S.
       ALLOCATE (ks_grid(nspin))
-      CALL rskp_transform_grid_prepare(s_grid, rmatrix, matrix_s, 1, xkp, nkp_grid, &
-                                       cell_to_index, sab_nl, use_grid_fft, &
-                                       max_storage_bytes=512_int_8*1024_int_8**2/INT(nspin + 1, int_8))
+      SELECT CASE (lattice_fft)
+      CASE (lattice_fft_auto)
+         use_grid_fft = nkp >= 27
+      CASE (lattice_fft_on)
+         use_grid_fft = .TRUE.
+      CASE (lattice_fft_off)
+         use_grid_fft = .FALSE.
+      CASE DEFAULT
+         CPABORT("Unknown lattice FFT selection mode")
+      END SELECT
+      IF (use_grid_fft) THEN
+         CALL rskp_transform_grid_prepare(s_grid, rmatrix, matrix_s, 1, xkp, nkp_grid, &
+                                          cell_to_index, sab_nl, use_grid_fft, &
+                                          max_storage_bytes=512_int_8*1024_int_8**2/INT(nspin + 1, int_8))
+      END IF
       IF (use_grid_fft) THEN
          DO ispin = 1, nspin
             CALL rskp_transform_grid_prepare(ks_grid(ispin), rmatrix, matrix_ks, ispin, xkp, nkp_grid, &
