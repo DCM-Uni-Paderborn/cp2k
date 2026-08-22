@@ -81,10 +81,10 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: &
-        qs_ot_reset_accepted_model_calibration, qs_ot_restart_signature_nchar, &
-        qs_ot_restart_signature_nint, qs_ot_restart_signature_nlog, qs_ot_restart_signature_nreal, &
-        qs_ot_settings_init, qs_ot_settings_restart_compatible, qs_ot_settings_restart_signature, &
-        qs_ot_settings_type, qs_ot_type
+        ot_metallic_variable_defaults, qs_ot_reset_accepted_model_calibration, &
+        qs_ot_restart_signature_nchar, qs_ot_restart_signature_nint, qs_ot_restart_signature_nlog, &
+        qs_ot_restart_signature_nreal, qs_ot_settings_init, qs_ot_settings_restart_compatible, &
+        qs_ot_settings_restart_signature, qs_ot_settings_type, qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_accepted_physical_residual_quality, qs_scf_kp_active_residual_affine, &
@@ -266,6 +266,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_fermi_guard_release("k-point Fermi guard residual release", nfail)
    CALL check_fermi_entropy_state("k-point spin-resolved Fermi entropy", 5.0E-15_dp, nfail)
    CALL check_ot_smearing_frontier_seed("OT smearing symmetric frontier seed", nfail)
+   CALL check_metallic_variable_defaults("metallic OT coupled variable defaults", nfail)
    CALL check_kpoint_added_mos_basis_bootstrap("k-point ADDED_MOS integer-basis bootstrap", nfail)
    CALL check_kpoint_added_mos_fractional_density( &
       "k-point ADDED_MOS fractional-density bootstrap", nfail)
@@ -6150,6 +6151,60 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_diis_mermin_rejection
+
+! **************************************************************************************************
+!> \brief Check coupled metallic ROTATION/ENERGIES default semantics.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_metallic_variable_defaults(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: do_ener, do_rotation, failed, &
+                                                            selected_ener, selected_rotation
+
+      do_rotation = .FALSE.
+      do_ener = .FALSE.
+      CALL ot_metallic_variable_defaults( &
+         do_rotation, do_ener, .FALSE., .FALSE., selected_rotation, selected_ener)
+      failed = .NOT. do_rotation .OR. .NOT. do_ener .OR. &
+               .NOT. selected_rotation .OR. .NOT. selected_ener
+
+      do_rotation = .TRUE.
+      do_ener = .FALSE.
+      CALL ot_metallic_variable_defaults( &
+         do_rotation, do_ener, .TRUE., .FALSE., selected_rotation, selected_ener)
+      failed = failed .OR. .NOT. do_rotation .OR. .NOT. do_ener .OR. &
+               selected_rotation .OR. .NOT. selected_ener
+
+      do_rotation = .FALSE.
+      do_ener = .TRUE.
+      CALL ot_metallic_variable_defaults( &
+         do_rotation, do_ener, .FALSE., .TRUE., selected_rotation, selected_ener)
+      failed = failed .OR. .NOT. do_rotation .OR. .NOT. do_ener .OR. &
+               .NOT. selected_rotation .OR. selected_ener
+
+      do_rotation = .FALSE.
+      do_ener = .FALSE.
+      CALL ot_metallic_variable_defaults( &
+         do_rotation, do_ener, .TRUE., .FALSE., selected_rotation, selected_ener)
+      failed = failed .OR. do_rotation .OR. do_ener .OR. selected_rotation .OR. selected_ener
+
+      do_rotation = .FALSE.
+      do_ener = .FALSE.
+      CALL ot_metallic_variable_defaults( &
+         do_rotation, do_ener, .FALSE., .TRUE., selected_rotation, selected_ener)
+      failed = failed .OR. do_rotation .OR. do_ener .OR. selected_rotation .OR. selected_ener
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_metallic_variable_defaults
 
 ! **************************************************************************************************
 !> \brief Check that accepted endpoints require complete physical and density audits.

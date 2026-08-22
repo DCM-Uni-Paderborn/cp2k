@@ -104,6 +104,7 @@ CONTAINS
 
       CALL ot_readwrite_input(qs_ot_env(1)%settings, ot_section, output_unit, &
                               kpoint_default_irac=do_kpoints, &
+                              smearing_default_metallic_variables=do_kpoints .AND. do_smear, &
                               smearing_default_occupation_preconditioner=do_kpoints .AND. do_smear, &
                               smearing_default_preconditioner=do_kpoints .AND. do_smear, &
                               smearing_default_full_all=nspin_ot == 2)

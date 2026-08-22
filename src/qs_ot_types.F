@@ -60,6 +60,7 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_reset_accepted_model_calibration
    PUBLIC  :: qs_ot_number_of_channels
    PUBLIC  :: qs_ot_occupation_preconditioner_active
+   PUBLIC  :: ot_metallic_variable_defaults
    PUBLIC  :: qs_ot_restart_signature_nchar
    PUBLIC  :: qs_ot_restart_signature_nint
    PUBLIC  :: qs_ot_restart_signature_nlog
@@ -962,6 +963,40 @@ MODULE qs_ot_types
                          qs_ot_restart_signature_nreal = 4
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief resolve coupled ROTATION/ENERGIES defaults for metallic OT
+!> \param do_rotation requested or defaulted rotation state
+!> \param do_ener requested or defaulted auxiliary-energy state
+!> \param rotation_explicit whether ROTATION was supplied explicitly
+!> \param energies_explicit whether ENERGIES was supplied explicitly
+!> \param selected_rotation_default whether ROTATION was enabled by this routine
+!> \param selected_energies_default whether ENERGIES was enabled by this routine
+! **************************************************************************************************
+   PURE SUBROUTINE ot_metallic_variable_defaults( &
+      do_rotation, do_ener, rotation_explicit, energies_explicit, &
+      selected_rotation_default, selected_energies_default)
+      LOGICAL, INTENT(INOUT)                             :: do_rotation, do_ener
+      LOGICAL, INTENT(IN)                                :: rotation_explicit, energies_explicit
+      LOGICAL, INTENT(OUT)                               :: selected_rotation_default, &
+                                                            selected_energies_default
+
+      selected_rotation_default = .FALSE.
+      selected_energies_default = .FALSE.
+      IF (.NOT. rotation_explicit .AND. .NOT. energies_explicit) THEN
+         do_rotation = .TRUE.
+         do_ener = .TRUE.
+         selected_rotation_default = .TRUE.
+         selected_energies_default = .TRUE.
+      ELSE IF (.NOT. rotation_explicit) THEN
+         do_rotation = do_ener
+         selected_rotation_default = do_rotation
+      ELSE IF (.NOT. energies_explicit) THEN
+         do_ener = do_rotation
+         selected_energies_default = do_ener
+      END IF
+
+   END SUBROUTINE ot_metallic_variable_defaults
 
 ! **************************************************************************************************
 !> \brief pack settings that define the meaning of serialized OT minimizer history
@@ -2933,17 +2968,19 @@ CONTAINS
 !> \param ot_section ...
 !> \param output_unit ...
 !> \param kpoint_default_irac Select IRAC when ALGORITHM was not explicitly given.
+!> \param smearing_default_metallic_variables Select ROTATION and ENERGIES as a coupled default.
 !> \param smearing_default_occupation_preconditioner Select the fixed-N preconditioner when omitted.
 !> \param smearing_default_preconditioner Select the orbital preconditioner when omitted.
 !> \param smearing_default_full_all Select the unrestricted orbital preconditioner.
 ! **************************************************************************************************
    SUBROUTINE ot_readwrite_input(settings, ot_section, output_unit, kpoint_default_irac, &
+                                 smearing_default_metallic_variables, &
                                  smearing_default_occupation_preconditioner, smearing_default_preconditioner, &
                                  smearing_default_full_all)
       TYPE(qs_ot_settings_type)                          :: settings
       TYPE(section_vals_type), POINTER                   :: ot_section
       INTEGER, INTENT(IN)                                :: output_unit
-      LOGICAL, INTENT(IN), OPTIONAL :: kpoint_default_irac, &
+      LOGICAL, INTENT(IN), OPTIONAL :: kpoint_default_irac, smearing_default_metallic_variables, &
          smearing_default_occupation_preconditioner, smearing_default_preconditioner, &
          smearing_default_full_all
 
@@ -2951,14 +2988,17 @@ CONTAINS
 
       INTEGER                                            :: handle, ls_method, ot_algorithm, &
                                                             ot_method, ot_ortho_irac
-      LOGICAL :: algorithm_explicit, occupation_preconditioner_explicit, preconditioner_explicit, &
+      LOGICAL :: algorithm_explicit, energies_explicit, occupation_preconditioner_explicit, &
+         preconditioner_explicit, rotation_explicit, selected_energies_default, &
          selected_kpoint_default, selected_occupation_preconditioner_default, &
-         selected_preconditioner_default
+         selected_preconditioner_default, selected_rotation_default
 
       CALL timeset(routineN, handle)
 
       ! choose algorithm
       selected_kpoint_default = .FALSE.
+      selected_rotation_default = .FALSE.
+      selected_energies_default = .FALSE.
       selected_occupation_preconditioner_default = .FALSE.
       selected_preconditioner_default = .FALSE.
       CALL section_vals_val_get(ot_section, "ALGORITHM", i_val=ot_algorithm, explicit=algorithm_explicit)
@@ -3126,13 +3166,23 @@ CONTAINS
       CALL section_vals_val_get(ot_section, "CHOLESKY", i_val=settings%cholesky_type)
       CALL section_vals_val_get(ot_section, "EPS_TAYLOR", r_val=settings%eps_taylor)
       CALL section_vals_val_get(ot_section, "MAX_TAYLOR", i_val=settings%max_taylor)
-      CALL section_vals_val_get(ot_section, "ROTATION", l_val=settings%do_rotation)
-      CALL section_vals_val_get(ot_section, "ENERGIES", l_val=settings%do_ener)
+      CALL section_vals_val_get(ot_section, "ROTATION", l_val=settings%do_rotation, &
+                                explicit=rotation_explicit)
+      CALL section_vals_val_get(ot_section, "ENERGIES", l_val=settings%do_ener, &
+                                explicit=energies_explicit)
+      IF (PRESENT(smearing_default_metallic_variables)) THEN
+         IF (smearing_default_metallic_variables) THEN
+            CALL ot_metallic_variable_defaults( &
+               settings%do_rotation, settings%do_ener, rotation_explicit, energies_explicit, &
+               selected_rotation_default, selected_energies_default)
+         END IF
+      END IF
       CALL section_vals_val_get(ot_section, "OCCUPATION_PRECONDITIONER", &
                                 l_val=settings%occupation_preconditioner, &
                                 explicit=occupation_preconditioner_explicit)
       IF (PRESENT(smearing_default_occupation_preconditioner)) THEN
          IF (smearing_default_occupation_preconditioner .AND. &
+             settings%do_rotation .AND. settings%do_ener .AND. &
              .NOT. occupation_preconditioner_explicit) THEN
             settings%occupation_preconditioner = .TRUE.
             selected_occupation_preconditioner_default = .TRUE.
@@ -3174,6 +3224,12 @@ CONTAINS
          WRITE (output_unit, '(/,A)') "  ----------------------------------- OT ---------------------------------------"
          IF (selected_kpoint_default) THEN
             WRITE (output_unit, '(A)') "  K-point OT default: ALGORITHM IRAC"
+         END IF
+         IF (selected_rotation_default) THEN
+            WRITE (output_unit, '(A)') "  K-point OT smearing default: ROTATION ON"
+         END IF
+         IF (selected_energies_default) THEN
+            WRITE (output_unit, '(A)') "  K-point OT smearing default: ENERGIES ON"
          END IF
          IF (selected_occupation_preconditioner_default) THEN
             WRITE (output_unit, '(A)') &

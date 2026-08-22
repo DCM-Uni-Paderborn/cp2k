@@ -46,6 +46,8 @@
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_uks_defaults.inp"             = [{matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="OT_KPOINT_DEFAULT_IRAC"},
+                                           {matcher="OT_KPOINT_DEFAULT_ROTATION"},
+                                           {matcher="OT_KPOINT_DEFAULT_ENERGIES"},
                                            {matcher="OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"},
                                            {matcher="OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},

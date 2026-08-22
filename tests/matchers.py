@@ -250,6 +250,12 @@ registry["SCF_guess_restart"] = TextPresenceMatcher(
 registry["OT_KPOINT_DEFAULT_IRAC"] = TextPresenceMatcher(
     "K-point OT default: ALGORITHM IRAC"
 )
+registry["OT_KPOINT_DEFAULT_ROTATION"] = TextPresenceMatcher(
+    "K-point OT smearing default: ROTATION ON"
+)
+registry["OT_KPOINT_DEFAULT_ENERGIES"] = TextPresenceMatcher(
+    "K-point OT smearing default: ENERGIES ON"
+)
 registry["OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"] = TextPresenceMatcher(
     "K-point OT smearing default: OCCUPATION_PRECONDITIONER ON"
 )

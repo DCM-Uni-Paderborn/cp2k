@@ -105,6 +105,7 @@ MODULE qs_scf_initialization
                                               init_mo_set,&
                                               mo_set_type,&
                                               set_mo_set
+   USE qs_ot_types,                     ONLY: ot_metallic_variable_defaults
    USE qs_outer_scf,                    ONLY: outer_loop_extrapolate,&
                                               outer_loop_switch,&
                                               outer_loop_variables_count
@@ -780,8 +781,8 @@ CONTAINS
       LOGICAL                                            :: has_unit_metric
 
       INTEGER                                            :: ispin, nao, nmo
-      LOGICAL                                            :: do_kpoints, need_coeff_b, not_se_or_tb, &
-                                                            ot_energies, ot_rotation
+      LOGICAL :: do_kpoints, need_coeff_b, not_se_or_tb, ot_energies, ot_energies_default, &
+         ot_energies_explicit, ot_rotation, ot_rotation_default, ot_rotation_explicit
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -906,8 +907,15 @@ CONTAINS
       ELSE IF (scf_control%use_ot) THEN
          scf_env%method = ot_method_nr
          need_coeff_b = .TRUE.
-         CALL section_vals_val_get(scf_section, "OT%ENERGIES", l_val=ot_energies)
-         CALL section_vals_val_get(scf_section, "OT%ROTATION", l_val=ot_rotation)
+         CALL section_vals_val_get(scf_section, "OT%ENERGIES", l_val=ot_energies, &
+                                   explicit=ot_energies_explicit)
+         CALL section_vals_val_get(scf_section, "OT%ROTATION", l_val=ot_rotation, &
+                                   explicit=ot_rotation_explicit)
+         IF (do_kpoints .AND. scf_control%smear%do_smear) THEN
+            CALL ot_metallic_variable_defaults( &
+               ot_rotation, ot_energies, ot_rotation_explicit, ot_energies_explicit, &
+               ot_rotation_default, ot_energies_default)
+         END IF
          IF (scf_control%smear%do_smear) THEN
             IF (.NOT. ot_energies) THEN
                CPABORT("OT with smearing requires OT%ENERGIES.")

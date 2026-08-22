@@ -36,10 +36,8 @@
       MAX_SCF 1
       SCF_GUESS ATOMIC
       &OT
-        ENERGIES
         LINESEARCH 2PNT
         MINIMIZER CG
-        ROTATION
       &END OT
       &SMEAR
         ELECTRONIC_TEMPERATURE 300
