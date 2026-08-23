@@ -179,7 +179,8 @@ MODULE qs_scf
                                               ot_scf_read_input
    USE qs_ot_types,                     ONLY: &
         qs_ot_allocate, qs_ot_channel_index, qs_ot_check_channel_context, qs_ot_init, &
-        qs_ot_number_of_channels, qs_ot_reset_accepted_model_calibration, qs_ot_set_context, &
+        qs_ot_kpoint_preconditioner_supported, qs_ot_number_of_channels, &
+        qs_ot_reset_accepted_model_calibration, qs_ot_set_context, &
         qs_ot_settings_restart_compatible, qs_ot_type
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
                                               outer_loop_optimize,&
@@ -2661,7 +2662,7 @@ CONTAINS
       INTEGER                                            :: ikpoint, ispin, kpoint_multiplicity, &
                                                             local_kpoint, number_of_OT_envs, &
                                                             ot_channel
-      LOGICAL                                            :: do_rotation, is_full_all
+      LOGICAL                                            :: do_rotation, is_full_all, use_real_wfn
       REAL(KIND=dp)                                      :: kpoint_weight
 
       CPASSERT(.NOT. ASSOCIATED(scf_env%qs_ot_env))
@@ -2706,7 +2707,7 @@ CONTAINS
       ! The historical real FULL_ALL construction canonicalizes C0 before building
       ! the state-selective metric.  That changes the gauge represented by explicit
       ! rotation variables, and mo_derivs do not carry the occupation-weighted
-      ! co-rotation.  The k-point builder preserves C0 and does not have this limit.
+      ! co-rotation.  The complex k-point builder preserves C0 and does not have this limit.
       do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
       is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all .OR. &
                     scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_fermi_low_rank
@@ -2714,7 +2715,22 @@ CONTAINS
          CALL cp_abort(__LOCATION__, &
                        "The real Gamma-point FULL_ALL/FERMI_LOW_RANK builder is not gauge-compatible "// &
                        "with OT%ROTATION. Use FULL_SINGLE_INVERSE or FULL_KINETIC, or select an "// &
-                       "explicit 1x1x1 KPOINTS mesh for the gauge-preserving builder.")
+                       "explicit COMPLEX 1x1x1 KPOINTS mesh for the gauge-preserving builder.")
+      END IF
+      IF (do_kpoints) THEN
+         CPASSERT(PRESENT(kpoints))
+         CPASSERT(ASSOCIATED(kpoints))
+         CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
+         IF (use_real_wfn) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "K-point OT requires KPOINTS%WAVEFUNCTIONS COMPLEX (the default).")
+         END IF
+         IF (.NOT. qs_ot_kpoint_preconditioner_supported( &
+             scf_env%qs_ot_env(1)%settings%preconditioner_type, use_real_wfn)) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "Complex k-point OT implements only NONE, FULL_SINGLE_INVERSE, "// &
+                          "FULL_ALL, and FERMI_LOW_RANK preconditioners.")
+         END IF
       END IF
 
       DO ikpoint = 1, nkpoint
@@ -3082,6 +3098,13 @@ CONTAINS
       CPASSERT(ASSOCIATED(matrix_s_kp(1, 1)%matrix))
 
       prec_type = scf_env%qs_ot_env(1)%settings%preconditioner_type
+      CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
+      IF (.NOT. qs_ot_kpoint_preconditioner_supported(prec_type, use_real_wfn)) THEN
+         CALL cp_abort(__LOCATION__, &
+                       "Complex k-point OT does not implement PRECONDITIONER "// &
+                       TRIM(scf_env%qs_ot_env(1)%settings%preconditioner_name)// &
+                       ". Use NONE, FULL_SINGLE_INVERSE, FULL_ALL, or FERMI_LOW_RANK.")
+      END IF
       SELECT CASE (prec_type)
       CASE (ot_precond_none)
          CALL timestop(handle)
@@ -3093,9 +3116,7 @@ CONTAINS
          ! Built directly from complex H(k), S(k), and C(k), without rotating
          ! the OT reference gauge.
       CASE DEFAULT
-         ! Other preconditioners keep the historical unpreconditioned k-point OT path.
-         CALL timestop(handle)
-         RETURN
+         CPABORT("Unsupported k-point OT preconditioner passed validation")
       END SELECT
 
       n_ot_channels = SIZE(scf_env%qs_ot_env)
@@ -3131,8 +3152,6 @@ CONTAINS
       END DO
       CPASSERT(ASSOCIATED(scf_env%ot_preconditioner))
       CPASSERT(SIZE(scf_env%ot_preconditioner) >= n_ot_channels)
-
-      CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env

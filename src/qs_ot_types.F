@@ -61,6 +61,7 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_reset_accepted_model_calibration
    PUBLIC  :: qs_ot_number_of_channels
    PUBLIC  :: qs_ot_occupation_preconditioner_active
+   PUBLIC  :: qs_ot_kpoint_preconditioner_supported
    PUBLIC  :: ot_metallic_variable_defaults
    PUBLIC  :: qs_ot_restart_signature_nchar
    PUBLIC  :: qs_ot_restart_signature_nint
@@ -1082,6 +1083,32 @@ CONTAINS
       END IF
 
    END FUNCTION qs_ot_occupation_preconditioner_active
+
+! **************************************************************************************************
+!> \brief Return whether an orbital preconditioner has an implementation for a k-point wavefunction.
+!> \param preconditioner_type selected OT preconditioner
+!> \param use_real_wfn whether the k-point channel stores a real wavefunction
+!> \return true for the preconditioners implemented by the complex k-point OT driver
+! **************************************************************************************************
+   PURE ELEMENTAL FUNCTION qs_ot_kpoint_preconditioner_supported(preconditioner_type, use_real_wfn) &
+      RESULT(supported)
+      INTEGER, INTENT(IN)                                :: preconditioner_type
+      LOGICAL, INTENT(IN)                                :: use_real_wfn
+      LOGICAL                                            :: supported
+
+      IF (use_real_wfn) THEN
+         supported = .FALSE.
+      ELSE
+         SELECT CASE (preconditioner_type)
+         CASE (ot_precond_none, ot_precond_full_single_inverse, ot_precond_full_all, &
+               ot_precond_fermi_low_rank)
+            supported = .TRUE.
+         CASE DEFAULT
+            supported = .FALSE.
+         END SELECT
+      END IF
+
+   END FUNCTION qs_ot_kpoint_preconditioner_supported
 
 ! **************************************************************************************************
 !> \brief sets default values for the settings type

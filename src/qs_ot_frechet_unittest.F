@@ -35,10 +35,10 @@ PROGRAM qs_ot_frechet_unittest
                                               cp_logger_release,&
                                               cp_logger_type,&
                                               cp_rm_default_logger
-   USE input_constants,                 ONLY: smear_fermi_dirac,&
-                                              smear_gaussian,&
-                                              smear_mp,&
-                                              smear_mv
+   USE input_constants,                 ONLY: &
+        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, &
+        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
+        ot_precond_s_inverse, smear_fermi_dirac, smear_gaussian, smear_mp, smear_mv
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE kpoint_io,                       ONLY: kpoint_ot_restart_geometry_compatible,&
@@ -82,10 +82,11 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: &
-        ot_metallic_variable_defaults, qs_ot_reset_accepted_model_calibration, &
-        qs_ot_restart_signature_nchar, qs_ot_restart_signature_nint, qs_ot_restart_signature_nlog, &
-        qs_ot_restart_signature_nreal, qs_ot_settings_init, qs_ot_settings_restart_compatible, &
-        qs_ot_settings_restart_signature, qs_ot_settings_type, qs_ot_type
+        ot_metallic_variable_defaults, qs_ot_kpoint_preconditioner_supported, &
+        qs_ot_reset_accepted_model_calibration, qs_ot_restart_signature_nchar, &
+        qs_ot_restart_signature_nint, qs_ot_restart_signature_nlog, qs_ot_restart_signature_nreal, &
+        qs_ot_settings_init, qs_ot_settings_restart_compatible, qs_ot_settings_restart_signature, &
+        qs_ot_settings_type, qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_accepted_physical_residual_quality, qs_scf_kp_active_residual_affine, &
@@ -271,6 +272,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_fermi_entropy_state("k-point spin-resolved Fermi entropy", 5.0E-15_dp, nfail)
    CALL check_ot_smearing_frontier_seed("OT smearing symmetric frontier seed", nfail)
    CALL check_metallic_variable_defaults("metallic OT coupled variable defaults", nfail)
+   CALL check_kpoint_preconditioner_support("k-point OT preconditioner support", nfail)
    CALL check_kpoint_added_mos_basis_bootstrap("k-point ADDED_MOS integer-basis bootstrap", nfail)
    CALL check_kpoint_added_mos_fractional_density( &
       "k-point ADDED_MOS fractional-density bootstrap", nfail)
@@ -2077,10 +2079,11 @@ CONTAINS
 
       COMPLEX(KIND=dp)                                   :: value
       COMPLEX(KIND=dp), DIMENSION(k, k)                  :: chc, chc_eigenvectors, gauge_u
-      COMPLEX(KIND=dp), DIMENSION(n, k) :: c0, c0_gauge, c0_time_reversed, gradient, &
-         gradient_gauge, output, output_gauge
-      COMPLEX(KIND=dp), DIMENSION(n, n) :: eigenvectors, h, h_time_reversed, identity, &
-         operator, operator_shifted, preconditioner_dense, preconditioner_gauge, &
+      COMPLEX(KIND=dp), DIMENSION(n, k)                  :: c0, c0_gauge, c0_time_reversed, &
+                                                            gradient, gradient_gauge, output, &
+                                                            output_gauge
+      COMPLEX(KIND=dp), DIMENSION(n, n) :: eigenvectors, h, h_time_reversed, identity, OPERATOR, &
+         operator_shifted, preconditioner_dense, preconditioner_gauge, &
          preconditioner_time_reversed, projector
       INTEGER                                            :: i, j
       REAL(KIND=dp) :: descent, gauge_error, hermiticity_error, inverse_error, max_ev, min_ev, &
@@ -2218,14 +2221,14 @@ CONTAINS
 
       chc(:, :) = MATMUL(CONJG(TRANSPOSE(c0)), MATMUL(h, c0))
       projector(:, :) = MATMUL(c0, CONJG(TRANSPOSE(c0)))
-      operator(:, :) = h - 2.0_dp*MATMUL(MATMUL(c0, chc), CONJG(TRANSPOSE(c0))) + projector
-      CALL diag_complex(operator, eigenvectors, eigenvalues)
+      OPERATOR(:, :) = h - 2.0_dp*MATMUL(MATMUL(c0, chc), CONJG(TRANSPOSE(c0))) + projector
+      CALL diag_complex(OPERATOR, eigenvectors, eigenvalues)
       min_ev = MINVAL(eigenvalues)
       CALL diag_complex(chc, chc_eigenvectors, chc_evals)
       max_ev = MAXVAL(chc_evals)
       target_edge = MAX(1.5_dp*(min_ev - max_ev), energy_gap)
       pre_shift = MAX(0.0_dp, target_edge - min_ev)
-      operator_shifted(:, :) = operator + pre_shift*identity
+      operator_shifted(:, :) = OPERATOR + pre_shift*identity
       inverse_error = MAXVAL(ABS(MATMUL(operator_shifted, preconditioner_dense) - identity))
       hermiticity_error = MAXVAL(ABS(preconditioner_dense - &
                                      CONJG(TRANSPOSE(preconditioner_dense))))
@@ -6488,6 +6491,48 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_metallic_variable_defaults
+
+! **************************************************************************************************
+!> \brief Check that complex k-point OT never silently drops an orbital preconditioner.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_preconditioner_support(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, DIMENSION(7), PARAMETER :: preconditioners = [ot_precond_none, &
+         ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_full_all, &
+         ot_precond_fermi_low_rank, ot_precond_full_kinetic, ot_precond_s_inverse]
+
+      LOGICAL                                            :: failed
+
+      failed = ANY(qs_ot_kpoint_preconditioner_supported(preconditioners, .TRUE.))
+      failed = failed .OR. .NOT. qs_ot_kpoint_preconditioner_supported( &
+               ot_precond_none, .FALSE.)
+      failed = failed .OR. qs_ot_kpoint_preconditioner_supported( &
+               ot_precond_full_single, .FALSE.)
+      failed = failed .OR. &
+               .NOT. qs_ot_kpoint_preconditioner_supported( &
+               ot_precond_full_single_inverse, .FALSE.)
+      failed = failed .OR. .NOT. qs_ot_kpoint_preconditioner_supported( &
+               ot_precond_full_all, .FALSE.)
+      failed = failed .OR. &
+               .NOT. qs_ot_kpoint_preconditioner_supported( &
+               ot_precond_fermi_low_rank, .FALSE.)
+      failed = failed .OR. qs_ot_kpoint_preconditioner_supported( &
+               ot_precond_full_kinetic, .FALSE.)
+      failed = failed .OR. qs_ot_kpoint_preconditioner_supported( &
+               ot_precond_s_inverse, .FALSE.)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_preconditioner_support
 
 ! **************************************************************************************************
 !> \brief Check that accepted endpoints require complete physical and density audits.
