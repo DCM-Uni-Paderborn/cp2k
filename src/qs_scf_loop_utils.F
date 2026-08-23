@@ -329,6 +329,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_replaced_response, &
              qs_scf_kp_fermi_entropy_state, &
              qs_scf_kp_fermi_frontier_armed, &
+             qs_scf_kp_fermi_frontier_mismatch, &
              qs_scf_kp_fermi_guard_control_delta, &
              qs_scf_kp_fermi_guard_release_ready, &
              qs_scf_kp_fermi_guard_transition, &
@@ -10695,14 +10696,14 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER                           :: restore_factor = 0.8_dp
 
-      INTEGER :: adjusted, calibration_samples, current_nmo, group, ikpoint, imo, ispin, &
-         local_channel, local_kpoint, ncopy, ngroups, nkpoint, trial_nmo
+      INTEGER :: adjusted, calibration_samples, current_nmo, density_ready_i, group, ikpoint, imo, &
+         ispin, local_channel, local_kpoint, ncopy, ngroups, nkpoint, trial_nmo
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: frontier_armed
-      LOGICAL                                            :: fractional_support_lost, guard_group, &
-                                                            lower_frontier, upper_frontier
-      REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, &
-                                                            frontier_dist, maxocc, occ_tail, &
-                                                            residual_delta, sigma
+      LOGICAL :: fractional_support_lost, guard_group, lower_frontier, physical_frontier_mismatch, &
+         release_ready, upper_frontier
+      REAL(KIND=dp)                                      :: anchor_window, density_delta, &
+                                                            distance_tol, eps, frontier_dist, &
+                                                            maxocc, occ_tail, residual_delta, sigma
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: canonical_max_partial, current_max_partial, &
          frac_weight, lower_dist, max_partial, maxocc_group, min_abs_eps_mu, release_current, &
          release_trial, upper_dist
@@ -10714,21 +10715,35 @@ CONTAINS
       IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
       IF (.NOT. local_ot_env(1)%settings%occupation_preconditioner) RETURN
       IF (.NOT. smear%do_smear .OR. .NOT. kpoint_ot_monotone_smearing(smear%method)) RETURN
-      ! Protect a pre-existing thermal frontier only during initial response
-      ! calibration.  Later occupation changes must follow the physical Mermin
-      ! minimization, including a legitimately gapped coarse k mesh.
+      ! Keep established thermal support until the coupled residual and the
+      ! exact canonical-projector density audit both enter the converged basin.
+      ! After release, an exact fractional canonical frontier can still rearm
+      ! the guard; a genuinely gapped canonical state remains untouched.
       calibration_samples = local_ot_env(1)%mermin_ls_accepted_quality_samples
       CALL para_env_inter_kp%min(calibration_samples)
       IF (smear%method == smear_gaussian .AND. calibration_samples <= 0) RETURN
       residual_delta = qs_scf_kp_fermi_guard_control_delta( &
                        local_ot_env(1)%delta, local_ot_env(1)%kpoint_raw_delta)
+      density_delta = 0.0_dp
+      density_ready_i = 1
+      IF (.NOT. local_ot_env(1)%kpoint_density_stationarity_ready) density_ready_i = 0
+      IF (local_ot_env(1)%kpoint_density_stationarity_ready) &
+         density_delta = MAX(density_delta, local_ot_env(1)%kpoint_density_stationarity_delta)
       DO local_channel = 2, SIZE(local_ot_env)
          residual_delta = MAX(residual_delta, qs_scf_kp_fermi_guard_control_delta( &
                               local_ot_env(local_channel)%delta, &
                               local_ot_env(local_channel)%kpoint_raw_delta))
+         IF (.NOT. local_ot_env(local_channel)%kpoint_density_stationarity_ready) density_ready_i = 0
+         IF (local_ot_env(local_channel)%kpoint_density_stationarity_ready) &
+            density_delta = MAX(density_delta, &
+                                local_ot_env(local_channel)%kpoint_density_stationarity_delta)
       END DO
       CALL para_env_inter_kp%max(residual_delta)
-      IF (qs_scf_kp_fermi_guard_release_ready(calibration_samples, residual_delta, eps_scf)) RETURN
+      CALL para_env_inter_kp%max(density_delta)
+      CALL para_env_inter_kp%min(density_ready_i)
+      release_ready = qs_scf_kp_fermi_guard_release_ready( &
+                      calibration_samples, residual_delta, eps_scf, density_delta, &
+                      density_ready_i > 0)
 
       sigma = kpoint_ot_smearing_width(smear)
       IF (sigma <= 1.0E-14_dp) RETURN
@@ -10842,10 +10857,14 @@ CONTAINS
             fractional_support_lost = qs_scf_kp_fermi_guard_transition( &
                                       current_max_partial(group), max_partial(group), &
                                       maxocc_group(group), frontier_armed(group) > 0)
+            physical_frontier_mismatch = qs_scf_kp_fermi_frontier_mismatch( &
+                                         canonical_max_partial(group), max_partial(group), &
+                                         maxocc_group(group))
             guard_group = lower_dist(group) < HUGE(1.0_dp) .AND. &
                           upper_dist(group) < HUGE(1.0_dp) .AND. &
                           min_abs_eps_mu(group) > anchor_window .AND. &
-                          fractional_support_lost
+                          fractional_support_lost .AND. &
+                          (.NOT. release_ready .OR. physical_frontier_mismatch)
             IF (.NOT. guard_group) CYCLE
 
             distance_tol = MAX(1.0E-10_dp, 1.0E-8_dp*MAX(lower_dist(group), upper_dist(group)))
@@ -11067,6 +11086,29 @@ CONTAINS
    END FUNCTION qs_scf_kp_fermi_frontier_armed
 
 ! **************************************************************************************************
+!> \brief whether an exact canonical thermal frontier is missing from an auxiliary state
+!> \param canonical_max_partial largest fractional support in the exact canonical projector
+!> \param state_max_partial largest fractional support in the auxiliary trial state
+!> \param maxocc maximum orbital occupation
+!> \return true only when the physical projector is fractional and the auxiliary state is not
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_fermi_frontier_mismatch(canonical_max_partial, state_max_partial, &
+                                                   maxocc) RESULT(mismatch)
+      REAL(KIND=dp), INTENT(IN)                          :: canonical_max_partial, &
+                                                            state_max_partial, maxocc
+      LOGICAL                                            :: mismatch
+
+      REAL(KIND=dp)                                      :: support_threshold
+
+      mismatch = .FALSE.
+      IF (maxocc <= EPSILON(1.0_dp)) RETURN
+      support_threshold = maxocc*ot_kp_fermi_window_min_frac
+      mismatch = canonical_max_partial >= support_threshold .AND. &
+                 state_max_partial < support_threshold
+
+   END FUNCTION qs_scf_kp_fermi_frontier_mismatch
+
+! **************************************************************************************************
 !> \brief whether a trial loses an already established finite-temperature occupation frontier
 !> \param current_max_partial largest min(f,maxocc-f) in the accepted state
 !> \param trial_max_partial largest min(f,maxocc-f) in the trial state
@@ -11122,19 +11164,33 @@ CONTAINS
 !> \param calibration_samples accepted Mermin model-quality samples
 !> \param residual_delta current physical OT residual
 !> \param eps_scf requested SCF convergence threshold
-!> \return true only after calibration and entry into the converged residual basin
+!> \param canonical_density_delta optional exact canonical-projector density residual
+!> \param canonical_density_ready optional completeness flag for the canonical density audit
+!> \return true only after calibration and entry into the converged physical residual basin
 ! **************************************************************************************************
-   FUNCTION qs_scf_kp_fermi_guard_release_ready(calibration_samples, residual_delta, eps_scf) &
+   FUNCTION qs_scf_kp_fermi_guard_release_ready(calibration_samples, residual_delta, eps_scf, &
+                                                canonical_density_delta, canonical_density_ready) &
       RESULT(release_ready)
       INTEGER, INTENT(IN)                                :: calibration_samples
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, eps_scf
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: canonical_density_delta
+      LOGICAL, INTENT(IN), OPTIONAL                      :: canonical_density_ready
       LOGICAL                                            :: release_ready
 
-      REAL(KIND=dp)                                      :: residual_limit
+      REAL(KIND=dp)                                      :: density_limit, residual_limit
 
       residual_limit = MAX(10.0_dp*MAX(eps_scf, 0.0_dp), SQRT(MAX(eps_scf, 0.0_dp)))
       release_ready = calibration_samples >= ot_kp_schur_calibration_min_samples .AND. &
                       residual_delta <= residual_limit
+      IF (PRESENT(canonical_density_delta) .OR. PRESENT(canonical_density_ready)) THEN
+         IF (.NOT. PRESENT(canonical_density_delta) .OR. .NOT. PRESENT(canonical_density_ready)) THEN
+            release_ready = .FALSE.
+         ELSE
+            density_limit = 10.0_dp*MAX(eps_scf, 0.0_dp)
+            release_ready = release_ready .AND. canonical_density_ready .AND. &
+                            canonical_density_delta <= density_limit
+         END IF
+      END IF
 
    END FUNCTION qs_scf_kp_fermi_guard_release_ready
 

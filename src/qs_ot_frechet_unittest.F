@@ -128,34 +128,35 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
         qs_scf_kp_energy_occupation_plateau_ready, qs_scf_kp_energy_relative_metric_ready, &
         qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
-        qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
-        qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_energy_hessian, &
-        qs_scf_kp_fixed_n_frozen_energy_gradient, qs_scf_kp_fixed_n_projector_frechet, &
-        qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_full_closure_response_model_adjustments, qs_scf_kp_full_residual_completion, &
-        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_line_search_exit_pending, &
-        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
-        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_mixed_tail_rebase_ready, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
-        qs_scf_kp_pair_mask_moments, qs_scf_kp_physical_audit_add_group, &
-        qs_scf_kp_physical_audit_begin, qs_scf_kp_prediction_candidate_evaluation_ready, &
-        qs_scf_kp_prediction_candidate_selected, qs_scf_kp_project_symmetric_subspace_correction, &
-        qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
-        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
-        qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
-        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
-        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
-        qs_scf_kp_residual_history_reset_needed, qs_scf_kp_residual_pair_capture_limit, &
-        qs_scf_kp_residual_pair_full_capture_ready, qs_scf_kp_residual_pair_omission_limit, &
-        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
-        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_anchor_action, &
-        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
+        qs_scf_kp_fermi_frontier_mismatch, qs_scf_kp_fermi_guard_control_delta, &
+        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
+        qs_scf_kp_fixed_n_energy_hessian, qs_scf_kp_fixed_n_frozen_energy_gradient, &
+        qs_scf_kp_fixed_n_projector_frechet, qs_scf_kp_fixed_n_response_mu_shift, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_full_closure_response_model_adjustments, &
+        qs_scf_kp_full_residual_completion, qs_scf_kp_indefinite_residual_balanced_step, &
+        qs_scf_kp_line_search_exit_pending, qs_scf_kp_measured_residual_subspace_step, &
+        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
+        qs_scf_kp_mixed_tail_rebase_ready, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
+        qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
+        qs_scf_kp_prediction_candidate_evaluation_ready, qs_scf_kp_prediction_candidate_selected, &
+        qs_scf_kp_project_symmetric_subspace_correction, qs_scf_kp_projector_trace_metrics, &
+        qs_scf_kp_projector_trace_metrics_type, qs_scf_kp_quadratic_descent_scale, &
+        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
+        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
+        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
+        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_history_reset_needed, &
+        qs_scf_kp_residual_pair_capture_limit, qs_scf_kp_residual_pair_full_capture_ready, &
+        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
+        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_validated_anchor_action, qs_scf_kp_validated_density_response, &
+        qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -270,6 +271,7 @@ PROGRAM qs_ot_frechet_unittest
                                         5.0E-14_dp, nfail)
    CALL check_fermi_guard_transition("k-point Fermi guard transition", nfail)
    CALL check_fermi_frontier_arming("k-point Fermi frontier canonical arming", nfail)
+   CALL check_fermi_frontier_mismatch("k-point Fermi frontier physical rearming", nfail)
    CALL check_fermi_guard_release("k-point Fermi guard residual release", nfail)
    CALL check_fermi_entropy_state("k-point spin-resolved Fermi entropy", 5.0E-15_dp, nfail)
    CALL check_ot_smearing_frontier_seed("OT smearing symmetric frontier seed", nfail)
@@ -5613,6 +5615,34 @@ CONTAINS
    END SUBROUTINE check_fermi_frontier_arming
 
 ! **************************************************************************************************
+!> \brief Check that exact fractional support can rearm a nominally released frontier guard.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_fermi_frontier_mismatch(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: maxocc = 2.0_dp
+
+      LOGICAL                                            :: failed
+
+      failed = qs_scf_kp_fermi_frontier_mismatch(0.0_dp, 0.0_dp, maxocc) .OR. &
+               qs_scf_kp_fermi_frontier_mismatch(2.0E-3_dp, 2.0E-3_dp, maxocc) .OR. &
+               qs_scf_kp_fermi_frontier_mismatch(1.0E-3_dp, 0.0_dp, maxocc) .OR. &
+               .NOT. qs_scf_kp_fermi_frontier_mismatch(2.0E-3_dp, 0.0_dp, maxocc) .OR. &
+               .NOT. qs_scf_kp_fermi_frontier_mismatch(2.0E-3_dp, 1.0E-3_dp, maxocc) .OR. &
+               qs_scf_kp_fermi_frontier_mismatch(2.0E-3_dp, 0.0_dp, 0.0_dp)
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_fermi_frontier_mismatch
+
+! **************************************************************************************************
 !> \brief Check that calibrated frontier support is released only in the converged residual basin.
 !> \param label ...
 !> \param nfail ...
@@ -5633,6 +5663,12 @@ CONTAINS
                qs_scf_kp_fermi_guard_release_ready(4, 2.0E-2_dp, eps_scf) .OR. &
                qs_scf_kp_fermi_guard_release_ready(4, 1.1E-3_dp, eps_scf) .OR. &
                .NOT. qs_scf_kp_fermi_guard_release_ready(4, 1.0E-3_dp, eps_scf) .OR. &
+               qs_scf_kp_fermi_guard_release_ready(8, 1.0E-6_dp, eps_scf, &
+                                                   1.1E-5_dp, .TRUE.) .OR. &
+               qs_scf_kp_fermi_guard_release_ready(8, 1.0E-6_dp, eps_scf, &
+                                                   1.0E-8_dp, .FALSE.) .OR. &
+               .NOT. qs_scf_kp_fermi_guard_release_ready(8, 1.0E-6_dp, eps_scf, &
+                                                         9.0E-6_dp, .TRUE.) .OR. &
                .NOT. qs_scf_kp_fermi_guard_release_ready(8, &
                                                          qs_scf_kp_fermi_guard_control_delta(1.0E-6_dp, -1.0_dp), eps_scf)
       IF (failed) THEN
