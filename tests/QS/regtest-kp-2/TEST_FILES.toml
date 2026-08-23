@@ -211,12 +211,6 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-# Al_kp_ot_restart_converge.inp remains an unlisted HIGH-print diagnostic for
-# the converged endpoint.  A fresh OMP_NUM_THREADS=1 write/read/continue chain
-# reaches the finite-entropy 1E-6 branch in 70 MPI-2 or serial continuation
-# iterations; both layouts agree within 6E-10 Ha.  An exhausted older
-# line-search payload is recovered without a fatal abort and can also converge;
-# no first/last-band, MAX-ITER, or "Unsupported content type" warning occurs.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]
