@@ -178,9 +178,9 @@
 # channels in one step.
 # Al_kp_ot_uks_common_mu_sym3_converge.inp is the complementary shared-mu
 # four-channel anchor and exercises the automatic unrestricted metallic
-# defaults. DIIS converges in 90 MPI-2/OMP-2 steps at -8.16155089955 Ha,
-# within 9.9E-9 Ha of diagonalization, versus 129 steps for CG, and reproduces
-# the unconstrained spin populations 6.33333/5.66667.
+# defaults. Fresh MPI-2/OMP-2 DIIS trajectories converge in 90--127 steps near
+# -8.16155089 Ha, within 2.5E-8 Ha of diagonalization, versus 129 steps for CG,
+# and reproduce the unconstrained spin populations 6.33333/5.66667.
 # Al_kp_ot_uks_common_mu_sym3_restart.inp also restores the four-channel state
 # in one step.
 # The unlisted Na_kp_ot_added_auto_sym333_converge.inp is the stricter atomic
@@ -202,10 +202,13 @@
 # the final tail. Their matching unlisted Al_kp_diag_gaussian_* inputs are
 # independent diagonalization references.
 # Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp is the unlisted four-channel
-# transition-metal Pulay diagnostic. Its spin-resolved AUTO buffers grow
-# (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO spaces. The current
-# multi-group DIIS path does not yet converge within 260 steps; the CG endpoint
-# remains -123.63311572 Ha while accepted-response calibration is completed.
+# transition-metal Pulay physics companion. Its spin-resolved AUTO buffers grow
+# (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO spaces. Accepted-drop
+# calibrated finite-response probes cross the former 5.33E-5 residual plateau;
+# the final AUTO space converges in 177 MPI-2/OMP-2 steps at
+# -123.633115713999 Ha, consistent with the CG endpoint -123.63311572 Ha.
+# Fe_kp_ot_uks_added_auto_sym3_diis_restart.inp checks the matching multi-group
+# DIIS restart without replaying the AUTO growth sequence.
 # Keep these physics checks manual so the registered restart/AUTO coverage
 # remains inexpensive.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035093907},

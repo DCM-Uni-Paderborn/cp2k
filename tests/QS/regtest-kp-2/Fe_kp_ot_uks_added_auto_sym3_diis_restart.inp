@@ -1,17 +1,13 @@
-! Slow/manual converged DIIS companion for Fe_kp_ot_uks_added_auto_sym3_converge.inp.
-! It is intentionally not listed in TEST_FILES.toml so the default regression
-! suite remains inexpensive. The case exercises four complex (spin,k-point)
-! channels, a fixed magnetic moment, symmetry weights, ADDED_MOS AUTO, and the
-! FULL_ALL fixed-N occupation preconditioner with Pulay history.
-! The spin-resolved AUTO buffers grow (4,6)->(8,10)->(16,18). The accepted-drop
-! calibrated finite-response probes cross the former F=-123.63270901 Ha,
-! residual 5.33E-5 plateau and converge the final AUTO space in 177 steps at
-! F=-123.633115713999 Ha and mu=0.403317731242 Ha. The matching CG endpoint is
-! -123.63311572 Ha. The DIIS restart companion closes the same four-channel
-! state without replaying AUTO growth.
+! Manual restart companion for Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp.
+! Run the source input first in the same directory. The four complex
+! (spin,k-point) channels, DIIS state, and adaptive 25-MO spaces are restored
+! without replaying the (4,6)->(8,10)->(16,18) AUTO growth. This input is
+! intentionally not listed in TEST_FILES.toml.
+! Current MPI-2/OMP-2 reference: one OT FIN step reproduces
+! F=-123.63311571399855 Ha and mu=0.40331773124234 Ha exactly.
 &GLOBAL
   PRINT_LEVEL MEDIUM
-  PROJECT Fe_kp_ot_uks_added_auto_sym3_diis_converge
+  PROJECT Fe_kp_ot_uks_added_auto_sym3_diis_restart
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -22,6 +18,7 @@
     MULTIPLICITY 3
     POTENTIAL_FILE_NAME POTENTIAL
     UKS TRUE
+    WFN_RESTART_FILE_NAME Fe_kp_ot_uks_added_auto_sym3_diis_converge-RESTART.kp
     &KPOINTS
       FULL_GRID OFF
       SCHEME MONKHORST-PACK 3 1 1
@@ -36,8 +33,8 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 260
-      SCF_GUESS ATOMIC
+      MAX_SCF 40
+      SCF_GUESS RESTART
       &OT
         ENERGIES
         LINESEARCH 2PNT

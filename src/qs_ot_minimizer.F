@@ -46,6 +46,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_cg_metric_history_reset, &
               ot_kpoint_cg_tail_metric_tracked, &
               ot_kpoint_diis_rejected_step, &
+              ot_kpoint_diis_rotation_response_probe_ready, &
               ot_kpoint_diis_rotation_response_ready, &
               ot_kpoint_diis_mermin_step_rejected, &
               ot_kpoint_diis_residual_step_rejected, &
@@ -82,7 +83,8 @@ MODULE qs_ot_minimizer
    INTEGER, PARAMETER, PRIVATE :: ot_cg_kp_physical_control_min_samples = 8, &
                                   ot_cg_kp_coupled_closure_flavor = 42, &
                                   ot_cg_kp_energy_closure_flavor = 45
-   INTEGER, PARAMETER, PRIVATE :: ot_cg_kp_mermin_closure_max_backtracks = 8
+   INTEGER, PARAMETER, PRIVATE :: ot_cg_kp_mermin_closure_max_backtracks = 8, &
+                                  ot_diis_kp_response_probe_min_accepted = 4
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_cg_kp_history_spike_ratio = 1.0E4_dp, &
                                         ot_cg_kp_history_jump_ratio = 1.0E2_dp, &
                                         ot_cg_kp_history_jump_beta = 1.0E1_dp, &
@@ -277,6 +279,50 @@ CONTAINS
       END DO
 
    END FUNCTION ot_kpoint_diis_rotation_response_ready
+
+! **************************************************************************************************
+!> \brief decide whether a mature multi-group DIIS state should probe the finite rotation response
+!>
+!>        The previous accepted Mermin decrease is compared with the complete first-order work of
+!>        the current group-resolved response.  A probe is useful only when the raw/Pulay path
+!>        underdelivers that local response model while the physical residual remains unresolved.
+!> \param direction_ready every fixed-N group supplied a valid finite response
+!> \param response_slope weighted response work for every fixed-N group
+!> \param raw_slope weighted raw rotation work for every fixed-N group
+!> \param accepted_samples accepted endpoints accumulated in the current AUTO subspace
+!> \param accepted_drop Mermin decrease of the preceding accepted candidate
+!> \param step current base trust step
+!> \param physical_delta complete fixed-N residual at the accepted candidate
+!> \param eps_scf requested SCF threshold
+!> \return true when the next candidate should audit a finite-response correction
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_diis_rotation_response_probe_ready( &
+      direction_ready, response_slope, raw_slope, accepted_samples, accepted_drop, step, &
+      physical_delta, eps_scf) RESULT(ready)
+      LOGICAL, INTENT(IN)                                :: direction_ready
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_slope, raw_slope
+      INTEGER, INTENT(IN)                                :: accepted_samples
+      REAL(KIND=dp), INTENT(IN)                          :: accepted_drop, step, physical_delta, &
+                                                            eps_scf
+      LOGICAL                                            :: ready
+
+      REAL(KIND=dp)                                      :: response_work, response_work_threshold
+
+      ready = ot_kpoint_diis_rotation_response_ready( &
+              direction_ready, response_slope, raw_slope, .FALSE.)
+      ready = ready .AND. SIZE(response_slope) > 1 .AND. &
+              accepted_samples >= ot_diis_kp_response_probe_min_accepted .AND. &
+              accepted_drop >= 0.0_dp .AND. eps_scf > 0.0_dp .AND. &
+              physical_delta > eps_scf*(1.0_dp + 10.0_dp*EPSILON(1.0_dp))
+      IF (.NOT. ready) RETURN
+
+      response_work = ABS(step)*SUM(response_slope)
+      response_work_threshold = ot_diis_kp_rotation_response_min_work_ratio*response_work
+      ready = response_work > EPSILON(1.0_dp) .AND. &
+              accepted_drop < response_work_threshold - &
+              10.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, response_work_threshold)
+
+   END FUNCTION ot_kpoint_diis_rotation_response_probe_ready
 
 ! **************************************************************************************************
 !> \brief Evaluate convergence of an accepted complex fixed-N Mermin endpoint.
@@ -5256,11 +5302,12 @@ CONTAINS
                                                             last_index, nfixed_groups, nspin
       LOGICAL :: current_state_converged, do_ener, do_ks, do_ot_sd, &
          kpoint_preconditioned_direction, kpoint_preconditioned_energy, &
-         kpoint_preconditioned_rotation, mermin_energy_rejected, mermin_residual_rejected, &
-         mermin_step_rejected
-      REAL(KIND=dp) :: contracted_step, current_exit_delta, current_physical_delta, norm_weight, &
-         nvar, overlap, previous_step, reference_energy, reference_physical_delta, &
-         rejected_energy, rotation_raw_slope, rotation_response_slope, tmp, tr_xnew_gx, tr_xold_gx
+         kpoint_preconditioned_rotation, kpoint_response_probe, mermin_energy_rejected, &
+         mermin_residual_rejected, mermin_step_rejected
+      REAL(KIND=dp) :: accepted_drop, contracted_step, current_exit_delta, current_physical_delta, &
+         norm_weight, nvar, overlap, previous_step, reference_energy, reference_physical_delta, &
+         rejected_energy, response_model_work, rotation_raw_slope, rotation_response_slope, tmp, &
+         tr_xnew_gx, tr_xold_gx
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rotation_group_raw_slope, &
                                                             rotation_group_response_slope
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -5335,6 +5382,7 @@ CONTAINS
                                        rotation_group_response_slope(1:MAX(1, nfixed_groups)), &
                                        rotation_group_raw_slope(1:MAX(1, nfixed_groups)), &
                                        nfixed_groups > 1)
+      kpoint_response_probe = .FALSE.
       kpoint_preconditioned_energy = kpoint_preconditioned_direction
       IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,2(1X,ES16.8))') &
@@ -5352,6 +5400,7 @@ CONTAINS
       mermin_step_rejected = .FALSE.
       mermin_energy_rejected = .FALSE.
       mermin_residual_rejected = .FALSE.
+      accepted_drop = -1.0_dp
       current_physical_delta = -1.0_dp
       reference_physical_delta = -1.0_dp
       IF (qs_ot_env(1)%has_complex_kpoint_state .AND. &
@@ -5371,6 +5420,25 @@ CONTAINS
                                     rejected_energy, reference_energy, current_physical_delta, &
                                     reference_physical_delta, qs_ot_env(1)%kpoint_eps_scf)
          mermin_step_rejected = mermin_energy_rejected .OR. mermin_residual_rejected
+         accepted_drop = MAX(0.0_dp, reference_energy - rejected_energy)
+      END IF
+      IF (.NOT. mermin_step_rejected .AND. nfixed_groups > 1) THEN
+         kpoint_response_probe = ot_kpoint_diis_rotation_response_probe_ready( &
+                                 kpoint_preconditioned_direction, &
+                                 rotation_group_response_slope(1:nfixed_groups), &
+                                 rotation_group_raw_slope(1:nfixed_groups), &
+                                 qs_ot_env(1)%kpoint_subspace_accepted_samples, accepted_drop, &
+                                 qs_ot_env(1)%ds_min, current_physical_delta, &
+                                 qs_ot_env(1)%kpoint_eps_scf)
+         kpoint_preconditioned_rotation = kpoint_response_probe
+      END IF
+      response_model_work = ABS(qs_ot_env(1)%ds_min)*rotation_response_slope
+      IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),3(1X,ES16.8),1X,I6)') &
+            " OT DIIS rotation response probe ready active adrop model_work residual samples:", &
+            kpoint_response_probe, kpoint_preconditioned_rotation, accepted_drop, &
+            response_model_work, current_physical_delta, &
+            qs_ot_env(1)%kpoint_subspace_accepted_samples
       END IF
       IF (mermin_step_rejected) THEN
          previous_step = qs_ot_env(1)%ds_min
