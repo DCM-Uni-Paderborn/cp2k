@@ -33,7 +33,8 @@ MODULE preconditioner
    USE input_constants,                 ONLY: &
         cholesky_reduce, ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, &
         ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
-        ot_precond_s_inverse, ot_precond_solver_update
+        ot_precond_s_inverse, ot_precond_solver_default, ot_precond_solver_inv_chol, &
+        ot_precond_solver_update
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE message_passing,                 ONLY: mp_para_env_type
@@ -261,20 +262,26 @@ CONTAINS
 !> \param mo_set_im imaginary part of the reference orbitals
 !> \param energy_gap denominator floor
 !> \param precon_type ...
+!> \param solver_type inverse application selected in the OT input
 ! **************************************************************************************************
    SUBROUTINE make_preconditioner_complex_full_all(preconditioner_env, &
                                                    matrix_h_re, matrix_h_im, &
                                                    matrix_s_re, matrix_s_im, &
-                                                   mo_set_re, mo_set_im, energy_gap, precon_type)
+                                                   mo_set_re, mo_set_im, energy_gap, precon_type, &
+                                                   solver_type)
 
       TYPE(preconditioner_type)                          :: preconditioner_env
       TYPE(dbcsr_type), POINTER                          :: matrix_h_re, matrix_h_im, matrix_s_re, &
                                                             matrix_s_im
       TYPE(mo_set_type), INTENT(IN)                      :: mo_set_re, mo_set_im
       REAL(KIND=dp), INTENT(IN)                          :: energy_gap
-      INTEGER, INTENT(IN), OPTIONAL                      :: precon_type
+      INTEGER, INTENT(IN), OPTIONAL                      :: precon_type, solver_type
 
-      CHARACTER(len=*), PARAMETER :: routineN = 'make_preconditioner_complex_full_all'
+      CHARACTER(len=*), PARAMETER :: routineN = 'make_preconditioner_complex_full_all', &
+         unsupported_single_solver_message = &
+         'Complex FULL_SINGLE_INVERSE supports only PRECOND_SOLVER DEFAULT/INVERSE_CHOLESKY', &
+         unsupported_spectral_solver_message = &
+         'Only PRECOND_SOLVER DEFAULT is implemented for complex FULL_ALL/FERMI_LOW_RANK'
 
       INTEGER                                            :: handle, nao, nmo
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
@@ -320,9 +327,20 @@ CONTAINS
 
       IF (PRESENT(precon_type)) THEN
          IF (precon_type == ot_precond_full_single_inverse) THEN
+            IF (PRESENT(solver_type)) THEN
+               IF (solver_type /= ot_precond_solver_default .AND. &
+                   solver_type /= ot_precond_solver_inv_chol) THEN
+                  CPABORT(unsupported_single_solver_message)
+               END IF
+            END IF
             CALL make_complex_full_single_inverse(preconditioner_env, matrix_c, matrix_h, matrix_s, &
                                                   eigenvalues(1:nmo), energy_gap)
          ELSE
+            IF (PRESENT(solver_type)) THEN
+               IF (solver_type /= ot_precond_solver_default) THEN
+                  CPABORT(unsupported_spectral_solver_message)
+               END IF
+            END IF
             CALL make_complex_full_all(preconditioner_env, matrix_c, matrix_h, matrix_s, &
                                        eigenvalues(1:nmo), energy_gap, precon_type)
          END IF

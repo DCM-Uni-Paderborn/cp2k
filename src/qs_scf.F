@@ -3168,7 +3168,8 @@ CONTAINS
                   scf_env%ot_preconditioner(ot_channel)%preconditioner, &
                   matrix_k_re, matrix_k_im, matrix_s_re, matrix_s_im, &
                   kp%mos(1, ispin), kp%mos(2, ispin), &
-                  scf_env%qs_ot_env(1)%settings%energy_gap, prec_type)
+                  scf_env%qs_ot_env(1)%settings%energy_gap, prec_type, &
+                  scf_env%qs_ot_env(1)%settings%precond_solver_type)
             ELSE
                scf_env%ot_preconditioner(ot_channel)%preconditioner%polynomial_degree = &
                   scf_env%qs_ot_env(1)%settings%chebyshev_degree
