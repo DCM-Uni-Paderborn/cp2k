@@ -3512,6 +3512,10 @@ CONTAINS
                scf_env%qs_ot_restart%channel(shared_channel)%diis_last_candidate_response
             qs_ot_env%diis_last_response_blend = &
                scf_env%qs_ot_restart%channel(shared_channel)%diis_last_response_blend
+            IF (scf_env%qs_ot_restart%format_version >= 37) THEN
+               qs_ot_env%diis_last_response_model_work = &
+                  scf_env%qs_ot_restart%channel(shared_channel)%diis_last_response_model_work
+            END IF
             qs_ot_env%diis_reference_rotation_gnorm = &
                scf_env%qs_ot_restart%channel(shared_channel)%diis_reference_rotation_gnorm
             qs_ot_env%diis_raw_residual_ratio = &

@@ -2,7 +2,9 @@
 ! metallic OT case. It is intentionally not listed in TEST_FILES.toml so the
 ! default regression suite remains inexpensive. The case exercises six
 ! complex (spin,k-point) channels, ADDED_MOS AUTO, and multi-group Pulay
-! response without irreducible-k-point weights.
+! response without irreducible-k-point weights. The 2026-08 MPI-2/OMP-2
+! reference grows (4,6)->(8,10)->(16,18) and converges in 199 final-space
+! steps at F=-123.63311571681535 Ha.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Fe_kp_ot_uks_added_auto_full3_diis_converge

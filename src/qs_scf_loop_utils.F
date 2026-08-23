@@ -7887,7 +7887,8 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: accepted_samples
       LOGICAL                                            :: ready
 
-      LOGICAL                                            :: complete_residual_ready
+      LOGICAL                                            :: complete_residual_ready, &
+                                                            persistent_density_mismatch
       REAL(KIND=dp)                                      :: asymptotic_delta, closure_crossover, &
                                                             complete_residual, eps
 
@@ -7895,6 +7896,7 @@ CONTAINS
       asymptotic_delta = MAX(eps, SQRT(eps))
       closure_crossover = SQRT(eps*MAX(density_delta, 0.0_dp))
       complete_residual_ready = .TRUE.
+      persistent_density_mismatch = .FALSE.
       IF (PRESENT(complete_physical_delta)) THEN
          complete_residual = ot_kpoint_physical_exit_delta(physical_delta, complete_physical_delta)
          complete_residual_ready = complete_residual <= MIN(asymptotic_delta, closure_crossover)
@@ -7904,9 +7906,24 @@ CONTAINS
          IF (.NOT. complete_residual_ready .AND. PRESENT(accepted_samples)) &
             complete_residual_ready = accepted_samples >= 2*ot_kp_subspace_refresh_min_steps
       END IF
+      IF (PRESENT(accepted_samples)) THEN
+         ! A mature endpoint history can expose a stale REF chart before the raw
+         ! residual reaches the geometric density crossover.  Require both
+         ! residuals to be bounded and the canonical-density defect to dominate
+         ! clearly, so an ordinary coupled transient is never rebased here.
+         persistent_density_mismatch = &
+            accepted_samples >= 2*ot_kp_subspace_refresh_min_steps .AND. &
+            physical_delta > eps .AND. physical_delta <= asymptotic_delta .AND. &
+            density_delta > eps .AND. density_delta <= asymptotic_delta .AND. &
+            density_delta >= 4.0_dp*MAX(physical_delta, eps)
+         IF (PRESENT(complete_physical_delta)) &
+            persistent_density_mismatch = persistent_density_mismatch .AND. &
+                                          complete_residual <= asymptotic_delta
+      END IF
       ready = physical_delta >= 0.0_dp .AND. density_delta > eps .AND. &
               physical_delta <= MIN(asymptotic_delta, closure_crossover) .AND. &
               complete_residual_ready
+      ready = ready .OR. persistent_density_mismatch
 
    END FUNCTION qs_scf_kp_density_closure_refresh_ready
 
@@ -10021,6 +10038,7 @@ CONTAINS
          local_ot_env(local_channel)%diis_last_candidate_sd = .TRUE.
          local_ot_env(local_channel)%diis_last_candidate_response = .FALSE.
          local_ot_env(local_channel)%diis_last_response_blend = 0.0_dp
+         local_ot_env(local_channel)%diis_last_response_model_work = 0.0_dp
          local_ot_env(local_channel)%diis_reference_rotation_gnorm = -1.0_dp
          local_ot_env(local_channel)%diis_raw_residual_ratio = -1.0_dp
          local_ot_env(local_channel)%diis_response_residual_ratio = -1.0_dp

@@ -45,6 +45,7 @@ MODULE qs_ot_minimizer
    PUBLIC  :: ot_kpoint_cg_residual_growth_guard, &
               ot_kpoint_cg_metric_history_reset, &
               ot_kpoint_cg_tail_metric_tracked, &
+              ot_kpoint_diis_accepted_response_step, &
               ot_kpoint_diis_rejected_step, &
               ot_kpoint_diis_response_endpoint_ratio, &
               ot_kpoint_diis_response_residual_blend, &
@@ -133,7 +134,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_closure_response_ema_alpha = 2.5E-1_dp, &
                                         ot_cg_kp_mermin_closure_backtrack = 5.0E-1_dp, &
                                         ot_cg_kp_mermin_secant_consistency = 2.0E-1_dp, &
-                                        ot_diis_kp_rotation_response_min_work_ratio = 2.5E-1_dp
+                                        ot_diis_kp_rotation_response_min_work_ratio = 2.5E-1_dp, &
+                                        ot_diis_kp_accepted_response_recovery = 2.0_dp
 
    TYPE, PRIVATE :: ot_cg_history_snapshot_type
       TYPE(dbcsr_type), POINTER                         :: matrix_gx_old => NULL(), &
@@ -242,6 +244,57 @@ CONTAINS
       next_step = SIGN(MAX(step_floor, 0.25_dp*ABS(previous_step)), previous_step)
 
    END FUNCTION ot_kpoint_diis_rejected_step
+
+! **************************************************************************************************
+!> \brief recover a contracted DIIS base step after a validated finite-response candidate
+!>
+!>        A rejected base candidate contracts the DIIS trust step, but that transient state may
+!>        otherwise survive indefinitely, including across exact minimizer restarts.  Recovery is
+!>        permitted only when an accepted finite complex response realizes a useful fraction of
+!>        its predicted Mermin decrease, remains inside the complete fixed-N residual trust region,
+!>        and does not worsen the rotation residual.  One recovery undoes half of a factor-four
+!>        rejection contraction; callers must restart Pulay history when the scale changes.
+!> \param previous_step current signed base step
+!> \param initial_step user-requested signed base step and recovery ceiling
+!> \param accepted_drop measured Mermin decrease of the accepted candidate
+!> \param model_work first-order Mermin work predicted for that candidate
+!> \param physical_ratio complete fixed-N residual ratio at the accepted endpoint
+!> \param rotation_ratio complex rotation-residual ratio at the accepted endpoint
+!> \param response_candidate true when the accepted candidate used the finite response
+!> \return retained or recovered signed base step
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_diis_accepted_response_step( &
+      previous_step, initial_step, accepted_drop, model_work, physical_ratio, rotation_ratio, &
+      response_candidate) RESULT(next_step)
+      REAL(KIND=dp), INTENT(IN)                          :: previous_step, initial_step, &
+                                                            accepted_drop, model_work, &
+                                                            physical_ratio, rotation_ratio
+      LOGICAL, INTENT(IN)                                :: response_candidate
+      REAL(KIND=dp)                                      :: next_step
+
+      LOGICAL                                            :: model_valid, residual_valid, step_valid
+
+      next_step = previous_step
+      step_valid = response_candidate .AND. previous_step*initial_step > 0.0_dp .AND. &
+                   ABS(previous_step) < HUGE(previous_step) .AND. &
+                   ABS(initial_step) < HUGE(initial_step) .AND. &
+                   ABS(previous_step) < ABS(initial_step)*(1.0_dp - 10.0_dp*EPSILON(1.0_dp))
+      IF (.NOT. step_valid) RETURN
+
+      model_valid = accepted_drop > 0.0_dp .AND. model_work > EPSILON(model_work) .AND. &
+                    accepted_drop < HUGE(accepted_drop) .AND. model_work < HUGE(model_work) .AND. &
+                    accepted_drop >= ot_diis_kp_rotation_response_min_work_ratio*model_work
+      residual_valid = physical_ratio > 0.0_dp .AND. rotation_ratio > 0.0_dp .AND. &
+                       physical_ratio < HUGE(physical_ratio) .AND. &
+                       rotation_ratio < HUGE(rotation_ratio) .AND. &
+                       physical_ratio <= SQRT(ot_cg_kp_mermin_residual_growth_ratio) .AND. &
+                       rotation_ratio <= 1.0_dp + 10.0_dp*EPSILON(rotation_ratio)
+      IF (.NOT. model_valid .OR. .NOT. residual_valid) RETURN
+
+      next_step = SIGN(MIN(ABS(initial_step), &
+                           ot_diis_kp_accepted_response_recovery*ABS(previous_step)), previous_step)
+
+   END FUNCTION ot_kpoint_diis_accepted_response_step
 
 ! **************************************************************************************************
 !> \brief decide whether a current Schur rotation response is a valid DIIS descent correction
@@ -1587,6 +1640,7 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%kpoint_subspace_accepted_samples)
       CALL para_env%bcast(qs_ot_env(1)%diis_last_candidate_response)
       CALL para_env%bcast(qs_ot_env(1)%diis_last_response_blend)
+      CALL para_env%bcast(qs_ot_env(1)%diis_last_response_model_work)
       CALL para_env%bcast(qs_ot_env(1)%diis_reference_rotation_gnorm)
       CALL para_env%bcast(qs_ot_env(1)%diis_raw_residual_ratio)
       CALL para_env%bcast(qs_ot_env(1)%diis_response_residual_ratio)
@@ -5363,15 +5417,16 @@ CONTAINS
       INTEGER                                            :: diis_bound, diis_m, direction_ready_all, &
                                                             group, handle, i, info, ispin, j, &
                                                             last_index, nfixed_groups, nspin
-      LOGICAL :: current_state_converged, do_ener, do_ks, do_ot_sd, &
+      LOGICAL :: current_state_converged, diis_trust_recovered, do_ener, do_ks, do_ot_sd, &
          kpoint_preconditioned_direction, kpoint_preconditioned_energy, &
          kpoint_preconditioned_rotation, kpoint_response_probe, mermin_energy_rejected, &
-         mermin_residual_rejected, mermin_step_rejected
-      REAL(KIND=dp) :: accepted_drop, accepted_residual_ratio, contracted_step, &
-         current_exit_delta, current_physical_delta, current_rotation_gnorm, norm_weight, nvar, &
-         overlap, previous_step, reference_energy, reference_physical_delta, &
-         reference_rotation_gnorm, rejected_energy, response_blend, response_model_work, &
-         rotation_raw_slope, rotation_response_slope, tmp, tr_xnew_gx, tr_xold_gx
+         mermin_residual_rejected, mermin_step_rejected, previous_response_candidate
+      REAL(KIND=dp) :: accepted_drop, accepted_physical_ratio, accepted_residual_ratio, &
+         contracted_step, current_exit_delta, current_physical_delta, current_rotation_gnorm, &
+         norm_weight, nvar, overlap, previous_response_model_work, previous_step, recovered_step, &
+         reference_energy, reference_physical_delta, reference_rotation_gnorm, rejected_energy, &
+         response_blend, response_model_work, rotation_raw_slope, rotation_response_slope, tmp, &
+         tr_xnew_gx, tr_xold_gx
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rotation_group_raw_slope, &
                                                             rotation_group_response_slope
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -5464,7 +5519,9 @@ CONTAINS
       mermin_step_rejected = .FALSE.
       mermin_energy_rejected = .FALSE.
       mermin_residual_rejected = .FALSE.
+      diis_trust_recovered = .FALSE.
       accepted_drop = -1.0_dp
+      accepted_physical_ratio = -1.0_dp
       accepted_residual_ratio = -1.0_dp
       current_physical_delta = -1.0_dp
       current_rotation_gnorm = -1.0_dp
@@ -5491,6 +5548,10 @@ CONTAINS
                                     reference_physical_delta, qs_ot_env(1)%kpoint_eps_scf)
          mermin_step_rejected = mermin_energy_rejected .OR. mermin_residual_rejected
          accepted_drop = MAX(0.0_dp, reference_energy - rejected_energy)
+         IF (.NOT. mermin_step_rejected .AND. current_physical_delta > 0.0_dp .AND. &
+             reference_physical_delta > 0.0_dp) THEN
+            accepted_physical_ratio = current_physical_delta/reference_physical_delta
+         END IF
          IF (.NOT. mermin_step_rejected .AND. current_rotation_gnorm > 0.0_dp .AND. &
              reference_rotation_gnorm > 0.0_dp) THEN
             accepted_residual_ratio = SQRT(current_rotation_gnorm/reference_rotation_gnorm)
@@ -5504,7 +5565,35 @@ CONTAINS
             END IF
          END IF
       END IF
-      IF (.NOT. mermin_step_rejected .AND. nfixed_groups > 1) THEN
+      previous_step = qs_ot_env(1)%ds_min
+      previous_response_model_work = qs_ot_env(1)%diis_last_response_model_work
+      previous_response_candidate = qs_ot_env(1)%diis_last_candidate_response
+      recovered_step = ot_kpoint_diis_accepted_response_step( &
+                       previous_step, qs_ot_env(1)%settings%ds_min, accepted_drop, &
+                       previous_response_model_work, accepted_physical_ratio, &
+                       accepted_residual_ratio, previous_response_candidate .AND. &
+                       .NOT. mermin_step_rejected)
+      diis_trust_recovered = ABS(recovered_step - previous_step) > &
+                             10.0_dp*EPSILON(previous_step)* &
+                             MAX(1.0_dp, ABS(previous_step), ABS(recovered_step))
+      IF (diis_trust_recovered) THEN
+         DO ispin = 1, nspin
+            qs_ot_env(ispin)%ds_min = recovered_step
+            qs_ot_env(ispin)%diis_last_candidate_sd = .TRUE.
+            qs_ot_env(ispin)%diis_last_candidate_response = .FALSE.
+            qs_ot_env(ispin)%diis_last_response_blend = 0.0_dp
+            qs_ot_env(ispin)%diis_last_response_model_work = 0.0_dp
+         END DO
+         ! The stored Pulay errors carry the old trust scale.  Rebuild history
+         ! from this accepted endpoint before using the recovered base step.
+         qs_ot_env(1)%diis_iter = 0
+         qs_ot_env(1)%ls_diis(:, :) = 0.0_dp
+         qs_ot_env(1)%lss_diis(:, :) = 0.0_dp
+         qs_ot_env(1)%c_diis(:) = 0.0_dp
+         qs_ot_env(1)%energy_h(:) = 0.0_dp
+      END IF
+      IF (.NOT. mermin_step_rejected .AND. .NOT. diis_trust_recovered .AND. &
+          nfixed_groups > 1) THEN
          kpoint_response_probe = ot_kpoint_diis_rotation_response_probe_ready( &
                                  kpoint_preconditioned_direction, &
                                  rotation_group_response_slope(1:nfixed_groups), &
@@ -5535,6 +5624,12 @@ CONTAINS
             qs_ot_env(1)%diis_response_residual_ratio, response_blend, &
             qs_ot_env(1)%diis_last_response_blend, &
             qs_ot_env(1)%diis_last_candidate_response
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),6(1X,ES16.8))') &
+            " OT DIIS trust recovery previous_response accepted old_step new_step model_work "// &
+            "physical_ratio rotation_ratio:", &
+            previous_response_candidate, diis_trust_recovered, accepted_drop, &
+            previous_step, recovered_step, previous_response_model_work, &
+            accepted_physical_ratio, accepted_residual_ratio
       END IF
       IF (mermin_step_rejected) THEN
          previous_step = qs_ot_env(1)%ds_min
@@ -5567,15 +5662,16 @@ CONTAINS
          END IF
          DO ispin = 1, nspin
             qs_ot_env(ispin)%ds_min = contracted_step
+            qs_ot_env(ispin)%diis_last_candidate_sd = .TRUE.
+            qs_ot_env(ispin)%diis_last_candidate_response = .FALSE.
+            qs_ot_env(ispin)%diis_last_response_blend = 0.0_dp
+            qs_ot_env(ispin)%diis_last_response_model_work = 0.0_dp
          END DO
          qs_ot_env(1)%diis_iter = 0
          qs_ot_env(1)%ls_diis(:, :) = 0.0_dp
          qs_ot_env(1)%lss_diis(:, :) = 0.0_dp
          qs_ot_env(1)%c_diis(:) = 0.0_dp
          qs_ot_env(1)%energy_h(:) = 0.0_dp
-         qs_ot_env(1)%diis_last_candidate_sd = .TRUE.
-         qs_ot_env(1)%diis_last_candidate_response = .FALSE.
-         qs_ot_env(1)%diis_last_response_blend = 0.0_dp
          qs_ot_env(1)%kpoint_physical_delta_ready = .FALSE.
          qs_ot_env(1)%kpoint_density_stationarity_ready = .FALSE.
          qs_ot_env(1)%kpoint_complete_physical_delta = -1.0_dp
@@ -6165,6 +6261,8 @@ CONTAINS
             kpoint_response_probe .AND. kpoint_preconditioned_rotation
          qs_ot_env(ispin)%diis_last_response_blend = &
             MERGE(response_blend, 0.0_dp, qs_ot_env(ispin)%diis_last_candidate_response)
+         qs_ot_env(ispin)%diis_last_response_model_work = &
+            MERGE(response_model_work, 0.0_dp, qs_ot_env(ispin)%diis_last_candidate_response)
       END DO
 
       CALL timestop(handle)

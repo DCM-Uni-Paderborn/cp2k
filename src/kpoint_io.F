@@ -78,7 +78,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 36
+   INTEGER, PARAMETER                   :: ot_restart_version = 37
    REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
    REAL(KIND=dp), PARAMETER             :: ot_restart_objective_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
@@ -668,7 +668,7 @@ CONTAINS
       LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: settings_log_payload
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: restart_positions
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
-      REAL(KIND=dp), DIMENSION(24)                       :: real_payload
+      REAL(KIND=dp), DIMENSION(25)                       :: real_payload
       REAL(KIND=dp), DIMENSION(3)                        :: smear_real_payload
       REAL(KIND=dp), DIMENSION(53)                       :: ot_energy_payload, ot_grad_payload, &
                                                             ot_pos_payload
@@ -817,7 +817,8 @@ CONTAINS
                          qs_ot_env(ichannel)%diis_last_response_blend, &
                          qs_ot_env(ichannel)%diis_reference_rotation_gnorm, &
                          qs_ot_env(ichannel)%diis_raw_residual_ratio, &
-                         qs_ot_env(ichannel)%diis_response_residual_ratio]
+                         qs_ot_env(ichannel)%diis_response_residual_ratio, &
+                         qs_ot_env(ichannel)%diis_last_response_model_work]
          schur_int_payload = [qs_ot_env(ichannel)%schur_projector_density_quality_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_audit_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_descent_quality_samples, &
@@ -1522,7 +1523,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload_v26
       REAL(KIND=dp), DIMENSION(20)                       :: real_payload_v16, real_payload_v35
-      REAL(KIND=dp), DIMENSION(24)                       :: real_payload
+      REAL(KIND=dp), DIMENSION(24)                       :: real_payload_v36
+      REAL(KIND=dp), DIMENSION(25)                       :: real_payload
       REAL(KIND=dp), DIMENSION(3)                        :: smear_real_payload
       REAL(KIND=dp), DIMENSION(3, 3)                     :: restart_hmat
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
@@ -1667,10 +1669,15 @@ CONTAINS
          adaptive_real_payload(:) = 0.0_dp
          real_payload(:) = 0.0_dp
          IF (para_env%is_source()) THEN
-            IF (version_read >= 36) THEN
+            IF (version_read >= 37) THEN
                READ (rst_unit) int_payload
                READ (rst_unit) log_payload
                READ (rst_unit) real_payload
+            ELSE IF (version_read == 36) THEN
+               READ (rst_unit) int_payload
+               READ (rst_unit) log_payload
+               READ (rst_unit) real_payload_v36
+               real_payload(1:24) = real_payload_v36
             ELSE IF (version_read >= 27) THEN
                READ (rst_unit) int_payload_v35
                READ (rst_unit) log_payload_v35
@@ -1954,6 +1961,7 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%diis_reference_rotation_gnorm = real_payload(22)
          scf_env%qs_ot_restart%channel(ichannel)%diis_raw_residual_ratio = real_payload(23)
          scf_env%qs_ot_restart%channel(ichannel)%diis_response_residual_ratio = real_payload(24)
+         scf_env%qs_ot_restart%channel(ichannel)%diis_last_response_model_work = real_payload(25)
          scf_env%qs_ot_restart%channel(ichannel)%density_quality_samples = schur_int_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%density_audit_samples = schur_int_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_quality_samples = schur_int_payload(3)

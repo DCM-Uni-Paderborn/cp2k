@@ -67,23 +67,24 @@ PROGRAM qs_ot_frechet_unittest
                                               qs_ot_ref_update_required
    USE qs_ot_minimizer,                 ONLY: &
         ot_kpoint_cg_metric_history_reset, ot_kpoint_cg_residual_growth_guard, &
-        ot_kpoint_cg_tail_metric_tracked, ot_kpoint_diis_mermin_step_rejected, &
-        ot_kpoint_diis_rejected_step, ot_kpoint_diis_residual_step_rejected, &
-        ot_kpoint_diis_response_endpoint_ratio, ot_kpoint_diis_response_residual_blend, &
-        ot_kpoint_diis_rotation_response_probe_ready, ot_kpoint_diis_rotation_response_ready, &
-        ot_kpoint_fermi_window_direction_scale, ot_kpoint_fermi_window_energy_coordinate, &
-        ot_kpoint_mermin_candidate_restart_step, ot_kpoint_mermin_closure_response_quality, &
-        ot_kpoint_mermin_current_guard_delta, ot_kpoint_mermin_derivative_refinement, &
-        ot_kpoint_mermin_endpoint_status, ot_kpoint_mermin_energy_curvature_resolved, &
-        ot_kpoint_mermin_full_direction_model, ot_kpoint_mermin_projected_reference_ready, &
-        ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
-        ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
-        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
-        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
-        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_exit_delta, &
-        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
-        ot_kpoint_rayleigh_probe_position, ot_kpoint_rayleigh_response_scale, &
-        ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
+        ot_kpoint_cg_tail_metric_tracked, ot_kpoint_diis_accepted_response_step, &
+        ot_kpoint_diis_mermin_step_rejected, ot_kpoint_diis_rejected_step, &
+        ot_kpoint_diis_residual_step_rejected, ot_kpoint_diis_response_endpoint_ratio, &
+        ot_kpoint_diis_response_residual_blend, ot_kpoint_diis_rotation_response_probe_ready, &
+        ot_kpoint_diis_rotation_response_ready, ot_kpoint_fermi_window_direction_scale, &
+        ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
+        ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
+        ot_kpoint_mermin_derivative_refinement, ot_kpoint_mermin_endpoint_status, &
+        ot_kpoint_mermin_energy_curvature_resolved, ot_kpoint_mermin_full_direction_model, &
+        ot_kpoint_mermin_projected_reference_ready, ot_kpoint_mermin_recovery_active_tail, &
+        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
+        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
+        ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
+        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
+        ot_kpoint_physical_exit_delta, ot_kpoint_physical_residual_split, &
+        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_probe_position, &
+        ot_kpoint_rayleigh_response_scale, ot_kpoint_residual_aware_rayleigh_model, &
+        ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: &
         ot_metallic_variable_defaults, qs_ot_kpoint_preconditioner_solver_supported, &
@@ -6021,6 +6022,14 @@ CONTAINS
                .NOT. qs_scf_kp_density_closure_refresh_ready( &
                5.25951362E-5_dp, 5.02182192E-4_dp, 1.0E-5_dp, 3.17580287E-3_dp, 24) .OR. &
                qs_scf_kp_density_closure_refresh_ready( &
+               5.3E-5_dp, 6.0E-4_dp, 1.0E-6_dp, 7.3E-4_dp, 12) .OR. &
+               .NOT. qs_scf_kp_density_closure_refresh_ready( &
+               5.3E-5_dp, 6.0E-4_dp, 1.0E-6_dp, 7.3E-4_dp, 24) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               5.3E-5_dp, 1.5E-4_dp, 1.0E-6_dp, 7.3E-4_dp, 24) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               5.3E-5_dp, 6.0E-4_dp, 1.0E-6_dp, 2.0E-3_dp, 24) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
                8.0E-7_dp, 8.0E-7_dp, eps_scf) .OR. &
                .NOT. qs_scf_kp_density_closure_buffer_ready(.FALSE., 4, 13) .OR. &
                qs_scf_kp_density_closure_buffer_ready(.TRUE., 8, 17) .OR. &
@@ -6491,6 +6500,29 @@ CONTAINS
                                0.15_dp, 0.15_dp, 1.0E-16_dp, .TRUE.) - 0.0375_dp) > 1.0E-15_dp
       failed = failed .OR. ABS(ot_kpoint_diis_rejected_step( &
                                -0.08_dp, 0.08_dp, 1.0E-16_dp, .TRUE.) + 0.02_dp) > 1.0E-15_dp
+      ! A productive accepted finite-response candidate gradually restores a historically
+      ! contracted base step, but only while both physical residual checks remain trustworthy.
+      failed = failed .OR. ABS(ot_kpoint_diis_accepted_response_step( &
+                               0.02_dp, 0.08_dp, 1.30E-5_dp, 1.37E-5_dp, &
+                               1.01_dp, 0.999_dp, .TRUE.) - 0.04_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_accepted_response_step( &
+                               0.04_dp, 0.08_dp, 1.30E-5_dp, 1.37E-5_dp, &
+                               1.01_dp, 0.999_dp, .TRUE.) - 0.08_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_accepted_response_step( &
+                               0.08_dp, 0.08_dp, 1.30E-5_dp, 1.37E-5_dp, &
+                               1.01_dp, 0.999_dp, .TRUE.) - 0.08_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_accepted_response_step( &
+                               0.02_dp, 0.08_dp, 1.0E-7_dp, 1.37E-5_dp, &
+                               1.01_dp, 0.999_dp, .TRUE.) - 0.02_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_accepted_response_step( &
+                               0.02_dp, 0.08_dp, 1.30E-5_dp, 1.37E-5_dp, &
+                               1.30_dp, 0.999_dp, .TRUE.) - 0.02_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_accepted_response_step( &
+                               0.02_dp, 0.08_dp, 1.30E-5_dp, 1.37E-5_dp, &
+                               1.01_dp, 1.001_dp, .TRUE.) - 0.02_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_accepted_response_step( &
+                               0.02_dp, 0.08_dp, 1.30E-5_dp, 1.37E-5_dp, &
+                               1.01_dp, 0.999_dp, .FALSE.) - 0.02_dp) > 1.0E-15_dp
       ! The current finite-complex response must be globally finite and a strict descent.
       failed = failed .OR. .NOT. ot_kpoint_diis_rotation_response_ready( &
                .TRUE., [2.0_dp], [1.0_dp], .FALSE.)

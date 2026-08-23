@@ -2,7 +2,8 @@
 ! metallic OT case. Run the source input first in the same directory. The six
 ! complex (spin,k-point) channels, DIIS state, and adaptive 25-MO spaces must
 ! be restored without replaying the (4,6)->(8,10)->(16,18) AUTO growth. This
-! input is intentionally not listed in TEST_FILES.toml.
+! input is intentionally not listed in TEST_FILES.toml. A matching v37
+! payload converges in one step at F=-123.63311571681535 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Fe_kp_ot_uks_added_auto_full3_diis_restart
@@ -31,7 +32,7 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 260
+      MAX_SCF 4
       SCF_GUESS RESTART
       &OT
         ENERGIES

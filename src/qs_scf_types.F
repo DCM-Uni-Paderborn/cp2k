@@ -151,6 +151,7 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: mermin_ls_accepted_gap = 0.0_dp
       REAL(KIND=dp) :: mermin_ls_accepted_gap_ema = 0.0_dp
       REAL(KIND=dp) :: diis_last_response_blend = 0.0_dp
+      REAL(KIND=dp) :: diis_last_response_model_work = 0.0_dp
       REAL(KIND=dp) :: diis_reference_rotation_gnorm = -1.0_dp
       REAL(KIND=dp) :: diis_raw_residual_ratio = -1.0_dp
       REAL(KIND=dp) :: diis_response_residual_ratio = -1.0_dp

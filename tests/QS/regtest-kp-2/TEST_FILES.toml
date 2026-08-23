@@ -209,6 +209,11 @@
 # -123.633115713999 Ha, consistent with the CG endpoint -123.63311572 Ha.
 # Fe_kp_ot_uks_added_auto_sym3_diis_restart.inp checks the matching multi-group
 # DIIS restart without replaying the AUTO growth sequence.
+# Fe_kp_ot_uks_added_auto_full3_diis_converge.inp is the complementary six-channel
+# FULL_GRID/SYMMETRY OFF physics check. Its AUTO buffers follow the same growth
+# sequence and converge in 199 MPI-2/OMP-2 final-space steps at
+# -123.63311571681535 Ha. The matching v37 restart companion closes in one step
+# without replaying AUTO growth or rebuilding the physical subspace.
 # Fe_kp_diag_uks_fermi_sym3_converge.inp uses stable direct density mixing to
 # refine that endpoint to EPS_SCF=1E-8 in 40 steps; its free energy differs by
 # only 7.5E-9 Ha. The matching unlisted OT/diagonalization force companions at

@@ -265,6 +265,7 @@ MODULE qs_ot_types
       ! ratios across compatible restarts and relearn them after a subspace change.
       LOGICAL          :: diis_last_candidate_response = .FALSE.
       REAL(KIND=dp)    :: diis_last_response_blend = 0.0_dp
+      REAL(KIND=dp)    :: diis_last_response_model_work = 0.0_dp
       REAL(KIND=dp)    :: diis_reference_rotation_gnorm = -1.0_dp
       REAL(KIND=dp)    :: diis_raw_residual_ratio = -1.0_dp
       REAL(KIND=dp)    :: diis_response_residual_ratio = -1.0_dp
@@ -1407,6 +1408,7 @@ CONTAINS
       qs_ot_env%diis_last_candidate_sd = .TRUE.
       qs_ot_env%diis_last_candidate_response = .FALSE.
       qs_ot_env%diis_last_response_blend = 0.0_dp
+      qs_ot_env%diis_last_response_model_work = 0.0_dp
       qs_ot_env%diis_reference_rotation_gnorm = -1.0_dp
       qs_ot_env%diis_raw_residual_ratio = -1.0_dp
       qs_ot_env%diis_response_residual_ratio = -1.0_dp
@@ -2982,6 +2984,7 @@ CONTAINS
       qs_ot_env%kpoint_subspace_accepted_samples = 0
       qs_ot_env%diis_last_candidate_response = .FALSE.
       qs_ot_env%diis_last_response_blend = 0.0_dp
+      qs_ot_env%diis_last_response_model_work = 0.0_dp
       qs_ot_env%diis_reference_rotation_gnorm = -1.0_dp
       qs_ot_env%diis_raw_residual_ratio = -1.0_dp
       qs_ot_env%diis_response_residual_ratio = -1.0_dp
