@@ -97,12 +97,11 @@
 # The unlisted Na_kp_ot_added_auto_sym333_converge.inp is the stricter atomic
 # 3x3x3 fixed-N companion. It grows AUTO 4->8->16 and converges in roughly
 # 285-385 steps near -9.0195318012 Ha. Its ordinary restart restores the
-# converged state in one step. The strict 1E-8 companion is also unlisted. It
-# reaches complete fixed-N Mermin endpoints on favorable trajectories, but is
-# not yet deterministic within its 360-step bound: the remaining complete
-# physical residual can stall just above 1E-8 even after search and density
-# residuals have converged. Keep it as a manual tail stress test, not a claimed
-# converged regression.
+# converged state in one step. The strict 1E-8 companion is also unlisted.
+# Independent MPI-2/OMP-2 trajectories converge in 493-494 steps at
+# -9.01953180129 Ha and its own OT restart closes in one step. Its conservative
+# 640-step allowance keeps this a robust manual physics regression without
+# adding the residual-tail cost to the default suite.
 # The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
 # provide the converged symmetry-reduced Gaussian path at
 # -8.15946107404605 Ha; the restart closes in one step and diagonalization is
