@@ -8029,13 +8029,14 @@ CONTAINS
 !> \brief Detect a bounded mixed residual tail in a stale metallic OT subspace.
 !>
 !>        A stale minimizer history can keep both the canonical density and complete physical
-!>        residual just above EPS_SCF while the raw search metric and complete physical audit
-!>        disagree substantially.
-!>        In that state the response-derived AUTO basis signal is never sampled, so the represented
-!>        MO space cannot grow.  Rebase only after a mature accepted history and inside a tightly
-!>        bounded asymptotic basin. This applies both before AUTO growth and when the AO basis is
-!>        already exhausted: a full KS rebuild can repair the represented physical subspace in
-!>        either case.
+!>        residual just above EPS_SCF while either the raw search metric and complete physical
+!>        audit disagree substantially or the complete orbital block dominates the independently
+!>        measured canonical-density block.
+!>        In either state adaptive MO growth cannot repair the current REF span: its response signal
+!>        may be unavailable, or the represented upper occupation edge is already empty. Rebase only
+!>        after a mature accepted history and inside a tightly bounded asymptotic basin. This applies
+!>        both before AUTO growth and when the AO basis is already exhausted: a full KS rebuild can
+!>        repair the represented physical subspace in either case.
 !> \param density_ready canonical fixed-N density audit is valid for the current orbitals
 !> \param density_delta canonical fixed-N density stationarity residual
 !> \param physical_delta complete physical OT residual
@@ -8054,6 +8055,8 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: accepted_samples
       LOGICAL                                            :: ready
 
+      LOGICAL                                            :: orbital_density_mismatch, &
+                                                            search_metric_mismatch
       REAL(KIND=dp)                                      :: density_upper, eps, physical_upper, &
                                                             raw_upper
 
@@ -8061,12 +8064,15 @@ CONTAINS
       density_upper = MIN(50.0_dp*eps, SQRT(eps))
       physical_upper = MIN(100.0_dp*eps, SQRT(eps))
       raw_upper = MIN(100.0_dp*eps, SQRT(eps))
+      search_metric_mismatch = MAX(raw_delta, physical_delta) >= &
+         2.0_dp*MIN(raw_delta, physical_delta)
+      orbital_density_mismatch = physical_delta >= 2.0_dp*density_delta
       ready = density_ready .AND. &
               accepted_samples >= 32 .AND. &
               density_delta > eps .AND. density_delta <= density_upper .AND. &
               physical_delta > eps .AND. physical_delta <= physical_upper .AND. &
               raw_delta > eps .AND. raw_delta <= raw_upper .AND. &
-              MAX(raw_delta, physical_delta) >= 2.0_dp*MIN(raw_delta, physical_delta)
+              (search_metric_mismatch .OR. orbital_density_mismatch)
 
    END FUNCTION qs_scf_kp_mixed_tail_rebase_ready
 

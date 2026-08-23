@@ -6119,6 +6119,11 @@ CONTAINS
       failed = failed .OR. .NOT. qs_scf_kp_mixed_tail_rebase_ready( &
                .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 33)
+      ! Measured Al tail: the complete complex orbital residual dominates the
+      ! canonical-density block while the raw search metric remains comparable.
+      failed = failed .OR. .NOT. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 4.51581499E-6_dp, 2.38535070E-5_dp, &
+               1.5E-5_dp, 1.0E-6_dp, 32)
       failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
                .FALSE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 33)
@@ -6131,6 +6136,9 @@ CONTAINS
       failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
                .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
                5.9E-6_dp, 1.0E-6_dp, 33)
+      failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 8.0E-6_dp, 1.2E-5_dp, &
+               8.0E-6_dp, 1.0E-6_dp, 33)
       failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
                .TRUE., 5.1E-5_dp, 3.01513481E-6_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 33)
