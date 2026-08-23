@@ -29416,29 +29416,6 @@ CONTAINS
                         " OT Schur dense metric step character group att gap gauge fermi gratio q:", &
                         target_group, schur_attempt, projector_step_gap_norm, projector_step_gauge_norm, &
                         projector_step_fermi_norm, projector_step_gauge_ratio, projector_step_gauge_quality
-                     IF (metric_attempt_tail_bridge) &
-                        WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),8(1X,ES16.8))') &
-                        " OT Schur dense metric tail bridge group att gate_q gate_ema rq mqema raw_q cal_q "// &
-                        "scale cdrop:", &
-                        target_group, schur_attempt, dense_coupled_gate_quality, &
-                        dense_coupled_gate_quality_ema, dense_residual_quality, &
-                        local_ot_env(1)%mermin_ls_accepted_quality_ema, &
-                        local_ot_env(1)%schur_coupled_quality, &
-                        local_ot_env(1)%schur_coupled_calibrated_quality, direction_scale, &
-                        model_calibrated_drop
-                     IF (metric_attempt_current_bridge) &
-                        WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),15(1X,ES16.8))') &
-                        " OT Schur dense metric current bridge group att shn gate_q gate_ema rq mqema "// &
-                        "shq shema trust mscale mp bscale bdrop bgdropq bratio scale cdrop:", &
-                        target_group, schur_attempt, &
-                        local_ot_env(1)%schur_dense_metric_shadow_quality_samples, &
-                        dense_coupled_gate_quality, dense_coupled_gate_quality_ema, dense_residual_quality, &
-                        local_ot_env(1)%mermin_ls_accepted_quality_ema, &
-                        local_ot_env(1)%schur_dense_metric_shadow_quality, &
-                        local_ot_env(1)%schur_dense_metric_shadow_quality_ema, dense_metric_trust_scale, &
-                        dense_metric_scale_ratio, dense_metric_normp, dense_metric_bridge_scale, &
-                        dense_metric_bridge_drop, dense_metric_bridge_gap_drop_ratio, &
-                        dense_metric_bridge_gap_ratio, direction_scale, model_calibrated_drop
                   END IF
                END IF
             END IF
