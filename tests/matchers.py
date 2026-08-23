@@ -58,6 +58,14 @@ registry["ADDED_MOS_AUTO_GROW_SEQUENCE"] = IntSequenceMatcher(
 registry["Electronic_entropic_energy"] = GenericMatcher(
     r"Electronic entropic energy:", col=4
 )
+registry["TBLITE_alpha_population"] = GenericMatcher(
+    r"^\s*#\s+Total charge and spin\s+([-+0-9.EeDd]+)", col=1, regex=True
+)
+registry["TBLITE_beta_population"] = GenericMatcher(
+    r"^\s*#\s+Total charge and spin\s+[-+0-9.EeDd]+\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
 registry["Cell_volume"] = GenericMatcher(
     r"CELL\| Volume \[angstrom\^3\]:\s+([-+0-9.EeDd]+)", col=1, regex=True
 )
@@ -292,6 +300,11 @@ registry["OT_KPOINT_DEFAULT_PRECONDITIONER"] = TextPresenceMatcher(
 )
 registry["OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"] = TextPresenceMatcher(
     "K-point OT smearing default: PRECONDITIONER FULL_ALL"
+)
+registry["OT_ROTATION_ACTIVE"] = TextPresenceMatcher("Allowing for rotations")
+registry["OT_ENERGIES_ACTIVE"] = TextPresenceMatcher("Optimizing orbital energies")
+registry["OT_OCCUPATION_PRECONDITIONER_ACTIVE"] = TextPresenceMatcher(
+    "Using occupation preconditioner"
 )
 registry["OT_KPOINT_REBUILT_PHYSICAL_SUBSPACE"] = TextPresenceMatcher(
     "K-point OT: rebuilding physical virtual subspace by full KS diagonalization."

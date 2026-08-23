@@ -1,0 +1,64 @@
+! Restart companion for spin- and k-point-resolved metallic OT.
+! The source input is immediately before this test in TEST_FILES.toml.
+&GLOBAL
+  PRINT_LEVEL MEDIUM
+  PROJECT Al_fcc_gfn1_kp_ot_uks_common_mu_restart
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  &DFT
+    MULTIPLICITY 2
+    UKS TRUE
+    WFN_RESTART_FILE_NAME Al_fcc_gfn1_kp_ot_uks_common_mu-RESTART.kp
+    &KPOINTS
+      EPS_GEO 1.0E-8
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY ON
+      VERBOSE T
+    &END KPOINTS
+    &QS
+      METHOD xTB
+      &XTB
+        GFN_TYPE TBLITE
+        &TBLITE
+          METHOD GFN1
+        &END TBLITE
+      &END XTB
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-6
+      MAX_SCF 5
+      SCF_GUESS RESTART
+      &OT
+        ENERGIES
+        LINESEARCH 2PNT
+        MINIMIZER CG
+        ROTATION
+      &END OT
+      &PRINT
+        &RESTART OFF
+        &END RESTART
+      &END PRINT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 300
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 2.8637824638 2.8637824638 2.8637824638
+      ALPHA_BETA_GAMMA 60.0 60.0 60.0
+      PERIODIC XYZ
+    &END CELL
+    &COORD
+      Al 0.0 0.0 0.0
+    &END COORD
+    &KIND Al
+      MAGNETIZATION 1.0
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL
