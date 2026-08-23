@@ -1,8 +1,9 @@
-! Fresh-process readback of the converged two-channel metallic OT state,
-! including the adaptive MO space and minimizer history.
+! Independent diagonalization reference for the compact converged metallic OT
+! regression. The simple-cubic one-atom cell retains a finite Fermi window and
+! reduces the 3x1x1 mesh to two irreducible k points.
 &GLOBAL
   PRINT_LEVEL LOW
-  PROJECT Al_kp_ot_restart_read
+  PROJECT Al_sc_kp_diag_fermi
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -11,7 +12,6 @@
   &DFT
     BASIS_SET_FILE_NAME BASIS_SET
     POTENTIAL_FILE_NAME POTENTIAL
-    WFN_RESTART_FILE_NAME Al_kp_ot_restart-RESTART.kp
     &KPOINTS
       FULL_GRID OFF
       SCHEME MONKHORST-PACK 3 1 1
@@ -29,15 +29,17 @@
     &END QS
     &SCF
       ADDED_MOS AUTO
-      EPS_SCF 1.0E-7
-      MAX_SCF 10
-      SCF_GUESS RESTART
-      &OT
-        ENERGIES
-        LINESEARCH 2PNT
-        MINIMIZER CG
-        ROTATION
-      &END OT
+      EPS_SCF 1.0E-8
+      MAX_SCF 80
+      SCF_GUESS ATOMIC
+      &DIAGONALIZATION
+        ALGORITHM STANDARD
+      &END DIAGONALIZATION
+      &MIXING
+        ALPHA 0.2
+        METHOD BROYDEN_MIXING
+        NBUFFER 8
+      &END MIXING
       &SMEAR
         ELECTRONIC_TEMPERATURE 300
         METHOD FERMI_DIRAC

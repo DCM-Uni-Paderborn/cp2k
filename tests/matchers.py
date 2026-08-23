@@ -53,6 +53,12 @@ registry["ADDED_MOS_AUTO_GROW_SEQUENCE"] = IntSequenceMatcher(
 registry["Electronic_entropic_energy"] = GenericMatcher(
     r"Electronic entropic energy:", col=4
 )
+registry["Atomic_force_1_x"] = GenericMatcher(
+    r"FORCES\|\s+1\s+([-+0-9.EeDd]+)", col=1, regex=True
+)
+registry["Atomic_force_2_x"] = GenericMatcher(
+    r"FORCES\|\s+2\s+([-+0-9.EeDd]+)", col=1, regex=True
+)
 
 registry["M002"] = GenericMatcher(r"MD| Potential energy", col=5)
 registry["M003"] = GenericMatcher(r"Total energy [eV]:", col=4)
@@ -278,6 +284,9 @@ registry["OT_KPOINT_DEFAULT_PRECONDITIONER"] = TextPresenceMatcher(
 )
 registry["OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"] = TextPresenceMatcher(
     "K-point OT smearing default: PRECONDITIONER FULL_ALL"
+)
+registry["OT_KPOINT_REBUILT_PHYSICAL_SUBSPACE"] = TextPresenceMatcher(
+    "K-point OT: rebuilding physical virtual subspace by full KS diagonalization."
 )
 registry["OT_PRECONDITIONER_FULL_SINGLE_INVERSE"] = TextPresenceMatcher(
     "Preconditioner : FULL_SINGLE_INVERSE"

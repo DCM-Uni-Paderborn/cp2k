@@ -59,6 +59,45 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
+"Al_sc_kp_diag_fermi.inp"              = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035261533},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035261533},
+                                           {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-2.06508035261533},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.1232462562E-4},
+                                           {matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
+                                           {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
+                                           {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
+                                           {matcher="NO_TEXT", text="SCF run NOT converged"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
+"Al_sc2_kp_diag_fermi_force.inp"       = [{matcher="E_total", tol=1.0E-10, ref=-4.00707460571299},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-4.00707460571299},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-7, ref=-6.5336232E-7},
+                                           {matcher="Atomic_force_1_x", tol=1.0E-6, ref=-5.16503074E-2},
+                                           {matcher="Atomic_force_2_x", tol=1.0E-6, ref=5.16503070E-2},
+                                           {matcher="M031", tol=1.0E-6, ref=2.36447518958E+4},
+                                           {matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
+                                           {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
+                                           {matcher="NO_TEXT", text="SCF run NOT converged"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
+"Al_sc2_kp_ot_fermi_force.inp"         = [{matcher="E_total", tol=1.0E-10, ref=-4.00707460568386},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-4.00707460568386},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-7, ref=-6.5336232E-7},
+                                           {matcher="Atomic_force_1_x", tol=1.0E-6, ref=-5.16503074E-2},
+                                           {matcher="Atomic_force_2_x", tol=1.0E-6, ref=5.16503070E-2},
+                                           {matcher="M031", tol=1.0E-6, ref=2.36447518958E+4},
+                                           {matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
+                                           {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
+                                           {matcher="SCF_guess_restart"},
+                                           {matcher="OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"},
+                                           {matcher="OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"},
+                                           {matcher="OT_KPOINT_REBUILT_PHYSICAL_SUBSPACE"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the first band"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="SCF run NOT converged"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_diag_uks_added_all.inp"          = [{matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="NO_TEXT", text="CPASSERT failed"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
@@ -117,31 +156,44 @@
 # roughly 150-180 steps near -123.63311572 Ha, within 5E-9 Ha of the CG endpoint.
 # Keep these physics checks manual so the registered restart/AUTO coverage
 # remains inexpensive.
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-8.12746952989461},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.12746952989461},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.004898018E-5},
-                                           {matcher="N_kpoints", tol=0.0, ref=1},
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035093907},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035093907},
+                                           {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-2.06508035093907},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.1232462562E-4},
+                                           {matcher="OT_SCF_convergence", tol=8.0E-1, ref=6.0E-8},
+                                           {matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
+                                           {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
+                                           {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
+                                           {matcher="ADDED_MOS_AUTO_GROW_SEQUENCE", ref="8"},
+                                           {matcher="OT_KPOINT_DEFAULT_IRAC"},
+                                           {matcher="OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"},
+                                           {matcher="OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="SCF run NOT converged"},
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-# Write/read remain short default restart-I/O smokes. The unlisted bounded
-# continue job is the converged 1E-6 physics anchor: it preserves the adaptive
-# history, allows one bounded reader step, and retains finite entropy. Keep the early
-# one-k-point smoke references strict.  Their current values include the
-# line-search-consistent adaptive canonical tether, which is fixed for all
-# trial points belonging to one accepted gradient. Depending on roundoff and
-# execution layout, Continue converges in roughly 100-185 of 220 MPI-2/OMP-2
-# steps in a fresh chain and remains within 2.5E-8 Ha of
-# the tightly converged diagonalization reference
-# -8.14585309375351 Ha.
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.12889290253133},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.12889290253133},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-9.843838368E-5},
-                                           {matcher="N_kpoints", tol=0.0, ref=1},
+# The writer is a converged finite-entropy physics test, not an early smoke.
+# It agrees with Al_sc_kp_diag_fermi.inp within 1.7E-9 Ha. The reader restores
+# both irreducible k-point channels, the adaptively grown eight-MO space, and
+# the minimizer payload in a fresh process.
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035093907},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035093907},
+                                           {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-2.06508035093907},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.1232462562E-4},
+                                           {matcher="OT_SCF_convergence", tol=8.0E-1, ref=6.0E-8},
+                                           {matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
+                                           {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="SCF run NOT converged"},
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_restart_sym3_write.inp"       = [{matcher="N_kpoints", tol=0.0, ref=2},

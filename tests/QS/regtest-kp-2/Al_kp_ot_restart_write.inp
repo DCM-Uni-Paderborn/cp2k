@@ -1,3 +1,5 @@
+! Compact converged metallic k-point OT restart writer. The matching
+! diagonalization reference is Al_sc_kp_diag_fermi.inp.
 &GLOBAL
   PRINT_LEVEL LOW
   PROJECT Al_kp_ot_restart
@@ -11,7 +13,7 @@
     POTENTIAL_FILE_NAME POTENTIAL
     &KPOINTS
       FULL_GRID OFF
-      SCHEME MONKHORST-PACK 2 1 1
+      SCHEME MONKHORST-PACK 3 1 1
       SYMMETRY ON
     &END KPOINTS
     &MGRID
@@ -25,18 +27,14 @@
       EPS_DEFAULT 1.0E-8
     &END QS
     &SCF
-      ADDED_MOS 12
-      EPS_SCF 1.0E-6
-      IGNORE_CONVERGENCE_FAILURE
-      MAX_SCF 20
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-7
+      MAX_SCF 80
       SCF_GUESS ATOMIC
       &OT
-        ALGORITHM IRAC
         ENERGIES
         LINESEARCH 2PNT
         MINIMIZER CG
-        OCCUPATION_PRECONDITIONER
-        PRECONDITIONER FULL_ALL
         ROTATION
       &END OT
       &PRINT
@@ -59,13 +57,11 @@
   &END DFT
   &SUBSYS
     &CELL
-      ABC 6.0 6.0 6.0
+      ABC 4.05 4.05 4.05
     &END CELL
     &COORD
-      Al        -0.4201082476       -0.4201082770       -0.4201082658
-      Al         2.1120503717        0.1540265147        0.1540265525
-      Al         0.1540266214        2.1120506065        0.1540265605
-      Al         0.1540266183        0.1540265196        2.1120505165
+      SCALED
+      Al 0.0 0.0 0.0
     &END COORD
     &KIND Al
       BASIS_SET DZVP-GTH-PADE-CONFINED
