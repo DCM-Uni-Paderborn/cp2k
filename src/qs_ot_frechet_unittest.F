@@ -6029,6 +6029,16 @@ CONTAINS
                5.3E-5_dp, 1.5E-4_dp, 1.0E-6_dp, 7.3E-4_dp, 24) .OR. &
                qs_scf_kp_density_closure_refresh_ready( &
                5.3E-5_dp, 6.0E-4_dp, 1.0E-6_dp, 2.0E-3_dp, 24) .OR. &
+               .NOT. qs_scf_kp_density_closure_refresh_ready( &
+               1.3E-6_dp, 1.5E-6_dp, eps_scf, 8.0E-7_dp, 24) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               1.3E-6_dp, 1.5E-6_dp, eps_scf, 8.0E-7_dp, 12) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               1.3E-6_dp, 1.5E-6_dp, eps_scf) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               1.3E-6_dp, 1.5E-6_dp, eps_scf, 1.3E-6_dp, 24) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               1.3E-6_dp, 1.5E-6_dp, eps_scf, 8.0E-7_dp, 24, .FALSE.) .OR. &
                qs_scf_kp_density_closure_refresh_ready( &
                8.0E-7_dp, 8.0E-7_dp, eps_scf) .OR. &
                .NOT. qs_scf_kp_density_closure_buffer_ready(.FALSE., 4, 13) .OR. &

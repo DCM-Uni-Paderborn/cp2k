@@ -7877,26 +7877,35 @@ CONTAINS
 !> \param eps_scf requested SCF threshold
 !> \param complete_physical_delta optional complete Re/Im fixed-N physical-residual audit
 !> \param accepted_samples optional independent accepted states since the previous subspace rebuild
+!> \param same_fixed_n_group optional flag that the global density and physical maxima belong to one
+!>        common fixed-N group
 !> \return true when canonical density closure is the dominant asymptotic block
 ! **************************************************************************************************
    PURE FUNCTION qs_scf_kp_density_closure_refresh_ready( &
-      physical_delta, density_delta, eps_scf, complete_physical_delta, accepted_samples) RESULT(ready)
+      physical_delta, density_delta, eps_scf, complete_physical_delta, accepted_samples, &
+      same_fixed_n_group) RESULT(ready)
 
       REAL(KIND=dp), INTENT(IN)                          :: physical_delta, density_delta, eps_scf
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: complete_physical_delta
       INTEGER, INTENT(IN), OPTIONAL                      :: accepted_samples
+      LOGICAL, INTENT(IN), OPTIONAL                      :: same_fixed_n_group
       LOGICAL                                            :: ready
 
-      LOGICAL                                            :: complete_residual_ready, &
-                                                            persistent_density_mismatch
+      LOGICAL                                            :: comparable_group_residuals, &
+                                                            complete_residual_ready, &
+                                                            persistent_density_mismatch, &
+                                                            stale_ref_mismatch
       REAL(KIND=dp)                                      :: asymptotic_delta, closure_crossover, &
                                                             complete_residual, eps
 
       eps = MAX(eps_scf, EPSILON(1.0_dp))
       asymptotic_delta = MAX(eps, SQRT(eps))
       closure_crossover = SQRT(eps*MAX(density_delta, 0.0_dp))
+      comparable_group_residuals = .TRUE.
+      IF (PRESENT(same_fixed_n_group)) comparable_group_residuals = same_fixed_n_group
       complete_residual_ready = .TRUE.
       persistent_density_mismatch = .FALSE.
+      stale_ref_mismatch = .FALSE.
       IF (PRESENT(complete_physical_delta)) THEN
          complete_residual = ot_kpoint_physical_exit_delta(physical_delta, complete_physical_delta)
          complete_residual_ready = complete_residual <= MIN(asymptotic_delta, closure_crossover)
@@ -7905,6 +7914,18 @@ CONTAINS
          ! but allow it after a second independent history window has established persistence.
          IF (.NOT. complete_residual_ready .AND. PRESENT(accepted_samples)) &
             complete_residual_ready = accepted_samples >= 2*ot_kp_subspace_refresh_min_steps
+         IF (PRESENT(accepted_samples) .AND. complete_physical_delta >= 0.0_dp .AND. &
+             comparable_group_residuals) THEN
+            ! Keep the conservative max of the minimizer and complete residuals for SCF exit, but
+            ! diagnose a stale REF chart from the complete audit itself.  Once that audit has crossed
+            ! below the geometric density boundary while the minimizer norm has not, the remaining
+            ! raw residual no longer describes the coupled fixed-N physical block.
+            stale_ref_mismatch = &
+               accepted_samples >= 2*ot_kp_subspace_refresh_min_steps .AND. &
+               physical_delta > closure_crossover .AND. physical_delta <= asymptotic_delta .AND. &
+               density_delta > eps .AND. density_delta <= asymptotic_delta .AND. &
+               complete_physical_delta <= MIN(asymptotic_delta, closure_crossover)
+         END IF
       END IF
       IF (PRESENT(accepted_samples)) THEN
          ! A mature endpoint history can expose a stale REF chart before the raw
@@ -7923,7 +7944,7 @@ CONTAINS
       ready = physical_delta >= 0.0_dp .AND. density_delta > eps .AND. &
               physical_delta <= MIN(asymptotic_delta, closure_crossover) .AND. &
               complete_residual_ready
-      ready = ready .OR. persistent_density_mismatch
+      ready = ready .OR. persistent_density_mismatch .OR. stale_ref_mismatch
 
    END FUNCTION qs_scf_kp_density_closure_refresh_ready
 
@@ -10203,7 +10224,8 @@ CONTAINS
                                  residual_delta, &
                                  local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf, &
                                  local_ot_env(1)%kpoint_complete_physical_delta, &
-                                 local_ot_env(1)%kpoint_subspace_accepted_samples)
+                                 local_ot_env(1)%kpoint_subspace_accepted_samples, &
+                                 .NOT. (nspin_ot == 2 .AND. smear%fixed_mag_mom >= 0.0_dp))
       density_history_stagnant = density_buffer_ready .AND. &
                                  qs_scf_kp_density_closure_history_refresh_ready( &
                                  local_ot_env(1)%kpoint_density_stationarity_ready, &
