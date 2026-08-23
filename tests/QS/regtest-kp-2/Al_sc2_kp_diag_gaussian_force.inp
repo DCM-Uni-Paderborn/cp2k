@@ -1,0 +1,74 @@
+! Independent Gaussian-smearing reference for complex k-point OT forces and
+! stress. Inversion symmetry retains nonzero opposing atomic forces and reduces
+! the 3x1x1 mesh to two irreducible k points.
+&GLOBAL
+  PRINT_LEVEL LOW
+  PROJECT Al_sc2_kp_gaussian_force
+  RUN_TYPE ENERGY_FORCE
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  STRESS_TENSOR ANALYTICAL
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_SET
+    POTENTIAL_FILE_NAME POTENTIAL
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 60
+    &END MGRID
+    &PRINT
+      &KPOINTS ON
+      &END KPOINTS
+    &END PRINT
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS 8
+      EPS_SCF 1.0E-10
+      MAX_SCF 100
+      SCF_GUESS ATOMIC
+      &DIAGONALIZATION
+        ALGORITHM STANDARD
+      &END DIAGONALIZATION
+      &MIXING
+        ALPHA 0.2
+        METHOD BROYDEN_MIXING
+        NBUFFER 8
+      &END MIXING
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 300
+        METHOD GAUSSIAN
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &PRINT
+    &FORCES ON
+    &END FORCES
+    &STRESS_TENSOR ON
+    &END STRESS_TENSOR
+  &END PRINT
+  &SUBSYS
+    &CELL
+      ABC 5.0 5.0 5.0
+    &END CELL
+    &COORD
+      SCALED
+      Al 0.27 0.50 0.50
+      Al 0.73 0.50 0.50
+    &END COORD
+    &KIND Al
+      BASIS_SET DZVP-GTH-PADE-CONFINED
+      POTENTIAL GTH-PADE-q3
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL
