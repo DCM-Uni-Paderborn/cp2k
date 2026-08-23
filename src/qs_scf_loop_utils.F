@@ -396,6 +396,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_added_mos_trust_stagnant, &
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_density_closure_buffer_ready, &
+             qs_scf_kp_density_closure_groups_refresh_ready, &
              qs_scf_kp_density_closure_history_refresh_ready, &
              qs_scf_kp_density_closure_refresh_ready, &
              qs_scf_kp_mixed_tail_rebase_ready, &
@@ -523,6 +524,8 @@ CONTAINS
       qs_ot_env%kpoint_physical_delta_ready = .TRUE.
       qs_ot_env%kpoint_physical_delta_groups = 0
       qs_ot_env%kpoint_complete_physical_delta = -1.0_dp
+      qs_ot_env%kpoint_complete_physical_group_available(:) = .FALSE.
+      qs_ot_env%kpoint_complete_physical_group_delta(:) = -1.0_dp
       qs_ot_env%kpoint_eps_scf = eps_scf
       qs_ot_env%kpoint_physical_gnorm = 0.0_dp
       qs_ot_env%kpoint_physical_rot_gnorm = 0.0_dp
@@ -541,17 +544,34 @@ CONTAINS
 !> \param full_rotation_norm complete physical rotation-gradient norm squared
 !> \param energy_norm fixed-N auxiliary-energy gradient norm squared
 !> \param gauge_norm occupation-gauge rotation-gradient norm squared
+!> \param group_index optional fixed-N group label
+!> \param complete_physical_delta optional normalized complete physical residual for this group
 ! **************************************************************************************************
    SUBROUTINE qs_scf_kp_physical_audit_add_group(qs_ot_env, group_ready, physical_norm, &
                                                  rotation_norm, full_rotation_norm, energy_norm, &
-                                                 gauge_norm)
+                                                 gauge_norm, group_index, complete_physical_delta)
       TYPE(qs_ot_type), INTENT(INOUT)                    :: qs_ot_env
       LOGICAL, INTENT(IN)                                :: group_ready
       REAL(KIND=dp), INTENT(IN)                          :: physical_norm, rotation_norm, &
                                                             full_rotation_norm, energy_norm, &
                                                             gauge_norm
+      INTEGER, INTENT(IN), OPTIONAL                      :: group_index
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: complete_physical_delta
+
+      INTEGER                                            :: group
 
       qs_ot_env%kpoint_physical_delta_groups = qs_ot_env%kpoint_physical_delta_groups + 1
+      group = qs_ot_env%kpoint_physical_delta_groups
+      IF (PRESENT(group_index)) group = group_index
+      IF (group >= 1 .AND. group <= SIZE(qs_ot_env%kpoint_complete_physical_group_available)) THEN
+         IF (PRESENT(complete_physical_delta)) THEN
+            qs_ot_env%kpoint_complete_physical_group_available(group) = &
+               complete_physical_delta >= 0.0_dp
+            qs_ot_env%kpoint_complete_physical_group_delta(group) = complete_physical_delta
+            qs_ot_env%kpoint_complete_physical_delta = &
+               MAX(qs_ot_env%kpoint_complete_physical_delta, complete_physical_delta)
+         END IF
+      END IF
       qs_ot_env%kpoint_physical_gnorm = qs_ot_env%kpoint_physical_gnorm + physical_norm
       qs_ot_env%kpoint_physical_rot_gnorm = qs_ot_env%kpoint_physical_rot_gnorm + rotation_norm
       qs_ot_env%kpoint_full_physical_rot_gnorm = &
@@ -7949,6 +7969,43 @@ CONTAINS
    END FUNCTION qs_scf_kp_density_closure_refresh_ready
 
 ! **************************************************************************************************
+!> \brief Test stale-REF density closure only between matching fixed-N group residuals.
+!> \param physical_delta global active-minimizer residual, used as a conservative work guard
+!> \param density_group_delta canonical-density residual per fixed-N group
+!> \param complete_group_delta complete physical residual per matching fixed-N group
+!> \param complete_group_available whether the matching physical audit is available
+!> \param eps_scf requested SCF threshold
+!> \param accepted_samples independent accepted states since the previous subspace rebuild
+!> \param ngroups number of complete fixed-N groups in the endpoint audit
+!> \return true if at least one aligned fixed-N group diagnoses a stale REF chart
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_density_closure_groups_refresh_ready( &
+      physical_delta, density_group_delta, complete_group_delta, complete_group_available, eps_scf, &
+      accepted_samples, ngroups) RESULT(ready)
+
+      REAL(KIND=dp), INTENT(IN)                          :: physical_delta
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: density_group_delta, complete_group_delta
+      LOGICAL, DIMENSION(:), INTENT(IN)                  :: complete_group_available
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf
+      INTEGER, INTENT(IN)                                :: accepted_samples, ngroups
+      LOGICAL                                            :: ready
+
+      INTEGER                                            :: group, ncomplete
+
+      ready = .FALSE.
+      ncomplete = MIN(ngroups, SIZE(density_group_delta), SIZE(complete_group_delta), &
+                      SIZE(complete_group_available))
+      DO group = 1, ncomplete
+         IF (.NOT. complete_group_available(group)) CYCLE
+         IF (density_group_delta(group) < 0.0_dp .OR. complete_group_delta(group) < 0.0_dp) CYCLE
+         ready = ready .OR. qs_scf_kp_density_closure_refresh_ready( &
+                 physical_delta, density_group_delta(group), eps_scf, &
+                 complete_group_delta(group), accepted_samples, .TRUE.)
+      END DO
+
+   END FUNCTION qs_scf_kp_density_closure_groups_refresh_ready
+
+! **************************************************************************************************
 !> \brief Detect a density-dominant accepted tail which the current OT subspace cannot close.
 !>
 !>        Density stationarity quality is the accepted fractional reduction
@@ -10152,7 +10209,8 @@ CONTAINS
                                                             ispin, local_kpoint, nao, nmo
       LOGICAL :: auto_expandable, base_state, collapsed, defer_energy_closure, &
          density_buffer_ready, density_closure_stagnant, density_history_stagnant, &
-         high_residual_stagnant, mixed_tail_rebase, orbital_tail_rebase, step_ready
+         fixed_moment_groups, high_residual_stagnant, mixed_tail_rebase, orbital_tail_rebase, &
+         step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
                                                             maxocc, occ_tail, residual_delta, &
                                                             weight
@@ -10211,6 +10269,7 @@ CONTAINS
       high_residual_stagnant = residual_delta > SQRT(MAX(eps_scf, EPSILON(1.0_dp))) .AND. &
                                local_ot_env(1)%ds_min <= &
                                MAX(eps_scf, SQRT(EPSILON(1.0_dp)))
+      fixed_moment_groups = nspin_ot == 2 .AND. smear%fixed_mag_mom >= 0.0_dp
       defer_energy_closure = qs_scf_kp_energy_occupation_plateau_ready( &
                              local_ot_env(1)%kpoint_density_stationarity_ready, &
                              local_ot_env(1)%kpoint_density_stationarity_diag, &
@@ -10218,14 +10277,24 @@ CONTAINS
                              local_ot_env(1)%mermin_ls_accepted_quality_samples) .AND. &
                              .NOT. local_ot_env(1)%kpoint_energy_closure_attempted .AND. &
                              .NOT. high_residual_stagnant
-      density_closure_stagnant = local_ot_env(1)%kpoint_density_stationarity_ready .AND. &
-                                 density_buffer_ready .AND. &
-                                 qs_scf_kp_density_closure_refresh_ready( &
-                                 residual_delta, &
-                                 local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf, &
-                                 local_ot_env(1)%kpoint_complete_physical_delta, &
-                                 local_ot_env(1)%kpoint_subspace_accepted_samples, &
-                                 .NOT. (nspin_ot == 2 .AND. smear%fixed_mag_mom >= 0.0_dp))
+      IF (fixed_moment_groups) THEN
+         density_closure_stagnant = &
+            local_ot_env(1)%kpoint_density_stationarity_ready .AND. density_buffer_ready .AND. &
+            local_ot_env(1)%kpoint_physical_delta_groups >= nspin_ot .AND. &
+            qs_scf_kp_density_closure_groups_refresh_ready( &
+            residual_delta, local_ot_env(1)%kpoint_density_stationarity_group_delta, &
+            local_ot_env(1)%kpoint_complete_physical_group_delta, &
+            local_ot_env(1)%kpoint_complete_physical_group_available, &
+            eps_scf, local_ot_env(1)%kpoint_subspace_accepted_samples, nspin_ot)
+      ELSE
+         density_closure_stagnant = local_ot_env(1)%kpoint_density_stationarity_ready .AND. &
+                                    density_buffer_ready .AND. &
+                                    qs_scf_kp_density_closure_refresh_ready( &
+                                    residual_delta, &
+                                    local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf, &
+                                    local_ot_env(1)%kpoint_complete_physical_delta, &
+                                    local_ot_env(1)%kpoint_subspace_accepted_samples)
+      END IF
       density_history_stagnant = density_buffer_ready .AND. &
                                  qs_scf_kp_density_closure_history_refresh_ready( &
                                  local_ot_env(1)%kpoint_density_stationarity_ready, &
@@ -13677,6 +13746,9 @@ CONTAINS
             local_ot_env(local_channel)%kpoint_density_stationarity_diag = -1.0_dp
             local_ot_env(local_channel)%kpoint_density_stationarity_offdiag = -1.0_dp
             local_ot_env(local_channel)%kpoint_density_stationarity_max = -1.0_dp
+            local_ot_env(local_channel)%kpoint_density_stationarity_group_delta(:) = -1.0_dp
+            local_ot_env(local_channel)%kpoint_density_stationarity_group_diag(:) = -1.0_dp
+            local_ot_env(local_channel)%kpoint_density_stationarity_group_offdiag(:) = -1.0_dp
             local_ot_env(local_channel)%kpoint_canonical_occupation_ready = .FALSE.
             local_ot_env(local_channel)%kpoint_canonical_mu = 0.0_dp
             IF (ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_occupation)) &
@@ -13845,6 +13917,12 @@ CONTAINS
             local_ot_env(local_channel)%kpoint_density_stationarity_diag = density_diag
             local_ot_env(local_channel)%kpoint_density_stationarity_offdiag = density_offdiag
             local_ot_env(local_channel)%kpoint_density_stationarity_max = density_max
+            local_ot_env(local_channel)%kpoint_density_stationarity_group_delta(1:ngroups) = &
+               group_density_delta(1:ngroups)
+            local_ot_env(local_channel)%kpoint_density_stationarity_group_diag(1:ngroups) = &
+               group_density_diag(1:ngroups)
+            local_ot_env(local_channel)%kpoint_density_stationarity_group_offdiag(1:ngroups) = &
+               group_density_offdiag(1:ngroups)
          END DO
          IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
@@ -21114,8 +21192,6 @@ CONTAINS
          IF (physical_delta_nvar > 0.0_dp) &
             physical_delta_norm = SQRT(MAX(0.0_dp, rot_grad_total_physical_norm)/ &
                                        physical_delta_nvar)
-         local_ot_env(1)%kpoint_complete_physical_delta = &
-            MAX(local_ot_env(1)%kpoint_complete_physical_delta, physical_delta_norm)
          energy_closure_tail_ready = qs_scf_kp_energy_closure_tail_ready( &
                                      residual_delta, physical_delta_norm, &
                                      group_density_delta(target_group), &
@@ -21150,7 +21226,7 @@ CONTAINS
          CALL qs_scf_kp_physical_audit_add_group( &
             local_ot_env(1), physical_delta_group_ready, rot_grad_total_physical_norm, &
             rot_grad_physical_norm, full_rot_grad_physical_norm, rot_grad_energy_norm, &
-            rot_grad_gauge_norm)
+            rot_grad_gauge_norm, target_group, physical_delta_norm)
          IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
             " OT Schur physical rotation residual group active full ratio:", &

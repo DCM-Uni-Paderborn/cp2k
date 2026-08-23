@@ -118,6 +118,7 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
         qs_scf_kp_density_candidate_relevant, qs_scf_kp_density_candidate_residual_bad, &
         qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
+        qs_scf_kp_density_closure_groups_refresh_ready, &
         qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
         qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
         qs_scf_kp_density_descent_candidate, qs_scf_kp_density_full_direct_tail_probe, &
@@ -334,6 +335,8 @@ PROGRAM qs_ot_frechet_unittest
                                                 5.0E-14_dp, nfail)
    CALL check_kpoint_canonical_density_group_metrics( &
       "k-point OT fixed-N canonical density groups", 5.0E-14_dp, nfail)
+   CALL check_kpoint_density_closure_group_refresh( &
+      "k-point OT aligned fixed-N REF refresh", nfail)
    CALL check_kpoint_density_pair_activation("k-point OT canonical density pair activation", nfail)
    CALL check_kpoint_complete_physical_gradient_norm( &
       "k-point OT complete reduced-space physical gradient", 5.0E-15_dp, nfail)
@@ -7605,17 +7608,25 @@ CONTAINS
       ot_env%kpoint_projected_delta = 1.0E-6_dp
       CALL qs_scf_kp_physical_audit_begin(ot_env, 1.0E-7_dp)
       CALL qs_scf_kp_physical_audit_add_group( &
-         ot_env, .FALSE., 9.0_dp, 4.0_dp, 5.0_dp, 3.0_dp, 2.0_dp)
+         ot_env, .FALSE., 9.0_dp, 4.0_dp, 5.0_dp, 3.0_dp, 2.0_dp, 2, 4.0E-7_dp)
       failed = ot_env%kpoint_physical_delta_ready .OR. &
-               ot_env%kpoint_physical_delta_groups /= 1
+               ot_env%kpoint_physical_delta_groups /= 1 .OR. &
+               .NOT. ot_env%kpoint_complete_physical_group_available(2) .OR. &
+               ABS(ot_env%kpoint_complete_physical_group_delta(2) - 4.0E-7_dp) > tol .OR. &
+               ABS(ot_env%kpoint_complete_physical_delta - 4.0E-7_dp) > tol
 
       ! A new line-search endpoint keeps the prior model residuals available
       ! until the minimizer replaces them, but starts a fresh physical audit.
       CALL qs_scf_kp_physical_audit_begin(ot_env, 2.0E-8_dp)
       CALL qs_scf_kp_physical_audit_add_group( &
-         ot_env, .TRUE., 9.0_dp, 4.0_dp, 5.0_dp, 3.0_dp, 2.0_dp)
+         ot_env, .TRUE., 9.0_dp, 4.0_dp, 5.0_dp, 3.0_dp, 2.0_dp, 1, 3.0E-8_dp)
       failed = failed .OR. .NOT. ot_env%kpoint_physical_delta_ready .OR. &
                ot_env%kpoint_physical_delta_groups /= 1 .OR. &
+               .NOT. ot_env%kpoint_complete_physical_group_available(1) .OR. &
+               ot_env%kpoint_complete_physical_group_available(2) .OR. &
+               ABS(ot_env%kpoint_complete_physical_group_delta(1) - 3.0E-8_dp) > tol .OR. &
+               ot_env%kpoint_complete_physical_group_delta(2) >= 0.0_dp .OR. &
+               ABS(ot_env%kpoint_complete_physical_delta - 3.0E-8_dp) > tol .OR. &
                ABS(ot_env%kpoint_physical_gnorm - 9.0_dp) > tol .OR. &
                ABS(ot_env%kpoint_physical_rot_gnorm - 4.0_dp) > tol .OR. &
                ABS(ot_env%kpoint_full_physical_rot_gnorm - 5.0_dp) > tol .OR. &
@@ -7638,6 +7649,48 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_physical_audit_lifecycle
+
+! **************************************************************************************************
+!> \brief Check that stale-REF closure compares density and physical residuals within one group.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_density_closure_group_refresh(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: eps_scf = 1.0E-6_dp
+
+      LOGICAL                                            :: failed
+      LOGICAL, DIMENSION(2)                              :: complete_available
+      REAL(KIND=dp), DIMENSION(2)                        :: complete_delta, density_delta
+
+      density_delta = [1.5E-6_dp, 8.0E-7_dp]
+      complete_delta = [8.0E-7_dp, 1.3E-6_dp]
+      complete_available = .TRUE.
+      failed = .NOT. qs_scf_kp_density_closure_groups_refresh_ready( &
+               1.3E-6_dp, density_delta, complete_delta, complete_available, eps_scf, 24, 2)
+      failed = failed .OR. qs_scf_kp_density_closure_groups_refresh_ready( &
+               1.3E-6_dp, density_delta, complete_delta, complete_available, eps_scf, 12, 2)
+
+      ! A low complete residual in the other spin group must not be paired
+      ! with the first group's unresolved density residual.
+      complete_delta = [1.3E-6_dp, 8.0E-7_dp]
+      failed = failed .OR. qs_scf_kp_density_closure_groups_refresh_ready( &
+               1.3E-6_dp, density_delta, complete_delta, complete_available, eps_scf, 24, 2)
+      complete_delta = [8.0E-7_dp, 1.3E-6_dp]
+      complete_available(1) = .FALSE.
+      failed = failed .OR. qs_scf_kp_density_closure_groups_refresh_ready( &
+               1.3E-6_dp, density_delta, complete_delta, complete_available, eps_scf, 24, 2)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_density_closure_group_refresh
 
 ! **************************************************************************************************
 !> \brief Check the physical residual budget used by adaptive complex-pair selection.

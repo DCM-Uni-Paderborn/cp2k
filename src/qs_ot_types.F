@@ -508,13 +508,18 @@ MODULE qs_ot_types
       LOGICAL :: kpoint_physical_delta_ready = .FALSE.
       LOGICAL :: kpoint_density_stationarity_ready = .FALSE.
       INTEGER :: kpoint_physical_delta_groups = 0
+      LOGICAL, DIMENSION(2) :: kpoint_complete_physical_group_available = .FALSE.
       REAL(KIND=dp) :: kpoint_raw_delta = -1.0_dp, kpoint_physical_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_complete_physical_delta = -1.0_dp
+      REAL(KIND=dp), DIMENSION(2) :: kpoint_complete_physical_group_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_projected_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_density_stationarity_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_density_stationarity_diag = -1.0_dp
       REAL(KIND=dp) :: kpoint_density_stationarity_offdiag = -1.0_dp
       REAL(KIND=dp) :: kpoint_density_stationarity_max = -1.0_dp
+      REAL(KIND=dp), DIMENSION(2) :: kpoint_density_stationarity_group_delta = -1.0_dp
+      REAL(KIND=dp), DIMENSION(2) :: kpoint_density_stationarity_group_diag = -1.0_dp
+      REAL(KIND=dp), DIMENSION(2) :: kpoint_density_stationarity_group_offdiag = -1.0_dp
       LOGICAL :: kpoint_energy_closure_attempted = .FALSE.
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: kpoint_density_pair_residual
       LOGICAL :: kpoint_canonical_occupation_ready = .FALSE.
@@ -1586,14 +1591,19 @@ CONTAINS
       qs_ot_env%kpoint_physical_delta_ready = .FALSE.
       qs_ot_env%kpoint_density_stationarity_ready = .FALSE.
       qs_ot_env%kpoint_physical_delta_groups = 0
+      qs_ot_env%kpoint_complete_physical_group_available(:) = .FALSE.
       qs_ot_env%kpoint_raw_delta = -1.0_dp
       qs_ot_env%kpoint_physical_delta = -1.0_dp
       qs_ot_env%kpoint_complete_physical_delta = -1.0_dp
+      qs_ot_env%kpoint_complete_physical_group_delta(:) = -1.0_dp
       qs_ot_env%kpoint_projected_delta = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_delta = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_diag = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_offdiag = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_max = -1.0_dp
+      qs_ot_env%kpoint_density_stationarity_group_delta(:) = -1.0_dp
+      qs_ot_env%kpoint_density_stationarity_group_diag(:) = -1.0_dp
+      qs_ot_env%kpoint_density_stationarity_group_offdiag(:) = -1.0_dp
       qs_ot_env%kpoint_energy_closure_attempted = .FALSE.
       IF (ALLOCATED(qs_ot_env%kpoint_density_pair_residual)) THEN
          qs_ot_env%kpoint_density_pair_residual(:, :) = 0.0_dp
