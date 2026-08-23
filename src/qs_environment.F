@@ -1003,7 +1003,8 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: mo_index_range
       LOGICAL :: all_potential_present, be_silent, cneo_potential_present, do_kpoints, do_ri_hfx, &
          do_ri_mp2, do_ri_rpa, do_ri_sos_mp2, do_rpa_ri_exx, do_wfc_im_time, e1terms, &
-         has_unit_metric, implicit_ot_added_mos_auto, lribas, mp2_present, orb_gradient, paw_atom
+         has_unit_metric, implicit_ot_added_mos_auto, kpoints_requested, lribas, mp2_present, &
+         orb_gradient, paw_atom
       REAL(KIND=dp)                                      :: alpha, ccore, ewald_rcut, fxx, maxocc, &
                                                             rc, rcut, total_zeff_corr, &
                                                             verlet_skin, zeff_correction
@@ -1046,9 +1047,9 @@ CONTAINS
       TYPE(scf_control_type), POINTER                    :: scf_control
       TYPE(se_taper_type), POINTER                       :: se_taper
       TYPE(section_vals_type), POINTER :: dft_section, et_coupling_section, et_ddapc_section, &
-         ewald_section, harris_section, lri_section, mp2_section, nl_section, poisson_section, &
-         pp_section, print_section, qs_section, rixs_section, se_section, tddfpt_section, &
-         xc_section
+         ewald_section, harris_section, kpoint_section, lri_section, mp2_section, nl_section, &
+         poisson_section, pp_section, print_section, qs_section, rixs_section, se_section, &
+         tddfpt_section, xc_section
       TYPE(semi_empirical_control_type), POINTER         :: se_control
       TYPE(semi_empirical_si_type), POINTER              :: se_store_int_env
       TYPE(xtb_control_type), POINTER                    :: xtb_control
@@ -1077,6 +1078,8 @@ CONTAINS
       NULLIFY (mos_last_converged)
       dft_section => section_vals_get_subs_vals(qs_env%input, "DFT")
       qs_section => section_vals_get_subs_vals(dft_section, "QS")
+      kpoint_section => section_vals_get_subs_vals(dft_section, "KPOINTS")
+      CALL section_vals_get(kpoint_section, explicit=kpoints_requested)
       et_coupling_section => section_vals_get_subs_vals(qs_env%input, "PROPERTIES%ET_COUPLING")
       ! reimplemented TDDFPT
       tddfpt_section => section_vals_get_subs_vals(qs_env%input, "PROPERTIES%TDDFPT")
@@ -2150,7 +2153,9 @@ CONTAINS
       IF (scf_control%smear%do_smear .AND. &
           (ANY(scf_control%added_mos_auto) .OR. implicit_ot_added_mos_auto)) THEN
          n_mo_auto = MAX(4, CEILING(0.2_dp*REAL(MAXVAL(n_mo(1:dft_control%nspins)), KIND=dp)))
-         IF (do_kpoints .AND. dft_control%nspins == 2 .AND. &
+         ! FULL_GRID k-point storage can still have nkp=0 at this stage.  The
+         ! explicit input section already requires common complex spin spaces.
+         IF ((do_kpoints .OR. kpoints_requested) .AND. dft_control%nspins == 2 .AND. &
              (ALL(scf_control%added_mos_auto(1:2)) .OR. implicit_ot_added_mos_auto)) THEN
             ! Complex k-point channels require one common MO dimension.  Base
             ! AUTO on the larger occupied spin space and express that common

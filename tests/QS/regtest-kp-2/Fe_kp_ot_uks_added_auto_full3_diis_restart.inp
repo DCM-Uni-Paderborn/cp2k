@@ -1,0 +1,74 @@
+! Manual HIGH-print restart companion for the full-grid fixed-moment Fe
+! metallic OT case. Run the source input first in the same directory. The six
+! complex (spin,k-point) channels, DIIS state, and adaptive 25-MO spaces must
+! be restored without replaying the (4,6)->(8,10)->(16,18) AUTO growth. This
+! input is intentionally not listed in TEST_FILES.toml.
+&GLOBAL
+  PRINT_LEVEL HIGH
+  PROJECT Fe_kp_ot_uks_added_auto_full3_diis_restart
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_MOLOPT
+    MULTIPLICITY 3
+    POTENTIAL_FILE_NAME POTENTIAL
+    UKS TRUE
+    WFN_RESTART_FILE_NAME Fe_kp_ot_uks_added_auto_full3_diis_converge-RESTART.kp
+    &KPOINTS
+      FULL_GRID ON
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY OFF
+    &END KPOINTS
+    &MGRID
+      CUTOFF 300
+    &END MGRID
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-6
+      MAX_SCF 260
+      SCF_GUESS RESTART
+      &OT
+        ENERGIES
+        LINESEARCH 2PNT
+        MINIMIZER DIIS
+        OCCUPATION_PRECONDITIONER
+        PRECONDITIONER FULL_ALL
+        ROTATION
+      &END OT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 1000
+        FIXED_MAGNETIC_MOMENT 2.0
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &PROPERTIES
+    &FIT_CHARGE OFF
+    &END FIT_CHARGE
+  &END PROPERTIES
+  &SUBSYS
+    &CELL
+      A -1.435 1.435 1.435
+      B 1.435 -1.435 1.435
+      C 1.435 1.435 -1.435
+    &END CELL
+    &COORD
+      Fe 0.000 0.000 0.000
+    &END COORD
+    &KIND Fe
+      BASIS_SET DZVP-MOLOPT-SR-GTH-q16
+      MAGNETIZATION 2.0
+      POTENTIAL GTH-PADE-q16
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL
