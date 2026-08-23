@@ -127,7 +127,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
         qs_scf_kp_energy_occupation_plateau_ready, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_exit_residual, qs_scf_kp_external_fermi_projection_enabled, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_frontier_mismatch, qs_scf_kp_fermi_guard_control_delta, &
         qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
         qs_scf_kp_fixed_n_energy_hessian, qs_scf_kp_fixed_n_frozen_energy_gradient, &
@@ -273,6 +274,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_fermi_frontier_arming("k-point Fermi frontier canonical arming", nfail)
    CALL check_fermi_frontier_mismatch("k-point Fermi frontier physical rearming", nfail)
    CALL check_fermi_guard_release("k-point Fermi guard residual release", nfail)
+   CALL check_fermi_guard_minimizer_policy("k-point Fermi guard minimizer policy", nfail)
    CALL check_fermi_entropy_state("k-point spin-resolved Fermi entropy", 5.0E-15_dp, nfail)
    CALL check_ot_smearing_frontier_seed("OT smearing symmetric frontier seed", nfail)
    CALL check_metallic_variable_defaults("metallic OT coupled variable defaults", nfail)
@@ -5679,6 +5681,29 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_fermi_guard_release
+
+! **************************************************************************************************
+!> \brief Check that external frontier projections do not hide evaluated DIIS candidates.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_fermi_guard_minimizer_policy(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_external_fermi_projection_enabled("CG") .OR. &
+               .NOT. qs_scf_kp_external_fermi_projection_enabled("SD") .OR. &
+               qs_scf_kp_external_fermi_projection_enabled("DIIS")
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_fermi_guard_minimizer_policy
 
 ! **************************************************************************************************
 !> \brief Check stable endpoint and fractional one-state Fermi entropy contributions.

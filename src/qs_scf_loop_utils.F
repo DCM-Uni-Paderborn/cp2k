@@ -330,6 +330,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_fermi_entropy_state, &
              qs_scf_kp_fermi_frontier_armed, &
              qs_scf_kp_fermi_frontier_mismatch, &
+             qs_scf_kp_external_fermi_projection_enabled, &
              qs_scf_kp_fermi_guard_control_delta, &
              qs_scf_kp_fermi_guard_release_ready, &
              qs_scf_kp_fermi_guard_transition, &
@@ -8881,7 +8882,9 @@ CONTAINS
                                                     kp_range, wkp, para_env_inter_kp, scf_control%smear, &
                                                     trial_eigenvalues, trial_occupation, trial_mu, trial_kTS)
       fermi_window_guarded = .FALSE.
-      IF (update_ot_energy_state .OR. protect_mermin_ls_sample) THEN
+      IF ((update_ot_energy_state .OR. protect_mermin_ls_sample) .AND. &
+          qs_scf_kp_external_fermi_projection_enabled( &
+          local_ot_env(1)%settings%OT_METHOD)) THEN
          CALL qs_scf_loop_guard_ot_kp_trial_fermi_window(kpoints, local_ot_env, first_channel, &
                                                          nspin_ot, kp_range, wkp, para_env_inter_kp, &
                                                          scf_control%smear, trial_eigenvalues, &
@@ -9152,7 +9155,9 @@ CONTAINS
          END IF
       END IF
       post_fermi_window_guarded = .FALSE.
-      IF (minimizer_step_taken) THEN
+      IF (minimizer_step_taken .AND. &
+          qs_scf_kp_external_fermi_projection_enabled( &
+          local_ot_env(1)%settings%OT_METHOD)) THEN
          ! Every OT line-search trial moves ener_x, including the first trial for
          ! which energy_only describes the *next* evaluation. Guard it before
          ! occupations are installed; one iteration later the old fractional
@@ -11144,6 +11149,23 @@ CONTAINS
       guard = trial_release + 10.0_dp*EPSILON(1.0_dp) < current_release
 
    END FUNCTION qs_scf_kp_fermi_guard_transition
+
+! **************************************************************************************************
+!> \brief whether an external frontier projection may replace a minimizer candidate
+!>
+!>        CG and SD use line searches whose trial states need immediate frontier protection.
+!>        DIIS instead evaluates each candidate against its accepted fixed-N Mermin endpoint.
+!>        Projecting a DIIS candidate before that audit erases both its energy and Pulay anchor.
+!> \param ot_method OT minimizer name
+!> \return true when the SCF driver should apply the external frontier projection
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_external_fermi_projection_enabled(ot_method) RESULT(enabled)
+      CHARACTER(LEN=*), INTENT(IN)                       :: ot_method
+      LOGICAL                                            :: enabled
+
+      enabled = TRIM(ot_method) /= "DIIS"
+
+   END FUNCTION qs_scf_kp_external_fermi_projection_enabled
 
 ! **************************************************************************************************
 !> \brief conservative residual controlling release of the metallic Fermi-window guard
