@@ -396,7 +396,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_closure_buffer_ready, &
              qs_scf_kp_density_closure_history_refresh_ready, &
              qs_scf_kp_density_closure_refresh_ready, &
-             qs_scf_kp_expandable_mixed_tail_rebase_ready, &
+             qs_scf_kp_mixed_tail_rebase_ready, &
              qs_scf_kp_orbital_tail_rebase_ready, &
              qs_scf_kp_rebased_calibration_samples, &
              qs_scf_kp_subspace_refresh_step_ready, &
@@ -8026,15 +8026,16 @@ CONTAINS
    END FUNCTION qs_scf_kp_orbital_tail_rebase_ready
 
 ! **************************************************************************************************
-!> \brief Detect a bounded mixed residual tail in an expandable ADDED_MOS AUTO subspace.
+!> \brief Detect a bounded mixed residual tail in a stale metallic OT subspace.
 !>
 !>        A stale minimizer history can keep both the canonical density and complete physical
 !>        residual just above EPS_SCF while the raw search metric and complete physical audit
 !>        disagree substantially.
 !>        In that state the response-derived AUTO basis signal is never sampled, so the represented
-!>        MO space cannot grow.  Rebase only after a mature accepted history, inside a tightly
-!>        bounded asymptotic basin, and only while an AUTO channel can still add orbitals.
-!> \param expandable at least one ADDED_MOS AUTO channel has unrepresented AO states
+!>        MO space cannot grow.  Rebase only after a mature accepted history and inside a tightly
+!>        bounded asymptotic basin. This applies both before AUTO growth and when the AO basis is
+!>        already exhausted: a full KS rebuild can repair the represented physical subspace in
+!>        either case.
 !> \param density_ready canonical fixed-N density audit is valid for the current orbitals
 !> \param density_delta canonical fixed-N density stationarity residual
 !> \param physical_delta complete physical OT residual
@@ -8043,11 +8044,11 @@ CONTAINS
 !> \param accepted_samples accepted Mermin line-search samples in the current orbital subspace
 !> \return true when a history-free canonical rebase should expose the missing-space response
 ! **************************************************************************************************
-   PURE FUNCTION qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-      expandable, density_ready, density_delta, physical_delta, raw_delta, eps_scf, &
+   PURE FUNCTION qs_scf_kp_mixed_tail_rebase_ready( &
+      density_ready, density_delta, physical_delta, raw_delta, eps_scf, &
       accepted_samples) RESULT(ready)
 
-      LOGICAL, INTENT(IN)                                :: expandable, density_ready
+      LOGICAL, INTENT(IN)                                :: density_ready
       REAL(KIND=dp), INTENT(IN)                          :: density_delta, physical_delta, &
                                                             raw_delta, eps_scf
       INTEGER, INTENT(IN)                                :: accepted_samples
@@ -8060,14 +8061,14 @@ CONTAINS
       density_upper = MIN(50.0_dp*eps, SQRT(eps))
       physical_upper = MIN(100.0_dp*eps, SQRT(eps))
       raw_upper = MIN(100.0_dp*eps, SQRT(eps))
-      ready = expandable .AND. density_ready .AND. &
+      ready = density_ready .AND. &
               accepted_samples >= 32 .AND. &
               density_delta > eps .AND. density_delta <= density_upper .AND. &
               physical_delta > eps .AND. physical_delta <= physical_upper .AND. &
               raw_delta > eps .AND. raw_delta <= raw_upper .AND. &
               MAX(raw_delta, physical_delta) >= 2.0_dp*MIN(raw_delta, physical_delta)
 
-   END FUNCTION qs_scf_kp_expandable_mixed_tail_rebase_ready
+   END FUNCTION qs_scf_kp_mixed_tail_rebase_ready
 
 ! **************************************************************************************************
 !> \brief scalar decision gate for a collapsed metallic k-point OT subspace refresh
@@ -10183,8 +10184,7 @@ CONTAINS
                             local_ot_env(1)%kpoint_complete_physical_delta, eps_scf, &
                             local_ot_env(1)%schur_closure_response_samples, &
                             local_ot_env(1)%schur_closure_response_quality_ema)
-      mixed_tail_rebase = qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-                          auto_expandable, &
+      mixed_tail_rebase = qs_scf_kp_mixed_tail_rebase_ready( &
                           local_ot_env(1)%kpoint_density_stationarity_ready, &
                           local_ot_env(1)%kpoint_density_stationarity_delta, &
                           local_ot_env(1)%kpoint_complete_physical_delta, &

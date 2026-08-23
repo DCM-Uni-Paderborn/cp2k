@@ -127,8 +127,7 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
         qs_scf_kp_energy_occupation_plateau_ready, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_expandable_mixed_tail_rebase_ready, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_energy_hessian, &
         qs_scf_kp_fixed_n_frozen_energy_gradient, qs_scf_kp_fixed_n_projector_frechet, &
@@ -136,27 +135,27 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_full_closure_response_model_adjustments, qs_scf_kp_full_residual_completion, &
         qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_line_search_exit_pending, &
         qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
-        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
-        qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
-        qs_scf_kp_prediction_candidate_evaluation_ready, qs_scf_kp_prediction_candidate_selected, &
-        qs_scf_kp_project_symmetric_subspace_correction, qs_scf_kp_projector_trace_metrics, &
-        qs_scf_kp_projector_trace_metrics_type, qs_scf_kp_quadratic_descent_scale, &
-        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
-        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
-        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_history_reset_needed, &
-        qs_scf_kp_residual_pair_capture_limit, qs_scf_kp_residual_pair_full_capture_ready, &
-        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_anchor_action, qs_scf_kp_validated_density_response, &
-        qs_scf_kp_work_consistent_response
+        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_mixed_tail_rebase_ready, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
+        qs_scf_kp_pair_mask_moments, qs_scf_kp_physical_audit_add_group, &
+        qs_scf_kp_physical_audit_begin, qs_scf_kp_prediction_candidate_evaluation_ready, &
+        qs_scf_kp_prediction_candidate_selected, qs_scf_kp_project_symmetric_subspace_correction, &
+        qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
+        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
+        qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
+        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_history_reset_needed, qs_scf_kp_residual_pair_capture_limit, &
+        qs_scf_kp_residual_pair_full_capture_ready, qs_scf_kp_residual_pair_omission_limit, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_anchor_action, &
+        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -288,8 +287,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_density_closure_history_refresh( &
       "k-point OT accepted density-closure refresh", nfail)
    CALL check_kpoint_orbital_tail_rebase("k-point OT orbital-tail rebase", nfail)
-   CALL check_kpoint_expandable_mixed_tail_rebase( &
-      "k-point OT expandable mixed-tail rebase", nfail)
+   CALL check_kpoint_mixed_tail_rebase( &
+      "k-point OT bounded mixed-tail rebase", nfail)
    CALL check_kpoint_occ_preconditioner_transition("k-point OT occupation-preconditioner bootstrap", nfail)
    CALL check_kpoint_fixed_spin_targets("k-point fixed-spin electron targets", 5.0E-15_dp, nfail)
    CALL check_kpoint_density_control_delta("k-point OT accepted density-projector tail", &
@@ -6104,7 +6103,7 @@ CONTAINS
 !> \param label ...
 !> \param nfail ...
 ! **************************************************************************************************
-   SUBROUTINE check_kpoint_expandable_mixed_tail_rebase(label, nfail)
+   SUBROUTINE check_kpoint_mixed_tail_rebase(label, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(INOUT)                             :: nfail
 
@@ -6112,32 +6111,34 @@ CONTAINS
 
       ! Measured Fe restart endpoint: stale small-space history kept all three audits above 1e-6,
       ! while the complete physical audit and raw metric disagreed by a factor of five.
-      failed = .NOT. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-               .TRUE., .TRUE., 2.67896426E-6_dp, 8.95122317E-5_dp, &
+      failed = .NOT. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 2.67896426E-6_dp, 8.95122317E-5_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 33)
-      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-               .FALSE., .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+      ! The same bounded mismatch remains a valid stale-subspace signal after
+      ! ADDED_MOS AUTO has exhausted the AO basis.
+      failed = failed .OR. .NOT. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 33)
-      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-               .TRUE., .FALSE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+      failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
+               .FALSE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 33)
-      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-               .TRUE., .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+      failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 31)
-      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-               .TRUE., .TRUE., 8.0E-7_dp, 3.01513481E-6_dp, &
+      failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 8.0E-7_dp, 3.01513481E-6_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 33)
-      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-               .TRUE., .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+      failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
                5.9E-6_dp, 1.0E-6_dp, 33)
-      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-               .TRUE., .TRUE., 5.1E-5_dp, 3.01513481E-6_dp, &
+      failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 5.1E-5_dp, 3.01513481E-6_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 33)
-      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-               .TRUE., .TRUE., 2.73493076E-6_dp, 1.01E-4_dp, &
+      failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 2.73493076E-6_dp, 1.01E-4_dp, &
                1.55960595E-5_dp, 1.0E-6_dp, 33)
-      failed = failed .OR. qs_scf_kp_expandable_mixed_tail_rebase_ready( &
-               .TRUE., .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
+      failed = failed .OR. qs_scf_kp_mixed_tail_rebase_ready( &
+               .TRUE., 2.73493076E-6_dp, 3.01513481E-6_dp, &
                1.01E-4_dp, 1.0E-6_dp, 33)
 
       IF (failed) THEN
@@ -6147,7 +6148,7 @@ CONTAINS
          WRITE (*, '(A,1X,A)') TRIM(label), "OK"
       END IF
 
-   END SUBROUTINE check_kpoint_expandable_mixed_tail_rebase
+   END SUBROUTINE check_kpoint_mixed_tail_rebase
 
 ! **************************************************************************************************
 !> \brief Check that the coupled response is switched only at stable search boundaries.

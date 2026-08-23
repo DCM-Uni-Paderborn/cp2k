@@ -153,10 +153,12 @@
 # cheap while the adaptive AUTO grow path can still be checked against the
 # 1E-6 Mermin path. The LOW 2x1x1 reference converges in 111 final-space
 # MPI-2 steps and reaches -8.14585308840704 Ha. The symmetry-reduced
-# 3x1x1 reference takes roughly 50-100 MPI-2/OMP-2 final-space steps and reaches
-# -8.159987079 Ha within 3E-9 Ha without overgrowing its empty virtual edge. The
+# 3x1x1 reference takes roughly 46-244 MPI-2/OMP-2 final-space steps and reaches
+# -8.159987079 Ha within 6E-9 Ha without overgrowing its empty virtual edge. A
+# mature bounded mismatch may refresh the subspace after AUTO exhausts the AO
+# basis, preventing an indefinitely stale residual tail. The
 # explicit full-grid 3x1x1 companion follows the same endpoint in roughly 60-90
-# final-space steps. Their EPS_SCF=1E-6 endpoints agree within 3E-9 Ha even though
+# final-space steps. Their EPS_SCF=1E-6 endpoints agree within 1E-8 Ha even though
 # their local virtual-space growth histories differ.
 # No first/last-band, AUTO-exhausted, MAX-ITER, or "Unsupported content type"
 # signature is printed. Al_kp_ot_added_auto_sym3_restart.inp restores the
