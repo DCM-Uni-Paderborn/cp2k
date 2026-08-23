@@ -8276,8 +8276,8 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL :: consistent_negative, consistent_positive, energy_resolved, energy_unresolved, &
-         no_signal, nonlinear, opposite_sign
+      LOGICAL :: consistent_negative, consistent_positive, energy_noise, energy_resolved, &
+         energy_unresolved, no_signal, nonlinear, opposite_sign
 
       consistent_positive = ot_kpoint_mermin_secant_consistent(1.00E-5_dp, 0.95E-5_dp)
       consistent_negative = ot_kpoint_mermin_secant_consistent(-2.00E-6_dp, -1.75E-6_dp)
@@ -8285,22 +8285,25 @@ CONTAINS
       opposite_sign = ot_kpoint_mermin_secant_consistent(-1.00E-6_dp, 1.00E-6_dp)
       no_signal = ot_kpoint_mermin_secant_consistent(0.0_dp, 0.0_dp)
       energy_resolved = ot_kpoint_mermin_energy_curvature_resolved( &
-                        0.1_dp, -100.0_dp, -100.0_dp, -1.0_dp, 1.0_dp)
+                        0.1_dp, -100.0_dp, -100.0_dp, -1.0_dp, 1.0_dp, 0.95_dp)
       energy_unresolved = ot_kpoint_mermin_energy_curvature_resolved( &
-                          1.0E-9_dp, -1000.0_dp, -1000.0_dp, -1.0E-10_dp, 1.0E5_dp)
+                          1.0E-9_dp, -1000.0_dp, -1000.0_dp, -1.0E-10_dp, 1.0E5_dp, 1.0E5_dp)
+      energy_noise = ot_kpoint_mermin_energy_curvature_resolved( &
+                     1.0E-2_dp, -9.0_dp, -9.0_dp, -1.0E-11_dp, -1.0E-6_dp, 1.0E-10_dp)
 
       IF (.NOT. consistent_positive .OR. .NOT. consistent_negative .OR. nonlinear .OR. &
-          opposite_sign .OR. no_signal .OR. .NOT. energy_resolved .OR. energy_unresolved) THEN
+          opposite_sign .OR. no_signal .OR. .NOT. energy_resolved .OR. energy_unresolved .OR. &
+          energy_noise) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
-            "failed with positive/negative/nonlinear/opposite/no-signal/resolved/unresolved", &
+         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
+            "failed with positive/negative/nonlinear/opposite/no-signal/resolved/unresolved/noise", &
             consistent_positive, consistent_negative, nonlinear, opposite_sign, no_signal, &
-            energy_resolved, energy_unresolved
+            energy_resolved, energy_unresolved, energy_noise
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
-            "OK with positive/negative/nonlinear/opposite/no-signal/resolved/unresolved", &
+         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
+            "OK with positive/negative/nonlinear/opposite/no-signal/resolved/unresolved/noise", &
             consistent_positive, consistent_negative, nonlinear, opposite_sign, no_signal, &
-            energy_resolved, energy_unresolved
+            energy_resolved, energy_unresolved, energy_noise
       END IF
 
    END SUBROUTINE check_kpoint_mermin_secant_consistency

@@ -3,14 +3,14 @@
 ! suite remains inexpensive.  It exercises a common fixed-N chemical
 ! potential, nontrivial irreducible k-point weights, ADDED_MOS AUTO, complex
 ! rotations, auxiliary energies, and the occupation preconditioner.
-! Local MPI-2/OMP-2 references: AUTO grows 4->8->16 and converges in roughly
-! 285-385 final-space steps at F = -9.0195318012 Ha. Rate-aware orbital-tail
+! Local MPI-2/OMP-2 reference: AUTO grows 4->8->16 and converges in 364
+! final-space steps at F = -9.01953180124 Ha. Rate-aware orbital-tail
 ! rebases use the complete fixed-N physical residual; the same case required
 ! more than 500 steps before that residual was available to the refresh gate.
 ! Restarting the resulting checkpoint at EPS_SCF 1E-7 converges in one step at
 ! the same printed endpoint. From that checkpoint independent strict 1E-8
-! trajectories reached the complete fixed-N Mermin endpoint in 493-494 steps
-! at F = -9.01953180129 Ha, and its own OT restart closes in one step. The
+! continuation reaches the complete fixed-N Mermin endpoint in 99 steps at
+! F = -9.01953180130 Ha, and its own OT restart closes in one step. The
 ! strict case remains an unlisted manual physics regression because of its cost.
 &GLOBAL
   PRINT_LEVEL HIGH

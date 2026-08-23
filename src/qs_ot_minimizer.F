@@ -2178,7 +2178,8 @@ CONTAINS
             ot_kpoint_mermin_secant_consistent(block_curvature, vector_secant_curvature)
          energy_curvature_resolved = ot_kpoint_mermin_energy_curvature_resolved( &
                                      alpha, qs_ot_env(1)%mermin_ls_reference_energy, &
-                                     qs_ot_env(1)%etotal, initial_total, energy_curvature)
+                                     qs_ot_env(1)%etotal, initial_total, energy_curvature, &
+                                     total_curvature)
          IF (energy_curvature_resolved) THEN
             energy_secant_consistent = &
                ot_kpoint_mermin_secant_consistent(total_curvature, energy_curvature)
@@ -2285,23 +2286,31 @@ CONTAINS
 !> \param endpoint_energy Mermin energy at the accepted endpoint
 !> \param reference_slope directional derivative at the line-search origin
 !> \param energy_curvature curvature reconstructed from the finite energy difference
+!> \param gradient_curvature curvature reconstructed from endpoint derivatives
 !> \return true when the O(alpha**2) energy remainder is numerically resolved
 ! **************************************************************************************************
    PURE LOGICAL FUNCTION ot_kpoint_mermin_energy_curvature_resolved( &
-      alpha, reference_energy, endpoint_energy, reference_slope, energy_curvature) RESULT(resolved)
+      alpha, reference_energy, endpoint_energy, reference_slope, energy_curvature, &
+      gradient_curvature) RESULT(resolved)
       REAL(KIND=dp), INTENT(IN)                          :: alpha, reference_energy, &
                                                             endpoint_energy, reference_slope, &
-                                                            energy_curvature
+                                                            energy_curvature, gradient_curvature
 
-      REAL(KIND=dp)                                      :: energy_scale, quadratic_remainder, &
-                                                            resolution
+      REAL(KIND=dp)                                      :: derivative_remainder, energy_scale, &
+                                                            quadratic_remainder, resolution
 
       energy_scale = MAX(1.0_dp, ABS(reference_energy), ABS(endpoint_energy), &
                          ABS(alpha*reference_slope))
       quadratic_remainder = 0.5_dp*ABS(alpha*alpha*energy_curvature)
+      derivative_remainder = 0.5_dp*ABS(alpha*alpha*gradient_curvature)
       resolution = 64.0_dp*EPSILON(1.0_dp)*energy_scale
+      ! Subtraction noise can look like a large curvature after division by alpha**2.
+      ! Only use the finite-energy veto when the independent endpoint derivatives also
+      ! predict a comfortably resolved quadratic remainder.
       resolved = quadratic_remainder > resolution .AND. &
-                 quadratic_remainder == quadratic_remainder
+                 derivative_remainder > 4.0_dp*resolution .AND. &
+                 quadratic_remainder == quadratic_remainder .AND. &
+                 derivative_remainder == derivative_remainder
 
    END FUNCTION ot_kpoint_mermin_energy_curvature_resolved
 
