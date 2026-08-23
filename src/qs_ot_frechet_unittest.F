@@ -56,7 +56,8 @@ PROGRAM qs_ot_frechet_unittest
                                               mp_world_init
    USE preconditioner,                  ONLY: apply_preconditioner,&
                                               full_all_response_metric_dense,&
-                                              make_complex_full_all
+                                              make_complex_full_all,&
+                                              make_complex_full_single_inverse
    USE preconditioner_types,            ONLY: preconditioner_type
    USE qs_ot,                           ONLY: qs_ot_adjoint_rotate_pair,&
                                               qs_ot_apply_complex_frechet_dbcsr,&
@@ -201,6 +202,8 @@ PROGRAM qs_ot_frechet_unittest
                                                 5.0E-12_dp, nfail, mp_comm)
    CALL check_complex_full_all_preconditioner("complex FULL_ALL phase covariance", &
                                               5.0E-11_dp, nfail, mp_comm)
+   CALL check_complex_full_single_inverse("complex FULL_SINGLE_INVERSE covariance", &
+                                          5.0E-10_dp, nfail, mp_comm)
    CALL check_complex_full_all_orbital_schur("complex FULL_ALL orbital Schur correction", &
                                              5.0E-7_dp, nfail)
    CALL check_smearing_derivative("smearing occupation derivative", 2.0E-7_dp, nfail)
@@ -2051,6 +2054,238 @@ CONTAINS
       CALL mp_para_env_release(para_env)
 
    END SUBROUTINE check_complex_full_all_preconditioner
+
+! **************************************************************************************************
+!> \brief Exercise the production complex FULL_SINGLE_INVERSE builder.  A unitary change of
+!>        reference gauge must leave its common AO operator invariant, and time reversal must
+!>        produce its complex conjugate.  The extracted inverse is also checked against the
+!>        independently assembled shifted Hermitian operator.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+!> \param mp_comm ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_full_single_inverse(label, tol, nfail, mp_comm)
+
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+      TYPE(mp_comm_type), INTENT(IN)                     :: mp_comm
+
+      INTEGER, PARAMETER                                 :: k = 2, n = 4
+      REAL(KIND=dp), PARAMETER                           :: energy_gap = 0.08_dp
+
+      COMPLEX(KIND=dp)                                   :: value
+      COMPLEX(KIND=dp), DIMENSION(k, k)                  :: chc, chc_eigenvectors, gauge_u
+      COMPLEX(KIND=dp), DIMENSION(n, k) :: c0, c0_gauge, c0_time_reversed, gradient, &
+         gradient_gauge, output, output_gauge
+      COMPLEX(KIND=dp), DIMENSION(n, n) :: eigenvectors, h, h_time_reversed, identity, &
+         operator, operator_shifted, preconditioner_dense, preconditioner_gauge, &
+         preconditioner_time_reversed, projector
+      INTEGER                                            :: i, j
+      REAL(KIND=dp) :: descent, gauge_error, hermiticity_error, inverse_error, max_ev, min_ev, &
+         output_error, output_gauge_error, positive_edge, pre_shift, target_edge, &
+         time_reversal_error
+      REAL(KIND=dp), DIMENSION(k)                        :: c0_evals, c0_gauge_evals, chc_evals
+      REAL(KIND=dp), DIMENSION(n)                        :: eigenvalues
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_cfm_type) :: c0_cfm, c0_gauge_cfm, c0_time_reversed_cfm, gradient_cfm, &
+         gradient_gauge_cfm, h_cfm, h_time_reversed_cfm, output_cfm, output_gauge_cfm, s_cfm
+      TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(preconditioner_type) :: preconditioner_env, preconditioner_gauge_env, &
+         preconditioner_time_reversed_env
+
+      NULLIFY (blacs_env, fm_struct, para_env)
+      ALLOCATE (para_env)
+      CALL para_env%from_dup(mp_comm)
+      CALL cp_blacs_env_create(blacs_env, para_env)
+      CALL cp_fm_struct_create(fm_struct, nrow_global=n, ncol_global=n, &
+                               context=blacs_env, para_env=para_env)
+
+      identity(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         identity(i, i) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)
+      END DO
+      h(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      h(1, 1) = CMPLX(-0.52_dp, 0.0_dp, KIND=dp)
+      h(2, 2) = CMPLX(-0.18_dp, 0.0_dp, KIND=dp)
+      h(3, 3) = CMPLX(0.29_dp, 0.0_dp, KIND=dp)
+      h(4, 4) = CMPLX(0.73_dp, 0.0_dp, KIND=dp)
+      h(1, 2) = CMPLX(0.05_dp, 0.04_dp, KIND=dp)
+      h(2, 1) = CONJG(h(1, 2))
+      h(1, 3) = CMPLX(-0.02_dp, 0.03_dp, KIND=dp)
+      h(3, 1) = CONJG(h(1, 3))
+      h(2, 4) = CMPLX(0.04_dp, -0.03_dp, KIND=dp)
+      h(4, 2) = CONJG(h(2, 4))
+      h(3, 4) = CMPLX(-0.06_dp, 0.02_dp, KIND=dp)
+      h(4, 3) = CONJG(h(3, 4))
+      h_time_reversed(:, :) = CONJG(h(:, :))
+
+      c0(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      c0(1, 1) = CMPLX(1.0_dp/SQRT(2.0_dp), 0.0_dp, KIND=dp)
+      c0(2, 1) = CMPLX(0.0_dp, 1.0_dp/SQRT(2.0_dp), KIND=dp)
+      c0(3, 2) = CMPLX(1.0_dp/SQRT(2.0_dp), 0.0_dp, KIND=dp)
+      c0(4, 2) = EXP(CMPLX(0.0_dp, 0.29_dp, KIND=dp))/SQRT(2.0_dp)
+      c0_time_reversed(:, :) = CONJG(c0(:, :))
+      gauge_u(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      gauge_u(1, 1) = CMPLX(COS(0.36_dp), 0.0_dp, KIND=dp)
+      gauge_u(1, 2) = EXP(CMPLX(0.0_dp, 0.47_dp, KIND=dp))*SIN(0.36_dp)
+      gauge_u(2, 1) = -CONJG(gauge_u(1, 2))
+      gauge_u(2, 2) = gauge_u(1, 1)
+      c0_gauge(:, :) = MATMUL(c0, gauge_u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(c0)), MATMUL(h, c0))
+      DO i = 1, k
+         c0_evals(i) = REAL(chc(i, i), KIND=dp)
+      END DO
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(c0_gauge)), MATMUL(h, c0_gauge))
+      DO i = 1, k
+         c0_gauge_evals(i) = REAL(chc(i, i), KIND=dp)
+      END DO
+
+      gradient(:, 1) = [CMPLX(0.13_dp, 0.02_dp, KIND=dp), &
+                        CMPLX(-0.07_dp, 0.04_dp, KIND=dp), &
+                        CMPLX(0.09_dp, -0.03_dp, KIND=dp), &
+                        CMPLX(-0.05_dp, 0.01_dp, KIND=dp)]
+      gradient(:, 2) = [CMPLX(-0.04_dp, 0.05_dp, KIND=dp), &
+                        CMPLX(0.08_dp, -0.01_dp, KIND=dp), &
+                        CMPLX(-0.11_dp, 0.06_dp, KIND=dp), &
+                        CMPLX(0.06_dp, 0.02_dp, KIND=dp)]
+      gradient_gauge(:, :) = MATMUL(gradient, gauge_u)
+
+      CALL cp_cfm_create(h_cfm, fm_struct, name='complex FULL_SINGLE test H')
+      CALL cp_cfm_create(h_time_reversed_cfm, fm_struct, &
+                         name='complex FULL_SINGLE time-reversed H')
+      CALL cp_cfm_create(s_cfm, fm_struct, name='complex FULL_SINGLE test S')
+      CALL cp_cfm_create(c0_cfm, fm_struct, nrow=n, ncol=k, name='complex FULL_SINGLE test C')
+      CALL cp_cfm_create(c0_gauge_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_SINGLE gauge C')
+      CALL cp_cfm_create(c0_time_reversed_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_SINGLE time-reversed C')
+      CALL cp_cfm_create(gradient_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_SINGLE test gradient')
+      CALL cp_cfm_create(gradient_gauge_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_SINGLE gauge gradient')
+      CALL cp_cfm_create(output_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_SINGLE test output')
+      CALL cp_cfm_create(output_gauge_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_SINGLE gauge output')
+      DO j = 1, n
+         DO i = 1, n
+            CALL cp_cfm_set_element(h_cfm, i, j, h(i, j))
+            CALL cp_cfm_set_element(h_time_reversed_cfm, i, j, h_time_reversed(i, j))
+            CALL cp_cfm_set_element(s_cfm, i, j, identity(i, j))
+         END DO
+      END DO
+      DO j = 1, k
+         DO i = 1, n
+            CALL cp_cfm_set_element(c0_cfm, i, j, c0(i, j))
+            CALL cp_cfm_set_element(c0_gauge_cfm, i, j, c0_gauge(i, j))
+            CALL cp_cfm_set_element(c0_time_reversed_cfm, i, j, c0_time_reversed(i, j))
+            CALL cp_cfm_set_element(gradient_cfm, i, j, gradient(i, j))
+            CALL cp_cfm_set_element(gradient_gauge_cfm, i, j, gradient_gauge(i, j))
+         END DO
+      END DO
+
+      CALL make_complex_full_single_inverse(preconditioner_env, c0_cfm, h_cfm, s_cfm, &
+                                            c0_evals, energy_gap)
+      CALL make_complex_full_single_inverse(preconditioner_gauge_env, c0_gauge_cfm, h_cfm, s_cfm, &
+                                            c0_gauge_evals, energy_gap)
+      CALL make_complex_full_single_inverse(preconditioner_time_reversed_env, &
+                                            c0_time_reversed_cfm, h_time_reversed_cfm, s_cfm, &
+                                            c0_evals, energy_gap)
+      CALL apply_preconditioner(preconditioner_env, gradient_cfm, output_cfm)
+      CALL apply_preconditioner(preconditioner_gauge_env, gradient_gauge_cfm, output_gauge_cfm)
+
+      DO j = 1, n
+         DO i = 1, n
+            CALL cp_cfm_get_element(preconditioner_env%complex_fm, i, j, value)
+            preconditioner_dense(i, j) = value
+            CALL cp_cfm_get_element(preconditioner_gauge_env%complex_fm, i, j, value)
+            preconditioner_gauge(i, j) = value
+            CALL cp_cfm_get_element(preconditioner_time_reversed_env%complex_fm, i, j, value)
+            preconditioner_time_reversed(i, j) = value
+         END DO
+      END DO
+      DO j = 1, k
+         DO i = 1, n
+            CALL cp_cfm_get_element(output_cfm, i, j, value)
+            output(i, j) = value
+            CALL cp_cfm_get_element(output_gauge_cfm, i, j, value)
+            output_gauge(i, j) = value
+         END DO
+      END DO
+
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(c0)), MATMUL(h, c0))
+      projector(:, :) = MATMUL(c0, CONJG(TRANSPOSE(c0)))
+      operator(:, :) = h - 2.0_dp*MATMUL(MATMUL(c0, chc), CONJG(TRANSPOSE(c0))) + projector
+      CALL diag_complex(operator, eigenvectors, eigenvalues)
+      min_ev = MINVAL(eigenvalues)
+      CALL diag_complex(chc, chc_eigenvectors, chc_evals)
+      max_ev = MAXVAL(chc_evals)
+      target_edge = MAX(1.5_dp*(min_ev - max_ev), energy_gap)
+      pre_shift = MAX(0.0_dp, target_edge - min_ev)
+      operator_shifted(:, :) = operator + pre_shift*identity
+      inverse_error = MAXVAL(ABS(MATMUL(operator_shifted, preconditioner_dense) - identity))
+      hermiticity_error = MAXVAL(ABS(preconditioner_dense - &
+                                     CONJG(TRANSPOSE(preconditioner_dense))))
+      gauge_error = MAXVAL(ABS(preconditioner_gauge - preconditioner_dense))
+      time_reversal_error = MAXVAL(ABS(preconditioner_time_reversed - &
+                                       CONJG(preconditioner_dense)))
+      output_error = MAXVAL(ABS(output - MATMUL(preconditioner_dense, gradient)))
+      output_gauge_error = MAXVAL(ABS(output_gauge - MATMUL(output, gauge_u)))
+      CALL diag_complex(preconditioner_dense, eigenvectors, eigenvalues)
+      positive_edge = MINVAL(eigenvalues)
+      descent = REAL(SUM(CONJG(gradient)*output), KIND=dp)
+
+      IF (inverse_error > tol .OR. hermiticity_error > tol .OR. gauge_error > tol .OR. &
+          time_reversal_error > tol .OR. output_error > tol .OR. output_gauge_error > tol .OR. &
+          positive_edge <= 0.0_dp .OR. descent <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            'failed with inverse/hermitian/gauge/time/output/output-gauge/edge/descent', &
+            inverse_error, hermiticity_error, gauge_error, time_reversal_error, output_error, &
+            output_gauge_error, positive_edge, descent
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            'OK with inverse/hermitian/gauge/time/output/output-gauge/edge/descent', &
+            inverse_error, hermiticity_error, gauge_error, time_reversal_error, output_error, &
+            output_gauge_error, positive_edge, descent
+      END IF
+
+      CALL cp_cfm_release(preconditioner_time_reversed_env%complex_fm)
+      DEALLOCATE (preconditioner_time_reversed_env%complex_fm)
+      CALL cp_cfm_release(preconditioner_time_reversed_env%complex_response_fm)
+      DEALLOCATE (preconditioner_time_reversed_env%complex_response_fm)
+      DEALLOCATE (preconditioner_time_reversed_env%full_evals)
+      DEALLOCATE (preconditioner_time_reversed_env%occ_evals)
+      CALL cp_cfm_release(preconditioner_gauge_env%complex_fm)
+      DEALLOCATE (preconditioner_gauge_env%complex_fm)
+      CALL cp_cfm_release(preconditioner_gauge_env%complex_response_fm)
+      DEALLOCATE (preconditioner_gauge_env%complex_response_fm)
+      DEALLOCATE (preconditioner_gauge_env%full_evals)
+      DEALLOCATE (preconditioner_gauge_env%occ_evals)
+      CALL cp_cfm_release(preconditioner_env%complex_fm)
+      DEALLOCATE (preconditioner_env%complex_fm)
+      CALL cp_cfm_release(preconditioner_env%complex_response_fm)
+      DEALLOCATE (preconditioner_env%complex_response_fm)
+      DEALLOCATE (preconditioner_env%full_evals)
+      DEALLOCATE (preconditioner_env%occ_evals)
+      CALL cp_cfm_release(output_gauge_cfm)
+      CALL cp_cfm_release(output_cfm)
+      CALL cp_cfm_release(gradient_gauge_cfm)
+      CALL cp_cfm_release(gradient_cfm)
+      CALL cp_cfm_release(c0_time_reversed_cfm)
+      CALL cp_cfm_release(c0_gauge_cfm)
+      CALL cp_cfm_release(c0_cfm)
+      CALL cp_cfm_release(s_cfm)
+      CALL cp_cfm_release(h_time_reversed_cfm)
+      CALL cp_cfm_release(h_cfm)
+      CALL cp_fm_struct_release(fm_struct)
+      CALL cp_blacs_env_release(blacs_env)
+      CALL mp_para_env_release(para_env)
+
+   END SUBROUTINE check_complex_full_single_inverse
 
 ! **************************************************************************************************
 !> \brief Check the complex orbital-complement Schur term against direct and finite-difference forms.

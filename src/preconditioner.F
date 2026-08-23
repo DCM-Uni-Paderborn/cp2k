@@ -44,6 +44,7 @@ MODULE preconditioner
                                               full_all_response_metric_dbcsr_complex,&
                                               full_all_response_metric_dense
    USE preconditioner_makes,            ONLY: make_complex_full_all,&
+                                              make_complex_full_single_inverse,&
                                               make_preconditioner_matrix
    USE preconditioner_solvers,          ONLY: solve_preconditioner,&
                                               transfer_dbcsr_to_fm,&
@@ -66,7 +67,7 @@ MODULE preconditioner
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'preconditioner'
 
-   PUBLIC :: make_complex_full_all, make_preconditioner, &
+   PUBLIC :: make_complex_full_all, make_complex_full_single_inverse, make_preconditioner, &
              make_preconditioner_complex_full_all, restart_preconditioner
    PUBLIC :: apply_preconditioner, full_all_response_metric_dbcsr_complex, &
              full_all_response_metric_dense, prepare_preconditioner
@@ -317,8 +318,18 @@ CONTAINS
       CALL cp_fm_to_cfm(matrix_s_re_fm, matrix_s_im_fm, matrix_s)
       CALL cp_fm_to_cfm(mo_coeff_re, mo_coeff_im, matrix_c)
 
-      CALL make_complex_full_all(preconditioner_env, matrix_c, matrix_h, matrix_s, &
-                                 eigenvalues(1:nmo), energy_gap, precon_type)
+      IF (PRESENT(precon_type)) THEN
+         IF (precon_type == ot_precond_full_single_inverse) THEN
+            CALL make_complex_full_single_inverse(preconditioner_env, matrix_c, matrix_h, matrix_s, &
+                                                  eigenvalues(1:nmo), energy_gap)
+         ELSE
+            CALL make_complex_full_all(preconditioner_env, matrix_c, matrix_h, matrix_s, &
+                                       eigenvalues(1:nmo), energy_gap, precon_type)
+         END IF
+      ELSE
+         CALL make_complex_full_all(preconditioner_env, matrix_c, matrix_h, matrix_s, &
+                                    eigenvalues(1:nmo), energy_gap)
+      END IF
 
       CALL cp_cfm_release(matrix_c)
       CALL cp_cfm_release(matrix_s)

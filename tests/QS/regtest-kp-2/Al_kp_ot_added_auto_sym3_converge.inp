@@ -2,7 +2,7 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-08 references: AUTO grows 4->8->16 and converges in 49-92
+! Local 2026-08 references: AUTO grows 4->8->16 and converges in 49-99
 ! final-space OT steps across runtime and O3 MPI-2/OMP-2 builds. Repeated runs
 ! can follow different nonlinear paths, but reach -8.159987079 Ha within 1E-9 Ha.
 ! At 16 MOs the weighted upper-edge occupation is below 6E-97 and the basis
@@ -48,7 +48,7 @@
         LINESEARCH 2PNT
         MINIMIZER CG
         OCCUPATION_PRECONDITIONER
-        PRECONDITIONER FULL_SINGLE_INVERSE
+        PRECONDITIONER FULL_ALL
         ROTATION
       &END OT
       &SMEAR

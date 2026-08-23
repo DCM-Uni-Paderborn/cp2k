@@ -6,8 +6,9 @@
 !
 ! Local 2026-07 HIGH reference from a fresh directory: the final 16-MO stage
 ! converges in 21 OT steps to a Mermin free energy of -8.15998707958001 Ha.
-! The FULL_SINGLE_INVERSE companion gives -8.15998708351193 Ha, a difference
-! of 3.9e-9 Ha. There is no first/last-band warning, AUTO-exhausted warning,
+! Older runs printed FULL_SINGLE_INVERSE while silently constructing the same
+! state-selective FULL_ALL operator and therefore were not an independent FSI
+! comparison. There is no first/last-band warning, AUTO-exhausted warning,
 ! preconditioner-positivity failure, or unsupported-content signature.
 &GLOBAL
   PRINT_LEVEL HIGH

@@ -2974,18 +2974,18 @@ CONTAINS
 !> \param smearing_default_metallic_variables Select ROTATION and ENERGIES as a coupled default.
 !> \param smearing_default_occupation_preconditioner Select the fixed-N preconditioner when omitted.
 !> \param smearing_default_preconditioner Select the orbital preconditioner when omitted.
-!> \param smearing_default_full_all Select the unrestricted orbital preconditioner.
+!> \param smearing_default_kpoint_full_all Select the complex k-point orbital preconditioner.
 ! **************************************************************************************************
    SUBROUTINE ot_readwrite_input(settings, ot_section, output_unit, kpoint_default_irac, &
                                  smearing_default_metallic_variables, &
                                  smearing_default_occupation_preconditioner, smearing_default_preconditioner, &
-                                 smearing_default_full_all)
+                                 smearing_default_kpoint_full_all)
       TYPE(qs_ot_settings_type)                          :: settings
       TYPE(section_vals_type), POINTER                   :: ot_section
       INTEGER, INTENT(IN)                                :: output_unit
       LOGICAL, INTENT(IN), OPTIONAL :: kpoint_default_irac, smearing_default_metallic_variables, &
          smearing_default_occupation_preconditioner, smearing_default_preconditioner, &
-         smearing_default_full_all
+         smearing_default_kpoint_full_all
 
       CHARACTER(len=*), PARAMETER :: routineN = 'ot_readwrite_input'
 
@@ -2995,7 +2995,7 @@ CONTAINS
          occupation_preconditioner_explicit, preconditioner_explicit, rotation_explicit, &
          selected_energies_default, selected_kpoint_default, &
          selected_occupation_preconditioner_default, selected_preconditioner_default, &
-         selected_rotation_default
+         selected_rotation_default, smearing_context
 
       CALL timeset(routineN, handle)
 
@@ -3006,7 +3006,11 @@ CONTAINS
       selected_occupation_preconditioner_default = .FALSE.
       selected_preconditioner_default = .FALSE.
       kpoint_smearing_context = .FALSE.
+      smearing_context = .FALSE.
       IF (PRESENT(kpoint_default_irac)) kpoint_smearing_context = kpoint_default_irac
+      IF (PRESENT(smearing_default_preconditioner)) THEN
+         smearing_context = smearing_default_preconditioner
+      END IF
       CALL section_vals_val_get(ot_section, "ALGORITHM", i_val=ot_algorithm, explicit=algorithm_explicit)
       IF (PRESENT(kpoint_default_irac)) THEN
          IF (kpoint_default_irac .AND. .NOT. algorithm_explicit) THEN
@@ -3141,8 +3145,8 @@ CONTAINS
       IF (PRESENT(smearing_default_preconditioner)) THEN
          IF (smearing_default_preconditioner .AND. .NOT. preconditioner_explicit) THEN
             settings%preconditioner_type = ot_precond_full_single_inverse
-            IF (PRESENT(smearing_default_full_all)) THEN
-               IF (smearing_default_full_all) settings%preconditioner_type = ot_precond_full_all
+            IF (PRESENT(smearing_default_kpoint_full_all)) THEN
+               IF (smearing_default_kpoint_full_all) settings%preconditioner_type = ot_precond_full_all
             END IF
             selected_preconditioner_default = .TRUE.
          END IF
@@ -3162,7 +3166,10 @@ CONTAINS
          IF (settings%energy_gap < 0.0_dp) settings%energy_gap = 0.08_dp
       CASE (ot_precond_full_all)
          settings%preconditioner_name = "FULL_ALL"
-         IF (settings%ds_min < 0.0_dp) settings%ds_min = 0.15_dp
+         IF (settings%ds_min < 0.0_dp) THEN
+            settings%ds_min = 0.15_dp
+            IF (kpoint_smearing_context .AND. smearing_context) settings%ds_min = 0.08_dp
+         END IF
          IF (settings%energy_gap < 0.0_dp) settings%energy_gap = 0.08_dp
       CASE (ot_precond_fermi_low_rank)
          settings%preconditioner_name = "FERMI_LOW_RANK"

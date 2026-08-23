@@ -47,6 +47,7 @@ MODULE preconditioner_types
       TYPE(cp_fm_type), POINTER :: fm => NULL()
       TYPE(cp_cfm_type), POINTER :: complex_fm => NULL()
       TYPE(cp_cfm_type), POINTER :: complex_base_fm => NULL()
+      TYPE(cp_cfm_type), POINTER :: complex_response_fm => NULL()
       TYPE(dbcsr_type), POINTER           :: dbcsr_matrix => NULL()
       TYPE(dbcsr_type), POINTER           :: max_ev_vector => NULL()
       TYPE(dbcsr_type), POINTER           :: min_ev_vector => NULL()
@@ -100,6 +101,7 @@ CONTAINS
       NULLIFY (preconditioner_env%fm)
       NULLIFY (preconditioner_env%complex_fm)
       NULLIFY (preconditioner_env%complex_base_fm)
+      NULLIFY (preconditioner_env%complex_response_fm)
       NULLIFY (preconditioner_env%dbcsr_matrix)
       NULLIFY (preconditioner_env%occ_evals)
       NULLIFY (preconditioner_env%full_evals)
@@ -158,6 +160,11 @@ CONTAINS
          CALL cp_cfm_release(preconditioner_env%complex_base_fm)
          DEALLOCATE (preconditioner_env%complex_base_fm)
          NULLIFY (preconditioner_env%complex_base_fm)
+      END IF
+      IF (ASSOCIATED(preconditioner_env%complex_response_fm)) THEN
+         CALL cp_cfm_release(preconditioner_env%complex_response_fm)
+         DEALLOCATE (preconditioner_env%complex_response_fm)
+         NULLIFY (preconditioner_env%complex_response_fm)
       END IF
       IF (ASSOCIATED(preconditioner_env%dbcsr_matrix)) THEN
          CALL dbcsr_release_p(preconditioner_env%dbcsr_matrix)

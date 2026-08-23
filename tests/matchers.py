@@ -279,6 +279,9 @@ registry["OT_KPOINT_DEFAULT_PRECONDITIONER"] = TextPresenceMatcher(
 registry["OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"] = TextPresenceMatcher(
     "K-point OT smearing default: PRECONDITIONER FULL_ALL"
 )
+registry["OT_PRECONDITIONER_FULL_SINGLE_INVERSE"] = TextPresenceMatcher(
+    "Preconditioner : FULL_SINGLE_INVERSE"
+)
 registry["OT_SMEARING_DEFAULT_ROTATION"] = TextPresenceMatcher(
     "OT smearing default: ROTATION ON"
 )

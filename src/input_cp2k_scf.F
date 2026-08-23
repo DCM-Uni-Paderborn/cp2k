@@ -815,8 +815,8 @@ CONTAINS
          description="Type of preconditioner to be used with all minimization schemes. "// &
          "They differ in effectiveness, cost of construction, cost of application. "// &
          "Properly preconditioned minimization can be orders of magnitude faster than doing nothing. "// &
-         "For OT with smearing, an omitted keyword selects FULL_SINGLE_INVERSE. Unrestricted K-point "// &
-         "smearing selects FULL_ALL instead; other OT calculations retain the FULL_KINETIC default.", &
+         "For OT with smearing, an omitted keyword selects FULL_SINGLE_INVERSE at Gamma and "// &
+         "FULL_ALL for complex K-point channels; other OT calculations retain the FULL_KINETIC default.", &
          usage="PRECONDITIONER FULL_ALL", &
          default_i_val=ot_precond_full_kinetic, &
          enum_c_vals=s2a("FULL_ALL", "FERMI_LOW_RANK", "FULL_SINGLE_INVERSE", "FULL_SINGLE", &

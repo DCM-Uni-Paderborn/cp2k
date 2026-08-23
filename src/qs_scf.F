@@ -2681,7 +2681,7 @@ CONTAINS
       END IF
 
       CALL ot_scf_read_input(scf_env%qs_ot_env, scf_section, do_kpoints, &
-                             scf_control%smear%do_smear, nspin_ot)
+                             scf_control%smear%do_smear)
 
       IF (scf_env%outer_scf%iter_count > 0) THEN
          IF (scf_env%qs_ot_env(1)%settings%ot_state == 1) THEN
@@ -3087,9 +3087,8 @@ CONTAINS
          CALL timestop(handle)
          RETURN
       CASE (ot_precond_full_single_inverse)
-         ! Complex k-point channels are promoted below to the exact Hermitian
-         ! FULL_ALL construction.  Applying a real-part inverse separately to
-         ! the real and imaginary gradients is not rank invariant.
+         ! Build one gauge-covariant Hermitian AO inverse for the orbital
+         ! gradient and a separate state-selective coupled-response metric.
       CASE (ot_precond_full_all, ot_precond_fermi_low_rank)
          ! Built directly from complex H(k), S(k), and C(k), without rotating
          ! the OT reference gauge.

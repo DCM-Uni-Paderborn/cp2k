@@ -8,9 +8,10 @@
 ! rebases use the complete fixed-N physical residual; the same case required
 ! more than 500 steps before that residual was available to the refresh gate.
 ! Restarting the resulting checkpoint at EPS_SCF 1E-7 converges in one step at
-! the same printed endpoint. From that checkpoint the strict 1E-8 companion
-! reaches a complete fixed-N Mermin endpoint in 105-296 MPI-2/OMP-2 steps with
-! the sign-aware dense Schur saddle-escape path, then restarts in one step.
+! the same printed endpoint. From that checkpoint the strict 1E-8 companion can
+! reach a complete fixed-N Mermin endpoint, but some trajectories still retain
+! a complete physical residual just above 1E-8 after 360 steps. It remains a
+! manual residual-tail stress test rather than a deterministic regression.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Na_kp_ot_added_auto_sym333_converge
@@ -44,7 +45,7 @@
         LINESEARCH 2PNT
         MINIMIZER CG
         OCCUPATION_PRECONDITIONER
-        PRECONDITIONER FULL_SINGLE_INVERSE
+        PRECONDITIONER FULL_ALL
         ROTATION
       &END OT
       &SMEAR

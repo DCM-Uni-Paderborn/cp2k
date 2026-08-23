@@ -14,6 +14,7 @@
                                            {matcher="Variational_smearing_free_energy", tol=4.0E-12, ref=-8.27916163440613}]
 "Al_kp_ot_added_auto.inp"               = [{matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="OT_KPOINT_DEFAULT_IRAC"},
+                                           {matcher="OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"},
                                            {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
@@ -43,6 +44,7 @@
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_diis_complex.inp"             = [{matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="OT_PRECONDITIONER_FULL_SINGLE_INVERSE"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_fermi_low_rank.inp"           = [{matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="NO_TEXT", text="CPASSERT failed"},
@@ -66,7 +68,7 @@
 # cheap while the adaptive AUTO grow path can still be checked against the
 # 1E-6 Mermin path. The LOW 2x1x1 reference converges in 111 final-space
 # MPI-2 steps and reaches -8.14585308840704 Ha. The symmetry-reduced
-# 3x1x1 reference takes roughly 50-95 MPI-2/OMP-2 final-space steps and reaches
+# 3x1x1 reference takes roughly 50-100 MPI-2/OMP-2 final-space steps and reaches
 # -8.159987079 Ha within 3E-9 Ha without overgrowing its empty virtual edge. The
 # explicit full-grid 3x1x1 companion follows the same endpoint in roughly 60-90
 # final-space steps. Their EPS_SCF=1E-6 endpoints agree within 3E-9 Ha even though
@@ -95,10 +97,12 @@
 # The unlisted Na_kp_ot_added_auto_sym333_converge.inp is the stricter atomic
 # 3x3x3 fixed-N companion. It grows AUTO 4->8->16 and converges in roughly
 # 285-385 steps near -9.0195318012 Ha. Its ordinary restart restores the
-# converged state in one step. The strict 1E-8 companion is also unlisted; three
-# independent MPI-2/OMP-2 paths reached complete fixed-N Mermin endpoints in
-# 105-296 steps with the sign-aware dense Schur saddle-escape path, and the
-# resulting checkpoints restarted in one step.
+# converged state in one step. The strict 1E-8 companion is also unlisted. It
+# reaches complete fixed-N Mermin endpoints on favorable trajectories, but is
+# not yet deterministic within its 360-step bound: the remaining complete
+# physical residual can stall just above 1E-8 even after search and density
+# residuals have converged. Keep it as a manual tail stress test, not a claimed
+# converged regression.
 # The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
 # provide the converged symmetry-reduced Gaussian path at
 # -8.15946107404605 Ha; the restart closes in one step and diagonalization is

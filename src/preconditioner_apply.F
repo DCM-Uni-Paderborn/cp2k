@@ -201,7 +201,10 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Build R^H P_j R directly from paired real/imaginary DBCSR residual matrices.
-!> \param preconditioner_env complex FULL_ALL preconditioner
+!>        FULL_ALL uses its column-resolved spectral weights.  FULL_SINGLE_INVERSE applies one
+!>        common AO inverse to orbital gradients, but uses its associated state-selective
+!>        spectral model for the coupled rotation/occupation response.
+!> \param preconditioner_env complex orbital preconditioner
 !> \param residual_re real part of the unweighted REF complement residual
 !> \param residual_im imaginary part of the unweighted REF complement residual
 !> \param response_metric reduced column-resolved FULL_ALL metric
@@ -216,56 +219,98 @@ CONTAINS
          DIMENSION(:, :, :), INTENT(INOUT)               :: response_metric
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: column_scale
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: spectral_residual
-      INTEGER                                            :: k, n
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: residual_dense, spectral_residual, &
+                                                            weighted_residual
+      INTEGER                                            :: imo, k, n
+      LOGICAL                                            :: single_inverse, spectral_response
+      REAL(KIND=dp)                                      :: scale
       TYPE(cp_cfm_type)                                  :: residual, residual_spectral
+      TYPE(cp_cfm_type), POINTER                         :: response_basis
       TYPE(cp_fm_type)                                   :: residual_im_fm, residual_re_fm
 
-      CPASSERT(is_spectral_preconditioner(preconditioner_env))
+      single_inverse = preconditioner_env%in_use == ot_precond_full_single_inverse
+      spectral_response = is_spectral_preconditioner(preconditioner_env) .OR. &
+                          (single_inverse .AND. ASSOCIATED(preconditioner_env%complex_response_fm))
+      CPASSERT(single_inverse .OR. is_spectral_preconditioner(preconditioner_env))
       CPASSERT(ASSOCIATED(preconditioner_env%complex_fm))
-      CPASSERT(ASSOCIATED(preconditioner_env%full_evals))
-      CPASSERT(ASSOCIATED(preconditioner_env%occ_evals))
+      NULLIFY (response_basis)
       CALL dbcsr_get_info(residual_re, nfullrows_total=n, nfullcols_total=k)
-      CPASSERT(n == SIZE(preconditioner_env%full_evals))
-      CPASSERT(k == SIZE(preconditioner_env%occ_evals))
+      IF (spectral_response) THEN
+         CPASSERT(ASSOCIATED(preconditioner_env%full_evals))
+         CPASSERT(ASSOCIATED(preconditioner_env%occ_evals))
+         CPASSERT(n == SIZE(preconditioner_env%full_evals))
+         CPASSERT(k == SIZE(preconditioner_env%occ_evals))
+         IF (single_inverse) THEN
+            response_basis => preconditioner_env%complex_response_fm
+         ELSE
+            response_basis => preconditioner_env%complex_fm
+         END IF
+      ELSE
+         CALL cp_cfm_get_info(preconditioner_env%complex_fm, nrow_global=imo)
+         CPASSERT(n == imo)
+      END IF
+      IF (PRESENT(column_scale)) THEN
+         CPASSERT(SIZE(column_scale) == k)
+      END IF
 
       IF (ALLOCATED(response_metric)) THEN
          IF (ANY(SHAPE(response_metric) /= [k, k, k])) DEALLOCATE (response_metric)
       END IF
       IF (.NOT. ALLOCATED(response_metric)) ALLOCATE (response_metric(k, k, k))
-      ALLOCATE (spectral_residual(n, k))
 
       CALL cp_fm_create(residual_re_fm, preconditioner_env%complex_fm%matrix_struct, &
-                        nrow=n, ncol=k, name='complex FULL_ALL response residual real')
+                        nrow=n, ncol=k, name='complex preconditioner response residual real')
       CALL cp_fm_create(residual_im_fm, preconditioner_env%complex_fm%matrix_struct, &
-                        nrow=n, ncol=k, name='complex FULL_ALL response residual imaginary')
+                        nrow=n, ncol=k, name='complex preconditioner response residual imaginary')
       CALL copy_dbcsr_to_fm(residual_re, residual_re_fm)
       CALL copy_dbcsr_to_fm(residual_im, residual_im_fm)
       CALL cp_cfm_create(residual, residual_re_fm%matrix_struct, &
-                         name='complex FULL_ALL response residual')
+                         name='complex preconditioner response residual')
       CALL cp_cfm_create(residual_spectral, residual_re_fm%matrix_struct, &
-                         name='complex FULL_ALL spectral response residual')
+                         name='complex preconditioner weighted response residual')
       CALL cp_fm_to_cfm(residual_re_fm, residual_im_fm, residual)
-      CALL cp_cfm_gemm('C', 'N', n, k, n, z_one, preconditioner_env%complex_fm, &
-                       residual, z_zero, residual_spectral)
-      CALL cp_cfm_get_submatrix(residual_spectral, spectral_residual)
-      IF (preconditioner_env%in_use == ot_precond_fermi_low_rank) THEN
-         CALL full_all_response_metric_dense(spectral_residual, preconditioner_env%full_evals, &
-                                             preconditioner_env%occ_evals, preconditioner_env%energy_gap, &
-                                             response_metric, column_scale, preconditioner_env%spectral_rank, &
-                                             preconditioner_env%spectral_window, &
-                                             preconditioner_env%spectral_base_scale)
+
+      IF (.NOT. spectral_response) THEN
+         ALLOCATE (residual_dense(n, k), weighted_residual(n, k))
+         CALL cp_cfm_gemm('N', 'N', n, k, n, z_one, preconditioner_env%complex_fm, &
+                          residual, z_zero, residual_spectral)
+         CALL cp_cfm_get_submatrix(residual, residual_dense)
+         CALL cp_cfm_get_submatrix(residual_spectral, weighted_residual)
+         DO imo = 1, k
+            scale = 1.0_dp
+            IF (PRESENT(column_scale)) scale = column_scale(imo)
+            CPASSERT(scale >= 0.0_dp)
+            response_metric(:, :, imo) = scale* &
+                                         MATMUL(CONJG(TRANSPOSE(residual_dense)), weighted_residual)
+            response_metric(:, :, imo) = 0.5_dp*(response_metric(:, :, imo) + &
+                                                 CONJG(TRANSPOSE(response_metric(:, :, imo))))
+         END DO
+         DEALLOCATE (weighted_residual, residual_dense)
       ELSE
-         CALL full_all_response_metric_dense(spectral_residual, preconditioner_env%full_evals, &
-                                             preconditioner_env%occ_evals, preconditioner_env%energy_gap, &
-                                             response_metric, column_scale)
+         ALLOCATE (spectral_residual(n, k))
+         CALL cp_cfm_gemm('C', 'N', n, k, n, z_one, response_basis, &
+                          residual, z_zero, residual_spectral)
+         CALL cp_cfm_get_submatrix(residual_spectral, spectral_residual)
+         IF (.NOT. single_inverse .AND. &
+             preconditioner_env%in_use == ot_precond_fermi_low_rank) THEN
+            CALL full_all_response_metric_dense( &
+               spectral_residual, preconditioner_env%full_evals, &
+               preconditioner_env%occ_evals, preconditioner_env%energy_gap, &
+               response_metric, column_scale, preconditioner_env%spectral_rank, &
+               preconditioner_env%spectral_window, preconditioner_env%spectral_base_scale)
+         ELSE
+            CALL full_all_response_metric_dense( &
+               spectral_residual, preconditioner_env%full_evals, &
+               preconditioner_env%occ_evals, preconditioner_env%energy_gap, &
+               response_metric, column_scale)
+         END IF
+         DEALLOCATE (spectral_residual)
       END IF
 
       CALL cp_cfm_release(residual_spectral)
       CALL cp_cfm_release(residual)
       CALL cp_fm_release(residual_im_fm)
       CALL cp_fm_release(residual_re_fm)
-      DEALLOCATE (spectral_residual)
 
    END SUBROUTINE full_all_response_metric_dbcsr_complex
 
@@ -389,6 +434,16 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
+      IF (preconditioner_env%in_use == ot_precond_full_single_inverse) THEN
+         CPASSERT(ASSOCIATED(preconditioner_env%complex_fm))
+         CPASSERT(.NOT. PRESENT(matrix_constraint))
+         CALL cp_cfm_get_info(matrix_in, nrow_global=n, ncol_global=k)
+         CALL cp_cfm_gemm('N', 'N', n, k, n, z_one, preconditioner_env%complex_fm, &
+                          matrix_in, z_zero, matrix_out)
+         CALL timestop(handle)
+         RETURN
+      END IF
+
       CPASSERT(is_spectral_preconditioner(preconditioner_env))
       CPASSERT(ASSOCIATED(preconditioner_env%complex_fm))
       CPASSERT(ASSOCIATED(preconditioner_env%full_evals))
@@ -506,7 +561,7 @@ CONTAINS
    END SUBROUTINE apply_preconditioner_cfm_complex
 
 ! **************************************************************************************************
-!> \brief Apply a complex state-selective FULL_ALL operator to paired real/imaginary DBCSR matrices.
+!> \brief Apply a complex orbital preconditioner to paired real/imaginary DBCSR matrices.
 !> \param preconditioner_env complex k-point preconditioner
 !> \param matrix_in_re real input channel
 !> \param matrix_in_im imaginary input channel
@@ -527,20 +582,25 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'apply_preconditioner_dbcsr_complex'
 
-      INTEGER                                            :: handle, k, n
+      INTEGER                                            :: handle, k, n, npre
       TYPE(cp_cfm_type)                                  :: matrix_constraint, matrix_in, matrix_out
       TYPE(cp_fm_type) :: matrix_constraint_im_fm, matrix_constraint_re_fm, matrix_in_im_fm, &
          matrix_in_re_fm, matrix_out_im_fm, matrix_out_re_fm
 
       CALL timeset(routineN, handle)
 
-      CPASSERT(is_spectral_preconditioner(preconditioner_env))
       CPASSERT(ASSOCIATED(preconditioner_env%complex_fm))
-      CPASSERT(ASSOCIATED(preconditioner_env%full_evals))
-      CPASSERT(ASSOCIATED(preconditioner_env%occ_evals))
       CALL dbcsr_get_info(matrix_in_re, nfullrows_total=n, nfullcols_total=k)
-      CPASSERT(n == SIZE(preconditioner_env%full_evals))
-      CPASSERT(k == SIZE(preconditioner_env%occ_evals))
+      IF (preconditioner_env%in_use == ot_precond_full_single_inverse) THEN
+         CALL cp_cfm_get_info(preconditioner_env%complex_fm, nrow_global=npre)
+         CPASSERT(n == npre)
+      ELSE
+         CPASSERT(is_spectral_preconditioner(preconditioner_env))
+         CPASSERT(ASSOCIATED(preconditioner_env%full_evals))
+         CPASSERT(ASSOCIATED(preconditioner_env%occ_evals))
+         CPASSERT(n == SIZE(preconditioner_env%full_evals))
+         CPASSERT(k == SIZE(preconditioner_env%occ_evals))
+      END IF
 
       CALL cp_fm_create(matrix_in_re_fm, preconditioner_env%complex_fm%matrix_struct, &
                         nrow=n, ncol=k, name='complex FULL_ALL input real')
