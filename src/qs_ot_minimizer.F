@@ -128,7 +128,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_residual_spike_quality_ceiling = 0.0_dp, &
                                         ot_cg_kp_closure_response_ema_alpha = 2.5E-1_dp, &
                                         ot_cg_kp_mermin_closure_backtrack = 5.0E-1_dp, &
-                                        ot_cg_kp_mermin_secant_consistency = 2.0E-1_dp
+                                        ot_cg_kp_mermin_secant_consistency = 2.0E-1_dp, &
+                                        ot_diis_kp_rotation_response_min_work_ratio = 2.5E-1_dp
 
    TYPE, PRIVATE :: ot_cg_history_snapshot_type
       TYPE(dbcsr_type), POINTER                         :: matrix_gx_old => NULL(), &
@@ -243,25 +244,37 @@ CONTAINS
 !>
 !>        The Pulay metric retains the raw complex rotation residual.  A finite Schur response is
 !>        applied only as a current-coordinate correction and only when its complete distributed
-!>        contraction with the raw gradient is a finite strict descent direction.  The correction
-!>        remains disabled while the canonical Fermi-frontier guard owns the trial state.
+!>        contraction with the raw gradient is a finite descent direction that retains a useful
+!>        fraction of the raw first-order work.  The correction remains disabled while an external
+!>        Fermi-frontier projection owns the trial state.
 !> \param direction_ready every distributed k-point channel supplied the current Schur response
-!> \param response_slope weighted gradient-response contraction
-!> \param raw_slope weighted squared raw rotation-gradient norm
-!> \param fermi_guard_active canonical frontier projection still controls accepted trials
+!> \param response_slope weighted gradient-response contraction for every fixed-N group
+!> \param raw_slope weighted squared raw rotation-gradient norm for every fixed-N group
+!> \param external_projection_active an external frontier projection still controls trial states
 !> \return true when the response can replace the current raw rotation shift
 ! **************************************************************************************************
    PURE FUNCTION ot_kpoint_diis_rotation_response_ready( &
-      direction_ready, response_slope, raw_slope, fermi_guard_active) RESULT(ready)
+      direction_ready, response_slope, raw_slope, external_projection_active) RESULT(ready)
       LOGICAL, INTENT(IN)                                :: direction_ready
-      REAL(KIND=dp), INTENT(IN)                          :: response_slope, raw_slope
-      LOGICAL, INTENT(IN)                                :: fermi_guard_active
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_slope, raw_slope
+      LOGICAL, INTENT(IN)                                :: external_projection_active
       LOGICAL                                            :: ready
 
-      ready = direction_ready .AND. .NOT. fermi_guard_active .AND. &
-              ABS(response_slope) < HUGE(response_slope) .AND. &
-              ABS(raw_slope) < HUGE(raw_slope) .AND. raw_slope > EPSILON(1.0_dp) .AND. &
-              response_slope > EPSILON(1.0_dp)*MAX(raw_slope, ABS(response_slope))
+      INTEGER                                            :: group
+
+      ready = direction_ready .AND. .NOT. external_projection_active .AND. &
+              SIZE(response_slope) > 0 .AND. SIZE(response_slope) == SIZE(raw_slope)
+      IF (.NOT. ready) RETURN
+      DO group = 1, SIZE(response_slope)
+         ready = ABS(response_slope(group)) < HUGE(response_slope(group)) .AND. &
+                 ABS(raw_slope(group)) < HUGE(raw_slope(group)) .AND. &
+                 raw_slope(group) > EPSILON(1.0_dp) .AND. &
+                 response_slope(group) >= &
+                 ot_diis_kp_rotation_response_min_work_ratio*raw_slope(group) .AND. &
+                 response_slope(group) > &
+                 EPSILON(1.0_dp)*MAX(raw_slope(group), ABS(response_slope(group)))
+         IF (.NOT. ready) RETURN
+      END DO
 
    END FUNCTION ot_kpoint_diis_rotation_response_ready
 
@@ -5239,8 +5252,8 @@ CONTAINS
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_diis_step'
 
       INTEGER                                            :: diis_bound, diis_m, direction_ready_all, &
-                                                            handle, i, info, ispin, j, last_index, &
-                                                            nspin
+                                                            group, handle, i, info, ispin, j, &
+                                                            last_index, nfixed_groups, nspin
       LOGICAL :: current_state_converged, do_ener, do_ks, do_ot_sd, &
          kpoint_preconditioned_direction, kpoint_preconditioned_energy, &
          kpoint_preconditioned_rotation, mermin_energy_rejected, mermin_residual_rejected, &
@@ -5248,6 +5261,8 @@ CONTAINS
       REAL(KIND=dp) :: contracted_step, current_exit_delta, current_physical_delta, norm_weight, &
          nvar, overlap, previous_step, reference_energy, reference_physical_delta, &
          rejected_energy, rotation_raw_slope, rotation_response_slope, tmp, tr_xnew_gx, tr_xold_gx
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rotation_group_raw_slope, &
+                                                            rotation_group_response_slope
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -5274,38 +5289,62 @@ CONTAINS
       ! Keep the raw complex rotation residual in the Pulay metric.  The
       ! sign-aware Schur response is admitted separately as the current
       ! coordinate correction, so indefinite directions never enter history.
+      nfixed_groups = qs_ot_env(1)%kpoint_physical_delta_groups
+      ALLOCATE (rotation_group_raw_slope(MAX(1, nfixed_groups)))
+      ALLOCATE (rotation_group_response_slope(MAX(1, nfixed_groups)))
+      rotation_group_raw_slope(:) = 0.0_dp
+      rotation_group_response_slope(:) = 0.0_dp
       rotation_raw_slope = 0.0_dp
       rotation_response_slope = 0.0_dp
-      IF (kpoint_preconditioned_direction .AND. qs_ot_env(1)%settings%do_rotation) THEN
+      IF (kpoint_preconditioned_direction .AND. nfixed_groups > 0 .AND. &
+          qs_ot_env(1)%settings%do_rotation) THEN
          DO ispin = 1, nspin
+            group = qs_ot_env(ispin)%occupation_group_index
+            CPASSERT(group >= 1 .AND. group <= nfixed_groups)
             norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
             CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx))
             CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_gx, tmp)
-            rotation_raw_slope = rotation_raw_slope + 0.5_dp*norm_weight*tmp
+            rotation_group_raw_slope(group) = &
+               rotation_group_raw_slope(group) + 0.5_dp*norm_weight*tmp
             CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_pgx, tmp)
-            rotation_response_slope = rotation_response_slope + 0.5_dp*tmp
+            rotation_group_response_slope(group) = &
+               rotation_group_response_slope(group) + 0.5_dp*tmp
             IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx_im))
                CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, &
                               qs_ot_env(ispin)%rot_mat_gx_im, tmp)
-               rotation_raw_slope = rotation_raw_slope + 0.5_dp*norm_weight*tmp
+               rotation_group_raw_slope(group) = &
+                  rotation_group_raw_slope(group) + 0.5_dp*norm_weight*tmp
                CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, &
                               qs_ot_env(ispin)%rot_mat_pgx_im, tmp)
-               rotation_response_slope = rotation_response_slope + 0.5_dp*tmp
+               rotation_group_response_slope(group) = &
+                  rotation_group_response_slope(group) + 0.5_dp*tmp
             END IF
          END DO
-         CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, rotation_raw_slope)
-         CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, rotation_response_slope)
+         DO group = 1, nfixed_groups
+            CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, rotation_group_raw_slope(group))
+            CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, rotation_group_response_slope(group))
+         END DO
+         rotation_raw_slope = SUM(rotation_group_raw_slope(1:nfixed_groups))
+         rotation_response_slope = SUM(rotation_group_response_slope(1:nfixed_groups))
       END IF
+      ! DIIS candidates are protected by the accepted-Mermin audit.  The SCF driver therefore
+      ! monitors the frontier without externally replacing these coordinates.
       kpoint_preconditioned_rotation = ot_kpoint_diis_rotation_response_ready( &
-                                       kpoint_preconditioned_direction, &
-                                       rotation_response_slope, rotation_raw_slope, &
-                                       qs_ot_env(1)%ener_x_fermi_guard_active)
+                                       kpoint_preconditioned_direction .AND. nfixed_groups > 0, &
+                                       rotation_group_response_slope(1:MAX(1, nfixed_groups)), &
+                                       rotation_group_raw_slope(1:MAX(1, nfixed_groups)), &
+                                       nfixed_groups > 1)
       kpoint_preconditioned_energy = kpoint_preconditioned_direction
       IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,2(1X,ES16.8))') &
             " OT DIIS current rotation response ready raw_slope response_slope:", &
             kpoint_preconditioned_rotation, rotation_raw_slope, rotation_response_slope
+         DO group = 1, nfixed_groups
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I4,2(1X,ES16.8))') &
+               " OT DIIS fixed-N rotation response group raw_slope response_slope:", &
+               group, rotation_group_raw_slope(group), rotation_group_response_slope(group)
+         END DO
       END IF
 
       diis_m = qs_ot_env(1)%settings%diis_m

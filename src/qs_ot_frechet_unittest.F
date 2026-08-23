@@ -6492,23 +6492,31 @@ CONTAINS
                                -0.08_dp, 0.08_dp, 1.0E-16_dp, .TRUE.) + 0.02_dp) > 1.0E-15_dp
       ! The current finite-complex response must be globally finite and a strict descent.
       failed = failed .OR. .NOT. ot_kpoint_diis_rotation_response_ready( &
-               .TRUE., 2.0_dp, 1.0_dp, .FALSE.)
+               .TRUE., [2.0_dp], [1.0_dp], .FALSE.)
       failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
-               .TRUE., 2.0_dp, 1.0_dp, .TRUE.)
+               .TRUE., [2.0_dp], [1.0_dp], .TRUE.)
       failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
-               .FALSE., 2.0_dp, 1.0_dp, .FALSE.)
+               .FALSE., [2.0_dp], [1.0_dp], .FALSE.)
       failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
-               .TRUE., 0.0_dp, 1.0_dp, .FALSE.)
+               .TRUE., [0.0_dp], [1.0_dp], .FALSE.)
       failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
-               .TRUE., -1.0_dp, 1.0_dp, .FALSE.)
+               .TRUE., [0.20_dp], [1.0_dp], .FALSE.)
+      failed = failed .OR. .NOT. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., [0.25_dp], [1.0_dp], .FALSE.)
       failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
-               .TRUE., 1.0_dp, 0.0_dp, .FALSE.)
+               .TRUE., [2.0_dp, 0.20_dp], [1.0_dp, 1.0_dp], .FALSE.)
+      failed = failed .OR. .NOT. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., [2.0_dp, 0.25_dp], [1.0_dp, 1.0_dp], .FALSE.)
       failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
-               .TRUE., HUGE(1.0_dp), 1.0_dp, .FALSE.)
+               .TRUE., [-1.0_dp], [1.0_dp], .FALSE.)
       failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
-               .TRUE., 1.0_dp, HUGE(1.0_dp), .FALSE.)
+               .TRUE., [1.0_dp], [0.0_dp], .FALSE.)
       failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
-               .TRUE., EPSILON(1.0_dp), 2.0_dp, .FALSE.)
+               .TRUE., [HUGE(1.0_dp)], [1.0_dp], .FALSE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., [1.0_dp], [HUGE(1.0_dp)], .FALSE.)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
+               .TRUE., [EPSILON(1.0_dp)], [2.0_dp], .FALSE.)
 
       IF (failed) THEN
          nfail = nfail + 1

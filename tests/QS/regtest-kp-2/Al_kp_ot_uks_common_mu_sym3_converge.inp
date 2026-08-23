@@ -6,12 +6,12 @@
 ! complex FULL_ALL preconditioner endpoint.
 !
 ! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference from a fresh directory:
-! OT converges in roughly 165-225 steps at EPS_SCF 1E-6. Mermin F is
-! about -8.1615509284 Ha, within 2E-8 Ha of matching diagonalization at
+! DIIS converges in 90 steps at EPS_SCF 1E-6. Mermin F is
+! -8.16155089955122 Ha, within 9.9E-9 Ha of matching diagonalization at
 ! -8.16155090938556 Ha. The weighted spin populations are 6.33333 and
 ! 5.66667. A restart companion restores the four (spin,k-point) channels in
 ! one step with identical free energy, entropy, chemical potential, and spin
-! populations.
+! populations. The corresponding CG path needs 129 steps.
 ! The endpoint physical audit is rebuilt once per line-search evaluation; its
 ! single fixed-N group already contains both spin channels.
 &GLOBAL
@@ -50,7 +50,7 @@
       &OT
         ENERGIES
         LINESEARCH 2PNT
-        MINIMIZER CG
+        MINIMIZER DIIS
         ROTATION
       &END OT
       &SMEAR

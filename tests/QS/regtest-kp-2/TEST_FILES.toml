@@ -178,8 +178,8 @@
 # channels in one step.
 # Al_kp_ot_uks_common_mu_sym3_converge.inp is the complementary shared-mu
 # four-channel anchor and exercises the automatic unrestricted metallic
-# defaults. FULL_ALL converges in roughly 165-225 MPI-2/OMP-2 steps near
-# -8.1615509284 Ha, within 2E-8 Ha of diagonalization, and reproduces
+# defaults. DIIS converges in 90 MPI-2/OMP-2 steps at -8.16155089955 Ha,
+# within 9.9E-9 Ha of diagonalization, versus 129 steps for CG, and reproduces
 # the unconstrained spin populations 6.33333/5.66667.
 # Al_kp_ot_uks_common_mu_sym3_restart.inp also restores the four-channel state
 # in one step.
@@ -202,9 +202,10 @@
 # the final tail. Their matching unlisted Al_kp_diag_gaussian_* inputs are
 # independent diagonalization references.
 # Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp is the unlisted four-channel
-# transition-metal Pulay companion. Its spin-resolved AUTO buffers grow
-# (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO spaces, and it converges in
-# roughly 150-180 steps near -123.63311572 Ha, within 5E-9 Ha of the CG endpoint.
+# transition-metal Pulay diagnostic. Its spin-resolved AUTO buffers grow
+# (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO spaces. The current
+# multi-group DIIS path does not yet converge within 260 steps; the CG endpoint
+# remains -123.63311572 Ha while accepted-response calibration is completed.
 # Keep these physics checks manual so the registered restart/AUTO coverage
 # remains inexpensive.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035093907},
