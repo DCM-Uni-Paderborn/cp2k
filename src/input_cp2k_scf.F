@@ -572,8 +572,8 @@ CONTAINS
                           "variational finite-temperature OT with FERMI_DIRAC or GAUSSIAN smearing, "// &
                           "orbital-energy optimization, and rotations. Periodic smearing calculations "// &
                           "must use an explicit KPOINTS section, including a 1x1x1 mesh for Gamma-only "// &
-                          "calculations. Non-monotone smearing methods are not supported by the OT "// &
-                          "occupation response.", &
+                          "calculations. K-point OT uses complex wavefunctions and the IRAC algorithm. "// &
+                          "Non-monotone smearing methods are not supported by the OT occupation response.", &
                           n_keywords=27, n_subsections=0, repeats=.FALSE., &
                           citations=[VandeVondele2003, Weber2008])
 
@@ -816,7 +816,8 @@ CONTAINS
          "They differ in effectiveness, cost of construction, cost of application. "// &
          "Properly preconditioned minimization can be orders of magnitude faster than doing nothing. "// &
          "For OT with smearing, an omitted keyword selects FULL_SINGLE_INVERSE at Gamma and "// &
-         "FULL_ALL for complex K-point channels; other OT calculations retain the FULL_KINETIC default.", &
+         "FULL_ALL for complex K-point channels; other OT calculations retain the FULL_KINETIC default. "// &
+         "Complex K-point OT implements NONE, FULL_SINGLE_INVERSE, FULL_ALL, and FERMI_LOW_RANK.", &
          usage="PRECONDITIONER FULL_ALL", &
          default_i_val=ot_precond_full_kinetic, &
          enum_c_vals=s2a("FULL_ALL", "FERMI_LOW_RANK", "FULL_SINGLE_INVERSE", "FULL_SINGLE", &
@@ -857,7 +858,9 @@ CONTAINS
 
       CALL keyword_create( &
          keyword, __LOCATION__, name="PRECOND_SOLVER", &
-         description="How the preconditioner is applied to the residual.", &
+         description="How the preconditioner is applied to the residual. Complex K-point "// &
+         "FULL_SINGLE_INVERSE supports DEFAULT and INVERSE_CHOLESKY; complex FULL_ALL and "// &
+         "FERMI_LOW_RANK support DEFAULT. CHEBYSHEV is implemented for FULL_KINETIC.", &
          usage="PRECOND_SOLVER DIRECT", &
          default_i_val=ot_precond_solver_default, &
          enum_c_vals=s2a("DEFAULT", "DIRECT", "INVERSE_CHOLESKY", "INVERSE_UPDATE", "CHEBYSHEV"), &

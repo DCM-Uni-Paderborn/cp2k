@@ -245,7 +245,8 @@ CONTAINS
                           description="Select whether real or complex wavefunctions should be used "// &
                           "when allowed by the k-point set. REAL wavefunctions can only represent "// &
                           "Gamma or special k-points and symmetry operations with real Bloch phases. "// &
-                          "Use COMPLEX for general atomic k-point symmetries with nontrivial phases.", &
+                          "Use COMPLEX for general atomic k-point symmetries with nontrivial phases; "// &
+                          "K-point orbital transformation (OT) requires COMPLEX.", &
                           usage="WAVEFUNCTIONS REAL", &
                           default_i_val=use_complex_wfn, &
                           enum_c_vals=s2a("REAL", "COMPLEX"), &
