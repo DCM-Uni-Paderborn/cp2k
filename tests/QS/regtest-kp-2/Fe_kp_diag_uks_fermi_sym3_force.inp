@@ -1,26 +1,27 @@
-! Slow/manual diagonalization reference for the spin-polarized bcc-Fe
-! metallic OT companion. Run Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp
-! first in the same directory. Starting both methods from its converged WFN
-! isolates stationarity from the difficult atomic-start mixing path. Direct
-! density mixing avoids the energy-oscillatory Broyden reference trajectory.
-! This input is intentionally not listed in TEST_FILES.toml.
-! Current MPI-2/OMP-2 reference: EPS_SCF=1E-8 converges in 40 steps at
-! F=-123.63311572153609 Ha and mu=0.40331705187428 Ha, 7.5E-9 Ha below
-! the EPS_SCF=1E-6 OT-DIIS endpoint.
+! Slow/manual direct-mixing diagonalization force and stress reference for
+! Fe_kp_ot_uks_added_auto_sym3_diis_force.inp. Run the converged
+! Fe_kp_diag_uks_fermi_sym3_converge.inp first. This input is intentionally
+! not listed in TEST_FILES.toml.
+!
+! The MPI-2/OMP-2 EPS_SCF=1E-9 reference converges in 15 steps at
+! F=-123.63311572154215 Ha. The matching OT force companion differs by
+! 3.7E-12 Ha in energy and 0.27 bar in analytical stress; the one-atom force
+! is numerical zero in both methods.
 &GLOBAL
   PRINT_LEVEL MEDIUM
-  PROJECT Fe_kp_diag_uks_fermi_sym3_converge
-  RUN_TYPE ENERGY
+  PROJECT Fe_kp_diag_uks_fermi_sym3_force
+  RUN_TYPE ENERGY_FORCE
 &END GLOBAL
 
 &FORCE_EVAL
   METHOD Quickstep
+  STRESS_TENSOR ANALYTICAL
   &DFT
     BASIS_SET_FILE_NAME BASIS_MOLOPT
     MULTIPLICITY 3
     POTENTIAL_FILE_NAME POTENTIAL
     UKS TRUE
-    WFN_RESTART_FILE_NAME Fe_kp_ot_uks_added_auto_sym3_diis_converge-RESTART.kp
+    WFN_RESTART_FILE_NAME Fe_kp_diag_uks_fermi_sym3_converge-RESTART.kp
     &KPOINTS
       FULL_GRID OFF
       SCHEME MONKHORST-PACK 3 1 1
@@ -34,7 +35,7 @@
     &END QS
     &SCF
       ADDED_MOS 16
-      EPS_SCF 1.0E-8
+      EPS_SCF 1.0E-9
       MAX_SCF 100
       SCF_GUESS RESTART
       &DIAGONALIZATION
@@ -55,6 +56,12 @@
       &END XC_FUNCTIONAL
     &END XC
   &END DFT
+  &PRINT
+    &FORCES ON
+    &END FORCES
+    &STRESS_TENSOR ON
+    &END STRESS_TENSOR
+  &END PRINT
   &PROPERTIES
     &FIT_CHARGE OFF
     &END FIT_CHARGE

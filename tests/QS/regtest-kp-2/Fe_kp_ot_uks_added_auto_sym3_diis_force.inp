@@ -1,0 +1,87 @@
+! Slow/manual force and stress companion for the converged spin-polarized
+! bcc-Fe DIIS path. Run Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp and then
+! Fe_kp_diag_uks_fermi_sym3_converge.inp first. The independently refined WFN
+! provides a common derivative reference without a long OT tightening tail.
+! This input is intentionally not listed in TEST_FILES.toml.
+!
+! The MPI-2/OMP-2 EPS_SCF=1E-9 reference converges in two steps at
+! F=-123.63311572154585 Ha. Relative to the matching direct-mixing
+! diagonalization force companion, the energy differs by 3.7E-12 Ha, the
+! symmetry-constrained force is numerical zero, and analytical stress agrees
+! within 0.27 bar.
+&GLOBAL
+  PRINT_LEVEL MEDIUM
+  PROJECT Fe_kp_ot_uks_added_auto_sym3_diis_force
+  RUN_TYPE ENERGY_FORCE
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  STRESS_TENSOR ANALYTICAL
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_MOLOPT
+    MULTIPLICITY 3
+    POTENTIAL_FILE_NAME POTENTIAL
+    UKS TRUE
+    WFN_RESTART_FILE_NAME Fe_kp_diag_uks_fermi_sym3_converge-RESTART.kp
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 300
+    &END MGRID
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-9
+      MAX_SCF 100
+      SCF_GUESS RESTART
+      &OT
+        ENERGIES
+        LINESEARCH 2PNT
+        MINIMIZER DIIS
+        OCCUPATION_PRECONDITIONER
+        PRECONDITIONER FULL_ALL
+        ROTATION
+      &END OT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 1000
+        FIXED_MAGNETIC_MOMENT 2.0
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &PRINT
+    &FORCES ON
+    &END FORCES
+    &STRESS_TENSOR ON
+    &END STRESS_TENSOR
+  &END PRINT
+  &PROPERTIES
+    &FIT_CHARGE OFF
+    &END FIT_CHARGE
+  &END PROPERTIES
+  &SUBSYS
+    &CELL
+      A -1.435 1.435 1.435
+      B 1.435 -1.435 1.435
+      C 1.435 1.435 -1.435
+    &END CELL
+    &COORD
+      Fe 0.000 0.000 0.000
+    &END COORD
+    &KIND Fe
+      BASIS_SET DZVP-MOLOPT-SR-GTH-q16
+      MAGNETIZATION 2.0
+      POTENTIAL GTH-PADE-q16
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL

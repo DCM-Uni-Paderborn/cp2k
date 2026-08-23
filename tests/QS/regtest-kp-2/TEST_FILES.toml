@@ -209,6 +209,11 @@
 # -123.633115713999 Ha, consistent with the CG endpoint -123.63311572 Ha.
 # Fe_kp_ot_uks_added_auto_sym3_diis_restart.inp checks the matching multi-group
 # DIIS restart without replaying the AUTO growth sequence.
+# Fe_kp_diag_uks_fermi_sym3_converge.inp uses stable direct density mixing to
+# refine that endpoint to EPS_SCF=1E-8 in 40 steps; its free energy differs by
+# only 7.5E-9 Ha. The matching unlisted OT/diagonalization force companions at
+# EPS_SCF=1E-9 agree within 3.7E-12 Ha in energy, numerical zero in force, and
+# 0.27 bar in analytical stress when initialized from the same refined WFN.
 # Keep these physics checks manual so the registered restart/AUTO coverage
 # remains inexpensive.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035093907},
