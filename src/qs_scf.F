@@ -759,13 +759,11 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: scf_section
 
-      CHARACTER(LEN=*), PARAMETER :: rotation_error = &
-         'State-selective OT preconditioners are not compatible with ROTATION. '// &
-         'Use FULL_S_INVERSE or FULL_KINETIC instead.', routineN = 'init_scf_loop'
+      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'init_scf_loop'
 
       INTEGER                                            :: handle, ispin, nmo, number_of_OT_envs
       LOGICAL                                            :: do_kpoints, do_rotation, &
-                                                            has_unit_metric, is_state_selective
+                                                            has_unit_metric, is_full_all
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
       TYPE(dbcsr_type), POINTER                          :: orthogonality_metric
@@ -949,16 +947,14 @@ CONTAINS
                scf_env%qs_ot_env(:)%restricted = .FALSE.
             END IF
 
-            ! this will rotate the MOs to be eigen states, which is not compatible with rotation
-            ! e.g. mo_derivs here do not yet include potentially different occupations numbers
+            ! FULL_ALL rotates the MOs to eigenstates and has column-dependent weights, which
+            ! is incompatible with optimizing the occupied gauge through OT ROTATION.
             do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
-            ! State-selective weights are tied to fixed occupied columns and do not transform
-            ! covariantly under occupied-space rotations C -> C U.
-            is_state_selective = &
-               scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all .OR. &
-               scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_fermi_low_rank
-            IF (do_rotation .AND. is_state_selective) THEN
-               CPABORT(rotation_error)
+            ! FULL_ALL has column-dependent occupied-state weights. FERMI_LOW_RANK instead
+            ! uses a common spectral reference and is covariant under C -> C U.
+            is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all
+            IF (do_rotation .AND. is_full_all) THEN
+               CPABORT('PRECONDITIONER FULL_ALL is not compatible with ROTATION.')
             END IF
 
             ! might need the KS matrix to init properly

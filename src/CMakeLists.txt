@@ -486,6 +486,7 @@ list(
   pme.F
   pme_tools.F
   population_analyses.F
+  low_rank_preconditioner_model.F
   preconditioner_apply.F
   preconditioner.F
   preconditioner_makes.F
@@ -1547,6 +1548,7 @@ set(CP2K_PROGS_F
     common/memory_utilities_unittest.F
     common/parallel_rng_types_unittest.F
     kpoint_lattice_fft_unittest.F
+    low_rank_preconditioner_unittest.F
     qs_charge_mixing_unittest.F
     subsys/cell_types_unittest.F
     pw/realspace_grid_cube_unittest.F
@@ -1956,6 +1958,7 @@ list(
   "memory_utilities_unittest"
   "parallel_rng_types_unittest"
   "kpoint_lattice_fft_unittest"
+  "low_rank_preconditioner_unittest"
   "qs_charge_mixing_unittest"
   "cell_types_unittest"
   "realspace_grid_cube_unittest"
@@ -1981,6 +1984,8 @@ add_executable(gemm_square_unittest common/gemm_square_unittest.F)
 add_executable(memory_utilities_unittest common/memory_utilities_unittest.F)
 add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
+add_executable(low_rank_preconditioner_unittest
+               low_rank_preconditioner_unittest.F)
 add_executable(qs_charge_mixing_unittest qs_charge_mixing_unittest.F)
 add_executable(cell_types_unittest subsys/cell_types_unittest.F)
 add_executable(realspace_grid_cube_unittest pw/realspace_grid_cube_unittest.F)

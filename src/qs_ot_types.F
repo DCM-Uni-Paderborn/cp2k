@@ -36,8 +36,8 @@ MODULE qs_ot_types
         ot_mini_diis, ot_mini_sd, ot_poly_irac, ot_precond_fermi_low_rank, ot_precond_full_all, &
         ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
         ot_precond_none, ot_precond_s_inverse, ot_precond_solver_chebyshev, &
-        ot_precond_solver_default, &
-        ot_precond_solver_direct, ot_precond_solver_inv_chol, ot_precond_solver_update
+        ot_precond_solver_default, ot_precond_solver_direct, ot_precond_solver_inv_chol, &
+        ot_precond_solver_update
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
@@ -968,7 +968,7 @@ CONTAINS
             WRITE (output_unit, '(A)') "  Preconditioner : FULL_ALL            : diagonalization, state selective"
          CASE ("FERMI_LOW_RANK")
             WRITE (output_unit, '(A)') &
-               "  Preconditioner : FERMI_LOW_RANK       : bounded low-rank spectral correction"
+               "  Preconditioner : FERMI_LOW_RANK       : rotationally covariant low-rank correction"
          CASE ("FULL_KINETIC")
             WRITE (output_unit, '(A)') "  Preconditioner : FULL_KINETIC        : inversion of T + eS"
          CASE ("FULL_S_INVERSE")
