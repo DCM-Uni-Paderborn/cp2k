@@ -3503,6 +3503,22 @@ CONTAINS
          END IF
          qs_ot_env%diis_iter = scf_env%qs_ot_restart%channel(shared_channel)%diis_iter
          qs_ot_env%ds_min = scf_env%qs_ot_restart%channel(shared_channel)%ds_min
+         IF (scf_env%qs_ot_restart%format_version >= 36) THEN
+            qs_ot_env%kpoint_subspace_accepted_samples = &
+               scf_env%qs_ot_restart%channel(shared_channel)%kpoint_subspace_accepted_samples
+            qs_ot_env%diis_last_candidate_sd = &
+               scf_env%qs_ot_restart%channel(shared_channel)%diis_last_candidate_sd
+            qs_ot_env%diis_last_candidate_response = &
+               scf_env%qs_ot_restart%channel(shared_channel)%diis_last_candidate_response
+            qs_ot_env%diis_last_response_blend = &
+               scf_env%qs_ot_restart%channel(shared_channel)%diis_last_response_blend
+            qs_ot_env%diis_reference_rotation_gnorm = &
+               scf_env%qs_ot_restart%channel(shared_channel)%diis_reference_rotation_gnorm
+            qs_ot_env%diis_raw_residual_ratio = &
+               scf_env%qs_ot_restart%channel(shared_channel)%diis_raw_residual_ratio
+            qs_ot_env%diis_response_residual_ratio = &
+               scf_env%qs_ot_restart%channel(shared_channel)%diis_response_residual_ratio
+         END IF
          qs_ot_env%broyden_adaptive_sigma = &
             scf_env%qs_ot_restart%channel(shared_channel)%broyden_adaptive_sigma
          IF (scf_env%qs_ot_restart%format_version >= 18) THEN

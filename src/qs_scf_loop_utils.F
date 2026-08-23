@@ -10019,6 +10019,11 @@ CONTAINS
          ! DIIS energy and can enter an exact projection/rejection cycle.
          local_ot_env(local_channel)%diis_iter = 0
          local_ot_env(local_channel)%diis_last_candidate_sd = .TRUE.
+         local_ot_env(local_channel)%diis_last_candidate_response = .FALSE.
+         local_ot_env(local_channel)%diis_last_response_blend = 0.0_dp
+         local_ot_env(local_channel)%diis_reference_rotation_gnorm = -1.0_dp
+         local_ot_env(local_channel)%diis_raw_residual_ratio = -1.0_dp
+         local_ot_env(local_channel)%diis_response_residual_ratio = -1.0_dp
          local_ot_env(local_channel)%broyden_adaptive_sigma = -1.0_dp
          IF (ASSOCIATED(local_ot_env(local_channel)%ls_diis)) &
             local_ot_env(local_channel)%ls_diis(:, :) = 0.0_dp

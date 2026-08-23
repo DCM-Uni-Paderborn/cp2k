@@ -69,6 +69,7 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_cg_metric_history_reset, ot_kpoint_cg_residual_growth_guard, &
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_diis_mermin_step_rejected, &
         ot_kpoint_diis_rejected_step, ot_kpoint_diis_residual_step_rejected, &
+        ot_kpoint_diis_response_endpoint_ratio, ot_kpoint_diis_response_residual_blend, &
         ot_kpoint_diis_rotation_response_probe_ready, ot_kpoint_diis_rotation_response_ready, &
         ot_kpoint_fermi_window_direction_scale, ot_kpoint_fermi_window_energy_coordinate, &
         ot_kpoint_mermin_candidate_restart_step, ot_kpoint_mermin_closure_response_quality, &
@@ -6533,6 +6534,22 @@ CONTAINS
       failed = failed .OR. ot_kpoint_diis_rotation_response_probe_ready( &
                .TRUE., [2.0_dp, 1.0_dp], [1.0_dp, 1.0_dp], 4, &
                0.01_dp, 0.1_dp, 1.0E-7_dp, 1.0E-6_dp)
+      ! Accepted residuals determine the maximal affine response fraction.  Missing calibration
+      ! keeps the full candidate available as a probe.
+      failed = failed .OR. ABS(ot_kpoint_diis_response_residual_blend( &
+                               -1.0_dp, -1.0_dp) - 1.0_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_response_residual_blend( &
+                               0.98_dp, 0.99_dp) - 1.0_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_response_residual_blend( &
+                               0.98_dp, 1.02_dp) - 0.5_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_response_residual_blend( &
+                               0.99_dp, 1.005_dp) - 2.0_dp/3.0_dp) > 1.0E-14_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_response_residual_blend( &
+                               1.01_dp, 1.02_dp)) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_response_endpoint_ratio( &
+                               0.98_dp, 1.001_dp, 0.5_dp) - 1.022_dp) > 1.0E-15_dp
+      failed = failed .OR. ABS(ot_kpoint_diis_response_endpoint_ratio( &
+                               -1.0_dp, 1.01_dp, 0.5_dp) - 1.01_dp) > 1.0E-15_dp
 
       IF (failed) THEN
          nfail = nfail + 1

@@ -128,9 +128,11 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: ot_pos(53) = 0.0_dp, ot_energy(53) = 0.0_dp, ot_grad(53) = 0.0_dp
       INTEGER :: line_search_left = -1, line_search_right = -1, line_search_mid = -1
       INTEGER :: line_search_count = -1, diis_iter = -1
+      INTEGER :: kpoint_subspace_accepted_samples = 0
       LOGICAL :: line_search_might_be_done = .FALSE., energy_only = .FALSE.
       LOGICAL :: ener_direction_linear = .FALSE.
       LOGICAL :: mermin_ls_sample_pending = .FALSE.
+      LOGICAL :: diis_last_candidate_sd = .TRUE., diis_last_candidate_response = .FALSE.
       INTEGER :: mermin_ls_best_sample_index = 0
       INTEGER :: mermin_ls_accepted_quality_samples = 0
       REAL(KIND=dp) :: delta = 0.0_dp, gnorm = 0.0_dp, gnorm_old = 0.0_dp
@@ -148,6 +150,10 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: mermin_ls_accepted_quality_ema = 1.0_dp
       REAL(KIND=dp) :: mermin_ls_accepted_gap = 0.0_dp
       REAL(KIND=dp) :: mermin_ls_accepted_gap_ema = 0.0_dp
+      REAL(KIND=dp) :: diis_last_response_blend = 0.0_dp
+      REAL(KIND=dp) :: diis_reference_rotation_gnorm = -1.0_dp
+      REAL(KIND=dp) :: diis_raw_residual_ratio = -1.0_dp
+      REAL(KIND=dp) :: diis_response_residual_ratio = -1.0_dp
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint) :: adaptive_int = 0
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog) :: adaptive_log = .FALSE.
       REAL(KIND=dp), DIMENSION(qs_ot_restart_adaptive_nreal) :: adaptive_real = 0.0_dp

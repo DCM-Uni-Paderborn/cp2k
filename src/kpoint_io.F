@@ -78,7 +78,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 35
+   INTEGER, PARAMETER                   :: ot_restart_version = 36
    REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
    REAL(KIND=dp), PARAMETER             :: ot_restart_objective_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
@@ -650,10 +650,10 @@ CONTAINS
          DIMENSION(qs_ot_restart_signature_nchar)        :: settings_char_payload
       INTEGER                                            :: iatom, ichannel, ihist, nchannel, ndiis, &
                                                             nener, nmo, nmo_ortho, source_count
-      INTEGER, DIMENSION(15)                             :: int_payload
+      INTEGER, DIMENSION(16)                             :: int_payload
       INTEGER, DIMENSION(19)                             :: schur_int_payload
-      INTEGER, DIMENSION(29)                             :: log_payload_int
       INTEGER, DIMENSION(3)                              :: smear_int_payload
+      INTEGER, DIMENSION(31)                             :: log_payload_int
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload_int
       INTEGER, DIMENSION(qs_ot_restart_signature_nint)   :: settings_int_payload
@@ -663,12 +663,12 @@ CONTAINS
          has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im, &
          settings_compatible
-      LOGICAL, DIMENSION(29)                             :: log_payload
+      LOGICAL, DIMENSION(31)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
       LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: settings_log_payload
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: restart_positions
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
-      REAL(KIND=dp), DIMENSION(20)                       :: real_payload
+      REAL(KIND=dp), DIMENSION(24)                       :: real_payload
       REAL(KIND=dp), DIMENSION(3)                        :: smear_real_payload
       REAL(KIND=dp), DIMENSION(53)                       :: ot_energy_payload, ot_grad_payload, &
                                                             ot_pos_payload
@@ -779,7 +779,7 @@ CONTAINS
                         qs_ot_env(ichannel)%diis_iter, &
                         qs_ot_env(ichannel)%mermin_ls_best_sample_index, &
                         qs_ot_env(ichannel)%mermin_ls_accepted_quality_samples, &
-                        nener, ndiis]
+                        nener, ndiis, qs_ot_env(ichannel)%kpoint_subspace_accepted_samples]
          log_payload = [qs_ot_env(ichannel)%state_allocated, &
                         qs_ot_env(ichannel)%has_complex_kpoint_state, &
                         qs_ot_env(ichannel)%settings%do_rotation, &
@@ -794,7 +794,9 @@ CONTAINS
                         has_rot_history, has_rot_history_im, has_ener_history, &
                         has_matrix_x, has_matrix_x_im, &
                         qs_ot_env(ichannel)%mermin_ls_sample_pending, &
-                        qs_ot_env(ichannel)%ener_direction_linear]
+                        qs_ot_env(ichannel)%ener_direction_linear, &
+                        qs_ot_env(ichannel)%diis_last_candidate_sd, &
+                        qs_ot_env(ichannel)%diis_last_candidate_response]
          real_payload = [qs_ot_env(ichannel)%kpoint_weight, &
                          qs_ot_env(ichannel)%delta, qs_ot_env(ichannel)%gnorm, &
                          qs_ot_env(ichannel)%gnorm_old, qs_ot_env(ichannel)%etotal, &
@@ -811,7 +813,11 @@ CONTAINS
                          qs_ot_env(ichannel)%mermin_ls_accepted_quality_ema, &
                          qs_ot_env(ichannel)%mermin_ls_accepted_gap, &
                          qs_ot_env(ichannel)%mermin_ls_accepted_gap_ema, &
-                         qs_ot_env(ichannel)%mermin_ls_reference_delta]
+                         qs_ot_env(ichannel)%mermin_ls_reference_delta, &
+                         qs_ot_env(ichannel)%diis_last_response_blend, &
+                         qs_ot_env(ichannel)%diis_reference_rotation_gnorm, &
+                         qs_ot_env(ichannel)%diis_raw_residual_ratio, &
+                         qs_ot_env(ichannel)%diis_response_residual_ratio]
          schur_int_payload = [qs_ot_env(ichannel)%schur_projector_density_quality_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_audit_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_descent_quality_samples, &
@@ -1490,7 +1496,8 @@ CONTAINS
                                                             int_payload_v10, schur_int_payload_v6
       INTEGER, DIMENSION(14)                             :: adaptive_int_payload_v21, &
                                                             schur_int_payload_v8
-      INTEGER, DIMENSION(15)                             :: int_payload
+      INTEGER, DIMENSION(15)                             :: int_payload_v35
+      INTEGER, DIMENSION(16)                             :: int_payload
       INTEGER, DIMENSION(17)                             :: schur_int_payload_v12
       INTEGER, DIMENSION(18)                             :: schur_int_payload_v13
       INTEGER, DIMENSION(19)                             :: schur_int_payload
@@ -1503,7 +1510,8 @@ CONTAINS
       LOGICAL, DIMENSION(12)                             :: adaptive_log_payload_v21
       LOGICAL, DIMENSION(27)                             :: log_payload_v10
       LOGICAL, DIMENSION(28)                             :: log_payload_v18
-      LOGICAL, DIMENSION(29)                             :: log_payload
+      LOGICAL, DIMENSION(29)                             :: log_payload_v35
+      LOGICAL, DIMENSION(31)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
       LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: settings_log_payload
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: current_positions, restart_positions
@@ -1513,7 +1521,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(133)                      :: schur_real_payload_v13
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload_v26
-      REAL(KIND=dp), DIMENSION(20)                       :: real_payload, real_payload_v16
+      REAL(KIND=dp), DIMENSION(20)                       :: real_payload_v16, real_payload_v35
+      REAL(KIND=dp), DIMENSION(24)                       :: real_payload
       REAL(KIND=dp), DIMENSION(3)                        :: smear_real_payload
       REAL(KIND=dp), DIMENSION(3, 3)                     :: restart_hmat
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
@@ -1658,10 +1667,22 @@ CONTAINS
          adaptive_real_payload(:) = 0.0_dp
          real_payload(:) = 0.0_dp
          IF (para_env%is_source()) THEN
-            IF (version_read >= 27) THEN
+            IF (version_read >= 36) THEN
                READ (rst_unit) int_payload
                READ (rst_unit) log_payload
                READ (rst_unit) real_payload
+            ELSE IF (version_read >= 27) THEN
+               READ (rst_unit) int_payload_v35
+               READ (rst_unit) log_payload_v35
+               READ (rst_unit) real_payload_v35
+               int_payload(:) = 0
+               int_payload(1:15) = int_payload_v35
+               log_payload(:) = .FALSE.
+               log_payload(1:29) = log_payload_v35
+               log_payload(30) = .TRUE.
+               real_payload(:) = 0.0_dp
+               real_payload(1:20) = real_payload_v35
+               real_payload(22:24) = -1.0_dp
             ELSE IF (version_read >= 19) THEN
                READ (rst_unit) int_payload
                READ (rst_unit) log_payload
@@ -1878,6 +1899,7 @@ CONTAINS
          nener = int_payload(14)
          ndiis = int_payload(15)
          scf_env%qs_ot_restart%channel(ichannel)%diis_m = ndiis
+         scf_env%qs_ot_restart%channel(ichannel)%kpoint_subspace_accepted_samples = int_payload(16)
          scf_env%qs_ot_restart%channel(ichannel)%has_complex_kpoint_state = log_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%do_rotation = log_payload(3)
          scf_env%qs_ot_restart%channel(ichannel)%do_ener = log_payload(4)
@@ -1906,6 +1928,8 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x_im = log_payload(27)
          scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_sample_pending = log_payload(28)
          scf_env%qs_ot_restart%channel(ichannel)%ener_direction_linear = log_payload(29)
+         scf_env%qs_ot_restart%channel(ichannel)%diis_last_candidate_sd = log_payload(30)
+         scf_env%qs_ot_restart%channel(ichannel)%diis_last_candidate_response = log_payload(31)
          scf_env%qs_ot_restart%channel(ichannel)%kpoint_weight = real_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%delta = real_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%gnorm = real_payload(3)
@@ -1926,6 +1950,10 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_gap = real_payload(18)
          scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_gap_ema = real_payload(19)
          scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_reference_delta = real_payload(20)
+         scf_env%qs_ot_restart%channel(ichannel)%diis_last_response_blend = real_payload(21)
+         scf_env%qs_ot_restart%channel(ichannel)%diis_reference_rotation_gnorm = real_payload(22)
+         scf_env%qs_ot_restart%channel(ichannel)%diis_raw_residual_ratio = real_payload(23)
+         scf_env%qs_ot_restart%channel(ichannel)%diis_response_residual_ratio = real_payload(24)
          scf_env%qs_ot_restart%channel(ichannel)%density_quality_samples = schur_int_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%density_audit_samples = schur_int_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_quality_samples = schur_int_payload(3)

@@ -261,6 +261,13 @@ MODULE qs_ot_types
       ! shrink the underlying SD trust step.  Only a rejected candidate built
       ! from the base preconditioned direction contracts that step.
       LOGICAL          :: diis_last_candidate_sd = .TRUE.
+      ! Multi-group DIIS response probes retain these accepted rotation-residual
+      ! ratios across compatible restarts and relearn them after a subspace change.
+      LOGICAL          :: diis_last_candidate_response = .FALSE.
+      REAL(KIND=dp)    :: diis_last_response_blend = 0.0_dp
+      REAL(KIND=dp)    :: diis_reference_rotation_gnorm = -1.0_dp
+      REAL(KIND=dp)    :: diis_raw_residual_ratio = -1.0_dp
+      REAL(KIND=dp)    :: diis_response_residual_ratio = -1.0_dp
       CHARACTER(LEN=8) :: OT_METHOD_FULL = ""
       INTEGER          :: OT_count = -1
       REAL(KIND=dp)    :: ds_min = -1.0_dp
@@ -1398,6 +1405,11 @@ CONTAINS
       qs_ot_env%gnorm_old = 1.0_dp
       qs_ot_env%diis_iter = 0
       qs_ot_env%diis_last_candidate_sd = .TRUE.
+      qs_ot_env%diis_last_candidate_response = .FALSE.
+      qs_ot_env%diis_last_response_blend = 0.0_dp
+      qs_ot_env%diis_reference_rotation_gnorm = -1.0_dp
+      qs_ot_env%diis_raw_residual_ratio = -1.0_dp
+      qs_ot_env%diis_response_residual_ratio = -1.0_dp
       qs_ot_env%ds_min = qs_ot_env%settings%ds_min
       qs_ot_env%os_valid = .FALSE.
       qs_ot_env%kpoint_occ_preconditioner_active = .FALSE.
@@ -2968,6 +2980,11 @@ CONTAINS
       qs_ot_env%kpoint_occ_preconditioner_active = .FALSE.
       qs_ot_env%kpoint_occ_preconditioner_ready_samples = 0
       qs_ot_env%kpoint_subspace_accepted_samples = 0
+      qs_ot_env%diis_last_candidate_response = .FALSE.
+      qs_ot_env%diis_last_response_blend = 0.0_dp
+      qs_ot_env%diis_reference_rotation_gnorm = -1.0_dp
+      qs_ot_env%diis_raw_residual_ratio = -1.0_dp
+      qs_ot_env%diis_response_residual_ratio = -1.0_dp
       qs_ot_env%kpoint_occ_metric_residual_quality_ema = 0.0_dp
       qs_ot_env%orbital_schur_response_ready = .FALSE.
       qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.

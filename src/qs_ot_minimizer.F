@@ -46,6 +46,8 @@ MODULE qs_ot_minimizer
               ot_kpoint_cg_metric_history_reset, &
               ot_kpoint_cg_tail_metric_tracked, &
               ot_kpoint_diis_rejected_step, &
+              ot_kpoint_diis_response_endpoint_ratio, &
+              ot_kpoint_diis_response_residual_blend, &
               ot_kpoint_diis_rotation_response_probe_ready, &
               ot_kpoint_diis_rotation_response_ready, &
               ot_kpoint_diis_mermin_step_rejected, &
@@ -323,6 +325,62 @@ CONTAINS
               10.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, response_work_threshold)
 
    END FUNCTION ot_kpoint_diis_rotation_response_probe_ready
+
+! **************************************************************************************************
+!> \brief blend raw and finite-response DIIS rotations under an accepted-rotation model
+!>
+!>        The affine rotation-residual model uses the last accepted raw and finite-response
+!>        candidates.  It retains the largest response fraction whose interpolated ratio does
+!>        not exceed one.  Missing calibration deliberately permits a full response probe.
+!> \param raw_ratio accepted rotation-residual ratio for the raw DIIS direction
+!> \param response_ratio accepted rotation-residual ratio for the finite response direction
+!> \return response fraction in the closed interval [0,1]
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_diis_response_residual_blend(raw_ratio, response_ratio) RESULT(blend)
+      REAL(KIND=dp), INTENT(IN)                          :: raw_ratio, response_ratio
+      REAL(KIND=dp)                                      :: blend
+
+      REAL(KIND=dp)                                      :: denominator
+
+      blend = 1.0_dp
+      IF (raw_ratio <= 0.0_dp .OR. response_ratio <= 0.0_dp) RETURN
+      IF (ABS(raw_ratio) >= HUGE(raw_ratio) .OR. &
+          ABS(response_ratio) >= HUGE(response_ratio)) RETURN
+      IF (response_ratio <= 1.0_dp) RETURN
+      IF (raw_ratio >= 1.0_dp) THEN
+         blend = 0.0_dp
+         RETURN
+      END IF
+
+      denominator = response_ratio - raw_ratio
+      IF (denominator <= EPSILON(denominator)*MAX(1.0_dp, ABS(response_ratio), ABS(raw_ratio))) THEN
+         blend = 0.0_dp
+      ELSE
+         blend = MAX(0.0_dp, MIN(1.0_dp, (1.0_dp - raw_ratio)/denominator))
+      END IF
+
+   END FUNCTION ot_kpoint_diis_response_residual_blend
+
+! **************************************************************************************************
+!> \brief recover the full-response residual ratio from an accepted blended candidate
+!> \param raw_ratio accepted residual ratio for the raw direction
+!> \param mixed_ratio measured residual ratio for the blended candidate
+!> \param response_blend response fraction used by the blended candidate
+!> \return affine estimate of the corresponding full-response residual ratio
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_diis_response_endpoint_ratio( &
+      raw_ratio, mixed_ratio, response_blend) RESULT(response_ratio)
+      REAL(KIND=dp), INTENT(IN)                          :: raw_ratio, mixed_ratio, response_blend
+      REAL(KIND=dp)                                      :: response_ratio
+
+      response_ratio = mixed_ratio
+      IF (raw_ratio <= 0.0_dp .OR. mixed_ratio <= 0.0_dp .OR. &
+          response_blend <= SQRT(EPSILON(response_blend))) RETURN
+      IF (ABS(raw_ratio) >= HUGE(raw_ratio) .OR. ABS(mixed_ratio) >= HUGE(mixed_ratio)) RETURN
+
+      response_ratio = raw_ratio + (mixed_ratio - raw_ratio)/response_blend
+
+   END FUNCTION ot_kpoint_diis_response_endpoint_ratio
 
 ! **************************************************************************************************
 !> \brief Evaluate convergence of an accepted complex fixed-N Mermin endpoint.
@@ -1527,6 +1585,11 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_next_pos)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality_samples)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_subspace_accepted_samples)
+      CALL para_env%bcast(qs_ot_env(1)%diis_last_candidate_response)
+      CALL para_env%bcast(qs_ot_env(1)%diis_last_response_blend)
+      CALL para_env%bcast(qs_ot_env(1)%diis_reference_rotation_gnorm)
+      CALL para_env%bcast(qs_ot_env(1)%diis_raw_residual_ratio)
+      CALL para_env%bcast(qs_ot_env(1)%diis_response_residual_ratio)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality_ema)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_gap)
@@ -5304,10 +5367,11 @@ CONTAINS
          kpoint_preconditioned_direction, kpoint_preconditioned_energy, &
          kpoint_preconditioned_rotation, kpoint_response_probe, mermin_energy_rejected, &
          mermin_residual_rejected, mermin_step_rejected
-      REAL(KIND=dp) :: accepted_drop, contracted_step, current_exit_delta, current_physical_delta, &
-         norm_weight, nvar, overlap, previous_step, reference_energy, reference_physical_delta, &
-         rejected_energy, response_model_work, rotation_raw_slope, rotation_response_slope, tmp, &
-         tr_xnew_gx, tr_xold_gx
+      REAL(KIND=dp) :: accepted_drop, accepted_residual_ratio, contracted_step, &
+         current_exit_delta, current_physical_delta, current_rotation_gnorm, norm_weight, nvar, &
+         overlap, previous_step, reference_energy, reference_physical_delta, &
+         reference_rotation_gnorm, rejected_energy, response_blend, response_model_work, &
+         rotation_raw_slope, rotation_response_slope, tmp, tr_xnew_gx, tr_xold_gx
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rotation_group_raw_slope, &
                                                             rotation_group_response_slope
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -5401,8 +5465,12 @@ CONTAINS
       mermin_energy_rejected = .FALSE.
       mermin_residual_rejected = .FALSE.
       accepted_drop = -1.0_dp
+      accepted_residual_ratio = -1.0_dp
       current_physical_delta = -1.0_dp
+      current_rotation_gnorm = -1.0_dp
       reference_physical_delta = -1.0_dp
+      reference_rotation_gnorm = -1.0_dp
+      response_blend = 1.0_dp
       IF (qs_ot_env(1)%has_complex_kpoint_state .AND. &
           qs_ot_env(1)%settings%occupation_preconditioner .AND. &
           qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
@@ -5414,6 +5482,8 @@ CONTAINS
                                   qs_ot_env(1)%kpoint_physical_delta, &
                                   qs_ot_env(1)%kpoint_complete_physical_delta)
          reference_physical_delta = qs_ot_env(1)%mermin_ls_reference_delta
+         current_rotation_gnorm = qs_ot_env(1)%kpoint_physical_rot_gnorm
+         reference_rotation_gnorm = qs_ot_env(1)%diis_reference_rotation_gnorm
          mermin_energy_rejected = &
             ot_kpoint_diis_mermin_step_rejected(rejected_energy, reference_energy)
          mermin_residual_rejected = ot_kpoint_diis_residual_step_rejected( &
@@ -5421,6 +5491,18 @@ CONTAINS
                                     reference_physical_delta, qs_ot_env(1)%kpoint_eps_scf)
          mermin_step_rejected = mermin_energy_rejected .OR. mermin_residual_rejected
          accepted_drop = MAX(0.0_dp, reference_energy - rejected_energy)
+         IF (.NOT. mermin_step_rejected .AND. current_rotation_gnorm > 0.0_dp .AND. &
+             reference_rotation_gnorm > 0.0_dp) THEN
+            accepted_residual_ratio = SQRT(current_rotation_gnorm/reference_rotation_gnorm)
+            IF (qs_ot_env(1)%diis_last_candidate_response) THEN
+               qs_ot_env(1)%diis_response_residual_ratio = &
+                  ot_kpoint_diis_response_endpoint_ratio( &
+                  qs_ot_env(1)%diis_raw_residual_ratio, accepted_residual_ratio, &
+                  qs_ot_env(1)%diis_last_response_blend)
+            ELSE
+               qs_ot_env(1)%diis_raw_residual_ratio = accepted_residual_ratio
+            END IF
+         END IF
       END IF
       IF (.NOT. mermin_step_rejected .AND. nfixed_groups > 1) THEN
          kpoint_response_probe = ot_kpoint_diis_rotation_response_probe_ready( &
@@ -5430,15 +5512,29 @@ CONTAINS
                                  qs_ot_env(1)%kpoint_subspace_accepted_samples, accepted_drop, &
                                  qs_ot_env(1)%ds_min, current_physical_delta, &
                                  qs_ot_env(1)%kpoint_eps_scf)
-         kpoint_preconditioned_rotation = kpoint_response_probe
+         IF (kpoint_response_probe) THEN
+            response_blend = ot_kpoint_diis_response_residual_blend( &
+                             qs_ot_env(1)%diis_raw_residual_ratio, &
+                             qs_ot_env(1)%diis_response_residual_ratio)
+         END IF
+         kpoint_preconditioned_rotation = kpoint_response_probe .AND. response_blend > 0.0_dp
       END IF
-      response_model_work = ABS(qs_ot_env(1)%ds_min)*rotation_response_slope
+      response_model_work = ABS(qs_ot_env(1)%ds_min)* &
+                            (rotation_raw_slope + response_blend* &
+                             (rotation_response_slope - rotation_raw_slope))
       IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),3(1X,ES16.8),1X,I6)') &
-            " OT DIIS rotation response probe ready active adrop model_work residual samples:", &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),4(1X,ES16.8),1X,I6)') &
+            " OT DIIS rotation response probe ready active adrop model_work total_metric "// &
+            "rotation_metric samples:", &
             kpoint_response_probe, kpoint_preconditioned_rotation, accepted_drop, &
-            response_model_work, current_physical_delta, &
+            response_model_work, current_physical_delta, current_rotation_gnorm, &
             qs_ot_env(1)%kpoint_subspace_accepted_samples
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8),1X,L1)') &
+            " OT DIIS response residual calibration accepted raw response blend last_blend last_response:", &
+            accepted_residual_ratio, qs_ot_env(1)%diis_raw_residual_ratio, &
+            qs_ot_env(1)%diis_response_residual_ratio, response_blend, &
+            qs_ot_env(1)%diis_last_response_blend, &
+            qs_ot_env(1)%diis_last_candidate_response
       END IF
       IF (mermin_step_rejected) THEN
          previous_step = qs_ot_env(1)%ds_min
@@ -5478,6 +5574,8 @@ CONTAINS
          qs_ot_env(1)%c_diis(:) = 0.0_dp
          qs_ot_env(1)%energy_h(:) = 0.0_dp
          qs_ot_env(1)%diis_last_candidate_sd = .TRUE.
+         qs_ot_env(1)%diis_last_candidate_response = .FALSE.
+         qs_ot_env(1)%diis_last_response_blend = 0.0_dp
          qs_ot_env(1)%kpoint_physical_delta_ready = .FALSE.
          qs_ot_env(1)%kpoint_density_stationarity_ready = .FALSE.
          qs_ot_env(1)%kpoint_complete_physical_delta = -1.0_dp
@@ -5519,6 +5617,7 @@ CONTAINS
       qs_ot_env(1)%mermin_ls_reference_delta = ot_kpoint_physical_exit_delta( &
                                                qs_ot_env(1)%kpoint_physical_delta, &
                                                qs_ot_env(1)%kpoint_complete_physical_delta)
+      qs_ot_env(1)%diis_reference_rotation_gnorm = qs_ot_env(1)%kpoint_physical_rot_gnorm
 
       ! copy the position and the error vector in the diis buffers
 
@@ -5894,17 +5993,19 @@ CONTAINS
                      norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
                      CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x, &
                                     qs_ot_env(ispin)%rot_mat_pgx, &
-                                    alpha_scalar=1.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+                                    alpha_scalar=1.0_dp, &
+                                    beta_scalar=-response_blend*qs_ot_env(1)%ds_min)
                      CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x, &
                                     qs_ot_env(ispin)%rot_mat_gx, alpha_scalar=1.0_dp, &
-                                    beta_scalar=qs_ot_env(1)%ds_min*norm_weight)
+                                    beta_scalar=response_blend*qs_ot_env(1)%ds_min*norm_weight)
                      IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                         CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x_im, &
                                        qs_ot_env(ispin)%rot_mat_pgx_im, &
-                                       alpha_scalar=1.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+                                       alpha_scalar=1.0_dp, &
+                                       beta_scalar=-response_blend*qs_ot_env(1)%ds_min)
                         CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x_im, &
                                        qs_ot_env(ispin)%rot_mat_gx_im, alpha_scalar=1.0_dp, &
-                                       beta_scalar=qs_ot_env(1)%ds_min*norm_weight)
+                                       beta_scalar=response_blend*qs_ot_env(1)%ds_min*norm_weight)
                      END IF
                   END IF
                END IF
@@ -6031,17 +6132,19 @@ CONTAINS
                      norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
                      CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x, &
                                     qs_ot_env(ispin)%rot_mat_pgx, &
-                                    alpha_scalar=1.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+                                    alpha_scalar=1.0_dp, &
+                                    beta_scalar=-response_blend*qs_ot_env(1)%ds_min)
                      CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x, &
                                     qs_ot_env(ispin)%rot_mat_gx, alpha_scalar=1.0_dp, &
-                                    beta_scalar=qs_ot_env(1)%ds_min*norm_weight)
+                                    beta_scalar=response_blend*qs_ot_env(1)%ds_min*norm_weight)
                      IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                         CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x_im, &
                                        qs_ot_env(ispin)%rot_mat_pgx_im, &
-                                       alpha_scalar=1.0_dp, beta_scalar=-qs_ot_env(1)%ds_min)
+                                       alpha_scalar=1.0_dp, &
+                                       beta_scalar=-response_blend*qs_ot_env(1)%ds_min)
                         CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_x_im, &
                                        qs_ot_env(ispin)%rot_mat_gx_im, alpha_scalar=1.0_dp, &
-                                       beta_scalar=qs_ot_env(1)%ds_min*norm_weight)
+                                       beta_scalar=response_blend*qs_ot_env(1)%ds_min*norm_weight)
                      END IF
                   END IF
                END IF
@@ -6058,6 +6161,10 @@ CONTAINS
 
       DO ispin = 1, nspin
          qs_ot_env(ispin)%diis_last_candidate_sd = do_ot_sd .OR. diis_bound == 1
+         qs_ot_env(ispin)%diis_last_candidate_response = &
+            kpoint_response_probe .AND. kpoint_preconditioned_rotation
+         qs_ot_env(ispin)%diis_last_response_blend = &
+            MERGE(response_blend, 0.0_dp, qs_ot_env(ispin)%diis_last_candidate_response)
       END DO
 
       CALL timestop(handle)
