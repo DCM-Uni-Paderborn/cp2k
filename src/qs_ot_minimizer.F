@@ -54,6 +54,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_mermin_closure_response_quality, &
               ot_kpoint_mermin_full_direction_model, &
               ot_kpoint_mermin_current_guard_delta, &
+              ot_kpoint_mermin_derivative_refinement, &
               ot_kpoint_mermin_energy_curvature_resolved, &
               ot_kpoint_mermin_endpoint_status, &
               ot_kpoint_mermin_secant_consistent, &
@@ -965,6 +966,50 @@ CONTAINS
       stagnant = energy_span <= 1.0E-12_dp*energy_scale
 
    END FUNCTION ot_kpoint_mermin_tail_energy_stagnant
+
+! **************************************************************************************************
+!> \brief refine a bracketed Mermin line-search endpoint from directional derivatives
+!>
+!>        The sampled Mermin energies can become less discriminating than the analytic gradient
+!>        in the fixed-N residual tail.  A line search which already brackets zero slope therefore
+!>        gets one safeguarded secant refinement when the selected endpoint still violates the
+!>        strong-Wolfe curvature condition.  The returned point stays strictly inside the accepted
+!>        reference-to-endpoint interval.
+!> \param reference_slope directional derivative at position zero
+!> \param current_slope directional derivative at the selected endpoint
+!> \param current_position selected endpoint position
+!> \param position_floor minimum resolvable displacement from either interval boundary
+!> \param refined_position safeguarded secant position, or current_position when not applicable
+!> \param refine whether a derivative refinement should be evaluated
+! **************************************************************************************************
+   PURE SUBROUTINE ot_kpoint_mermin_derivative_refinement( &
+      reference_slope, current_slope, current_position, position_floor, refined_position, refine)
+      REAL(KIND=dp), INTENT(IN)                          :: reference_slope, current_slope, &
+                                                            current_position, position_floor
+      REAL(KIND=dp), INTENT(OUT)                         :: refined_position
+      LOGICAL, INTENT(OUT)                               :: refine
+
+      REAL(KIND=dp), PARAMETER :: strong_wolfe_curvature = 0.5_dp
+
+      REAL(KIND=dp)                                      :: denominator, floor, secant_position
+
+      refine = .FALSE.
+      refined_position = current_position
+      floor = MAX(0.0_dp, position_floor)
+      IF (current_position <= 2.0_dp*floor) RETURN
+      IF (reference_slope >= 0.0_dp .OR. current_slope <= 0.0_dp) RETURN
+      IF (ABS(current_slope) <= strong_wolfe_curvature*ABS(reference_slope)) RETURN
+
+      denominator = current_slope - reference_slope
+      IF (denominator <= EPSILON(denominator)* &
+          MAX(1.0_dp, ABS(reference_slope), ABS(current_slope))) RETURN
+      secant_position = -reference_slope*current_position/denominator
+      IF (secant_position <= floor .OR. secant_position >= current_position - floor) RETURN
+
+      refined_position = secant_position
+      refine = .TRUE.
+
+   END SUBROUTINE ot_kpoint_mermin_derivative_refinement
 
 ! **************************************************************************************************
 !> \brief keep an open Mermin search until its selected endpoint has a physical residual
@@ -2449,8 +2494,10 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       LOGICAL                                            :: res
 
-      LOGICAL                                            :: residual_rejected
-      REAL(KIND=dp)                                      :: acceptance_tol
+      INTEGER                                            :: current_position_index
+      LOGICAL                                            :: derivative_refinement, residual_rejected
+      REAL(KIND=dp)                                      :: acceptance_tol, position_floor, &
+                                                            refined_position
 
       res = .FALSE.
 
@@ -2473,6 +2520,20 @@ CONTAINS
             END IF
             residual_rejected = kpoint_mermin_residual_closure_rejected(qs_ot_env)
             IF (residual_rejected) RETURN
+            IF (use_three_point_mermin_search(qs_ot_env) .AND. &
+                qs_ot_env(1)%mermin_ls_sample_pending .AND. &
+                qs_ot_env(1)%line_search_count == 3) THEN
+               current_position_index = qs_ot_env(1)%line_search_count + 1
+               CPASSERT(current_position_index <= SIZE(qs_ot_env(1)%ot_pos))
+               position_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), &
+                                    qs_ot_env(1)%settings%eps_taylor)* &
+                                MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min))
+               CALL ot_kpoint_mermin_derivative_refinement( &
+                  qs_ot_env(1)%ot_grad(1), qs_ot_env(1)%gradient, &
+                  qs_ot_env(1)%ot_pos(current_position_index), position_floor, &
+                  refined_position, derivative_refinement)
+               IF (derivative_refinement) RETURN
+            END IF
             res = .TRUE.
             RETURN
          END IF
@@ -3610,11 +3671,11 @@ CONTAINS
 
       INTEGER                                            :: best_index, closure_backtracks, count, &
                                                             handle, i
-      LOGICAL :: mermin_boundary_extend, mermin_closure_reset, mermin_residual_closure, &
-         mermin_search, mermin_uphill_closure
-      REAL(KIND=dp) :: best_drop, best_energy, closure_pos_floor, denom, ds, fa, fb, fc, &
-         model_drop, model_quality, nom, pos, residual_growth_ratio, residual_quality, &
-         slope_mismatch, slope_model, tol, val, xa, xb, xc
+      LOGICAL :: derivative_refinement, mermin_boundary_extend, mermin_closure_reset, &
+         mermin_residual_closure, mermin_search, mermin_uphill_closure
+      REAL(KIND=dp) :: best_drop, best_energy, closure_pos_floor, denom, &
+         derivative_refinement_pos, ds, fa, fb, fc, model_drop, model_quality, nom, pos, &
+         residual_growth_ratio, residual_quality, slope_mismatch, slope_model, tol, val, xa, xb, xc
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -3731,7 +3792,29 @@ CONTAINS
          mermin_residual_closure = kpoint_mermin_residual_closure_rejected( &
                                    qs_ot_env, residual_quality, residual_growth_ratio)
          mermin_closure_reset = .FALSE.
-         IF (mermin_residual_closure) THEN
+         derivative_refinement = .FALSE.
+         IF (count == 4 .AND. qs_ot_env(1)%mermin_ls_sample_pending .AND. &
+             .NOT. mermin_uphill_closure .AND. .NOT. mermin_residual_closure) THEN
+            closure_pos_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), &
+                                    qs_ot_env(1)%settings%eps_taylor)* &
+                                MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min))
+            CALL ot_kpoint_mermin_derivative_refinement( &
+               qs_ot_env(1)%ot_grad(1), qs_ot_env(1)%gradient, &
+               qs_ot_env(1)%ot_pos(count), closure_pos_floor, &
+               derivative_refinement_pos, derivative_refinement)
+         END IF
+         IF (derivative_refinement) THEN
+            qs_ot_env(1)%OT_pos(count + 1) = derivative_refinement_pos
+            qs_ot_env(1)%mermin_ls_next_pos = derivative_refinement_pos
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= debug_print_level .AND. &
+                logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
+                  " OT Mermin LS derivative refinement reference current old new floor:", &
+                  qs_ot_env(1)%ot_grad(1), qs_ot_env(1)%gradient, &
+                  qs_ot_env(1)%ot_pos(count), derivative_refinement_pos, closure_pos_floor
+            END IF
+         ELSE IF (mermin_residual_closure) THEN
             closure_backtracks = count - 3
             closure_pos_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), &
                                     qs_ot_env(1)%settings%eps_taylor)* &
@@ -3852,7 +3935,10 @@ CONTAINS
                qs_ot_env(1)%mermin_ls_sample_pending = .FALSE.
             END IF
          END IF
-         IF (mermin_residual_closure) THEN
+         IF (derivative_refinement) THEN
+            qs_ot_env(1)%energy_only = .FALSE.
+            qs_ot_env(1)%line_search_might_be_done = .TRUE.
+         ELSE IF (mermin_residual_closure) THEN
             ! Residual backtracking needs a gradient at every candidate endpoint.
             qs_ot_env(1)%energy_only = .FALSE.
             qs_ot_env(1)%line_search_might_be_done = mermin_closure_reset

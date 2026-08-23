@@ -72,16 +72,17 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_diis_rotation_response_ready, ot_kpoint_fermi_window_direction_scale, &
         ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
         ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
-        ot_kpoint_mermin_endpoint_status, ot_kpoint_mermin_energy_curvature_resolved, &
-        ot_kpoint_mermin_full_direction_model, ot_kpoint_mermin_projected_reference_ready, &
-        ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
-        ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
-        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
-        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
-        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_exit_delta, &
-        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
-        ot_kpoint_rayleigh_probe_position, ot_kpoint_rayleigh_response_scale, &
-        ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
+        ot_kpoint_mermin_derivative_refinement, ot_kpoint_mermin_endpoint_status, &
+        ot_kpoint_mermin_energy_curvature_resolved, ot_kpoint_mermin_full_direction_model, &
+        ot_kpoint_mermin_projected_reference_ready, ot_kpoint_mermin_recovery_active_tail, &
+        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
+        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
+        ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
+        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
+        ot_kpoint_physical_exit_delta, ot_kpoint_physical_residual_split, &
+        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_probe_position, &
+        ot_kpoint_rayleigh_response_scale, ot_kpoint_residual_aware_rayleigh_model, &
+        ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: &
         ot_metallic_variable_defaults, qs_ot_kpoint_preconditioner_solver_supported, &
@@ -367,6 +368,8 @@ PROGRAM qs_ot_frechet_unittest
                                          5.0E-14_dp, nfail)
    CALL check_kpoint_mermin_candidate_restart_step( &
       "k-point OT finite-response candidate restart step", 5.0E-14_dp, nfail)
+   CALL check_kpoint_mermin_derivative_refinement( &
+      "k-point OT bracketed derivative refinement", 5.0E-14_dp, nfail)
    CALL check_kpoint_mermin_search_stagnant("k-point OT stagnant-search restart", nfail)
    CALL check_kpoint_mermin_tail_energy_stagnant("k-point OT flat-energy tail restart", nfail)
    CALL check_kpoint_mermin_recovery_active_tail("k-point OT dual-residual recovery tail", nfail)
@@ -8082,6 +8085,43 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_mermin_candidate_restart_step
+
+! **************************************************************************************************
+!> \brief Check the safeguarded derivative refinement used by complex Mermin OT.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_derivative_refinement(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: bracketed, curvature_ok, unbracketed
+      REAL(KIND=dp)                                      :: bracketed_pos, curvature_pos, &
+                                                            unbracketed_pos
+
+      CALL ot_kpoint_mermin_derivative_refinement( &
+         -4.0_dp, 3.0_dp, 0.9_dp, 1.0E-12_dp, bracketed_pos, bracketed)
+      CALL ot_kpoint_mermin_derivative_refinement( &
+         -4.0_dp, 1.0_dp, 0.9_dp, 1.0E-12_dp, curvature_pos, curvature_ok)
+      CALL ot_kpoint_mermin_derivative_refinement( &
+         -4.0_dp, -1.0_dp, 0.9_dp, 1.0E-12_dp, unbracketed_pos, unbracketed)
+
+      IF (.NOT. bracketed .OR. ABS(bracketed_pos - 18.0_dp/35.0_dp) > tol .OR. &
+          curvature_ok .OR. ABS(curvature_pos - 0.9_dp) > tol .OR. &
+          unbracketed .OR. ABS(unbracketed_pos - 0.9_dp) > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES16.8))') TRIM(label), &
+            "failed with bracketed/curvature/unbracketed", &
+            bracketed_pos, curvature_pos, unbracketed_pos
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES16.8))') TRIM(label), &
+            "OK with bracketed/curvature/unbracketed", &
+            bracketed_pos, curvature_pos, unbracketed_pos
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_derivative_refinement
 
 ! **************************************************************************************************
 !> \brief Check restart detection for repeated Mermin energies at an unchanged next point.

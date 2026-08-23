@@ -2,11 +2,12 @@
 ! Na_kp_ot_added_auto_sym333_converge.inp. Run the source input first in the
 ! same directory. The sign-aware dense Schur model retains an absolute-
 ! curvature saddle-escape direction when no negative-mode mixture can lower
-! the local linear residual. Independent MPI-2/OMP-2 trajectories reached the
-! complete fixed-N Mermin endpoint in 493-494 steps at
-! F = -9.01953180129 Ha, and the resulting OT restart closes in one step. The
-! conservative 640-step allowance keeps this intentionally unlisted strict
-! physics regression robust without making the default suite expensive.
+! the local linear residual. The safeguarded directional-derivative refinement
+! reaches the complete fixed-N Mermin endpoint from the committed 1E-7
+! checkpoint in 450 MPI-2/OMP-2 steps at F = -9.01953180129 Ha; the same
+! build without that refinement exhausted 640 steps. The resulting OT restart
+! closes in one step. This strict physics regression remains intentionally
+! unlisted so the default suite stays inexpensive.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Na_kp_ot_added_auto_sym333_restart_strict
