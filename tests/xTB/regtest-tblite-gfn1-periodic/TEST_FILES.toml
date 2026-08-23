@@ -31,6 +31,7 @@
                                              {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
                                              {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
                                              {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
+                                             {matcher="NO_TEXT", text="Method not implemented for k-points"},
                                              {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_fcc_gfn1_kp_ot_fermi_low_rank.inp"  = [{matcher="E_total", tol=1.0E-9, ref=-1.14691758428414},
                                              {matcher="Mermin_free_energy", tol=1.0E-9, ref=-1.14691758428414},
