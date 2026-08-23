@@ -179,8 +179,8 @@ MODULE qs_scf
                                               ot_scf_read_input
    USE qs_ot_types,                     ONLY: &
         qs_ot_allocate, qs_ot_channel_index, qs_ot_check_channel_context, qs_ot_init, &
-        qs_ot_kpoint_preconditioner_supported, qs_ot_number_of_channels, &
-        qs_ot_reset_accepted_model_calibration, qs_ot_set_context, &
+        qs_ot_kpoint_preconditioner_solver_supported, qs_ot_kpoint_preconditioner_supported, &
+        qs_ot_number_of_channels, qs_ot_reset_accepted_model_calibration, qs_ot_set_context, &
         qs_ot_settings_restart_compatible, qs_ot_type
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
                                               outer_loop_optimize,&
@@ -2730,6 +2730,15 @@ CONTAINS
             CALL cp_abort(__LOCATION__, &
                           "Complex k-point OT implements only NONE, FULL_SINGLE_INVERSE, "// &
                           "FULL_ALL, and FERMI_LOW_RANK preconditioners.")
+         END IF
+         IF (.NOT. qs_ot_kpoint_preconditioner_solver_supported( &
+             scf_env%qs_ot_env(1)%settings%preconditioner_type, &
+             scf_env%qs_ot_env(1)%settings%precond_solver_type, use_real_wfn)) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "Complex k-point OT does not implement PRECOND_SOLVER "// &
+                          TRIM(scf_env%qs_ot_env(1)%settings%precond_solver_name)// &
+                          " for PRECONDITIONER "// &
+                          TRIM(scf_env%qs_ot_env(1)%settings%preconditioner_name)//".")
          END IF
       END IF
 

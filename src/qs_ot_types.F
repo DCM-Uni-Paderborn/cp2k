@@ -62,6 +62,7 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_number_of_channels
    PUBLIC  :: qs_ot_occupation_preconditioner_active
    PUBLIC  :: qs_ot_kpoint_preconditioner_supported
+   PUBLIC  :: qs_ot_kpoint_preconditioner_solver_supported
    PUBLIC  :: ot_metallic_variable_defaults
    PUBLIC  :: qs_ot_restart_signature_nchar
    PUBLIC  :: qs_ot_restart_signature_nint
@@ -1109,6 +1110,36 @@ CONTAINS
       END IF
 
    END FUNCTION qs_ot_kpoint_preconditioner_supported
+
+! **************************************************************************************************
+!> \brief Return whether a solver is implemented for a k-point OT preconditioner.
+!> \param preconditioner_type selected OT preconditioner
+!> \param solver_type selected preconditioner solver
+!> \param use_real_wfn whether the k-point channel stores a real wavefunction
+!> \return true when the complex builder implements the complete combination
+! **************************************************************************************************
+   PURE ELEMENTAL FUNCTION qs_ot_kpoint_preconditioner_solver_supported( &
+      preconditioner_type, solver_type, use_real_wfn) RESULT(supported)
+      INTEGER, INTENT(IN)                                :: preconditioner_type, solver_type
+      LOGICAL, INTENT(IN)                                :: use_real_wfn
+      LOGICAL                                            :: supported
+
+      supported = qs_ot_kpoint_preconditioner_supported(preconditioner_type, use_real_wfn)
+      IF (.NOT. supported) RETURN
+
+      SELECT CASE (preconditioner_type)
+      CASE (ot_precond_none)
+         supported = .TRUE.
+      CASE (ot_precond_full_single_inverse)
+         supported = solver_type == ot_precond_solver_default .OR. &
+                     solver_type == ot_precond_solver_inv_chol
+      CASE (ot_precond_full_all, ot_precond_fermi_low_rank)
+         supported = solver_type == ot_precond_solver_default
+      CASE DEFAULT
+         supported = .FALSE.
+      END SELECT
+
+   END FUNCTION qs_ot_kpoint_preconditioner_solver_supported
 
 ! **************************************************************************************************
 !> \brief sets default values for the settings type

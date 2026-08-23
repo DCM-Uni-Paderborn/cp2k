@@ -38,7 +38,9 @@ PROGRAM qs_ot_frechet_unittest
    USE input_constants,                 ONLY: &
         ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, &
         ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
-        ot_precond_s_inverse, smear_fermi_dirac, smear_gaussian, smear_mp, smear_mv
+        ot_precond_s_inverse, ot_precond_solver_chebyshev, ot_precond_solver_default, &
+        ot_precond_solver_direct, ot_precond_solver_inv_chol, ot_precond_solver_update, &
+        smear_fermi_dirac, smear_gaussian, smear_mp, smear_mv
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE kpoint_io,                       ONLY: kpoint_ot_restart_geometry_compatible,&
@@ -82,11 +84,11 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_residual_aware_rayleigh_model, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: &
-        ot_metallic_variable_defaults, qs_ot_kpoint_preconditioner_supported, &
-        qs_ot_reset_accepted_model_calibration, qs_ot_restart_signature_nchar, &
-        qs_ot_restart_signature_nint, qs_ot_restart_signature_nlog, qs_ot_restart_signature_nreal, &
-        qs_ot_settings_init, qs_ot_settings_restart_compatible, qs_ot_settings_restart_signature, &
-        qs_ot_settings_type, qs_ot_type
+        ot_metallic_variable_defaults, qs_ot_kpoint_preconditioner_solver_supported, &
+        qs_ot_kpoint_preconditioner_supported, qs_ot_reset_accepted_model_calibration, &
+        qs_ot_restart_signature_nchar, qs_ot_restart_signature_nint, qs_ot_restart_signature_nlog, &
+        qs_ot_restart_signature_nreal, qs_ot_settings_init, qs_ot_settings_restart_compatible, &
+        qs_ot_settings_restart_signature, qs_ot_settings_type, qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_accepted_physical_residual_quality, qs_scf_kp_active_residual_affine, &
@@ -6524,6 +6526,26 @@ CONTAINS
                ot_precond_full_kinetic, .FALSE.)
       failed = failed .OR. qs_ot_kpoint_preconditioner_supported( &
                ot_precond_s_inverse, .FALSE.)
+      failed = failed .OR. .NOT. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_none, ot_precond_solver_chebyshev, .FALSE.)
+      failed = failed .OR. .NOT. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_full_single_inverse, ot_precond_solver_default, .FALSE.)
+      failed = failed .OR. .NOT. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_full_single_inverse, ot_precond_solver_inv_chol, .FALSE.)
+      failed = failed .OR. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_full_single_inverse, ot_precond_solver_direct, .FALSE.)
+      failed = failed .OR. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_full_single_inverse, ot_precond_solver_update, .FALSE.)
+      failed = failed .OR. .NOT. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_full_all, ot_precond_solver_default, .FALSE.)
+      failed = failed .OR. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_full_all, ot_precond_solver_inv_chol, .FALSE.)
+      failed = failed .OR. .NOT. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_fermi_low_rank, ot_precond_solver_default, .FALSE.)
+      failed = failed .OR. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_fermi_low_rank, ot_precond_solver_chebyshev, .FALSE.)
+      failed = failed .OR. qs_ot_kpoint_preconditioner_solver_supported( &
+               ot_precond_full_all, ot_precond_solver_default, .TRUE.)
 
       IF (failed) THEN
          nfail = nfail + 1
