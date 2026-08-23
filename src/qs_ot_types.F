@@ -332,12 +332,8 @@ MODULE qs_ot_types
       TYPE(dbcsr_type), POINTER :: rot_mat_evec_im => NULL()
 
       ! third part of the variables, if we need to optimize orbital energies
-      REAL(KIND=dp) :: ener_x_trust_radius = -1.0_dp, ener_x_trust_edge_window = -1.0_dp
-      REAL(KIND=dp) :: ener_x_trust_mu = 0.0_dp, ener_x_trust_sigma = 0.0_dp
-      REAL(KIND=dp) :: ener_x_trust_frac_weight = 0.0_dp, ener_x_trust_entropy = 0.0_dp
-      REAL(KIND=dp) :: ener_x_trust_min_abs_eps_mu = HUGE(1.0_dp)
-      REAL(KIND=dp) :: ener_x_trust_rayleigh_gap = 0.0_dp, ener_x_trust_rayleigh_edge_gap = 0.0_dp
-      REAL(KIND=dp) :: ener_x_step_max = 0.0_dp, ener_x_trusted_step_max = 0.0_dp
+      REAL(KIND=dp) :: ener_x_trust_radius = -1.0_dp, ener_x_trust_mu = 0.0_dp
+      REAL(KIND=dp) :: ener_x_trusted_step_max = 0.0_dp
       REAL(KIND=dp) :: ener_x_trust_scale = 1.0_dp
       LOGICAL       :: ener_x_fermi_guard_active = .FALSE.
       LOGICAL       :: ener_x_fermi_frontier_armed = .FALSE.
@@ -345,9 +341,7 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: ener_x_fermi_guard_position_max = -1.0_dp
       REAL(KIND=dp) :: ener_x_line_search_position = 0.0_dp
       REAL(KIND=dp) :: ener_x_line_search_tangent = 1.0_dp
-      REAL(KIND=dp) :: canonical_tether_energy = 0.0_dp, canonical_tether_strength = 0.0_dp
-      REAL(KIND=dp) :: canonical_tether_weight_sum = 0.0_dp, canonical_tether_shift = 0.0_dp
-      REAL(KIND=dp) :: canonical_tether_grad_max = 0.0_dp
+      REAL(KIND=dp) :: canonical_tether_strength = 0.0_dp
       REAL(KIND=dp) :: added_mos_auto_basis_signal = 0.0_dp
       ! Runtime accepted-step calibration only.  Restart files persist the OT
       ! orbitals/history, while this Schur quality model is relearned after read.
@@ -2066,15 +2060,7 @@ CONTAINS
          qs_ot_env%ener_gx(:) = 0.0_dp
          IF (ASSOCIATED(qs_ot_env%ener_pgx)) qs_ot_env%ener_pgx(:) = 0.0_dp
          qs_ot_env%ener_x_trust_radius = -1.0_dp
-         qs_ot_env%ener_x_trust_edge_window = -1.0_dp
          qs_ot_env%ener_x_trust_mu = 0.0_dp
-         qs_ot_env%ener_x_trust_sigma = 0.0_dp
-         qs_ot_env%ener_x_trust_frac_weight = 0.0_dp
-         qs_ot_env%ener_x_trust_entropy = 0.0_dp
-         qs_ot_env%ener_x_trust_min_abs_eps_mu = HUGE(1.0_dp)
-         qs_ot_env%ener_x_trust_rayleigh_gap = 0.0_dp
-         qs_ot_env%ener_x_trust_rayleigh_edge_gap = 0.0_dp
-         qs_ot_env%ener_x_step_max = 0.0_dp
          qs_ot_env%ener_x_trusted_step_max = 0.0_dp
          qs_ot_env%ener_x_trust_scale = 1.0_dp
          qs_ot_env%ener_x_fermi_guard_active = .FALSE.
@@ -2083,11 +2069,7 @@ CONTAINS
          qs_ot_env%ener_x_fermi_guard_position_max = -1.0_dp
          qs_ot_env%ener_x_line_search_position = 0.0_dp
          qs_ot_env%ener_x_line_search_tangent = 1.0_dp
-         qs_ot_env%canonical_tether_energy = 0.0_dp
          qs_ot_env%canonical_tether_strength = 0.0_dp
-         qs_ot_env%canonical_tether_weight_sum = 0.0_dp
-         qs_ot_env%canonical_tether_shift = 0.0_dp
-         qs_ot_env%canonical_tether_grad_max = 0.0_dp
          qs_ot_env%added_mos_auto_basis_signal = 0.0_dp
          IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
          IF (ASSOCIATED(qs_ot_env%matrix_occ_precond_scale)) THEN

@@ -1218,7 +1218,6 @@ CONTAINS
 
       IF (do_ener) THEN
          DO ispin = 1, nspin
-            qs_ot_env(ispin)%ener_x_step_max = 0.0_dp
             qs_ot_env(ispin)%ener_x_trusted_step_max = 0.0_dp
             qs_ot_env(ispin)%ener_x_trust_scale = 1.0_dp
          END DO
@@ -1323,8 +1322,6 @@ CONTAINS
       CASE DEFAULT
          CPABORT("OT_METHOD NYI")
       END SELECT
-
-      IF (do_ener) CALL print_energy_step_diagnostic(qs_ot_env)
 
       CALL timestop(handle)
 
@@ -3425,7 +3422,6 @@ CONTAINS
             qs_ot_env%ener_x_line_search_tangent)
          qs_ot_env%ener_x(:) = qs_ot_env%ener_x(:) + actual_alpha*direction(:)
          qs_ot_env%ener_x_line_search_position = next_position
-         qs_ot_env%ener_x_step_max = raw_step_max
          qs_ot_env%ener_x_trusted_step_max = MAXVAL(ABS(actual_alpha*direction))
          IF (raw_step_max > EPSILON(raw_step_max)) THEN
             qs_ot_env%ener_x_trust_scale = MIN(qs_ot_env%ener_x_trust_scale, &
@@ -3485,74 +3481,12 @@ CONTAINS
          IF (raw_step_max > EPSILON(raw_step_max)) step_scale = trusted_step_max/raw_step_max
       END IF
       qs_ot_env%ener_x = qs_ot_env%ener_x + limited_step
-      qs_ot_env%ener_x_step_max = raw_step_max
       qs_ot_env%ener_x_trusted_step_max = trusted_step_max
       qs_ot_env%ener_x_trust_scale = MIN(qs_ot_env%ener_x_trust_scale, step_scale)
 
       DEALLOCATE (raw_step, limited_step)
 
    END SUBROUTINE take_energy_step
-
-! **************************************************************************************************
-!> \brief debug-print diagnostic for auxiliary-energy trust-region steps
-!> \param qs_ot_env ...
-! **************************************************************************************************
-   SUBROUTINE print_energy_step_diagnostic(qs_ot_env)
-      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
-
-      INTEGER                                            :: ispin
-      REAL(KIND=dp) :: entropy, frac_weight, min_abs_eps_mu, raw_step_max, rayleigh_edge_gap, &
-         rayleigh_gap, scale_min, tether_energy, tether_grad_max, tether_shift_abs, &
-         tether_strength, tether_weight_sum, trusted_step_max
-      TYPE(cp_logger_type), POINTER                      :: logger
-
-      logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level < debug_print_level) RETURN
-
-      raw_step_max = 0.0_dp
-      trusted_step_max = 0.0_dp
-      scale_min = 1.0_dp
-      entropy = 0.0_dp
-      frac_weight = 0.0_dp
-      min_abs_eps_mu = HUGE(1.0_dp)
-      rayleigh_gap = 0.0_dp
-      rayleigh_edge_gap = 0.0_dp
-      tether_energy = 0.0_dp
-      tether_strength = 0.0_dp
-      tether_weight_sum = 0.0_dp
-      tether_shift_abs = 0.0_dp
-      tether_grad_max = 0.0_dp
-      DO ispin = 1, SIZE(qs_ot_env)
-         IF (qs_ot_env(ispin)%ener_x_trust_radius <= 0.0_dp) CYCLE
-         raw_step_max = MAX(raw_step_max, qs_ot_env(ispin)%ener_x_step_max)
-         trusted_step_max = MAX(trusted_step_max, qs_ot_env(ispin)%ener_x_trusted_step_max)
-         scale_min = MIN(scale_min, qs_ot_env(ispin)%ener_x_trust_scale)
-         entropy = entropy + qs_ot_env(ispin)%ener_x_trust_entropy
-         frac_weight = frac_weight + qs_ot_env(ispin)%ener_x_trust_frac_weight
-         min_abs_eps_mu = MIN(min_abs_eps_mu, qs_ot_env(ispin)%ener_x_trust_min_abs_eps_mu)
-         rayleigh_gap = MAX(rayleigh_gap, qs_ot_env(ispin)%ener_x_trust_rayleigh_gap)
-         rayleigh_edge_gap = MAX(rayleigh_edge_gap, qs_ot_env(ispin)%ener_x_trust_rayleigh_edge_gap)
-         tether_energy = tether_energy + qs_ot_env(ispin)%canonical_tether_energy
-         tether_strength = MAX(tether_strength, qs_ot_env(ispin)%canonical_tether_strength)
-         tether_weight_sum = tether_weight_sum + qs_ot_env(ispin)%canonical_tether_weight_sum
-         tether_shift_abs = MAX(tether_shift_abs, ABS(qs_ot_env(ispin)%canonical_tether_shift))
-         tether_grad_max = MAX(tether_grad_max, qs_ot_env(ispin)%canonical_tether_grad_max)
-      END DO
-
-      IF (raw_step_max > 0.0_dp .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8),1X,I5)') &
-            " OT ener_x step raw kept scale ds kTS frac min_abs ray_gap edge_gap ls:", &
-            raw_step_max, trusted_step_max, scale_min, qs_ot_env(1)%ds_min, entropy, &
-            frac_weight, min_abs_eps_mu, rayleigh_gap, rayleigh_edge_gap, &
-            qs_ot_env(1)%line_search_count
-         IF (tether_weight_sum > 0.0_dp) THEN
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
-               " OT canonical tether energy strength weight shift grad:", &
-               tether_energy, tether_strength, tether_weight_sum, tether_shift_abs, tether_grad_max
-         END IF
-      END IF
-
-   END SUBROUTINE print_energy_step_diagnostic
 
 ! implements a golden ratio search as a robust way of minimizing
 ! **************************************************************************************************

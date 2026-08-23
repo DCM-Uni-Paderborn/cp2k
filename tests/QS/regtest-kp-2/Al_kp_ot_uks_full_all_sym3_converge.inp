@@ -4,15 +4,17 @@
 ! a fixed magnetic moment, complex FULL_ALL response, and fractional Fermi
 ! support through the complete fixed-N Mermin minimization.
 !
-! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference from a fresh directory:
-! the uninterrupted OT run converges in 91 steps at EPS_SCF 1E-6, with
-! Mermin F = -8.14036045443613 Ha and kTS = -0.000168745538 Ha. A matching
-! runtime-check OMP-2 run converges in 98 steps at F = -8.14036043923571 Ha,
+! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 references from fresh directories:
+! release trajectories converge in 91--164 steps at EPS_SCF 1E-6, with
+! Mermin F = -8.14036045 Ha. A matching runtime-check OMP-2 run converges in
+! 98 steps at F = -8.14036043923571 Ha,
 ! -T*S = -0.00016884786056 Ha, and mu = -0.02250546977047 Ha. A matching
-! diagonalization run converges to -8.14036093712786 Ha, so the free-energy
-! difference remains below 5.0E-7 Ha. The weighted spin populations remain 7 and 5;
+! diagonalization run converges to -8.14036050006483 Ha, so the free-energy
+! difference remains below 5.1E-8 Ha. The weighted spin populations remain 7 and 5;
 ! its restart companion restores all four channels in one step with identical
-! free energy, entropy, chemical potential, and fixed magnetic moment.
+! free energy, entropy, chemical potential, and fixed magnetic moment. At EPS_SCF
+! 1E-7, analytic OT forces and stress agree with independently converged
+! diagonalization within 1.1E-6 Ha/bohr and 1.3 bar, respectively.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_uks_full_all_sym3_converge

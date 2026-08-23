@@ -7874,26 +7874,37 @@ CONTAINS
 !> \param density_delta canonical fixed-N density stationarity residual
 !> \param eps_scf requested SCF threshold
 !> \param complete_physical_delta optional complete Re/Im fixed-N physical-residual audit
+!> \param accepted_samples optional independent accepted states since the previous subspace rebuild
 !> \return true when canonical density closure is the dominant asymptotic block
 ! **************************************************************************************************
    PURE FUNCTION qs_scf_kp_density_closure_refresh_ready( &
-      physical_delta, density_delta, eps_scf, complete_physical_delta) RESULT(ready)
+      physical_delta, density_delta, eps_scf, complete_physical_delta, accepted_samples) RESULT(ready)
 
       REAL(KIND=dp), INTENT(IN)                          :: physical_delta, density_delta, eps_scf
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: complete_physical_delta
+      INTEGER, INTENT(IN), OPTIONAL                      :: accepted_samples
       LOGICAL                                            :: ready
 
+      LOGICAL                                            :: complete_residual_ready
       REAL(KIND=dp)                                      :: asymptotic_delta, closure_crossover, &
-                                                            eps, physical_residual
+                                                            complete_residual, eps
 
       eps = MAX(eps_scf, EPSILON(1.0_dp))
-      physical_residual = MAX(0.0_dp, physical_delta)
-      IF (PRESENT(complete_physical_delta)) &
-         physical_residual = ot_kpoint_physical_exit_delta(physical_residual, complete_physical_delta)
       asymptotic_delta = MAX(eps, SQRT(eps))
       closure_crossover = SQRT(eps*MAX(density_delta, 0.0_dp))
+      complete_residual_ready = .TRUE.
+      IF (PRESENT(complete_physical_delta)) THEN
+         complete_residual = ot_kpoint_physical_exit_delta(physical_delta, complete_physical_delta)
+         complete_residual_ready = complete_residual <= MIN(asymptotic_delta, closure_crossover)
+         ! A complete residual can remain outside the active minimizer norm when the represented
+         ! virtual subspace has become stale.  Do not rebuild on the first short-history mismatch,
+         ! but allow it after a second independent history window has established persistence.
+         IF (.NOT. complete_residual_ready .AND. PRESENT(accepted_samples)) &
+            complete_residual_ready = accepted_samples >= 2*ot_kp_subspace_refresh_min_steps
+      END IF
       ready = physical_delta >= 0.0_dp .AND. density_delta > eps .AND. &
-              physical_residual <= MIN(asymptotic_delta, closure_crossover)
+              physical_delta <= MIN(asymptotic_delta, closure_crossover) .AND. &
+              complete_residual_ready
 
    END FUNCTION qs_scf_kp_density_closure_refresh_ready
 
@@ -8658,7 +8669,7 @@ CONTAINS
       END IF
       IF (scf_env%qs_ot_env(1)%settings%ot_algorithm /= "REF") THEN
          CALL cp_abort(__LOCATION__, &
-                       "K-point OT driver currently supports OT%ALGORITHM REF only.")
+                       "K-point OT driver requires OT%ALGORITHM IRAC (internal REF representation).")
       END IF
       transfer_step = .FALSE.
       CALL do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, .FALSE., &
@@ -10155,7 +10166,8 @@ CONTAINS
                                  qs_scf_kp_density_closure_refresh_ready( &
                                  residual_delta, &
                                  local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf, &
-                                 local_ot_env(1)%kpoint_complete_physical_delta)
+                                 local_ot_env(1)%kpoint_complete_physical_delta, &
+                                 local_ot_env(1)%kpoint_subspace_accepted_samples)
       density_history_stagnant = density_buffer_ready .AND. &
                                  qs_scf_kp_density_closure_history_refresh_ready( &
                                  local_ot_env(1)%kpoint_density_stationarity_ready, &
@@ -12454,23 +12466,14 @@ CONTAINS
                                                             ispin, local_channel, local_kpoint, nmo
       LOGICAL                                            :: active, fermi_guard_active, &
                                                             has_trust_weight
-      REAL(KIND=dp) :: edge_window, fermi_guard_anchor, frac_weight, gvalue, maxocc, &
-         min_abs_eps_mu, mu, occ_tail, rayleigh_edge_gap, rayleigh_gap, residual_delta, sigma, &
-         trust_radius
+      REAL(KIND=dp) :: edge_window, fermi_guard_anchor, gvalue, maxocc, mu, occ_tail, &
+         rayleigh_edge_gap, residual_delta, sigma, trust_radius
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rayleigh_diag
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       DO local_channel = 1, SIZE(local_ot_env)
          local_ot_env(local_channel)%ener_x_trust_radius = -1.0_dp
-         local_ot_env(local_channel)%ener_x_trust_edge_window = -1.0_dp
          local_ot_env(local_channel)%ener_x_trust_mu = 0.0_dp
-         local_ot_env(local_channel)%ener_x_trust_sigma = 0.0_dp
-         local_ot_env(local_channel)%ener_x_trust_frac_weight = 0.0_dp
-         local_ot_env(local_channel)%ener_x_trust_entropy = 0.0_dp
-         local_ot_env(local_channel)%ener_x_trust_min_abs_eps_mu = HUGE(1.0_dp)
-         local_ot_env(local_channel)%ener_x_trust_rayleigh_gap = 0.0_dp
-         local_ot_env(local_channel)%ener_x_trust_rayleigh_edge_gap = 0.0_dp
-         local_ot_env(local_channel)%ener_x_step_max = 0.0_dp
          local_ot_env(local_channel)%ener_x_trusted_step_max = 0.0_dp
          local_ot_env(local_channel)%ener_x_trust_scale = 1.0_dp
          local_ot_env(local_channel)%ener_x_fermi_guard_active = .FALSE.
@@ -12519,13 +12522,7 @@ CONTAINS
             IF (ASSOCIATED(local_ot_env(local_channel)%ener_x_trust_weight)) &
                has_trust_weight = SIZE(local_ot_env(local_channel)%ener_x_trust_weight) >= nmo
             local_ot_env(local_channel)%ener_x_trust_radius = trust_radius
-            local_ot_env(local_channel)%ener_x_trust_edge_window = edge_window
             local_ot_env(local_channel)%ener_x_trust_mu = mu
-            local_ot_env(local_channel)%ener_x_trust_sigma = sigma
-            local_ot_env(local_channel)%ener_x_trust_entropy = kp%mos(1, ispin)%kTS
-            frac_weight = 0.0_dp
-            min_abs_eps_mu = HUGE(1.0_dp)
-            rayleigh_gap = 0.0_dp
             rayleigh_edge_gap = 0.0_dp
             ALLOCATE (rayleigh_diag(nmo))
             CALL get_replicated_kpoint_ot_diag(local_ot_env(local_channel)%rot_mat_chc, &
@@ -12534,9 +12531,6 @@ CONTAINS
             DO imo = 1, nmo
                occ_tail = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
                                           maxocc - trial_occupation(imo, ikpoint, ispin)))
-               frac_weight = frac_weight + wkp(ikpoint)*occ_tail
-               min_abs_eps_mu = MIN(min_abs_eps_mu, ABS(trial_eigenvalues(imo, ikpoint, ispin) - mu))
-               rayleigh_gap = MAX(rayleigh_gap, ABS(rayleigh_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
                active = occ_tail > partial_tol*MAX(maxocc, 1.0_dp) .OR. &
                         ABS(trial_eigenvalues(imo, ikpoint, ispin) - mu) < edge_window
                IF (active) rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
@@ -12549,11 +12543,6 @@ CONTAINS
                END IF
             END DO
             DEALLOCATE (rayleigh_diag)
-            local_ot_env(local_channel)%ener_x_trust_frac_weight = frac_weight
-            local_ot_env(local_channel)%ener_x_trust_min_abs_eps_mu = min_abs_eps_mu
-            local_ot_env(local_channel)%ener_x_trust_rayleigh_gap = rayleigh_gap
-            local_ot_env(local_channel)%ener_x_trust_rayleigh_edge_gap = rayleigh_edge_gap
-            local_ot_env(local_channel)%ener_x_step_max = rayleigh_gap
             local_ot_env(local_channel)%ener_x_trusted_step_max = rayleigh_edge_gap
             IF (rayleigh_edge_gap > trust_radius .AND. trust_radius > EPSILON(trust_radius)) THEN
                local_ot_env(local_channel)%ener_x_trust_scale = trust_radius/rayleigh_edge_gap
@@ -12817,11 +12806,6 @@ CONTAINS
          CALL dbcsr_add(qs_ot_env%rot_mat_dedu_im, tmp2, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
       END IF
 
-      qs_ot_env%canonical_tether_energy = 0.0_dp
-      qs_ot_env%canonical_tether_weight_sum = 0.0_dp
-      qs_ot_env%canonical_tether_shift = 0.0_dp
-      qs_ot_env%canonical_tether_grad_max = 0.0_dp
-
       IF (qs_ot_env%settings%do_ener .AND. &
           qs_ot_occupation_preconditioner_active(qs_ot_env) .AND. &
           qs_ot_env%settings%canonical_tether .AND. &
@@ -12865,12 +12849,7 @@ CONTAINS
                   canonical_tether_energy = canonical_tether_energy + 0.5_dp*tether_weight*delta**2
                END DO
                nondiag_energy = nondiag_energy + canonical_tether_energy
-               qs_ot_env%canonical_tether_energy = canonical_tether_energy
                qs_ot_env%canonical_tether_strength = tether_strength
-               qs_ot_env%canonical_tether_weight_sum = tether_weight_sum
-               qs_ot_env%canonical_tether_shift = tether_shift
-               qs_ot_env%canonical_tether_grad_max = MAXVAL(ABS(tether_diag))
-
                CALL dbcsr_copy(b_re, chc_re)
                CALL dbcsr_set(b_re, 0.0_dp)
                CALL dbcsr_set_diag(b_re, tether_diag)
