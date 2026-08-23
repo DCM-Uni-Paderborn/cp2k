@@ -7870,24 +7870,30 @@ CONTAINS
 !>        The physical OT residual need not already satisfy EPS_SCF. It must, however, lie below
 !>        the geometric transition sqrt(EPS_SCF*density_delta), so that its remaining error is
 !>        higher order relative to the independently measured canonical fixed-N density block.
-!> \param physical_delta complete physical OT residual
+!> \param physical_delta physical residual supplied by the active minimizer
 !> \param density_delta canonical fixed-N density stationarity residual
 !> \param eps_scf requested SCF threshold
+!> \param complete_physical_delta optional complete Re/Im fixed-N physical-residual audit
 !> \return true when canonical density closure is the dominant asymptotic block
 ! **************************************************************************************************
    PURE FUNCTION qs_scf_kp_density_closure_refresh_ready( &
-      physical_delta, density_delta, eps_scf) RESULT(ready)
+      physical_delta, density_delta, eps_scf, complete_physical_delta) RESULT(ready)
 
       REAL(KIND=dp), INTENT(IN)                          :: physical_delta, density_delta, eps_scf
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: complete_physical_delta
       LOGICAL                                            :: ready
 
-      REAL(KIND=dp)                                      :: asymptotic_delta, closure_crossover, eps
+      REAL(KIND=dp)                                      :: asymptotic_delta, closure_crossover, &
+                                                            eps, physical_residual
 
       eps = MAX(eps_scf, EPSILON(1.0_dp))
+      physical_residual = MAX(0.0_dp, physical_delta)
+      IF (PRESENT(complete_physical_delta)) &
+         physical_residual = ot_kpoint_physical_exit_delta(physical_residual, complete_physical_delta)
       asymptotic_delta = MAX(eps, SQRT(eps))
       closure_crossover = SQRT(eps*MAX(density_delta, 0.0_dp))
       ready = physical_delta >= 0.0_dp .AND. density_delta > eps .AND. &
-              physical_delta <= MIN(asymptotic_delta, closure_crossover)
+              physical_residual <= MIN(asymptotic_delta, closure_crossover)
 
    END FUNCTION qs_scf_kp_density_closure_refresh_ready
 
@@ -10148,7 +10154,8 @@ CONTAINS
                                  density_buffer_ready .AND. &
                                  qs_scf_kp_density_closure_refresh_ready( &
                                  residual_delta, &
-                                 local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf)
+                                 local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf, &
+                                 local_ot_env(1)%kpoint_complete_physical_delta)
       density_history_stagnant = density_buffer_ready .AND. &
                                  qs_scf_kp_density_closure_history_refresh_ready( &
                                  local_ot_env(1)%kpoint_density_stationarity_ready, &

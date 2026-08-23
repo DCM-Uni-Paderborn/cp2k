@@ -5954,6 +5954,8 @@ CONTAINS
                qs_scf_kp_density_closure_refresh_ready( &
                4.0E-4_dp, 1.0E-5_dp, eps_scf) .OR. &
                qs_scf_kp_density_closure_refresh_ready( &
+               5.25951362E-5_dp, 5.02182192E-4_dp, 1.0E-5_dp, 3.17580287E-3_dp) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
                8.0E-7_dp, 8.0E-7_dp, eps_scf) .OR. &
                .NOT. qs_scf_kp_density_closure_buffer_ready(.FALSE., 4, 13) .OR. &
                qs_scf_kp_density_closure_buffer_ready(.TRUE., 8, 17) .OR. &
