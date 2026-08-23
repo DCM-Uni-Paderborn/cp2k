@@ -871,7 +871,7 @@ CONTAINS
                        "Performs a Hotelling update of the inverse if a previous preconditioner is present. "// &
                        "Mainly useful for GPU accelerated systems (works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)", &
                        "Applies a bounded Chebyshev approximation to the inverse using matrix products only "// &
-                       "(works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)."), &
+                       "(currently requires FULL_KINETIC)."), &
          enum_i_vals=[ot_precond_solver_default, &
                       ot_precond_solver_direct, &
                       ot_precond_solver_inv_chol, &

@@ -42,8 +42,7 @@ MODULE preconditioner_apply
         ot_precond_solver_chebyshev, ot_precond_solver_direct, ot_precond_solver_inv_chol, &
         ot_precond_solver_update
    USE kinds,                           ONLY: dp
-   USE mathconstants,                   ONLY: pi,&
-                                              z_one,&
+   USE mathconstants,                   ONLY: z_one,&
                                               z_zero
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE preconditioner_types,            ONLY: preconditioner_type
@@ -59,40 +58,6 @@ MODULE preconditioner_apply
              full_all_response_metric_dbcsr_complex, full_all_response_metric_dense
 
 CONTAINS
-
-! **************************************************************************************************
-!> \brief Chebyshev coefficients of 1/x on a positive spectral interval.
-!> \param lambda_min ...
-!> \param lambda_max ...
-!> \param degree ...
-!> \param coeff ...
-! **************************************************************************************************
-   SUBROUTINE chebyshev_inverse_coefficients(lambda_min, lambda_max, degree, coeff)
-
-      REAL(KIND=dp), INTENT(IN)                          :: lambda_min, lambda_max
-      INTEGER, INTENT(IN)                                :: degree
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
-         INTENT(OUT)                                     :: coeff
-
-      INTEGER                                            :: icoeff, iquad, nquad
-      REAL(KIND=dp)                                      :: half_width, midpoint, theta, x
-
-      CPASSERT(lambda_min > 0.0_dp .AND. lambda_max > lambda_min)
-      CPASSERT(degree >= 0)
-      midpoint = 0.5_dp*(lambda_max + lambda_min)
-      half_width = 0.5_dp*(lambda_max - lambda_min)
-      nquad = MAX(64, 4*(degree + 1))
-      ALLOCATE (coeff(0:degree), source=0.0_dp)
-      DO icoeff = 0, degree
-         DO iquad = 1, nquad
-            theta = pi*(REAL(iquad, KIND=dp) - 0.5_dp)/REAL(nquad, KIND=dp)
-            x = midpoint + half_width*COS(theta)
-            coeff(icoeff) = coeff(icoeff) + COS(REAL(icoeff, KIND=dp)*theta)/x
-         END DO
-         coeff(icoeff) = 2.0_dp*coeff(icoeff)/REAL(nquad, KIND=dp)
-      END DO
-
-   END SUBROUTINE chebyshev_inverse_coefficients
 
 ! **************************************************************************************************
 !> \brief ...
@@ -747,43 +712,35 @@ CONTAINS
       TYPE(preconditioner_type)                          :: preconditioner_env
       TYPE(cp_fm_type), INTENT(IN)                       :: matrix_in, matrix_out
 
-      INTEGER                                            :: degree, icoeff, k, n
-      REAL(KIND=dp)                                      :: half_width, midpoint
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: coeff
-      TYPE(cp_fm_type)                                   :: t_next, t_now, t_previous
+      INTEGER                                            :: degree, iteration, k, n
+      REAL(KIND=dp)                                      :: delta, rho, rho_previous, sigma, theta
+      TYPE(cp_fm_type)                                   :: direction, residual
 
       CPASSERT(ASSOCIATED(preconditioner_env%fm))
       degree = preconditioner_env%polynomial_degree
-      CALL chebyshev_inverse_coefficients(preconditioner_env%polynomial_min, &
-                                          preconditioner_env%polynomial_max, degree, coeff)
-      midpoint = 0.5_dp*(preconditioner_env%polynomial_max + preconditioner_env%polynomial_min)
-      half_width = 0.5_dp*(preconditioner_env%polynomial_max - preconditioner_env%polynomial_min)
+      CPASSERT(degree >= 1)
+      theta = 0.5_dp*(preconditioner_env%polynomial_max + preconditioner_env%polynomial_min)
+      delta = 0.5_dp*(preconditioner_env%polynomial_max - preconditioner_env%polynomial_min)
+      sigma = theta/delta
+      rho_previous = 1.0_dp/sigma
       CALL cp_fm_get_info(matrix_in, nrow_global=n, ncol_global=k)
-      CALL cp_fm_create(t_previous, matrix_in%matrix_struct, name='Chebyshev previous vector')
-      CALL cp_fm_create(t_now, matrix_in%matrix_struct, name='Chebyshev current vector')
-      CALL cp_fm_create(t_next, matrix_in%matrix_struct, name='Chebyshev next vector')
-      CALL cp_fm_to_fm(matrix_in, t_previous)
-      CALL cp_fm_to_fm(matrix_in, matrix_out)
-      CALL cp_fm_scale(0.5_dp*coeff(0), matrix_out)
-      IF (degree >= 1) THEN
-         CALL parallel_gemm('N', 'N', n, k, n, 1.0_dp/half_width, preconditioner_env%fm, &
-                            matrix_in, 0.0_dp, t_now)
-         CALL cp_fm_scale_and_add(1.0_dp, t_now, -midpoint/half_width, matrix_in)
-         CALL cp_fm_scale_and_add(1.0_dp, matrix_out, coeff(1), t_now)
-         DO icoeff = 2, degree
-            CALL parallel_gemm('N', 'N', n, k, n, 2.0_dp/half_width, preconditioner_env%fm, &
-                               t_now, 0.0_dp, t_next)
-            CALL cp_fm_scale_and_add(1.0_dp, t_next, -2.0_dp*midpoint/half_width, t_now)
-            CALL cp_fm_scale_and_add(1.0_dp, t_next, -1.0_dp, t_previous)
-            CALL cp_fm_scale_and_add(1.0_dp, matrix_out, coeff(icoeff), t_next)
-            CALL cp_fm_to_fm(t_now, t_previous)
-            CALL cp_fm_to_fm(t_next, t_now)
-         END DO
-      END IF
-      CALL cp_fm_release(t_next)
-      CALL cp_fm_release(t_now)
-      CALL cp_fm_release(t_previous)
-      DEALLOCATE (coeff)
+      CALL cp_fm_create(direction, matrix_in%matrix_struct, name='Chebyshev direction')
+      CALL cp_fm_create(residual, matrix_in%matrix_struct, name='Chebyshev residual')
+      CALL cp_fm_to_fm(matrix_in, direction)
+      CALL cp_fm_scale(1.0_dp/theta, direction)
+      CALL cp_fm_to_fm(direction, matrix_out)
+      DO iteration = 2, degree
+         CALL cp_fm_to_fm(matrix_in, residual)
+         CALL parallel_gemm('N', 'N', n, k, n, -1.0_dp, preconditioner_env%fm, &
+                            matrix_out, 1.0_dp, residual)
+         rho = 1.0_dp/(2.0_dp*sigma - rho_previous)
+         CALL cp_fm_scale(rho*rho_previous, direction)
+         CALL cp_fm_scale_and_add(1.0_dp, direction, 2.0_dp*rho/delta, residual)
+         CALL cp_fm_scale_and_add(1.0_dp, matrix_out, 1.0_dp, direction)
+         rho_previous = rho
+      END DO
+      CALL cp_fm_release(residual)
+      CALL cp_fm_release(direction)
 
    END SUBROUTINE apply_chebyshev_fm
 
@@ -798,41 +755,35 @@ CONTAINS
       TYPE(preconditioner_type)                          :: preconditioner_env
       TYPE(dbcsr_type)                                   :: matrix_in, matrix_out
 
-      INTEGER                                            :: degree, icoeff
-      REAL(KIND=dp)                                      :: half_width, midpoint
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: coeff
-      TYPE(dbcsr_type)                                   :: t_next, t_now, t_previous
+      INTEGER                                            :: degree, iteration
+      REAL(KIND=dp)                                      :: delta, rho, rho_previous, sigma, theta
+      TYPE(dbcsr_type)                                   :: direction, residual
 
       CPASSERT(ASSOCIATED(preconditioner_env%dbcsr_matrix))
       degree = preconditioner_env%polynomial_degree
-      CALL chebyshev_inverse_coefficients(preconditioner_env%polynomial_min, &
-                                          preconditioner_env%polynomial_max, degree, coeff)
-      midpoint = 0.5_dp*(preconditioner_env%polynomial_max + preconditioner_env%polynomial_min)
-      half_width = 0.5_dp*(preconditioner_env%polynomial_max - preconditioner_env%polynomial_min)
-      CALL dbcsr_copy(t_previous, matrix_in, name='Chebyshev previous vector')
+      CPASSERT(degree >= 1)
+      theta = 0.5_dp*(preconditioner_env%polynomial_max + preconditioner_env%polynomial_min)
+      delta = 0.5_dp*(preconditioner_env%polynomial_max - preconditioner_env%polynomial_min)
+      sigma = theta/delta
+      rho_previous = 1.0_dp/sigma
+      CALL dbcsr_copy(direction, matrix_in, name='Chebyshev direction')
+      CALL dbcsr_copy(residual, matrix_in, name='Chebyshev residual')
       CALL dbcsr_set(matrix_out, 0.0_dp)
-      CALL dbcsr_add(matrix_out, t_previous, 1.0_dp, 0.5_dp*coeff(0))
-      IF (degree >= 1) THEN
-         CALL dbcsr_copy(t_now, matrix_in, name='Chebyshev current vector')
-         CALL dbcsr_multiply('N', 'N', 1.0_dp/half_width, preconditioner_env%dbcsr_matrix, &
-                             matrix_in, -midpoint/half_width, t_now)
-         CALL dbcsr_add(matrix_out, t_now, 1.0_dp, coeff(1))
-         DO icoeff = 2, degree
-            CALL dbcsr_copy(t_next, t_previous, name='Chebyshev next vector')
-            CALL dbcsr_multiply('N', 'N', 2.0_dp/half_width, preconditioner_env%dbcsr_matrix, &
-                                t_now, -1.0_dp, t_next)
-            CALL dbcsr_add(t_next, t_now, 1.0_dp, -2.0_dp*midpoint/half_width)
-            CALL dbcsr_add(matrix_out, t_next, 1.0_dp, coeff(icoeff))
-            CALL dbcsr_release(t_previous)
-            CALL dbcsr_copy(t_previous, t_now, name='Chebyshev previous vector')
-            CALL dbcsr_release(t_now)
-            CALL dbcsr_copy(t_now, t_next, name='Chebyshev current vector')
-            CALL dbcsr_release(t_next)
-         END DO
-         CALL dbcsr_release(t_now)
-      END IF
-      CALL dbcsr_release(t_previous)
-      DEALLOCATE (coeff)
+      CALL dbcsr_add(matrix_out, direction, 1.0_dp, 1.0_dp/theta)
+      CALL dbcsr_set(direction, 0.0_dp)
+      CALL dbcsr_add(direction, matrix_in, 1.0_dp, 1.0_dp/theta)
+      DO iteration = 2, degree
+         CALL dbcsr_set(residual, 0.0_dp)
+         CALL dbcsr_add(residual, matrix_in, 1.0_dp, 1.0_dp)
+         CALL dbcsr_multiply('N', 'N', -1.0_dp, preconditioner_env%dbcsr_matrix, &
+                             matrix_out, 1.0_dp, residual)
+         rho = 1.0_dp/(2.0_dp*sigma - rho_previous)
+         CALL dbcsr_add(direction, residual, rho*rho_previous, 2.0_dp*rho/delta)
+         CALL dbcsr_add(matrix_out, direction, 1.0_dp, 1.0_dp)
+         rho_previous = rho
+      END DO
+      CALL dbcsr_release(residual)
+      CALL dbcsr_release(direction)
 
    END SUBROUTINE apply_chebyshev_dbcsr
 

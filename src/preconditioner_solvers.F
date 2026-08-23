@@ -24,6 +24,7 @@ MODULE preconditioner_solvers
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_create, dbcsr_filter, dbcsr_get_info, dbcsr_get_occupation, dbcsr_init_p, &
         dbcsr_p_type, dbcsr_release, dbcsr_type, dbcsr_type_no_symmetry
+   USE cp_dbcsr_contrib,                ONLY: dbcsr_gershgorin_norm
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr
    USE cp_fm_basic_linalg,              ONLY: cp_fm_uplo_to_full
@@ -36,7 +37,8 @@ MODULE preconditioner_solvers
                                               cp_fm_release,&
                                               cp_fm_set_all,&
                                               cp_fm_type
-   USE input_constants,                 ONLY: ot_precond_solver_chebyshev,&
+   USE input_constants,                 ONLY: ot_precond_full_kinetic,&
+                                              ot_precond_solver_chebyshev,&
                                               ot_precond_solver_default,&
                                               ot_precond_solver_direct,&
                                               ot_precond_solver_inv_chol,&
@@ -108,23 +110,27 @@ CONTAINS
             CALL make_inverse_update(preconditioner_env, matrix_h)
          END IF
       CASE (ot_precond_solver_chebyshev)
+         IF (preconditioner_env%in_use /= ot_precond_full_kinetic) THEN
+            CPABORT("PRECOND_SOLVER CHEBYSHEV currently requires PRECONDITIONER FULL_KINETIC")
+         END IF
          preconditioner_env%solver = ot_precond_solver_chebyshev
          CPASSERT(ASSOCIATED(preconditioner_env%sparse_matrix))
          CALL estimate_cond_num(preconditioner_env%sparse_matrix, preconditioner_env%condition_num, &
                                 max_eigenvalue=preconditioner_env%polynomial_max, &
                                 min_eigenvalue=preconditioner_env%polynomial_min)
-         ! Extremal Ritz values can converge from inside the exact spectrum.
-         ! Enlarge the interval so that the Chebyshev recurrence remains bounded.
+         ! Extremal Ritz values can converge from inside the exact spectrum. Halve
+         ! the estimated lower edge as a safety margin and use a rigorous row-sum
+         ! upper bound for the Chebyshev interval.
          preconditioner_env%polynomial_min = 0.5_dp*preconditioner_env%polynomial_min
-         preconditioner_env%polynomial_max = 1.2_dp*preconditioner_env%polynomial_max
+         preconditioner_env%polynomial_max = &
+            (1.0_dp + 100.0_dp*EPSILON(1.0_dp))*dbcsr_gershgorin_norm(preconditioner_env%sparse_matrix)
          IF (preconditioner_env%polynomial_min <= SQRT(EPSILON(1.0_dp)) .OR. &
              preconditioner_env%polynomial_max <= preconditioner_env%polynomial_min) THEN
             CPWARN("Invalid Chebyshev bounds; using Cholesky inverse")
             preconditioner_env%solver = ot_precond_solver_inv_chol
             CALL make_full_inverse_cholesky(preconditioner_env, matrix_s)
          ELSE
-            ! Keep the SPD operator itself; its output representation is selected
-            ! by make_preconditioner after this routine returns.
+            ! Preserve the SPD operator instead of replacing it with its inverse.
             CALL transfer_dbcsr_to_fm(preconditioner_env%sparse_matrix, preconditioner_env%fm, &
                                       preconditioner_env%para_env, preconditioner_env%ctxt)
          END IF
