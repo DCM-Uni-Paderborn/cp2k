@@ -1,0 +1,66 @@
+! Cheap UKS parser/channel regression for spin-resolved ADDED_MOS AUTO.
+! Alpha and beta have different occupied dimensions, while complex k-point OT
+! must construct equal MO dimensions without a corrective warning.
+&GLOBAL
+  PRINT_LEVEL LOW
+  PROJECT Al_kp_ot_uks_added_auto_defaults
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_SET
+    MULTIPLICITY 2
+    POTENTIAL_FILE_NAME POTENTIAL
+    UKS TRUE
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 40
+    &END MGRID
+    &PRINT
+      &KPOINTS ON
+      &END KPOINTS
+    &END PRINT
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-6
+      IGNORE_CONVERGENCE_FAILURE
+      MAX_SCF 1
+      SCF_GUESS ATOMIC
+      &OT
+        LINESEARCH 2PNT
+        MINIMIZER CG
+      &END OT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 300
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 4.05 4.05 4.05
+    &END CELL
+    &COORD
+      SCALED
+      Al 0.0 0.0 0.0
+    &END COORD
+    &KIND Al
+      BASIS_SET DZVP-GTH-PADE-CONFINED
+      MAGNETIZATION 1.0
+      POTENTIAL GTH-PADE-q3
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL

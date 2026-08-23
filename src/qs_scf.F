@@ -1228,13 +1228,12 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_grow_added_mos_auto_kp'
 
-      INTEGER                                            :: base_nmo, current_added, grow_by, &
-                                                            handle, ic, ik, ispin, nmo_mat, &
-                                                            nspins, old_nmo, target_nmo
-      INTEGER, DIMENSION(2)                              :: new_added, new_nmo
+      INTEGER :: base_nmo, common_base_nmo, current_added, current_target_nmo, grow_by, handle, &
+         ic, ik, ispin, nmo_mat, nspins, old_nmo, target_nmo
+      INTEGER, DIMENSION(2)                              :: base_nmo_spin, new_added, new_nmo
       LOGICAL                                            :: diag_step, global_frontier_lost, &
                                                             has_unit_metric, need_resize, &
-                                                            reseed_basis
+                                                            reseed_basis, shared_spin_auto
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: restore_ot_ener_x
       REAL(KIND=dp)                                      :: energy_step, flexible_electron_count, &
                                                             maxocc, n_el_f
@@ -1278,48 +1277,76 @@ CONTAINS
       new_added = scf_control%added_mos
       new_nmo(:) = 0
       need_resize = .FALSE.
+      shared_spin_auto = nspins == 2 .AND. ALL(scf_control%added_mos_auto(1:2))
 
-      DO ispin = 1, nspins
-         old_nmo = mos(ispin)%nmo
-         new_nmo(ispin) = old_nmo
-         IF (.NOT. scf_control%added_mos_auto(ispin)) CYCLE
-
-         current_added = MAX(0, scf_control%added_mos(ispin))
-         base_nmo = MAX(0, old_nmo - current_added)
+      IF (shared_spin_auto) THEN
+         DO ispin = 1, nspins
+            current_added = MAX(0, scf_control%added_mos(ispin))
+            base_nmo_spin(ispin) = MAX(0, mos(ispin)%nmo - current_added)
+         END DO
+         common_base_nmo = MAXVAL(base_nmo_spin(1:nspins))
+         current_target_nmo = MAX(mos(1)%nmo, mos(2)%nmo)
+         current_added = MAX(0, current_target_nmo - common_base_nmo)
+         grow_by = MAX(4, current_added)
          IF (PRESENT(restart_target_nmo)) THEN
             CPASSERT(SIZE(restart_target_nmo) >= nspins)
-            IF (restart_target_nmo(ispin) > mos(ispin)%nao) THEN
+            IF (MAXVAL(restart_target_nmo(1:nspins)) > MIN(mos(1)%nao, mos(2)%nao)) THEN
                CALL cp_abort(__LOCATION__, &
                              "K-point OT restart requests more MOs than available in the AO basis.")
             END IF
-            grow_by = MAX(4, current_added)
-            new_added(ispin) = MAX(current_added, &
-                                   MIN(restart_target_nmo(ispin) - base_nmo, &
-                                       current_added + grow_by))
+            target_nmo = MAX(current_target_nmo, &
+                             MIN(MAXVAL(restart_target_nmo(1:nspins)), current_target_nmo + grow_by))
          ELSE
-            grow_by = MAX(4, current_added)
-            new_added(ispin) = MIN(mos(ispin)%nao - base_nmo, current_added + grow_by)
+            target_nmo = MIN(mos(1)%nao, mos(2)%nao, current_target_nmo + grow_by)
          END IF
-         new_nmo(ispin) = base_nmo + new_added(ispin)
-         IF (new_nmo(ispin) > old_nmo) need_resize = .TRUE.
-      END DO
-
-      IF (nspins == 2) THEN
-         target_nmo = MAX(new_nmo(1), new_nmo(2))
          DO ispin = 1, nspins
-            IF (target_nmo > mos(ispin)%nao) THEN
-               CALL cp_abort(__LOCATION__, &
-                             "K-point ADDED_MOS AUTO exhausted the AO basis while matching spin bands.")
-            END IF
-            IF (target_nmo > mos(ispin)%nmo .AND. .NOT. scf_control%added_mos_auto(ispin)) THEN
-               CALL cp_abort(__LOCATION__, &
-                             "K-point ADDED_MOS AUTO needs to grow a spin channel with explicit ADDED_MOS.")
-            END IF
-            base_nmo = MAX(0, mos(ispin)%nmo - MAX(0, scf_control%added_mos(ispin)))
             new_nmo(ispin) = target_nmo
-            new_added(ispin) = target_nmo - base_nmo
+            new_added(ispin) = target_nmo - base_nmo_spin(ispin)
             IF (new_nmo(ispin) > mos(ispin)%nmo) need_resize = .TRUE.
          END DO
+      ELSE
+         DO ispin = 1, nspins
+            old_nmo = mos(ispin)%nmo
+            new_nmo(ispin) = old_nmo
+            IF (.NOT. scf_control%added_mos_auto(ispin)) CYCLE
+
+            current_added = MAX(0, scf_control%added_mos(ispin))
+            base_nmo = MAX(0, old_nmo - current_added)
+            IF (PRESENT(restart_target_nmo)) THEN
+               CPASSERT(SIZE(restart_target_nmo) >= nspins)
+               IF (restart_target_nmo(ispin) > mos(ispin)%nao) THEN
+                  CALL cp_abort(__LOCATION__, &
+                                "K-point OT restart requests more MOs than available in the AO basis.")
+               END IF
+               grow_by = MAX(4, current_added)
+               new_added(ispin) = MAX(current_added, &
+                                      MIN(restart_target_nmo(ispin) - base_nmo, &
+                                          current_added + grow_by))
+            ELSE
+               grow_by = MAX(4, current_added)
+               new_added(ispin) = MIN(mos(ispin)%nao - base_nmo, current_added + grow_by)
+            END IF
+            new_nmo(ispin) = base_nmo + new_added(ispin)
+            IF (new_nmo(ispin) > old_nmo) need_resize = .TRUE.
+         END DO
+
+         IF (nspins == 2) THEN
+            target_nmo = MAX(new_nmo(1), new_nmo(2))
+            DO ispin = 1, nspins
+               IF (target_nmo > mos(ispin)%nao) THEN
+                  CALL cp_abort(__LOCATION__, &
+                                "K-point ADDED_MOS AUTO exhausted the AO basis while matching spin bands.")
+               END IF
+               IF (target_nmo > mos(ispin)%nmo .AND. .NOT. scf_control%added_mos_auto(ispin)) THEN
+                  CALL cp_abort(__LOCATION__, &
+                                "K-point ADDED_MOS AUTO needs to grow a spin channel with explicit ADDED_MOS.")
+               END IF
+               base_nmo = MAX(0, mos(ispin)%nmo - MAX(0, scf_control%added_mos(ispin)))
+               new_nmo(ispin) = target_nmo
+               new_added(ispin) = target_nmo - base_nmo
+               IF (new_nmo(ispin) > mos(ispin)%nmo) need_resize = .TRUE.
+            END DO
+         END IF
       END IF
 
       IF (.NOT. need_resize) THEN

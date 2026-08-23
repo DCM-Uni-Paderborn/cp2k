@@ -47,6 +47,11 @@ registry["ADDED_MOS_AUTO"] = GenericMatcher(
     col=1,
     regex=True,
 )
+registry["ADDED_MOS_AUTO_BETA"] = GenericMatcher(
+    r"SCF smearing: automatically selected ADDED_MOS:\s+[0-9]+\s+([0-9]+)",
+    col=1,
+    regex=True,
+)
 registry["ADDED_MOS_AUTO_GROW_SEQUENCE"] = IntSequenceMatcher(
     r"K-point ADDED_MOS AUTO: growing virtual-space buffer to:\s+([0-9]+)"
 )

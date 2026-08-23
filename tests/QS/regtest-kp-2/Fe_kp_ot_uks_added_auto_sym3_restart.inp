@@ -1,10 +1,10 @@
 ! Manual restart companion for Fe_kp_ot_uks_added_auto_sym3_converge.inp.
 ! Run the source input first in the same directory. The four complex
-! (spin,k-point) channels and adaptive 16-MO spaces must be restored
-! without replaying the 4->8->16 AUTO growth. This input is intentionally
+! (spin,k-point) channels and adaptive 25-MO spaces must be restored
+! without replaying the (4,6)->(8,10)->(16,18) AUTO growth. This input is intentionally
 ! not listed in TEST_FILES.toml.
 ! Current MPI-2/OMP-2 reference: one OT FIN step reproduces
-! F=-123.63311571914022 Ha and mu=0.40331788648348 Ha exactly.
+! F=-123.63311572142678 Ha and mu=0.40331771881338 Ha exactly.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Fe_kp_ot_uks_added_auto_sym3_restart

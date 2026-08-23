@@ -59,6 +59,18 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
+"Al_kp_ot_uks_added_auto_defaults.inp"  = [{matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
+                                           {matcher="ADDED_MOS_AUTO_BETA", tol=0.0, ref=5},
+                                           {matcher="OT_KPOINT_DEFAULT_IRAC"},
+                                           {matcher="OT_KPOINT_DEFAULT_ROTATION"},
+                                           {matcher="OT_KPOINT_DEFAULT_ENERGIES"},
+                                           {matcher="OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"},
+                                           {matcher="OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"},
+                                           {matcher="NO_TEXT", text="Kpoints: Different number of MOs requested"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the first band"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_sc_kp_diag_fermi.inp"              = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035261533},
                                            {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035261533},
                                            {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-2.06508035261533},
@@ -186,7 +198,8 @@
 # the final tail. Their matching unlisted Al_kp_diag_gaussian_* inputs are
 # independent diagonalization references.
 # Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp is the unlisted four-channel
-# transition-metal Pulay companion. It grows AUTO 4->8->16 and converges in
+# transition-metal Pulay companion. Its spin-resolved AUTO buffers grow
+# (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO spaces, and it converges in
 # roughly 150-180 steps near -123.63311572 Ha, within 5E-9 Ha of the CG endpoint.
 # Keep these physics checks manual so the registered restart/AUTO coverage
 # remains inexpensive.
