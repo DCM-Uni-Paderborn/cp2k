@@ -2184,10 +2184,6 @@ CONTAINS
                   qs_ot_env(ichannel)%mermin_direction_curvature_valid)
          IF (.NOT. vector_valid) CYCLE
          qs_ot_env(ichannel)%mermin_secant_sty = secant_sty
-         qs_ot_env(ichannel)%mermin_secant_snorm = secant_snorm
-         qs_ot_env(ichannel)%mermin_secant_ynorm = secant_ynorm
-         qs_ot_env(ichannel)%mermin_secant_alignment = secant_alignment
-         qs_ot_env(ichannel)%mermin_secant_orthogonal_fraction = secant_orthogonal_fraction
          qs_ot_env(ichannel)%mermin_secant_work_ratio = energy_curvature/total_curvature
       END DO
 

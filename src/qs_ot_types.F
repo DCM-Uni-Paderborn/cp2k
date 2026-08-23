@@ -243,10 +243,6 @@ MODULE qs_ot_types
       REAL(KIND=dp)    :: mermin_ls_rotation_slope = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_energy_slope = 0.0_dp
       REAL(KIND=dp)    :: mermin_secant_sty = 0.0_dp
-      REAL(KIND=dp)    :: mermin_secant_snorm = 0.0_dp
-      REAL(KIND=dp)    :: mermin_secant_ynorm = 0.0_dp
-      REAL(KIND=dp)    :: mermin_secant_alignment = 0.0_dp
-      REAL(KIND=dp)    :: mermin_secant_orthogonal_fraction = 0.0_dp
       ! The accepted finite-energy curvature divided by the endpoint-gradient
       ! curvature follows the runtime-only current/previous/anchor secants.
       REAL(KIND=dp)    :: mermin_secant_work_ratio = 1.0_dp
@@ -379,7 +375,6 @@ MODULE qs_ot_types
       LOGICAL :: schur_projector_physical_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_spectral_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_diagref_pending = .FALSE.
-      LOGICAL :: schur_projector_diagref_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_density_pending = .FALSE.
       LOGICAL :: schur_projector_density_audit_pending = .FALSE.
       LOGICAL :: schur_projector_density_descent_pending = .FALSE.
@@ -390,8 +385,6 @@ MODULE qs_ot_types
       LOGICAL :: schur_projector_density_full_direct_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_density_full_global_pending = .FALSE.
       LOGICAL :: schur_dense_metric_shadow_pending = .FALSE.
-      LOGICAL :: schur_projector_phys_direct_density_fshadow_ready = .FALSE.
-      LOGICAL :: schur_projector_phys_direct_density_cshadow_ready = .FALSE.
       LOGICAL :: schur_history_mixed = .FALSE., schur_split_candidate_enabled = .FALSE.
       LOGICAL :: schur_density_probe_tail_armed = .FALSE.
       INTEGER :: schur_model_attempt = 0, schur_cg_attempt = 0, schur_model_flavor = 0, &
@@ -624,7 +617,6 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_mode_response_negative_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_mode_trust_ema = 1.0_dp
       REAL(KIND=dp) :: schur_projector_offdiag_drop = 0.0_dp
-      REAL(KIND=dp) :: schur_projector_offdiag_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_offdiag_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_offdiag_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_offdiag_measured_sum = 0.0_dp
@@ -644,7 +636,6 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_offdiag_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_offdiag_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_inactive_offdiag_drop = 0.0_dp
-      REAL(KIND=dp) :: schur_projector_inactive_offdiag_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_inactive_offdiag_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_inactive_offdiag_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_inactive_offdiag_measured_sum = 0.0_dp
@@ -681,9 +672,7 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_response_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_response_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_plateau_gap_quadratic = 0.0_dp
-      REAL(KIND=dp) :: schur_projector_plateau_gap_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_plateau_gap_quality_ema = 0.0_dp
-      REAL(KIND=dp) :: schur_projector_plateau_gap_advantage = 0.0_dp
       REAL(KIND=dp) :: schur_projector_plateau_gap_advantage_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_plateau_gap_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_plateau_gap_measured_sum = 0.0_dp
@@ -694,7 +683,6 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_plateau_gap_step = 0.0_dp
       REAL(KIND=dp) :: schur_projector_plateau_gap_step_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_diagref_drop = 0.0_dp
-      REAL(KIND=dp) :: schur_projector_diagref_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_diagref_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_diagref_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_diagref_measured_sum = 0.0_dp
@@ -725,7 +713,6 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_density_descent_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_base = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_incremental = 0.0_dp
-      REAL(KIND=dp) :: schur_projector_density_descent_incremental_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_incremental_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_incremental_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_incremental_measured_sum = 0.0_dp
@@ -839,11 +826,9 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_resid_quality_ema = 1.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_coverage = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_coverage_ema = 0.0_dp
-      REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_promotion_weight = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_cshadow = 0.0_dp
-      REAL(KIND=dp) :: schur_projector_phys_direct_density_cshadow_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_cshadow_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_cshadow_resid_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_cshadow_resid_quality_ema = 1.0_dp
@@ -1351,10 +1336,6 @@ CONTAINS
       qs_ot_env%mermin_closure_secant_anchor_flavor = 0
       qs_ot_env%mermin_frozen_reduced_target_ready = .FALSE.
       qs_ot_env%mermin_secant_sty = 0.0_dp
-      qs_ot_env%mermin_secant_snorm = 0.0_dp
-      qs_ot_env%mermin_secant_ynorm = 0.0_dp
-      qs_ot_env%mermin_secant_alignment = 0.0_dp
-      qs_ot_env%mermin_secant_orthogonal_fraction = 0.0_dp
       qs_ot_env%mermin_secant_work_ratio = 1.0_dp
       qs_ot_env%mermin_secant_work_ratio_previous = 1.0_dp
       qs_ot_env%mermin_secant_work_ratio_anchor = 1.0_dp
@@ -1399,7 +1380,6 @@ CONTAINS
       qs_ot_env%schur_projector_physical_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_spectral_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_diagref_pending = .FALSE.
-      qs_ot_env%schur_projector_diagref_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_density_pending = .FALSE.
       qs_ot_env%schur_projector_density_audit_pending = .FALSE.
       qs_ot_env%schur_projector_density_descent_pending = .FALSE.
@@ -1410,8 +1390,6 @@ CONTAINS
       qs_ot_env%schur_projector_density_full_direct_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_density_full_global_pending = .FALSE.
       qs_ot_env%schur_dense_metric_shadow_pending = .FALSE.
-      qs_ot_env%schur_projector_phys_direct_density_fshadow_ready = .FALSE.
-      qs_ot_env%schur_projector_phys_direct_density_cshadow_ready = .FALSE.
       qs_ot_env%schur_history_mixed = .FALSE.
       qs_ot_env%schur_split_candidate_enabled = .FALSE.
       qs_ot_env%schur_density_probe_tail_armed = .FALSE.
@@ -1674,7 +1652,6 @@ CONTAINS
       qs_ot_env%schur_projector_mode_response_negative_ema = 0.0_dp
       qs_ot_env%schur_projector_mode_trust_ema = 1.0_dp
       qs_ot_env%schur_projector_offdiag_drop = 0.0_dp
-      qs_ot_env%schur_projector_offdiag_quality = 0.0_dp
       qs_ot_env%schur_projector_offdiag_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_offdiag_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_offdiag_measured_sum = 0.0_dp
@@ -1694,7 +1671,6 @@ CONTAINS
       qs_ot_env%schur_projector_offdiag_selected_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_offdiag_selected_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_inactive_offdiag_drop = 0.0_dp
-      qs_ot_env%schur_projector_inactive_offdiag_quality = 0.0_dp
       qs_ot_env%schur_projector_inactive_offdiag_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_inactive_offdiag_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_inactive_offdiag_measured_sum = 0.0_dp
@@ -1731,9 +1707,7 @@ CONTAINS
       qs_ot_env%schur_projector_response_selected_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_response_selected_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_plateau_gap_quadratic = 0.0_dp
-      qs_ot_env%schur_projector_plateau_gap_quality = 0.0_dp
       qs_ot_env%schur_projector_plateau_gap_quality_ema = 0.0_dp
-      qs_ot_env%schur_projector_plateau_gap_advantage = 0.0_dp
       qs_ot_env%schur_projector_plateau_gap_advantage_ema = 0.0_dp
       qs_ot_env%schur_projector_plateau_gap_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_plateau_gap_measured_sum = 0.0_dp
@@ -1744,7 +1718,6 @@ CONTAINS
       qs_ot_env%schur_projector_plateau_gap_step = 0.0_dp
       qs_ot_env%schur_projector_plateau_gap_step_ema = 0.0_dp
       qs_ot_env%schur_projector_diagref_drop = 0.0_dp
-      qs_ot_env%schur_projector_diagref_quality = 0.0_dp
       qs_ot_env%schur_projector_diagref_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_diagref_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_diagref_measured_sum = 0.0_dp
@@ -1775,7 +1748,6 @@ CONTAINS
       qs_ot_env%schur_projector_density_descent_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_density_descent_base = 0.0_dp
       qs_ot_env%schur_projector_density_descent_incremental = 0.0_dp
-      qs_ot_env%schur_projector_density_descent_incremental_quality = 0.0_dp
       qs_ot_env%schur_projector_density_descent_incremental_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_density_descent_incremental_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_density_descent_incremental_measured_sum = 0.0_dp
@@ -1889,11 +1861,9 @@ CONTAINS
       qs_ot_env%schur_projector_phys_direct_density_fshadow_resid_quality_ema = 1.0_dp
       qs_ot_env%schur_projector_phys_direct_density_fshadow_coverage = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_fshadow_coverage_ema = 0.0_dp
-      qs_ot_env%schur_projector_phys_direct_density_fshadow_promotion_weight = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_fshadow_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_fshadow_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_cshadow = 0.0_dp
-      qs_ot_env%schur_projector_phys_direct_density_cshadow_quality = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_cshadow_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_cshadow_resid_quality = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_cshadow_resid_quality_ema = 1.0_dp

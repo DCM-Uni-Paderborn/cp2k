@@ -14972,7 +14972,6 @@ CONTAINS
              projector_offdiag_predicted_drop > EPSILON(projector_offdiag_predicted_drop) .AND. &
              measured_drop > 0.0_dp) THEN
             projector_offdiag_quality_ratio = measured_drop/projector_offdiag_predicted_drop
-            local_ot_env(1)%schur_projector_offdiag_quality = projector_offdiag_quality_ratio
             samples = MIN(local_ot_env(1)%schur_projector_offdiag_quality_samples + 1, HUGE(samples) - 1)
             local_ot_env(1)%schur_projector_offdiag_quality_samples = samples
             IF (samples == 1) THEN
@@ -15085,8 +15084,6 @@ CONTAINS
              projector_inactive_offdiag_predicted_drop > &
              EPSILON(projector_inactive_offdiag_predicted_drop) .AND. measured_drop > 0.0_dp) THEN
             projector_inactive_offdiag_quality_ratio = measured_drop/projector_inactive_offdiag_predicted_drop
-            local_ot_env(1)%schur_projector_inactive_offdiag_quality = &
-               projector_inactive_offdiag_quality_ratio
             samples = MIN(local_ot_env(1)%schur_projector_inactive_offdiag_quality_samples + 1, &
                           HUGE(samples) - 1)
             local_ot_env(1)%schur_projector_inactive_offdiag_quality_samples = samples
@@ -15284,8 +15281,6 @@ CONTAINS
             projector_plateau_gap_candidate_error, projector_plateau_gap_advantage, &
             projector_plateau_gap_quality_ready)
          IF (projector_plateau_gap_quality_ready) THEN
-            local_ot_env(1)%schur_projector_plateau_gap_quality = projector_plateau_gap_quality_ratio
-            local_ot_env(1)%schur_projector_plateau_gap_advantage = projector_plateau_gap_advantage
             samples = MIN(local_ot_env(1)%schur_projector_plateau_gap_quality_samples + 1, HUGE(samples) - 1)
             local_ot_env(1)%schur_projector_plateau_gap_quality_samples = samples
             IF (samples == 1) THEN
@@ -15335,7 +15330,6 @@ CONTAINS
              projector_diagref_predicted_drop > EPSILON(projector_diagref_predicted_drop) .AND. &
              measured_drop > 0.0_dp) THEN
             projector_diagref_quality_ratio = measured_drop/projector_diagref_predicted_drop
-            local_ot_env(1)%schur_projector_diagref_quality = projector_diagref_quality_ratio
             samples = MIN(local_ot_env(1)%schur_projector_diagref_quality_samples + 1, HUGE(samples) - 1)
             local_ot_env(1)%schur_projector_diagref_quality_samples = samples
             IF (samples == 1) THEN
@@ -15369,13 +15363,6 @@ CONTAINS
             local_ot_env(1)%schur_projector_diagref_measured_sum = &
                local_ot_env(1)%schur_projector_diagref_measured_sum + measured_drop
          END IF
-         local_ot_env(1)%schur_projector_diagref_candidate_enabled = &
-            local_ot_env(1)%schur_projector_diagref_quality_samples >= &
-            ot_kp_schur_projector_response_min_samples .AND. &
-            local_ot_env(1)%schur_projector_diagref_quality_ema >= &
-            ot_kp_schur_projector_response_quality_min_ratio .AND. &
-            local_ot_env(1)%schur_projector_diagref_quality >= &
-            0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
 
          projector_density_predicted_drop = local_ot_env(1)%schur_projector_density_drop
          projector_density_lowcurv_ratio = 0.0_dp
@@ -15800,8 +15787,6 @@ CONTAINS
                kpoint_ot_density_descent_incremental_history_quality( &
                projector_density_descent_incremental_measured_drop, &
                projector_density_descent_incremental_predicted_drop)
-            local_ot_env(1)%schur_projector_density_descent_incremental_quality = &
-               projector_density_descent_incremental_quality_ratio
             samples = MIN( &
                       local_ot_env(1)% &
                       schur_projector_density_descent_incremental_quality_samples + 1, &
@@ -16483,8 +16468,6 @@ CONTAINS
              measured_drop > 0.0_dp) THEN
             projector_physical_direct_density_cshadow_quality_ratio = &
                measured_drop/projector_physical_direct_density_cshadow_predicted_drop
-            local_ot_env(1)%schur_projector_phys_direct_density_cshadow_quality = &
-               projector_physical_direct_density_cshadow_quality_ratio
             samples = MIN( &
                       local_ot_env(1)%schur_projector_phys_direct_density_cshadow_quality_samples + 1, &
                       HUGE(samples) - 1)
@@ -16532,15 +16515,6 @@ CONTAINS
                   ot_kp_schur_quality_ema_alpha*projector_physical_direct_density_cshadow_coverage
             END IF
          END IF
-         local_ot_env(1)%schur_projector_phys_direct_density_cshadow_ready = &
-            kp_ot_phys_dir_den_fshadow_prom_weight( &
-            1.0_dp, local_ot_env(1)%schur_projector_phys_direct_density_cshadow_quality_samples, &
-            local_ot_env(1)%schur_projector_phys_direct_density_cshadow_quality, &
-            local_ot_env(1)%schur_projector_phys_direct_density_cshadow_quality_ema, &
-            local_ot_env(1)%schur_projector_phys_direct_density_cshadow_resid_quality, &
-            local_ot_env(1)%schur_projector_phys_direct_density_cshadow_resid_quality_ema, &
-            local_ot_env(1)%schur_projector_phys_direct_density_cshadow_coverage, &
-            local_ot_env(1)%schur_projector_phys_direct_density_cshadow_coverage_ema) > EPSILON(1.0_dp)
          projector_mixed_direct_predicted_drop = local_ot_env(1)%schur_projector_mixed_direct_drop
          projector_mixed_direct_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_projector_mixed_direct_pending .AND. &
@@ -22365,10 +22339,6 @@ CONTAINS
          projector_physical_direct_density_fshadow_ready = &
             projector_physical_direct_density_fshadow_promotion_weight > &
             EPSILON(projector_physical_direct_density_fshadow_promotion_weight)
-         local_ot_env(1)%schur_projector_phys_direct_density_fshadow_ready = &
-            projector_physical_direct_density_fshadow_ready
-         local_ot_env(1)%schur_projector_phys_direct_density_fshadow_promotion_weight = &
-            projector_physical_direct_density_fshadow_promotion_weight
          IF (exact_density_direct_response_ready .AND. exact_density_basis_filtered_audit_ready .AND. &
              projector_physical_direct_density_fshadow_ready) THEN
             energy_cross_density_direct(:, :) = &
@@ -40941,35 +40911,6 @@ CONTAINS
          DEALLOCATE (inv_sqrt_step_weight, metric_step, mode_eval, sqrt_step_weight, mode_vec)
 
       END FUNCTION kpoint_ot_symmetric_abs_quad
-
-! **************************************************************************************************
-!> \brief ...
-!> \param mode_vec ...
-!> \param mode_eval ...
-!> \param step_vec ...
-!> \return ...
-! **************************************************************************************************
-      FUNCTION kpoint_ot_modal_abs_quad(mode_vec, mode_eval, step_vec) RESULT(abs_quad)
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: mode_vec
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: mode_eval, step_vec
-      REAL(KIND=dp)                                      :: abs_quad
-
-      INTEGER                                            :: imode, nrot_local
-      REAL(KIND=dp)                                      :: coeff
-
-         abs_quad = 0.0_dp
-         nrot_local = SIZE(mode_eval)
-         IF (nrot_local <= 0) RETURN
-         IF (SIZE(mode_vec, 1) /= nrot_local) RETURN
-         IF (SIZE(mode_vec, 2) /= nrot_local) RETURN
-         IF (SIZE(step_vec) /= nrot_local) RETURN
-
-         DO imode = 1, nrot_local
-            coeff = DOT_PRODUCT(mode_vec(:, imode), step_vec)
-            abs_quad = abs_quad + ABS(mode_eval(imode))*coeff*coeff
-         END DO
-
-      END FUNCTION kpoint_ot_modal_abs_quad
 
 ! **************************************************************************************************
 !> \brief ...
