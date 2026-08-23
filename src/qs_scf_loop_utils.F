@@ -36337,14 +36337,19 @@ CONTAINS
       END SUBROUTINE solve_kpoint_ot_secant_energy_response
 
 ! **************************************************************************************************
-!> \brief ...
-!> \param response_vec ...
-!> \param occ_curv ...
-!> \param tether_curv ...
-!> \param occ_curv_sum ...
-!> \param channel_nmo ...
-!> \param e_offset ...
-!> \param metric_floor_fraction ...
+!> \brief Project an auxiliary-energy response onto the fixed-N Mermin tangent space.
+!>
+!>        The primary projection is the minimum correction in the diagonal physical-curvature
+!>        metric.  If that constrained metric is singular, two coordinate-projection passes remove
+!>        the global chemical-potential gauge and the true channel-local tether null modes.  Energy
+!>        variables with neither occupation nor tether curvature are removed from the response.
+!> \param response_vec auxiliary-energy response, overwritten by its tangent-space projection
+!> \param occ_curv positive weighted occupation susceptibility for each energy variable
+!> \param tether_curv positive channel-local canonical-tether susceptibility
+!> \param occ_curv_sum globally reduced fixed-N occupation susceptibility
+!> \param channel_nmo number of energy variables in each local OT channel
+!> \param e_offset first energy-variable index of each local OT channel
+!> \param metric_floor_fraction optional floor relative to the largest total curvature
 ! **************************************************************************************************
       SUBROUTINE project_kpoint_ot_schur_response(response_vec, occ_curv, tether_curv, &
                                                   occ_curv_sum, channel_nmo, e_offset, metric_floor_fraction)
@@ -36359,6 +36364,19 @@ CONTAINS
       LOGICAL                                            :: projected
       REAL(KIND=dp)                                      :: channel_occ_sum, response_shift, &
                                                             weight_sum
+
+         CPASSERT(SIZE(response_vec) > 0)
+         CPASSERT(SIZE(occ_curv) == SIZE(response_vec))
+         CPASSERT(SIZE(tether_curv) == SIZE(response_vec))
+         CPASSERT(SIZE(channel_nmo) == SIZE(e_offset))
+         CPASSERT(ALL(channel_nmo >= 0))
+         DO local_channel = 1, SIZE(channel_nmo)
+            nmo = channel_nmo(local_channel)
+            IF (nmo <= 0) CYCLE
+            first_energy = e_offset(local_channel)
+            CPASSERT(first_energy >= 1)
+            CPASSERT(first_energy + nmo - 1 <= SIZE(response_vec))
+         END DO
 
          ! The fixed-N Mermin projector is global over the spin/k group, while
          ! the canonical tether gauge is local to each OT channel.
@@ -36402,15 +36420,22 @@ CONTAINS
       END SUBROUTINE project_kpoint_ot_schur_response
 
 ! **************************************************************************************************
-!> \brief ...
-!> \param response_vec ...
-!> \param occ_curv ...
-!> \param tether_curv ...
-!> \param occ_curv_sum ...
-!> \param channel_nmo ...
-!> \param e_offset ...
-!> \param projected ...
-!> \param metric_floor_fraction ...
+!> \brief Apply the curvature-metric fixed-N and canonical-tether projection.
+!>
+!>        With M=diag(max(occ_curv+tether_curv,floor)), this routine finds the smallest
+!>        M-norm correction that enforces occ_curv^T response=0.  A channel-local tether
+!>        constraint is included only when that channel has no occupation response; otherwise a
+!>        constant channel shift is coupled to the other k points by the global fixed-N block and
+!>        is not a null mode.  The resulting arrowhead Lagrange-multiplier system is eliminated
+!>        analytically, with global scalar products reduced over distributed k-point groups.
+!> \param response_vec auxiliary-energy response, overwritten by its constrained projection
+!> \param occ_curv positive weighted occupation susceptibility for each energy variable
+!> \param tether_curv positive channel-local canonical-tether susceptibility
+!> \param occ_curv_sum globally reduced fixed-N occupation susceptibility
+!> \param channel_nmo number of energy variables in each local OT channel
+!> \param e_offset first energy-variable index of each local OT channel
+!> \param projected whether a nonsingular metric projection was completed
+!> \param metric_floor_fraction optional floor relative to the largest total curvature
 ! **************************************************************************************************
       SUBROUTINE project_kpoint_ot_schur_response_metric(response_vec, occ_curv, tether_curv, &
                                                          occ_curv_sum, channel_nmo, e_offset, projected, &
@@ -36535,20 +36560,25 @@ CONTAINS
       END SUBROUTINE project_kpoint_ot_schur_response_metric
 
 ! **************************************************************************************************
-!> \brief ...
-!> \param response_vec ...
-!> \param descent_vec ...
-!> \param grad_e ...
-!> \param projected_vec ...
-!> \param coeff ...
-!> \param gdot ...
-!> \param denom ...
-!> \param flip_negative ...
-!> \param occ_curv ...
-!> \param tether_curv ...
-!> \param occ_curv_sum ...
-!> \param channel_nmo ...
-!> \param e_offset ...
+!> \brief Resolve one energy-response vector along an established descent direction.
+!>
+!>        The coefficient must explain both positive gradient work and, when supplied, positive
+!>        work in the projected fixed-N/tether curvature metric.  An explicitly requested sign
+!>        flip lets an anti-aligned finite response contribute by magnitude.  The larger admissible
+!>        coefficient is returned so the resolved component is not counted twice downstream.
+!> \param response_vec finite auxiliary-energy response to resolve
+!> \param descent_vec established auxiliary-energy descent direction
+!> \param grad_e current auxiliary-energy gradient
+!> \param projected_vec resolved component parallel to descent_vec
+!> \param coeff selected response coefficient
+!> \param gdot globally reduced gradient work of response_vec
+!> \param denom globally reduced gradient work of descent_vec
+!> \param flip_negative whether an anti-aligned response may be matched by magnitude
+!> \param occ_curv optional fixed-N occupation curvature
+!> \param tether_curv optional channel-local tether curvature
+!> \param occ_curv_sum optional globally reduced fixed-N susceptibility
+!> \param channel_nmo optional number of energy variables per local OT channel
+!> \param e_offset optional first energy-variable index per local OT channel
 ! **************************************************************************************************
       SUBROUTINE project_kpoint_ot_descent_response(response_vec, descent_vec, grad_e, projected_vec, &
                                                     coeff, gdot, denom, flip_negative, occ_curv, &
