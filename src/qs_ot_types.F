@@ -34,11 +34,11 @@ MODULE qs_ot_types
    USE input_constants,                 ONLY: &
         cholesky_reduce, ls_2pnt, ls_3pnt, ls_adapt, ls_gold, ls_none, ot_algo_irac, &
         ot_algo_taylor_or_diag, ot_chol_irac, ot_lwdn_irac, ot_mini_broyden, ot_mini_cg, &
-        ot_mini_diis, ot_mini_sd, ot_poly_irac, ot_precond_fermi_low_rank, ot_precond_full_all, &
-        ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
-        ot_precond_none, ot_precond_s_inverse, ot_precond_solver_chebyshev, &
-        ot_precond_solver_default, ot_precond_solver_direct, ot_precond_solver_inv_chol, &
-        ot_precond_solver_update
+        ot_mini_diis, ot_mini_lbfgs, ot_mini_sd, ot_poly_irac, ot_precond_fermi_low_rank, &
+        ot_precond_full_all, ot_precond_full_kinetic, ot_precond_full_single, &
+        ot_precond_full_single_inverse, ot_precond_none, ot_precond_s_inverse, &
+        ot_precond_solver_chebyshev, ot_precond_solver_default, ot_precond_solver_direct, &
+        ot_precond_solver_inv_chol, ot_precond_solver_update
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
@@ -187,6 +187,7 @@ MODULE qs_ot_types
 
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: matrix_h_e => NULL(), matrix_h_x => NULL()
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: matrix_h_e_im => NULL(), matrix_h_x_im => NULL()
+      REAL(KIND=dp), DIMENSION(:), POINTER      :: lbfgs_rho => NULL(), lbfgs_yy => NULL()
 
       REAL(KIND=dp), DIMENSION(:, :), POINTER  :: ls_diis => NULL()
       REAL(KIND=dp), DIMENSION(:, :), POINTER  :: lss_diis => NULL()
@@ -2036,6 +2037,10 @@ CONTAINS
             CALL dbcsr_set(qs_ot_env%matrix_gx_old_im, 0.0_dp)
          END IF
       END IF
+      IF (qs_ot_env%settings%ot_method == "LBFG") THEN
+         qs_ot_env%lbfgs_rho = 0.0_dp
+         qs_ot_env%lbfgs_yy = 0.0_dp
+      END IF
 
       IF (qs_ot_env%settings%do_rotation) THEN
          CALL dbcsr_set(qs_ot_env%rot_mat_u, 0.0_dp)
@@ -2440,9 +2445,10 @@ CONTAINS
       SELECT CASE (qs_ot_env%settings%ot_method)
       CASE ("SD")
          ! nothing
-      CASE ("CG")
+      CASE ("CG", "LBFG")
          qs_ot_env%use_gx_old = .TRUE.
          qs_ot_env%use_dx = .TRUE.
+         IF (qs_ot_env%settings%ot_method == "LBFG" .AND. m_diis < 1) CPABORT("m_diis less than one")
       CASE ("DIIS", "BROY")
          IF (m_diis < 1) CPABORT("m_diis less than one")
       CASE DEFAULT
@@ -2458,6 +2464,11 @@ CONTAINS
          ALLOCATE (qs_ot_env%c_broy(m_diis))
          ALLOCATE (qs_ot_env%energy_h(m_diis))
          ALLOCATE (qs_ot_env%ipivot(m_diis + 1))
+      END IF
+      IF (qs_ot_env%settings%ot_method == "LBFG") THEN
+         ALLOCATE (qs_ot_env%lbfgs_rho(m_diis), qs_ot_env%lbfgs_yy(m_diis))
+         qs_ot_env%lbfgs_rho = 0.0_dp
+         qs_ot_env%lbfgs_yy = 0.0_dp
       END IF
 
       ALLOCATE (qs_ot_env%evals(k))
@@ -2640,12 +2651,15 @@ CONTAINS
       END SELECT
 
       IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
-          qs_ot_env%settings%ot_method == "BROY") THEN
+          qs_ot_env%settings%ot_method == "BROY" .OR. &
+          qs_ot_env%settings%ot_method == "LBFG") THEN
          NULLIFY (qs_ot_env%matrix_h_e)
          NULLIFY (qs_ot_env%matrix_h_x)
-         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_e, m_diis)
-         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_x, m_diis)
-         DO i = 1, m_diis
+         ncoef = m_diis
+         IF (qs_ot_env%settings%ot_method == "LBFG") ncoef = m_diis + 1
+         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_e, ncoef)
+         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_x, ncoef)
+         DO i = 1, ncoef
             CALL dbcsr_init_p(qs_ot_env%matrix_h_x(i)%matrix)
             CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_h_x(i)%matrix, template=matrix_s, n=k, &
                                                    sym=dbcsr_type_no_symmetry)
@@ -2698,10 +2712,13 @@ CONTAINS
          CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_chc, template=matrix_s, m=k, n=k, &
                                             sym=dbcsr_type_no_symmetry)
 
-         IF (qs_ot_env%settings%ot_method == "DIIS") THEN
-            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_e, m_diis)
-            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_x, m_diis)
-            DO i = 1, m_diis
+         IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
+             qs_ot_env%settings%ot_method == "LBFG") THEN
+            ncoef = m_diis
+            IF (qs_ot_env%settings%ot_method == "LBFG") ncoef = m_diis + 1
+            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_e, ncoef)
+            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_x, ncoef)
+            DO i = 1, ncoef
                CALL dbcsr_init_p(qs_ot_env%rot_mat_h_e(i)%matrix)
                CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_h_e(i)%matrix, template=matrix_s, m=k, n=k, &
                                                   sym=dbcsr_type_no_symmetry)
@@ -2825,17 +2842,24 @@ CONTAINS
       IF (ASSOCIATED(qs_ot_env%buf1_n_k_dp)) CALL dbcsr_release_p(qs_ot_env%buf1_n_k_dp)
 
       IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
-          qs_ot_env%settings%ot_method == "BROY") THEN
+          qs_ot_env%settings%ot_method == "BROY" .OR. &
+          qs_ot_env%settings%ot_method == "LBFG") THEN
          CALL dbcsr_deallocate_matrix_set(qs_ot_env%matrix_h_x)
          CALL dbcsr_deallocate_matrix_set(qs_ot_env%matrix_h_e)
          IF (ASSOCIATED(qs_ot_env%matrix_h_x_im)) CALL dbcsr_deallocate_matrix_set(qs_ot_env%matrix_h_x_im)
          IF (ASSOCIATED(qs_ot_env%matrix_h_e_im)) CALL dbcsr_deallocate_matrix_set(qs_ot_env%matrix_h_e_im)
+      END IF
+      IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
+          qs_ot_env%settings%ot_method == "BROY") THEN
          DEALLOCATE (qs_ot_env%ls_diis)
          DEALLOCATE (qs_ot_env%lss_diis)
          DEALLOCATE (qs_ot_env%c_diis)
          DEALLOCATE (qs_ot_env%c_broy)
          DEALLOCATE (qs_ot_env%energy_h)
          DEALLOCATE (qs_ot_env%ipivot)
+      END IF
+      IF (qs_ot_env%settings%ot_method == "LBFG") THEN
+         DEALLOCATE (qs_ot_env%lbfgs_rho, qs_ot_env%lbfgs_yy)
       END IF
 
       IF (qs_ot_env%settings%do_rotation) THEN
@@ -2849,7 +2873,8 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%rot_mat_chc)) CALL dbcsr_release_p(qs_ot_env%rot_mat_chc)
          IF (ASSOCIATED(qs_ot_env%rot_mat_chc_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_chc_im)
 
-         IF (qs_ot_env%settings%ot_method == "DIIS") THEN
+         IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
+             qs_ot_env%settings%ot_method == "LBFG") THEN
             CALL dbcsr_deallocate_matrix_set(qs_ot_env%rot_mat_h_x)
             CALL dbcsr_deallocate_matrix_set(qs_ot_env%rot_mat_h_e)
             IF (ASSOCIATED(qs_ot_env%rot_mat_h_x_im)) CALL dbcsr_deallocate_matrix_set(qs_ot_env%rot_mat_h_x_im)
@@ -3123,6 +3148,9 @@ CONTAINS
          CALL section_vals_val_get(ot_section, "BROYDEN_ADAPTIVE_SIGMA", l_val=settings%broyden_adaptive_sigma)
          CALL section_vals_val_get(ot_section, "BROYDEN_ENABLE_FLIP", l_val=settings%broyden_enable_flip)
          settings%ot_method = "BROY"
+      CASE (ot_mini_lbfgs)
+         CALL section_vals_val_get(ot_section, "N_HISTORY_VEC", i_val=settings%diis_m)
+         settings%ot_method = "LBFG"
       CASE DEFAULT
          CPABORT("READ OTSCF MINIMIZER: Value unknown")
       END SELECT
@@ -3254,13 +3282,11 @@ CONTAINS
       IF (settings%do_ener .AND. .NOT. settings%do_rotation) THEN
          CPABORT("OT%ENERGIES requires OT%ROTATION.")
       END IF
-      IF (settings%occupation_preconditioner .AND. .NOT. settings%do_ener) THEN
-         CPABORT("OT%OCCUPATION_PRECONDITIONER requires OT%ENERGIES.")
-      END IF
       IF (settings%add_nondiag_energy .AND. .NOT. settings%do_ener) THEN
          CPABORT("OT%NONDIAG_ENERGY requires OT%ENERGIES.")
       END IF
-      IF (settings%canonical_tether .AND. .NOT. settings%occupation_preconditioner) THEN
+      IF (settings%canonical_tether .AND. &
+          .NOT. (settings%occupation_preconditioner .AND. settings%do_ener)) THEN
          settings%canonical_tether = .FALSE.
       END IF
       IF (settings%canonical_tether_strength < 0.0_dp .OR. &
@@ -3269,6 +3295,14 @@ CONTAINS
       END IF
       IF (settings%canonical_tether_max_strength < settings%canonical_tether_strength) THEN
          settings%canonical_tether_max_strength = settings%canonical_tether_strength
+      END IF
+      IF (settings%ot_method == "LBFG") THEN
+         IF (settings%ot_algorithm /= "TOD") THEN
+            CPABORT("MINIMIZER LBFGS currently requires ALGORITHM STRICT")
+         END IF
+         IF (settings%do_ener) THEN
+            CPABORT("MINIMIZER LBFGS does not support ENERGIES")
+         END IF
       END IF
 
       ! write OT output
@@ -3350,6 +3384,10 @@ CONTAINS
             WRITE (output_unit, '(A,F16.8)') "                   SIGMA               : ", settings%broyden_sigma
             WRITE (output_unit, '(A,I3,A)') "                            using      : - ", &
                settings%diis_m, " BROYDEN vectors"
+         CASE ("LBFG")
+            WRITE (output_unit, '(A)') "  Minimizer      : LBFGS               : limited-memory BFGS"
+            WRITE (output_unit, '(A,I3,A)') "                            using      :   ", &
+               settings%diis_m, " secant pairs"
          CASE DEFAULT
             WRITE (output_unit, '(3A)') "  Minimizer      :      ", settings%OT_METHOD, " : UNKNOWN"
          END SELECT

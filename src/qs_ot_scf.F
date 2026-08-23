@@ -275,7 +275,8 @@ CONTAINS
          END DO
       END IF
 
-      IF (qs_ot_occupation_preconditioner_active(qs_ot_env(1))) THEN
+      IF (qs_ot_env(1)%settings%do_ener .AND. &
+          qs_ot_occupation_preconditioner_active(qs_ot_env(1))) THEN
          CALL precondition_ot_energy_gradient(qs_ot_env, mo_array, occupation_numbers, smear)
       END IF
 
@@ -287,10 +288,14 @@ CONTAINS
          ALLOCATE (matrix_dedc_scaled(ispin)%matrix)
          CALL dbcsr_copy(matrix_dedc_scaled(ispin)%matrix, matrix_dedc(ispin)%matrix)
 
-         ! The physical orbital derivative contains 2*f_i.  Occupation
-         ! curvature is preconditioned separately in
-         ! precondition_ot_energy_gradient; removing f_i here would turn
-         ! thermally empty virtual-orbital gauge motion into an SCF residual.
+         ! Without energy variables this keyword retains its conventional
+         ! orbital-preconditioner meaning.  In the coupled Mermin model the
+         ! physical orbital derivative keeps 2*f_i and occupation curvature
+         ! is preconditioned separately in precondition_ot_energy_gradient.
+         IF (qs_ot_occupation_preconditioner_active(qs_ot_env(1)) .AND. &
+             .NOT. qs_ot_env(1)%settings%do_ener) THEN
+            orbital_scaling_factor(ispin)%array = 2.0_dp
+         END IF
          CALL dbcsr_scale_by_vector(matrix_dedc_scaled(ispin)%matrix, alpha=orbital_scaling_factor(ispin)%array, &
                                     side='right')
       END DO
