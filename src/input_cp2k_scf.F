@@ -815,7 +815,7 @@ CONTAINS
                        "This preconditioner is recommended for almost all systems, except very large systems where "// &
                        "make_preconditioner would dominate the total computational cost.", &
                        "Experimental rotationally covariant bounded spectral preconditioner. It applies an "// &
-                       "overlap-inverse base plus at most 48 complementary-state corrections relative to a "// &
+                       "overlap-inverse base plus a configurable number of complementary-state corrections relative to a "// &
                        "common occupied reference level. Construction currently retains a full diagonalization. "// &
                        "Application can be cheaper when the complementary space is larger than the retained rank.", &
                        "Based on H-eS cholesky inversion, similar to FULL_SINGLE in preconditioning efficiency "// &
@@ -829,6 +829,17 @@ CONTAINS
          enum_i_vals=[ot_precond_full_all, ot_precond_fermi_low_rank, ot_precond_full_single_inverse, &
                       ot_precond_full_single, ot_precond_full_kinetic, ot_precond_s_inverse, ot_precond_none], &
          citations=[VandeVondele2003, Weber2008, Schiffmann2015])
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, name="FERMI_LOW_RANK_MAX_RANK", &
+         description="Maximum number of complementary eigenstates retained by PRECONDITIONER FERMI_LOW_RANK. "// &
+         "Larger values approach the complete common-reference spectral operator at higher application cost. "// &
+         "A value of -1 retains the entire complementary space. A finite cap never splits a numerically "// &
+         "degenerate boundary manifold.", &
+         usage="FERMI_LOW_RANK_MAX_RANK 64", &
+         default_i_val=48)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

@@ -64,7 +64,6 @@ MODULE preconditioner
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'preconditioner'
-   INTEGER, PARAMETER, PRIVATE          :: fermi_low_rank_max_rank = 48
    REAL(KIND=dp), PARAMETER, PRIVATE    :: fermi_low_rank_gap_factor = 4.0_dp, &
                                            fermi_low_rank_degeneracy_tolerance = 1.0E-8_dp, &
                                            fermi_low_rank_min_window = 1.0_dp
@@ -157,8 +156,8 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'make_preconditioner'
 
-      INTEGER                                            :: handle, k, my_solver_type, nao, nhomo, &
-                                                            output_unit
+      INTEGER                                            :: handle, k, max_rank, my_solver_type, &
+                                                            nao, nhomo, output_unit
       LOGICAL                                            :: my_convert_precond_to_dbcsr, &
                                                             needs_full_spectrum, needs_homo, &
                                                             use_mo_coeff_b
@@ -268,8 +267,10 @@ CONTAINS
          preconditioner_env%spectral_window = &
             MAX(fermi_low_rank_min_window, fermi_low_rank_gap_factor*preconditioner_env%energy_gap)
          preconditioner_env%spectral_base_scale = 1.0_dp/preconditioner_env%spectral_window
+         max_rank = preconditioner_env%spectral_max_rank
+         IF (max_rank == -1) max_rank = SIZE(preconditioner_env%full_evals) - nhomo
          preconditioner_env%spectral_rank = low_rank_select_rank( &
-                                            preconditioner_env%full_evals, nhomo, fermi_low_rank_max_rank, &
+                                            preconditioner_env%full_evals, nhomo, max_rank, &
                                             fermi_low_rank_degeneracy_tolerance)
          IF (preconditioner_env%para_env%is_source()) THEN
             logger => cp_get_default_logger()
@@ -376,11 +377,13 @@ CONTAINS
 !> \param chol_type ...
 !> \param full_mo_set ...
 !> \param chebyshev_degree ...
+!> \param fermi_low_rank_max_rank ...
 ! **************************************************************************************************
    SUBROUTINE prepare_preconditioner(qs_env, mos, matrix_ks, matrix_s, &
                                      ot_preconditioner, prec_type, solver_type, &
                                      energy_gap, nspins, has_unit_metric, &
-                                     convert_to_dbcsr, chol_type, full_mo_set, chebyshev_degree)
+                                     convert_to_dbcsr, chol_type, full_mo_set, chebyshev_degree, &
+                                     fermi_low_rank_max_rank)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(mo_set_type), DIMENSION(:), INTENT(INOUT)     :: mos
@@ -392,13 +395,14 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: has_unit_metric, convert_to_dbcsr
       INTEGER, INTENT(IN), OPTIONAL                      :: chol_type
       LOGICAL, INTENT(IN), OPTIONAL                      :: full_mo_set
-      INTEGER, INTENT(IN), OPTIONAL                      :: chebyshev_degree
+      INTEGER, INTENT(IN), OPTIONAL                      :: chebyshev_degree, fermi_low_rank_max_rank
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'prepare_preconditioner'
 
       CHARACTER(LEN=default_string_length)               :: msg
       INTEGER                                            :: handle, icall, ispin, &
-                                                            my_chebyshev_degree, n_loops
+                                                            my_chebyshev_degree, &
+                                                            my_fermi_low_rank_max_rank, n_loops
       INTEGER, DIMENSION(5)                              :: nocc, norb
       LOGICAL                                            :: do_co_rotate, my_convert_to_dbcsr, &
                                                             my_full_mo_set, my_has_unit_metric, &
@@ -420,6 +424,8 @@ CONTAINS
       IF (PRESENT(full_mo_set)) my_full_mo_set = full_mo_set
       my_chebyshev_degree = 8
       IF (PRESENT(chebyshev_degree)) my_chebyshev_degree = chebyshev_degree
+      my_fermi_low_rank_max_rank = 48
+      IF (PRESENT(fermi_low_rank_max_rank)) my_fermi_low_rank_max_rank = fermi_low_rank_max_rank
 
       CALL get_qs_env(qs_env, &
                       dft_control=dft_control, &
@@ -494,6 +500,7 @@ CONTAINS
       CASE DEFAULT
          DO icall = 1, n_loops
             ot_preconditioner(icall)%preconditioner%polynomial_degree = my_chebyshev_degree
+            ot_preconditioner(icall)%preconditioner%spectral_max_rank = my_fermi_low_rank_max_rank
             IF (my_has_unit_metric) THEN
                CALL make_preconditioner(ot_preconditioner(icall)%preconditioner, &
                                         prec_type, &

@@ -54,4 +54,5 @@
 "CH4-3.inp"                             = [{matcher="E_total", tol=1e-13, ref=-7.94506870642185}]
 "CH4-chebyshev.inp"                     = [{matcher="E_total", tol=1e-10, ref=-7.94506870641358}]
 "CH4-fermi-low-rank.inp"                = [{matcher="E_total", tol=1e-10, ref=-15.93664757384581}]
+"CH4-fermi-low-rank-full.inp"           = [{matcher="E_total", tol=1e-10, ref=-15.93664757426925}]
 #EOF
