@@ -196,7 +196,8 @@
 # adding the residual-tail cost to the default suite.
 # The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
 # provide the converged symmetry-reduced Gaussian path at
-# -8.15946107404605 Ha; the restart closes in one step and diagonalization is
+# -8.15946107406207 Ha in 29 total SCF steps; the restart closes in one step and
+# diagonalization is
 # within 4.6E-8 Ha. Gaussian prints the variational smearing free energy but
 # deliberately not the Fermi-Dirac-only Mermin label.
 # Al_kp_ot_gaussian_gamma_converge.inp is the explicit-Gamma companion. The
@@ -206,10 +207,10 @@
 # independent diagonalization references.
 # Fe_kp_ot_uks_added_auto_sym3_300K_converge.inp is the unlisted sharp-frontier
 # transition-metal stress companion. AUTO grows (4,6)->(8,10)->(16,18); its
-# final 25-MO space converges in 172 MPI-2/OMP-2 steps at
-# -123.63026685087659 Ha and in 129 MPI-4/OMP-1 steps at
-# -123.63026685078455 Ha. These layouts agree within 9.2E-11 Ha; explicit
-# all-26-MO OT agrees within 1.1E-10 Ha, and
+# final 25-MO space converges in 155 MPI-2/OMP-2 steps at
+# -123.63026685055964 Ha and in 115 MPI-4/OMP-1 steps at
+# -123.63026685078690 Ha. Both layouts preserve charge 26 and magnetic moment 2,
+# and
 # Fe_kp_ot_uks_added_auto_sym3_300K_restart.inp restores the four channels in
 # one step across MPI layouts. Keep this low-temperature physics path manual.
 # Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp is the unlisted four-channel
