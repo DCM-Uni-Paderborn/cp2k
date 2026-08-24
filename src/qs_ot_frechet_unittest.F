@@ -10802,7 +10802,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: n = 4, nrhs = 2
+      INTEGER, PARAMETER                                 :: n = 5, nrhs = 2
 
       INTEGER                                            :: identifiable_rank, scaled_rank, &
                                                             scaled_tangent_rank, tangent_rank
@@ -10817,19 +10817,21 @@ CONTAINS
       hessian(:, :) = 0.0_dp
       hessian(1, 1) = 2.0_dp
       hessian(2, 2) = 0.5_dp
-      hessian(3, 3) = 1.0E-14_dp
-      hessian(4, 4) = 3.0_dp
-      constraints(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp]
+      hessian(3, 3) = 1.0E-10_dp
+      hessian(4, 4) = 1.0E-16_dp
+      hessian(5, 5) = 3.0_dp
+      constraints(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp]
       scaled_constraints(:, 1) = 1.0E-11_dp*constraints(:, 1)
-      expected(:, 1) = [0.3_dp, -0.4_dp, 0.7_dp, 0.0_dp]
-      expected(:, 2) = [-0.2_dp, 0.6_dp, -0.5_dp, 0.0_dp]
+      expected(:, 1) = [0.3_dp, -0.4_dp, 0.7_dp, -0.6_dp, 0.0_dp]
+      expected(:, 2) = [-0.2_dp, 0.6_dp, -0.5_dp, 0.2_dp, 0.0_dp]
       rhs(:, :) = MATMUL(hessian, expected)
       reference(:, :) = expected(:, :)
       reference(1, :) = [0.8_dp, 0.1_dp]
       reference(2, :) = [-0.9_dp, -0.3_dp]
       reference(3, :) = [1.7_dp, -1.5_dp]
       reference(4, :) = [4.0_dp, -3.0_dp]
-      expected(3, :) = reference(3, :)
+      reference(5, :) = [2.0_dp, -1.0_dp]
+      expected(4, :) = reference(4, :)
 
       CALL qs_scf_kp_identifiable_constrained_response( &
          hessian, constraints, rhs, reference, response, ready, identifiable_rank, tangent_rank, &
@@ -10843,8 +10845,8 @@ CONTAINS
               ABS(mode_floor - scaled_floor) + ABS(mode_min - scaled_min) + &
               ABS(mode_max - scaled_max)
 
-      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. identifiable_rank /= 2 .OR. &
-          scaled_rank /= 2 .OR. tangent_rank /= 3 .OR. scaled_tangent_rank /= 3 .OR. &
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. identifiable_rank /= 3 .OR. &
+          scaled_rank /= 3 .OR. tangent_rank /= 4 .OR. scaled_tangent_rank /= 4 .OR. &
           error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,2(1X,L1),4(1X,I4),1X,ES16.8)') TRIM(label)// &

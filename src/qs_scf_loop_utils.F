@@ -5241,7 +5241,7 @@ CONTAINS
       INTEGER                                            :: i, info, j, n, nconstraint, nrhs, pass, &
                                                             rank
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ipiv
-      REAL(KIND=dp)                                      :: column_norm, tolerance
+      REAL(KIND=dp)                                      :: basis_tolerance, column_norm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: work_column
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: augmented, augmented_rhs, basis
 
@@ -5261,7 +5261,7 @@ CONTAINS
       ALLOCATE (basis(n, nconstraint), work_column(n))
       basis(:, :) = 0.0_dp
       rank = 0
-      tolerance = 64.0_dp*SQRT(EPSILON(1.0_dp))
+      basis_tolerance = 64.0_dp*SQRT(EPSILON(1.0_dp))
       DO j = 1, nconstraint
          column_norm = SQRT(MAX(0.0_dp, &
                                 DOT_PRODUCT(constraints(:, j), constraints(:, j))))
@@ -5274,7 +5274,7 @@ CONTAINS
             END DO
          END DO
          column_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(work_column, work_column)))
-         IF (column_norm <= tolerance) CYCLE
+         IF (column_norm <= basis_tolerance) CYCLE
          rank = rank + 1
          basis(:, rank) = work_column/column_norm
       END DO
@@ -5343,7 +5343,7 @@ CONTAINS
 
       INTEGER                                            :: constraint_rank, i, j, n, nconstraint, &
                                                             nrhs, pass
-      REAL(KIND=dp)                                      :: column_norm, tolerance
+      REAL(KIND=dp)                                      :: basis_tolerance, column_norm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues, reference_modes, rhs_modes, &
                                                             work_column
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: constraint_basis, tangent_basis, &
@@ -5369,7 +5369,7 @@ CONTAINS
       IF (.NOT. ALL(hessian == hessian) .OR. .NOT. ALL(constraints == constraints) .OR. &
           .NOT. ALL(rhs == rhs) .OR. .NOT. ALL(reference_response == reference_response)) RETURN
 
-      tolerance = 64.0_dp*SQRT(EPSILON(1.0_dp))
+      basis_tolerance = 64.0_dp*SQRT(EPSILON(1.0_dp))
       ALLOCATE (constraint_basis(n, nconstraint), tangent_basis(n, n), work_column(n))
       constraint_basis(:, :) = 0.0_dp
       tangent_basis(:, :) = 0.0_dp
@@ -5386,7 +5386,7 @@ CONTAINS
             END DO
          END DO
          column_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(work_column, work_column)))
-         IF (column_norm <= tolerance) CYCLE
+         IF (column_norm <= basis_tolerance) CYCLE
          constraint_rank = constraint_rank + 1
          constraint_basis(:, constraint_rank) = work_column/column_norm
       END DO
@@ -5411,7 +5411,7 @@ CONTAINS
             END DO
          END DO
          column_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(work_column, work_column)))
-         IF (column_norm <= tolerance) CYCLE
+         IF (column_norm <= basis_tolerance) CYCLE
          tangent_rank = tangent_rank + 1
          tangent_basis(:, tangent_rank) = work_column/column_norm
          IF (tangent_rank == n - constraint_rank) EXIT
@@ -5431,7 +5431,8 @@ CONTAINS
       CALL diamat_all(tangent_hessian, eigenvalues)
       mode_min = MINVAL(eigenvalues)
       mode_max = MAXVAL(eigenvalues)
-      mode_floor = tolerance*MAX(MAXVAL(ABS(eigenvalues)), TINY(1.0_dp))
+      mode_floor = 64.0_dp*EPSILON(1.0_dp)*REAL(MAX(1, tangent_rank), KIND=dp)* &
+                   MAX(MAXVAL(ABS(eigenvalues)), TINY(1.0_dp))
 
       DO j = 1, nrhs
          rhs_modes(:) = MATMUL(TRANSPOSE(tangent_hessian), &
