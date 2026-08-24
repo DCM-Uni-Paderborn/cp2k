@@ -32,7 +32,8 @@ MODULE qs_scf_loop_utils
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type,&
                                               cp_to_string
-   USE cp_output_handling,              ONLY: debug_print_level
+   USE cp_output_handling,              ONLY: debug_print_level,&
+                                              high_print_level
    USE input_constants,                 ONLY: smear_fermi_dirac,&
                                               smear_gaussian,&
                                               smear_mp,&
@@ -296,6 +297,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_mermin_residual_pareto_scale, &
              qs_scf_kp_reduced_subspace_step, &
              qs_scf_kp_reduced_subspace_replacement_step, &
+             qs_scf_kp_constrained_symmetric_solve, &
              qs_scf_kp_fixed_n_energy_hessian, &
              qs_scf_kp_project_symmetric_subspace_correction, &
              qs_scf_kp_full_residual_completion, &
@@ -5213,6 +5215,99 @@ CONTAINS
                   orthonormal_modes, work_mode)
 
    END SUBROUTINE qs_scf_kp_reduced_subspace_replacement_step
+
+! **************************************************************************************************
+!> \brief Solve a symmetric linear system on an explicitly constrained tangent space.
+!>
+!>        The KKT system [H C; C^T 0] [x; lambda] = [b; 0] avoids adding an arbitrary gauge
+!>        curvature to H.  Constraint columns are orthonormalized before the solve, making the
+!>        result invariant to their scale and removing linearly dependent constraints.
+!> \param hessian symmetric physical Hessian
+!> \param constraints normals of the admissible tangent space
+!> \param rhs right-hand sides in physical coordinates
+!> \param solution constrained solutions
+!> \param ready whether an independent constraint basis and finite solution were obtained
+!> \param relative_tangent_residual optional relative residual after removing constraint normals
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_constrained_symmetric_solve( &
+      hessian, constraints, rhs, solution, ready, relative_tangent_residual)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian, constraints, rhs
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: solution
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: relative_tangent_residual
+
+      INTEGER                                            :: i, info, j, n, nconstraint, nrhs, pass, &
+                                                            rank
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ipiv
+      REAL(KIND=dp)                                      :: column_norm, tolerance
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: work_column
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: augmented, augmented_rhs, basis
+
+      n = SIZE(hessian, 1)
+      nconstraint = SIZE(constraints, 2)
+      nrhs = SIZE(rhs, 2)
+      CPASSERT(ALL(SHAPE(hessian) == [n, n]))
+      CPASSERT(SIZE(constraints, 1) == n)
+      CPASSERT(SIZE(rhs, 1) == n)
+      CPASSERT(ALL(SHAPE(solution) == [n, nrhs]))
+
+      solution(:, :) = 0.0_dp
+      ready = .FALSE.
+      IF (PRESENT(relative_tangent_residual)) relative_tangent_residual = HUGE(1.0_dp)
+      IF (n <= 0 .OR. nrhs <= 0 .OR. nconstraint <= 0) RETURN
+
+      ALLOCATE (basis(n, nconstraint), work_column(n))
+      basis(:, :) = 0.0_dp
+      rank = 0
+      tolerance = 64.0_dp*SQRT(EPSILON(1.0_dp))
+      DO j = 1, nconstraint
+         column_norm = SQRT(MAX(0.0_dp, &
+                                DOT_PRODUCT(constraints(:, j), constraints(:, j))))
+         IF (column_norm <= TINY(1.0_dp)) CYCLE
+         work_column(:) = constraints(:, j)/column_norm
+         DO pass = 1, 2
+            DO i = 1, rank
+               work_column(:) = work_column - &
+                                DOT_PRODUCT(basis(:, i), work_column)*basis(:, i)
+            END DO
+         END DO
+         column_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(work_column, work_column)))
+         IF (column_norm <= tolerance) CYCLE
+         rank = rank + 1
+         basis(:, rank) = work_column/column_norm
+      END DO
+      IF (rank <= 0) THEN
+         DEALLOCATE (basis, work_column)
+         RETURN
+      END IF
+
+      ALLOCATE (augmented(n + rank, n + rank), augmented_rhs(n + rank, nrhs), &
+                ipiv(n + rank))
+      augmented(:, :) = 0.0_dp
+      augmented(1:n, 1:n) = 0.5_dp*(hessian + TRANSPOSE(hessian))
+      augmented(1:n, n + 1:n + rank) = basis(:, 1:rank)
+      augmented(n + 1:n + rank, 1:n) = TRANSPOSE(basis(:, 1:rank))
+      augmented_rhs(:, :) = 0.0_dp
+      augmented_rhs(1:n, :) = rhs(:, :)
+      CALL dgesv(n + rank, nrhs, augmented, n + rank, ipiv, augmented_rhs, n + rank, info)
+      IF (info == 0) THEN
+         solution(:, :) = augmented_rhs(1:n, :)
+         ready = ALL(solution == solution) .AND. &
+                 MAXVAL(ABS(solution)) < HUGE(1.0_dp)
+         IF (ready .AND. PRESENT(relative_tangent_residual)) THEN
+            augmented_rhs(1:n, :) = MATMUL(0.5_dp*(hessian + TRANSPOSE(hessian)), solution) - rhs
+            augmented_rhs(1:n, :) = augmented_rhs(1:n, :) - &
+                                    MATMUL(basis(:, 1:rank), &
+                                           MATMUL(TRANSPOSE(basis(:, 1:rank)), &
+                                                  augmented_rhs(1:n, :)))
+            relative_tangent_residual = SQRT(MAX(0.0_dp, SUM(augmented_rhs(1:n, :)**2)))/ &
+                                        MAX(SQRT(MAX(0.0_dp, SUM(rhs**2))), EPSILON(1.0_dp))
+         END IF
+      END IF
+      IF (.NOT. ready) solution(:, :) = 0.0_dp
+      DEALLOCATE (augmented, augmented_rhs, basis, ipiv, work_column)
+
+   END SUBROUTINE qs_scf_kp_constrained_symmetric_solve
 
 ! **************************************************************************************************
 !> \brief Build the ungauged fixed-N Mermin Hessian in auxiliary-energy coordinates.
@@ -22755,7 +22850,8 @@ CONTAINS
                                                     channel_nmo, e_offset, energy_hessian, energy_cross, &
                                                     response_exact, z_exact_trial, ipiv_energy, &
                                                     exact_energy_model_ready, energy_gauge_weight, &
-                                                    energy_hessian_reference=energy_hessian_reference)
+                                                    energy_hessian_reference=energy_hessian_reference, &
+                                                    constrained_audit_group=target_group)
          exact_physical_response_ready = .FALSE.
          IF (exact_energy_model_ready .AND. projector_physical_shadow_enabled) &
             CALL build_kpoint_ot_exact_energy_response(canonical_occ_curv, 0.0_dp*tether_curv, &
@@ -36547,12 +36643,14 @@ CONTAINS
 !> \param curv_floor_fraction optional diagonal regularization as fraction of max curvature
 !> \param curv_floor_weight optional per-energy-row floor weight in [0,1]
 !> \param energy_hessian_reference optional unfactored fixed-N energy Hessian
+!> \param constrained_audit_group optional fixed-N group for the HIGH constrained-response audit
 ! **************************************************************************************************
       SUBROUTINE build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_occ, &
                                                        response_tether, grad_e, channel_nmo, e_offset, &
                                                        energy_hessian, energy_cross, response_exact, z_exact, &
                                                        ipiv_energy, ready, gauge_weight, curv_floor_fraction, &
-                                                       curv_floor_weight, energy_hessian_reference)
+                                                       curv_floor_weight, energy_hessian_reference, &
+                                                       constrained_audit_group)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: response_occ, response_tether
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: grad_e
@@ -36567,13 +36665,19 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: curv_floor_weight
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT), &
          OPTIONAL                                        :: energy_hessian_reference
+      INTEGER, INTENT(IN), OPTIONAL                      :: constrained_audit_group
 
-      INTEGER                                            :: first_energy, ie, info, je, &
+      INTEGER                                            :: constraint_count, constraint_index, &
+                                                            first_energy, ie, info, je, &
                                                             local_channel, ne_local, nmo, nrhs, &
                                                             nrot_local, r
-      REAL(KIND=dp) :: channel_occ_sum, curv_max, local_response_curv_floor, occ_sum, &
-         response_curv_floor, response_shift, total_curv, weight_sum
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: rhs, rhs_source
+      LOGICAL                                            :: constrained_audit_enabled, &
+                                                            constrained_ready
+      REAL(KIND=dp) :: channel_occ_sum, constrained_base_norm, constrained_delta_norm, &
+         constrained_model_residual, constrained_work, curv_max, local_response_curv_floor, &
+         occ_sum, response_curv_floor, response_shift, total_curv, used_work, weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: constrained_solution, constraints, &
+                                                            physical_hessian, rhs, rhs_source
 
          ready = .FALSE.
          gauge_weight = 0.0_dp
@@ -36649,6 +36753,51 @@ CONTAINS
             END DO
          END DO
 
+         constrained_audit_enabled = PRESENT(constrained_audit_group) .AND. &
+                                     global_schur_replicated .AND. &
+                                     logger%iter_info%print_level >= high_print_level
+         constraint_count = 0
+         IF (constrained_audit_enabled) THEN
+            ALLOCATE (physical_hessian(ne_local, ne_local))
+            physical_hessian(:, :) = energy_hessian(:, :)
+         END IF
+         IF (constrained_audit_enabled .AND. occ_sum > EPSILON(occ_sum)) &
+            constraint_count = constraint_count + 1
+         IF (constrained_audit_enabled) THEN
+            DO local_channel = 1, SIZE(channel_nmo)
+               nmo = channel_nmo(local_channel)
+               IF (nmo <= 0) CYCLE
+               first_energy = e_offset(local_channel)
+               weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+               channel_occ_sum = SUM(occ_curv(first_energy:first_energy + nmo - 1))
+               IF (weight_sum > EPSILON(weight_sum) .AND. &
+                   channel_occ_sum <= EPSILON(occ_sum)) &
+                  constraint_count = constraint_count + 1
+            END DO
+         END IF
+         IF (constraint_count > 0) THEN
+            ALLOCATE (constraints(ne_local, constraint_count))
+            constraints(:, :) = 0.0_dp
+            constraint_index = 0
+            IF (occ_sum > EPSILON(occ_sum)) THEN
+               constraint_index = constraint_index + 1
+               constraints(:, constraint_index) = occ_curv(:)
+            END IF
+            DO local_channel = 1, SIZE(channel_nmo)
+               nmo = channel_nmo(local_channel)
+               IF (nmo <= 0) CYCLE
+               first_energy = e_offset(local_channel)
+               weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+               channel_occ_sum = SUM(occ_curv(first_energy:first_energy + nmo - 1))
+               IF (weight_sum <= EPSILON(weight_sum) .OR. &
+                   channel_occ_sum > EPSILON(occ_sum)) CYCLE
+               constraint_index = constraint_index + 1
+               constraints(first_energy:first_energy + nmo - 1, constraint_index) = &
+                  tether_curv(first_energy:first_energy + nmo - 1)
+            END DO
+            CPASSERT(constraint_index == constraint_count)
+         END IF
+
          gauge_weight = curv_max/REAL(MAX(1, ne_local), KIND=dp)
          IF (occ_sum > EPSILON(occ_sum)) THEN
             ! Lift the global fixed-N gauge.  The response RHS is fixed-N
@@ -36675,6 +36824,11 @@ CONTAINS
             energy_hessian(ie, :) = 0.0_dp
             energy_hessian(:, ie) = 0.0_dp
             energy_hessian(ie, ie) = 1.0_dp
+            IF (constrained_audit_enabled) THEN
+               physical_hessian(ie, :) = 0.0_dp
+               physical_hessian(:, ie) = 0.0_dp
+               physical_hessian(ie, ie) = 1.0_dp
+            END IF
             energy_cross(ie, :) = 0.0_dp
          END DO
 
@@ -36691,6 +36845,13 @@ CONTAINS
             IF (occ_curv(ie) + tether_curv(ie) <= EPSILON(curv_max)) rhs(ie, nrhs) = 0.0_dp
          END DO
          rhs_source(:, :) = rhs(:, :)
+         constrained_ready = .FALSE.
+         IF (constraint_count > 0) THEN
+            ALLOCATE (constrained_solution(ne_local, nrhs))
+            CALL qs_scf_kp_constrained_symmetric_solve( &
+               physical_hessian, constraints, rhs_source, constrained_solution, constrained_ready, &
+               constrained_model_residual)
+         END IF
          CALL dgesv(ne_local, nrhs, energy_hessian, ne_local, ipiv_energy, rhs, ne_local, info)
          IF (info /= 0) THEN
             DO r = 1, nrhs
@@ -36722,7 +36883,34 @@ CONTAINS
                                                   occ_sum, channel_nmo, e_offset)
             ready = .TRUE.
          END IF
+         IF (constrained_ready .AND. ready) THEN
+            DO r = 1, nrot_local
+               CALL project_kpoint_ot_schur_response( &
+                  constrained_solution(:, r), occ_curv, tether_curv, &
+                  occ_sum, channel_nmo, e_offset)
+            END DO
+            CALL project_kpoint_ot_schur_response( &
+               constrained_solution(:, nrhs), occ_curv, tether_curv, &
+               occ_sum, channel_nmo, e_offset)
+            constrained_delta_norm = &
+               SUM((constrained_solution(:, 1:nrot_local) - response_exact)**2) + &
+               SUM((constrained_solution(:, nrhs) - z_exact)**2)
+            constrained_base_norm = SUM(response_exact**2) + SUM(z_exact**2)
+            constrained_delta_norm = SQRT(MAX(0.0_dp, constrained_delta_norm))/ &
+                                     MAX(SQRT(MAX(0.0_dp, constrained_base_norm)), &
+                                         EPSILON(1.0_dp))
+            used_work = DOT_PRODUCT(grad_e, z_exact)
+            constrained_work = DOT_PRODUCT(grad_e, constrained_solution(:, nrhs))
+            IF (logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,ES16.8))') &
+               " OT Schur constrained-response audit group rel_delta model_res used_work kkt_work:", &
+               constrained_audit_group, constrained_delta_norm, constrained_model_residual, used_work, &
+               constrained_work
+         END IF
          DEALLOCATE (rhs, rhs_source)
+         IF (ALLOCATED(constrained_solution)) DEALLOCATE (constrained_solution)
+         IF (ALLOCATED(constraints)) DEALLOCATE (constraints)
+         IF (ALLOCATED(physical_hessian)) DEALLOCATE (physical_hessian)
 
       END SUBROUTINE build_kpoint_ot_exact_energy_response
 

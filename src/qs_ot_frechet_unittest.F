@@ -110,16 +110,16 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_closure_response_history_ready, &
         qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
         qs_scf_kp_complete_physical_audit_ready, qs_scf_kp_complete_physical_gradient_norm, &
-        qs_scf_kp_coupled_closure_prediction, qs_scf_kp_coupled_closure_response, &
-        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
-        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_residual_prediction, &
-        qs_scf_kp_coupled_response_quadratic, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
-        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
-        qs_scf_kp_density_candidate_relevant, qs_scf_kp_density_candidate_residual_bad, &
-        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
-        qs_scf_kp_density_closure_groups_refresh_ready, &
+        qs_scf_kp_constrained_symmetric_solve, qs_scf_kp_coupled_closure_prediction, &
+        qs_scf_kp_coupled_closure_response, qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
+        qs_scf_kp_coupled_residual_prediction, qs_scf_kp_coupled_response_quadratic, &
+        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_relevant, &
+        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
+        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_groups_refresh_ready, &
         qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
         qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
         qs_scf_kp_density_descent_candidate, qs_scf_kp_density_full_direct_tail_probe, &
@@ -415,6 +415,8 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT reduced secant subspace replacement", 5.0E-13_dp, nfail)
    CALL check_kpoint_fixed_n_energy_hessian( &
       "k-point OT ungauged fixed-N energy Hessian", 5.0E-13_dp, nfail)
+   CALL check_kpoint_constrained_symmetric_solve( &
+      "k-point OT fixed-N constrained energy solve", 5.0E-13_dp, nfail)
    CALL check_kpoint_project_symmetric_subspace_correction( &
       "k-point OT identifiable energy-Hessian projection", 5.0E-13_dp, nfail)
    CALL check_kpoint_indefinite_residual_balanced_step( &
@@ -10717,6 +10719,72 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_fixed_n_energy_hessian
+
+! **************************************************************************************************
+!> \brief Check the gauge-free dense fixed-N KKT energy solve and constraint-scale invariance.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_constrained_symmetric_solve(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 5, nrhs = 2
+
+      INTEGER                                            :: i, j
+      LOGICAL                                            :: ready, scaled_ready
+      REAL(KIND=dp)                                      :: error, residual, scaled_residual, shift, &
+                                                            weight_sum
+      REAL(KIND=dp), DIMENSION(n)                        :: occupation_curvature
+      REAL(KIND=dp), DIMENSION(n, 1)                     :: constraints, scaled_constraints
+      REAL(KIND=dp), DIMENSION(n, n)                     :: hessian
+      REAL(KIND=dp), DIMENSION(n, nrhs)                  :: expected, rhs, scaled_solution, &
+                                                            solution, TARGET
+
+      occupation_curvature(:) = [0.31_dp, 0.74_dp, 0.16_dp, 0.47_dp, 0.22_dp]
+      weight_sum = SUM(occupation_curvature)
+      hessian(:, :) = 0.0_dp
+      DO i = 1, n
+         hessian(i, i) = occupation_curvature(i)
+      END DO
+      DO j = 1, n
+         DO i = 1, n
+            hessian(i, j) = hessian(i, j) - &
+                            occupation_curvature(i)*occupation_curvature(j)/weight_sum
+         END DO
+      END DO
+      TARGET(:, 1) = [0.13_dp, -0.21_dp, 0.09_dp, 0.31_dp, -0.17_dp]
+      TARGET(:, 2) = [-0.05_dp, 0.18_dp, 0.24_dp, -0.11_dp, 0.07_dp]
+      rhs(:, :) = MATMUL(hessian, TARGET)
+      expected(:, :) = TARGET(:, :)
+      DO j = 1, nrhs
+         shift = DOT_PRODUCT(occupation_curvature, expected(:, j))/weight_sum
+         expected(:, j) = expected(:, j) - shift
+      END DO
+      constraints(:, 1) = occupation_curvature(:)
+      scaled_constraints(:, 1) = 1.0E-11_dp*occupation_curvature(:)
+
+      CALL qs_scf_kp_constrained_symmetric_solve( &
+         hessian, constraints, rhs, solution, ready, residual)
+      CALL qs_scf_kp_constrained_symmetric_solve( &
+         hessian, scaled_constraints, rhs, scaled_solution, scaled_ready, scaled_residual)
+      error = MAXVAL(ABS(solution - expected)) + &
+              MAXVAL(ABS(scaled_solution - expected)) + &
+              MAXVAL(ABS(MATMUL(hessian, solution) - rhs)) + &
+              MAXVAL(ABS(MATMUL(TRANSPOSE(constraints), solution))) + &
+              MAXVAL(ABS(solution - scaled_solution)) + residual + scaled_residual
+
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,L1),1X,ES16.8)') TRIM(label)// &
+            " FAILED with ready/scaled/error", ready, scaled_ready, error
+      ELSE
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" OK with error", error
+      END IF
+
+   END SUBROUTINE check_kpoint_constrained_symmetric_solve
 
 ! **************************************************************************************************
 !> \brief Check that a learned Hessian correction has no action outside measured energy modes.
