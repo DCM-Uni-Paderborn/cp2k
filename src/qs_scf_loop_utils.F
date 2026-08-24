@@ -298,6 +298,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_reduced_subspace_step, &
              qs_scf_kp_reduced_subspace_replacement_step, &
              qs_scf_kp_constrained_symmetric_solve, &
+             qs_scf_kp_identifiable_constrained_response, &
              qs_scf_kp_fixed_n_energy_hessian, &
              qs_scf_kp_project_symmetric_subspace_correction, &
              qs_scf_kp_full_residual_completion, &
@@ -5308,6 +5309,151 @@ CONTAINS
       DEALLOCATE (augmented, augmented_rhs, basis, ipiv, work_column)
 
    END SUBROUTINE qs_scf_kp_constrained_symmetric_solve
+
+! **************************************************************************************************
+!> \brief Replace a reference response only in identifiable constrained Hessian modes.
+!>
+!>        The constraint normals are normalized and reduced before a basis of their orthogonal
+!>        complement is constructed. The physical Hessian is diagonalized in that tangent basis.
+!>        Positive modes above a rank-revealing numerical threshold use the physical inverse,
+!>        while unresolved near-null modes retain the reference response. This separates a
+!>        physical fixed-N response update from gauge and weak-curvature coordinate noise.
+!> \param hessian symmetric physical Hessian
+!> \param constraints normals of the admissible tangent space
+!> \param rhs right-hand sides in physical coordinates
+!> \param reference_response established constrained response used in unresolved modes
+!> \param response mode-selective constrained response
+!> \param ready whether a finite tangent-space response was obtained
+!> \param identifiable_rank number of positive Hessian modes replaced by the physical inverse
+!> \param tangent_rank dimension of the constrained tangent space
+!> \param mode_floor numerical positive-curvature threshold
+!> \param mode_min smallest tangent-space Hessian eigenvalue
+!> \param mode_max largest tangent-space Hessian eigenvalue
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_identifiable_constrained_response( &
+      hessian, constraints, rhs, reference_response, response, ready, identifiable_rank, &
+      tangent_rank, mode_floor, mode_min, mode_max)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian, constraints, rhs, &
+                                                            reference_response
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: response
+      LOGICAL, INTENT(OUT)                               :: ready
+      INTEGER, INTENT(OUT)                               :: identifiable_rank, tangent_rank
+      REAL(KIND=dp), INTENT(OUT)                         :: mode_floor, mode_min, mode_max
+
+      INTEGER                                            :: constraint_rank, i, j, n, nconstraint, &
+                                                            nrhs, pass
+      REAL(KIND=dp)                                      :: column_norm, tolerance
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues, reference_modes, rhs_modes, &
+                                                            work_column
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: constraint_basis, tangent_basis, &
+                                                            tangent_hessian
+
+      n = SIZE(hessian, 1)
+      nconstraint = SIZE(constraints, 2)
+      nrhs = SIZE(rhs, 2)
+      CPASSERT(ALL(SHAPE(hessian) == [n, n]))
+      CPASSERT(SIZE(constraints, 1) == n)
+      CPASSERT(ALL(SHAPE(rhs) == [n, nrhs]))
+      CPASSERT(ALL(SHAPE(reference_response) == [n, nrhs]))
+      CPASSERT(ALL(SHAPE(response) == [n, nrhs]))
+
+      response(:, :) = 0.0_dp
+      ready = .FALSE.
+      identifiable_rank = 0
+      tangent_rank = 0
+      mode_floor = 0.0_dp
+      mode_min = 0.0_dp
+      mode_max = 0.0_dp
+      IF (n <= 0 .OR. nrhs <= 0 .OR. nconstraint <= 0) RETURN
+      IF (.NOT. ALL(hessian == hessian) .OR. .NOT. ALL(constraints == constraints) .OR. &
+          .NOT. ALL(rhs == rhs) .OR. .NOT. ALL(reference_response == reference_response)) RETURN
+
+      tolerance = 64.0_dp*SQRT(EPSILON(1.0_dp))
+      ALLOCATE (constraint_basis(n, nconstraint), tangent_basis(n, n), work_column(n))
+      constraint_basis(:, :) = 0.0_dp
+      tangent_basis(:, :) = 0.0_dp
+      constraint_rank = 0
+      DO j = 1, nconstraint
+         column_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(constraints(:, j), constraints(:, j))))
+         IF (column_norm <= TINY(1.0_dp)) CYCLE
+         work_column(:) = constraints(:, j)/column_norm
+         DO pass = 1, 2
+            DO i = 1, constraint_rank
+               work_column(:) = work_column - &
+                                DOT_PRODUCT(constraint_basis(:, i), work_column)* &
+                                constraint_basis(:, i)
+            END DO
+         END DO
+         column_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(work_column, work_column)))
+         IF (column_norm <= tolerance) CYCLE
+         constraint_rank = constraint_rank + 1
+         constraint_basis(:, constraint_rank) = work_column/column_norm
+      END DO
+      IF (constraint_rank <= 0 .OR. constraint_rank >= n) THEN
+         DEALLOCATE (constraint_basis, tangent_basis, work_column)
+         RETURN
+      END IF
+
+      DO j = 1, n
+         work_column(:) = 0.0_dp
+         work_column(j) = 1.0_dp
+         DO pass = 1, 2
+            DO i = 1, constraint_rank
+               work_column(:) = work_column - &
+                                DOT_PRODUCT(constraint_basis(:, i), work_column)* &
+                                constraint_basis(:, i)
+            END DO
+            DO i = 1, tangent_rank
+               work_column(:) = work_column - &
+                                DOT_PRODUCT(tangent_basis(:, i), work_column)* &
+                                tangent_basis(:, i)
+            END DO
+         END DO
+         column_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(work_column, work_column)))
+         IF (column_norm <= tolerance) CYCLE
+         tangent_rank = tangent_rank + 1
+         tangent_basis(:, tangent_rank) = work_column/column_norm
+         IF (tangent_rank == n - constraint_rank) EXIT
+      END DO
+      IF (tangent_rank /= n - constraint_rank) THEN
+         DEALLOCATE (constraint_basis, tangent_basis, work_column)
+         tangent_rank = 0
+         RETURN
+      END IF
+
+      ALLOCATE (eigenvalues(tangent_rank), rhs_modes(tangent_rank), &
+                reference_modes(tangent_rank), tangent_hessian(tangent_rank, tangent_rank))
+      tangent_hessian(:, :) = MATMUL(TRANSPOSE(tangent_basis(:, 1:tangent_rank)), &
+                                     MATMUL(0.5_dp*(hessian + TRANSPOSE(hessian)), &
+                                            tangent_basis(:, 1:tangent_rank)))
+      tangent_hessian(:, :) = 0.5_dp*(tangent_hessian + TRANSPOSE(tangent_hessian))
+      CALL diamat_all(tangent_hessian, eigenvalues)
+      mode_min = MINVAL(eigenvalues)
+      mode_max = MAXVAL(eigenvalues)
+      mode_floor = tolerance*MAX(MAXVAL(ABS(eigenvalues)), TINY(1.0_dp))
+
+      DO j = 1, nrhs
+         rhs_modes(:) = MATMUL(TRANSPOSE(tangent_hessian), &
+                               MATMUL(TRANSPOSE(tangent_basis(:, 1:tangent_rank)), rhs(:, j)))
+         reference_modes(:) = MATMUL(TRANSPOSE(tangent_hessian), &
+                                     MATMUL(TRANSPOSE(tangent_basis(:, 1:tangent_rank)), &
+                                            reference_response(:, j)))
+         DO i = 1, tangent_rank
+            IF (eigenvalues(i) > mode_floor) reference_modes(i) = rhs_modes(i)/eigenvalues(i)
+         END DO
+         response(:, j) = MATMUL(tangent_basis(:, 1:tangent_rank), &
+                                 MATMUL(tangent_hessian, reference_modes))
+      END DO
+      identifiable_rank = COUNT(eigenvalues > mode_floor)
+      ready = ALL(response == response) .AND. MAXVAL(ABS(response)) < HUGE(1.0_dp)
+      IF (.NOT. ready) THEN
+         response(:, :) = 0.0_dp
+         identifiable_rank = 0
+      END IF
+      DEALLOCATE (constraint_basis, eigenvalues, reference_modes, rhs_modes, tangent_basis, &
+                  tangent_hessian, work_column)
+
+   END SUBROUTINE qs_scf_kp_identifiable_constrained_response
 
 ! **************************************************************************************************
 !> \brief Build the ungauged fixed-N Mermin Hessian in auxiliary-energy coordinates.
@@ -36667,17 +36813,18 @@ CONTAINS
          OPTIONAL                                        :: energy_hessian_reference
       INTEGER, INTENT(IN), OPTIONAL                      :: constrained_audit_group
 
-      INTEGER                                            :: constraint_count, constraint_index, &
-                                                            first_energy, ie, info, je, &
-                                                            local_channel, ne_local, nmo, nrhs, &
-                                                            nrot_local, r
+      INTEGER :: constraint_count, constraint_index, first_energy, identifiable_rank, ie, info, &
+         je, local_channel, ne_local, nmo, nrhs, nrot_local, r, s, tangent_rank
       LOGICAL                                            :: constrained_audit_enabled, &
-                                                            constrained_ready
+                                                            constrained_ready, identifiable_ready
       REAL(KIND=dp) :: channel_occ_sum, constrained_base_norm, constrained_delta_norm, &
-         constrained_model_residual, constrained_work, curv_max, local_response_curv_floor, &
-         occ_sum, response_curv_floor, response_shift, total_curv, used_work, weight_sum
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: constrained_solution, constraints, &
-                                                            physical_hessian, rhs, rhs_source
+         constrained_model_residual, constrained_work, cross_base_norm, cross_delta_norm, &
+         curv_max, identifiable_base_norm, identifiable_delta_norm, identifiable_mode_floor, &
+         identifiable_mode_max, identifiable_mode_min, identifiable_work, &
+         local_response_curv_floor, occ_sum, physical_base_norm, physical_delta_norm, &
+         response_curv_floor, response_shift, total_curv, used_work, weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: constrained_solution, constraints, &
+         identifiable_solution, physical_hessian, reference_solution, rhs, rhs_source
 
          ready = .FALSE.
          gauge_weight = 0.0_dp
@@ -36883,7 +37030,15 @@ CONTAINS
                                                   occ_sum, channel_nmo, e_offset)
             ready = .TRUE.
          END IF
+         identifiable_ready = .FALSE.
          IF (constrained_ready .AND. ready) THEN
+            ALLOCATE (identifiable_solution(ne_local, nrhs), reference_solution(ne_local, nrhs))
+            reference_solution(:, 1:nrot_local) = response_exact(:, :)
+            reference_solution(:, nrhs) = z_exact(:)
+            CALL qs_scf_kp_identifiable_constrained_response( &
+               physical_hessian, constraints, rhs_source, reference_solution, &
+               identifiable_solution, identifiable_ready, identifiable_rank, tangent_rank, &
+               identifiable_mode_floor, identifiable_mode_min, identifiable_mode_max)
             DO r = 1, nrot_local
                CALL project_kpoint_ot_schur_response( &
                   constrained_solution(:, r), occ_curv, tether_curv, &
@@ -36907,10 +37062,58 @@ CONTAINS
                constrained_audit_group, constrained_delta_norm, constrained_model_residual, used_work, &
                constrained_work
          END IF
+         IF (identifiable_ready) THEN
+            identifiable_delta_norm = SUM((identifiable_solution - reference_solution)**2)
+            identifiable_base_norm = SUM(reference_solution**2)
+            identifiable_delta_norm = SQRT(MAX(0.0_dp, identifiable_delta_norm))/ &
+                                      MAX(SQRT(MAX(0.0_dp, identifiable_base_norm)), &
+                                          EPSILON(1.0_dp))
+            cross_delta_norm = 0.0_dp
+            cross_base_norm = 0.0_dp
+            DO s = 1, nrot_local
+               DO r = 1, nrot_local
+                  cross_delta_norm = cross_delta_norm + &
+                                     DOT_PRODUCT(energy_cross(:, r), &
+                                                 identifiable_solution(:, s) - response_exact(:, s))**2
+                  cross_base_norm = cross_base_norm + &
+                                    DOT_PRODUCT(energy_cross(:, r), response_exact(:, s))**2
+               END DO
+            END DO
+            cross_delta_norm = SQRT(MAX(0.0_dp, cross_delta_norm))/ &
+                               MAX(SQRT(MAX(0.0_dp, cross_base_norm)), EPSILON(1.0_dp))
+            physical_delta_norm = 0.0_dp
+            physical_base_norm = 0.0_dp
+            DO r = 1, nrhs
+               physical_delta_norm = physical_delta_norm + &
+                                     ABS(DOT_PRODUCT(identifiable_solution(:, r) - &
+                                                     reference_solution(:, r), &
+                                                     MATMUL(physical_hessian, &
+                                                            identifiable_solution(:, r) - &
+                                                            reference_solution(:, r))))
+               physical_base_norm = physical_base_norm + &
+                                    ABS(DOT_PRODUCT(reference_solution(:, r), &
+                                                    MATMUL(physical_hessian, &
+                                                           reference_solution(:, r))))
+            END DO
+            physical_delta_norm = SQRT(MAX(0.0_dp, physical_delta_norm))/ &
+                                  MAX(SQRT(MAX(0.0_dp, physical_base_norm)), EPSILON(1.0_dp))
+            identifiable_work = DOT_PRODUCT(grad_e, identifiable_solution(:, nrhs))
+            IF (logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,I5),7(1X,ES16.8))') &
+               " OT Schur identifiable-response audit group rank tangent rel_delta cross_delta "// &
+               "phys_delta work_delta eig_min eig_floor eig_max:", &
+               constrained_audit_group, identifiable_rank, tangent_rank, identifiable_delta_norm, &
+               cross_delta_norm, physical_delta_norm, &
+               ABS(identifiable_work - used_work)/MAX(ABS(used_work), ABS(identifiable_work), &
+                                                      EPSILON(1.0_dp)), &
+               identifiable_mode_min, identifiable_mode_floor, identifiable_mode_max
+         END IF
          DEALLOCATE (rhs, rhs_source)
          IF (ALLOCATED(constrained_solution)) DEALLOCATE (constrained_solution)
          IF (ALLOCATED(constraints)) DEALLOCATE (constraints)
+         IF (ALLOCATED(identifiable_solution)) DEALLOCATE (identifiable_solution)
          IF (ALLOCATED(physical_hessian)) DEALLOCATE (physical_hessian)
+         IF (ALLOCATED(reference_solution)) DEALLOCATE (reference_solution)
 
       END SUBROUTINE build_kpoint_ot_exact_energy_response
 

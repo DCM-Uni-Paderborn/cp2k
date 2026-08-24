@@ -138,30 +138,31 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_energy_hessian, &
         qs_scf_kp_fixed_n_frozen_energy_gradient, qs_scf_kp_fixed_n_projector_frechet, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_full_residual_completion, qs_scf_kp_indefinite_residual_balanced_step, &
-        qs_scf_kp_line_search_exit_pending, qs_scf_kp_mature_tail_rebase_ready, &
-        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
-        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_mixed_tail_rebase_ready, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
-        qs_scf_kp_pair_mask_moments, qs_scf_kp_physical_audit_add_group, &
-        qs_scf_kp_physical_audit_begin, qs_scf_kp_prediction_candidate_evaluation_ready, &
-        qs_scf_kp_prediction_candidate_selected, qs_scf_kp_project_symmetric_subspace_correction, &
-        qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
-        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
-        qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
-        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
-        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
-        qs_scf_kp_residual_history_reset_needed, qs_scf_kp_residual_pair_capture_limit, &
-        qs_scf_kp_residual_pair_full_capture_ready, qs_scf_kp_residual_pair_omission_limit, &
-        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
-        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_anchor_action, &
-        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
+        qs_scf_kp_full_residual_completion, qs_scf_kp_identifiable_constrained_response, &
+        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_line_search_exit_pending, &
+        qs_scf_kp_mature_tail_rebase_ready, qs_scf_kp_measured_residual_subspace_step, &
+        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
+        qs_scf_kp_mixed_tail_rebase_ready, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
+        qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
+        qs_scf_kp_prediction_candidate_evaluation_ready, qs_scf_kp_prediction_candidate_selected, &
+        qs_scf_kp_project_symmetric_subspace_correction, qs_scf_kp_projector_trace_metrics, &
+        qs_scf_kp_projector_trace_metrics_type, qs_scf_kp_quadratic_descent_scale, &
+        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
+        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
+        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
+        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_history_reset_needed, &
+        qs_scf_kp_residual_pair_capture_limit, qs_scf_kp_residual_pair_full_capture_ready, &
+        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
+        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_validated_anchor_action, qs_scf_kp_validated_density_response, &
+        qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -417,6 +418,8 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT ungauged fixed-N energy Hessian", 5.0E-13_dp, nfail)
    CALL check_kpoint_constrained_symmetric_solve( &
       "k-point OT fixed-N constrained energy solve", 5.0E-13_dp, nfail)
+   CALL check_kpoint_identifiable_constrained_response( &
+      "k-point OT identifiable constrained response", 5.0E-13_dp, nfail)
    CALL check_kpoint_project_symmetric_subspace_correction( &
       "k-point OT identifiable energy-Hessian projection", 5.0E-13_dp, nfail)
    CALL check_kpoint_indefinite_residual_balanced_step( &
@@ -10785,6 +10788,72 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_constrained_symmetric_solve
+
+! **************************************************************************************************
+!> \brief Check scale-invariant physical-mode replacement and soft-mode preservation.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_identifiable_constrained_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4, nrhs = 2
+
+      INTEGER                                            :: identifiable_rank, scaled_rank, &
+                                                            scaled_tangent_rank, tangent_rank
+      LOGICAL                                            :: ready, scaled_ready
+      REAL(KIND=dp)                                      :: error, mode_floor, mode_max, mode_min, &
+                                                            scaled_floor, scaled_max, scaled_min
+      REAL(KIND=dp), DIMENSION(n, 1)                     :: constraints, scaled_constraints
+      REAL(KIND=dp), DIMENSION(n, n)                     :: hessian
+      REAL(KIND=dp), DIMENSION(n, nrhs)                  :: expected, reference, response, rhs, &
+                                                            scaled_response
+
+      hessian(:, :) = 0.0_dp
+      hessian(1, 1) = 2.0_dp
+      hessian(2, 2) = 0.5_dp
+      hessian(3, 3) = 1.0E-14_dp
+      hessian(4, 4) = 3.0_dp
+      constraints(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp]
+      scaled_constraints(:, 1) = 1.0E-11_dp*constraints(:, 1)
+      expected(:, 1) = [0.3_dp, -0.4_dp, 0.7_dp, 0.0_dp]
+      expected(:, 2) = [-0.2_dp, 0.6_dp, -0.5_dp, 0.0_dp]
+      rhs(:, :) = MATMUL(hessian, expected)
+      reference(:, :) = expected(:, :)
+      reference(1, :) = [0.8_dp, 0.1_dp]
+      reference(2, :) = [-0.9_dp, -0.3_dp]
+      reference(3, :) = [1.7_dp, -1.5_dp]
+      reference(4, :) = [4.0_dp, -3.0_dp]
+      expected(3, :) = reference(3, :)
+
+      CALL qs_scf_kp_identifiable_constrained_response( &
+         hessian, constraints, rhs, reference, response, ready, identifiable_rank, tangent_rank, &
+         mode_floor, mode_min, mode_max)
+      CALL qs_scf_kp_identifiable_constrained_response( &
+         hessian, scaled_constraints, rhs, reference, scaled_response, scaled_ready, scaled_rank, &
+         scaled_tangent_rank, scaled_floor, scaled_min, scaled_max)
+      error = MAXVAL(ABS(response - expected)) + MAXVAL(ABS(scaled_response - expected)) + &
+              MAXVAL(ABS(response - scaled_response)) + &
+              MAXVAL(ABS(MATMUL(TRANSPOSE(constraints), response))) + &
+              ABS(mode_floor - scaled_floor) + ABS(mode_min - scaled_min) + &
+              ABS(mode_max - scaled_max)
+
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. identifiable_rank /= 2 .OR. &
+          scaled_rank /= 2 .OR. tangent_rank /= 3 .OR. scaled_tangent_rank /= 3 .OR. &
+          error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,L1),4(1X,I4),1X,ES16.8)') TRIM(label)// &
+            " FAILED with ready/scaled/ranks/error", ready, scaled_ready, identifiable_rank, &
+            scaled_rank, tangent_rank, scaled_tangent_rank, error
+      ELSE
+         WRITE (*, '(A,2(1X,I4),1X,ES16.8)') TRIM(label)//" OK with ranks/error", &
+            identifiable_rank, tangent_rank, error
+      END IF
+
+   END SUBROUTINE check_kpoint_identifiable_constrained_response
 
 ! **************************************************************************************************
 !> \brief Check that a learned Hessian correction has no action outside measured energy modes.
