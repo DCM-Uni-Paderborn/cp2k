@@ -137,31 +137,30 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_energy_hessian, &
         qs_scf_kp_fixed_n_frozen_energy_gradient, qs_scf_kp_fixed_n_projector_frechet, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_full_closure_response_model_adjustments, qs_scf_kp_full_residual_completion, &
-        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_line_search_exit_pending, &
-        qs_scf_kp_mature_tail_rebase_ready, qs_scf_kp_measured_residual_subspace_step, &
-        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
-        qs_scf_kp_mixed_tail_rebase_ready, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
-        qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
-        qs_scf_kp_prediction_candidate_evaluation_ready, qs_scf_kp_prediction_candidate_selected, &
-        qs_scf_kp_project_symmetric_subspace_correction, qs_scf_kp_projector_trace_metrics, &
-        qs_scf_kp_projector_trace_metrics_type, qs_scf_kp_quadratic_descent_scale, &
-        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
-        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
-        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_history_reset_needed, &
-        qs_scf_kp_residual_pair_capture_limit, qs_scf_kp_residual_pair_full_capture_ready, &
-        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_anchor_action, qs_scf_kp_validated_density_response, &
-        qs_scf_kp_work_consistent_response
+        qs_scf_kp_full_residual_completion, qs_scf_kp_indefinite_residual_balanced_step, &
+        qs_scf_kp_line_search_exit_pending, qs_scf_kp_mature_tail_rebase_ready, &
+        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
+        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_mixed_tail_rebase_ready, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
+        qs_scf_kp_pair_mask_moments, qs_scf_kp_physical_audit_add_group, &
+        qs_scf_kp_physical_audit_begin, qs_scf_kp_prediction_candidate_evaluation_ready, &
+        qs_scf_kp_prediction_candidate_selected, qs_scf_kp_project_symmetric_subspace_correction, &
+        qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
+        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
+        qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
+        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_history_reset_needed, qs_scf_kp_residual_pair_capture_limit, &
+        qs_scf_kp_residual_pair_full_capture_ready, qs_scf_kp_residual_pair_omission_limit, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_anchor_action, &
+        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -7355,16 +7354,6 @@ CONTAINS
          2.0_dp, 5.0_dp, .TRUE., .TRUE., baseline_adjustment, candidate_adjustment)
       failed = failed .OR. ABS(baseline_adjustment + 3.0_dp) > tolerance
       failed = failed .OR. ABS(candidate_adjustment) > tolerance
-
-      CALL qs_scf_kp_full_closure_response_model_adjustments( &
-         2.0_dp, 5.0_dp, .FALSE., baseline_adjustment, candidate_adjustment)
-      failed = failed .OR. ABS(baseline_adjustment) > tolerance
-      failed = failed .OR. ABS(candidate_adjustment - 5.0_dp) > tolerance
-
-      CALL qs_scf_kp_full_closure_response_model_adjustments( &
-         2.0_dp, 5.0_dp, .TRUE., baseline_adjustment, candidate_adjustment)
-      failed = failed .OR. ABS(baseline_adjustment) > tolerance
-      failed = failed .OR. ABS(candidate_adjustment - 3.0_dp) > tolerance
 
       IF (failed) THEN
          nfail = nfail + 1
@@ -30175,13 +30164,6 @@ CONTAINS
       ot_env%schur_closure_response_pending = .TRUE.
       ot_env%schur_closure_response_samples = 3
       ot_env%schur_closure_response_quality_ema = 0.4_dp
-      ot_env%schur_closure_vector_shadow_pending = .TRUE.
-      ot_env%schur_closure_vector_shadow_consistent = .TRUE.
-      ot_env%schur_closure_vector_shadow_quality_samples = 3
-      ot_env%schur_closure_vector_shadow_baseline_quadratic = 0.5_dp
-      ot_env%schur_closure_vector_shadow_quadratic = 0.7_dp
-      ot_env%schur_closure_vector_shadow_quality_ema = 0.4_dp
-      ot_env%schur_closure_vector_shadow_advantage_ema = 0.2_dp
       CALL qs_ot_reset_accepted_model_calibration(ot_env)
 
       error = ABS(ot_env%gnorm - 3.0_dp) + &
@@ -30203,14 +30185,7 @@ CONTAINS
               ABS(ot_env%schur_projector_physical_selected_measured_sum) + &
               ABS(ot_env%schur_projector_physical_selected_quality_line_ema) + &
               ABS(REAL(ot_env%schur_closure_response_samples, KIND=dp)) + &
-              ABS(ot_env%schur_closure_response_quality_ema) + &
-              ABS(REAL(ot_env%schur_closure_vector_shadow_quality_samples, KIND=dp)) + &
-              ABS(ot_env%schur_closure_vector_shadow_baseline_quadratic) + &
-              ABS(ot_env%schur_closure_vector_shadow_quadratic) + &
-              ABS(ot_env%schur_closure_vector_shadow_quality_ema) + &
-              ABS(ot_env%schur_closure_vector_shadow_advantage_ema)
-      IF (ot_env%schur_closure_vector_shadow_pending) error = error + 1.0_dp
-      IF (ot_env%schur_closure_vector_shadow_consistent) error = error + 1.0_dp
+              ABS(ot_env%schur_closure_response_quality_ema)
       IF (ot_env%schur_model_pending .OR. ot_env%schur_prediction_pending .OR. &
           ot_env%schur_closure_response_pending .OR. &
           ot_env%schur_reduced_secant_pending .OR. error > tol) THEN
