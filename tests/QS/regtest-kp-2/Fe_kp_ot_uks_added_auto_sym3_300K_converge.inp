@@ -1,17 +1,18 @@
-! Slow/manual spin-polarized transition-metal companion. This input is
-! intentionally not listed in TEST_FILES.toml so the default regression
-! suite remains inexpensive. It exercises four complex (spin,k-point)
-! channels, a fixed magnetic moment, dense d-band Fermi support, symmetry
-! weights, ADDED_MOS AUTO, and FULL_ALL occupation preconditioning.
-! Current MPI-2/OMP-2 references at 1000 K: the spin-resolved AUTO buffers
-! grow (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO spaces. The
-! final space converges in roughly 97--130 steps near F=-123.63311572 Ha,
-! -T*S=-0.0048590 Ha, and mu=0.403318 Ha. The higher
-! temperature keeps the deliberately sparse 3x1x1 Fe mesh differentiable;
-! the converged 300 K stress path is retained as a separate manual companion.
+! Slow/manual low-temperature transition-metal companion. This input is
+! intentionally not listed in TEST_FILES.toml so the default regression suite
+! remains inexpensive. It exercises four complex (spin,k-point) channels, a
+! fixed magnetic moment, a sharp d-band Fermi frontier, symmetry weights,
+! ADDED_MOS AUTO, and FULL_ALL occupation preconditioning.
+!
+! Current MPI-2/OMP-2 reference: AUTO grows
+! (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO spaces. The final
+! space converges in 162 steps at F=-123.63026685080393 Ha,
+! -T*S=-0.00061227017619 Ha, and mu=0.40200369056544 Ha. Explicit 26-MO OT
+! differs by 8.7E-11 Ha. MPI-1 and MPI-4 restarts close in one step without
+! replaying AUTO growth or rebuilding the physical subspace.
 &GLOBAL
   PRINT_LEVEL MEDIUM
-  PROJECT Fe_kp_ot_uks_added_auto_sym3_converge
+  PROJECT Fe_kp_ot_uks_added_auto_sym3_300K_converge
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -36,7 +37,7 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 400
+      MAX_SCF 240
       SCF_GUESS ATOMIC
       &OT
         ENERGIES
@@ -47,7 +48,7 @@
         ROTATION
       &END OT
       &SMEAR
-        ELECTRONIC_TEMPERATURE 1000
+        ELECTRONIC_TEMPERATURE 300
         FIXED_MAGNETIC_MOMENT 2.0
         METHOD FERMI_DIRAC
       &END SMEAR

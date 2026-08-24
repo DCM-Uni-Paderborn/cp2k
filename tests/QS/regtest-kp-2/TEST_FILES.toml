@@ -204,6 +204,12 @@
 # residual, rather than its already small search or density residual, controls
 # the final tail. Their matching unlisted Al_kp_diag_gaussian_* inputs are
 # independent diagonalization references.
+# Fe_kp_ot_uks_added_auto_sym3_300K_converge.inp is the unlisted sharp-frontier
+# transition-metal stress companion. AUTO grows (4,6)->(8,10)->(16,18); its
+# final 25-MO space converges in 162 MPI-2/OMP-2 steps at
+# -123.63026685080393 Ha. Explicit all-26-MO OT agrees within 8.7E-11 Ha, and
+# Fe_kp_ot_uks_added_auto_sym3_300K_restart.inp restores the four channels in
+# one step across MPI layouts. Keep this low-temperature physics path manual.
 # Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp is the unlisted four-channel
 # transition-metal Pulay physics companion. Its spin-resolved AUTO buffers grow
 # (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO spaces. Accepted-drop
