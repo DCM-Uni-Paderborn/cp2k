@@ -217,6 +217,13 @@ MODULE qs_ot_types
       REAL(KIND=dp)    :: mermin_ls_accepted_quality_ema = 1.0_dp
       REAL(KIND=dp)    :: mermin_ls_accepted_gap = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_accepted_gap_ema = 0.0_dp
+      ! The globally audited accepted endpoint is consumed by the next product-space L-BFGS
+      ! secant.  It is runtime-only because it has no meaning without the in-memory old point.
+      LOGICAL          :: lbfgs_mermin_sample_pending = .FALSE.
+      REAL(KIND=dp)    :: lbfgs_mermin_reference_energy = 0.0_dp
+      REAL(KIND=dp)    :: lbfgs_mermin_current_energy = 0.0_dp
+      REAL(KIND=dp)    :: lbfgs_mermin_physical_start = -1.0_dp
+      REAL(KIND=dp)    :: lbfgs_mermin_physical_current = -1.0_dp
       ! Runtime directional derivatives at the start of a Mermin line search.
       ! They intentionally are not restart payload: a restarted in-flight
       ! search must collect a fresh direction before auditing its curvature.
@@ -1348,6 +1355,11 @@ CONTAINS
       qs_ot_env%mermin_ls_accepted_quality_ema = 1.0_dp
       qs_ot_env%mermin_ls_accepted_gap = 0.0_dp
       qs_ot_env%mermin_ls_accepted_gap_ema = 0.0_dp
+      qs_ot_env%lbfgs_mermin_sample_pending = .FALSE.
+      qs_ot_env%lbfgs_mermin_reference_energy = 0.0_dp
+      qs_ot_env%lbfgs_mermin_current_energy = 0.0_dp
+      qs_ot_env%lbfgs_mermin_physical_start = -1.0_dp
+      qs_ot_env%lbfgs_mermin_physical_current = -1.0_dp
       qs_ot_env%mermin_ls_vector_start_valid = .FALSE.
       qs_ot_env%mermin_secant_ready = .FALSE.
       qs_ot_env%mermin_secant_previous_ready = .FALSE.

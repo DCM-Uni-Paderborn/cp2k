@@ -81,7 +81,8 @@ MODULE qs_scf_loop_utils
                                               qs_ot_get_orbitals_ref_complex,&
                                               qs_ot_ref_update_required,&
                                               qs_ot_rot_mat_derivative_complex
-   USE qs_ot_minimizer,                 ONLY: ot_kpoint_physical_exit_delta,&
+   USE qs_ot_minimizer,                 ONLY: ot_kpoint_lbfgs_mermin_tail_sample,&
+                                              ot_kpoint_physical_exit_delta,&
                                               ot_kpoint_physical_residual_split,&
                                               ot_kpoint_secant_geometry,&
                                               ot_mini,&
@@ -14241,6 +14242,18 @@ CONTAINS
             " OT Schur accepted residual quality raw physical pstart pcurrent rstart rcurrent:", &
             raw_residual_quality_ratio, residual_quality_ratio, physical_model_delta, &
             physical_current_delta, local_ot_env(1)%schur_model_delta, residual_current_delta
+         IF (mermin_search .AND. local_ot_env(1)%mermin_ls_sample_pending) THEN
+            local_ot_env(1)%lbfgs_mermin_sample_pending = &
+               ot_kpoint_lbfgs_mermin_tail_sample( &
+               .TRUE., physical_model_delta, local_ot_env(1)%kpoint_eps_scf)
+            IF (local_ot_env(1)%lbfgs_mermin_sample_pending) THEN
+               local_ot_env(1)%lbfgs_mermin_reference_energy = &
+                  local_ot_env(1)%mermin_ls_reference_energy
+               local_ot_env(1)%lbfgs_mermin_current_energy = local_ot_env(1)%etotal
+               local_ot_env(1)%lbfgs_mermin_physical_start = physical_model_delta
+               local_ot_env(1)%lbfgs_mermin_physical_current = physical_current_delta
+            END IF
+         END IF
          density_stationarity_quality_ready = mermin_search .AND. measured_drop > 0.0_dp .AND. &
                                               local_ot_env(1)%kpoint_density_stationarity_ready .AND. &
                                               local_ot_env(1)%schur_model_density_stationarity_delta > &

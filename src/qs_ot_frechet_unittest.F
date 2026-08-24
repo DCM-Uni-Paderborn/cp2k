@@ -72,7 +72,8 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_diis_residual_step_rejected, ot_kpoint_diis_response_endpoint_ratio, &
         ot_kpoint_diis_response_residual_blend, ot_kpoint_diis_rotation_response_probe_ready, &
         ot_kpoint_diis_rotation_response_ready, ot_kpoint_fermi_window_direction_scale, &
-        ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
+        ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_lbfgs_mermin_tail_sample, &
+        ot_kpoint_lbfgs_secant_admitted, ot_kpoint_mermin_candidate_restart_step, &
         ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
         ot_kpoint_mermin_derivative_refinement, ot_kpoint_mermin_endpoint_status, &
         ot_kpoint_mermin_energy_curvature_resolved, ot_kpoint_mermin_full_direction_model, &
@@ -818,6 +819,8 @@ PROGRAM qs_ot_frechet_unittest
       "canonical density physical tail probe", 2.0E-13_dp, nfail)
    CALL check_mermin_closure_response_quality( &
       "accepted Mermin closure-response quality", 2.0E-13_dp, nfail)
+   CALL check_kpoint_lbfgs_secant_admission( &
+      "accepted metallic L-BFGS secant admission", nfail)
    CALL check_accepted_model_calibration_reset( &
       "accepted model restart-calibration reset", 2.0E-13_dp, nfail)
    CALL check_kpoint_ot_restart_geometry_signature( &
@@ -30125,6 +30128,46 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_mermin_closure_response_quality
+
+! **************************************************************************************************
+!> \brief Check that metallic L-BFGS history follows resolved Mermin and complete residual descent.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_lbfgs_secant_admission(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = ot_kpoint_lbfgs_secant_admitted( &
+               .FALSE., .TRUE., -10.0_dp, -10.1_dp, 2.0E-6_dp, 1.0E-6_dp)
+      failed = failed .OR. .NOT. ot_kpoint_lbfgs_secant_admitted( &
+               .TRUE., .FALSE., -10.0_dp, -9.0_dp, 1.0E-6_dp, 2.0E-6_dp)
+      failed = failed .OR. .NOT. ot_kpoint_lbfgs_secant_admitted( &
+               .TRUE., .TRUE., -10.0_dp, -10.1_dp, 2.0E-6_dp, 1.0E-6_dp)
+      failed = failed .OR. ot_kpoint_lbfgs_secant_admitted( &
+               .TRUE., .TRUE., -10.0_dp, -10.0_dp, 2.0E-6_dp, 1.0E-6_dp)
+      failed = failed .OR. ot_kpoint_lbfgs_secant_admitted( &
+               .TRUE., .TRUE., -10.0_dp, -10.1_dp, 1.0E-6_dp, 2.0E-6_dp)
+      failed = failed .OR. .NOT. ot_kpoint_lbfgs_secant_admitted( &
+               .TRUE., .TRUE., -10.0_dp, -10.1_dp, -1.0_dp, 2.0E-6_dp)
+      failed = failed .OR. .NOT. ot_kpoint_lbfgs_mermin_tail_sample( &
+               .TRUE., 1.9E-5_dp, 1.0E-6_dp)
+      failed = failed .OR. ot_kpoint_lbfgs_mermin_tail_sample( &
+               .TRUE., 2.1E-5_dp, 1.0E-6_dp)
+      failed = failed .OR. ot_kpoint_lbfgs_mermin_tail_sample( &
+               .TRUE., -1.0_dp, 1.0E-6_dp)
+      failed = failed .OR. ot_kpoint_lbfgs_mermin_tail_sample( &
+               .FALSE., 1.0E-6_dp, 1.0E-6_dp)
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_lbfgs_secant_admission
 
 !> \brief Check that restart migration drops unit-step calibration but retains physical history.
 !> \param label ...
