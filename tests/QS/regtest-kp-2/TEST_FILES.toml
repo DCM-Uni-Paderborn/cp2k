@@ -170,10 +170,11 @@
 # components within 5.0E-7 Ha/bohr, and analytical stress within 0.52 bar.
 # Al_kp_ot_uks_full_all_sym3_converge.inp is the unlisted four-channel UKS
 # physics companion.  With two spins, two irreducible k-points, and fixed
-# magnetization, current CG/DIIS MPI-2/OMP-2 trajectories converge in 237/146
-# OT steps near -8.14036050 Ha, within 2.7E-8 Ha of tight diagonalization while
-# retaining weighted spin populations 7/5 and finite entropy. Earlier CG
-# trajectories needed 91--164 steps, illustrating the nonlinear path spread.
+# magnetization, current guarded-CG/DIIS MPI-2/OMP-2 trajectories converge in
+# 245/146 OT steps near -8.14036050 Ha, within 2.7E-8 Ha of tight diagonalization
+# while retaining weighted spin populations 7/5 and finite entropy. Earlier CG
+# trajectories needed 91--237 steps; two exact-build controls without the mature
+# physical-tail rebase missed MAX_SCF=260, illustrating the nonlinear path spread.
 # Analytic forces and stress
 # agree with diagonalization within 1.1E-6 Ha/bohr and 1.3 bar at EPS_SCF=1E-7.
 # Al_kp_ot_uks_full_all_sym3_restart.inp restores all four (spin,k-point)

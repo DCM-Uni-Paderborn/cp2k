@@ -138,29 +138,29 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fixed_n_projector_frechet, qs_scf_kp_fixed_n_response_mu_shift, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_full_closure_response_model_adjustments, &
         qs_scf_kp_full_residual_completion, qs_scf_kp_indefinite_residual_balanced_step, &
-        qs_scf_kp_line_search_exit_pending, qs_scf_kp_measured_residual_subspace_step, &
-        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
-        qs_scf_kp_mixed_tail_rebase_ready, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
-        qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
-        qs_scf_kp_prediction_candidate_evaluation_ready, qs_scf_kp_prediction_candidate_selected, &
-        qs_scf_kp_project_symmetric_subspace_correction, qs_scf_kp_projector_trace_metrics, &
-        qs_scf_kp_projector_trace_metrics_type, qs_scf_kp_quadratic_descent_scale, &
-        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
-        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
-        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_history_reset_needed, &
-        qs_scf_kp_residual_pair_capture_limit, qs_scf_kp_residual_pair_full_capture_ready, &
-        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_anchor_action, qs_scf_kp_validated_density_response, &
-        qs_scf_kp_work_consistent_response
+        qs_scf_kp_line_search_exit_pending, qs_scf_kp_mature_tail_rebase_ready, &
+        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
+        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_mixed_tail_rebase_ready, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
+        qs_scf_kp_pair_mask_moments, qs_scf_kp_physical_audit_add_group, &
+        qs_scf_kp_physical_audit_begin, qs_scf_kp_prediction_candidate_evaluation_ready, &
+        qs_scf_kp_prediction_candidate_selected, qs_scf_kp_project_symmetric_subspace_correction, &
+        qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
+        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
+        qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
+        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_history_reset_needed, qs_scf_kp_residual_pair_capture_limit, &
+        qs_scf_kp_residual_pair_full_capture_ready, qs_scf_kp_residual_pair_omission_limit, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_anchor_action, &
+        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -6047,6 +6047,29 @@ CONTAINS
                .NOT. qs_scf_kp_density_closure_buffer_ready(.FALSE., 4, 13) .OR. &
                qs_scf_kp_density_closure_buffer_ready(.TRUE., 8, 17) .OR. &
                .NOT. qs_scf_kp_density_closure_buffer_ready(.TRUE., 16, 25) .OR. &
+               .NOT. qs_scf_kp_mature_tail_rebase_ready( &
+               1.64343938E-4_dp, 1.43155853E-4_dp, .TRUE., 1.16538387E-5_dp, &
+               eps_scf, 15, 1.0_dp, 12) .OR. &
+               .NOT. qs_scf_kp_mature_tail_rebase_ready( &
+               2.04889841E-3_dp, 7.84026917E-3_dp, .TRUE., 4.16074304E-4_dp, &
+               eps_scf, 35, 1.0_dp, 12) .OR. &
+               qs_scf_kp_mature_tail_rebase_ready( &
+               1.64343938E-4_dp, 1.43155853E-4_dp, .TRUE., 1.16538387E-5_dp, &
+               eps_scf, 11, 1.0_dp, 12) .OR. &
+               qs_scf_kp_mature_tail_rebase_ready( &
+               1.64343938E-4_dp, 1.43155853E-4_dp, .TRUE., 1.16538387E-5_dp, &
+               eps_scf, 15, 0.49_dp, 12) .OR. &
+               qs_scf_kp_mature_tail_rebase_ready( &
+               8.0E-6_dp, 8.0E-6_dp, .TRUE., 2.0E-6_dp, eps_scf, 15, 1.0_dp, 12) .OR. &
+               qs_scf_kp_mature_tail_rebase_ready( &
+               1.1E-2_dp, 1.0E-4_dp, .TRUE., 2.0E-5_dp, eps_scf, 15, 1.0_dp, 12) .OR. &
+               qs_scf_kp_mature_tail_rebase_ready( &
+               1.0E-3_dp, 1.0E-3_dp, .TRUE., 1.1E-3_dp, eps_scf, 15, 1.0_dp, 12) .OR. &
+               qs_scf_kp_mature_tail_rebase_ready( &
+               1.0E-4_dp, -1.0_dp, .TRUE., 2.0E-5_dp, eps_scf, 15, 1.0_dp, 12) .OR. &
+               qs_scf_kp_mature_tail_rebase_ready( &
+               1.64343938E-4_dp, 1.43155853E-4_dp, .FALSE., 1.16538387E-5_dp, &
+               eps_scf, 15, 1.0_dp, 12) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
                                                5.0E-4_dp, eps_scf, .TRUE., .FALSE.)
       IF (failed) THEN

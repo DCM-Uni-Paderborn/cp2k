@@ -6,8 +6,10 @@
 !
 ! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 references from fresh directories:
 ! release trajectories converge to Mermin F = -8.14036045 Ha. Earlier paths
-! needed 91--164 steps; the stricter complete fixed-N residual audit on the
-! current head needed 237 steps and reached F = -8.14036047378622 Ha. A
+! needed 91--164 steps; the stricter complete fixed-N residual audit needed
+! 237 steps on an earlier path. Two fresh exact-build trajectories without a
+! mature physical-tail rebase missed MAX_SCF=260, whereas the guarded rebase
+! converged in 245 steps at F = -8.14036050049804 Ha. A
 ! matching runtime-check OMP-2 run converged in 98 steps at
 ! F = -8.14036043923571 Ha,
 ! -T*S = -0.00016884786056 Ha, and mu = -0.02250546977047 Ha. A matching
