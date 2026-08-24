@@ -1,10 +1,10 @@
 ! Slow/manual companion for monotone Gaussian smearing with symmetry-reduced
 ! metallic k-point OT. This input is intentionally not listed in
 ! TEST_FILES.toml so the default regression remains inexpensive.
-! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 reference: ADDED_MOS AUTO grows
-! 4->8->16, the final stage converges in roughly 55-65 OT steps, and reaches
-! about -8.1594610740 Ha. The variational smearing free-energy correction is
-! -3.5733645376E-4 Ha and the Fermi energy is -4.0103008598E-2 Ha. The
+! Current MPI-2/OMP-2 reference: ADDED_MOS AUTO grows 4->8->16, converges in
+! 29 total SCF steps, and reaches -8.159461074062071 Ha. The variational
+! smearing free-energy correction is -3.5733645376E-4 Ha and the Fermi energy
+! is -4.0103008598E-2 Ha. The
 ! corresponding diagonalization reference differs by 4.6E-8 Ha. Gaussian
 ! smearing is variational but not a physical Mermin entropy, so this path
 ! intentionally does not print the Fermi-Dirac-only Mermin label.

@@ -764,6 +764,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector thermal cluster gap", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_thermal_value_window( &
       "history-safe occupation-projector thermal value window", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_thermal_physical_secant( &
+      "history-safe occupation-projector thermal physical secant", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_thermal_no_fd_offblock( &
       "history-safe occupation-projector thermal no-fd offblock", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_group_count( &
@@ -27697,7 +27699,7 @@ CONTAINS
       INTEGER                                            :: i
       LOGICAL                                            :: fd_used
       REAL(KIND=dp)                                      :: err, fd_gap, gap, occ_tol, old_pair_gap, &
-                                                            pair_gap, raw_noise, safe_active
+                                                            pair_gap, raw_gap, safe_active
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale, occ_slope
 
       evals(:) = [-0.010000_dp, -0.004000_dp, 0.31_dp]
@@ -27726,7 +27728,8 @@ CONTAINS
       CALL dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_slope)
       CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_slope, &
                                                     projector_window_gap)
-      docc_expected(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_slope, docc_expected)
+      docc_expected(:, :) = projector_weight*docc_expected(:, :)
       CALL dense_fixed_n_projector_cluster_kernel(evals, dchc, occ_curv, occ_slope, gauge_gap, &
                                                   projector_weight, docc_expected, projector_window_gap)
 
@@ -27737,19 +27740,19 @@ CONTAINS
                                                      MAXVAL(occ_curv(:)), projector_window_gap)
       err = MAXVAL(ABS(docc_safe(:, :) - docc_expected(:, :)))
       fd_gap = MAXVAL(ABS(docc_fd(:, :) - docc_expected(:, :)))
-      raw_noise = MAXVAL(ABS(projector_weight*docc_raw(:, :) - docc_safe(:, :)))
+      raw_gap = MAXVAL(ABS(projector_weight*docc_raw(:, :) - docc_safe(:, :)))
       safe_active = MAXVAL(ABS(docc_safe(:, :)))
 
       IF (.NOT. fd_used .OR. gap <= old_pair_gap .OR. gap > pair_gap .OR. err > tol .OR. &
-          fd_gap < active_tol .OR. raw_noise < active_tol .OR. safe_active < active_tol) THEN
+          fd_gap > tol .OR. raw_gap > tol .OR. safe_active < active_tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,7(1X,ES12.5),1(1X,L1))') TRIM(label), &
-            "failed with err/fdgap/gap/oldpgap/pgap/rawnoise/active/fd", err, fd_gap, gap, &
-            old_pair_gap, pair_gap, raw_noise, safe_active, fd_used
+            "failed with err/fdgap/gap/oldpgap/pgap/rawgap/active/fd", err, fd_gap, gap, &
+            old_pair_gap, pair_gap, raw_gap, safe_active, fd_used
       ELSE
          WRITE (*, '(A,1X,A,7(1X,ES12.5),1(1X,L1))') TRIM(label), &
-            "OK with err/fdgap/gap/oldpgap/pgap/rawnoise/active/fd", err, fd_gap, gap, &
-            old_pair_gap, pair_gap, raw_noise, safe_active, fd_used
+            "OK with err/fdgap/gap/oldpgap/pgap/rawgap/active/fd", err, fd_gap, gap, &
+            old_pair_gap, pair_gap, raw_gap, safe_active, fd_used
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_thermal_cluster_gap
@@ -27814,6 +27817,79 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_thermal_value_window
+
+! **************************************************************************************************
+!> \brief Check that a resolved Fermi-Dirac secant is not mistaken for projector gauge noise.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_thermal_physical_secant(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER :: gauge_gap = 5.0E-5_dp, projector_weight = 0.37_dp, &
+         projector_window_gap = 8.0E-3_dp, sigma = 1.0E-3_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_raw, docc_safe, occ_raw, &
+                                                            occ_safe
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: derivative_err, err, filter_err, gap, &
+                                                            physical_slope, shared_slope, &
+                                                            slope_cap, value_err
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, fi, occ_curv, occ_filtered, &
+                                                            occ_scale
+
+      evals(:) = [-sigma, sigma, 0.25_dp]
+      fi(:) = [1.0_dp/(1.0_dp + EXP(-1.0_dp)), 1.0_dp/(1.0_dp + EXP(1.0_dp)), 0.0_dp]
+      occ_scale(:) = 2.0_dp*fi(:)
+      occ_curv(:) = fi(:)*(1.0_dp - fi(:))/sigma
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 2) = CMPLX(0.19_dp, -0.12_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      occ_filtered(:) = occ_scale(:)
+      CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, &
+                                                    SQRT(EPSILON(1.0_dp))*MAXVAL(occ_scale), &
+                                                    occ_filtered, projector_window_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc, occ_scale, projector_weight, occ_safe, &
+                                                     occ_curv, gauge_gap, projector_window_gap)
+      CALL dense_spectral_occ_projector_from_chc(chc, occ_scale, occ_raw)
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap, &
+                                                           projector_window_gap=projector_window_gap)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
+      docc_raw(:, :) = projector_weight*docc_raw(:, :)
+
+      gap = evals(2) - evals(1)
+      physical_slope = ABS(occ_scale(2) - occ_scale(1))/gap
+      shared_slope = dense_shared_occ_slope(occ_curv(1), occ_curv(2))
+      slope_cap = dense_projector_pair_slope_cap(gap, gauge_gap, occ_curv(1), occ_curv(2), &
+                                                 MAXVAL(occ_curv), projector_window_gap)
+      filter_err = MAXVAL(ABS(occ_filtered - occ_scale))
+      value_err = MAXVAL(ABS(occ_safe - occ_raw))
+      derivative_err = MAXVAL(ABS(docc_safe - docc_raw))
+      err = MAX(filter_err, value_err, derivative_err)
+
+      IF (err > tol .OR. physical_slope <= shared_slope + tol .OR. slope_cap < physical_slope - tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/filter/value/derivative/physical/shared/cap", err, filter_err, value_err, &
+            derivative_err, physical_slope, shared_slope, slope_cap
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/filter/value/derivative/physical/shared/cap", err, filter_err, value_err, &
+            derivative_err, physical_slope, shared_slope, slope_cap
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_thermal_physical_secant
 
 ! **************************************************************************************************
 !> \brief Check that the no-FD projector derivative still uses the thermal cluster window.
@@ -31802,19 +31878,34 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
       REAL(KIND=dp)                                      :: slope_cap
 
-      REAL(KIND=dp)                                      :: local_gap
+      REAL(KIND=dp), PARAMETER                           :: thermal_slope_factor = 2.0_dp
+
+      REAL(KIND=dp)                                      :: broad_cap, local_gap, resolution, &
+                                                            shared_slope
 
       slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_i, occ_curv_j))
       IF (slope_cap <= EPSILON(slope_cap)) RETURN
 
       IF (PRESENT(projector_window_gap)) THEN
+         broad_cap = thermal_slope_factor*slope_cap
          local_gap = dense_projector_occupation_pair_gap(gauge_gap, occ_curv_i, occ_curv_j, &
                                                          occ_curv_max, projector_window_gap)
       ELSE
          local_gap = dense_projector_occupation_pair_gap(gauge_gap, occ_curv_i, occ_curv_j, &
                                                          occ_curv_max)
+         IF (ABS(denom) <= local_gap) &
+            slope_cap = MIN(slope_cap, dense_shared_occ_slope(occ_curv_i, occ_curv_j))
+         RETURN
       END IF
-      IF (ABS(denom) <= local_gap) slope_cap = MIN(slope_cap, dense_shared_occ_slope(occ_curv_i, occ_curv_j))
+      slope_cap = broad_cap
+      IF (ABS(denom) <= local_gap) THEN
+         shared_slope = dense_shared_occ_slope(occ_curv_i, occ_curv_j)
+         resolution = 0.0_dp
+         IF (local_gap > gauge_gap) &
+            resolution = (ABS(denom) - gauge_gap)/(local_gap - gauge_gap)
+         resolution = MIN(1.0_dp, MAX(0.0_dp, resolution))
+         slope_cap = (1.0_dp - resolution)*MIN(broad_cap, shared_slope) + resolution*broad_cap
+      END IF
 
    END FUNCTION dense_projector_pair_slope_cap
 
@@ -32648,7 +32739,8 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: cluster_curv, cluster_evec, &
-         cluster_evec_b, cluster_kernel, cluster_work, cluster_work_b, modal_block, response_block
+         cluster_evec_b, cluster_kernel, cluster_work, cluster_work_b, modal_block, &
+         resolved_block, response_block
       INTEGER                                            :: a, b, c, first, first_b, j, last, &
                                                             last_b, m, m_b, n
       LOGICAL                                            :: cluster_exact_gauge, &
@@ -32656,7 +32748,7 @@ CONTAINS
       REAL(KIND=dp) :: cluster_gauge_blend, cluster_occ_blend, cluster_occ_blend_b, &
          cluster_response_gap, cluster_scalar_curv, cluster_span, component_weight, curv, denom, &
          gap_tol, local_gap, mu_den, mu_num, mu_shift, occ_curv_max, occ_tol, offdiag_coeff, &
-         slope_cap
+         pair_resolution, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: cluster_eval, cluster_eval_b, modal_curv, &
          modal_curv_b, modal_curv_scale, modal_energy, modal_energy_b, modal_occ, modal_occ_b, &
          modal_occ_basis, modal_occ_basis_b, modal_raw_curv, occ_cluster, occ_cluster_b
@@ -32728,12 +32820,14 @@ CONTAINS
             cluster_span = ABS(evals(last) - evals(first))
             cluster_response_gap = dense_projector_cluster_response_gap(evals, occ_curv, first, last, &
                                                                         gauge_gap, occ_curv_max, projector_window_gap)
-            kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
             ALLOCATE (cluster_col(m), cluster_curv(m, m), cluster_work(m, m), &
                       cluster_evec(m, m), cluster_kernel(m, m), &
                       modal_col(m), modal_energy(m), modal_occ(m), modal_occ_basis(m), &
                       response_block(m, m), response_col(m), cluster_eval(m), modal_curv(m), &
                       modal_raw_curv(m), modal_curv_scale(m), occ_cluster(m))
+            ALLOCATE (resolved_block(m, m))
+            resolved_block(:, :) = kernel(first:last, first:last)
+            kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
             cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                          CONJG(TRANSPOSE(work(first:last, first:last))))
             CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
@@ -32796,6 +32890,18 @@ CONTAINS
                                           MATMUL(cluster_kernel, CONJG(TRANSPOSE(cluster_evec))))
             DO b = 1, m
                DO a = 1, m
+                  IF (a /= b) THEN
+                     pair_resolution = 0.0_dp
+                     IF (PRESENT(projector_window_gap)) THEN
+                        pair_resolution = 1.0_dp
+                        IF (gauge_gap > gap_tol) &
+                           pair_resolution = (ABS(evals(first + a - 1) - evals(first + b - 1)) - gap_tol)/ &
+                                             (gauge_gap - gap_tol)
+                     END IF
+                     pair_resolution = MIN(1.0_dp, MAX(0.0_dp, pair_resolution))
+                     response_block(a, b) = (1.0_dp - pair_resolution)*response_block(a, b) + &
+                                            pair_resolution*resolved_block(a, b)
+                  END IF
                   kernel(first + a - 1, first + b - 1) = response_block(a, b)
                END DO
             END DO
@@ -32843,7 +32949,7 @@ CONTAINS
             END DO
             DEALLOCATE (cluster_col, cluster_curv, cluster_work, cluster_evec, cluster_kernel, modal_col, &
                         modal_energy, modal_occ, modal_occ_basis, response_block, response_col, cluster_eval, &
-                        modal_curv, modal_raw_curv, modal_curv_scale, occ_cluster)
+                        modal_curv, modal_raw_curv, modal_curv_scale, occ_cluster, resolved_block)
          ELSE
             curv = MAX(0.0_dp, occ_curv(first))
             kernel(first, first) = CMPLX(-2.0_dp*projector_weight*curv* &
@@ -33153,7 +33259,8 @@ CONTAINS
             local_gap = dense_projector_occupation_pair_gap(gauge_gap, occ_curv(last), occ_curv(last + 1), &
                                                             occ_curv_max, projector_window_gap)
             IF (gap > local_gap) EXIT
-            slope_cap = dense_shared_occ_slope(occ_curv(last), occ_curv(last + 1))
+            slope_cap = dense_projector_pair_slope_cap(gap, gauge_gap, occ_curv(last), occ_curv(last + 1), &
+                                                       occ_curv_max, projector_window_gap)
             allowed_jump = slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
             occ_jump = ABS(occ_mono(last + 1) - occ_mono(last))
             IF (occ_jump > allowed_jump) needs_filter = .TRUE.
@@ -33168,7 +33275,8 @@ CONTAINS
             fit_den = 0.0_dp
             DO idx = first, last - 1
                gap = ABS(evals(idx + 1) - evals(idx))
-               slope_pair = dense_shared_occ_slope(occ_curv(idx), occ_curv(idx + 1))
+               slope_pair = dense_projector_pair_slope_cap(gap, gauge_gap, occ_curv(idx), occ_curv(idx + 1), &
+                                                           occ_curv_max, projector_window_gap)
                slope_cap = MIN(slope_cap, slope_pair)
                allowed_jump = slope_pair*MAX(gap, EPSILON(1.0_dp)) + occ_tol
                occ_jump = ABS(occ_mono(idx + 1) - occ_mono(idx))
@@ -33196,7 +33304,9 @@ CONTAINS
                IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
                   occ_mono(first) = 0.0_dp
                   DO idx = first + 1, last
-                     slope_pair = dense_shared_occ_slope(occ_curv(idx - 1), occ_curv(idx))
+                     slope_pair = dense_projector_pair_slope_cap(evals(idx) - evals(idx - 1), gauge_gap, &
+                                                                 occ_curv(idx - 1), occ_curv(idx), &
+                                                                 occ_curv_max, projector_window_gap)
                      occ_mono(idx) = occ_mono(idx - 1) - slope_pair*(evals(idx) - evals(idx - 1))
                   END DO
                   shape_sum = SUM(occ_mono(first:last))

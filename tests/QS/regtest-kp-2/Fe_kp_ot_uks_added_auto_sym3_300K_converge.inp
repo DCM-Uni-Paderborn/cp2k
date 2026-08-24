@@ -5,13 +5,12 @@
 ! ADDED_MOS AUTO, and FULL_ALL occupation preconditioning.
 !
 ! Current references: AUTO grows (4,6)->(8,10)->(16,18), preserving common
-! 13->17->25 MO spaces. MPI-2/OMP-2 converges in 172 final-space steps at
-! F=-123.63026685087659 Ha, -T*S=-0.00061212813201 Ha, and
-! mu=0.40200628146977 Ha. MPI-4/OMP-1 converges in 129 steps at
-! F=-123.63026685078455 Ha, -T*S=-0.00061229807647 Ha, and
-! mu=0.40200380973213 Ha. The two free energies differ by 9.2E-11 Ha and
-! explicit 26-MO OT agrees within 1.1E-10 Ha. MPI-1 and MPI-4 restarts close
-! in one step without replaying AUTO growth or rebuilding the physical subspace.
+! 13->17->25 MO spaces. MPI-2/OMP-2 converges in 155 steps at
+! F=-123.63026685055964 Ha, -T*S=-0.00061235186724 Ha, and
+! mu=0.40200370924099 Ha. MPI-4/OMP-1 converges in 115 steps at
+! F=-123.63026685078690 Ha, -T*S=-0.00061227136374 Ha, and
+! mu=0.40200410992213 Ha. MPI-2 and MPI-4 restarts close in one step without
+! replaying AUTO growth or rebuilding the physical subspace.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Fe_kp_ot_uks_added_auto_sym3_300K_converge

@@ -141,6 +141,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_projector_occupation_gauge_gap = 3.0E-5_dp, &
                                         ot_kp_projector_occupation_thermal_gap_fraction = 2.5E-1_dp, &
                                         ot_kp_projector_occupation_thermal_gap_max_factor = 5.0E1_dp, &
+                                        ot_kp_projector_occupation_thermal_slope_factor = 2.0_dp, &
                                         ot_kp_canonical_density_control_raw_max_ratio = 1.50_dp, &
                                         ot_kp_fermi_window_tail_fraction = 3.22954647E-2_dp, &
                                         ot_kp_fermi_window_min_frac = 1.0E-3_dp, &
@@ -12610,20 +12611,35 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
       REAL(KIND=dp)                                      :: slope_cap
 
-      REAL(KIND=dp)                                      :: local_gap
+      REAL(KIND=dp)                                      :: broad_cap, local_gap, resolution, &
+                                                            shared_slope
 
       slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_i, occ_curv_j))
       IF (slope_cap <= EPSILON(slope_cap)) RETURN
 
       IF (PRESENT(projector_window_gap)) THEN
+         ! The endpoint curvatures can miss a response maximum between two
+         ! thermally separated bands.  Admit one unresolved midpoint peak,
+         ! while retaining the shared-curvature limit at exact gauge overlap.
+         broad_cap = ot_kp_projector_occupation_thermal_slope_factor*slope_cap
          local_gap = kpoint_ot_projector_occupation_pair_gap(gauge_gap, occ_curv_i, occ_curv_j, &
                                                              occ_curv_max, projector_window_gap)
       ELSE
          local_gap = kpoint_ot_projector_occupation_pair_gap(gauge_gap, occ_curv_i, occ_curv_j, &
                                                              occ_curv_max)
+         IF (ABS(denom) <= local_gap) &
+            slope_cap = MIN(slope_cap, kpoint_ot_shared_occ_slope(occ_curv_i, occ_curv_j))
+         RETURN
       END IF
-      IF (ABS(denom) <= local_gap) &
-         slope_cap = MIN(slope_cap, kpoint_ot_shared_occ_slope(occ_curv_i, occ_curv_j))
+      slope_cap = broad_cap
+      IF (ABS(denom) <= local_gap) THEN
+         shared_slope = kpoint_ot_shared_occ_slope(occ_curv_i, occ_curv_j)
+         resolution = 0.0_dp
+         IF (local_gap > gauge_gap) &
+            resolution = (ABS(denom) - gauge_gap)/(local_gap - gauge_gap)
+         resolution = MIN(1.0_dp, MAX(0.0_dp, resolution))
+         slope_cap = (1.0_dp - resolution)*MIN(broad_cap, shared_slope) + resolution*broad_cap
+      END IF
 
    END FUNCTION kpoint_ot_projector_pair_slope_cap
 
@@ -42228,7 +42244,8 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: cluster_curv, cluster_evec, &
-         cluster_evec_b, cluster_kernel, cluster_work, cluster_work_b, modal_block, response_block
+         cluster_evec_b, cluster_kernel, cluster_work, cluster_work_b, modal_block, &
+         resolved_block, response_block
       INTEGER                                            :: a, b, c, first, first_b, j, last, &
                                                             last_b, m, m_b, n
       LOGICAL                                            :: cluster_exact_gauge, &
@@ -42236,7 +42253,7 @@ CONTAINS
       REAL(KIND=dp) :: cluster_gauge_blend, cluster_occ_blend, cluster_occ_blend_b, &
          cluster_response_gap, cluster_scalar_curv, cluster_span, component_weight, curv, denom, &
          gap_tol, local_gap, mu_den, mu_num, mu_shift, occ_curv_max, occ_tol, offdiag_coeff, &
-         slope_cap
+         pair_resolution, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: cluster_eval, cluster_eval_b, modal_curv, &
          modal_curv_b, modal_curv_scale, modal_energy, modal_energy_b, modal_occ, modal_occ_b, &
          modal_occ_basis, modal_occ_basis_b, modal_raw_curv, occ_cluster, occ_cluster_b
@@ -42313,12 +42330,14 @@ CONTAINS
                cluster_response_gap = kpoint_ot_projector_cluster_response_gap(evals, occ_curv_channel, first, last, &
                                                                                gauge_gap, occ_curv_max, &
                                                                                projector_window_gap)
-               kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                ALLOCATE (cluster_col(m), cluster_curv(m, m), cluster_work(m, m), &
                          cluster_evec(m, m), cluster_kernel(m, m), &
                          modal_col(m), modal_energy(m), modal_occ(m), modal_occ_basis(m), &
                          response_block(m, m), response_col(m), cluster_eval(m), modal_curv(m), &
                          modal_raw_curv(m), modal_curv_scale(m), occ_cluster(m))
+               ALLOCATE (resolved_block(m, m))
+               resolved_block(:, :) = kernel(first:last, first:last)
+               kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
@@ -42382,6 +42401,24 @@ CONTAINS
                                              MATMUL(cluster_kernel, CONJG(TRANSPOSE(cluster_evec))))
                DO b = 1, m
                   DO a = 1, m
+                     IF (a /= b) THEN
+                        ! Thermal clustering identifies a coupled response
+                        ! window, not an eigenvector gauge equivalence.  Once
+                        ! a pair is resolved beyond the numerical gauge gap,
+                        ! retain its previously assembled spectral Frechet
+                        ! response; the modal fixed-N model still controls the
+                        ! unresolved block and every diagonal splitting.
+                        pair_resolution = 0.0_dp
+                        IF (PRESENT(projector_window_gap)) THEN
+                           pair_resolution = 1.0_dp
+                           IF (gauge_gap > gap_tol) &
+                              pair_resolution = (ABS(evals(first + a - 1) - evals(first + b - 1)) - gap_tol)/ &
+                                                (gauge_gap - gap_tol)
+                        END IF
+                        pair_resolution = MIN(1.0_dp, MAX(0.0_dp, pair_resolution))
+                        response_block(a, b) = (1.0_dp - pair_resolution)*response_block(a, b) + &
+                                               pair_resolution*resolved_block(a, b)
+                     END IF
                      kernel(first + a - 1, first + b - 1) = response_block(a, b)
                   END DO
                END DO
@@ -42434,7 +42471,7 @@ CONTAINS
                END DO
                DEALLOCATE (cluster_col, cluster_curv, cluster_work, cluster_evec, cluster_kernel, modal_col, &
                            modal_energy, modal_occ, modal_occ_basis, response_block, response_col, cluster_eval, &
-                           modal_curv, modal_raw_curv, modal_curv_scale, occ_cluster)
+                           modal_curv, modal_raw_curv, modal_curv_scale, occ_cluster, resolved_block)
             ELSE
                curv = MAX(0.0_dp, occ_curv_channel(first))
                kernel(first, first) = CMPLX(-2.0_dp*projector_weight*curv* &
@@ -42752,7 +42789,9 @@ CONTAINS
                                                                    occ_curv_channel(last + 1), &
                                                                    occ_curv_max, projector_window_gap)
                IF (gap > local_gap) EXIT
-               slope_cap = kpoint_ot_shared_occ_slope(occ_curv_channel(last), occ_curv_channel(last + 1))
+               slope_cap = kpoint_ot_projector_pair_slope_cap( &
+                           gap, gauge_gap, occ_curv_channel(last), occ_curv_channel(last + 1), &
+                           occ_curv_max, projector_window_gap)
                allowed_jump = slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
                occ_jump = ABS(occ_mono(last + 1) - occ_mono(last))
                IF (occ_jump > allowed_jump) needs_filter = .TRUE.
@@ -42767,7 +42806,9 @@ CONTAINS
                fit_den = 0.0_dp
                DO idx = first, last - 1
                   gap = ABS(evals(idx + 1) - evals(idx))
-                  slope_pair = kpoint_ot_shared_occ_slope(occ_curv_channel(idx), occ_curv_channel(idx + 1))
+                  slope_pair = kpoint_ot_projector_pair_slope_cap( &
+                               gap, gauge_gap, occ_curv_channel(idx), occ_curv_channel(idx + 1), &
+                               occ_curv_max, projector_window_gap)
                   slope_cap = MIN(slope_cap, slope_pair)
                   allowed_jump = slope_pair*MAX(gap, EPSILON(1.0_dp)) + occ_tol
                   occ_jump = ABS(occ_mono(idx + 1) - occ_mono(idx))
@@ -42800,8 +42841,10 @@ CONTAINS
                   IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
                      occ_mono(first) = 0.0_dp
                      DO idx = first + 1, last
-                        slope_pair = kpoint_ot_shared_occ_slope(occ_curv_channel(idx - 1), &
-                                                                occ_curv_channel(idx))
+                        slope_pair = kpoint_ot_projector_pair_slope_cap( &
+                                     evals(idx) - evals(idx - 1), gauge_gap, &
+                                     occ_curv_channel(idx - 1), occ_curv_channel(idx), &
+                                     occ_curv_max, projector_window_gap)
                         occ_mono(idx) = occ_mono(idx - 1) - &
                                         slope_pair*(evals(idx) - evals(idx - 1))
                      END DO
