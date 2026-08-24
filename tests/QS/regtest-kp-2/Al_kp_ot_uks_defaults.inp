@@ -39,6 +39,10 @@
         LINESEARCH 2PNT
         MINIMIZER CG
       &END OT
+      &PRINT
+        &RESTART OFF
+        &END RESTART
+      &END PRINT
       &SMEAR
         ELECTRONIC_TEMPERATURE 300
         METHOD FERMI_DIRAC
