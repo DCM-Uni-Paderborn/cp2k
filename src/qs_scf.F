@@ -2612,7 +2612,9 @@ CONTAINS
                                            scf_env%qs_ot_env(1)%settings%energy_gap, dft_control%nspins, &
                                            has_unit_metric=has_unit_metric, &
                                            chol_type=scf_env%qs_ot_env(1)%settings%cholesky_type, &
-                                           chebyshev_degree=scf_env%qs_ot_env(1)%settings%chebyshev_degree)
+                                           chebyshev_degree=scf_env%qs_ot_env(1)%settings%chebyshev_degree, &
+                                           preserve_reference_gauge= &
+                                           scf_env%qs_ot_env(1)%settings%do_rotation)
             END IF
             IF (reuse_precond) reuse_precond = .FALSE.
 
@@ -2689,7 +2691,7 @@ CONTAINS
       INTEGER                                            :: ikpoint, ispin, kpoint_multiplicity, &
                                                             local_kpoint, number_of_OT_envs, &
                                                             ot_channel
-      LOGICAL                                            :: do_rotation, is_full_all, use_real_wfn
+      LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp)                                      :: kpoint_weight
 
       CPASSERT(.NOT. ASSOCIATED(scf_env%qs_ot_env))
@@ -2731,19 +2733,6 @@ CONTAINS
          scf_env%qs_ot_env(:)%restricted = .FALSE.
       END IF
 
-      ! The historical real FULL_ALL construction canonicalizes C0 before building
-      ! the state-selective metric.  That changes the gauge represented by explicit
-      ! rotation variables, and mo_derivs do not carry the occupation-weighted
-      ! co-rotation.  The complex k-point builder preserves C0 and does not have this limit.
-      do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
-      is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all .OR. &
-                    scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_fermi_low_rank
-      IF (do_rotation .AND. is_full_all .AND. .NOT. do_kpoints) THEN
-         CALL cp_abort(__LOCATION__, &
-                       "The real Gamma-point FULL_ALL/FERMI_LOW_RANK builder is not gauge-compatible "// &
-                       "with OT%ROTATION. Use FULL_SINGLE_INVERSE or FULL_KINETIC, or select an "// &
-                       "explicit COMPLEX 1x1x1 KPOINTS mesh for the gauge-preserving builder.")
-      END IF
       IF (do_kpoints) THEN
          CPASSERT(PRESENT(kpoints))
          CPASSERT(ASSOCIATED(kpoints))

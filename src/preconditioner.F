@@ -28,6 +28,7 @@ MODULE preconditioner
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_info,&
                                               cp_fm_release,&
+                                              cp_fm_set_element,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
    USE input_constants,                 ONLY: &
@@ -362,6 +363,107 @@ CONTAINS
    END SUBROUTINE make_preconditioner_complex_full_all
 
 ! **************************************************************************************************
+!> \brief Construct the gauge-preserving spectral preconditioner for a real OT reference.
+!>
+!>        The historical real FULL_ALL builder diagonalizes and rotates the supplied orbitals.
+!>        That is not a coordinate-neutral operation when explicit OT rotation variables refer to
+!>        the original columns.  Embed the real H, S, and C in the complex spectral builder instead;
+!>        its imaginary channel remains identically zero while the reference gauge is untouched.
+!> \param preconditioner_env preconditioner storage
+!> \param precon_type FULL_ALL or FERMI_LOW_RANK
+!> \param solver_type requested inverse application
+!> \param matrix_h real Hamiltonian
+!> \param mo_set real reference orbitals and auxiliary energies
+!> \param energy_gap denominator floor
+!> \param matrix_s optional real overlap; absence denotes an orthonormal basis
+! **************************************************************************************************
+   SUBROUTINE make_preconditioner_real_gauge_preserving(preconditioner_env, precon_type, solver_type, &
+                                                        matrix_h, mo_set, energy_gap, matrix_s)
+      TYPE(preconditioner_type)                          :: preconditioner_env
+      INTEGER, INTENT(IN)                                :: precon_type, solver_type
+      TYPE(dbcsr_type), POINTER                          :: matrix_h
+      TYPE(mo_set_type), INTENT(IN)                      :: mo_set
+      REAL(KIND=dp), INTENT(IN)                          :: energy_gap
+      TYPE(dbcsr_type), OPTIONAL, POINTER                :: matrix_s
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'make_preconditioner_real_gauge_preserving'
+
+      INTEGER                                            :: handle, i, nao, nmo
+      LOGICAL                                            :: use_mo_coeff_b
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
+      TYPE(cp_cfm_type)                                  :: matrix_c, matrix_h_complex, &
+                                                            matrix_s_complex
+      TYPE(cp_fm_type)                                   :: matrix_c_im, matrix_c_re, matrix_h_im, &
+                                                            matrix_h_re, matrix_s_im, matrix_s_re
+      TYPE(cp_fm_type), POINTER                          :: mo_coeff
+      TYPE(dbcsr_type), POINTER                          :: mo_coeff_b
+
+      CALL timeset(routineN, handle)
+
+      NULLIFY (eigenvalues, mo_coeff, mo_coeff_b)
+      CPASSERT(precon_type == ot_precond_full_all .OR. precon_type == ot_precond_fermi_low_rank)
+      IF (solver_type /= ot_precond_solver_default) THEN
+         CPABORT("Gauge-preserving real FULL_ALL/FERMI_LOW_RANK supports only PRECOND_SOLVER DEFAULT")
+      END IF
+      CALL get_mo_set(mo_set, mo_coeff=mo_coeff, mo_coeff_b=mo_coeff_b, &
+                      eigenvalues=eigenvalues, nao=nao, nmo=nmo)
+      CPASSERT(ASSOCIATED(mo_coeff))
+      CPASSERT(ASSOCIATED(eigenvalues))
+      CPASSERT(SIZE(eigenvalues) >= nmo)
+      use_mo_coeff_b = mo_set%use_mo_coeff_b
+
+      CALL cp_fm_create(matrix_h_re, mo_coeff%matrix_struct, nrow=nao, ncol=nao, &
+                        name='real gauge-preserving H')
+      CALL cp_fm_create(matrix_h_im, mo_coeff%matrix_struct, nrow=nao, ncol=nao, &
+                        name='real gauge-preserving H imaginary', set_zero=.TRUE.)
+      CALL cp_fm_create(matrix_s_re, mo_coeff%matrix_struct, nrow=nao, ncol=nao, &
+                        name='real gauge-preserving S', set_zero=.TRUE.)
+      CALL cp_fm_create(matrix_s_im, mo_coeff%matrix_struct, nrow=nao, ncol=nao, &
+                        name='real gauge-preserving S imaginary', set_zero=.TRUE.)
+      CALL cp_fm_create(matrix_c_re, mo_coeff%matrix_struct, nrow=nao, ncol=nmo, &
+                        name='real gauge-preserving C')
+      CALL cp_fm_create(matrix_c_im, mo_coeff%matrix_struct, nrow=nao, ncol=nmo, &
+                        name='real gauge-preserving C imaginary', set_zero=.TRUE.)
+      CALL copy_dbcsr_to_fm(matrix_h, matrix_h_re)
+      IF (PRESENT(matrix_s)) THEN
+         CPASSERT(ASSOCIATED(matrix_s))
+         CALL copy_dbcsr_to_fm(matrix_s, matrix_s_re)
+      ELSE
+         DO i = 1, nao
+            CALL cp_fm_set_element(matrix_s_re, i, i, 1.0_dp)
+         END DO
+      END IF
+      IF (use_mo_coeff_b) THEN
+         CPASSERT(ASSOCIATED(mo_coeff_b))
+         CALL copy_dbcsr_to_fm(mo_coeff_b, matrix_c_re)
+      ELSE
+         CALL cp_fm_to_fm(mo_coeff, matrix_c_re)
+      END IF
+
+      CALL cp_cfm_create(matrix_h_complex, matrix_h_re%matrix_struct, name='real gauge-preserving H')
+      CALL cp_cfm_create(matrix_s_complex, matrix_s_re%matrix_struct, name='real gauge-preserving S')
+      CALL cp_cfm_create(matrix_c, matrix_c_re%matrix_struct, name='real gauge-preserving C')
+      CALL cp_fm_to_cfm(matrix_h_re, matrix_h_im, matrix_h_complex)
+      CALL cp_fm_to_cfm(matrix_s_re, matrix_s_im, matrix_s_complex)
+      CALL cp_fm_to_cfm(matrix_c_re, matrix_c_im, matrix_c)
+      CALL make_complex_full_all(preconditioner_env, matrix_c, matrix_h_complex, matrix_s_complex, &
+                                 eigenvalues(1:nmo), energy_gap, precon_type)
+
+      CALL cp_cfm_release(matrix_c)
+      CALL cp_cfm_release(matrix_s_complex)
+      CALL cp_cfm_release(matrix_h_complex)
+      CALL cp_fm_release(matrix_c_im)
+      CALL cp_fm_release(matrix_c_re)
+      CALL cp_fm_release(matrix_s_im)
+      CALL cp_fm_release(matrix_s_re)
+      CALL cp_fm_release(matrix_h_im)
+      CALL cp_fm_release(matrix_h_re)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE make_preconditioner_real_gauge_preserving
+
+! **************************************************************************************************
 !> \brief Allows for a restart of the preconditioner
 !>        depending on the method it purges all arrays or keeps them
 !> \param qs_env ...
@@ -446,11 +548,13 @@ CONTAINS
 !> \param chol_type ...
 !> \param full_mo_set ...
 !> \param chebyshev_degree ...
+!> \param preserve_reference_gauge avoid canonicalizing an explicit OT rotation chart
 ! **************************************************************************************************
    SUBROUTINE prepare_preconditioner(qs_env, mos, matrix_ks, matrix_s, &
                                      ot_preconditioner, prec_type, solver_type, &
                                      energy_gap, nspins, has_unit_metric, &
-                                     convert_to_dbcsr, chol_type, full_mo_set, chebyshev_degree)
+                                     convert_to_dbcsr, chol_type, full_mo_set, chebyshev_degree, &
+                                     preserve_reference_gauge)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(mo_set_type), DIMENSION(:), INTENT(INOUT)     :: mos
@@ -463,6 +567,7 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: chol_type
       LOGICAL, INTENT(IN), OPTIONAL                      :: full_mo_set
       INTEGER, INTENT(IN), OPTIONAL                      :: chebyshev_degree
+      LOGICAL, INTENT(IN), OPTIONAL                      :: preserve_reference_gauge
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'prepare_preconditioner'
 
@@ -470,9 +575,8 @@ CONTAINS
       INTEGER                                            :: handle, icall, ispin, &
                                                             my_chebyshev_degree, n_loops
       INTEGER, DIMENSION(5)                              :: nocc, norb
-      LOGICAL                                            :: do_co_rotate, my_convert_to_dbcsr, &
-                                                            my_full_mo_set, my_has_unit_metric, &
-                                                            use_mo_coeff_b
+      LOGICAL :: do_co_rotate, my_convert_to_dbcsr, my_full_mo_set, my_has_unit_metric, &
+         my_preserve_reference_gauge, use_mo_coeff_b
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: kinetic
@@ -490,6 +594,8 @@ CONTAINS
       IF (PRESENT(full_mo_set)) my_full_mo_set = full_mo_set
       my_chebyshev_degree = 8
       IF (PRESENT(chebyshev_degree)) my_chebyshev_degree = chebyshev_degree
+      my_preserve_reference_gauge = .FALSE.
+      IF (PRESENT(preserve_reference_gauge)) my_preserve_reference_gauge = preserve_reference_gauge
 
       CALL get_qs_env(qs_env, &
                       dft_control=dft_control, &
@@ -527,26 +633,28 @@ CONTAINS
          ! if one of these preconditioners is used every spin needs to call make_preconditioner
          n_loops = nspins
 
-         do_co_rotate = ASSOCIATED(qs_env%mo_derivs)
-         DO ispin = 1, nspins
-            CALL get_mo_set(mo_set=mos(ispin), mo_coeff_b=mo_coeff_b, mo_coeff=mo_coeff)
-            use_mo_coeff_b = mos(ispin)%use_mo_coeff_b
-            IF (use_mo_coeff_b .AND. do_co_rotate) THEN
-               CALL calculate_subspace_eigenvalues(mo_coeff_b, matrix_ks(ispin)%matrix, &
-                                                   do_rotation=.TRUE., &
-                                                   co_rotate=qs_env%mo_derivs(ispin)%matrix, &
-                                                   para_env=para_env, &
-                                                   blacs_env=blacs_env)
-            ELSE IF (use_mo_coeff_b) THEN
-               CALL calculate_subspace_eigenvalues(mo_coeff_b, matrix_ks(ispin)%matrix, &
-                                                   do_rotation=.TRUE., &
-                                                   para_env=para_env, &
-                                                   blacs_env=blacs_env)
-            ELSE
-               CALL calculate_subspace_eigenvalues(mo_coeff, matrix_ks(ispin)%matrix, &
-                                                   do_rotation=.TRUE.)
-            END IF
-         END DO
+         IF (.NOT. my_preserve_reference_gauge) THEN
+            do_co_rotate = ASSOCIATED(qs_env%mo_derivs)
+            DO ispin = 1, nspins
+               CALL get_mo_set(mo_set=mos(ispin), mo_coeff_b=mo_coeff_b, mo_coeff=mo_coeff)
+               use_mo_coeff_b = mos(ispin)%use_mo_coeff_b
+               IF (use_mo_coeff_b .AND. do_co_rotate) THEN
+                  CALL calculate_subspace_eigenvalues(mo_coeff_b, matrix_ks(ispin)%matrix, &
+                                                      do_rotation=.TRUE., &
+                                                      co_rotate=qs_env%mo_derivs(ispin)%matrix, &
+                                                      para_env=para_env, &
+                                                      blacs_env=blacs_env)
+               ELSE IF (use_mo_coeff_b) THEN
+                  CALL calculate_subspace_eigenvalues(mo_coeff_b, matrix_ks(ispin)%matrix, &
+                                                      do_rotation=.TRUE., &
+                                                      para_env=para_env, &
+                                                      blacs_env=blacs_env)
+               ELSE
+                  CALL calculate_subspace_eigenvalues(mo_coeff, matrix_ks(ispin)%matrix, &
+                                                      do_rotation=.TRUE.)
+               END IF
+            END DO
+         END IF
       CASE DEFAULT
          ! No need to rotate the MOs
       END SELECT
@@ -560,7 +668,19 @@ CONTAINS
       CASE DEFAULT
          DO icall = 1, n_loops
             ot_preconditioner(icall)%preconditioner%polynomial_degree = my_chebyshev_degree
-            IF (my_has_unit_metric) THEN
+            IF (my_preserve_reference_gauge .AND. &
+                (prec_type == ot_precond_full_all .OR. &
+                 prec_type == ot_precond_fermi_low_rank)) THEN
+               IF (my_has_unit_metric) THEN
+                  CALL make_preconditioner_real_gauge_preserving( &
+                     ot_preconditioner(icall)%preconditioner, prec_type, solver_type, &
+                     matrix_ks(icall)%matrix, mos(icall), energy_gap)
+               ELSE
+                  CALL make_preconditioner_real_gauge_preserving( &
+                     ot_preconditioner(icall)%preconditioner, prec_type, solver_type, &
+                     matrix_ks(icall)%matrix, mos(icall), energy_gap, matrix_s(1)%matrix)
+               END IF
+            ELSE IF (my_has_unit_metric) THEN
                CALL make_preconditioner(ot_preconditioner(icall)%preconditioner, &
                                         prec_type, &
                                         solver_type, &

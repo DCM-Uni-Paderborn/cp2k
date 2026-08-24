@@ -293,8 +293,29 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'apply_preconditioner_fm'
 
       INTEGER                                            :: handle
+      TYPE(cp_cfm_type)                                  :: matrix_in_complex, matrix_out_complex
+      TYPE(cp_fm_type)                                   :: matrix_zero_in, matrix_zero_out
 
       CALL timeset(routineN, handle)
+
+      IF (is_spectral_preconditioner(preconditioner_env) .AND. &
+          ASSOCIATED(preconditioner_env%complex_fm)) THEN
+         CALL cp_fm_create(matrix_zero_in, matrix_in%matrix_struct, set_zero=.TRUE.)
+         CALL cp_fm_create(matrix_zero_out, matrix_out%matrix_struct, set_zero=.TRUE.)
+         CALL cp_cfm_create(matrix_in_complex, matrix_in%matrix_struct, &
+                            name='real gauge-preserving input')
+         CALL cp_cfm_create(matrix_out_complex, matrix_out%matrix_struct, &
+                            name='real gauge-preserving output')
+         CALL cp_fm_to_cfm(matrix_in, matrix_zero_in, matrix_in_complex)
+         CALL apply_preconditioner_cfm_complex(preconditioner_env, matrix_in_complex, matrix_out_complex)
+         CALL cp_cfm_to_fm(matrix_out_complex, matrix_out, matrix_zero_out)
+         CALL cp_cfm_release(matrix_out_complex)
+         CALL cp_cfm_release(matrix_in_complex)
+         CALL cp_fm_release(matrix_zero_out)
+         CALL cp_fm_release(matrix_zero_in)
+         CALL timestop(handle)
+         RETURN
+      END IF
 
       SELECT CASE (preconditioner_env%in_use)
       CASE (0)
@@ -336,8 +357,23 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'apply_preconditioner_dbcsr'
 
       INTEGER                                            :: handle
+      TYPE(dbcsr_type)                                   :: matrix_zero_in, matrix_zero_out
 
       CALL timeset(routineN, handle)
+
+      IF (is_spectral_preconditioner(preconditioner_env) .AND. &
+          ASSOCIATED(preconditioner_env%complex_fm)) THEN
+         CALL dbcsr_copy(matrix_zero_in, matrix_in, name='real gauge-preserving input imaginary')
+         CALL dbcsr_copy(matrix_zero_out, matrix_out, name='real gauge-preserving output imaginary')
+         CALL dbcsr_set(matrix_zero_in, 0.0_dp)
+         CALL dbcsr_set(matrix_zero_out, 0.0_dp)
+         CALL apply_preconditioner_dbcsr_complex(preconditioner_env, matrix_in, matrix_zero_in, &
+                                                 matrix_out, matrix_zero_out)
+         CALL dbcsr_release(matrix_zero_out)
+         CALL dbcsr_release(matrix_zero_in)
+         CALL timestop(handle)
+         RETURN
+      END IF
 
       SELECT CASE (preconditioner_env%in_use)
       CASE (0)
