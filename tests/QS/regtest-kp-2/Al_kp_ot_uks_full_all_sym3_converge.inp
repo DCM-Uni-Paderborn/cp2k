@@ -5,13 +5,18 @@
 ! support through the complete fixed-N Mermin minimization.
 !
 ! Local 2026-08 OMP_NUM_THREADS=2, MPI-2 references from fresh directories:
-! release trajectories converge in 91--164 steps at EPS_SCF 1E-6, with
-! Mermin F = -8.14036045 Ha. A matching runtime-check OMP-2 run converges in
-! 98 steps at F = -8.14036043923571 Ha,
+! release trajectories converge to Mermin F = -8.14036045 Ha. Earlier paths
+! needed 91--164 steps; the stricter complete fixed-N residual audit on the
+! current head needed 237 steps and reached F = -8.14036047378622 Ha. A
+! matching runtime-check OMP-2 run converged in 98 steps at
+! F = -8.14036043923571 Ha,
 ! -T*S = -0.00016884786056 Ha, and mu = -0.02250546977047 Ha. A matching
 ! diagonalization run converges to -8.14036050006483 Ha, so the free-energy
-! difference remains below 5.1E-8 Ha. The weighted spin populations remain 7 and 5;
-! its restart companion restores all four channels in one step with identical
+! difference remains below 5.1E-8 Ha. The weighted spin populations remain 7 and 5.
+! An otherwise identical DIIS trajectory converges in 146 steps at
+! F = -8.14036049916465 Ha. DIIS is faster here, but remains slower on the
+! corresponding restricted Al path, so this is not a global default claim.
+! The restart companion restores all four channels in one step with identical
 ! free energy, entropy, chemical potential, and fixed magnetic moment. At EPS_SCF
 ! 1E-7, analytic OT forces and stress agree with independently converged
 ! diagonalization within 1.1E-6 Ha/bohr and 1.3 bar, respectively.
@@ -46,7 +51,7 @@
     &SCF
       ADDED_MOS 12
       EPS_SCF 1.0E-6
-      MAX_SCF 180
+      MAX_SCF 260
       SCF_GUESS ATOMIC
       &OT
         ALGORITHM IRAC

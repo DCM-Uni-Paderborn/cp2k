@@ -170,9 +170,11 @@
 # components within 5.0E-7 Ha/bohr, and analytical stress within 0.52 bar.
 # Al_kp_ot_uks_full_all_sym3_converge.inp is the unlisted four-channel UKS
 # physics companion.  With two spins, two irreducible k-points, and fixed
-# magnetization, release trajectories converge in 91--164 MPI-2/OMP-2 OT steps
-# near -8.14036045 Ha, within 5.1E-8 Ha of tight diagonalization while retaining
-# weighted spin populations 7/5 and finite entropy. Analytic forces and stress
+# magnetization, current CG/DIIS MPI-2/OMP-2 trajectories converge in 237/146
+# OT steps near -8.14036050 Ha, within 2.7E-8 Ha of tight diagonalization while
+# retaining weighted spin populations 7/5 and finite entropy. Earlier CG
+# trajectories needed 91--164 steps, illustrating the nonlinear path spread.
+# Analytic forces and stress
 # agree with diagonalization within 1.1E-6 Ha/bohr and 1.3 bar at EPS_SCF=1E-7.
 # Al_kp_ot_uks_full_all_sym3_restart.inp restores all four (spin,k-point)
 # channels in one step.
@@ -254,6 +256,21 @@
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="SCF_guess_restart"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the first band"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="SCF run NOT converged"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
+"Al_kp_ot_added_all_restart.inp"        = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035094088},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035094088},
+                                           {matcher="QS_number_of_molecular_orbitals", tol=0.0, ref=13},
+                                           {matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
+                                           {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
+                                           {matcher="SCF_guess_restart"},
+                                           {matcher="OT_KPOINT_REBUILT_PHYSICAL_SUBSPACE"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
