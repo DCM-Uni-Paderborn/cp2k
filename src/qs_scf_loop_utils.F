@@ -10184,9 +10184,6 @@ CONTAINS
       local_ot_env(1)%schur_closure_shadow_pending = .FALSE.
       local_ot_env(1)%schur_closure_shadow_baseline_quadratic = 0.0_dp
       local_ot_env(1)%schur_closure_shadow_quadratic = 0.0_dp
-      local_ot_env(1)%schur_closure_full_shadow_pending = .FALSE.
-      local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = 0.0_dp
-      local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
       local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
       local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
       local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .FALSE.
@@ -14106,106 +14103,107 @@ CONTAINS
          spectral_selected_recent_ok, spectral_shadow_probe_quality_ready
       REAL(KIND=dp) :: calibrated_predicted_drop, calibrated_quality_ratio, &
          closure_candidate_predicted_drop, closure_candidate_quality_ratio, &
-         closure_full_shadow_advantage, closure_full_shadow_baseline_error, &
-         closure_full_shadow_baseline_predicted_drop, closure_full_shadow_predicted_drop, &
-         closure_full_shadow_quality_ratio, closure_full_shadow_relative_error, &
          closure_shadow_advantage, closure_shadow_baseline_error, &
          closure_shadow_baseline_predicted_drop, closure_shadow_predicted_drop, &
          closure_shadow_quality_ratio, closure_shadow_relative_error, &
-         closure_vector_shadow_advantage
-      REAL(KIND=dp) :: closure_vector_shadow_baseline_error, &
+         closure_vector_shadow_advantage, closure_vector_shadow_baseline_error, &
          closure_vector_shadow_baseline_predicted_drop, closure_vector_shadow_candidate_error, &
          closure_vector_shadow_predicted_drop, closure_vector_shadow_quality_ratio, &
-         constrained_calibrated_predicted_drop, constrained_calibrated_quality_ratio, &
-         constrained_predicted_drop, constrained_quality_ratio, &
-         dense_metric_shadow_predicted_drop, dense_metric_shadow_quality_ratio, &
-         density_candidate_residual_quality_ratio, density_stationarity_quality_ratio, &
-         gauge_residual_quality_ratio, line_search_model_drop, line_search_model_position
-      REAL(KIND=dp) :: line_search_model_scale, measured_drop, metric_residual_quality, &
-         multisecant_predicted_drop, multisecant_quality_ratio, occgap_shadow_predicted_drop, &
-         occgap_shadow_quality_ratio, physical_current_delta, physical_model_delta, &
-         predicted_drop, prediction_predicted_drop, prediction_quality_ratio, &
+         constrained_calibrated_predicted_drop
+      REAL(KIND=dp) :: constrained_calibrated_quality_ratio, constrained_predicted_drop, &
+         constrained_quality_ratio, dense_metric_shadow_predicted_drop, &
+         dense_metric_shadow_quality_ratio, density_candidate_residual_quality_ratio, &
+         density_stationarity_quality_ratio, gauge_residual_quality_ratio, line_search_model_drop, &
+         line_search_model_position, line_search_model_scale, measured_drop, &
+         metric_residual_quality, multisecant_predicted_drop, multisecant_quality_ratio, &
+         occgap_shadow_predicted_drop, occgap_shadow_quality_ratio, physical_current_delta, &
+         physical_model_delta, predicted_drop
+      REAL(KIND=dp) :: prediction_predicted_drop, prediction_quality_ratio, &
          projector_density_audit_amplification_quality, projector_density_audit_lowcurv_quality, &
          projector_density_audit_quality_ratio, projector_density_descent_base_predicted_drop, &
          projector_density_descent_incremental_measured_drop, &
-         projector_density_descent_incremental_predicted_drop
-      REAL(KIND=dp) :: projector_density_descent_incremental_quality_ratio, &
+         projector_density_descent_incremental_predicted_drop, &
+         projector_density_descent_incremental_quality_ratio, &
          projector_density_descent_predicted_drop, projector_density_descent_quality_ratio, &
          projector_density_descent_selected_predicted_drop, &
-         projector_density_descent_selected_quality_ratio, projector_density_descent_support, &
+         projector_density_descent_selected_quality_ratio
+      REAL(KIND=dp) :: projector_density_descent_support, &
          projector_density_full_direct_predicted_drop, &
          projector_density_full_direct_quality_ratio, &
          projector_density_full_direct_selected_predicted_drop, &
          projector_density_full_direct_selected_quality_ratio, &
-         projector_density_full_global_predicted_drop, projector_density_full_global_quality_ratio
-      REAL(KIND=dp) :: projector_density_full_global_selected_predicted_drop, &
+         projector_density_full_global_predicted_drop, &
+         projector_density_full_global_quality_ratio, &
+         projector_density_full_global_selected_predicted_drop, &
          projector_density_full_global_selected_quality_ratio, projector_density_full_min_drop, &
-         projector_density_full_predicted_drop, projector_density_full_quality_ratio, &
-         projector_density_full_selected_predicted_drop, &
+         projector_density_full_predicted_drop, projector_density_full_quality_ratio
+      REAL(KIND=dp) :: projector_density_full_selected_predicted_drop, &
          projector_density_full_selected_quality_ratio, projector_density_lowcurv_quality, &
          projector_density_lowcurv_ratio, projector_density_predicted_drop, &
          projector_density_quality_ratio, projector_diagref_correction_ratio, &
-         projector_diagref_predicted_drop, projector_diagref_quality_ratio
-      REAL(KIND=dp) :: projector_inactive_offdiag_abs_ratio, projector_inactive_offdiag_negative, &
+         projector_diagref_predicted_drop, projector_diagref_quality_ratio, &
+         projector_inactive_offdiag_abs_ratio, projector_inactive_offdiag_negative, &
          projector_inactive_offdiag_predicted_drop, projector_inactive_offdiag_quality_ratio, &
-         projector_inactive_offdiag_selected_predicted_drop, &
-         projector_inactive_offdiag_selected_quality_ratio, &
+         projector_inactive_offdiag_selected_predicted_drop
+      REAL(KIND=dp) :: projector_inactive_offdiag_selected_quality_ratio, &
          projector_inactive_offdiag_signed_ratio, projector_inactive_offdiag_step_negative, &
          projector_mixed_direct_predicted_drop, projector_mixed_direct_quality_ratio, &
          projector_mode_predicted_drop, projector_mode_quality_ratio, &
-         projector_mode_response_drop_ratio, projector_mode_response_negative
-      REAL(KIND=dp) :: projector_mode_step_negative, projector_mode_trust, &
-         projector_offdiag_abs_ratio, projector_offdiag_negative, &
-         projector_offdiag_predicted_drop, projector_offdiag_quality_ratio, &
-         projector_offdiag_selected_predicted_drop, projector_offdiag_selected_quality_ratio, &
-         projector_offdiag_signed_ratio, projector_offdiag_step_negative, &
-         projector_physical_compensation_quality, projector_physical_compensation_ratio, &
-         projector_physical_correction_quality, projector_physical_correction_ratio, &
-         projector_physical_direct_density_cshadow_coverage
-      REAL(KIND=dp) :: projector_physical_direct_density_cshadow_predicted_drop, &
+         projector_mode_response_drop_ratio, projector_mode_response_negative, &
+         projector_mode_step_negative, projector_mode_trust, projector_offdiag_abs_ratio, &
+         projector_offdiag_negative, projector_offdiag_predicted_drop, &
+         projector_offdiag_quality_ratio, projector_offdiag_selected_predicted_drop
+      REAL(KIND=dp) :: projector_offdiag_selected_quality_ratio, projector_offdiag_signed_ratio, &
+         projector_offdiag_step_negative, projector_physical_compensation_quality, &
+         projector_physical_compensation_ratio, projector_physical_correction_quality, &
+         projector_physical_correction_ratio, projector_physical_direct_density_cshadow_coverage, &
+         projector_physical_direct_density_cshadow_predicted_drop, &
          projector_physical_direct_density_cshadow_quality_ratio, &
          projector_physical_direct_density_fshadow_coverage, &
-         projector_physical_direct_density_fshadow_predicted_drop, &
-         projector_physical_direct_density_fshadow_quality_ratio, &
+         projector_physical_direct_density_fshadow_predicted_drop
+      REAL(KIND=dp) :: projector_physical_direct_density_fshadow_quality_ratio, &
          projector_physical_direct_density_selected_predicted_drop, &
          projector_physical_direct_density_selected_quality_ratio, &
          projector_physical_direct_predicted_drop, projector_physical_direct_quality, &
-         projector_physical_direct_quality_ratio, projector_physical_direct_ratio
-      REAL(KIND=dp) :: projector_physical_direct_selected_predicted_drop, &
+         projector_physical_direct_quality_ratio, projector_physical_direct_ratio, &
+         projector_physical_direct_selected_predicted_drop, &
          projector_physical_direct_selected_quality_ratio, projector_physical_metric_quality, &
          projector_physical_metric_ratio, projector_physical_negative_quality, &
-         projector_physical_predicted_drop, projector_physical_quality_ratio, &
+         projector_physical_predicted_drop
+      REAL(KIND=dp) :: projector_physical_quality_ratio, &
          projector_physical_selected_predicted_drop, projector_physical_selected_quality, &
          projector_physical_selected_quality_ratio, projector_physical_selected_ratio, &
          projector_physical_shift_quality, projector_physical_shift_ratio, &
-         projector_physical_trace_active_avg, projector_physical_trace_active_diag_avg
-      REAL(KIND=dp) :: projector_physical_trace_active_diag_quality, &
-         projector_physical_trace_active_free_avg, projector_physical_trace_active_free_quality, &
-         projector_physical_trace_active_quality, projector_physical_trace_actual_avg, &
-         projector_physical_trace_actual_diag_avg, projector_physical_trace_actual_diag_quality, &
-         projector_physical_trace_actual_free_avg, projector_physical_trace_actual_free_quality, &
-         projector_physical_trace_actual_quality, projector_physical_trace_invariant_avg, &
-         projector_physical_trace_invariant_diag_avg, &
-         projector_physical_trace_invariant_diag_quality
-      REAL(KIND=dp) :: projector_physical_trace_invariant_free_avg, &
+         projector_physical_trace_active_avg, projector_physical_trace_active_diag_avg, &
+         projector_physical_trace_active_diag_quality, projector_physical_trace_active_free_avg, &
+         projector_physical_trace_active_free_quality, projector_physical_trace_active_quality, &
+         projector_physical_trace_actual_avg
+      REAL(KIND=dp) :: projector_physical_trace_actual_diag_avg, &
+         projector_physical_trace_actual_diag_quality, projector_physical_trace_actual_free_avg, &
+         projector_physical_trace_actual_free_quality, projector_physical_trace_actual_quality, &
+         projector_physical_trace_invariant_avg, projector_physical_trace_invariant_diag_avg, &
+         projector_physical_trace_invariant_diag_quality, &
+         projector_physical_trace_invariant_free_avg, &
          projector_physical_trace_invariant_free_quality, &
          projector_physical_trace_invariant_quality, projector_physical_trace_raw_avg, &
-         projector_physical_trace_raw_diag_avg, projector_physical_trace_raw_diag_quality, &
+         projector_physical_trace_raw_diag_avg
+      REAL(KIND=dp) :: projector_physical_trace_raw_diag_quality, &
          projector_physical_trace_raw_free_avg, projector_physical_trace_raw_free_quality, &
          projector_physical_trace_raw_quality, projector_physical_weight_quality, &
          projector_plateau_gap_advantage, projector_plateau_gap_baseline_error, &
-         projector_plateau_gap_baseline_predicted_drop, projector_plateau_gap_candidate_error
-      REAL(KIND=dp) :: projector_plateau_gap_predicted_drop, projector_plateau_gap_quality_ratio, &
+         projector_plateau_gap_baseline_predicted_drop, projector_plateau_gap_candidate_error, &
+         projector_plateau_gap_predicted_drop, projector_plateau_gap_quality_ratio, &
          projector_response_predicted_drop, projector_response_quality_ratio, &
-         projector_response_selected_predicted_drop, projector_response_selected_quality_ratio, &
+         projector_response_selected_predicted_drop
+      REAL(KIND=dp) :: projector_response_selected_quality_ratio, &
          projector_spectral_predicted_drop, projector_spectral_quality_ratio, &
          projector_spectral_selected_predicted_drop, projector_spectral_selected_quality_ratio, &
          quality_ratio, raw_residual_quality_ratio, reduced_secant_predicted_drop, &
          reduced_secant_quality_ratio, residual_current_delta, residual_drop, &
-         residual_quality_ratio, sample_accepted_drop
-      REAL(KIND=dp) :: sample_gap, sample_gap_ratio, sample_quality, sample_reference_drop, &
-         split_shadow_calibrated_predicted_drop, split_shadow_calibrated_quality_ratio, &
-         split_shadow_predicted_drop, split_shadow_quality_ratio, vector_secant_predicted_drop, &
+         residual_quality_ratio, sample_accepted_drop, sample_gap, sample_gap_ratio, &
+         sample_quality, sample_reference_drop, split_shadow_calibrated_predicted_drop, &
+         split_shadow_calibrated_quality_ratio, split_shadow_predicted_drop
+      REAL(KIND=dp) :: split_shadow_quality_ratio, vector_secant_predicted_drop, &
          vector_secant_quality_ratio
       TYPE(cp_logger_type), POINTER                      :: logger
 
@@ -14441,75 +14439,6 @@ CONTAINS
                closure_shadow_relative_error, closure_shadow_advantage, &
                local_ot_env(1)%schur_closure_shadow_advantage_ema
          END IF
-         closure_full_shadow_baseline_predicted_drop = 0.0_dp
-         closure_full_shadow_predicted_drop = 0.0_dp
-         closure_full_shadow_quality_ratio = 0.0_dp
-         closure_full_shadow_advantage = 0.0_dp
-         closure_full_shadow_baseline_error = 1.0_dp
-         closure_full_shadow_relative_error = 1.0_dp
-         IF (mermin_search .AND. local_ot_env(1)%schur_closure_full_shadow_pending) THEN
-            closure_full_shadow_baseline_predicted_drop = qs_scf_kp_quadratic_position_drop( &
-                                                          local_ot_env(1)%schur_model_slope, &
-                                                          local_ot_env(1)%schur_model_quadratic + &
-                                                          local_ot_env(1)% &
-                                                          schur_closure_full_shadow_baseline_quadratic, &
-                                                          line_search_model_position)
-            closure_full_shadow_predicted_drop = qs_scf_kp_quadratic_position_drop( &
-                                                 local_ot_env(1)%schur_model_slope, &
-                                                 local_ot_env(1)%schur_model_quadratic + &
-                                                 local_ot_env(1)% &
-                                                 schur_closure_full_shadow_quadratic, &
-                                                 line_search_model_position)
-            IF (closure_full_shadow_predicted_drop > &
-                EPSILON(closure_full_shadow_predicted_drop) .AND. &
-                closure_full_shadow_baseline_predicted_drop > &
-                EPSILON(closure_full_shadow_baseline_predicted_drop) .AND. measured_drop > 0.0_dp) THEN
-               closure_full_shadow_quality_ratio = measured_drop/closure_full_shadow_predicted_drop
-               closure_full_shadow_baseline_error = &
-                  ABS(measured_drop - closure_full_shadow_baseline_predicted_drop)/ &
-                  MAX(measured_drop, closure_full_shadow_baseline_predicted_drop)
-               closure_full_shadow_relative_error = &
-                  ABS(measured_drop - closure_full_shadow_predicted_drop)/ &
-                  MAX(measured_drop, closure_full_shadow_predicted_drop)
-               closure_full_shadow_advantage = closure_full_shadow_baseline_error - &
-                                               closure_full_shadow_relative_error
-               samples = MIN(local_ot_env(1)%schur_closure_full_shadow_quality_samples + 1, &
-                             HUGE(samples) - 1)
-               local_ot_env(1)%schur_closure_full_shadow_quality_samples = samples
-               local_ot_env(1)%schur_closure_full_shadow_quality = closure_full_shadow_quality_ratio
-               local_ot_env(1)%schur_closure_full_shadow_advantage = closure_full_shadow_advantage
-               IF (samples == 1) THEN
-                  local_ot_env(1)%schur_closure_full_shadow_quality_ema = &
-                     closure_full_shadow_quality_ratio
-                  local_ot_env(1)%schur_closure_full_shadow_advantage_ema = &
-                     closure_full_shadow_advantage
-               ELSE
-                  local_ot_env(1)%schur_closure_full_shadow_quality_ema = &
-                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
-                     local_ot_env(1)%schur_closure_full_shadow_quality_ema + &
-                     ot_kp_schur_quality_ema_alpha*closure_full_shadow_quality_ratio
-                  local_ot_env(1)%schur_closure_full_shadow_advantage_ema = &
-                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
-                     local_ot_env(1)%schur_closure_full_shadow_advantage_ema + &
-                     ot_kp_schur_quality_ema_alpha*closure_full_shadow_advantage
-               END IF
-            END IF
-            logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= debug_print_level .AND. &
-                logger%para_env%is_source()) &
-               WRITE (cp_logger_get_default_unit_nr(logger), &
-                      '(A,1X,I6,9(1X,ES16.8))') &
-               " OT Schur full closure shadow history n base candidate measured q qema "// &
-               "berr cerr adv aema:", &
-               local_ot_env(1)%schur_closure_full_shadow_quality_samples, &
-               closure_full_shadow_baseline_predicted_drop, &
-               closure_full_shadow_predicted_drop, measured_drop, &
-               closure_full_shadow_quality_ratio, &
-               local_ot_env(1)%schur_closure_full_shadow_quality_ema, &
-               closure_full_shadow_baseline_error, closure_full_shadow_relative_error, &
-               closure_full_shadow_advantage, &
-               local_ot_env(1)%schur_closure_full_shadow_advantage_ema
-         END IF
          closure_vector_shadow_baseline_predicted_drop = 0.0_dp
          closure_vector_shadow_predicted_drop = 0.0_dp
          closure_vector_shadow_quality_ratio = 0.0_dp
@@ -14560,31 +14489,6 @@ CONTAINS
                      ot_kp_schur_quality_ema_alpha*closure_vector_shadow_advantage
                END IF
             END IF
-            IF (closure_vector_shadow_quality_ready .AND. &
-                local_ot_env(1)%schur_closure_vector_shadow_work_consistent) THEN
-               samples = MIN(local_ot_env(1)%schur_closure_work_shadow_quality_samples + 1, &
-                             HUGE(samples) - 1)
-               local_ot_env(1)%schur_closure_work_shadow_quality_samples = samples
-               local_ot_env(1)%schur_closure_work_shadow_quality = &
-                  closure_vector_shadow_quality_ratio
-               local_ot_env(1)%schur_closure_work_shadow_advantage = &
-                  closure_vector_shadow_advantage
-               IF (samples == 1) THEN
-                  local_ot_env(1)%schur_closure_work_shadow_quality_ema = &
-                     closure_vector_shadow_quality_ratio
-                  local_ot_env(1)%schur_closure_work_shadow_advantage_ema = &
-                     closure_vector_shadow_advantage
-               ELSE
-                  local_ot_env(1)%schur_closure_work_shadow_quality_ema = &
-                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
-                     local_ot_env(1)%schur_closure_work_shadow_quality_ema + &
-                     ot_kp_schur_quality_ema_alpha*closure_vector_shadow_quality_ratio
-                  local_ot_env(1)%schur_closure_work_shadow_advantage_ema = &
-                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
-                     local_ot_env(1)%schur_closure_work_shadow_advantage_ema + &
-                     ot_kp_schur_quality_ema_alpha*closure_vector_shadow_advantage
-               END IF
-            END IF
             logger => cp_get_default_logger()
             IF (logger%iter_info%print_level >= debug_print_level .AND. &
                 logger%para_env%is_source()) &
@@ -14604,17 +14508,6 @@ CONTAINS
                closure_vector_shadow_baseline_error, closure_vector_shadow_candidate_error, &
                closure_vector_shadow_advantage, &
                local_ot_env(1)%schur_closure_vector_shadow_advantage_ema
-            IF (logger%iter_info%print_level >= debug_print_level .AND. &
-                logger%para_env%is_source()) &
-               WRITE (cp_logger_get_default_unit_nr(logger), &
-                      '(A,1X,I6,2(1X,L1),4(1X,ES16.8))') &
-               " OT Schur observable-work shadow history n eligible ready q qema adv aema:", &
-               local_ot_env(1)%schur_closure_work_shadow_quality_samples, &
-               local_ot_env(1)%schur_closure_vector_shadow_work_consistent, &
-               closure_vector_shadow_quality_ready, closure_vector_shadow_quality_ratio, &
-               local_ot_env(1)%schur_closure_work_shadow_quality_ema, &
-               closure_vector_shadow_advantage, &
-               local_ot_env(1)%schur_closure_work_shadow_advantage_ema
          END IF
          IF (mermin_search .AND. measured_drop > 0.0_dp .AND. &
              residual_quality_ratio <= EPSILON(1.0_dp) .AND. &
@@ -14670,9 +14563,6 @@ CONTAINS
             local_ot_env(1)%schur_closure_shadow_pending = .FALSE.
             local_ot_env(1)%schur_closure_shadow_baseline_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_shadow_quadratic = 0.0_dp
-            local_ot_env(1)%schur_closure_full_shadow_pending = .FALSE.
-            local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = 0.0_dp
-            local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
             local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
             local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .FALSE.
@@ -17067,9 +16957,6 @@ CONTAINS
          local_ot_env(1)%schur_closure_shadow_pending = .FALSE.
          local_ot_env(1)%schur_closure_shadow_baseline_quadratic = 0.0_dp
          local_ot_env(1)%schur_closure_shadow_quadratic = 0.0_dp
-         local_ot_env(1)%schur_closure_full_shadow_pending = .FALSE.
-         local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = 0.0_dp
-         local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
          local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
          local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
          local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .FALSE.
@@ -17737,9 +17624,6 @@ CONTAINS
             local_ot_env(1)%schur_closure_shadow_pending = .FALSE.
             local_ot_env(1)%schur_closure_shadow_baseline_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_shadow_quadratic = 0.0_dp
-            local_ot_env(1)%schur_closure_full_shadow_pending = .FALSE.
-            local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = 0.0_dp
-            local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
             local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
             local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .FALSE.
@@ -32273,17 +32157,6 @@ CONTAINS
                local_ot_env(1)%schur_closure_shadow_quadratic = &
                   local_ot_env(1)%schur_closure_shadow_quadratic + &
                   closure_response_candidate_quad
-            END IF
-            IF (closure_coupled_response_ready .AND. &
-                ABS(closure_full_response_candidate_quad - closure_full_response_baseline_quad) > &
-                TINY(1.0_dp)) THEN
-               local_ot_env(1)%schur_closure_full_shadow_pending = .TRUE.
-               local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = &
-                  local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic + &
-                  closure_full_response_baseline_quad
-               local_ot_env(1)%schur_closure_full_shadow_quadratic = &
-                  local_ot_env(1)%schur_closure_full_shadow_quadratic + &
-                  closure_full_response_candidate_quad
             END IF
             IF (closure_coupled_predictive_finite .AND. &
                 ABS(closure_predictive_response_adjustment - &

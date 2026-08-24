@@ -1701,14 +1701,6 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_residual_quality_ema)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_drop_sum)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_measured_sum)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_full_shadow_pending)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_full_shadow_quality_samples)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_full_shadow_baseline_quadratic)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_full_shadow_quadratic)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_full_shadow_quality)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_full_shadow_quality_ema)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_full_shadow_advantage)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_full_shadow_advantage_ema)
       CALL para_env%bcast(qs_ot_env(1)%schur_projector_density_full_selected_stationarity_samples)
       CALL para_env%bcast(qs_ot_env(1)%schur_projector_density_full_selected_stationarity_quality)
       CALL para_env%bcast(qs_ot_env(1)%schur_projector_density_full_selected_stationarity_quality_ema)
@@ -5303,14 +5295,6 @@ CONTAINS
                qs_ot_env(1)%schur_closure_shadow_baseline_quadratic
             qs_ot_env(1)%schur_closure_shadow_quadratic = rayleigh_model_quadratic_factor* &
                                                           qs_ot_env(1)%schur_closure_shadow_quadratic
-         END IF
-         IF (qs_ot_env(1)%schur_closure_full_shadow_pending) THEN
-            qs_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = &
-               rayleigh_model_quadratic_factor* &
-               qs_ot_env(1)%schur_closure_full_shadow_baseline_quadratic
-            qs_ot_env(1)%schur_closure_full_shadow_quadratic = &
-               rayleigh_model_quadratic_factor* &
-               qs_ot_env(1)%schur_closure_full_shadow_quadratic
          END IF
          partial_direction_slope = qs_ot_env(1)%schur_model_slope
          partial_direction_quadratic = qs_ot_env(1)%schur_model_quadratic
