@@ -14634,9 +14634,6 @@ CONTAINS
                samples = MIN(local_ot_env(1)%schur_closure_shadow_quality_samples + 1, &
                              HUGE(samples) - 1)
                local_ot_env(1)%schur_closure_shadow_quality_samples = samples
-               local_ot_env(1)%schur_closure_shadow_quality = closure_shadow_quality_ratio
-               local_ot_env(1)%schur_closure_shadow_advantage = closure_shadow_advantage
-               local_ot_env(1)%schur_closure_shadow_residual_quality = raw_residual_quality_ratio
                IF (samples == 1) THEN
                   local_ot_env(1)%schur_closure_shadow_quality_ema = closure_shadow_quality_ratio
                   local_ot_env(1)%schur_closure_shadow_advantage_ema = closure_shadow_advantage

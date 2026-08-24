@@ -1632,8 +1632,6 @@ CONTAINS
 
       samples = MIN(qs_ot_env(1)%schur_closure_response_samples + 1, HUGE(samples) - 1)
       qs_ot_env(1)%schur_closure_response_samples = samples
-      qs_ot_env(1)%schur_closure_response_quality = quality
-      qs_ot_env(1)%schur_closure_response_density_quality = density_quality
       IF (samples == 1) THEN
          qs_ot_env(1)%schur_closure_response_quality_ema = quality
          qs_ot_env(1)%schur_closure_response_density_quality_ema = density_quality
@@ -1748,19 +1746,14 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_samples)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_model_delta)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_model_density_delta)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_quality)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_quality_ema)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_density_quality)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_density_quality_ema)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_pending)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_quality_samples)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_baseline_quadratic)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_quadratic)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_quality)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_quality_ema)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_advantage)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_advantage_ema)
-      CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_residual_quality)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_residual_quality_ema)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_drop_sum)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_shadow_measured_sum)
