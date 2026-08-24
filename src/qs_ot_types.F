@@ -2315,7 +2315,7 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_ref
       INTEGER, OPTIONAL                                  :: ortho_k
 
-      INTEGER                                            :: i, k, m_diis, my_ortho_k, n, ncoef
+      INTEGER                                            :: i, k, m_diis, my_ortho_k, n, ncoef, nhistory
       TYPE(cp_blacs_env_type), POINTER                   :: context
       TYPE(mp_para_env_type), POINTER                    :: para_env
 
@@ -2668,9 +2668,12 @@ CONTAINS
          qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
          qs_ot_env%matrix_occ_precond_scale(:) = 1.0_dp
 
-         IF (qs_ot_env%settings%ot_method == "DIIS") THEN
-            ALLOCATE (qs_ot_env%ener_h_e(m_diis, ncoef))
-            ALLOCATE (qs_ot_env%ener_h_x(m_diis, ncoef))
+         IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
+             qs_ot_env%settings%ot_method == "LBFG") THEN
+            nhistory = m_diis
+            IF (qs_ot_env%settings%ot_method == "LBFG") nhistory = m_diis + 1
+            ALLOCATE (qs_ot_env%ener_h_e(nhistory, ncoef))
+            ALLOCATE (qs_ot_env%ener_h_x(nhistory, ncoef))
          END IF
 
          ALLOCATE (qs_ot_env%ener_gx(ncoef))
@@ -2882,7 +2885,8 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%ener_mermin_closure_y_anchor)) THEN
             DEALLOCATE (qs_ot_env%ener_mermin_closure_y_anchor)
          END IF
-         IF (qs_ot_env%settings%ot_method == "DIIS") THEN
+         IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
+             qs_ot_env%settings%ot_method == "LBFG") THEN
             IF (ASSOCIATED(qs_ot_env%ener_h_x)) DEALLOCATE (qs_ot_env%ener_h_x)
             IF (ASSOCIATED(qs_ot_env%ener_h_e)) DEALLOCATE (qs_ot_env%ener_h_e)
          END IF
@@ -3202,11 +3206,8 @@ CONTAINS
          settings%canonical_tether_max_strength = settings%canonical_tether_strength
       END IF
       IF (settings%ot_method == "LBFG") THEN
-         IF (settings%ot_algorithm /= "TOD") THEN
-            CPABORT("MINIMIZER LBFGS currently requires ALGORITHM STRICT")
-         END IF
-         IF (settings%do_ener) THEN
-            CPABORT("MINIMIZER LBFGS does not support ENERGIES")
+         IF (settings%ot_algorithm /= "TOD" .AND. settings%ot_algorithm /= "REF") THEN
+            CPABORT("MINIMIZER LBFGS requires ALGORITHM STRICT or IRAC")
          END IF
       END IF
 

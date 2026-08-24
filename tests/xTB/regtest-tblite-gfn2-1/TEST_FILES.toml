@@ -31,6 +31,17 @@
                                              {matcher="NO_TEXT", text="Smearing includes the last MO"},
                                              {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                              {matcher="NO_TEXT", text="Unsupported content type"}]
+"N2_gfn2_ot_smear_lbfgs.inp"             = [{matcher="E_total", tol=1.0E-9, ref=-5.72892261349308},
+                                             {matcher="Mermin_free_energy", tol=1.0E-9, ref=-5.72892261349308},
+                                             {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-5.72892261349308},
+                                             {matcher="OT_SMEARING_DEFAULT_ROTATION"},
+                                             {matcher="OT_SMEARING_DEFAULT_ENERGIES"},
+                                             {matcher="OT_SMEARING_DEFAULT_OCCUPATION_PRECONDITIONER"},
+                                             {matcher="NO_TEXT", text="Smearing includes the first MO"},
+                                             {matcher="NO_TEXT", text="Smearing includes the last MO"},
+                                             {matcher="NO_TEXT", text="SCF run NOT converged"},
+                                             {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
+                                             {matcher="NO_TEXT", text="Unsupported content type"}]
 "N2_gfn2_ls.inp"                         = [{matcher="M011", tol=1.0E-8, ref=-5.72892260298788}]
 "N2_gfn2_uks.inp"                        = [{matcher="E_total", tol=1.0E-8, ref=-5.7289226128}]
 "N2_gfn2_uks_cp2k_mixer.inp"             = [{matcher="E_total", tol=1.0E-8, ref=-5.7289226128}]

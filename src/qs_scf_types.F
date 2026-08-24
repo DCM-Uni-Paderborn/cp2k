@@ -124,6 +124,7 @@ MODULE qs_scf_types
       LOGICAL :: has_diis_scalars = .FALSE., has_matrix_history = .FALSE.
       LOGICAL :: has_matrix_history_im = .FALSE., has_rot_history = .FALSE.
       LOGICAL :: has_rot_history_im = .FALSE., has_ener_history = .FALSE.
+      LOGICAL :: has_lbfgs_scalars = .FALSE.
       REAL(KIND=dp) :: kpoint_weight = 0.0_dp
       REAL(KIND=dp) :: ot_pos(53) = 0.0_dp, ot_energy(53) = 0.0_dp, ot_grad(53) = 0.0_dp
       INTEGER :: line_search_left = -1, line_search_right = -1, line_search_mid = -1
@@ -330,6 +331,7 @@ MODULE qs_scf_types
                                                                           rot_mat_h_x_im_dense
       REAL(KIND=dp), DIMENSION(:), POINTER :: ener_x => NULL(), ener_dx => NULL(), ener_gx_old => NULL()
       REAL(KIND=dp), DIMENSION(:), POINTER :: c_diis => NULL(), c_broy => NULL(), energy_h => NULL()
+      REAL(KIND=dp), DIMENSION(:), POINTER :: lbfgs_rho => NULL(), lbfgs_yy => NULL()
       INTEGER, DIMENSION(:), POINTER :: ipivot => NULL()
       REAL(KIND=dp), DIMENSION(:, :), POINTER :: ls_diis => NULL(), lss_diis => NULL()
       REAL(KIND=dp), DIMENSION(:, :), POINTER :: ener_h_e => NULL(), ener_h_x => NULL()
@@ -865,6 +867,12 @@ CONTAINS
             END IF
             IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%energy_h)) THEN
                DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%energy_h)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%lbfgs_rho)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%lbfgs_rho)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%lbfgs_yy)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%lbfgs_yy)
             END IF
             IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%ipivot)) THEN
                DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ipivot)

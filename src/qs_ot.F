@@ -698,6 +698,11 @@ CONTAINS
          END SELECT
       CASE ("DIIS")
          update = .TRUE.
+      CASE ("LBFG")
+         ! L-BFGS secants live in the explicit (C_ref, A, epsilon) product chart.
+         ! Absorbing exp(A) into C_ref would change that chart and invalidate both
+         ! the orbital and generator parts of every stored secant pair.
+         update = .FALSE.
       CASE DEFAULT
          CPABORT("NYI")
       END SELECT

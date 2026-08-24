@@ -78,7 +78,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 37
+   INTEGER, PARAMETER                   :: ot_restart_version = 38
    REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
    REAL(KIND=dp), PARAMETER             :: ot_restart_objective_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
@@ -653,17 +653,17 @@ CONTAINS
       INTEGER, DIMENSION(16)                             :: int_payload
       INTEGER, DIMENSION(19)                             :: schur_int_payload
       INTEGER, DIMENSION(3)                              :: smear_int_payload
-      INTEGER, DIMENSION(31)                             :: log_payload_int
+      INTEGER, DIMENSION(32)                             :: log_payload_int
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload_int
       INTEGER, DIMENSION(qs_ot_restart_signature_nint)   :: settings_int_payload
       LOGICAL :: channel_source, has_diis_scalars, has_ener_dx, has_ener_gx_old, has_ener_history, &
-         has_ener_x, has_matrix_dx, has_matrix_dx_im, has_matrix_gx_old, has_matrix_gx_old_im, &
-         has_matrix_history, has_matrix_history_im, has_matrix_x, has_matrix_x_im, &
-         has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
+         has_ener_x, has_lbfgs_scalars, has_matrix_dx, has_matrix_dx_im, has_matrix_gx_old, &
+         has_matrix_gx_old_im, has_matrix_history, has_matrix_history_im, has_matrix_x, &
+         has_matrix_x_im, has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im, &
          settings_compatible
-      LOGICAL, DIMENSION(31)                             :: log_payload
+      LOGICAL, DIMENSION(32)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
       LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: settings_log_payload
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: restart_positions
@@ -764,10 +764,18 @@ CONTAINS
          has_ener_history = qs_ot_env(ichannel)%state_allocated .AND. &
                             ASSOCIATED(qs_ot_env(ichannel)%ener_h_e) .AND. &
                             ASSOCIATED(qs_ot_env(ichannel)%ener_h_x)
+         has_lbfgs_scalars = qs_ot_env(ichannel)%state_allocated .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%lbfgs_rho) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%lbfgs_yy)
          nener = 0
          IF (has_ener_x) nener = SIZE(qs_ot_env(ichannel)%ener_x)
          ndiis = 0
          IF (has_diis_scalars) ndiis = SIZE(qs_ot_env(ichannel)%energy_h)
+         IF (has_lbfgs_scalars) THEN
+            ndiis = SIZE(qs_ot_env(ichannel)%lbfgs_rho) + 1
+            CPASSERT(ndiis > 1)
+            CPASSERT(ndiis == SIZE(qs_ot_env(ichannel)%lbfgs_yy) + 1)
+         END IF
 
          int_payload = [ichannel, qs_ot_env(ichannel)%spin_index, &
                         qs_ot_env(ichannel)%kpoint_index, &
@@ -796,7 +804,8 @@ CONTAINS
                         qs_ot_env(ichannel)%mermin_ls_sample_pending, &
                         qs_ot_env(ichannel)%ener_direction_linear, &
                         qs_ot_env(ichannel)%diis_last_candidate_sd, &
-                        qs_ot_env(ichannel)%diis_last_candidate_response]
+                        qs_ot_env(ichannel)%diis_last_candidate_response, &
+                        has_lbfgs_scalars]
          real_payload = [qs_ot_env(ichannel)%kpoint_weight, &
                          qs_ot_env(ichannel)%delta, qs_ot_env(ichannel)%gnorm, &
                          qs_ot_env(ichannel)%gnorm_old, qs_ot_env(ichannel)%etotal, &
@@ -1158,6 +1167,7 @@ CONTAINS
          has_ener_history = log_payload(25)
          has_matrix_x = log_payload(26)
          has_matrix_x_im = log_payload(27)
+         has_lbfgs_scalars = log_payload(32)
 
          IF (ires > 0) THEN
             WRITE (ires) int_payload
@@ -1296,6 +1306,12 @@ CONTAINS
             CALL write_restart_real_matrix(qs_ot_env(ichannel)%ener_h_e, ndiis, nener, &
                                            channel_source, global_para_env, ires)
             CALL write_restart_real_matrix(qs_ot_env(ichannel)%ener_h_x, ndiis, nener, &
+                                           channel_source, global_para_env, ires)
+         END IF
+         IF (has_lbfgs_scalars) THEN
+            CALL write_restart_real_vector(qs_ot_env(ichannel)%lbfgs_rho, ndiis - 1, &
+                                           channel_source, global_para_env, ires)
+            CALL write_restart_real_vector(qs_ot_env(ichannel)%lbfgs_yy, ndiis - 1, &
                                            channel_source, global_para_env, ires)
          END IF
       END DO
@@ -1500,7 +1516,8 @@ CONTAINS
       LOGICAL, DIMENSION(27)                             :: log_payload_v10
       LOGICAL, DIMENSION(28)                             :: log_payload_v18
       LOGICAL, DIMENSION(29)                             :: log_payload_v35
-      LOGICAL, DIMENSION(31)                             :: log_payload
+      LOGICAL, DIMENSION(31)                             :: log_payload_v37
+      LOGICAL, DIMENSION(32)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
       LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: settings_log_payload
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: current_positions, restart_positions
@@ -1655,16 +1672,24 @@ CONTAINS
          adaptive_int_payload(:) = 0
          adaptive_log_payload(:) = .FALSE.
          adaptive_real_payload(:) = 0.0_dp
+         log_payload(:) = .FALSE.
          real_payload(:) = 0.0_dp
          IF (para_env%is_source()) THEN
-            IF (version_read >= 37) THEN
+            IF (version_read >= 38) THEN
                READ (rst_unit) int_payload
                READ (rst_unit) log_payload
                READ (rst_unit) real_payload
+            ELSE IF (version_read == 37) THEN
+               READ (rst_unit) int_payload
+               READ (rst_unit) log_payload_v37
+               READ (rst_unit) real_payload
+               log_payload(:) = .FALSE.
+               log_payload(1:31) = log_payload_v37
             ELSE IF (version_read == 36) THEN
                READ (rst_unit) int_payload
-               READ (rst_unit) log_payload
+               READ (rst_unit) log_payload_v37
                READ (rst_unit) real_payload_v36
+               log_payload(1:31) = log_payload_v37
                real_payload(1:24) = real_payload_v36
             ELSE IF (version_read >= 27) THEN
                READ (rst_unit) int_payload_v35
@@ -1680,8 +1705,9 @@ CONTAINS
                real_payload(22:24) = -1.0_dp
             ELSE IF (version_read >= 19) THEN
                READ (rst_unit) int_payload
-               READ (rst_unit) log_payload
+               READ (rst_unit) log_payload_v37
                READ (rst_unit) real_payload_v26
+               log_payload(1:31) = log_payload_v37
                real_payload(1:19) = real_payload_v26
             ELSE IF (version_read >= 17) THEN
                READ (rst_unit) int_payload
@@ -1925,6 +1951,7 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%ener_direction_linear = log_payload(29)
          scf_env%qs_ot_restart%channel(ichannel)%diis_last_candidate_sd = log_payload(30)
          scf_env%qs_ot_restart%channel(ichannel)%diis_last_candidate_response = log_payload(31)
+         scf_env%qs_ot_restart%channel(ichannel)%has_lbfgs_scalars = log_payload(32)
          scf_env%qs_ot_restart%channel(ichannel)%kpoint_weight = real_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%delta = real_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%gnorm = real_payload(3)
@@ -2365,6 +2392,17 @@ CONTAINS
             END IF
             CALL para_env%bcast(scf_env%qs_ot_restart%channel(ichannel)%ener_h_e)
             CALL para_env%bcast(scf_env%qs_ot_restart%channel(ichannel)%ener_h_x)
+         END IF
+         IF (scf_env%qs_ot_restart%channel(ichannel)%has_lbfgs_scalars) THEN
+            CPASSERT(ndiis > 1)
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%lbfgs_rho(ndiis - 1))
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%lbfgs_yy(ndiis - 1))
+            IF (para_env%is_source()) THEN
+               READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%lbfgs_rho
+               READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%lbfgs_yy
+            END IF
+            CALL para_env%bcast(scf_env%qs_ot_restart%channel(ichannel)%lbfgs_rho)
+            CALL para_env%bcast(scf_env%qs_ot_restart%channel(ichannel)%lbfgs_yy)
          END IF
       END DO
 

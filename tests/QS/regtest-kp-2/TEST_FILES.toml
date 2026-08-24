@@ -272,6 +272,34 @@
                                            {matcher="NO_TEXT", text="SCF run NOT converged"},
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
+# Product-space L-BFGS spans C(k) real/imaginary parts, finite complex
+# rotations, and the fixed-N energy variables. The matching reader restores
+# the complete eight-entry state/secant ring plus rho and y^T y scalars.
+"Al_kp_ot_lbfgs.inp"                     = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035093773},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035093773},
+                                           {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-2.06508035093773},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.1232462562E-4},
+                                           {matcher="OT_SCF_convergence", tol=8.0E-1, ref=5.0E-8},
+                                           {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
+                                           {matcher="ADDED_MOS_AUTO_GROW_SEQUENCE", ref="8"},
+                                           {matcher="OT_KPOINT_DEFAULT_IRAC"},
+                                           {matcher="OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"},
+                                           {matcher="OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the first band"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
+                                           {matcher="NO_TEXT", text="SCF run NOT converged"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
+"Al_kp_ot_lbfgs_restart.inp"             = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035093773},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035093773},
+                                           {matcher="OT_SCF_convergence", tol=8.0E-1, ref=5.0E-8},
+                                           {matcher="SCF_guess_restart"},
+                                           {matcher="NO_TEXT", text="Ignoring malformed k-point OT restart"},
+                                           {matcher="NO_TEXT", text="Ignoring incomplete k-point OT restart"},
+                                           {matcher="NO_TEXT", text="SCF run NOT converged"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_added_all_restart.inp"        = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035094088},
                                            {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035094088},
                                            {matcher="QS_number_of_molecular_orbitals", tol=0.0, ref=13},

@@ -3457,6 +3457,21 @@ CONTAINS
             restored = .TRUE.
          END IF
       END IF
+      IF (scf_env%qs_ot_restart%channel(shared_channel)%has_lbfgs_scalars) THEN
+         IF (ASSOCIATED(qs_ot_env%lbfgs_rho) .AND. ASSOCIATED(qs_ot_env%lbfgs_yy)) THEN
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(shared_channel)%lbfgs_rho) .AND. &
+                ASSOCIATED(scf_env%qs_ot_restart%channel(shared_channel)%lbfgs_yy)) THEN
+               IF (SIZE(qs_ot_env%lbfgs_rho) == &
+                   SIZE(scf_env%qs_ot_restart%channel(shared_channel)%lbfgs_rho) .AND. &
+                   SIZE(qs_ot_env%lbfgs_yy) == &
+                   SIZE(scf_env%qs_ot_restart%channel(shared_channel)%lbfgs_yy)) THEN
+                  qs_ot_env%lbfgs_rho = scf_env%qs_ot_restart%channel(shared_channel)%lbfgs_rho
+                  qs_ot_env%lbfgs_yy = scf_env%qs_ot_restart%channel(shared_channel)%lbfgs_yy
+                  restored = .TRUE.
+               END IF
+            END IF
+         END IF
+      END IF
 
       IF (restored) THEN
          qs_ot_env%ot_pos = scf_env%qs_ot_restart%channel(shared_channel)%ot_pos
@@ -4250,7 +4265,7 @@ CONTAINS
       TYPE(qs_ot_type)                                   :: qs_ot_env
       TYPE(dbcsr_type), POINTER                          :: matrix_s
 
-      INTEGER                                            :: i, m_diis, nmo, nmo_ortho
+      INTEGER                                            :: i, m_diis, ncoef, nmo, nmo_ortho
 
       CPASSERT(qs_ot_env%state_allocated)
       CPASSERT(.NOT. qs_ot_env%has_complex_kpoint_state)
@@ -4294,10 +4309,13 @@ CONTAINS
       END IF
 
       IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
-          qs_ot_env%settings%ot_method == "BROY") THEN
-         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_e_im, m_diis)
-         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_x_im, m_diis)
-         DO i = 1, m_diis
+          qs_ot_env%settings%ot_method == "BROY" .OR. &
+          qs_ot_env%settings%ot_method == "LBFG") THEN
+         ncoef = m_diis
+         IF (qs_ot_env%settings%ot_method == "LBFG") ncoef = m_diis + 1
+         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_e_im, ncoef)
+         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_x_im, ncoef)
+         DO i = 1, ncoef
             CALL dbcsr_init_p(qs_ot_env%matrix_h_x_im(i)%matrix)
             CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_h_x_im(i)%matrix, template=matrix_s, &
                                                    n=nmo, sym=dbcsr_type_no_symmetry)
@@ -4421,10 +4439,13 @@ CONTAINS
          CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_closure_y_anchor_im)
          CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_closure_y_anchor_im, template=matrix_s, &
                                             m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
-         IF (qs_ot_env%settings%ot_method == "DIIS") THEN
-            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_e_im, m_diis)
-            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_x_im, m_diis)
-            DO i = 1, m_diis
+         IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
+             qs_ot_env%settings%ot_method == "LBFG") THEN
+            ncoef = m_diis
+            IF (qs_ot_env%settings%ot_method == "LBFG") ncoef = m_diis + 1
+            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_e_im, ncoef)
+            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_x_im, ncoef)
+            DO i = 1, ncoef
                CALL dbcsr_init_p(qs_ot_env%rot_mat_h_x_im(i)%matrix)
                CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_h_x_im(i)%matrix, template=matrix_s, &
                                                   m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
