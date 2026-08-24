@@ -978,6 +978,8 @@ CONTAINS
                                qs_ot_env(ichannel)%schur_projector_physical_selected_drop_sum, &
                                qs_ot_env(ichannel)%schur_projector_physical_selected_measured_sum]
 
+         ! Keep the retired split-shadow and occupation-gap slots zero so that
+         ! version-20-and-newer restart payload layouts remain unchanged.
          adaptive_int_payload = [qs_ot_env(ichannel)%schur_model_attempt, &
                                  qs_ot_env(ichannel)%schur_cg_attempt, &
                                  qs_ot_env(ichannel)%schur_model_flavor, &
@@ -986,8 +988,7 @@ CONTAINS
                                  qs_ot_env(ichannel)%schur_constrained_quality_samples, &
                                  qs_ot_env(ichannel)%schur_split_quality_samples, &
                                  qs_ot_env(ichannel)%schur_coupled_quality_samples, &
-                                 qs_ot_env(ichannel)%schur_split_shadow_quality_samples, &
-                                 qs_ot_env(ichannel)%schur_occgap_shadow_quality_samples, &
+                                 0, 0, &
                                  qs_ot_env(ichannel)%schur_dense_metric_shadow_quality_samples, &
                                  qs_ot_env(ichannel)%schur_step_gauge_quality_samples, &
                                  qs_ot_env(ichannel)%kpoint_physical_delta_groups, &
@@ -997,8 +998,7 @@ CONTAINS
                                  qs_ot_env(ichannel)%schur_model_quality_ready, &
                                  qs_ot_env(ichannel)%schur_constrained_pending, &
                                  qs_ot_env(ichannel)%schur_constrained_candidate_enabled, &
-                                 qs_ot_env(ichannel)%schur_split_shadow_pending, &
-                                 qs_ot_env(ichannel)%schur_occgap_shadow_pending, &
+                                 .FALSE., .FALSE., &
                                  qs_ot_env(ichannel)%schur_dense_metric_shadow_pending, &
                                  qs_ot_env(ichannel)%schur_history_mixed, &
                                  qs_ot_env(ichannel)%schur_split_candidate_enabled, &
@@ -1052,21 +1052,9 @@ CONTAINS
                                   qs_ot_env(ichannel)%schur_split_drop_sum, &
                                   qs_ot_env(ichannel)%schur_split_measured_sum, &
                                   qs_ot_env(ichannel)%schur_split_calibrated_drop_sum, &
-                                  qs_ot_env(ichannel)%schur_split_shadow_drop, &
-                                  qs_ot_env(ichannel)%schur_split_shadow_calibrated_drop, &
-                                  qs_ot_env(ichannel)%schur_split_shadow_quality, &
-                                  qs_ot_env(ichannel)%schur_split_shadow_quality_ema, &
-                                  qs_ot_env(ichannel)%schur_split_shadow_calibrated_quality, &
-                                  qs_ot_env(ichannel)%schur_split_shadow_calibrated_quality_ema, &
-                                  qs_ot_env(ichannel)%schur_split_shadow_drop_sum, &
-                                  qs_ot_env(ichannel)%schur_split_shadow_measured_sum, &
-                                  qs_ot_env(ichannel)%schur_split_shadow_calibrated_drop_sum, &
-                                  qs_ot_env(ichannel)%schur_occgap_shadow_drop, &
-                                  qs_ot_env(ichannel)%schur_occgap_shadow_quality, &
-                                  qs_ot_env(ichannel)%schur_occgap_shadow_quality_ema, &
-                                  qs_ot_env(ichannel)%schur_occgap_shadow_drop_sum, &
-                                  qs_ot_env(ichannel)%schur_occgap_shadow_measured_sum, &
-                                  qs_ot_env(ichannel)%schur_occgap_shadow_gap_ratio, &
+                                  0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
+                                  0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
+                                  0.0_dp, 0.0_dp, 0.0_dp, &
                                   qs_ot_env(ichannel)%schur_coupled_quality, &
                                   qs_ot_env(ichannel)%schur_coupled_quality_ema, &
                                   qs_ot_env(ichannel)%schur_coupled_calibrated_quality, &

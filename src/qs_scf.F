@@ -3921,10 +3921,6 @@ CONTAINS
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(7)
             qs_ot_env%schur_coupled_quality_samples = &
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(8)
-            qs_ot_env%schur_split_shadow_quality_samples = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(9)
-            qs_ot_env%schur_occgap_shadow_quality_samples = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(10)
             qs_ot_env%schur_dense_metric_shadow_quality_samples = &
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(11)
             qs_ot_env%schur_step_gauge_quality_samples = &
@@ -3940,10 +3936,6 @@ CONTAINS
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(3)
             qs_ot_env%schur_constrained_candidate_enabled = &
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(4)
-            qs_ot_env%schur_split_shadow_pending = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(5)
-            qs_ot_env%schur_occgap_shadow_pending = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(6)
             qs_ot_env%schur_dense_metric_shadow_pending = &
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(7)
             qs_ot_env%schur_history_mixed = &
@@ -4034,36 +4026,6 @@ CONTAINS
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(45)
             qs_ot_env%schur_split_calibrated_drop_sum = &
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(46)
-            qs_ot_env%schur_split_shadow_drop = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(47)
-            qs_ot_env%schur_split_shadow_calibrated_drop = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(48)
-            qs_ot_env%schur_split_shadow_quality = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(49)
-            qs_ot_env%schur_split_shadow_quality_ema = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(50)
-            qs_ot_env%schur_split_shadow_calibrated_quality = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(51)
-            qs_ot_env%schur_split_shadow_calibrated_quality_ema = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(52)
-            qs_ot_env%schur_split_shadow_drop_sum = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(53)
-            qs_ot_env%schur_split_shadow_measured_sum = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(54)
-            qs_ot_env%schur_split_shadow_calibrated_drop_sum = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(55)
-            qs_ot_env%schur_occgap_shadow_drop = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(56)
-            qs_ot_env%schur_occgap_shadow_quality = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(57)
-            qs_ot_env%schur_occgap_shadow_quality_ema = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(58)
-            qs_ot_env%schur_occgap_shadow_drop_sum = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(59)
-            qs_ot_env%schur_occgap_shadow_measured_sum = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(60)
-            qs_ot_env%schur_occgap_shadow_gap_ratio = &
-               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(61)
             qs_ot_env%schur_coupled_quality = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(62)
             qs_ot_env%schur_coupled_quality_ema = &
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(63)

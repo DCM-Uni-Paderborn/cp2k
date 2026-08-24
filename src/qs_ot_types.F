@@ -356,8 +356,6 @@ MODULE qs_ot_types
       ! orbitals/history, while this Schur quality model is relearned after read.
       LOGICAL :: schur_model_pending = .FALSE., schur_model_quality_ready = .FALSE.
       LOGICAL :: schur_constrained_pending = .FALSE., schur_constrained_candidate_enabled = .FALSE.
-      LOGICAL :: schur_split_shadow_pending = .FALSE.
-      LOGICAL :: schur_occgap_shadow_pending = .FALSE.
       LOGICAL :: schur_vector_secant_pending = .FALSE.
       LOGICAL :: schur_vector_secant_candidate_enabled = .FALSE.
       LOGICAL :: schur_multisecant_pending = .FALSE.
@@ -397,7 +395,6 @@ MODULE qs_ot_types
                  schur_model_quality_samples = 0
       INTEGER :: schur_constrained_quality_samples = 0
       INTEGER :: schur_split_quality_samples = 0, schur_coupled_quality_samples = 0
-      INTEGER :: schur_split_shadow_quality_samples = 0
       INTEGER :: schur_vector_secant_quality_samples = 0
       INTEGER :: schur_multisecant_quality_samples = 0
       INTEGER :: schur_prediction_quality_samples = 0
@@ -519,18 +516,6 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_split_residual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_split_drop_sum = 0.0_dp, schur_split_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_split_calibrated_drop_sum = 0.0_dp
-      REAL(KIND=dp) :: schur_split_shadow_drop = 0.0_dp, schur_split_shadow_calibrated_drop = 0.0_dp
-      REAL(KIND=dp) :: schur_split_shadow_quality = 0.0_dp, schur_split_shadow_quality_ema = 0.0_dp
-      REAL(KIND=dp) :: schur_split_shadow_calibrated_quality = 0.0_dp
-      REAL(KIND=dp) :: schur_split_shadow_calibrated_quality_ema = 0.0_dp
-      REAL(KIND=dp) :: schur_split_shadow_drop_sum = 0.0_dp, schur_split_shadow_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: schur_split_shadow_calibrated_drop_sum = 0.0_dp
-      REAL(KIND=dp) :: schur_occgap_shadow_drop = 0.0_dp, schur_occgap_shadow_quality = 0.0_dp
-      REAL(KIND=dp) :: schur_occgap_shadow_quality_ema = 0.0_dp
-      REAL(KIND=dp) :: schur_occgap_shadow_drop_sum = 0.0_dp
-      REAL(KIND=dp) :: schur_occgap_shadow_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: schur_occgap_shadow_gap_ratio = 0.0_dp
-      INTEGER :: schur_occgap_shadow_quality_samples = 0
       REAL(KIND=dp) :: schur_coupled_quality = 0.0_dp, schur_coupled_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_calibrated_quality = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_calibrated_quality_ema = 0.0_dp
@@ -1403,8 +1388,6 @@ CONTAINS
       qs_ot_env%schur_model_quality_ready = .FALSE.
       qs_ot_env%schur_constrained_pending = .FALSE.
       qs_ot_env%schur_constrained_candidate_enabled = .FALSE.
-      qs_ot_env%schur_split_shadow_pending = .FALSE.
-      qs_ot_env%schur_occgap_shadow_pending = .FALSE.
       qs_ot_env%schur_vector_secant_pending = .FALSE.
       qs_ot_env%schur_vector_secant_candidate_enabled = .FALSE.
       qs_ot_env%schur_multisecant_pending = .FALSE.
@@ -1449,7 +1432,6 @@ CONTAINS
       qs_ot_env%schur_constrained_quality_samples = 0
       qs_ot_env%schur_split_quality_samples = 0
       qs_ot_env%schur_coupled_quality_samples = 0
-      qs_ot_env%schur_split_shadow_quality_samples = 0
       qs_ot_env%schur_vector_secant_quality_samples = 0
       qs_ot_env%schur_multisecant_quality_samples = 0
       qs_ot_env%schur_prediction_quality_samples = 0
@@ -1459,7 +1441,6 @@ CONTAINS
       qs_ot_env%schur_closure_candidate_quality_samples = 0
       qs_ot_env%schur_closure_candidate_model_groups = 0
       qs_ot_env%schur_closure_candidate_selected_groups = 0
-      qs_ot_env%schur_occgap_shadow_quality_samples = 0
       qs_ot_env%schur_projector_mode_quality_samples = 0
       qs_ot_env%schur_projector_offdiag_quality_samples = 0
       qs_ot_env%schur_projector_offdiag_selected_quality_samples = 0
@@ -1593,21 +1574,6 @@ CONTAINS
       qs_ot_env%schur_split_drop_sum = 0.0_dp
       qs_ot_env%schur_split_measured_sum = 0.0_dp
       qs_ot_env%schur_split_calibrated_drop_sum = 0.0_dp
-      qs_ot_env%schur_split_shadow_drop = 0.0_dp
-      qs_ot_env%schur_split_shadow_calibrated_drop = 0.0_dp
-      qs_ot_env%schur_split_shadow_quality = 0.0_dp
-      qs_ot_env%schur_split_shadow_quality_ema = 0.0_dp
-      qs_ot_env%schur_split_shadow_calibrated_quality = 0.0_dp
-      qs_ot_env%schur_split_shadow_calibrated_quality_ema = 0.0_dp
-      qs_ot_env%schur_split_shadow_drop_sum = 0.0_dp
-      qs_ot_env%schur_split_shadow_measured_sum = 0.0_dp
-      qs_ot_env%schur_split_shadow_calibrated_drop_sum = 0.0_dp
-      qs_ot_env%schur_occgap_shadow_drop = 0.0_dp
-      qs_ot_env%schur_occgap_shadow_quality = 0.0_dp
-      qs_ot_env%schur_occgap_shadow_quality_ema = 0.0_dp
-      qs_ot_env%schur_occgap_shadow_drop_sum = 0.0_dp
-      qs_ot_env%schur_occgap_shadow_measured_sum = 0.0_dp
-      qs_ot_env%schur_occgap_shadow_gap_ratio = 0.0_dp
       qs_ot_env%schur_coupled_quality = 0.0_dp
       qs_ot_env%schur_coupled_quality_ema = 0.0_dp
       qs_ot_env%schur_coupled_calibrated_quality = 0.0_dp
