@@ -181,7 +181,7 @@
 # channels in one step.
 # Al_kp_ot_uks_common_mu_sym3_converge.inp is the complementary shared-mu
 # four-channel anchor and exercises the automatic unrestricted metallic
-# defaults. Fresh MPI-2/OMP-2 DIIS trajectories converge in 90--127 steps near
+# defaults. Fresh MPI-2/OMP-2 DIIS trajectories converge in 87--127 steps near
 # -8.16155089 Ha, within 2.5E-8 Ha of diagonalization, versus 129 steps for CG,
 # and reproduce the unconstrained spin populations 6.33333/5.66667.
 # Al_kp_ot_uks_common_mu_sym3_restart.inp also restores the four-channel state
