@@ -399,6 +399,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_closure_groups_refresh_ready, &
              qs_scf_kp_density_closure_history_refresh_ready, &
              qs_scf_kp_density_closure_refresh_ready, &
+             qs_scf_kp_exit_limited_rebase_ready, &
              qs_scf_kp_mature_tail_rebase_ready, &
              qs_scf_kp_mixed_tail_rebase_ready, &
              qs_scf_kp_orbital_tail_rebase_ready, &
@@ -8175,6 +8176,46 @@ CONTAINS
    END FUNCTION qs_scf_kp_mixed_tail_rebase_ready
 
 ! **************************************************************************************************
+!> \brief Detect a complete-residual exit veto after the represented search space has converged.
+!>
+!>        A stale REF chart can leave the raw/search residual and canonical fixed-N density below
+!>        EPS_SCF while the independently completed complex physical residual remains just above
+!>        it.  Further line searches in the represented chart cannot resolve that omitted block.
+!>        Rebase only after accepted Mermin calibration and inside a narrow one-decade exit basin.
+!> \param residual_delta represented/global OT search residual
+!> \param complete_physical_delta complete complex fixed-N physical residual
+!> \param density_ready whether the canonical fixed-N density audit is available
+!> \param density_delta canonical fixed-N density-stationarity residual
+!> \param eps_scf requested SCF threshold
+!> \param accepted_samples independently accepted states in the current REF chart
+!> \param accepted_quality_ema accepted Mermin-drop quality
+!> \return true when a fresh physical REF chart should resolve the exit-only residual
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_exit_limited_rebase_ready( &
+      residual_delta, complete_physical_delta, density_ready, density_delta, eps_scf, &
+      accepted_samples, accepted_quality_ema) RESULT(ready)
+
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, complete_physical_delta
+      LOGICAL, INTENT(IN)                                :: density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_delta, eps_scf
+      INTEGER, INTENT(IN)                                :: accepted_samples
+      REAL(KIND=dp), INTENT(IN)                          :: accepted_quality_ema
+      LOGICAL                                            :: ready
+
+      REAL(KIND=dp)                                      :: eps, physical_upper
+
+      eps = MAX(eps_scf, EPSILON(1.0_dp))
+      physical_upper = MIN(10.0_dp*eps, SQRT(eps))
+      ready = density_ready .AND. complete_physical_delta >= 0.0_dp .AND. &
+              residual_delta >= 0.0_dp .AND. residual_delta <= eps .AND. &
+              density_delta >= 0.0_dp .AND. density_delta <= eps .AND. &
+              complete_physical_delta > eps .AND. complete_physical_delta <= physical_upper .AND. &
+              accepted_samples >= ot_kp_schur_calibration_min_samples .AND. &
+              accepted_quality_ema >= 0.5_dp
+
+   END FUNCTION qs_scf_kp_exit_limited_rebase_ready
+
+! **************************************************************************************************
 !> \brief Decide whether a mature asymptotic fixed-N tail needs a fresh REF chart.
 !>
 !>        This is deliberately not a generic residual threshold.  It requires a complete accepted
@@ -10257,8 +10298,8 @@ CONTAINS
                                                             ispin, local_kpoint, nao, nmo
       LOGICAL :: auto_expandable, base_state, collapsed, defer_energy_closure, &
          density_buffer_ready, density_closure_stagnant, density_history_stagnant, &
-         fixed_moment_groups, high_residual_stagnant, mature_tail_rebase, mixed_tail_rebase, &
-         orbital_tail_rebase, step_ready
+         exit_limited_rebase, fixed_moment_groups, high_residual_stagnant, mature_tail_rebase, &
+         mixed_tail_rebase, orbital_tail_rebase, step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
                                                             maxocc, occ_tail, residual_delta, &
                                                             weight
@@ -10364,6 +10405,13 @@ CONTAINS
                           local_ot_env(1)%kpoint_complete_physical_delta, &
                           local_ot_env(1)%kpoint_raw_delta, eps_scf, &
                           local_ot_env(1)%mermin_ls_accepted_quality_samples)
+      exit_limited_rebase = allow_orbital_tail_rebase .AND. density_buffer_ready .AND. &
+                            qs_scf_kp_exit_limited_rebase_ready( &
+                            residual_delta, local_ot_env(1)%kpoint_complete_physical_delta, &
+                            local_ot_env(1)%kpoint_density_stationarity_ready, &
+                            local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf, &
+                            local_ot_env(1)%kpoint_subspace_accepted_samples, &
+                            local_ot_env(1)%mermin_ls_accepted_quality_ema)
       mature_tail_rebase = allow_orbital_tail_rebase .AND. &
                            qs_scf_kp_mature_tail_rebase_ready( &
                            residual_delta, local_ot_env(1)%kpoint_complete_physical_delta, &
@@ -10375,7 +10423,8 @@ CONTAINS
       density_closure_stagnant = density_closure_stagnant .OR. density_history_stagnant
       ! Reserve one search direction for the diagonal fixed-N energy closure before
       ! replacing the orbital subspace; a later refresh re-arms this one-shot attempt.
-      IF (defer_energy_closure .AND. .NOT. mixed_tail_rebase .AND. .NOT. mature_tail_rebase) RETURN
+      IF (defer_energy_closure .AND. .NOT. mixed_tail_rebase .AND. &
+          .NOT. mature_tail_rebase .AND. .NOT. exit_limited_rebase) RETURN
       refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
                                                 residual_delta, eps_scf, step_ready, base_state, &
                                                 high_residual_stagnant, density_closure_stagnant)
@@ -10403,18 +10452,27 @@ CONTAINS
          refresh = qs_scf_kp_subspace_refresh_gate(.TRUE., fermi_window_guarded, .FALSE., &
                                                    residual_delta, eps_scf, step_ready, base_state, &
                                                    density_closure_stagnant=.TRUE.)
+      IF (.NOT. refresh .AND. exit_limited_rebase) THEN
+         ! This narrow exit predicate already requires four independently
+         ! accepted states in the current REF chart.  Do not apply the
+         ! general twelve-sample stagnation gate a second time.
+         refresh = qs_scf_kp_subspace_refresh_gate(.TRUE., fermi_window_guarded, .FALSE., &
+                                                   residual_delta, eps_scf, .TRUE., base_state, &
+                                                   density_closure_stagnant=.TRUE.)
+      END IF
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= debug_print_level .AND. logger%para_env%is_source() .AND. &
           (collapsed .OR. density_closure_stagnant .OR. orbital_tail_rebase .OR. mature_tail_rebase .OR. &
+           exit_limited_rebase .OR. &
            mixed_tail_rebase .OR. &
            (auto_expandable .AND. local_ot_env(1)%mermin_ls_accepted_quality_samples >= 32)) .AND. &
-          step_ready) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,L1),3(1X,I6),7(1X,ES16.8))') &
+          (step_ready .OR. exit_limited_rebase)) &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,11(1X,L1),3(1X,I6),7(1X,ES16.8))') &
          " OT k-point subspace refresh ready restart stagnant buffer closure history "// &
-         "orbital mature expandable mixed step epoch samples residual physical density dqema pqema frac max:", &
+         "orbital mature exit expandable mixed step epoch samples residual physical density dqema pqema frac max:", &
          refresh, restart_valid, high_residual_stagnant, density_buffer_ready, density_closure_stagnant, &
-         density_history_stagnant, orbital_tail_rebase, mature_tail_rebase, auto_expandable, &
+         density_history_stagnant, orbital_tail_rebase, mature_tail_rebase, exit_limited_rebase, auto_expandable, &
          mixed_tail_rebase, &
          local_ot_env(1)%OT_count, &
          local_ot_env(1)%kpoint_subspace_accepted_samples, &
