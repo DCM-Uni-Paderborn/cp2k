@@ -114,13 +114,13 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_constrained_symmetric_solve, qs_scf_kp_coupled_closure_prediction, &
         qs_scf_kp_coupled_closure_response, qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
-        qs_scf_kp_coupled_residual_prediction, qs_scf_kp_coupled_response_quadratic, &
-        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
-        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_relevant, &
-        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_groups_refresh_ready, &
+        qs_scf_kp_coupled_residual_prediction, qs_scf_kp_coupled_schur_transport, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
+        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
+        qs_scf_kp_density_candidate_relevant, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
+        qs_scf_kp_density_closure_groups_refresh_ready, &
         qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
         qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
         qs_scf_kp_density_descent_candidate, qs_scf_kp_density_full_direct_tail_probe, &
@@ -133,37 +133,36 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
         qs_scf_kp_energy_occupation_plateau_ready, qs_scf_kp_energy_relative_metric_ready, &
         qs_scf_kp_exit_limited_rebase_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_external_fermi_projection_enabled, qs_scf_kp_fermi_entropy_state, &
-        qs_scf_kp_fermi_frontier_armed, qs_scf_kp_fermi_frontier_mismatch, &
-        qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
-        qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_energy_hessian, &
-        qs_scf_kp_fixed_n_frozen_energy_gradient, qs_scf_kp_fixed_n_projector_frechet, &
-        qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_full_residual_completion, qs_scf_kp_identifiable_constrained_response, &
-        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_line_search_exit_pending, &
-        qs_scf_kp_mature_tail_rebase_ready, qs_scf_kp_measured_residual_subspace_step, &
-        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
-        qs_scf_kp_mixed_tail_rebase_ready, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_orbital_tail_rebase_ready, qs_scf_kp_pair_mask_moments, &
-        qs_scf_kp_physical_audit_add_group, qs_scf_kp_physical_audit_begin, &
-        qs_scf_kp_prediction_candidate_evaluation_ready, qs_scf_kp_prediction_candidate_selected, &
-        qs_scf_kp_project_symmetric_subspace_correction, qs_scf_kp_projector_trace_metrics, &
-        qs_scf_kp_projector_trace_metrics_type, qs_scf_kp_quadratic_descent_scale, &
-        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_rebased_calibration_samples, &
-        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
-        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_history_reset_needed, &
-        qs_scf_kp_residual_pair_capture_limit, qs_scf_kp_residual_pair_full_capture_ready, &
-        qs_scf_kp_residual_pair_omission_limit, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_shadow_prediction_quality, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_subspace_refresh_step_ready, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_anchor_action, qs_scf_kp_validated_density_response, &
-        qs_scf_kp_work_consistent_response
+        qs_scf_kp_external_fermi_projection_enabled, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_fermi_frontier_mismatch, qs_scf_kp_fermi_guard_control_delta, &
+        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
+        qs_scf_kp_fixed_n_energy_hessian, qs_scf_kp_fixed_n_frozen_energy_gradient, &
+        qs_scf_kp_fixed_n_projector_frechet, qs_scf_kp_fixed_n_response_mu_shift, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_full_residual_completion, &
+        qs_scf_kp_identifiable_constrained_response, qs_scf_kp_indefinite_residual_balanced_step, &
+        qs_scf_kp_line_search_exit_pending, qs_scf_kp_mature_tail_rebase_ready, &
+        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
+        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_mixed_tail_rebase_ready, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_orbital_tail_rebase_ready, &
+        qs_scf_kp_pair_mask_moments, qs_scf_kp_physical_audit_add_group, &
+        qs_scf_kp_physical_audit_begin, qs_scf_kp_prediction_candidate_evaluation_ready, &
+        qs_scf_kp_prediction_candidate_selected, qs_scf_kp_project_symmetric_subspace_correction, &
+        qs_scf_kp_projector_trace_metrics, qs_scf_kp_projector_trace_metrics_type, &
+        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
+        qs_scf_kp_rebased_calibration_samples, qs_scf_kp_reduced_secant_prediction, &
+        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_history_reset_needed, qs_scf_kp_residual_pair_capture_limit, &
+        qs_scf_kp_residual_pair_full_capture_ready, qs_scf_kp_residual_pair_omission_limit, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_subspace_refresh_step_ready, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_anchor_action, &
+        qs_scf_kp_validated_density_response, qs_scf_kp_work_consistent_response
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
@@ -281,7 +280,6 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_fermi_frontier_mismatch("k-point Fermi frontier physical rearming", nfail)
    CALL check_fermi_guard_release("k-point Fermi guard residual release", nfail)
    CALL check_fermi_guard_minimizer_policy("k-point Fermi guard minimizer policy", nfail)
-   CALL check_fermi_entropy_state("k-point spin-resolved Fermi entropy", 5.0E-15_dp, nfail)
    CALL check_ot_smearing_frontier_seed("OT smearing symmetric frontier seed", nfail)
    CALL check_metallic_variable_defaults("metallic OT coupled variable defaults", nfail)
    CALL check_kpoint_preconditioner_support("k-point OT preconditioner support", nfail)
@@ -5725,34 +5723,6 @@ CONTAINS
    END SUBROUTINE check_fermi_guard_minimizer_policy
 
 ! **************************************************************************************************
-!> \brief Check stable endpoint and fractional one-state Fermi entropy contributions.
-!> \param label ...
-!> \param tol ...
-!> \param nfail ...
-! **************************************************************************************************
-   SUBROUTINE check_fermi_entropy_state(label, tol, nfail)
-      CHARACTER(LEN=*), INTENT(IN)                       :: label
-      REAL(KIND=dp), INTENT(IN)                          :: tol
-      INTEGER, INTENT(INOUT)                             :: nfail
-
-      REAL(KIND=dp), PARAMETER                           :: maxocc = 2.0_dp, sigma = 0.01_dp
-
-      REAL(KIND=dp)                                      :: error
-
-      error = MAX(ABS(qs_scf_kp_fermi_entropy_state(0.0_dp, maxocc, sigma)), &
-                  ABS(qs_scf_kp_fermi_entropy_state(maxocc, maxocc, sigma)))
-      error = MAX(error, ABS(qs_scf_kp_fermi_entropy_state(0.5_dp*maxocc, maxocc, sigma) + &
-                             sigma*maxocc*LOG(2.0_dp)))
-      IF (error > tol) THEN
-         nfail = nfail + 1
-         WRITE (*, '(A,1X,A,1X,ES16.8)') TRIM(label), "failed with error", error
-      ELSE
-         WRITE (*, '(A,1X,A,1X,ES16.8)') TRIM(label), "OK with error", error
-      END IF
-
-   END SUBROUTINE check_fermi_entropy_state
-
-! **************************************************************************************************
 !> \brief Check the fixed-N symmetric frontier seed and its applicability guards.
 !> \param label ...
 !> \param nfail ...
@@ -9256,19 +9226,26 @@ CONTAINS
                  ABS(tiny_cross_ratio - closure_cross_ratio)
          IF (.NOT. tiny_closure_ready) error = error + 1.0_dp
       END BLOCK
-      closure_response_quadratic = qs_scf_kp_coupled_response_quadratic( &
-                                   rotation_steps(:, 1), energy_steps(:, 1), &
-                                   closure_rotation_correction, closure_energy_correction, &
-                                   closure_cross_correction, closure_rotation_quadratic, &
-                                   closure_energy_quadratic, closure_cross_quadratic)
-      scaled_closure_response_quadratic = qs_scf_kp_coupled_response_quadratic( &
-                                          rotation_steps(:, 1), scaled_energy_steps(:, 1), &
-                                          scaled_closure_rotation_correction, &
-                                          scaled_closure_energy_correction, &
-                                          scaled_closure_cross_correction, &
-                                          scaled_closure_rotation_quadratic, &
-                                          scaled_closure_energy_quadratic, &
-                                          scaled_closure_cross_quadratic)
+      closure_rotation_quadratic = DOT_PRODUCT(rotation_steps(:, 1), &
+                                               MATMUL(closure_rotation_correction, rotation_steps(:, 1)))
+      closure_energy_quadratic = DOT_PRODUCT(energy_steps(:, 1), &
+                                             MATMUL(closure_energy_correction, energy_steps(:, 1)))
+      closure_cross_quadratic = -2.0_dp*DOT_PRODUCT(energy_steps(:, 1), &
+                                                    MATMUL(closure_cross_correction, rotation_steps(:, 1)))
+      closure_response_quadratic = closure_rotation_quadratic + closure_energy_quadratic + &
+                                   closure_cross_quadratic
+      scaled_closure_rotation_quadratic = DOT_PRODUCT( &
+                                          rotation_steps(:, 1), &
+                                          MATMUL(scaled_closure_rotation_correction, rotation_steps(:, 1)))
+      scaled_closure_energy_quadratic = DOT_PRODUCT( &
+                                        scaled_energy_steps(:, 1), &
+                                        MATMUL(scaled_closure_energy_correction, scaled_energy_steps(:, 1)))
+      scaled_closure_cross_quadratic = -2.0_dp*DOT_PRODUCT( &
+                                       scaled_energy_steps(:, 1), &
+                                       MATMUL(scaled_closure_cross_correction, rotation_steps(:, 1)))
+      scaled_closure_response_quadratic = scaled_closure_rotation_quadratic + &
+                                          scaled_closure_energy_quadratic + &
+                                          scaled_closure_cross_quadratic
       error = error + MAXVAL(ABS(closure_response - TRANSPOSE(closure_response))) + &
               MAXVAL(ABS(scaled_closure_response - closure_response)) + &
               MAXVAL(ABS(closure_rotation_correction - &

@@ -131,7 +131,6 @@ MODULE qs_scf_loop_utils
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_scf_loop_utils'
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_electron_tolerance = 1.0E-14_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_canonical_density_max_weight = 2.0E-2_dp, &
-                                        ot_kp_canonical_density_branch_max_weight = 1.0E-1_dp, &
                                         ot_kp_canonical_projector_delta = 5.0E-3_dp, &
                                         ot_kp_canonical_projector_max_weight = 0.10_dp, &
                                         ot_kp_canonical_tether_release_full_eps_factor = 1.0E1_dp, &
@@ -188,7 +187,6 @@ MODULE qs_scf_loop_utils
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_floor = 1.0E-10_dp, &
                                         ot_kp_ref_overlap_guard_backtrack = 5.0E-1_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_quality_ema_alpha = 0.30_dp, &
-                                        ot_kp_schur_quality_max_ratio = 2.0_dp, &
                                         ot_kp_schur_quality_min_ratio = 1.0E-1_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_prediction_overlap_min = 9.8E-1_dp, &
                                         ot_kp_schur_prediction_capture_min = 6.5E-1_dp, &
@@ -313,7 +311,6 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_coupled_closure_response, &
              qs_scf_kp_coupled_closure_prediction, &
              qs_scf_kp_coupled_residual_prediction, &
-             qs_scf_kp_coupled_response_quadratic, &
              qs_scf_kp_closure_response_model_adjustments, &
              qs_scf_kp_closure_response_history_ready, &
              qs_scf_kp_shadow_prediction_quality, &
@@ -335,7 +332,6 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_control_delta, &
              qs_scf_kp_density_mode_projected_floor, &
              qs_scf_kp_density_replaced_response, &
-             qs_scf_kp_fermi_entropy_state, &
              qs_scf_kp_fermi_frontier_armed, &
              qs_scf_kp_fermi_frontier_mismatch, &
              qs_scf_kp_external_fermi_projection_enabled, &
@@ -3264,48 +3260,6 @@ CONTAINS
       END IF
 
    END SUBROUTINE qs_scf_kp_closure_response_model_adjustments
-
-! **************************************************************************************************
-!> \brief Evaluate a coupled response correction on one rotation/auxiliary-energy step.
-!> \param rotation_step complex-rotation coordinates
-!> \param energy_step fixed-N auxiliary-energy coordinates
-!> \param rotation_response correction to H_RR
-!> \param energy_response correction to H_ee
-!> \param cross_response correction to B in [H_RR,-B^T;-B,H_ee]
-!> \param rotation_quadratic optional rotation-block contribution
-!> \param energy_quadratic optional auxiliary-energy-block contribution
-!> \param cross_quadratic optional signed cross-block contribution
-!> \return full response quadratic on the supplied step
-! **************************************************************************************************
-   FUNCTION qs_scf_kp_coupled_response_quadratic( &
-      rotation_step, energy_step, rotation_response, energy_response, cross_response, &
-      rotation_quadratic, energy_quadratic, cross_quadratic) &
-      RESULT(quadratic)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: rotation_step, energy_step
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_response, energy_response, &
-                                                            cross_response
-      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: rotation_quadratic, energy_quadratic, &
-                                                            cross_quadratic
-      REAL(KIND=dp)                                      :: quadratic
-
-      INTEGER                                            :: nener, nrot
-      REAL(KIND=dp)                                      :: cross_part, energy_part, rotation_part
-
-      nrot = SIZE(rotation_step)
-      nener = SIZE(energy_step)
-      CPASSERT(ALL(SHAPE(rotation_response) == [nrot, nrot]))
-      CPASSERT(ALL(SHAPE(energy_response) == [nener, nener]))
-      CPASSERT(ALL(SHAPE(cross_response) == [nener, nrot]))
-
-      rotation_part = DOT_PRODUCT(rotation_step, MATMUL(rotation_response, rotation_step))
-      energy_part = DOT_PRODUCT(energy_step, MATMUL(energy_response, energy_step))
-      cross_part = -2.0_dp*DOT_PRODUCT(energy_step, MATMUL(cross_response, rotation_step))
-      quadratic = rotation_part + energy_part + cross_part
-      IF (PRESENT(rotation_quadratic)) rotation_quadratic = rotation_part
-      IF (PRESENT(energy_quadratic)) energy_quadratic = energy_part
-      IF (PRESENT(cross_quadratic)) cross_quadratic = cross_part
-
-   END FUNCTION qs_scf_kp_coupled_response_quadratic
 
 ! **************************************************************************************************
 !> \brief Apply channel-resolved canonical-density Newton modes to a coupled rotation candidate.
@@ -13008,28 +12962,6 @@ CONTAINS
       CALL dbcsr_copy(chc_im, b_im)
 
    END SUBROUTINE qs_scf_loop_prepare_ot_kp_final_chc
-
-! **************************************************************************************************
-!> \brief one-state Fermi-Dirac contribution to the Mermin smearing correction
-!> \param occupation orbital occupation in [0,maxocc]
-!> \param maxocc maximum orbital occupation
-!> \param sigma electronic temperature in Hartree
-!> \return negative T*S contribution for one state before its k-point weight
-! **************************************************************************************************
-   PURE FUNCTION qs_scf_kp_fermi_entropy_state(occupation, maxocc, sigma) RESULT(kTS)
-      REAL(KIND=dp), INTENT(IN)                          :: occupation, maxocc, sigma
-      REAL(KIND=dp)                                      :: kTS
-
-      REAL(KIND=dp)                                      :: occ_fraction
-
-      kTS = 0.0_dp
-      IF (maxocc <= EPSILON(maxocc) .OR. sigma <= 1.0E-14_dp) RETURN
-      occ_fraction = MAX(0.0_dp, MIN(1.0_dp, occupation/maxocc))
-      IF (occ_fraction <= 0.0_dp .OR. occ_fraction >= 1.0_dp) RETURN
-      kTS = sigma*maxocc*(occ_fraction*LOG(occ_fraction) + &
-                          (1.0_dp - occ_fraction)*LOG(1.0_dp - occ_fraction))
-
-   END FUNCTION qs_scf_kp_fermi_entropy_state
 
 ! **************************************************************************************************
 !> \brief prepare per-channel Fermi-window trust data for k-point OT energy variables
