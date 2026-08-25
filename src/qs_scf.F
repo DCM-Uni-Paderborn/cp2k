@@ -2993,7 +2993,7 @@ CONTAINS
          CPABORT("K-point OT currently requires OT%ALGORITHM IRAC.")
       END IF
       IF (scf_env%qs_ot_env(1)%settings%ot_method == "BROY") THEN
-         CPABORT("K-point OT does not support OT%MINIMIZER BROYDEN; use CG or DIIS.")
+         CPABORT("K-point OT does not support OT%MINIMIZER BROYDEN; use CG, DIIS, or LBFGS.")
       END IF
 
       CALL get_kpoint_info(kpoints, nkp=nkpoint, use_real_wfn=use_real_wfn)
