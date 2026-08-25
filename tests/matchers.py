@@ -75,6 +75,9 @@ registry["Atomic_force_1_x"] = GenericMatcher(
 registry["Atomic_force_2_x"] = GenericMatcher(
     r"FORCES\|\s+2\s+([-+0-9.EeDd]+)", col=1, regex=True
 )
+registry["COMMUTATOR_HR_X"] = GenericMatcher(r"COMMUTATOR_HR| CheckSum X =", col=5)
+registry["COMMUTATOR_HR_Y"] = GenericMatcher(r"COMMUTATOR_HR| CheckSum Y =", col=5)
+registry["COMMUTATOR_HR_Z"] = GenericMatcher(r"COMMUTATOR_HR| CheckSum Z =", col=5)
 
 registry["M002"] = GenericMatcher(r"MD| Potential energy", col=5)
 registry["M003"] = GenericMatcher(r"Total energy [eV]:", col=4)
@@ -121,6 +124,7 @@ registry["QS_number_of_molecular_orbitals"] = GenericMatcher(
     r"Number of molecular orbitals:", col=5
 )
 registry["QS_cartesian_mo_output"] = TextPresenceMatcher("CARTESIAN EIGENVECTORS")
+registry["QS_MO_OCCUPATION_STATS"] = TextPresenceMatcher("MO| Total occupied (ALPHA):")
 registry["Kubo_sigma_iso"] = GenericMatcher(r"KUBO_TRANSPORT| sigma_iso[S/cm]", col=3)
 registry["Kubo_sigma_iso_2d"] = GenericMatcher(r"KUBO_TRANSPORT| sigma_iso[S]", col=3)
 registry["Kubo_sigma_iso_1d"] = GenericMatcher(r"KUBO_TRANSPORT| sigma_iso[S*m]", col=3)
