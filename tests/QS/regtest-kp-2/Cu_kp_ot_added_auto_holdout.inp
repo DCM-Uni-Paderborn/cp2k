@@ -1,0 +1,66 @@
+! Slow/manual transition-metal holdout that was not used to calibrate the
+! metallic OT response model. This input is intentionally not listed in
+! TEST_FILES.toml so the default regtest remains inexpensive.
+!
+! The 3x3x3 mesh reduces to six weighted k-points. ADDED_MOS AUTO grows
+! 4->8->12, reaches the complete 18-function AO space, and converges over the
+! three spaces in 20+34+21 evaluations. MPI-2/OMP-1 reference:
+! F=-48.10314645247482 Ha, 4.94E-9 Ha below the independent diagonalization
+! reference. No frontier, exhausted-buffer, or unsupported-content warning is
+! emitted. The restart companion closes in one exact step.
+&GLOBAL
+  PRINT_LEVEL MEDIUM
+  PROJECT Cu_kp_ot_added_auto_holdout
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_SET
+    POTENTIAL_FILE_NAME POTENTIAL
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 3 3
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 120
+    &END MGRID
+    &QS
+      EPS_DEFAULT 1.0E-9
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-6
+      MAX_SCF 180
+      SCF_GUESS ATOMIC
+      &OT
+        MINIMIZER CG
+        PRECONDITIONER FULL_SINGLE_INVERSE
+      &END OT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 1000
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 2.55619 2.55619 2.55619
+      ALPHA_BETA_GAMMA 60 60 60
+    &END CELL
+    &COORD
+      SCALED
+      Cu 0.0 0.0 0.0
+    &END COORD
+    &KIND Cu
+      BASIS_SET DZV-GTH-PADE
+      POTENTIAL GTH-PADE-q11
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL

@@ -1,0 +1,60 @@
+! Restart companion to Cu_kp_ot_added_auto_holdout.inp. Run in the same
+! directory after the writer. Both AUTO growth records (8 and 12 virtual
+! states) are restored and the converged six-channel state must finish in one
+! OT step at F=-48.10314645247482 Ha without a REF rebuild.
+&GLOBAL
+  PRINT_LEVEL MEDIUM
+  PROJECT Cu_kp_ot_added_auto_holdout
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_SET
+    POTENTIAL_FILE_NAME POTENTIAL
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 3 3
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 120
+    &END MGRID
+    &QS
+      EPS_DEFAULT 1.0E-9
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-6
+      MAX_SCF 20
+      SCF_GUESS RESTART
+      &OT
+        MINIMIZER CG
+        PRECONDITIONER FULL_SINGLE_INVERSE
+      &END OT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 1000
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 2.55619 2.55619 2.55619
+      ALPHA_BETA_GAMMA 60 60 60
+    &END CELL
+    &COORD
+      SCALED
+      Cu 0.0 0.0 0.0
+    &END COORD
+    &KIND Cu
+      BASIS_SET DZV-GTH-PADE
+      POTENTIAL GTH-PADE-q11
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL

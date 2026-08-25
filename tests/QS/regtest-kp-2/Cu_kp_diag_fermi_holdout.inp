@@ -1,0 +1,70 @@
+! Slow/manual diagonalization reference for the Cu metallic-OT holdout. This
+! input is intentionally not listed in TEST_FILES.toml so the default regtest
+! remains inexpensive. The 3x3x3 mesh reduces to six weighted k-points.
+!
+! MPI-2/OMP-1 reference: 23 SCF steps, F=-48.10314644753744 Ha. The matching
+! OT companion differs by 4.94E-9 Ha after adaptive growth to the complete AO
+! space. The compact DZV-GTH-PADE basis avoids the near-linear dependencies of
+! diffuse MOLOPT bases in the primitive fcc cell.
+&GLOBAL
+  PRINT_LEVEL MEDIUM
+  PROJECT Cu_kp_diag_fermi_holdout
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_SET
+    POTENTIAL_FILE_NAME POTENTIAL
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 3 3
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 120
+    &END MGRID
+    &QS
+      EPS_DEFAULT 1.0E-9
+    &END QS
+    &SCF
+      ADDED_MOS 12
+      EPS_EIGVAL 1.0E-8
+      EPS_SCF 1.0E-10
+      MAX_SCF 240
+      SCF_GUESS ATOMIC
+      &DIAGONALIZATION
+        ALGORITHM STANDARD
+      &END DIAGONALIZATION
+      &MIXING
+        ALPHA 0.2
+        BETA 1.5
+        METHOD BROYDEN_MIXING
+        NBUFFER 8
+      &END MIXING
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 1000
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 2.55619 2.55619 2.55619
+      ALPHA_BETA_GAMMA 60 60 60
+    &END CELL
+    &COORD
+      SCALED
+      Cu 0.0 0.0 0.0
+    &END COORD
+    &KIND Cu
+      BASIS_SET DZV-GTH-PADE
+      POTENTIAL GTH-PADE-q11
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL
