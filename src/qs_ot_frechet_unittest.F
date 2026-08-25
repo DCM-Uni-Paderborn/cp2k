@@ -124,9 +124,10 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
         qs_scf_kp_density_descent_candidate, qs_scf_kp_density_full_direct_tail_probe, &
         qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_response_probe, &
-        qs_scf_kp_density_response_tail_ready, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_response_effective_steps, &
+        qs_scf_kp_density_response_probe, qs_scf_kp_density_response_tail_ready, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
+        qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_bootstrap_curvature_floor, qs_scf_kp_energy_closure_preferred, &
         qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
@@ -405,6 +406,8 @@ PROGRAM qs_ot_frechet_unittest
                                                5.0E-13_dp, nfail)
    CALL check_kpoint_reduced_secant_prediction("k-point OT reduced secant prediction", &
                                                5.0E-13_dp, nfail)
+   CALL check_kpoint_density_response_effective_steps( &
+      "k-point OT physical product-density projection", 5.0E-13_dp, nfail)
    CALL check_kpoint_validated_density_response("k-point OT physical density response subspace", &
                                                 5.0E-13_dp, nfail)
    CALL check_kpoint_reduced_cross_response("k-point OT reduced cross response", &
@@ -10052,6 +10055,150 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_reduced_secant_prediction
+
+! **************************************************************************************************
+!> \brief check product-space projection onto fixed-N density tangents
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_density_response_effective_steps(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nener = 3, nmode = 2, nrot = 5, &
+                                                            nsample = 3
+      REAL(KIND=dp), PARAMETER                           :: energy_unit_scale = 7.0_dp
+
+      INTEGER                                            :: i, scaled_rank, supported_rank, &
+                                                            transformed_rank
+      LOGICAL                                            :: ready, scaled_ready, transformed_ready
+      REAL(KIND=dp)                                      :: error, exact_residual_ratio, &
+                                                            residual_ratio, scaled_residual_ratio, &
+                                                            transformed_residual_ratio
+      REAL(KIND=dp), DIMENSION(nener, nener)             :: energy_hessian, energy_transform, &
+                                                            scaled_energy_hessian, &
+                                                            transformed_energy_hessian
+      REAL(KIND=dp), DIMENSION(nener, nrot)              :: energy_response, scaled_energy_response, &
+                                                            transformed_energy_response
+      REAL(KIND=dp), DIMENSION(nener, nsample)           :: energy_steps, exact_energy_steps, &
+                                                            scaled_energy_steps, &
+                                                            transformed_energy_steps
+      REAL(KIND=dp), DIMENSION(nmode, nsample)           :: coefficients
+      REAL(KIND=dp), DIMENSION(nrot, nmode)              :: tangent_modes, transformed_tangent_modes
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rotation_hessian, rotation_transform, &
+                                                            transformed_rotation_hessian
+      REAL(KIND=dp), DIMENSION(nrot, nsample) :: effective_steps, exact_effective_steps, &
+         expected_steps, rotation_steps, scaled_effective_steps, transformed_effective_steps, &
+         transformed_rotation_steps
+
+      tangent_modes(:, :) = 0.0_dp
+      tangent_modes(1, 1) = 1.0_dp
+      tangent_modes(3, 1) = 0.5_dp
+      tangent_modes(2, 2) = 1.0_dp
+      tangent_modes(4, 2) = -0.25_dp
+      energy_response(:, :) = 0.0_dp
+      energy_response(1, 1) = 0.5_dp
+      energy_response(2, 2) = -0.25_dp
+      rotation_hessian(:, :) = 0.0_dp
+      energy_hessian(:, :) = 0.0_dp
+      DO i = 1, nrot
+         rotation_hessian(i, i) = REAL((i + 1)**2, KIND=dp)
+      END DO
+      energy_hessian(1, 1) = 2.0_dp
+      energy_hessian(2, 2) = 3.0_dp
+      energy_hessian(3, 3) = 5.0_dp
+      coefficients(:, 1) = [0.7_dp, -0.4_dp]
+      coefficients(:, 2) = [-0.2_dp, 0.9_dp]
+      coefficients(:, 3) = [0.3_dp, 0.25_dp]
+      expected_steps(:, :) = MATMUL(tangent_modes, coefficients)
+      exact_energy_steps(:, :) = MATMUL(energy_response, expected_steps)
+
+      CALL qs_scf_kp_density_response_effective_steps( &
+         tangent_modes, energy_response, rotation_hessian, energy_hessian, expected_steps, &
+         exact_energy_steps, exact_effective_steps, ready, supported_rank, exact_residual_ratio)
+      error = MAXVAL(ABS(exact_effective_steps - expected_steps))
+      IF (.NOT. ready .OR. supported_rank /= nmode .OR. exact_residual_ratio > tol) &
+         error = HUGE(1.0_dp)
+
+      ! Components orthogonal to [T;R*T] are gauge/off-manifold motion.  They remain in the
+      ! residual without changing the effective density step.
+      rotation_steps(:, :) = expected_steps(:, :)
+      rotation_steps(5, :) = [0.7_dp, -0.2_dp, 0.3_dp]
+      energy_steps(:, :) = exact_energy_steps(:, :)
+      energy_steps(3, :) = [-0.4_dp, 0.1_dp, 0.2_dp]
+      CALL qs_scf_kp_density_response_effective_steps( &
+         tangent_modes, energy_response, rotation_hessian, energy_hessian, rotation_steps, &
+         energy_steps, effective_steps, ready, supported_rank, residual_ratio)
+      error = MAX(error, MAXVAL(ABS(effective_steps - expected_steps)))
+      IF (.NOT. ready .OR. supported_rank /= nmode .OR. residual_ratio <= tol) &
+         error = HUGE(1.0_dp)
+
+      ! A numerical ener_x unit change rescales R, de and H_ee together.  The physical projection
+      ! and its dimensionless residual are invariant.
+      scaled_energy_response(:, :) = energy_unit_scale*energy_response(:, :)
+      scaled_energy_steps(:, :) = energy_unit_scale*energy_steps(:, :)
+      scaled_energy_hessian(:, :) = energy_hessian/(energy_unit_scale*energy_unit_scale)
+      CALL qs_scf_kp_density_response_effective_steps( &
+         tangent_modes, scaled_energy_response, rotation_hessian, scaled_energy_hessian, &
+         rotation_steps, scaled_energy_steps, scaled_effective_steps, scaled_ready, scaled_rank, &
+         scaled_residual_ratio)
+      error = MAX(error, MAXVAL(ABS(scaled_effective_steps - expected_steps)), &
+                  ABS(scaled_residual_ratio - residual_ratio))
+      IF (.NOT. scaled_ready .OR. scaled_rank /= nmode) error = HUGE(1.0_dp)
+
+      ! The metric must not depend on a particular orthogonal REF-rotation or ener_x basis.
+      rotation_transform(:, :) = 0.0_dp
+      DO i = 1, nrot
+         rotation_transform(i, i) = 1.0_dp
+      END DO
+      rotation_transform(1, 1) = 0.8_dp
+      rotation_transform(1, 5) = -0.6_dp
+      rotation_transform(5, 1) = 0.6_dp
+      rotation_transform(5, 5) = 0.8_dp
+      energy_transform(:, :) = 0.0_dp
+      DO i = 1, nener
+         energy_transform(i, i) = 1.0_dp
+      END DO
+      energy_transform(1, 1) = 0.6_dp
+      energy_transform(1, 3) = -0.8_dp
+      energy_transform(3, 1) = 0.8_dp
+      energy_transform(3, 3) = 0.6_dp
+      transformed_tangent_modes(:, :) = MATMUL(rotation_transform, tangent_modes)
+      transformed_energy_response(:, :) = &
+         MATMUL(energy_transform, MATMUL(energy_response, TRANSPOSE(rotation_transform)))
+      transformed_rotation_hessian(:, :) = &
+         MATMUL(rotation_transform, MATMUL(rotation_hessian, TRANSPOSE(rotation_transform)))
+      transformed_energy_hessian(:, :) = &
+         MATMUL(energy_transform, MATMUL(energy_hessian, TRANSPOSE(energy_transform)))
+      transformed_rotation_steps(:, :) = MATMUL(rotation_transform, rotation_steps)
+      transformed_energy_steps(:, :) = MATMUL(energy_transform, energy_steps)
+      CALL qs_scf_kp_density_response_effective_steps( &
+         transformed_tangent_modes, transformed_energy_response, &
+         transformed_rotation_hessian, transformed_energy_hessian, transformed_rotation_steps, &
+         transformed_energy_steps, transformed_effective_steps, transformed_ready, &
+         transformed_rank, transformed_residual_ratio)
+      error = MAX(error, MAXVAL(ABS(transformed_effective_steps - &
+                                    MATMUL(rotation_transform, expected_steps))), &
+                  ABS(transformed_residual_ratio - residual_ratio))
+      IF (.NOT. transformed_ready .OR. transformed_rank /= nmode) error = HUGE(1.0_dp)
+
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES16.8,3(1X,L1),3(1X,I4),4(1X,ES16.8))') TRIM(label), &
+            "FAILED with error/ready/scaled/transformed/ranks/exact/residual/scaled/transformed", &
+            error, ready, scaled_ready, transformed_ready, supported_rank, scaled_rank, &
+            transformed_rank, exact_residual_ratio, residual_ratio, scaled_residual_ratio, &
+            transformed_residual_ratio
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES16.8,3(1X,I4),4(1X,ES16.8))') TRIM(label), &
+            "OK with error/ranks/exact/residual/scaled/transformed", error, supported_rank, &
+            scaled_rank, transformed_rank, exact_residual_ratio, residual_ratio, &
+            scaled_residual_ratio, transformed_residual_ratio
+      END IF
+
+   END SUBROUTINE check_kpoint_density_response_effective_steps
 
 ! **************************************************************************************************
 !> \brief Check a signed two-secant closure response in the physical density-mode span.
