@@ -190,55 +190,43 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: density_descent_measured_sum = 0.0_dp
       REAL(KIND=dp) :: density_descent_coeff_ema = 0.0_dp
       REAL(KIND=dp) :: density_descent_support = 0.0_dp, density_descent_support_ema = 0.0_dp
-      REAL(KIND=dp) :: density_descent_selected = 0.0_dp
       REAL(KIND=dp) :: density_descent_selected_quality = 0.0_dp
       REAL(KIND=dp) :: density_descent_selected_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_descent_selected_residual_quality = 0.0_dp
       REAL(KIND=dp) :: density_descent_selected_residual_quality_ema = 1.0_dp
       REAL(KIND=dp) :: density_descent_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: density_descent_selected_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: response_selected = 0.0_dp
       REAL(KIND=dp) :: response_selected_quality = 0.0_dp
       REAL(KIND=dp) :: response_selected_quality_ema = 0.0_dp
       REAL(KIND=dp) :: response_selected_residual_quality = 0.0_dp
       REAL(KIND=dp) :: response_selected_residual_quality_ema = 1.0_dp
       REAL(KIND=dp) :: response_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: response_selected_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: density_full_selected = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_quality = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_residual_quality = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_residual_quality_ema = 1.0_dp
       REAL(KIND=dp) :: density_full_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: density_full_direct_drop = 0.0_dp
       REAL(KIND=dp) :: density_full_direct_quality = 0.0_dp
       REAL(KIND=dp) :: density_full_direct_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_full_direct_drop_sum = 0.0_dp
       REAL(KIND=dp) :: density_full_direct_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: density_full_direct_trust = 1.0_dp
       REAL(KIND=dp) :: density_full_direct_trust_ema = 1.0_dp
-      REAL(KIND=dp) :: density_full_direct_weighted_trust = 0.0_dp
       REAL(KIND=dp) :: density_full_direct_weighted_trust_ema = 0.0_dp
-      REAL(KIND=dp) :: density_full_direct_abs_trust = 0.0_dp
       REAL(KIND=dp) :: density_full_direct_abs_trust_ema = 0.0_dp
-      REAL(KIND=dp) :: density_fdir_selected = 0.0_dp
       REAL(KIND=dp) :: density_fdir_sel_quality = 0.0_dp
       REAL(KIND=dp) :: density_fdir_sel_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_fdir_sel_resid_quality = 0.0_dp
       REAL(KIND=dp) :: density_fdir_sel_resid_quality_ema = 1.0_dp
       REAL(KIND=dp) :: density_fdir_sel_drop_sum = 0.0_dp
       REAL(KIND=dp) :: density_fdir_sel_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: density_full_global_drop = 0.0_dp
       REAL(KIND=dp) :: density_full_global_quality = 0.0_dp
       REAL(KIND=dp) :: density_full_global_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_full_global_drop_sum = 0.0_dp
       REAL(KIND=dp) :: density_full_global_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: density_full_global_trust = 1.0_dp
       REAL(KIND=dp) :: density_full_global_trust_ema = 1.0_dp
-      REAL(KIND=dp) :: density_full_global_weighted_trust = 0.0_dp
       REAL(KIND=dp) :: density_full_global_weighted_trust_ema = 0.0_dp
-      REAL(KIND=dp) :: density_full_global_abs_trust = 0.0_dp
       REAL(KIND=dp) :: density_full_global_abs_trust_ema = 0.0_dp
       REAL(KIND=dp) :: density_full_global_selected = 0.0_dp
       REAL(KIND=dp) :: density_full_global_sel_quality = 0.0_dp
@@ -284,14 +272,12 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: physical_direct_drop_sum = 0.0_dp
       REAL(KIND=dp) :: physical_direct_measured_sum = 0.0_dp
       REAL(KIND=dp) :: physical_direct_ema = 0.0_dp
-      REAL(KIND=dp) :: physical_direct_selected = 0.0_dp
       REAL(KIND=dp) :: physical_direct_selected_quality = 0.0_dp
       REAL(KIND=dp) :: physical_direct_selected_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_direct_selected_residual_quality = 0.0_dp
       REAL(KIND=dp) :: physical_direct_selected_residual_quality_ema = 1.0_dp
       REAL(KIND=dp) :: physical_direct_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: physical_direct_selected_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: phys_direct_density_sel = 0.0_dp
       REAL(KIND=dp) :: phys_direct_density_sel_quality = 0.0_dp
       REAL(KIND=dp) :: phys_direct_density_sel_quality_ema = 0.0_dp
       REAL(KIND=dp) :: phys_direct_density_sel_resid_quality = 0.0_dp
@@ -482,8 +468,6 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: coupled_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: coupled_residual_quality = 0.0_dp
       REAL(KIND=dp) :: coupled_residual_quality_ema = 1.0_dp
-      REAL(KIND=dp) :: coupled_drop_sum = 0.0_dp, coupled_measured_sum = 0.0_dp
-      REAL(KIND=dp) :: coupled_calibrated_drop_sum = 0.0_dp
       LOGICAL :: density_descent_support_ready = .FALSE.
    END TYPE qs_ot_schur_density_calibration_channel_type
 

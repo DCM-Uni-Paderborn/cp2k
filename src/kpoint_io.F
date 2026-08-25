@@ -2044,7 +2044,6 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_coeff_ema = schur_real_payload(15)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_support = schur_real_payload(16)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_support_ema = schur_real_payload(17)
-         scf_env%qs_ot_restart%channel(ichannel)%density_descent_selected = schur_real_payload(18)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_selected_quality = &
             schur_real_payload(19)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_selected_quality_ema = &
@@ -2063,7 +2062,6 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%physical_direct_drop_sum = schur_real_payload(27)
          scf_env%qs_ot_restart%channel(ichannel)%physical_direct_measured_sum = schur_real_payload(28)
          scf_env%qs_ot_restart%channel(ichannel)%physical_direct_ema = schur_real_payload(29)
-         scf_env%qs_ot_restart%channel(ichannel)%physical_direct_selected = schur_real_payload(30)
          scf_env%qs_ot_restart%channel(ichannel)%physical_direct_selected_quality = schur_real_payload(31)
          scf_env%qs_ot_restart%channel(ichannel)%physical_direct_selected_quality_ema = &
             schur_real_payload(32)
@@ -2075,7 +2073,6 @@ CONTAINS
             schur_real_payload(35)
          scf_env%qs_ot_restart%channel(ichannel)%physical_direct_selected_measured_sum = &
             schur_real_payload(36)
-         scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel = schur_real_payload(37)
          scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_quality = schur_real_payload(38)
          scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_quality_ema = &
             schur_real_payload(39)
@@ -2101,7 +2098,6 @@ CONTAINS
             schur_real_payload(125)
          scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_residual_quality_ema = &
             schur_real_payload(126)
-         scf_env%qs_ot_restart%channel(ichannel)%response_selected = schur_real_payload(52)
          scf_env%qs_ot_restart%channel(ichannel)%response_selected_quality = schur_real_payload(53)
          scf_env%qs_ot_restart%channel(ichannel)%response_selected_quality_ema = schur_real_payload(54)
          scf_env%qs_ot_restart%channel(ichannel)%response_selected_residual_quality = &
@@ -2110,7 +2106,6 @@ CONTAINS
             schur_real_payload(56)
          scf_env%qs_ot_restart%channel(ichannel)%response_selected_drop_sum = schur_real_payload(57)
          scf_env%qs_ot_restart%channel(ichannel)%response_selected_measured_sum = schur_real_payload(58)
-         scf_env%qs_ot_restart%channel(ichannel)%density_full_selected = schur_real_payload(59)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_selected_quality = schur_real_payload(60)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_selected_quality_ema = &
             schur_real_payload(61)
@@ -2170,7 +2165,6 @@ CONTAINS
             schur_real_payload(86)
          scf_env%qs_ot_restart%channel(ichannel)%physical_trace_active_free_quality_ema = &
             schur_real_payload(87)
-         scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_drop = schur_real_payload(90)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_quality = schur_real_payload(91)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_quality_ema = &
             schur_real_payload(92)
@@ -2178,18 +2172,12 @@ CONTAINS
             schur_real_payload(93)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_measured_sum = &
             schur_real_payload(94)
-         scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_trust = schur_real_payload(95)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_trust_ema = &
             schur_real_payload(96)
-         scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_weighted_trust = &
-            schur_real_payload(97)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_weighted_trust_ema = &
             schur_real_payload(98)
-         scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_abs_trust = &
-            schur_real_payload(99)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_direct_abs_trust_ema = &
             schur_real_payload(100)
-         scf_env%qs_ot_restart%channel(ichannel)%density_fdir_selected = schur_real_payload(101)
          scf_env%qs_ot_restart%channel(ichannel)%density_fdir_sel_quality = schur_real_payload(102)
          scf_env%qs_ot_restart%channel(ichannel)%density_fdir_sel_quality_ema = &
             schur_real_payload(103)
@@ -2201,7 +2189,6 @@ CONTAINS
             schur_real_payload(106)
          scf_env%qs_ot_restart%channel(ichannel)%density_fdir_sel_measured_sum = &
             schur_real_payload(107)
-         scf_env%qs_ot_restart%channel(ichannel)%density_full_global_drop = schur_real_payload(108)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_global_quality = schur_real_payload(109)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_global_quality_ema = &
             schur_real_payload(110)
@@ -2209,15 +2196,10 @@ CONTAINS
             schur_real_payload(111)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_global_measured_sum = &
             schur_real_payload(112)
-         scf_env%qs_ot_restart%channel(ichannel)%density_full_global_trust = schur_real_payload(113)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_global_trust_ema = &
             schur_real_payload(114)
-         scf_env%qs_ot_restart%channel(ichannel)%density_full_global_weighted_trust = &
-            schur_real_payload(115)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_global_weighted_trust_ema = &
             schur_real_payload(116)
-         scf_env%qs_ot_restart%channel(ichannel)%density_full_global_abs_trust = &
-            schur_real_payload(117)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_global_abs_trust_ema = &
             schur_real_payload(118)
          scf_env%qs_ot_restart%channel(ichannel)%physical_trace_invariant_ema = &

@@ -1782,9 +1782,6 @@ CONTAINS
                   ot_env%schur_coupled_calibrated_quality_ema
                cache%coupled_residual_quality = ot_env%schur_coupled_residual_quality
                cache%coupled_residual_quality_ema = ot_env%schur_coupled_residual_quality_ema
-               cache%coupled_drop_sum = 0.0_dp
-               cache%coupled_measured_sum = 0.0_dp
-               cache%coupled_calibrated_drop_sum = 0.0_dp
                cache%mermin_ls_accepted_quality_samples = &
                   qs_scf_kp_rebased_calibration_samples( &
                   ot_env%mermin_ls_accepted_quality_samples)
