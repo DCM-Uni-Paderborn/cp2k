@@ -1,4 +1,6 @@
-! Compact converged metallic k-point OT restart writer. The matching
+! Compact converged metallic k-point OT restart writer. ADDED_MOS AUTO keeps
+! the initial four-MO buffer because its upper edge is already empty; the
+! matching L-BFGS writer exercises an explicit 4->8 grow before restart. The
 ! diagonalization reference is Al_sc_kp_diag_fermi.inp.
 &GLOBAL
   PRINT_LEVEL LOW

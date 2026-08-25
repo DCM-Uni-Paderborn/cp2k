@@ -5,13 +5,13 @@
 ! ADDED_MOS AUTO, and FULL_ALL occupation preconditioning.
 !
 ! AUTO grows (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO
-! spaces. Numerically favorable paths still converge directly with CG. If an
-! accepted-step path exhausts 240 CG steps, the existing Outer-SCF EPS_DIIS
-! handoff starts a fresh DIIS history instead of merely raising the limit.
-! Current MPI-4/OMP-1 fallback reference: 240 CG plus 142 DIIS steps,
-! F=-123.63026681026970 Ha, -T*S=-0.00061137638699 Ha, and
-! mu=0.40203664031768 Ha. The restart companion must close in one step without
-! replaying AUTO growth or rebuilding the physical subspace.
+! spaces. If an accepted-step path exhausts 240 CG steps, the existing
+! Outer-SCF EPS_DIIS handoff starts a fresh DIIS history instead of merely
+! raising the limit. With the fixed-label Mermin mixed response, current
+! references are 315 total evaluations on MPI-4/OMP-1 and 367 on MPI-2/OMP-2,
+! at F=-123.63026684851916 and -123.63026682953948 Ha, respectively. The
+! restart companion must close in one step without replaying AUTO growth or
+! rebuilding the physical subspace.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Fe_kp_ot_uks_added_auto_sym3_300K_converge

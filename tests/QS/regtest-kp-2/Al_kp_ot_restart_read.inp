@@ -1,5 +1,5 @@
 ! Fresh-process readback of the converged two-channel metallic OT state,
-! including the adaptive MO space and minimizer history.
+! including the automatically retained MO space and minimizer history.
 &GLOBAL
   PRINT_LEVEL LOW
   PROJECT Al_kp_ot_restart_read

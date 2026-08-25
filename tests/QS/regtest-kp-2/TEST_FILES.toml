@@ -207,10 +207,9 @@
 # independent diagonalization references.
 # Fe_kp_ot_uks_added_auto_sym3_300K_converge.inp is the unlisted sharp-frontier
 # transition-metal stress companion. AUTO grows (4,6)->(8,10)->(16,18); its
-# final 25-MO space converges in 155 MPI-2/OMP-2 steps at
-# -123.63026685055964 Ha and in 115 MPI-4/OMP-1 steps at
-# -123.63026685078690 Ha. Both layouts preserve charge 26 and magnetic moment 2,
-# and
+# current-master paths converge in 367 total MPI-2/OMP-2 evaluations at
+# -123.63026682953948 Ha and 315 MPI-4/OMP-1 evaluations at
+# -123.63026684851916 Ha. Both layouts preserve charge 26 and magnetic moment 2.
 # Fe_kp_ot_uks_added_auto_sym3_300K_restart.inp restores the four channels in
 # one step across MPI layouts. Keep this low-temperature physics path manual.
 # Fe_kp_ot_uks_added_auto_sym3_diis_converge.inp is the unlisted four-channel
@@ -237,12 +236,12 @@
                                            {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035093907},
                                            {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-2.06508035093907},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.1232462562E-4},
-                                           {matcher="OT_SCF_convergence", tol=8.0E-1, ref=6.0E-8},
+                                           {matcher="OT_SCF_convergence", tol=8.0E-1, ref=8.0E-9},
                                            {matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
-                                           {matcher="ADDED_MOS_AUTO_GROW_SEQUENCE", ref="8"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO: growing"},
                                            {matcher="OT_KPOINT_DEFAULT_IRAC"},
                                            {matcher="OT_KPOINT_DEFAULT_OCCUPATION_PRECONDITIONER"},
                                            {matcher="OT_KPOINT_DEFAULT_PRECONDITIONER_FULL_ALL"},
@@ -254,14 +253,15 @@
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # The writer is a converged finite-entropy physics test, not an early smoke.
-# It agrees with Al_sc_kp_diag_fermi.inp within 1.7E-9 Ha. The reader restores
-# both irreducible k-point channels, the adaptively grown eight-MO space, and
-# the minimizer payload in a fresh process.
+# It agrees with Al_sc_kp_diag_fermi.inp within 1.7E-9 Ha. AUTO now verifies
+# that the initial four-MO edge is empty; the L-BFGS writer below retains the
+# explicit 4->8 grow coverage. The reader restores both irreducible k-point
+# channels and the minimizer payload in a fresh process.
 "Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-9, ref=-2.06508035093907},
                                            {matcher="Mermin_free_energy", tol=1.0E-9, ref=-2.06508035093907},
                                            {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-2.06508035093907},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.1232462562E-4},
-                                           {matcher="OT_SCF_convergence", tol=8.0E-1, ref=6.0E-8},
+                                           {matcher="OT_SCF_convergence", tol=8.0E-1, ref=8.0E-9},
                                            {matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},

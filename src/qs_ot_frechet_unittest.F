@@ -250,7 +250,7 @@ PROGRAM qs_ot_frechet_unittest
                                                    3.0E-5_dp, nfail)
    CALL check_complex_fixed_n_response_channel("complex fixed-N response channel", &
                                                2.0E-7_dp, nfail)
-   CALL check_complex_projector_blended_response_channel("complex projector-blended response channel", &
+   CALL check_complex_projector_blended_response_channel("complex projector shadow response channel", &
                                                          5.0E-9_dp, nfail)
    CALL check_complex_projector_physical_response_channel("complex projector physical response channel", &
                                                           5.0E-9_dp, nfail)
@@ -4088,12 +4088,14 @@ CONTAINS
    END SUBROUTINE check_complex_fixed_n_response_channel
 
 ! **************************************************************************************************
-!> \brief Check the response blend used by the finite complex split Schur model.
+!> \brief Check the canonical projector response retained by the physical shadow model.
 !>        The occupation-projector response is the derivative of the rotation
 !>        gradient with respect to the band occupation weights.  For a purely
 !>        diagonal projector this reduces to d[U^H H U]_ii/dtheta; with a
 !>        spectral projector blend it also contains the finite complex projector
-!>        rotation response.
+!>        rotation response.  The active fixed-label Mermin mixed block is
+!>        checked separately by check_complex_fixed_n_response_channel and must
+!>        not consume this shadow response.
 !> \param label ...
 !> \param tol ...
 !> \param nfail ...

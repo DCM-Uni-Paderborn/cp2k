@@ -41430,21 +41430,6 @@ CONTAINS
                       orbital_occ_response(nmo, nmo, last_var - first_var + 1))
          END IF
 
-         DO ie = 1, nmo
-            CALL dense_history_safe_occ_projector_basis(projector_evec_base, projector_weight, ie, occ_basis)
-            CALL dense_ref_rotation_gradient(x_re, x_im, base, occ_basis, grad_p_re, grad_p_im, eps_p)
-            DO r = first_var, last_var
-               imo = var_i(r)
-               jmo = var_j(r)
-               SELECT CASE (var_kind(r))
-               CASE (1)
-                  response_occ(first_energy + ie - 1, r) = 2.0_dp*grad_p_re(imo, jmo)
-               CASE (2)
-                  response_occ(first_energy + ie - 1, r) = 2.0_dp*grad_p_im(imo, jmo)
-               END SELECT
-            END DO
-         END DO
-
          shadow_active_gap_norm_sq = 0.0_dp
          shadow_frechet_norm_sq = 0.0_dp
          shadow_hermitian_max = 0.0_dp
@@ -41796,6 +41781,13 @@ CONTAINS
             DO ie = 1, nmo
                raw_response = (eps_p(ie) - eps_m(ie))/(2.0_dp*fd_step)
                response(first_energy + ie - 1, s) = raw_response
+               ! The active mixed block must differentiate the same
+               ! fixed-label Mermin functional as the production gradient.
+               ! Canonical spectral projectors belong to the separately
+               ! calibrated physical shadow; blending them into H_eR makes
+               ! H_eR and H_Re non-conjugate derivatives of different
+               ! functionals.
+               response_occ(first_energy + ie - 1, s) = raw_response
             END DO
          END DO
 
