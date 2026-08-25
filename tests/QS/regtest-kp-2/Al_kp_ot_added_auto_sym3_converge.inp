@@ -2,9 +2,10 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Current MPI-2/OMP-2 references: AUTO grows 4->8->16 and converges in 52--53
-! total SCF steps near -8.1599870795 Ha. The one-step difference reflects the
-! threshold-sensitive accepted-step path; both runs reach the same free-energy basin.
+! Current MPI-4/OMP-1 reference: AUTO grows 4->8->16 and reproducibly converges
+! in 54 total SCF steps at -8.159987078117867 Ha. MPI-2/OMP-2 accepted-step
+! ordering is threshold-sensitive; five fresh runs required 47--72 steps while
+! reaching the same free-energy basin.
 ! After 32 accepted tail samples, the complete complex orbital residual is
 ! compared with the independent canonical-density block. A dominant orbital
 ! block refreshes the physical REF subspace instead of waiting for a path-

@@ -2,11 +2,11 @@
 ! This input is intentionally not listed in TEST_FILES.toml so the default
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
 ! Current 2026-08 MPI-2/OMP-2 status from isolated working directories: the
-! current clean branch and the coupled product-density model both reach the
-! 120-step limit near -8.14560 Ha. This remains an open convergence companion,
-! not a passing reference. The LOW print level is intentional: a future fix
-! must not require HIGH diagnostics. No first/last-band, AUTO-exhausted, or
-! "Unsupported content type" signature occurs before the limit.
+! current branch reaches the 120-step limit near -8.14560 Ha. This remains an
+! open convergence companion, not a passing reference. The LOW print level is
+! intentional: a future fix must not require HIGH diagnostics. No first/last-
+! band, AUTO-exhausted, or "Unsupported content type" signature occurs before
+! the limit.
 ! Run this companion from a fresh CWD because PROJECT files are written there
 ! and stale Al_kp_ot_added_auto* files make diagnosis ambiguous.
 &GLOBAL
