@@ -342,6 +342,7 @@ MODULE qs_scf_types
    TYPE qs_ot_restart_cache_type
       LOGICAL :: valid = .FALSE.
       INTEGER :: format_version = 0, nchannel = 0
+      CHARACTER(LEN=20) :: requested_ot_method = ""
       CHARACTER(LEN=20), DIMENSION(qs_ot_restart_signature_nchar) :: settings_char = ""
       INTEGER, DIMENSION(qs_ot_restart_signature_nint) :: settings_int = 0
       LOGICAL, DIMENSION(qs_ot_restart_signature_nlog) :: settings_log = .FALSE.
@@ -582,6 +583,7 @@ CONTAINS
       scf_env%qs_ot_restart%valid = .FALSE.
       scf_env%qs_ot_restart%format_version = 0
       scf_env%qs_ot_restart%nchannel = 0
+      scf_env%qs_ot_restart%requested_ot_method = ""
       scf_env%qs_ot_restart%settings_char = ""
       scf_env%qs_ot_restart%settings_int = 0
       scf_env%qs_ot_restart%settings_log = .FALSE.
@@ -910,6 +912,7 @@ CONTAINS
       scf_env%qs_ot_restart%valid = .FALSE.
       scf_env%qs_ot_restart%format_version = 0
       scf_env%qs_ot_restart%nchannel = 0
+      scf_env%qs_ot_restart%requested_ot_method = ""
       scf_env%qs_ot_restart%settings_char = ""
       scf_env%qs_ot_restart%settings_int = 0
       scf_env%qs_ot_restart%settings_log = .FALSE.

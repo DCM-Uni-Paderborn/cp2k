@@ -78,7 +78,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 38
+   INTEGER, PARAMETER                   :: ot_restart_version = 39
    REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
    REAL(KIND=dp), PARAMETER             :: ot_restart_objective_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
@@ -646,6 +646,7 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(smear_type), INTENT(IN)                       :: smear
 
+      CHARACTER(LEN=20)                                  :: requested_ot_method_payload
       CHARACTER(LEN=20), &
          DIMENSION(qs_ot_restart_signature_nchar)        :: settings_char_payload
       INTEGER                                            :: iatom, ichannel, ihist, nchannel, ndiis, &
@@ -694,10 +695,14 @@ CONTAINS
       CALL qs_ot_settings_restart_signature(qs_ot_env(1)%settings, settings_char_payload, &
                                             settings_int_payload, settings_log_payload, &
                                             settings_real_payload)
+      requested_ot_method_payload = qs_ot_env(1)%settings%requested_ot_method
       DO ichannel = 2, nchannel
          settings_compatible = qs_ot_settings_restart_compatible( &
                                qs_ot_env(ichannel)%settings, settings_char_payload, &
                                settings_int_payload, settings_log_payload, settings_real_payload)
+         settings_compatible = settings_compatible .AND. &
+                               qs_ot_env(ichannel)%settings%requested_ot_method == &
+                               requested_ot_method_payload
          CPASSERT(settings_compatible)
       END DO
       IF (ires > 0) THEN
@@ -712,6 +717,7 @@ CONTAINS
          WRITE (ires) settings_int_payload
          WRITE (ires) settings_log_payload
          WRITE (ires) settings_real_payload
+         WRITE (ires) requested_ot_method_payload
       END IF
       DEALLOCATE (restart_positions)
       DO ichannel = 1, nchannel
@@ -1489,6 +1495,7 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(smear_type), INTENT(IN)                       :: smear
 
+      CHARACTER(LEN=20)                                  :: requested_ot_method_payload
       CHARACTER(LEN=20), &
          DIMENSION(qs_ot_restart_signature_nchar)        :: settings_char_payload
       CHARACTER(LEN=LEN(ot_restart_marker))              :: marker
@@ -1606,6 +1613,7 @@ CONTAINS
       settings_int_payload(:) = 0
       settings_log_payload(:) = .FALSE.
       settings_real_payload(:) = 0.0_dp
+      requested_ot_method_payload = ""
       IF (para_env%is_source()) THEN
          READ (rst_unit, IOSTAT=ios) restart_hmat
          IF (ios == 0) READ (rst_unit, IOSTAT=ios) restart_positions
@@ -1615,6 +1623,9 @@ CONTAINS
          IF (ios == 0) READ (rst_unit, IOSTAT=ios) settings_int_payload
          IF (ios == 0) READ (rst_unit, IOSTAT=ios) settings_log_payload
          IF (ios == 0) READ (rst_unit, IOSTAT=ios) settings_real_payload
+         IF (version_read >= 39 .AND. ios == 0) THEN
+            READ (rst_unit, IOSTAT=ios) requested_ot_method_payload
+         END IF
       END IF
       CALL para_env%bcast(ios)
       CALL para_env%bcast(restart_hmat)
@@ -1625,6 +1636,11 @@ CONTAINS
       CALL para_env%bcast(settings_int_payload)
       CALL para_env%bcast(settings_log_payload)
       CALL para_env%bcast(settings_real_payload)
+      IF (version_read >= 39) THEN
+         CALL para_env%bcast(requested_ot_method_payload)
+      ELSE
+         requested_ot_method_payload = settings_char_payload(1)
+      END IF
       IF (ios /= 0) THEN
          DEALLOCATE (restart_positions)
          CALL cp_warn(__LOCATION__, "Ignoring malformed k-point OT restart geometry signature")
@@ -1663,6 +1679,7 @@ CONTAINS
       scf_env%qs_ot_restart%valid = .TRUE.
       scf_env%qs_ot_restart%format_version = version_read
       scf_env%qs_ot_restart%nchannel = nchannel
+      scf_env%qs_ot_restart%requested_ot_method = requested_ot_method_payload
       scf_env%qs_ot_restart%settings_char = settings_char_payload
       scf_env%qs_ot_restart%settings_int = settings_int_payload
       scf_env%qs_ot_restart%settings_log = settings_log_payload

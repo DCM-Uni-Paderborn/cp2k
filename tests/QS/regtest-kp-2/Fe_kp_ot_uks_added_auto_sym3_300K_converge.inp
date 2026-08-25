@@ -4,12 +4,13 @@
 ! fixed magnetic moment, a sharp d-band Fermi frontier, symmetry weights,
 ! ADDED_MOS AUTO, and FULL_ALL occupation preconditioning.
 !
-! Current references: AUTO grows (4,6)->(8,10)->(16,18), preserving common
-! 13->17->25 MO spaces. MPI-2/OMP-2 converges in 155 steps at
-! F=-123.63026685055964 Ha, -T*S=-0.00061235186724 Ha, and
-! mu=0.40200370924099 Ha. MPI-4/OMP-1 converges in 115 steps at
-! F=-123.63026685078690 Ha, -T*S=-0.00061227136374 Ha, and
-! mu=0.40200410992213 Ha. MPI-2 and MPI-4 restarts close in one step without
+! AUTO grows (4,6)->(8,10)->(16,18), preserving common 13->17->25 MO
+! spaces. Numerically favorable paths still converge directly with CG. If an
+! accepted-step path exhausts 240 CG steps, the existing Outer-SCF EPS_DIIS
+! handoff starts a fresh DIIS history instead of merely raising the limit.
+! Current MPI-4/OMP-1 fallback reference: 240 CG plus 142 DIIS steps,
+! F=-123.63026681026970 Ha, -T*S=-0.00061137638699 Ha, and
+! mu=0.40203664031768 Ha. The restart companion must close in one step without
 ! replaying AUTO growth or rebuilding the physical subspace.
 &GLOBAL
   PRINT_LEVEL MEDIUM
@@ -37,17 +38,23 @@
     &END QS
     &SCF
       ADDED_MOS AUTO
+      EPS_DIIS 2.0E-4
       EPS_SCF 1.0E-6
       MAX_SCF 240
       SCF_GUESS ATOMIC
       &OT
         ENERGIES
         LINESEARCH 2PNT
+        MAX_SCF_DIIS 240
         MINIMIZER CG
         OCCUPATION_PRECONDITIONER
         PRECONDITIONER FULL_ALL
         ROTATION
       &END OT
+      &OUTER_SCF
+        EPS_SCF 1.0E-6
+        MAX_SCF 2
+      &END OUTER_SCF
       &SMEAR
         ELECTRONIC_TEMPERATURE 300
         FIXED_MAGNETIC_MOMENT 2.0

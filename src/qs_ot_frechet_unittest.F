@@ -90,9 +90,10 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_ot_types,                     ONLY: &
         ot_metallic_variable_defaults, qs_ot_kpoint_preconditioner_solver_supported, &
         qs_ot_kpoint_preconditioner_supported, qs_ot_reset_accepted_model_calibration, &
-        qs_ot_restart_signature_nchar, qs_ot_restart_signature_nint, qs_ot_restart_signature_nlog, &
-        qs_ot_restart_signature_nreal, qs_ot_settings_init, qs_ot_settings_restart_compatible, &
-        qs_ot_settings_restart_signature, qs_ot_settings_type, qs_ot_type
+        qs_ot_restart_outer_diis_handoff, qs_ot_restart_signature_nchar, &
+        qs_ot_restart_signature_nint, qs_ot_restart_signature_nlog, qs_ot_restart_signature_nreal, &
+        qs_ot_settings_init, qs_ot_settings_restart_compatible, qs_ot_settings_restart_signature, &
+        qs_ot_settings_type, qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_accepted_physical_residual_quality, qs_scf_kp_active_residual_affine, &
@@ -30584,7 +30585,9 @@ CONTAINS
          DIMENSION(qs_ot_restart_signature_nchar)        :: char_signature
       INTEGER, DIMENSION(qs_ot_restart_signature_nint)   :: int_signature
       LOGICAL :: changed_algorithm, changed_diis, changed_method, changed_occupation, &
-         changed_preconditioner, changed_rotation, changed_tether, roundoff_match, same
+         changed_preconditioner, changed_requested_handoff, changed_rotation, changed_tether, &
+         handoff, missing_outer_handoff, missing_threshold_handoff, roundoff_match, same, &
+         saved_cg_handoff
       LOGICAL, DIMENSION(qs_ot_restart_signature_nlog)   :: log_signature
       REAL(KIND=dp), &
          DIMENSION(qs_ot_restart_signature_nreal)        :: real_signature
@@ -30595,6 +30598,7 @@ CONTAINS
       settings%do_rotation = .TRUE.
       settings%do_ener = .TRUE.
       settings%occupation_preconditioner = .TRUE.
+      settings%max_scf_diis = 240
       CALL qs_ot_settings_restart_signature(settings, char_signature, int_signature, &
                                             log_signature, real_signature)
 
@@ -30635,14 +30639,29 @@ CONTAINS
       changed_tether = qs_ot_settings_restart_compatible( &
                        settings, char_signature, int_signature, log_signature, real_signature)
 
+      handoff = qs_ot_restart_outer_diis_handoff(settings, "DIIS", "CG", .TRUE., 2.0E-4_dp)
+      changed_requested_handoff = &
+         qs_ot_restart_outer_diis_handoff(settings, "DIIS", "LBFG", .TRUE., 2.0E-4_dp)
+      missing_outer_handoff = &
+         qs_ot_restart_outer_diis_handoff(settings, "DIIS", "CG", .FALSE., 2.0E-4_dp)
+      missing_threshold_handoff = &
+         qs_ot_restart_outer_diis_handoff(settings, "DIIS", "CG", .TRUE., 0.0_dp)
+      saved_cg_handoff = &
+         qs_ot_restart_outer_diis_handoff(settings, "CG", "CG", .TRUE., 2.0E-4_dp)
+
       IF (.NOT. same .OR. .NOT. roundoff_match .OR. changed_method .OR. changed_algorithm .OR. &
           changed_preconditioner .OR. changed_diis .OR. changed_rotation .OR. &
-          changed_occupation .OR. changed_tether) THEN
+          changed_occupation .OR. changed_tether .OR. .NOT. handoff .OR. &
+          changed_requested_handoff .OR. missing_outer_handoff .OR. &
+          missing_threshold_handoff .OR. saved_cg_handoff) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
-            "failed with same/roundoff/method/algorithm/preconditioner/diis/rotation/occupation/tether", &
+         WRITE (*, '(A,1X,A,14(1X,L1))') TRIM(label), &
+            "failed with same/roundoff/method/algorithm/preconditioner/diis/rotation/ "// &
+            "occupation/tether/handoff/changed-request/no-outer/no-threshold/saved-CG", &
             same, roundoff_match, changed_method, changed_algorithm, changed_preconditioner, &
-            changed_diis, changed_rotation, changed_occupation, changed_tether
+            changed_diis, changed_rotation, changed_occupation, changed_tether, handoff, &
+            changed_requested_handoff, missing_outer_handoff, missing_threshold_handoff, &
+            saved_cg_handoff
       ELSE
          WRITE (*, '(A,1X,A)') TRIM(label), "OK"
       END IF

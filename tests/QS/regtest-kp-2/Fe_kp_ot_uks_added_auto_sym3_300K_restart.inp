@@ -1,8 +1,9 @@
 ! Manual restart companion for
 ! Fe_kp_ot_uks_added_auto_sym3_300K_converge.inp. Run the source input first
 ! in the same directory. The four complex (spin,k-point) channels and adaptive
-! 25-MO spaces must be restored without replaying AUTO growth. This input is
-! intentionally not listed in TEST_FILES.toml.
+! 25-MO spaces and a possible Outer-SCF CG-to-DIIS handoff must be restored
+! without replaying AUTO growth. This input is intentionally not listed in
+! TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Fe_kp_ot_uks_added_auto_sym3_300K_restart
@@ -30,17 +31,23 @@
     &END QS
     &SCF
       ADDED_MOS AUTO
+      EPS_DIIS 2.0E-4
       EPS_SCF 1.0E-6
-      MAX_SCF 40
+      MAX_SCF 240
       SCF_GUESS RESTART
       &OT
         ENERGIES
         LINESEARCH 2PNT
+        MAX_SCF_DIIS 240
         MINIMIZER CG
         OCCUPATION_PRECONDITIONER
         PRECONDITIONER FULL_ALL
         ROTATION
       &END OT
+      &OUTER_SCF
+        EPS_SCF 1.0E-6
+        MAX_SCF 2
+      &END OUTER_SCF
       &SMEAR
         ELECTRONIC_TEMPERATURE 300
         FIXED_MAGNETIC_MOMENT 2.0

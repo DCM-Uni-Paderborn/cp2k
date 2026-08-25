@@ -68,6 +68,7 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_restart_signature_nint
    PUBLIC  :: qs_ot_restart_signature_nlog
    PUBLIC  :: qs_ot_restart_signature_nreal
+   PUBLIC  :: qs_ot_restart_outer_diis_handoff
    PUBLIC  :: qs_ot_settings_restart_compatible
    PUBLIC  :: qs_ot_settings_restart_signature
    PUBLIC  :: qs_ot_settings_init
@@ -81,6 +82,7 @@ MODULE qs_ot_types
       LOGICAL           :: do_rotation = .FALSE., do_ener = .FALSE.
       LOGICAL           :: ks = .FALSE.
       CHARACTER(LEN=4)  :: ot_method = ""
+      CHARACTER(LEN=4)  :: requested_ot_method = ""
       CHARACTER(LEN=3)  :: ot_algorithm = ""
       CHARACTER(LEN=4)  :: line_search_method = ""
       CHARACTER(LEN=20) :: preconditioner_name = ""
@@ -1040,6 +1042,30 @@ CONTAINS
    END FUNCTION qs_ot_settings_restart_compatible
 
 ! **************************************************************************************************
+!> \brief recognize a serialized Outer-SCF transition to OT/DIIS
+!> \param settings current input-derived OT settings
+!> \param restart_method effective minimizer stored in the restart
+!> \param restart_requested_method input minimizer stored in the restart
+!> \param have_outer_scf whether the current input enables Outer-SCF
+!> \param eps_diis current Outer-SCF OT/DIIS transition threshold
+!> \return true only for the same requested method and an enabled DIIS handoff
+! **************************************************************************************************
+   PURE FUNCTION qs_ot_restart_outer_diis_handoff( &
+      settings, restart_method, restart_requested_method, have_outer_scf, eps_diis) RESULT(handoff)
+      TYPE(qs_ot_settings_type), INTENT(IN)              :: settings
+      CHARACTER(LEN=*), INTENT(IN)                       :: restart_method, restart_requested_method
+      LOGICAL, INTENT(IN)                                :: have_outer_scf
+      REAL(KIND=dp), INTENT(IN)                          :: eps_diis
+      LOGICAL                                            :: handoff
+
+      handoff = TRIM(restart_method) == "DIIS" .AND. &
+                TRIM(restart_requested_method) == TRIM(settings%requested_ot_method) .AND. &
+                TRIM(restart_method) /= TRIM(restart_requested_method) .AND. &
+                have_outer_scf .AND. eps_diis > 0.0_dp .AND. settings%max_scf_diis > 0
+
+   END FUNCTION qs_ot_restart_outer_diis_handoff
+
+! **************************************************************************************************
 !> \brief Return whether the occupation preconditioner belongs to the current runtime model.
 !> \param qs_ot_env ...
 !> \return Requested state for real/Gamma OT, staged state for complex k-point OT.
@@ -1121,6 +1147,7 @@ CONTAINS
       TYPE(qs_ot_settings_type)                          :: settings
 
       settings%ot_method = "CG"
+      settings%requested_ot_method = "CG"
       settings%ot_algorithm = "TOD"
       settings%diis_m = 7
       settings%preconditioner_name = "FULL_KINETIC"
@@ -3028,6 +3055,20 @@ CONTAINS
       CALL section_vals_val_get(ot_section, "ON_THE_FLY_LOC", l_val=settings%on_the_fly_loc)
 
       CALL section_vals_val_get(ot_section, "MINIMIZER", i_val=ot_method)
+      SELECT CASE (ot_method)
+      CASE (ot_mini_sd)
+         settings%requested_ot_method = "SD"
+      CASE (ot_mini_cg)
+         settings%requested_ot_method = "CG"
+      CASE (ot_mini_diis)
+         settings%requested_ot_method = "DIIS"
+      CASE (ot_mini_broyden)
+         settings%requested_ot_method = "BROY"
+      CASE (ot_mini_lbfgs)
+         settings%requested_ot_method = "LBFG"
+      CASE DEFAULT
+         CPABORT("READ OTSCF MINIMIZER: Value unknown")
+      END SELECT
       ! overwrite input if ot_state is set
       IF (settings%ot_state == 1) THEN
          ot_method = ot_mini_diis

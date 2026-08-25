@@ -182,8 +182,9 @@ MODULE qs_scf
    USE qs_ot_types,                     ONLY: &
         qs_ot_allocate, qs_ot_channel_index, qs_ot_check_channel_context, qs_ot_init, &
         qs_ot_kpoint_preconditioner_solver_supported, qs_ot_kpoint_preconditioner_supported, &
-        qs_ot_number_of_channels, qs_ot_reset_accepted_model_calibration, qs_ot_set_context, &
-        qs_ot_settings_restart_compatible, qs_ot_type
+        qs_ot_number_of_channels, qs_ot_reset_accepted_model_calibration, &
+        qs_ot_restart_outer_diis_handoff, qs_ot_set_context, qs_ot_settings_restart_compatible, &
+        qs_ot_type
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
                                               outer_loop_optimize,&
                                               outer_loop_purge_history,&
@@ -2964,8 +2965,10 @@ CONTAINS
 
       INTEGER                                            :: handle, ikpoint, ikpoint_local, ispin, &
                                                             nao, nelectron, nkpoint, nmo, &
-                                                            ot_channel, restart_compatible_int
-      LOGICAL                                            :: restart_compatible, use_real_wfn
+                                                            ot_channel, output_unit, &
+                                                            restart_compatible_int
+      LOGICAL                                            :: restart_compatible, &
+                                                            restart_diis_handoff, use_real_wfn
       REAL(KIND=dp)                                      :: maxocc
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       TYPE(cp_fm_type)                                   :: sc_coeff, sc_coeff_im
@@ -2995,6 +2998,29 @@ CONTAINS
 
       CALL get_kpoint_info(kpoints, nkp=nkpoint, use_real_wfn=use_real_wfn)
 
+      ! An Outer-SCF EPS_DIIS transition changes the effective minimizer while retaining the
+      ! user-requested method.  Resume that exact DIIS state only when restart v39 records the
+      ! same requested method and the current input still enables the same handoff mechanism.
+      restart_diis_handoff = .FALSE.
+      IF (scf_env%qs_ot_restart%valid .AND. scf_env%qs_ot_restart%format_version >= 39) THEN
+         restart_diis_handoff = qs_ot_restart_outer_diis_handoff( &
+                                scf_env%qs_ot_env(1)%settings, &
+                                scf_env%qs_ot_restart%settings_char(1), &
+                                scf_env%qs_ot_restart%requested_ot_method, &
+                                scf_control%outer_scf%have_scf, scf_control%eps_diis)
+      END IF
+      IF (restart_diis_handoff) THEN
+         DO ot_channel = 1, SIZE(scf_env%qs_ot_env)
+            scf_env%qs_ot_env(ot_channel)%settings%ot_state = 1
+            scf_env%qs_ot_env(ot_channel)%settings%ot_method = "DIIS"
+         END DO
+         scf_control%max_scf = MAX(scf_env%qs_ot_env(1)%settings%max_scf_diis, &
+                                   scf_control%max_scf)
+         output_unit = cp_logger_get_default_io_unit()
+         IF (output_unit > 0) WRITE (output_unit, '(A)') &
+            " K-point OT restart: resuming the Outer-SCF DIIS handoff."
+      END IF
+
       ! A distributed minimizer restart is meaningful only if every channel can
       ! restore the same accepted-step state.  Reject the payload globally
       ! before touching any local channel if the current MO layout differs.
@@ -3007,6 +3033,11 @@ CONTAINS
                               scf_env%qs_ot_restart%settings_int, &
                               scf_env%qs_ot_restart%settings_log, &
                               scf_env%qs_ot_restart%settings_real)
+      END IF
+      IF (restart_compatible .AND. scf_env%qs_ot_restart%format_version >= 39) THEN
+         restart_compatible = &
+            TRIM(scf_env%qs_ot_restart%requested_ot_method) == &
+            TRIM(scf_env%qs_ot_env(1)%settings%requested_ot_method)
       END IF
       IF (restart_compatible) THEN
          restart_compatible = SIZE(scf_env%qs_ot_restart%channel) == SIZE(scf_env%qs_ot_env)
