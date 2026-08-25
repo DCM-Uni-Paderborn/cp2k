@@ -3247,10 +3247,6 @@ CONTAINS
          IF (settings%ot_algorithm /= "TOD" .AND. settings%ot_algorithm /= "REF") THEN
             CPABORT("MINIMIZER LBFGS requires ALGORITHM STRICT or IRAC")
          END IF
-         IF (settings%occupation_preconditioner .AND. &
-             .NOT. (kpoint_smearing_context .AND. smearing_context)) THEN
-            CPABORT("MINIMIZER LBFGS supports OCCUPATION_PRECONDITIONER only for k-point smearing")
-         END IF
       END IF
 
       ! write OT output
