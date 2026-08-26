@@ -458,6 +458,7 @@ MODULE qs_ot_types
       INTEGER :: schur_density_stationarity_quality_samples = 0
       REAL(KIND=dp) :: schur_density_stationarity_quality = 0.0_dp
       REAL(KIND=dp) :: schur_density_stationarity_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: diis_reference_density_stationarity_delta = -1.0_dp
       LOGICAL :: schur_closure_response_pending = .FALSE.
       INTEGER :: schur_closure_response_samples = 0
       REAL(KIND=dp) :: schur_closure_response_model_delta = 0.0_dp
@@ -1525,6 +1526,7 @@ CONTAINS
       qs_ot_env%schur_density_stationarity_quality_samples = 0
       qs_ot_env%schur_density_stationarity_quality = 0.0_dp
       qs_ot_env%schur_density_stationarity_quality_ema = 0.0_dp
+      qs_ot_env%diis_reference_density_stationarity_delta = -1.0_dp
       qs_ot_env%schur_closure_response_pending = .FALSE.
       qs_ot_env%schur_closure_response_samples = 0
       qs_ot_env%schur_closure_response_model_delta = 0.0_dp

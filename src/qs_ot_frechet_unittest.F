@@ -105,6 +105,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_affine_residual_minimum, qs_scf_kp_affine_residual_quality, &
         qs_scf_kp_candidate_calibration_exposure, qs_scf_kp_candidate_position_drop, &
         qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
+        qs_scf_kp_canonical_density_exact_plateau_ready, &
+        qs_scf_kp_canonical_density_exact_shadow_weight, &
         qs_scf_kp_canonical_density_group_metrics, qs_scf_kp_canonical_density_multimode_blend, &
         qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
         qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_projector_density_response, &
@@ -124,10 +126,11 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
         qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
         qs_scf_kp_density_descent_candidate, qs_scf_kp_density_full_direct_tail_probe, &
-        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_response_probe, &
-        qs_scf_kp_density_response_tail_ready, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
+        qs_scf_kp_density_history_controls_refresh, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_pair_activation_ready, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_response_probe, qs_scf_kp_density_response_tail_ready, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
+        qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_bootstrap_curvature_floor, qs_scf_kp_energy_closure_preferred, &
         qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_response_ready, &
         qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
@@ -340,6 +343,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_density_closure_group_refresh( &
       "k-point OT aligned fixed-N REF refresh", nfail)
    CALL check_kpoint_density_pair_activation("k-point OT canonical density pair activation", nfail)
+   CALL check_kpoint_canonical_density_exact_plateau( &
+      "k-point OT exact fixed-N density plateau", 5.0E-15_dp, nfail)
    CALL check_kpoint_complete_physical_gradient_norm( &
       "k-point OT complete reduced-space physical gradient", 5.0E-15_dp, nfail)
    CALL check_kpoint_complete_physical_audit_ready( &
@@ -5992,6 +5997,18 @@ CONTAINS
                                                2.0E-1_dp, eps_scf, .TRUE., .TRUE., .FALSE.) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
                                                5.0E-4_dp, eps_scf, .FALSE., .TRUE.) .OR. &
+               .NOT. qs_scf_kp_density_history_controls_refresh( &
+               .TRUE., 2.0E-6_dp, 1.0E-6_dp, 3, 2.0E-3_dp) .OR. &
+               qs_scf_kp_density_history_controls_refresh( &
+               .TRUE., 2.0E-6_dp, 1.0E-6_dp, 2, 2.0E-3_dp) .OR. &
+               .NOT. qs_scf_kp_density_history_controls_refresh( &
+               .TRUE., 2.0E-6_dp, 1.0E-6_dp, 3, -2.0E-3_dp) .OR. &
+               qs_scf_kp_density_history_controls_refresh( &
+               .TRUE., 5.0E-7_dp, 1.0E-6_dp, 3, 2.0E-3_dp) .OR. &
+               qs_scf_kp_density_history_controls_refresh( &
+               .FALSE., 2.0E-6_dp, 1.0E-6_dp, 3, 2.0E-3_dp) .OR. &
+               qs_scf_kp_density_history_controls_refresh( &
+               .TRUE., 2.0E-6_dp, 1.0E-6_dp, 3, HUGE(1.0_dp)) .OR. &
                .NOT. qs_scf_kp_density_closure_refresh_ready( &
                1.0E-5_dp, 4.0E-4_dp, eps_scf) .OR. &
                .NOT. qs_scf_kp_density_closure_refresh_ready( &
@@ -6622,7 +6639,7 @@ CONTAINS
                .TRUE., [1.0_dp], [HUGE(1.0_dp)], .FALSE.)
       failed = failed .OR. ot_kpoint_diis_rotation_response_ready( &
                .TRUE., [EPSILON(1.0_dp)], [2.0_dp], .FALSE.)
-      ! A mature multi-group path probes only when accepted descent underdelivers response work.
+      ! A mature fixed-N path probes only when accepted descent underdelivers response work.
       failed = failed .OR. .NOT. ot_kpoint_diis_rotation_response_probe_ready( &
                .TRUE., [2.0_dp, 1.0_dp], [1.0_dp, 1.0_dp], 4, &
                0.05_dp, 0.1_dp, 1.0E-4_dp, 1.0E-6_dp)
@@ -6632,9 +6649,17 @@ CONTAINS
       failed = failed .OR. ot_kpoint_diis_rotation_response_probe_ready( &
                .TRUE., [2.0_dp, 1.0_dp], [1.0_dp, 1.0_dp], 4, &
                0.075_dp, 0.1_dp, 1.0E-4_dp, 1.0E-6_dp)
-      failed = failed .OR. ot_kpoint_diis_rotation_response_probe_ready( &
+      failed = failed .OR. .NOT. ot_kpoint_diis_rotation_response_probe_ready( &
                .TRUE., [2.0_dp], [1.0_dp], 4, &
                0.01_dp, 0.1_dp, 1.0E-4_dp, 1.0E-6_dp)
+      ! On a density-limited plateau the variational rotation gradient can vanish while the
+      ! finite fixed-N response retains resolvable descent work.
+      failed = failed .OR. .NOT. ot_kpoint_diis_rotation_response_probe_ready( &
+               .TRUE., [3.0E-12_dp], [2.0E-18_dp], 64, &
+               5.0E-14_dp, 0.08_dp, 1.05E-8_dp, 1.0E-8_dp)
+      failed = failed .OR. ot_kpoint_diis_rotation_response_probe_ready( &
+               .TRUE., [-3.0E-12_dp], [2.0E-18_dp], 64, &
+               5.0E-14_dp, 0.08_dp, 1.05E-8_dp, 1.0E-8_dp)
       failed = failed .OR. ot_kpoint_diis_rotation_response_probe_ready( &
                .TRUE., [2.0_dp, 1.0_dp], [1.0_dp, 1.0_dp], 4, &
                0.01_dp, 0.1_dp, 1.0E-7_dp, 1.0E-6_dp)
@@ -7582,6 +7607,54 @@ CONTAINS
    END SUBROUTINE check_kpoint_density_pair_activation
 
 ! **************************************************************************************************
+!> \brief Check admission and bounded weight of the mature exact-density candidate.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_canonical_density_exact_plateau(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: error
+
+      failed = .NOT. qs_scf_kp_canonical_density_exact_plateau_ready( &
+               .TRUE., 1.05E-8_dp, 1.0E-8_dp, 1.0E-8_dp, 64, 0.0_dp, 0, 0.0_dp, 0.0_dp)
+      failed = failed .OR. qs_scf_kp_canonical_density_exact_plateau_ready( &
+               .TRUE., 1.05E-8_dp, 1.0E-8_dp, 1.0E-8_dp, 63, 0.0_dp, 0, 0.0_dp, 0.0_dp)
+      failed = failed .OR. qs_scf_kp_canonical_density_exact_plateau_ready( &
+               .TRUE., 1.0E-8_dp, 1.0E-8_dp, 1.0E-8_dp, 64, 0.0_dp, 0, 0.0_dp, 0.0_dp)
+      failed = failed .OR. qs_scf_kp_canonical_density_exact_plateau_ready( &
+               .TRUE., 5.1E-8_dp, 1.0E-8_dp, 1.0E-8_dp, 64, 0.0_dp, 0, 0.0_dp, 0.0_dp)
+      failed = failed .OR. qs_scf_kp_canonical_density_exact_plateau_ready( &
+               .TRUE., 1.05E-8_dp, 1.0E-3_dp, 1.0E-8_dp, 64, 0.0_dp, 0, 0.0_dp, 0.0_dp)
+      failed = failed .OR. qs_scf_kp_canonical_density_exact_plateau_ready( &
+               .TRUE., 1.05E-8_dp, 1.0E-8_dp, 1.0E-8_dp, 64, 0.1_dp, 0, 0.0_dp, 0.0_dp)
+      failed = failed .OR. qs_scf_kp_canonical_density_exact_plateau_ready( &
+               .TRUE., 1.05E-8_dp, 1.0E-8_dp, 1.0E-8_dp, 64, 0.0_dp, 8, 0.05_dp, 1.0_dp)
+      failed = failed .OR. .NOT. qs_scf_kp_canonical_density_exact_plateau_ready( &
+               .TRUE., 1.05E-8_dp, 1.0E-8_dp, 1.0E-8_dp, 64, 0.0_dp, 8, 1.0_dp, 1.0_dp)
+
+      error = ABS(qs_scf_kp_canonical_density_exact_shadow_weight( &
+                  .TRUE., 1.05E-8_dp, 1.0E-8_dp) - 0.05_dp/1.05_dp)
+      error = MAX(error, ABS(qs_scf_kp_canonical_density_exact_shadow_weight( &
+                             .TRUE., 2.0E-8_dp, 1.0E-8_dp) - 0.1_dp))
+      error = MAX(error, ABS(qs_scf_kp_canonical_density_exact_shadow_weight( &
+                             .FALSE., 2.0E-8_dp, 1.0E-8_dp)))
+      failed = failed .OR. error > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", error
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", error
+      END IF
+
+   END SUBROUTINE check_kpoint_canonical_density_exact_plateau
+
+! **************************************************************************************************
 !> \brief Check that reduced Schur spaces retain omitted physical rotations in the exit norm.
 !> \param label ...
 !> \param tol ...
@@ -8487,9 +8560,8 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: exhausted, moving_energy_sample, &
-                                                            pending_physical_endpoint, &
-                                                            stagnant_energy_sample
+      LOGICAL :: accepted_physical_endpoint, exhausted, moving_energy_sample, &
+         pending_physical_endpoint, stagnant_energy_sample
 
       pending_physical_endpoint = ot_kpoint_mermin_recovery_deferred( &
                                   .TRUE., .TRUE., .FALSE., .FALSE., .TRUE.)
@@ -8498,17 +8570,21 @@ CONTAINS
       moving_energy_sample = ot_kpoint_mermin_recovery_deferred( &
                              .TRUE., .TRUE., .TRUE., .FALSE., .FALSE.)
       exhausted = ot_kpoint_mermin_recovery_deferred(.TRUE., .TRUE., .FALSE., .TRUE., .TRUE.)
+      accepted_physical_endpoint = ot_kpoint_mermin_recovery_deferred( &
+                                   .FALSE., .TRUE., .FALSE., .FALSE., .TRUE.)
 
       IF (.NOT. pending_physical_endpoint .OR. stagnant_energy_sample .OR. &
-          .NOT. moving_energy_sample .OR. exhausted) THEN
+          .NOT. moving_energy_sample .OR. exhausted .OR. accepted_physical_endpoint) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,L1))') TRIM(label), &
-            "failed with physical/stagnant/moving/exhausted", &
-            pending_physical_endpoint, stagnant_energy_sample, moving_energy_sample, exhausted
+         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
+            "failed with physical/stagnant/moving/exhausted/accepted", &
+            pending_physical_endpoint, stagnant_energy_sample, moving_energy_sample, exhausted, &
+            accepted_physical_endpoint
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,L1))') TRIM(label), &
-            "OK with physical/stagnant/moving/exhausted", &
-            pending_physical_endpoint, stagnant_energy_sample, moving_energy_sample, exhausted
+         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
+            "OK with physical/stagnant/moving/exhausted/accepted", &
+            pending_physical_endpoint, stagnant_energy_sample, moving_energy_sample, exhausted, &
+            accepted_physical_endpoint
       END IF
 
    END SUBROUTINE check_kpoint_mermin_recovery_deferred

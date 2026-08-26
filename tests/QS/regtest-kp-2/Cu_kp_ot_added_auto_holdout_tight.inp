@@ -1,13 +1,11 @@
-! Slow/manual transition-metal holdout that was not used to calibrate the
-! metallic OT response model. This input is intentionally not listed in
-! TEST_FILES.toml so the default regtest remains inexpensive.
-!
-! The 3x3x3 mesh reduces to six weighted k-points. ADDED_MOS AUTO grows
-! 4->8->12, reaches the complete 18-function AO space, and converges over the
-! three spaces in 21+35+21 reported inner steps. MPI-2/OMP-1 reference:
-! F=-48.10314645247482 Ha, 4.94E-9 Ha below the independent diagonalization
-! reference. No frontier, exhausted-buffer, or unsupported-content warning is
-! emitted. The restart companion closes in one exact step.
+! Tight, intentionally unregistered physics companion to
+! Cu_kp_ot_added_auto_holdout.inp. Run in the same directory after the writer.
+! The first inner cycle retains 20 safeguarded CG/line-search evaluations;
+! OUTER_SCF then hands the complete complex fixed-N state to DIIS. The
+! MPI-2/OMP-1 v40 reference converges in 20+125 evaluations at EPS_SCF=1E-8 and
+! F=-48.10314645439294 Ha; its own restart closes in one step. Keeping this
+! input out of TEST_FILES.toml avoids adding the long density-tail closure to
+! the default regression suite.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Cu_kp_ot_added_auto_holdout
@@ -32,13 +30,19 @@
     &END QS
     &SCF
       ADDED_MOS AUTO
-      EPS_SCF 1.0E-6
-      MAX_SCF 180
-      SCF_GUESS ATOMIC
+      EPS_DIIS 2.0E-6
+      EPS_SCF 1.0E-8
+      MAX_SCF 20
+      SCF_GUESS RESTART
       &OT
+        MAX_SCF_DIIS 180
         MINIMIZER CG
         PRECONDITIONER FULL_SINGLE_INVERSE
       &END OT
+      &OUTER_SCF
+        EPS_SCF 1.0E-8
+        MAX_SCF 1
+      &END OUTER_SCF
       &SMEAR
         ELECTRONIC_TEMPERATURE 1000
         METHOD FERMI_DIRAC

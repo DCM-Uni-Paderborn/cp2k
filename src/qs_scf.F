@@ -4302,6 +4302,12 @@ CONTAINS
             ! relearn only the incompatible accepted-direction statistics.
             CALL qs_ot_reset_accepted_model_calibration(qs_ot_env)
          END IF
+         IF (scf_env%qs_ot_restart%format_version >= 40) THEN
+            qs_ot_env%diis_reference_density_stationarity_delta = &
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(99)
+         ELSE
+            qs_ot_env%diis_reference_density_stationarity_delta = -1.0_dp
+         END IF
          IF (scf_env%qs_ot_restart%format_version >= 20 .AND. &
              scf_env%qs_ot_restart%format_version < 31 .AND. &
              qs_ot_env%has_complex_kpoint_state .AND. &

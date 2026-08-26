@@ -275,6 +275,12 @@ MODULE qs_scf_loop_utils
                        full_invariant_ratio = 0.0_dp
       REAL(KIND=dp) :: excess_quad = 0.0_dp, invariant_gap_quad = 0.0_dp
    END TYPE qs_scf_kp_projector_trace_metrics_type
+   TYPE, PRIVATE :: qs_scf_kp_canonical_density_tail_type
+      LOGICAL :: shadow_used = .FALSE.
+      LOGICAL :: model_ready = .FALSE.
+      LOGICAL :: probe_ready = .FALSE.
+      REAL(KIND=dp) :: shadow_weight = 0.0_dp
+   END TYPE qs_scf_kp_canonical_density_tail_type
    PUBLIC :: qs_scf_kp_projector_trace_metrics
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
@@ -366,6 +372,8 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_affine_rebased_drop, &
              qs_scf_kp_canonical_density_residual, &
              qs_scf_kp_density_pair_activation_ready, &
+             qs_scf_kp_canonical_density_exact_plateau_ready, &
+             qs_scf_kp_canonical_density_exact_shadow_weight, &
              qs_scf_kp_canonical_density_blend, &
              qs_scf_kp_canonical_density_candidate, &
              qs_scf_kp_canonical_density_multimode_blend, &
@@ -401,6 +409,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_density_closure_buffer_ready, &
              qs_scf_kp_density_closure_groups_refresh_ready, &
+             qs_scf_kp_density_history_controls_refresh, &
              qs_scf_kp_density_closure_history_refresh_ready, &
              qs_scf_kp_density_closure_refresh_ready, &
              qs_scf_kp_exit_limited_rebase_ready, &
@@ -2077,6 +2086,80 @@ CONTAINS
               density_delta > eps_scf
 
    END FUNCTION qs_scf_kp_density_pair_activation_ready
+
+! **************************************************************************************************
+!> \brief identify a mature unresolved canonical-density plateau for exact response
+!> \param density_ready canonical fixed-N density audit is valid for the current orbitals
+!> \param density_delta canonical fixed-N density-stationarity residual
+!> \param raw_delta current raw OT residual
+!> \param eps_scf requested SCF threshold
+!> \param density_samples accepted density-stationarity samples
+!> \param density_quality_ema EMA of accepted fractional density reduction
+!> \param selected_samples accepted exact-response candidate samples
+!> \param selected_quality_ema accepted Mermin-drop quality of the exact candidate
+!> \param selected_residual_quality_ema accepted residual quality of the exact candidate
+!> \return true for an initial mature probe or a repeatedly validated exact response
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_canonical_density_exact_plateau_ready( &
+      density_ready, density_delta, raw_delta, eps_scf, density_samples, density_quality_ema, &
+      selected_samples, selected_quality_ema, selected_residual_quality_ema) RESULT(ready)
+
+      LOGICAL, INTENT(IN)                                :: density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_delta, raw_delta, eps_scf
+      INTEGER, INTENT(IN)                                :: density_samples
+      REAL(KIND=dp), INTENT(IN)                          :: density_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: selected_quality_ema, &
+                                                            selected_residual_quality_ema
+      LOGICAL                                            :: ready
+
+      LOGICAL                                            :: density_stagnant
+      REAL(KIND=dp)                                      :: contraction, eps, projected_steps
+
+      ready = .FALSE.
+      IF (.NOT. density_ready .OR. eps_scf <= 0.0_dp) RETURN
+      eps = MAX(eps_scf, EPSILON(1.0_dp))
+      IF (density_samples < ot_kp_density_closure_tail_max_samples .OR. &
+          density_delta <= eps .OR. density_delta > 5.0_dp*eps .OR. &
+          raw_delta < 0.0_dp .OR. raw_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+
+      density_stagnant = .FALSE.
+      contraction = 1.0_dp - density_quality_ema
+      IF (contraction >= 1.0_dp) THEN
+         density_stagnant = .TRUE.
+      ELSE IF (contraction > EPSILON(contraction)) THEN
+         projected_steps = LOG(eps/density_delta)/LOG(contraction)
+         density_stagnant = projected_steps > REAL(ot_kp_density_closure_tail_max_samples, KIND=dp)
+      END IF
+      IF (.NOT. density_stagnant) RETURN
+
+      ready = .TRUE.
+      IF (selected_samples >= ot_kp_schur_projector_response_min_samples) &
+         ready = selected_quality_ema >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                 selected_residual_quality_ema >= ot_kp_schur_projector_response_quality_min_ratio
+
+   END FUNCTION qs_scf_kp_canonical_density_exact_plateau_ready
+
+! **************************************************************************************************
+!> \brief bounded exact-response weight for a mature canonical-density plateau
+!> \param plateau_ready mature plateau admission from the matching history model
+!> \param density_delta canonical fixed-N density-stationarity residual
+!> \param eps_scf requested SCF threshold
+!> \return unresolved-density fraction capped by the physical Projector tail weight
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_canonical_density_exact_shadow_weight( &
+      plateau_ready, density_delta, eps_scf) RESULT(weight)
+
+      LOGICAL, INTENT(IN)                                :: plateau_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_delta, eps_scf
+      REAL(KIND=dp)                                      :: weight
+
+      weight = 0.0_dp
+      IF (.NOT. plateau_ready .OR. eps_scf <= 0.0_dp .OR. density_delta <= eps_scf) RETURN
+      weight = MIN(ot_kp_schur_projector_coupled_tail_max_weight, &
+                   MAX(0.0_dp, (density_delta - eps_scf)/MAX(density_delta, eps_scf)))
+
+   END FUNCTION qs_scf_kp_canonical_density_exact_shadow_weight
 
 ! **************************************************************************************************
 !> \brief Build the finite-generator tangent which rotates the current diagonal occupation
@@ -8188,6 +8271,33 @@ CONTAINS
    END FUNCTION qs_scf_kp_density_closure_groups_refresh_ready
 
 ! **************************************************************************************************
+!> \brief let mature measured density progress govern repeated subspace refreshes
+!> \param density_ready canonical fixed-N density audit is valid for the current orbitals
+!> \param density_delta canonical fixed-N density-stationarity residual
+!> \param eps_scf requested SCF threshold
+!> \param quality_samples accepted density-stationarity samples
+!> \param quality_ema EMA of the fractional density-stationarity reduction
+!> \return true once measured unresolved density history replaces the absolute-value gate
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_density_history_controls_refresh( &
+      density_ready, density_delta, eps_scf, quality_samples, quality_ema) RESULT(controls)
+
+      LOGICAL, INTENT(IN)                                :: density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_delta, eps_scf
+      INTEGER, INTENT(IN)                                :: quality_samples
+      REAL(KIND=dp), INTENT(IN)                          :: quality_ema
+      LOGICAL                                            :: controls
+
+      ! Zero or negative progress is meaningful once three accepted endpoint
+      ! pairs exist. Keep the established orbital-refresh policy before that
+      ! point and after canonical density itself has converged.
+      controls = density_ready .AND. eps_scf > 0.0_dp .AND. density_delta > eps_scf .AND. &
+                 quality_samples >= ot_kp_schur_quality_min_samples .AND. &
+                 ABS(quality_ema) < HUGE(quality_ema)
+
+   END FUNCTION qs_scf_kp_density_history_controls_refresh
+
+! **************************************************************************************************
 !> \brief Detect a density-dominant accepted tail which the current OT subspace cannot close.
 !>
 !>        Density stationarity quality is the accepted fractional reduction
@@ -10516,9 +10626,10 @@ CONTAINS
                                                             density_buffer_ready_i, ikpoint, imo, &
                                                             ispin, local_kpoint, nao, nmo
       LOGICAL :: auto_expandable, base_state, collapsed, defer_energy_closure, &
-         density_buffer_ready, density_closure_stagnant, density_history_stagnant, &
-         exit_limited_rebase, fixed_moment_groups, high_residual_stagnant, mature_tail_rebase, &
-         mixed_tail_rebase, orbital_tail_rebase, step_ready
+         density_buffer_ready, density_closure_stagnant, density_history_controls, &
+         density_history_stagnant, exit_limited_rebase, fixed_moment_groups, &
+         high_residual_stagnant, mature_tail_rebase, mixed_tail_rebase, orbital_tail_rebase, &
+         step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
                                                             maxocc, occ_tail, residual_delta, &
                                                             weight
@@ -10610,6 +10721,11 @@ CONTAINS
                                  local_ot_env(1)%kpoint_raw_delta, eps_scf, &
                                  local_ot_env(1)%schur_density_stationarity_quality_samples, &
                                  local_ot_env(1)%schur_density_stationarity_quality_ema)
+      density_history_controls = qs_scf_kp_density_history_controls_refresh( &
+                                 local_ot_env(1)%kpoint_density_stationarity_ready, &
+                                 local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf, &
+                                 local_ot_env(1)%schur_density_stationarity_quality_samples, &
+                                 local_ot_env(1)%schur_density_stationarity_quality_ema)
       orbital_tail_rebase = density_buffer_ready .AND. &
                             local_ot_env(1)%kpoint_complete_physical_delta >= 0.0_dp .AND. &
                             qs_scf_kp_orbital_tail_rebase_ready( &
@@ -10639,7 +10755,11 @@ CONTAINS
                            local_ot_env(1)%kpoint_subspace_accepted_samples, &
                            local_ot_env(1)%mermin_ls_accepted_quality_ema, &
                            ot_kp_subspace_refresh_min_steps)
-      density_closure_stagnant = density_closure_stagnant .OR. density_history_stagnant
+      IF (density_history_controls) THEN
+         density_closure_stagnant = density_history_stagnant
+      ELSE
+         density_closure_stagnant = density_closure_stagnant .OR. density_history_stagnant
+      END IF
       ! Reserve one search direction for the diagonal fixed-N energy closure before
       ! replacing the orbital subspace; a later refresh re-arms this one-shot attempt.
       IF (defer_energy_closure .AND. .NOT. mixed_tail_rebase .AND. &
@@ -10687,11 +10807,12 @@ CONTAINS
            mixed_tail_rebase .OR. &
            (auto_expandable .AND. local_ot_env(1)%mermin_ls_accepted_quality_samples >= 32)) .AND. &
           (step_ready .OR. exit_limited_rebase)) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,11(1X,L1),3(1X,I6),7(1X,ES16.8))') &
-         " OT k-point subspace refresh ready restart stagnant buffer closure history "// &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,12(1X,L1),3(1X,I6),7(1X,ES16.8))') &
+         " OT k-point subspace refresh ready restart stagnant buffer closure history measured "// &
          "orbital mature exit expandable mixed step epoch samples residual physical density dqema pqema frac max:", &
          refresh, restart_valid, high_residual_stagnant, density_buffer_ready, density_closure_stagnant, &
-         density_history_stagnant, orbital_tail_rebase, mature_tail_rebase, exit_limited_rebase, auto_expandable, &
+         density_history_stagnant, density_history_controls, orbital_tail_rebase, mature_tail_rebase, &
+         exit_limited_rebase, auto_expandable, &
          mixed_tail_rebase, &
          local_ot_env(1)%OT_count, &
          local_ot_env(1)%kpoint_subspace_accepted_samples, &
@@ -18827,6 +18948,7 @@ CONTAINS
                                                             channel_residual_pair_score
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(qs_scf_kp_canonical_density_tail_type)        :: canonical_density_tail
       TYPE(qs_scf_kp_projector_trace_metrics_type)       :: projector_trace_metrics
 
          group_done = .FALSE.
@@ -20668,6 +20790,7 @@ CONTAINS
          constrained_candidate_selected = .FALSE.
          projector_physical_candidate_ready = .FALSE.
          projector_physical_candidate_selected = .FALSE.
+         canonical_density_tail = qs_scf_kp_canonical_density_tail_type()
          projector_physical_direct_candidate_ready = .FALSE.
          projector_physical_direct_candidate_selected = .FALSE.
          projector_physical_direct_candidate_used = .FALSE.
@@ -24947,11 +25070,25 @@ CONTAINS
                   END IF
                END IF
                projector_physical_shadow_coupled_weight = projector_coupled_weight
+               canonical_density_tail%model_ready = &
+                  qs_scf_kp_canonical_density_exact_plateau_ready( &
+                  local_ot_env(1)%kpoint_density_stationarity_ready, &
+                  local_ot_env(1)%kpoint_density_stationarity_delta, residual_delta, eps_scf_channel, &
+                  local_ot_env(1)%schur_density_stationarity_quality_samples, &
+                  local_ot_env(1)%schur_density_stationarity_quality_ema, &
+                  local_ot_env(1)%schur_projector_physical_selected_quality_samples, &
+                  local_ot_env(1)%schur_projector_physical_selected_quality_line_ema, &
+                  local_ot_env(1)%schur_projector_physical_selected_residual_quality_ema)
+               canonical_density_tail%shadow_weight = &
+                  qs_scf_kp_canonical_density_exact_shadow_weight( &
+                  canonical_density_tail%model_ready, &
+                  local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel)
                IF (projector_physical_shadow_enabled .AND. &
                    residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
                    local_ot_env(1)%kpoint_density_stationarity_ready) &
                   projector_physical_shadow_coupled_weight = &
-                  MAX(projector_physical_shadow_coupled_weight, density_projector_fraction)
+                  MAX(projector_physical_shadow_coupled_weight, density_projector_fraction, &
+                      canonical_density_tail%shadow_weight)
                IF (schur_attempt == 3 .AND. exact_attempt_response .AND. exact_physical_response_ready .AND. &
                    projector_physical_shadow_enabled .AND. &
                    projector_physical_shadow_coupled_weight > &
@@ -25185,6 +25322,14 @@ CONTAINS
                                                                 projector_physical_response_audit_negative_weight_sum, &
                                                                 raw_residual_delta=response_raw_delta, &
                                                                 step_metric_weight=var_step_weight)
+                  IF (canonical_density_tail%model_ready .AND. &
+                      projector_physical_response_weight <= &
+                      SQRT(EPSILON(1.0_dp))*canonical_density_tail%shadow_weight .AND. &
+                      canonical_density_tail%shadow_weight > EPSILON(1.0_dp)) THEN
+                     projector_physical_rx_e(:) = projector_physical_model_e(:)
+                     projector_physical_response_weight = canonical_density_tail%shadow_weight
+                     canonical_density_tail%shadow_used = .TRUE.
+                  END IF
                   IF (projector_physical_response_weight > EPSILON(projector_physical_response_weight)) THEN
                      projector_physical_z_e(:) = z_e(:) + projector_physical_rx_e(:)
                      projector_physical_gdot_energy = DOT_PRODUCT(grad_e, projector_physical_z_e)
@@ -25208,7 +25353,8 @@ CONTAINS
                      IF (projector_physical_coupled_model_ready .AND. &
                          projector_physical_gdotp > 0.0_dp .AND. &
                          projector_physical_normp > EPSILON(projector_physical_normp) .AND. &
-                         projector_physical_norm_ratio <= max_norm_ratio) THEN
+                         (projector_physical_norm_ratio <= max_norm_ratio .OR. &
+                          canonical_density_tail%shadow_used)) THEN
                         projector_physical_unit_abs_step = MAXVAL(ABS(projector_physical_rx_e))
                         IF (.NOT. global_schur_replicated) &
                            CALL para_env_inter_kp%max(projector_physical_unit_abs_step)
@@ -29239,6 +29385,11 @@ CONTAINS
                      projector_physical_direct_response_abs_trust_ratio, &
                      projector_physical_direct_model_gap_ratio)
                END IF
+               canonical_density_tail%probe_ready = &
+                  canonical_density_tail%shadow_used .AND. &
+                  canonical_density_tail%model_ready .AND. &
+                  projector_physical_candidate_ready .AND. &
+                  .NOT. projector_physical_direct_candidate_used
                z_e(:) = z_e(:) + rx_e(:)
 
                gdot_energy = DOT_PRODUCT(grad_e, z_e)
@@ -30209,6 +30360,7 @@ CONTAINS
                                             projector_physical_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
                IF ((local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
+                    canonical_density_tail%probe_ready .OR. &
                     (projector_physical_direct_candidate_used .AND. &
                      (projector_physical_direct_promoted .OR. &
                       projector_physical_direct_mixed_enabled .OR. &
@@ -30846,6 +30998,7 @@ CONTAINS
                                             projector_physical_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
                IF ((local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
+                    canonical_density_tail%probe_ready .OR. &
                     (projector_physical_direct_candidate_used .AND. &
                      (projector_physical_direct_promoted .OR. &
                       projector_physical_direct_mixed_enabled .OR. &
@@ -32694,6 +32847,8 @@ CONTAINS
                       projector_physical_density_rhs_abs_max)
             END IF
             IF (projector_physical_candidate_ready .AND. &
+                (.NOT. canonical_density_tail%shadow_used .OR. &
+                 projector_physical_candidate_selected) .AND. &
                 projector_physical_model_calibrated_drop > EPSILON(projector_physical_model_calibrated_drop)) THEN
                local_ot_env(1)%schur_projector_physical_pending = .TRUE.
                local_ot_env(1)%schur_projector_physical_drop = &

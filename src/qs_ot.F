@@ -768,6 +768,7 @@ CONTAINS
       IF (ASSOCIATED(qs_ot_env%c_diis)) qs_ot_env%c_diis(:) = 0.0_dp
       IF (ASSOCIATED(qs_ot_env%c_broy)) qs_ot_env%c_broy(:) = 0.0_dp
       IF (ASSOCIATED(qs_ot_env%energy_h)) qs_ot_env%energy_h(:) = 0.0_dp
+      qs_ot_env%diis_reference_density_stationarity_delta = -1.0_dp
 
    END SUBROUTINE qs_ot_reset_ref_rotation_history
 

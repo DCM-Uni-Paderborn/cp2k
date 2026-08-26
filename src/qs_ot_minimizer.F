@@ -118,6 +118,7 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_recovery_tail_max_eps_factor = 20.0_dp, &
                                         ot_cg_kp_mermin_recovery_step_floor = 1.0E-9_dp, &
                                         ot_cg_kp_mermin_recovery_active_step_floor = 1.0E-5_dp, &
+                                        ot_cg_kp_density_stationarity_ema_alpha = 3.0E-1_dp, &
                                         ot_cg_kp_physical_raw_delta_floor_ratio = 1.0E-2_dp, &
                                         ot_cg_kp_physical_raw_delta_mermin_floor = 1.0E-8_dp, &
                                         ot_cg_kp_physical_raw_delta_tail_quality = 9.9E-1_dp, &
@@ -400,7 +401,7 @@ CONTAINS
    END FUNCTION ot_kpoint_diis_rotation_response_ready
 
 ! **************************************************************************************************
-!> \brief decide whether a mature multi-group DIIS state should probe the finite rotation response
+!> \brief decide whether a mature fixed-N DIIS state should probe the finite rotation response
 !>
 !>        The previous accepted Mermin decrease is compared with the complete first-order work of
 !>        the current group-resolved response.  A probe is useful only when the raw/Pulay path
@@ -425,15 +426,26 @@ CONTAINS
                                                             eps_scf
       LOGICAL                                            :: ready
 
+      INTEGER                                            :: group
       REAL(KIND=dp)                                      :: response_work, response_work_threshold
 
-      ready = ot_kpoint_diis_rotation_response_ready( &
-              direction_ready, response_slope, raw_slope, .FALSE.)
-      ready = ready .AND. SIZE(response_slope) > 1 .AND. &
+      ready = direction_ready .AND. SIZE(response_slope) > 0 .AND. &
+              SIZE(response_slope) == SIZE(raw_slope) .AND. &
               accepted_samples >= ot_diis_kp_response_probe_min_accepted .AND. &
               accepted_drop >= 0.0_dp .AND. eps_scf > 0.0_dp .AND. &
               physical_delta > eps_scf*(1.0_dp + 10.0_dp*EPSILON(1.0_dp))
       IF (.NOT. ready) RETURN
+
+      DO group = 1, SIZE(response_slope)
+         ready = ABS(response_slope(group)) < HUGE(response_slope(group)) .AND. &
+                 ABS(raw_slope(group)) < HUGE(raw_slope(group)) .AND. &
+                 raw_slope(group) >= 0.0_dp .AND. &
+                 response_slope(group) >= &
+                 ot_diis_kp_rotation_response_min_work_ratio*raw_slope(group) .AND. &
+                 response_slope(group) > &
+                 EPSILON(1.0_dp)*MAX(1.0_dp, raw_slope(group))
+         IF (.NOT. ready) RETURN
+      END DO
 
       response_work = ABS(step)*SUM(response_slope)
       response_work_threshold = ot_diis_kp_rotation_response_min_work_ratio*response_work
@@ -1742,6 +1754,7 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%schur_density_stationarity_quality_samples)
       CALL para_env%bcast(qs_ot_env(1)%schur_density_stationarity_quality)
       CALL para_env%bcast(qs_ot_env(1)%schur_density_stationarity_quality_ema)
+      CALL para_env%bcast(qs_ot_env(1)%diis_reference_density_stationarity_delta)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_pending)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_samples)
       CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_model_delta)
@@ -5450,6 +5463,12 @@ CONTAINS
       qs_ot_env(1)%c_diis(:) = 0.0_dp
       qs_ot_env(1)%energy_h(:) = 0.0_dp
       qs_ot_env(1)%energy_h(1) = qs_ot_env(1)%etotal
+      IF (qs_ot_env(1)%kpoint_density_stationarity_ready) THEN
+         qs_ot_env(1)%diis_reference_density_stationarity_delta = &
+            qs_ot_env(1)%kpoint_density_stationarity_delta
+      ELSE
+         qs_ot_env(1)%diis_reference_density_stationarity_delta = -1.0_dp
+      END IF
 
    END SUBROUTINE ot_diis_restart_current_anchor
 
@@ -6066,18 +6085,22 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_diis_step'
 
-      INTEGER                                            :: diis_bound, diis_m, direction_ready_all, &
+      INTEGER                                            :: density_quality_samples, diis_bound, diis_m, direction_ready_all, &
                                                             group, handle, i, info, ispin, j, &
                                                             last_index, nfixed_groups, nspin
       LOGICAL :: current_state_converged, diis_trust_recovered, do_ener, do_ks, do_ot_sd, &
+                 density_response_target, &
                  kpoint_preconditioned_direction, kpoint_preconditioned_energy, &
                  kpoint_preconditioned_rotation, kpoint_response_probe, mermin_energy_rejected, &
                  mermin_residual_rejected, mermin_step_rejected, previous_response_candidate
       REAL(KIND=dp) :: accepted_drop, accepted_physical_ratio, accepted_residual_ratio, &
                        contracted_step, current_exit_delta, current_physical_delta, current_rotation_gnorm, &
-                       norm_weight, nvar, overlap, previous_response_model_work, previous_step, recovered_step, &
-                       reference_energy, reference_physical_delta, reference_rotation_gnorm, rejected_energy, &
-                       response_blend, response_model_work, rotation_raw_slope, rotation_response_slope, tmp, &
+                       density_quality, norm_weight, nvar, overlap, previous_response_model_work, &
+                       previous_step, recovered_step, &
+                       reference_energy, reference_physical_delta, reference_response_delta, &
+                       reference_rotation_gnorm, rejected_energy, &
+                       response_blend, response_model_work, response_target_delta, &
+                       rotation_raw_slope, rotation_response_slope, tmp, &
                        tr_xnew_gx, tr_xold_gx
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rotation_group_raw_slope, &
                                                             rotation_group_response_slope
@@ -6176,8 +6199,12 @@ CONTAINS
       accepted_physical_ratio = -1.0_dp
       accepted_residual_ratio = -1.0_dp
       current_physical_delta = -1.0_dp
+      response_target_delta = -1.0_dp
       current_rotation_gnorm = -1.0_dp
+      density_quality = 0.0_dp
+      density_response_target = .FALSE.
       reference_physical_delta = -1.0_dp
+      reference_response_delta = -1.0_dp
       reference_rotation_gnorm = -1.0_dp
       response_blend = 1.0_dp
       IF (qs_ot_env(1)%has_complex_kpoint_state .AND. &
@@ -6190,19 +6217,32 @@ CONTAINS
          current_physical_delta = ot_kpoint_physical_exit_delta( &
                                   qs_ot_env(1)%kpoint_physical_delta, &
                                   qs_ot_env(1)%kpoint_complete_physical_delta)
+         response_target_delta = current_physical_delta
+         IF (qs_ot_env(1)%kpoint_density_stationarity_ready) THEN
+            response_target_delta = MAX(response_target_delta, &
+                                        qs_ot_env(1)%kpoint_density_stationarity_delta)
+         END IF
          reference_physical_delta = qs_ot_env(1)%mermin_ls_reference_delta
+         reference_response_delta = reference_physical_delta
+         IF (qs_ot_env(1)%diis_reference_density_stationarity_delta > 0.0_dp) THEN
+            reference_response_delta = MAX(reference_response_delta, &
+                                           qs_ot_env(1)%diis_reference_density_stationarity_delta)
+         END IF
+         density_response_target = &
+            qs_ot_env(1)%diis_reference_density_stationarity_delta > &
+            MAX(qs_ot_env(1)%kpoint_eps_scf, reference_physical_delta)
          current_rotation_gnorm = qs_ot_env(1)%kpoint_physical_rot_gnorm
          reference_rotation_gnorm = qs_ot_env(1)%diis_reference_rotation_gnorm
          mermin_energy_rejected = &
             ot_kpoint_diis_mermin_step_rejected(rejected_energy, reference_energy)
          mermin_residual_rejected = ot_kpoint_diis_residual_step_rejected( &
-                                    rejected_energy, reference_energy, current_physical_delta, &
-                                    reference_physical_delta, qs_ot_env(1)%kpoint_eps_scf)
+                                    rejected_energy, reference_energy, response_target_delta, &
+                                    reference_response_delta, qs_ot_env(1)%kpoint_eps_scf)
          mermin_step_rejected = mermin_energy_rejected .OR. mermin_residual_rejected
          accepted_drop = MAX(0.0_dp, reference_energy - rejected_energy)
-         IF (.NOT. mermin_step_rejected .AND. current_physical_delta > 0.0_dp .AND. &
-             reference_physical_delta > 0.0_dp) THEN
-            accepted_physical_ratio = current_physical_delta/reference_physical_delta
+         IF (.NOT. mermin_step_rejected .AND. response_target_delta > 0.0_dp .AND. &
+             reference_response_delta > 0.0_dp) THEN
+            accepted_physical_ratio = response_target_delta/reference_response_delta
          END IF
          IF (.NOT. mermin_step_rejected .AND. current_rotation_gnorm > 0.0_dp .AND. &
              reference_rotation_gnorm > 0.0_dp) THEN
@@ -6215,6 +6255,39 @@ CONTAINS
             ELSE
                qs_ot_env(1)%diis_raw_residual_ratio = accepted_residual_ratio
             END IF
+         END IF
+         IF (.NOT. mermin_step_rejected .AND. density_response_target .AND. &
+             qs_ot_env(1)%kpoint_density_stationarity_ready) THEN
+            accepted_residual_ratio = qs_ot_env(1)%kpoint_density_stationarity_delta/ &
+                                      qs_ot_env(1)%diis_reference_density_stationarity_delta
+            IF (qs_ot_env(1)%diis_last_candidate_response) THEN
+               qs_ot_env(1)%diis_response_residual_ratio = &
+                  ot_kpoint_diis_response_endpoint_ratio( &
+                  qs_ot_env(1)%diis_raw_residual_ratio, accepted_residual_ratio, &
+                  qs_ot_env(1)%diis_last_response_blend)
+            ELSE
+               qs_ot_env(1)%diis_raw_residual_ratio = accepted_residual_ratio
+            END IF
+         END IF
+      END IF
+      IF (.NOT. mermin_step_rejected .AND. qs_ot_env(1)%diis_iter > 0 .AND. &
+          qs_ot_env(1)%kpoint_density_stationarity_ready .AND. &
+          qs_ot_env(1)%diis_reference_density_stationarity_delta > EPSILON(1.0_dp)) THEN
+         density_quality = ot_kpoint_mermin_closure_response_quality( &
+                           qs_ot_env(1)%diis_reference_density_stationarity_delta, &
+                           qs_ot_env(1)%kpoint_density_stationarity_delta)
+         density_quality_samples = &
+            MIN(qs_ot_env(1)%schur_density_stationarity_quality_samples + 1, &
+                HUGE(density_quality_samples) - 1)
+         qs_ot_env(1)%schur_density_stationarity_quality = density_quality
+         qs_ot_env(1)%schur_density_stationarity_quality_samples = density_quality_samples
+         IF (density_quality_samples == 1) THEN
+            qs_ot_env(1)%schur_density_stationarity_quality_ema = density_quality
+         ELSE
+            qs_ot_env(1)%schur_density_stationarity_quality_ema = &
+               (1.0_dp - ot_cg_kp_density_stationarity_ema_alpha)* &
+               qs_ot_env(1)%schur_density_stationarity_quality_ema + &
+               ot_cg_kp_density_stationarity_ema_alpha*density_quality
          END IF
       END IF
       previous_step = qs_ot_env(1)%ds_min
@@ -6245,13 +6318,13 @@ CONTAINS
          qs_ot_env(1)%energy_h(:) = 0.0_dp
       END IF
       IF (.NOT. mermin_step_rejected .AND. .NOT. diis_trust_recovered .AND. &
-          nfixed_groups > 1) THEN
+          nfixed_groups > 0) THEN
          kpoint_response_probe = ot_kpoint_diis_rotation_response_probe_ready( &
                                  kpoint_preconditioned_direction, &
                                  rotation_group_response_slope(1:nfixed_groups), &
                                  rotation_group_raw_slope(1:nfixed_groups), &
                                  qs_ot_env(1)%kpoint_subspace_accepted_samples, accepted_drop, &
-                                 qs_ot_env(1)%ds_min, current_physical_delta, &
+                                 qs_ot_env(1)%ds_min, response_target_delta, &
                                  qs_ot_env(1)%kpoint_eps_scf)
          IF (kpoint_response_probe) THEN
             response_blend = ot_kpoint_diis_response_residual_blend( &
@@ -6282,6 +6355,12 @@ CONTAINS
             previous_response_candidate, diis_trust_recovered, accepted_drop, &
             previous_step, recovered_step, previous_response_model_work, &
             accepted_physical_ratio, accepted_residual_ratio
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,4(1X,ES16.8))') &
+            " OT DIIS density stationarity history samples reference current quality ema:", &
+            qs_ot_env(1)%schur_density_stationarity_quality_samples, &
+            qs_ot_env(1)%diis_reference_density_stationarity_delta, &
+            qs_ot_env(1)%kpoint_density_stationarity_delta, density_quality, &
+            qs_ot_env(1)%schur_density_stationarity_quality_ema
       END IF
       IF (mermin_step_rejected) THEN
          previous_step = qs_ot_env(1)%ds_min
@@ -6337,7 +6416,7 @@ CONTAINS
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),2(1X,L1))') &
                " OT DIIS Mermin candidate rejected energy reference residual reference_residual "// &
                "old_step new_step energy_reject residual_reject:", &
-               rejected_energy, reference_energy, current_physical_delta, reference_physical_delta, &
+               rejected_energy, reference_energy, response_target_delta, reference_response_delta, &
                previous_step, contracted_step, mermin_energy_rejected, mermin_residual_rejected
          END IF
          CALL timestop(handle)
@@ -6366,6 +6445,12 @@ CONTAINS
                                                qs_ot_env(1)%kpoint_physical_delta, &
                                                qs_ot_env(1)%kpoint_complete_physical_delta)
       qs_ot_env(1)%diis_reference_rotation_gnorm = qs_ot_env(1)%kpoint_physical_rot_gnorm
+      IF (qs_ot_env(1)%kpoint_density_stationarity_ready) THEN
+         qs_ot_env(1)%diis_reference_density_stationarity_delta = &
+            qs_ot_env(1)%kpoint_density_stationarity_delta
+      ELSE
+         qs_ot_env(1)%diis_reference_density_stationarity_delta = -1.0_dp
+      END IF
 
       ! copy the position and the error vector in the diis buffers
 
