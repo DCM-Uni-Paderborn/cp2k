@@ -47,6 +47,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_cg_metric_history_reset, &
               ot_kpoint_cg_tail_metric_tracked, &
               ot_kpoint_diis_accepted_response_step, &
+              ot_kpoint_diis_response_anchor_ready, &
               ot_kpoint_diis_rejected_step, &
               ot_kpoint_diis_response_endpoint_ratio, &
               ot_kpoint_diis_response_residual_blend, &
@@ -139,6 +140,7 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_closure_backtrack = 5.0E-1_dp, &
                                         ot_cg_kp_mermin_secant_consistency = 2.0E-1_dp, &
                                         ot_diis_kp_rotation_response_min_work_ratio = 2.5E-1_dp, &
+                                        ot_diis_kp_response_anchor_min_gap_fraction = 2.5E-1_dp, &
                                         ot_diis_kp_accepted_response_recovery = 2.0_dp
 
    TYPE, PRIVATE :: ot_cg_history_snapshot_type
@@ -360,6 +362,63 @@ CONTAINS
                            ot_diis_kp_accepted_response_recovery*ABS(previous_step)), previous_step)
 
    END FUNCTION ot_kpoint_diis_accepted_response_step
+
+! **************************************************************************************************
+!> \brief retain a productive finite-response endpoint as the new Pulay anchor
+!>
+!>        The raw rotation gradient can be numerically null on a fixed-N density plateau. In that
+!>        case old Pulay vectors do not resolve the canonical-density mode and may extrapolate an
+!>        accepted finite-response endpoint back toward the old density. Re-anchor only after the
+!>        accepted candidate used a substantial response fraction and removed a substantial part
+!>        of the density error still separating the endpoint from EPS_SCF.
+!> \param response_candidate preceding candidate used the finite complex response
+!> \param single_density_group one spin-density channel owns the common fixed-N response
+!> \param density_target canonical density, rather than the raw rotation norm, controlled the step
+!> \param step_rejected preceding endpoint failed the accepted Mermin/residual guard
+!> \param response_blend finite-response fraction used by the accepted candidate
+!> \param reference_density canonical-density residual before the candidate
+!> \param current_density canonical-density residual at the accepted endpoint
+!> \param eps_scf requested SCF convergence threshold
+!> \return true when stale Pulay vectors should be replaced by the accepted endpoint
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_diis_response_anchor_ready( &
+      response_candidate, single_density_group, density_target, step_rejected, response_blend, &
+      reference_density, current_density, eps_scf) RESULT(ready)
+
+      LOGICAL, INTENT(IN)                                :: response_candidate, &
+                                                            single_density_group, density_target, &
+                                                            step_rejected
+      REAL(KIND=dp), INTENT(IN)                          :: response_blend, reference_density, &
+                                                            current_density, eps_scf
+      LOGICAL                                            :: ready
+
+      REAL(KIND=dp)                                      :: closed_fraction, density_decrease, &
+                                                            density_gap, tolerance
+
+      ready = response_candidate .AND. single_density_group .AND. density_target .AND. &
+              .NOT. step_rejected .AND. &
+              eps_scf > 0.0_dp .AND. reference_density > eps_scf .AND. &
+              current_density > eps_scf .AND. response_blend >= 0.5_dp
+      IF (.NOT. ready) RETURN
+      IF (.NOT. ieee_is_finite(response_blend) .OR. &
+          .NOT. ieee_is_finite(reference_density) .OR. &
+          .NOT. ieee_is_finite(current_density)) THEN
+         ready = .FALSE.
+         RETURN
+      END IF
+
+      density_gap = reference_density - eps_scf
+      density_decrease = reference_density - current_density
+      tolerance = 64.0_dp*EPSILON(1.0_dp)* &
+                  MAX(ABS(reference_density), ABS(current_density), ABS(eps_scf))
+      IF (density_gap <= tolerance .OR. density_decrease <= tolerance) THEN
+         ready = .FALSE.
+         RETURN
+      END IF
+      closed_fraction = density_decrease/density_gap
+      ready = closed_fraction >= ot_diis_kp_response_anchor_min_gap_fraction
+
+   END FUNCTION ot_kpoint_diis_response_anchor_ready
 
 ! **************************************************************************************************
 !> \brief decide whether a current Schur rotation response is a valid DIIS descent correction
@@ -6088,7 +6147,7 @@ CONTAINS
       INTEGER                                            :: density_quality_samples, diis_bound, diis_m, direction_ready_all, &
                                                             group, handle, i, info, ispin, j, &
                                                             last_index, nfixed_groups, nspin
-      LOGICAL :: current_state_converged, diis_trust_recovered, do_ener, do_ks, do_ot_sd, &
+      LOGICAL :: current_state_converged, diis_response_anchor, diis_trust_recovered, do_ener, do_ks, do_ot_sd, &
                  density_response_target, &
                  kpoint_preconditioned_direction, kpoint_preconditioned_energy, &
                  kpoint_preconditioned_rotation, kpoint_response_probe, mermin_energy_rejected, &
@@ -6096,7 +6155,7 @@ CONTAINS
       REAL(KIND=dp) :: accepted_drop, accepted_physical_ratio, accepted_residual_ratio, &
                        contracted_step, current_exit_delta, current_physical_delta, current_rotation_gnorm, &
                        density_quality, norm_weight, nvar, overlap, previous_response_model_work, &
-                       previous_step, recovered_step, &
+                       previous_response_blend, previous_step, recovered_step, &
                        reference_energy, reference_physical_delta, reference_response_delta, &
                        reference_rotation_gnorm, rejected_energy, &
                        response_blend, response_model_work, response_target_delta, &
@@ -6292,11 +6351,38 @@ CONTAINS
       END IF
       previous_step = qs_ot_env(1)%ds_min
       previous_response_model_work = qs_ot_env(1)%diis_last_response_model_work
+      previous_response_blend = qs_ot_env(1)%diis_last_response_blend
       previous_response_candidate = qs_ot_env(1)%diis_last_candidate_response
+      diis_response_anchor = ot_kpoint_diis_response_anchor_ready( &
+                             previous_response_candidate, nfixed_groups == 1 .AND. &
+                             .NOT. ot_kpoint_mermin_shared_spin_group( &
+                             qs_ot_env%spin_index, qs_ot_env%occupation_group_index), &
+                             density_response_target, &
+                             mermin_step_rejected, previous_response_blend, &
+                             qs_ot_env(1)%diis_reference_density_stationarity_delta, &
+                             qs_ot_env(1)%kpoint_density_stationarity_delta, &
+                             qs_ot_env(1)%kpoint_eps_scf)
+      IF (diis_response_anchor) THEN
+         ! The current coordinates are the accepted response endpoint, but they have not yet been
+         ! inserted into the circular history. Clear only the stale Pulay model; the accepted
+         ! response and density-quality calibration remain causal across the new anchor.
+         qs_ot_env(1)%diis_iter = 0
+         qs_ot_env(1)%ls_diis(:, :) = 0.0_dp
+         qs_ot_env(1)%lss_diis(:, :) = 0.0_dp
+         qs_ot_env(1)%c_diis(:) = 0.0_dp
+         qs_ot_env(1)%energy_h(:) = 0.0_dp
+         DO ispin = 1, nspin
+            qs_ot_env(ispin)%diis_last_candidate_sd = .TRUE.
+            qs_ot_env(ispin)%diis_last_candidate_response = .FALSE.
+            qs_ot_env(ispin)%diis_last_response_blend = 0.0_dp
+            qs_ot_env(ispin)%diis_last_response_model_work = 0.0_dp
+         END DO
+      END IF
       recovered_step = ot_kpoint_diis_accepted_response_step( &
                        previous_step, qs_ot_env(1)%settings%ds_min, accepted_drop, &
                        previous_response_model_work, accepted_physical_ratio, &
                        accepted_residual_ratio, previous_response_candidate .AND. &
+                       .NOT. diis_response_anchor .AND. &
                        .NOT. mermin_step_rejected)
       diis_trust_recovered = ABS(recovered_step - previous_step) > &
                              10.0_dp*EPSILON(previous_step)* &
@@ -6317,7 +6403,8 @@ CONTAINS
          qs_ot_env(1)%c_diis(:) = 0.0_dp
          qs_ot_env(1)%energy_h(:) = 0.0_dp
       END IF
-      IF (.NOT. mermin_step_rejected .AND. .NOT. diis_trust_recovered .AND. &
+      IF (.NOT. mermin_step_rejected .AND. .NOT. diis_response_anchor .AND. &
+          .NOT. diis_trust_recovered .AND. &
           nfixed_groups > 0) THEN
          kpoint_response_probe = ot_kpoint_diis_rotation_response_probe_ready( &
                                  kpoint_preconditioned_direction, &
@@ -6361,6 +6448,12 @@ CONTAINS
             qs_ot_env(1)%diis_reference_density_stationarity_delta, &
             qs_ot_env(1)%kpoint_density_stationarity_delta, density_quality, &
             qs_ot_env(1)%schur_density_stationarity_quality_ema
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),4(1X,ES16.8))') &
+            " OT DIIS response endpoint anchor previous density_target anchor blend ref current eps:", &
+            previous_response_candidate, density_response_target, diis_response_anchor, &
+            previous_response_blend, &
+            qs_ot_env(1)%diis_reference_density_stationarity_delta, &
+            qs_ot_env(1)%kpoint_density_stationarity_delta, qs_ot_env(1)%kpoint_eps_scf
       END IF
       IF (mermin_step_rejected) THEN
          previous_step = qs_ot_env(1)%ds_min

@@ -2,8 +2,8 @@
 ! Cu_kp_ot_added_auto_holdout.inp. Run in the same directory after the writer.
 ! The first inner cycle retains 20 safeguarded CG/line-search evaluations;
 ! OUTER_SCF then hands the complete complex fixed-N state to DIIS. The
-! MPI-2/OMP-1 v40 reference converges in 20+125 evaluations at EPS_SCF=1E-8 and
-! F=-48.10314645439294 Ha; its own restart closes in one step. Keeping this
+! MPI-2/OMP-1 v40 reference converges in 20+83 evaluations at EPS_SCF=1E-8 and
+! F=-48.10314645439306 Ha; its own restart closes in one step. Keeping this
 ! input out of TEST_FILES.toml avoids adding the long density-tail closure to
 ! the default regression suite.
 &GLOBAL
