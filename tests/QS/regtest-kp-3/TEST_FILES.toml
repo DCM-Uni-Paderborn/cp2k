@@ -18,4 +18,5 @@
 "cc8.inp"                               = [{matcher="M011", tol=5.0E-10, ref=-45.389916356641265},
                                            {matcher="gext", tol=5.0E-08, ref=0.7099959941}]
 "cc9.inp"                               = [{matcher="M011", tol=5.0E-10, ref=-45.270016601865670}]
+"he_kpoint_symmetry_openmp.inp"         = [{matcher="E_total", tol=1e-10, ref=-11.23084551534152}]
 #EOF
