@@ -169,7 +169,6 @@ MODULE tblite_interface
    INTEGER, PARAMETER                                 :: dip_n = 3
    INTEGER, PARAMETER                                 :: quad_n = 6
    REAL(KIND=dp), PARAMETER                           :: same_atom = 0.00001_dp
-   REAL(KIND=dp), PARAMETER                           :: tblite_scc_pconv = 2.0E-5_dp
    PUBLIC :: tb_set_calculator, tb_init_geometry, tb_init_wf
    PUBLIC :: tb_get_basis, build_tblite_matrices
    PUBLIC :: tb_get_energy, tb_update_charges, tb_ham_add_coulomb
@@ -4813,8 +4812,7 @@ CONTAINS
       LOGICAL                                            :: advance_native_mixer, discard_mixed_output, do_combined_mixing, &
                                                             do_dipole, do_kpoints, do_quadrupole, native_sign_mixing, &
                                                             skip_charge_mixing, reuse_native_input, skip_scf_dispersion, &
-                                                            skip_scf_dispersion_energy, seed_native_from_rho, &
-                                                            skip_scf_dispersion_gradient, skip_scf_dispersion_potential, &
+                                                            seed_native_from_rho, &
                                                             use_gxtb_potential_mixer, use_native_mixer, use_no_mixer
       REAL(KIND=dp)                                      :: native_seed_charge, norm, new_charge, pao
 #if defined(__TBLITE_DEBUG_DIAGNOSTICS)
@@ -7620,31 +7618,37 @@ CONTAINS
       END IF
       IF (dft_control%qs_control%xtb_control%tblite_method /= gxtb) THEN
          IF (dft_control%qs_control%xtb_control%tblite_mixer_memory /= reference_iterations) THEN
-         WRITE (UNIT=iounit, FMT="(/,T2,A)") &
-            "WARNING: tblite reference CLI cannot reproduce XTB/TBLITE_MIXER/MEMORY."
-         WRITE (UNIT=iounit, FMT="(T2,A,I0,A,I0,A)") &
-            "The native reference run uses tblite's internal mixer memory tied to --iterations (", &
-            reference_iterations, "), while CP2K uses MEMORY ", &
-            dft_control%qs_control%xtb_control%tblite_mixer_memory, "."
-            IF (ref%stop_on_error) CPABORT("tblite reference CLI cannot reproduce TBLITE_MIXER/MEMORY")
+            WRITE (UNIT=iounit, FMT="(/,T2,A)") &
+               "WARNING: tblite reference CLI cannot reproduce XTB/TBLITE_MIXER/MEMORY."
+            WRITE (UNIT=iounit, FMT="(T2,A,I0,A,I0,A)") &
+               "The native reference run uses tblite's internal mixer memory tied to --iterations (", &
+               reference_iterations, "), while CP2K uses MEMORY ", &
+               dft_control%qs_control%xtb_control%tblite_mixer_memory, "."
+            IF (ref%stop_on_error) THEN
+               CPABORT("tblite reference CLI cannot reproduce TBLITE_MIXER/MEMORY")
+            END IF
          END IF
          IF (ABS(dft_control%qs_control%xtb_control%tblite_mixer_damping - &
                  tblite_mixer_damping_default) > 10.0_dp*EPSILON(1.0_dp)) THEN
-         WRITE (UNIT=iounit, FMT="(/,T2,A)") &
-            "WARNING: tblite reference CLI cannot reproduce XTB/TBLITE_MIXER/DAMPING."
-         WRITE (UNIT=iounit, FMT="(T2,A,F8.4,A,F8.4,A)") &
-            "The native reference run uses tblite's library default ", tblite_mixer_damping_default, &
-            ", while CP2K uses DAMPING ", dft_control%qs_control%xtb_control%tblite_mixer_damping, "."
-            IF (ref%stop_on_error) CPABORT("tblite reference CLI cannot reproduce TBLITE_MIXER/DAMPING")
+            WRITE (UNIT=iounit, FMT="(/,T2,A)") &
+               "WARNING: tblite reference CLI cannot reproduce XTB/TBLITE_MIXER/DAMPING."
+            WRITE (UNIT=iounit, FMT="(T2,A,F8.4,A,F8.4,A)") &
+               "The native reference run uses tblite's library default ", tblite_mixer_damping_default, &
+               ", while CP2K uses DAMPING ", dft_control%qs_control%xtb_control%tblite_mixer_damping, "."
+            IF (ref%stop_on_error) THEN
+               CPABORT("tblite reference CLI cannot reproduce TBLITE_MIXER/DAMPING")
+            END IF
          END IF
          IF (ABS(dft_control%qs_control%xtb_control%tblite_mixer_omega0 - &
                  tblite_mixer_omega0_default) > 10.0_dp*EPSILON(1.0_dp)) THEN
-         WRITE (UNIT=iounit, FMT="(/,T2,A)") &
-            "WARNING: tblite reference CLI cannot reproduce XTB/TBLITE_MIXER/OMEGA0."
-         WRITE (UNIT=iounit, FMT="(T2,A,ES12.4,A,ES12.4,A)") &
-            "The native reference run uses tblite's library default ", tblite_mixer_omega0_default, &
-            ", while CP2K uses OMEGA0 ", dft_control%qs_control%xtb_control%tblite_mixer_omega0, "."
-            IF (ref%stop_on_error) CPABORT("tblite reference CLI cannot reproduce TBLITE_MIXER/OMEGA0")
+            WRITE (UNIT=iounit, FMT="(/,T2,A)") &
+               "WARNING: tblite reference CLI cannot reproduce XTB/TBLITE_MIXER/OMEGA0."
+            WRITE (UNIT=iounit, FMT="(T2,A,ES12.4,A,ES12.4,A)") &
+               "The native reference run uses tblite's library default ", tblite_mixer_omega0_default, &
+               ", while CP2K uses OMEGA0 ", dft_control%qs_control%xtb_control%tblite_mixer_omega0, "."
+            IF (ref%stop_on_error) THEN
+               CPABORT("tblite reference CLI cannot reproduce TBLITE_MIXER/OMEGA0")
+            END IF
          END IF
          IF (ABS(dft_control%qs_control%xtb_control%tblite_mixer_min_weight - &
                  tblite_mixer_min_weight_default) > 10.0_dp*EPSILON(1.0_dp)) THEN

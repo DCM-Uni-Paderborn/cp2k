@@ -679,7 +679,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: update_p
       LOGICAL, INTENT(INOUT)                             :: diis_step
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: diis_error
-      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
       TYPE(dbcsr_p_type), DIMENSION(:, :), OPTIONAL, &
@@ -750,12 +750,15 @@ CONTAINS
       kplocal = kp_range(2) - kp_range(1) + 1
 
 #if defined(__TBLITE_GXTB)
-      CALL get_qs_env(qs_env, dft_control=dft_control, kpoints=scf_kpoints)
-      IF (ASSOCIATED(dft_control)) THEN
-         IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
-             dft_control%qs_control%xtb_control%tblite_method == gxtb .AND. .NOT. update_p) THEN
-            IF (.NOT. ASSOCIATED(scf_kpoints, kpoints)) &
-               CPABORT("Post-SCF g-xTB new k-point grid is not yet implemented")
+      IF (PRESENT(qs_env)) THEN
+         CALL get_qs_env(qs_env, dft_control=dft_control, kpoints=scf_kpoints)
+         IF (ASSOCIATED(dft_control)) THEN
+            IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
+                dft_control%qs_control%xtb_control%tblite_method == gxtb .AND. .NOT. update_p) THEN
+               IF (.NOT. ASSOCIATED(scf_kpoints, kpoints)) THEN
+                  CPABORT("Post-SCF g-xTB new k-point grid is not yet implemented")
+               END IF
+            END IF
          END IF
       END IF
 #endif
@@ -823,6 +826,12 @@ CONTAINS
          use_omp_kpoints = .FALSE.
       END IF
       IF (diag_check_requested()) use_omp_kpoints = .FALSE.
+#if defined(__TBLITE_GXTB)
+      IF (ASSOCIATED(dft_control)) THEN
+         IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
+             dft_control%qs_control%xtb_control%tblite_method == gxtb) use_omp_kpoints = .FALSE.
+      END IF
+#endif
 
       IF (use_omp_kpoints) THEN
          CALL do_general_diag_kp_omp(effective_ks, matrix_s, adiis_ks, kpoints, scf_env, scf_control, update_p, &
@@ -935,10 +944,10 @@ CONTAINS
       ALLOCATE (info(kplocal*nspin*nkp_groups, ninfo))
 
 #if defined(__TBLITE_GXTB)
-      ! A same-grid post-SCF diagonalization must reuse the converged exchange
-      ! and mixed F(k).  Advancing the model-native mixer here would create an
-      ! additional, non-SCF iteration and invalidate the cached potential.
-      IF (update_p) CALL tb_prepare_gxtb_kpoint_mixer(qs_env, matrix_ks, kpoints, scf_env)
+      IF (PRESENT(qs_env)) THEN
+         ! A same-grid post-SCF diagonalization reuses the converged exchange and mixed F(k).
+         IF (update_p) CALL tb_prepare_gxtb_kpoint_mixer(qs_env, matrix_ks, kpoints, scf_env)
+      END IF
 #endif
 
       ! Setup and start all the communication
@@ -962,7 +971,7 @@ CONTAINS
                   CALL dbcsr_desymmetrize(rmatrix, tmpmat)
                   CALL copy_dbcsr_to_fm(tmpmat, fmwork(1))
 #if defined(__TBLITE_GXTB)
-                  CALL tb_apply_gxtb_kpoint_fm(qs_env, ik, ispin, fmwork(1))
+                  IF (PRESENT(qs_env)) CALL tb_apply_gxtb_kpoint_fm(qs_env, ik, ispin, fmwork(1))
 #endif
                   ! s matrix is not spin dependent
                   IF (use_grid_fft) THEN
@@ -989,7 +998,9 @@ CONTAINS
                   CALL dbcsr_desymmetrize(cmatrix, tmpmat)
                   CALL copy_dbcsr_to_fm(tmpmat, fmwork(2))
 #if defined(__TBLITE_GXTB)
-                  CALL tb_apply_gxtb_kpoint_fm(qs_env, ik, ispin, fmwork(1), fmwork(2))
+                  IF (PRESENT(qs_env)) THEN
+                     CALL tb_apply_gxtb_kpoint_fm(qs_env, ik, ispin, fmwork(1), fmwork(2))
+                  END IF
 #endif
                   ! s matrix is not spin dependent, double the work
                   IF (use_grid_fft) THEN
