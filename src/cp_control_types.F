@@ -14,17 +14,16 @@ MODULE cp_control_types
                                               cp_fm_type
    USE eeq_input,                       ONLY: eeq_solver_type
    USE input_constants,                 ONLY: &
-        do_full_density, rtp_bse_ham_G0W0, rtp_method_tddft, tblite_cli_born_kernel_auto, &
+        do_full_density, rtp_bse_ham_gw, rtp_method_tddft, tblite_cli_born_kernel_auto, &
         tblite_cli_solution_state_gsolv, tblite_cli_solvation_none, tblite_guess_auto, &
         tblite_guess_ceh, tblite_gxtb_acceleration_auto, tblite_gxtb_acp_cache_enabled, &
-        tblite_gxtb_acp_mesh_dense, &
-        tblite_gxtb_exchange_complete_array, tblite_gxtb_forward_qualification_off, &
-        tblite_gxtb_gradient_dense, tblite_gxtb_image_batch_default, tblite_gxtb_star_dense, &
-        tblite_gxtb_transform_dense, tblite_mixer_damping_default, &
-        tblite_mixer_iterations_default, tblite_mixer_max_weight_default, &
-        tblite_mixer_min_weight_default, tblite_mixer_omega0_default, &
-        tblite_mixer_weight_factor_default, tblite_scc_mixer_auto, tblite_solver_gvd, &
-        use_mom_ref_coac
+        tblite_gxtb_acp_mesh_dense, tblite_gxtb_exchange_complete_array, &
+        tblite_gxtb_forward_qualification_off, tblite_gxtb_gradient_dense, &
+        tblite_gxtb_image_batch_default, tblite_gxtb_star_dense, tblite_gxtb_transform_dense, &
+        tblite_mixer_damping_default, tblite_mixer_iterations_default, &
+        tblite_mixer_max_weight_default, tblite_mixer_min_weight_default, &
+        tblite_mixer_omega0_default, tblite_mixer_weight_factor_default, tblite_scc_mixer_auto, &
+        tblite_solver_gvd, use_mom_ref_coac
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp
@@ -104,7 +103,7 @@ MODULE cp_control_types
       INTEGER                              :: propagator = 0
       LOGICAL                              :: fixed_ions = .FALSE.
       INTEGER                              :: rtp_method = rtp_method_tddft
-      INTEGER                              :: rtbse_ham = rtp_bse_ham_G0W0
+      INTEGER                              :: rtbse_ham = rtp_bse_ham_gw
       INTEGER                              :: initial_wfn = 0
       REAL(dp)                             :: eps_exp = 0.0_dp
       LOGICAL                              :: initial_step = .FALSE.
@@ -268,6 +267,7 @@ MODULE cp_control_types
       !
       INTEGER                              :: sto_ng = 0
       INTEGER                              :: h_sto_ng = 0
+      LOGICAL                              :: sto_flex = .FALSE.
       INTEGER                              :: tblite_method = 0
       INTEGER                              :: tblite_scc_mixer = tblite_scc_mixer_auto
       INTEGER                              :: tblite_mixer_iterations = tblite_mixer_iterations_default
@@ -803,11 +803,17 @@ MODULE cp_control_types
                                               auto_basis_ri_hxc = 1, &
                                               auto_basis_ri_xas = 1, &
                                               auto_basis_ri_hfx = 1, &
-                                              localize_each = 1
-      REAL(KIND=dp)                        :: relax_multiplicity = 0.0_dp, &
+                                              localize_each = 1, &
+                                              mtlr_ikind = 1, &
+                                              max_mtlr_iter = 10
+      REAL(KIND=dp)                        :: eps_u_j_loop = 0.01_dp, &
+                                              relax_multiplicity = 0.0_dp, &
                                               sic_scaling_a = 0.0_dp, &
                                               sic_scaling_b = 0.0_dp, &
-                                              pos_dir_surf_dip = 0.0_dp
+                                              pos_dir_surf_dip = 0.0_dp, &
+                                              perturbation_strength = 0.0_dp, &
+                                              trq(2) = 0.0_dp, &
+                                              vhxc(2) = 0.0_dp
       LOGICAL                              :: do_xas_calculation = .FALSE., &
                                               do_xas_tdp_calculation = .FALSE., &
                                               drho_by_collocation = .FALSE., &
@@ -817,6 +823,7 @@ MODULE cp_control_types
                                               uks = .FALSE., &
                                               lsd = .FALSE., &
                                               dft_plus_u = .FALSE., &
+                                              mtlr_u_j = .FALSE., &
                                               apply_efield = .FALSE., &
                                               apply_efield_field = .FALSE., &
                                               apply_vector_potential = .FALSE., &
@@ -843,7 +850,8 @@ MODULE cp_control_types
                                               do_paep = .FALSE., &
                                               do_pcc = .FALSE., &
                                               ! If true, then no other XC functionals are allowed
-                                              use_gauxc = .FALSE.
+                                              use_gauxc = .FALSE., &
+                                              mtlr_dft_with_perturbation = .FALSE.
    END TYPE dft_control_type
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cp_control_types'

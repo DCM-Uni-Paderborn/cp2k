@@ -14,7 +14,7 @@
 ! **************************************************************************************************
 MODULE input_cp2k_scf
    USE bibliography,                    ONLY: &
-        Becke1988b, Chai2024a, Holmberg2017, Holmberg2018, Schiffmann2015, Stewart1982, &
+        Becke1988b, Chai2024a, Holmberg2017, Holmberg2018, Hu2010, Schiffmann2015, Stewart1982, &
         VandeVondele2003, VandeVondele2005a, Weber2008
    USE cp_output_handling,              ONLY: add_last_numeric,&
                                               cp_print_key_section_create,&
@@ -28,15 +28,16 @@ MODULE input_cp2k_scf
         cdft_alpha_constraint, cdft_beta_constraint, cdft_charge_constraint, &
         cdft_magnetization_constraint, cholesky_dbcsr, cholesky_inverse, cholesky_off, &
         cholesky_reduce, cholesky_restore, core_guess, diag_block_davidson, diag_block_krylov, &
-        diag_filter_matrix, diag_ot, diag_standard, eht_guess, gaussian, general_roks, &
-        high_spin_roks, history_guess, jacobian_fd1, jacobian_fd1_backward, jacobian_fd1_central, &
-        jacobian_fd2, jacobian_fd2_backward, kpoint_restart_exact, &
-        kpoint_restart_legacy_compatible, kpoint_restart_validated_bvk_transfer, ls_2pnt, ls_3pnt, &
-        ls_adapt, ls_gold, ls_none, mopac_guess, no_guess, numerical, ot_algo_irac, &
-        ot_algo_taylor_or_diag, ot_chol_irac, ot_lwdn_irac, ot_mini_broyden, ot_mini_cg, &
-        ot_mini_diis, ot_mini_sd, ot_poly_irac, ot_precond_full_all, ot_precond_full_kinetic, &
-        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
-        ot_precond_s_inverse, ot_precond_solver_default, ot_precond_solver_direct, &
+        diag_filter_matrix, diag_ot, diag_standard, diag_update_method_adiis, &
+        diag_update_method_mixing, eht_guess, gaussian, general_roks, high_spin_roks, &
+        history_guess, jacobian_fd1, jacobian_fd1_backward, jacobian_fd1_central, jacobian_fd2, &
+        jacobian_fd2_backward, kpoint_restart_exact, kpoint_restart_legacy_compatible, &
+        kpoint_restart_validated_bvk_transfer, ls_2pnt, ls_3pnt, ls_adapt, ls_gold, ls_none, &
+        mopac_guess, no_guess, numerical, ot_algo_irac, ot_algo_taylor_or_diag, ot_chol_irac, &
+        ot_lwdn_irac, ot_mini_broyden, ot_mini_cg, ot_mini_diis, ot_mini_lbfgs, ot_mini_sd, &
+        ot_poly_irac, ot_precond_full_all, ot_precond_full_kinetic, ot_precond_full_single, &
+        ot_precond_full_single_inverse, ot_precond_none, ot_precond_s_inverse, &
+        ot_precond_solver_chebyshev, ot_precond_solver_default, ot_precond_solver_direct, &
         ot_precond_solver_inv_chol, ot_precond_solver_update, outer_scf_basis_center_opt, &
         outer_scf_becke_constraint, outer_scf_cdft_constraint, outer_scf_ddapc_constraint, &
         outer_scf_hirshfeld_constraint, outer_scf_none, outer_scf_optimizer_bisect, &
@@ -89,7 +90,7 @@ CONTAINS
       CPASSERT(.NOT. ASSOCIATED(section))
       CALL section_create(section, __LOCATION__, name="scf", &
                           description="Parameters needed to perform an SCF run.", &
-                          n_keywords=19, n_subsections=7, repeats=.FALSE.)
+                          n_keywords=21, n_subsections=8, repeats=.FALSE.)
 
       NULLIFY (subsection)
 
@@ -110,6 +111,10 @@ CONTAINS
       CALL section_release(subsection)
 
       CALL create_mixing_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      CALL create_adiis_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
@@ -152,7 +157,7 @@ CONTAINS
 
       CALL keyword_create(keyword, __LOCATION__, name="MAX_DIIS", &
                           variants=["MAX_DIIS_BUFFER_SIZE"], &
-                          description="Maximum number of DIIS vectors to be used", &
+                          description="Maximum number of conventional DIIS subspace vectors to be used", &
                           usage="MAX_DIIS 3", default_i_val=4)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -261,8 +266,9 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="ADDED_MOS", &
                           description="Number of additional molecular orbitals added for each spin channel. "// &
                           "This is commonly needed for smearing, excited-state, or post-Hartree-Fock calculations. "// &
-                          "Use -1 to add all available orbitals.", &
-                          usage="ADDED_MOS", default_i_val=0, n_var=-1)
+                          "Use -1 to add all available orbitals. For K-point smearing, use AUTO "// &
+                          "to select and adapt the virtual-space buffer.", &
+                          usage="ADDED_MOS {integer|AUTO}", default_c_val="0", n_var=-1)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -569,29 +575,46 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief makes the orbital transformation section
 !> \param section ...
+!> \param diagonalization ...
 !> \par History
 !>      11.2004 created [Joost VandeVondele]
 ! **************************************************************************************************
-   SUBROUTINE create_ot_section(section)
+   SUBROUTINE create_ot_section(section, diagonalization)
       TYPE(section_type), POINTER                        :: section
+      LOGICAL, INTENT(IN), OPTIONAL                      :: diagonalization
 
+      LOGICAL                                            :: is_diagonalization
       TYPE(keyword_type), POINTER                        :: keyword
 
       CPASSERT(.NOT. ASSOCIATED(section))
-      CALL section_create(section, __LOCATION__, name="OT", &
-                          description="Sets the various options for the orbital transformation (OT) method. "// &
-                          "Default settings already provide an efficient, yet robust method. "// &
-                          "Most systems benefit from using the FULL_ALL preconditioner "// &
-                          "combined with a small value (0.001) of ENERGY_GAP. "// &
-                          "Well-behaved systems might benefit from using a DIIS minimizer. "//newline//newline// &
-                          "**Advantages:** "// &
-                          "It's fast, because no expensive diagonalisation is performed. "// &
-                          "If preconditioned correctly, method guaranteed to find minimum. "//newline//newline// &
-                          "**Disadvantages:** "// &
-                          "Sensitive to preconditioning. A good preconditioner can be expensive. "// &
-                          "No smearing, or advanced SCF mixing possible: POOR convergence for metallic systems.", &
-                          n_keywords=27, n_subsections=0, repeats=.FALSE., &
-                          citations=[VandeVondele2003, Weber2008])
+      is_diagonalization = .FALSE.
+      IF (PRESENT(diagonalization)) is_diagonalization = diagonalization
+      IF (is_diagonalization) THEN
+         CALL section_create(section, __LOCATION__, name="OT", &
+                             description="Configures OT as the iterative eigensolver selected by "// &
+                             "SCF%DIAGONALIZATION%ALGORITHM OT. The solver minimizes the trace of the "// &
+                             "requested orbital subspace for a fixed Kohn-Sham matrix. Orbital energies, "// &
+                             "occupations, smearing, density construction, and density mixing are handled "// &
+                             "afterwards by the parent DIAGONALIZATION SCF path.", &
+                             n_keywords=28, n_subsections=0, repeats=.FALSE., &
+                             citations=[VandeVondele2003, Weber2008])
+      ELSE
+         CALL section_create(section, __LOCATION__, name="OT", &
+                             description="Sets the various options for the orbital transformation (OT) method. "// &
+                             "Default settings already provide an efficient, yet robust method. "// &
+                             "Most systems benefit from using the FULL_ALL preconditioner "// &
+                             "combined with a small value (0.001) of ENERGY_GAP. "// &
+                             "Well-behaved systems might benefit from using a DIIS minimizer. "//newline//newline// &
+                             "**Advantages:** "// &
+                             "It's fast, because no expensive diagonalisation is performed. "// &
+                             "If preconditioned correctly, method guaranteed to find minimum. "//newline//newline// &
+                             "**Disadvantages:** "// &
+                             "Sensitive to preconditioning. A good preconditioner can be expensive. "// &
+                             "Metallic systems require a sufficiently large virtual orbital space and "// &
+                             "the coupled ROTATION and ENERGIES variables.", &
+                             n_keywords=28, n_subsections=0, repeats=.FALSE., &
+                             citations=[VandeVondele2003, Weber2008])
+      END IF
 
       NULLIFY (keyword)
 
@@ -683,12 +706,16 @@ CONTAINS
          description="Minimizer to be used with the OT method", &
          usage="MINIMIZER DIIS", &
          default_i_val=ot_mini_cg, &
-         enum_c_vals=s2a("SD", "CG", "DIIS", "BROYDEN"), &
+         enum_c_vals=s2a("SD", "CG", "DIIS", "BROYDEN", "LBFGS"), &
          enum_desc=s2a("Steepest descent: not recommended", "Conjugate Gradients: most reliable, use for difficult systems."// &
                        " The total energy should decrease at every OT CG step if the line search is appropriate.", &
                        "Direct inversion in the iterative subspace: less reliable than CG, but sometimes about 50% faster", &
-                       "Broyden mixing approximating the inverse Hessian"), &
-         enum_i_vals=[ot_mini_sd, ot_mini_cg, ot_mini_diis, ot_mini_broyden])
+                       "Broyden mixing approximating the inverse Hessian", &
+                       "Limited-memory BFGS in the fixed OT product chart. The selected OT preconditioner is used"// &
+                       " as the initial inverse Hessian. The secant history is reset after a tenfold increase in"// &
+                       " the raw fixed-chart gradient norm. With OUTER_SCF, an explicit EPS_DIIS can switch later"// &
+                       " outer iterations to OT/DIIS. Available with ALGORITHM STRICT or IRAC."), &
+         enum_i_vals=[ot_mini_sd, ot_mini_cg, ot_mini_diis, ot_mini_broyden, ot_mini_lbfgs])
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -709,10 +736,30 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="N_HISTORY_VEC", &
-                          variants=s2a("NDIIS", "N_DIIS", "N_BROYDEN"), &
-                          description="Number of history vectors to be used with DIIS or BROYDEN", &
-                          usage="N_DIIS 4", &
+                          variants=s2a("NDIIS", "N_DIIS", "N_BROYDEN", "N_LBFGS"), &
+                          description="Number of history vectors to be used with DIIS, BROYDEN, or LBFGS", &
+                          usage="N_HISTORY_VEC 7", &
                           default_i_val=7)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, name="LBFGS_CURVATURE_TOL", &
+         description="Minimum dimensionless relative curvature accepted for an LBFGS secant pair."// &
+         " Values are restricted to the interval [0,1).", &
+         usage="LBFGS_CURVATURE_TOL 1.0E-4", &
+         default_r_val=1.0E-4_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, name="LBFGS_DAMPING", &
+         description="Regularize weak or negative LBFGS curvature by the smallest shift of the"// &
+         " gradient difference along the step that satisfies LBFGS_CURVATURE_TOL."// &
+         " If disabled, such secant pairs are skipped.", &
+         usage="LBFGS_DAMPING ON", &
+         default_l_val=.TRUE., &
+         lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -869,17 +916,29 @@ CONTAINS
          description="How the preconditioner is applied to the residual.", &
          usage="PRECOND_SOLVER DIRECT", &
          default_i_val=ot_precond_solver_default, &
-         enum_c_vals=s2a("DEFAULT", "DIRECT", "INVERSE_CHOLESKY", "INVERSE_UPDATE"), &
+         enum_c_vals=s2a("DEFAULT", "DIRECT", "INVERSE_CHOLESKY", "INVERSE_UPDATE", "CHEBYSHEV"), &
          enum_desc=s2a("the default", "Cholesky decomposition followed by triangular solve "// &
                        "(works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)", &
                        "Cholesky decomposition followed by explicit inversion "// &
                        "(works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)", &
                        "Performs a Hotelling update of the inverse if a previous preconditioner is present. "// &
-                       "Mainly useful for GPU accelerated systems (works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)"), &
+                       "Mainly useful for GPU accelerated systems (works for FULL_KINETIC/SINGLE_INVERSE/S_INVERSE)", &
+                       "Applies a bounded Chebyshev approximation to the inverse using matrix products only "// &
+                       "(currently requires FULL_KINETIC)."), &
          enum_i_vals=[ot_precond_solver_default, &
                       ot_precond_solver_direct, &
                       ot_precond_solver_inv_chol, &
-                      ot_precond_solver_update])
+                      ot_precond_solver_update, &
+                      ot_precond_solver_chebyshev])
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, name="CHEBYSHEV_DEGREE", &
+         description="Polynomial degree of the positive Chebyshev semi-iterative inverse used by "// &
+         "PRECOND_SOLVER CHEBYSHEV.", &
+         usage="CHEBYSHEV_DEGREE 8", &
+         default_i_val=8)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -918,29 +977,35 @@ CONTAINS
                           description="Introduce additional variables so that rotations of the occupied"// &
                           " subspace are allowed as well, only needed for cases where the energy is not invariant under"// &
                           " a rotation of the occupied subspace such as non-singlet restricted calculations"// &
-                          " or fractional occupations.", &
+                          " or fractional occupations. This variable is not used by DIAGONALIZATION%OT, "// &
+                          "which canonicalizes the converged eigenspace explicitly.", &
                           usage="ROTATION", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="ENERGIES", &
-                          description="Optimize orbital energies for use in Fermi-Dirac smearing "// &
-                          "(requires ROTATION and FD smearing to be active).", &
+                          description="Optimize auxiliary orbital energies for Mermin smearing in direct SCF%OT "// &
+                          "(requires ROTATION and smearing to be active). DIAGONALIZATION%OT obtains "// &
+                          "orbital energies by canonicalizing its converged eigenspace instead.", &
                           usage="ENERGIES", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="OCCUPATION_PRECONDITIONER", &
-                          description="Preconditioner with the occupation numbers (FD smearing)", &
+                          description="Augment the direct SCF%OT orbital metric with coupled fixed-N "// &
+                          "occupation response. This augments the independently selected orbital "// &
+                          "preconditioner. It is not used by DIAGONALIZATION%OT, where occupations are "// &
+                          "assigned after the eigensolver has converged.", &
                           usage="OCCUPATION_PRECONDITIONER", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="NONDIAG_ENERGY", &
-                          description="Add a non-diagonal energy penalty (FD smearing)", &
+                          description="Add a non-diagonal auxiliary-energy penalty in direct SCF%OT. "// &
+                          "It is not used by DIAGONALIZATION%OT.", &
                           usage="NONDIAG_ENERGY", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
@@ -953,6 +1018,47 @@ CONTAINS
       CALL keyword_release(keyword)
 
    END SUBROUTINE create_ot_section
+
+! **************************************************************************************************
+!> \brief creates the ADIIS section
+!> \param section ...
+! **************************************************************************************************
+   SUBROUTINE create_adiis_section(section)
+      TYPE(section_type), POINTER                        :: section
+
+      TYPE(keyword_type), POINTER                        :: keyword
+
+      CPASSERT(.NOT. ASSOCIATED(section))
+      CALL section_create(section, __LOCATION__, name="ADIIS", &
+                          description="Parameters for the ADIIS SCF update method.", &
+                          n_keywords=3, n_subsections=0, repeats=.FALSE.)
+
+      NULLIFY (keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="MAX_HISTORY", &
+                          description="Maximum number of paired density/Fock states retained by ADIIS. "// &
+                          "Histories up to 12 use exact active-face enumeration; larger histories use "// &
+                          "deterministic pairwise simplex minimization.", &
+                          usage="MAX_HISTORY 7", default_i_val=16)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="ODA", &
+                          description="Enable safeguarded optimal damping of raw Roothaan steps used to initialize "// &
+                          "or globalize ADIIS. "// &
+                          "ODA supports STANDARD diagonalization, including k-point calculations. "// &
+                          "It is disabled with a warning when HF%ACE is active. "// &
+                          "Smearing remains unsupported for ADIIS and ODA.", &
+                          usage="ODA T", default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="VERBOSE", &
+                          description="Print per-iteration ADIIS and ODA diagnostic metrics.", &
+                          usage="VERBOSE", lone_keyword_l_val=.TRUE., default_l_val=.FALSE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+   END SUBROUTINE create_adiis_section
 
 ! **************************************************************************************************
 !> \brief creates the diagonalization section
@@ -981,12 +1087,26 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="UPDATE_METHOD", &
+                          description="Selects the SCF update method used with diagonalization. MIXING uses "// &
+                          "the existing density-mixing and DIIS workflow; ADIIS uses augmented-DIIS "// &
+                          "Fock-space interpolation and accepts the diagonalized density directly.", &
+                          usage="UPDATE_METHOD ADIIS", default_i_val=diag_update_method_mixing, &
+                          enum_c_vals=s2a("MIXING", "ADIIS"), &
+                          enum_desc=s2a("Use the existing density-mixing SCF workflow", &
+                                        "Use augmented-DIIS Fock-space interpolation"), &
+                          enum_i_vals=[diag_update_method_mixing, diag_update_method_adiis], &
+                          citations=[Hu2010])
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="ALGORITHM", &
                           description="Algorithm to be used for diagonalization", &
                           usage="ALGORITHM STANDARD", &
                           default_i_val=diag_standard, &
                           enum_c_vals=s2a("STANDARD", "OT", "LANCZOS", "DAVIDSON", "FILTER_MATRIX"), &
-                          enum_desc=s2a("Standard diagonalization: LAPACK methods or Jacobi.", &
+                          enum_desc=s2a("AO-basis Kohn-Sham diagonalization using LAPACK-compatible methods"// &
+                                        " or a late-SCF Jacobi sweep.", &
                                         "Iterative diagonalization using OT method", &
                                         "Block Krylov-space approach to self-consistent diagonalisation", &
                                         "Preconditioned blocked Davidson", &
@@ -1040,7 +1160,7 @@ CONTAINS
       CALL keyword_release(keyword)
 
       NULLIFY (subsection)
-      CALL create_ot_section(subsection)
+      CALL create_ot_section(subsection, diagonalization=.TRUE.)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
@@ -1492,7 +1612,9 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="FRAGMENT_A_FILE_NAME", variants=["FRAGMENT_A_FILE"], &
                           description="Name of the reference total electron density cube file for fragment A."// &
                           " May include a path. The reference electron density needs to be outputted"// &
-                          " on the same grid as the full system (same cutoff and cell, output stride 1).", &
+                          " on the same grid as the full system (same cutoff and cell, output stride 1)."// &
+                          " For GAPW, generate the cube with E_DENSITY_CUBE% DENSITY_INCLUDE TOTAL_DENSITY;"// &
+                          " a regular GAPW electron-density cube contains only the soft density and is rejected.", &
                           usage="FRAGMENT_A_FILE_NAME <FILENAME>", &
                           default_lc_val="fragment_a.cube")
       CALL section_add_keyword(section, keyword)
@@ -1501,7 +1623,9 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="FRAGMENT_B_FILE_NAME", variants=["FRAGMENT_B_FILE"], &
                           description="Name of the reference total electron density cube file for fragment B."// &
                           " May include a path. The reference electron density needs to be outputted"// &
-                          " on the same grid as the full system (same cutoff and cell, output stride 1).", &
+                          " on the same grid as the full system (same cutoff and cell, output stride 1)."// &
+                          " For GAPW, generate the cube with E_DENSITY_CUBE% DENSITY_INCLUDE TOTAL_DENSITY;"// &
+                          " a regular GAPW electron-density cube contains only the soft density and is rejected.", &
                           usage="FRAGMENT_B_FILE_NAME <FILENAME>", &
                           default_lc_val="fragment_b.cube")
       CALL section_add_keyword(section, keyword)
@@ -1511,7 +1635,9 @@ CONTAINS
                           variants=["FRAGMENT_A_SPIN_FILE_NAME"], &
                           description="Name of the reference spin density cube file for fragment A."// &
                           " May include a path. The reference spin density needs to be outputted"// &
-                          " on the same grid as the full system (same cutoff and cell, output stride 1).", &
+                          " on the same grid as the full system (same cutoff and cell, output stride 1)."// &
+                          " For GAPW, use the TOTAL_SPIN_DENSITY cube generated together with"// &
+                          " E_DENSITY_CUBE% DENSITY_INCLUDE TOTAL_DENSITY.", &
                           usage="FRAGMENT_A_SPIN_FILE <FILENAME>", &
                           default_lc_val="fragment_a_spin.cube")
       CALL section_add_keyword(section, keyword)
@@ -1521,7 +1647,9 @@ CONTAINS
                           variants=["FRAGMENT_B_SPIN_FILE_NAME"], &
                           description="Name of the reference spin density cube file for fragment B."// &
                           " May include a path. The reference spin density needs to be outputted"// &
-                          " on the same grid as the full system (same cutoff and cell, output stride 1).", &
+                          " on the same grid as the full system (same cutoff and cell, output stride 1)."// &
+                          " For GAPW, use the TOTAL_SPIN_DENSITY cube generated together with"// &
+                          " E_DENSITY_CUBE% DENSITY_INCLUDE TOTAL_DENSITY.", &
                           usage="FRAGMENT_B_SPIN_FILE <FILENAME>", &
                           default_lc_val="fragment_b_spin.cube")
       CALL section_add_keyword(section, keyword)

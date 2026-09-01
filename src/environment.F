@@ -22,6 +22,7 @@ MODULE environment
    USE cp2k_info,                       ONLY: &
         compile_arch, compile_date, compile_host, compile_revision, cp2k_flags, cp2k_home, &
         cp2k_version, cp2k_year, get_runtime_info, r_host_name, r_pid, r_user_name
+   USE cp_cfm_elpa,                     ONLY: check_elpa_c_kernel_correctness
    USE cp_error_handling,               ONLY: warning_counter
    USE cp_files,                        ONLY: close_file,&
                                               get_data_dir,&
@@ -30,14 +31,10 @@ MODULE environment
                                               FM_CHOLESKY_TYPE_SCALAPACK,&
                                               cholesky_type,&
                                               dlaf_cholesky_n_min
-   USE cp_fm_diag,                      ONLY: FM_DIAG_TYPE_CUSOLVER,&
-                                              FM_DIAG_TYPE_DLAF,&
-                                              FM_DIAG_TYPE_ELPA,&
-                                              FM_DIAG_TYPE_SCALAPACK,&
-                                              cusolver_n_min,&
-                                              diag_finalize,&
-                                              diag_init,&
-                                              eps_check_diag_default
+   USE cp_fm_diag,                      ONLY: &
+        FM_DIAG_TYPE_CUSOLVER, FM_DIAG_TYPE_DLAF, FM_DIAG_TYPE_ELPA, FM_DIAG_TYPE_SCALAPACK, &
+        cusolver_n_min, diag_finalize, diag_init, diag_lib_explicit, diag_type, &
+        eps_check_diag_default
    USE cp_fm_diag_utils,                ONLY: cp_fm_redistribute_init
    USE cp_fm_struct,                    ONLY: cp_fm_struct_config
    USE cp_fm_types,                     ONLY: cp_fm_get_mm_type,&
@@ -81,6 +78,7 @@ MODULE environment
         section_get_ival, section_get_keyword, section_get_lval, section_get_rval, &
         section_release, section_type, section_vals_get, section_vals_get_subs_vals, &
         section_vals_get_subs_vals3, section_vals_type, section_vals_val_get, section_vals_val_set
+   USE integral_library_types,          ONLY: active_integral_library
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp,&
@@ -119,6 +117,7 @@ MODULE environment
                                               timings_report_callgraph,&
                                               timings_report_print
    USE voronoi_interface,               ONLY: finalize_libvori
+   USE xc_libxc,                        ONLY: libxc_release_workers
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num, omp_get_num_threads
 #include "./base/base_uses.f90"
@@ -550,10 +549,15 @@ CONTAINS
                                 l_val=globenv%direct_generalized_diagonalization)
       CALL section_vals_val_get(global_section, "PREFERRED_CHOLESKY_LIBRARY", i_val=i_cholesky)
       CALL section_vals_val_get(global_section, "PREFERRED_DGEMM_LIBRARY", i_val=i_dgemm)
+      CALL section_vals_val_get(global_section, "PREFERRED_INTEGRAL_LIBRARY%COULOMB_2C", &
+                                i_val=active_integral_library%coulomb2_library)
+      CALL section_vals_val_get(global_section, "PREFERRED_INTEGRAL_LIBRARY%COULOMB_3C", &
+                                i_val=active_integral_library%coulomb3_library)
       CALL section_vals_val_get(global_section, "EPS_CHECK_DIAG", r_val=globenv%eps_check_diag)
       CALL section_vals_val_get(global_section, "ENABLE_MPI_IO", l_val=flag)
       CALL cp_mpi_io_set(flag)
       CALL section_vals_val_get(global_section, "ELPA_KERNEL", i_val=globenv%k_elpa)
+      CALL section_vals_val_get(global_section, "ELPA_COMPLEX_KERNEL", i_val=globenv%k_elpa_c)
       CALL section_vals_val_get(global_section, "ELPA_NEIGVEC_MIN", i_val=globenv%elpa_neigvec_min)
       CALL section_vals_val_get(global_section, "ELPA_QR", l_val=globenv%elpa_qr)
       CALL section_vals_val_get(global_section, "ELPA_ONE_STAGE", l_val=globenv%elpa_one_stage)
@@ -1026,7 +1030,12 @@ CONTAINS
                                          extension=".log")
 
       CALL fft_setup_library(globenv, global_section)
-      CALL diag_setup_library(globenv)
+      CALL diag_setup_library(globenv, global_section)
+
+      ! Run a one-time correctness check of the ELPA complex kernels if they may be used.
+      IF (diag_type == FM_DIAG_TYPE_ELPA .AND. diag_lib_explicit) THEN
+         CALL check_elpa_c_kernel_correctness(para_env)
+      END IF
 
       CALL cp_print_key_finished_output(output_unit, logger, global_section, &
                                         "PROGRAM_RUN_INFO")
@@ -1117,17 +1126,23 @@ CONTAINS
 !> \brief availability diagonalizatioon library
 !>
 !> \param globenv ...
+!> \param global_section ...
 !> \author MI
 ! **************************************************************************************************
-   SUBROUTINE diag_setup_library(globenv)
+   SUBROUTINE diag_setup_library(globenv, global_section)
       TYPE(global_environment_type), POINTER             :: globenv
+      TYPE(section_vals_type), POINTER                   :: global_section
 
       CHARACTER(LEN=3*default_string_length)             :: message
-      LOGICAL                                            :: fallback_applied
+      LOGICAL                                            :: diag_lib_explicit, fallback_applied
+
+      CALL section_vals_val_get(global_section, "PREFERRED_DIAG_LIBRARY", explicit=diag_lib_explicit)
 
       CALL diag_init(diag_lib=TRIM(globenv%diag_library), &
                      fallback_applied=fallback_applied, &
+                     diag_lib_explicit_input=diag_lib_explicit, &
                      elpa_kernel=globenv%k_elpa, &
+                     elpa_c_kernel=globenv%k_elpa_c, &
                      elpa_neigvec_min_input=globenv%elpa_neigvec_min, &
                      elpa_qr=globenv%elpa_qr, &
                      elpa_print=globenv%elpa_print, &
@@ -1287,6 +1302,8 @@ CONTAINS
          CALL deallocate_orbital_pointers()
          CALL deallocate_md_ftable()
          CALL diag_finalize()
+         ! the LibXC functional objects are kept alive across calculations
+         CALL libxc_release_workers()
          ! finalize the fft (i.e. writes the wisdom if FFTW3 )
          CALL finalize_fft(para_env, globenv%fftw_wisdom_file_name)
          CALL finalize_libvori()

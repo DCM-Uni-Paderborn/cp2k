@@ -322,6 +322,7 @@ set(CP2K_SUPPORTED_CUDA_ARCHITECTURES
     V100
     A100
     H100
+    B200
     GB10
     A40)
 set(CP2K_SUPPORTED_HIP_ARCHITECTURES
@@ -337,6 +338,7 @@ set(CP2K_SUPPORTED_HIP_ARCHITECTURES
     V100
     A100
     H100
+    B200
     GB10
     A40)
 
@@ -494,6 +496,7 @@ if((CP2K_USE_ACCEL MATCHES CUDA) OR (CP2K_USE_ACCEL MATCHES HIP))
   set(CP2K_GPU_ARCH_NUMBER_V100 70)
   set(CP2K_GPU_ARCH_NUMBER_A100 80)
   set(CP2K_GPU_ARCH_NUMBER_H100 90)
+  set(CP2K_GPU_ARCH_NUMBER_B200 100)
   set(CP2K_GPU_ARCH_NUMBER_GB10 121)
   set(CP2K_GPU_ARCH_NUMBER_A40 86)
   set(CP2K_GPU_ARCH_NUMBER_Mi50 gfx906)
@@ -553,6 +556,9 @@ if((CP2K_USE_ACCEL MATCHES CUDA) OR (CP2K_USE_ACCEL MATCHES HIP))
       set(CMAKE_HIP_ARCHITECTURES "${CP2K_GPU_ARCH_NUMBER_${CP2K_WITH_GPU}}")
     endif()
   endif()
+
+  set(CP2K_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+  set(CP2K_HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 endif()
 
 message("\n------------------------------------------------------------")
@@ -885,27 +891,12 @@ if(CP2K_USE_SPLA)
   endif()
 endif()
 
-# Sets CP2K_USE_DFTD4_V3 / CP2K_USE_DFTD4_V4_2 from dftd4_VERSION, which is
-# populated by dftd4-config-version.cmake either directly via
-# find_package(dftd4) or transitively via find_package(tblite).
-macro(cp2k_detect_dftd4_api)
-  if(dftd4_VERSION VERSION_LESS "4.0.0")
-    message(STATUS "DFTD4: found version ${dftd4_VERSION}, using v3.x API")
-    set(CP2K_USE_DFTD4_V3 ON)
-  else()
-    set(CP2K_USE_DFTD4_V3 OFF)
-  endif()
-  if(dftd4_VERSION VERSION_GREATER_EQUAL "4.2.0")
-    message(STATUS "DFTD4: found version ${dftd4_VERSION}, using v4.2+ API")
-    set(CP2K_USE_DFTD4_V4_2 ON)
-  else()
-    set(CP2K_USE_DFTD4_V4_2 OFF)
-  endif()
-endmacro()
-
 if(CP2K_USE_DFTD4)
+  find_package(mctc-lib REQUIRED) # workaround: find mctc-lib first
   find_package(dftd4 REQUIRED)
-  cp2k_detect_dftd4_api()
+  if(dftd4_VERSION VERSION_LESS "4.2.0")
+    message(FATAL_ERROR "dftd4 >= 4.2.0 is required; found ${dftd4_VERSION}")
+  endif()
 endif()
 
 if(CP2K_USE_DEEPMD)
@@ -929,7 +920,15 @@ if(CP2K_USE_ACE)
 endif()
 
 if(CP2K_USE_TBLITE)
-  find_package(tblite REQUIRED)
+  find_package(tblite CONFIG REQUIRED)
+  if(CP2K_TBLITE_PROVIDER STREQUAL "SAVE" AND tblite_VERSION VERSION_LESS
+                                              "0.6.0")
+    message(
+      FATAL_ERROR "SAVE tblite >= 0.6.0 is required; found ${tblite_VERSION}")
+  elseif(NOT CP2K_TBLITE_PROVIDER STREQUAL "SAVE" AND tblite_VERSION
+                                                      VERSION_LESS "0.7.0")
+    message(FATAL_ERROR "tblite >= 0.7.0 is required; found ${tblite_VERSION}")
+  endif()
   add_library(cp2k::tblite INTERFACE IMPORTED)
   target_link_libraries(
     cp2k::tblite INTERFACE tblite::tblite mctc-lib::mctc-lib dftd4::dftd4
@@ -985,14 +984,36 @@ endif()
 # SIRIUS
 if(CP2K_USE_SIRIUS)
   find_package(sirius 7.7.0 REQUIRED)
+  add_library(cp2k::sirius INTERFACE IMPORTED)
+  target_link_libraries(cp2k::sirius INTERFACE sirius::sirius)
+
+  get_target_property(CP2K_SIRIUS_LIBRARY_TYPE sirius::sirius TYPE)
+  if(CP2K_SIRIUS_LIBRARY_TYPE STREQUAL "SHARED_LIBRARY")
+    # Shared SIRIUS does not export the private C++ library's link interface.
+    find_package(sirius_cxx CONFIG REQUIRED)
+    target_link_libraries(cp2k::sirius
+                          INTERFACE "$<LINK_ONLY:sirius::sirius_cxx>")
+  endif()
+  unset(CP2K_SIRIUS_LIBRARY_TYPE)
 endif()
 
 if(CP2K_USE_PLUMED)
   find_package(Plumed REQUIRED)
 endif()
 
+set(CP2K_USE_LIBTORCH_CUDA OFF)
 if(CP2K_USE_LIBTORCH)
   find_package(Torch REQUIRED)
+  # Torch's CMake package disables CMAKE_CUDA_ARCHITECTURES after adding its own
+  # NVCC flags. Restore CP2K's selected target for the targets below.
+  if(CP2K_USE_ACCEL MATCHES CUDA)
+    set(CMAKE_CUDA_ARCHITECTURES "${CP2K_CUDA_ARCHITECTURES}")
+  elseif(CP2K_USE_ACCEL MATCHES HIP)
+    set(CMAKE_HIP_ARCHITECTURES "${CP2K_HIP_ARCHITECTURES}")
+  endif()
+  if(DEFINED TORCH_CUDA_LIBRARIES AND NOT "${TORCH_CUDA_LIBRARIES}" STREQUAL "")
+    set(CP2K_USE_LIBTORCH_CUDA ON)
+  endif()
   get_target_property(CP2K_TORCH_CXX_STANDARD torch CXX_STANDARD)
   if(${CP2K_TORCH_CXX_STANDARD} VERSION_GREATER ${CMAKE_CXX_STANDARD})
     set(CMAKE_CXX_STANDARD ${CP2K_TORCH_CXX_STANDARD})
@@ -1141,11 +1162,10 @@ if(CP2K_USE_CUSOLVER_MP)
   else()
     message("    - CAL Include directories: ${CP2K_CAL_INCLUDE_DIRS}\n"
             "    - CAL Libraries: ${CP2K_CAL_LINK_LIBRARIES}")
+    message("    - UCC Include directories: ${CP2K_UCC_INCLUDE_DIRS}\n"
+            "    - UCC Libraries: ${CP2K_UCC_LINK_LIBRARIES}\n"
+            "    - UCX Libraries: ${CP2K_UCX_LINK_LIBRARIES}\n")
   endif()
-
-  message("    - UCC Include directories: ${CP2K_UCC_INCLUDE_DIRS}\n"
-          "    - UCC Libraries: ${CP2K_UCC_LINK_LIBRARIES}\n"
-          "    - UCX Libraries: ${CP2K_UCX_LINK_LIBRARIES}\n")
 endif()
 
 if(CP2K_USE_LIBXC)

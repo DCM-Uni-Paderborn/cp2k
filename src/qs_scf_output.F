@@ -250,12 +250,7 @@ CONTAINS
 
       print_occup_stats = .FALSE.
       occup_stats_occ_threshold = 1e-6_dp
-      IF (SIZE(tmpstringlist) > 0) THEN  ! the lone_keyword_c_vals doesn't work as advertised, handle it manually
-         print_occup_stats = .TRUE.
-         IF (LEN_TRIM(tmpstringlist(1)) > 0) THEN
-            READ (tmpstringlist(1), *) print_occup_stats
-         END IF
-      END IF
+      IF (SIZE(tmpstringlist) > 0) READ (tmpstringlist(1), *) print_occup_stats
       IF (SIZE(tmpstringlist) > 1) THEN
          READ (tmpstringlist(2), *) occup_stats_occ_threshold
       END IF
@@ -312,10 +307,9 @@ CONTAINS
                solver_method = "OT"
 
                IF (do_kpoints) THEN
-                  CPABORT("The OT method is not implemented for k points")
-               END IF
-
-               IF (final_mos) THEN
+                  mo_set => mos(ispin)
+                  NULLIFY (umo_set)
+               ELSE IF (final_mos) THEN
 
                   matrix_ks => ks(ispin)%matrix
                   matrix_s => s(1)%matrix
@@ -427,7 +421,7 @@ CONTAINS
                   do_printout = .FALSE.
                   EXIT kp_loop
 
-               END IF ! final MOs
+               END IF ! final MOs / k-point OT
 
             ELSE
 
@@ -555,14 +549,16 @@ CONTAINS
 !> \param t1 ...
 !> \param t2 ...
 !> \param energy ...
+!> \param adiis_verbose whether to print per-iteration ADIIS and ODA diagnostics
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_loop_info(scf_env, output_unit, just_energy, t1, t2, energy)
+   SUBROUTINE qs_scf_loop_info(scf_env, output_unit, just_energy, t1, t2, energy, adiis_verbose)
 
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       INTEGER                                            :: output_unit
-      LOGICAL                                            :: just_energy
+      LOGICAL, INTENT(IN)                                :: just_energy
       REAL(KIND=dp)                                      :: t1, t2
       TYPE(qs_energy_type), POINTER                      :: energy
+      LOGICAL, INTENT(IN)                                :: adiis_verbose
 
       IF ((output_unit > 0) .AND. scf_env%print_iter_line) THEN
          IF (just_energy) THEN
@@ -581,6 +577,27 @@ CONTAINS
                       FMT="(T2,I5,1X,A,T20,E8.2,1X,F6.1,1X,F14.8,1X,F20.10,1X,ES9.2)") &
                   scf_env%iter_count, TRIM(scf_env%iter_method), scf_env%iter_param, &
                   t2 - t1, scf_env%iter_delta, energy%total, energy%total - energy%tot_old
+            END IF
+            IF (adiis_verbose) THEN
+               IF (scf_env%raw_map_delta_valid) THEN
+                  WRITE (UNIT=output_unit, FMT="(T4,A,ES11.3,A,ES11.3)") &
+                     "ADIIS metrics: step_norm=", scf_env%step_norm, &
+                     " raw_map_delta=", scf_env%raw_map_delta
+               END IF
+               IF (LEN_TRIM(scf_env%oda_status) > 0) THEN
+                  WRITE (UNIT=output_unit, FMT="(T4,A,F9.6,A,I3,A,A,A,ES18.10)") &
+                     "ODA metrics: lambda=", scf_env%oda_lambda, &
+                     " evaluations=", scf_env%oda_evaluations, &
+                     " status=", TRIM(scf_env%oda_status), &
+                     " trial_energy=", scf_env%oda_energy
+                  IF (scf_env%oda_evaluations > 0) THEN
+                     WRITE (UNIT=output_unit, FMT="(T17,A,ES12.4,A,ES12.4)") &
+                        "g0=", scf_env%oda_gradient0, " g_trial=", scf_env%oda_gradient1
+                  ELSE
+                     WRITE (UNIT=output_unit, FMT="(T17,A,ES12.4)") &
+                        "g0=", scf_env%oda_gradient0
+                  END IF
+               END IF
             END IF
          END IF
       END IF
@@ -652,6 +669,14 @@ CONTAINS
                   "Total dipole moment perpendicular to ", &
                   "the slab [electrons-Angstroem]: ", &
                   qs_env%surface_dipole_moment
+               WRITE (UNIT=output_unit, FMT="((T3,A,/,T3,A,T41,F20.10))") &
+                  "Position of the dipole ", &
+                  "correction plane [Angstroem]: ", &
+                  qs_env%surface_dipole_ref_pos
+               WRITE (UNIT=output_unit, FMT="((T3,A,/,T3,A,T41,2F20.10))") &
+                  "Vacuum level below/above the ", &
+                  "dipole correction plane [eV]: ", &
+                  qs_env%vacuum_level_below, qs_env%vacuum_level_above
             END IF
 
             IF (gapw) THEN

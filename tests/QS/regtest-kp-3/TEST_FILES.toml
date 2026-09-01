@@ -18,4 +18,39 @@
 "cc8.inp"                               = [{matcher="M011", tol=5.0E-10, ref=-45.389916356641265},
                                            {matcher="gext", tol=5.0E-08, ref=0.7099959941}]
 "cc9.inp"                               = [{matcher="M011", tol=5.0E-10, ref=-45.270016601865670}]
+"he_ot_fixed.inp"                       = [{matcher="E_total", tol=1e-9, ref=-2.89466358139099},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"he_ot_fixed_s_inverse.inp"             = [{matcher="E_total", tol=1e-9, ref=-2.89466358139099},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"he_ot_fixed_strict.inp"                = [{matcher="E_total", tol=1e-9, ref=-2.89466358139099},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"he_ot_fixed_strict_full_all.inp"       = [{matcher="E_total", tol=1e-9, ref=-2.89466358139099},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"he_ot_fixed_strict_lbfgs.inp"          = [{matcher="E_total", tol=1e-9, ref=-2.89466358139099},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"he_ot_fixed_diis.inp"                  = [{matcher="E_total", tol=1e-9, ref=-2.89466358139099},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"he_kpoint_symmetry_openmp.inp"         = [{matcher="E_total", tol=1e-10, ref=-11.23084551534152}]
+"he_ot_fixed_diis_rotation.inp"         = [{matcher="E_total", tol=1e-9, ref=-2.89466358139099},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"he_ot_fixed_lbfgs_rotation.inp"        = [{matcher="E_total", tol=1e-9, ref=-2.89466358139099},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"he_ot_fixed_full_all_rotation.inp"     = [{matcher="E_total", tol=1e-9, ref=-2.89466358139099},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"li_ot_fixed_uks.inp"                   = [{matcher="E_total", tol=1e-9, ref=-7.304793045179261},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=1}]
+"li_ot_fixed_uks_diis.inp"              = [{matcher="E_total", tol=1e-9, ref=-7.304793043105472},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=1}]
+"li_ot_fixed_uks_full_all.inp"          = [{matcher="E_total", tol=1e-9, ref=-7.30479304513239},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=1}]
+"li_ot_fixed_uks_lbfgs_rotation.inp"    = [{matcher="E_total", tol=1e-9, ref=-7.30479343035225},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=1}]
+"li_ot_fixed_uks_strict_diis.inp"       = [{matcher="E_total", tol=1e-9, ref=-7.304793043105472},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=1}]
+"li_ot_fixed_uks_restart.inp"           = [{matcher="E_total", tol=1e-9, ref=-7.304793043804057},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=1}]
+"lih_ot_fixed_force_stress.inp"         = [{matcher="E_total", tol=1e-9, ref=-7.887175453793000},
+                                           {matcher="M072", tol=1e-6, ref=1.25935756E-01},
+                                           {matcher="M031", tol=1e-6, ref=-1.27602641422E+04},
+                                           {matcher="N_special_kpoints", tol=0.0, ref=1}]
 #EOF

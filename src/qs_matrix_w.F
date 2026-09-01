@@ -24,7 +24,8 @@ MODULE qs_matrix_w
    USE input_constants,                 ONLY: gxtb
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_density_matrices,&
-                                              kpoint_density_transform
+                                              kpoint_density_transform,&
+                                              kpoint_ot_energy_weighted_matrices
    USE kpoint_types,                    ONLY: kpoint_type
    USE qs_density_matrices,             ONLY: calculate_w_matrix,&
                                               calculate_w_matrix_ot
@@ -88,7 +89,8 @@ CONTAINS
                TYPE(cp_fm_type), DIMENSION(2)                   :: fmwork
                TYPE(cp_fm_struct_type), POINTER                   :: ao_ao_fmstruct
                TYPE(cp_fm_type), POINTER                          :: mo_coeff
-               TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s_kp, matrix_w_kp
+               TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks_kp, matrix_s_kp, &
+                                                                     matrix_w_kp
                TYPE(kpoint_type), POINTER                         :: kpoints
                TYPE(neighbor_list_set_p_type), DIMENSION(:), &
                   POINTER                                         :: sab_kp, sab_nl, sab_w
@@ -96,11 +98,13 @@ CONTAINS
                CALL get_qs_env(qs_env, &
                                dft_control=dft_control, &
                                matrix_w_kp=matrix_w_kp, &
+                               matrix_ks_kp=matrix_ks_kp, &
                                matrix_s_kp=matrix_s_kp, &
                                sab_kp=sab_kp, &
                                sab_orb=sab_nl, &
                                mos=mos, &
-                               kpoints=kpoints)
+                               kpoints=kpoints, &
+                               scf_control=scf_control)
 
                CPASSERT(ASSOCIATED(dft_control))
                CPASSERT(ASSOCIATED(sab_nl))
@@ -126,7 +130,11 @@ CONTAINS
                CALL cp_fm_struct_release(ao_ao_fmstruct)
 
                ! energy weighted density matrices in k-space
-               CALL kpoint_density_matrices(kpoints, energy_weighted=.TRUE.)
+               IF (scf_control%use_ot) THEN
+                  CALL kpoint_ot_energy_weighted_matrices(kpoints, matrix_ks_kp)
+               ELSE
+                  CALL kpoint_density_matrices(kpoints, energy_weighted=.TRUE.)
+               END IF
                ! energy weighted density matrices in real space
                CALL kpoint_density_transform(kpoints, matrix_w_kp, .TRUE., &
                                              matrix_s_kp(1, 1)%matrix, sab_w, fmwork)

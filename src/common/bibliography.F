@@ -50,7 +50,7 @@ MODULE bibliography
                             Stewart1989, Thiel1992, Repasky2002, Stewart2007, Weber2008, &
                             Hunt2003, Guidon2008, Elber1987, Jonsson1998, Jonsson2000_1, &
                             Jonsson2000_2, Wales2004, Stewart1982, E2002, Laino2008, &
-                            Blochl1995, Tao2003, VandeVondele2006, VanVoorhis2015, Hu2007, Grimme2006, &
+                            Blochl1995, Tao2003, VandeVondele2006, VanVoorhis2015, Hu2007, Hu2010, Grimme2006, &
                             Branduardi2007, Schenter2008, BeckeRoussel1989, Proynov2007, &
                             VandenCic2006, Becke1997, Foiles1986, Ricci2003, Kolafa2004, &
                             Kuhne2007, Kunert2003, Ceriotti2009, ceriotti2009b, Guidon2009, &
@@ -97,7 +97,8 @@ MODULE bibliography
                             FuHo1983, MethfesselPaxton1989, Marzari1999, dosSantos2023, Mermin1965, &
                             KuhneHeskeProdan2020, Schreder2021, Schreder2024_1, Schreder2024_2, &
                             Shiga2022, Lindh1995, Chai2024a, Rullan2026, Sundararaman2017, Andreussi2019, &
-                            Chai2025a, Neugebauer2023
+                            Chai2025a, Neugebauer2023, Chai2024b, Moynihan2017, Cococcioni2005, &
+                            Cances2000, Herbst2022, Zhang2025
 
 CONTAINS
 
@@ -183,6 +184,13 @@ CONTAINS
                          "density functional tight binding method: From molecular clusters to the liquid state", &
                          source="J. Phys. Chem. A", volume="111", pages="5685-5691", &
                          year=2007, doi="10.1021/jp070308d")
+
+      CALL add_reference(key=Hu2010, &
+                         authors=s2a("X. Hu", "W. Yang"), &
+                         title="Accelerating self-consistent field convergence "// &
+                         "with the augmented Roothaan-Hall energy function", &
+                         source="J. Chem. Phys.", volume="132", pages="054109", &
+                         year=2010, doi="10.1063/1.3304922")
 
       CALL add_reference(key=Zhao1994, &
                          authors=s2a("Q. S. Zhao", "R. C. Morrison", "R. G. Parr"), &
@@ -2134,6 +2142,18 @@ CONTAINS
                          source="Math. Comput.", volume="19", pages="577-593", &
                          year=1965, doi="10.1090/S0025-5718-1965-0198670-6")
 
+      CALL add_reference(key=Cances2000, &
+                         authors=s2a("E. Cancès", "C. Le Bris"), &
+                         title="Can we outperform the DIIS approach for electronic structure calculations?", &
+                         source="Int. J. Quantum Chem.", volume="79", pages="82-90", &
+                         year=2000, doi="10.1002/1097-461X(2000)79:2<82::AID-QUA3>3.0.CO;2-I")
+
+      CALL add_reference(key=Herbst2022, &
+                         authors=s2a("M. F. Herbst", "A. Levitt"), &
+                         title="A robust and efficient line search for self-consistent field iterations", &
+                         source="J. Comput. Phys.", volume="459", pages="111127", &
+                         year=2022, doi="10.1016/j.jcp.2022.111127")
+
       CALL add_reference(key=Kerker1981, &
                          authors=s2a("G. P. Kerker"), &
                          title="Efficient iteration scheme for self-consistent pseudopotential calculations", &
@@ -2231,6 +2251,34 @@ CONTAINS
                          "on the solvent-aware interface", &
                          source="Comput. Phys. Commun.", volume="311", pages="109563", &
                          year=2025, doi="10.1016/j.cpc.2025.109563")
+
+      CALL add_reference(key=Chai2024b, &
+                         authors=s2a("Z. Chai", "R. Si", "M. Chen", "G. Teobaldi", "D. O'Regan", "L. Liu"), &
+                         title="Minimum Tracking Linear Response Hubbard and Hund Corrected Density Functional Theory in CP2K", &
+                         source="J. Chem. Theory Comput.", volume="20", pages="8984-9002", &
+                         year=2024, doi="10.1021/acs.jctc.4c00964")
+
+      CALL add_reference(key=Moynihan2017, &
+                         authors=s2a("G. Moynihan", "G. Teobaldi", "D. D. O'Regan"), &
+                         title="A self-consistent ground-state formulation of the "// &
+                         "first-principles Hubbard U parameter validated on "// &
+                         "one-electron self-interaction error", &
+                         source="arXiv", pages="1704.08076", &
+                         year=2017, doi="10.48550/arXiv.1704.08076")
+
+      CALL add_reference(key=Cococcioni2005, &
+                         authors=s2a("M. Cococcioni", "S. de Gironcoli"), &
+                         title="Linear response approach to the calculation of the "// &
+                         "effective interaction parameters in the LDA+U method", &
+                         source="Phys. Rev. B", volume="71", pages="035105", &
+                         year=2005, doi="10.1103/PhysRevB.71.035105")
+
+      CALL add_reference(key=Zhang2025, &
+                         authors=s2a("P. Zhang", "X. Xu"), &
+                         title="Propensity of Water Self-Ions at Air(Oil)-Water Interfaces Revealed by "// &
+                         "Deep Potential Molecular Dynamics with Enhanced Sampling", &
+                         source="Langmuir", volume="41", pages="3675-3683", &
+                         year=2025, doi="10.1021/acs.langmuir.4c05004")
 
    END SUBROUTINE add_all_references
 

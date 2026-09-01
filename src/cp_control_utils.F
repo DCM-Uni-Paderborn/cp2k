@@ -33,6 +33,7 @@ MODULE cp_control_utils
                                               parser_create,&
                                               parser_release,&
                                               parser_reset
+   USE cp_spline_utils,                 ONLY: pw_interp
    USE cp_units,                        ONLY: cp_unit_from_cp2k,&
                                               cp_unit_to_cp2k
    USE eeq_input,                       ONLY: read_eeq_param
@@ -56,19 +57,19 @@ MODULE cp_control_utils
         do_se_is_slater, do_se_lr_ewald, do_se_lr_ewald_gks, do_se_lr_ewald_r3, do_se_lr_none, &
         gapw_1c_large, gapw_1c_medium, gapw_1c_orb, gapw_1c_small, gapw_1c_very_large, &
         gaussian_env, gfn1xtb, gfn_tblite, gxtb, kg_tnadd_embed, kg_tnadd_embed_ri, no_admm_type, &
-        numerical, ramp_env, real_time_propagation, rtp_method_bse, sccs_andreussi, &
-        sccs_derivative_cd3, sccs_derivative_cd5, sccs_derivative_cd7, sccs_derivative_fft, &
-        sccs_fattebert_gygi, sccs_saa_andreussi, sic_ad, sic_eo, sic_list_all, sic_list_unpaired, &
-        sic_mauri_spz, sic_mauri_us, sic_none, slater, tblite_cli_born_kernel_auto, &
-        tblite_cli_solution_state_gsolv, tblite_cli_solvation_alpb, tblite_cli_solvation_cpcm, &
-        tblite_cli_solvation_gb, tblite_cli_solvation_gbe, tblite_cli_solvation_gbsa, &
-        tblite_guess_ceh, tblite_gxtb_acceleration_auto, tblite_gxtb_acceleration_manual, &
-        tblite_gxtb_exchange_complete_array, tblite_gxtb_exchange_kgroup_partial_images, &
-        tblite_gxtb_exchange_symmetry_fused, tblite_gxtb_gradient_dense, &
-        tblite_gxtb_transform_dense, tblite_mixer_memory_inherit, tblite_scc_mixer_auto, &
-        tblite_scc_mixer_cp2k, tblite_scc_mixer_none, tblite_scc_mixer_tblite, tblite_solver_gvd, &
-        tblite_solver_gvr, tddfpt_dipole_length, tddfpt_kernel_stda, use_mom_ref_user, &
-        xtb_vdw_type_d3, xtb_vdw_type_d4, xtb_vdw_type_none
+        numerical, ramp_env, real_time_propagation, rtp_method_bse, rtp_method_bse_linearized, &
+        sccs_andreussi, sccs_derivative_cd3, sccs_derivative_cd5, sccs_derivative_cd7, &
+        sccs_derivative_fft, sccs_fattebert_gygi, sccs_saa_andreussi, sic_ad, sic_eo, &
+        sic_list_all, sic_list_unpaired, sic_mauri_spz, sic_mauri_us, sic_none, slater, &
+        tblite_cli_born_kernel_auto, tblite_cli_solution_state_gsolv, tblite_cli_solvation_alpb, &
+        tblite_cli_solvation_cpcm, tblite_cli_solvation_gb, tblite_cli_solvation_gbe, &
+        tblite_cli_solvation_gbsa, tblite_guess_ceh, tblite_gxtb_acceleration_auto, &
+        tblite_gxtb_acceleration_manual, tblite_gxtb_exchange_complete_array, &
+        tblite_gxtb_exchange_kgroup_partial_images, tblite_gxtb_exchange_symmetry_fused, &
+        tblite_gxtb_gradient_dense, tblite_gxtb_transform_dense, tblite_mixer_memory_inherit, &
+        tblite_scc_mixer_auto, tblite_scc_mixer_cp2k, tblite_scc_mixer_none, &
+        tblite_scc_mixer_tblite, tblite_solver_gvd, tblite_solver_gvr, tddfpt_dipole_length, &
+        tddfpt_kernel_stda, use_mom_ref_user, xtb_vdw_type_d3, xtb_vdw_type_d4, xtb_vdw_type_none
    USE input_cp2k_check,                ONLY: xc_functionals_expand
    USE input_cp2k_dft,                  ONLY: create_dft_section
    USE input_enumeration_types,         ONLY: enum_i2c,&
@@ -123,7 +124,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: dft_section
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
 
-      CHARACTER(len=default_path_length)                 :: basis_set_file_name, &
+      CHARACTER(len=default_path_length)                 :: basis_set_file_name, gauxc_model_name, &
                                                             intensities_file_name, &
                                                             potential_file_name
       CHARACTER(LEN=default_string_length), &
@@ -215,7 +216,13 @@ CONTAINS
       IF (dft_control%use_gauxc) THEN
          native_skala_grid = .FALSE.
          CALL section_vals_val_get(xc_gauxc_subsection, "NATIVE_GRID", l_val=native_skala_grid)
-         IF (native_skala_grid) dft_control%use_kinetic_energy_density = .TRUE.
+         CALL section_vals_val_get(xc_gauxc_subsection, "MODEL", c_val=gauxc_model_name)
+         gauxc_model_name = ADJUSTL(gauxc_model_name)
+         CALL uppercase(gauxc_model_name)
+         IF (native_skala_grid .OR. &
+             (TRIM(gauxc_model_name) /= "" .AND. TRIM(gauxc_model_name) /= "NONE")) THEN
+            dft_control%use_kinetic_energy_density = .TRUE.
+         END IF
       END IF
       tmp_section => section_vals_get_subs_vals(dft_section, "KG_METHOD")
       CALL section_vals_get(tmp_section, explicit=explicit)
@@ -476,6 +483,10 @@ CONTAINS
       CALL section_vals_val_get(dft_section, "PLUS_U_METHOD", i_val=method_id)
       dft_control%plus_u_method_id = method_id
 
+      ! Minimum tracking linear response U and J
+      CALL section_vals_val_get(dft_section, "EPS_U_J_LOOP", r_val=dft_control%eps_u_j_loop)
+      CALL section_vals_val_get(dft_section, "MAX_MTLR_LOOP", i_val=dft_control%max_mtlr_iter)
+
       ! Smearing in use
       dft_control%smear = .FALSE.
 
@@ -569,7 +580,8 @@ CONTAINS
       IF (do_rtp) THEN
          ! tmp_section => section_vals_get_subs_vals(dft_section, "REAL_TIME_PROPAGATION%PRINT%POLARIZABILITY")
          ! CALL section_vals_get(tmp_section, explicit=is_present)
-         local_moment_possible = (dft_control%rtp_control%rtp_method == rtp_method_bse) .OR. &
+         local_moment_possible = (dft_control%rtp_control%rtp_method == rtp_method_bse .OR. &
+                                  dft_control%rtp_control%rtp_method == rtp_method_bse_linearized) .OR. &
                                  ((.NOT. dft_control%rtp_control%periodic) .AND. dft_control%rtp_control%linear_scaling)
          IF (local_moment_possible .AND. (.NOT. ASSOCIATED(dft_control%rtp_control%print_pol_elements))) THEN
             tmp_section => section_vals_get_subs_vals(dft_section, "REAL_TIME_PROPAGATION")
@@ -896,22 +908,26 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'read_mgrid_section'
 
-      INTEGER                                            :: handle, igrid_level, ngrid_level
+      INTEGER                                            :: handle, igrid_level, interp_kind, &
+                                                            ngrid_level
       LOGICAL                                            :: explicit, multigrid_set
       REAL(dp)                                           :: cutoff
       REAL(dp), DIMENSION(:), POINTER                    :: cutofflist
-      TYPE(section_vals_type), POINTER                   :: mgrid_section
+      TYPE(section_vals_type), POINTER                   :: interp_section, mgrid_section
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (mgrid_section, cutofflist)
+      NULLIFY (interp_section, mgrid_section, cutofflist)
       mgrid_section => section_vals_get_subs_vals(dft_section, "MGRID")
+      interp_section => section_vals_get_subs_vals(mgrid_section, "INTERPOLATOR")
 
       CALL section_vals_val_get(mgrid_section, "NGRIDS", i_val=ngrid_level)
       CALL section_vals_val_get(mgrid_section, "MULTIGRID_SET", l_val=multigrid_set)
       CALL section_vals_val_get(mgrid_section, "CUTOFF", r_val=cutoff)
       CALL section_vals_val_get(mgrid_section, "PROGRESSION_FACTOR", r_val=qs_control%progression_factor)
       CALL section_vals_val_get(mgrid_section, "COMMENSURATE", l_val=qs_control%commensurate_mgrids)
+      CALL section_vals_val_get(interp_section, "KIND", i_val=interp_kind)
+      IF (interp_kind /= pw_interp) qs_control%commensurate_mgrids = .TRUE.
       CALL section_vals_val_get(mgrid_section, "REALSPACE", l_val=qs_control%realspace_mgrids)
       CALL section_vals_val_get(mgrid_section, "REL_CUTOFF", r_val=qs_control%relative_cutoff)
       CALL section_vals_val_get(mgrid_section, "SKIP_LOAD_BALANCE_DISTRIBUTED", &
@@ -997,11 +1013,10 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: tmplist
       LOGICAL :: dftb_scc_mixer_explicit, dftb_tblite_mixer_explicit, explicit, &
          gxtb_acceleration_explicit, gxtb_acp_cache_explicit, gxtb_acp_mesh_explicit, &
-         gxtb_exchange_explicit, &
-         gxtb_forward_qualification_explicit, gxtb_gradient_explicit, gxtb_image_batch_explicit, &
-         gxtb_mode_explicit, gxtb_star_explicit, gxtb_transform_explicit, tblite_reference_cli, &
-         tblite_reference_cli_section, tblite_section_active, was_present, xtb_scc_mixer_explicit, &
-         xtb_tblite_mixer_explicit
+         gxtb_exchange_explicit, gxtb_forward_qualification_explicit, gxtb_gradient_explicit, &
+         gxtb_image_batch_explicit, gxtb_mode_explicit, gxtb_star_explicit, &
+         gxtb_transform_explicit, tblite_reference_cli, tblite_reference_cli_section, &
+         tblite_section_active, was_present, xtb_scc_mixer_explicit, xtb_tblite_mixer_explicit
       REAL(dp)                                           :: tmp, tmpsqrt, value
       REAL(dp), POINTER                                  :: scal(:)
       TYPE(section_vals_type), POINTER :: cdft_control_section, ddapc_restraint_section, &
@@ -1625,6 +1640,13 @@ CONTAINS
          qs_control%xtb_control%sto_ng = ngauss
          CALL section_vals_val_get(xtb_section, "HYDROGEN_STO_NG", i_val=ngauss)
          qs_control%xtb_control%h_sto_ng = ngauss
+         CALL section_vals_val_get(xtb_section, "STO_FLEX", explicit=explicit)
+         IF (explicit) THEN
+            CALL section_vals_val_get(xtb_section, "STO_FLEX", &
+                                      l_val=qs_control%xtb_control%sto_flex)
+         ELSE
+            qs_control%xtb_control%sto_flex = .FALSE.
+         END IF
          CALL section_vals_val_get(xtb_parameter, "PARAM_FILE_PATH", &
                                    c_val=qs_control%xtb_control%parameter_file_path)
          CALL section_vals_val_get(xtb_parameter, "PARAM_FILE_NAME", explicit=explicit)
@@ -1859,10 +1881,10 @@ CONTAINS
             DO j = 1, n_rep
                CALL section_vals_val_get(xtb_parameter, "KAB_PARAM", i_rep_val=j, c_vals=clist)
                qs_control%xtb_control%kab_param(1, j) = clist(1)
-               CALL get_ptable_info(clist(1), &
+               CALL get_ptable_info(clist(1) (1:2), &
                                     ielement=qs_control%xtb_control%kab_types(1, j))
                qs_control%xtb_control%kab_param(2, j) = clist(2)
-               CALL get_ptable_info(clist(2), &
+               CALL get_ptable_info(clist(2) (1:2), &
                                     ielement=qs_control%xtb_control%kab_types(2, j))
                qs_control%xtb_control%kab_param(3, j) = clist(3)
                READ (clist(3), '(F10.0)') qs_control%xtb_control%kab_vals(j)
@@ -2463,9 +2485,10 @@ CONTAINS
       CHARACTER(len=*), PARAMETER                        :: routineN = 'write_dft_control'
 
       CHARACTER(LEN=20)                                  :: tmpStr
-      INTEGER                                            :: handle, i, i_rep, n_rep, output_unit
+      INTEGER                                            :: handle, i, i_rep, max_mtlr_iter, n_rep, &
+                                                            output_unit
       REAL(kind=dp)                                      :: density_cut, density_smooth_cut_range, &
-                                                            gradient_cut, tau_cut
+                                                            eps_u_j_loop, gradient_cut, tau_cut
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(enumeration_type), POINTER                    :: enum
       TYPE(keyword_type), POINTER                        :: keyword
@@ -2573,6 +2596,14 @@ CONTAINS
                "DFT+U| Method", ADJUSTR(TRIM(enum_i2c(enum, dft_control%plus_u_method_id)))
             WRITE (UNIT=output_unit, FMT="(T2,A)") &
                "DFT+U| Check atomic kind information for details"
+            IF (dft_control%mtlr_u_j) THEN
+               CALL section_vals_val_get(dft_section, "EPS_U_J_LOOP", r_val=eps_u_j_loop)
+               WRITE (UNIT=output_unit, FMT="(T2,A,T67,ES14.7E3)") &
+                  "MTLR U J| EPS_U_J_LOOP", eps_u_j_loop
+               CALL section_vals_val_get(dft_section, "MAX_MTLR_LOOP", i_val=max_mtlr_iter)
+               WRITE (UNIT=output_unit, FMT="(T2,A,T67,I10)") &
+                  "MTLR U J| MAX_MTLR_LOOP", max_mtlr_iter
+            END IF
             CALL section_release(section)
          END IF
 
@@ -3451,7 +3482,8 @@ CONTAINS
 
       INTEGER                                            :: i, j, n_elems
       INTEGER, DIMENSION(:), POINTER                     :: tmp
-      LOGICAL                                            :: is_present, local_moment_possible
+      LOGICAL                                            :: is_present, linearize_bse_propagation, &
+                                                            local_moment_possible
       TYPE(section_vals_type), POINTER                   :: proj_mo_section, subsection
 
       ALLOCATE (dft_control%rtp_control)
@@ -3467,6 +3499,20 @@ CONTAINS
                                 i_val=dft_control%rtp_control%rtp_method)
       CALL section_vals_val_get(rtp_section, "RTBSE%RTBSE_HAMILTONIAN", &
                                 i_val=dft_control%rtp_control%rtbse_ham)
+      CALL section_vals_val_get(rtp_section, "RTBSE%LINEARIZED_BSE_PROPAGATION", &
+                                l_val=linearize_bse_propagation)
+      ! Change rtp_method to linearized bse. The section parameter also feeds bs_env%rtp_method,
+      ! which gates the W(w=0) build in the GW step - TDDFT there would dispatch the linearized
+      ! propagator with no screened interaction to propagate with, so reject the combination.
+      IF (linearize_bse_propagation) THEN
+         IF (dft_control%rtp_control%rtp_method /= rtp_method_bse) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "LINEARIZED_BSE_PROPAGATION requires the RTBSE section opened as "// &
+                          "'&RTBSE' or '&RTBSE RTBSE', not '&RTBSE TDDFT'.")
+         END IF
+         dft_control%rtp_control%rtp_method = rtp_method_bse_linearized
+      END IF
+
       CALL section_vals_val_get(rtp_section, "PROPAGATOR", &
                                 i_val=dft_control%rtp_control%propagator)
       CALL section_vals_val_get(rtp_section, "EPS_ITER", &
@@ -3517,7 +3563,8 @@ CONTAINS
          dft_control%rtp_control%is_proj_mo = .FALSE.
       END IF
       ! Moment trace
-      local_moment_possible = (dft_control%rtp_control%rtp_method == rtp_method_bse) .OR. &
+      local_moment_possible = (dft_control%rtp_control%rtp_method == rtp_method_bse .OR. &
+                               dft_control%rtp_control%rtp_method == rtp_method_bse_linearized) .OR. &
                               ((.NOT. dft_control%rtp_control%periodic) .AND. dft_control%rtp_control%linear_scaling)
       ! TODO : Implement for other moment operators
       subsection => section_vals_get_subs_vals(rtp_section, "PRINT%MOMENTS")

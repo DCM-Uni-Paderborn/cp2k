@@ -320,6 +320,11 @@ MODULE qs_environment_types
       ! Resp charges
       REAL(KIND=dp), DIMENSION(:), POINTER                  :: rhs => NULL()
       REAL(KIND=dp)                                         :: total_zeff_corr = -1.0_dp, surface_dipole_moment = -1.0_dp
+      ! Plane-averaged Hartree potential (incl. dipole correction) just below/above the dipole
+      ! correction reference plane, i.e. the vacuum level on either side of the slab
+      REAL(KIND=dp)                                         :: vacuum_level_below = 0.0_dp, vacuum_level_above = 0.0_dp
+      ! Position of the dipole correction reference plane [Angstrom]
+      REAL(KIND=dp)                                         :: surface_dipole_ref_pos = 0.0_dp
       LOGICAL                                               :: surface_dipole_switch_off = .FALSE.
       TYPE(mo_set_type), DIMENSION(:), POINTER              :: mos_last_converged => NULL()
       ! tblite
@@ -389,6 +394,7 @@ CONTAINS
 !> \param matrix_w ...
 !> \param matrix_p_mp2 ...
 !> \param matrix_p_mp2_admm ...
+!> \param matrix_vhxc ...
 !> \param rho ...
 !> \param rho_xc ...
 !> \param pw_env ...
@@ -509,7 +515,7 @@ CONTAINS
                          matrix_h, matrix_h_im, matrix_ks, matrix_ks_im, matrix_vxc, run_rtp, rtp, &
                          matrix_h_kp, matrix_h_im_kp, matrix_ks_kp, matrix_ks_im_kp, matrix_vxc_kp, kinetic_kp, matrix_s_kp, &
                          matrix_w_kp, matrix_s_RI_aux_kp, matrix_s, matrix_s_RI_aux, matrix_w, &
-                         matrix_p_mp2, matrix_p_mp2_admm, rho, &
+                         matrix_p_mp2, matrix_p_mp2_admm, matrix_vhxc, rho, &
                          rho_xc, pw_env, ewald_env, ewald_pw, active_space, &
                          mpools, input, para_env, blacs_env, scf_control, rel_control, kinetic, qs_charges, &
                          vppl, xcint_weights, rho_core, rho_nlcc, rho_nlcc_g, &
@@ -562,7 +568,8 @@ CONTAINS
          matrix_s_RI_aux_kp
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: matrix_s, matrix_s_RI_aux, matrix_w, &
-                                                            matrix_p_mp2, matrix_p_mp2_admm
+                                                            matrix_p_mp2, matrix_p_mp2_admm, &
+                                                            matrix_vhxc
       TYPE(qs_rho_type), OPTIONAL, POINTER               :: rho, rho_xc
       TYPE(pw_env_type), OPTIONAL, POINTER               :: pw_env
       TYPE(ewald_environment_type), OPTIONAL, POINTER    :: ewald_env
@@ -818,6 +825,7 @@ CONTAINS
                       matrix_w=matrix_w, &
                       matrix_p_mp2=matrix_p_mp2, &
                       matrix_p_mp2_admm=matrix_p_mp2_admm, &
+                      matrix_vhxc=matrix_vhxc, &
                       matrix_h_kp=matrix_h_kp, &
                       matrix_h_im_kp=matrix_h_im_kp, &
                       matrix_ks_kp=matrix_ks_kp, &
@@ -1002,6 +1010,9 @@ CONTAINS
 
       qs_env%total_zeff_corr = 0.0_dp
       qs_env%surface_dipole_moment = 0.0_dp
+      qs_env%vacuum_level_below = 0.0_dp
+      qs_env%vacuum_level_above = 0.0_dp
+      qs_env%surface_dipole_ref_pos = 0.0_dp
       qs_env%surface_dipole_switch_off = .FALSE.
 
       ! Zero all variables containing results

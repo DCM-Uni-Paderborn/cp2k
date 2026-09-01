@@ -20,16 +20,17 @@ MODULE scf_control_types
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
+   USE cp_parser_methods,               ONLY: read_integer_object
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE input_constants,                 ONLY: &
-        atomic_guess, diag_ot, direct_p_mix, general_roks, high_spin_roks, &
-        kpoint_restart_legacy_compatible, no_guess, no_mix, ot_algo_taylor_or_diag, &
-        outer_scf_basis_center_opt, outer_scf_cdft_constraint, outer_scf_ddapc_constraint, &
-        outer_scf_none, outer_scf_optimizer_bisect, outer_scf_optimizer_broyden, &
-        outer_scf_optimizer_diis, outer_scf_optimizer_newton, outer_scf_optimizer_newton_ls, &
-        outer_scf_optimizer_none, outer_scf_optimizer_sd, outer_scf_optimizer_secant, &
-        outer_scf_s2_constraint, smear_energy_window, smear_fermi_dirac, smear_gaussian, &
-        smear_list, smear_mp, smear_mv
+        atomic_guess, diag_ot, diag_update_method_adiis, diag_update_method_mixing, direct_p_mix, &
+        general_roks, high_spin_roks, kpoint_restart_legacy_compatible, no_guess, no_mix, &
+        ot_algo_taylor_or_diag, outer_scf_basis_center_opt, outer_scf_cdft_constraint, &
+        outer_scf_ddapc_constraint, outer_scf_none, outer_scf_optimizer_bisect, &
+        outer_scf_optimizer_broyden, outer_scf_optimizer_diis, outer_scf_optimizer_newton, &
+        outer_scf_optimizer_newton_ls, outer_scf_optimizer_none, outer_scf_optimizer_sd, &
+        outer_scf_optimizer_secant, outer_scf_s2_constraint, smear_energy_window, &
+        smear_fermi_dirac, smear_gaussian, smear_list, smear_mp, smear_mv
    USE input_cp2k_scf,                  ONLY: create_scf_section
    USE input_enumeration_types,         ONLY: enum_i2c,&
                                               enumeration_type
@@ -42,13 +43,15 @@ MODULE scf_control_types
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: default_string_length,&
+                                              dp
    USE outer_scf_control_types,         ONLY: outer_scf_control_type,&
                                               outer_scf_read_parameters
    USE qs_cdft_opt_types,               ONLY: cdft_opt_type_release
    USE qs_ot_types,                     ONLY: ot_readwrite_input,&
                                               qs_ot_settings_init,&
                                               qs_ot_settings_type
+   USE string_utilities,                ONLY: uppercase
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -103,10 +106,11 @@ MODULE scf_control_types
    END TYPE smear_type
 
    TYPE diagonalization_type
-      INTEGER                               :: method = -1
+      INTEGER                               :: method = -1, update_method = -1, max_history = -1
       REAL(KIND=dp)                         :: eps_jacobi = -1.0_dp
       REAL(KIND=dp)                         :: jacobi_threshold = -1.0_dp
       INTEGER                               :: max_iter = -1, nkrylov = -1, nblock_krylov = -1
+      LOGICAL                               :: adiis_verbose = .FALSE., do_oda = .FALSE.
       ! Maximum Overlap Method
       LOGICAL                               :: mom = .FALSE., mom_didguess = .FALSE.
       INTEGER                               :: mom_proj_formula = -1
@@ -144,6 +148,7 @@ MODULE scf_control_types
       LOGICAL                               :: force_scf_calculation = .FALSE.
       LOGICAL                               :: non_selfconsistent = .FALSE.
       INTEGER, DIMENSION(2)                 :: added_mos = -1
+      LOGICAL, DIMENSION(2)                 :: added_mos_auto = .FALSE.
       INTEGER                               :: roks_scheme = -1
       REAL(KIND=dp)                         :: roks_f = -1.0_dp
       REAL(KIND=dp), DIMENSION(0:2, 0:2, 1:2) :: roks_parameter = -1.0_dp
@@ -205,6 +210,7 @@ CONTAINS
       scf_control%max_diis = 4
       scf_control%eps_diis = 0.1_dp
       scf_control%added_mos(:) = 0
+      scf_control%added_mos_auto(:) = .FALSE.
       scf_control%max_scf_hist = 0
       scf_control%kpoint_restart_mode = kpoint_restart_legacy_compatible
 
@@ -217,6 +223,10 @@ CONTAINS
 
       ! Diagonalization
       scf_control%diagonalization%method = 0
+      scf_control%diagonalization%update_method = diag_update_method_mixing
+      scf_control%diagonalization%max_history = 16
+      scf_control%diagonalization%do_oda = .FALSE.
+      scf_control%diagonalization%adiis_verbose = .FALSE.
       scf_control%diagonalization%eps_jacobi = 0.0_dp
       scf_control%diagonalization%jacobi_threshold = 1.0E-7_dp
       scf_control%diagonalization%max_iter = 0
@@ -336,13 +346,16 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'scf_c_read_parameters'
 
-      INTEGER                                            :: cholesky_flag, handle, ialgo
-      INTEGER, DIMENSION(:), POINTER                     :: added_mos
+      CHARACTER(LEN=default_string_length)               :: added_mos_string, error_message
+      CHARACTER(LEN=default_string_length), &
+         DIMENSION(:), POINTER                           :: added_mos
+      INTEGER                                            :: added_mos_value, cholesky_flag, handle, &
+                                                            i, ialgo
       LOGICAL                                            :: do_mixing, explicit
       REAL(KIND=dp), DIMENSION(:), POINTER               :: roks_parameter
-      TYPE(section_vals_type), POINTER                   :: gce_section, mixing_section, &
-                                                            outer_scf_section, scf_section, &
-                                                            smear_section
+      TYPE(section_vals_type), POINTER                   :: adiis_section, gce_section, &
+                                                            mixing_section, outer_scf_section, &
+                                                            scf_section, smear_section
 
       CALL timeset(routineN, handle)
 
@@ -392,6 +405,8 @@ CONTAINS
       IF (scf_control%use_diag) THEN
          CALL section_vals_val_get(scf_section, "DIAGONALIZATION%ALGORITHM", &
                                    i_val=scf_control%diagonalization%method)
+         CALL section_vals_val_get(scf_section, "DIAGONALIZATION%UPDATE_METHOD", &
+                                   i_val=scf_control%diagonalization%update_method)
          CALL section_vals_val_get(scf_section, "DIAGONALIZATION%EPS_JACOBI", &
                                    r_val=scf_control%diagonalization%eps_jacobi)
          CALL section_vals_val_get(scf_section, "DIAGONALIZATION%JACOBI_THRESHOLD", &
@@ -436,7 +451,14 @@ CONTAINS
                                       i_val=scf_control%diagonalization%mom_proj_formula)
          END IF
       END IF
-
+      ! Read ADIIS section
+      adiis_section => section_vals_get_subs_vals(scf_section, "ADIIS")
+      CALL section_vals_val_get(adiis_section, "MAX_HISTORY", &
+                                i_val=scf_control%diagonalization%max_history)
+      CALL section_vals_val_get(adiis_section, "ODA", &
+                                l_val=scf_control%diagonalization%do_oda)
+      CALL section_vals_val_get(adiis_section, "VERBOSE", &
+                                l_val=scf_control%diagonalization%adiis_verbose)
       ! Read ROKS parameters
       CALL section_vals_val_get(scf_section, "ROKS_SCHEME", i_val=scf_control%roks_scheme)
 
@@ -464,12 +486,28 @@ CONTAINS
       CALL section_vals_val_get(scf_section, "max_iter_lumo", i_val=scf_control%max_iter_lumos)
 
       ! Extra MOs, e.g. for smearing
-      CALL section_vals_val_get(scf_section, "added_mos", i_vals=added_mos)
+      CALL section_vals_val_get(scf_section, "added_mos", c_vals=added_mos)
       CPASSERT(ASSOCIATED(added_mos))
       IF (SIZE(added_mos) > 0) THEN
-         scf_control%added_mos(1) = added_mos(1)
-         IF (SIZE(added_mos) > 1) THEN
-            scf_control%added_mos(2) = added_mos(2)
+         scf_control%added_mos_auto(:) = .FALSE.
+         DO i = 1, MIN(SIZE(added_mos), SIZE(scf_control%added_mos))
+            added_mos_string = ADJUSTL(added_mos(i))
+            CALL uppercase(added_mos_string)
+            IF (TRIM(added_mos_string) == "AUTO") THEN
+               scf_control%added_mos(i) = 0
+               scf_control%added_mos_auto(i) = .TRUE.
+            ELSE
+               CALL read_integer_object(TRIM(added_mos(i)), added_mos_value, error_message)
+               IF (LEN_TRIM(error_message) > 0) THEN
+                  CALL cp_abort(__LOCATION__, &
+                                "Invalid ADDED_MOS value '"//TRIM(added_mos(i))// &
+                                "'. Use an integer or AUTO.")
+               END IF
+               scf_control%added_mos(i) = added_mos_value
+            END IF
+         END DO
+         IF (SIZE(added_mos) == 1 .AND. scf_control%added_mos_auto(1)) THEN
+            scf_control%added_mos_auto(2) = .TRUE.
          END IF
       END IF
 
@@ -661,9 +699,26 @@ CONTAINS
                   "eps_diis:          ", scf_control%eps_diis, &
                   "eps_eigval:        ", scf_control%eps_eigval, &
                   "level_shift [a.u.]:", scf_control%level_shift
+
+               IF (scf_control%use_diag) THEN
+                  keyword => section_get_keyword(section, "DIAGONALIZATION%UPDATE_METHOD")
+                  CALL keyword_get(keyword, enum=enum)
+                  WRITE (UNIT=output_unit, FMT="(T25,A,T51,A30)") &
+                     "SCF update method:  ", &
+                     ADJUSTR(TRIM(enum_i2c(enum, scf_control%diagonalization%update_method)))
+                  IF (scf_control%diagonalization%update_method == diag_update_method_adiis) THEN
+                     WRITE (UNIT=output_unit, FMT="(T25,A,T71,I10)") &
+                        "ADIIS max history: ", scf_control%diagonalization%max_history
+                     WRITE (UNIT=output_unit, FMT="(T25,A,T71,L10)") &
+                        "ADIIS optimal damping: ", scf_control%diagonalization%do_oda
+                  END IF
+               END IF
             END IF
 
-            IF (SUM(ABS(scf_control%added_mos)) > 0) THEN
+            IF (ANY(scf_control%added_mos_auto)) THEN
+               WRITE (UNIT=output_unit, FMT="(T25,A,T71,2I5)") &
+                  "added MOs (auto)   ", scf_control%added_mos
+            ELSE IF (SUM(ABS(scf_control%added_mos)) > 0) THEN
                WRITE (UNIT=output_unit, FMT="(T25,A,T71,2I5)") &
                   "added MOs          ", scf_control%added_mos
             END IF
@@ -835,7 +890,7 @@ CONTAINS
       ot_section => section_vals_get_subs_vals(scf_section, "DIAGONALIZATION%OT")
       CALL section_vals_get(ot_section, explicit=explicit)
 
-      CALL ot_readwrite_input(settings, ot_section, output_unit)
+      CALL ot_readwrite_input(settings, ot_section, output_unit, eigensolver=.TRUE.)
 
       CALL cp_print_key_finished_output(output_unit, logger, scf_section, &
                                         "PRINT%PROGRAM_RUN_INFO")

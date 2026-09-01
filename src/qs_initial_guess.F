@@ -185,7 +185,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: dft_section, input, subsys_section
 
       logger => cp_get_default_logger()
-      NULLIFY (atomic_kind, qs_kind, mo_coeff, orb_basis_set, atomic_kind_set, cell, &
+      NULLIFY (atomic_kind, cell, qs_kind, mo_coeff, orb_basis_set, atomic_kind_set, &
                qs_kind_set, particle_set, ortho, work2, work1, mo_array, s_sparse, &
                scf_control, dft_control, p_rmpv, para_env, h_core_sparse, matrix_ks, rho, &
                mos_last_converged)
@@ -200,6 +200,7 @@ CONTAINS
 
       CALL get_qs_env(qs_env, &
                       atomic_kind_set=atomic_kind_set, &
+                      cell=cell, &
                       qs_kind_set=qs_kind_set, &
                       particle_set=particle_set, &
                       mos=mo_array, &
@@ -209,7 +210,6 @@ CONTAINS
                       input=input, &
                       scf_control=scf_control, &
                       dft_control=dft_control, &
-                      cell=cell, &
                       has_unit_metric=has_unit_metric, &
                       do_kpoints=do_kpoints, &
                       kpoints=kpoints, &

@@ -100,6 +100,10 @@ CONTAINS
 
 !$    flags = TRIM(flags)//" omp"
 
+#if defined(__MACOSX)
+      flags = TRIM(flags)//" macos"
+#endif
+
       ! TODO: remove __INTEL_LLVM_COMPILER conditions (regtests)
 #if defined(__INTEL_LLVM_COMPILER)
       flags = TRIM(flags)//" ifx"
@@ -130,6 +134,9 @@ CONTAINS
 #endif
 #if defined(GAUXC_HAS_CUDA)
       flags = TRIM(flags)//" gauxc_cuda"
+#endif
+#if defined(GAUXC_HAS_CUTLASS)
+      flags = TRIM(flags)//" gauxc_cutlass"
 #endif
 #if defined(GAUXC_HAS_HDF5)
       flags = TRIM(flags)//" gauxc_hdf5"
@@ -223,14 +230,11 @@ CONTAINS
 #if defined(__MKL)
       flags = TRIM(flags)//" mkl"
 #endif
+#if defined(__OPENBLAS)
+      flags = TRIM(flags)//" openblas"
+#endif
 #if defined(__DFTD4)
       flags = TRIM(flags)//" libdftd4"
-#endif
-#if defined(__DFTD4_V3)
-      flags = TRIM(flags)//" dftd4_v3"
-#endif
-#if defined(__DFTD4_V4_2)
-      flags = TRIM(flags)//" dftd4_v4_2"
 #endif
 #if defined(__S_DFTD3)
       flags = TRIM(flags)//" s_dftd3"
@@ -272,6 +276,9 @@ CONTAINS
 #endif
 #if defined(__LIBTORCH)
       flags = TRIM(flags)//" libtorch"
+#endif
+#if defined(__LIBTORCH_CUDA)
+      flags = TRIM(flags)//" libtorch_cuda"
 #endif
 #if defined(__MIMIC)
       flags = TRIM(flags)//" mimic"
