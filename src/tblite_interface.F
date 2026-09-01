@@ -39,9 +39,9 @@ MODULE tblite_interface
                                  cp2k_multipole_grad_cgto, cp2k_set_scf_options, &
                                  cp2k_update_basis, new_cp2k_potential_mixer
 #else
-   USE tblite_integral_multipole, ONLY: multipole_cgto, multipole_grad_cgto
+   USE tblite_integral_native_integrals, ONLY: multipole_cgto, multipole_grad_cgto
 #endif
-   USE tblite_integral_multipole, ONLY: maxl, msao
+   USE tblite_integral_native_integrals, ONLY: maxl, msao
    USE tblite_integral_type, ONLY: integral_type, new_integral
 #if !defined(__TBLITE_GXTB)
    USE tblite_scf, ONLY: get_mixer_dimension

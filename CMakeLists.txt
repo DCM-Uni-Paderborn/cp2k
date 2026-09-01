@@ -929,10 +929,16 @@ if(CP2K_USE_TBLITE)
                                                       VERSION_LESS "0.7.0")
     message(FATAL_ERROR "tblite >= 0.7.0 is required; found ${tblite_VERSION}")
   endif()
+  if(NOT tblite_INCLUDE_DIRS)
+    get_target_property(tblite_INCLUDE_DIRS tblite::tblite
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    if(NOT tblite_INCLUDE_DIRS AND TARGET tblite::tblite-lib)
+      get_target_property(tblite_INCLUDE_DIRS tblite::tblite-lib
+                          INTERFACE_INCLUDE_DIRECTORIES)
+    endif()
+  endif()
   add_library(cp2k::tblite INTERFACE IMPORTED)
-  target_link_libraries(
-    cp2k::tblite INTERFACE tblite::tblite mctc-lib::mctc-lib dftd4::dftd4
-                           toml-f::toml-f s-dftd3::s-dftd3)
+  target_link_libraries(cp2k::tblite INTERFACE tblite::tblite)
   if(CP2K_TBLITE_PROVIDER STREQUAL "UPSTREAM")
     cp2k_detect_dftd4_api()
     set(CP2K_TBLITE_WITH_CP2K_DFTD4 ON)
