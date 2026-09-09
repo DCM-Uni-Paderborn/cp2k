@@ -37,8 +37,9 @@ MODULE qs_ot_types
                                               cp_fm_type
    USE input_constants,                 ONLY: &
         cholesky_reduce, ls_2pnt, ls_3pnt, ls_adapt, ls_gold, ls_none, ot_algo_irac, &
-        ot_algo_taylor_or_diag, ot_chol_irac, ot_lwdn_irac, ot_mini_broyden, ot_mini_cg, &
-        ot_mini_diis, ot_mini_lbfgs, ot_mini_sd, ot_poly_irac, ot_precond_full_all, &
+        ot_algo_taylor_or_diag, ot_chol_irac, ot_low_rank_base_lattice_fft, &
+        ot_low_rank_base_overlap, ot_lwdn_irac, ot_mini_broyden, ot_mini_cg, ot_mini_diis, &
+        ot_mini_lbfgs, ot_mini_sd, ot_poly_irac, ot_precond_fermi_low_rank, ot_precond_full_all, &
         ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
         ot_precond_none, ot_precond_s_inverse, ot_precond_solver_chebyshev, &
         ot_precond_solver_default, ot_precond_solver_direct, ot_precond_solver_inv_chol, &
@@ -82,6 +83,8 @@ MODULE qs_ot_types
       CHARACTER(LEN=4)  :: line_search_method = ""
       CHARACTER(LEN=20) :: preconditioner_name = ""
       INTEGER           :: preconditioner_type = -1
+      CHARACTER(LEN=20) :: low_rank_base_name = ""
+      INTEGER           :: low_rank_base = ot_low_rank_base_overlap
       INTEGER           :: cholesky_type = -1
       INTEGER           :: ot_state = 0
       CHARACTER(LEN=20) :: precond_solver_name = ""
@@ -124,9 +127,6 @@ MODULE qs_ot_types
       LOGICAL                   :: has_kpoint_context = .FALSE.
       LOGICAL                   :: state_allocated = .FALSE.
       LOGICAL                   :: has_complex_kpoint_state = .FALSE.
-      LOGICAL                   :: initial_density_sync_pending = .FALSE.
-      LOGICAL                   :: initial_gradient_sync_pending = .FALSE.
-      LOGICAL                   :: prepared_direction_pending = .FALSE.
 
       ! first part of the variables, for occupied subspace invariant optimisation
 
@@ -305,6 +305,8 @@ CONTAINS
       settings%lbfgs_damping = .TRUE.
       settings%preconditioner_name = "FULL_KINETIC"
       settings%preconditioner_type = ot_precond_full_kinetic
+      settings%low_rank_base_name = "OVERLAP_INVERSE"
+      settings%low_rank_base = ot_low_rank_base_overlap
       settings%cholesky_type = cholesky_reduce
       settings%precond_solver_name = "CHOLESKY_INVERSE"
       settings%precond_solver_type = ot_precond_solver_inv_chol
@@ -568,8 +570,6 @@ CONTAINS
       qs_ot_env%line_search_count = 0
 
       qs_ot_env%energy_only = .FALSE.
-      qs_ot_env%initial_gradient_sync_pending = .FALSE.
-      qs_ot_env%prepared_direction_pending = .FALSE.
       qs_ot_env%gnorm_old = 1.0_dp
       qs_ot_env%diis_iter = 0
       qs_ot_env%ds_min = qs_ot_env%settings%ds_min
@@ -1740,6 +1740,10 @@ CONTAINS
          settings%preconditioner_name = "FULL_ALL"
          IF (settings%ds_min < 0.0_dp) settings%ds_min = 0.15_dp
          IF (settings%energy_gap < 0.0_dp) settings%energy_gap = 0.08_dp
+      CASE (ot_precond_fermi_low_rank)
+         settings%preconditioner_name = "FERMI_LOW_RANK"
+         IF (settings%ds_min < 0.0_dp) settings%ds_min = 0.12_dp
+         IF (settings%energy_gap < 0.0_dp) settings%energy_gap = 0.08_dp
       CASE (ot_precond_full_kinetic)
          settings%preconditioner_name = "FULL_KINETIC"
          IF (settings%ds_min < 0.0_dp) settings%ds_min = 0.15_dp
@@ -1754,6 +1758,15 @@ CONTAINS
       IF (use_complex_kpoints .AND. &
           settings%preconditioner_type == ot_precond_full_single_inverse .AND. &
           .NOT. energy_gap_explicit) settings%energy_gap = 0.20_dp
+      CALL section_vals_val_get(ot_section, "FERMI_LOW_RANK_BASE", i_val=settings%low_rank_base)
+      SELECT CASE (settings%low_rank_base)
+      CASE (ot_low_rank_base_overlap)
+         settings%low_rank_base_name = "OVERLAP_INVERSE"
+      CASE (ot_low_rank_base_lattice_fft)
+         settings%low_rank_base_name = "LATTICE_FFT"
+      CASE DEFAULT
+         CPABORT("READ OT FERMI_LOW_RANK_BASE: Value unknown")
+      END SELECT
       CALL section_vals_val_get(ot_section, "CHOLESKY", i_val=settings%cholesky_type)
       CALL section_vals_val_get(ot_section, "EPS_TAYLOR", r_val=settings%eps_taylor)
       CALL section_vals_val_get(ot_section, "MAX_TAYLOR", i_val=settings%max_taylor)
@@ -1835,6 +1848,9 @@ CONTAINS
                "                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T"
          CASE ("FULL_ALL")
             WRITE (output_unit, '(A)') "  Preconditioner : FULL_ALL            : diagonalization, state selective"
+         CASE ("FERMI_LOW_RANK")
+            WRITE (output_unit, '(A)') &
+               "  Preconditioner : FERMI_LOW_RANK       : rotationally covariant low-rank correction"
          CASE ("FULL_KINETIC")
             WRITE (output_unit, '(A)') "  Preconditioner : FULL_KINETIC        : inversion of T + eS"
          CASE ("FULL_S_INVERSE")
@@ -1849,6 +1865,10 @@ CONTAINS
          CASE DEFAULT
             WRITE (output_unit, '(3A)') "  Preconditioner : ", settings%preconditioner_name, " : UNKNOWN"
          END SELECT
+
+         IF (settings%preconditioner_type == ot_precond_fermi_low_rank) THEN
+            WRITE (output_unit, '(A,A)') "  Low-rank base : ", TRIM(settings%low_rank_base_name)
+         END IF
 
          WRITE (output_unit, '(A)') "  Precond_solver : "//TRIM(settings%precond_solver_name)
          IF (settings%precond_solver_type == ot_precond_solver_chebyshev) THEN

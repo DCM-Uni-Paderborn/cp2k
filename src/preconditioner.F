@@ -23,20 +23,35 @@ MODULE preconditioner
                                               dbcsr_p_type,&
                                               dbcsr_type
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm
+   USE cp_fm_basic_linalg,              ONLY: cp_fm_uplo_to_full
+   USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_decompose,&
+                                              cp_fm_cholesky_invert
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_info,&
                                               cp_fm_release,&
+                                              cp_fm_set_all,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
+   USE cp_log_handling,                 ONLY: cp_get_default_logger,&
+                                              cp_logger_get_default_io_unit,&
+                                              cp_logger_type
    USE input_constants,                 ONLY: &
-        cholesky_reduce, ot_precond_full_all, ot_precond_full_kinetic, ot_precond_full_single, &
-        ot_precond_full_single_inverse, ot_precond_none, ot_precond_s_inverse, &
-        ot_precond_solver_default, ot_precond_solver_inv_chol, ot_precond_solver_update
+        cholesky_reduce, ot_low_rank_base_lattice_fft, ot_low_rank_base_overlap, &
+        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, &
+        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
+        ot_precond_s_inverse, ot_precond_solver_default, ot_precond_solver_inv_chol, &
+        ot_precond_solver_update
+   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+                                              section_vals_type,&
+                                              section_vals_val_get
    USE kinds,                           ONLY: default_string_length,&
                                               dp
+   USE lattice_low_rank_preconditioner, ONLY: build_lattice_inverse
+   USE low_rank_preconditioner_model,   ONLY: low_rank_inverse_weight,&
+                                              low_rank_select_rank
    USE message_passing,                 ONLY: mp_para_env_type
    USE preconditioner_apply,            ONLY: apply_preconditioner_cfm_complex,&
                                               apply_preconditioner_dbcsr,&
@@ -68,6 +83,10 @@ MODULE preconditioner
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'preconditioner'
+   INTEGER, PARAMETER, PRIVATE          :: fermi_low_rank_max_rank = 48
+   REAL(KIND=dp), PARAMETER, PRIVATE    :: fermi_low_rank_gap_factor = 4.0_dp, &
+                                           fermi_low_rank_degeneracy_tolerance = 1.0E-8_dp, &
+                                           fermi_low_rank_min_window = 1.0_dp
 
    PUBLIC :: make_preconditioner, make_preconditioner_complex_full_all, &
              make_preconditioner_complex_full_kinetic, &
@@ -88,6 +107,111 @@ MODULE preconditioner
 ! **************************************************************************************************
 
 CONTAINS
+
+! **************************************************************************************************
+
+! **************************************************************************************************
+!> \brief Build the overlap-inverse base of the bounded low-rank spectral preconditioner.
+!> \param preconditioner_env ...
+!> \param matrix_s ...
+! **************************************************************************************************
+   SUBROUTINE prepare_low_rank_base(preconditioner_env, matrix_s)
+
+      TYPE(preconditioner_type)                          :: preconditioner_env
+      TYPE(dbcsr_type), OPTIONAL, POINTER                :: matrix_s
+
+      INTEGER                                            :: i, info, j, n, ncol_local, nrow_local, &
+                                                            output_unit
+      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
+      LOGICAL                                            :: used_fft
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: overlap
+      REAL(KIND=dp), CONTIGUOUS, DIMENSION(:, :), &
+         POINTER                                         :: local_data
+      TYPE(cp_fm_type)                                   :: overlap_fm, work
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      CPASSERT(ASSOCIATED(preconditioner_env%fm))
+      CPASSERT(.NOT. ASSOCIATED(preconditioner_env%base_fm))
+
+      SELECT CASE (preconditioner_env%low_rank_base)
+      CASE (ot_low_rank_base_overlap)
+         ALLOCATE (preconditioner_env%base_fm)
+         CALL cp_fm_create(preconditioner_env%base_fm, preconditioner_env%fm%matrix_struct, &
+                           name="FERMI_LOW_RANK overlap inverse")
+
+         IF (PRESENT(matrix_s)) THEN
+            CPASSERT(ASSOCIATED(matrix_s))
+            CALL copy_dbcsr_to_fm(matrix_s, preconditioner_env%base_fm)
+            CALL cp_fm_cholesky_decompose(preconditioner_env%base_fm, info_out=info)
+            IF (info /= 0) CPABORT("FERMI_LOW_RANK requires a positive-definite overlap matrix")
+            CALL cp_fm_cholesky_invert(preconditioner_env%base_fm)
+            CALL cp_fm_create(work, preconditioner_env%base_fm%matrix_struct, name="low-rank base work")
+            CALL cp_fm_uplo_to_full(preconditioner_env%base_fm, work)
+            CALL cp_fm_release(work)
+         ELSE
+            CALL cp_fm_set_all(preconditioner_env%base_fm, alpha=0.0_dp, beta=1.0_dp)
+         END IF
+
+      CASE (ot_low_rank_base_lattice_fft)
+         IF (.NOT. PRESENT(matrix_s)) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT requires a non-unit overlap metric")
+         END IF
+         CPASSERT(ASSOCIATED(matrix_s))
+         CALL cp_fm_get_info(preconditioner_env%fm, nrow_global=n)
+         CALL cp_fm_create(overlap_fm, preconditioner_env%fm%matrix_struct, &
+                           name="low-rank lattice overlap")
+         CALL cp_fm_set_all(overlap_fm, alpha=0.0_dp, beta=0.0_dp)
+         CALL copy_dbcsr_to_fm(matrix_s, overlap_fm)
+         CALL cp_fm_create(work, overlap_fm%matrix_struct, name="lattice overlap work")
+         CALL cp_fm_uplo_to_full(overlap_fm, work)
+         CALL cp_fm_release(work)
+         CALL cp_fm_get_info(overlap_fm, nrow_local=nrow_local, ncol_local=ncol_local, &
+                             row_indices=row_indices, col_indices=col_indices, local_data=local_data)
+         ALLOCATE (overlap(n, n), source=0.0_dp)
+         DO j = 1, ncol_local
+            DO i = 1, nrow_local
+               IF (row_indices(i) <= col_indices(j)) THEN
+                  overlap(row_indices(i), col_indices(j)) = local_data(i, j)
+               END IF
+            END DO
+         END DO
+         CALL preconditioner_env%para_env%sum(overlap)
+         DO j = 1, n
+            DO i = j + 1, n
+               overlap(i, j) = overlap(j, i)
+            END DO
+         END DO
+         CALL build_lattice_inverse(overlap, preconditioner_env%lattice_dims, &
+                                    preconditioner_env%lattice_inverse_k, &
+                                    preconditioner_env%lattice_projection_error, used_fft, info)
+         CALL cp_fm_release(overlap_fm)
+         DEALLOCATE (overlap)
+         IF (info /= 0) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT found a non-positive Fourier overlap block")
+         END IF
+         IF (.NOT. used_fft) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT could not initialize its lattice FFT")
+         END IF
+         preconditioner_env%lattice_block_size = &
+            n/PRODUCT(preconditioner_env%lattice_dims)
+         IF (preconditioner_env%para_env%is_source()) THEN
+            logger => cp_get_default_logger()
+            output_unit = cp_logger_get_default_io_unit(logger)
+            IF (output_unit > 0) THEN
+               WRITE (output_unit, '(T2,A,3(I0,1X),A,I0)') &
+                  "OT| FERMI_LOW_RANK lattice FFT cells: ", preconditioner_env%lattice_dims, &
+                  "AO block: ", preconditioner_env%lattice_block_size
+               WRITE (output_unit, '(T2,A,ES12.4)') &
+                  "OT| Block-circulant overlap projection error: ", &
+                  preconditioner_env%lattice_projection_error
+            END IF
+         END IF
+
+      CASE DEFAULT
+         CPABORT("Unknown FERMI_LOW_RANK base operator")
+      END SELECT
+
+   END SUBROUTINE prepare_low_rank_base
 
 ! **************************************************************************************************
 
@@ -128,7 +252,8 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'make_preconditioner'
 
-      INTEGER                                            :: handle, k, my_solver_type, nao, nhomo
+      INTEGER                                            :: handle, k, my_solver_type, nao, nhomo, &
+                                                            output_unit
       LOGICAL                                            :: my_convert_precond_to_dbcsr, &
                                                             needs_full_spectrum, needs_homo, &
                                                             use_mo_coeff_b
@@ -137,6 +262,7 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
       TYPE(cp_fm_type)                                   :: mo_occ
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_type), POINTER                          :: mo_coeff_b
 
       CALL timeset(routineN, handle)
@@ -148,6 +274,12 @@ CONTAINS
       ! Starting some matrix mess, check where to store the result in preconditioner_env, fm or dbcsr_matrix
       my_convert_precond_to_dbcsr = .FALSE.
       IF (PRESENT(convert_precond_to_dbcsr)) my_convert_precond_to_dbcsr = convert_precond_to_dbcsr
+      IF (precon_type == ot_precond_fermi_low_rank .AND. &
+          preconditioner_env%low_rank_base == ot_low_rank_base_lattice_fft) THEN
+         ! The FFT base is an operator rather than a stored DBCSR matrix. Keep the
+         ! complementary vectors in their distributed full-matrix representation.
+         my_convert_precond_to_dbcsr = .FALSE.
+      END IF
 
       ! Thanks to the mess with the matrices we need to make sure in this case that the
       ! Previous inverse is properly stored as a sparse matrix, fm gets deallocated here
@@ -160,7 +292,7 @@ CONTAINS
       needs_homo = .FALSE.
 
       SELECT CASE (precon_type)
-      CASE (ot_precond_full_all)
+      CASE (ot_precond_full_all, ot_precond_fermi_low_rank)
          needs_full_spectrum = .TRUE.
          ! both of them need the coefficients as fm's, more matrix mess
          IF (use_mo_coeff_b) THEN
@@ -232,11 +364,48 @@ CONTAINS
 
       CALL solve_preconditioner(my_solver_type, preconditioner_env, matrix_s, matrix_h)
 
+      IF (precon_type == ot_precond_fermi_low_rank) THEN
+         preconditioner_env%spectral_reference = energy_homo
+         preconditioner_env%spectral_window = &
+            MAX(fermi_low_rank_min_window, fermi_low_rank_gap_factor*preconditioner_env%energy_gap)
+         preconditioner_env%spectral_base_scale = 1.0_dp/preconditioner_env%spectral_window
+         preconditioner_env%spectral_rank = low_rank_select_rank( &
+                                            preconditioner_env%full_evals, nhomo, fermi_low_rank_max_rank, &
+                                            fermi_low_rank_degeneracy_tolerance)
+         IF (preconditioner_env%low_rank_base == ot_low_rank_base_lattice_fft) THEN
+            ! With an approximate base, retain only non-negative spectral updates.
+            ! This preserves positive definiteness independently of the projection error.
+            DO WHILE (preconditioner_env%spectral_rank > 0)
+               IF (low_rank_inverse_weight( &
+                   preconditioner_env%full_evals(nhomo + preconditioner_env%spectral_rank), &
+                   preconditioner_env%spectral_reference, preconditioner_env%energy_gap) >= &
+                   preconditioner_env%spectral_base_scale) EXIT
+               preconditioner_env%spectral_rank = preconditioner_env%spectral_rank - 1
+            END DO
+         END IF
+         IF (preconditioner_env%para_env%is_source()) THEN
+            logger => cp_get_default_logger()
+            output_unit = cp_logger_get_default_io_unit(logger)
+            IF (output_unit > 0) THEN
+               WRITE (output_unit, '(T2,A,F14.8,A,I0)') &
+                  "OT| FERMI_LOW_RANK common reference [hartree]: ", &
+                  preconditioner_env%spectral_reference, " retained rank: ", &
+                  preconditioner_env%spectral_rank
+            END IF
+         END IF
+         CALL prepare_low_rank_base(preconditioner_env, matrix_s)
+      END IF
+
       ! Here comes more matrix mess, make sure to output the correct matrix format,
       ! A bit pointless to convert the cholesky factorized version as it doesn't work in
       ! dbcsr form and will crash later,...
       IF (my_convert_precond_to_dbcsr) THEN
          CALL transfer_fm_to_dbcsr(preconditioner_env%fm, preconditioner_env%dbcsr_matrix, matrix_h)
+         IF (precon_type == ot_precond_fermi_low_rank .AND. &
+             preconditioner_env%low_rank_base == ot_low_rank_base_overlap) THEN
+            CALL transfer_fm_to_dbcsr(preconditioner_env%base_fm, &
+                                      preconditioner_env%base_dbcsr_matrix, matrix_h)
+         END IF
       ELSE
          CALL transfer_dbcsr_to_fm(preconditioner_env%dbcsr_matrix, preconditioner_env%fm, &
                                    preconditioner_env%para_env, preconditioner_env%ctxt)
@@ -580,7 +749,8 @@ CONTAINS
 
       IF (ASSOCIATED(preconditioner)) THEN
          SELECT CASE (prec_type)
-         CASE (ot_precond_full_all, ot_precond_full_single) ! these depend on the ks matrix
+         CASE (ot_precond_full_all, ot_precond_fermi_low_rank, &
+               ot_precond_full_single) ! these depend on the ks matrix
             DO ispin = 1, SIZE(preconditioner)
                CALL destroy_preconditioner(preconditioner(ispin)%preconditioner)
                DEALLOCATE (preconditioner(ispin)%preconditioner)
@@ -597,7 +767,7 @@ CONTAINS
       ! add an OT preconditioner if none is present
       IF (.NOT. ASSOCIATED(preconditioner)) THEN
          SELECT CASE (prec_type)
-         CASE (ot_precond_full_all, ot_precond_full_single_inverse)
+         CASE (ot_precond_full_all, ot_precond_fermi_low_rank, ot_precond_full_single_inverse)
             ALLOCATE (preconditioner(nspins))
          CASE DEFAULT
             ALLOCATE (preconditioner(1))
@@ -628,11 +798,13 @@ CONTAINS
 !> \param chol_type ...
 !> \param full_mo_set ...
 !> \param chebyshev_degree ...
+!> \param low_rank_base ...
 ! **************************************************************************************************
    SUBROUTINE prepare_preconditioner(qs_env, mos, matrix_ks, matrix_s, &
                                      ot_preconditioner, prec_type, solver_type, &
                                      energy_gap, nspins, has_unit_metric, &
-                                     convert_to_dbcsr, chol_type, full_mo_set, chebyshev_degree)
+                                     convert_to_dbcsr, chol_type, full_mo_set, chebyshev_degree, &
+                                     low_rank_base)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(mo_set_type), DIMENSION(:), INTENT(INOUT)     :: mos
@@ -644,26 +816,30 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: has_unit_metric, convert_to_dbcsr
       INTEGER, INTENT(IN), OPTIONAL                      :: chol_type
       LOGICAL, INTENT(IN), OPTIONAL                      :: full_mo_set
-      INTEGER, INTENT(IN), OPTIONAL                      :: chebyshev_degree
+      INTEGER, INTENT(IN), OPTIONAL                      :: chebyshev_degree, low_rank_base
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'prepare_preconditioner'
 
       CHARACTER(LEN=default_string_length)               :: msg
       INTEGER                                            :: handle, icall, ispin, &
-                                                            my_chebyshev_degree, n_loops
+                                                            my_chebyshev_degree, my_low_rank_base, &
+                                                            n_loops
       INTEGER, DIMENSION(5)                              :: nocc, norb
-      LOGICAL                                            :: do_co_rotate, my_convert_to_dbcsr, &
-                                                            my_full_mo_set, my_has_unit_metric, &
-                                                            use_mo_coeff_b
+      INTEGER, DIMENSION(:), POINTER                     :: multiple_unit_cell
+      LOGICAL                                            :: do_co_rotate, do_kpoints, &
+                                                            my_convert_to_dbcsr, my_full_mo_set, &
+                                                            my_has_unit_metric, use_mo_coeff_b
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: kinetic
       TYPE(dbcsr_type), POINTER                          :: matrix_t, mo_coeff_b
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(section_vals_type), POINTER                   :: input, subsys_section
 
       CALL timeset(routineN, handle)
-      NULLIFY (matrix_t, mo_coeff_b, mo_coeff, kinetic, dft_control, para_env, blacs_env)
+      NULLIFY (matrix_t, mo_coeff_b, mo_coeff, kinetic, dft_control, para_env, blacs_env, &
+               input, subsys_section, multiple_unit_cell)
       my_has_unit_metric = .FALSE.
       IF (PRESENT(has_unit_metric)) my_has_unit_metric = has_unit_metric
       my_convert_to_dbcsr = .TRUE.
@@ -672,11 +848,47 @@ CONTAINS
       IF (PRESENT(full_mo_set)) my_full_mo_set = full_mo_set
       my_chebyshev_degree = 8
       IF (PRESENT(chebyshev_degree)) my_chebyshev_degree = chebyshev_degree
+      my_low_rank_base = ot_low_rank_base_overlap
+      IF (PRESENT(low_rank_base)) my_low_rank_base = low_rank_base
+      do_kpoints = .FALSE.
 
       CALL get_qs_env(qs_env, &
                       dft_control=dft_control, &
+                      do_kpoints=do_kpoints, &
+                      input=input, &
                       para_env=para_env, &
                       blacs_env=blacs_env)
+
+      IF (my_low_rank_base == ot_low_rank_base_lattice_fft) THEN
+         IF (prec_type /= ot_precond_fermi_low_rank) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT requires PRECONDITIONER FERMI_LOW_RANK")
+         END IF
+         IF (my_has_unit_metric) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT is unavailable with a unit overlap metric")
+         END IF
+         IF (do_kpoints) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT currently supports only real Gamma-point OT")
+         END IF
+         IF (.NOT. ASSOCIATED(input)) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT could not access the input tree")
+         END IF
+         subsys_section => section_vals_get_subs_vals(input, "SUBSYS")
+         IF (.NOT. ASSOCIATED(subsys_section)) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT requires a SUBSYS section")
+         END IF
+         CALL section_vals_val_get(subsys_section, "CELL%MULTIPLE_UNIT_CELL", &
+                                   i_vals=multiple_unit_cell)
+         IF (.NOT. ASSOCIATED(multiple_unit_cell)) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT could not read MULTIPLE_UNIT_CELL")
+         END IF
+         IF (SIZE(multiple_unit_cell) /= 3 .OR. ANY(multiple_unit_cell <= 0) .OR. &
+             PRODUCT(multiple_unit_cell) <= 1) THEN
+            CPABORT("FERMI_LOW_RANK_BASE LATTICE_FFT requires an explicit replicated multiple unit cell")
+         END IF
+         my_convert_to_dbcsr = .FALSE.
+      ELSE IF (my_low_rank_base /= ot_low_rank_base_overlap) THEN
+         CPABORT("Unknown FERMI_LOW_RANK_BASE setting")
+      END IF
 
       IF (dft_control%qs_control%semi_empirical .OR. dft_control%qs_control%dftb .OR. &
           dft_control%qs_control%xtb) THEN
@@ -706,7 +918,7 @@ CONTAINS
       ! check whether we need the ev and rotate the MOs
       SELECT CASE (prec_type)
       CASE (ot_precond_full_all)
-         ! if one of these preconditioners is used every spin needs to call make_preconditioner
+         ! FULL_ALL needs canonical occupied eigenstates and one preconditioner per spin.
          n_loops = nspins
 
          do_co_rotate = ASSOCIATED(qs_env%mo_derivs)
@@ -729,6 +941,10 @@ CONTAINS
                                                    do_rotation=.TRUE.)
             END IF
          END DO
+      CASE (ot_precond_fermi_low_rank)
+         ! The common-reference low-rank operator depends only on the occupied projector.
+         ! Keep the input gauge unchanged so that OT ROTATION remains well defined.
+         n_loops = nspins
       CASE DEFAULT
          ! No need to rotate the MOs
       END SELECT
@@ -742,6 +958,10 @@ CONTAINS
       CASE DEFAULT
          DO icall = 1, n_loops
             ot_preconditioner(icall)%preconditioner%polynomial_degree = my_chebyshev_degree
+            ot_preconditioner(icall)%preconditioner%low_rank_base = my_low_rank_base
+            IF (my_low_rank_base == ot_low_rank_base_lattice_fft) THEN
+               ot_preconditioner(icall)%preconditioner%lattice_dims = multiple_unit_cell
+            END IF
             IF (my_has_unit_metric) THEN
                CALL make_preconditioner(ot_preconditioner(icall)%preconditioner, &
                                         prec_type, &

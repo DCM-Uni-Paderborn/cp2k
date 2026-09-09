@@ -78,7 +78,7 @@ MODULE environment
         section_get_ival, section_get_keyword, section_get_lval, section_get_rval, &
         section_release, section_type, section_vals_get, section_vals_get_subs_vals, &
         section_vals_get_subs_vals3, section_vals_type, section_vals_val_get, section_vals_val_set
-   USE integral_library_types,          ONLY: active_integral_library
+   USE integral_library_types,          ONLY: integral_library_init
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp,&
@@ -527,9 +527,8 @@ CONTAINS
          MemTotal_max, MemTotal_min, Slab, Slab_avr, Slab_max, Slab_min, SReclaimable, &
          SReclaimable_avr, SReclaimable_max, SReclaimable_min
       INTEGER, DIMENSION(:), POINTER                     :: i_force_eval
-      LOGICAL                                            :: ata, do_echo_all_hosts, efl, explicit, &
-                                                            flag, report_maxloc, trace, &
-                                                            trace_master
+      LOGICAL                                            :: ata, do_echo_all_hosts, explicit, flag, &
+                                                            report_maxloc, trace, trace_master
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(enumeration_type), POINTER                    :: enum1, enum2
       TYPE(keyword_type), POINTER                        :: keyword
@@ -549,10 +548,6 @@ CONTAINS
                                 l_val=globenv%direct_generalized_diagonalization)
       CALL section_vals_val_get(global_section, "PREFERRED_CHOLESKY_LIBRARY", i_val=i_cholesky)
       CALL section_vals_val_get(global_section, "PREFERRED_DGEMM_LIBRARY", i_val=i_dgemm)
-      CALL section_vals_val_get(global_section, "PREFERRED_INTEGRAL_LIBRARY%COULOMB_2C", &
-                                i_val=active_integral_library%coulomb2_library)
-      CALL section_vals_val_get(global_section, "PREFERRED_INTEGRAL_LIBRARY%COULOMB_3C", &
-                                i_val=active_integral_library%coulomb3_library)
       CALL section_vals_val_get(global_section, "EPS_CHECK_DIAG", r_val=globenv%eps_check_diag)
       CALL section_vals_val_get(global_section, "ENABLE_MPI_IO", l_val=flag)
       CALL cp_mpi_io_set(flag)
@@ -893,9 +888,6 @@ CONTAINS
          CALL section_vals_val_get(global_section, "ALLTOALL_SGL", l_val=ata)
          WRITE (UNIT=output_unit, FMT="(T2,A,T80,L1)") &
             start_section_label//"| All-to-all communication in single precision", ata
-         CALL section_vals_val_get(global_section, "EXTENDED_FFT_LENGTHS", l_val=efl)
-         WRITE (UNIT=output_unit, FMT="(T2,A,T80,L1)") &
-            start_section_label//"| FFTs using library dependent lengths", efl
 
          SELECT CASE (print_level)
          CASE (silent_print_level)
@@ -1029,6 +1021,7 @@ CONTAINS
       output_unit = cp_print_key_unit_nr(logger, global_section, "PROGRAM_RUN_INFO", &
                                          extension=".log")
 
+      CALL integral_setup_library(global_section)
       CALL fft_setup_library(globenv, global_section)
       CALL diag_setup_library(globenv, global_section)
 
@@ -1041,6 +1034,31 @@ CONTAINS
                                         "PROGRAM_RUN_INFO")
 
    END SUBROUTINE read_cp2k_section
+
+! **************************************************************************************************
+!> \brief Resolve preferred integral libraries against the compiled-in backends.
+!> \param global_section ...
+! **************************************************************************************************
+   SUBROUTINE integral_setup_library(global_section)
+      TYPE(section_vals_type), POINTER                   :: global_section
+
+      CHARACTER(LEN=3*default_string_length)             :: message
+      INTEGER                                            :: coulomb2_library, coulomb3_library
+      LOGICAL                                            :: fallback_applied
+
+      CALL section_vals_val_get(global_section, "PREFERRED_INTEGRAL_LIBRARY%COULOMB_2C", &
+                                i_val=coulomb2_library)
+      CALL section_vals_val_get(global_section, "PREFERRED_INTEGRAL_LIBRARY%COULOMB_3C", &
+                                i_val=coulomb3_library)
+      CALL integral_library_init(coulomb2_library, coulomb3_library, fallback_applied)
+
+      IF (fallback_applied) THEN
+         message = "Integral library Libint is not available. "// &
+                   "The native integral library is used as fallback."
+         CPWARN(TRIM(message))
+      END IF
+
+   END SUBROUTINE integral_setup_library
 
 ! **************************************************************************************************
 !> \brief check FFT preferred library availability, if not switch
@@ -1079,7 +1097,6 @@ CONTAINS
       ! Initialize FFT library with the user's preferred FFT library
       CALL init_fft(fftlib=TRIM(globenv%default_fft_library), &
                     alltoall=section_get_lval(global_section, "ALLTOALL_SGL"), &
-                    fftsg_sizes=.NOT. section_get_lval(global_section, "EXTENDED_FFT_LENGTHS"), &
                     pool_limit=globenv%fft_pool_scratch_limit, &
                     wisdom_file=globenv%fftw_wisdom_file_name, &
                     plan_style=globenv%fftw_plan_type)
@@ -1094,7 +1111,6 @@ CONTAINS
             globenv%default_fft_library = "FFTW3"
             CALL init_fft(fftlib=TRIM(globenv%default_fft_library), &
                           alltoall=section_get_lval(global_section, "ALLTOALL_SGL"), &
-                          fftsg_sizes=.NOT. section_get_lval(global_section, "EXTENDED_FFT_LENGTHS"), &
                           pool_limit=globenv%fft_pool_scratch_limit, &
                           wisdom_file=globenv%fftw_wisdom_file_name, &
                           plan_style=globenv%fftw_plan_type)
@@ -1108,7 +1124,6 @@ CONTAINS
             globenv%default_fft_library = "FFTSG"
             CALL init_fft(fftlib=TRIM(globenv%default_fft_library), &
                           alltoall=section_get_lval(global_section, "ALLTOALL_SGL"), &
-                          fftsg_sizes=.NOT. section_get_lval(global_section, "EXTENDED_FFT_LENGTHS"), &
                           pool_limit=globenv%fft_pool_scratch_limit, &
                           wisdom_file=globenv%fftw_wisdom_file_name, &
                           plan_style=globenv%fftw_plan_type)

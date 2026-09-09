@@ -219,7 +219,8 @@ MODULE input_constants
                                                sparse_guess = 8, &
                                                almo_scf_guess = 9, &
                                                molecular_guess = 10, &
-                                               eht_guess = 11
+                                               eht_guess = 11, &
+                                               external_density_guess = 12
 
    ! Projection formulas for the maximum overlap method
    INTEGER, PARAMETER, PUBLIC               :: momproj_norm = 0, &
@@ -535,7 +536,10 @@ MODULE input_constants
                                                ot_precond_s_inverse = 3, &
                                                ot_precond_full_all = 5, &
                                                ot_precond_full_single_inverse = 6, &
-                                               precond_mlp = 7
+                                               precond_mlp = 7, &
+                                               ot_precond_fermi_low_rank = 8
+   INTEGER, PARAMETER, PUBLIC               :: ot_low_rank_base_overlap = 1, &
+                                               ot_low_rank_base_lattice_fft = 2
    INTEGER, PARAMETER, PUBLIC               :: ot_precond_solver_default = 1, &
                                                ot_precond_solver_inv_chol = 2, &
                                                ot_precond_solver_direct = 3, &
@@ -1209,6 +1213,8 @@ MODULE input_constants
    INTEGER, PARAMETER, PUBLIC               :: hden_atomic = 10, &
                                                hden_cube = 20, &
                                                hden_cube_fit = 30
+   INTEGER, PARAMETER, PUBLIC               :: hfit_least_squares = 10, &
+                                               hfit_relative_entropy = 20
    INTEGER, PARAMETER, PUBLIC               :: horb_default = 100
 
    ! non-scf energy corrections

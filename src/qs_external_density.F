@@ -13,7 +13,9 @@ MODULE qs_external_density
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_files,                        ONLY: close_file,&
                                               open_file
+   USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
    USE gaussian_gridlevels,             ONLY: gridlevel_info_type
+   USE hfx_types,                       ONLY: hfx_type
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
@@ -27,6 +29,7 @@ MODULE qs_external_density
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
+                                              qs_rho_set,&
                                               qs_rho_type
    USE realspace_grid_types,            ONLY: realspace_grid_desc_p_type,&
                                               realspace_grid_type,&
@@ -42,9 +45,59 @@ MODULE qs_external_density
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_external_density'
 
-   PUBLIC :: external_read_density, read_cube_density
+   PUBLIC :: external_read_density, read_cube_density, read_scf_guess_density
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Read a cube density for one-time use as the first SCF input density
+!> \param qs_env QS environment
+!> \param filename cube filename
+! **************************************************************************************************
+   SUBROUTINE read_scf_guess_density(qs_env, filename)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      CHARACTER(LEN=*), INTENT(IN)                       :: filename
+
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(hfx_type), DIMENSION(:, :), POINTER           :: x_data
+      TYPE(qs_rho_type), POINTER                         :: rho
+
+      NULLIFY (dft_control, rho, x_data)
+
+      IF (LEN_TRIM(filename) == 0) THEN
+         CPABORT("SCF_GUESS EXTERNAL_DENSITY requires a cube filename")
+      END IF
+
+      CALL get_qs_env(qs_env, dft_control=dft_control, rho=rho, x_data=x_data)
+      IF (.NOT. dft_control%qs_control%gpw) THEN
+         CPABORT("SCF_GUESS EXTERNAL_DENSITY currently supports GPW only")
+      END IF
+      IF (dft_control%nspins /= 1) THEN
+         CPABORT("SCF_GUESS EXTERNAL_DENSITY currently requires a spin-restricted calculation")
+      END IF
+      IF (dft_control%use_kinetic_energy_density) THEN
+         CPABORT("SCF_GUESS EXTERNAL_DENSITY does not provide a kinetic-energy density")
+      END IF
+      IF (dft_control%drho_by_collocation) THEN
+         CPABORT("SCF_GUESS EXTERNAL_DENSITY is incompatible with DRHO_BY_COLLOCATION")
+      END IF
+      IF (dft_control%dft_plus_u) THEN
+         CPABORT("SCF_GUESS EXTERNAL_DENSITY currently does not support DFT+U")
+      END IF
+      IF (ASSOCIATED(x_data)) THEN
+         CPABORT("SCF_GUESS EXTERNAL_DENSITY does not support HFX")
+      END IF
+      IF (dft_control%apply_external_density) THEN
+         CPABORT("SCF_GUESS EXTERNAL_DENSITY cannot be combined with DFT%EXTERNAL_DENSITY")
+      END IF
+
+      CALL read_cube_density(qs_env, rho, TRIM(filename), total_density_sign=-1, &
+                             source_label="SCF GUESS")
+      CALL qs_rho_set(rho, rho_r_valid=.TRUE., rho_g_valid=.TRUE., &
+                      drho_r_valid=.FALSE., drho_g_valid=.FALSE., &
+                      tau_r_valid=.FALSE., tau_g_valid=.FALSE., soft_valid=.FALSE.)
+
+   END SUBROUTINE read_scf_guess_density
 
 ! **************************************************************************************************
 !> \brief  Computes the external density on the grid
@@ -101,7 +154,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER                        :: routineN = 'read_cube_density'
 
       INTEGER                                            :: extunit, handle, i, igrid_level, j, k, &
-                                                            nat, ndum
+                                                            nat, ndum, output_unit
       INTEGER, DIMENSION(3)                              :: lbounds, lbounds_local, npoints, &
                                                             ubounds, ubounds_local
       LOGICAL                                            :: grid_mismatch
@@ -119,6 +172,7 @@ CONTAINS
 
       CALL timeset(routineN, handle)
       NULLIFY (pw_env, rho_r, rho_g, tot_rho_r, rs_descs)
+      output_unit = cp_logger_get_default_io_unit()
 
       IF (total_density_sign /= -1 .AND. total_density_sign /= 1) THEN
          CPABORT("total_density_sign has to be -1 or 1")
@@ -147,7 +201,8 @@ CONTAINS
                  my_rank => rho_r(1)%pw_grid%para%group%mepos)
          grid_mismatch = .FALSE.
          IF (my_rank == 0) THEN
-            WRITE (*, FMT="(/,T3,A,A)") TRIM(source_label)//"| Reading electron density: ", TRIM(filename)
+            WRITE (output_unit, FMT="(/,T3,A,A)") &
+               TRIM(source_label)//"| Reading electron density: ", TRIM(filename)
             CALL open_file(file_name=filename, file_status="OLD", file_form="FORMATTED", &
                            file_action="READ", unit_number=extunit)
 
@@ -156,12 +211,12 @@ CONTAINS
             READ (extunit, *) nat, cube_origin
             IF (MAXVAL(ABS(cube_origin)) > 1.0E-4_dp) THEN
                grid_mismatch = .TRUE.
-               WRITE (*, FMT="(T3,A,3ES16.8)") TRIM(source_label)// &
+               WRITE (output_unit, FMT="(T3,A,3ES16.8)") TRIM(source_label)// &
                   "| Cube origin is not the CP2K grid origin: ", cube_origin
             END IF
             IF (nat < 0) THEN
                grid_mismatch = .TRUE.
-               WRITE (*, FMT="(T3,A)") TRIM(source_label)// &
+               WRITE (output_unit, FMT="(T3,A)") TRIM(source_label)// &
                   "| Multi-orbital cube files are not supported"
             END IF
             DO i = 1, 3
@@ -169,12 +224,12 @@ CONTAINS
                IF (ndum /= npoints(i) .OR. &
                    MAXVAL(ABS(voxel - rs_descs(igrid_level)%rs_desc%dh(:, i))) > 1.0E-4_dp) THEN
                   grid_mismatch = .TRUE.
-                  WRITE (*, FMT="(T3,A,I0)") TRIM(source_label)// &
+                  WRITE (output_unit, FMT="(T3,A,I0)") TRIM(source_label)// &
                      "| Cube grid does not coincide with CP2K grid along axis ", i
-                  WRITE (*, FMT="(T3,A,I0,A,I0)") TRIM(source_label)//"| Grid points: ", &
+                  WRITE (output_unit, FMT="(T3,A,I0,A,I0)") TRIM(source_label)//"| Grid points: ", &
                      ndum, " instead of ", npoints(i)
-                  WRITE (*, FMT="(T3,A,3ES16.8)") TRIM(source_label)//"| Cube vector: ", voxel
-                  WRITE (*, FMT="(T3,A,3ES16.8)") TRIM(source_label)//"| CP2K vector: ", &
+                  WRITE (output_unit, FMT="(T3,A,3ES16.8)") TRIM(source_label)//"| Cube vector: ", voxel
+                  WRITE (output_unit, FMT="(T3,A,3ES16.8)") TRIM(source_label)//"| CP2K vector: ", &
                      rs_descs(igrid_level)%rs_desc%dh(:, i)
                END IF
             END DO
@@ -206,7 +261,7 @@ CONTAINS
          CALL density_rs2pw(pw_env, rs_rho, rho=rho_r(1), rho_gspace=rho_g(1))
          tot_rho_r(1) = pw_integrate_function(rho_r(1), isign=total_density_sign)
          IF (my_rank == 0) THEN
-            WRITE (*, FMT="(T3,A,T61,F20.10)") TRIM(source_label)// &
+            WRITE (output_unit, FMT="(T3,A,T61,F20.10)") TRIM(source_label)// &
                "| Integrated electron density:", REAL(total_density_sign, dp)*tot_rho_r(1)
          END IF
          CALL gid%sync()

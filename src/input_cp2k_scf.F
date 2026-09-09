@@ -30,23 +30,24 @@ MODULE input_cp2k_scf
         cdft_magnetization_constraint, cholesky_dbcsr, cholesky_inverse, cholesky_off, &
         cholesky_reduce, cholesky_restore, core_guess, diag_block_davidson, diag_block_krylov, &
         diag_filter_matrix, diag_ot, diag_standard, diag_update_method_adiis, &
-        diag_update_method_mixing, eht_guess, gaussian, general_roks, high_spin_roks, &
-        history_guess, jacobian_fd1, jacobian_fd1_backward, jacobian_fd1_central, jacobian_fd2, &
-        jacobian_fd2_backward, ls_2pnt, ls_3pnt, ls_adapt, ls_gold, ls_none, mopac_guess, &
-        no_guess, numerical, ot_algo_irac, ot_algo_taylor_or_diag, ot_chol_irac, ot_lwdn_irac, &
-        ot_mini_broyden, ot_mini_cg, ot_mini_diis, ot_mini_lbfgs, ot_mini_sd, ot_poly_irac, &
-        ot_precond_full_all, ot_precond_full_kinetic, ot_precond_full_single, &
-        ot_precond_full_single_inverse, ot_precond_none, ot_precond_s_inverse, &
-        ot_precond_solver_chebyshev, ot_precond_solver_default, ot_precond_solver_direct, &
-        ot_precond_solver_inv_chol, ot_precond_solver_update, outer_scf_basis_center_opt, &
-        outer_scf_becke_constraint, outer_scf_cdft_constraint, outer_scf_ddapc_constraint, &
-        outer_scf_hirshfeld_constraint, outer_scf_none, outer_scf_optimizer_bisect, &
-        outer_scf_optimizer_broyden, outer_scf_optimizer_diis, outer_scf_optimizer_newton, &
-        outer_scf_optimizer_newton_ls, outer_scf_optimizer_none, outer_scf_optimizer_sd, &
-        outer_scf_optimizer_secant, outer_scf_s2_constraint, radius_covalent, radius_default, &
-        radius_single, radius_user, radius_vdw, random_guess, restart_guess, &
-        shape_function_density, shape_function_gaussian, smear_energy_window, smear_fermi_dirac, &
-        smear_gaussian, smear_list, smear_mp, smear_mv, sparse_guess
+        diag_update_method_mixing, eht_guess, external_density_guess, gaussian, general_roks, &
+        high_spin_roks, history_guess, jacobian_fd1, jacobian_fd1_backward, jacobian_fd1_central, &
+        jacobian_fd2, jacobian_fd2_backward, ls_2pnt, ls_3pnt, ls_adapt, ls_gold, ls_none, &
+        mopac_guess, no_guess, numerical, ot_algo_irac, ot_algo_taylor_or_diag, ot_chol_irac, &
+        ot_low_rank_base_lattice_fft, ot_low_rank_base_overlap, ot_lwdn_irac, ot_mini_broyden, &
+        ot_mini_cg, ot_mini_diis, ot_mini_lbfgs, ot_mini_sd, ot_poly_irac, &
+        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, &
+        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
+        ot_precond_s_inverse, ot_precond_solver_chebyshev, ot_precond_solver_default, &
+        ot_precond_solver_direct, ot_precond_solver_inv_chol, ot_precond_solver_update, &
+        outer_scf_basis_center_opt, outer_scf_becke_constraint, outer_scf_cdft_constraint, &
+        outer_scf_ddapc_constraint, outer_scf_hirshfeld_constraint, outer_scf_none, &
+        outer_scf_optimizer_bisect, outer_scf_optimizer_broyden, outer_scf_optimizer_diis, &
+        outer_scf_optimizer_newton, outer_scf_optimizer_newton_ls, outer_scf_optimizer_none, &
+        outer_scf_optimizer_sd, outer_scf_optimizer_secant, outer_scf_s2_constraint, &
+        radius_covalent, radius_default, radius_single, radius_user, radius_vdw, random_guess, &
+        restart_guess, shape_function_density, shape_function_gaussian, smear_energy_window, &
+        smear_fermi_dirac, smear_gaussian, smear_list, smear_mp, smear_mv, sparse_guess
    USE input_keyword_types,             ONLY: keyword_create,&
                                               keyword_release,&
                                               keyword_type
@@ -55,7 +56,8 @@ MODULE input_cp2k_scf
                                               section_create,&
                                               section_release,&
                                               section_type
-   USE input_val_types,                 ONLY: integer_t,&
+   USE input_val_types,                 ONLY: char_t,&
+                                              integer_t,&
                                               real_t
    USE kinds,                           ONLY: dp
    USE qs_density_mixing_types,         ONLY: create_mixing_section
@@ -90,7 +92,7 @@ CONTAINS
       CPASSERT(.NOT. ASSOCIATED(section))
       CALL section_create(section, __LOCATION__, name="scf", &
                           description="Parameters needed to perform an SCF run.", &
-                          n_keywords=20, n_subsections=8, repeats=.FALSE.)
+                          n_keywords=21, n_subsections=8, repeats=.FALSE.)
 
       NULLIFY (subsection)
 
@@ -214,7 +216,7 @@ CONTAINS
          description="Selects how the initial wavefunction or density matrix is generated.", &
          usage="SCF_GUESS RESTART", default_i_val=atomic_guess, &
          enum_c_vals=s2a("ATOMIC", "RESTART", "RANDOM", "CORE", &
-                         "HISTORY_RESTART", "MOPAC", "EHT", "SPARSE", "NONE"), &
+                         "HISTORY_RESTART", "MOPAC", "EHT", "SPARSE", "EXTERNAL_DENSITY", "NONE"), &
          enum_desc=s2a("Generate an atomic density using the atomic code and internal default values", &
                        "Use the RESTART file as an initial guess (and ATOMIC if not present).", &
                        "Use random wavefunction coefficients.", &
@@ -223,9 +225,20 @@ CONTAINS
                        "Use same guess as MOPAC for semi-empirical methods or a simple diagonal density matrix for other methods", &
                        "Use the EHT (gfn0-xTB) code to generate an initial wavefunction.", &
                        "Generate a sparse wavefunction using the atomic code (for OT based methods)", &
+                       "Read a scalar electron density from a cube file for the first SCF Hamiltonian", &
                        "Skip initial guess (only for non-self consistent methods)."), &
          enum_i_vals=[atomic_guess, restart_guess, random_guess, core_guess, &
-                      history_guess, mopac_guess, eht_guess, sparse_guess, no_guess])
+                      history_guess, mopac_guess, eht_guess, sparse_guess, external_density_guess, no_guess])
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="EXTERNAL_DENSITY_FILE_NAME", &
+                          description="Cube file containing the electron density used when SCF_GUESS is "// &
+                          "EXTERNAL_DENSITY. The density is consumed once to build the first KS Hamiltonian; "// &
+                          "all subsequent densities are generated by the regular SCF solver. The cube grid "// &
+                          "has to coincide with the finest CP2K real-space grid.", &
+                          usage="EXTERNAL_DENSITY_FILE_NAME <FILENAME>", &
+                          type_of_var=char_t, default_c_val="", n_var=1)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -856,12 +869,16 @@ CONTAINS
          "Properly preconditioned minimization can be orders of magnitude faster than doing nothing.", &
          usage="PRECONDITIONER FULL_ALL", &
          default_i_val=ot_precond_full_kinetic, &
-         enum_c_vals=s2a("FULL_ALL", "FULL_SINGLE_INVERSE", "FULL_SINGLE", "FULL_KINETIC", "FULL_S_INVERSE", &
-                         "NONE"), &
+         enum_c_vals=s2a("FULL_ALL", "FERMI_LOW_RANK", "FULL_SINGLE_INVERSE", "FULL_SINGLE", &
+                         "FULL_KINETIC", "FULL_S_INVERSE", "NONE"), &
          enum_desc=s2a("Most effective state selective preconditioner based on diagonalization, "// &
                        "requires the ENERGY_GAP parameter to be an underestimate of the HOMO-LUMO gap. "// &
                        "This preconditioner is recommended for almost all systems, except very large systems where "// &
                        "make_preconditioner would dominate the total computational cost.", &
+                       "Experimental rotationally covariant bounded spectral preconditioner. It applies an "// &
+                       "overlap-inverse base plus at most 48 complementary-state corrections relative to a "// &
+                       "common occupied reference level. Construction currently retains a full diagonalization. "// &
+                       "Application can be cheaper when the complementary space is larger than the retained rank.", &
                        "Based on H-eS cholesky inversion, similar to FULL_SINGLE in preconditioning efficiency "// &
                        "but cheaper to construct, "// &
                        "might be somewhat less robust. Recommended for large systems.", &
@@ -870,9 +887,25 @@ CONTAINS
                        "use for very large systems.", &
                        "Cholesky inversion of S, not as good as FULL_KINETIC, yet equally expensive.", &
                        "skip preconditioning"), &
-         enum_i_vals=[ot_precond_full_all, ot_precond_full_single_inverse, ot_precond_full_single, &
-                      ot_precond_full_kinetic, ot_precond_s_inverse, ot_precond_none], &
+         enum_i_vals=[ot_precond_full_all, ot_precond_fermi_low_rank, ot_precond_full_single_inverse, &
+                      ot_precond_full_single, ot_precond_full_kinetic, ot_precond_s_inverse, ot_precond_none], &
          citations=[VandeVondele2003, Weber2008, Schiffmann2015])
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, name="FERMI_LOW_RANK_BASE", &
+         description="Base operator used only with PRECONDITIONER FERMI_LOW_RANK. OVERLAP_INVERSE "// &
+         "applies the exact dense inverse overlap. LATTICE_FFT projects the overlap onto translations "// &
+         "of an explicitly replicated SUBSYS multiple unit cell, inverts its small reciprocal-space "// &
+         "blocks, and applies the approximate inverse with lattice FFTs. The experimental FFT path is "// &
+         "restricted to real Gamma-point OT calculations and is never selected automatically.", &
+         usage="FERMI_LOW_RANK_BASE LATTICE_FFT", &
+         default_i_val=ot_low_rank_base_overlap, &
+         enum_c_vals=s2a("OVERLAP_INVERSE", "LATTICE_FFT"), &
+         enum_desc=s2a("Exact dense inverse-overlap base", &
+                       "Approximate block-circulant inverse applied by lattice FFT"), &
+         enum_i_vals=[ot_low_rank_base_overlap, ot_low_rank_base_lattice_fft])
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

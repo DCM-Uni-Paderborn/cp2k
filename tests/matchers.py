@@ -67,9 +67,6 @@ registry["M009"] = GenericMatcher(r"PINT| Total energy =", col=5)
 registry["M010"] = GenericMatcher(r"BAND TOTAL ENERGY [au]", col=6)
 registry["M011"] = GenericMatcher(r"ENERGY| Total FORCE_EVAL", col=9)
 registry["N_special_kpoints"] = GenericMatcher(r"Number of Special K-points:", col=5)
-registry["N_kpoints_per_group"] = GenericMatcher(
-    r"KPOINTS\| Number of kpoints per group", col=7
-)
 registry["QS_number_of_molecular_orbitals"] = GenericMatcher(
     r"Number of molecular orbitals:", col=5
 )
@@ -79,11 +76,11 @@ registry["OT_lbfgs_skipped_update"] = TextPresenceMatcher("OT LSKIP")
 registry["OT_lbfgs_update"] = TextPresenceMatcher("OT LBFGS")
 registry["OT_diis_update"] = TextPresenceMatcher("OT DIIS")
 registry["OT_mermin_response_update"] = TextPresenceMatcher("OT CG-R")
+registry["OT_mermin_exact_hxc"] = TextPresenceMatcher("apply_hxc_kernel_kp")
 registry["OT_mermin_lbfgs_response_update"] = TextPresenceMatcher("OT L-R")
 registry["OT_kpoint_ref_refresh"] = TextPresenceMatcher(
     "K-point OT: rebuilding physical virtual subspace"
 )
-registry["OT_kpoint_ref_gradient_sync"] = TextPresenceMatcher("OT GSync")
 registry["OT_added_mos_auto_grow"] = TextPresenceMatcher(
     "K-point ADDED_MOS AUTO: growing virtual-space buffer"
 )
@@ -220,6 +217,9 @@ registry["M069"] = GenericMatcher(r"Log(1-CN):", col=10)
 registry["M070"] = GenericMatcher(r"MD| Temperature [K]", col=4)
 registry["M071"] = GenericMatcher(r"Current value of constraint", col=6)
 registry["M072"] = GenericMatcher(r"FORCES| Total atomic force", col=5)
+registry["Atomic_force_1_z"] = GenericMatcher(r"^\s*FORCES\|\s+1\s+", col=5, regex=True)
+registry["Atomic_force_2_y"] = GenericMatcher(r"^\s*FORCES\|\s+2\s+", col=4, regex=True)
+registry["Atomic_force_2_z"] = GenericMatcher(r"^\s*FORCES\|\s+2\s+", col=5, regex=True)
 registry["M073"] = GenericMatcher(r"Diabatic electronic coupling (rotation", col=6)
 registry["M074"] = GenericMatcher(r"Diabatic electronic coupling (wfn", col=7)
 registry["M075"] = GenericMatcher(r"Charge transfer energy", col=6)
@@ -478,6 +478,15 @@ registry["Vacuum_level_above"] = GenericMatcher(r"dipole correction plane [eV]:"
 # Electron count imposed on a cube density fitted in the nonorthogonal AO basis.
 registry["Harris_fit_electron_count"] = GenericMatcher(
     r"HARRIS\| AO density-matrix electron count:", col=6
+)
+registry["Harris_fit_relative_entropy"] = GenericMatcher(
+    r"HARRIS\| Final fermionic relative entropy:", col=6
+)
+registry["Harris_fit_prior_commutator"] = GenericMatcher(
+    r"HARRIS\| Prior-Hamiltonian commutator norm:", col=5
+)
+registry["Harris_fit_idempotency_error"] = GenericMatcher(
+    r"HARRIS\| Occupation idempotency error:", col=5
 )
 registry["Harris_direct_trial_energy"] = GenericMatcher(
     r"Consistent trial-DM energy:", col=4

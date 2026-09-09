@@ -402,7 +402,7 @@ COPY ./tools/conventions/redirect_gfortran_output.py /usr/bin/
         + f"""
 # Run test for conventions.
 COPY ./tools/conventions ./tools/conventions
-RUN /bin/bash -ec "./tools/conventions/test_conventions.sh |& tee report.log"
+RUN /bin/bash -ec "./tools/conventions/test_conventions.sh -j $(nproc) |& tee report.log"
 """
         + print_cached_report()
     )
@@ -809,8 +809,6 @@ COPY ./tools/conventions ./tools/conventions
 RUN ./make_cp2k.sh -cv {version} {gcc_version_flag} -gpu {gpu_model} -mpi {mpi_mode} {feature_flags}
 """
     )
-    if test_type == "conventions" or test_type == "coverage":
-        return output
     output += (
         install_base_image(
             base_image=rf"{base_image}",
@@ -846,6 +844,7 @@ RUN ldconfig
 # Install benchmark inputs for performance test
 COPY ./benchmarks/QS ./benchmarks/QS
 COPY ./benchmarks/QS_reference ./benchmarks/QS_reference
+COPY ./benchmarks/QS_kp ./benchmarks/QS_kp
 COPY ./benchmarks/QS_single_node ./benchmarks/QS_single_node
 COPY ./benchmarks/QMMM_MQAE ./benchmarks/QMMM_MQAE
 RUN mkdir -p ./tools/docker/scripts
@@ -862,6 +861,17 @@ RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_benchmarks {benchmark
         output += rf"""
 # Run CP2K regression test
 RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests {testopts} || echo "ERROR: Regression test run failed"
+"""
+    elif test_type == "conventions":
+        output += rf"""
+# Copy data from convention check
+COPY --from=build_cp2k /opt/cp2k/build /opt/cp2k/build
+COPY --from=build_cp2k /opt/cp2k/tools/conventions /opt/cp2k/tools/conventions
+"""
+    elif test_type == "coverage":
+        output += rf"""
+# Copy data from coverage analysis
+COPY --from=build_cp2k /workspace /workspace
 """
     elif test_type == "gromacs":
         pass

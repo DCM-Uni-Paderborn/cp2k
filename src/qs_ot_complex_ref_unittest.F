@@ -23,6 +23,7 @@ PROGRAM qs_ot_complex_ref_unittest
         dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, &
         dbcsr_finalize, dbcsr_finalize_lib, dbcsr_get_block_p, dbcsr_init_lib, dbcsr_put_block, &
         dbcsr_release, dbcsr_reserve_blocks, dbcsr_type, dbcsr_type_no_symmetry
+   USE cp_fm_basic_linalg,              ONLY: cp_complex_fm_gemm
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
@@ -105,7 +106,7 @@ PROGRAM qs_ot_complex_ref_unittest
    mynode = mp_comm%mepos
    io_unit = -1
    IF (mynode == 0) io_unit = default_output_unit
-   CALL test_antihermitian_spectral_norm(mynode, nfail)
+   CALL test_antihermitian_spectral_norm(io_unit, nfail)
    CALL test_fixed_n_mermin_energy(mynode, nfail)
    CALL test_fixed_n_projector_frechet(mynode, nfail)
    CALL test_finite_rotation_response(mynode, nfail)
@@ -128,8 +129,9 @@ PROGRAM qs_ot_complex_ref_unittest
    CALL test_complex_rotation_frechet(para_env, nfail)
    CALL test_sparse_frechet_patterns(para_env, nfail)
    CALL test_complex_ref_rotation(para_env, nfail)
+   CALL test_split_complex_fm_gemm(para_env, io_unit, nfail)
    CALL test_complex_preconditioner_gauge(para_env, nfail)
-   CALL test_kpoint_ot_energy_weighted_density(para_env, nfail)
+   CALL test_kpoint_ot_energy_weighted_density(para_env, io_unit, nfail)
 
    x(:, 1) = [CMPLX(1.10_dp, 0.10_dp, KIND=dp), CMPLX(0.20_dp, -0.30_dp, KIND=dp), &
               CMPLX(-0.10_dp, 0.20_dp, KIND=dp)]
@@ -263,12 +265,96 @@ PROGRAM qs_ot_complex_ref_unittest
 CONTAINS
 
 ! **************************************************************************************************
-!> \brief Check the noncanonical complex OT energy-weighted density and its gauge covariance.
+!> \brief Check split-complex full-matrix multiplication including adjoints.
 !> \param para_env parallel environment
+!> \param io_unit output unit
 !> \param nfail accumulated number of failures
 ! **************************************************************************************************
-   SUBROUTINE test_kpoint_ot_energy_weighted_density(para_env, nfail)
+   SUBROUTINE test_split_complex_fm_gemm(para_env, io_unit, nfail)
       TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(IN)                                :: io_unit
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ndim = 3
+
+      COMPLEX(KIND=dp), DIMENSION(ndim, ndim)            :: a, actual, b, expected
+      INTEGER                                            :: i, j
+      REAL(KIND=dp)                                      :: error_cn, error_nc, error_nn
+      REAL(KIND=dp), DIMENSION(ndim, ndim)               :: actual_im, actual_re
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
+      TYPE(cp_fm_type)                                   :: a_im, a_re, b_im, b_re, c_im, c_re
+
+      NULLIFY (blacs_env, matrix_struct)
+      DO j = 1, ndim
+         DO i = 1, ndim
+            a(i, j) = CMPLX(0.13_dp*i - 0.07_dp*j, 0.05_dp*i*j - 0.11_dp*j, KIND=dp)
+            b(i, j) = CMPLX(-0.09_dp*i + 0.17_dp*j, 0.08_dp*i*j + 0.04_dp*i, KIND=dp)
+         END DO
+      END DO
+
+      CALL cp_blacs_env_create(blacs_env=blacs_env, para_env=para_env)
+      CALL cp_fm_struct_create(matrix_struct, nrow_global=ndim, ncol_global=ndim, &
+                               context=blacs_env, para_env=para_env)
+      CALL cp_fm_create(a_re, matrix_struct)
+      CALL cp_fm_create(a_im, matrix_struct)
+      CALL cp_fm_create(b_re, matrix_struct)
+      CALL cp_fm_create(b_im, matrix_struct)
+      CALL cp_fm_create(c_re, matrix_struct)
+      CALL cp_fm_create(c_im, matrix_struct)
+      CALL cp_fm_set_submatrix(a_re, REAL(a, KIND=dp))
+      CALL cp_fm_set_submatrix(a_im, AIMAG(a))
+      CALL cp_fm_set_submatrix(b_re, REAL(b, KIND=dp))
+      CALL cp_fm_set_submatrix(b_im, AIMAG(b))
+
+      CALL cp_complex_fm_gemm('N', 'N', ndim, ndim, ndim, 1.0_dp, &
+                              a_re, a_im, b_re, b_im, 0.0_dp, c_re, c_im)
+      CALL cp_fm_get_submatrix(c_re, actual_re)
+      CALL cp_fm_get_submatrix(c_im, actual_im)
+      actual = CMPLX(actual_re, actual_im, KIND=dp)
+      expected = MATMUL(a, b)
+      error_nn = MAXVAL(ABS(actual - expected))
+
+      CALL cp_complex_fm_gemm('C', 'N', ndim, ndim, ndim, 1.0_dp, &
+                              a_re, a_im, b_re, b_im, 0.0_dp, c_re, c_im)
+      CALL cp_fm_get_submatrix(c_re, actual_re)
+      CALL cp_fm_get_submatrix(c_im, actual_im)
+      actual = CMPLX(actual_re, actual_im, KIND=dp)
+      expected = MATMUL(CONJG(TRANSPOSE(a)), b)
+      error_cn = MAXVAL(ABS(actual - expected))
+
+      CALL cp_complex_fm_gemm('N', 'C', ndim, ndim, ndim, 1.0_dp, &
+                              a_re, a_im, b_re, b_im, 0.0_dp, c_re, c_im)
+      CALL cp_fm_get_submatrix(c_re, actual_re)
+      CALL cp_fm_get_submatrix(c_im, actual_im)
+      actual = CMPLX(actual_re, actual_im, KIND=dp)
+      expected = MATMUL(a, CONJG(TRANSPOSE(b)))
+      error_nc = MAXVAL(ABS(actual - expected))
+
+      IF (MAX(error_nn, error_cn, error_nc) > 1.0E-12_dp) nfail = nfail + 1
+      IF (io_unit >= 0) WRITE (io_unit, '(A,3(1X,ES13.6))') &
+         'split-complex GEMM N/N, C/N, N/C errors:', error_nn, error_cn, error_nc
+
+      CALL cp_fm_release(c_im)
+      CALL cp_fm_release(c_re)
+      CALL cp_fm_release(b_im)
+      CALL cp_fm_release(b_re)
+      CALL cp_fm_release(a_im)
+      CALL cp_fm_release(a_re)
+      CALL cp_fm_struct_release(matrix_struct)
+      CALL cp_blacs_env_release(blacs_env)
+
+   END SUBROUTINE test_split_complex_fm_gemm
+
+! **************************************************************************************************
+!> \brief Check the noncanonical complex OT energy-weighted density and its gauge covariance.
+!> \param para_env parallel environment
+!> \param io_unit output unit
+!> \param nfail accumulated number of failures
+! **************************************************************************************************
+   SUBROUTINE test_kpoint_ot_energy_weighted_density(para_env, io_unit, nfail)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(IN)                                :: io_unit
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: nao = 4, nmo = 3
@@ -370,8 +456,8 @@ CONTAINS
 
       IF (error > 5.0E-12_dp .OR. hermitian_error > 5.0E-12_dp .OR. &
           gauge_error > 5.0E-12_dp) nfail = nfail + 1
-      IF (para_env%is_source()) THEN
-         WRITE (*, '(A,3(1X,ES13.6))') 'complex OT W error/hermitian/gauge', &
+      IF (io_unit >= 0) THEN
+         WRITE (io_unit, '(A,3(1X,ES13.6))') 'complex OT W error/hermitian/gauge', &
             error, hermitian_error, gauge_error
       END IF
 
@@ -388,11 +474,11 @@ CONTAINS
    END SUBROUTINE test_kpoint_ot_energy_weighted_density
 ! **************************************************************************************************
 !> \brief Check the complex rotation norm against an analytic pair and a unitary gauge change.
-!> \param mynode MPI rank
+!> \param io_unit output unit
 !> \param nfail accumulated failures
 ! **************************************************************************************************
-   SUBROUTINE test_antihermitian_spectral_norm(mynode, nfail)
-      INTEGER, INTENT(IN)                                :: mynode
+   SUBROUTINE test_antihermitian_spectral_norm(io_unit, nfail)
+      INTEGER, INTENT(IN)                                :: io_unit
       INTEGER, INTENT(INOUT)                             :: nfail
 
       COMPLEX(KIND=dp), DIMENSION(3)                     :: phase
@@ -413,7 +499,7 @@ CONTAINS
       norm = qs_ot_antihermitian_spectral_norm(generator)
       transformed_norm = qs_ot_antihermitian_spectral_norm(transformed)
       error = MAX(ABS(norm - 0.5_dp), ABS(transformed_norm - norm))
-      IF (mynode == 0) WRITE (default_output_unit, '(A,ES14.6)') &
+      IF (io_unit >= 0) WRITE (io_unit, '(A,ES14.6)') &
          "complex rotation spectral-norm error: ", error
       IF (error > 1.0E-13_dp) nfail = nfail + 1
 
@@ -1236,8 +1322,9 @@ CONTAINS
       density_modes(2, 1, 2) = CONJG(density_modes(1, 2, 2))
 
       overlap(:, :) = MATMUL(CONJG(TRANSPOSE(c0)), c1)
-      h0(:, :) = MATMUL(CONJG(TRANSPOSE(c0)), MATMUL(hamiltonian_step, c0))
-      h1(:, :) = MATMUL(CONJG(TRANSPOSE(c1)), MATMUL(hamiltonian_step, c1))
+      ! Keep the reference path independent of optimized complex MATMUL expressions.
+      CALL reference_project_operator(c0, hamiltonian_step, h0)
+      CALL reference_project_operator(c1, hamiltonian_step, h1)
       CALL qs_ot_density_secant_orbital_overlaps( &
          overlap, occupation0, occupation1, h0, h1, density_modes, weight, density_norm, &
          response_work, density_overlap, response_overlap, valid)
@@ -1252,16 +1339,14 @@ CONTAINS
                         SPREAD(CONJG(c0(:, i)), DIM=1, NCOPIES=nao)
       END DO
       DO i = 1, nmode
-         density_modes_ao(:, :, i) = MATMUL(c1, &
-                                            MATMUL(density_modes(:, :, i), &
-                                                   CONJG(TRANSPOSE(c1))))
-         density_overlap_ref(i) = REAL( &
-                                  SUM(CONJG(density_step)*density_modes_ao(:, :, i)), KIND=dp)/weight
+         CALL reference_transform_density_mode(c1, density_modes(:, :, i), density_modes_ao(:, :, i))
+         density_overlap_ref(i) = &
+            reference_frobenius_product_real(density_step, density_modes_ao(:, :, i))/weight
          response_overlap_ref(i) = &
-            REAL(SUM(CONJG(hamiltonian_step)*density_modes_ao(:, :, i)), KIND=dp)
+            reference_frobenius_product_real(hamiltonian_step, density_modes_ao(:, :, i))
       END DO
-      density_norm_ref = REAL(SUM(CONJG(density_step)*density_step), KIND=dp)/weight
-      response_work_ref = REAL(SUM(CONJG(density_step)*hamiltonian_step), KIND=dp)
+      density_norm_ref = reference_frobenius_product_real(density_step, density_step)/weight
+      response_work_ref = reference_frobenius_product_real(density_step, hamiltonian_step)
       error = MAX(ABS(density_norm - density_norm_ref), ABS(response_work - response_work_ref))
       error = MAX(error, MAXVAL(ABS(density_overlap - density_overlap_ref)))
       error = MAX(error, MAXVAL(ABS(response_overlap - response_overlap_ref)))
@@ -1271,6 +1356,75 @@ CONTAINS
          "moving-subspace density secant error:", error
 
    END SUBROUTINE test_density_secant_moving_subspace
+
+! **************************************************************************************************
+!> \brief Reference projection C^H H C using scalar operations.
+!> \param orbitals orbital coefficient matrix C
+!> \param hamiltonian operator matrix H
+!> \param projected projected operator
+! **************************************************************************************************
+   SUBROUTINE reference_project_operator(orbitals, hamiltonian, projected)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: orbitals, hamiltonian
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: projected
+
+      COMPLEX(KIND=dp)                                   :: value
+      INTEGER                                            :: i, j, mu, nu
+
+      DO j = 1, SIZE(orbitals, 2)
+         DO i = 1, SIZE(orbitals, 2)
+            value = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+            DO nu = 1, SIZE(orbitals, 1)
+               DO mu = 1, SIZE(orbitals, 1)
+                  value = value + CONJG(orbitals(mu, i))*hamiltonian(mu, nu)*orbitals(nu, j)
+               END DO
+            END DO
+            projected(i, j) = value
+         END DO
+      END DO
+
+   END SUBROUTINE reference_project_operator
+
+! **************************************************************************************************
+!> \brief Reference transformation C M C^H using scalar operations.
+!> \param orbitals orbital coefficient matrix C
+!> \param mode density mode M
+!> \param transformed transformed density mode
+! **************************************************************************************************
+   SUBROUTINE reference_transform_density_mode(orbitals, mode, transformed)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: orbitals, mode
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: transformed
+
+      COMPLEX(KIND=dp)                                   :: value
+      INTEGER                                            :: i, j, m, n
+
+      DO j = 1, SIZE(orbitals, 1)
+         DO i = 1, SIZE(orbitals, 1)
+            value = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+            DO n = 1, SIZE(orbitals, 2)
+               DO m = 1, SIZE(orbitals, 2)
+                  value = value + orbitals(i, m)*mode(m, n)*CONJG(orbitals(j, n))
+               END DO
+            END DO
+            transformed(i, j) = value
+         END DO
+      END DO
+
+   END SUBROUTINE reference_transform_density_mode
+
+! **************************************************************************************************
+!> \brief Real part of the complex Frobenius inner product.
+!> \param matrix_a first matrix
+!> \param matrix_b second matrix
+!> \return real Frobenius product
+! **************************************************************************************************
+   FUNCTION reference_frobenius_product_real(matrix_a, matrix_b) RESULT(value)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: matrix_a, matrix_b
+      REAL(KIND=dp)                                      :: value
+
+      value = SUM(REAL(matrix_a, KIND=dp)*REAL(matrix_b, KIND=dp) + &
+                  AIMAG(matrix_a)*AIMAG(matrix_b))
+
+   END FUNCTION reference_frobenius_product_real
 
 ! **************************************************************************************************
 !> \brief fixed-occupation band energy for a dense finite rotation
