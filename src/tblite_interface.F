@@ -12411,11 +12411,9 @@ CONTAINS
       TYPE(acp_image_type), INTENT(IN), OPTIONAL         :: prepared_images
 
       COMPLEX(KIND=dp), ALLOCATABLE                      :: density_k(:, :, :, :)
-      INTEGER                                            :: acp_img, img, nao, nspin
+      INTEGER                                            :: nao, nspin
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ao_first, ao_size
-      LOGICAL                                            :: self_inverse_kmesh, validate_density
-      REAL(KIND=dp)                                      :: translation_scale, translation_tol2
-      REAL(KIND=dp), ALLOCATABLE                         :: padded_density(:, :, :, :)
+      LOGICAL                                            :: validate_density
       TYPE(acp_image_type)                               :: acp_images
       TYPE(error_type), ALLOCATABLE                      :: error
 
@@ -12425,73 +12423,42 @@ CONTAINS
       dEdqbas = 0.0_dp
       gradient = 0.0_dp
       sigma = 0.0_dp
-      self_inverse_kmesh = MAXVAL(ABS(2.0_dp*kmap%xkp - &
-                                      REAL(NINT(2.0_dp*kmap%xkp), KIND=dp))) <= 1.0E-12_dp
-
-      IF (self_inverse_kmesh) THEN
-         IF (PRESENT(prepared_images)) THEN
-            CALL cp2k_acp_image_gradient(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                         prepared_images, density_translations, density_images, &
-                                         dEdcnbas, dEdqbas, gradient, sigma, error)
-         ELSE
-            CALL cp2k_build_image_acp(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                      projector_translations, acp_images)
-            ALLOCATE (padded_density(nao, nao, SIZE(acp_images%translation, 2), nspin))
-            padded_density = 0.0_dp
-            translation_scale = MAX(1.0_dp, MAXVAL(ABS(acp_images%translation)), &
-                                    MAXVAL(ABS(density_translations)))
-            translation_tol2 = (2048.0_dp*EPSILON(1.0_dp)*translation_scale)**2
-            DO acp_img = 1, SIZE(acp_images%translation, 2)
-               DO img = 1, SIZE(density_translations, 2)
-                  IF (SUM((acp_images%translation(:, acp_img) - &
-                           density_translations(:, img))**2) <= translation_tol2) THEN
-                     padded_density(:, :, acp_img, :) = density_images(:, :, img, :)
-                     EXIT
-                  END IF
-               END DO
-            END DO
-            CALL cp2k_acp_image_gradient(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                         acp_images, acp_images%translation, padded_density, &
-                                         dEdcnbas, dEdqbas, gradient, sigma, error)
-         END IF
-         IF (ALLOCATED(error)) THEN
-            CPABORT("save_tblite dense ACP image gradient failed: "//TRIM(error%message))
-         END IF
-         IF (ALLOCATED(padded_density)) DEALLOCATE (padded_density)
-      ELSE
-         IF (.NOT. PRESENT(prepared_images)) THEN
-            CALL tb_build_gxtb_acp_projectors(tb, projector_translations, acp_images)
-         END IF
-         CALL tb_gxtb_ao_layout(tb, ao_first, ao_size)
-         ALLOCATE (density_k(nao, nao, nspin, kmap%nfull))
-         IF (kmap%identity) THEN
-            CALL tb_collect_kpoint_density(qs_env, tb, kpoints, density_k)
-         ELSE
-            CALL tb_collect_kpoint_density(qs_env, tb, kpoints, density_k, kmap%representative)
-            validate_density = .NOT. tb%gxtb_density_map_validated .AND. &
-                               MAXVAL(ABS(density_k)) > 1.0E-14_dp
-            CALL tb_expand_gxtb_kpoint_density(kpoints, kmap, ao_first, ao_size, &
-                                               density_k, validate_density)
-            IF (validate_density) tb%gxtb_density_map_validated = .TRUE.
-         END IF
-         IF (.NOT. ALL(ieee_is_finite(REAL(density_k, KIND=dp))) .OR. &
-             .NOT. ALL(ieee_is_finite(AIMAG(density_k)))) THEN
-            CPABORT("CP2K supplied a non-finite k-point density to the dense ACP gradient")
-         END IF
-         IF (PRESENT(prepared_images)) THEN
-            CALL cp2k_acp_kmesh_gradient(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                         prepared_images, kmap%xkp, kmap%weight, density_k, &
-                                         dEdcnbas, dEdqbas, gradient, sigma, error)
-         ELSE
-            CALL cp2k_acp_kmesh_gradient(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                         acp_images, kmap%xkp, kmap%weight, density_k, &
-                                         dEdcnbas, dEdqbas, gradient, sigma, error)
-         END IF
-         IF (ALLOCATED(error)) THEN
-            CPABORT("save_tblite dense ACP k-mesh gradient failed: "//TRIM(error%message))
-         END IF
-         DEALLOCATE (density_k, ao_first, ao_size)
+      ! Keep the independently qualified complete-k density derivative as the
+      ! dense oracle on every mesh, including self-inverse meshes. Do not revive
+      ! the legacy image-padding workaround while importing acceleration.
+      MARK_USED(density_translations)
+      IF (.NOT. PRESENT(prepared_images)) THEN
+         CALL tb_build_gxtb_acp_projectors(tb, projector_translations, acp_images)
       END IF
+      CALL tb_gxtb_ao_layout(tb, ao_first, ao_size)
+      ALLOCATE (density_k(nao, nao, nspin, kmap%nfull))
+      IF (kmap%identity) THEN
+         CALL tb_collect_kpoint_density(qs_env, tb, kpoints, density_k)
+      ELSE
+         CALL tb_collect_kpoint_density(qs_env, tb, kpoints, density_k, kmap%representative)
+         validate_density = .NOT. tb%gxtb_density_map_validated .AND. &
+                            MAXVAL(ABS(density_k)) > 1.0E-14_dp
+         CALL tb_expand_gxtb_kpoint_density(kpoints, kmap, ao_first, ao_size, &
+                                            density_k, validate_density)
+         IF (validate_density) tb%gxtb_density_map_validated = .TRUE.
+      END IF
+      IF (.NOT. ALL(ieee_is_finite(REAL(density_k, KIND=dp))) .OR. &
+          .NOT. ALL(ieee_is_finite(AIMAG(density_k)))) THEN
+         CPABORT("CP2K supplied a non-finite k-point density to the dense ACP gradient")
+      END IF
+      IF (PRESENT(prepared_images)) THEN
+         CALL cp2k_acp_kmesh_gradient(tb%calc, tb%mol, tb%bcache, tb%acache, &
+                                      prepared_images, kmap%xkp, kmap%weight, density_k, &
+                                      dEdcnbas, dEdqbas, gradient, sigma, error)
+      ELSE
+         CALL cp2k_acp_kmesh_gradient(tb%calc, tb%mol, tb%bcache, tb%acache, &
+                                      acp_images, kmap%xkp, kmap%weight, density_k, &
+                                      dEdcnbas, dEdqbas, gradient, sigma, error)
+      END IF
+      IF (ALLOCATED(error)) THEN
+         CPABORT("save_tblite dense ACP k-mesh gradient failed: "//TRIM(error%message))
+      END IF
+      DEALLOCATE (density_k, ao_first, ao_size)
 
    END SUBROUTINE tb_gxtb_acp_dense_gradient
 
