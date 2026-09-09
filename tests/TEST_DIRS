@@ -6,6 +6,7 @@
 xTB/regtest-tblite-gxtb                                    tblite_gxtb
 xTB/regtest-tblite-gxtb-spglib                             tblite_gxtb spglib
 xTB/regtest-tblite-gxtb-complex                            tblite_gxtb spglib
+xTB/regtest-tblite-gxtb-acceleration                       tblite_gxtb_acceleration
 QS/regtest-tddfpt-force-libxc                               libxc !ifx
 QMMM/QS/regtest-mpi                                         parallel mpiranks>2
 QS/regtest-libgint                                          libGint libint offload_cuda !ifx

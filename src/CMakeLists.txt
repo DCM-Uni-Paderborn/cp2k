@@ -1875,7 +1875,7 @@ endif()
 
 target_link_libraries(cp2k PUBLIC cp2k_link_libs)
 if(CP2K_TBLITE_HAS_GXTB_ACCELERATION)
-  set_property(SOURCE tblite_interface.F APPEND PROPERTY COMPILE_DEFINITIONS
+  set_property(SOURCE tblite_interface.F cp2k_info.F APPEND PROPERTY COMPILE_DEFINITIONS
                                                        __TBLITE_GXTB_ACCELERATION)
 endif()
 target_compile_definitions(
