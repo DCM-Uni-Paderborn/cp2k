@@ -12502,10 +12502,9 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Evaluate the permanent dense ACP derivative oracle.
 !>
-!> Self-inverse meshes retain the established full projector-difference-set image contraction.
-!> Genuinely complex meshes retain the established complete Bloch-density contraction. This
-!> routine is intentionally storage-heavy and is used either by DENSE or only as the oracle in
-!> QUALIFY.
+!> All meshes retain the independently qualified complete Bloch-density contraction, including
+!> self-inverse meshes. This routine is intentionally storage-heavy and is used either by DENSE
+!> or only as the oracle in QUALIFY.
 !> \param qs_env Quickstep environment that owns the k-point density matrices.
 !> \param tb TBLITE state and calculator data.
 !> \param kpoints CP2K k-point descriptor.
