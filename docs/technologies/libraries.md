@@ -385,11 +385,33 @@ symbols, and Fortran modules.
   points can be given in any order. Already reduced, nonuniform, or nonregular `GENERAL` lists are
   rejected because save_tblite's coupled exchange needs an unambiguous Born-von Karman mesh. The
   k-point force and stress path differentiates the image-resolved H0, Pulay, q-vSZP/ACP, and
-  nonlinear exchange terms. Partially periodic (1D or 2D) g-xTB calculations are not supported. For
+  nonlinear exchange terms. Partial-periodicity inputs retain the provider's existing image-bound
+  semantics; this is not a qualification of isolated physical wire/slab Ewald electrostatics.
+  CP2K requires an orthorhombic cell in 1D; the 1D derivative checks cover forces and diagonal
+  stress only. The 2D checks include forces and the full virial tensor. For
   reduced meshes, overlap-covariance calibration selects between CP2K's internally wrapped atom
   gauge and save_tblite's input-coordinate Bloch gauge, using the latter when required by the
   symmetry transformation. Geometry and cell changes rebuild these symmetry data; a 1x1x1 Gamma mesh
   also retains its little-group operations for force and stress projection.
+- Extended save_tblite providers expose an additional `tblite_gxtb_acceleration` capability,
+  checked at configure time together with the partial-exchange ABI and reported by
+  `cp2k --version`. The same CP2K source also builds with the minimal g-xTB provider. Without
+  the extended capability, `AUTO` retains the dense/complete-array implementation; an explicit
+  unsupported acceleration request is rejected rather than silently ignored.
+- `XTB/TBLITE/GXTB_ACCELERATION/MODE AUTO` is the default when the section is absent. With an
+  extended provider it selects compatible bounded/distributed image contractions or a
+  symmetry-fused path, mixed-radix transforms, streamed derivatives and ACP contractions.
+  The output records the selected backends. These are exact reorganizations of the same
+  finite-mesh model, not independent exchange calculations at each k-point. `MODE MANUAL`
+  exposes individual controls; an explicitly present section without `MODE` is treated as
+  `MANUAL` for compatibility. The `QUALIFY` settings run additional dense comparisons and are
+  diagnostic, not a request for maximum performance. `AUTO` does not enable those oracles.
+- Native g-xTB regression coverage includes full, time-reversal, K290 and SPGLIB meshes,
+  anisotropic meshes, analytical force/stress finite differences, and a Gamma-supercell
+  comparison. Extended-provider controls additionally compare against the independently
+  qualified dense provider and run with one, two and four MPI processes. This is not a
+  guarantee for every input, optional dependency model or build configuration, nor a measured
+  speedup factor for large meshes.
 - CP2K stores the structural q-vSZP orbital layout per element kind, while save_tblite evaluates its
   charge- and environment-dependent coefficients separately for every atom. Atoms in one CP2K kind
   therefore share the structural layout, but both the Gamma and k-point response retain the
@@ -415,6 +437,12 @@ symbols, and Fortran modules.
   rejected for now. The explicit g-xTB exchange Fock matrix and native mixer state belong to the
   converged SCF grid; silently reusing them on a different grid would be incorrect. Exporting the
   already converged SCF orbitals does not require this extra diagonalization.
+- A new SCF calculation may reuse a self-describing density-matrix restart on a finer regular
+  mesh with `SCF/KPOINT_RESTART_MODE VALIDATED_BVK_TRANSFER`. Basis, geometry, spin/electron
+  counts, smearing and Fourier metadata are checked before transfer; a rejected transfer falls
+  back to the method's safe initial guess. This is an initial guess, not post-SCF evaluation
+  on another grid or an N-representability guarantee. `COMPATIBLE` remains the default for
+  historical same-mesh behavior; `EXACT` requires a self-describing same-mesh restart.
 - `XTB/TBLITE/REFERENCE_CLI` can optionally cross-check the native result with the save_tblite CLI
   for molecular and 3D-periodic Gamma-point calculations. The CLI cannot reproduce CP2K k-point
   sampling, so such a reference check is skipped or rejected according to `STOP_ON_ERROR` when

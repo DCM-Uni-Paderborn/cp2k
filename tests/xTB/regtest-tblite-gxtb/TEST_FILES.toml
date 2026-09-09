@@ -63,10 +63,10 @@
 "Si_prim_gxtb_kp_general.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.001230548395938}]
 "Si_prim_gxtb_kp_shifted_full.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.001230548395938}]
 "CH4_gxtb_kp_restart_3.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.468866070692428},
+  {matcher="E_total", tol=1.0E-10, ref=-40.466670333868578},
 ]
 "CH4_gxtb_kp_restart_4.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.468551982577388},
+  {matcher="E_total", tol=1.0E-10, ref=-40.466666199913966},
   {matcher="KPOINT_RESTART_VALIDATED_TRANSFER"},
 ]
 "H2O_gxtb_kp_cp2k_density_mixer_restart.inp" = [
