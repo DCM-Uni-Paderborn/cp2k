@@ -10303,8 +10303,9 @@ CONTAINS
              acceleration_forward_qualification .OR. &
              acp_projector_cache_mode /= tblite_gxtb_acp_cache_direct .OR. &
              acp_mesh_mode /= tb_gxtb_acp_mesh_dense) THEN
-            CPABORT("Requested g-xTB acceleration requires an extended save_tblite provider; "// &
-                    "use AUTO for the minimal provider or link tdkuehne-integration")
+            CALL cp_abort(__LOCATION__, &
+                          "Requested g-xTB acceleration requires an extended save_tblite provider; "// &
+                          "use AUTO for the minimal provider or link tdkuehne-integration")
          END IF
 #endif
          IF (acceleration_transform_backend /= cp2k_exchange_transform_dense .AND. &
