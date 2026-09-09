@@ -75,6 +75,7 @@ MODULE tblite_types
       REAL(KIND=dp), DIMENSION(3, 3)                     :: sigma = -1.0_dp
       REAL(KIND=dp), ALLOCATABLE                         :: e_hal(:)
       REAL(KIND=dp), ALLOCATABLE                         :: e_rep(:)
+      REAL(KIND=dp), ALLOCATABLE                         :: e_rep_sc(:)
       REAL(KIND=dp), ALLOCATABLE                         :: e_disp(:)
       REAL(KIND=dp), ALLOCATABLE                         :: e_scd(:)
       REAL(KIND=dp), ALLOCATABLE                         :: e_es(:)
@@ -171,6 +172,7 @@ CONTAINS
 
          IF (ALLOCATED(tb_tblite%e_hal)) DEALLOCATE (tb_tblite%e_hal)
          IF (ALLOCATED(tb_tblite%e_rep)) DEALLOCATE (tb_tblite%e_rep)
+         IF (ALLOCATED(tb_tblite%e_rep_sc)) DEALLOCATE (tb_tblite%e_rep_sc)
          IF (ALLOCATED(tb_tblite%e_disp)) DEALLOCATE (tb_tblite%e_disp)
          IF (ALLOCATED(tb_tblite%e_scd)) DEALLOCATE (tb_tblite%e_scd)
          IF (ALLOCATED(tb_tblite%e_es)) DEALLOCATE (tb_tblite%e_es)

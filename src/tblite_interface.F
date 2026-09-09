@@ -421,6 +421,7 @@ CONTAINS
 
       !allocate quantities later required
       ALLOCATE (tb%e_hal(tb%mol%nat), tb%e_rep(tb%mol%nat), tb%e_disp(tb%mol%nat))
+      ALLOCATE (tb%e_rep_sc(tb%mol%nat))
       ALLOCATE (tb%e_scd(tb%mol%nat), tb%e_es(tb%mol%nat), tb%e_int(tb%mol%nat))
       ALLOCATE (tb%e_inc(tb%mol%nat), tb%e_exchange(tb%mol%nat), tb%e_spin(tb%mol%nat))
       ALLOCATE (tb%selfenergy(tb%calc%bas%nsh))
@@ -735,6 +736,7 @@ CONTAINS
 
       tb%e_hal = 0.0_dp
       tb%e_rep = 0.0_dp
+      tb%e_rep_sc = 0.0_dp
       tb%e_disp = 0.0_dp
       tb%e_int = 0.0_dp
       tb%e_inc = 0.0_dp
@@ -847,7 +849,7 @@ CONTAINS
       iounit = cp_logger_get_default_io_unit(logger)
       scf_section => section_vals_get_subs_vals(qs_env%input, "DFT%SCF")
 
-      energy%repulsive = SUM(tb%e_rep)
+      energy%repulsive = SUM(tb%e_rep) + SUM(tb%e_rep_sc)
       energy%el_stat = SUM(tb%e_es)
       energy%dispersion = SUM(tb%e_disp)
       energy%dispersion_sc = SUM(tb%e_scd)
@@ -5465,10 +5467,13 @@ CONTAINS
          END IF
 
          IF (ALLOCATED(tb%calc%repulsion)) THEN
-            tb%e_rep = 0.0_dp
+            ! The geometry-only contribution from get_engrad remains in e_rep.
+            ! get_energy adds only the density-dependent part and may be a no-op.
+            ! Resetting e_rep here discarded an energy whose force was retained.
+            tb%e_rep_sc = 0.0_dp
             CALL tb%calc%repulsion%update(tb%mol, tb%rcache)
             CALL tb%calc%repulsion%get_potential(tb%mol, tb%rcache, tb%wfn, tb%pot)
-            CALL tb%calc%repulsion%get_energy(tb%mol, tb%rcache, tb%wfn, tb%e_rep)
+            CALL tb%calc%repulsion%get_energy(tb%mol, tb%rcache, tb%wfn, tb%e_rep_sc)
          END IF
 
          IF (ALLOCATED(tb%calc%spin_polarization)) THEN
