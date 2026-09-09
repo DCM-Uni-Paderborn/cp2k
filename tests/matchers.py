@@ -67,6 +67,9 @@ registry["M009"] = GenericMatcher(r"PINT| Total energy =", col=5)
 registry["M010"] = GenericMatcher(r"BAND TOTAL ENERGY [au]", col=6)
 registry["M011"] = GenericMatcher(r"ENERGY| Total FORCE_EVAL", col=9)
 registry["N_special_kpoints"] = GenericMatcher(r"Number of Special K-points:", col=5)
+registry["N_special_kpoints_initial"] = GenericMatcher(
+    r"Number of Special K-points:", col=5, first=True
+)
 registry["QS_number_of_molecular_orbitals"] = GenericMatcher(
     r"Number of molecular orbitals:", col=5
 )
