@@ -55,6 +55,7 @@ MODULE kpoint_methods
                                               csym_type,&
                                               kpoint_gen,&
                                               kpoint_gen_general,&
+                                              kpoint_mesh_preserved,&
                                               print_crys_symmetry,&
                                               print_kp_symmetry,&
                                               release_csym_type
@@ -169,6 +170,7 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: agauge
       INTEGER, DIMENSION(3, 3)                           :: frot, krot
       LOGICAL                                            :: spez
+      LOGICAL, ALLOCATABLE, DIMENSION(:, :)              :: mesh_operations
       REAL(KIND=dp)                                      :: eps_kpoint, wsum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: coord, scoord
       REAL(KIND=dp), DIMENSION(3)                        :: diff, kgvec, r_pbc, scoord_pbc, srot
@@ -251,6 +253,7 @@ CONTAINS
          END DO
 
          eps_kpoint = MAX(1.e-12_dp, 10.0_dp*kpoint%eps_geo)
+         CALL kpoint_mesh_operations(crys_sym, cell, eps_kpoint, mesh_operations)
          ! print output
          IF (kpoint%symmetry) CALL print_crys_symmetry(crys_sym)
          IF (kpoint%symmetry) CALL print_kp_symmetry(crys_sym)
@@ -276,6 +279,7 @@ CONTAINS
                            krot(1:3, 1:3) = NINT(TRANSPOSE(inv_3x3(REAL(frot(1:3, 1:3), KIND=dp))))
                            DO isign = 1, 2
                               ir = MERGE(crys_sym%ibrot(ic), -crys_sym%ibrot(ic), isign == 1)
+                              IF (.NOT. mesh_operations(isign, ic)) CYCLE
                               IF (ir == crys_sym%kpop(is)) CYCLE
                               kgvec(1:3) = crys_sym%kpmesh(1:3, is) - &
                                            MATMUL(REAL(MERGE(krot(1:3, 1:3), -krot(1:3, 1:3), &
@@ -307,6 +311,7 @@ CONTAINS
                         ira = ABS(ir)
                         DO ic = 1, crys_sym%nrtot
                            IF (crys_sym%ibrot(ic) == ira) THEN
+                              CPASSERT(mesh_operations(MERGE(1, 2, ir > 0), ic))
                               kpsym%rotp(nr) = ir
                               kpsym%rot(1:3, 1:3, nr) = crys_sym%rt(1:3, 1:3, ic)
                               srotmat = MATMUL(cell%h_inv, MATMUL(crys_sym%rt(1:3, 1:3, ic), cell%hmat))
@@ -347,6 +352,7 @@ CONTAINS
                            krot(1:3, 1:3) = NINT(TRANSPOSE(inv_3x3(REAL(frot(1:3, 1:3), KIND=dp))))
                            DO isign = 1, 2
                               ir = MERGE(crys_sym%ibrot(ic), -crys_sym%ibrot(ic), isign == 1)
+                              IF (.NOT. mesh_operations(isign, ic)) CYCLE
                               IF (ir == crys_sym%kpop(is)) CYCLE
                               kgvec(1:3) = crys_sym%kpmesh(1:3, is) - &
                                            MATMUL(REAL(MERGE(krot(1:3, 1:3), -krot(1:3, 1:3), &
@@ -398,6 +404,7 @@ CONTAINS
          END IF
 
          CALL release_csym_type(crys_sym)
+         DEALLOCATE (mesh_operations)
          DEALLOCATE (scoord, atype)
          DEALLOCATE (agauge)
 
@@ -480,6 +487,7 @@ CONTAINS
             END DO
 
             eps_kpoint = MAX(1.e-12_dp, 10.0_dp*kpoint%eps_geo)
+            CALL kpoint_mesh_operations(crys_sym, cell, eps_kpoint, mesh_operations)
             CALL print_crys_symmetry(crys_sym)
             CALL print_kp_symmetry(crys_sym)
 
@@ -501,6 +509,7 @@ CONTAINS
                               krot(1:3, 1:3) = NINT(TRANSPOSE(inv_3x3(REAL(frot(1:3, 1:3), KIND=dp))))
                               DO isign = 1, 2
                                  ir = MERGE(crys_sym%ibrot(ic), -crys_sym%ibrot(ic), isign == 1)
+                                 IF (.NOT. mesh_operations(isign, ic)) CYCLE
                                  IF (ir == crys_sym%kpop(is)) CYCLE
                                  kgvec(1:3) = crys_sym%kpmesh(1:3, is) - &
                                               MATMUL(REAL(MERGE(krot(1:3, 1:3), -krot(1:3, 1:3), &
@@ -531,6 +540,7 @@ CONTAINS
                            ira = ABS(ir)
                            DO ic = 1, crys_sym%nrtot
                               IF (crys_sym%ibrot(ic) == ira) THEN
+                                 CPASSERT(mesh_operations(MERGE(1, 2, ir > 0), ic))
                                  kpsym%rotp(nr) = ir
                                  kpsym%rot(1:3, 1:3, nr) = crys_sym%rt(1:3, 1:3, ic)
                                  srotmat = MATMUL(cell%h_inv, MATMUL(crys_sym%rt(1:3, 1:3, ic), cell%hmat))
@@ -571,6 +581,7 @@ CONTAINS
                               krot(1:3, 1:3) = NINT(TRANSPOSE(inv_3x3(REAL(frot(1:3, 1:3), KIND=dp))))
                               DO isign = 1, 2
                                  ir = MERGE(crys_sym%ibrot(ic), -crys_sym%ibrot(ic), isign == 1)
+                                 IF (.NOT. mesh_operations(isign, ic)) CYCLE
                                  IF (ir == crys_sym%kpop(is)) CYCLE
                                  kgvec(1:3) = crys_sym%kpmesh(1:3, is) - &
                                               MATMUL(REAL(MERGE(krot(1:3, 1:3), -krot(1:3, 1:3), &
@@ -620,6 +631,7 @@ CONTAINS
             kpoint%ibrot(1:ns) = crys_sym%ibrot(1:ns)
 
             CALL release_csym_type(crys_sym)
+            DEALLOCATE (mesh_operations)
             DEALLOCATE (scoord, atype)
             DEALLOCATE (agauge)
          END IF
@@ -660,6 +672,36 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE kpoint_initialize
+
+! **************************************************************************************************
+!> \brief Select the crystal operations preserving the complete finite k-point mesh.
+!> \param crys_sym crystal and complete k-point mesh
+!> \param cell primitive cell
+!> \param eps fractional-coordinate tolerance
+!> \param operations unitary and antiunitary eligibility for each spatial operation
+!>
+!> Use the same mesh subgroup for the additional little-group operations as for the star
+!> representatives. Pointwise membership alone would over-project the density at Gamma.
+! **************************************************************************************************
+   SUBROUTINE kpoint_mesh_operations(crys_sym, cell, eps, operations)
+      TYPE(csym_type), INTENT(IN)                        :: crys_sym
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(KIND=dp), INTENT(IN)                          :: eps
+      LOGICAL, ALLOCATABLE, DIMENSION(:, :), INTENT(OUT) :: operations
+
+      INTEGER                                            :: ic
+      REAL(KIND=dp), DIMENSION(3, 3)                    :: krot, srot
+
+      ALLOCATE (operations(2, crys_sym%nrtot), source=.FALSE.)
+      IF (crys_sym%fullgrid .OR. crys_sym%inversion_only .OR. crys_sym%istriz /= 1) RETURN
+      DO ic = 1, crys_sym%nrtot
+         srot = MATMUL(cell%h_inv, MATMUL(crys_sym%rt(:, :, ic), cell%hmat))
+         krot = TRANSPOSE(inv_3x3(REAL(NINT(srot), KIND=dp)))
+         operations(1, ic) = kpoint_mesh_preserved(krot, crys_sym%kpmesh, eps)
+         operations(2, ic) = kpoint_mesh_preserved(-krot, crys_sym%kpmesh, eps)
+      END DO
+
+   END SUBROUTINE kpoint_mesh_operations
 
 ! **************************************************************************************************
 !> \brief Initialize the kpoint environment

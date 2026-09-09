@@ -33,6 +33,7 @@ MODULE cryssym
    PRIVATE
    PUBLIC :: csym_type, release_csym_type, print_crys_symmetry, print_kp_symmetry
    PUBLIC :: crys_sym_gen, full_grid_gen, kpoint_gen, kpoint_gen_general
+   PUBLIC :: kpoint_mesh_preserved
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cryssym'
 
@@ -81,6 +82,39 @@ MODULE cryssym
    END TYPE csym_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Test whether a reciprocal-space operation preserves the entire finite k-point set.
+!> \param krot reciprocal-space operation, including the sign for time reversal
+!> \param xkp complete k-point set in fractional coordinates
+!> \param eps fractional-coordinate tolerance
+!> \return true when every transformed point is present modulo a reciprocal lattice vector
+!>
+!> A rotation can fix Gamma while mapping other mesh points outside an anisotropic or shifted
+!> mesh. Such a rotation is not a symmetry of the finite-mesh quadrature or its BvK supercell.
+! **************************************************************************************************
+   LOGICAL FUNCTION kpoint_mesh_preserved(krot, xkp, eps) RESULT(preserved)
+      REAL(KIND=dp), DIMENSION(3, 3), INTENT(IN)         :: krot
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp
+      REAL(KIND=dp), INTENT(IN)                          :: eps
+
+      INTEGER                                            :: i, j, nkpts
+      REAL(KIND=dp), DIMENSION(3)                        :: diff, rotated
+
+      preserved = .FALSE.
+      nkpts = SIZE(xkp, 2)
+      DO i = 1, nkpts
+         rotated = MATMUL(krot, xkp(1:3, i))
+         DO j = 1, nkpts
+            diff = xkp(1:3, j) - rotated
+            diff = diff - ANINT(diff)
+            IF (ALL(ABS(diff) < eps)) EXIT
+         END DO
+         IF (j > nkpts) RETURN
+      END DO
+      preserved = .TRUE.
+
+   END FUNCTION kpoint_mesh_preserved
 
 ! **************************************************************************************************
 !> \brief Release the CSYM type
@@ -1051,12 +1085,19 @@ CONTAINS
       INTEGER                                            :: i, iop, isign, j, kr, nkpts, score
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: kscore
       INTEGER, DIMENSION(3, 3)                           :: krot
+      LOGICAL, ALLOCATABLE, DIMENSION(:, :)              :: mesh_operations
       REAL(KIND=dp)                                      :: eps
       REAL(KIND=dp), DIMENSION(3)                        :: diff, rr
 
       nkpts = SIZE(wkp)
       eps = MAX(1.e-12_dp, 10.0_dp*csym%delta)
       ALLOCATE (kscore(nkpts))
+      ALLOCATE (mesh_operations(2, nrot))
+      DO iop = 1, nrot
+         krot = reciprocal_rotation(srot(:, :, csym%ibrot(iop)))
+         mesh_operations(1, iop) = kpoint_mesh_preserved(REAL(krot, KIND=dp), xkp, eps)
+         mesh_operations(2, iop) = kpoint_mesh_preserved(-REAL(krot, KIND=dp), xkp, eps)
+      END DO
 
       wkp = 0.0_dp
       kpop = 0
@@ -1076,6 +1117,7 @@ CONTAINS
             krot = reciprocal_rotation(srot(:, :, kr))
             score = spglib_operation_score(csym, iop, srot(:, :, kr))
             DO isign = 1, 2
+               IF (.NOT. mesh_operations(isign, iop)) CYCLE
                rr(1:3) = MATMUL(REAL(krot(1:3, 1:3), KIND=dp), xkp(1:3, i))
                IF (isign == 2) THEN
                   rr(1:3) = -rr(1:3)
@@ -1112,7 +1154,7 @@ CONTAINS
          CPASSERT(csym%kplink(1, i) /= 0)
          CPASSERT(kpop(i) /= 0)
       END DO
-      DEALLOCATE (kscore)
+      DEALLOCATE (kscore, mesh_operations)
 
    END SUBROUTINE reduce_spglib_kpoint_mesh
 
@@ -1513,12 +1555,22 @@ CONTAINS
                                                             nskipped
       INTEGER, DIMENSION(3, 3)                           :: krot
       LOGICAL                                            :: valid
+      LOGICAL, ALLOCATABLE, DIMENSION(:, :)              :: mesh_operations, k290_mesh_operations
       REAL(KIND=dp)                                      :: eps
       REAL(KIND=dp), DIMENSION(3)                        :: diff, rr
 
       nkpts = SIZE(wkp)
       eps = MAX(1.e-12_dp, 10.0_dp*csym%delta)
       nskipped = 0
+
+      ALLOCATE (mesh_operations(2, nrot))
+      DO iop = 1, nrot
+         krot = reciprocal_rotation(srot(:, :, iop))
+         mesh_operations(1, iop) = kpoint_mesh_preserved(REAL(krot, KIND=dp), xkp, eps)
+         mesh_operations(2, iop) = kpoint_mesh_preserved(-REAL(krot, KIND=dp), xkp, eps)
+      END DO
+      CALL k290_mesh_operation_mask(csym%rt, csym%ibrot, csym%nrtot, xkp, &
+                                     a1, a2, a3, b1, b2, b3, alat, eps, k290_mesh_operations, .TRUE.)
 
       wkp = 0.0_dp
       kpop = 0
@@ -1534,6 +1586,7 @@ CONTAINS
          DO iop = 1, nrot
             krot = reciprocal_rotation(srot(:, :, iop))
             DO isign = 1, 2
+               IF (.NOT. mesh_operations(isign, iop)) CYCLE
                rr(1:3) = MATMUL(REAL(krot(1:3, 1:3), KIND=dp), xkp(1:3, i))
                IF (isign == 2) rr(1:3) = -rr(1:3)
 
@@ -1549,7 +1602,7 @@ CONTAINS
 
                      CALL find_k290_kpoint_operation(csym, xkp(1:3, i), xkp(1:3, j), &
                                                      a1, a2, a3, b1, b2, b3, alat, &
-                                                     k290_op, valid)
+                                                     k290_op, valid, k290_mesh_operations)
                      IF (.NOT. valid) THEN
                         nskipped = nskipped + 1
                         EXIT
@@ -1591,14 +1644,16 @@ CONTAINS
 !> \param alat lattice scaling used by K290
 !> \param k290_op K290 operation identifier
 !> \param valid whether a matching K290 operation was found
+!> \param mesh_operations optional whole-mesh operation mask
 ! **************************************************************************************************
    SUBROUTINE find_k290_kpoint_operation(csym, xref, xtarget, a1, a2, a3, b1, b2, b3, alat, &
-                                         k290_op, valid)
+                                         k290_op, valid, mesh_operations)
       TYPE(csym_type)                                    :: csym
       REAL(KIND=dp), DIMENSION(3), INTENT(IN)            :: xref, xtarget, a1, a2, a3, b1, b2, b3
       REAL(KIND=dp), INTENT(IN)                          :: alat
       INTEGER, INTENT(OUT)                               :: k290_op
       LOGICAL, INTENT(OUT)                               :: valid
+      LOGICAL, DIMENSION(:, :), INTENT(IN), OPTIONAL     :: mesh_operations
 
       INTEGER                                            :: ibsign, iop, kr
       REAL(KIND=dp)                                      :: eps
@@ -1612,6 +1667,9 @@ CONTAINS
          IF (iop > SIZE(csym%rt, 3)) CYCLE
          IF (csym%ibrot(iop) == 0) CYCLE
          DO ibsign = 1, 2
+            IF (PRESENT(mesh_operations)) THEN
+               IF (.NOT. mesh_operations(ibsign, iop)) CYCLE
+            END IF
             wcart(1:3) = alat*(xref(1)*b1(1:3) + xref(2)*b2(1:3) + xref(3)*b3(1:3))
             wcart(1:3) = kp_apply_operation(wcart(1:3), csym%rt(1:3, 1:3, iop))
             IF (ibsign == 2) THEN
@@ -1687,6 +1745,55 @@ CONTAINS
    END FUNCTION reciprocal_rotation
 
 ! **************************************************************************************************
+!> \brief Select K290 operations that preserve a complete k-point mesh.
+!> \param rotations Cartesian K290 rotations
+!> \param ib operation identifiers
+!> \param nrot number of active rotations
+!> \param xkp complete fractional mesh
+!> \param a1 first direct vector
+!> \param a2 second direct vector
+!> \param a3 third direct vector
+!> \param b1 first reciprocal vector
+!> \param b2 second reciprocal vector
+!> \param b3 third reciprocal vector
+!> \param alat K290 lattice scale
+!> \param eps fractional-coordinate tolerance
+!> \param operations unitary and antiunitary eligibility
+!> \param packed rotations are packed in active-operation order rather than indexed by ib
+! **************************************************************************************************
+   SUBROUTINE k290_mesh_operation_mask(rotations, ib, nrot, xkp, a1, a2, a3, b1, b2, b3, &
+                                        alat, eps, operations, packed)
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)     :: rotations
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: ib
+      INTEGER, INTENT(IN)                                :: nrot
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp
+      REAL(KIND=dp), DIMENSION(3), INTENT(IN)            :: a1, a2, a3, b1, b2, b3
+      REAL(KIND=dp), INTENT(IN)                          :: alat, eps
+      LOGICAL, ALLOCATABLE, DIMENSION(:, :), INTENT(OUT) :: operations
+      LOGICAL, INTENT(IN)                                :: packed
+
+      INTEGER                                            :: axis, iop, ir
+      REAL(KIND=dp), DIMENSION(3)                        :: wcart
+      REAL(KIND=dp), DIMENSION(3, 3)                    :: reciprocal, krot
+
+      reciprocal(:, 1) = b1
+      reciprocal(:, 2) = b2
+      reciprocal(:, 3) = b3
+      ALLOCATE (operations(2, nrot), source=.FALSE.)
+      DO iop = 1, nrot
+         ir = MERGE(iop, ib(iop), packed)
+         DO axis = 1, 3
+            wcart = kp_apply_operation(alat*reciprocal(:, axis), rotations(:, :, ir))
+            krot(:, axis) = [DOT_PRODUCT(a1, wcart), DOT_PRODUCT(a2, wcart), &
+                             DOT_PRODUCT(a3, wcart)]/alat
+         END DO
+         operations(1, iop) = kpoint_mesh_preserved(krot, xkp, eps)
+         operations(2, iop) = kpoint_mesh_preserved(-krot, xkp, eps)
+      END DO
+
+   END SUBROUTINE k290_mesh_operation_mask
+
+! **************************************************************************************************
 !> \brief Reduce a CP2K Monkhorst-Pack mesh using K290 symmetry operations
 !> \param csym ...
 !> \param xkp full k-point mesh in reciprocal lattice coordinates
@@ -1716,12 +1823,15 @@ CONTAINS
 
       INTEGER                                            :: i, ibsign, iop, j, kr, nkpts, &
                                                             nskipped_overlaps
+      LOGICAL, ALLOCATABLE, DIMENSION(:, :)              :: mesh_operations
       REAL(KIND=dp)                                      :: eps
       REAL(KIND=dp), DIMENSION(3)                        :: diff, rr, wcart
 
       nkpts = SIZE(wkp)
       eps = MAX(1.e-12_dp, 10.0_dp*csym%delta)
       nskipped_overlaps = 0
+      CALL k290_mesh_operation_mask(r, ib, nc, xkp, a1, a2, a3, b1, b2, b3, &
+                                     alat, eps, mesh_operations, .FALSE.)
 
       wkp = 0.0_dp
       kpop = 0
@@ -1736,6 +1846,7 @@ CONTAINS
 
          DO iop = 1, nc
             DO ibsign = 1, 2
+               IF (.NOT. mesh_operations(ibsign, iop)) CYCLE
                kr = ib(iop)
                wcart(1:3) = alat*(xkp(1, i)*b1(1:3) + xkp(2, i)*b2(1:3) + xkp(3, i)*b3(1:3))
                wcart(1:3) = kp_apply_operation(wcart(1:3), r(1:3, 1:3, kr))
