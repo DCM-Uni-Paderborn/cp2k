@@ -1,0 +1,24 @@
+"CH4_gxtb_kp_311_force_stress.inp" = [
+  {matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
+  {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0},
+]
+"CH4_gxtb_kp_spglib_311_force_stress.inp" = [
+  {matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
+  {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0},
+  {matcher="N_special_kpoints_initial", tol=0.0, ref=2},
+]
+"CH4_gxtb_kp_k290_311_force_stress.inp" = [
+  {matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
+  {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0},
+  {matcher="N_special_kpoints_initial", tol=0.0, ref=2},
+]
+"CH4_gxtb_kp_331_force_stress.inp" = [
+  {matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
+  {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0},
+]
+"CH4_gxtb_kp_spglib_331_force_stress.inp" = [
+  {matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
+  {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0},
+  {matcher="N_special_kpoints_initial", tol=0.0, ref=3},
+]
+#EOF
