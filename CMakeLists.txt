@@ -949,26 +949,88 @@ if(CP2K_USE_TBLITE)
   cmake_push_check_state(RESET)
   set(CMAKE_REQUIRED_INCLUDES ${tblite_INCLUDE_DIRS})
   unset(CP2K_TBLITE_HAS_GXTB CACHE)
+  unset(CP2K_TBLITE_HAS_GXTB_ACCELERATION CACHE)
   CHECK_Fortran_SOURCE_COMPILES(
     "program check_tblite_gxtb
        use tblite_xtb_gxtb, only : new_gxtb_calculator
-       use tblite_cp2k_compat, only : cp2k_acp_projector_image_gradient, &
-          cp2k_build_acp_projectors, &
-          cp2k_exchange_kpoint, cp2k_exchange_partial_abi_version, &
-          cp2k_exchange_partial_begin, &
-          cp2k_exchange_partial_descriptor_type, &
-          cp2k_exchange_partial_forward_type, &
-          cp2k_exchange_partial_reverse_type, &
-          cp2k_exchange_stream_batch_apply, &
-          cp2k_exchange_stream_reverse_batch_apply, &
-          cp2k_exchange_transform_dense, &
-          cp2k_exchange_transform_mixed_radix_fft, &
-          cp2k_exchange_transform_separable_dft, &
+       use tblite_cp2k_compat, only : cp2k_build_acp_projectors, &
+          cp2k_exchange_kmesh, cp2k_exchange_kmesh_gradient, &
           cp2k_get_scc_mixer_dimension, cp2k_potential_mixer_type, &
-          cp2k_prepare_exchange, new_cp2k_potential_mixer
+          new_cp2k_potential_mixer
        implicit none
      end program check_tblite_gxtb"
     CP2K_TBLITE_HAS_GXTB
+    SRC_EXT
+    F90)
+  # Acceleration is an optional extension of the stable integration API.
+  # A minimal lmseidler-integration provider must retain full g-xTB support.
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_tblite_gxtb_acceleration
+       use tblite_xtb_gxtb, only : new_gxtb_calculator
+       use tblite_cp2k_compat, only : cp2k_acp_projector_image_gradient, &
+          cp2k_exchange_partial_abi_version, &
+          cp2k_exchange_partial_begin, &
+          cp2k_exchange_partial_contributor_advance, &
+          cp2k_exchange_partial_descriptor_pack, &
+          cp2k_exchange_partial_descriptor_size, &
+          cp2k_exchange_partial_descriptor_words, &
+          cp2k_exchange_partial_descriptor_type, &
+          cp2k_exchange_partial_descriptor_unpack, &
+          cp2k_exchange_partial_descriptors_match, &
+          cp2k_exchange_partial_discard, &
+          cp2k_exchange_partial_export_forward, &
+          cp2k_exchange_partial_export_reverse, &
+          cp2k_exchange_partial_forward_pack, &
+          cp2k_exchange_partial_forward_pack_range, &
+          cp2k_exchange_partial_forward_size, &
+          cp2k_exchange_partial_forward_type, &
+          cp2k_exchange_partial_forward_unpack, &
+          cp2k_exchange_partial_forward_unpack_range, &
+          cp2k_exchange_partial_import_forward, &
+          cp2k_exchange_partial_import_forward_range, &
+          cp2k_exchange_partial_import_reverse, &
+          cp2k_exchange_partial_import_reverse_range, &
+          cp2k_exchange_partial_push, &
+          cp2k_exchange_partial_reverse_pack, &
+          cp2k_exchange_partial_reverse_pack_range, &
+          cp2k_exchange_partial_reverse_push, &
+          cp2k_exchange_partial_reverse_size, &
+          cp2k_exchange_partial_reverse_type, &
+          cp2k_exchange_partial_reverse_unpack, &
+          cp2k_exchange_partial_reverse_unpack_range, &
+          cp2k_exchange_partial_set_image_range, &
+          cp2k_exchange_partial_set_pull_ownership, &
+          cp2k_exchange_stream_batch_advance, &
+          cp2k_exchange_stream_batch_apply, &
+          cp2k_exchange_stream_batch_bounds, &
+          cp2k_exchange_stream_batch_pull, &
+          cp2k_exchange_stream_batch_result, &
+          cp2k_exchange_stream_apply, &
+          cp2k_exchange_stream_begin, &
+          cp2k_exchange_stream_batched, &
+          cp2k_exchange_stream_end, &
+          cp2k_exchange_stream_get, &
+          cp2k_exchange_stream_has_full_mesh_storage, &
+          cp2k_exchange_stream_peak_complex_elements, &
+          cp2k_exchange_stream_oracle, &
+          cp2k_exchange_stream_push, &
+          cp2k_exchange_stream_reduced, &
+          cp2k_exchange_stream_type, &
+          cp2k_exchange_stream_reverse_batch_advance, &
+          cp2k_exchange_stream_reverse_batch_apply, &
+          cp2k_exchange_stream_reverse_batch_pull, &
+          cp2k_exchange_stream_reverse_push, &
+          cp2k_exchange_stream_reverse_result, &
+          cp2k_exchange_stream_reverse_transform_advance, &
+          cp2k_exchange_stream_transform_advance, &
+          cp2k_exchange_transform_dense, &
+          cp2k_exchange_transform_mixed_radix_fft, &
+          cp2k_exchange_transform_separable_dft
+       implicit none
+       integer, parameter :: supported_abi = &
+          1 / merge(1, 0, cp2k_exchange_partial_abi_version == 1)
+     end program check_tblite_gxtb_acceleration"
+    CP2K_TBLITE_HAS_GXTB_ACCELERATION
     SRC_EXT
     F90)
   cmake_pop_check_state()
@@ -976,7 +1038,7 @@ if(CP2K_USE_TBLITE)
   if(CP2K_TBLITE_PROVIDER STREQUAL "SAVE" AND NOT CP2K_TBLITE_HAS_GXTB)
     message(
       FATAL_ERROR
-        "The SAVE tblite provider was selected, but the detected library does not export the required g-xTB/CP2K compatibility, partial-exchange, transform, sparse-ACP, ACP-cache, and potential-mixer API"
+        "The SAVE tblite provider was selected, but the detected library does not export the required base g-xTB/CP2K compatibility and potential-mixer API"
     )
   endif()
   if(CP2K_TBLITE_PROVIDER STREQUAL "UPSTREAM" AND CP2K_TBLITE_HAS_GXTB)
@@ -1275,6 +1337,7 @@ if(CP2K_USE_TBLITE)
     "    - Provider: ${CP2K_TBLITE_PROVIDER}\n"
     "    - Source revision: ${CP2K_TBLITE_REVISION}\n"
     "    - g-xTB support: ${CP2K_TBLITE_HAS_GXTB}\n"
+    "    - g-xTB acceleration API: ${CP2K_TBLITE_HAS_GXTB_ACCELERATION}\n"
     "    - CP2K DFTD4 interface: ${CP2K_TBLITE_WITH_CP2K_DFTD4}\n"
     "    - Include directories: ${tblite_INCLUDE_DIRS}\n"
     "    - Libraries: ${tblite_LINK_LIBRARIES}\n")
