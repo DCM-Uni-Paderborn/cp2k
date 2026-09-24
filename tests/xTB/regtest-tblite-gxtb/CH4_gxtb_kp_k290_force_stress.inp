@@ -8,7 +8,10 @@
   CHECK_ATOM_FORCE 2 X
   DEBUG_FORCES T
   DEBUG_STRESS_TENSOR T
-  DX 0.0001
+  # Resolve the smooth WS image switching at the cubic tie. Halving DX
+  # from 1e-4 reduces the virial FD error from 1.24e-6 to 1.61e-7 Eh;
+  # 2.5e-5 gives 1.91e-8 Eh. Keep the existing 1e-6 test tolerance.
+  DX 0.00005
   STOP_ON_MISMATCH F
 &END DEBUG
 

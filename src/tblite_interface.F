@@ -211,9 +211,12 @@ MODULE tblite_interface
                               tblite_scc_mixer_auto, tblite_scc_mixer_cp2k, &
                               tblite_scc_mixer_none, tblite_scc_mixer_tblite, &
                               tblite_solver_gvd, tblite_solver_gvr
+   USE input_cp2k_kpoints, ONLY: lattice_fft_auto, lattice_fft_off, lattice_fft_on
    USE input_section_types, ONLY: section_vals_val_get
    USE kinds, ONLY: default_path_length, default_string_length, dp, int_8
-   USE kpoint_methods, ONLY: calibrate_symmetry_phases, kpoint_density_transform, rskp_transform
+   USE kpoint_methods, ONLY: calibrate_symmetry_phases, kpoint_density_transform, &
+                            rskp_grid_type, rskp_transform, rskp_transform_grid_extract, &
+                            rskp_transform_grid_prepare, rskp_transform_grid_release
    USE kpoint_types, ONLY: get_kpoint_info, kind_rotmat_type, kpoint_env_type, &
                            kpoint_phase_gauge_input, kpoint_phase_gauge_pbc, &
                            kpoint_sym_type, kpoint_type
@@ -3799,7 +3802,7 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ao_first, ao_size
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: run_dense_star, run_streamed_star, &
-                                                            use_real_wfn
+                                                            request_grid_fft, use_grid_fft, use_real_wfn
       REAL(KIND=dp) :: dense_covariance_residual, hermitian_error, scale, &
                        spin_covariance_residual, spin_roundtrip_residual, streamed_covariance_residual, &
                        streamed_roundtrip_residual
@@ -3811,6 +3814,7 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
+      TYPE(rskp_grid_type)                               :: fock_grid
       TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
       TYPE(tblite_type), POINTER                         :: tb
 
@@ -3870,12 +3874,35 @@ CONTAINS
       CALL cp_dbcsr_alloc_block_from_nbl(rmatrix, sab_nl)
       CALL cp_dbcsr_alloc_block_from_nbl(cmatrix, sab_nl)
 
-      DO ik = 1, nkp
-         DO ispin = 1, nspin
-            CALL dbcsr_set(rmatrix, 0.0_dp)
-            CALL dbcsr_set(cmatrix, 0.0_dp)
-            CALL rskp_transform(rmatrix, cmatrix, matrix_ks, ispin, kpoints%xkp(1:3, ik), &
-                                cell_to_index, sab_nl)
+      ! The mixer needs all F(k), independently of the distribution used by the eigensolver.
+      ! Transform the local blocks once per spin on complete regular grids. Keep the exact
+      ! per-k sum for reduced/general grids, LATTICE_FFT OFF, or the bounded-memory fallback.
+      SELECT CASE (kpoints%lattice_fft)
+      CASE (lattice_fft_auto)
+         request_grid_fft = nkp >= 27
+      CASE (lattice_fft_on)
+         request_grid_fft = .TRUE.
+      CASE (lattice_fft_off)
+         request_grid_fft = .FALSE.
+      CASE DEFAULT
+         CPABORT("Unknown lattice FFT selection mode")
+      END SELECT
+      DO ispin = 1, nspin
+         use_grid_fft = .FALSE.
+         IF (request_grid_fft) THEN
+            CALL rskp_transform_grid_prepare(fock_grid, rmatrix, matrix_ks, ispin, &
+                                             kpoints%xkp, kpoints%nkp_grid, cell_to_index, sab_nl, &
+                                             use_grid_fft, max_storage_bytes=64_int_8*1024_int_8**2)
+         END IF
+         DO ik = 1, nkp
+            IF (use_grid_fft) THEN
+               CALL rskp_transform_grid_extract(fock_grid, ik, rmatrix, cmatrix)
+            ELSE
+               CALL dbcsr_set(rmatrix, 0.0_dp)
+               CALL dbcsr_set(cmatrix, 0.0_dp)
+               CALL rskp_transform(rmatrix, cmatrix, matrix_ks, ispin, kpoints%xkp(1:3, ik), &
+                                   cell_to_index, sab_nl)
+            END IF
             CALL tb_dbcsr_component_to_dense(tb, rmatrix, fock_real, para_env, .FALSE.)
             IF (use_real_wfn) THEN
                fock_imag = 0.0_dp
@@ -3894,6 +3921,7 @@ CONTAINS
             IF (hermitian_error > 1.0E-10_dp) &
                CPABORT("CP2K supplied a non-Hermitian k-point Fock matrix to the g-xTB mixer")
          END DO
+         CALL rskp_transform_grid_release(fock_grid)
       END DO
       CALL dbcsr_deallocate_matrix(rmatrix)
       CALL dbcsr_deallocate_matrix(cmatrix)
@@ -5870,7 +5898,7 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: packed_payload
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: overlap_block, transform_work
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: density_block, fock_batch
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: density_block, fock_batch, overlap_cached
       COMPLEX(KIND=dp), ALLOCATABLE, &
          DIMENSION(:, :, :, :)                           :: density_local
       INTEGER                                            :: actual_batch_size, batch_size, &
@@ -5889,6 +5917,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       INTEGER(KIND=int_8)                                :: local_payload_size, &
                                                             root_payload_size, transaction_id(2)
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: overlap_cached_valid
       LOGICAL                                            :: batch_done, contributor_done, &
                                                             first_batch, importer_done, leader, local_failed, &
                                                             owns_source, service_rank, &
@@ -5898,6 +5927,8 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: exchange_vsh
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: overlap_part
       TYPE(cp2k_exchange_partial_descriptor_type)        :: descriptor
+      TYPE(rskp_grid_type)                               :: overlap_grid
+      LOGICAL                                            :: use_overlap_grid
       TYPE(cp2k_exchange_partial_forward_type)           :: local_buffer, summed_buffer
       TYPE(cp2k_exchange_stream_type)                    :: importer_stream, stream
       TYPE(dbcsr_type), POINTER                          :: cmatrix, rmatrix
@@ -5978,6 +6009,12 @@ CONTAINS
       END IF
       nao = tb%calc%bas%nao
       nspin = tb%wfn%nspin
+      ! Every rank visits the same overlap requests, including nonleaders.
+      ! Cache validity therefore preserves collective ordering on all ranks.
+      IF (REAL(nao, dp)*REAL(nao, dp)*REAL(kmap%nfull, dp)*16.0_dp <= 64.0_dp*1024.0_dp**2) THEN
+         ALLOCATE (overlap_cached(nao, nao, kmap%nfull))
+         ALLOCATE (overlap_cached_valid(kmap%nfull), source=.FALSE.)
+      END IF
       CALL tb_gxtb_ao_layout(tb, ao_first, ao_size)
       ALLOCATE (density_local(nao, nao, nspin, nlocal), &
                 density_block(nao, nao, nspin), fock_batch(nao, nao, nspin), &
@@ -6007,6 +6044,9 @@ CONTAINS
                         matrix_type=dbcsr_type_antisymmetric)
       CALL cp_dbcsr_alloc_block_from_nbl(rmatrix, sab_nl)
       CALL cp_dbcsr_alloc_block_from_nbl(cmatrix, sab_nl)
+      CALL tb_prepare_gxtb_overlap_grid(kpoints, kmap, rmatrix, matrix_s, cell_to_index, &
+                                        sab_nl, overlap_grid, use_overlap_grid, &
+                                        run_qualification_oracle, overlap_cached)
 
       batch_size = tb_gxtb_exchange_stream_batch_size(tb)
       actual_batch_size = MIN(batch_size, kmap%nfull)
@@ -6567,11 +6607,13 @@ CONTAINS
          END SELECT
       END IF
 
+      CALL rskp_transform_grid_release(overlap_grid)
       CALL dbcsr_deallocate_matrix(rmatrix)
       CALL dbcsr_deallocate_matrix(cmatrix)
       DEALLOCATE (ao_first, ao_size, density_block, density_local, exchange_vsh, &
                   fock_batch, overlap_block, overlap_part, transform_work)
       IF (ALLOCATED(pull_owner)) DEALLOCATE (pull_owner)
+      IF (ALLOCATED(overlap_cached)) DEALLOCATE (overlap_cached, overlap_cached_valid)
 
    CONTAINS
 
@@ -6585,10 +6627,20 @@ CONTAINS
 
          REAL(KIND=dp)                                      :: local_hermitian_error
 
-         CALL dbcsr_set(rmatrix, 0.0_dp)
-         CALL dbcsr_set(cmatrix, 0.0_dp)
-         CALL rskp_transform(rmatrix, cmatrix, matrix_s, 1, kmap%xkp(1:3, ifull_local), &
-                             cell_to_index, sab_nl)
+         IF (ALLOCATED(overlap_cached_valid)) THEN
+            IF (overlap_cached_valid(ifull_local)) THEN
+               overlap_block = overlap_cached(:, :, ifull_local)
+               RETURN
+            END IF
+         END IF
+         IF (use_overlap_grid) THEN
+            CALL rskp_transform_grid_extract(overlap_grid, ifull_local, rmatrix, cmatrix)
+         ELSE
+            CALL dbcsr_set(rmatrix, 0.0_dp)
+            CALL dbcsr_set(cmatrix, 0.0_dp)
+            CALL rskp_transform(rmatrix, cmatrix, matrix_s, 1, kmap%xkp(1:3, ifull_local), &
+                                cell_to_index, sab_nl)
+         END IF
          CALL tb_dbcsr_component_to_dense(tb, rmatrix, overlap_part, para_env_global, .FALSE.)
          overlap_block(:, :) = CMPLX(overlap_part, 0.0_dp, KIND=dp)
          CALL tb_dbcsr_component_to_dense(tb, cmatrix, overlap_part, para_env_global, .TRUE.)
@@ -6600,6 +6652,10 @@ CONTAINS
             MAXVAL(ABS(overlap_block - CONJG(TRANSPOSE(overlap_block))))
          IF (local_hermitian_error > 1.0E-10_dp) &
             CPABORT("CP2K supplied a non-Hermitian KGROUP_PARTIAL_ROOT overlap")
+         IF (ALLOCATED(overlap_cached_valid)) THEN
+            overlap_cached(:, :, ifull_local) = overlap_block
+            overlap_cached_valid(ifull_local) = .TRUE.
+         END IF
 
       END SUBROUTINE prepare_overlap_block
 
@@ -6698,7 +6754,7 @@ CONTAINS
 #endif
 
 ! **************************************************************************************************
-!> \brief Evaluate complete-mesh g-xTB exchange without extra expanded full-star host arrays.
+!> \brief Evaluate complete-mesh g-xTB exchange without expanded density/Fock star arrays.
 !> \param qs_env ...
 !> \param tb ...
 !> \param matrix_s ...
@@ -6714,6 +6770,8 @@ CONTAINS
 !> tile, then sums energy, shell potential, and the already folded irreducible Fock response.  All
 !> ranks still enter the CP2K dense-matrix collectives in identical order.  The provider oracle mode
 !> retains its complete arrays internally as a reference.
+!> Non-fused streams may retain at most 64 MiB of unchanged overlaps within this call to avoid
+!> repeating the same image-to-k transform for every image batch. Larger overlaps are recomputed.
 !> \param run_qualification_oracle ...
 !> \param iter_count ...
 ! **************************************************************************************************
@@ -6734,7 +6792,7 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, &
          DIMENSION(:, :, :, :)                           :: density_reduced
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full_qualification, &
-                                                            overlap_reduced
+                                                            overlap_reduced, overlap_cached
       INTEGER                                            :: batch_size, first_image, ifull, ispin, &
                                                             last_image, local_image_count, &
                                                             local_image_first, nao, nowners, nred, &
@@ -6742,6 +6800,7 @@ CONTAINS
                                                             requested_batch_size, source, transform_backend
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ao_first, ao_size, image_owner_count
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: overlap_cached_valid
       LOGICAL                                            :: batches_done, distributed_mode, fused_symmetry, &
                                                             expected_full_mesh_storage, &
                                                             has_full_kspace_inputs, &
@@ -6757,6 +6816,8 @@ CONTAINS
       TYPE(dbcsr_type), POINTER                          :: cmatrix, rmatrix
       TYPE(error_type), ALLOCATABLE                      :: error
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(rskp_grid_type)                               :: overlap_grid
+      LOGICAL                                            :: use_overlap_grid
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
       TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
@@ -6811,6 +6872,20 @@ CONTAINS
                         matrix_type=dbcsr_type_antisymmetric)
       CALL cp_dbcsr_alloc_block_from_nbl(rmatrix, sab_nl)
       CALL cp_dbcsr_alloc_block_from_nbl(cmatrix, sab_nl)
+
+      ! S(k) is invariant during this exchange transaction. In particular,
+      ! BATCHED must not repeat its expensive CP2K real-space transform on
+      ! every push/pull of every image batch. Keep the additional memory
+      ! strictly bounded; do not change SYMMETRY_FUSED's reduced-storage path.
+      IF (.NOT. fused_symmetry .AND. &
+          REAL(nao, dp)*REAL(nao, dp)*REAL(kmap%nfull, dp)*16.0_dp <= 64.0_dp*1024.0_dp**2) THEN
+         ALLOCATE (overlap_cached(nao, nao, kmap%nfull))
+         ALLOCATE (overlap_cached_valid(kmap%nfull), source=.FALSE.)
+      END IF
+
+      CALL tb_prepare_gxtb_overlap_grid(kpoints, kmap, rmatrix, matrix_s, cell_to_index, &
+                                        sab_nl, overlap_grid, use_overlap_grid, &
+                                        run_qualification_oracle .OR. fused_symmetry, overlap_cached)
 
       IF (fused_symmetry) THEN
          ALLOCATE (overlap_reduced(nao, nao, nred))
@@ -7077,6 +7152,7 @@ CONTAINS
             CPABORT("Unknown streamed g-XTB exchange transform backend")
          END SELECT
       END IF
+      CALL rskp_transform_grid_release(overlap_grid)
       CALL dbcsr_deallocate_matrix(rmatrix)
       CALL dbcsr_deallocate_matrix(cmatrix)
 
@@ -7087,6 +7163,7 @@ CONTAINS
       DEALLOCATE (ao_first, ao_size, density_block, density_reduced, exchange_vsh, &
                   fock_block, overlap_block, overlap_part, transform_work)
       IF (ALLOCATED(overlap_reduced)) DEALLOCATE (overlap_reduced)
+      IF (ALLOCATED(overlap_cached)) DEALLOCATE (overlap_cached, overlap_cached_valid)
 
    CONTAINS
 
@@ -7483,10 +7560,20 @@ CONTAINS
 
          REAL(KIND=dp)                                      :: local_hermitian_error
 
-         CALL dbcsr_set(rmatrix, 0.0_dp)
-         CALL dbcsr_set(cmatrix, 0.0_dp)
-         CALL rskp_transform(rmatrix, cmatrix, matrix_s, 1, kmap%xkp(1:3, ifull_local), &
-                             cell_to_index, sab_nl)
+         IF (ALLOCATED(overlap_cached_valid)) THEN
+            IF (overlap_cached_valid(ifull_local)) THEN
+               overlap_block = overlap_cached(:, :, ifull_local)
+               RETURN
+            END IF
+         END IF
+         IF (use_overlap_grid) THEN
+            CALL rskp_transform_grid_extract(overlap_grid, ifull_local, rmatrix, cmatrix)
+         ELSE
+            CALL dbcsr_set(rmatrix, 0.0_dp)
+            CALL dbcsr_set(cmatrix, 0.0_dp)
+            CALL rskp_transform(rmatrix, cmatrix, matrix_s, 1, kmap%xkp(1:3, ifull_local), &
+                                cell_to_index, sab_nl)
+         END IF
          CALL tb_dbcsr_component_to_dense(tb, rmatrix, overlap_part, para_env, .FALSE.)
          overlap_block(:, :) = CMPLX(overlap_part, 0.0_dp, KIND=dp)
          CALL tb_dbcsr_component_to_dense(tb, cmatrix, overlap_part, para_env, .TRUE.)
@@ -7499,6 +7586,10 @@ CONTAINS
             MAXVAL(ABS(overlap_block - CONJG(TRANSPOSE(overlap_block))))
          IF (local_hermitian_error > 1.0E-10_dp) THEN
             CPABORT("CP2K supplied a non-Hermitian direct overlap to save_tblite")
+         END IF
+         IF (ALLOCATED(overlap_cached_valid)) THEN
+            overlap_cached(:, :, ifull_local) = overlap_block
+            overlap_cached_valid(ifull_local) = .TRUE.
          END IF
 
       END SUBROUTINE prepare_direct_overlap_block
@@ -7539,12 +7630,70 @@ CONTAINS
 #endif
 
 ! **************************************************************************************************
-!> \brief ...
+!> \brief Prepare an exact full-mesh overlap FFT within the remaining 64 MiB cache budget.
+!> \param matrix_s real-space overlap images
+!> \param kpoints CP2K k-point controls
+!> \param kmap complete exchange mesh
+!> \param rmatrix local DBCSR block template
+!> \param cell_to_index real-space image mapping
+!> \param sab_nl overlap neighbor list
+!> \param grid local transformed overlap blocks
+!> \param use_grid whether preparation succeeded
+!> \param keep_direct preserve the independent direct sum or reduced-storage path
+!> \param overlap_cache optional existing dense overlap cache, charged against the budget
+! **************************************************************************************************
+   SUBROUTINE tb_prepare_gxtb_overlap_grid(kpoints, kmap, rmatrix, matrix_s, cell_to_index, &
+                                           sab_nl, grid, use_grid, keep_direct, overlap_cache)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
+      TYPE(dbcsr_type), POINTER                          :: rmatrix
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
+      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
+         POINTER                                         :: sab_nl
+      TYPE(rskp_grid_type), INTENT(INOUT)                :: grid
+      LOGICAL, INTENT(OUT)                               :: use_grid
+      LOGICAL, INTENT(IN)                                :: keep_direct
+      COMPLEX(KIND=dp), ALLOCATABLE, OPTIONAL, &
+         INTENT(IN), DIMENSION(:, :, :)                  :: overlap_cache
+
+      INTEGER(KIND=int_8)                                :: remaining_bytes
+      LOGICAL                                            :: requested
+
+      CALL rskp_transform_grid_release(grid)
+      use_grid = .FALSE.
+      ! Independent qualification and reduced-storage fused symmetry retain
+      ! the direct phase sum. Other paths can use the exact CP2K lattice FFT.
+      IF (keep_direct) RETURN
+      SELECT CASE (kpoints%lattice_fft)
+      CASE (lattice_fft_auto)
+         requested = kmap%nfull >= 27
+      CASE (lattice_fft_on)
+         requested = .TRUE.
+      CASE (lattice_fft_off)
+         requested = .FALSE.
+      CASE DEFAULT
+         CPABORT("Unknown lattice FFT selection mode")
+      END SELECT
+      IF (.NOT. requested) RETURN
+      remaining_bytes = 64_int_8*1024_int_8**2
+      IF (PRESENT(overlap_cache)) THEN
+         IF (ALLOCATED(overlap_cache)) &
+            remaining_bytes = remaining_bytes - 16_int_8*SIZE(overlap_cache, KIND=int_8)
+      END IF
+      IF (remaining_bytes <= 0_int_8) RETURN
+      CALL rskp_transform_grid_prepare(grid, rmatrix, matrix_s, 1, kmap%xkp, kmap%nmesh, &
+                                       cell_to_index, sab_nl, use_grid, max_storage_bytes=remaining_bytes)
+
+   END SUBROUTINE tb_prepare_gxtb_overlap_grid
+
+! **************************************************************************************************
+!> \brief Build the complete regular-mesh exchange, with bounded exact overlap transforms.
 !> \param qs_env ...
 !> \param tb ...
 !> \param matrix_s ...
 !> \param para_env ...
-!> Build g-xTB exchange from the complete regular mesh represented by CP2K's k-points.
 !> \param iter_count ...
 ! **************************************************************************************************
    SUBROUTINE tb_build_gxtb_kpoint_exchange(qs_env, tb, matrix_s, para_env, iter_count)
@@ -7581,6 +7730,8 @@ CONTAINS
       TYPE(dbcsr_type), POINTER                          :: cmatrix, rmatrix
       TYPE(error_type), ALLOCATABLE                      :: error
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(rskp_grid_type)                               :: overlap_grid
+      LOGICAL                                            :: use_overlap_grid
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
       TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
@@ -7683,12 +7834,19 @@ CONTAINS
                         matrix_type=dbcsr_type_antisymmetric)
       CALL cp_dbcsr_alloc_block_from_nbl(rmatrix, sab_nl)
       CALL cp_dbcsr_alloc_block_from_nbl(cmatrix, sab_nl)
+      CALL tb_prepare_gxtb_overlap_grid(kpoints, kmap, rmatrix, matrix_s, cell_to_index, &
+                                        sab_nl, overlap_grid, use_overlap_grid, &
+                                        run_qualification_oracle)
 
       DO ik = 1, kmap%nfull
-         CALL dbcsr_set(rmatrix, 0.0_dp)
-         CALL dbcsr_set(cmatrix, 0.0_dp)
-         CALL rskp_transform(rmatrix, cmatrix, matrix_s, 1, kmap%xkp(1:3, ik), &
-                             cell_to_index, sab_nl)
+         IF (use_overlap_grid) THEN
+            CALL rskp_transform_grid_extract(overlap_grid, ik, rmatrix, cmatrix)
+         ELSE
+            CALL dbcsr_set(rmatrix, 0.0_dp)
+            CALL dbcsr_set(cmatrix, 0.0_dp)
+            CALL rskp_transform(rmatrix, cmatrix, matrix_s, 1, kmap%xkp(1:3, ik), &
+                                cell_to_index, sab_nl)
+         END IF
          CALL tb_dbcsr_component_to_dense(tb, rmatrix, overlap_part, para_env, .FALSE.)
          IF (.NOT. ALL(ieee_is_finite(overlap_part))) &
             CPABORT("CP2K supplied a non-finite k-point overlap matrix to save_tblite")
@@ -7715,6 +7873,7 @@ CONTAINS
          CALL tb_validate_gxtb_kmesh_transform(kpoints, kmap, ao_first, ao_size, overlap)
          tb%gxtb_transform_validated = .TRUE.
       END IF
+      CALL rskp_transform_grid_release(overlap_grid)
       CALL dbcsr_deallocate_matrix(rmatrix)
       CALL dbcsr_deallocate_matrix(cmatrix)
       DEALLOCATE (overlap_part)
@@ -8366,7 +8525,7 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, &
          DIMENSION(:, :, :, :)                           :: density_reduced
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: density_block, overlap_grad, &
-                                                            overlap_reduced
+                                                            overlap_reduced, overlap_cached
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: overlap_adjoint, overlap_block, &
                                                             transform_work
       INTEGER                                            :: actual_batch_size, batch_size, ic, ifull, &
@@ -8379,6 +8538,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: batch_done, fused_symmetry, transform_done, &
                                                             use_real_wfn
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: overlap_cached_valid
       REAL(KIND=dp)                                      :: hermitian_error
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: k_gradient, k_sigma, overlap_part
       TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
@@ -8438,6 +8598,13 @@ CONTAINS
       nat = tb%mol%nat
       nspin = tb%wfn%nspin
       nimg = SIZE(matrix_s, 2)
+      ! Match the forward transaction's bounded overlap reuse. The fused
+      ! symmetry path continues to store only irreducible overlaps.
+      IF (.NOT. fused_symmetry .AND. &
+          REAL(nao, dp)*REAL(nao, dp)*REAL(kmap%nfull, dp)*16.0_dp <= 64.0_dp*1024.0_dp**2) THEN
+         ALLOCATE (overlap_cached(nao, nao, kmap%nfull))
+         ALLOCATE (overlap_cached_valid(kmap%nfull), source=.FALSE.)
+      END IF
       nc = MERGE(1, 2, use_real_wfn)
       kplocal = kp_range(2) - kp_range(1) + 1
       CALL tb_gxtb_ao_layout(tb, ao_first, ao_size)
@@ -8647,6 +8814,7 @@ CONTAINS
                   overlap_adjoint, overlap_block, overlap_grad, overlap_part, pmat_ext, &
                   transform_work)
       IF (ALLOCATED(overlap_reduced)) DEALLOCATE (overlap_reduced)
+      IF (ALLOCATED(overlap_cached)) DEALLOCATE (overlap_cached, overlap_cached_valid)
 
    CONTAINS
 
@@ -8791,6 +8959,12 @@ CONTAINS
 
          REAL(KIND=dp)                                      :: local_hermitian_error
 
+         IF (ALLOCATED(overlap_cached_valid)) THEN
+            IF (overlap_cached_valid(ifull_local)) THEN
+               overlap_block = overlap_cached(:, :, ifull_local)
+               RETURN
+            END IF
+         END IF
          CALL dbcsr_set(rmatrix, 0.0_dp)
          CALL dbcsr_set(cmatrix, 0.0_dp)
          CALL rskp_transform(rmatrix, cmatrix, matrix_s, 1, kmap%xkp(1:3, ifull_local), &
@@ -8807,6 +8981,10 @@ CONTAINS
             MAXVAL(ABS(overlap_block - CONJG(TRANSPOSE(overlap_block))))
          IF (local_hermitian_error > 1.0E-10_dp) THEN
             CPABORT("CP2K supplied a non-Hermitian direct overlap to streamed reverse save_tblite")
+         END IF
+         IF (ALLOCATED(overlap_cached_valid)) THEN
+            overlap_cached(:, :, ifull_local) = overlap_block
+            overlap_cached_valid(ifull_local) = .TRUE.
          END IF
 
       END SUBROUTINE prepare_direct_overlap_block
@@ -8905,7 +9083,7 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: packed_payload
       COMPLEX(KIND=dp), ALLOCATABLE, &
          DIMENSION(:, :, :, :)                           :: density_local
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: density_block, overlap_grad
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: density_block, overlap_grad, overlap_cached
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: overlap_adjoint, overlap_block, &
                                                             transform_work
       INTEGER                                            :: actual_batch_size, batch_size, &
@@ -8925,6 +9103,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       INTEGER(KIND=int_8)                                :: local_payload_size, peak_complex, &
                                                             root_payload_size, transaction_id(2)
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: overlap_cached_valid
       LOGICAL                                            :: batch_done, contributor_done, &
                                                             first_batch, importer_done, leader, local_failed, owns_source, &
                                                             service_rank, transform_done, use_real_wfn
@@ -9039,6 +9218,10 @@ CONTAINS
                 density_block(nao, nao, nspin), overlap_adjoint(nao, nao), &
                 overlap_block(nao, nao), overlap_grad(nao, nao, nred), &
                 transform_work(nao, nao), source=CMPLX(0.0_dp, 0.0_dp, KIND=dp))
+      IF (REAL(nao, dp)*REAL(nao, dp)*REAL(kmap%nfull, dp)*16.0_dp <= 64.0_dp*1024.0_dp**2) THEN
+         ALLOCATE (overlap_cached(nao, nao, kmap%nfull))
+         ALLOCATE (overlap_cached_valid(kmap%nfull), source=.FALSE.)
+      END IF
       ALLOCATE (overlap_part(nao, nao), k_gradient(3, nat), k_sigma(3, 3), source=0.0_dp)
       CALL tb_collect_local_kpoint_density(tb, kpoints, density_local)
       IF (.NOT. ALL(ieee_is_finite(REAL(density_local, KIND=dp))) .OR. &
@@ -9657,6 +9840,7 @@ CONTAINS
                   overlap_adjoint, overlap_block, overlap_grad, overlap_part, pmat_ext, &
                   transform_work)
       IF (ALLOCATED(pull_owner)) DEALLOCATE (pull_owner)
+      IF (ALLOCATED(overlap_cached)) DEALLOCATE (overlap_cached, overlap_cached_valid)
 
    CONTAINS
 
@@ -9691,6 +9875,38 @@ CONTAINS
             END DO
          END IF
 
+         CALL prepare_overlap_block(ifull_local)
+         ! A cached overlap does not replace the density collectives: these
+         ! depend on this request's ownership and reduce_to_root flag.
+         IF (reduce_to_root) THEN
+            IF (replicated_importers) THEN
+               CALL para_env_global%sum(density_block)
+            ELSE IF (leader) THEN
+               DO ispin_local = 1, nspin
+                  CALL para_env_inter_kp%sum(density_block(:, :, ispin_local), &
+                                             para_env_inter_kp%source)
+               END DO
+            END IF
+         END IF
+
+      END SUBROUTINE prepare_reverse_block
+
+! **************************************************************************************************
+!> \brief Reuse invariant overlaps within one reverse transaction, bounded to 64 MiB per rank.
+!> \param ifull_local ...
+! **************************************************************************************************
+      SUBROUTINE prepare_overlap_block(ifull_local)
+
+         INTEGER, INTENT(IN)                                :: ifull_local
+
+         REAL(KIND=dp)                                      :: local_hermitian_error
+
+         IF (ALLOCATED(overlap_cached_valid)) THEN
+            IF (overlap_cached_valid(ifull_local)) THEN
+               overlap_block = overlap_cached(:, :, ifull_local)
+               RETURN
+            END IF
+         END IF
          CALL dbcsr_set(rmatrix, 0.0_dp)
          CALL dbcsr_set(cmatrix, 0.0_dp)
          CALL rskp_transform(rmatrix, cmatrix, matrix_s, 1, kmap%xkp(1:3, ifull_local), &
@@ -9706,18 +9922,12 @@ CONTAINS
             MAXVAL(ABS(overlap_block - CONJG(TRANSPOSE(overlap_block))))
          IF (local_hermitian_error > 1.0E-10_dp) &
             CPABORT("KGROUP_PARTIAL_ROOT reverse overlap is not Hermitian")
-         IF (reduce_to_root) THEN
-            IF (replicated_importers) THEN
-               CALL para_env_global%sum(density_block)
-            ELSE IF (leader) THEN
-               DO ispin_local = 1, nspin
-                  CALL para_env_inter_kp%sum(density_block(:, :, ispin_local), &
-                                             para_env_inter_kp%source)
-               END DO
-            END IF
+         IF (ALLOCATED(overlap_cached_valid)) THEN
+            overlap_cached(:, :, ifull_local) = overlap_block
+            overlap_cached_valid(ifull_local) = .TRUE.
          END IF
 
-      END SUBROUTINE prepare_reverse_block
+      END SUBROUTINE prepare_overlap_block
 
 ! **************************************************************************************************
 !> \brief ...
@@ -9941,16 +10151,13 @@ CONTAINS
 !> \brief ...
 !> \param tb ...
 !> \param matrix_s ...
-!> \param sab_orb ...
 !> \param nimg ...
 !> Allocate the image-resolved multipole matrices used by the SCC potential.
 ! **************************************************************************************************
-   SUBROUTINE tb_allocate_image_multipoles(tb, matrix_s, sab_orb, nimg)
+   SUBROUTINE tb_allocate_image_multipoles(tb, matrix_s, nimg)
 
       TYPE(tblite_type), POINTER                         :: tb
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
-      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
-         POINTER                                         :: sab_orb
       INTEGER, INTENT(IN)                                :: nimg
 
       INTEGER                                            :: i, idx, img
@@ -9968,22 +10175,21 @@ CONTAINS
          DO i = 1, dip_n
             idx = i + dip_n*(img - 1)
             ALLOCATE (tb%dipbra(idx)%matrix, tb%dipket(idx)%matrix)
-            CALL dbcsr_create(tb%dipbra(idx)%matrix, template=matrix_s(1, img)%matrix, &
-                              name="DIPOLE BRA MATRIX")
-            CALL dbcsr_create(tb%dipket(idx)%matrix, template=matrix_s(1, img)%matrix, &
-                              name="DIPOLE KET MATRIX")
-            CALL cp_dbcsr_alloc_block_from_nbl(tb%dipbra(idx)%matrix, sab_orb)
-            CALL cp_dbcsr_alloc_block_from_nbl(tb%dipket(idx)%matrix, sab_orb)
+            ! All image matrices have the overlap's already allocated local
+            ! block layout.  Do not rescan the full image neighbour list for
+            ! each component: that repeats identical work 18 times per image.
+            CALL dbcsr_copy(tb%dipbra(idx)%matrix, matrix_s(1, img)%matrix, name="DIPOLE BRA MATRIX")
+            CALL dbcsr_copy(tb%dipket(idx)%matrix, matrix_s(1, img)%matrix, name="DIPOLE KET MATRIX")
+            CALL dbcsr_set(tb%dipbra(idx)%matrix, 0.0_dp)
+            CALL dbcsr_set(tb%dipket(idx)%matrix, 0.0_dp)
          END DO
          DO i = 1, quad_n
             idx = i + quad_n*(img - 1)
             ALLOCATE (tb%quadbra(idx)%matrix, tb%quadket(idx)%matrix)
-            CALL dbcsr_create(tb%quadbra(idx)%matrix, template=matrix_s(1, img)%matrix, &
-                              name="QUADRUPOLE BRA MATRIX")
-            CALL dbcsr_create(tb%quadket(idx)%matrix, template=matrix_s(1, img)%matrix, &
-                              name="QUADRUPOLE KET MATRIX")
-            CALL cp_dbcsr_alloc_block_from_nbl(tb%quadbra(idx)%matrix, sab_orb)
-            CALL cp_dbcsr_alloc_block_from_nbl(tb%quadket(idx)%matrix, sab_orb)
+            CALL dbcsr_copy(tb%quadbra(idx)%matrix, matrix_s(1, img)%matrix, name="QUADRUPOLE BRA MATRIX")
+            CALL dbcsr_copy(tb%quadket(idx)%matrix, matrix_s(1, img)%matrix, name="QUADRUPOLE KET MATRIX")
+            CALL dbcsr_set(tb%quadbra(idx)%matrix, 0.0_dp)
+            CALL dbcsr_set(tb%quadket(idx)%matrix, 0.0_dp)
          END DO
       END DO
 
@@ -10419,9 +10625,8 @@ CONTAINS
       CALL dbcsr_allocate_matrix_set(matrix_h, 1, nimg)
       DO img = 1, nimg
          ALLOCATE (matrix_h(1, img)%matrix)
-         CALL dbcsr_create(matrix_h(1, img)%matrix, template=matrix_s(1, img)%matrix, &
-                           name="HAMILTONIAN MATRIX")
-         CALL cp_dbcsr_alloc_block_from_nbl(matrix_h(1, img)%matrix, sab_orb)
+         CALL dbcsr_copy(matrix_h(1, img)%matrix, matrix_s(1, img)%matrix, name="HAMILTONIAN MATRIX")
+         CALL dbcsr_set(matrix_h(1, img)%matrix, 0.0_dp)
       END DO
       CALL set_ks_env(ks_env, matrix_h_kp=matrix_h)
 #if defined(__TBLITE_GXTB)
@@ -10453,7 +10658,7 @@ CONTAINS
          END DO
          CALL cp2k_build_image_h0(tb%calc, tb%mol, tb%bcache, tb%accuracy, tb%selfenergy, &
                                   translations, h0_images)
-         CALL tb_allocate_image_multipoles(tb, matrix_s, sab_orb, nimg)
+         CALL tb_allocate_image_multipoles(tb, matrix_s, nimg)
          IF (ALLOCATED(tb%calc%acp)) THEN
             ! ACP is a convolution of projector/valence overlaps.  Build C(T)
             ! only on save_tblite's one-overlap cutoff, while SAB_KP above

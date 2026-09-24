@@ -1,33 +1,33 @@
-"H2O_gxtb_pbc.inp"           = [{matcher="E_total", tol=1.0E-8, ref=-76.450817156286917},
+"H2O_gxtb_pbc.inp"           = [{matcher="E_total", tol=1.0E-8, ref=-76.450817108363694},
                                   {matcher="GXTB_native_raw"},
                                   {matcher="GXTB_native_simple"},
                                   {matcher="GXTB_native_fdiis"}]
-"H2O_gxtb_kp_gamma.inp"      = [{matcher="E_total", tol=1.0E-8, ref=-76.450817153224875}]
+"H2O_gxtb_kp_gamma.inp"      = [{matcher="E_total", tol=1.0E-8, ref=-76.450817108363708}]
 "H2O_gxtb_force.inp"         = [{matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0}]
 "H2O_gxtb_stress.inp"        = [{matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0}]
 "H2O_gxtb_gamma_force_stress.inp" = [{matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
                                        {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0}]
 "H2O_gxtb_kp_gamma_force_stress.inp" = [{matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
                                           {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0}]
-"H2O_gxtb_reference_cli.inp" = [{matcher="E_total", tol=1.0E-8, ref=-76.450817153220441}]
-"O2_gxtb_uks_reference_cli.inp" = [{matcher="E_total", tol=1.0E-8, ref=-150.344922040007361}]
-"O2_gxtb_uks_kp_311.inp" = [{matcher="E_total", tol=1.0E-10, ref=-150.465067867307624},
+"H2O_gxtb_reference_cli.inp" = [{matcher="E_total", tol=1.0E-8, ref=-76.450817108363708}]
+"O2_gxtb_uks_reference_cli.inp" = [{matcher="E_total", tol=1.0E-8, ref=-150.34492204000736}]
+"O2_gxtb_uks_kp_311.inp" = [{matcher="E_total", tol=1.0E-10, ref=-150.46506775618306},
                               {matcher="TBLITE_alpha_population", tol=1.0E-10, ref=7.0},
                               {matcher="TBLITE_beta_population", tol=1.0E-10, ref=5.0}]
-"H2O_gxtb_cp2k_density_mixer.inp" = [{matcher="E_total", tol=1.0E-8, ref=-76.450817156286917},
+"H2O_gxtb_cp2k_density_mixer.inp" = [{matcher="E_total", tol=1.0E-8, ref=-76.450817108363694},
                                       {matcher="GXTB_cp2k_pmix"}]
-"H2O_gxtb_cp2k_fock_diis.inp"     = [{matcher="E_total", tol=1.0E-8, ref=-76.450817156286917},
+"H2O_gxtb_cp2k_fock_diis.inp"     = [{matcher="E_total", tol=1.0E-8, ref=-76.450817108363694},
                                       {matcher="GXTB_cp2k_fdiis"}]
-"H2O_gxtb_kp_cp2k_density_mixer.inp" = [{matcher="E_total", tol=1.0E-10, ref=-76.450817418357133},
+"H2O_gxtb_kp_cp2k_density_mixer.inp" = [{matcher="E_total", tol=1.0E-10, ref=-76.450817373496093},
                                          {matcher="GXTB_cp2k_pmix"}]
-"H2O_gxtb_kp_cp2k_fock_diis.inp" = [{matcher="E_total", tol=1.0E-10, ref=-76.450817418357119},
+"H2O_gxtb_kp_cp2k_fock_diis.inp" = [{matcher="E_total", tol=1.0E-10, ref=-76.450817373496093},
                                      {matcher="GXTB_cp2k_fdiis"}]
-"Si_prim_gxtb_kp_full.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.098706159326980}]
-"Si_prim_gxtb_kp_311.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.062675854689360}]
-"CH4_gxtb_kp_full.inp" = [{matcher="E_total", tol=1.0E-10, ref=-40.467010243469041},
+"Si_prim_gxtb_kp_full.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.09869321635131}]
+"Si_prim_gxtb_kp_311.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.06270901376740}]
+"CH4_gxtb_kp_full.inp" = [{matcher="E_total", tol=1.0E-10, ref=-40.467008824367596},
                             {matcher="GXTB_auto_mode"}]
-"H2_gxtb_kp_311.inp" = [{matcher="E_total", tol=1.0E-10, ref=-1.185698700807108}]
-"H2_gxtb_gamma_supercell_311.inp" = [{matcher="E_total", tol=1.0E-10, ref=-3.557096101919630}]
+"H2_gxtb_kp_311.inp" = [{matcher="E_total", tol=1.0E-10, ref=-1.1856987008071080}]
+"H2_gxtb_gamma_supercell_311.inp" = [{matcher="E_total", tol=1.0E-10, ref=-3.5570961024724221}]
 "H2_gxtb_kp_311_force_stress.inp" = [{matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
                                        {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0}]
 "H2_gxtb_gamma_supercell_311_force_stress.inp" = [
@@ -43,34 +43,38 @@
   {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0},
 ]
 "CH4_gxtb_kp_k290.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.467010243469048},
+  {matcher="E_total", tol=1.0E-10, ref=-40.467008824367582},
   {matcher="N_special_kpoints", tol=0.0, ref=1},
 ]
 "CH4_gxtb_kp_k290_force_stress.inp" = [
   {matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
   {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0},
 ]
-"H2_gxtb_kp_311_tr.inp" = [{matcher="E_total", tol=1.0E-10, ref=-1.185698700807108}]
+"H2_gxtb_kp_311_tr.inp" = [{matcher="E_total", tol=1.0E-10, ref=-1.1856987008071080}]
 "H2_gxtb_kp_311_tr_force_stress.inp" = [
   {matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
   {matcher="DEBUG_force_sum", tol=1.0E-6, ref=0.0},
 ]
 "O2_gxtb_uks_kp_311_tr.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-150.465067867307624},
+  {matcher="E_total", tol=1.0E-10, ref=-150.46506775618306},
   {matcher="TBLITE_alpha_population", tol=1.0E-10, ref=7.0},
   {matcher="TBLITE_beta_population", tol=1.0E-10, ref=5.0},
 ]
-"Si_prim_gxtb_kp_general.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.001230548395938}]
-"Si_prim_gxtb_kp_shifted_full.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.001230548395938}]
+"Si_prim_gxtb_kp_general.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.00125000568460}]
+"Si_prim_gxtb_kp_shifted_full.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.00125000568460}]
 "CH4_gxtb_kp_restart_3.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.466670333868578},
+  {matcher="E_total", tol=1.0E-10, ref=-40.466668927226941},
 ]
 "CH4_gxtb_kp_restart_4.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.466666199913966},
+  {matcher="E_total", tol=1.0E-10, ref=-40.466664793424442},
   {matcher="KPOINT_RESTART_VALIDATED_TRANSFER"},
 ]
 "H2O_gxtb_kp_cp2k_density_mixer_restart.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-76.450817418357133},
+  {matcher="E_total", tol=1.0E-10, ref=-76.450817373496093},
   {matcher="GXTB_cp2k_pmix"},
 ]
+# The Gamma atom-block pattern must not truncate ACP or the exchange density.
+# The two cells are equivalent only with the explicit Gamma-centered even mesh.
+"NaCl_gxtb_kp_611_support.inp" = [{matcher="E_total", tol=1.0E-10, ref=-622.90274819561853}]
+"NaCl_gxtb_gamma_supercell_611_support.inp" = [{matcher="E_total", tol=1.0E-10, ref=-3737.4164891734622}]
 #EOF

@@ -307,7 +307,7 @@ CONTAINS
       LOGICAL, ALLOCATABLE, DIMENSION(:) :: all_present, aux_fit_present, aux_present, &
          cneo_present, core_present, default_present, nonbond1_atom, nonbond2_atom, oce_present, &
          orb_present, ppl_present, ppnl_present, ri_present, xb1_atom, xb2_atom
-      REAL(dp)                                           :: almo_rcov, almo_rvdw, eps_schwarz, &
+      REAL(dp)                                           :: almo_rcov, almo_rvdw, eps_schwarz, gxtb_radius, &
                                                             omega, pdist, rcut, roperator, subcells
       REAL(dp), ALLOCATABLE, DIMENSION(:) :: all_pot_rad, aux_fit_radius, c_radius, calpha, &
          core_radius, nuc_orb_radius, oce_radius, orb_radius, ppl_radius, ppnl_radius, ri_radius, &
@@ -610,6 +610,27 @@ CONTAINS
                      plane_distance(0, 0, 1, cell))
       END IF
       CALL pair_radius_setup(orb_present, orb_present, orb_radius, orb_radius, pair_radius, pdist)
+      ! The Gamma g-xTB matrices are built by the provider, including the
+      ! separable ACP convolution. Ordinary Gaussian overlap screening is
+      ! insufficient for their support: scattering only those atom blocks
+      ! would discard ACP entries and truncate the collected density. Cover
+      ! the provider convolution range and every atom pair needed by the
+      ! dense Gamma exchange/density, even in cells larger than that range.
+      IF (.NOT. dokp .AND. xtb .AND. dft_control%qs_control%xtb_control%do_tblite .AND. &
+          dft_control%qs_control%xtb_control%tblite_method == gxtb) THEN
+         gxtb_radius = gxtb_gamma_density_radius(particle_set, cell)
+         DO ikind = 1, nkind
+            CALL get_qs_kind(qs_kind_set(ikind), xtb_parameter=xtb_atom)
+            CALL get_xtb_atom_param(xtb_parameter=xtb_atom, rcut=c_radius(ikind))
+         END DO
+         DO jkind = 1, nkind
+            DO ikind = 1, nkind
+               IF (orb_present(ikind) .AND. orb_present(jkind)) &
+                  pair_radius(ikind, jkind) = MAX(pair_radius(ikind, jkind), &
+                                                  c_radius(ikind) + c_radius(jkind), gxtb_radius)
+            END DO
+         END DO
+      END IF
       CALL build_neighbor_lists(sab_orb, particle_set, atom2d, cell, pair_radius, &
                                 mic=mic, subcells=subcells, molecular=molecule_only, nlname="sab_orb", &
                                 stable_images=stable_images)
@@ -1072,6 +1093,44 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE build_qs_neighbor_lists
+
+! **************************************************************************************************
+!> \brief Bound a representative of every atom pair for dense Gamma g-xTB matrices.
+!> \param particle_set ...
+!> \param cell ...
+!> \return Radius that includes all atom pairs, including pairs with negligible overlap.
+! **************************************************************************************************
+   FUNCTION gxtb_gamma_density_radius(particle_set, cell) RESULT(radius)
+      TYPE(particle_type), DIMENSION(:), INTENT(IN)      :: particle_set
+      TYPE(cell_type), POINTER, INTENT(IN)               :: cell
+      REAL(dp)                                           :: radius
+
+      INTEGER                                            :: corner, iatom, idim
+      REAL(dp), DIMENSION(3)                             :: bounds, lower, r, s, upper
+
+      CPASSERT(SIZE(particle_set) > 0)
+      lower = HUGE(0.0_dp)
+      upper = -HUGE(0.0_dp)
+      DO iatom = 1, SIZE(particle_set)
+         CALL real_to_scaled(s, particle_set(iatom)%r, cell)
+         lower = MIN(lower, s)
+         upper = MAX(upper, s)
+      END DO
+      bounds = upper - lower
+      ! A minimum-image representative exists with each periodic fractional
+      ! component in [-1/2,1/2]. Nonperiodic directions retain the atom extent.
+      WHERE (cell%perd /= 0) bounds = MIN(bounds, 0.5_dp)
+      radius = 0.0_dp
+      DO corner = 0, 7
+         DO idim = 1, 3
+            s(idim) = MERGE(-bounds(idim), bounds(idim), BTEST(corner, idim - 1))
+         END DO
+         CALL scaled_to_real(r, s, cell)
+         radius = MAX(radius, NORM2(r))
+      END DO
+      ! The neighbor list applies a strict distance inequality.
+      radius = radius + 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, radius)
+   END FUNCTION gxtb_gamma_density_radius
 
 ! **************************************************************************************************
 !> \brief   Build simple pair neighbor lists.

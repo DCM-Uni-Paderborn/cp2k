@@ -835,7 +835,11 @@ CONTAINS
 #if defined(__TBLITE_GXTB)
       IF (ASSOCIATED(dft_control)) THEN
          IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
-             dft_control%qs_control%xtb_control%tblite_method == gxtb) use_omp_kpoints = .FALSE.
+             dft_control%qs_control%xtb_control%tblite_method == gxtb) THEN
+            ! The native mixer supplies complete F(k), prepared before entering OpenMP.
+            ! CP2K density/DIIS mixing still needs its operator-correction callbacks.
+            use_omp_kpoints = use_omp_kpoints .AND. tb_native_scc_mixer_active(dft_control)
+         END IF
       END IF
 #endif
 
@@ -1375,12 +1379,16 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'do_general_diag_kp_omp'
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: coeffs
+      COMPLEX(KIND=dp), POINTER, DIMENSION(:, :, :, :)  :: mixed_fock_kp
       INTEGER                                            :: cdiis_ncall, handle, ib, ikp, kplocal, &
                                                             nb, nspin, nworkers, thread
       LOGICAL                                            :: cdiis_step, use_adiis
       REAL(KIND=dp)                                      :: diis_weight
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct, mo_struct
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
+#if defined(__TBLITE_GXTB)
+      TYPE(dft_control_type), POINTER                    :: dft_control
+#endif
       TYPE(kp_diag_omp_workspace_type), ALLOCATABLE, &
          DIMENSION(:)                                    :: workspace
       TYPE(kp_transform_plan_type)                       :: transform_plan
@@ -1389,9 +1397,32 @@ CONTAINS
 
       CALL timeset(routineN, handle)
       NULLIFY (matrix_struct, mo_struct, mo_coeff, kp, scf_section)
+      NULLIFY (mixed_fock_kp)
 
       kplocal = SIZE(xkp, 2)
       nspin = SIZE(matrix_ks, 1)
+#if defined(__TBLITE_GXTB)
+      NULLIFY (dft_control)
+      IF (PRESENT(qs_env)) THEN
+         CALL get_qs_env(qs_env, dft_control=dft_control)
+         IF (ASSOCIATED(dft_control)) THEN
+            IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
+                dft_control%qs_control%xtb_control%tblite_method == gxtb) THEN
+               CPASSERT(tb_native_scc_mixer_active(dft_control))
+               CPASSERT(.NOT. do_diis)
+               ! Keep all density collection and potential mixing outside worker threads.
+               ! A same-grid post-SCF call reuses the converged cached matrices.
+               IF (update_p) CALL tb_prepare_gxtb_kpoint_mixer(qs_env, matrix_ks, kpoints, scf_env)
+               CPASSERT(ASSOCIATED(qs_env%tb_tblite))
+               CPASSERT(qs_env%tb_tblite%mixed_fock_kp_valid)
+               CPASSERT(ALLOCATED(qs_env%tb_tblite%mixed_fock_kp))
+               mixed_fock_kp => qs_env%tb_tblite%mixed_fock_kp
+               CPASSERT(SIZE(mixed_fock_kp, 3) == nspin)
+               CPASSERT(SIZE(mixed_fock_kp, 4) == kplocal)
+            END IF
+         END IF
+      END IF
+#endif
       use_adiis = update_p .AND. &
                   scf_control%diagonalization%update_method == diag_update_method_adiis
       nworkers = 1
@@ -1467,13 +1498,14 @@ CONTAINS
       ELSE
          diis_step = .FALSE.
 !$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(DYNAMIC, 1) NUM_THREADS(nworkers) &
-!$OMP SHARED(workspace,matrix_ks,matrix_s,kpoints,scf_env,scf_control,transform_plan,xkp,kplocal,nspin,nworkers) &
+!$OMP SHARED(workspace,matrix_ks,matrix_s,kpoints,scf_env,scf_control,transform_plan,xkp,kplocal,nspin,nworkers, &
+!$OMP        mixed_fock_kp) &
 !$OMP PRIVATE(ikp,thread)
          DO ikp = 1, kplocal
             thread = 1
 !$          thread = omp_get_thread_num() + 1
             CALL kp_diag_job(ikp, workspace(thread), matrix_ks, matrix_s, kpoints, scf_env, scf_control, &
-                             transform_plan, xkp, nspin)
+                             transform_plan, xkp, nspin, mixed_fock_kp)
          END DO
 !$OMP END PARALLEL DO
       END IF
@@ -1606,9 +1638,10 @@ CONTAINS
 !> \param transform_plan ...
 !> \param xkp ...
 !> \param nspin ...
+!> \param mixed_fock_kp read-only complete native g-xTB F(k), or a disassociated pointer
 ! **************************************************************************************************
    SUBROUTINE kp_diag_job(ikp, workspace, matrix_ks, matrix_s, kpoints, scf_env, scf_control, &
-                          transform_plan, xkp, nspin)
+                          transform_plan, xkp, nspin, mixed_fock_kp)
 
       INTEGER, INTENT(IN)                                :: ikp
       TYPE(kp_diag_omp_workspace_type), INTENT(INOUT)    :: workspace
@@ -1619,8 +1652,10 @@ CONTAINS
       TYPE(kp_transform_plan_type), INTENT(IN)           :: transform_plan
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       INTEGER, INTENT(IN)                                :: nspin
+      COMPLEX(KIND=dp), POINTER, INTENT(IN), &
+         DIMENSION(:, :, :, :)                           :: mixed_fock_kp
 
-      INTEGER                                            :: ispin
+      INTEGER                                            :: icol, irow, ispin, ncol, nrow
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       TYPE(cp_fm_type), POINTER                          :: imos, rmos
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -1628,7 +1663,23 @@ CONTAINS
       kp => kpoints%kp_env(ikp)%kpoint_env
       CALL kp_build_cfm(matrix_s, 1, xkp(1:3, ikp), transform_plan, workspace%csmat_base)
       DO ispin = 1, nspin
-         CALL kp_build_cfm(matrix_ks, ispin, xkp(1:3, ikp), transform_plan, workspace%cksmat)
+         IF (ASSOCIATED(mixed_fock_kp)) THEN
+            ! The full matrix is read-only; every worker owns its LAPACK input.
+            ! Use the matrix's AO index mapping rather than assuming a storage order.
+            nrow = SIZE(workspace%cksmat%local_data, 1)
+            ncol = SIZE(workspace%cksmat%local_data, 2)
+            CPASSERT(nrow == SIZE(mixed_fock_kp, 1))
+            CPASSERT(ncol == SIZE(mixed_fock_kp, 2))
+            DO icol = 1, ncol
+               DO irow = 1, nrow
+                  workspace%cksmat%local_data(irow, icol) = &
+                     mixed_fock_kp(workspace%cksmat%matrix_struct%row_indices(irow), &
+                                   workspace%cksmat%matrix_struct%col_indices(icol), ispin, ikp)
+               END DO
+            END DO
+         ELSE
+            CALL kp_build_cfm(matrix_ks, ispin, xkp(1:3, ikp), transform_plan, workspace%cksmat)
+         END IF
          CALL cp_cfm_to_cfm(workspace%csmat_base, workspace%csmat)
          CALL get_mo_set(kp%mos(1, ispin), mo_coeff=rmos, eigenvalues=eigenvalues)
          CALL get_mo_set(kp%mos(2, ispin), mo_coeff=imos)

@@ -1,6 +1,8 @@
 # Native periodic g-xTB regression provenance
 
-The energy references were refreshed on 2026-09-09 for the minimal
+## Historical 9 September baseline
+
+The prior energy references were refreshed on 2026-09-09 for the minimal
 `DCM-Uni-Paderborn/save_tblite:lmseidler-integration` model at
 `02730ac0ada8a56474fe53ffd6634e83e8cc2661`. They are not references for the
 older performance branch's molecular parameterization.
@@ -22,5 +24,64 @@ were retained; model changes must not be hidden by increasing them.
 The 2x2x2 finite-difference case checks the initial special-k-point count:
 the displaced geometries legitimately have lower symmetry.
 
-These small-system regression tests do not establish performance, dense-mesh
+Those small-system regression tests did not establish performance, dense-mesh
 benchmark convergence, or qualification of optional acceleration combinations.
+
+## Gamma matrix support regression
+
+The two `NaCl_*_611_support` inputs are a deliberately distorted cubic salt,
+not a rock-salt benchmark. They compare a Gamma-centered 6x1x1 primitive mesh
+with its explicit 12-atom Gamma supercell. Ordinary Gaussian overlap screening
+omitted Gamma atom blocks required by the separable ACP and exchange density.
+The k-point path already retained the provider's convolution support.
+
+The corrected pair agrees within 4.1e-11 Eh per primitive cell. The old Gamma
+result differs by 5.65e-5 Eh for the supercell, so the regression distinguishes
+the fix without relaxing energy tolerances. The even mesh must explicitly be
+Gamma-centered; an unshifted MACDONALD input alone is not sufficient.
+These references require the accompanying periodic Coulomb/auxiliary-charge
+corrections in the provider and dependency.
+
+## 25 September corrected periodic model
+
+Current energy references include the provider's full periodic Hubbard
+correction, retained nonzero-image self terms, the differentiable C2
+Wigner-Seitz partition, and corrected multicharge real/reciprocal/image bounds.
+The latter is distributed as a pinned source plus a tested correctness patch
+in save_tblite, not as an unpublished dependency assumption.
+
+The minimal and extended provider candidates were tested with the same
+CP2K source. All 39 inputs in this directory and the SPGLIB suite terminate
+normally with converged SCF. Their maximum cross-build energy difference is
+2.85e-14 Eh. Executable SHA-256 identifiers:
+
+- Minimal: `db56ac410a64236de86611fd0f4327646a8eea6135fc2bc331616c16290b92ea`.
+- Extended: `8617dd64636f92d3e5cfa0e05ef8adbdf78ae0dabbf807b35e39b1b3612c42c1`.
+
+References were reviewed against full/K290/SPGLIB, general/shifted mesh,
+time-reversal, mixer/restart, CLI-Gamma and explicit-supercell comparisons.
+The independent provider and multicharge image-sum/replication tests also pass.
+The old numeric failures were retained in the validation archive. Changing
+the references does not assert that the historical and corrected periodic
+models are identical; no numeric tolerance was increased.
+
+The C2 methane finite-difference step check was repeated for implicit Gamma,
+explicit Gamma, SPGLIB Gamma and SPGLIB 2x2x2. Their virial difference sums
+at DX=1e-4 are 1.216421e-6, 1.216958e-6, 1.218570e-6 and 1.237255e-6 Eh.
+At DX=5e-5 they fall to 1.57812e-7, 1.59961e-7, 1.53515e-7 and 1.61995e-7;
+at DX=2.5e-5 to 2.1391e-8, 2.1391e-8, 1.2797e-8 and 2.1277e-8 Eh.
+Both providers pass the unchanged 1e-6 tolerance at the retained DX=5e-5.
+The extended-provider corresponding maximum is 1.60921e-7 Eh.
+
+## Smooth-image stress finite differences
+
+For the cubic methane K290 case, use `DX 5e-5` with the existing `1e-6`
+virial/force tolerances. With the current C2 Wigner-Seitz partition, the
+virial absolute-difference sum at steps `1e-4`, `5e-5`, and `2.5e-5` is
+respectively `1.238329e-6`, `1.60921e-7`, and `1.9129e-8` Eh. Tightening
+`EPS_SCF` from `1e-10` to `1e-12` leaves the first value essentially
+unchanged (`1.235106e-6`); a full, unreduced mesh also reproduces it
+(`1.239403e-6`). This step-convergence check distinguishes finite-difference
+discretization from an analytic-stress or symmetry-reduction discrepancy.
+The reported quantity is the energy-valued `pv_virial` difference, not a
+volume-normalized stress.

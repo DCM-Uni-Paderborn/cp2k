@@ -1,6 +1,6 @@
-"Si_prim_gxtb_kp_spglib.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.098706159326980},
+"Si_prim_gxtb_kp_spglib.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.09869321635131},
                                   {matcher="N_special_kpoints", tol=0.0, ref=2}]
-"CH4_gxtb_kp_spglib.inp" = [{matcher="E_total", tol=1.0E-10, ref=-40.467010243469041},
+"CH4_gxtb_kp_spglib.inp" = [{matcher="E_total", tol=1.0E-10, ref=-40.467008824367582},
                               {matcher="N_special_kpoints", tol=0.0, ref=1}]
 "CH4_gxtb_kp_spglib_111_force_stress.inp" = [
   {matcher="DEBUG_stress_sum", tol=1.0E-6, ref=0.0},
@@ -8,7 +8,7 @@
   {matcher="N_special_kpoints", tol=0.0, ref=1},
 ]
 "Si_prim_gxtb_kp_shifted_spglib.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-579.001230548395938},
+  {matcher="E_total", tol=1.0E-10, ref=-579.00125000568460},
   {matcher="N_special_kpoints", tol=0.0, ref=3},
 ]
 "CH4_gxtb_kp_spglib_222_force_stress.inp" = [

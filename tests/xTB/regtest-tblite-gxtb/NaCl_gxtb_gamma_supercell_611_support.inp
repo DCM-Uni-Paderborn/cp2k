@@ -1,0 +1,62 @@
+# Distorted cubic salt: a compact regression for full Gamma matrix support.
+# This is not the rock-salt benchmark geometry.
+&GLOBAL
+  PROJECT NaCl_gxtb_gamma_supercell_611_support
+  PRINT_LEVEL MEDIUM
+  RUN_TYPE ENERGY_FORCE
+&END GLOBAL
+&FORCE_EVAL
+  METHOD QUICKSTEP
+  STRESS_TENSOR ANALYTICAL
+  &DFT
+    &POISSON
+      PERIODIC XYZ
+      POISSON_SOLVER PERIODIC
+    &END POISSON
+    &QS
+      EPS_DEFAULT 1.0E-12
+      METHOD xTB
+      &XTB
+        GFN_TYPE TBLITE
+        SCC_MIXER TBLITE
+        &TBLITE
+          METHOD GXTB
+          ACCURACY 1.0
+        &END TBLITE
+      &END XTB
+    &END QS
+    &SCF
+      EPS_SCF 1.0E-12
+      MAX_SCF 200
+      SCF_GUESS MOPAC
+      &MIXING
+        METHOD DIRECT_P_MIXING
+        ALPHA 0.2
+      &END MIXING
+      &PRINT
+        &RESTART OFF
+        &END RESTART
+      &END PRINT
+    &END SCF
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 24.000000000000 4.0 4.0
+      PERIODIC XYZ
+    &END CELL
+    &COORD
+      Na 0.000000000000 0 0
+      Cl 1.880000000000 2.0 2.12
+      Na 4.000000000000 0 0
+      Cl 5.880000000000 2.0 2.12
+      Na 8.000000000000 0 0
+      Cl 9.880000000000 2.0 2.12
+      Na 12.000000000000 0 0
+      Cl 13.880000000000 2.0 2.12
+      Na 16.000000000000 0 0
+      Cl 17.880000000000 2.0 2.12
+      Na 20.000000000000 0 0
+      Cl 21.880000000000 2.0 2.12
+    &END COORD
+  &END SUBSYS
+&END FORCE_EVAL
