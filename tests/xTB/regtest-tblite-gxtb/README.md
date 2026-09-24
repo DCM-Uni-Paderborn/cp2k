@@ -85,3 +85,36 @@ unchanged (`1.235106e-6`); a full, unreduced mesh also reproduces it
 discretization from an analytic-stress or symmetry-reduction discrepancy.
 The reported quantity is the energy-valued `pv_virial` difference, not a
 volume-normalized stress.
+
+## Controlled NaCl timing check, 25 September
+
+The corrected builds above were measured on Terok with the same full 6x6x6
+input (SHA-256 `01acac45ebdf316d2c42580eedd6f14fb9090c61340586ef4f0e6cd3e8cf3885`).
+Two interleaved repetitions per configuration ran without another native
+calculation/compiler at launch. BLAS remained single-threaded, CPU affinity
+was disjoint and reserved, and all energies were -622.6304237931206 Eh.
+
+| Provider | MPI x OpenMP | Median elapsed compute / s | Sampled rank-summed peak RSS / GiB |
+| --- | ---: | ---: | ---: |
+| Minimal | 1 x 1 | 73.85 | 0.746-0.747 |
+| Minimal | 1 x 4 | 65.28 | 0.748 |
+| Minimal | 4 x 1 | 54.45 | 2.249-2.345 |
+| Extended | 1 x 1 | 70.64 | 0.749-0.759 |
+| Extended | 1 x 4 | 64.64 | 0.755-0.765 |
+| Extended | 4 x 1 | 49.04 | 2.350 |
+
+OpenMP speedup is modest (1.13x minimal, 1.09x extended); four MPI ranks
+give 1.36x and 1.44x, respectively. The extended provider is not a universal
+large speedup over the corrected minimal provider. Both share the CP2K-side
+allocation/layout reuse, bounded overlap reuse and regular-grid Fock/overlap
+FFTs. The earlier extended batched implementation redundantly repeated the
+same overlap transform for each batch; avoiding that is not an approximation
+to the exchange model. Global exchange coupling, density transforms and MPI
+matrix communication still limit scaling, especially for a tiny AO basis.
+
+These are two-repeat observations on a shared host, not confidence intervals
+or a prediction for an 8x8x8 benchmark. RSS is sampled every 0.2 s, may miss
+short peaks and counts shared pages once per rank; it is not PSS. Existing
+historical timings use different code/physics and must not be treated as a
+controlled same-build speedup series. Evidence: `current-controlled-k6-timings.json`
+and its twelve raw run directories in the frozen validation archive.
