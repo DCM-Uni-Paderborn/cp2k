@@ -49,7 +49,11 @@ To build the experimental g-xTB-capable save_tblite provider instead of upstream
 
 The two providers are mutually exclusive. The save provider checks out a pinned revision from the
 private `DCM-Uni-Paderborn/save_tblite` repository and requires GitHub read credentials. The default
-`--tblite-provider=upstream` path remains unchanged and uses the public tblite release. Because
+SAVE pin follows the minimal `lmseidler-integration` provider, including the corrected periodic
+Hubbard and auxiliary-charge image sums. Its pinned multicharge dependency receives the bundled
+correctness patch during fetch; an external dependency must carry the same fixes. Extended
+provider-specific optimizations remain on `tdkuehne-integration` and are not required by this pin.
+The default `--tblite-provider=upstream` path remains unchanged and uses the public tblite release. Because
 save_tblite's internal experimental DFTD API is not compatible with CP2K's standalone DFTD4 API, the
 save provider disables the latter while retaining dispersion within its xTB methods. The native
 g-xTB path supports energies and analytical forces for molecular (0D) and fully periodic (3D)

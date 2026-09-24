@@ -373,6 +373,9 @@ symbols, and Fortran modules.
 - The toolchain equivalent is `--with-tblite=install --tblite-provider=save`. This checks out a
   pinned revision from the private `DCM-Uni-Paderborn/save_tblite` repository and therefore needs
   suitable GitHub credentials. Its non-release dependencies are pinned by commit as well.
+  The SAVE toolchain pin uses the minimal `lmseidler-integration` provider with the corrected
+  periodic Hubbard and auxiliary-charge sums. Its multicharge dependency also applies a shipped
+  correctness patch. Explicit externally installed dependencies must include those same fixes.
 - `save_tblite` uses the experimental `grimme-lab/dftd` API internally. This dispersion remains
   available to its xTB methods, but it is not API-compatible with CP2K's standalone DFTD4 feature.
   Consequently, SAVE builds require `-DCP2K_USE_DFTD4=OFF`; the toolchain sets this automatically.
@@ -398,6 +401,16 @@ symbols, and Fortran modules.
   `cp2k --version`. The same CP2K source also builds with the minimal g-xTB provider. Without
   the extended capability, `AUTO` retains the dense/complete-array implementation; an explicit
   unsupported acceleration request is rejected rather than silently ignored.
+- CP2K-side image-matrix layout reuse, bounded overlap reuse and native-mixer lattice FFTs do
+  not require that extended provider capability. `accelerationAPI=0` therefore does not disable
+  these CP2K optimizations. `KPOINTS/LATTICE_FFT` controls the exact regular-grid transforms;
+  reduced or unsupported grids and requests exceeding the 64 MiB per-call overlap-cache/grid
+  budget use the direct sums. Native-mixer F(k) preparation also has a 64 MiB FFT storage bound.
+- Eligible local k-point diagonalizations with the native g-xTB mixer can use OpenMP: complete
+  mixed F(k) matrices are prepared before the worker region and each worker owns its eigensolver
+  workspace. Mixing and MPI collectives remain outside that region. CP2K density/DIIS mixers
+  retain their operator-correction path. This does not remove the global exchange coupling or
+  guarantee that more threads improve small-basis wall time.
 - `XTB/TBLITE/GXTB_ACCELERATION/MODE AUTO` is the default when the section is absent. With an
   extended provider it selects compatible bounded/distributed image contractions or a
   symmetry-fused path, mixed-radix transforms, streamed derivatives and ACP contractions.
