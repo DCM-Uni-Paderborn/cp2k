@@ -215,8 +215,8 @@ MODULE tblite_interface
    USE input_section_types, ONLY: section_vals_val_get
    USE kinds, ONLY: default_path_length, default_string_length, dp, int_8
    USE kpoint_methods, ONLY: calibrate_symmetry_phases, kpoint_density_transform, &
-                            rskp_grid_type, rskp_transform, rskp_transform_grid_extract, &
-                            rskp_transform_grid_prepare, rskp_transform_grid_release
+                             rskp_grid_type, rskp_transform, rskp_transform_grid_extract, &
+                             rskp_transform_grid_prepare, rskp_transform_grid_release
    USE kpoint_types, ONLY: get_kpoint_info, kind_rotmat_type, kpoint_env_type, &
                            kpoint_phase_gauge_input, kpoint_phase_gauge_pbc, &
                            kpoint_sym_type, kpoint_type
@@ -3879,7 +3879,7 @@ CONTAINS
       ! per-k sum for reduced/general grids, LATTICE_FFT OFF, or the bounded-memory fallback.
       SELECT CASE (kpoints%lattice_fft)
       CASE (lattice_fft_auto)
-         request_grid_fft = nkp >= 27
+         request_grid_fft = nkp >= 2 .AND. PRODUCT(kpoints%nkp_grid) >= 27
       CASE (lattice_fft_on)
          request_grid_fft = .TRUE.
       CASE (lattice_fft_off)

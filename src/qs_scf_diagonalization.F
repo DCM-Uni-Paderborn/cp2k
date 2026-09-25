@@ -323,7 +323,7 @@ CONTAINS
       INTEGER                                            :: cdiis_cholesky_method, cdiis_ncall, &
                                                             ispin, nspin
       LOGICAL :: cdiis_step, do_level_shift, owns_ortho, use_adiis, use_cdiis, use_jacobi, &
-         use_native_gxtb_mixer, use_subspace_fock
+                 use_native_gxtb_mixer, use_subspace_fock
       REAL(KIND=dp)                                      :: candidate_shift, cdiis_error, &
                                                             diis_error, diis_weight, eps_diis
       TYPE(cp_fm_type), POINTER                          :: ortho
@@ -849,7 +849,8 @@ CONTAINS
       ! potential mixing instead prepares complete read-only F(k) before workers.
       IF (is_gxtb .AND. .NOT. native_gxtb_mixer) use_local_kpoints = .FALSE.
       IF (para_env%num_pe == 1 .AND. omp_threads == 1) THEN
-         IF (lattice_fft == lattice_fft_on .OR. (lattice_fft == lattice_fft_auto .AND. nkp >= 27)) THEN
+         IF (lattice_fft == lattice_fft_on .OR. &
+             (lattice_fft == lattice_fft_auto .AND. nkp >= 2 .AND. PRODUCT(nkp_grid) >= 27)) THEN
             use_local_kpoints = .FALSE.
          END IF
       END IF
@@ -919,13 +920,13 @@ CONTAINS
          cmos => workspace(1)%cmos
       END IF
 
-      ! For a complete Monkhorst-Pack grid, transform every MPI-local DBCSR block over all k points
-      ! in one lattice FFT. The established per-k phase sum remains the exact memory/irregular-grid
+      ! Transform every MPI-local DBCSR block on the regular grid, retaining only the requested
+      ! (possibly irreducible) points. The per-k phase sum remains the exact memory/irregular-grid
       ! fallback. Divide the conservative memory budget between H spins and S.
       ALLOCATE (ks_grid(nspin))
       SELECT CASE (lattice_fft)
       CASE (lattice_fft_auto)
-         use_grid_fft = nkp >= 27
+         use_grid_fft = nkp >= 2 .AND. PRODUCT(nkp_grid) >= 27
       CASE (lattice_fft_on)
          use_grid_fft = .TRUE.
       CASE (lattice_fft_off)
@@ -1146,7 +1147,7 @@ CONTAINS
 !> \param spin ...
 ! **************************************************************************************************
       SUBROUTINE harvest_operators(round, spin)
-      INTEGER, INTENT(IN)                                :: round, spin
+         INTEGER, INTENT(IN)                                :: round, spin
 
          IF (use_real_wfn) THEN
             CALL kpoint_operator_finish(op_ctx, round, spin, kpoint_slot_ks, fm_re=rksmat)
@@ -1206,9 +1207,9 @@ CONTAINS
 !> \param fm_im optional imaginary part for complex wavefunctions
 ! **************************************************************************************************
       SUBROUTINE correct_gxtb_operator(ik, matrix_row, fm_re, fm_im)
-      INTEGER, INTENT(IN)                                :: ik, matrix_row
-      TYPE(cp_fm_type)                                   :: fm_re
-      TYPE(cp_fm_type), OPTIONAL                         :: fm_im
+         INTEGER, INTENT(IN)                                :: ik, matrix_row
+         TYPE(cp_fm_type)                                   :: fm_re
+         TYPE(cp_fm_type), OPTIONAL                         :: fm_im
 
          CALL tb_apply_gxtb_kpoint_fm(qs_env, ik, matrix_row, fm_re, fm_im)
       END SUBROUTINE correct_gxtb_operator

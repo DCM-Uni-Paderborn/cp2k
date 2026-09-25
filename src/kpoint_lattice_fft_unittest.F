@@ -5,27 +5,28 @@
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
 PROGRAM kpoint_lattice_fft_unittest
-   USE fft_tools,                       ONLY: finalize_fft,&
-                                              init_fft
-   USE kinds,                           ONLY: dp
-   USE kpoint_lattice_fft,              ONLY: cell_to_k_grid_fft,&
-                                              k_grid_to_cell_execute,&
-                                              k_grid_to_cell_fft,&
-                                              k_grid_to_cell_prepare,&
-                                              k_grid_to_cell_release,&
-                                              k_grid_to_cell_work_type,&
-                                              regular_kpoint_grid
+   USE fft_lib, ONLY: fft_supports_arbitrary_lengths
+   USE fft_tools, ONLY: finalize_fft, &
+                        init_fft
+   USE kinds, ONLY: dp
+   USE kpoint_lattice_fft, ONLY: cell_to_k_grid_fft, &
+                                 k_grid_to_cell_execute, &
+                                 k_grid_to_cell_fft, &
+                                 k_grid_to_cell_prepare, &
+                                 k_grid_to_cell_release, &
+                                 k_grid_to_cell_work_type, &
+                                 regular_kpoint_grid
    USE lattice_preconditioner_operator, ONLY: &
-        apply_lattice_inverse_dense, apply_lattice_state_inverse_dense, build_lattice_inverse, &
-        build_lattice_local_correction, lattice_fft_auto_select, lattice_fft_cost_ratio, &
-        lattice_fft_storage_ratio, lattice_grid, lattice_local_cost_ratio, &
-        lattice_local_storage_ratio
-   USE mathconstants,                   ONLY: gaussi,&
-                                              twopi,&
-                                              z_zero
-   USE message_passing,                 ONLY: mp_comm_type,&
-                                              mp_world_finalize,&
-                                              mp_world_init
+      apply_lattice_inverse_dense, apply_lattice_state_inverse_dense, build_lattice_inverse, &
+      build_lattice_local_correction, lattice_fft_auto_select, lattice_fft_cost_ratio, &
+      lattice_fft_storage_ratio, lattice_grid, lattice_local_cost_ratio, &
+      lattice_local_storage_ratio
+   USE mathconstants, ONLY: gaussi, &
+                            twopi, &
+                            z_zero
+   USE message_passing, ONLY: mp_comm_type, &
+                              mp_world_finalize, &
+                              mp_world_init
 
    IMPLICIT NONE
 
@@ -48,6 +49,7 @@ PROGRAM kpoint_lattice_fft_unittest
    INTEGER, DIMENSION(3, nround)                       :: round_index
    INTEGER, DIMENSION(nselected)                       :: selected_kpoints
    LOGICAL                                             :: used_fft
+   CHARACTER(LEN=16)                                   :: fft_backend
    REAL(KIND=dp), DIMENSION(3, 3)                      :: hmat
    REAL(KIND=dp)                                       :: base_residual_norm, corrected_projection_error, &
                                                           corrected_residual_norm, cost_ratio, &
@@ -73,7 +75,9 @@ PROGRAM kpoint_lattice_fft_unittest
    COMPLEX(KIND=dp), DIMENSION(2, 3, ncell)            :: weighted_reference, weighted_result
 
    CALL mp_world_init(mp_comm)
-   CALL init_fft("FFTSG", alltoall=.FALSE., pool_limit=4, &
+   fft_backend = "FFTSG"
+   IF (COMMAND_ARGUMENT_COUNT() > 0) CALL GET_COMMAND_ARGUMENT(1, fft_backend)
+   CALL init_fft(TRIM(fft_backend), alltoall=.FALSE., pool_limit=4, &
                  wisdom_file="", plan_style=1)
 
    nkp_grid = [4, 4, 4]
@@ -119,12 +123,34 @@ PROGRAM kpoint_lattice_fft_unittest
       ERROR STOP "Selected lattice-FFT output differs from the full transform"
    END IF
 
+   ! A reduced list is opt-in: no symmetry weights enter a forward transform.
+   CALL cell_to_k_grid_fft(values_rs, index_to_cell, xkp(:, selected_kpoints), nkp_grid, &
+                           selected_transformed, used_fft)
+   IF (used_fft) ERROR STOP "Incomplete forward grid was accepted without opt-in"
+   CALL cell_to_k_grid_fft(values_rs, index_to_cell, xkp(:, selected_kpoints), nkp_grid, &
+                           selected_transformed, used_fft, allow_incomplete=.TRUE.)
+   IF (.NOT. used_fft) ERROR STOP "Regular reduced forward grid did not use FFT"
+   IF (MAXVAL(ABS(selected_transformed - direct(:, :, selected_kpoints))) > 2.0E-12_dp) THEN
+      ERROR STOP "Reduced forward transform differs from the full-grid phase sum"
+   END IF
+   IF (regular_kpoint_grid(xkp(:, [2, 31, 2]), nkp_grid, allow_incomplete=.TRUE.)) THEN
+      ERROR STOP "Duplicate reduced points were accepted"
+   END IF
+
    CALL cell_to_k_grid_fft(values_rs, index_to_cell, xkp, nkp_grid, transformed, used_fft, 2, hmat)
    IF (.NOT. used_fft) ERROR STOP "Derivative did not use lattice FFT"
    CALL direct_reference(values_rs, index_to_cell, xkp, direct, 2, hmat)
    IF (MAXVAL(ABS(transformed - direct)) > 5.0E-12_dp) THEN
       ERROR STOP "Lattice-FFT derivative differs from direct transform"
    END IF
+   CALL cell_to_k_grid_fft(values_rs, index_to_cell, xkp(:, selected_kpoints), nkp_grid, &
+                           selected_transformed, used_fft, 2, hmat, allow_incomplete=.TRUE.)
+   IF (.NOT. used_fft) ERROR STOP "Reduced forward derivative did not use FFT"
+   IF (MAXVAL(ABS(selected_transformed - direct(:, :, selected_kpoints))) > 5.0E-12_dp) THEN
+      ERROR STOP "Reduced forward derivative differs from direct transform"
+   END IF
+
+   CALL check_prime_grid()
 
    nkp_grid = [4, 4, 1]
    ik = 0
@@ -373,6 +399,84 @@ PROGRAM kpoint_lattice_fft_unittest
    CALL mp_world_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Prime-length full/reduced grids use FFTW, with an exact FFTSG fallback.
+! **************************************************************************************************
+   SUBROUTINE check_prime_grid()
+
+      INTEGER, PARAMETER                               :: np = 343, ns = 3
+      INTEGER                                           :: k, x, y, z, component
+      INTEGER, DIMENSION(ns)                            :: selected
+      REAL(KIND=dp), DIMENSION(3, np)                   :: points
+      REAL(KIND=dp), DIMENSION(3, ns)                   :: bad_points
+      REAL(KIND=dp), DIMENSION(ns)                      :: weights
+      COMPLEX(KIND=dp), DIMENSION(2, 3, np)             :: exact, RESULT
+      COMPLEX(KIND=dp), DIMENSION(2, 3, ns)             :: reduced
+      COMPLEX(KIND=dp), DIMENSION(2, 3, ncell)          :: inverse, expected_inverse
+      LOGICAL                                           :: fft_used, capable
+
+      k = 0
+      DO z = 0, 6
+         DO y = 0, 6
+            DO x = 0, 6
+               k = k + 1
+               points(:, k) = ([REAL(x, dp), REAL(y, dp), REAL(z, dp)] + &
+                               [0.5_dp, 0.0_dp, 0.25_dp])/7.0_dp
+            END DO
+         END DO
+      END DO
+      selected = [2, 51, 319]
+      capable = fft_supports_arbitrary_lengths()
+      CALL cell_to_k_grid_fft(values_rs, index_to_cell, points, [7, 7, 7], RESULT, fft_used)
+      IF (fft_used .NEQV. capable) ERROR STOP "Prime-grid forward path ignored backend capabilities"
+      CALL direct_reference(values_rs, index_to_cell, points, exact)
+      IF (MAXVAL(ABS(RESULT - exact)) > 3.0E-12_dp) ERROR STOP "Prime-grid forward transform differs"
+      CALL cell_to_k_grid_fft(values_rs, index_to_cell, points(:, selected), [7, 7, 7], &
+                              reduced, fft_used, allow_incomplete=.TRUE.)
+      IF (fft_used .NEQV. capable) ERROR STOP "Prime reduced grid ignored backend capabilities"
+      IF (MAXVAL(ABS(reduced - exact(:, :, selected))) > 3.0E-12_dp) THEN
+         ERROR STOP "Prime reduced transform differs"
+      END IF
+
+      weights = [0.2_dp, 0.3_dp, 0.5_dp]
+      expected_inverse = z_zero
+      DO component = 1, ncell
+         DO k = 1, ns
+            expected_inverse(:, :, component) = expected_inverse(:, :, component) + weights(k)* &
+                                                EXP(-gaussi*twopi*SUM(points(:, selected(k))* &
+                                                                      REAL(index_to_cell(:, component), dp)))* &
+                                                reduced(:, :, k)
+         END DO
+      END DO
+      CALL k_grid_to_cell_fft(reduced, points(:, selected), [7, 7, 7], index_to_cell, inverse, &
+                              fft_used, weights=weights, allow_incomplete=.TRUE.)
+      IF (fft_used .NEQV. capable) ERROR STOP "Prime inverse path ignored backend capabilities"
+      IF (MAXVAL(ABS(inverse - expected_inverse)) > 3.0E-12_dp) THEN
+         ERROR STOP "Prime weighted inverse differs"
+      END IF
+
+      DO component = 1, 3
+         CALL direct_reference(values_rs, index_to_cell, points, exact, component, hmat)
+         CALL cell_to_k_grid_fft(values_rs, index_to_cell, points(:, selected), [7, 7, 7], &
+                                 reduced, fft_used, component, hmat, allow_incomplete=.TRUE.)
+         IF (fft_used .NEQV. capable) ERROR STOP "Prime derivative path ignored backend capabilities"
+         IF (MAXVAL(ABS(reduced - exact(:, :, selected))) > 1.0E-11_dp) THEN
+            ERROR STOP "Prime reduced derivative differs"
+         END IF
+      END DO
+
+      bad_points = points(:, selected)
+      bad_points(1, 2) = bad_points(1, 2) + 0.03_dp
+      CALL cell_to_k_grid_fft(values_rs, index_to_cell, bad_points, [7, 7, 7], &
+                              reduced, fft_used, allow_incomplete=.TRUE.)
+      IF (fft_used) ERROR STOP "Irregular reduced list used FFT"
+      CALL direct_reference(values_rs, index_to_cell, bad_points, exact(:, :, 1:ns))
+      IF (MAXVAL(ABS(reduced - exact(:, :, 1:ns))) > 1.0E-14_dp) THEN
+         ERROR STOP "Irregular reduced fallback differs"
+      END IF
+
+   END SUBROUTINE check_prime_grid
 
 ! **************************************************************************************************
 !> \brief Apply the balanced two-level inverse used by the production local correction.

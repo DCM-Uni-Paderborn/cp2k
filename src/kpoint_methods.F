@@ -13,110 +13,110 @@
 !> \author JGH
 ! **************************************************************************************************
 MODULE kpoint_methods
-   USE atomic_kind_types,               ONLY: get_atomic_kind
-   USE cell_types,                      ONLY: cell_type,&
-                                              pbc_stable,&
-                                              real_to_scaled
-   USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
-                                              cp_blacs_env_type
-   USE cp_cfm_basic_linalg,             ONLY: cp_cfm_column_scale,&
-                                              cp_cfm_gemm,&
-                                              cp_cfm_scale_and_add,&
-                                              cp_cfm_transpose
-   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
-                                              cp_cfm_get_info,&
-                                              cp_cfm_release,&
-                                              cp_cfm_to_fm,&
-                                              cp_cfm_type,&
-                                              cp_fm_to_cfm
-   USE cp_control_types,                ONLY: hairy_probes_type
-   USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_distribute, &
-        dbcsr_distribution_get, dbcsr_distribution_type, dbcsr_get_block_p, dbcsr_get_info, &
-        dbcsr_get_readonly_block_p, dbcsr_get_stored_coordinates, dbcsr_iterator_blocks_left, &
-        dbcsr_iterator_next_block, dbcsr_iterator_readonly_start, dbcsr_iterator_start, &
-        dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_p_type, dbcsr_replicate_all, dbcsr_set, &
-        dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, dbcsr_type_symmetric
-   USE cp_dbcsr_contrib,                ONLY: dbcsr_dot
-   USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
-   USE cp_dbcsr_operations,             ONLY: copy_fm_to_dbcsr
-   USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale
-   USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
-                                              fm_pool_create_fm,&
-                                              fm_pool_give_back_fm
-   USE cp_fm_struct,                    ONLY: cp_fm_struct_equivalent,&
-                                              cp_fm_struct_type
-   USE cp_fm_types,                     ONLY: &
-        copy_info_type, cp_fm_cleanup_copy_general, cp_fm_create, cp_fm_finish_copy_general, &
-        cp_fm_get_diag, cp_fm_get_info, cp_fm_get_submatrix, cp_fm_p_type, cp_fm_release, &
-        cp_fm_start_copy_general, cp_fm_to_fm, cp_fm_type
-   USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
-   USE cryssym,                         ONLY: crys_sym_gen,&
-                                              csym_type,&
-                                              kpoint_gen,&
-                                              kpoint_gen_general,&
-                                              kpoint_mesh_preserved,&
-                                              print_crys_symmetry,&
-                                              print_kp_symmetry,&
-                                              release_csym_type
-   USE hairy_probes,                    ONLY: probe_occupancy_kp
-   USE input_constants,                 ONLY: smear_fermi_dirac,&
-                                              smear_gaussian,&
-                                              smear_mp,&
-                                              smear_mv
-   USE input_cp2k_kpoints,              ONLY: lattice_fft_auto,&
-                                              lattice_fft_off,&
-                                              use_spglib_kpoint_backend,&
-                                              use_spglib_kpoint_symmetry
-   USE kinds,                           ONLY: dp,&
-                                              int_8
-   USE kpoint_lattice_fft,              ONLY: cell_to_k_grid_fft,&
-                                              k_grid_to_cell_execute,&
-                                              k_grid_to_cell_prepare,&
-                                              k_grid_to_cell_release,&
-                                              k_grid_to_cell_work_type,&
-                                              lattice_fft_shape,&
-                                              regular_kpoint_grid
-   USE kpoint_types,                    ONLY: get_kpoint_info,&
-                                              kind_rotmat_type,&
-                                              kpoint_env_create,&
-                                              kpoint_env_p_type,&
-                                              kpoint_env_type,&
-                                              kpoint_phase_gauge_input,&
-                                              kpoint_phase_gauge_pbc,&
-                                              kpoint_sym_create,&
-                                              kpoint_sym_type,&
-                                              kpoint_type
-   USE local_gemm_api,                  ONLY: LOCAL_GEMM_PU_GPU,&
-                                              local_gemm_ctxt_type
-   USE mathconstants,                   ONLY: twopi
-   USE mathlib,                         ONLY: inv_3x3
-   USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_cart_type,&
-                                              mp_para_env_type
-   USE parallel_gemm_api,               ONLY: parallel_gemm
-   USE particle_types,                  ONLY: particle_type
-   USE qs_matrix_pools,                 ONLY: mpools_create,&
-                                              mpools_get,&
-                                              mpools_rebuild_fm_pools,&
-                                              qs_matrix_pools_type
-   USE qs_mo_types,                     ONLY: allocate_mo_set,&
-                                              get_mo_set,&
-                                              init_mo_set,&
-                                              mo_set_type,&
-                                              set_mo_set
-   USE qs_neighbor_list_types,          ONLY: get_iterator_info,&
-                                              get_neighbor_list_set_p,&
-                                              neighbor_list_iterate,&
-                                              neighbor_list_iterator_create,&
-                                              neighbor_list_iterator_p_type,&
-                                              neighbor_list_iterator_release,&
-                                              neighbor_list_set_p_type
-   USE scf_control_types,               ONLY: smear_type
-   USE smearing_utils,                  ONLY: Smearkp,&
-                                              Smearkp2
-   USE util,                            ONLY: get_limit,&
-                                              sort
+   USE atomic_kind_types, ONLY: get_atomic_kind
+   USE cell_types, ONLY: cell_type, &
+                         pbc_stable, &
+                         real_to_scaled
+   USE cp_blacs_env, ONLY: cp_blacs_env_create, &
+                           cp_blacs_env_type
+   USE cp_cfm_basic_linalg, ONLY: cp_cfm_column_scale, &
+                                  cp_cfm_gemm, &
+                                  cp_cfm_scale_and_add, &
+                                  cp_cfm_transpose
+   USE cp_cfm_types, ONLY: cp_cfm_create, &
+                           cp_cfm_get_info, &
+                           cp_cfm_release, &
+                           cp_cfm_to_fm, &
+                           cp_cfm_type, &
+                           cp_fm_to_cfm
+   USE cp_control_types, ONLY: hairy_probes_type
+   USE cp_dbcsr_api, ONLY: &
+      dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_distribute, &
+      dbcsr_distribution_get, dbcsr_distribution_type, dbcsr_get_block_p, dbcsr_get_info, &
+      dbcsr_get_readonly_block_p, dbcsr_get_stored_coordinates, dbcsr_iterator_blocks_left, &
+      dbcsr_iterator_next_block, dbcsr_iterator_readonly_start, dbcsr_iterator_start, &
+      dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_p_type, dbcsr_replicate_all, dbcsr_set, &
+      dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, dbcsr_type_symmetric
+   USE cp_dbcsr_contrib, ONLY: dbcsr_dot
+   USE cp_dbcsr_cp2k_link, ONLY: cp_dbcsr_alloc_block_from_nbl
+   USE cp_dbcsr_operations, ONLY: copy_fm_to_dbcsr
+   USE cp_fm_basic_linalg, ONLY: cp_fm_column_scale
+   USE cp_fm_pool_types, ONLY: cp_fm_pool_p_type, &
+                               fm_pool_create_fm, &
+                               fm_pool_give_back_fm
+   USE cp_fm_struct, ONLY: cp_fm_struct_equivalent, &
+                           cp_fm_struct_type
+   USE cp_fm_types, ONLY: &
+      copy_info_type, cp_fm_cleanup_copy_general, cp_fm_create, cp_fm_finish_copy_general, &
+      cp_fm_get_diag, cp_fm_get_info, cp_fm_get_submatrix, cp_fm_p_type, cp_fm_release, &
+      cp_fm_start_copy_general, cp_fm_to_fm, cp_fm_type
+   USE cp_log_handling, ONLY: cp_logger_get_default_io_unit
+   USE cryssym, ONLY: crys_sym_gen, &
+                      csym_type, &
+                      kpoint_gen, &
+                      kpoint_gen_general, &
+                      kpoint_mesh_preserved, &
+                      print_crys_symmetry, &
+                      print_kp_symmetry, &
+                      release_csym_type
+   USE hairy_probes, ONLY: probe_occupancy_kp
+   USE input_constants, ONLY: smear_fermi_dirac, &
+                              smear_gaussian, &
+                              smear_mp, &
+                              smear_mv
+   USE input_cp2k_kpoints, ONLY: lattice_fft_auto, &
+                                 lattice_fft_off, &
+                                 use_spglib_kpoint_backend, &
+                                 use_spglib_kpoint_symmetry
+   USE kinds, ONLY: dp, &
+                    int_8
+   USE kpoint_lattice_fft, ONLY: cell_to_k_grid_fft, &
+                                 k_grid_to_cell_execute, &
+                                 k_grid_to_cell_prepare, &
+                                 k_grid_to_cell_release, &
+                                 k_grid_to_cell_work_type, &
+                                 lattice_fft_shape, &
+                                 regular_kpoint_grid
+   USE kpoint_types, ONLY: get_kpoint_info, &
+                           kind_rotmat_type, &
+                           kpoint_env_create, &
+                           kpoint_env_p_type, &
+                           kpoint_env_type, &
+                           kpoint_phase_gauge_input, &
+                           kpoint_phase_gauge_pbc, &
+                           kpoint_sym_create, &
+                           kpoint_sym_type, &
+                           kpoint_type
+   USE local_gemm_api, ONLY: LOCAL_GEMM_PU_GPU, &
+                             local_gemm_ctxt_type
+   USE mathconstants, ONLY: twopi
+   USE mathlib, ONLY: inv_3x3
+   USE memory_utilities, ONLY: reallocate
+   USE message_passing, ONLY: mp_cart_type, &
+                              mp_para_env_type
+   USE parallel_gemm_api, ONLY: parallel_gemm
+   USE particle_types, ONLY: particle_type
+   USE qs_matrix_pools, ONLY: mpools_create, &
+                              mpools_get, &
+                              mpools_rebuild_fm_pools, &
+                              qs_matrix_pools_type
+   USE qs_mo_types, ONLY: allocate_mo_set, &
+                          get_mo_set, &
+                          init_mo_set, &
+                          mo_set_type, &
+                          set_mo_set
+   USE qs_neighbor_list_types, ONLY: get_iterator_info, &
+                                     get_neighbor_list_set_p, &
+                                     neighbor_list_iterate, &
+                                     neighbor_list_iterator_create, &
+                                     neighbor_list_iterator_p_type, &
+                                     neighbor_list_iterator_release, &
+                                     neighbor_list_set_p_type
+   USE scf_control_types, ONLY: smear_type
+   USE smearing_utils, ONLY: Smearkp, &
+                             Smearkp2
+   USE util, ONLY: get_limit, &
+                   sort
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, &
 !$                    omp_get_thread_num
@@ -857,10 +857,10 @@ CONTAINS
 !> \param env ...
 ! **************************************************************************************************
       SUBROUTINE create_local_environments(env)
-      TYPE(kpoint_env_p_type), INTENT(OUT), POINTER      :: env(:)
+         TYPE(kpoint_env_p_type), INTENT(OUT), POINTER      :: env(:)
 
-      INTEGER                                            :: ik, ikk
-      TYPE(kpoint_env_type), POINTER                     :: kp
+         INTEGER                                            :: ik, ikk
+         TYPE(kpoint_env_type), POINTER                     :: kp
 
          ALLOCATE (env(nkp_loc))
          DO ik = 1, nkp_loc
@@ -1308,13 +1308,13 @@ CONTAINS
    END SUBROUTINE rskp_transform
 
 ! **************************************************************************************************
-!> \brief Prepare a batched real-cell to complete reciprocal-grid transform for local DBCSR blocks.
+!> \brief Prepare a batched real-cell to regular reciprocal-grid transform for local DBCSR blocks.
 !>        The stored blocks remain MPI local.  Irregular or too-large grids return used_fft=.FALSE.
 !> \param grid cached transformed local blocks and their DBCSR coordinates
 !> \param rmatrix allocated output template defining the local block layout
 !> \param rsmat real-space matrix set
 !> \param ispin spin component of rsmat
-!> \param xkp complete reciprocal grid in arbitrary order
+!> \param xkp reciprocal grid or symmetry-reduced subset in arbitrary order
 !> \param nkp_grid reciprocal grid dimensions
 !> \param cell_to_index real-cell coordinate mapping
 !> \param sab_nl neighbor list defining the stored block orientation
@@ -1350,7 +1350,7 @@ CONTAINS
       INTEGER(KIND=int_8)                                :: memory_limit, storage_bytes
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: block_map, index_to_cell
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)           :: fft_cell_to_index
-      INTEGER, DIMENSION(3)                              :: cell, fft_cell
+      INTEGER, DIMENSION(3)                              :: cell, fft_cell, nfft
       LOGICAL                                            :: do_symmetric, found, my_complex
       REAL(KIND=dp)                                      :: fsign, fsym, value_sign
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: values_rs
@@ -1365,11 +1365,17 @@ CONTAINS
 
       nkp = SIZE(xkp, 2)
       nimg = SIZE(rsmat, 2)
-      IF (nkp < 2 .OR. PRODUCT(nkp_grid) /= nkp) THEN
+      IF (nkp < 2) THEN
          CALL timestop(handle)
          RETURN
       END IF
-      IF (.NOT. regular_kpoint_grid(xkp, nkp_grid)) THEN
+      IF (.NOT. regular_kpoint_grid(xkp, nkp_grid, allow_incomplete=.TRUE.)) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+      ! Reject unsupported lengths before packing the matrices. Otherwise the
+      ! mathematical fallback computes a direct sum which this cache discards.
+      IF (.NOT. lattice_fft_shape(nkp_grid, nfft, allow_arbitrary=.TRUE.)) THEN
          CALL timestop(handle)
          RETURN
       END IF
@@ -1434,9 +1440,11 @@ CONTAINS
 
       memory_limit = 512_int_8*1024_int_8**2
       IF (PRESENT(max_storage_bytes)) memory_limit = max_storage_bytes
-      ! Include the real-cell input, complex result and conservative FFT work/padding allowance.
+      ! Count the actual padded FFT grid even if only an irreducible subset is
+      ! retained. Keep a conservative work allowance per matrix element.
       storage_bytes = INT(nvalues, int_8)*(8_int_8*INT(ncell, int_8) + &
-                                           80_int_8*INT(nkp, int_8))
+                                           16_int_8*INT(nkp, int_8) + &
+                                           64_int_8*PRODUCT(INT(nfft, int_8)))
       IF (storage_bytes > memory_limit) THEN
          CALL rskp_transform_grid_release(grid)
          CALL timestop(handle)
@@ -1495,7 +1503,8 @@ CONTAINS
       END DO
       CALL neighbor_list_iterator_release(nl_iterator)
 
-      CALL cell_to_k_grid_fft(values_rs, index_to_cell, xkp, nkp_grid, grid%values, used_fft)
+      CALL cell_to_k_grid_fft(values_rs, index_to_cell, xkp, nkp_grid, grid%values, used_fft, &
+                              allow_incomplete=.TRUE.)
       IF (used_fft) THEN
          grid%ready = .TRUE.
       ELSE
@@ -2736,7 +2745,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: local
 
       INTEGER(KIND=int_8), PARAMETER :: max_bytes = 64_int_8*1024*1024, &
-         min_fft_peer_bytes = 32_int_8*1024
+                                        min_fft_peer_bytes = 32_int_8*1024
       INTEGER, PARAMETER                                 :: max_batch = 32
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:), &
@@ -2747,7 +2756,7 @@ CONTAINS
       COMPLEX(KIND=dp), CONTIGUOUS, DIMENSION(:, :, :), &
          POINTER                                         :: values_k
       INTEGER :: batch, count, element, first, group, handle, i, ikp, j, last, local_k, &
-         min_local_k, mine, nc, nel, ngroup, nkp, nowned, offset, pos, width
+                 min_local_k, mine, nc, nel, ngroup, nkp, nowned, offset, pos, width
       INTEGER(KIND=int_8)                                :: fixed_bytes, peer_bytes, per_entry, &
                                                             tile_size
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: rcount, rdispl, scount, sdispl

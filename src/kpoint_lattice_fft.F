@@ -9,23 +9,23 @@
 !> \brief Batched lattice Fourier transforms on regular k-point grids.
 !>
 !>        Image cells are folded modulo the reciprocal grid; shifted meshes use a phase twist.
-!>        Forward transforms require a complete grid. The inverse transform can also embed
-!>        an explicitly allowed subset with its supplied weights and zero missing points.
+!>        Forward transforms can extract an explicitly allowed regular-grid subset. The
+!>        inverse can embed a subset with its supplied weights and zero missing points.
 !>        Unsupported grids retain the direct phase-sum fallback.
 ! **************************************************************************************************
 MODULE kpoint_lattice_fft
-   USE fft_lib,                         ONLY: fft_supports_arbitrary_lengths
-   USE fft_tools,                       ONLY: BWFFT,&
-                                              FFT_RADIX_NEXT,&
-                                              FWFFT,&
-                                              fft3d,&
-                                              fft_alloc,&
-                                              fft_dealloc,&
-                                              fft_radix_operations
-   USE kinds,                           ONLY: dp
-   USE mathconstants,                   ONLY: gaussi,&
-                                              twopi,&
-                                              z_zero
+   USE fft_lib, ONLY: fft_supports_arbitrary_lengths
+   USE fft_tools, ONLY: BWFFT, &
+                        FFT_RADIX_NEXT, &
+                        FWFFT, &
+                        fft3d, &
+                        fft_alloc, &
+                        fft_dealloc, &
+                        fft_radix_operations
+   USE kinds, ONLY: dp
+   USE mathconstants, ONLY: gaussi, &
+                            twopi, &
+                            z_zero
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -165,9 +165,10 @@ CONTAINS
 !> \param deriv_direction optional Cartesian k derivative (1, 2, or 3)
 !> \param hmat direct-lattice cell matrix, required for a derivative
 !> \param selected_kpoints optional indices of k points to retain in values_k
+!> \param allow_incomplete accept requested points forming a subset of the regular grid
 ! **************************************************************************************************
    SUBROUTINE cell_to_k_grid_fft(values_rs, index_to_cell, xkp, nkp_grid, values_k, &
-                                 used_fft, deriv_direction, hmat, selected_kpoints)
+                                 used_fft, deriv_direction, hmat, selected_kpoints, allow_incomplete)
 
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: values_rs
       INTEGER, DIMENSION(:, :), INTENT(IN)               :: index_to_cell
@@ -179,6 +180,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(IN), &
          OPTIONAL                                        :: hmat
       INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: selected_kpoints
+      LOGICAL, INTENT(IN), OPTIONAL                      :: allow_incomplete
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cell_factor
       COMPLEX(KIND=dp), CONTIGUOUS, DIMENSION(:, :, :), &
@@ -219,9 +221,9 @@ CONTAINS
       END IF
 
       ALLOCATE (grid_index(3, SIZE(xkp, 2)))
-      regular = regular_kpoint_grid(xkp, nkp_grid, grid_index, k_offset)
+      regular = regular_kpoint_grid(xkp, nkp_grid, grid_index, k_offset, allow_incomplete)
       n = nkp_grid
-      IF (regular) regular = lattice_fft_shape(n, nfft)
+      IF (regular) regular = lattice_fft_shape(n, nfft, allow_arbitrary=.TRUE.)
       IF (.NOT. regular) THEN
          CALL direct_cell_to_k(values_rs, index_to_cell, xkp, values_k, deriv_direction, hmat, &
                                selected_kpoints)
@@ -349,7 +351,7 @@ CONTAINS
          work%weight(:) = weights
       END IF
       work%regular = regular_kpoint_grid(xkp, nkp_grid, work%grid_index, k_offset, allow_incomplete)
-      IF (work%regular) work%regular = lattice_fft_shape(nkp_grid, work%nfft, allow_incomplete)
+      IF (work%regular) work%regular = lattice_fft_shape(nkp_grid, work%nfft, allow_arbitrary=.TRUE.)
       IF (.NOT. work%regular) RETURN
 
       CALL fft_alloc(work%fft_in, work%nfft)
