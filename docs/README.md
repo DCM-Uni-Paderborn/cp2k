@@ -30,13 +30,20 @@ To build a local version of the manual perform the following steps:
    ./generate_input_reference.py ./cp2k_input.xml
    ```
 
-1. Run Sphinx:
+1. Run Sphinx, followed by Pagefind to build the static search bundle:
 
    ```
    make html
    ```
 
-1. Browse the HTML output in the `_build/html` directory.
+1. Serve the HTML output locally (Pagefind needs HTTP, not `file://`):
+
+   ```
+   python3 -m http.server --bind 127.0.0.1 --directory _build/html 8000
+   ```
+
+   Open `http://127.0.0.1:8000/`. The sidebar search opens a Pagefind modal; `Ctrl+K` (`Cmd+K` on
+   macOS) opens the same modal. Classic Sphinx search remains available.
 
 > [!TIP]
 >
@@ -46,12 +53,59 @@ To build a local version of the manual perform the following steps:
 > reference. To check cross-references one can generate the input reference and then remove all
 > pages except the relevant ones.
 
+## Static search
+
+Pagefind is installed by `requirements.txt`, including its native indexing binary; no Node.js,
+external search service, or deployment-side process is needed. `make html` runs the indexer only
+after Sphinx has exited. A failed indexing command fails the build rather than silently publishing
+an incomplete search bundle.
+
+Publish the **entire** `_build/html` directory, including `pagefind/`. Assets and result URLs are
+relative to the current manual version, so `/trunk/` and release directories have separate searches.
+The first prototype does not merge indexes across versions. Deploy HTML and its matching search
+bundle together; caches must allow the entry manifest and UI assets to refresh on updates.
+
+If a publishing job invokes Sphinx directly instead of `make html`, run the indexer afterward, from
+this directory:
+
+```
+make pagefind
+# For an HTML output at /path/to/build/html:
+make pagefind BUILDDIR=/path/to/build
+```
+
+`PAGEFIND` can be overridden to use a separately installed binary, and `PAGEFINDOPTS` passes extra
+indexer options. The index settings are in `pagefind.yml`; commands should run from `docs/` so that
+Pagefind reads this file. Other Sphinx targets, such as `linkcheck`, do not run Pagefind.
+
+The search indexes only the document body, not sidebars, breadcrumbs, footers, generated keyword
+lists, or edit links. Input-reference result titles include the section path. The Collection filter
+separates input reference from other documentation. Named keyword rubrics are rendered as HTML
+headings so Pagefind can link directly to the keyword, without adding Sphinx TOC entries or Python
+domain objects. The anonymous inlined Libxc keywords retain their existing target policy; do not
+expect unique keyword-level results for those in this first version.
+
+For comparison, test `EPS_SCF`, `SCF EPS_SCF`, `ATOMIC_NUMBER`, `CELL_OPT CONSTRAINT`, `ADDED_MOS`,
+and a prose query such as `geometry optimization`. Check keyword sub-result links as well as page
+ranking. A full dotted input path and typo tolerance are not separately tuned in this prototype. A
+missing or inaccessible search bundle leaves the original Sphinx search form available.
+
 ______________________________________________________________________
 
 # Syntax Cheat Sheet
 
 The CP2K manual uses Sphinx with the [MyST parser](https://myst-parser.readthedocs.io) for Markdown
-support. The following gives a quick overview of the syntax:
+support. The following gives a quick overview of the syntax.
+
+> [!CAUTION]
+>
+> The GitHub Markdown Preview does not currently have complete support for the MyST syntax used in
+> the manual. Known differences include:
+>
+> - The empty `[]` for the displayed text of links will be resolved in the manual as the title of
+>   the target heading but will _not_ be displayable on GitHub.
+> - The `\\` in math entities will be rendered as a linebreak in the manual, but only as a single
+>   literal backslash (escaped once) on GitHub.
 
 ## Headings
 
@@ -95,7 +149,7 @@ For a all typography options see the
 - Subsection in another page: `[](../optical/tddft.md#periodic-systems)`
   - ⚠️ Also use the relative path, but the `.md` suffix must be present before the `#` sign, and
     only the first three levels of headings have these anchors auto-generated on the final page
-    ready for use; see [](#cross-references) below for an alternative
+    ready for use; see [Cross References](#cross-references) below for an alternative
 - Input section: `[FORCE_EVAL](#CP2K_INPUT.FORCE_EVAL)`
   - This will also generate a "mentions" backlink in the input reference for the section
 - Input keyword: `[STRESS_TENSOR](#CP2K_INPUT.FORCE_EVAL.STRESS_TENSOR)`
@@ -166,19 +220,30 @@ For more table formatting options, see the
 
 ## Math
 
+[Math shortcuts](https://myst-parser.readthedocs.io/en/latest/syntax/optional.html#math-shortcuts)
+in the MyST parser are enabled with the `dollarmath` extension, and will be rendered with MathJax as
+entities on which a right click launches a contextual menu. For MathJax support of TeX syntax, see
+[MathJax documentation](https://docs.mathjax.org/en/latest/input/tex/index.html).
+
+The `dollarmath` extension parses the usual dollar-delimited math for inline and display (block)
+usage; a literal dollar sign needs escaping as `\$`.
+
 ```
 Inline math: $A_{ia,jb}$.
 
 Math block:
-$$ \begin{align}
-    A_{ia,jb} &= (\varepsilon_a^{GW}-\varepsilon_i^{GW})\delta_{ij}\delta_{ab}
-    B_{ia,jb} &= 2 v_{ia,bj} - W_{ib,aj} \quad .
-\end{align} $$
+$$
+  A_{ia,jb} &= (\varepsilon_a^{GW}-\varepsilon_i^{GW})\delta_{ij}\delta_{ab}, \\
+  B_{ia,jb} &= 2 v_{ia,bj} - W_{ib,aj} \quad .
+$$
 ```
 
-See also the
-[MyST](https://myst-parser.readthedocs.io/en/latest/syntax/optional.html#math-shortcuts) and
-[MathJax](https://docs.mathjax.org/en/latest/input/tex/index.html) documentation.
+> [!NOTE]
+>
+> The math block contains `&` for tab aligning and `\\` for linebreaking. The latter will result in
+> an `\begin{split}...\end{split}` environment automatically added to the TeX source for MathJax
+> rendering. Thus, a math block with double-dollar delimiters may conflict with other environments
+> and fail to render with an error message as `Erroneous nesting of equation structures`.
 
 ## Notes and Warnings
 

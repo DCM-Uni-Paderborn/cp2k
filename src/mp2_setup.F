@@ -71,7 +71,7 @@ CONTAINS
                                                             print_level_NTO_analysis, unit_nr
       INTEGER, DIMENSION(:), POINTER                     :: tmplist
       LOGICAL                                            :: do_mp2, do_opt_ri_basis, do_ri_mp2, &
-                                                            do_ri_sos_mp2, do_rpa
+                                                            do_ri_sos_mp2, do_rpa, explicit
       REAL(KIND=dp), DIMENSION(:), POINTER               :: r_vals
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(section_vals_type), POINTER                   :: bse_section, cphf_section, &
@@ -204,26 +204,43 @@ CONTAINS
                                 i_val=mp2_env%bse%num_print_exc_descr)
       CALL section_vals_val_get(bse_section, "PRINT_DIRECTIONAL_EXC_DESCR", &
                                 l_val=mp2_env%bse%print_directional_exc_descr)
+      CALL section_vals_val_get(bse_section, "PRINT_DIRECTIONAL_CROSSCORRELATION", &
+                                l_val=mp2_env%bse%print_directional_crosscorrelation, explicit=explicit)
+      IF (explicit .AND. mp2_env%bse%print_directional_crosscorrelation .AND. &
+          .NOT. mp2_env%bse%print_directional_exc_descr) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "PRINT_DIRECTIONAL_CROSSCORRELATION has no effect without PRINT_DIRECTIONAL_EXC_DESCR.")
+      END IF
       CALL section_vals_val_get(bse_section, "EPS_X", &
                                 r_val=mp2_env%bse%eps_x)
-      CALL section_vals_val_get(bse_section, "BSE_ITERAT%DAVIDSON_ABORT_COND", &
-                                i_val=mp2_env%bse%davidson_abort_cond)
       CALL section_vals_val_get(bse_section, "BSE_ITERAT%NUM_EXC_EN", &
                                 i_val=mp2_env%bse%num_exc_en)
-      CALL section_vals_val_get(bse_section, "BSE_ITERAT%NUM_ADD_START_Z_SPACE", &
-                                i_val=mp2_env%bse%num_add_start_z_space)
-      CALL section_vals_val_get(bse_section, "BSE_ITERAT%FAC_MAX_Z_SPACE", &
-                                i_val=mp2_env%bse%fac_max_z_space)
-      CALL section_vals_val_get(bse_section, "BSE_ITERAT%NUM_NEW_T", &
-                                i_val=mp2_env%bse%num_new_t)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%NUM_BUFFER_STATES", &
+                                i_val=mp2_env%bse%num_buffer_states)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%BLOCK_SIZE", &
+                                i_val=mp2_env%bse%block_size)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%NUM_GUESS_TRANSITIONS", &
+                                i_val=mp2_env%bse%num_guess_transitions)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%MAX_SUBSPACE_FACTOR", &
+                                i_val=mp2_env%bse%max_subspace_factor)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%MATVEC_BLOCK_COLUMNS", &
+                                i_val=mp2_env%bse%matvec_block_columns)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%MEMORY_CHECK", &
+                                i_val=mp2_env%bse%memory_check)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%MEMORY_BUDGET_GB", &
+                                r_val=mp2_env%bse%memory_budget_gb)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%MAX_ITER", &
+                                i_val=mp2_env%bse%max_iter)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%CONVERGENCE_CRITERION", &
+                                i_val=mp2_env%bse%convergence_criterion)
       CALL section_vals_val_get(bse_section, "BSE_ITERAT%EPS_RES", &
                                 r_val=mp2_env%bse%eps_res)
-      CALL section_vals_val_get(bse_section, "BSE_ITERAT%EPS_EXC_EN", &
-                                r_val=mp2_env%bse%eps_exc_en)
-      CALL section_vals_val_get(bse_section, "BSE_ITERAT%NUM_DAVIDSON_ITER", &
-                                i_val=mp2_env%bse%num_davidson_iter)
-      CALL section_vals_val_get(bse_section, "BSE_ITERAT%Z_SPACE_ENERGY_CUTOFF", &
-                                r_val=mp2_env%bse%z_space_energy_cutoff)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%EPS_ENERGY", &
+                                r_val=mp2_env%bse%eps_energy)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%PRECONDITIONER", &
+                                i_val=mp2_env%bse%preconditioner)
+      CALL section_vals_val_get(bse_section, "BSE_ITERAT%ABBA_SOLVER", &
+                                i_val=mp2_env%bse%abba_solver)
       CALL section_vals_val_get(bse_section, "BSE_DIAG_METHOD", &
                                 i_val=mp2_env%bse%bse_diag_method)
       CALL section_vals_val_get(bse_section, "TDA", &
@@ -398,12 +415,6 @@ CONTAINS
 
       CALL section_vals_val_get(low_scaling_section, "KEEP_QUADRATURE", &
                                 l_val=mp2_env%ri_rpa_im_time%keep_quad)
-      NULLIFY (mp2_env%ri_rpa_im_time%tau_tj)
-      NULLIFY (mp2_env%ri_rpa_im_time%tau_wj)
-      NULLIFY (mp2_env%ri_rpa_im_time%tj)
-      NULLIFY (mp2_env%ri_rpa_im_time%wj)
-      NULLIFY (mp2_env%ri_rpa_im_time%weights_cos_tf_t_to_w)
-      NULLIFY (mp2_env%ri_rpa_im_time%weights_cos_tf_w_to_t)
 
       CALL section_vals_val_get(low_scaling_section, "MIN_BLOCK_SIZE", &
                                 i_val=mp2_env%ri_rpa_im_time%min_bsize)
