@@ -33,8 +33,10 @@ MODULE qs_kpoint_operators
         dbcsr_type_symmetric
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
-                                              copy_fm_to_dbcsr_bc
-   USE cp_fm_pool_types,                ONLY: fm_pool_create_fm,&
+                                              copy_fm_to_dbcsr_bc,&
+                                              dbcsr_fm_copy_plan_type
+   USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
+                                              fm_pool_create_fm,&
                                               fm_pool_give_back_fm
    USE cp_fm_struct,                    ONLY: cp_fm_struct_equivalent,&
                                               cp_fm_struct_release,&
@@ -53,6 +55,7 @@ MODULE qs_kpoint_operators
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE kpoint_methods,                  ONLY: kp_transform_plan_create,&
+                                              kp_transform_plan_type,&
                                               rskp_grid_type,&
                                               rskp_transform,&
                                               rskp_transform_grid_extract,&
@@ -85,16 +88,6 @@ MODULE qs_kpoint_operators
    PUBLIC :: kpoint_operator_get, kpoint_operator_prepare
    PUBLIC :: kpoint_operator_evaluate, kpoint_operator_work_size
    PUBLIC :: kpoint_operator_store, kpoint_operator_get_local, kpoint_operator_get_all
-
-   ABSTRACT INTERFACE
-      ! Serialized correction after densification, before any group transfer.
-      SUBROUTINE kpoint_operator_correction(ik, matrix_row, fm_re, fm_im)
-         IMPORT :: cp_fm_type
-         INTEGER, INTENT(IN) :: ik, matrix_row
-         TYPE(cp_fm_type) :: fm_re
-         TYPE(cp_fm_type), OPTIONAL :: fm_im
-      END SUBROUTINE kpoint_operator_correction
-   END INTERFACE
 
    INTEGER, PARAMETER, PUBLIC :: kpoint_slot_ks = 1, &
                                  kpoint_slot_s = 2, &
@@ -199,6 +192,16 @@ MODULE qs_kpoint_operators
       TYPE(copy_info_type), ALLOCATABLE, DIMENSION(:, :, :, :) :: info
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)            :: status
    END TYPE kpoint_operator_context_type
+
+   ABSTRACT INTERFACE
+      ! Serialized correction after densification, before any group transfer.
+      SUBROUTINE kpoint_operator_correction(ik, matrix_row, fm_re, fm_im)
+         IMPORT :: cp_fm_type
+         INTEGER, INTENT(IN) :: ik, matrix_row
+         TYPE(cp_fm_type) :: fm_re
+         TYPE(cp_fm_type), OPTIONAL :: fm_im
+      END SUBROUTINE kpoint_operator_correction
+   END INTERFACE
 
 CONTAINS
 
