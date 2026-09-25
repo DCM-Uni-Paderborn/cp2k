@@ -1255,7 +1255,9 @@ CONTAINS
       nworkers = SIZE(workspace)
       build_s = .NOT. PRESENT(coeffs) .AND. .NOT. reuse_smat
       build_h = .NOT. PRESENT(coeffs) .OR. diis_weight < 1.0_dp
-      IF (ASSOCIATED(mixed_fock_kp)) CPASSERT(.NOT. PRESENT(coeffs) .AND. .NOT. store_error)
+      IF (ASSOCIATED(mixed_fock_kp)) THEN
+         CPASSERT(.NOT. PRESENT(coeffs) .AND. .NOT. store_error)
+      END IF
       ! Each one-rank group owns complete matrices: assemble directly into solver storage.
       ! Keep the workspace binding explicit and thread-private for classic ifort.
 !$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(DYNAMIC, 1) NUM_THREADS(nworkers) IF(nworkers > 1) &
