@@ -73,7 +73,11 @@ endif()
 # Compatibility: some external packages (e.g. tblite/multicharge) expect
 # LAPACK::LAPACK
 if(NOT TARGET LAPACK::LAPACK)
-  add_library(LAPACK::LAPACK ALIAS cp2k::LAPACK::lapack)
+  # A real imported target is needed when a dependency's link interface is
+  # exported into a try_compile project; a transitive alias is not exported.
+  add_library(LAPACK::LAPACK INTERFACE IMPORTED)
+  set_property(TARGET LAPACK::LAPACK PROPERTY INTERFACE_LINK_LIBRARIES
+                                            cp2k::LAPACK::lapack)
 endif()
 
 set_property(TARGET cp2k::LAPACK::lapack PROPERTY INTERFACE_LINK_LIBRARIES

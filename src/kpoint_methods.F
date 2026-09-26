@@ -3278,18 +3278,22 @@ CONTAINS
 
       CHARACTER(LEN=256)                                 :: phase_error
       INTEGER                                            :: best_gauge, best_mode, gauge, ik, ir, &
-                                                            ira, is, jr, mode
+                                                            ira, is, iu, jr, mode, nunique
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: overlap_point
       INTEGER, DIMENSION(:, :), POINTER                  :: phase_fcell
       LOGICAL                                            :: calibrate_inactive, needs_calibration, &
-                                                            reverse
+                                                            reverse, use_overlap_grid
       REAL(KIND=dp)                                      :: best_residual, candidate_norm, &
                                                             direct_norm, overlap_dot, &
                                                             phase_tolerance, relative_residual, &
                                                             tie_tolerance
+      REAL(KIND=dp), DIMENSION(3)                        :: delta_k
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)       :: overlap_kpoints
       TYPE(dbcsr_type), POINTER                          :: direct_c, direct_r, source_c, source_r, &
                                                             sym_c, sym_r
       TYPE(kind_rotmat_type), DIMENSION(:), POINTER      :: kind_rot
       TYPE(kpoint_sym_type), POINTER                     :: kpsym
+      TYPE(rskp_grid_type)                                :: overlap_grid
 
       calibrate_inactive = .FALSE.
       IF (PRESENT(include_inactive)) calibrate_inactive = include_inactive
@@ -3330,11 +3334,6 @@ CONTAINS
              .NOT. (calibrate_inactive .AND. kpsym%nwred > 0)) CYCLE
          IF (ALL(kpsym%phase_mode > 0 .AND. kpsym%phase_gauge > 0)) CYCLE
 
-         CALL dbcsr_set(source_r, 0.0_dp)
-         CALL dbcsr_set(source_c, 0.0_dp)
-         CALL rskp_transform(source_r, source_c, overlap_rs, 1, kpoint%xkp(1:3, ik), &
-                             cell_to_index, sab_nl)
-
          CPASSERT(kpsym%nwred == SIZE(kpsym%phase_mode))
          CPASSERT(kpsym%nwred == SIZE(kpsym%phase_gauge))
          CPASSERT(kpsym%nwred == SIZE(kpsym%xkp, 2))
@@ -3345,12 +3344,55 @@ CONTAINS
          CPASSERT(kpsym%nwred == SIZE(kpsym%kgphase, 2))
          CPASSERT(kpsym%nwred == SIZE(kpsym%kgphase_input, 2))
          CPASSERT(kpsym%nwred == SIZE(kpsym%rotp))
+
+         ! Stabilizers can request the same reciprocal point many times. Pack each
+         ! distinct point once, modulo a reciprocal lattice vector, and transform
+         ! the MPI-local overlap blocks together. Irregular grids and memory-limited
+         ! cases retain the direct phase sum; OFF remains an independent control.
+         use_overlap_grid = .FALSE.
+         ALLOCATE (overlap_point(kpsym%nwred + 1), overlap_kpoints(3, kpsym%nwred + 1))
+         nunique = 1
+         overlap_point(1) = 1
+         overlap_kpoints(:, 1) = kpoint%xkp(1:3, ik)
+         DO is = 1, kpsym%nwred
+            DO iu = 1, nunique
+               delta_k = kpsym%xkp(1:3, is) - overlap_kpoints(:, iu)
+               IF (ALL(ABS(delta_k - ANINT(delta_k)) <= &
+                       64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(delta_k))))) EXIT
+            END DO
+            IF (iu > nunique) THEN
+               nunique = nunique + 1
+               overlap_kpoints(:, nunique) = kpsym%xkp(1:3, is)
+            END IF
+            overlap_point(is + 1) = iu
+         END DO
+         IF (kpoint%lattice_fft /= lattice_fft_off .AND. nunique >= 2) THEN
+            IF (kpoint%lattice_fft /= lattice_fft_auto .OR. PRODUCT(kpoint%nkp_grid) >= 27) THEN
+               CALL rskp_transform_grid_prepare(overlap_grid, source_r, overlap_rs, 1, &
+                                                overlap_kpoints(:, :nunique), kpoint%nkp_grid, &
+                                                cell_to_index, sab_nl, use_overlap_grid, &
+                                                max_storage_bytes=64_int_8*1024_int_8**2)
+            END IF
+         END IF
+
+         IF (use_overlap_grid) THEN
+            CALL rskp_transform_grid_extract(overlap_grid, 1, source_r, source_c)
+         ELSE
+            CALL dbcsr_set(source_r, 0.0_dp)
+            CALL dbcsr_set(source_c, 0.0_dp)
+            CALL rskp_transform(source_r, source_c, overlap_rs, 1, kpoint%xkp(1:3, ik), &
+                                cell_to_index, sab_nl)
+         END IF
          DO is = 1, kpsym%nwred
             IF (kpsym%phase_mode(is) > 0 .AND. kpsym%phase_gauge(is) > 0) CYCLE
-            CALL dbcsr_set(direct_r, 0.0_dp)
-            CALL dbcsr_set(direct_c, 0.0_dp)
-            CALL rskp_transform(direct_r, direct_c, overlap_rs, 1, kpsym%xkp(1:3, is), &
-                                cell_to_index, sab_nl)
+            IF (use_overlap_grid) THEN
+               CALL rskp_transform_grid_extract(overlap_grid, overlap_point(is + 1), direct_r, direct_c)
+            ELSE
+               CALL dbcsr_set(direct_r, 0.0_dp)
+               CALL dbcsr_set(direct_c, 0.0_dp)
+               CALL rskp_transform(direct_r, direct_c, overlap_rs, 1, kpsym%xkp(1:3, is), &
+                                   cell_to_index, sab_nl)
+            END IF
             CALL dbcsr_dot(direct_r, direct_r, direct_norm)
             CALL dbcsr_dot(direct_c, direct_c, candidate_norm)
             direct_norm = direct_norm + candidate_norm
@@ -3414,9 +3456,12 @@ CONTAINS
             kpsym%phase_mode(is) = best_mode
             kpsym%phase_gauge(is) = best_gauge
          END DO
+         CALL rskp_transform_grid_release(overlap_grid)
+         DEALLOCATE (overlap_point, overlap_kpoints)
       END DO
 
 900   CONTINUE
+      CALL rskp_transform_grid_release(overlap_grid)
       CALL dbcsr_deallocate_matrix(source_r)
       CALL dbcsr_deallocate_matrix(source_c)
       CALL dbcsr_deallocate_matrix(direct_r)

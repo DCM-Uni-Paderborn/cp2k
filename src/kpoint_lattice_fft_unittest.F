@@ -5,11 +5,13 @@
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
 PROGRAM kpoint_lattice_fft_unittest
+   USE, INTRINSIC :: ieee_arithmetic, ONLY: ieee_quiet_nan, ieee_value
    USE fft_lib, ONLY: fft_supports_arbitrary_lengths
    USE fft_tools, ONLY: finalize_fft, &
                         init_fft
    USE kinds, ONLY: dp
    USE kpoint_lattice_fft, ONLY: cell_to_k_grid_fft, &
+                                 certify_kpoint_mesh, kpoint_mesh_certificate_type, &
                                  k_grid_to_cell_execute, &
                                  k_grid_to_cell_fft, &
                                  k_grid_to_cell_prepare, &
@@ -79,6 +81,7 @@ PROGRAM kpoint_lattice_fft_unittest
    IF (COMMAND_ARGUMENT_COUNT() > 0) CALL GET_COMMAND_ARGUMENT(1, fft_backend)
    CALL init_fft(TRIM(fft_backend), alltoall=.FALSE., pool_limit=4, &
                  wisdom_file="", plan_style=1)
+   CALL check_mesh_certificate()
 
    nkp_grid = [4, 4, 4]
    hmat = RESHAPE([4.0_dp, 0.1_dp, 0.2_dp, &
@@ -399,6 +402,98 @@ PROGRAM kpoint_lattice_fft_unittest
    CALL mp_world_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Verify exact-key reuse and invalidation independently of model kernels and FFT backend.
+! **************************************************************************************************
+   SUBROUTINE check_mesh_certificate()
+
+      TYPE(kpoint_mesh_certificate_type)                 :: certificate
+      INTEGER                                            :: ix, iy, ik
+      INTEGER                                            :: cells(3, 6), changed_cells(3, 6)
+      REAL(KIND=dp)                                      :: points(3, 6), changed_points(3, 6)
+      REAL(KIND=dp)                                      :: weights(6), changed_weights(6)
+      LOGICAL                                            :: valid, reused
+
+      ik = 0
+      DO iy = 0, 2
+         DO ix = 0, 1
+            ik = ik + 1
+            cells(:, ik) = [ix, iy, 0]
+            points(:, ik) = [REAL(ix, dp)/2.0_dp, REAL(iy, dp)/3.0_dp, 0.0_dp]
+         END DO
+      END DO
+      weights = 1.0_dp/6.0_dp
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Initial mesh certificate failed"
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. .NOT. reused) ERROR STOP "Identical mesh certificate was not reused"
+
+      changed_points = points(:, [6, 5, 4, 3, 2, 1]) + 0.125_dp
+      CALL certify_kpoint_mesh(certificate, changed_points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Shifted/reordered mesh did not invalidate certificate"
+      changed_points(1, 1) = changed_points(1, 1) + 1.0E-13_dp
+      CALL certify_kpoint_mesh(certificate, changed_points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Near-equal mesh incorrectly reused certificate"
+      CALL certify_kpoint_mesh(certificate, changed_points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. .NOT. reused) ERROR STOP "Recertified mesh did not become reusable"
+
+      changed_cells = cells(:, [6, 5, 4, 3, 2, 1]) + 4
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], changed_cells, weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Changed cell labels incorrectly reused certificate"
+      changed_weights = weights
+      changed_weights(1) = changed_weights(1) + 1.0E-14_dp
+      changed_weights(2) = changed_weights(2) - 1.0E-14_dp
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], changed_cells, changed_weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Near-equal weights incorrectly reused certificate"
+
+      changed_points = points
+      changed_points(:, 2) = changed_points(:, 1)
+      CALL certify_kpoint_mesh(certificate, changed_points, [2, 3, 1], cells, weights, valid, reused)
+      IF (valid .OR. reused) ERROR STOP "Duplicate k points received a certificate"
+      changed_cells = cells
+      changed_cells(:, 2) = changed_cells(:, 1)
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], changed_cells, weights, valid, reused)
+      IF (valid .OR. reused) ERROR STOP "Duplicate BvK representatives received a certificate"
+      changed_weights = weights
+      changed_weights(1) = changed_weights(1) + 0.01_dp
+      changed_weights(2) = changed_weights(2) - 0.01_dp
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, changed_weights, valid, reused)
+      IF (valid .OR. reused) ERROR STOP "Nonuniform weights received a certificate"
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, 2.0_dp*weights, valid, reused)
+      IF (valid .OR. reused) ERROR STOP "Unnormalized weights received a certificate"
+
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Invalid mesh did not invalidate the previous key"
+      changed_points = points
+      changed_points(1, 1) = ieee_value(0.0_dp, ieee_quiet_nan)
+      CALL certify_kpoint_mesh(certificate, changed_points, [2, 3, 1], cells, weights, valid, reused)
+      IF (valid .OR. reused) ERROR STOP "Non-finite point received a certificate"
+      changed_weights = weights
+      changed_weights(1) = ieee_value(0.0_dp, ieee_quiet_nan)
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, changed_weights, valid, reused)
+      IF (valid .OR. reused) ERROR STOP "Non-finite weight received a certificate"
+
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Non-finite inputs left a stale valid certificate"
+      CALL certify_kpoint_mesh(certificate, points(:, 1:5), [2, 3, 1], cells, weights, valid, reused)
+      IF (valid .OR. reused) ERROR STOP "Inconsistent point shape received a certificate"
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells(:, 1:5), weights, valid, reused)
+      IF (valid .OR. reused) ERROR STOP "Inconsistent cell shape received a certificate"
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Invalid shape did not invalidate the certificate"
+      CALL certify_kpoint_mesh(certificate, points, [0, 3, 1], cells, weights, valid, reused)
+      IF (valid .OR. reused) ERROR STOP "Invalid grid dimensions received a certificate"
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Invalid dimensions did not invalidate the certificate"
+
+      ! A changed number of points must be safe without accessing stale-shaped cache arrays.
+      CALL certify_kpoint_mesh(certificate, points(:, 1:1), [1, 1, 1], cells(:, 1:1), [1.0_dp], valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Gamma mesh failed after larger-mesh certificate"
+      CALL certify_kpoint_mesh(certificate, points, [2, 3, 1], cells, weights, valid, reused)
+      IF (.NOT. valid .OR. reused) ERROR STOP "Larger mesh failed after Gamma certificate"
+
+   END SUBROUTINE check_mesh_certificate
 
 ! **************************************************************************************************
 !> \brief Prime-length full/reduced grids use FFTW, with an exact FFTSG fallback.

@@ -14,6 +14,7 @@
 !>        Unsupported grids retain the direct phase-sum fallback.
 ! **************************************************************************************************
 MODULE kpoint_lattice_fft
+   USE, INTRINSIC :: ieee_arithmetic, ONLY: ieee_is_finite
    USE fft_lib, ONLY: fft_supports_arbitrary_lengths
    USE fft_tools, ONLY: BWFFT, &
                         FFT_RADIX_NEXT, &
@@ -40,6 +41,16 @@ MODULE kpoint_lattice_fft
              k_grid_to_cell_work_type, &
              lattice_fft_shape, &
              regular_kpoint_grid
+   PUBLIC :: kpoint_mesh_certificate_type, certify_kpoint_mesh
+
+   ! A certificate concerns only Fourier quadrature, not geometry-dependent operators.
+   TYPE kpoint_mesh_certificate_type
+      PRIVATE
+      LOGICAL :: valid = .FALSE.
+      INTEGER :: nmesh(3) = 0
+      INTEGER, ALLOCATABLE :: cells(:, :)
+      REAL(KIND=dp), ALLOCATABLE :: points(:, :), weights(:)
+   END TYPE kpoint_mesh_certificate_type
 
    ! Call-scoped mathematical maps and buffers. Backend plans remain owned by fft_tools.
    TYPE k_grid_to_cell_work_type
@@ -53,6 +64,69 @@ MODULE kpoint_lattice_fft
    END TYPE k_grid_to_cell_work_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Certify complete-mesh Fourier orthogonality, reusing only an exact immutable key.
+!> \param certificate call-persistent consumer cache, invalidated before testing a changed key
+!> \param xkp unweighted fractional reciprocal points
+!> \param nmesh positive complete-grid dimensions
+!> \param cells integer Born-von Karman representatives
+!> \param weights uniform quadrature weights summing to one
+!> \param valid every ordered pair of representatives is orthogonal within 1E-10
+!> \param reused the exact key was previously certified, not merely close to it
+! **************************************************************************************************
+   SUBROUTINE certify_kpoint_mesh(certificate, xkp, nmesh, cells, weights, valid, reused)
+
+      TYPE(kpoint_mesh_certificate_type), INTENT(INOUT)  :: certificate
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp
+      INTEGER, DIMENSION(3), INTENT(IN)                  :: nmesh
+      INTEGER, DIMENSION(:, :), INTENT(IN)               :: cells
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: weights
+      LOGICAL, INTENT(OUT)                              :: valid, reused
+
+      INTEGER                                            :: nk, icell, jcell
+      COMPLEX(KIND=dp)                                   :: orthogonality
+      REAL(KIND=dp)                                      :: target
+      LOGICAL                                            :: previously_valid
+
+      valid = .FALSE.
+      reused = .FALSE.
+      previously_valid = certificate%valid
+      certificate%valid = .FALSE.
+      nk = SIZE(weights)
+      IF (nk < 1 .OR. ANY(nmesh < 1)) RETURN
+      IF (PRODUCT(nmesh) /= nk) RETURN
+      IF (ANY(SHAPE(xkp) /= [3, nk]) .OR. ANY(SHAPE(cells) /= [3, nk])) RETURN
+      IF (.NOT. ALL(ieee_is_finite(xkp)) .OR. .NOT. ALL(ieee_is_finite(weights))) RETURN
+      IF (previously_valid) THEN
+         IF (ALL(certificate%nmesh == nmesh)) THEN
+            IF (ALL(certificate%cells == cells) .AND. ALL(certificate%points == xkp) .AND. &
+                ALL(certificate%weights == weights)) THEN
+               valid = .TRUE.
+               reused = .TRUE.
+               certificate%valid = .TRUE.
+               RETURN
+            END IF
+         END IF
+      END IF
+      IF (ABS(SUM(weights) - 1.0_dp) > 1.0E-12_dp .OR. &
+          MAXVAL(ABS(weights - 1.0_dp/REAL(nk, dp))) > 1.0E-12_dp) RETURN
+      DO icell = 1, nk
+         DO jcell = 1, nk
+            orthogonality = SUM(weights*EXP(gaussi*twopi* &
+                                            MATMUL(TRANSPOSE(xkp), REAL(cells(:, icell) - cells(:, jcell), dp))))
+            TARGET = MERGE(1.0_dp, 0.0_dp, icell == jcell)
+            IF (ABS(orthogonality - TARGET) > 1.0E-10_dp) RETURN
+         END DO
+      END DO
+      certificate%cells = cells
+      certificate%points = xkp
+      certificate%weights = weights
+      certificate%nmesh = nmesh
+      certificate%valid = .TRUE.
+      valid = .TRUE.
+
+   END SUBROUTINE certify_kpoint_mesh
 
 ! **************************************************************************************************
 !> \brief Test and map a uniformly shifted reciprocal grid or an explicitly allowed subset.

@@ -872,9 +872,20 @@ list(
   taper_types.F
   task_list_methods.F
   task_list_types.F
+  tblite_acp_images.F
+  tblite_acp_response.F
+  tblite_bvk_plan.F
+  tblite_stream_plan.F
+  tblite_exchange_contractions.F
+  tblite_bvk_transform.F
+  tblite_exchange_fft.F
+  tblite_exchange_stream.F
   tblite_interface.F
   tblite_ks_matrix.F
+  tblite_model_bridge.F
+  tblite_projector_cache.F
   tblite_scc_mixer.F
+  tblite_transform_contract.F
   tblite_types.F
   time_frequency_grids.F
   tip_scan_methods.F
@@ -1585,6 +1596,12 @@ set(CP2K_PROGS_F
     common/memory_utilities_unittest.F
     common/parallel_rng_types_unittest.F
     kpoint_lattice_fft_unittest.F
+    tblite_projector_cache_unittest.F
+    tblite_bvk_plan_unittest.F
+    tblite_exchange_stream_unittest.F
+    tblite_exchange_derivative_unittest.F
+    tblite_model_bridge_unittest.F
+    tblite_exchange_integration_unittest.F
     kpoint_smearing_unittest.F
     topology_wilson_unittest.F
     topology_symmetry_unittest.F
@@ -1902,7 +1919,12 @@ endif()
 
 target_link_libraries(cp2k PUBLIC cp2k_link_libs)
 if(CP2K_TBLITE_HAS_GXTB_ACCELERATION)
-  set_property(SOURCE tblite_interface.F cp2k_info.F APPEND PROPERTY COMPILE_DEFINITIONS
+  set_property(SOURCE tblite_interface.F cp2k_info.F tblite_projector_cache_unittest.F
+               tblite_acp_response.F tblite_bvk_transform.F tblite_exchange_contractions.F tblite_exchange_stream.F tblite_exchange_stream_unittest.F
+               tblite_exchange_derivative_unittest.F
+               tblite_model_bridge_unittest.F
+               tblite_exchange_integration_unittest.F
+               APPEND PROPERTY COMPILE_DEFINITIONS
                                                        __TBLITE_GXTB_ACCELERATION)
 endif()
 target_compile_definitions(
@@ -1920,6 +1942,7 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_USE_LIBSMEAGOL}>:__SMEAGOL>
     $<$<BOOL:${CP2K_USE_TBLITE}>:__TBLITE>
     $<$<BOOL:${CP2K_TBLITE_HAS_GXTB}>:__TBLITE_GXTB>
+    $<$<BOOL:${CP2K_TBLITE_HAS_GXTB_TRANSFORM}>:__TBLITE_GXTB_TRANSFORM>
     $<$<BOOL:${CP2K_USE_TBLITE}>:__TBLITE_PROVIDER=\"${CP2K_TBLITE_PROVIDER}\">
     $<$<BOOL:${CP2K_USE_TBLITE}>:__TBLITE_REVISION=\"${CP2K_TBLITE_REVISION}\">
     $<$<BOOL:${CP2K_USE_TBLITE}>:__S_DFTD3>
@@ -2014,6 +2037,12 @@ list(
   "memory_utilities_unittest"
   "parallel_rng_types_unittest"
   "kpoint_lattice_fft_unittest"
+  "tblite_projector_cache_unittest"
+  "tblite_bvk_plan_unittest"
+  "tblite_exchange_stream_unittest"
+  "tblite_exchange_derivative_unittest"
+  "tblite_model_bridge_unittest"
+  "tblite_exchange_integration_unittest"
   "kpoint_smearing_unittest"
   "topology_wilson_unittest"
   "topology_symmetry_unittest"
@@ -2053,6 +2082,12 @@ add_executable(gemm_square_unittest common/gemm_square_unittest.F)
 add_executable(memory_utilities_unittest common/memory_utilities_unittest.F)
 add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
+add_executable(tblite_projector_cache_unittest tblite_projector_cache_unittest.F)
+add_executable(tblite_bvk_plan_unittest tblite_bvk_plan_unittest.F)
+add_executable(tblite_exchange_stream_unittest tblite_exchange_stream_unittest.F)
+add_executable(tblite_exchange_derivative_unittest tblite_exchange_derivative_unittest.F)
+add_executable(tblite_model_bridge_unittest tblite_model_bridge_unittest.F)
+add_executable(tblite_exchange_integration_unittest tblite_exchange_integration_unittest.F)
 add_executable(kpoint_smearing_unittest kpoint_smearing_unittest.F)
 add_executable(topology_wilson_unittest topology_wilson_unittest.F)
 add_executable(topology_symmetry_unittest topology_symmetry_unittest.F)

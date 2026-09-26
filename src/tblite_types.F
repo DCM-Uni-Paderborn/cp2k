@@ -18,7 +18,10 @@ MODULE tblite_types
 #if defined(__TBLITE_GXTB)
    USE tblite_acp_cache, ONLY: acp_cache
    USE tblite_basis_cache, ONLY: basis_cache
-   USE tblite_cp2k_compat, ONLY: cp2k_potential_mixer_type
+   USE tblite_stream_plan, ONLY: cp2k_stream_plan_type
+   USE tblite_bvk_plan, ONLY: cp2k_bvk_plan_type
+   USE tblite_projector_cache, ONLY: cp2k_acp_projector_cache_type
+   USE tblite_model_bridge, ONLY: cp2k_potential_mixer_type
 #endif
    USE tblite_xtb_calculator, ONLY: xtb_calculator
    USE tblite_container, ONLY: container_cache
@@ -47,6 +50,7 @@ MODULE tblite_types
                               tblite_mixer_weight_factor_default, &
                               tblite_solver_gvd
    USE kinds, ONLY: dp
+   USE kpoint_lattice_fft, ONLY: kpoint_mesh_certificate_type
 
 #include "./base/base_uses.f90"
    IMPLICIT NONE
@@ -74,6 +78,9 @@ MODULE tblite_types
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)      :: reduced_xkp, xkp
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)         :: reduced_weight, weight, fold_factor
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :) :: atom_phase
+      ! Exact key for the consumer-owned whole-mesh Fourier certificate.
+      ! This certifies only the reciprocal grid, never a geometry/charge kernel.
+      TYPE(kpoint_mesh_certificate_type)               :: exchange_mesh_certificate
    END TYPE tb_gxtb_kmesh_map_type
 #endif
 
@@ -119,6 +126,9 @@ MODULE tblite_types
 #if defined(__TBLITE_GXTB)
       TYPE(basis_cache)                                  :: bcache = basis_cache()
       TYPE(acp_cache)                                    :: acache = acp_cache()
+      TYPE(cp2k_acp_projector_cache_type)                 :: acp_projector_cache
+      TYPE(cp2k_stream_plan_type) :: stream_plan
+      TYPE(cp2k_bvk_plan_type)                            :: bvk_plan
       REAL(KIND=dp), ALLOCATABLE                         :: overlap_dense(:, :)
       TYPE(tb_gxtb_kmesh_map_type), ALLOCATABLE          :: gxtb_kmesh_map
       COMPLEX(KIND=dp), ALLOCATABLE                      :: acp_fock_kp(:, :, :)

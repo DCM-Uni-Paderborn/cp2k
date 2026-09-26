@@ -26,7 +26,12 @@ MODULE tblite_interface
    USE tblite_cutoff, ONLY: get_lattice_points
    USE tblite_data_spin, ONLY: get_spin_constant
 #if defined(__TBLITE_GXTB)
-   USE tblite_cp2k_compat, ONLY: get_mixer_dimension => cp2k_get_scc_mixer_dimension, &
+   USE tblite_bvk_plan, ONLY: evaluate_bvk_exchange, evaluate_bvk_gradient
+   USE tblite_projector_cache, ONLY: projector_cache_lookup, projector_cache_store, &
+                                     projector_cache_bypass, projector_cache_counts
+   USE tblite_exchange_cache, ONLY: exchange_cache
+   USE tblite_exchange_fock, ONLY: exchange_fock
+   USE tblite_model_bridge, ONLY: get_mixer_dimension => cp2k_get_scc_mixer_dimension, &
                                  acp_image_type, &
                                  hamiltonian_image_type, &
                                  cp2k_acp_image_gradient, &
@@ -37,8 +42,6 @@ MODULE tblite_interface
                                  cp2k_build_image_acp, &
                                  cp2k_build_gamma_h0, &
                                  cp2k_build_image_h0, &
-                                 cp2k_exchange_kmesh, &
-                                 cp2k_exchange_kmesh_gradient, &
                                  cp2k_exchange_kpoint_gradient, &
                                  cp2k_gamma_gradient, &
                                  cp2k_image_h0_gradient, &
@@ -51,7 +54,9 @@ MODULE tblite_interface
                                  cp2k_update_basis, &
                                  new_cp2k_potential_mixer
 #if defined(__TBLITE_GXTB_ACCELERATION)
-   USE tblite_cp2k_compat, ONLY: cp2k_acp_projector_image_gradient, &
+   USE tblite_exchange_stream, ONLY: cp2k_acp_projector_image_gradient, &
+                                 cp2k_exchange_kmesh, &
+                                 cp2k_exchange_kmesh_gradient, &
                                  cp2k_exchange_partial_abi_version, &
                                  cp2k_exchange_partial_begin, &
                                  cp2k_exchange_partial_contributor_advance, &
@@ -95,7 +100,8 @@ MODULE tblite_interface
                                  cp2k_exchange_stream_end, &
                                  cp2k_exchange_stream_get, &
                                  cp2k_exchange_stream_has_full_mesh_storage, &
-                                 cp2k_exchange_stream_peak_complex_elements, &
+                                 cp2k_exchange_stream_peak_complex_elements, cp2k_exchange_stream_pair_tile_size, &
+                                 cp2k_exchange_stream_image_batch_size, &
                                  cp2k_exchange_stream_oracle, &
                                  cp2k_exchange_stream_push, &
                                  cp2k_exchange_stream_reduced, &
@@ -111,6 +117,7 @@ MODULE tblite_interface
                                  cp2k_exchange_transform_mixed_radix_fft, &
                                  cp2k_exchange_transform_separable_dft
 #else
+   USE tblite_model_bridge, ONLY: cp2k_exchange_kmesh, cp2k_exchange_kmesh_gradient
    ! Input-selector aliases only: no accelerated provider routine is called.
    USE input_constants, ONLY: cp2k_exchange_stream_reduced => tblite_gxtb_exchange_reduced, &
                               cp2k_exchange_stream_oracle => tblite_gxtb_exchange_oracle, &
@@ -204,7 +211,7 @@ MODULE tblite_interface
                               tblite_gxtb_star_dense, &
                               tblite_gxtb_star_qualify, tblite_gxtb_star_streamed, &
                               tblite_gxtb_transform_dense, tblite_gxtb_transform_mixed_radix, &
-                              tblite_gxtb_transform_separable, &
+                              tblite_gxtb_transform_separable, tblite_gxtb_transform_cp2k_fft, &
                               tblite_mixer_damping_default, &
                               tblite_mixer_max_weight_default, tblite_mixer_min_weight_default, &
                               tblite_mixer_omega0_default, tblite_mixer_weight_factor_default, &
@@ -272,20 +279,19 @@ MODULE tblite_interface
    INTEGER, PARAMETER                                 :: dip_n = 3
    INTEGER, PARAMETER                                 :: quad_n = 6
 #if defined(__TBLITE_GXTB)
-   ! CP2K-only qualification mode.  The provider sees an ordinary bounded
+   ! CP2K-only qualification mode.  Each consumer stream uses an ordinary bounded
    ! transaction, while CP2K assigns one disjoint additive BvK image range to
    ! every participating MPI rank and reduces the folded response afterwards.
    INTEGER, PARAMETER                                 :: tb_gxtb_exchange_stream_distributed = &
                                                          tblite_gxtb_exchange_distributed
    ! Exact CP2K k-group ownership precursor.  Only the owner of an irreducible
    ! k point expands its star blocks; official inter-k-point communicators feed
-   ! one nonreplicated provider stream, and owner groups perform the weighted
-   ! foldback.  The coupled provider kernel itself is intentionally not claimed
-   ! to scale over k groups until save_tblite exposes a public partial-k-to-R
-   ! accumulator merge/finalize interface.
+   ! one nonreplicated CP2K stream, and owner groups perform the weighted
+   ! foldback.  This owner-only variant keeps the coupled contraction serial;
+   ! the separate partial-k variants distribute CP2K-owned accumulation.
    INTEGER, PARAMETER                                 :: tb_gxtb_exchange_stream_kgroup_owner = &
                                                          tblite_gxtb_exchange_kgroup_owner
-   ! Safe first consumer of save_tblite's public partial k-to-R ABI.  K-group
+   ! CP2K-owned partial k-to-R accumulation.  K-group
    ! leaders form additive pre-kernel payloads, while one service leader owns
    ! the nonlinear apply and every R-to-k response pull.  Thus only k-to-R is
    ! distributed; the coupled kernel and reverse transform remain root-serial.
@@ -303,7 +309,7 @@ MODULE tblite_interface
    ! each image range contributes additively to the complete Bloch response.
    INTEGER, PARAMETER                                 :: tb_gxtb_exchange_stream_kgroup_partial_images = &
                                                          tblite_gxtb_exchange_kgroup_partial_images
-   ! CP2K-side fused symmetry traversal.  The provider receives an ordinary
+   ! CP2K-side fused symmetry traversal.  The consumer stream uses an ordinary
    ! bounded transaction; this distinct value selects source-major star
    ! expansion from irreducible P/S blocks and immediate weighted foldback.
    INTEGER, PARAMETER                                 :: tb_gxtb_exchange_stream_symmetry_fused = &
@@ -327,11 +333,7 @@ MODULE tblite_interface
    INTEGER, PARAMETER                                 :: tb_gxtb_acp_mesh_dense = tblite_gxtb_acp_mesh_dense
    INTEGER, PARAMETER                                 :: tb_gxtb_acp_mesh_streamed = tblite_gxtb_acp_mesh_streamed
    INTEGER, PARAMETER                                 :: tb_gxtb_acp_mesh_qualify = tblite_gxtb_acp_mesh_qualify
-#if defined(__TBLITE_GXTB_ACCELERATION)
    INTEGER, PARAMETER                                 :: tb_gxtb_default_acp_cache = tblite_gxtb_acp_cache_enabled
-#else
-   INTEGER, PARAMETER                                 :: tb_gxtb_default_acp_cache = tblite_gxtb_acp_cache_direct
-#endif
 #endif
    REAL(KIND=dp), PARAMETER                           :: same_atom = 0.00001_dp
    PUBLIC :: tb_set_calculator, tb_init_geometry, tb_init_wf
@@ -1034,7 +1036,7 @@ CONTAINS
       INTEGER                                            :: iounit
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(section_vals_type), POINTER                   :: scf_section
-      REAL(KIND=dp)                                      :: xtb_inter
+      REAL(KIND=dp)                                      :: xtb_inter, energy_without_increment
       NULLIFY (scf_section, logger)
 
       logger => cp_get_default_logger()
@@ -1058,6 +1060,19 @@ CONTAINS
       iounit = cp_print_key_unit_nr(logger, scf_section, "PRINT%DETAILED_ENERGY", &
                                     extension=".scfLog")
       IF (iounit > 0) THEN
+         ! Form the geometry-dependent sum before adding the constant atomic
+         ! core increment. Subtracting it from energy%total would already have
+         ! lost precision needed by small-step force and stress differences.
+         energy_without_increment = energy%core + energy%repulsive + energy%el_stat + energy%dispersion &
+                                    + energy%dispersion_sc + energy%xtb_xb_inter + SUM(tb%e_int) &
+                                    + SUM(tb%e_exchange) + SUM(tb%e_spin) &
+                                    + energy%kTS + energy%efield + energy%qmmm_el
+#if defined(__TBLITE_GXTB)
+         energy_without_increment = energy_without_increment + tb%e_acp_kp
+#endif
+         WRITE (UNIT=iounit, FMT="(/,(T9,A,T60,ES26.17))") &
+            "Atomic core increment [hartree]:               ", SUM(tb%e_inc), &
+            "Energy without core increment [hartree]:       ", energy_without_increment
          WRITE (UNIT=iounit, FMT="(/,(T9,A,T60,F20.10))") &
             "Repulsive pair potential energy:               ", energy%repulsive, &
             "Zeroth order Hamiltonian energy:               ", energy%core, &
@@ -2557,7 +2572,7 @@ CONTAINS
    END SUBROUTINE tb_prepare_gxtb_kmesh_map
 
 ! **************************************************************************************************
-!> \brief Apply AUTO defaults supported by the linked provider's compile-time API.
+!> \brief Apply AUTO defaults supported by this CP2K build and the linked model API.
 !> \param tb ...
 ! **************************************************************************************************
    SUBROUTINE tb_apply_gxtb_provider_defaults(tb)
@@ -2567,7 +2582,7 @@ CONTAINS
 #if defined(__TBLITE_GXTB_ACCELERATION)
       MARK_USED(tb)
 #else
-      ! AUTO resolves only features actually supplied by this linked library.
+      ! AUTO resolves only features actually available in this CP2K build.
       ! Explicit MANUAL requests are checked separately and never silently downgraded.
       IF (tb%gxtb_acceleration_mode /= tblite_gxtb_acceleration_auto) RETURN
       tb%gxtb_exchange_stream_backend = tblite_gxtb_exchange_complete_array
@@ -2575,7 +2590,7 @@ CONTAINS
       tb%gxtb_fourier_transform_backend = tblite_gxtb_transform_dense
       tb%gxtb_symmetry_star_contraction = tblite_gxtb_star_dense
       tb%gxtb_forward_fock_qualification = tblite_gxtb_forward_qualification_off
-      tb%gxtb_acp_projector_cache = tblite_gxtb_acp_cache_direct
+      tb%gxtb_acp_projector_cache = tblite_gxtb_acp_cache_enabled
       tb%gxtb_acp_mesh_contraction = tblite_gxtb_acp_mesh_dense
 #endif
 
@@ -2587,9 +2602,9 @@ CONTAINS
 !> \param kpoints ...
 !> \param kmap ...
 !>
-!> With an extended provider, reduced meshes use symmetry-fused traversal and FFT;
+!> With CP2K acceleration support, reduced meshes use symmetry-fused traversal and FFT;
 !> unreduced meshes use distributed images under MPI and bounded batching otherwise.
-!> Minimal providers retain the independently qualified complete-array path.
+!> Builds without that support retain the complete-array path.
 !> Qualification is never enabled implicitly.
 ! **************************************************************************************************
    SUBROUTINE tb_resolve_gxtb_acceleration(tb, kpoints, kmap)
@@ -3801,11 +3816,12 @@ CONTAINS
       INTEGER(KIND=int_8)                                :: dense_full_complex, streamed_peak_complex
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ao_first, ao_size
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: run_dense_star, run_streamed_star, &
-                                                            request_grid_fft, use_grid_fft, use_real_wfn
+      LOGICAL                                            :: request_grid_fft, run_dense_star, &
+                                                            run_streamed_star, use_grid_fft, &
+                                                            use_real_wfn
       REAL(KIND=dp) :: dense_covariance_residual, hermitian_error, scale, &
-                       spin_covariance_residual, spin_roundtrip_residual, streamed_covariance_residual, &
-                       streamed_roundtrip_residual
+         spin_covariance_residual, spin_roundtrip_residual, streamed_covariance_residual, &
+         streamed_roundtrip_residual
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mixed_vector, raw_vector
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: fock_imag, fock_real
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
@@ -4395,11 +4411,11 @@ CONTAINS
 !> \brief Select the public CP2K bridge for streamed g-xTB exchange.
 !>
 !> Zero retains the Part-I complete-array implementation.  The nonzero values expose the
-!> provider's matrix-lean, full-mesh, bounded image-batch, and MPI-distributed image-range
+!> CP2K's matrix-lean, full-mesh, bounded image-batch, and MPI-distributed image-range
 !> transaction modes through GXTB_ACCELERATION.  Independent dense-oracle execution is controlled
 !> by FORWARD_FOCK_QUALIFICATION and never changes which response is applied.
 !> \param tb ...
-!> \return selected provider stream mode, or zero for the complete-array bridge
+!> \return selected CP2K stream mode, or zero for the complete-array bridge
 ! **************************************************************************************************
    INTEGER FUNCTION tb_gxtb_exchange_stream_mode(tb) RESULT(stream_mode)
 
@@ -4487,10 +4503,11 @@ CONTAINS
 !> \param env_override true when CP2K_GXTB_EXCHANGE_IMAGE_BATCH_SIZE supplied the result
 !> \return requested positive image batch size
 ! **************************************************************************************************
-   INTEGER FUNCTION tb_gxtb_exchange_stream_batch_size(tb, env_override) RESULT(batch_size)
+   INTEGER FUNCTION tb_gxtb_exchange_stream_batch_size(tb, env_override, adaptive_images) RESULT(batch_size)
 
       TYPE(tblite_type), INTENT(IN)                      :: tb
       LOGICAL, INTENT(OUT), OPTIONAL                     :: env_override
+      LOGICAL, INTENT(IN), OPTIONAL                      :: adaptive_images
 
       CHARACTER(LEN=32)                                  :: value
       INTEGER                                            :: status, value_length
@@ -4498,6 +4515,17 @@ CONTAINS
       batch_size = tb%gxtb_image_batch_size
       IF (batch_size < 1) THEN
          CPABORT("XTB/TBLITE/GXTB_ACCELERATION/IMAGE_BATCH_SIZE must be positive")
+      END IF
+      ! Only the symmetry-fused exchange path uses this measured AUTO policy.
+      ! Other consumers (in particular ACP and distributed partial streams)
+      ! keep their own established storage bounds. Explicit choices still win.
+      IF (PRESENT(adaptive_images)) THEN
+         IF (adaptive_images .AND. tb%gxtb_acceleration_mode == tblite_gxtb_acceleration_auto .AND. &
+             .NOT. tb%gxtb_image_batch_explicit) THEN
+            CPASSERT(ALLOCATED(tb%gxtb_kmesh_map))
+            batch_size = cp2k_exchange_stream_image_batch_size( &
+               tb%calc%bas%nao, tb%gxtb_kmesh_map%nfull, tb%wfn%nspin)
+         END IF
       END IF
       IF (PRESENT(env_override)) env_override = .FALSE.
       status = 1
@@ -4523,7 +4551,7 @@ CONTAINS
 !> \brief Select the CP2K consumer used for the coupled-exchange derivative.
 !>
 !> DENSE preserves the Part-I complete-mesh implementation.  STREAMED uses the
-!> provider's bounded reverse-only transaction and folds each returned full-star
+!> CP2K's bounded reverse-only transaction and folds each returned full-star
 !> overlap adjoint immediately.  QUALIFY executes STREAMED, then constructs the
 !> unchanged complete-mesh derivative only as a numerical oracle before applying
 !> the streamed response exactly once.
@@ -4570,11 +4598,11 @@ CONTAINS
 !> Dense phase-table multiplication remains the default and permanent numerical oracle.  The
 !> separable backend is a factorized direct DFT: it applies one-dimensional transforms along each
 !> regular mesh direction and scales as Nk*sum(nmesh) character products.  MIXED_RADIX_FFT selects
-!> the provider's recursive Cooley--Tukey transform, with direct DFT leaves only for prime factors.
-!> The provider rejects meshes or weights that are not machine-regular instead of silently falling
+!> CP2K's recursive Cooley--Tukey transform, with direct DFT leaves only for prime factors.
+!> The consumer rejects meshes or weights that are not machine-regular instead of silently falling
 !> back, so qualification runs always exercise the backend that was requested.
 !> \param tb ...
-!> \return provider transform-backend identifier
+!> \return CP2K transform-backend identifier
 ! **************************************************************************************************
    INTEGER FUNCTION tb_gxtb_exchange_transform_backend(tb) RESULT(transform_backend)
 
@@ -4590,6 +4618,8 @@ CONTAINS
          transform_backend = cp2k_exchange_transform_separable_dft
       CASE (tblite_gxtb_transform_mixed_radix)
          transform_backend = cp2k_exchange_transform_mixed_radix_fft
+      CASE (tblite_gxtb_transform_cp2k_fft)
+         transform_backend = tblite_gxtb_transform_cp2k_fft
       CASE DEFAULT
          CPABORT("Invalid XTB/TBLITE/GXTB_ACCELERATION/FOURIER_TRANSFORM_BACKEND")
       END SELECT
@@ -4613,6 +4643,8 @@ CONTAINS
          transform_backend = cp2k_exchange_transform_separable_dft
       CASE ("FFT", "fft", "MIXED_RADIX_FFT", "mixed_radix_fft", "3")
          transform_backend = cp2k_exchange_transform_mixed_radix_fft
+      CASE ("CP2K_FFT", "cp2k_fft", "4")
+         transform_backend = tblite_gxtb_transform_cp2k_fft
       CASE DEFAULT
          CPABORT("Unknown CP2K_GXTB_EXCHANGE_TRANSFORM_MODE value")
       END SELECT
@@ -4688,7 +4720,8 @@ CONTAINS
 
       gradient_mode = tb_gxtb_exchange_gradient_mode(tb)
       star_mode = tb_gxtb_symmetry_star_mode(tb)
-      batch_size = tb_gxtb_exchange_stream_batch_size(tb)
+      batch_size = tb_gxtb_exchange_stream_batch_size( &
+         tb, adaptive_images=stream_mode == tb_gxtb_exchange_stream_symmetry_fused)
       acp_mode = tb_gxtb_acp_projector_cache_mode(tb)
       qualification = tb_gxtb_forward_qualification_enabled(tb)
 
@@ -4738,6 +4771,8 @@ CONTAINS
          transform_name = "SEPARABLE_DFT"
       CASE (cp2k_exchange_transform_mixed_radix_fft)
          transform_name = "MIXED_RADIX_FFT"
+      CASE (tblite_gxtb_transform_cp2k_fft)
+         transform_name = "CP2K_FFT"
       CASE DEFAULT
          CPABORT("Unknown effective g-XTB Fourier backend")
       END SELECT
@@ -4842,9 +4877,9 @@ CONTAINS
 !> \param translations compact projector translation list
 !> \param images selected projector representation
 !>
-!> QUALIFY first repeats the cache-enabled build and verifies a real provider cache hit, then
+!> QUALIFY first repeats the cache-enabled build and verifies a real CP2K cache hit, then
 !> compares both cache-enabled representations with an immediate direct rebuild.  The direct
-!> provider call deliberately invalidates the reusable payload, so a later call must establish a
+!> oracle deliberately invalidates the reusable payload, so a later call must establish a
 !> fresh cache hit or miss rather than reusing data that were not checked in the current geometry.
 !> ACP derivative integrals are outside this wrapper and remain uncached.
 ! **************************************************************************************************
@@ -4855,43 +4890,34 @@ CONTAINS
       TYPE(acp_image_type), INTENT(OUT)                  :: images
 
       INTEGER                                            :: bypasses_before, cache_mode, &
-                                                            hits_before, misses_before
+                                                            hits_before, misses_before, hits, misses, bypasses
+      LOGICAL                                            :: hit, valid
       TYPE(acp_image_type)                               :: direct_images, repeated_images
 
-#if defined(__TBLITE_GXTB_ACCELERATION)
       cache_mode = tb_gxtb_acp_projector_cache_mode(tb)
       SELECT CASE (cache_mode)
       CASE (tblite_gxtb_acp_cache_enabled)
-         CALL cp2k_build_acp_projectors(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                        translations, images, use_projector_cache=.TRUE.)
+         CALL cached_build(images, hit)
       CASE (tblite_gxtb_acp_cache_direct)
-         CALL cp2k_build_acp_projectors(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                        translations, images, use_projector_cache=.FALSE.)
+         CALL projector_cache_bypass(tb%acp_projector_cache)
+         CALL direct_build(images)
       CASE (tblite_gxtb_acp_cache_qualify)
-         CALL cp2k_build_acp_projectors(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                        translations, images, use_projector_cache=.TRUE.)
-         hits_before = tb%acache%projector_hits
-         misses_before = tb%acache%projector_misses
-         bypasses_before = tb%acache%projector_bypasses
-         CALL cp2k_build_acp_projectors(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                        translations, repeated_images, use_projector_cache=.TRUE.)
-         IF (tb%acache%projector_hits /= hits_before + 1 .OR. &
-             tb%acache%projector_misses /= misses_before .OR. &
-             tb%acache%projector_bypasses /= bypasses_before .OR. &
-             .NOT. tb%acache%projector_valid) THEN
-            CPABORT("Repeated ACP projector build did not use the provider cache")
+         CALL cached_build(images, hit)
+         CALL projector_cache_counts(tb%acp_projector_cache, hits_before, misses_before, bypasses_before, valid)
+         CALL cached_build(repeated_images, hit)
+         CALL projector_cache_counts(tb%acp_projector_cache, hits, misses, bypasses, valid)
+         IF (.NOT. hit .OR. .NOT. valid .OR. hits /= hits_before + 1 .OR. &
+             misses /= misses_before .OR. bypasses /= bypasses_before) THEN
+            CPABORT("Repeated ACP projector build did not use the CP2K cache")
          END IF
          CALL tb_qualify_gxtb_acp_projectors(images, repeated_images)
-         hits_before = tb%acache%projector_hits
-         misses_before = tb%acache%projector_misses
-         bypasses_before = tb%acache%projector_bypasses
-         CALL cp2k_build_acp_projectors(tb%calc, tb%mol, tb%bcache, tb%acache, &
-                                        translations, direct_images, use_projector_cache=.FALSE.)
-         IF (tb%acache%projector_hits /= hits_before .OR. &
-             tb%acache%projector_misses /= misses_before .OR. &
-             tb%acache%projector_bypasses /= bypasses_before + 1 .OR. &
-             tb%acache%projector_valid) THEN
-            CPABORT("Direct ACP projector oracle did not bypass and invalidate the provider cache")
+         hits_before = hits
+         CALL projector_cache_bypass(tb%acp_projector_cache)
+         CALL direct_build(direct_images)
+         CALL projector_cache_counts(tb%acp_projector_cache, hits, misses, bypasses, valid)
+         IF (hits /= hits_before .OR. misses /= misses_before .OR. &
+             bypasses /= bypasses_before + 1 .OR. valid) THEN
+            CPABORT("Direct ACP projector oracle did not bypass and invalidate the CP2K cache")
          END IF
          CALL tb_qualify_gxtb_acp_projectors(images, direct_images)
          WRITE (*, '(A)') &
@@ -4899,12 +4925,25 @@ CONTAINS
       CASE DEFAULT
          CPABORT("Invalid XTB/TBLITE/GXTB_ACCELERATION/ACP_PROJECTOR_CACHE")
       END SELECT
-#else
-      IF (tb_gxtb_acp_projector_cache_mode(tb) /= tblite_gxtb_acp_cache_direct) THEN
-         CPABORT("ACP projector caching requires an extended save_tblite provider")
-      END IF
-      CALL cp2k_build_acp_projectors(tb%calc, tb%mol, tb%bcache, tb%acache, translations, images)
-#endif
+
+   CONTAINS
+
+      SUBROUTINE cached_build(RESULT, reused)
+      TYPE(acp_image_type), INTENT(OUT)                  :: result
+      LOGICAL, INTENT(OUT)                               :: reused
+
+         CALL projector_cache_lookup(tb%acp_projector_cache, tb%mol, tb%calc%bas, tb%bcache, &
+                                     tb%calc%acp, tb%acache, translations, RESULT, reused)
+         IF (reused) RETURN
+         CALL direct_build(RESULT)
+         CALL projector_cache_store(tb%acp_projector_cache, RESULT)
+      END SUBROUTINE cached_build
+
+      SUBROUTINE direct_build(RESULT)
+         TYPE(acp_image_type), INTENT(OUT) :: result
+         ! The common bridge bypasses any provider cache when that API exists.
+         CALL cp2k_build_acp_projectors(tb%calc, tb%mol, tb%bcache, tb%acache, translations, RESULT)
+      END SUBROUTINE direct_build
 
    END SUBROUTINE tb_build_gxtb_acp_projectors
 
@@ -5507,18 +5546,16 @@ CONTAINS
 !> array from the streamed bridge.  Every CP2K k-point group gathers only its
 !> own P(k).  Its group leader expands exactly the full-mesh star members whose
 !> irreducible source lies in kp_range; para_env_inter_kp transfers one block at
-!> a time to the unique provider rank.  The provider state and coupled kernel
+!> a time to the unique exchange-service rank.  The stream state and coupled contraction
 !> are intentionally nonreplicated.  Returned full-k Fock blocks travel only
 !> among group leaders, are folded by the irreducible owner, and are finally
 !> reduced over para_env_inter_kp and broadcast inside para_env_kp.
 !>
-!> The current public save_tblite stream API requires every Bloch block in one
-!> stream before apply and does not expose mergeable partial k-to-R
-!> accumulators.  Consequently this exact precursor demonstrates CP2K
-!> ownership and bounded block communication, but does not claim parallel
-!> provider-kernel scaling.  A future distributed variant must use a public
-!> provider accumulator create/push/merge/finalize API, never private stream
-!> components.
+!> This owner-only variant collects every Bloch block in one stream before
+!> applying the contraction.  It demonstrates ownership and bounded block
+!> communication, not parallel contraction scaling.  The separate partial-k
+!> variants use CP2K's accumulator merge/finalize operations; no library-side
+!> streaming or MPI interface is required.
 ! **************************************************************************************************
 #if defined(__TBLITE_GXTB_ACCELERATION)
    SUBROUTINE tb_build_gxtb_kpoint_exchange_kgroup_owner(qs_env, tb, matrix_s, &
@@ -5621,7 +5658,7 @@ CONTAINS
       CALL cp_dbcsr_alloc_block_from_nbl(cmatrix, sab_nl)
 
       IF (service_rank) THEN
-         CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+         CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
                                          kmap%nmesh, kmap%xkp, kmap%weight, error, &
                                          mode=cp2k_exchange_stream_reduced)
       ELSE
@@ -5689,7 +5726,7 @@ CONTAINS
       IF (validate_density) tb%gxtb_density_map_validated = .TRUE.
 
       IF (service_rank) THEN
-         CALL cp2k_exchange_stream_apply(stream, tb%calc, tb%mol, tb%ecache, &
+         CALL cp2k_exchange_stream_apply(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, &
                                          exchange_vsh, exchange_energy, error)
          IF (ALLOCATED(error)) CPABORT("save_tblite KGROUP_OWNER apply failed")
       END IF
@@ -5754,7 +5791,7 @@ CONTAINS
          WRITE (*, '(A,I0,A,I0,A,I0,A)') &
             " GXTB-KGROUP-OWNER groups=", nkp_groups, ", nred=", nred, &
             ", nfull=", kmap%nfull, &
-            "; provider kernel remains single-state until public accumulator merge ABI"
+            "; owner-only contraction remains single-state; partial-k modes distribute accumulation"
       END IF
 
       CALL dbcsr_deallocate_matrix(rmatrix)
@@ -5770,9 +5807,9 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE prepare_overlap_block(ifull_local)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
+      INTEGER, INTENT(IN)                                :: ifull_local
 
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          CALL dbcsr_set(rmatrix, 0.0_dp)
          CALL dbcsr_set(cmatrix, 0.0_dp)
@@ -5797,15 +5834,15 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE qualify_kgroup_oracle()
 
-         COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full
-         COMPLEX(KIND=dp), ALLOCATABLE, &
-            DIMENSION(:, :, :, :)                           :: density_full, fock_full, &
-                                                               fock_reduced_oracle
-         INTEGER                                            :: ifull_local, ispin_local, &
-                                                               local_source_local, source_local
-         REAL(KIND=dp)                                      :: energy_delta, energy_oracle, fock_delta, &
-                                                               vsh_delta
-         REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: vsh_oracle
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full
+      COMPLEX(KIND=dp), ALLOCATABLE, &
+         DIMENSION(:, :, :, :)                           :: density_full, fock_full, &
+                                                            fock_reduced_oracle
+      INTEGER                                            :: ifull_local, ispin_local, &
+                                                            local_source_local, source_local
+      REAL(KIND=dp)                                      :: energy_delta, energy_oracle, fock_delta, &
+                                                            vsh_delta
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: vsh_oracle
 
          IF (service_rank) THEN
             ALLOCATE (density_full(nao, nao, nspin, kmap%nfull), &
@@ -5837,7 +5874,7 @@ CONTAINS
             END IF
          END DO
          IF (service_rank) THEN
-            CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%wfn, kmap%nmesh, &
+            CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, kmap%nmesh, &
                                      kmap%xkp, kmap%weight, density_full, overlap_full, &
                                      fock_full, vsh_oracle, energy_oracle, error, &
                                      transform_backend=cp2k_exchange_transform_dense)
@@ -6076,7 +6113,7 @@ CONTAINS
       local_failed = .FALSE.
       IF (distributed_images) THEN
          IF (leader) THEN
-            CALL cp2k_exchange_partial_begin(stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+            CALL cp2k_exchange_partial_begin(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
                                              kmap%nmesh, kmap%xkp, kmap%weight, batch_size, &
                                              transaction_id, error, &
                                              transform_backend=transform_backend, &
@@ -6087,7 +6124,7 @@ CONTAINS
             local_failed = ALLOCATED(error)
          END IF
       ELSE IF (leader .OR. replicated_importers) THEN
-         CALL cp2k_exchange_partial_begin(stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+         CALL cp2k_exchange_partial_begin(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
                                           kmap%nmesh, kmap%xkp, kmap%weight, batch_size, &
                                           transaction_id, error, &
                                           transform_backend=transform_backend, &
@@ -6104,7 +6141,7 @@ CONTAINS
                                         "save_tblite KGROUP_PARTIAL_ROOT initialization failed")
       IF (distributed_images) THEN
          CALL cp2k_exchange_partial_begin( &
-            importer_stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+            importer_stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
             kmap%nmesh, kmap%xkp, kmap%weight, batch_size, transaction_id, error, &
             local_image_first=image_first, local_image_count=image_count, &
             transform_backend=transform_backend, &
@@ -6285,7 +6322,7 @@ CONTAINS
                   IF (.NOT. local_failed) THEN
                      CALL cp2k_exchange_partial_import_forward_range( &
                         importer_stream, descriptor, owner_sum, summed_buffer, &
-                        tb%calc, tb%mol, tb%ecache, error)
+                        tb%calc, tb%mol, tb%ecache, tb%stream_plan, error)
                      local_failed = ALLOCATED(error)
                   END IF
                END IF
@@ -6295,7 +6332,7 @@ CONTAINS
                DEALLOCATE (packed_payload)
             END DO
             CALL cp2k_exchange_stream_batch_apply( &
-               importer_stream, tb%calc, tb%mol, tb%ecache, error)
+               importer_stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, error)
             local_failed = ALLOCATED(error)
             CALL tb_gxtb_partial_sync_failure(leader, para_env_inter_kp, para_env_kp, &
                                               local_failed, &
@@ -6360,7 +6397,7 @@ CONTAINS
                IF (.NOT. local_failed) THEN
                   CALL cp2k_exchange_partial_import_forward(stream, descriptor, owner_sum, &
                                                             summed_buffer, tb%calc, tb%mol, &
-                                                            tb%ecache, error)
+                                                            tb%ecache, tb%stream_plan, error)
                   local_failed = ALLOCATED(error)
                END IF
                IF (.NOT. local_failed .AND. replicated_importers .AND. first_batch) THEN
@@ -6381,7 +6418,7 @@ CONTAINS
 
             local_failed = .FALSE.
             IF (service_rank .OR. replicated_importers) THEN
-               CALL cp2k_exchange_stream_batch_apply(stream, tb%calc, tb%mol, tb%ecache, error)
+               CALL cp2k_exchange_stream_batch_apply(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, error)
                local_failed = ALLOCATED(error)
             END IF
             CALL tb_gxtb_partial_sync_failure(leader, para_env_inter_kp, para_env_kp, &
@@ -6490,10 +6527,10 @@ CONTAINS
       IF (service_rank .OR. distributed_images) THEN
          IF (distributed_images) THEN
             CALL cp2k_exchange_stream_batch_result( &
-               importer_stream, tb%calc, tb%mol, tb%ecache, &
+               importer_stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, &
                exchange_vsh, exchange_energy, error)
          ELSE
-            CALL cp2k_exchange_stream_batch_result(stream, tb%calc, tb%mol, tb%ecache, &
+            CALL cp2k_exchange_stream_batch_result(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, &
                                                    exchange_vsh, exchange_energy, error)
          END IF
          local_failed = ALLOCATED(error)
@@ -6623,9 +6660,9 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE prepare_overlap_block(ifull_local)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
+      INTEGER, INTENT(IN)                                :: ifull_local
 
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          IF (ALLOCATED(overlap_cached_valid)) THEN
             IF (overlap_cached_valid(ifull_local)) THEN
@@ -6664,15 +6701,15 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE qualify_partial_root_oracle()
 
-         COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full
-         COMPLEX(KIND=dp), ALLOCATABLE, &
-            DIMENSION(:, :, :, :)                           :: density_full, fock_full, &
-                                                               fock_reduced_oracle
-         INTEGER                                            :: ifull_local, ispin_local, &
-                                                               local_source_local, source_local
-         REAL(KIND=dp)                                      :: energy_delta, energy_oracle, fock_delta, &
-                                                               vsh_delta
-         REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: vsh_oracle
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full
+      COMPLEX(KIND=dp), ALLOCATABLE, &
+         DIMENSION(:, :, :, :)                           :: density_full, fock_full, &
+                                                            fock_reduced_oracle
+      INTEGER                                            :: ifull_local, ispin_local, &
+                                                            local_source_local, source_local
+      REAL(KIND=dp)                                      :: energy_delta, energy_oracle, fock_delta, &
+                                                            vsh_delta
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: vsh_oracle
 
          IF (service_rank) THEN
             ALLOCATE (density_full(nao, nao, nspin, kmap%nfull), &
@@ -6705,7 +6742,7 @@ CONTAINS
          END DO
          local_failed = .FALSE.
          IF (service_rank) THEN
-            CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%wfn, kmap%nmesh, &
+            CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, kmap%nmesh, &
                                      kmap%xkp, kmap%weight, density_full, overlap_full, &
                                      fock_full, vsh_oracle, energy_oracle, error, &
                                      transform_backend=cp2k_exchange_transform_dense)
@@ -6797,7 +6834,8 @@ CONTAINS
                                                             last_image, local_image_count, &
                                                             local_image_first, nao, nowners, nred, &
                                                             nspin, provider_stream_mode, &
-                                                            requested_batch_size, source, transform_backend
+                                                            requested_batch_size, source, transform_backend, &
+                                                            transform_pair_batch_size, timing_handle
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ao_first, ao_size, image_owner_count
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: overlap_cached_valid
@@ -6822,6 +6860,7 @@ CONTAINS
          POINTER                                         :: sab_nl
       TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
 
+      CALL timeset('tb_build_gxtb_kpoint_exchange_streamed', timing_handle)
       NULLIFY (cell_to_index, cmatrix, kmap, kpoints, rmatrix, sab_nl)
       IF (stream_mode /= cp2k_exchange_stream_reduced .AND. &
           stream_mode /= cp2k_exchange_stream_oracle .AND. &
@@ -6851,6 +6890,7 @@ CONTAINS
 
       nao = tb%calc%bas%nao
       nspin = tb%wfn%nspin
+      transform_pair_batch_size = cp2k_exchange_stream_pair_tile_size(nao, kmap%nfull, nspin, 3)
       CALL tb_gxtb_ao_layout(tb, ao_first, ao_size)
       ALLOCATE (density_reduced(nao, nao, nspin, nred), &
                 density_block(nao, nao, nspin), fock_block(nao, nao, nspin), &
@@ -6957,7 +6997,7 @@ CONTAINS
       IF (distributed_mode) THEN
          IF (owns_image_range) THEN
             batch_size = local_image_count
-            CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+            CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
                                             kmap%nmesh, kmap%xkp, kmap%weight, error, &
                                             mode=cp2k_exchange_stream_batched, &
                                             batch_size=batch_size, &
@@ -6970,19 +7010,19 @@ CONTAINS
             CALL cp2k_prepare_exchange(tb%calc, tb%mol, tb%ecache, tb%wfn, error)
          END IF
       ELSE IF (provider_stream_mode == cp2k_exchange_stream_batched) THEN
-         requested_batch_size = tb_gxtb_exchange_stream_batch_size(tb)
+         requested_batch_size = tb_gxtb_exchange_stream_batch_size(tb, adaptive_images=fused_symmetry)
          batch_size = requested_batch_size
          IF (fused_symmetry) THEN
             CPASSERT(kmap%nfull > 1)
             batch_size = MIN(batch_size, kmap%nfull - 1)
          END IF
-         CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+         CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
                                          kmap%nmesh, kmap%xkp, kmap%weight, error, &
                                          mode=provider_stream_mode, batch_size=batch_size, &
                                          transform_backend=transform_backend, &
-                                         transform_pair_batch_size=batch_size)
+                                         transform_pair_batch_size=transform_pair_batch_size)
       ELSE
-         CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+         CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
                                          kmap%nmesh, kmap%xkp, kmap%weight, error, &
                                          mode=provider_stream_mode)
       END IF
@@ -7028,7 +7068,7 @@ CONTAINS
             END IF
          END DO
          IF (owns_image_range) THEN
-            CALL cp2k_exchange_stream_batch_apply(stream, tb%calc, tb%mol, tb%ecache, error)
+            CALL cp2k_exchange_stream_batch_apply(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, error)
             IF (ALLOCATED(error)) CPABORT("save_tblite distributed image evaluation failed")
          END IF
          DO ifull = 1, kmap%nfull
@@ -7046,7 +7086,7 @@ CONTAINS
             CALL cp2k_exchange_stream_batch_advance(stream, batches_done, error)
             IF (ALLOCATED(error)) CPABORT("save_tblite distributed image advance failed")
             IF (.NOT. batches_done) CPABORT("save_tblite distributed image range was not complete")
-            CALL cp2k_exchange_stream_batch_result(stream, tb%calc, tb%mol, tb%ecache, &
+            CALL cp2k_exchange_stream_batch_result(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, &
                                                    exchange_vsh, exchange_energy, error)
             IF (ALLOCATED(error)) CPABORT("save_tblite distributed image result failed")
          END IF
@@ -7074,14 +7114,14 @@ CONTAINS
                   END IF
                END DO
             END IF
-            CALL cp2k_exchange_stream_batch_apply(stream, tb%calc, tb%mol, tb%ecache, error)
+            CALL cp2k_exchange_stream_batch_apply(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, error)
             IF (ALLOCATED(error)) CPABORT("save_tblite exchange image-batch evaluation failed")
 
             CALL pull_stream_blocks()
             CALL cp2k_exchange_stream_batch_advance(stream, batches_done, error)
             IF (ALLOCATED(error)) CPABORT("save_tblite exchange image-batch advance failed")
          END DO
-         CALL cp2k_exchange_stream_batch_result(stream, tb%calc, tb%mol, tb%ecache, &
+         CALL cp2k_exchange_stream_batch_result(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, &
                                                 exchange_vsh, exchange_energy, error)
          IF (ALLOCATED(error)) CPABORT("save_tblite exchange image-batch result failed")
       ELSE
@@ -7090,7 +7130,7 @@ CONTAINS
             CALL cp2k_exchange_stream_push(stream, ifull, density_block, overlap_block, error)
             IF (ALLOCATED(error)) CPABORT("save_tblite exchange stream rejected a Bloch block")
          END DO
-         CALL cp2k_exchange_stream_apply(stream, tb%calc, tb%mol, tb%ecache, exchange_vsh, &
+         CALL cp2k_exchange_stream_apply(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, exchange_vsh, &
                                          exchange_energy, error)
          IF (ALLOCATED(error)) CPABORT("save_tblite exchange stream evaluation failed")
          DO ifull = 1, kmap%nfull
@@ -7130,10 +7170,11 @@ CONTAINS
          CPABORT("SYMMETRY_FUSED exchange did not verify bounded provider storage")
       END IF
       IF (fused_symmetry .AND. iter_count == 1 .AND. para_env%is_source()) THEN
-         WRITE (*, '(A,I0,A,I0,A,I0,A,I0,A,I0,A,I0)') &
+         WRITE (*, '(A,I0,A,I0,A,I0,A,I0,A,I0,A,I0,A,I0)') &
             " GXTB-SYMMETRY-FUSED nred=", nred, ", nfull=", kmap%nfull, &
             ", requestedBatch=", requested_batch_size, ", effectiveBatch=", batch_size, &
-            ", cachedRepresentativeOverlaps=", nred, ", persistentFullExchangeStarMatrices=", 0
+            ", cachedRepresentativeOverlaps=", nred, ", persistentFullExchangeStarMatrices=", 0, &
+            ", transformPairTile=", transform_pair_batch_size
       END IF
       IF (fused_symmetry .AND. para_env%is_source()) THEN
          SELECT CASE (transform_backend)
@@ -7164,6 +7205,7 @@ CONTAINS
                   fock_block, overlap_block, overlap_part, transform_work)
       IF (ALLOCATED(overlap_reduced)) DEALLOCATE (overlap_reduced)
       IF (ALLOCATED(overlap_cached)) DEALLOCATE (overlap_cached, overlap_cached_valid)
+      CALL timestop(timing_handle)
 
    CONTAINS
 
@@ -7173,8 +7215,8 @@ CONTAINS
 ! **************************************************************************************************
       LOGICAL FUNCTION block_helper_qualification_requested() RESULT(requested)
 
-         CHARACTER(LEN=32)                                  :: value
-         INTEGER                                            :: status
+      CHARACTER(LEN=32)                                  :: value
+      INTEGER                                            :: status
 
          requested = .FALSE.
          value = ""
@@ -7202,7 +7244,7 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE push_stream_blocks()
 
-         INTEGER                                            :: ifull_local, source_local, star_position
+      INTEGER                                            :: ifull_local, source_local, star_position
 
          IF (fused_symmetry) THEN
             DO source_local = 1, nred
@@ -7235,7 +7277,7 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE pull_stream_blocks()
 
-         INTEGER                                            :: ifull_local, source_local, star_position
+      INTEGER                                            :: ifull_local, source_local, star_position
 
          IF (fused_symmetry) THEN
             DO source_local = 1, nred
@@ -7272,10 +7314,10 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE validate_stream_density()
 
-         COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: expanded, transformed
-         INTEGER                                            :: ifull_local, iop_local, ispin_local, &
-                                                               source_local
-         REAL(KIND=dp)                                      :: residual, scale, symmetry_tolerance
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: expanded, transformed
+      INTEGER                                            :: ifull_local, iop_local, ispin_local, &
+                                                            source_local
+      REAL(KIND=dp)                                      :: residual, scale, symmetry_tolerance
 
          ALLOCATE (expanded(nao, nao), transformed(nao, nao))
          symmetry_tolerance = MAX(1.0E-10_dp, 100.0_dp*kpoints%eps_geo)
@@ -7307,13 +7349,13 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE validate_stream_overlap()
 
-         CHARACTER(LEN=256)                                 :: error_message
-         COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: adjoint, transformed
-         COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_reduced
-         INTEGER                                            :: ifull_local, iop_local, source_local
-         REAL(KIND=dp)                                      :: adjoint_residual, covariance_residual, &
-                                                               lhs, max_adjoint_residual, &
-                                                               max_covariance_residual, rhs, scale
+      CHARACTER(LEN=256)                                 :: error_message
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: adjoint, transformed
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_reduced
+      INTEGER                                            :: ifull_local, iop_local, source_local
+      REAL(KIND=dp)                                      :: adjoint_residual, covariance_residual, &
+                                                            lhs, max_adjoint_residual, &
+                                                            max_covariance_residual, rhs, scale
 
          ALLOCATE (adjoint(nao, nao), transformed(nao, nao), &
                    overlap_reduced(nao, nao, kmap%nred))
@@ -7380,15 +7422,15 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE qualify_stream_oracle()
 
-         COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full
-         COMPLEX(KIND=dp), ALLOCATABLE, &
-            DIMENSION(:, :, :, :)                           :: density_full, fock_full, fock_reduced
-         INTEGER                                            :: ifull_local, ispin_local, source_local
-         REAL(KIND=dp) :: duality_full, duality_reduced, duality_relative, energy_delta, &
-                          energy_oracle, fock_delta, hermitian_residual, oracle_duality_residual, &
-                          oracle_fold_covariance_residual, oracle_full_covariance_residual, &
-                          stream_covariance_residual, stream_duality_residual, vsh_delta
-         REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: vsh_oracle
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full
+      COMPLEX(KIND=dp), ALLOCATABLE, &
+         DIMENSION(:, :, :, :)                           :: density_full, fock_full, fock_reduced
+      INTEGER                                            :: ifull_local, ispin_local, source_local
+      REAL(KIND=dp) :: duality_full, duality_reduced, duality_relative, energy_delta, &
+         energy_oracle, fock_delta, hermitian_residual, oracle_duality_residual, &
+         oracle_fold_covariance_residual, oracle_full_covariance_residual, &
+         stream_covariance_residual, stream_duality_residual, vsh_delta
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: vsh_oracle
 
          ALLOCATE (density_full(nao, nao, nspin, kmap%nfull), &
                    fock_full(nao, nao, nspin, kmap%nfull), &
@@ -7406,7 +7448,7 @@ CONTAINS
             CALL prepare_direct_overlap_block(ifull_local)
             overlap_full(:, :, ifull_local) = overlap_block
          END DO
-         CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%wfn, kmap%nmesh, &
+         CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, kmap%nmesh, &
                                   kmap%xkp, kmap%weight, density_full, overlap_full, fock_full, &
                                   vsh_oracle, energy_oracle, error, &
                                   transform_backend=cp2k_exchange_transform_dense)
@@ -7508,11 +7550,11 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE prepare_stream_block(ifull_local, include_density)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
-         LOGICAL, INTENT(IN)                                :: include_density
+      INTEGER, INTENT(IN)                                :: ifull_local
+      LOGICAL, INTENT(IN)                                :: include_density
 
-         INTEGER                                            :: ispin_local, source_local
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      INTEGER                                            :: ispin_local, source_local
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          source_local = kmap%source(ifull_local)
          IF (include_density) THEN
@@ -7556,9 +7598,9 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE prepare_direct_overlap_block(ifull_local)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
+      INTEGER, INTENT(IN)                                :: ifull_local
 
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          IF (ALLOCATED(overlap_cached_valid)) THEN
             IF (overlap_cached_valid(ifull_local)) THEN
@@ -7601,11 +7643,11 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE fold_stream_fock_block(ifull_local, require_hermitian)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
-         LOGICAL, INTENT(IN)                                :: require_hermitian
+      INTEGER, INTENT(IN)                                :: ifull_local
+      LOGICAL, INTENT(IN)                                :: require_hermitian
 
-         INTEGER                                            :: ispin_local, source_local
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      INTEGER                                            :: ispin_local, source_local
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          IF (.NOT. ALL(ieee_is_finite(REAL(fock_block, KIND=dp))) .OR. &
              .NOT. ALL(ieee_is_finite(AIMAG(fock_block)))) &
@@ -7706,34 +7748,34 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap, overlap_oracle
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :, :) :: density, density_oracle, &
-                                              density_reduced, exchange_fock_full, exchange_fock_oracle, exchange_fock_unpermuted, &
-                                                              folded_fock_oracle
+         density_reduced, exchange_fock_full, exchange_fock_oracle, exchange_fock_unpermuted, &
+         folded_fock_oracle
       INTEGER                                            :: ik, ispin, nao, nred, nspin, &
-                                                            source_index, &
-                                                            stream_mode, transform_backend
+                                                            source_index, stream_mode, &
+                                                            transform_backend
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ao_first, ao_size
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: run_qualification_duality, &
                                                             run_qualification_oracle, &
-                                                            use_real_wfn, validate_density
+                                                            use_overlap_grid, use_real_wfn, &
+                                                            validate_density
       REAL(KIND=dp) :: acp_duality_full, acp_duality_reduced, acp_duality_relative, &
-                       acp_duality_total_full, acp_duality_total_reduced, duality_tolerance, &
-                       exchange_duality_full, exchange_duality_reduced, exchange_duality_relative, &
-                       exchange_duality_total_full, exchange_duality_total_reduced, exchange_energy, &
-                       exchange_energy_oracle, hermitian_error, oracle_energy_delta, oracle_fold_abs, &
-                       oracle_fold_rel, oracle_full_abs, oracle_full_rel, oracle_scale, oracle_sym_fold, &
-                       oracle_sym_full, oracle_tolerance, oracle_vsh_delta, primary_sym_fold, primary_sym_full, &
-                       symmetry_residual
+         acp_duality_total_full, acp_duality_total_reduced, duality_tolerance, &
+         exchange_duality_full, exchange_duality_reduced, exchange_duality_relative, &
+         exchange_duality_total_full, exchange_duality_total_reduced, exchange_energy, &
+         exchange_energy_oracle, hermitian_error, oracle_energy_delta, oracle_fold_abs, &
+         oracle_fold_rel, oracle_full_abs, oracle_full_rel, oracle_scale, oracle_sym_fold, &
+         oracle_sym_full, oracle_tolerance, oracle_vsh_delta, primary_sym_fold, primary_sym_full, &
+         symmetry_residual
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: exchange_vsh, exchange_vsh_oracle, &
                                                             weight_oracle
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: overlap_part, xkp_oracle
       TYPE(dbcsr_type), POINTER                          :: cmatrix, rmatrix
       TYPE(error_type), ALLOCATABLE                      :: error
       TYPE(kpoint_type), POINTER                         :: kpoints
-      TYPE(rskp_grid_type)                               :: overlap_grid
-      LOGICAL                                            :: use_overlap_grid
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
+      TYPE(rskp_grid_type)                               :: overlap_grid
       TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
 
       NULLIFY (cell_to_index, cmatrix, kmap, kpoints, rmatrix, sab_nl)
@@ -7789,7 +7831,7 @@ CONTAINS
          RETURN
       END IF
 #else
-      IF (stream_mode /= 0) CPABORT("Streamed exchange requires an extended save_tblite provider")
+      IF (stream_mode /= 0) CPABORT("Streamed exchange is unavailable in this CP2K build")
 #endif
 
       nao = tb%calc%bas%nao
@@ -7888,19 +7930,25 @@ CONTAINS
          CASE (cp2k_exchange_transform_mixed_radix_fft)
             WRITE (*, '(A,I0)') &
                " GXTB-EXCHANGE-TRANSFORM stage=FORWARD backend=MIXED_RADIX_FFT fallback=0 iter=", iter_count
+         CASE (tblite_gxtb_transform_cp2k_fft)
+            WRITE (*, '(A,I0)') &
+               " GXTB-EXCHANGE-TRANSFORM stage=FORWARD owner=CP2K selection=FFT_WITH_DIRECT_FALLBACK iter=", iter_count
          CASE DEFAULT
             CPABORT("Unknown g-xTB exchange transform backend before provider call")
          END SELECT
       END IF
+      IF (ANY(transform_backend == [cp2k_exchange_transform_dense, tblite_gxtb_transform_cp2k_fft])) THEN
+         CALL tb_evaluate_gxtb_dense_exchange(tb, kmap, density, overlap, exchange_fock_full, &
+                                              exchange_vsh, exchange_energy, error)
+      ELSE
 #if defined(__TBLITE_GXTB_ACCELERATION)
-      CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%wfn, kmap%nmesh, &
-                               kmap%xkp, kmap%weight, density, overlap, exchange_fock_full, exchange_vsh, &
-                               exchange_energy, error, transform_backend=transform_backend)
+         CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, kmap%nmesh, &
+                                  kmap%xkp, kmap%weight, density, overlap, exchange_fock_full, exchange_vsh, &
+                                  exchange_energy, error, transform_backend=transform_backend)
 #else
-      CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%wfn, kmap%nmesh, &
-                               kmap%xkp, kmap%weight, density, overlap, exchange_fock_full, exchange_vsh, &
-                               exchange_energy, error)
+         CPABORT("Compact CP2K exchange is unavailable in this build")
 #endif
+      END IF
       IF (ALLOCATED(error)) CPABORT("save_tblite whole-mesh exchange evaluation failed")
       IF (.NOT. ALL(ieee_is_finite(REAL(exchange_fock_full, KIND=dp))) .OR. &
           .NOT. ALL(ieee_is_finite(AIMAG(exchange_fock_full)))) &
@@ -8032,7 +8080,7 @@ CONTAINS
             xkp_oracle(:, ik) = kmap%xkp(:, source_index)
          END DO
 #if defined(__TBLITE_GXTB_ACCELERATION)
-         CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%wfn, kmap%nmesh, &
+         CALL cp2k_exchange_kmesh(tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, kmap%nmesh, &
                                   xkp_oracle, weight_oracle, density_oracle, overlap_oracle, &
                                   exchange_fock_oracle, exchange_vsh_oracle, &
                                   exchange_energy_oracle, error, &
@@ -8106,6 +8154,72 @@ CONTAINS
       tb%exchange_fock_kp_valid = .TRUE.
 
    END SUBROUTINE tb_build_gxtb_kpoint_exchange
+
+! **************************************************************************************************
+!> \brief Dispatch the dense model with CP2K-owned geometry and reciprocal-mesh caches.
+!>        The provider still prepares its charge-dependent onsite terms on every invocation.
+!>        Geometry-static kernels are reused only for an exact geometry/model key.
+!>        The unmodified cp2k_exchange_kmesh remains the independent qualification oracle.
+!> \param tb live provider calculator, geometry, charge and cache
+!> \param kmap complete reciprocal grid
+!> \param density unweighted spin-resolved Bloch density matrices
+!> \param overlap unweighted Bloch overlap matrices
+!> \param fock complete unweighted exchange Fock matrices
+!> \param vsh shell potential, weighted once over the complete mesh
+!> \param energy exchange energy per primitive cell
+!> \param error provider preparation failure
+! **************************************************************************************************
+   SUBROUTINE tb_evaluate_gxtb_dense_exchange(tb, kmap, density, overlap, fock, vsh, energy, error)
+
+      TYPE(tblite_type), INTENT(INOUT)                   :: tb
+      TYPE(tb_gxtb_kmesh_map_type), INTENT(INOUT)        :: kmap
+      COMPLEX(KIND=dp), DIMENSION(:, :, :, :), &
+         INTENT(IN)                                      :: density
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), INTENT(IN)   :: overlap
+      COMPLEX(KIND=dp), DIMENSION(:, :, :, :), &
+         INTENT(OUT)                                     :: fock
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: vsh
+      REAL(KIND=dp), INTENT(OUT)                         :: energy
+      TYPE(error_type), ALLOCATABLE, INTENT(OUT)         :: error
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'tb_evaluate_gxtb_dense_exchange'
+
+      INTEGER                                            :: handle, nao, nk, nspin
+
+      CALL timeset(routineN, handle)
+      nk = kmap%nfull
+      nspin = tb%wfn%nspin
+      nao = tb%calc%bas%nao
+      CPASSERT(ALL(kmap%nmesh > 0) .AND. PRODUCT(kmap%nmesh) == nk)
+      CPASSERT(.NOT. ANY((.NOT. tb%mol%periodic) .AND. kmap%nmesh /= 1))
+      CPASSERT(ALL(SHAPE(density) == [nao, nao, nspin, nk]))
+      CPASSERT(ALL(SHAPE(fock) == [nao, nao, nspin, nk]))
+      CPASSERT(ALL(SHAPE(overlap) == [nao, nao, nk]))
+      CPASSERT(nspin == 1 .OR. nspin == 2)
+      CALL cp2k_prepare_exchange(tb%calc, tb%mol, tb%ecache, tb%wfn, error)
+      IF (ALLOCATED(error)) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+      SELECT TYPE (cache => tb%ecache%raw)
+      TYPE IS (exchange_cache)
+         SELECT TYPE (exchange => tb%calc%exchange)
+         TYPE IS (exchange_fock)
+            CPASSERT(exchange%nao == nao .AND. SIZE(vsh) == exchange%nsh)
+            CALL evaluate_bvk_exchange(tb%bvk_plan, kmap%exchange_mesh_certificate, exchange, &
+                                       tb%mol, cache, kmap%nmesh, kmap%xkp, kmap%weight, &
+                                       density, overlap, fock, vsh, energy, error, &
+                                       use_consumer_transform= &
+                                       tb_gxtb_exchange_transform_backend(tb) == tblite_gxtb_transform_cp2k_fft)
+         CLASS DEFAULT
+            CPABORT("Whole-mesh exchange requires the exchange_fock implementation")
+         END SELECT
+      CLASS DEFAULT
+         CPABORT("Unexpected g-xTB exchange cache type")
+      END SELECT
+      CALL timestop(handle)
+
+   END SUBROUTINE tb_evaluate_gxtb_dense_exchange
 
 ! **************************************************************************************************
 !> \brief Dispatch the coupled g-xTB exchange derivative to the dense oracle or bounded consumer.
@@ -8377,19 +8491,42 @@ CONTAINS
             CASE (cp2k_exchange_transform_mixed_radix_fft)
                WRITE (*, '(A)') &
                   " GXTB-EXCHANGE-TRANSFORM stage=REVERSE backend=MIXED_RADIX_FFT fallback=0"
+            CASE (tblite_gxtb_transform_cp2k_fft)
+               WRITE (*, '(A)') &
+                  " GXTB-EXCHANGE-TRANSFORM stage=REVERSE owner=CP2K selection=FFT_WITH_DIRECT_FALLBACK"
             CASE DEFAULT
                CPABORT("Unknown g-xTB exchange transform backend before gradient provider call")
             END SELECT
          END IF
+#if defined(__TBLITE_GXTB_TRANSFORM)
+         IF (transform_backend == tblite_gxtb_transform_cp2k_fft) THEN
+            SELECT TYPE (cache => tb%ecache%raw)
+            TYPE IS (exchange_cache)
+               SELECT TYPE (exchange => tb%calc%exchange)
+               TYPE IS (exchange_fock)
+                  CALL evaluate_bvk_gradient(tb%bvk_plan, kmap%exchange_mesh_certificate, exchange, &
+                                             tb%mol, cache, kmap%nmesh, kmap%xkp, kmap%weight, density, overlap, &
+                                             overlap_grad_full, k_gradient, k_sigma, error)
+               CLASS DEFAULT
+                  CPABORT("Whole-mesh exchange gradient requires exchange_fock")
+               END SELECT
+            CLASS DEFAULT
+               CPABORT("Unexpected g-xTB exchange cache type in gradient")
+            END SELECT
+         ELSE
+#endif
 #if defined(__TBLITE_GXTB_ACCELERATION)
-         CALL cp2k_exchange_kmesh_gradient(tb%calc, tb%mol, tb%ecache, kmap%nmesh, &
-                                           kmap%xkp, kmap%weight, density, overlap, overlap_grad_full, &
-                                           k_gradient, k_sigma, error, &
-                                           transform_backend=transform_backend)
+            CALL cp2k_exchange_kmesh_gradient(tb%calc, tb%mol, tb%ecache, tb%stream_plan, kmap%nmesh, &
+                                              kmap%xkp, kmap%weight, density, overlap, overlap_grad_full, &
+                                              k_gradient, k_sigma, error, &
+                                              transform_backend=transform_backend)
 #else
-         CALL cp2k_exchange_kmesh_gradient(tb%calc, tb%mol, tb%ecache, kmap%nmesh, &
-                                           kmap%xkp, kmap%weight, density, overlap, overlap_grad_full, &
-                                           k_gradient, k_sigma, error)
+            CALL cp2k_exchange_kmesh_gradient(tb%calc, tb%mol, tb%ecache, kmap%nmesh, &
+                                              kmap%xkp, kmap%weight, density, overlap, overlap_grad_full, &
+                                              k_gradient, k_sigma, error)
+#endif
+#if defined(__TBLITE_GXTB_TRANSFORM)
+         END IF
 #endif
          IF (ALLOCATED(error)) CPABORT("save_tblite whole-mesh exchange gradient failed")
          gradient = k_gradient
@@ -8643,16 +8780,12 @@ CONTAINS
          END DO
       END IF
 
-      batch_size = tb_gxtb_exchange_stream_batch_size(tb)
+      batch_size = tb_gxtb_exchange_stream_batch_size(tb, adaptive_images=fused_symmetry)
       ! A bounded qualification must not silently become one complete AO image mesh.
       batch_size = MIN(batch_size, kmap%nfull - 1)
       actual_batch_size = MIN(batch_size, kmap%nfull)
-      IF (nao*nao > 1) THEN
-         transform_pair_batch_size = MIN(batch_size, nao*nao - 1)
-      ELSE
-         transform_pair_batch_size = 1
-      END IF
-      CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+      transform_pair_batch_size = cp2k_exchange_stream_pair_tile_size(nao, kmap%nfull, nspin, 6)
+      CALL cp2k_exchange_stream_begin(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
                                       kmap%nmesh, kmap%xkp, kmap%weight, error, &
                                       mode=cp2k_exchange_stream_batched, batch_size=batch_size, &
                                       reverse_only=.TRUE., transform_backend=transform_backend, &
@@ -8693,7 +8826,7 @@ CONTAINS
                END IF
             END DO
          END IF
-         CALL cp2k_exchange_stream_reverse_batch_apply(stream, tb%calc, tb%mol, tb%ecache, error)
+         CALL cp2k_exchange_stream_reverse_batch_apply(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, error)
          IF (ALLOCATED(error)) &
             CPABORT("save_tblite bounded reverse apply failed: "//TRIM(error%message))
 
@@ -8702,7 +8835,7 @@ CONTAINS
          IF (ALLOCATED(error)) &
             CPABORT("save_tblite bounded reverse advance failed: "//TRIM(error%message))
       END DO
-      CALL cp2k_exchange_stream_reverse_result(stream, tb%calc, tb%mol, tb%ecache, &
+      CALL cp2k_exchange_stream_reverse_result(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, &
                                                k_gradient, k_sigma, error)
       IF (ALLOCATED(error)) &
          CPABORT("save_tblite bounded reverse result failed: "//TRIM(error%message))
@@ -8823,7 +8956,7 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE push_reverse_blocks()
 
-         INTEGER                                            :: ifull_local, source_local, star_position
+      INTEGER                                            :: ifull_local, source_local, star_position
 
          IF (fused_symmetry) THEN
             DO source_local = 1, nred
@@ -8856,7 +8989,7 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE pull_reverse_blocks()
 
-         INTEGER                                            :: ifull_local, source_local, star_position
+      INTEGER                                            :: ifull_local, source_local, star_position
 
          IF (fused_symmetry) THEN
             DO source_local = 1, nred
@@ -8880,10 +9013,10 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE pull_reverse_block(ifull_local)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
+      INTEGER, INTENT(IN)                                :: ifull_local
 
-         INTEGER                                            :: source_local
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      INTEGER                                            :: source_local
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          CALL prepare_reverse_block(ifull_local)
          overlap_adjoint = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -8914,10 +9047,10 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE prepare_reverse_block(ifull_local)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
+      INTEGER, INTENT(IN)                                :: ifull_local
 
-         INTEGER                                            :: ispin_local, source_local
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      INTEGER                                            :: ispin_local, source_local
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          source_local = kmap%source(ifull_local)
          DO ispin_local = 1, nspin
@@ -8955,9 +9088,9 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE prepare_direct_overlap_block(ifull_local)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
+      INTEGER, INTENT(IN)                                :: ifull_local
 
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          IF (ALLOCATED(overlap_cached_valid)) THEN
             IF (overlap_cached_valid(ifull_local)) THEN
@@ -8994,14 +9127,14 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE qualify_bounded_reverse()
 
-         COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full, overlap_grad_full, &
-                                                               overlap_grad_oracle
-         COMPLEX(KIND=dp), ALLOCATABLE, &
-            DIMENSION(:, :, :, :)                           :: density_full
-         INTEGER                                            :: ifull_local
-         REAL(KIND=dp)                                      :: force_residual, response_residual, &
-                                                               response_scale, stress_residual
-         REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: gradient_oracle, sigma_oracle
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full, overlap_grad_full, &
+                                                            overlap_grad_oracle
+      COMPLEX(KIND=dp), ALLOCATABLE, &
+         DIMENSION(:, :, :, :)                           :: density_full
+      INTEGER                                            :: ifull_local
+      REAL(KIND=dp)                                      :: force_residual, response_residual, &
+                                                            response_scale, stress_residual
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: gradient_oracle, sigma_oracle
 
          ALLOCATE (density_full(nao, nao, nspin, kmap%nfull), &
                    overlap_full(nao, nao, kmap%nfull), &
@@ -9015,7 +9148,7 @@ CONTAINS
             IF (fused_symmetry) CALL prepare_direct_overlap_block(ifull_local)
             overlap_full(:, :, ifull_local) = overlap_block
          END DO
-         CALL cp2k_exchange_kmesh_gradient(tb%calc, tb%mol, tb%ecache, kmap%nmesh, &
+         CALL cp2k_exchange_kmesh_gradient(tb%calc, tb%mol, tb%ecache, tb%stream_plan, kmap%nmesh, &
                                            kmap%xkp, kmap%weight, density_full, overlap_full, &
                                            overlap_grad_full, gradient_oracle, sigma_oracle, error, &
                                            transform_backend=tb_gxtb_exchange_transform_backend(tb))
@@ -9264,7 +9397,7 @@ CONTAINS
       local_failed = .FALSE.
       IF (distributed_images) THEN
          IF (leader) THEN
-            CALL cp2k_exchange_partial_begin(stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+            CALL cp2k_exchange_partial_begin(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
                                              kmap%nmesh, kmap%xkp, kmap%weight, batch_size, &
                                              transaction_id, error, reverse_only=.TRUE., &
                                              transform_backend=transform_backend, &
@@ -9276,7 +9409,7 @@ CONTAINS
          END IF
          peak_complex = 0_int_8
       ELSE IF (leader .OR. replicated_importers) THEN
-         CALL cp2k_exchange_partial_begin(stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+         CALL cp2k_exchange_partial_begin(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
                                           kmap%nmesh, kmap%xkp, kmap%weight, batch_size, &
                                           transaction_id, error, reverse_only=.TRUE., &
                                           transform_backend=transform_backend, &
@@ -9296,7 +9429,7 @@ CONTAINS
                                         "save_tblite KGROUP_PARTIAL_ROOT reverse initialization failed")
       IF (distributed_images) THEN
          CALL cp2k_exchange_partial_begin( &
-            importer_stream, tb%calc, tb%mol, tb%ecache, tb%wfn, &
+            importer_stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, tb%wfn, &
             kmap%nmesh, kmap%xkp, kmap%weight, batch_size, transaction_id, error, &
             reverse_only=.TRUE., local_image_first=image_first, local_image_count=image_count, &
             transform_backend=transform_backend, &
@@ -9458,7 +9591,7 @@ CONTAINS
                   IF (.NOT. local_failed) THEN
                      CALL cp2k_exchange_partial_import_reverse_range( &
                         importer_stream, descriptor, owner_sum, summed_buffer, &
-                        tb%calc, tb%mol, tb%ecache, error)
+                        tb%calc, tb%mol, tb%ecache, tb%stream_plan, error)
                      local_failed = ALLOCATED(error)
                   END IF
                END IF
@@ -9468,7 +9601,7 @@ CONTAINS
                DEALLOCATE (packed_payload)
             END DO
             CALL cp2k_exchange_stream_reverse_batch_apply( &
-               importer_stream, tb%calc, tb%mol, tb%ecache, error)
+               importer_stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, error)
             local_failed = ALLOCATED(error)
             CALL tb_gxtb_partial_sync_failure(leader, para_env_inter_kp, para_env_kp, &
                                               local_failed, &
@@ -9532,7 +9665,7 @@ CONTAINS
                IF (.NOT. local_failed) THEN
                   CALL cp2k_exchange_partial_import_reverse(stream, descriptor, owner_sum, &
                                                             summed_buffer, tb%calc, tb%mol, &
-                                                            tb%ecache, error)
+                                                            tb%ecache, tb%stream_plan, error)
                   local_failed = ALLOCATED(error)
                END IF
                IF (.NOT. local_failed .AND. replicated_importers .AND. first_batch) THEN
@@ -9553,7 +9686,7 @@ CONTAINS
             local_failed = .FALSE.
             IF (service_rank .OR. replicated_importers) THEN
                CALL cp2k_exchange_stream_reverse_batch_apply(stream, tb%calc, tb%mol, &
-                                                             tb%ecache, error)
+                                                             tb%ecache, tb%stream_plan, error)
                local_failed = ALLOCATED(error)
             END IF
             CALL tb_gxtb_partial_sync_failure(leader, para_env_inter_kp, para_env_kp, &
@@ -9661,9 +9794,9 @@ CONTAINS
       IF (service_rank .OR. distributed_images) THEN
          IF (distributed_images) THEN
             CALL cp2k_exchange_stream_reverse_result( &
-               importer_stream, tb%calc, tb%mol, tb%ecache, k_gradient, k_sigma, error)
+               importer_stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, k_gradient, k_sigma, error)
          ELSE
-            CALL cp2k_exchange_stream_reverse_result(stream, tb%calc, tb%mol, tb%ecache, &
+            CALL cp2k_exchange_stream_reverse_result(stream, tb%calc, tb%mol, tb%ecache, tb%stream_plan, &
                                                      k_gradient, k_sigma, error)
          END IF
          local_failed = ALLOCATED(error)
@@ -9851,12 +9984,12 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE prepare_reverse_block(ifull_local, reduce_to_root)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
-         LOGICAL, INTENT(IN)                                :: reduce_to_root
+      INTEGER, INTENT(IN)                                :: ifull_local
+      LOGICAL, INTENT(IN)                                :: reduce_to_root
 
-         INTEGER                                            :: ispin_local, local_source_local, &
-                                                               source_local
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      INTEGER                                            :: ispin_local, local_source_local, &
+                                                            source_local
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          density_block = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          source_local = kmap%source(ifull_local)
@@ -9897,9 +10030,9 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE prepare_overlap_block(ifull_local)
 
-         INTEGER, INTENT(IN)                                :: ifull_local
+      INTEGER, INTENT(IN)                                :: ifull_local
 
-         REAL(KIND=dp)                                      :: local_hermitian_error
+      REAL(KIND=dp)                                      :: local_hermitian_error
 
          IF (ALLOCATED(overlap_cached_valid)) THEN
             IF (overlap_cached_valid(ifull_local)) THEN
@@ -9934,14 +10067,14 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE qualify_partial_root_reverse()
 
-         COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full, overlap_grad_full, &
-                                                               overlap_grad_oracle
-         COMPLEX(KIND=dp), ALLOCATABLE, &
-            DIMENSION(:, :, :, :)                           :: density_full
-         INTEGER                                            :: ifull_local
-         REAL(KIND=dp)                                      :: force_residual, response_residual, &
-                                                               response_scale, stress_residual
-         REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: gradient_oracle, sigma_oracle
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full, overlap_grad_full, &
+                                                            overlap_grad_oracle
+      COMPLEX(KIND=dp), ALLOCATABLE, &
+         DIMENSION(:, :, :, :)                           :: density_full
+      INTEGER                                            :: ifull_local
+      REAL(KIND=dp)                                      :: force_residual, response_residual, &
+                                                            response_scale, stress_residual
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: gradient_oracle, sigma_oracle
 
          IF (service_rank) THEN
             ALLOCATE (density_full(nao, nao, nspin, kmap%nfull), &
@@ -9961,7 +10094,7 @@ CONTAINS
          local_failed = .FALSE.
          IF (service_rank) THEN
             CALL cp2k_exchange_kmesh_gradient( &
-               tb%calc, tb%mol, tb%ecache, kmap%nmesh, kmap%xkp, kmap%weight, &
+               tb%calc, tb%mol, tb%ecache, tb%stream_plan, kmap%nmesh, kmap%xkp, kmap%weight, &
                density_full, overlap_full, overlap_grad_full, gradient_oracle, &
                sigma_oracle, error, transform_backend=cp2k_exchange_transform_dense)
             local_failed = ALLOCATED(error)
@@ -10501,17 +10634,25 @@ CONTAINS
          acceleration_forward_qualification = tb_gxtb_forward_qualification_enabled(tb)
          acp_projector_cache_mode = tb_gxtb_acp_projector_cache_mode(tb)
          acp_mesh_mode = tb_gxtb_acp_mesh_mode(tb)
+         IF (acceleration_transform_backend == tblite_gxtb_transform_cp2k_fft) THEN
+#if !defined(__TBLITE_GXTB_TRANSFORM)
+            CPABORT("CP2K_FFT exchange requires CP2K complex-transform support")
+#endif
+            IF (acceleration_stream_mode /= 0 .OR. &
+                acceleration_gradient_mode /= tb_gxtb_exchange_gradient_dense) &
+               CPABORT("CP2K_FFT requires complete-array exchange and dense gradients")
+         END IF
 #if !defined(__TBLITE_GXTB_ACCELERATION)
          IF (acceleration_stream_mode /= 0 .OR. &
              acceleration_gradient_mode /= tb_gxtb_exchange_gradient_dense .OR. &
-             acceleration_transform_backend /= cp2k_exchange_transform_dense .OR. &
+             .NOT. ANY(acceleration_transform_backend == &
+                       [cp2k_exchange_transform_dense, tblite_gxtb_transform_cp2k_fft]) .OR. &
              acceleration_star_mode /= tb_gxtb_symmetry_star_dense .OR. &
              acceleration_forward_qualification .OR. &
-             acp_projector_cache_mode /= tblite_gxtb_acp_cache_direct .OR. &
              acp_mesh_mode /= tb_gxtb_acp_mesh_dense) THEN
             CALL cp_abort(__LOCATION__, &
-                          "Requested g-xTB acceleration requires an extended save_tblite provider; "// &
-                          "use AUTO for the minimal provider or link tdkuehne-integration")
+                          "Requested g-xTB acceleration is unavailable in this CP2K build; "// &
+                          "use AUTO or rebuild CP2K with the required model interfaces")
          END IF
 #endif
          IF (acceleration_transform_backend /= cp2k_exchange_transform_dense .AND. &
@@ -12853,7 +12994,7 @@ CONTAINS
       END IF
 
 #else
-      CPABORT("Streamed ACP derivatives require an extended save_tblite provider")
+      CPABORT("Streamed ACP derivatives are unavailable in this CP2K build")
 #endif
    END SUBROUTINE tb_gxtb_acp_streamed_gradient
 
@@ -13971,10 +14112,10 @@ CONTAINS
 
       CHARACTER(LEN=16)                                  :: solvation_model_name
       CHARACTER(LEN=32) :: acc_str, charge_str, efield_x_str, efield_y_str, efield_z_str, &
-                           etemp_guess_val_str, etemp_str, iter_str, spin_str, spinpol_str
-      CHARACTER(LEN=4*default_path_length + 16) :: efield_str, etemp_guess_str, guess_str, &
-                                           param_str, post_processing_output_str, post_processing_str, restart_str, solvation_str, &
-                                                   verbosity_str
+         etemp_guess_val_str, etemp_str, iter_str, spin_str, spinpol_str
+      CHARACTER(LEN=4*default_path_length+16) :: efield_str, etemp_guess_str, guess_str, &
+         param_str, post_processing_output_str, post_processing_str, restart_str, solvation_str, &
+         verbosity_str
       CHARACTER(LEN=8)                                   :: guess, method, solver
       CHARACTER(LEN=8*default_path_length)               :: command
       CHARACTER(LEN=default_path_length)                 :: file_base, gen_file, grad_file, &
@@ -14523,9 +14664,9 @@ CONTAINS
       CHARACTER(LEN=32)                                  :: charge_str, efield_x_str, efield_y_str, &
                                                             efield_z_str, etemp_guess_val_str, &
                                                             spin_str
-      CHARACTER(LEN=4*default_path_length + 16)            :: copy_str, dry_run_str, efield_str, &
-                                                              etemp_guess_str, grad_str, json_str, &
-                                                              method_str, output_str
+      CHARACTER(LEN=4*default_path_length+16)            :: copy_str, dry_run_str, efield_str, &
+                                                            etemp_guess_str, grad_str, json_str, &
+                                                            method_str, output_str
       CHARACTER(LEN=8*default_path_length)               :: command
       CHARACTER(LEN=default_path_length)                 :: guess_input, log_file
       INTEGER                                            :: spin

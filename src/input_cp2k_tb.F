@@ -41,10 +41,11 @@ MODULE input_cp2k_tb
         tblite_gxtb_forward_qualification_qualify, tblite_gxtb_gradient_dense, &
         tblite_gxtb_gradient_qualify, tblite_gxtb_gradient_streamed, &
         tblite_gxtb_image_batch_default, tblite_gxtb_star_dense, tblite_gxtb_star_qualify, &
-        tblite_gxtb_star_streamed, tblite_gxtb_transform_dense, tblite_gxtb_transform_mixed_radix, &
-        tblite_gxtb_transform_separable, tblite_mixer_damping_default, &
-        tblite_mixer_iterations_default, tblite_mixer_max_weight_default, &
-        tblite_mixer_memory_inherit, tblite_mixer_min_weight_default, tblite_mixer_omega0_default, &
+        tblite_gxtb_star_streamed, tblite_gxtb_transform_cp2k_fft, tblite_gxtb_transform_dense, &
+        tblite_gxtb_transform_mixed_radix, tblite_gxtb_transform_separable, &
+        tblite_mixer_damping_default, tblite_mixer_iterations_default, &
+        tblite_mixer_max_weight_default, tblite_mixer_memory_inherit, &
+        tblite_mixer_min_weight_default, tblite_mixer_omega0_default, &
         tblite_mixer_weight_factor_default, tblite_scc_mixer_auto, tblite_scc_mixer_cp2k, &
         tblite_scc_mixer_none, tblite_scc_mixer_tblite, tblite_solver_gvd, tblite_solver_gvr
    USE input_cp2k_mm,                   ONLY: create_GENPOT_section
@@ -807,9 +808,9 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="EXCHANGE_STREAM_BACKEND", &
                           description="Selects the forward consumer for Brillouin-zone-coupled nonlocal exchange. "// &
                           "COMPLETE_ARRAY is the original complete-mesh oracle. REDUCED and ORACLE use the "// &
-                          "provider's reduced or full-mesh stream. BATCHED bounds live image storage. DISTRIBUTED "// &
+                          "CP2K reduced or full-mesh stream. BATCHED bounds live image storage. DISTRIBUTED "// &
                           "partitions the complete BvK image range over CP2K ranks. K_GROUP_OWNER distributes "// &
-                          "irreducible-density ownership while retaining one provider service. "// &
+                          "irreducible-density ownership while retaining one exchange service. "// &
                           "K_GROUP_PARTIAL_ROOT merges partial "// &
                           "k-to-R contributions before a root-owned nonlinear kernel. K_GROUP_PARTIAL_REPLICATED "// &
                           "replicates the merged state and distributes response pulls. "// &
@@ -834,11 +835,11 @@ CONTAINS
                                        tblite_gxtb_exchange_kgroup_partial_images, &
                                        tblite_gxtb_exchange_symmetry_fused], &
                           enum_desc=s2a("Use the dense complete-array reference implementation.", &
-                                        "Use the reduced provider stream.", &
-                                        "Use the provider's streamed full-mesh oracle.", &
+                                        "Use the CP2K reduced exchange stream.", &
+                                        "Use the CP2K streamed full-mesh oracle.", &
                                         "Use bounded image batches.", &
                                         "Distribute the complete BvK image range over CP2K ranks.", &
-                                        "Distribute irreducible-k ownership around one provider service.", &
+                                        "Distribute irreducible-k ownership around one exchange service.", &
                                         "Merge partial k-to-R state and evaluate on one service root.", &
                                         "Replicate merged state and distribute response pulls.", &
                                         "Distribute the nonlinear BvK image kernel and response.", &
@@ -889,17 +890,20 @@ CONTAINS
                           description="Selects the regular-mesh k-to-R and R-to-k transform used by the "// &
                           "complete-array or exact symmetry-fused exchange paths. DENSE uses the permanent phase-table "// &
                           "oracle. SEPARABLE_DFT factorizes the direct transform by mesh direction. "// &
-                          "MIXED_RADIX_FFT uses recursive Cooley--Tukey transforms with direct prime leaves. In the "// &
+                          "MIXED_RADIX_FFT uses recursive Cooley--Tukey transforms with direct prime leaves. "// &
+                          "CP2K_FFT uses CP2K-owned complex transforms and their adjoints, with exact direct fallback. "// &
+                          "It requires COMPLETE_ARRAY exchange and DENSE gradients. In the "// &
                           "SYMMETRY_FUSED path, compact AO-pair tiles are composed exactly with bounded image batches; "// &
                           "all derivative contraction choices use the same selected backend. The developer-only "// &
                           "CP2K_GXTB_EXCHANGE_TRANSFORM_MODE environment variable overrides this keyword.", &
-                          usage="FOURIER_TRANSFORM_BACKEND (DENSE|SEPARABLE_DFT|MIXED_RADIX_FFT)", &
-                          enum_c_vals=s2a("DENSE", "SEPARABLE_DFT", "MIXED_RADIX_FFT"), &
+                          usage="FOURIER_TRANSFORM_BACKEND (DENSE|SEPARABLE_DFT|MIXED_RADIX_FFT|CP2K_FFT)", &
+                          enum_c_vals=s2a("DENSE", "SEPARABLE_DFT", "MIXED_RADIX_FFT", "CP2K_FFT"), &
                           enum_i_vals=[tblite_gxtb_transform_dense, tblite_gxtb_transform_separable, &
-                                       tblite_gxtb_transform_mixed_radix], &
+                                       tblite_gxtb_transform_mixed_radix, tblite_gxtb_transform_cp2k_fft], &
                           enum_desc=s2a("Use dense phase-table multiplication.", &
                                         "Use factorized direct one-dimensional transforms.", &
-                                        "Use recursive mixed-radix FFT transforms."), &
+                                        "Use recursive mixed-radix FFT transforms.", &
+                                        "Use CP2K-owned FFTs and their exact adjoints."), &
                           default_i_val=tblite_gxtb_transform_dense)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -927,7 +931,10 @@ CONTAINS
                           "reverse exchange transactions. The value is used by BATCHED, SYMMETRY_FUSED, "// &
                           "partial-k-group backends, and STREAMED or QUALIFY gradient contractions. "// &
                           "SYMMETRY_FUSED caps the effective forward batch below the complete-mesh size and "// &
-                          "fails unless the provider confirms bounded storage. The value must be positive. "// &
+                          "fails unless the CP2K stream confirms bounded storage. The value must be positive. "// &
+                          "In MODE AUTO, symmetry-fused exchange selects the largest image batch whose six "// &
+                          "forward/reverse fields fit within 64 MiB, always retaining at least one image and "// &
+                          "less than the complete image mesh. Transform tiles have a separate memory bound. "// &
                           "CP2K aborts when an explicitly supplied value would be ignored by all selected paths. The "// &
                           "developer-only CP2K_GXTB_EXCHANGE_IMAGE_BATCH_SIZE environment variable overrides this "// &
                           "keyword and is subject to the same unused-value check.", &
@@ -936,8 +943,9 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="ACP_PROJECTOR_CACHE", &
-                          description="Controls only the geometry-static compact ACP projector translations, "// &
-                          "overlaps, and levels. ENABLED reuses an exactly keyed provider cache. DIRECT bypasses and "// &
+                          description="Controls only the compact ACP projector translations, overlaps, and levels. "// &
+                          "ENABLED reuses a CP2K cache keyed exactly by geometry, basis and effective contraction "// &
+                          "coefficients, including their charge dependence. DIRECT bypasses and "// &
                           "invalidates that cache. QUALIFY builds both representations and aborts unless shapes and "// &
                           "values agree at the strict internal tolerance. DIRECT and QUALIFY require the selected "// &
                           "g-xTB parametrization to provide an ACP model. ACP derivative integrals remain uncached "// &

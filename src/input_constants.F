@@ -1474,7 +1474,8 @@ MODULE input_constants
                                                tblite_gxtb_gradient_qualify = 2
    INTEGER, PARAMETER, PUBLIC               :: tblite_gxtb_transform_dense = 1, &
                                                tblite_gxtb_transform_separable = 2, &
-                                               tblite_gxtb_transform_mixed_radix = 3
+                                               tblite_gxtb_transform_mixed_radix = 3, &
+                                               tblite_gxtb_transform_cp2k_fft = 4
    INTEGER, PARAMETER, PUBLIC               :: tblite_gxtb_star_dense = 0, &
                                                tblite_gxtb_star_streamed = 1, &
                                                tblite_gxtb_star_qualify = 2
