@@ -111,7 +111,6 @@ CONTAINS
       TYPE(upf_projector_type)                           :: native
 
       logger => cp_get_default_logger()
-      CALL section_vals_val_set(functional, 'PBE%PARAMETRIZATION', i_val=xc_pbe_orig)
       DO argument = 1, COMMAND_ARGUMENT_COUNT()
          CALL GET_COMMAND_ARGUMENT(argument, filename)
          IF (argument == 1) THEN
@@ -119,6 +118,8 @@ CONTAINS
             IF (source_root_argument) CYCLE
          END IF
          CALL atom_read_upf(original, TRIM(filename), read_paw=.TRUE.)
+         CALL section_vals_val_set(functional, 'PBE%PARAMETRIZATION', &
+                                   i_val=MERGE(xc_pbe_sol, xc_pbe_orig, INDEX(original%functional, 'PSX') > 0))
          CALL upf_projector_init(original, MAXVAL(original%lbeta), native)
          CALL paw_onecenter_init(original, native, centered)
          CALL paw_xc_init(original, 110, xcgrid)
