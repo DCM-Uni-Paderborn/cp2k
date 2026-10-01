@@ -217,7 +217,8 @@ CONTAINS
       energy%trial_dm = ks_energy%total
       trial_density_energy = ks_energy%hartree + ks_energy%hartree_1c + &
                              ks_energy%exc + ks_energy%exc1 + &
-                             ks_energy%exc_aux_fit + ks_energy%exc1_aux_fit
+                             ks_energy%exc_aux_fit + ks_energy%exc1_aux_fit + &
+                             ks_energy%paw_hartree + ks_energy%paw_xc
 
       ! Mixed Harris evaluation: retain P_fit but use the original cube density for E_H and E_xc.
       CALL qs_rho_get(rho, rho_r=rho_r, rho_g=rho_g, tot_rho_r=tot_rho_r)
@@ -231,7 +232,8 @@ CONTAINS
                                print_active=.FALSE.)
       target_density_energy = ks_energy%hartree + ks_energy%hartree_1c + &
                               ks_energy%exc + ks_energy%exc1 + &
-                              ks_energy%exc_aux_fit + ks_energy%exc1_aux_fit
+                              ks_energy%exc_aux_fit + ks_energy%exc1_aux_fit + &
+                              ks_energy%paw_hartree + ks_energy%paw_xc
 
       energy%direct_harris = energy%trial_dm + target_density_energy - trial_density_energy
       energy%direct_difference = energy%trial_dm - energy%direct_harris

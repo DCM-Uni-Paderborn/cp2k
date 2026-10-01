@@ -139,7 +139,8 @@ MODULE qs_ks_methods
                                               qs_rho_type
    USE qs_sccs,                         ONLY: sccs
    USE qs_uspp_gapw,                    ONLY: qs_uspp_gapw_coulomb
-   USE qs_uspp_methods,                 ONLY: qs_uspp_atom_grid_apply_ks,&
+   USE qs_uspp_methods,                 ONLY: qs_paw_correction,&
+                                              qs_uspp_atom_grid_apply_ks,&
                                               qs_uspp_atom_grid_type
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE qs_vxc,                          ONLY: qs_vxc_create
@@ -1093,7 +1094,7 @@ CONTAINS
       hfx_sections => section_vals_get_subs_vals(xc_section, "HF")
       CALL section_vals_get(hfx_sections, explicit=do_hfx)
       IF (do_hfx .AND. ASSOCIATED(uspp)) THEN
-         CPABORT("Exact exchange with USPP augmentation is not implemented")
+         CPABORT("Exact exchange with USPP/PAW augmentation is not implemented")
       END IF
 
       ace_active = .FALSE.
@@ -1398,6 +1399,14 @@ CONTAINS
             !Note: also update ks_aux_fit matrix in case of rtp
             CALL admm_update_ks_atom(qs_env, calculate_forces)
          END IF
+      END IF
+
+      IF (just_energy) THEN
+         CALL qs_paw_correction(ks_env, xc_section, rho_ao, energy%paw_hartree, energy%paw_xc, energy%paw_core, &
+                                calculate_forces)
+      ELSE
+         CALL qs_paw_correction(ks_env, xc_section, rho_ao, energy%paw_hartree, energy%paw_xc, energy%paw_core, &
+                                calculate_forces, ks_matrix)
       END IF
 
       !Calculation of Mulliken restraint, if requested

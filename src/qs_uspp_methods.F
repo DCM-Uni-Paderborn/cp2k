@@ -17,11 +17,18 @@ MODULE qs_uspp_methods
         dbcsr_add, dbcsr_copy, dbcsr_get_block_p, dbcsr_get_info, dbcsr_p_type, dbcsr_release, &
         dbcsr_scale, dbcsr_set, dbcsr_type
    USE input_constants,                 ONLY: do_ppl_analytic
+   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+                                              section_vals_type,&
+                                              section_vals_val_get
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_type
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_comm_unequal
    USE particle_types,                  ONLY: particle_type
+   USE paw_onecenter,                   ONLY: paw_onecenter_hartree,&
+                                              paw_onecenter_init
+   USE paw_xc,                          ONLY: paw_xc_evaluate,&
+                                              paw_xc_init
    USE pw_grid_types,                   ONLY: FULLSPACE,&
                                               HALFSPACE,&
                                               pw_grid_type
@@ -65,7 +72,7 @@ MODULE qs_uspp_methods
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_methods'
    PUBLIC :: qs_uspp_prepare, qs_uspp_init_ao_matrix, qs_uspp_collocate, qs_uspp_integrate
-   PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces
+   PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces, qs_paw_correction
    PUBLIC :: qs_uspp_atom_grid_type, qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_collocate, &
              qs_uspp_atom_grid_integrate, qs_uspp_atom_grid_apply, qs_uspp_atom_grid_apply_ks
 
@@ -397,7 +404,7 @@ CONTAINS
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
       TYPE(dbcsr_p_type), INTENT(IN)                     :: gaussian_overlap(:)
 
-      INTEGER                                            :: handle
+      INTEGER                                            :: handle, ikind
       LOGICAL                                            :: do_kpoints
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -415,14 +422,22 @@ CONTAINS
       CALL get_ks_env(ks_env, do_kpoints=do_kpoints, sap_ppnl=sap_ppnl, dft_control=dft_control)
       IF (.NOT. (dft_control%qs_control%gpw .OR. dft_control%qs_control%gapw_xc .OR. &
                  dft_control%qs_control%gapw)) THEN
-         CPABORT("USPP requires GPW, GAPW_XC or GAPW")
+         CPABORT("USPP/PAW requires GPW, GAPW_XC or GAPW")
       END IF
       IF (dft_control%qs_control%do_ppl_method /= do_ppl_analytic) THEN
-         CPABORT("USPP requires analytic local-potential integrals")
+         CPABORT("USPP/PAW requires analytic local-potential integrals")
       END IF
       IF (dft_control%use_kinetic_energy_density) THEN
-         CPABORT("USPP augmentation for kinetic-energy-density functionals is not implemented")
+         CPABORT("USPP/PAW augmentation for kinetic-energy-density functionals is not implemented")
       END IF
+      DO ikind = 1, SIZE(qs_kind_set)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         ASSOCIATE (potential => qs_kind_set(ikind)%sgp_potential, cache => uspp%paw(ikind))
+            CALL paw_onecenter_init(potential%upf_data, potential%upf_projectors, cache%onecenter)
+            CALL paw_xc_init(potential%upf_data, qs_kind_set(ikind)%ngrid_ang, cache%xcgrid)
+            cache%core_energy = potential%upf_data%paw%core_energy
+         END ASSOCIATE
+      END DO
       CPASSERT(ASSOCIATED(sap_ppnl))
       ALLOCATE (sap_int(SIZE(qs_kind_set)**2))
       CALL build_sap_ints(sap_int, sap_ppnl, qs_kind_set, nder=0)
@@ -808,6 +823,123 @@ CONTAINS
          DEALLOCATE (total_density(image)%matrix)
       END DO
    END SUBROUTINE qs_uspp_core_forces
+
+! **************************************************************************************************
+!> \brief PAW one-center energies, Hamiltonian and projector force/strain derivatives in every METHOD.
+!>        Radial data are fixed in Cartesian atom-centered coordinates. Geometry enters only through
+!>        the projected density, so its transpose supplies the complete one-center geometry response.
+!> \param ks_env Prepared generalized overlap, original PAW caches and force accumulators.
+!> \param xc_section Same XC section as for the smooth density.
+!> \param density Spin and image-resolved AO densities, including occupations and k-point weights.
+!> \param hartree PAW Hartree correction, reset and returned replicated.
+!> \param exc PAW XC correction, reset and returned replicated.
+!> \param core Frozen-core energy constant, reset and returned replicated.
+!> \param calculate_forces Whether to differentiate projectors at fixed AO density.
+!> \param hamiltonian Optional spin and image AO matrices; absent for energy-only evaluation.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_correction(ks_env, xc_section, density, hartree, exc, core, calculate_forces, hamiltonian)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:, :)
+      REAL(dp), INTENT(OUT)                              :: hartree, exc, core
+      LOGICAL, INTENT(IN)                                :: calculate_forces
+      TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: hamiltonian(:, :)
+
+      INTEGER                                            :: center, handle, ikind, n, natom, ns, spin
+      LOGICAL                                            :: found
+      REAL(dp)                                           :: density_cutoff, eh, energies(3), ex, &
+                                                            gradient_cutoff
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), &
+                                                            cell_gradient(:, :), dm(:, :, :), &
+                                                            vh(:, :), vxc(:, :, :)
+      REAL(dp), POINTER                                  :: block(:, :)
+      TYPE(dbcsr_type), ALLOCATABLE                      :: onsite(:), projected(:)
+      TYPE(mp_comm_type)                                 :: group
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+      TYPE(section_vals_type), POINTER                   :: functional
+
+      hartree = 0.0_dp
+      exc = 0.0_dp
+      core = 0.0_dp
+      CALL get_ks_env(ks_env, uspp=uspp)
+      IF (.NOT. ASSOCIATED(uspp)) RETURN
+      IF (.NOT. ALLOCATED(uspp%paw)) RETURN
+      IF (.NOT. ANY(uspp%paw%active)) RETURN
+      CALL timeset('qs_paw_correction', handle)
+      ns = SIZE(density, 1)
+      CPASSERT(ns == 1 .OR. ns == 2)
+      IF (PRESENT(hamiltonian)) THEN
+         CPASSERT(ALL(SHAPE(hamiltonian) == SHAPE(density)))
+      END IF
+      functional => section_vals_get_subs_vals(xc_section, 'XC_FUNCTIONAL')
+      CALL section_vals_val_get(xc_section, 'DENSITY_CUTOFF', r_val=density_cutoff)
+      CALL section_vals_val_get(xc_section, 'GRADIENT_CUTOFF', r_val=gradient_cutoff)
+      CALL dbcsr_get_info(uspp%overlaps, group=group)
+      ALLOCATE (projected(ns), onsite(ns))
+      DO spin = 1, ns
+         CALL project_density(uspp, density(spin, :), projected(spin))
+         CALL uspp_projector_create_onsite(uspp%overlaps, onsite(spin))
+      END DO
+      energies = 0.0_dp
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         ! All spin blocks have the same owner. Evaluate and count each center once.
+         CALL dbcsr_get_block_p(projected(1), center, center, block, found)
+         IF (.NOT. found) CYCLE
+         n = uspp%projector_sizes(center)
+         ALLOCATE (dm(n, n, ns), vh(n, n), vxc(n, n, ns))
+         DO spin = 1, ns
+            CALL dbcsr_get_block_p(projected(spin), center, center, block, found)
+            CPASSERT(found)
+            dm(:, :, spin) = block
+         END DO
+         ASSOCIATE (cache => uspp%paw(ikind))
+            CALL paw_onecenter_hartree(cache%onecenter, SUM(dm, DIM=3), eh, vh)
+            CALL paw_xc_evaluate(cache%xcgrid, cache%onecenter, functional, dm, density_cutoff, gradient_cutoff, ex, vxc)
+            energies = energies + [eh, ex, cache%core_energy]
+         END ASSOCIATE
+         DO spin = 1, ns
+            CALL dbcsr_get_block_p(onsite(spin), center, center, block, found)
+            CPASSERT(found)
+            block = vh + vxc(:, :, spin)
+         END DO
+         DEALLOCATE (dm, vh, vxc)
+      END DO
+      CALL group%sum(energies)
+      hartree = energies(1)
+      exc = energies(2)
+      core = energies(3)
+      NULLIFY (sap_int)
+      IF (calculate_forces) THEN
+         CALL get_ks_env(ks_env, natom=natom)
+         ALLOCATE (atom_gradient(3, natom))
+         atom_gradient = 0.0_dp
+         CALL allocate_cell_gradient(ks_env, cell_gradient)
+         CALL build_derivatives(ks_env, sap_int)
+      END IF
+      DO spin = 1, ns
+         IF (calculate_forces) THEN
+            IF (PRESENT(hamiltonian)) THEN
+               CALL apply_operator(uspp, onsite(spin), hamiltonian(spin, :), density(spin, :), &
+                                   sap_int, atom_gradient, cell_gradient)
+            ELSE
+               CALL apply_operator(uspp, onsite(spin), density=density(spin, :), &
+                                   sap_int=sap_int, atom_gradient=atom_gradient, cell_gradient=cell_gradient)
+            END IF
+         ELSE IF (PRESENT(hamiltonian)) THEN
+            CALL apply_operator(uspp, onsite(spin), hamiltonian(spin, :))
+         END IF
+         CALL dbcsr_release(projected(spin))
+         CALL dbcsr_release(onsite(spin))
+      END DO
+      IF (calculate_forces) THEN
+         CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
+         CALL release_sap_int(sap_int)
+      END IF
+      CALL timestop(handle)
+   END SUBROUTINE qs_paw_correction
 
 ! **************************************************************************************************
 !> \brief Build image-resolved derivatives only on the force path.

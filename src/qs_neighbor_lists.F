@@ -576,7 +576,9 @@ CONTAINS
                                   ppnl_radius=ppnl_radius(ikind))
                IF (dokp .AND. .NOT. qs_kind_set(ikind)%ghost) THEN
                   IF (ALLOCATED(sgp_potential%upf_data)) THEN
-                     IF (sgp_potential%upf_data%is_ultrasoft) uspp_radius = MAX(uspp_radius, ppnl_radius(ikind))
+                     IF (sgp_potential%upf_data%is_ultrasoft .OR. sgp_potential%upf_data%is_paw) THEN
+                        uspp_radius = MAX(uspp_radius, ppnl_radius(ikind))
+                     END IF
                   END IF
                END IF
             ELSE

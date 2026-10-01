@@ -904,6 +904,9 @@ CONTAINS
       CALL check_sum_energy(energy%total, energy%hartree_1c, "Energy from GAPW local Eh = 1 center integrals")
       CALL check_sum_energy(energy%total, energy%exc, "Exchange-correlation energy")
       CALL check_sum_energy(energy%total, energy%exc1, "Exc1 energy")
+      CALL check_sum_energy(energy%total, energy%paw_hartree, "PAW one-center Hartree energy")
+      CALL check_sum_energy(energy%total, energy%paw_xc, "PAW one-center XC energy")
+      CALL check_sum_energy(energy%total, energy%paw_core, "PAW frozen-core energy")
       CALL check_sum_energy(energy%total, energy%ex, "Ex energy")
       CALL check_sum_energy(energy%total, energy%dispersion, "Dispersion energy")
       CALL check_sum_energy(energy%total, energy%gcp, "gCP energy")
@@ -1203,6 +1206,12 @@ CONTAINS
                "Integral of the (density * v_xc):              ", energy%exc
          END IF
 
+         IF (energy%paw_hartree /= 0.0_dp .OR. energy%paw_xc /= 0.0_dp .OR. energy%paw_core /= 0.0_dp) THEN
+            WRITE (UNIT=output_unit, FMT="(/,(T3,A,T61,F20.10))") &
+               "PAW| one-center Hartree correction:           ", energy%paw_hartree, &
+               "PAW| one-center XC correction:                ", energy%paw_xc, &
+               "PAW| frozen-core energy:                      ", energy%paw_core
+         END IF
          IF (energy%e_hartree /= 0.0_dp) THEN
             WRITE (UNIT=output_unit, FMT="(T3,A,T61,F20.10)") &
                "Coulomb (electron-electron) energy:            ", energy%e_hartree
