@@ -218,9 +218,10 @@ CONTAINS
 !> \param density Optional AO density for the derivatives; requires both gradient outputs.
 !> \param gradient Optional new B-shaped derivative matrix, distributed like overlaps.
 !> \param center_gradient Optional local center derivatives (3,ncenter), not MPI-reduced.
+!> \param cell_gradient Optional local density strain contribution, incremented without MPI reduction.
 ! **************************************************************************************************
    SUBROUTINE uspp_projector_integrate(overlaps, augmentation, kind, position, gvecs, volume, vg, multiplicity, hamiltonian, &
-                                       density, gradient, center_gradient)
+                                       density, gradient, center_gradient, cell_gradient)
       TYPE(dbcsr_type), INTENT(IN)                       :: overlaps
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation(:)
       INTEGER, INTENT(IN)                                :: kind(:)
@@ -231,11 +232,12 @@ CONTAINS
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density
       TYPE(dbcsr_type), INTENT(INOUT), OPTIONAL          :: gradient
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: center_gradient(:, :)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: cell_gradient(3, 3)
 
-      INTEGER                                            :: i, idir, n
+      INTEGER                                            :: i, idir, jdir, n
       LOGICAL                                            :: found
       REAL(KIND=dp), ALLOCATABLE                         :: derivative(:, :, :), dm(:, :), &
-                                                            matrix(:, :)
+                                                            matrix(:, :), strain(:, :, :, :)
       REAL(KIND=dp), POINTER                             :: block(:, :)
       TYPE(dbcsr_type)                                   :: onsite, projected
       TYPE(mp_comm_type)                                 :: group
@@ -246,6 +248,9 @@ CONTAINS
       CALL uspp_projector_create_onsite(overlaps, onsite)
       CPASSERT(PRESENT(density) .EQV. PRESENT(gradient))
       CPASSERT(PRESENT(density) .EQV. PRESENT(center_gradient))
+      IF (PRESENT(cell_gradient)) THEN
+         CPASSERT(PRESENT(density))
+      END IF
       IF (PRESENT(density)) THEN
          CPASSERT(ALL(SHAPE(center_gradient) == [3, SIZE(kind)]))
          CALL uspp_projector_density(overlaps, density, projected)
@@ -256,15 +261,24 @@ CONTAINS
          ALLOCATE (matrix(n, n))
          IF (PRESENT(density)) THEN
             ALLOCATE (dm(n, n), derivative(n, n, 3))
+            IF (PRESENT(cell_gradient)) ALLOCATE (strain(n, n, 3, 3))
             dm = 0.0_dp
             CALL dbcsr_get_block_p(projected, i, i, block, found)
             IF (found) dm(:, :) = block
             CALL group%sum(dm)
             CALL uspp_augmentation_integrate(augmentation(KIND(i)), gvecs, position(:, i), volume, vg, multiplicity, &
-                                             matrix, derivative)
+                                             matrix, derivative, strain)
             DO idir = 1, 3
                center_gradient(idir, i) = SUM(dm*derivative(:, :, idir))
             END DO
+            IF (PRESENT(cell_gradient)) THEN
+               DO jdir = 1, 3
+                  DO idir = 1, 3
+                     cell_gradient(idir, jdir) = cell_gradient(idir, jdir) + SUM(dm*strain(:, :, idir, jdir))
+                  END DO
+               END DO
+               DEALLOCATE (strain)
+            END IF
             DEALLOCATE (dm, derivative)
          ELSE
             CALL uspp_augmentation_integrate(augmentation(KIND(i)), gvecs, position(:, i), volume, vg, multiplicity, matrix)

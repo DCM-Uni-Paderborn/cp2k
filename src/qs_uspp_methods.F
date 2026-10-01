@@ -54,6 +54,7 @@ MODULE qs_uspp_methods
                                               uspp_projector_create_onsite,&
                                               uspp_projector_integrate,&
                                               uspp_projector_pullback
+   USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -191,7 +192,7 @@ CONTAINS
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density
 
       INTEGER                                            :: natom
-      REAL(KIND=dp), ALLOCATABLE                         :: atom_gradient(:, :)
+      REAL(KIND=dp), ALLOCATABLE                         :: atom_gradient(:, :), cell_gradient(:, :)
       TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(sap_int_type), POINTER                        :: sap_int(:)
 
@@ -201,9 +202,10 @@ CONTAINS
          CALL get_ks_env(ks_env, natom=natom)
          ALLOCATE (atom_gradient(3, natom))
          atom_gradient = 0.0_dp
+         CALL allocate_cell_gradient(ks_env, cell_gradient)
          CALL build_derivatives(ks_env, sap_int)
-         CALL integrate_grid(uspp, potential, hamiltonian, weighted, density, sap_int, atom_gradient)
-         CALL accumulate_gradient(ks_env, atom_gradient)
+         CALL integrate_grid(uspp, potential, hamiltonian, weighted, density, sap_int, atom_gradient, cell_gradient)
+         CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
          CALL release_sap_int(sap_int)
       ELSE
          CALL integrate_grid(uspp, potential, hamiltonian, weighted)
@@ -219,15 +221,16 @@ CONTAINS
 !> \param density Optional force-path AO density.
 !> \param sap_int Optional image-resolved projector derivatives.
 !> \param atom_gradient Optional local atomic energy gradients, incremented without MPI reduction.
+!> \param cell_gradient Optional strain energy gradient, incremented without MPI reduction.
 ! **************************************************************************************************
-   SUBROUTINE integrate_grid(uspp, potential, hamiltonian, weighted, density, sap_int, atom_gradient)
+   SUBROUTINE integrate_grid(uspp, potential, hamiltonian, weighted, density, sap_int, atom_gradient, cell_gradient)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
       TYPE(dbcsr_type), INTENT(INOUT)                    :: hamiltonian
       LOGICAL, INTENT(IN)                                :: weighted
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density
       TYPE(sap_int_type), INTENT(IN), OPTIONAL           :: sap_int(:)
-      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :), cell_gradient(3, 3)
 
       INTEGER                                            :: center, handle
       REAL(KIND=dp), ALLOCATABLE                         :: center_gradient(:, :), multiplicity(:)
@@ -251,8 +254,8 @@ CONTAINS
          ALLOCATE (center_gradient(3, SIZE(uspp%center_atoms)))
          CALL uspp_projector_integrate(uspp%overlaps, uspp%augmentation, uspp%center_kinds, &
                                        uspp%position, potential%pw_grid%g, potential%pw_grid%vol, &
-                                       potential_g%array, multiplicity, hamiltonian, density, gradient, center_gradient)
-         CALL qs_uspp_projector_gradient(gradient, sap_int, uspp%center_atoms, atom_gradient)
+                                    potential_g%array, multiplicity, hamiltonian, density, gradient, center_gradient, cell_gradient)
+         CALL qs_uspp_projector_gradient(gradient, sap_int, uspp%center_atoms, atom_gradient, cell_gradient)
          DO center = 1, SIZE(uspp%center_atoms)
             atom_gradient(:, uspp%center_atoms(center)) = atom_gradient(:, uspp%center_atoms(center)) + &
                                                           center_gradient(:, center)
@@ -281,9 +284,10 @@ CONTAINS
 !> \param energy_weighted Optional total energy-weighted AO density.
 !> \param sap_int Optional uncompressed projector derivatives.
 !> \param atom_gradient Optional local atomic energy gradients, incremented without MPI reduction.
+!> \param cell_gradient Optional strain energy gradient, incremented without MPI reduction.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_core_matrix(uspp, qs_kind_set, particle_set, grid, hamiltonian, &
-                                  density, energy_weighted, sap_int, atom_gradient)
+                                  density, energy_weighted, sap_int, atom_gradient, cell_gradient)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
       TYPE(qs_kind_type), INTENT(INOUT)                  :: qs_kind_set(:)
       TYPE(particle_type), INTENT(IN)                    :: particle_set(:)
@@ -291,10 +295,11 @@ CONTAINS
       TYPE(dbcsr_type), INTENT(INOUT)                    :: hamiltonian
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density, energy_weighted
       TYPE(sap_int_type), INTENT(IN), OPTIONAL           :: sap_int(:)
-      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :), cell_gradient(3, 3)
 
-      COMPLEX(KIND=dp), ALLOCATABLE                      :: ionic_derivative(:, :), ionic_g(:)
-      INTEGER                                            :: atom, center, handle, idir, ikind
+      COMPLEX(KIND=dp), ALLOCATABLE                      :: ionic_derivative(:, :), ionic_dg(:, :), &
+                                                            ionic_g(:)
+      INTEGER                                            :: atom, center, handle, idir, ikind, jdir
       LOGICAL                                            :: found
       REAL(KIND=dp)                                      :: charge
       REAL(KIND=dp), ALLOCATABLE                         :: multiplicity(:)
@@ -308,6 +313,9 @@ CONTAINS
       CPASSERT(PRESENT(density) .EQV. PRESENT(energy_weighted))
       CPASSERT(PRESENT(density) .EQV. PRESENT(sap_int))
       CPASSERT(PRESENT(density) .EQV. PRESENT(atom_gradient))
+      IF (PRESENT(cell_gradient)) THEN
+         CPASSERT(PRESENT(density))
+      END IF
       CALL uspp_projector_create_onsite(uspp%overlaps, bare)
       DO center = 1, SIZE(uspp%center_kinds)
          ikind = uspp%center_kinds(center)
@@ -317,7 +325,7 @@ CONTAINS
       CALL uspp_projector_add_operator(uspp%overlaps, bare, hamiltonian)
       IF (PRESENT(density)) THEN
          CALL uspp_projector_pullback(uspp%overlaps, density, bare, 1.0_dp, gradient)
-         CALL qs_uspp_projector_gradient(gradient, sap_int, uspp%center_atoms, atom_gradient)
+         CALL qs_uspp_projector_gradient(gradient, sap_int, uspp%center_atoms, atom_gradient, cell_gradient)
          CALL dbcsr_release(gradient)
          DO center = 1, SIZE(uspp%center_kinds)
             ikind = uspp%center_kinds(center)
@@ -325,7 +333,7 @@ CONTAINS
             IF (found) block(:, :) = uspp%augmentation(ikind)%q
          END DO
          CALL uspp_projector_pullback(uspp%overlaps, energy_weighted, bare, -1.0_dp, gradient)
-         CALL qs_uspp_projector_gradient(gradient, sap_int, uspp%center_atoms, atom_gradient)
+         CALL qs_uspp_projector_gradient(gradient, sap_int, uspp%center_atoms, atom_gradient, cell_gradient)
          CALL dbcsr_release(gradient)
       END IF
       CALL dbcsr_release(bare)
@@ -344,6 +352,7 @@ CONTAINS
          CALL pw_transfer(rho_g, rho_r)
          CALL pw_transfer(rho_r, rho_g)
          ALLOCATE (ionic_derivative(3, SIZE(ionic_g)), multiplicity(SIZE(ionic_g)))
+         IF (PRESENT(cell_gradient)) ALLOCATE (ionic_dg(3, SIZE(ionic_g)))
          multiplicity = 1.0_dp
          IF (grid%grid_span == HALFSPACE) THEN
             multiplicity = 2.0_dp
@@ -360,11 +369,23 @@ CONTAINS
                CALL upf_local_init(potential%upf_data, potential%alpha_core_charge, 0, potential%upf_local)
             END IF
             IF (PRESENT(density)) THEN
-               CALL upf_local_fourier(potential%upf_local, grid%g, particle_set(atom)%r, grid%vol, ionic_g, ionic_derivative)
+               CALL upf_local_fourier(potential%upf_local, grid%g, particle_set(atom)%r, grid%vol, &
+                                      ionic_g, ionic_derivative, ionic_dg)
                DO idir = 1, 3
                   atom_gradient(idir, atom) = atom_gradient(idir, atom) + grid%vol* &
                                               SUM(multiplicity*REAL(CONJG(rho_g%array)*ionic_derivative(idir, :), KIND=dp))
                END DO
+               IF (PRESENT(cell_gradient)) THEN
+                  ! The ionic phase is invariant at fixed fractional coordinates.
+                  ! The -V/volume term cancels the explicit volume weight in integral rho_aug V_sr.
+                  DO jdir = 1, 3
+                     ionic_dg(jdir, :) = ionic_dg(jdir, :) + CMPLX(0.0_dp, particle_set(atom)%r(jdir), dp)*ionic_g
+                     DO idir = 1, 3
+                        cell_gradient(idir, jdir) = cell_gradient(idir, jdir) - grid%vol* &
+                                               SUM(multiplicity*REAL(CONJG(rho_g%array)*grid%g(idir, :)*ionic_dg(jdir, :), KIND=dp))
+                     END DO
+                  END DO
+               END IF
             ELSE
                CALL upf_local_fourier(potential%upf_local, grid%g, particle_set(atom)%r, grid%vol, ionic_g)
             END IF
@@ -374,7 +395,7 @@ CONTAINS
       ! Explicit real projection also treats aliased Nyquist pairs consistently on even grids.
       CALL pw_transfer(potential_g, potential_r)
       CALL integrate_grid(uspp, potential_r, hamiltonian, weighted=.FALSE., &
-                          density=density, sap_int=sap_int, atom_gradient=atom_gradient)
+                          density=density, sap_int=sap_int, atom_gradient=atom_gradient, cell_gradient=cell_gradient)
       IF (PRESENT(density)) THEN
          CALL rho_g%release()
          CALL rho_r%release()
@@ -400,7 +421,7 @@ CONTAINS
       TYPE(dbcsr_type), INTENT(IN)                       :: weighted_density
 
       INTEGER                                            :: ispin
-      REAL(KIND=dp), ALLOCATABLE                         :: atom_gradient(:, :)
+      REAL(KIND=dp), ALLOCATABLE                         :: atom_gradient(:, :), cell_gradient(:, :)
       TYPE(dbcsr_type)                                   :: total_density
       TYPE(particle_type), POINTER                       :: particle_set(:)
       TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
@@ -415,10 +436,11 @@ CONTAINS
       END DO
       ALLOCATE (atom_gradient(3, SIZE(particle_set)))
       atom_gradient = 0.0_dp
+      CALL allocate_cell_gradient(ks_env, cell_gradient)
       CALL build_derivatives(ks_env, sap_int)
       CALL qs_uspp_core_matrix(uspp, qs_kind_set, particle_set, grid, hamiltonian, &
-                               total_density, weighted_density, sap_int, atom_gradient)
-      CALL accumulate_gradient(ks_env, atom_gradient)
+                               total_density, weighted_density, sap_int, atom_gradient, cell_gradient)
+      CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
       CALL release_sap_int(sap_int)
       CALL dbcsr_release(total_density)
    END SUBROUTINE qs_uspp_core_forces
@@ -444,15 +466,18 @@ CONTAINS
 !> \brief Add unreduced USPP energy gradients to the normal Quickstep force accumulator.
 !> \param ks_env Kinds and force arrays; Quickstep later reduces and negates these gradients.
 !> \param atom_gradient Local energy gradients in global particle order.
+!> \param cell_gradient Optional strain energy gradient; its negative is the virial.
 ! **************************************************************************************************
-   SUBROUTINE accumulate_gradient(ks_env, atom_gradient)
+   SUBROUTINE accumulate_gradient(ks_env, atom_gradient, cell_gradient)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       REAL(KIND=dp), INTENT(IN)                          :: atom_gradient(:, :)
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: cell_gradient(3, 3)
 
       INTEGER                                            :: atom, ia, ikind
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind_set(:)
       TYPE(qs_force_type), POINTER                       :: force(:)
+      TYPE(virial_type), POINTER                         :: virial
 
       CALL get_ks_env(ks_env, atomic_kind_set=atomic_kind_set, force=force)
       CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
@@ -461,7 +486,30 @@ CONTAINS
          ia = atom_of_kind(atom)
          force(ikind)%gth_ppnl(:, ia) = force(ikind)%gth_ppnl(:, ia) + atom_gradient(:, atom)
       END DO
+      IF (PRESENT(cell_gradient)) THEN
+         CALL get_ks_env(ks_env, virial=virial)
+         virial%pv_ppnl = virial%pv_ppnl - cell_gradient
+         virial%pv_virial = virial%pv_virial - cell_gradient
+      END IF
    END SUBROUTINE accumulate_gradient
+
+! **************************************************************************************************
+!> \brief Allocate the optional local strain accumulator only for analytic stress.
+!> \param ks_env Current virial settings.
+!> \param cell_gradient Allocated and zeroed for analytic stress, otherwise absent.
+! **************************************************************************************************
+   SUBROUTINE allocate_cell_gradient(ks_env, cell_gradient)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      REAL(KIND=dp), ALLOCATABLE, INTENT(OUT)            :: cell_gradient(:, :)
+
+      TYPE(virial_type), POINTER                         :: virial
+
+      CALL get_ks_env(ks_env, virial=virial)
+      IF (virial%pv_availability .AND. .NOT. virial%pv_numer) THEN
+         ALLOCATE (cell_gradient(3, 3))
+         cell_gradient = 0.0_dp
+      END IF
+   END SUBROUTINE allocate_cell_gradient
 
 ! **************************************************************************************************
 !> \brief Require every retained G to occur once over the projector communicator.

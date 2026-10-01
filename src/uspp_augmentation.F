@@ -16,9 +16,12 @@ MODULE uspp_augmentation
    USE bessel_lib,                      ONLY: bessel0
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
-   USE orbital_pointers,                ONLY: nco,&
+   USE orbital_pointers,                ONLY: indco,&
+                                              init_orbital_pointers,&
+                                              nco,&
                                               ncoset
-   USE orbital_transformation_matrices, ONLY: orbtramat
+   USE orbital_transformation_matrices, ONLY: init_spherical_harmonics,&
+                                              orbtramat
    USE spherical_harmonics,             ONLY: y_lm
    USE upf_projector_integrals,         ONLY: upf_projector_type
 #include "./base/base_uses.f90"
@@ -63,6 +66,8 @@ CONTAINS
       nc = pot%number_of_proj*(pot%number_of_proj + 1)/2
       augmentation%nproj = projectors%nproj
       augmentation%lmax = 2*MAXVAL(pot%lbeta)
+      CALL init_orbital_pointers(augmentation%lmax)
+      CALL init_spherical_harmonics(augmentation%lmax, -1)
       CPASSERT(ALL(SHAPE(pot%qijl) == [n, nc, augmentation%lmax + 1]))
       CPASSERT(LBOUND(pot%qijl, 3) == 0)
       ALLOCATE (augmentation%r(n), weights(n))
@@ -111,35 +116,73 @@ CONTAINS
 !> \param position Augmentation center in bohr.
 !> \param volume Cell volume in bohr cubed.
 !> \param qg Complex symmetric form-factor matrix. Q(-G) = conjugate(Q(G)).
+!> \param strain Optional dQ/d epsilon_ab at fixed fractional center and reciprocal index.
+!>        Includes the inverse-volume derivative; the center phase is strain invariant.
 ! **************************************************************************************************
-   SUBROUTINE uspp_augmentation_fourier(augmentation, g, position, volume, qg)
+   SUBROUTINE uspp_augmentation_fourier(augmentation, g, position, volume, qg, strain)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: g(3), position(3), volume
       COMPLEX(KIND=dp), INTENT(OUT)                      :: qg(:, :)
+      COMPLEX(KIND=dp), INTENT(OUT), OPTIONAL            :: strain(:, :, :, :)
 
       COMPLEX(KIND=dp)                                   :: phase, phase_l
-      INTEGER                                            :: i, j, l, lm, m, p, pair, q
-      REAL(KIND=dp)                                      :: angular, direction(3, 1), norm_g, &
+      INTEGER                                            :: a, axis, i, j, l, lm, m, p, pair, &
+                                                            powers(3), q
+      REAL(KIND=dp)                                      :: angular, angular_derivative(3), &
+                                                            direction(3, 1), monomial, norm_g, &
                                                             value(1)
-      REAL(KIND=dp), ALLOCATABLE                         :: harmonics(:), radial(:, :), work(:)
+      REAL(KIND=dp), ALLOCATABLE                         :: harmonics(:), radial(:, :), &
+                                                            radial_next(:, :), &
+                                                            solid_gradient(:, :), work(:)
 
       CPASSERT(volume > 0.0_dp)
       CPASSERT(ALL(SHAPE(qg) == augmentation%nproj))
+      IF (PRESENT(strain)) THEN
+         CPASSERT(ALL(SHAPE(strain) == [augmentation%nproj, augmentation%nproj, 3, 3]))
+         strain = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
       norm_g = SQRT(SUM(g*g))
       IF (norm_g == 0.0_dp) THEN
          qg(:, :) = CMPLX(augmentation%q/volume, 0.0_dp, KIND=dp)
+         IF (PRESENT(strain)) THEN
+            DO axis = 1, 3
+               strain(:, :, axis, axis) = -qg
+            END DO
+         END IF
          RETURN
       END IF
       direction(:, 1) = g/norm_g
       ALLOCATE (work(SIZE(augmentation%r)), harmonics((augmentation%lmax + 1)**2))
       ALLOCATE (radial(SIZE(augmentation%weighted_q, 2), 0:augmentation%lmax))
+      IF (PRESENT(strain)) THEN
+         ALLOCATE (solid_gradient(3, (augmentation%lmax + 1)**2), &
+                   radial_next(SIZE(radial, 1), 0:augmentation%lmax))
+         solid_gradient = 0.0_dp
+      END IF
       DO l = 0, augmentation%lmax
+         IF (PRESENT(strain)) THEN
+            work(:) = augmentation%r*bessel0(norm_g*augmentation%r, l + 1)
+            radial_next(:, l) = MATMUL(work, augmentation%weighted_q(:, :, l))
+         END IF
          work(:) = bessel0(norm_g*augmentation%r, l)
          radial(:, l) = MATMUL(work, augmentation%weighted_q(:, :, l))
          DO m = -l, l
             lm = l*l + l + m + 1
             CALL y_lm(direction, value, l, m)
             harmonics(lm) = value(1)
+            IF (PRESENT(strain)) THEN
+               ! Cartesian solid-harmonic derivatives avoid polar-axis singularities.
+               DO a = 1, nco(l)
+                  DO axis = 1, 3
+                     powers = indco(:, ncoset(l - 1) + a)
+                     IF (powers(axis) == 0) CYCLE
+                     monomial = REAL(powers(axis), dp)
+                     powers(axis) = powers(axis) - 1
+                     solid_gradient(axis, lm) = solid_gradient(axis, lm) + &
+                                                orbtramat(l)%slm(l + m + 1, a)*monomial*PRODUCT(direction(:, 1)**powers)
+                  END DO
+               END DO
+            END IF
          END DO
       END DO
       phase = EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g, position), KIND=dp))*fourpi/volume
@@ -155,9 +198,25 @@ CONTAINS
                                      harmonics(l*l + 1:(l + 1)**2))
                phase_l = CMPLX(0.0_dp, -1.0_dp, KIND=dp)**l
                qg(p, q) = qg(p, q) + phase_l*angular*radial(pair, l)
+               IF (PRESENT(strain)) THEN
+                  angular_derivative = MATMUL(solid_gradient(:, l*l + 1:(l + 1)**2), &
+                                              augmentation%gaunt(p, q, l*l + 1:(l + 1)**2))
+                  ! d[j_l(Gr)Y_l(G)]/dG combines the l/G terms analytically.
+                  angular_derivative = radial(pair, l)/norm_g*angular_derivative &
+                                       - radial_next(pair, l)*angular*direction(:, 1)
+                  DO axis = 1, 3
+                     strain(p, q, :, axis) = strain(p, q, :, axis) - phase*phase_l*g*angular_derivative(axis)
+                  END DO
+               END IF
             END DO
             qg(p, q) = phase*qg(p, q)
             qg(q, p) = qg(p, q)
+            IF (PRESENT(strain)) THEN
+               DO axis = 1, 3
+                  strain(p, q, axis, axis) = strain(p, q, axis, axis) - qg(p, q)
+               END DO
+               strain(q, p, :, :) = strain(p, q, :, :)
+            END IF
          END DO
       END DO
    END SUBROUTINE uspp_augmentation_fourier
@@ -199,17 +258,18 @@ CONTAINS
 !> \param multiplicity One for a complete reciprocal list; two for a retained +/-G pair.
 !> \param matrix Real symmetric screened projector contribution, overwritten.
 !> \param derivative Optional derivatives of matrix with respect to the augmentation center.
+!> \param strain Optional density strain contribution at fixed Fourier potential and volume weight.
 ! **************************************************************************************************
-   SUBROUTINE uspp_augmentation_integrate(augmentation, gvecs, position, volume, vg, multiplicity, matrix, derivative)
+   SUBROUTINE uspp_augmentation_integrate(augmentation, gvecs, position, volume, vg, multiplicity, matrix, derivative, strain)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: gvecs(:, :), position(3), volume
       COMPLEX(KIND=dp), INTENT(IN)                       :: vg(:)
       REAL(KIND=dp), INTENT(IN)                          :: multiplicity(:)
       REAL(KIND=dp), INTENT(OUT)                         :: matrix(:, :)
-      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: derivative(:, :, :)
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: derivative(:, :, :), strain(:, :, :, :)
 
-      COMPLEX(KIND=dp), ALLOCATABLE                      :: qg(:, :)
-      INTEGER                                            :: idir, ig
+      COMPLEX(KIND=dp), ALLOCATABLE                      :: dq(:, :, :, :), qg(:, :)
+      INTEGER                                            :: idir, ig, jdir
 
       CPASSERT(SIZE(gvecs, 1) == 3 .AND. SIZE(gvecs, 2) == SIZE(vg))
       CPASSERT(SIZE(multiplicity) == SIZE(vg))
@@ -220,8 +280,21 @@ CONTAINS
          CPASSERT(ALL(SHAPE(derivative) == [augmentation%nproj, augmentation%nproj, 3]))
          derivative = 0.0_dp
       END IF
+      IF (PRESENT(strain)) THEN
+         CPASSERT(ALL(SHAPE(strain) == [augmentation%nproj, augmentation%nproj, 3, 3]))
+         ALLOCATE (dq(augmentation%nproj, augmentation%nproj, 3, 3))
+         strain = 0.0_dp
+      END IF
       DO ig = 1, SIZE(vg)
-         CALL uspp_augmentation_fourier(augmentation, gvecs(:, ig), position, volume, qg)
+         CALL uspp_augmentation_fourier(augmentation, gvecs(:, ig), position, volume, qg, dq)
+         IF (PRESENT(strain)) THEN
+            DO jdir = 1, 3
+               DO idir = 1, 3
+                  strain(:, :, idir, jdir) = strain(:, :, idir, jdir) + volume*multiplicity(ig)* &
+                                             REAL(CONJG(dq(:, :, idir, jdir))*vg(ig), KIND=dp)
+               END DO
+            END DO
+         END IF
          matrix(:, :) = matrix + volume*multiplicity(ig)*REAL(CONJG(qg)*vg(ig), KIND=dp)
          IF (PRESENT(derivative)) THEN
             DO idir = 1, 3

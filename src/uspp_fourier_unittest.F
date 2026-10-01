@@ -34,6 +34,7 @@ PROGRAM uspp_fourier_unittest
    REAL(KIND=dp) :: dx, g(3), error, max_error, vectors(3, 7), d(np, np), matrix(np, np), matrix_half(np, np)
    REAL(KIND=dp) :: weights(7), energy_grid, energy_matrix, b(nao, np), p(nao, nao), delta_s(nao, nao)
    COMPLEX(KIND=dp) :: qg(np, np), qminus(np, np), reference(np, np), rho(7), vg(7)
+   COMPLEX(KIND=dp) :: strain(np, np, 3, 3), strain_reference(np, np, 3, 3)
 
    CALL cp2k_init()
    max_error = 0.0_dp
@@ -85,13 +86,19 @@ PROGRAM uspp_fourier_unittest
          CASE (5)
             g = [0.0_dp, 0.0_dp, 2.8_dp]
          END SELECT
-         CALL uspp_augmentation_fourier(aug, g, center, volume, qg)
-         CALL gaussian_reference(g, reference)
+         CALL uspp_augmentation_fourier(aug, g, center, volume, qg, strain)
+         CALL gaussian_reference(g, reference, strain_reference)
          error = volume*MAXVAL(ABS(qg - reference))
          max_error = MAX(max_error, error)
          IF (error > 2.e-10_dp) THEN
             WRITE (*, *) 'Gaussian Fourier error:', grid, test, error
             ERROR STOP 'USPP Fourier transform differs from Cartesian Gaussian integral'
+         END IF
+         error = volume*MAXVAL(ABS(strain - strain_reference))
+         max_error = MAX(max_error, error)
+         IF (error > 2.e-10_dp) THEN
+            WRITE (*, *) 'Gaussian Fourier strain error:', grid, test, error
+            ERROR STOP 'USPP strain derivative differs from Cartesian Gaussian integral'
          END IF
          CALL uspp_augmentation_fourier(aug, -g, center, volume, qminus)
          IF (MAXVAL(ABS(qminus - CONJG(qg))) > 2.e-13_dp) ERROR STOP 'Wrong reciprocal conjugation'
@@ -145,26 +152,28 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Independent full Cartesian Gaussian Fourier integrals, without Gaunt or Bessel sums.
 !> \param g Reciprocal vector.
-!> \param result Analytic transform of solid-harmonic products times a Gaussian.
+!> \param fourier Analytic transform of solid-harmonic products times a Gaussian.
+!> \param strain Independent strain derivative from one-higher Cartesian moments.
 ! **************************************************************************************************
-   SUBROUTINE gaussian_reference(g, RESULT)
+   SUBROUTINE gaussian_reference(g, fourier, strain)
       REAL(KIND=dp), INTENT(IN)                          :: g(3)
-      COMPLEX(KIND=dp), INTENT(OUT)                      :: result(np, np)
+      COMPLEX(KIND=dp), INTENT(OUT)                      :: fourier(np, np), strain(np, np, 3, 3)
 
-      COMPLEX(KIND=dp)                                   :: moments(0:6, 3), phase, term
+      COMPLEX(KIND=dp)                                   :: dterm(3), moments(0:7, 3), phase, term
       INTEGER                                            :: a, axis, c, i, j, k, li, lj, mi, mj, &
-                                                            powers(3), u, v
+                                                            powers(3), raised(3), u, v
 
       DO axis = 1, 3
          moments(0, axis) = SQRT(pi/alpha)*EXP(-g(axis)**2/(4.0_dp*alpha))
          moments(1, axis) = CMPLX(0.0_dp, -g(axis)/(2.0_dp*alpha), dp)*moments(0, axis)
-         DO k = 1, 5
+         DO k = 1, 6
             moments(k + 1, axis) = REAL(k, dp)/(2.0_dp*alpha)*moments(k - 1, axis) &
                                    + CMPLX(0.0_dp, -g(axis)/(2.0_dp*alpha), dp)*moments(k, axis)
          END DO
       END DO
       phase = EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g, center), dp))/volume
-      RESULT = CMPLX(0.0_dp, 0.0_dp, dp)
+      fourier = CMPLX(0.0_dp, 0.0_dp, dp)
+      strain = CMPLX(0.0_dp, 0.0_dp, dp)
       DO v = 1, np
          j = projectors%radial_index(v)
          lj = pot%lbeta(j)
@@ -177,10 +186,22 @@ CONTAINS
                DO a = 1, nco(li)
                   powers = indco(:, ncoset(li - 1) + a) + indco(:, ncoset(lj - 1) + c)
                   term = PRODUCT([moments(powers(1), 1), moments(powers(2), 2), moments(powers(3), 3)])
-                  RESULT(u, v) = RESULT(u, v) + orbtramat(li)%slm(mi, a)*orbtramat(lj)%slm(mj, c)*term
+                  fourier(u, v) = fourier(u, v) + orbtramat(li)%slm(mi, a)*orbtramat(lj)%slm(mj, c)*term
+                  DO axis = 1, 3
+                     raised = powers
+                     raised(axis) = raised(axis) + 1
+                     dterm(axis) = CMPLX(0.0_dp, -1.0_dp, dp)* &
+                                   PRODUCT([moments(raised(1), 1), moments(raised(2), 2), moments(raised(3), 3)])
+                     strain(u, v, :, axis) = strain(u, v, :, axis) - &
+                                             g*dterm(axis)*orbtramat(li)%slm(mi, a)*orbtramat(lj)%slm(mj, c)
+                  END DO
                END DO
             END DO
-            RESULT(u, v) = RESULT(u, v)*phase*(i + j)*0.1_dp
+            fourier(u, v) = fourier(u, v)*phase*(i + j)*0.1_dp
+            strain(u, v, :, :) = strain(u, v, :, :)*phase*(i + j)*0.1_dp
+            DO axis = 1, 3
+               strain(u, v, axis, axis) = strain(u, v, axis, axis) - fourier(u, v)
+            END DO
          END DO
       END DO
    END SUBROUTINE gaussian_reference

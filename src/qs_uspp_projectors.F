@@ -117,12 +117,14 @@ CONTAINS
 !> \param sap_int Uncompressed nder=1 projector overlaps from the ABBA neighbor list.
 !> \param center_atoms Global atom indices for the projector column blocks.
 !> \param atom_gradient Local energy gradients (3,natom), incremented in place.
+!> \param cell_gradient Optional strain energy gradient, including each periodic image.
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_projector_gradient(gradient, sap_int, center_atoms, atom_gradient)
+   SUBROUTINE qs_uspp_projector_gradient(gradient, sap_int, center_atoms, atom_gradient, cell_gradient)
       TYPE(dbcsr_type), INTENT(INOUT)                    :: gradient
       TYPE(sap_int_type), INTENT(IN)                     :: sap_int(:)
       INTEGER, INTENT(IN)                                :: center_atoms(:)
       REAL(KIND=dp), INTENT(INOUT)                       :: atom_gradient(:, :)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: cell_gradient(3, 3)
 
       INTEGER                                            :: atom, catom, center, i, idir, j, k, owner
       INTEGER, ALLOCATABLE                               :: atom_to_center(:)
@@ -160,6 +162,10 @@ CONTAINS
                      value = SUM(block*integrals(:, :, idir + 1))
                      atom_gradient(idir, atom) = atom_gradient(idir, atom) + value
                      atom_gradient(idir, catom) = atom_gradient(idir, catom) - value
+                     IF (PRESENT(cell_gradient)) THEN
+                        ! rac points from the AO center to this image of the projector center.
+                        cell_gradient(idir, :) = cell_gradient(idir, :) - value*sap_int(i)%alist(j)%clist(k)%rac
+                     END IF
                   END DO
                END ASSOCIATE
             END DO

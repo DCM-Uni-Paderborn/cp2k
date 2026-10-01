@@ -369,11 +369,11 @@ CONTAINS
 ! **************************************************************************************************
 
    SUBROUTINE check_pw_grid()
-      INTEGER                                            :: atom, idir, ix, iy, iz, k, nx, parity, &
-                                                            span
+      INTEGER                                            :: atom, idir, ix, iy, iz, jdir, k, nx, &
+                                                            parity, span
       LOGICAL                                            :: odd
-      REAL(KIND=dp) :: atom_gradient(3, 4), cell(3, 3), egrid, eminus, eplus, expected_charge, &
-         hpw_dense(nao, nao), norm_g2, original, total_charge
+      REAL(KIND=dp) :: atom_gradient(3, 4), cell(3, 3), cell_gradient(3, 3), egrid, eminus, eplus, &
+         expected_charge, hpw_dense(nao, nao), norm_g2, original, total_charge
       TYPE(atomic_kind_type), TARGET                     :: atomic_kinds(4)
       TYPE(cp_subsys_type), POINTER                      :: cp_subsys
       TYPE(dbcsr_type)                                   :: hpw
@@ -496,9 +496,19 @@ CONTAINS
             END DO
             CALL check(ABS(egrid - SUM(p*(hpw_dense - sg))), 'bare D0 plus all-ion augmentation core energy')
             atom_gradient = 0.0_dp
+            cell_gradient = 0.0_dp
             CALL dbcsr_copy(hpw, sm)
-            CALL qs_uspp_core_matrix(uspp, qs_kinds, particles, pw_grid, hpw, pm, pm, empty_sap, atom_gradient)
+            CALL qs_uspp_core_matrix(uspp, qs_kinds, particles, pw_grid, hpw, pm, pm, empty_sap, atom_gradient, cell_gradient)
             CALL comm%sum(atom_gradient)
+            CALL comm%sum(cell_gradient)
+            DO jdir = 1, 3
+               DO idir = 1, 3
+                  CALL core_strain_energy(uspp, qs_kinds, particles, cell, span, nx, idir, jdir, step, eplus)
+                  CALL core_strain_energy(uspp, qs_kinds, particles, cell, span, nx, idir, jdir, -step, eminus)
+                  CALL check(ABS(cell_gradient(idir, jdir) - (eplus - eminus)/(2.0_dp*step)), &
+                             'FFT augmentation and all-ion strain derivative', 3.e-9_dp)
+               END DO
+            END DO
             DO atom = 1, 4
                DO idir = 1, 3
                   original = particles(atom)%r(idir)
@@ -554,14 +564,67 @@ CONTAINS
    END SUBROUTINE check_pw_grid
 
 ! **************************************************************************************************
+!> \brief Independent core energy on a strained FFT grid with fixed fractional centers and B.
+!> \param uspp Unstrained augmentation state; restored on return.
+!> \param qs_kinds Original ionic potentials.
+!> \param particles Unstrained particle coordinates.
+!> \param cell Unstrained cell.
+!> \param span Reciprocal representation.
+!> \param nx Grid size.
+!> \param idir Cartesian displacement direction.
+!> \param jdir Cartesian coordinate supplying the displacement.
+!> \param amount Strain component.
+!> \param energy Strained core energy at fixed AO density and projector overlaps.
+! **************************************************************************************************
+   SUBROUTINE core_strain_energy(uspp, qs_kinds, particles, cell, span, nx, idir, jdir, amount, energy)
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
+      TYPE(qs_kind_type), INTENT(INOUT)                  :: qs_kinds(:)
+      TYPE(particle_type), INTENT(IN)                    :: particles(:)
+      REAL(KIND=dp), INTENT(IN)                          :: cell(3, 3)
+      INTEGER, INTENT(IN)                                :: span, nx, idir, jdir
+      REAL(KIND=dp), INTENT(IN)                          :: amount
+      REAL(KIND=dp), INTENT(OUT)                         :: energy
+
+      INTEGER                                            :: atom, axis
+      REAL(KIND=dp)                                      :: deformation(3, 3), dense(nao, nao), &
+                                                            strained_cell(3, 3)
+      REAL(KIND=dp), ALLOCATABLE                         :: saved_position(:, :)
+      TYPE(dbcsr_type)                                   :: hcore
+      TYPE(particle_type)                                :: moved(SIZE(particles))
+      TYPE(pw_grid_type), POINTER                        :: strained_grid
+
+      deformation = 0.0_dp
+      DO axis = 1, 3
+         deformation(axis, axis) = 1.0_dp
+      END DO
+      deformation(idir, jdir) = deformation(idir, jdir) + amount
+      strained_cell = MATMUL(deformation, cell)
+      moved = particles
+      DO atom = 1, SIZE(particles)
+         moved(atom)%r = MATMUL(deformation, particles(atom)%r)
+      END DO
+      ALLOCATE (saved_position, SOURCE=uspp%position)
+      uspp%position(:, :) = MATMUL(deformation, saved_position)
+      NULLIFY (strained_grid)
+      CALL pw_grid_create(strained_grid, comm, strained_cell, grid_span=span, npts=[nx, nx, nx], &
+                          odd=MODULO(nx, 2) == 1, fft_usage=.TRUE., rs_dims=[nranks, 1])
+      CALL dbcsr_copy(hcore, sm)
+      CALL qs_uspp_core_matrix(uspp, qs_kinds, moved, strained_grid, hcore)
+      CALL gather(hcore, dense)
+      energy = SUM(p*(dense - sg))
+      CALL dbcsr_release(hcore)
+      CALL pw_grid_release(strained_grid)
+      uspp%position(:, :) = saved_position
+   END SUBROUTINE core_strain_energy
+
+! **************************************************************************************************
 !> \brief ...
 ! **************************************************************************************************
    SUBROUTINE check_sap_assembly()
       INTEGER                                            :: atom, axis, center, ENTRY, idir, image, &
-                                                            moved, mycol, myrow, r
-      REAL(KIND=dp)                                      :: assembled_b(nao, nproj), &
-                                                            atom_gradient(3, 3), factor, fd, &
-                                                            perturb(nao, nproj)
+                                                            jdir, moved, mycol, myrow, r
+      REAL(KIND=dp) :: assembled_b(nao, nproj), atom_gradient(3, 3), cell_gradient(3, 3), &
+         distance(3), factor, fd, perturb(nao, nproj)
       TYPE(sap_int_type), POINTER                        :: sap(:)
 
       ALLOCATE (sap(1))
@@ -584,6 +647,8 @@ CONTAINS
                ENTRY = 2*(center - 1) + image
                sap(1)%alist(atom)%clist(ENTRY)%catom = center
                sap(1)%alist(atom)%clist(ENTRY)%cell = [image - 1, 0, 0]
+               sap(1)%alist(atom)%clist(ENTRY)%rac = &
+                  [0.4_dp*(center - atom) + 5.0_dp*(image - 1), 0.7_dp*(center - atom), -0.2_dp*(center - atom)]
                ALLOCATE (sap(1)%alist(atom)%clist(ENTRY)%acint(ao_sizes(atom), pp_sizes(center), 4))
                factor = 0.3_dp
                IF (image == 2) factor = 0.7_dp
@@ -603,8 +668,10 @@ CONTAINS
       CALL gather(assembled, assembled_b)
       CALL check(MAXVAL(ABS(assembled_b - b)), 'Quickstep ABBA ownership and periodic images')
       atom_gradient = 0.0_dp
-      CALL qs_uspp_projector_gradient(assembled, sap, [1, 2], atom_gradient)
+      cell_gradient = 0.0_dp
+      CALL qs_uspp_projector_gradient(assembled, sap, [1, 2], atom_gradient, cell_gradient)
       CALL comm%sum(atom_gradient)
+      CALL comm%sum(cell_gradient)
       DO moved = 1, 3
          DO axis = 1, 3
             perturb = 0.0_dp
@@ -625,6 +692,29 @@ CONTAINS
          END DO
       END DO
       CALL check(MAXVAL(ABS(SUM(atom_gradient, DIM=2))), 'projector translation sum rule')
+      DO jdir = 1, 3
+         DO axis = 1, 3
+            perturb = 0.0_dp
+            r = 1
+            DO atom = 1, 3
+               DO center = 1, 2
+                  IF (atom == 1 .AND. center == 2) CYCLE
+                  IF (atom == 3 .AND. center == 1) CYCLE
+                  DO image = 1, 2
+                     distance = [0.4_dp*(atom - center) - 5.0_dp*(image - 1), &
+                                 0.7_dp*(atom - center), -0.2_dp*(atom - center)]
+                     factor = MERGE(0.3_dp, 0.7_dp, image == 1)*(0.2_dp*axis + 0.1_dp*image)*distance(jdir)
+                     perturb(r:r + ao_sizes(atom) - 1, first(center):last(center)) = &
+                        perturb(r:r + ao_sizes(atom) - 1, first(center):last(center)) &
+                        + factor*db(r:r + ao_sizes(atom) - 1, first(center):last(center))
+                  END DO
+               END DO
+               r = r + ao_sizes(atom)
+            END DO
+            fd = (SUM((b + step*perturb)**2) - SUM((b - step*perturb)**2))/(4.0_dp*step)
+            CALL check(ABS(cell_gradient(axis, jdir) - fd), 'image-resolved projector strain derivative', 2.e-10_dp)
+         END DO
+      END DO
       CALL check_state(sap)
       CALL release_sap_int(sap)
       ! Feed the assembled matrix to all subsequent AO/grid and variational tests.

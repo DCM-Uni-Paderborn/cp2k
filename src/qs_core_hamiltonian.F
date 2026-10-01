@@ -366,9 +366,6 @@ CONTAINS
          CALL get_ks_env(ks_env, pw_env=pw_env)
          CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool)
          IF (calculate_forces) THEN
-            CALL get_ks_env(ks_env, virial=virial)
-            use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
-            IF (use_virial) CPABORT("USPP stress is not implemented")
             CALL qs_uspp_core_forces(ks_env, auxbas_pw_pool%pw_grid, matrix_h(1, 1)%matrix, &
                                      matrix_p(:, 1), matrix_w(1, 1)%matrix)
          ELSE
