@@ -14,6 +14,7 @@ MODULE localizer_sparse_inertia
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE message_passing,                 ONLY: mp_para_env_type
+#include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -122,6 +123,12 @@ CONTAINS
       status = 0
       IF (state%error_code /= 0) status = -4
 #else
+      MARK_USED(state)
+      MARK_USED(order)
+      MARK_USED(rows)
+      MARK_USED(cols)
+      MARK_USED(para_env)
+      MARK_USED(positive_definite)
       status = -5
 #endif
    END SUBROUTINE sparse_inertia_start
@@ -204,6 +211,9 @@ CONTAINS
       state%factor_valid = .TRUE.
       status = 0
 #else
+      MARK_USED(state)
+      MARK_USED(values)
+      MARK_USED(para_env)
       negative = 0
       status = -5
 #endif
@@ -261,7 +271,7 @@ CONTAINS
       lower = 0.5_dp*upper
       DO i = 1, 100
          lower = MAX(lower, tolerance*upper*(1.0_dp + 16.0_dp*EPSILON(lower)))
-         shifted = values - lower*identity
+         shifted(:) = values - lower*identity
          CALL sparse_inertia_count(state, shifted, para_env, negative, info)
          IF (info < 0) THEN
             status = info
@@ -323,6 +333,9 @@ CONTAINS
       IF (.NOT. ALL(ieee_is_finite(rhs))) RETURN
       status = 0
 #else
+      MARK_USED(state)
+      MARK_USED(rhs)
+      MARK_USED(para_env)
       status = -5
 #endif
    END SUBROUTINE sparse_metric_solve

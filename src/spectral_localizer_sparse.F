@@ -107,7 +107,7 @@ CONTAINS
       ! MUMPS uses non-pivoted LDL for SYM=1, so success alone does NOT imply positive definiteness.
       DO iteration = 1, 100
          mid = MAX(mid, metric_tol*bnorm*(1.0_dp + 16.0_dp*EPSILON(1.0_dp)))
-         values = b - mid*identity
+         values(:) = b - mid*identity
          CALL sparse_inertia_count(statistics, values, para_env, negative, info)
          IF (info < 0) THEN
             status = -4
@@ -143,7 +143,7 @@ CONTAINS
       resolution = MAX(1.e-12_dp, 0.01_dp*gap_tol, 32.0_dp*EPSILON(1.0_dp)*gap_upper)
       DO iteration = 1, 100
          mid = 0.5_dp*(gap_lower + gap_upper)
-         values = a - mid*b
+         values(:) = a - mid*b
          CALL sparse_inertia_count(statistics, values, para_env, negative, info)
          IF (info < 0) THEN
             status = -4
@@ -152,7 +152,7 @@ CONTAINS
          IF (info /= 0 .OR. negative /= reference) THEN
             gap_upper = mid
          ELSE
-            values = a + mid*b
+            values(:) = a + mid*b
             CALL sparse_inertia_count(statistics, values, para_env, negative, info)
             IF (info < 0) THEN
                status = -4

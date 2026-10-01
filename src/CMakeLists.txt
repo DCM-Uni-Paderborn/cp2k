@@ -1619,7 +1619,7 @@ set(CP2K_PROGS_F
     kpoint_lattice_fft_unittest.F
     kpoint_smearing_unittest.F
     topology_wilson_unittest.F
-    quadratic_dbcsr_unittest.F
+    quadratic_pseudospectrum_dbcsr_unittest.F
     spectral_localizer_sparse_unittest.F
     spectral_localizer_unittest.F
     quadratic_pseudospectrum_unittest.F
@@ -2063,7 +2063,7 @@ list(
   "kpoint_lattice_fft_unittest"
   "kpoint_smearing_unittest"
   "topology_wilson_unittest"
-  "quadratic_dbcsr_unittest"
+  "quadratic_pseudospectrum_dbcsr_unittest"
   "spectral_localizer_sparse_unittest"
   "spectral_localizer_unittest"
   "quadratic_pseudospectrum_unittest"
@@ -2111,7 +2111,8 @@ add_executable(gapw_1c_basis_unittest gapw_1c_basis_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
 add_executable(kpoint_smearing_unittest kpoint_smearing_unittest.F)
 add_executable(topology_wilson_unittest topology_wilson_unittest.F)
-add_executable(quadratic_dbcsr_unittest quadratic_dbcsr_unittest.F)
+add_executable(quadratic_pseudospectrum_dbcsr_unittest
+               quadratic_pseudospectrum_dbcsr_unittest.F)
 add_executable(spectral_localizer_sparse_unittest
                spectral_localizer_sparse_unittest.F)
 add_executable(spectral_localizer_unittest spectral_localizer_unittest.F)

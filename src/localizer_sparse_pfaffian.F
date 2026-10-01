@@ -19,6 +19,7 @@ MODULE localizer_sparse_pfaffian
    USE kinds, ONLY: dp, &
                     int_8
    USE message_passing, ONLY: mp_para_env_type
+#include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -121,6 +122,8 @@ CONTAINS
       CALL ieee_set_halting_mode(IEEE_ALL, halt)
 #endif
 #else
+      MARK_USED(order)
+      MARK_USED(tolerance)
       status = -5
 #endif
       IF (PRESENT(peak_memory_bytes)) peak_memory_bytes = peak
@@ -236,6 +239,16 @@ CONTAINS
       CALL para_env%bcast(residual, para_env%source)
       CALL para_env%bcast(fill, para_env%source)
       CALL para_env%bcast(peak, para_env%source)
+#else
+      MARK_USED(order)
+      MARK_USED(rows)
+      MARK_USED(cols)
+      MARK_USED(a)
+      MARK_USED(b)
+      MARK_USED(para_env)
+      MARK_USED(tolerance)
+      MARK_USED(metric_ratio)
+      MARK_USED(gap)
 #endif
       IF (PRESENT(peak_memory_bytes)) peak_memory_bytes = peak
    END SUBROUTINE sparse_z2_evaluate

@@ -109,7 +109,7 @@ PROGRAM spectral_localizer_sparse_unittest
                     CMPLX(0.0_dp, 0.2_dp, dp), CMPLX(0.8_dp, 0.0_dp, dp)], [2, 2])
       matrix(:2, :2) = MATMUL(CONJG(TRANSPOSE(tx)), MATMUL(matrix(:2, :2), tx))
       matrix(3:, 3:) = matrix(:2, :2)
-      metric = MATMUL(CONJG(TRANSPOSE(tx)), tx)
+      metric(:, :) = MATMUL(CONJG(TRANSPOSE(tx)), tx)
       CALL compare(matrix, metric, 0, 'complex metric')
       metric = 0.0_dp
       metric(1, 1) = 1.0_dp
@@ -391,7 +391,7 @@ CONTAINS
          IF (i < n) change(i, i + 1) = CMPLX(0.02_dp, -0.01_dp, dp)
       END DO
       change(n + 1:, n + 1:) = CONJG(change(:n, :n))
-      spin_s = MATMUL(CONJG(TRANSPOSE(change)), MATMUL(spin_s, change))
+      spin_s(:, :) = MATMUL(CONJG(TRANSPOSE(change)), MATMUL(spin_s, change))
       a(:2*n, :2*n) = MATMUL(CONJG(TRANSPOSE(change)), MATMUL(a(:2*n, :2*n), change))
       a(2*n + 1:, 2*n + 1:) = -a(:2*n, :2*n)
       a(:2*n, 2*n + 1:) = MATMUL(CONJG(TRANSPOSE(change)), MATMUL(a(:2*n, 2*n + 1:), change))
@@ -435,7 +435,7 @@ CONTAINS
             DO i = 1, n, 2
                a(i, i + 1) = a(i, i + 1) + 2.0_dp
             END DO
-            a = a - TRANSPOSE(a)
+            a(:, :) = a - TRANSPOSE(a)
             CALL check_pfaffian(a)
             CALL check_pfaffian(1.e-120_dp*a)
             CALL check_pfaffian(1.e120_dp*a)
@@ -467,7 +467,7 @@ CONTAINS
          blocks(i, i + 1) = REAL((-1)**((i - 1)/2), dp)
          blocks(i + 1, i) = -blocks(i, i + 1)
       END DO
-      a = MATMUL(lower, MATMUL(blocks, TRANSPOSE(lower)))
+      a(:, :) = MATMUL(lower, MATMUL(blocks, TRANSPOSE(lower)))
       CALL check_pfaffian(a, expected_zero=.TRUE.)
       CALL check_pfaffian(1.e-120_dp*a, expected_zero=.TRUE.)
       CALL check_pfaffian(1.e120_dp*a, expected_zero=.TRUE.)
@@ -485,7 +485,7 @@ CONTAINS
       a(4, 5) = -1.0_dp
       a(5, 6) = 1.0_dp
       a(7, 8) = 1.0_dp
-      a = a - TRANSPOSE(a)
+      a(:, :) = a - TRANSPOSE(a)
       CALL check_pfaffian(a)
       CALL check_pfaffian(1.e-120_dp*a)
       CALL check_pfaffian(1.e120_dp*a)
@@ -515,7 +515,7 @@ CONTAINS
       a(5, 6:) = [-3.0_dp, -5.0_dp, -4.0_dp]
       a(6, 7:) = [-5.0_dp, 4.0_dp]
       a(7, 8) = -4.0_dp
-      a = a - TRANSPOSE(a)
+      a(:, :) = a - TRANSPOSE(a)
       CALL localizer_pfaffian_sign(a, sign, status)
       IF (status /= 0 .OR. sign /= 1) ERROR STOP 'Dense pivot fixture failed'
       CALL check_pfaffian(a)
@@ -529,7 +529,7 @@ CONTAINS
       a(1, 3) = 1.0_dp
       a(2, 4) = 1.0_dp
       a(3, 4) = 1.0_dp
-      a = a - TRANSPOSE(a)
+      a(:, :) = a - TRANSPOSE(a)
       CALL check_pfaffian(a)
       CALL sparse_pfaffian_sign(2, [1, 2], [2, 1], [1.0_dp, 1.0_dp], 1.e-10_dp, &
                                 sign, residual, fill, status)
@@ -610,7 +610,8 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: values(:)
 
       n = SIZE(a, 1)
-      permutation = [(i, i=1, n)]
+      ALLOCATE (permutation(n))
+      permutation(:) = [(i, i=1, n)]
       CALL localizer_pfaffian_sign(a, dense_sign, dense_status)
       ! Scaling roundoff can leave a tiny nonzero last dense pivot. The known
       ! nullity of this fixture supplies the reference independently of it.

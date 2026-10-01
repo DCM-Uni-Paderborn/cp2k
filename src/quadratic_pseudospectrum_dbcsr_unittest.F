@@ -9,7 +9,7 @@
 !> \brief Distributed non-Hermitian products and metric-aware quadratic translations.
 !> \author Thomas D. Kuehne, tkuehne@cp2k.org
 ! **************************************************************************************************
-PROGRAM quadratic_dbcsr_unittest
+PROGRAM quadratic_pseudospectrum_dbcsr_unittest
    USE bibliography,                    ONLY: add_all_references
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, &
@@ -267,4 +267,4 @@ CONTAINS
          CALL zpotrs('L', n, SIZE(v, 2), cholesky, n, y, n, status)
       END IF
    END SUBROUTINE solve
-END PROGRAM quadratic_dbcsr_unittest
+END PROGRAM quadratic_pseudospectrum_dbcsr_unittest
