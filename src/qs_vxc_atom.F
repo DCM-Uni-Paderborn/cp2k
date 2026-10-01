@@ -305,10 +305,11 @@ CONTAINS
          one_center_rho_grad_field_contraction, one_center_rho_grad_matrix_contraction, &
          one_center_tau_field_contraction, one_center_tau_matrix_contraction, &
          one_center_tensor_contraction, partition_adjoint, partition_scale, partition_weight, &
-         smooth_grid_contraction, smooth_input_contraction, target_partition_adjoint
-      REAL(dp) :: tau_cut, zeff
+         smooth_grid_contraction, smooth_input_contraction, smooth_reference_exc
+      REAL(dp) :: target_partition_adjoint, tau_cut, zeff
       REAL(dp), ALLOCATABLE :: augmentation_grad(:, :), augmentation_point_gradient(:, :), &
-         augmentation_rho(:), augmentation_weights(:)
+         augmentation_rho(:), augmentation_weights(:), composite_smooth_density_grad(:, :), &
+         composite_smooth_grad_grad(:, :, :), smooth_reference_weight_grad(:)
       REAL(dp), ALLOCATABLE, DIMENSION(:) :: composite_atomic_grid_weight_grad, &
          composite_atomic_grid_weights, composite_base_grid_weights, composite_distances, &
          composite_grid_weight_grad, composite_grid_weights, composite_partition_weights, fw
@@ -1441,6 +1442,39 @@ CONTAINS
                END DO
             END IF
 
+            ! A uniform-grid background cancels the slowly converging diffuse part of
+            ! the atom quadrature. Only the smooth-field adjoint is subtracted; the
+            ! augmentation, core and hard-minus-soft fields retain the full adjoint.
+            smooth_reference_exc = 0.0_dp
+            IF (PRESENT(uspp_fields)) THEN
+               ALLOCATE (composite_cross_density(composite_nflat, 2), &
+                         composite_cross_grad(composite_nflat, 3, 2), &
+                         composite_cross_kin(composite_nflat, 2))
+               composite_cross_density(:, :) = composite_smooth_density_cache
+               composite_cross_grad(:, :, :) = composite_smooth_gradient_cache
+               composite_cross_kin = 0.0_dp
+               IF (.NOT. lsd) THEN
+                  composite_cross_density(:, 1) = 0.5_dp*composite_smooth_density_cache(:, 1)
+                  composite_cross_density(:, 2) = composite_cross_density(:, 1)
+                  composite_cross_grad(:, :, 1) = 0.5_dp*composite_smooth_gradient_cache(:, :, 1)
+                  composite_cross_grad(:, :, 2) = composite_cross_grad(:, :, 1)
+               END IF
+               CALL atom_composite_energy( &
+                  my_xc_section, lsd, para_env, composite_cross_density, composite_cross_grad, composite_cross_kin, &
+                  composite_grid_coords, composite_grid_weights, composite_atomic_grid_weights, &
+                  composite_local_grid_sizes, composite_local_atom_coords, smooth_reference_exc, &
+                  density_grad_out=composite_smooth_density_grad, grad_grad_out=composite_smooth_grad_grad, &
+                  grid_weight_grad_out=smooth_reference_weight_grad)
+               DEALLOCATE (composite_cross_density, composite_cross_grad, composite_cross_kin)
+            ELSE
+               ALLOCATE (composite_smooth_density_grad(composite_nflat, 2), &
+                         composite_smooth_grad_grad(composite_nflat, 3, 2), &
+                         smooth_reference_weight_grad(composite_nflat))
+               composite_smooth_density_grad = 0.0_dp
+               composite_smooth_grad_grad = 0.0_dp
+               smooth_reference_weight_grad = 0.0_dp
+            END IF
+
             CPASSERT(ALL(composite_grid_weights >= 0.0_dp))
             atom_composite_nelec = SUM(composite_grid_weights* &
                                        (composite_density(:, 1) + composite_density(:, 2)))
@@ -1453,6 +1487,9 @@ CONTAINS
                   composite_density_grad, composite_grad_grad, composite_kin_grad, &
                   composite_grid_coord_grad, composite_grid_weight_grad, &
                   composite_atomic_grid_weight_grad, composite_atom_coord_grad)
+               composite_smooth_density_grad(:, :) = composite_density_grad - composite_smooth_density_grad
+               composite_smooth_grad_grad(:, :, :) = composite_grad_grad - composite_smooth_grad_grad
+               composite_grid_weight_grad(:) = composite_grid_weight_grad - smooth_reference_weight_grad
                IF (PRESENT(uspp_fields)) THEN
                   ALLOCATE (augmentation_point_gradient(3, composite_nflat))
                   augmentation_point_gradient = 0.0_dp
@@ -1498,7 +1535,7 @@ CONTAINS
 !$OMP PARALLEL DO IF (image_partition_atom_composite) SCHEDULE(STATIC) DEFAULT(NONE) &
 !$OMP PRIVATE(composite_local_atom, composite_row, composite_smooth_gradient_value, &
 !$OMP         iatom, idir, ispin, jdir) &
-!$OMP SHARED(cell, composite_atom_end, composite_atom_start, composite_grad_grad, &
+!$OMP SHARED(cell, composite_atom_end, composite_atom_start, composite_smooth_grad_grad, &
 !$OMP        composite_grid_coords, composite_local_atoms, composite_local_natom, &
 !$OMP        composite_smooth_drho, composite_smooth_drhoa, composite_smooth_drhob, &
 !$OMP        image_partition_atom_composite, lsd, smooth_rho_r) &
@@ -1533,7 +1570,7 @@ CONTAINS
                            DO jdir = 1, 3
                               composite_feature_virial(jdir, idir) = &
                                  composite_feature_virial(jdir, idir) - &
-                                 composite_grad_grad(composite_row, idir, ispin)* &
+                                 composite_smooth_grad_grad(composite_row, idir, ispin)* &
                                  composite_smooth_gradient_value(jdir, ispin)
                            END DO
                         END DO
@@ -1557,6 +1594,7 @@ CONTAINS
 !$OMP        composite_nlcc, &
 !$OMP        composite_atom_kind, composite_atom_start, composite_atomic_grid_weight_grad, &
 !$OMP        composite_atomic_grid_weights, composite_base_grid_weights, composite_density_grad, &
+!$OMP        composite_smooth_density_grad, composite_smooth_grad_grad, &
 !$OMP        composite_grad_grad, composite_grid_coord_force, composite_grid_coord_grad, &
 !$OMP        composite_grid_coords, composite_grid_weight_grad, composite_image_periodicity, &
 !$OMP        composite_kin_grad, composite_local_atoms, composite_local_natom, &
@@ -1584,12 +1622,12 @@ CONTAINS
                         composite_grid_coord_grad(:, composite_row)
                      IF (lsd) THEN
                         spatial_derivative = &
-                           composite_density_grad(composite_row, 1)* &
+                           composite_smooth_density_grad(composite_row, 1)* &
                            interpolate_native_grid_gradient( &
                            composite_smooth_rhoa, smooth_rho_r(1)%pw_grid, cell, &
                            composite_grid_coords(:, composite_row), &
                            image_partition_atom_composite) + &
-                           composite_density_grad(composite_row, 2)* &
+                           composite_smooth_density_grad(composite_row, 2)* &
                            interpolate_native_grid_gradient( &
                            composite_smooth_rhob, smooth_rho_r(1)%pw_grid, cell, &
                            composite_grid_coords(:, composite_row), &
@@ -1606,13 +1644,13 @@ CONTAINS
                            image_partition_atom_composite)
                         DO idir = 1, 3
                            spatial_derivative = spatial_derivative + &
-                                                composite_grad_grad(composite_row, idir, 1)* &
+                                                composite_smooth_grad_grad(composite_row, idir, 1)* &
                                                 interpolate_native_grid_gradient( &
                                                 composite_smooth_drhoa(idir)%array, &
                                                 smooth_rho_r(1)%pw_grid, cell, &
                                                 composite_grid_coords(:, composite_row), &
                                                 image_partition_atom_composite) + &
-                                                composite_grad_grad(composite_row, idir, 2)* &
+                                                composite_smooth_grad_grad(composite_row, idir, 2)* &
                                                 interpolate_native_grid_gradient( &
                                                 composite_smooth_drhob(idir)%array, &
                                                 smooth_rho_r(1)%pw_grid, cell, &
@@ -1621,7 +1659,7 @@ CONTAINS
                         END DO
                      ELSE
                         spatial_derivative = 0.5_dp*SUM( &
-                                             composite_density_grad(composite_row, :))* &
+                                             composite_smooth_density_grad(composite_row, :))* &
                                              interpolate_native_grid_gradient( &
                                              composite_smooth_rho, smooth_rho_r(1)%pw_grid, cell, &
                                              composite_grid_coords(:, composite_row), &
@@ -1633,7 +1671,7 @@ CONTAINS
                                              image_partition_atom_composite)
                         DO idir = 1, 3
                            spatial_derivative = spatial_derivative + 0.5_dp*SUM( &
-                                                composite_grad_grad(composite_row, idir, :))* &
+                                                composite_smooth_grad_grad(composite_row, idir, :))* &
                                                 interpolate_native_grid_gradient( &
                                                 composite_smooth_drho(idir)%array, &
                                                 smooth_rho_r(1)%pw_grid, &
@@ -1977,7 +2015,9 @@ CONTAINS
                   ! deform with the periodic cell. Correct the standard PW response,
                   ! which follows fixed fractional coordinates, by the corresponding
                   ! non-affine interpolation derivative.
-                  virial%pv_xc = composite_feature_virial - composite_interpolation_virial
+                  ! Retain the uniform-grid XC virial when adding the local residual.
+                  IF (.NOT. PRESENT(uspp_fields)) virial%pv_xc = 0.0_dp
+                  virial%pv_xc = virial%pv_xc + composite_feature_virial - composite_interpolation_virial
                   virial%pv_gapw = virial%pv_gapw + composite_explicit_virial
                   virial%pv_virial = virial%pv_virial + composite_explicit_virial
                END IF
@@ -2063,7 +2103,11 @@ CONTAINS
                   composite_grid_coords, composite_grid_weights, composite_atomic_grid_weights, &
                   composite_local_grid_sizes, composite_local_atom_coords, atom_composite_exc, &
                   composite_density_grad, composite_grad_grad, composite_kin_grad)
+               composite_smooth_density_grad(:, :) = composite_density_grad - composite_smooth_density_grad
+               composite_smooth_grad_grad(:, :, :) = composite_grad_grad - composite_smooth_grad_grad
             END IF
+            atom_composite_exc = atom_composite_exc - smooth_reference_exc
+            DEALLOCATE (smooth_reference_weight_grad)
             IF (PRESENT(uspp_fields)) THEN
                IF (.NOT. my_calculate_forces) THEN
                   DO ispin = 1, nspins
@@ -2099,7 +2143,7 @@ CONTAINS
 !$OMP         composite_smooth_gradient_adjoint_value, composite_smooth_kin_adjoint_value, &
 !$OMP         adjoint_tile_lower, adjoint_tile_upper, interpolation_stencil) &
 !$OMP SHARED(adjoint_bin_offsets, adjoint_bin_rows, adjoint_nbins, adjoint_nchannels, &
-!$OMP        adjoint_tile_count, cell, composite_density_grad, composite_grad_grad, &
+!$OMP        adjoint_tile_count, cell, composite_smooth_density_grad, composite_smooth_grad_grad, &
 !$OMP        composite_grid_coords, composite_kin_grad, image_partition_atom_composite, lsd, &
 !$OMP        smooth_density_adjoint_storage, smooth_grad_adjoint_storage, &
 !$OMP        smooth_kin_adjoint_storage, smooth_rho_r, qs_env)
@@ -2118,18 +2162,18 @@ CONTAINS
                   END IF
                   IF (lsd) THEN
                      composite_smooth_density_adjoint_value = &
-                        composite_density_grad(composite_row, :)
+                        composite_smooth_density_grad(composite_row, :)
                      composite_smooth_gradient_adjoint_value = &
-                        composite_grad_grad(composite_row, :, :)
+                        composite_smooth_grad_grad(composite_row, :, :)
                      composite_smooth_kin_adjoint_value = composite_kin_grad(composite_row, :)
                   ELSE
                      composite_smooth_density_adjoint_value = 0.0_dp
                      composite_smooth_gradient_adjoint_value = 0.0_dp
                      composite_smooth_kin_adjoint_value = 0.0_dp
                      composite_smooth_density_adjoint_value(1) = &
-                        SUM(composite_density_grad(composite_row, :))
+                        SUM(composite_smooth_density_grad(composite_row, :))
                      composite_smooth_gradient_adjoint_value(:, 1) = &
-                        SUM(composite_grad_grad(composite_row, :, :), DIM=2)
+                        SUM(composite_smooth_grad_grad(composite_row, :, :), DIM=2)
                      composite_smooth_kin_adjoint_value(1) = &
                         SUM(composite_kin_grad(composite_row, :))
                   END IF
@@ -2148,7 +2192,7 @@ CONTAINS
 !$OMP PARALLEL DO SCHEDULE(STATIC) REDUCTION(+:smooth_input_contraction) DEFAULT(NONE) &
 !$OMP PRIVATE(composite_smooth_density_value, composite_smooth_gradient_value, &
 !$OMP         composite_smooth_kin_value, idir, ispin) &
-!$OMP SHARED(composite_density_grad, composite_grad_grad, composite_kin_grad, composite_nflat, &
+!$OMP SHARED(composite_smooth_density_grad, composite_smooth_grad_grad, composite_kin_grad, composite_nflat, &
 !$OMP        composite_smooth_density_cache, composite_smooth_gradient_cache, &
 !$OMP        composite_smooth_kin_cache, lsd)
             DO composite_row = 1, composite_nflat
@@ -2159,24 +2203,24 @@ CONTAINS
                DO ispin = 1, 2
                   IF (lsd) THEN
                      smooth_input_contraction = smooth_input_contraction + &
-                                                composite_density_grad(composite_row, ispin)* &
+                                                composite_smooth_density_grad(composite_row, ispin)* &
                                                 composite_smooth_density_value(ispin) + &
                                                 composite_kin_grad(composite_row, ispin)* &
                                                 composite_smooth_kin_value(ispin)
                      DO idir = 1, 3
                         smooth_input_contraction = smooth_input_contraction + &
-                                                   composite_grad_grad(composite_row, idir, ispin)* &
+                                                   composite_smooth_grad_grad(composite_row, idir, ispin)* &
                                                    composite_smooth_gradient_value(idir, ispin)
                      END DO
                   ELSE
                      smooth_input_contraction = smooth_input_contraction + 0.5_dp*( &
-                                                composite_density_grad(composite_row, ispin)* &
+                                                composite_smooth_density_grad(composite_row, ispin)* &
                                                 composite_smooth_density_value(1) + &
                                                 composite_kin_grad(composite_row, ispin)* &
                                                 composite_smooth_kin_value(1))
                      DO idir = 1, 3
                         smooth_input_contraction = smooth_input_contraction + 0.5_dp* &
-                                                   composite_grad_grad(composite_row, idir, ispin)* &
+                                                   composite_smooth_grad_grad(composite_row, idir, ispin)* &
                                                    composite_smooth_gradient_value(idir, 1)
                      END DO
                   END IF
@@ -2706,7 +2750,7 @@ CONTAINS
                         composite_partition_weights, composite_partition_atom_coords, &
                         composite_distances, composite_density, composite_grad, composite_kin, &
                         composite_smooth_density_cache, composite_smooth_gradient_cache, &
-                        composite_smooth_kin_cache, &
+                        composite_smooth_kin_cache, composite_smooth_density_grad, composite_smooth_grad_grad, &
                         composite_density_grad, composite_grad_grad, composite_kin_grad, &
                         composite_grid_coords, composite_grid_weights, &
                         composite_base_grid_weights, composite_atomic_grid_weights)

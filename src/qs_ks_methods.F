@@ -970,17 +970,17 @@ CONTAINS
                END IF
             END IF
          ELSE IF (gapw_xc .AND. ASSOCIATED(uspp)) THEN
-            ! The smooth field and Gaussian hard-minus-soft fields are combined with
-            ! all USPP augmentation centers before evaluating the nonlinear functional.
-            ALLOCATE (uspp_xc_fields(nspins), v_rspace_new(nspins))
-            DO ispin = 1, nspins
-               CALL auxbas_pw_pool%create_pw(v_rspace_new(ispin))
-               v_rspace_new(ispin)%array = 0.0_dp
-            END DO
+            ! Integrate the smooth XC background on the uniform grid. The atom grids
+            ! supply F[n_s + delta_n] - F[n_s], including NLCC only in the full field.
+            CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
+                               vxc_rho=v_rspace_new, vxc_tau=v_tau_rspace, exc=energy%exc, &
+                               edisp=edisp, dispersion_env=qs_env%dispersion_env, &
+                               just_energy=.FALSE., exclude_nlcc=.TRUE.)
+            IF (edisp /= 0.0_dp) energy%dispersion = edisp
+            ALLOCATE (uspp_xc_fields(nspins))
             CALL calculate_vxc_atom(qs_env, just_energy_xc, energy%exc1, &
                                     xc_section_external=xc_section, calculate_forces=calculate_forces, &
                                     composite_vxc_rho=v_rspace_new, uspp_fields=uspp_xc_fields)
-            energy%exc = 0.0_dp
          ELSE
             CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
                                vxc_rho=v_rspace_new, vxc_tau=v_tau_rspace, exc=energy%exc, &
