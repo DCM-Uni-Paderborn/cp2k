@@ -417,8 +417,12 @@ CONTAINS
                  dft_control%qs_control%gapw)) THEN
          CPABORT("USPP requires GPW, GAPW_XC or GAPW")
       END IF
-      CPASSERT(dft_control%qs_control%do_ppl_method == do_ppl_analytic)
-      CPASSERT(.NOT. dft_control%use_kinetic_energy_density)
+      IF (dft_control%qs_control%do_ppl_method /= do_ppl_analytic) THEN
+         CPABORT("USPP requires analytic local-potential integrals")
+      END IF
+      IF (dft_control%use_kinetic_energy_density) THEN
+         CPABORT("USPP augmentation for kinetic-energy-density functionals is not implemented")
+      END IF
       CPASSERT(ASSOCIATED(sap_ppnl))
       ALLOCATE (sap_int(SIZE(qs_kind_set)**2))
       CALL build_sap_ints(sap_int, sap_ppnl, qs_kind_set, nder=0)

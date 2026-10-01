@@ -1092,6 +1092,9 @@ CONTAINS
       ! *** Add Hartree-Fock contribution if required ***
       hfx_sections => section_vals_get_subs_vals(xc_section, "HF")
       CALL section_vals_get(hfx_sections, explicit=do_hfx)
+      IF (do_hfx .AND. ASSOCIATED(uspp)) THEN
+         CPABORT("Exact exchange with USPP augmentation is not implemented")
+      END IF
 
       ace_active = .FALSE.
       ace_rebuild_frequency = 1
