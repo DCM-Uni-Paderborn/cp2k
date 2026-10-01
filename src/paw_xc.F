@@ -24,6 +24,7 @@ MODULE paw_xc
    USE orbital_transformation_matrices, ONLY: init_spherical_harmonics,&
                                               orbtramat
    USE paw_onecenter,                   ONLY: paw_onecenter_type
+   USE paw_types,                       ONLY: paw_xc_type
    USE splines,                         ONLY: spline3ders
    USE xc_atom,                         ONLY: fill_rho_set,&
                                               vxc_of_r_new,&
@@ -42,13 +43,6 @@ MODULE paw_xc
    IMPLICIT NONE
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'paw_xc'
-
-   TYPE paw_xc_type
-      INTEGER :: na = 0, nr = 0, nval = 0, npair = 0, lmax = -1
-      REAL(dp), ALLOCATABLE :: r(:), wr(:), wa(:), directions(:, :), harmonics(:, :), angular_gradient(:, :, :)
-      ! Final dimension: 1 is AE, 2 is compensated PS. Radial arrays contain true densities.
-      REAL(dp), ALLOCATABLE :: radial(:, :, :, :), radial_gradient(:, :, :, :), core(:, :), core_gradient(:, :)
-   END TYPE paw_xc_type
 
    PUBLIC :: paw_xc_type, paw_xc_init, paw_xc_evaluate, paw_xc_collocate
 

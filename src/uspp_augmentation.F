@@ -113,7 +113,7 @@ CONTAINS
       INTEGER                                            :: i, j, l, n, nc, p, pair, q
       REAL(KIND=dp), ALLOCATABLE                         :: weights(:)
 
-      CPASSERT(.NOT. pot%has_so .AND. .NOT. pot%is_paw)
+      CPASSERT(.NOT. pot%has_so)
       CPASSERT(ALLOCATED(pot%qijl))
       CPASSERT(projectors%degree >= MAXVAL(pot%lbeta))
       CPASSERT(ALL(projectors%lbeta == pot%lbeta))
@@ -121,6 +121,11 @@ CONTAINS
       CPASSERT(n >= 3 .AND. SIZE(pot%rab) == n)
       CPASSERT(ALL(pot%r >= 0.0_dp) .AND. ALL(pot%rab > 0.0_dp))
       CPASSERT(ALL(pot%r(2:) > pot%r(:n - 1)))
+      IF (pot%is_paw) THEN
+         CPASSERT(ALLOCATED(pot%paw))
+         ! The compensated-PS density must use the same sphere as the PAW functional.
+         CPASSERT(ALL(pot%qijl(pot%paw%cutoff_index + 1:, :, :) == 0.0_dp))
+      END IF
       nc = pot%number_of_proj*(pot%number_of_proj + 1)/2
       augmentation%nproj = projectors%nproj
       augmentation%lmax = 2*MAXVAL(pot%lbeta)

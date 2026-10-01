@@ -24,6 +24,7 @@ MODULE qs_uspp_types
                                               set_1d_pointer,&
                                               set_2d_pointer
    USE particle_types,                  ONLY: particle_type
+   USE paw_types,                       ONLY: paw_kind_type
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_images,&
@@ -52,6 +53,7 @@ MODULE qs_uspp_types
       LOGICAL :: global_xc_ready = .FALSE.
       TYPE(uspp_augmentation_type), ALLOCATABLE :: xc_density(:), xc_kinetic(:), xc_core_density(:), xc_core_kinetic(:)
       TYPE(upf_core_kinetic_type), ALLOCATABLE :: model_core_kinetic(:)
+      TYPE(paw_kind_type), ALLOCATABLE :: paw(:)
       TYPE(dbcsr_type), POINTER :: overlaps => NULL(), ao_pattern => NULL()
       TYPE(kpoint_transitional_type) :: metric
       TYPE(sap_int_type), POINTER :: image_integrals(:) => NULL()
@@ -64,10 +66,10 @@ MODULE qs_uspp_types
 CONTAINS
 
 ! **************************************************************************************************
-!> \brief Select actual USPP centers and prepare per-kind augmentation in native beta order.
-!>        No state is allocated for a system without USPP centers. Ghost atoms never augment.
+!> \brief Select actual USPP/PAW centers and prepare per-kind augmentation in native beta order.
+!>        No state is allocated for a system without USPP/PAW centers. Ghost atoms never augment.
 !> \param uspp Owned state, replaced if already present.
-!> \param qs_kind_set Kinds with original scalar USPP data and native projector caches.
+!> \param qs_kind_set Kinds with original scalar USPP/PAW data and native projector caches.
 !> \param particle_set Global particles, indexed in the same order as AO matrix blocks.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_init(uspp, qs_kind_set, particle_set)
@@ -85,7 +87,7 @@ CONTAINS
          IF (.NOT. ASSOCIATED(qs_kind_set(ikind)%sgp_potential)) CYCLE
          ASSOCIATE (potential => qs_kind_set(ikind)%sgp_potential)
             IF (.NOT. ALLOCATED(potential%upf_data)) CYCLE
-            active(ikind) = potential%upf_data%is_ultrasoft
+            active(ikind) = potential%upf_data%is_ultrasoft .OR. potential%upf_data%is_paw
          END ASSOCIATE
       END DO
       IF (.NOT. ANY(active)) RETURN
@@ -100,6 +102,7 @@ CONTAINS
       ALLOCATE (uspp)
       ALLOCATE (uspp%center_atoms(ncenter), uspp%center_kinds(ncenter), uspp%projector_sizes(ncenter))
       ALLOCATE (uspp%position(3, ncenter), uspp%augmentation(SIZE(qs_kind_set)))
+      ALLOCATE (uspp%paw(SIZE(qs_kind_set)))
       center = 0
       DO atom = 1, SIZE(particle_set)
          ikind = particle_set(atom)%atomic_kind%kind_number
@@ -112,6 +115,7 @@ CONTAINS
                   CALL upf_projector_init(potential%upf_data, degree, potential%upf_projectors)
                END IF
                CALL uspp_augmentation_init(potential%upf_data, potential%upf_projectors, uspp%augmentation(ikind))
+               uspp%paw(ikind)%active = potential%upf_data%is_paw
             END IF
          END ASSOCIATE
          center = center + 1

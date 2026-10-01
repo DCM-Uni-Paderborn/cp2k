@@ -35,9 +35,15 @@ MODULE atom_electronic_structure
         do_analytic, do_dkh0_atom, do_dkh1_atom, do_dkh2_atom, do_dkh3_atom, do_nonrel_atom, &
         do_numeric, do_rhf_atom, do_rks_atom, do_rohf_atom, do_sczoramp_atom, do_semi_analytic, &
         do_uhf_atom, do_uks_atom, do_zoramp_atom
-   USE input_section_types,             ONLY: section_vals_get,&
+   USE input_cp2k_xc,                   ONLY: create_xc_section
+   USE input_section_types,             ONLY: section_release,&
+                                              section_type,&
+                                              section_vals_create,&
+                                              section_vals_get,&
                                               section_vals_get_subs_vals,&
-                                              section_vals_type
+                                              section_vals_release,&
+                                              section_vals_type,&
+                                              section_vals_val_set
    USE kinds,                           ONLY: dp
 #include "./base/base_uses.f90"
 
@@ -68,7 +74,8 @@ CONTAINS
       CHARACTER(len=*), PARAMETER                        :: routineN = 'calculate_atom'
 
       INTEGER                                            :: handle, method
-      LOGICAL                                            :: explicit
+      LOGICAL                                            :: default_paw_xc, explicit
+      TYPE(section_type), POINTER                        :: xc_specification
       TYPE(section_vals_type), POINTER                   :: sub_section
 
       CALL timeset(routineN, handle)
@@ -108,6 +115,22 @@ CONTAINS
          END IF
       END IF
 
+      default_paw_xc = .FALSE.
+      IF (atom%potential%ppot_type == upf_pseudo) THEN
+         IF (atom%potential%upf_pot%is_paw .AND. .NOT. ASSOCIATED(atom%xc_section)) THEN
+            ! Atomic guesses normally call the direct PADE evaluator without an input section.
+            ! Share an explicit equivalent functional with the PAW one-center correction.
+            NULLIFY (xc_specification)
+            CALL create_xc_section(xc_specification)
+            CALL section_vals_create(atom%xc_section, xc_specification)
+            CALL section_vals_val_set(atom%xc_section, 'XC_FUNCTIONAL%PADE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+            CALL section_vals_val_set(atom%xc_section, 'DENSITY_CUTOFF', r_val=1.e-20_dp)
+            CALL section_vals_val_set(atom%xc_section, 'GRADIENT_CUTOFF', r_val=1.e-20_dp)
+            CALL section_release(xc_specification)
+            default_paw_xc = .TRUE.
+         END IF
+      END IF
+
       SELECT CASE (method)
       CASE (do_rks_atom, do_rhf_atom)
          CALL calculate_atom_restricted(atom, iw, noguess, converged)
@@ -119,6 +142,7 @@ CONTAINS
          CPABORT("Invalid method specified for ATOM code. Check the code!")
       END SELECT
 
+      IF (default_paw_xc) CALL section_vals_release(atom%xc_section)
       CALL timestop(handle)
 
    END SUBROUTINE calculate_atom

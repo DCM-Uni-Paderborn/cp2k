@@ -146,7 +146,8 @@ MODULE qs_ks_methods
                                               qs_rho_type
    USE qs_sccs,                         ONLY: sccs
    USE qs_uspp_gapw,                    ONLY: qs_uspp_gapw_coulomb
-   USE qs_uspp_methods,                 ONLY: qs_uspp_atom_grid_apply_ks,&
+   USE qs_uspp_methods,                 ONLY: qs_paw_correction,&
+                                              qs_uspp_atom_grid_apply_ks,&
                                               qs_uspp_atom_grid_apply_state,&
                                               qs_uspp_atom_grid_type
    USE qs_uspp_types,                   ONLY: qs_uspp_type
@@ -1526,6 +1527,14 @@ CONTAINS
                                                   force_factors=uspp_aux_force_factors)
             END IF
          END IF
+      END IF
+
+      IF (just_energy) THEN
+         CALL qs_paw_correction(ks_env, xc_section, rho_ao, energy%paw_hartree, energy%paw_xc, energy%paw_core, &
+                                calculate_forces)
+      ELSE
+         CALL qs_paw_correction(ks_env, xc_section, rho_ao, energy%paw_hartree, energy%paw_xc, energy%paw_core, &
+                                calculate_forces, ks_matrix)
       END IF
 
       !Calculation of Mulliken restraint, if requested

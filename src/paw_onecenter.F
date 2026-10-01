@@ -14,6 +14,7 @@ MODULE paw_onecenter
    USE atom_upf,                        ONLY: atom_upfpot_type
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
+   USE paw_types,                       ONLY: paw_onecenter_type
    USE splines,                         ONLY: spline3ders
    USE upf_projector_integrals,         ONLY: upf_projector_product_gaunt,&
                                               upf_projector_type
@@ -22,12 +23,6 @@ MODULE paw_onecenter
    IMPLICIT NONE
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'paw_onecenter'
-
-   TYPE paw_onecenter_type
-      INTEGER :: nproj = 0, npair = 0, lmax = -1
-      INTEGER, ALLOCATABLE :: pair_index(:, :)
-      REAL(dp), ALLOCATABLE :: gaunt(:, :, :), hartree(:, :, :)
-   END TYPE paw_onecenter_type
 
    PUBLIC :: paw_onecenter_type, paw_onecenter_init, paw_onecenter_hartree, paw_radial_coulomb
 

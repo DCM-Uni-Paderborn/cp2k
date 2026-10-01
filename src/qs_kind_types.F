@@ -2873,8 +2873,8 @@ CONTAINS
                   CALL allocate_potential(qs_kind%sgp_potential)
                   CALL get_potential(qs_kind%sgp_potential, description=description)
                   description(4) = "UPF "//TRIM(potential_name)
-                  CALL atom_read_upf(upfpot, potential_name, read_augmentation=.TRUE.)
-                  IF (TRIM(upfpot%pseudo_type) == "NC" .OR. upfpot%is_ultrasoft) THEN
+                  CALL atom_read_upf(upfpot, potential_name, read_augmentation=.TRUE., read_paw=.TRUE.)
+                  IF (TRIM(upfpot%pseudo_type) == "NC" .OR. upfpot%is_ultrasoft .OR. upfpot%is_paw) THEN
                      ALLOCATE (qs_kind%sgp_potential%upf_data, SOURCE=upfpot)
                   END IF
                   CALL set_potential(qs_kind%sgp_potential, name=upfpot%pname, description=description, &
@@ -4283,9 +4283,9 @@ CONTAINS
    END SUBROUTINE set_pseudo_state
 
 ! **************************************************************************************************
-!> \brief Whether a non-ghost kind carries ultrasoft augmentation.
+!> \brief Whether a non-ghost kind carries USPP or PAW augmentation.
 !> \param qs_kind_set Current Gaussian kinds.
-!> \return True for at least one scalar USPP kind.
+!> \return True for at least one scalar USPP or PAW kind.
 ! **************************************************************************************************
    FUNCTION has_uspp(qs_kind_set) RESULT(ultrasoft)
       TYPE(qs_kind_type), INTENT(IN)                     :: qs_kind_set(:)
@@ -4298,7 +4298,9 @@ CONTAINS
          IF (qs_kind_set(ikind)%ghost) CYCLE
          IF (.NOT. ASSOCIATED(qs_kind_set(ikind)%sgp_potential)) CYCLE
          IF (.NOT. ALLOCATED(qs_kind_set(ikind)%sgp_potential%upf_data)) CYCLE
-         IF (qs_kind_set(ikind)%sgp_potential%upf_data%is_ultrasoft) ultrasoft = .TRUE.
+         ASSOCIATE (pot => qs_kind_set(ikind)%sgp_potential%upf_data)
+            IF (pot%is_ultrasoft .OR. pot%is_paw) ultrasoft = .TRUE.
+         END ASSOCIATE
       END DO
    END FUNCTION has_uspp
 
