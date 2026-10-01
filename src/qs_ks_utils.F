@@ -117,6 +117,7 @@ MODULE qs_ks_utils
                                               mo_set_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_uspp_methods,                 ONLY: qs_uspp_integrate
    USE skala_gpw_functional,            ONLY: native_skala_gapw_composite_direct_ao,&
                                               native_skala_gapw_composite_reference
    USE task_list_types,                 ONLY: task_list_type
@@ -1477,7 +1478,7 @@ CONTAINS
                       input=input, &
                       pw_env=pw_env, &
                       v_hartree_rspace=v_rspace, &
-                      vee=vee)
+                      ks_env=ks_env, vee=vee)
 
       CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
       CALL pw_env_get(pw_env, poisson_env=poisson_env, auxbas_pw_pool=auxbas_pw_pool)
@@ -1654,6 +1655,7 @@ CONTAINS
                                        calculate_forces=calculate_forces, &
                                        gapw=gapw .AND. .NOT. gapw_composite_direct_ao)
             END IF
+            CALL qs_uspp_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, 1)%matrix, weighted=.TRUE.)
             CALL auxbas_pw_pool%give_back_pw(v_rspace_new(ispin))
          END DO ! ispin
 
@@ -1759,6 +1761,7 @@ CONTAINS
                                        calculate_forces=calculate_forces, &
                                        gapw=gapw)
             END IF
+            CALL qs_uspp_integrate(ks_env, v_rspace_used, ks_matrix(ispin, 1)%matrix, weighted=.TRUE.)
             IF (use_work_v_rspace) CALL auxbas_pw_pool%give_back_pw(v_rspace_work)
          END DO
       END IF ! ASSOCIATED(v_rspace_new)

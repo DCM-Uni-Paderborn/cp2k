@@ -21,7 +21,8 @@ PROGRAM uspp_projector_operators_unittest
    USE cp_subsys_types,                 ONLY: cp_subsys_release,&
                                               cp_subsys_type
    USE external_potential_types,        ONLY: allocate_potential,&
-                                              deallocate_potential
+                                              deallocate_potential,&
+                                              init_potential
    USE fft_tools,                       ONLY: finalize_fft,&
                                               init_fft
    USE kinds,                           ONLY: dp
@@ -40,7 +41,10 @@ PROGRAM uspp_projector_operators_unittest
                                               pw_grid_type
    USE pw_grids,                        ONLY: pw_grid_create,&
                                               pw_grid_release
-   USE pw_methods,                      ONLY: pw_transfer
+   USE pw_methods,                      ONLY: pw_copy,&
+                                              pw_derive,&
+                                              pw_scale,&
+                                              pw_transfer
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_kind_types,                   ONLY: qs_kind_type
@@ -51,7 +55,10 @@ PROGRAM uspp_projector_operators_unittest
                                               set_ks_env
    USE qs_subsys_types,                 ONLY: qs_subsys_set,&
                                               qs_subsys_type
-   USE qs_uspp_methods,                 ONLY: qs_uspp_init_ao_matrix
+   USE qs_uspp_methods,                 ONLY: qs_uspp_collocate,&
+                                              qs_uspp_core_matrix,&
+                                              qs_uspp_init_ao_matrix,&
+                                              qs_uspp_integrate
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_matrix
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
                                               qs_uspp_type,&
@@ -93,7 +100,8 @@ PROGRAM uspp_projector_operators_unittest
    TYPE(atom_upfpot_type) :: pot(2)
    TYPE(upf_projector_type) :: beta(2)
    TYPE(uspp_augmentation_type), ALLOCATABLE :: aug(:)
-   TYPE(dbcsr_type) :: bm, pm, sm, gm, hm, dm, am, gradm, assembled
+   TYPE(dbcsr_type), TARGET :: bm
+   TYPE(dbcsr_type) :: pm, sm, gm, hm, dm, am, gradm, assembled
    TYPE(dbcsr_distribution_type) :: dist_ao, dist_b, dist_pp
    TYPE(mp_comm_type) :: comm
 
@@ -334,16 +342,52 @@ CONTAINS
 ! **************************************************************************************************
 
    SUBROUTINE check_pw_grid()
-      INTEGER                                            :: ix, iy, iz, nx, parity, span
+      INTEGER                                            :: atom, idir, ix, iy, iz, k, nx, parity, &
+                                                            span
       LOGICAL                                            :: odd
-      REAL(KIND=dp)                                      :: aug_charge, cell(3, 3), egrid, &
-                                                            hpw_dense(nao, nao), total_charge
-      REAL(KIND=dp), ALLOCATABLE                         :: multiplicity(:)
+      REAL(KIND=dp)                                      :: cell(3, 3), egrid, expected_charge, &
+                                                            hpw_dense(nao, nao), norm_g2, &
+                                                            total_charge
+      TYPE(atomic_kind_type), TARGET                     :: atomic_kinds(4)
+      TYPE(cp_subsys_type), POINTER                      :: cp_subsys
       TYPE(dbcsr_type)                                   :: hpw
-      TYPE(pw_c1d_gs_type)                               :: rho_g, v_g
+      TYPE(particle_type)                                :: particles(4)
+      TYPE(pw_c1d_gs_type)                               :: derivative_g, reference_g, rho_g, v_g
       TYPE(pw_grid_type), POINTER                        :: pw_grid
-      TYPE(pw_r3d_rs_type)                               :: rho_r, v_r
+      TYPE(pw_r3d_rs_type)                               :: derivative_r, reference_r, rho_r, v_r
+      TYPE(qs_kind_type)                                 :: qs_kinds(4)
+      TYPE(qs_ks_env_type)                               :: ks
+      TYPE(qs_subsys_type), POINTER                      :: subsys
+      TYPE(qs_uspp_type), POINTER                        :: no_uspp, uspp
 
+      ! Exercise the production adapter, using borrowed B and owned per-kind radial data.
+      ALLOCATE (subsys, cp_subsys)
+      CALL qs_subsys_set(subsys, cp_subsys=cp_subsys)
+      CALL cp_subsys_release(cp_subsys)
+      CALL set_ks_env(ks, subsys=subsys)
+      ALLOCATE (uspp)
+      NULLIFY (no_uspp)
+      uspp%overlaps => bm
+      ALLOCATE (uspp%center_kinds, SOURCE=kind)
+      ALLOCATE (uspp%position, SOURCE=positions)
+      ALLOCATE (uspp%augmentation, SOURCE=aug)
+      CALL set_ks_env(ks, uspp=uspp)
+      DO k = 1, 4
+         atomic_kinds(k)%kind_number = k
+         particles(k)%atomic_kind => atomic_kinds(k)
+         CALL allocate_potential(qs_kinds(k)%sgp_potential)
+         atom = MIN(k, 2)
+         ALLOCATE (qs_kinds(k)%sgp_potential%upf_data, SOURCE=pot(atom))
+         qs_kinds(k)%sgp_potential%upf_projectors = beta(atom)
+         qs_kinds(k)%sgp_potential%alpha_core_charge = 0.8_dp
+      END DO
+      qs_kinds(3)%sgp_potential%upf_data%is_ultrasoft = .FALSE.
+      qs_kinds(4)%ghost = .TRUE.
+      particles(1)%r = positions(:, 1)
+      particles(2)%r = positions(:, 2)
+      particles(3)%r = [-0.6_dp, 1.4_dp, 0.3_dp]
+      particles(4)%r = [0.9_dp, -0.1_dp, 1.2_dp]
+      expected_charge = SUM(MATMUL(TRANSPOSE(b), MATMUL(p, b))*q)
       NULLIFY (pw_grid)
       cell = 0.0_dp
       cell(1, 1) = 5.0_dp; cell(2, 2) = 6.0_dp; cell(3, 3) = 4.5_dp
@@ -358,14 +402,31 @@ CONTAINS
                                 odd=odd, fft_usage=.TRUE., rs_dims=[nranks, 1])
             CALL rho_g%create(pw_grid)
             CALL v_g%create(pw_grid)
+            CALL derivative_g%create(pw_grid)
+            CALL reference_g%create(pw_grid)
             CALL rho_r%create(pw_grid)
             CALL v_r%create(pw_grid)
-            rho_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
-            CALL uspp_projector_collocate(bm, pm, aug, kind, positions, pw_grid%g, pw_grid%vol, rho_g%array, aug_charge)
-            CALL pw_transfer(rho_g, rho_r)
-            total_charge = SUM(rho_r%array)*pw_grid%dvol
-            CALL comm%sum(total_charge)
-            CALL check(ABS(total_charge - aug_charge), 'CP2K FFT integrated augmentation charge')
+            CALL derivative_r%create(pw_grid)
+            CALL reference_r%create(pw_grid)
+            rho_r%array = 0.19_dp
+            CALL pw_transfer(rho_r, rho_g)
+            total_charge = -0.19_dp*pw_grid%vol
+            CALL qs_uspp_collocate(ks, pm, rho_g, rho_r, total_charge)
+            CALL check(ABS(total_charge + 0.19_dp*pw_grid%vol + expected_charge), 'signed Quickstep charge')
+            egrid = SUM(rho_r%array)*pw_grid%dvol
+            CALL comm%sum(egrid)
+            CALL check(ABS(egrid + total_charge), 'CP2K FFT integrated augmentation charge')
+            CALL pw_transfer(rho_r, reference_g)
+            CALL check(MAXVAL(ABS(reference_g%array - rho_g%array)), 'consistent real and reciprocal density')
+            DO idir = 1, 3
+               derivative_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+               CALL qs_uspp_collocate(ks, pm, derivative_g, derivative_r, &
+                                      derivative=[MERGE(1, 0, idir == 1), MERGE(1, 0, idir == 2), MERGE(1, 0, idir == 3)])
+               CALL pw_copy(rho_g, reference_g)
+               CALL pw_derive(reference_g, [MERGE(1, 0, idir == 1), MERGE(1, 0, idir == 2), MERGE(1, 0, idir == 3)])
+               CALL pw_transfer(reference_g, reference_r)
+               CALL check(MAXVAL(ABS(reference_r%array - derivative_r%array)), 'collocated augmentation gradient')
+            END DO
             DO iz = LBOUND(v_r%array, 3), UBOUND(v_r%array, 3)
                DO iy = LBOUND(v_r%array, 2), UBOUND(v_r%array, 2)
                   DO ix = LBOUND(v_r%array, 1), UBOUND(v_r%array, 1)
@@ -373,27 +434,66 @@ CONTAINS
                   END DO
                END DO
             END DO
-            CALL pw_transfer(v_r, v_g)
-            ALLOCATE (multiplicity(SIZE(v_g%array)))
-            multiplicity = 1.0_dp
-            IF (span == HALFSPACE) THEN
-               multiplicity = 2.0_dp
-               IF (pw_grid%have_g0) multiplicity(1) = 1.0_dp
-            END IF
             CALL dbcsr_copy(hpw, sm)
-            CALL uspp_projector_integrate(bm, aug, kind, positions, pw_grid%g, pw_grid%vol, v_g%array, multiplicity, hpw)
+            CALL qs_uspp_integrate(ks, v_r, hpw, weighted=.FALSE.)
             CALL gather(hpw, hpw_dense)
-            egrid = SUM(v_r%array*rho_r%array)*pw_grid%dvol
+            egrid = SUM(v_r%array*(rho_r%array - 0.19_dp))*pw_grid%dvol
             CALL comm%sum(egrid)
-            CALL check(ABS(egrid - SUM(p*(hpw_dense - sg))), 'CP2K real-space FFT/DBCSR adjoint identity')
+            CALL check(ABS(egrid - SUM(p*(hpw_dense - sg))), 'Quickstep real-space FFT/DBCSR adjoint identity')
+            CALL dbcsr_copy(hpw, sm)
+            CALL pw_scale(v_r, pw_grid%dvol)
+            CALL qs_uspp_integrate(ks, v_r, hpw, weighted=.TRUE.)
+            CALL gather(hpw, hpw_dense)
+            CALL check(ABS(egrid - SUM(p*(hpw_dense - sg))), 'Quickstep weighted potential normalization')
+            ! The core contribution must include the third, ordinary ion and exclude the ghost.
+            v_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+            DO atom = 1, 3
+               k = MIN(atom, 2)
+               DO ig = 1, SIZE(v_g%array)
+                  norm_g2 = SUM(pw_grid%g(:, ig)**2)
+                  v_g%array(ig) = v_g%array(ig) + REAL(k, dp)*(pi/(0.6_dp + 0.2_dp*k))**1.5_dp &
+                                  *EXP(-norm_g2/(4.0_dp*(0.6_dp + 0.2_dp*k)))/pw_grid%vol &
+                                  *EXP(CMPLX(0.0_dp, -DOT_PRODUCT(pw_grid%g(:, ig), particles(atom)%r), dp))
+               END DO
+            END DO
+            CALL pw_transfer(v_g, v_r)
+            CALL dbcsr_copy(hpw, sm)
+            CALL qs_uspp_core_matrix(uspp, qs_kinds, particles, pw_grid, hpw)
+            CALL gather(hpw, hpw_dense)
+            egrid = SUM(v_r%array*(rho_r%array - 0.19_dp))*pw_grid%dvol
+            CALL comm%sum(egrid)
+            DO k = 1, 2
+               egrid = egrid + SUM(MATMUL(TRANSPOSE(b(:, first(k):last(k))), &
+                                          MATMUL(p, b(:, first(k):last(k))))*beta(k)%d)
+            END DO
+            CALL check(ABS(egrid - SUM(p*(hpw_dense - sg))), 'bare D0 plus all-ion augmentation core energy')
+            ! Ordinary calculations must leave their arrays and operators untouched.
+            CALL set_ks_env(ks, uspp=no_uspp)
+            CALL pw_copy(rho_g, reference_g)
+            CALL qs_uspp_collocate(ks, pm, rho_g, rho_r, total_charge)
+            CALL check(MAXVAL(ABS(reference_g%array - rho_g%array)), 'ordinary density unchanged')
+            CALL qs_uspp_integrate(ks, v_r, hpw, weighted=.FALSE.)
+            CALL gather(hpw, work)
+            CALL check(MAXVAL(ABS(work - hpw_dense)), 'ordinary Hamiltonian unchanged')
+            CALL set_ks_env(ks, uspp=uspp)
             CALL dbcsr_release(hpw)
-            DEALLOCATE (multiplicity)
             CALL rho_g%release()
             CALL v_g%release()
+            CALL derivative_g%release()
+            CALL reference_g%release()
             CALL rho_r%release()
             CALL v_r%release()
+            CALL derivative_r%release()
+            CALL reference_r%release()
             CALL pw_grid_release(pw_grid)
          END DO
+      END DO
+      CALL set_ks_env(ks, uspp=no_uspp)
+      NULLIFY (uspp%overlaps)
+      DEALLOCATE (uspp)
+      CALL qs_ks_release(ks)
+      DO k = 1, 4
+         CALL deallocate_potential(qs_kinds(k)%sgp_potential)
       END DO
    END SUBROUTINE check_pw_grid
 
@@ -488,6 +588,11 @@ CONTAINS
       particles(3)%atomic_kind => atomic_kinds(2)
       CALL qs_uspp_init(uspp, qs_kinds, particles(3:))
       IF (ASSOCIATED(uspp)) ERROR STOP 'NC atom acquired USPP augmentation'
+      CALL init_potential(qs_kinds(3)%sgp_potential)
+      IF (qs_kinds(3)%sgp_potential%n_nonlocal /= 0) ERROR STOP 'Unexpected Gaussian nonlocal fit'
+      IF (qs_kinds(3)%sgp_potential%nppnl /= beta(1)%nproj) ERROR STOP 'Native projector count missing'
+      IF (qs_kinds(3)%sgp_potential%lmax /= MAXVAL(pot(1)%lbeta)) ERROR STOP 'Native projector lmax missing'
+      IF (.NOT. ALL(qs_kinds(3)%sgp_potential%is_nonlocal(pot(1)%lbeta))) ERROR STOP 'Native neighbor-list metadata missing'
       CALL qs_uspp_init(uspp, qs_kinds, particles)
       IF (.NOT. ASSOCIATED(uspp)) ERROR STOP 'Missing mixed-kind USPP state'
       IF (ANY(uspp%center_atoms /= [1, 2])) ERROR STOP 'Incorrect augmentation-center mapping'
@@ -607,10 +712,21 @@ CONTAINS
       ALLOCATE (pot(k)%lbeta(2), pot(k)%dion(2, 2), pot(k)%qij(2, 2))
       pot(k)%lbeta(:) = [0, 2 - k]
       pot(k)%dion = 0.0_dp
+      pot(k)%dion(1, 1) = 0.7_dp
+      pot(k)%dion(2, 2) = -0.3_dp
+      IF (k == 2) THEN
+         pot(k)%dion(1, 2) = 0.11_dp
+         pot(k)%dion(2, 1) = 0.11_dp
+      END IF
+      pot(k)%zion = REAL(k, dp)
       pot(k)%qij = 42.0_dp
       ALLOCATE (pot(k)%r(nr), pot(k)%rab(nr), pot(k)%beta(nr, 2), pot(k)%qijl(nr, 3, 0:2*(2 - k)))
       pot(k)%r(:) = [(REAL(i - 1, dp)*0.00625_dp, i=1, nr)]
       pot(k)%rab = 0.00625_dp
+      ALLOCATE (pot(k)%vlocal(nr))
+      pot(k)%vlocal(1) = -2.0_dp*pot(k)%zion*SQRT(0.8_dp/pi)
+      pot(k)%vlocal(2:) = -pot(k)%zion*ERF(SQRT(0.8_dp)*pot(k)%r(2:))/pot(k)%r(2:)
+      pot(k)%vlocal(:) = pot(k)%vlocal + REAL(k, dp)*EXP(-(0.6_dp + 0.2_dp*k)*pot(k)%r**2)
       pot(k)%qijl = 0.0_dp
       DO j = 1, 2
          pot(k)%beta(:, j) = pot(k)%r**pot(k)%lbeta(j)*EXP(-alpha(k)*pot(k)%r**2)

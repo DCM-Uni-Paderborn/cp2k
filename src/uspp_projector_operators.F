@@ -29,6 +29,7 @@ MODULE uspp_projector_operators
 
    PUBLIC :: uspp_projector_density, uspp_projector_add_operator, uspp_projector_metric, &
              uspp_projector_collocate, uspp_projector_integrate, uspp_projector_pullback, uspp_projector_ao_pattern
+   PUBLIC :: uspp_projector_create_onsite
 
 CONTAINS
 
@@ -60,7 +61,7 @@ CONTAINS
 !> \param overlaps Rectangular Gaussian/projector matrix B.
 !> \param onsite New matrix with exactly one diagonal block per center.
 ! **************************************************************************************************
-   SUBROUTINE create_onsite(overlaps, onsite)
+   SUBROUTINE uspp_projector_create_onsite(overlaps, onsite)
       TYPE(dbcsr_type), INTENT(IN)                       :: overlaps
       TYPE(dbcsr_type), INTENT(INOUT)                    :: onsite
 
@@ -86,7 +87,7 @@ CONTAINS
       END DO
       CALL dbcsr_finalize(onsite)
       CALL dbcsr_set(onsite, 0.0_dp)
-   END SUBROUTINE create_onsite
+   END SUBROUTINE uspp_projector_create_onsite
 
 ! **************************************************************************************************
 !> \brief Compute only the atomic diagonal blocks of B^T P B.
@@ -100,7 +101,7 @@ CONTAINS
 
       TYPE(dbcsr_type)                                   :: work
 
-      CALL create_onsite(overlaps, projected)
+      CALL uspp_projector_create_onsite(overlaps, projected)
       CALL dbcsr_create(work, template=overlaps)
       CALL dbcsr_multiply('N', 'N', 1.0_dp, density, overlaps, 0.0_dp, work)
       CALL dbcsr_multiply('T', 'N', 1.0_dp, overlaps, work, 0.0_dp, projected, retain_sparsity=.TRUE.)
@@ -146,7 +147,7 @@ CONTAINS
       TYPE(dbcsr_type)                                   :: onsite
 
       CALL check_centers(overlaps, augmentation, kind)
-      CALL create_onsite(overlaps, onsite)
+      CALL uspp_projector_create_onsite(overlaps, onsite)
       DO i = 1, SIZE(kind)
          CALL dbcsr_get_block_p(onsite, i, i, block, found)
          IF (found) block(:, :) = augmentation(KIND(i))%q
@@ -234,7 +235,7 @@ CONTAINS
       CALL check_centers(overlaps, augmentation, kind)
       CPASSERT(ALL(SHAPE(position) == [3, SIZE(kind)]))
       CALL dbcsr_get_info(overlaps, group=group)
-      CALL create_onsite(overlaps, onsite)
+      CALL uspp_projector_create_onsite(overlaps, onsite)
       DO i = 1, SIZE(kind)
          n = augmentation(KIND(i))%nproj
          ALLOCATE (matrix(n, n))
