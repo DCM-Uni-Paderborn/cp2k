@@ -50,8 +50,11 @@ transform: see its pinned
 and
 [angular reconstruction](https://github.com/QEF/q-e/blob/61569eb480231b649c47f631df9c5c83537df461/upflib/qvan2.f90).
 The independent Python audit integrates the whole supplied radial mesh; QE's radial transform uses
-its effective beta cutoff. Their cutoffs must be reconciled before claiming equivalence of the two
-implementations.
+its effective beta cutoff. A separate XML/SciPy audit found that every QIJL array in all 86 files
+vanishes beyond the maximum PP_BETA cutoff_radius_index. Using the same quadrature on the full and
+truncated meshes gives exactly zero difference at G=0, 1 and 5 bohr^-1 for all 3228 channels. Two
+files have an even cutoff index. This establishes cutoff insensitivity for those sampled radial
+transforms; it does not replace comparison of complete implementations or their SCF results.
 
 ## GPW reference: one augmentation representation
 
