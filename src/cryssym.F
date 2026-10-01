@@ -453,28 +453,29 @@ CONTAINS
 !> \param inversion_symmetry_only ...
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
+!> \param partial_property_orbits Permit incomplete stars for independent properties, not SCF integration
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen_general(csym, xkp_in, wkp_in, symm, full_grid, &
-                                 inversion_symmetry_only, use_spglib_reduction, use_spglib_backend)
+                                 inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, partial_property_orbits)
       TYPE(csym_type)                                    :: csym
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp_in
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp_in
-      LOGICAL, INTENT(IN), OPTIONAL                      :: symm, full_grid, &
-                                                            inversion_symmetry_only, &
-                                                            use_spglib_reduction, &
-                                                            use_spglib_backend
+      LOGICAL, INTENT(IN), OPTIONAL :: symm, full_grid, inversion_symmetry_only, &
+         use_spglib_reduction, use_spglib_backend, partial_property_orbits
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_gen_general'
 
       INTEGER                                            :: handle, i, nfull
       LOGICAL                                            :: atomic_symmetry, fullmesh, &
-                                                            inversion_only, spglib_backend, &
-                                                            spglib_reduction
+                                                            inversion_only, partial, &
+                                                            spglib_backend, spglib_reduction
       REAL(KIND=dp)                                      :: weight_eps
 
       CALL timeset(routineN, handle)
 
       nfull = SIZE(wkp_in)
+      partial = .FALSE.
+      IF (PRESENT(partial_property_orbits)) partial = partial_property_orbits
       CPASSERT(SIZE(xkp_in, 1) == 3)
       CPASSERT(SIZE(xkp_in, 2) == nfull)
 
@@ -535,17 +536,17 @@ CONTAINS
                CALL cp_abort(__LOCATION__, &
                              "SCHEME GENERAL with SYMMETRY_BACKEND SPGLIB requires SPGLIB.")
             END IF
-            CALL reduce_general_spglib(csym, xkp_in)
+            CALL reduce_general_spglib(csym, xkp_in, partial)
          ELSE IF (spglib_reduction) THEN
             IF (.NOT. csym%symlib) THEN
                CALL cp_abort(__LOCATION__, &
                              "SCHEME GENERAL with SYMMETRY_REDUCTION_METHOD SPGLIB requires SPGLIB.")
             END IF
             CALL setup_k290_operations(csym)
-            CALL reduce_general_spglib_k290(csym, xkp_in)
+            CALL reduce_general_spglib_k290(csym, xkp_in, partial)
          ELSE
             CALL setup_k290_operations(csym)
-            CALL reduce_general_k290(csym, xkp_in)
+            CALL reduce_general_k290(csym, xkp_in, partial)
          END IF
       END IF
 
@@ -1121,10 +1122,12 @@ CONTAINS
 !> \brief Reduce an explicit k-point set with K290 symmetry operations.
 !> \param csym ...
 !> \param xkp_full explicit k-point coordinates
+!> \param partial_property_orbits Reduce only supplied property points without requiring closed stars
 ! **************************************************************************************************
-   SUBROUTINE reduce_general_k290(csym, xkp_full)
+   SUBROUTINE reduce_general_k290(csym, xkp_full, partial_property_orbits)
       TYPE(csym_type)                                    :: csym
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp_full
+      LOGICAL, INTENT(IN)                                :: partial_property_orbits
 
       INTEGER                                            :: i, ibsign, iop, j, kr, nfull, nred
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: rep
@@ -1185,7 +1188,7 @@ CONTAINS
                      EXIT
                   END IF
                END DO
-               IF (.NOT. found) THEN
+               IF (.NOT. found .AND. .NOT. partial_property_orbits) THEN
                   CALL cp_abort(__LOCATION__, &
                                 "KPOINTS%SYMMETRY with SCHEME GENERAL requires the explicit k-point set "// &
                                 "to be closed under the K290 symmetry operations.")
@@ -1204,10 +1207,12 @@ CONTAINS
 !> \brief Reduce an explicit k-point set with SPGLIB symmetry operations.
 !> \param csym ...
 !> \param xkp_full explicit k-point coordinates
+!> \param partial_property_orbits Reduce only supplied property points without requiring closed stars
 ! **************************************************************************************************
-   SUBROUTINE reduce_general_spglib(csym, xkp_full)
+   SUBROUTINE reduce_general_spglib(csym, xkp_full, partial_property_orbits)
       TYPE(csym_type)                                    :: csym
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp_full
+      LOGICAL, INTENT(IN)                                :: partial_property_orbits
 
       INTEGER                                            :: i, iop, isign, j, kr, nfull, nred, nrot
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: rep
@@ -1268,7 +1273,7 @@ CONTAINS
                      EXIT
                   END IF
                END DO
-               IF (.NOT. found) THEN
+               IF (.NOT. found .AND. .NOT. partial_property_orbits) THEN
                   CALL cp_abort(__LOCATION__, &
                                 "KPOINTS%SYMMETRY with SCHEME GENERAL requires the explicit k-point set "// &
                                 "to be closed under the requested symmetry operations.")
@@ -1287,10 +1292,12 @@ CONTAINS
 !> \brief Reduce an explicit k-point set with SPGLIB rotations and K290 operations.
 !> \param csym ...
 !> \param xkp_full explicit k-point coordinates
+!> \param partial_property_orbits Reduce only supplied property points without requiring closed stars
 ! **************************************************************************************************
-   SUBROUTINE reduce_general_spglib_k290(csym, xkp_full)
+   SUBROUTINE reduce_general_spglib_k290(csym, xkp_full, partial_property_orbits)
       TYPE(csym_type)                                    :: csym
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp_full
+      LOGICAL, INTENT(IN)                                :: partial_property_orbits
 
       INTEGER                                            :: i, iop, isign, j, k290_op, nfull, nred, &
                                                             nrot, nskipped
@@ -1355,7 +1362,7 @@ CONTAINS
                      EXIT
                   END IF
                END DO
-               IF (.NOT. found) THEN
+               IF (.NOT. found .AND. .NOT. partial_property_orbits) THEN
                   CALL cp_abort(__LOCATION__, &
                                 "KPOINTS%SYMMETRY with SCHEME GENERAL requires the explicit k-point set "// &
                                 "to be closed under the SPGLIB symmetry operations.")

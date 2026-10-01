@@ -15,7 +15,315 @@ MODULE topology_symmetry
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: character_multiplicities, inversion_representation
+   PUBLIC :: subspace_sewing, transform_sewing_link
+   PUBLIC :: spin_rotation, transform_spinor_frame, check_sewing_product
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Lift a Cartesian orthogonal operation to the physical spin-1/2 representation.
+!> \param rotation Cartesian polar-vector operation, including improper operations
+!> \param spin SU(2) lift of det(rotation)*rotation; inversion acts trivially on spin
+!> \param tolerance Orthogonality tolerance
+!> \param status Zero on success, negative for invalid geometry
+!> \note The quaternion sign fixes one representative, not a single-valued SO(3) representation.
+!>       Products must retain the resulting double-group factor system. Orbital parity is separate.
+! **************************************************************************************************
+   SUBROUTINE spin_rotation(rotation, spin, tolerance, status)
+      REAL(dp), INTENT(IN)                               :: rotation(3, 3)
+      COMPLEX(dp), INTENT(OUT)                           :: spin(2, 2)
+      REAL(dp), INTENT(IN)                               :: tolerance
+      INTEGER, INTENT(OUT)                               :: status
+
+      INTEGER                                            :: branch, i, j, k
+      REAL(dp)                                           :: candidates(0:3), det, q(0:3), r(3, 3), &
+                                                            scale, work(3, 3)
+
+      spin = 0.0_dp
+      status = -1
+      IF (.NOT. ALL(ieee_is_finite(rotation)) .OR. .NOT. ieee_is_finite(tolerance)) RETURN
+      IF (tolerance <= 0.0_dp .OR. tolerance >= 1.0_dp) RETURN
+      work = MATMUL(TRANSPOSE(rotation), rotation)
+      DO i = 1, 3
+         work(i, i) = work(i, i) - 1.0_dp
+      END DO
+      IF (MAXVAL(ABS(work)) > tolerance) RETURN
+      det = rotation(1, 1)*(rotation(2, 2)*rotation(3, 3) - rotation(2, 3)*rotation(3, 2)) &
+            - rotation(1, 2)*(rotation(2, 1)*rotation(3, 3) - rotation(2, 3)*rotation(3, 1)) &
+            + rotation(1, 3)*(rotation(2, 1)*rotation(3, 2) - rotation(2, 2)*rotation(3, 1))
+      IF (ABS(ABS(det) - 1.0_dp) > 3*tolerance) RETURN
+      r = SIGN(1.0_dp, det)*rotation
+      candidates(0) = 1.0_dp + r(1, 1) + r(2, 2) + r(3, 3)
+      DO i = 1, 3
+         candidates(i) = 2.0_dp*(1.0_dp + r(i, i)) - candidates(0)
+      END DO
+      branch = MAXLOC(candidates, DIM=1) - 1
+      scale = 2.0_dp*SQRT(MAX(0.0_dp, candidates(branch)))
+      q(branch) = 0.25_dp*scale
+      IF (branch == 0) THEN
+         q(1) = (r(3, 2) - r(2, 3))/scale
+         q(2) = (r(1, 3) - r(3, 1))/scale
+         q(3) = (r(2, 1) - r(1, 2))/scale
+      ELSE
+         i = branch
+         j = MODULO(i, 3) + 1
+         k = MODULO(i + 1, 3) + 1
+         q(0) = (r(k, j) - r(j, k))/scale
+         q(j) = (r(j, i) + r(i, j))/scale
+         q(k) = (r(k, i) + r(i, k))/scale
+      END IF
+      q = q/SQRT(SUM(q**2))
+      spin(1, 1) = CMPLX(q(0), -q(3), dp)
+      spin(2, 2) = CONJG(spin(1, 1))
+      spin(1, 2) = CMPLX(-q(2), -q(1), dp)
+      spin(2, 1) = -CONJG(spin(1, 2))
+      status = 0
+   END SUBROUTINE spin_rotation
+
+! **************************************************************************************************
+!> \brief Compose orbital, Bloch, physical-spin and optional time-reversal transformations.
+!> \param orbital Scalar AO action from the source to the target k, including all lattice phases
+!> \param spin Unitary spin matrix from spin_rotation
+!> \param source Source spin-major frame
+!> \param antiunitary Apply physical Theta=i*sigma_y*K before the spatial operation
+!> \param image Transformed spin-major frame in the target AO basis
+!> \param tolerance Spin unitarity tolerance
+!> \param status Zero on success, negative for malformed data
+!> \note Orbital metric/Hamiltonian covariance and k mapping must be checked by the caller.
+! **************************************************************************************************
+   SUBROUTINE transform_spinor_frame(orbital, spin, source, antiunitary, image, tolerance, status)
+      COMPLEX(dp), INTENT(IN)                            :: orbital(:, :), spin(2, 2), source(:, :)
+      LOGICAL, INTENT(IN)                                :: antiunitary
+      COMPLEX(dp), INTENT(OUT)                           :: image(:, :)
+      REAL(dp), INTENT(IN)                               :: tolerance
+      INTEGER, INTENT(OUT)                               :: status
+
+      COMPLEX(dp)                                        :: gram(2, 2)
+      COMPLEX(dp), ALLOCATABLE                           :: down(:, :), up(:, :)
+      INTEGER                                            :: m, n
+
+      status = -1
+      image = 0.0_dp
+      n = SIZE(orbital, 2)
+      m = SIZE(orbital, 1)
+      IF (n < 1 .OR. m < 1 .OR. SIZE(source, 1) /= 2*n) RETURN
+      IF (ANY(SHAPE(image) /= [2*m, SIZE(source, 2)])) RETURN
+      IF (.NOT. ieee_is_finite(tolerance) .OR. tolerance <= 0.0_dp .OR. tolerance >= 1.0_dp) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(orbital, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(orbital)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(source, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(source)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(spin, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(spin)))) RETURN
+      gram = MATMUL(CONJG(TRANSPOSE(spin)), spin)
+      gram(1, 1) = gram(1, 1) - 1.0_dp
+      gram(2, 2) = gram(2, 2) - 1.0_dp
+      IF (MAXVAL(ABS(gram)) > tolerance) RETURN
+      IF (antiunitary) THEN
+         up = MATMUL(orbital, CONJG(source(n + 1:, :)))
+         down = -MATMUL(orbital, CONJG(source(:n, :)))
+      ELSE
+         up = MATMUL(orbital, source(:n, :))
+         down = MATMUL(orbital, source(n + 1:, :))
+      END IF
+      image(:m, :) = spin(1, 1)*up + spin(1, 2)*down
+      image(m + 1:, :) = spin(2, 1)*up + spin(2, 2)*down
+      IF (.NOT. ALL(ieee_is_finite(REAL(image, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(image)))) RETURN
+      status = 0
+   END SUBROUTINE transform_spinor_frame
+
+! **************************************************************************************************
+!> \brief Validate unitary/antiunitary little-group sewing products with a supplied factor system.
+!> \param sewing Matrices at one fixed k, in a common frame and operation ordering
+!> \param product Product-operation indices
+!> \param factor Nonsymmorphic Bloch and double-group phases, not inferred from characters
+!> \param antiunitary Which operations conjugate a following sewing matrix
+!> \param tolerance Absolute unitarity/product tolerance
+!> \param residual Largest unitarity or multiplication residual
+!> \param status Zero on success; -1 invalid data; -2 failed algebra
+!> \param partition Optional zero-based worker index and worker count for first-factor rows
+!> \note A partition validates only its rows. The caller must cover every row and combine
+!>       all statuses and maximum residuals before accepting the complete product law.
+!> \note This does not validate spatial operation tables or provide EBR data.
+! **************************************************************************************************
+   SUBROUTINE check_sewing_product(sewing, product, factor, antiunitary, tolerance, residual, status, partition)
+      COMPLEX(dp), INTENT(IN)                            :: sewing(:, :, :)
+      INTEGER, INTENT(IN)                                :: product(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: factor(:, :)
+      LOGICAL, INTENT(IN)                                :: antiunitary(:)
+      REAL(dp), INTENT(IN)                               :: tolerance
+      REAL(dp), INTENT(OUT)                              :: residual
+      INTEGER, INTENT(OUT)                               :: status
+      INTEGER, INTENT(IN), OPTIONAL                      :: partition(2)
+
+      COMPLEX(dp), ALLOCATABLE                           :: work(:, :)
+      INTEGER                                            :: first, g, gh, h, i, n, ng, stride
+
+      status = -1
+      residual = HUGE(1.0_dp)
+      n = SIZE(sewing, 1)
+      ng = SIZE(sewing, 3)
+      first = 1
+      stride = 1
+      IF (PRESENT(partition)) THEN
+         IF (partition(2) < 1 .OR. partition(1) < 0 .OR. partition(1) >= partition(2)) RETURN
+         first = partition(1) + 1
+         stride = partition(2)
+      END IF
+      IF (n < 1 .OR. ng < 1 .OR. SIZE(sewing, 2) /= n) RETURN
+      IF (ANY(SHAPE(product) /= [ng, ng]) .OR. ANY(SHAPE(factor) /= [ng, ng])) RETURN
+      IF (SIZE(antiunitary) /= ng) RETURN
+      IF (ANY(product < 1) .OR. ANY(product > ng)) RETURN
+      IF (.NOT. ieee_is_finite(tolerance) .OR. tolerance <= 0.0_dp .OR. tolerance >= 1.0_dp) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(sewing, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(sewing)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(factor, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(factor)))) RETURN
+      IF (MAXVAL(ABS(ABS(factor) - 1.0_dp)) > tolerance) RETURN
+      ALLOCATE (work(n, n))
+      residual = 0.0_dp
+      DO g = first, ng, stride
+         work = MATMUL(CONJG(TRANSPOSE(sewing(:, :, g))), sewing(:, :, g))
+         DO i = 1, n
+            work(i, i) = work(i, i) - 1.0_dp
+         END DO
+         residual = MAX(residual, MAXVAL(ABS(work)))
+         DO h = 1, ng
+            gh = PRODUCT(g, h)
+            IF (antiunitary(gh) .NEQV. (antiunitary(g) .NEQV. antiunitary(h))) RETURN
+            IF (antiunitary(g)) THEN
+               work = MATMUL(sewing(:, :, g), CONJG(sewing(:, :, h)))
+            ELSE
+               work = MATMUL(sewing(:, :, g), sewing(:, :, h))
+            END IF
+            residual = MAX(residual, MAXVAL(ABS(work - factor(g, h)*sewing(:, :, gh))))
+         END DO
+      END DO
+      status = -2
+      IF (.NOT. ieee_is_finite(residual) .OR. residual > tolerance) RETURN
+      status = 0
+   END SUBROUTINE check_sewing_product
+
+! **************************************************************************************************
+!> \brief Metric-aware sewing of a transformed scalar/spinor frame to a target frame.
+!> \param metric Positive AO overlap in the target k sector, common to spin components
+!> \param frame Target S-orthonormal frame, spin-major AO ordering
+!> \param image Symmetry-transformed source frame in the target AO basis. The caller supplies
+!>        AO/atom permutations, spin rotation, lattice phases and conjugation for antiunitary maps.
+!> \param sewing B=frame^dagger S image, so image=frame B in a closed subspace
+!> \param tolerance Absolute frame/closure tolerance
+!> \param residuals Target normalization, image normalization, sewing unitarity and closure
+!> \param status 0 closed orthonormal frames; -1 invalid data; -2 nonclosed or nonorthonormal
+!> \note No gauge fixing, polar projection, band reordering or enlargement of the subspace.
+!>       The caller must additionally check energy compatibility and the AO symmetry itself.
+! **************************************************************************************************
+   SUBROUTINE subspace_sewing(metric, frame, image, sewing, tolerance, residuals, status)
+      COMPLEX(dp), INTENT(IN)                            :: metric(:, :), frame(:, :), image(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: sewing(:, :)
+      REAL(dp), INTENT(IN)                               :: tolerance
+      REAL(dp), INTENT(OUT)                              :: residuals(4)
+      INTEGER, INTENT(OUT)                               :: status
+
+      COMPLEX(dp), ALLOCATABLE                           :: difference(:, :), sm_image(:, :), &
+                                                            sm_target(:, :), work(:, :)
+      INTEGER                                            :: first, i, last, nao, nspin, rank, spin
+
+      sewing = 0.0_dp
+      residuals = HUGE(1.0_dp)
+      status = -1
+      nao = SIZE(metric, 1)
+      rank = SIZE(frame, 2)
+      IF (nao < 1 .OR. rank < 1 .OR. SIZE(metric, 2) /= nao) RETURN
+      IF (MOD(SIZE(frame, 1), nao) /= 0 .OR. SIZE(frame, 1) == 0) RETURN
+      nspin = SIZE(frame, 1)/nao
+      IF (ANY(SHAPE(image) /= SHAPE(frame)) .OR. ANY(SHAPE(sewing) /= [rank, rank])) RETURN
+      IF (.NOT. ieee_is_finite(tolerance) .OR. tolerance <= 0.0_dp .OR. tolerance >= 1.0_dp) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(metric, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(metric)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(frame, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(frame)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(image, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(image)))) RETURN
+      IF (MAXVAL(ABS(metric - CONJG(TRANSPOSE(metric)))) > tolerance*MAXVAL(ABS(metric))) RETURN
+      ALLOCATE (sm_target(nao*nspin, rank), sm_image(nao*nspin, rank), work(rank, rank))
+      ALLOCATE (difference(nao*nspin, rank))
+      DO spin = 1, nspin
+         first = (spin - 1)*nao + 1
+         last = spin*nao
+         sm_target(first:last, :) = MATMUL(metric, frame(first:last, :))
+         sm_image(first:last, :) = MATMUL(metric, image(first:last, :))
+      END DO
+      work = MATMUL(CONJG(TRANSPOSE(frame)), sm_target)
+      DO i = 1, rank
+         work(i, i) = work(i, i) - 1.0_dp
+      END DO
+      residuals(1) = MAXVAL(ABS(work))
+      work = MATMUL(CONJG(TRANSPOSE(image)), sm_image)
+      DO i = 1, rank
+         work(i, i) = work(i, i) - 1.0_dp
+      END DO
+      residuals(2) = MAXVAL(ABS(work))
+      sewing = MATMUL(CONJG(TRANSPOSE(frame)), sm_image)
+      work = MATMUL(CONJG(TRANSPOSE(sewing)), sewing)
+      DO i = 1, rank
+         work(i, i) = work(i, i) - 1.0_dp
+      END DO
+      residuals(3) = MAXVAL(ABS(work))
+      difference = image - MATMUL(frame, sewing)
+      sm_image = sm_image - MATMUL(sm_target, sewing)
+      work = MATMUL(CONJG(TRANSPOSE(difference)), sm_image)
+      residuals(4) = SQRT(MAXVAL(ABS(work)))
+      IF (.NOT. ALL(ieee_is_finite(residuals))) RETURN
+      status = -2
+      IF (MAXVAL(residuals) > tolerance) RETURN
+      status = 0
+   END SUBROUTINE subspace_sewing
+
+! **************************************************************************************************
+!> \brief Transform an overlap/link after validating both endpoint sewing matrices.
+!> \param link Source-sector connection, possibly rectangular between different-rank frames
+!> \param left Sewing matrix at the first endpoint
+!> \param right Sewing matrix at the second endpoint
+!> \param antiunitary Conjugate the source link before the two endpoint rotations
+!> \param transformed left * link^(*) * right^dagger in the target frames
+!> \param tolerance Absolute unitarity tolerance
+!> \param status 0 success; -1 invalid data or nonunitary sewing matrix
+!> \note The caller must map the link direction and its reciprocal-lattice boundary phase.
+!>       A reversed edge additionally requires a Hermitian transpose. SCF weights are not used.
+! **************************************************************************************************
+   SUBROUTINE transform_sewing_link(link, left, right, antiunitary, transformed, tolerance, status)
+      COMPLEX(dp), INTENT(IN)                            :: link(:, :), left(:, :), right(:, :)
+      LOGICAL, INTENT(IN)                                :: antiunitary
+      COMPLEX(dp), INTENT(OUT)                           :: transformed(:, :)
+      REAL(dp), INTENT(IN)                               :: tolerance
+      INTEGER, INTENT(OUT)                               :: status
+
+      COMPLEX(dp), ALLOCATABLE                           :: work(:, :)
+      INTEGER                                            :: i, m, n
+
+      transformed = 0.0_dp
+      status = -1
+      n = SIZE(link, 1)
+      m = SIZE(link, 2)
+      IF (n < 1 .OR. m < 1 .OR. ANY(SHAPE(transformed) /= [n, m])) RETURN
+      IF (ANY(SHAPE(left) /= [n, n]) .OR. ANY(SHAPE(right) /= [m, m])) RETURN
+      IF (.NOT. ieee_is_finite(tolerance) .OR. tolerance <= 0.0_dp .OR. tolerance >= 1.0_dp) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(link, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(link)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(left, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(left)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(right, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(right)))) RETURN
+      ALLOCATE (work(n, n))
+      work = MATMUL(CONJG(TRANSPOSE(left)), left)
+      DO i = 1, n
+         work(i, i) = work(i, i) - 1.0_dp
+      END DO
+      IF (MAXVAL(ABS(work)) > tolerance) RETURN
+      DEALLOCATE (work)
+      ALLOCATE (work(m, m))
+      work = MATMUL(CONJG(TRANSPOSE(right)), right)
+      DO i = 1, m
+         work(i, i) = work(i, i) - 1.0_dp
+      END DO
+      IF (MAXVAL(ABS(work)) > tolerance) RETURN
+      IF (antiunitary) THEN
+         transformed = MATMUL(left, MATMUL(CONJG(link), CONJG(TRANSPOSE(right))))
+      ELSE
+         transformed = MATMUL(left, MATMUL(link, CONJG(TRANSPOSE(right))))
+      END IF
+      IF (.NOT. ALL(ieee_is_finite(REAL(transformed, dp)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(AIMAG(transformed)))) RETURN
+      status = 0
+   END SUBROUTINE transform_sewing_link
 
 ! **************************************************************************************************
 !> \brief Decompose a character against a complete unitary character table.
@@ -104,9 +412,10 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: diagnostics(4)
 
       COMPLEX(KIND=dp)                                   :: characters(2), table(2, 2)
-      COMPLEX(KIND=dp), ALLOCATABLE                      :: pc(:, :), projected(:, :), sc(:, :), &
-                                                            trc(:, :), work(:, :)
-      INTEGER                                            :: first, i, j, last, nao, nspin, rank, s
+      COMPLEX(KIND=dp), ALLOCATABLE                      :: pc(:, :), projected(:, :), trc(:, :)
+      INTEGER                                            :: first, i, j, nao, nspin, rank, s, &
+                                                            sewing_status
+      REAL(dp)                                           :: sewing_errors(4)
       REAL(KIND=dp)                                      :: metric_scale
 
       status = -1
@@ -143,30 +452,21 @@ CONTAINS
          END DO
       END DO
       IF (PRESENT(diagnostics)) diagnostics(1) = error
-      ALLOCATE (sc(nao*nspin, rank), pc(nao*nspin, rank), projected(rank, rank), work(rank, rank))
+      ALLOCATE (pc(nao*nspin, rank), projected(rank, rank))
       DO s = 1, nspin
          first = (s - 1)*nao
-         last = s*nao
-         sc(first + 1:last, :) = MATMUL(metric, coeff(first + 1:last, :))
          DO i = 1, nao
             pc(first + mapping(i), :) = phase(i)*coeff(first + i, :)
          END DO
       END DO
-      work(:, :) = MATMUL(CONJG(TRANSPOSE(coeff)), sc)
-      DO i = 1, rank
-         work(i, i) = work(i, i) - 1.0_dp
-      END DO
-      error = MAX(error, MAXVAL(ABS(work)))
-      IF (PRESENT(diagnostics)) diagnostics(2) = MAXVAL(ABS(work))
-      projected(:, :) = MATMUL(CONJG(TRANSPOSE(sc)), pc)
+      CALL subspace_sewing(metric, coeff, pc, projected, tolerance, sewing_errors, sewing_status)
+      IF (sewing_status == -1) RETURN
+      error = MAX(error, MAXVAL(sewing_errors))
+      IF (PRESENT(diagnostics)) diagnostics(2) = sewing_errors(1)
       IF (.NOT. ALL(ieee_is_finite(REAL(projected, dp)))) RETURN
       IF (.NOT. ALL(ieee_is_finite(AIMAG(projected)))) RETURN
-      work(:, :) = MATMUL(CONJG(TRANSPOSE(projected)), projected)
-      DO i = 1, rank
-         work(i, i) = work(i, i) - 1.0_dp
-      END DO
-      error = MAX(error, MAXVAL(ABS(work)), MAXVAL(ABS(projected - CONJG(TRANSPOSE(projected)))))
-      IF (PRESENT(diagnostics)) diagnostics(3) = MAX(MAXVAL(ABS(work)), &
+      error = MAX(error, MAXVAL(ABS(projected - CONJG(TRANSPOSE(projected)))))
+      IF (PRESENT(diagnostics)) diagnostics(3) = MAX(MAXVAL(sewing_errors(2:4)), &
                                                      MAXVAL(ABS(projected - CONJG(TRANSPOSE(projected)))))
       IF (PRESENT(diagnostics)) THEN
          IF (.NOT. check_tr) diagnostics(4) = 0.0_dp
@@ -193,13 +493,11 @@ CONTAINS
          ALLOCATE (trc(2*nao, rank))
          trc(:nao, :) = CONJG(coeff(nao + 1:, :))
          trc(nao + 1:, :) = -CONJG(coeff(:nao, :))
-         projected(:, :) = MATMUL(CONJG(TRANSPOSE(sc)), trc)
-         work(:, :) = MATMUL(CONJG(TRANSPOSE(projected)), projected)
-         DO i = 1, rank
-            work(i, i) = work(i, i) - 1.0_dp
-         END DO
-         error = MAX(error, MAXVAL(ABS(work)), MAXVAL(ABS(projected + TRANSPOSE(projected))))
-         IF (PRESENT(diagnostics)) diagnostics(4) = MAX(MAXVAL(ABS(work)), &
+         CALL subspace_sewing(metric, coeff, trc, projected, tolerance, sewing_errors, sewing_status)
+         IF (sewing_status == -1) RETURN
+         error = MAX(error, MAXVAL(sewing_errors))
+         error = MAX(error, MAXVAL(ABS(projected + TRANSPOSE(projected))))
+         IF (PRESENT(diagnostics)) diagnostics(4) = MAX(MAXVAL(sewing_errors), &
                                                         MAXVAL(ABS(projected + TRANSPOSE(projected))))
          DO j = 1, rank
             DO i = 1, rank

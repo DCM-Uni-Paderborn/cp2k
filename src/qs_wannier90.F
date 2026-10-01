@@ -41,6 +41,7 @@ MODULE qs_wannier90
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit,&
                                               cp_logger_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -75,15 +76,33 @@ MODULE qs_wannier90
                                               qs_env_release,&
                                               qs_environment_type
    USE qs_gamma2kp,                     ONLY: create_kp_from_gamma
+   USE qs_little_group,                 ONLY: prepare_little_group_sampling,&
+                                              write_atomic_signatures,&
+                                              write_little_group,&
+                                              write_little_group_edges,&
+                                              write_little_group_graph,&
+                                              write_little_group_sampling
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
    USE qs_moments,                      ONLY: build_berry_kpoint_matrix
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
+   USE qs_property_links,               ONLY: berry_matrix_type,&
+                                              property_link_context_type,&
+                                              property_links_get,&
+                                              property_links_prepare,&
+                                              property_links_release
+   USE qs_property_soc,                 ONLY: property_soc_groups
+   USE qs_property_symmetry,            ONLY: property_symmetry_mos,&
+                                              property_symmetry_plan,&
+                                              property_symmetry_spin_frame
    USE qs_scf_diagonalization,          ONLY: do_general_diag_kp
    USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE scf_control_types,               ONLY: scf_control_type
    USE soc_pseudopotential_methods,     ONLY: V_SOC_xyz_from_pseudopotential
+   USE topology_compatibility,          ONLY: little_group_data_type,&
+                                              little_group_storage
    USE topology_inversion,              ONLY: gaussian_inversion_action
+   USE topology_reciprocal,             ONLY: reciprocal_sampling_type
    USE topology_state_io,               ONLY: topology_state_begin,&
                                               topology_state_point
    USE topology_symmetry,               ONLY: inversion_representation
@@ -105,11 +124,7 @@ MODULE qs_wannier90
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_wannier90'
    INTEGER, PARAMETER, PRIVATE :: w90_kpoints_mp_grid = 0, &
                                   w90_kpoints_scf = 1, w90_kpoints_nnkp = 2, w90_kpoints_wilson = 3, &
-                                  w90_kpoints_trim = 4
-
-   TYPE berry_matrix_type
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER      :: sinmat => NULL(), cosmat => NULL()
-   END TYPE berry_matrix_type
+                                  w90_kpoints_trim = 4, w90_kpoints_symmetry = 5
 
    PUBLIC :: wannier90_interface, prepare_wannier90_scf_mos
 
@@ -259,20 +274,24 @@ CONTAINS
       CHARACTER(len=default_string_length)               :: filename, input_kp_scheme, reuse_reason, &
                                                             seed_name
       CHARACTER(LEN=timestamp_length)                    :: timestamp
+      COMPLEX(dp), ALLOCATABLE                           :: symmetry_soc_source(:, :), &
+                                                            symmetry_soc_work(:, :)
       COMPLEX(KIND=dp)                                   :: zmmn
       COMPLEX(KIND=dp), ALLOCATABLE :: export_coeff(:, :), export_scalar(:, :), link_matrix(:, :), &
-         parity_metric(:, :), parity_phase(:), scalar_overlap(:, :), soc_h(:, :), soc_u(:, :), &
-         soc_xyz(:, :, :), spinor_coeff(:, :, :), wilson_product(:, :, :)
-      COMPLEX(KIND=dp), ALLOCATABLE, &
-         DIMENSION(:, :, :, :)                           :: reference_mo
-      INTEGER :: aligned_degenerate_blocks, aligned_degenerate_max_size, axis, base_mesh(2), &
-         counts(2), first_point, i, i_rep, ib, ib1, ib2, ibs, ik, ik2, ikk, ikpgr, iloop, ipoint, &
-         ispin, iunit, ix, iy, iz, jpar, k, kpoints_source, loop_direction(3), n_rep, nadd, nao, &
-         nberry_images, nbs, nelectron, nexcl, nkp, nloop, nmo, nntot, npoint, nscalar, nspins, &
-         num_atoms, num_bands, num_bands_tot, num_kpts, num_wann, spin_channel, state_components, &
-         state_unit, status, strong, tqc_dimension, trim_id, weak(3), z4
-      INTEGER, ALLOCATABLE                               :: ebr_coefficients(:, :), loop_index(:), &
-                                                            parity_map(:), parity_odd(:)
+         parity_metric(:, :), parity_phase(:), reference_mo(:, :, :, :), scalar_overlap(:, :), &
+         soc_h(:, :), soc_u(:, :), soc_xyz(:, :, :), spinor_coeff(:, :, :), wilson_product(:, :, :)
+      INTEGER :: aligned_degenerate_blocks, aligned_degenerate_max_size, atomic_max_nodes, axis, &
+         base_mesh(2), counts(2), first_point, i, i_rep, ib, ib1, ib2, ibs, ik, ik2, ikk, ikpgr, &
+         iloop, ipoint, ir_property, ispin, isym_order, iunit, ix, iy, iz, jpar, k, &
+         kpoints_source, little_max_points, little_memory, little_path_points, little_unit, &
+         loop_direction(3), n_rep, nadd, nao, nberry_images, nbs, nelectron, nexcl, nkp, nloop, &
+         nmo, nntot, npoint, nscalar, nspins, num_atoms, num_bands, num_bands_tot, num_kpts, &
+         num_wann, order_count, source_point, spin_channel, state_components, state_unit, status
+      INTEGER :: strong, symmetry_backend, symmetry_group_size, symmetry_memory, tqc_dimension, &
+         trim_id, weak(3), z4
+      INTEGER, ALLOCATABLE :: ebr_coefficients(:, :), little_destinations(:), little_shifts(:, :), &
+         little_sources(:), loop_index(:), parity_map(:), parity_odd(:), property_operation(:), &
+         property_order(:), property_representative(:), property_source(:)
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: band_map, exclude_bands
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: nblist, nnlist
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)           :: nncell
@@ -280,21 +299,24 @@ CONTAINS
       INTEGER, DIMENSION(3)                              :: input_nkp_grid, mp_grid
       INTEGER, DIMENSION(:), POINTER                     :: invals
       INTEGER, DIMENSION(:, :, :), POINTER               :: berry_cell_index, cell_to_index
-      LOGICAL :: diis_step, do_chern, do_kpoints, do_parity, do_soc, do_tqc, do_wilson, do_z2, &
-         export_state, full_mesh_diagonalized, gamma_only, input_full_grid, input_gamma_centered, &
-         input_kpoint_symmetry, lowest_bands, mp_grid_explicit, mp_grid_valid, my_kpgrp, mygrp, &
-         nonnegative_atomic, ordered_berry, require_global_gap, reuse_scf_mos, reused_scf_mos, &
-         signed_atomic, spinors, time_reversal, use_bloch_phases, validate_reuse_ok, &
-         validate_reuse_scf_mos
+      LOGICAL :: diis_step, do_atomic_signatures, do_chern, do_compatibility, do_kpoints, &
+         do_little, do_parity, do_sampling, do_soc, do_tqc, do_wilson, do_z2, export_state, &
+         full_mesh_diagonalized, gamma_only, input_full_grid, input_gamma_centered, &
+         input_kpoint_symmetry, link_groups, lowest_bands, mp_grid_explicit, mp_grid_valid, &
+         my_kpgrp, mygrp, nonnegative_atomic, ordered_berry, property_symmetry, &
+         require_global_gap, reuse_scf_mos, reused_scf_mos, signed_atomic, soc_groups, spinors, &
+         time_reversal, use_bloch_phases, validate_reuse_ok, validate_reuse_scf_mos
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: keep_band
+      REAL(dp) :: little_retained, symmetry_geometry, symmetry_operators, &
+         symmetry_projection(3, 3), symmetry_soc_errors(2)
       REAL(KIND=dp) :: aligned_degenerate_min_svalue, berry_phase, chern_winding, cmmn, &
          conduction_min, direct_gap, gap_tol, gauge_arg, gauge_imag, gauge_real, gauge_tmp, ksign, &
-         link_sv, loop_origin(3), pair_gap, parity_checks(4), parity_energy_error, &
-         parity_energy_tolerance, parity_error, parity_gap, parity_origin(3), parity_tolerance, &
-         reuse_candidate_deviation, reuse_candidate_metric_deviation, reuse_candidate_min_svalue, &
-         reuse_candidate_residual, rmmn, transverse(3), valence_max, &
-         validation_eigenvalue_deviation, validation_min_svalue, validation_subspace_deviation, &
-         wkp_ref
+         link_sv, little_energy, little_geometry, little_tolerance, loop_origin(3), pair_gap, &
+         parity_checks(4), parity_energy_error, parity_energy_tolerance, parity_error, parity_gap, &
+         parity_origin(3), parity_tolerance, reuse_candidate_deviation, &
+         reuse_candidate_metric_deviation, reuse_candidate_min_svalue, reuse_candidate_residual, &
+         rmmn, transverse(3), valence_max, validation_eigenvalue_deviation, validation_min_svalue
+      REAL(KIND=dp) :: validation_subspace_deviation, wkp_ref
       REAL(KIND=dp), ALLOCATABLE                         :: loop_sv(:), parity_energies(:), &
                                                             scalar_values(:), spinor_values(:, :)
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigval
@@ -319,14 +341,18 @@ CONTAINS
                                                             loop_real, rmatrix, rmatrix_full
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_env_type), POINTER                     :: kp
-      TYPE(kpoint_type), POINTER                         :: berry_kpoint, kpoint, qs_kpoint
+      TYPE(kpoint_type), POINTER                         :: berry_kpoint, kpoint, property_points, &
+                                                            qs_kpoint
+      TYPE(little_group_data_type), ALLOCATABLE          :: little_points(:)
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: overlap_nl, sab_nl
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
+      TYPE(property_link_context_type)                   :: link_context
       TYPE(qs_environment_type), POINTER                 :: qs_env_kp
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(reciprocal_sampling_type)                     :: symmetry_sampling
       TYPE(scf_control_type), POINTER                    :: scf_control
 
       !--------------------------------------------------------------------------------------------!
@@ -335,6 +361,7 @@ CONTAINS
       CALL section_vals_val_get(input, "SEED_NAME", c_val=seed_name)
       CALL section_vals_val_get(input, "MP_GRID", i_vals=invals, explicit=mp_grid_explicit)
       CALL section_vals_val_get(input, "KPOINTS_SOURCE", i_val=kpoints_source)
+      do_sampling = kpoints_source == w90_kpoints_symmetry
       ordered_berry = kpoints_source >= w90_kpoints_nnkp
       CALL section_vals_val_get(input, "NNKP_FILE", c_val=nnkp_file)
       CALL section_vals_val_get(input, "SPIN_CHANNEL", i_val=spin_channel)
@@ -345,6 +372,40 @@ CONTAINS
       CALL section_vals_val_get(input, "STATE_EXPORT", l_val=export_state)
       CALL section_vals_val_get(input, "PARITY", l_val=do_parity)
       CALL section_vals_val_get(input, "INVERSION_TQC", l_val=do_tqc)
+      CALL section_vals_val_get(input, "LITTLE_GROUP_IRREPS", l_val=do_little)
+      CALL section_vals_val_get(input, "LITTLE_GROUP_COMPATIBILITY", l_val=do_compatibility)
+      do_compatibility = do_compatibility .OR. do_sampling
+      CALL section_vals_val_get(input, "ATOMIC_SIGNATURES", l_val=do_atomic_signatures)
+      CALL section_vals_val_get(input, "ATOMIC_SIGNATURE_MAX_NODES", i_val=atomic_max_nodes)
+      IF (do_atomic_signatures .AND. atomic_max_nodes < 0) THEN
+         CPABORT("ATOMIC_SIGNATURE_MAX_NODES must be nonnegative.")
+      END IF
+      do_little = do_little .OR. do_compatibility .OR. do_atomic_signatures
+      IF (do_compatibility .AND. kpoints_source /= w90_kpoints_nnkp .AND. kpoints_source /= w90_kpoints_wilson &
+          .AND. .NOT. do_sampling) THEN
+         CPABORT("LITTLE_GROUP_COMPATIBILITY requires NNKP, WILSON or SYMMETRY segments.")
+      END IF
+      CALL section_vals_val_get(input, "LITTLE_GROUP_EPS_GEOMETRY", r_val=little_geometry)
+      CALL section_vals_val_get(input, "LITTLE_GROUP_TOLERANCE", r_val=little_tolerance)
+      CALL section_vals_val_get(input, "LITTLE_GROUP_ENERGY_TOL", r_val=little_energy)
+      CALL section_vals_val_get(input, "LITTLE_GROUP_MAX_MEMORY_MB", i_val=little_memory)
+      CALL section_vals_val_get(input, "LITTLE_GROUP_PATH_POINTS", i_val=little_path_points)
+      CALL section_vals_val_get(input, "LITTLE_GROUP_MAX_POINTS", i_val=little_max_points)
+      IF (do_little) THEN
+#if !defined(__SPGLIB)
+         CPABORT("LITTLE_GROUP_IRREPS requires a CP2K build with SPGLIB.")
+#endif
+         IF (.NOT. ordered_berry) THEN
+            CPABORT("LITTLE_GROUP_IRREPS requires NNKP, WILSON, TRIM or SYMMETRY points.")
+         END IF
+         IF (.NOT. ALL(ieee_is_finite([little_geometry, little_tolerance, little_energy]))) THEN
+            CPABORT("Little-group tolerances must be finite.")
+         END IF
+         IF (MIN(little_geometry, little_tolerance, little_energy) <= 0.0_dp .OR. &
+             little_tolerance >= 0.01_dp .OR. little_memory < 1) THEN
+            CPABORT("Invalid little-group tolerances or memory limit.")
+         END IF
+      END IF
       CALL section_vals_val_get(input, "TQC_DIMENSION", i_val=tqc_dimension)
       CALL section_vals_val_get(input, "PARITY_ORIGIN", r_vals=rvals)
       parity_origin = rvals
@@ -352,17 +413,37 @@ CONTAINS
       CALL section_vals_val_get(input, "PARITY_ENERGY_TOL", r_val=parity_energy_tolerance)
       do_parity = do_parity .OR. do_tqc .OR. kpoints_source == w90_kpoints_trim
       IF (do_parity .AND. .NOT. ordered_berry) THEN
-         CPABORT("PARITY requires explicit NNKP, WILSON or TRIM points.")
+         CPABORT("PARITY requires NNKP, WILSON, TRIM or SYMMETRY points.")
       END IF
       IF (tqc_dimension < 2 .OR. tqc_dimension > 3) CPABORT("TQC_DIMENSION must be 2 or 3.")
       IF (parity_tolerance <= 0.0_dp .OR. parity_energy_tolerance <= 0.0_dp) THEN
          CPABORT("Invalid parity tolerance.")
       END IF
       IF (export_state .AND. .NOT. ordered_berry) THEN
-         CPABORT("STATE_EXPORT requires explicit NNKP, WILSON or TRIM points.")
+         CPABORT("STATE_EXPORT requires NNKP, WILSON, TRIM or SYMMETRY points.")
       END IF
       CALL section_vals_val_get(input, "TIME_REVERSAL", l_val=time_reversal)
       CALL section_vals_val_get(input, "SOC", l_val=do_soc)
+      CALL section_vals_val_get(input, "SYMMETRY", l_val=property_symmetry)
+      CALL section_vals_val_get(input, "SYMMETRY_BACKEND", i_val=symmetry_backend)
+      CALL section_vals_val_get(input, "EPS_SYMMETRY", r_val=symmetry_geometry)
+      CALL section_vals_val_get(input, "EPS_SYMMETRY_OPERATORS", r_val=symmetry_operators)
+      CALL section_vals_val_get(input, "SYMMETRY_MAX_MEMORY_MB", i_val=symmetry_memory)
+      CALL section_vals_val_get(input, "SYMMETRY_PARALLEL_GROUP_SIZE", i_val=symmetry_group_size)
+      NULLIFY (property_points)
+      IF (property_symmetry) THEN
+         IF (.NOT. ordered_berry) THEN
+            CPABORT('WANNIER90 SYMMETRY requires independent explicit property points.')
+         END IF
+         IF (symmetry_group_size < -1) CPABORT('SYMMETRY_PARALLEL_GROUP_SIZE must be at least -1.')
+         IF (.NOT. ALL(ieee_is_finite([symmetry_geometry, symmetry_operators]))) THEN
+            CPABORT('Property symmetry tolerances must be finite.')
+         END IF
+         IF (MIN(symmetry_geometry, symmetry_operators) <= 0.0_dp .OR. &
+             symmetry_operators >= 0.01_dp .OR. symmetry_memory < 1) THEN
+            CPABORT('Invalid property symmetry tolerances or memory.')
+         END IF
+      END IF
       IF (do_tqc .AND. (.NOT. do_soc .OR. .NOT. time_reversal)) THEN
          CPABORT("INVERSION_TQC requires SOC T and TIME_REVERSAL T.")
       END IF
@@ -373,6 +454,9 @@ CONTAINS
       do_wilson = do_wilson .OR. kpoints_source == w90_kpoints_wilson
       IF (do_wilson .AND. kpoints_source == w90_kpoints_trim) THEN
          CPABORT("TRIM points are not Wilson loops; use KPOINTS_SOURCE WILSON.")
+      END IF
+      IF (do_wilson .AND. do_sampling) THEN
+         CPABORT("SYMMETRY segments are not Wilson loops; use KPOINTS_SOURCE WILSON.")
       END IF
       IF (do_wilson) CALL cite_reference(Gresch2017)
       IF (do_z2) CALL cite_reference(Soluyanov2011)
@@ -385,15 +469,21 @@ CONTAINS
       IF (do_chern .AND. (kpoints_source /= w90_kpoints_wilson .OR. do_z2)) THEN
          CPABORT("CHERN requires a full WILSON surface and cannot be combined with Z2.")
       END IF
-      IF (require_global_gap .AND. .NOT. do_wilson) THEN
-         CPABORT("REQUIRE_GLOBAL_GAP requires Wilson analysis.")
+      IF (require_global_gap .AND. .NOT. (do_wilson .OR. do_sampling)) THEN
+         CPABORT("REQUIRE_GLOBAL_GAP requires WILSON or SYMMETRY analysis.")
       END IF
       CALL get_qs_env(qs_env, dft_control=dft_control)
+      IF (property_symmetry .AND. dft_control%nspins /= 1) THEN
+         CPABORT('Property symmetry requires a restricted SCF.')
+      END IF
       IF (spin_channel < 1 .OR. spin_channel > dft_control%nspins) THEN
          CPABORT("WANNIER90%SPIN_CHANNEL is not available in this calculation.")
       END IF
       IF (do_soc .AND. dft_control%nspins /= 1) THEN
          CPABORT("WANNIER90 SOC currently requires a restricted SCF.")
+      END IF
+      IF (do_little .AND. time_reversal .AND. dft_control%nspins /= 1) THEN
+         CPABORT("Little-group time reversal requires a restricted SCF.")
       END IF
       CALL section_vals_val_get(input, "WANNIER_FUNCTIONS", i_val=num_wann)
       CALL section_vals_val_get(input, "ADDED_MOS", i_val=nadd)
@@ -449,8 +539,14 @@ CONTAINS
       CALL kpoint_create(kpoint)
 
       SELECT CASE (kpoints_source)
-      CASE (w90_kpoints_nnkp, w90_kpoints_wilson, w90_kpoints_trim)
-         IF (kpoints_source == w90_kpoints_nnkp) THEN
+      CASE (w90_kpoints_nnkp, w90_kpoints_wilson, w90_kpoints_trim, w90_kpoints_symmetry)
+         IF (do_sampling) THEN
+            CALL prepare_little_group_sampling(qs_env, time_reversal, little_geometry, little_tolerance, &
+                                               little_path_points, little_max_points, symmetry_sampling, iw)
+            kpt_latt = symmetry_sampling%kpoints
+            ! Native symmetry uses a ragged graph, not Wannier90 overlap neighbours.
+            ALLOCATE (nnlist(SIZE(kpt_latt, 2), 0), nncell(3, SIZE(kpt_latt, 2), 0))
+         ELSE IF (kpoints_source == w90_kpoints_nnkp) THEN
             CALL read_wannier90_nnkpts(nnkp_file, real_lattice, recip_lattice, kpt_latt, nnlist, nncell)
          ELSE IF (kpoints_source == w90_kpoints_trim) THEN
             num_kpts = 2**tqc_dimension
@@ -945,7 +1041,42 @@ CONTAINS
          END IF
       END IF
       IF (.NOT. reused_scf_mos .AND. .NOT. full_mesh_diagonalized) THEN
-         CALL do_general_diag_kp(matrix_ks, matrix_s, kpoint, scf_env, scf_control, .FALSE., diis_step)
+         IF (property_symmetry) THEN
+            symmetry_projection = 0.0_dp
+            DO i = 1, 3
+               symmetry_projection(i, i) = 1.0_dp
+            END DO
+            CALL property_symmetry_plan(qs_env_kp, kpoint%xkp, projection=symmetry_projection, &
+                                        backend=symmetry_backend, tolerance=symmetry_geometry, points=property_points, &
+                                        representative=property_representative, operation=property_operation)
+            ALLOCATE (property_source(property_points%nkp), property_order(num_kpts))
+            order_count = 0
+            DO ir_property = 1, property_points%nkp
+               source_point = 0
+               DO ik = 1, num_kpts
+                  IF (.NOT. kpoint_same_periodic(kpoint%xkp(:, ik), property_points%xkp(:, ir_property))) CYCLE
+                  source_point = ik
+                  EXIT
+               END DO
+               CPASSERT(source_point > 0)
+               property_source(ir_property) = source_point
+               property_representative(source_point) = ir_property
+               property_operation(source_point) = 0
+               order_count = order_count + 1
+               property_order(order_count) = source_point
+               DO ik = 1, num_kpts
+                  IF (property_representative(ik) /= ir_property .OR. ik == source_point) CYCLE
+                  order_count = order_count + 1
+                  property_order(order_count) = ik
+               END DO
+            END DO
+            CPASSERT(order_count == num_kpts)
+            property_points%parallel_group_size = symmetry_group_size
+            CALL property_symmetry_mos(qs_env_kp, kpoint, property_points, property_representative, &
+                                       property_operation, nadd, do_soc, symmetry_operators, symmetry_memory, iw)
+         ELSE
+            CALL do_general_diag_kp(matrix_ks, matrix_s, kpoint, scf_env, scf_control, .FALSE., diis_step)
+         END IF
       END IF
       IF (ALLOCATED(reference_mo)) DEALLOCATE (reference_mo)
       IF (ALLOCATED(reference_eigenvalues)) DEALLOCATE (reference_eigenvalues)
@@ -956,7 +1087,7 @@ CONTAINS
       !
       ! Calculate and print Overlaps
       !
-      IF (para_env%is_source()) THEN
+      IF (para_env%is_source() .AND. .NOT. do_sampling) THEN
          WRITE (filename, '(A,A)') TRIM(seed_name), ".mmn"
          CALL open_file(filename, unit_number=iunit, file_status="UNKNOWN", file_action="WRITE")
          CALL m_timestamp(timestamp)
@@ -1073,7 +1204,27 @@ CONTAINS
          ALLOCATE (soc_xyz(nmo, nmo, 3), soc_h(2*nmo, 2*nmo), soc_u(2*nmo, 2*nmo))
          ALLOCATE (scalar_values(2*nmo), spinor_values(2*nmo, num_kpts))
          ALLOCATE (spinor_coeff(2*nmo, num_bands, num_kpts), scalar_overlap(nmo, nmo))
-         DO ik = 1, num_kpts
+         IF (property_symmetry) ALLOCATE (symmetry_soc_source(2*nmo, 2*nmo), symmetry_soc_work(2*nmo, 2*nmo))
+         symmetry_soc_errors = 0.0_dp
+         soc_groups = .FALSE.
+         IF (property_symmetry) THEN
+            CALL property_soc_groups(property_points, kpoint%xkp, property_representative, property_operation, &
+                                     property_source, band_map, soc_matrices, mat_real, symmetry_operators, symmetry_memory, &
+                                     spinor_values, spinor_coeff, symmetry_soc_errors, soc_groups, iw)
+            IF (.NOT. soc_groups .AND. iw > 0) THEN
+               WRITE (iw, '(T2,A)') 'TOPOLOGY| SOC snapshots unavailable; using collective orbit assembly.'
+               WRITE (iw, '(T2,A,I0)') 'TOPOLOGY| Property SOC MPI groups: 1 ranks per group: ', para_env%num_pe
+            END IF
+         END IF
+         DO isym_order = 1, num_kpts
+            IF (soc_groups) EXIT
+            ik = isym_order
+            source_point = ik
+            IF (property_symmetry) THEN
+               ik = property_order(isym_order)
+               ir_property = property_representative(ik)
+               source_point = property_source(ir_property)
+            END IF
             kp => kpoint%kp_env(ik)%kpoint_env
             CALL cp_cfm_copy_general(kp%mos(1)%cmo_coeff, fmk1_cfm, para_env)
             CALL get_mo_set(kp%mos(1), eigenvalues=eigenvalues)
@@ -1110,86 +1261,130 @@ CONTAINS
                   MAXVAL(ABS(soc_h - CONJG(TRANSPOSE(soc_h))))
                CPABORT("WANNIER90 SOC: non-Hermitian second-variational Hamiltonian.")
             END IF
-            CALL diag_complex(soc_h, soc_u, spinor_values(:, ik))
+            IF (ik == source_point) THEN
+               CALL diag_complex(soc_h, soc_u, spinor_values(:, ik))
+               IF (property_symmetry) symmetry_soc_source = soc_u
+            ELSE
+               CALL property_symmetry_spin_frame(property_points, ir_property, property_operation(ik), &
+                                                 symmetry_soc_source, soc_u, status)
+               IF (status /= 0) THEN
+                  CPABORT('Could not reconstruct property SOC frame.')
+               END IF
+               spinor_values(:, ik) = spinor_values(:, source_point)
+               symmetry_soc_work = MATMUL(CONJG(TRANSPOSE(soc_u)), soc_u)
+               DO ib = 1, 2*nmo
+                  symmetry_soc_work(ib, ib) = symmetry_soc_work(ib, ib) - 1.0_dp
+               END DO
+               symmetry_soc_errors(1) = MAX(symmetry_soc_errors(1), MAXVAL(ABS(symmetry_soc_work)))
+               symmetry_soc_work = MATMUL(soc_h, soc_u)
+               DO ib = 1, 2*nmo
+                  symmetry_soc_work(:, ib) = symmetry_soc_work(:, ib) - soc_u(:, ib)*spinor_values(ib, ik)
+               END DO
+               symmetry_soc_errors(2) = MAX(symmetry_soc_errors(2), MAXVAL(ABS(symmetry_soc_work))/ &
+                                            MAX(1.0_dp, MAXVAL(ABS(soc_h))))
+               IF (.NOT. ALL(ieee_is_finite(REAL(symmetry_soc_work, dp))) .OR. &
+                   .NOT. ALL(ieee_is_finite(AIMAG(symmetry_soc_work))) .OR. &
+                   MAXVAL(symmetry_soc_errors) > symmetry_operators) THEN
+                  IF (iw > 0) WRITE (iw, '(T2,A,I0,A,2ES14.5)') &
+                     'TOPOLOGY| Invalid SOC orbit at point ', ik, ' normalization/H residuals: ', symmetry_soc_errors
+                  CPABORT('Property symmetry does not preserve the SOC Hamiltonian or scalar band window.')
+               END IF
+            END IF
             spinor_coeff(:, :, ik) = soc_u(:, band_map)
          END DO
          CALL dbcsr_deallocate_matrix_set(soc_matrices)
          DEALLOCATE (soc_xyz, soc_h, soc_u, scalar_values)
          IF (iw > 0) WRITE (iw, '(T2,A,I0)') "TOPOLOGY| Scalar bands in SOC second variation: ", nmo
+         IF (property_symmetry .AND. iw > 0) THEN
+            WRITE (iw, '(T2,A,I0,A,I0)') 'TOPOLOGY| Property SOC diagonalizations: ', property_points%nkp, ' / ', num_kpts
+            WRITE (iw, '(T2,A,2ES14.5)') 'TOPOLOGY| Property SOC normalization/H residuals: ', symmetry_soc_errors
+         END IF
+      END IF
+      link_groups = .FALSE.
+      IF (property_symmetry .AND. nntot > 0) THEN
+         CALL property_links_prepare(link_context, property_points, berry_kpoint, berry_matrix, mat_real, &
+                                     nmo, num_bands, num_kpts*nntot, symmetry_memory, link_groups, iw)
+         IF (.NOT. link_groups .AND. iw > 0) WRITE (iw, '(T2,A)') &
+            'TOPOLOGY| Directed-link snapshots unavailable; using collective link construction.'
       END IF
       DO ispin = spin_channel, spin_channel
          ! loop over all k-points
          DO ik = 1, num_kpts
-            ! get the MO coefficients for this k-point
-            my_kpgrp = (ik >= kpoint%kp_range(1) .AND. ik <= kpoint%kp_range(2))
-            IF (my_kpgrp) THEN
-               ikk = ik - kpoint%kp_range(1) + 1
-               kp => kpoint%kp_env(ikk)%kpoint_env
-               cmo_coeff_source => kp%mos(ispin)%cmo_coeff
-            ELSE
-               NULLIFY (kp)
-               NULLIFY (cmo_coeff_source)
+            IF (.NOT. link_groups) THEN
+               ! get the MO coefficients for this k-point
+               my_kpgrp = (ik >= kpoint%kp_range(1) .AND. ik <= kpoint%kp_range(2))
+               IF (my_kpgrp) THEN
+                  ikk = ik - kpoint%kp_range(1) + 1
+                  kp => kpoint%kp_env(ikk)%kpoint_env
+                  cmo_coeff_source => kp%mos(ispin)%cmo_coeff
+               ELSE
+                  NULLIFY (kp, cmo_coeff_source)
+               END IF
+               CALL wannier90_copy_cfm_general(cmo_coeff_source, fmk1_cfm, para_env)
             END IF
-            CALL wannier90_copy_cfm_general(cmo_coeff_source, fmk1_cfm, para_env)
             ! loop over all connected neighbors
             DO i = 1, nntot
                ! get the MO coefficients for the connected k-point
                ik2 = nnlist(ik, i)
-               mygrp = (ik2 >= kpoint%kp_range(1) .AND. ik2 <= kpoint%kp_range(2))
-               IF (mygrp) THEN
-                  ikk = ik2 - kpoint%kp_range(1) + 1
-                  kp => kpoint%kp_env(ikk)%kpoint_env
-                  cmo_coeff_source => kp%mos(ispin)%cmo_coeff
+               IF (link_groups) THEN
+                  CALL property_links_get(link_context, kpoint, ispin, nnlist, nblist, band_map, spinor_coeff, &
+                                          (ik - 1)*nntot + i, link_matrix)
                ELSE
-                  NULLIFY (kp)
-                  NULLIFY (cmo_coeff_source)
-               END IF
-               CALL wannier90_copy_cfm_general(cmo_coeff_source, fmk2_cfm, para_env)
-               !
-               ! transfer realspace overlaps to connected k-point
-               ibs = nblist(ik, i)
-               ksign = SIGN(1.0_dp, REAL(ibs, KIND=dp))
-               ibs = ABS(ibs)
-               IF (ordered_berry) THEN
-                  ! The cross-k AO operator is not Hermitian. Retain ordered atom pairs
-                  ! and use exp(i*k'.R) [cos(b.r) - i*sin(b.r)] without symmetry shortcuts.
-                  CALL dbcsr_set(rmatrix_full, 0.0_dp)
-                  CALL dbcsr_set(cmatrix_full, 0.0_dp)
-                  CALL dbcsr_set(loop_real, 0.0_dp)
-                  CALL dbcsr_set(loop_imag, 0.0_dp)
-                  CALL rskp_transform(rmatrix_full, cmatrix_full, berry_matrix(ibs)%cosmat, 1, &
-                                      kpoint%xkp(:, ik2), berry_cell_index, overlap_nl)
-                  CALL rskp_transform(loop_real, loop_imag, berry_matrix(ibs)%sinmat, 1, &
-                                      kpoint%xkp(:, ik2), berry_cell_index, overlap_nl, rs_sign=ksign)
-                  CALL dbcsr_add(rmatrix_full, loop_imag, 1.0_dp, -1.0_dp)
-                  CALL dbcsr_add(cmatrix_full, loop_real, 1.0_dp, 1.0_dp)
-               ELSE
-                  CALL dbcsr_set(rmatrix, 0.0_dp)
-                  CALL dbcsr_set(cmatrix, 0.0_dp)
-                  CALL rskp_transform(rmatrix, cmatrix, rsmat=berry_matrix(ibs)%cosmat, ispin=1, &
-                                      xkp=kpoint%xkp(1:3, ik2), cell_to_index=cell_to_index, sab_nl=sab_nl, &
-                                      is_complex=.FALSE., rs_sign=ksign)
-                  CALL rskp_transform(cmatrix, rmatrix, rsmat=berry_matrix(ibs)%sinmat, ispin=1, &
-                                      xkp=kpoint%xkp(1:3, ik2), cell_to_index=cell_to_index, sab_nl=sab_nl, &
-                                      is_complex=.TRUE., rs_sign=ksign)
+                  mygrp = (ik2 >= kpoint%kp_range(1) .AND. ik2 <= kpoint%kp_range(2))
+                  IF (mygrp) THEN
+                     ikk = ik2 - kpoint%kp_range(1) + 1
+                     kp => kpoint%kp_env(ikk)%kpoint_env
+                     cmo_coeff_source => kp%mos(ispin)%cmo_coeff
+                  ELSE
+                     NULLIFY (kp, cmo_coeff_source)
+                  END IF
+                  CALL wannier90_copy_cfm_general(cmo_coeff_source, fmk2_cfm, para_env)
                   !
-                  ! calculate M_(mn)^(k,b) = C(k)^H O(k,b) C(k+b)
-                  CALL dbcsr_desymmetrize(rmatrix, rmatrix_full)
-                  CALL dbcsr_desymmetrize(cmatrix, cmatrix_full)
-               END IF
-               CALL copy_dbcsr_to_fm(rmatrix_full, mat_real)
-               CALL copy_dbcsr_to_fm(cmatrix_full, mat_imag)
-               CALL cp_fm_to_cfm(mat_real, mat_imag, omat_cfm)
-               CALL parallel_gemm("N", "N", nao, nmo, nao, CMPLX(1.0_dp, 0.0_dp, KIND=dp), &
-                                  omat_cfm, fmk2_cfm, CMPLX(0.0_dp, 0.0_dp, KIND=dp), tmp_cfm)
-               CALL parallel_gemm("C", "N", nmo, nmo, nao, CMPLX(1.0_dp, 0.0_dp, KIND=dp), &
-                                  fmk1_cfm, tmp_cfm, CMPLX(0.0_dp, 0.0_dp, KIND=dp), mmn_cfm)
-               IF (do_soc) THEN
-                  CALL cp_cfm_get_submatrix(mmn_cfm, scalar_overlap)
-                  link_matrix(:, :) = MATMUL(CONJG(TRANSPOSE(spinor_coeff(1:nmo, :, ik))), &
-                                             MATMUL(scalar_overlap, spinor_coeff(1:nmo, :, ik2))) + &
-                                      MATMUL(CONJG(TRANSPOSE(spinor_coeff(nmo + 1:, :, ik))), &
-                                             MATMUL(scalar_overlap, spinor_coeff(nmo + 1:, :, ik2)))
+                  ! transfer realspace overlaps to connected k-point
+                  ibs = nblist(ik, i)
+                  ksign = SIGN(1.0_dp, REAL(ibs, KIND=dp))
+                  ibs = ABS(ibs)
+                  IF (ordered_berry) THEN
+                     ! The cross-k AO operator is not Hermitian. Retain ordered atom pairs
+                     ! and use exp(i*k'.R) [cos(b.r) - i*sin(b.r)] without symmetry shortcuts.
+                     CALL dbcsr_set(rmatrix_full, 0.0_dp)
+                     CALL dbcsr_set(cmatrix_full, 0.0_dp)
+                     CALL dbcsr_set(loop_real, 0.0_dp)
+                     CALL dbcsr_set(loop_imag, 0.0_dp)
+                     CALL rskp_transform(rmatrix_full, cmatrix_full, berry_matrix(ibs)%cosmat, 1, &
+                                         kpoint%xkp(:, ik2), berry_cell_index, overlap_nl)
+                     CALL rskp_transform(loop_real, loop_imag, berry_matrix(ibs)%sinmat, 1, &
+                                         kpoint%xkp(:, ik2), berry_cell_index, overlap_nl, rs_sign=ksign)
+                     CALL dbcsr_add(rmatrix_full, loop_imag, 1.0_dp, -1.0_dp)
+                     CALL dbcsr_add(cmatrix_full, loop_real, 1.0_dp, 1.0_dp)
+                  ELSE
+                     CALL dbcsr_set(rmatrix, 0.0_dp)
+                     CALL dbcsr_set(cmatrix, 0.0_dp)
+                     CALL rskp_transform(rmatrix, cmatrix, rsmat=berry_matrix(ibs)%cosmat, ispin=1, &
+                                         xkp=kpoint%xkp(1:3, ik2), cell_to_index=cell_to_index, sab_nl=sab_nl, &
+                                         is_complex=.FALSE., rs_sign=ksign)
+                     CALL rskp_transform(cmatrix, rmatrix, rsmat=berry_matrix(ibs)%sinmat, ispin=1, &
+                                         xkp=kpoint%xkp(1:3, ik2), cell_to_index=cell_to_index, sab_nl=sab_nl, &
+                                         is_complex=.TRUE., rs_sign=ksign)
+                     !
+                     ! calculate M_(mn)^(k,b) = C(k)^H O(k,b) C(k+b)
+                     CALL dbcsr_desymmetrize(rmatrix, rmatrix_full)
+                     CALL dbcsr_desymmetrize(cmatrix, cmatrix_full)
+                  END IF
+                  CALL copy_dbcsr_to_fm(rmatrix_full, mat_real)
+                  CALL copy_dbcsr_to_fm(cmatrix_full, mat_imag)
+                  CALL cp_fm_to_cfm(mat_real, mat_imag, omat_cfm)
+                  CALL parallel_gemm("N", "N", nao, nmo, nao, CMPLX(1.0_dp, 0.0_dp, KIND=dp), &
+                                     omat_cfm, fmk2_cfm, CMPLX(0.0_dp, 0.0_dp, KIND=dp), tmp_cfm)
+                  CALL parallel_gemm("C", "N", nmo, nmo, nao, CMPLX(1.0_dp, 0.0_dp, KIND=dp), &
+                                     fmk1_cfm, tmp_cfm, CMPLX(0.0_dp, 0.0_dp, KIND=dp), mmn_cfm)
+                  IF (do_soc) THEN
+                     CALL cp_cfm_get_submatrix(mmn_cfm, scalar_overlap)
+                     link_matrix(:, :) = MATMUL(CONJG(TRANSPOSE(spinor_coeff(1:nmo, :, ik))), &
+                                                MATMUL(scalar_overlap, spinor_coeff(1:nmo, :, ik2))) + &
+                                         MATMUL(CONJG(TRANSPOSE(spinor_coeff(nmo + 1:, :, ik))), &
+                                                MATMUL(scalar_overlap, spinor_coeff(nmo + 1:, :, ik2)))
+                  END IF
                END IF
                !
                ! write to output file
@@ -1208,7 +1403,7 @@ CONTAINS
                END IF
                DO ib2 = 1, num_bands
                   DO ib1 = 1, num_bands
-                     IF (do_soc) THEN
+                     IF (do_soc .OR. link_groups) THEN
                         rmmn = REAL(link_matrix(ib1, ib2), dp)
                         cmmn = AIMAG(link_matrix(ib1, ib2))
                      ELSE
@@ -1237,15 +1432,29 @@ CONTAINS
             END DO
          END DO
       END DO
+      CALL property_links_release(link_context)
+      IF (link_groups .AND. iw > 0) WRITE (iw, '(T2,A,I0)') &
+         'TOPOLOGY| Property directed links delivered: ', num_kpts*nntot
       ! Optional full-state snapshots, before the distributed work matrices are released.
-      IF (export_state .OR. do_parity) THEN
+      IF (export_state .OR. do_parity .OR. do_little) THEN
          state_components = 1
          IF (do_soc) state_components = 2
          ALLOCATE (export_scalar(nao, nscalar), export_coeff(nao*state_components, num_bands))
          state_unit = -1
+         little_unit = -1
+         little_retained = 0.0_dp
+         IF (do_compatibility .OR. do_atomic_signatures) ALLOCATE (little_points(num_kpts))
+         IF (do_little .AND. para_env%is_source()) THEN
+            CALL open_file(TRIM(seed_name)//".little_group", unit_number=little_unit, &
+                           file_status="REPLACE", file_action="WRITE")
+            WRITE (little_unit, '(A)') '# CP2K little-group data v1; cell-gauge bands, spin-major SOC coefficients'
+            WRITE (little_unit, '(A)') '# OPERATION stores index, antiunitary flag, row-major fractional W, and tau'
+            WRITE (little_unit, '(A)') '# Complex numbers are real/imaginary pairs; irrep labels are local to each k'
+            IF (do_sampling) CALL write_little_group_sampling(symmetry_sampling, little_unit)
+         END IF
          IF (export_state) CALL topology_state_begin(qs_env_kp, TRIM(seed_name)//".topology", nao, num_bands, num_kpts, &
                                                      state_components, num_bands_tot, spin_channel, band_map, state_unit)
-         IF (do_parity) THEN
+         IF (do_parity .OR. do_little) THEN
             CPASSERT(ALL(kpoint%kp_range == [1, num_kpts]))
             ALLOCATE (parity_metric(nao, nao), parity_phase(nao), parity_map(nao), &
                       parity_odd(2**tqc_dimension), ebr_coefficients(2, 2**tqc_dimension), &
@@ -1266,28 +1475,23 @@ CONTAINS
                export_coeff(:nao, :) = MATMUL(export_scalar, spinor_coeff(:nscalar, :, ik))
                export_coeff(nao + 1:, :) = MATMUL(export_scalar, spinor_coeff(nscalar + 1:, :, ik))
                CALL topology_state_point(state_unit, ik, kpt_latt(:, ik), spinor_values(:, ik), export_coeff)
-               IF (do_parity) parity_energies(:) = spinor_values(:, ik)
+               IF (do_parity .OR. do_little) parity_energies(:) = spinor_values(:, ik)
             ELSE
                export_coeff(:, :) = export_scalar(:, band_map)
                CALL get_mo_set(kp%mos(spin_channel), eigenvalues=eigenvalues)
                CALL topology_state_point(state_unit, ik, kpt_latt(:, ik), eigenvalues(:nscalar), export_coeff)
-               IF (do_parity) parity_energies(:) = eigenvalues(:nscalar)
+               IF (do_parity .OR. do_little) parity_energies(:) = eigenvalues(:nscalar)
             END IF
-            IF (.NOT. do_parity) CYCLE
+            IF (.NOT. (do_parity .OR. do_little)) CYCLE
             parity_gap = HUGE(1.0_dp)
             DO jpar = 1, num_bands_tot
                IF (ANY(band_map == jpar)) CYCLE
                parity_gap = MIN(parity_gap, MINVAL(ABS(parity_energies(band_map) - parity_energies(jpar))))
             END DO
             IF (num_bands == num_bands_tot .OR. parity_gap <= gap_tol) THEN
-               CPABORT("PARITY requires an isolated selected subspace and computed excluded bands.")
+               CPABORT("Band symmetry needs isolated selected bands and computed excluded bands.")
             END IF
-            IF (MAXVAL(ABS(2*kpt_latt(:, ik) - NINT(2*kpt_latt(:, ik)))) > 1.e-8_dp) CYCLE
-            CALL gaussian_inversion_action(qs_env_kp, kpt_latt(:, ik), parity_origin, parity_map, &
-                                           parity_phase, parity_tolerance, status)
-            IF (status /= 0) THEN
-               CPABORT("PARITY: inversion does not preserve geometry and atomic kinds.")
-            END IF
+            IF (.NOT. do_little .AND. MAXVAL(ABS(2*kpt_latt(:, ik) - NINT(2*kpt_latt(:, ik)))) > 1.e-8_dp) CYCLE
             CALL dbcsr_set(rmatrix, 0.0_dp)
             CALL dbcsr_set(cmatrix, 0.0_dp)
             CALL rskp_transform(rmatrix, cmatrix, rsmat=matrix_s, ispin=1, xkp=kpoint%xkp(:, ik), &
@@ -1298,6 +1502,26 @@ CONTAINS
             CALL copy_dbcsr_to_fm(cmatrix_full, mat_imag)
             CALL cp_fm_to_cfm(mat_real, mat_imag, omat_cfm)
             CALL cp_cfm_get_submatrix(omat_cfm, parity_metric)
+            IF (do_little) THEN
+               IF (do_compatibility .OR. do_atomic_signatures) THEN
+                  CALL write_little_group(qs_env_kp, kpt_latt(:, ik), parity_metric, export_coeff, &
+                                          parity_energies(band_map), do_soc, time_reversal, little_geometry, &
+                                          little_tolerance, little_energy, REAL(little_memory, dp), iw, little_unit, &
+                                          little_points(ik), little_retained)
+                  little_retained = little_retained + little_group_storage(little_points(ik))
+               ELSE
+                  CALL write_little_group(qs_env_kp, kpt_latt(:, ik), parity_metric, export_coeff, &
+                                          parity_energies(band_map), do_soc, time_reversal, little_geometry, &
+                                          little_tolerance, little_energy, REAL(little_memory, dp), iw, little_unit)
+               END IF
+            END IF
+            IF (.NOT. do_parity) CYCLE
+            IF (MAXVAL(ABS(2*kpt_latt(:, ik) - NINT(2*kpt_latt(:, ik)))) > 1.e-8_dp) CYCLE
+            CALL gaussian_inversion_action(qs_env_kp, kpt_latt(:, ik), parity_origin, parity_map, &
+                                           parity_phase, parity_tolerance, status)
+            IF (status /= 0) THEN
+               CPABORT("PARITY: inversion does not preserve geometry and atomic kinds.")
+            END IF
             CALL inversion_representation(parity_metric, export_coeff, parity_map, parity_phase, &
                                           parity_energies(band_map), do_soc .AND. time_reversal, parity_tolerance, &
                                           parity_energy_tolerance, counts, parity_error, parity_energy_error, status, parity_checks)
@@ -1319,7 +1543,39 @@ CONTAINS
             END IF
             parity_odd(trim_id) = counts(2)
          END DO
+         IF (do_compatibility) THEN
+            IF (do_sampling) THEN
+               CALL write_little_group_graph(little_points, symmetry_sampling%source, symmetry_sampling%destination, &
+                                             symmetry_sampling%shift, little_tolerance, REAL(little_memory, dp), iw, little_unit, &
+                                             para_env)
+            ELSE
+               CALL write_little_group_edges(little_points, nnlist, nncell, little_tolerance, &
+                                             REAL(little_memory, dp), iw, little_unit, para_env)
+            END IF
+         END IF
+         IF (do_atomic_signatures) THEN
+            IF (do_compatibility) THEN
+               IF (do_sampling) THEN
+                  little_sources = symmetry_sampling%source
+                  little_destinations = symmetry_sampling%destination
+                  little_shifts = symmetry_sampling%shift
+               ELSE
+                  little_sources = [(MODULO(i - 1, num_kpts) + 1, i=1, SIZE(nnlist))]
+                  little_destinations = RESHAPE(nnlist, [SIZE(nnlist)])
+                  little_shifts = RESHAPE(nncell, [3, SIZE(nnlist)])
+               END IF
+               CALL write_atomic_signatures(qs_env_kp, little_points, time_reversal, little_geometry, little_tolerance, &
+                                            REAL(little_memory, dp), atomic_max_nodes, iw, little_unit, &
+                                            little_sources, little_destinations, little_shifts)
+               DEALLOCATE (little_sources, little_destinations, little_shifts)
+            ELSE
+               CALL write_atomic_signatures(qs_env_kp, little_points, time_reversal, little_geometry, little_tolerance, &
+                                            REAL(little_memory, dp), atomic_max_nodes, iw, little_unit)
+            END IF
+         END IF
+         IF (ALLOCATED(little_points)) DEALLOCATE (little_points)
          IF (state_unit > 0) CALL close_file(state_unit)
+         IF (little_unit > 0) CALL close_file(little_unit)
          IF (do_parity) THEN
             IF (ALL(parity_odd < 0)) THEN
                CPABORT("PARITY requires a TRIM in the requested dimension.")
@@ -1388,7 +1644,7 @@ CONTAINS
          CALL dbcsr_deallocate_matrix(loop_imag)
       END IF
       !
-      IF (para_env%is_source()) THEN
+      IF (iunit > 0) THEN
          CALL close_file(iunit)
       END IF
       !
@@ -1424,7 +1680,7 @@ CONTAINS
                eigval(1:nmo) = 0.0_dp
             END IF
             IF (.NOT. do_soc) CALL kpoint%para_env_inter_kp%sum(eigval)
-            IF (do_wilson) THEN
+            IF (do_wilson .OR. do_sampling) THEN
                IF (lowest_bands) THEN
                   valence_max = MAX(valence_max, eigval(num_bands))
                   conduction_min = MIN(conduction_min, eigval(num_bands + 1))
@@ -1449,10 +1705,10 @@ CONTAINS
          CALL close_file(iunit)
       END IF
       !
-      IF (do_wilson) THEN
+      IF (do_wilson .OR. do_sampling) THEN
          IF (iw > 0 .AND. num_bands < num_bands_tot) WRITE (iw, '(T2,A,ES18.10)') &
             "TOPOLOGY| Minimum sampled subspace gap [eV]: ", direct_gap*evolt
-         IF (direct_gap < gap_tol) CPABORT("Wilson subspace is not isolated on the sampled points.")
+         IF (direct_gap < gap_tol) CPABORT("Property subspace is not isolated on the sampled points.")
          IF (lowest_bands) THEN
             IF (iw > 0) THEN
                WRITE (iw, '(T2,A,ES18.10)') &
@@ -1468,6 +1724,8 @@ CONTAINS
                CPABORT("No positive sampled indirect gap above the selected bands.")
             END IF
          END IF
+      END IF
+      IF (do_wilson) THEN
          DO iloop = 1, nloop
             CALL wilson_spectrum(wilson_product(:, :, iloop), wcc_out(:, iloop), berry_phase, status)
             IF (status /= 0) CPABORT("Wilson eigenvalue calculation failed.")
@@ -1501,6 +1759,7 @@ CONTAINS
          END IF
       END IF
       ! clean up
+      IF (ASSOCIATED(property_points)) CALL kpoint_release(property_points)
       IF (ordered_berry) CALL kpoint_release(berry_kpoint)
       DEALLOCATE (kpt_latt, atoms_cart, atom_symbols, eigval)
       DEALLOCATE (nnlist, nncell)

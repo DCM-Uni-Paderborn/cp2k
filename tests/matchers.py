@@ -578,3 +578,115 @@ registry["LOCALIZER_UNRESOLVED"] = TextPresenceMatcher(
 registry["Band_first_eigenvalue"] = GenericMatcher(
     r"^\s*1\s+([-+]?\d+\.\d{8})\s+\d+\.\d{8}\s*$", col=2, regex=True
 )
+
+registry["TOPOLOGY_LINKS_DELIVERED"] = GenericMatcher(
+    "TOPOLOGY| Property directed links delivered:", col=6
+)
+
+registry["TOPOLOGY_SCALAR_DIAGONALIZATIONS"] = GenericMatcher(
+    "TOPOLOGY| Property scalar diagonalizations:", col=5
+)
+
+registry["TOPOLOGY_SCALAR_PROJECTED_RESIDUAL"] = GenericMatcher(
+    "TOPOLOGY| Property scalar metric/H/projected-H residuals:", col=8
+)
+
+registry["TOPOLOGY_SOC_DIAGONALIZATIONS"] = GenericMatcher(
+    "TOPOLOGY| Property SOC diagonalizations:", col=5
+)
+
+registry["TOPOLOGY_SOC_RESIDUAL"] = GenericMatcher(
+    "TOPOLOGY| Property SOC normalization/H residuals:", col=7
+)
+
+registry["TQC_ANTIUNITARY_SEGMENTS"] = GenericMatcher(
+    "TQC| Antiunitary compatibility segments:", col=5
+)
+
+registry["TQC_AUTOMATIC_FAMILIES"] = GenericMatcher(
+    "TQC| Automatic fixed families:", col=5
+)
+
+registry["TQC_AUTOMATIC_POINTS"] = GenericMatcher(
+    "TQC| Automatic property points:", col=5
+)
+
+registry["TQC_COMPATIBILITY_SEGMENTS"] = GenericMatcher(
+    "TQC| Compatibility segments:", col=4
+)
+
+registry["TQC_COMPATIBLE_RANK"] = GenericMatcher(
+    "TQC| Sampled compatible signature rank:", col=6
+)
+
+registry["TQC_COREP_BANDS"] = GenericMatcher(
+    "TQC| Corepresentation represented bands:", col=5
+)
+
+registry["TQC_COREP_DOUBLED"] = GenericMatcher(
+    "TQC| Corepresentation type -1 multiplicity:", col=6
+)
+
+registry["TQC_COREP_PAIRED"] = GenericMatcher(
+    "TQC| Corepresentation type 0 multiplicity:", col=6
+)
+
+registry["TQC_COREP_UNDOUBLED"] = GenericMatcher(
+    "TQC| Corepresentation type 1 multiplicity:", col=6
+)
+
+registry["TQC_INCOMPATIBLE_SEGMENTS"] = GenericMatcher(
+    "TQC| Incompatible segments:", col=4
+)
+
+registry["TQC_LITTLE_1D"] = GenericMatcher(
+    "TQC| Little-group irrep dimension 1 multiplicity:", col=7
+)
+
+registry["TQC_LITTLE_2D"] = GenericMatcher(
+    "TQC| Little-group irrep dimension 2 multiplicity:", col=7
+)
+
+registry["TQC_LITTLE_BANDS"] = GenericMatcher(
+    "TQC| Little-group represented bands:", col=5
+)
+
+registry["TQC_LITTLE_SCREW_IMAG"] = GenericMatcher(
+    r"^CHARACTER\s+\d+\s+2\s+", col=5, regex=True, abs_value=True
+)
+
+registry["TQC_LITTLE_SCREW_REAL"] = GenericMatcher(
+    r"^CHARACTER\s+\d+\s+2\s+", col=4, regex=True, abs_value=True
+)
+
+registry["TQC_LITTLE_SCREW_SQUARE"] = GenericMatcher(
+    r"^PRODUCT\s+2\s+2\s+1\s+", col=6, regex=True
+)
+
+registry["TQC_QUOTIENT_CYCLIC_FACTORS"] = GenericMatcher(
+    "TQC| Sampled quotient cyclic factors:", col=6
+)
+
+registry["TQC_QUOTIENT_FREE_RANK"] = GenericMatcher(
+    "TQC| Sampled quotient free rank:", col=6
+)
+
+registry["TQC_QUOTIENT_NONZERO_CLASS"] = GenericMatcher(
+    "TQC| Sampled quotient nonzero class:", col=6
+)
+
+registry["TQC_SAMPLED_COMPATIBLE"] = GenericMatcher(
+    "TQC| Sampled compatibility-lattice membership (1/0/-1):", col=6
+)
+
+registry["TQC_SAMPLED_NONNEGATIVE_ATOMIC"] = GenericMatcher(
+    "TQC| Sampled nonnegative atomic membership (1/0/-1):", col=7
+)
+
+registry["TQC_SAMPLED_SIGNED_ATOMIC"] = GenericMatcher(
+    "TQC| Sampled signed atomic membership (1/0/-1):", col=7
+)
+
+registry["TQC_STAR_IDENTIFICATIONS"] = GenericMatcher(
+    "TQC| Sampled star identifications:", col=5
+)

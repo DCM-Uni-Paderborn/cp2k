@@ -1,0 +1,31 @@
+# Full-path reference, scalar/SOC reconstruction, generic links and both backends.
+"neon-k290.inp" = [{matcher="TOPOLOGY_Z2_TRIVIAL", tol=0.0, ref=1.0},
+                   {matcher="TOPOLOGY_SCALAR_DIAGONALIZATIONS", tol=0.0, ref=15.0},
+                   {matcher="TOPOLOGY_SOC_DIAGONALIZATIONS", tol=0.0, ref=15.0},
+                   {matcher="TOPOLOGY_SOC_RESIDUAL", tol=1e-8, ref=0.0}]
+"helium-full.inp" = [{matcher="TOPOLOGY_BERRY_PHASE", tol=1e-4, ref=3.141592653589793}]
+"helium-gapw-spglib.inp" = [{matcher="TOPOLOGY_SCALAR_DIAGONALIZATIONS", tol=0.0, ref=3.0},
+                            {matcher="TOPOLOGY_SCALAR_PROJECTED_RESIDUAL", tol=1e-8, ref=0.0}]
+"helium-links-spglib.inp" = [{matcher="TOPOLOGY_SCALAR_DIAGONALIZATIONS", tol=0.0, ref=4.0},
+                             {matcher="TOPOLOGY_LINKS_DELIVERED", tol=0.0, ref=5.0},
+                             {matcher="TOPOLOGY_BERRY_PHASE", tol=1e-8, ref=0.0},
+                             {matcher="TOPOLOGY_SCALAR_PROJECTED_RESIDUAL", tol=1e-8, ref=0.0}]
+"helium-neighbors-k290.inp" = [{matcher="TOPOLOGY_SCALAR_DIAGONALIZATIONS", tol=0.0, ref=4.0},
+                               {matcher="TOPOLOGY_LINKS_DELIVERED", tol=0.0, ref=15.0},
+                               {matcher="TOPOLOGY_SCALAR_PROJECTED_RESIDUAL", tol=1e-8, ref=0.0}]
+"stanene-spglib.inp" = [{matcher="TQC_PARITY_INDEX", tol=0.0, ref=1.0},
+                        {matcher="TOPOLOGY_SCALAR_DIAGONALIZATIONS", tol=0.0, ref=2.0},
+                        {matcher="TOPOLOGY_SOC_DIAGONALIZATIONS", tol=0.0, ref=2.0}]
+"automatic-spglib.inp" = [{matcher="TQC_LITTLE_BANDS", tol=0.0, ref=16.0},
+    {matcher="TQC_SAMPLED_COMPATIBLE", tol=0.0, ref=1.0},
+    {matcher="TQC_COMPATIBLE_RANK", tol=0.0, ref=5.0},
+    {matcher="TQC_QUOTIENT_FREE_RANK", tol=0.0, ref=0.0},
+    {matcher="TQC_QUOTIENT_CYCLIC_FACTORS", tol=0.0, ref=3.0},
+    {matcher="TQC_QUOTIENT_NONZERO_CLASS", tol=0.0, ref=0.0},
+    {matcher="TQC_AUTOMATIC_FAMILIES", tol=0.0, ref=15.0},
+    {matcher="TQC_AUTOMATIC_POINTS", tol=0.0, ref=56.0},
+    {matcher="TQC_COMPATIBILITY_SEGMENTS", tol=0.0, ref=82.0},
+    {matcher="TQC_ANTIUNITARY_SEGMENTS", tol=0.0, ref=82.0},
+    {matcher="TQC_INCOMPATIBLE_SEGMENTS", tol=0.0, ref=0.0},
+    {matcher="TQC_SAMPLED_SIGNED_ATOMIC", tol=0.0, ref=1.0},
+    {matcher="TQC_SAMPLED_NONNEGATIVE_ATOMIC", tol=0.0, ref=1.0}]

@@ -9,6 +9,7 @@ PROGRAM kpsym_unittest
    USE cryssym,                         ONLY: crys_sym_gen,&
                                               csym_type,&
                                               kpoint_gen,&
+                                              kpoint_gen_general,&
                                               release_csym_type
    USE kinds,                           ONLY: dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
@@ -88,9 +89,62 @@ PROGRAM kpsym_unittest
    coords(3, 36) = coords(3, 36) - 0.75e-6_dp
    CALL check_mesh(coords, cell, 1.0e-6_dp, 14, .TRUE., .FALSE.)
    IF (io_unit > 0) WRITE (io_unit, *) "K290 tolerance-boundary and orbit-guard tests passed"
+   CALL check_property_orbits(.FALSE., .FALSE.)
+#if defined(__SPGLIB)
+   CALL check_property_orbits(.TRUE., .TRUE.)
+   CALL check_property_orbits(.TRUE., .FALSE.)
+#endif
+   IF (io_unit > 0) WRITE (io_unit, *) "Partial property stars and closed integration stars passed"
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Incomplete property stars retain only requested points; closed SCF stars still reduce normally.
+!> \param spglib_reduction Use SPGLIB orbit reduction
+!> \param spglib_backend Use SPGLIB atom operations
+! **************************************************************************************************
+   SUBROUTINE check_property_orbits(spglib_reduction, spglib_backend)
+      LOGICAL, INTENT(IN)                                :: spglib_reduction, spglib_backend
+
+      INTEGER                                            :: a, b, c, n
+      REAL(dp)                                           :: full(3, 27), h(3, 3), partial(3, 6), &
+                                                            x(3, 1)
+      TYPE(csym_type)                                    :: csym
+
+      h = 0.0_dp
+      DO a = 1, 3
+         h(a, a) = 4.0_dp
+      END DO
+      x = 0.0_dp
+      partial = RESHAPE([0.0_dp, 0.0_dp, 0.0_dp, &
+                         0.25_dp, 0.0_dp, 0.0_dp, -0.25_dp, 0.0_dp, 0.0_dp, &
+                         0.0_dp, 0.25_dp, 0.0_dp, 0.5_dp, 0.0_dp, 0.0_dp, &
+                         0.25_dp, 0.25_dp, 0.0_dp], [3, 6])
+      CALL crys_sym_gen(csym, x, [1], h, delta=1.e-8_dp, use_spglib=spglib_reduction)
+      CALL kpoint_gen_general(csym, partial, SPREAD(1.0_dp, 1, 6), symm=.TRUE., &
+                              use_spglib_reduction=spglib_reduction, use_spglib_backend=spglib_backend, &
+                              partial_property_orbits=.TRUE.)
+      IF (csym%nkpoint /= 4) ERROR STOP 'Wrong partial property orbit count'
+      IF (ABS(SUM(csym%wkpoint) - 6.0_dp) > 1.e-12_dp) ERROR STOP 'Property plan added unrequested points'
+      IF (ANY(csym%kplink <= 0)) ERROR STOP 'Incomplete property orbit mapping'
+      CALL release_csym_type(csym)
+      n = 0
+      DO a = -1, 1
+         DO b = -1, 1
+            DO c = -1, 1
+               n = n + 1
+               full(:, n) = REAL([a, b, c], dp)/3.0_dp
+            END DO
+         END DO
+      END DO
+      CALL crys_sym_gen(csym, x, [1], h, delta=1.e-8_dp, use_spglib=spglib_reduction)
+      CALL kpoint_gen_general(csym, full, SPREAD(1.0_dp, 1, 27), symm=.TRUE., &
+                              use_spglib_reduction=spglib_reduction, use_spglib_backend=spglib_backend)
+      IF (csym%nkpoint /= 4) ERROR STOP 'Wrong closed integration orbit count'
+      IF (ABS(SUM(csym%wkpoint) - 27.0_dp) > 1.e-12_dp) ERROR STOP 'Wrong closed integration weight sum'
+      CALL release_csym_type(csym)
+   END SUBROUTINE check_property_orbits
 
 ! **************************************************************************************************
 !> \brief Check mesh reduction and atomic operation consistency without an SCF calculation.

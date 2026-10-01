@@ -158,3 +158,22 @@ are outside this implementation.
   [Nature Communications **8**, 50 (2017)](https://doi.org/10.1038/s41467-017-00133-2).
 - J. Cano and B. Bradlyn, *Band representations and topological quantum chemistry*,
   [Annual Review of Condensed Matter Physics **12**, 225--246 (2021)](https://arxiv.org/abs/2006.04890).
+
+## General property symmetry and little groups
+
+`WANNIER90 / SYMMETRY` reconstructs scalar and post-SCF SOC eigenframes on independent property
+meshes with `SYMMETRY_BACKEND K290|SPGLIB`. Each image is checked against the target metric and
+Hamiltonian. Directed connections retain endpoint gauges and reciprocal-boundary phases.
+
+`LITTLE_GROUP_IRREPS` evaluates native projective little-group characters, including spin rotations
+and antiunitary corepresentations. `LITTLE_GROUP_COMPATIBILITY` checks restrictions along the
+sampled segments. `KPOINTS_SOURCE SYMMETRY` generates reciprocal fixed-family points and incidence
+paths using SPGLIB.
+
+`ATOMIC_SIGNATURES` compares the selected bands with generated site-induced atomic signatures using
+exact integer compatibility quotients. The nonnegative search is bounded by
+`ATOMIC_SIGNATURE_MAX_NODES`; exhaustion is unresolved, not a negative result. Inspect numerical
+residuals, band isolation and sampling. Native labels and sampled compatibility do not constitute a
+complete global band-connectivity classification. The input reference defines the tolerances and
+memory limits. Broader examples are available in
+[TopologicalCP2K](https://github.com/DCM-Uni-Paderborn/TopologicalCP2K).

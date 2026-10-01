@@ -120,7 +120,7 @@ MODULE input_cp2k_print_dft
    USE input_cp2k_field, ONLY: create_efield_section, &
                                create_per_efield_section
    USE input_cp2k_kpoints, ONLY: create_kpoint_set_section, &
-                                 create_kpoints_section
+                                 create_kpoints_section, use_k290_kpoint_backend, use_spglib_kpoint_backend
    USE input_cp2k_loc, ONLY: create_localize_section, &
                              print_wanniers
    USE input_cp2k_ls, ONLY: create_ls_scf_section
@@ -2955,15 +2955,19 @@ CONTAINS
                           "Wannier90 requires a complete mesh. NNKP reads explicit k-points and directed "// &
                           "overlap connections from NNKP_FILE, without a regular-mesh requirement. "// &
                           "WILSON generates and refines a surface of closed loops at the SCF potential. "// &
-                          "TRIM generates four or eight time-reversal-invariant points for native parity analysis.", &
+                          "TRIM generates four or eight time-reversal-invariant points for native parity analysis. "// &
+                          "SYMMETRY generates reciprocal fixed-family points, incidence paths and primitive cycles "// &
+                          "for native band-symmetry analysis, including interior samples. It implies LITTLE_GROUP_IRREPS "// &
+                          "and LITTLE_GROUP_COMPATIBILITY, requires SPGLIB, and does not write Wannier90 overlaps.", &
                           usage="KPOINTS_SOURCE MP_GRID", type_of_var=enum_t, &
-                          enum_c_vals=s2a("MP_GRID", "SCF", "NNKP", "WILSON", "TRIM"), &
-                          enum_i_vals=[0, 1, 2, 3, 4], &
+                          enum_c_vals=s2a("MP_GRID", "SCF", "NNKP", "WILSON", "TRIM", "SYMMETRY"), &
+                          enum_i_vals=[0, 1, 2, 3, 4, 5], &
                           enum_desc=s2a("Build the Wannier90 k-point mesh from WANNIER90%MP_GRID.", &
                                         "Use the full k-point mesh from DFT%KPOINTS.", &
                                         "Read explicit k-points and connections from NNKP_FILE.", &
                                         "Generate a family of closed Wilson loops.", &
-                                        "Generate TRIM and enable native inversion-parity analysis."), &
+                                        "Generate TRIM and enable native inversion-parity analysis.", &
+                                        "Generate native symmetry points, incidence paths and primitive cycles."), &
                           default_i_val=0)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
@@ -2975,6 +2979,49 @@ CONTAINS
                           "in the file are unsupported; use EXCLUDE_BANDS in CP2K instead.", &
                           usage="NNKP_FILE loop.nnkp", default_c_val="wannier90.nnkp", &
                           n_var=1, type_of_var=char_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SYMMETRY", &
+                          description="Reduce independent NNKP, WILSON, TRIM or SYMMETRY property diagonalizations. "// &
+                          "Reconstruct full scalar/SOC eigenframes with atom/AO, cell-image, spin and time-reversal actions. "// &
+                          "All directed overlaps and reciprocal boundary connections remain explicit. "// &
+                          "Every reconstructed frame is checked against the frozen target Hamiltonian and metric; "// &
+                          "inconsistent symmetry aborts without a hidden full-mesh fallback. Requires a restricted SCF.", &
+                          default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="SYMMETRY_BACKEND", type_of_var=enum_t, &
+                          description="Backend for the independent property symmetry set, not the SCF k-point mesh.", &
+                          enum_c_vals=s2a("K290", "SPGLIB"), &
+                          enum_i_vals=[use_k290_kpoint_backend, use_spglib_kpoint_backend], &
+                          default_i_val=use_k290_kpoint_backend)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="EPS_SYMMETRY", &
+                          description="Geometric tolerance for property symmetry detection.", default_r_val=1.e-6_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="EPS_SYMMETRY_OPERATORS", &
+                          description="Tolerance for reconstructed scalar/SOC normalization and scaled Hamiltonian residuals.", &
+                          default_r_val=1.e-8_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="SYMMETRY_MAX_MEMORY_MB", &
+                         description="Safety bound in MiB on extra scalar/SOC symmetry and directed-link work arrays per rank. "// &
+                          "Excludes the usual Wannier90/SOC arrays, distributed MO sets and library workspace.", &
+                          default_i_val=1024)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SYMMETRY_PARALLEL_GROUP_SIZE", &
+                          description="MPI ranks per group for independent scalar/SOC property work with SYMMETRY T. "// &
+                          "-1 automatically maximizes the number of equal-sized groups, 0 uses all ranks in one group. "// &
+                          "A positive size must divide the rank count and cannot create more groups than representatives. "// &
+                          "SOC orbits use bounded operator snapshots; collective assembly is retained if these do not fit. "// &
+                          "Scalar frame checks also use bounded group-local H/S snapshots. "// &
+                          "Directed NNKP/WILSON links use bounded group-local snapshots and preserve their original order.", &
+                          default_i_val=-1)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
 
@@ -3050,6 +3097,82 @@ CONTAINS
                           default_i_val=3)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="LITTLE_GROUP_IRREPS", &
+                          description="Compute local unitary projective irrep multiplicities of the selected bands "// &
+                          "at NNKP, WILSON, TRIM or SYMMETRY points. Requires SPGLIB and a fully periodic Gaussian "// &
+                          "calculation. Retains nonsymmorphic and centering translations, validates AO metric, "// &
+                          "subspace, Hamiltonian and sewing-product covariance. SOC and TIME_REVERSAL are supported. "// &
+                          "With antiunitary little-group operations, also classifies Wigner corepresentations "// &
+                          "and checks their band multiplicities. Writes operation/factor/character and "// &
+                          "corepresentation data to SEED_NAME.little_group. No EBR classification "// &
+                          "or standard irrep labels are assigned.", default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="LITTLE_GROUP_EPS_GEOMETRY", &
+                          description="SPGLIB and same-kind atom-mapping tolerance in Bohr for LITTLE_GROUP_IRREPS.", &
+                          default_r_val=1.e-6_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="LITTLE_GROUP_COMPATIBILITY", &
+                          description="Check band compatibility on directed NNKP, WILSON or automatic SYMMETRY "// &
+                          "segments, retaining reciprocal target-cell shifts and nonsymmorphic phases. "// &
+                          "Include corepresentation restrictions when antiunitary symmetry is present. "// &
+                          "Implies LITTLE_GROUP_IRREPS. Writes restrictions and line multiplicities to "// &
+                          "SEED_NAME.little_group. Incompatible endpoint counts are reported, not repaired. "// &
+                          "Agreement does not prove a gap along the segment or a trivial topology.", &
+                          default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="LITTLE_GROUP_PATH_POINTS", &
+                          description="Samples per generated SYMMETRY segment, including both endpoints; at least two. "// &
+                          "Intermediate points are diagonalized and checked for band isolation and symmetry. "// &
+                          "Increase to test sampling convergence; no finite sampling proves a gap everywhere.", &
+                          default_i_val=3)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="LITTLE_GROUP_MAX_POINTS", &
+                          description="Conservative point/work budget for automatic SYMMETRY path refinement, "// &
+                          "before duplicate intermediate points are merged. Limits post-SCF sampling, not the SCF mesh.", &
+                          default_i_val=4096)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="LITTLE_GROUP_TOLERANCE", &
+                          description="Dimensionless metric, selected-subspace, factor and character tolerance "// &
+                          "for LITTLE_GROUP_IRREPS. Failed covariance is not repaired by gauge fitting.", &
+                          default_r_val=1.e-6_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="ATOMIC_SIGNATURES", &
+                          description="Compare the validated selected-band signature at the explicit NNKP, WILSON "// &
+                          "or TRIM points, or generated SYMMETRY points, with native site-induced atomic signatures. "// &
+                          "Implies LITTLE_GROUP_IRREPS. "// &
+                          "Checks signed integer and nonnegative membership and writes reference characters, "// &
+                          "matrix columns and witnesses to SEED_NAME.little_group. With compatibility analysis, "// &
+                          "also constructs the joint integer compatibility kernel and quotient by atomic columns. "// &
+                          "Results concern the supplied "// &
+                          "reciprocal sample, not a complete EBR classification or proof of band-bundle triviality. "// &
+                          "Resource limits are reported as unresolved, not as topological obstructions.", &
+                          default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="ATOMIC_SIGNATURE_MAX_NODES", &
+                          description="Maximum search nodes for the nonnegative atomic-signature decomposition. "// &
+                          "Exhaustion returns unresolved rather than no decomposition. Zero disables this search; "// &
+                          "the signed integer test still runs. Used only with ATOMIC_SIGNATURES.", &
+                          default_i_val=1000000)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="LITTLE_GROUP_ENERGY_TOL", &
+                          description="Maximum selected-band symmetry/eigenvalue commutator in Hartree "// &
+                          "for LITTLE_GROUP_IRREPS.", default_r_val=1.e-6_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="LITTLE_GROUP_MAX_MEMORY_MB", &
+                          description="Limit for estimated additional replicated little-group matrix storage "// &
+                          "per rank in MiB, excluding SCF/export storage and external library workspace.", &
+                          default_i_val=512)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="PARITY_ORIGIN", &
                           description="Inversion center in fractional direct-cell coordinates. The operation is "// &
                           "r -> 2*center-r. Atomic kinds, basis and the selected Hamiltonian subspace must be invariant.", &
@@ -3077,7 +3200,7 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="STATE_EXPORT", &
                           description="Export selected complex AO states, all eigenvalues and full contracted "// &
                           "Gaussian basis to SEED_NAME.topology for cross-geometry/phason overlaps. "// &
-                          "Requires NNKP, WILSON or TRIM, uses atomic units, and can generate large files. "// &
+                          "Requires NNKP, WILSON, TRIM or SYMMETRY, uses atomic units, and can generate large files. "// &
                           "Spinor coefficients include second-variational SOC when enabled. "// &
                           "No Wannier fit or Fermi-energy alignment is performed.", default_l_val=.FALSE.)
       CALL section_add_keyword(print_key, keyword)

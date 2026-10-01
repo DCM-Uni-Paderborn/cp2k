@@ -1,0 +1,4 @@
+@SET CASE automatic-spglib
+@SET PROPERTY_SYMMETRY T
+@SET PROPERTY_BACKEND SPGLIB
+@INCLUDE automatic-common.inc

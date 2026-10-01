@@ -377,12 +377,14 @@ CONTAINS
 !> \param kpoint       The kpoint environment
 !> \param particle_set Particle types and coordinates
 !> \param cell         Computational cell information
+!> \param partial_property_orbits Allow incomplete GENERAL stars for independent properties, never SCF integration
 ! **************************************************************************************************
-   SUBROUTINE kpoint_initialize(kpoint, particle_set, cell)
+   SUBROUTINE kpoint_initialize(kpoint, particle_set, cell, partial_property_orbits)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(cell_type), POINTER                           :: cell
+      LOGICAL, INTENT(IN), OPTIONAL                      :: partial_property_orbits
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'kpoint_initialize'
 
@@ -565,7 +567,8 @@ CONTAINS
                                     inversion_symmetry_only=kpoint%inversion_symmetry_only, &
                                     use_spglib_reduction= &
                                     kpoint%symmetry_reduction_method == use_spglib_kpoint_symmetry, &
-                                    use_spglib_backend=kpoint%symmetry_backend == use_spglib_kpoint_backend)
+                                    use_spglib_backend=kpoint%symmetry_backend == use_spglib_kpoint_backend, &
+                                    partial_property_orbits=partial_property_orbits)
             IF (crys_sym%inversion_only) kpoint%inversion_symmetry_only = .TRUE.
             IF (ASSOCIATED(kpoint%xkp)) THEN
                DEALLOCATE (kpoint%xkp)
