@@ -18,6 +18,7 @@ MODULE atom_upf
    USE cp_parser_types,                 ONLY: cp_parser_type,&
                                               parser_create,&
                                               parser_release
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp
@@ -29,6 +30,21 @@ MODULE atom_upf
 
    ! use same value as in atom_types!
    INTEGER, PARAMETER                                :: lmat = 3
+
+   TYPE upf_paw_type
+      INTEGER                                        :: data_format = -1, cutoff_index = -1, lmax_aug = -1
+      CHARACTER(LEN=default_string_length)           :: augmentation_shape = ""
+      REAL(dp)                                       :: cutoff_radius = -1.0_dp, augmentation_epsilon = 1.e-12_dp
+      REAL(dp)                                       :: core_energy = 0.0_dp
+      LOGICAL                                        :: has_core_energy = .FALSE.
+      ! Original r*phi(r) partial waves, one per beta projector, without normalization.
+      REAL(dp), ALLOCATABLE                          :: ae_wfc(:, :), ps_wfc(:, :), occupations(:)
+      INTEGER, ALLOCATABLE                           :: angular_momenta(:)
+      ! Multipoles have the same beta convention as PP_Q; L starts at zero.
+      REAL(dp), ALLOCATABLE                          :: multipoles(:, :, :)
+      ! True core density (without 4*pi*r**2), AE local potential and core energy in Hartree.
+      REAL(dp), ALLOCATABLE                          :: rho_core(:), vlocal(:)
+   END TYPE upf_paw_type
 
    TYPE atom_upfpot_type
       CHARACTER(LEN=2)                               :: symbol = ""
@@ -85,6 +101,7 @@ MODULE atom_upf
       ! The pair index is j*(j-1)/2+i for i<=j; the last dimension starts at L=0.
       REAL(dp), DIMENSION(:, :), ALLOCATABLE         :: qij
       REAL(dp), DIMENSION(:, :, :), ALLOCATABLE      :: qijl
+      TYPE(upf_paw_type), ALLOCATABLE                 :: paw
       ! <SEMILOCAL>
       REAL(dp), DIMENSION(:, :), ALLOCATABLE         :: vsemi
    END TYPE atom_upfpot_type
@@ -123,22 +140,49 @@ CONTAINS
    END FUNCTION upf_radial_weights
 
 ! **************************************************************************************************
+!> \brief Advance past standalone XML comments before tokenization treats ! as an input comment.
+!> \param parser UPF parser.
+!> \param at_end Whether the file ended.
+! **************************************************************************************************
+   SUBROUTINE upf_next_line(parser, at_end)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+      LOGICAL, INTENT(OUT)                               :: at_end
+
+      CHARACTER(LEN=:), ALLOCATABLE                      :: line
+      LOGICAL                                            :: in_comment
+
+      in_comment = .FALSE.
+      DO
+         CALL parser_get_next_line(parser, 1, at_end)
+         IF (at_end) THEN
+            CPASSERT(.NOT. in_comment)
+            RETURN
+         END IF
+         line = ADJUSTL(parser%buffer%input_lines(parser%buffer%present_line_number))
+         IF (.NOT. in_comment .AND. INDEX(line, '<!--') /= 1) RETURN
+         in_comment = INDEX(line, '-->') == 0
+      END DO
+   END SUBROUTINE upf_next_line
+
+! **************************************************************************************************
 !> \brief ...
 !> \param pot ...
 !> \param upf_filename ...
 !> \param read_header ...
 !> \param read_augmentation Import scalar USPP augmentation data explicitly.
 !>        This reader option does not enable USPP in a calculation method.
+!> \param read_paw Import scalar PAW partial waves and one-center data, including augmentation.
+!>        Calculation methods must explicitly support the PAW energy functional before using this option.
 ! **************************************************************************************************
-   SUBROUTINE atom_read_upf(pot, upf_filename, read_header, read_augmentation)
+   SUBROUTINE atom_read_upf(pot, upf_filename, read_header, read_augmentation, read_paw)
 
       TYPE(atom_upfpot_type)                             :: pot
       CHARACTER(len=*), INTENT(IN)                       :: upf_filename
-      LOGICAL, INTENT(IN), OPTIONAL                      :: read_header, read_augmentation
+      LOGICAL, INTENT(IN), OPTIONAL                      :: read_header, read_augmentation, read_paw
 
       CHARACTER(LEN=2)                                   :: symbol
       INTEGER                                            :: l, ncore, nel
-      LOGICAL                                            :: readall, readaug
+      LOGICAL                                            :: readall, readaug, readpaw
 
       IF (PRESENT(read_header)) THEN
          readall = .NOT. read_header
@@ -147,6 +191,9 @@ CONTAINS
       END IF
       readaug = .FALSE.
       IF (PRESENT(read_augmentation)) readaug = read_augmentation
+      readpaw = .FALSE.
+      IF (PRESENT(read_paw)) readpaw = read_paw
+      readaug = readaug .OR. readpaw
 
       ! filename
       pot%filename = ADJUSTL(TRIM(upf_filename))
@@ -160,7 +207,7 @@ CONTAINS
          END IF
       END IF
 
-      CALL atom_read_upf_v2(pot, upf_filename, readall, readaug)
+      CALL atom_read_upf_v2(pot, upf_filename, readall, readaug, readpaw)
 
       ! set up econf
       IF (SUM(pot%econf) == 0) THEN
@@ -221,12 +268,13 @@ CONTAINS
 !> \param upf_filename ...
 !> \param readall ...
 !> \param readaug Read scalar USPP augmentation arrays.
+!> \param readpaw Read scalar PAW one-center data.
 ! **************************************************************************************************
-   SUBROUTINE atom_read_upf_v2(pot, upf_filename, readall, readaug)
+   SUBROUTINE atom_read_upf_v2(pot, upf_filename, readall, readaug, readpaw)
 
       TYPE(atom_upfpot_type)                             :: pot
       CHARACTER(len=*), INTENT(IN)                       :: upf_filename
-      LOGICAL, INTENT(IN)                                :: readall, readaug
+      LOGICAL, INTENT(IN)                                :: readall, readaug, readpaw
 
       CHARACTER(LEN=default_string_length)               :: nametag
       INTEGER                                            :: ib, ntag
@@ -237,7 +285,7 @@ CONTAINS
       CALL parser_create(parser, upf_filename, apply_preprocessing=.FALSE.)
       DO
          at_end = .FALSE.
-         CALL parser_get_next_line(parser, 1, at_end)
+         CALL upf_next_line(parser, at_end)
          IF (at_end) EXIT
          CALL parser_get_object(parser, nametag, lower_to_upper=.TRUE.)
          IF (nametag(1:1) /= "<") CYCLE
@@ -262,6 +310,11 @@ CONTAINS
                IF (.NOT. (nametag(11:11) == ">")) THEN
                   CALL upf_header_option(parser, pot)
                END IF
+               IF (readpaw .AND. pot%is_paw) THEN
+                  IF (pot%has_so) CPABORT("Native PAW import requires scalar-relativistic data")
+                  CPASSERT(.NOT. ALLOCATED(pot%paw))
+                  ALLOCATE (pot%paw)
+               END IF
             ELSE IF (nametag(2:8) == "PP_MESH") THEN
                IF (.NOT. (nametag(9:9) == ">")) THEN
                   CALL upf_mesh_option(parser, pot)
@@ -281,15 +334,17 @@ CONTAINS
                END IF
             ELSE IF (nametag(2:12) == "PP_NONLOCAL") THEN
                CPASSERT(nametag(13:13) == ">")
-               CALL upf_nonlocal_section(parser, pot, readaug)
+               CALL upf_nonlocal_section(parser, pot, readaug .AND. (.NOT. pot%is_paw .OR. readpaw))
             ELSE IF (nametag(2:13) == "PP_SEMILOCAL") THEN
                CALL upf_semilocal_section(parser, pot)
             ELSE IF (nametag(2:9) == "PP_PSWFC") THEN
                ! skip section for now
+            ELSE IF (nametag(2:12) == "PP_FULL_WFC") THEN
+               IF (ALLOCATED(pot%paw)) CALL upf_full_wfc_section(parser, pot, nametag)
             ELSE IF (nametag(2:11) == "PP_RHOATOM") THEN
                ! skip section for now
             ELSE IF (nametag(2:7) == "PP_PAW") THEN
-               ! skip section for now
+               IF (ALLOCATED(pot%paw)) CALL upf_paw_section(parser, pot)
             ELSE IF (nametag(2:6) == "/UPF>") THEN
                EXIT
             END IF
@@ -316,12 +371,19 @@ CONTAINS
          IF (pot%is_ultrasoft .AND. .NOT. readaug) THEN
             CPABORT("UPF ultrasoft pseudopotential not implemented")
          END IF
-         IF (pot%is_paw) THEN
+         IF (pot%is_paw .AND. .NOT. readpaw) THEN
             CPABORT("UPF PAW potential not implemented")
          END IF
       END IF
-      IF (readaug .AND. pot%is_ultrasoft .AND. .NOT. pot%is_paw) THEN
+      IF (readaug .AND. (pot%is_ultrasoft .OR. pot%is_paw) .AND. (.NOT. pot%is_paw .OR. readpaw)) THEN
          CPASSERT(ALLOCATED(pot%qij) .AND. ALLOCATED(pot%qijl))
+      END IF
+      IF (ALLOCATED(pot%paw)) THEN
+         CPASSERT(ALLOCATED(pot%paw%ae_wfc) .AND. ALLOCATED(pot%paw%ps_wfc))
+         CPASSERT(ALLOCATED(pot%paw%occupations) .AND. ALLOCATED(pot%paw%rho_core))
+         CPASSERT(ALLOCATED(pot%paw%vlocal) .AND. ALLOCATED(pot%paw%multipoles))
+         CPASSERT(ALL(pot%paw%angular_momenta == pot%lbeta))
+         CPASSERT(ALL(ieee_is_finite(pot%qij)) .AND. ALL(ieee_is_finite(pot%qijl)))
       END IF
 
    END SUBROUTINE atom_read_upf_v2
@@ -341,7 +403,7 @@ CONTAINS
 
       icount = 0
       DO
-         CALL parser_get_next_line(parser, 1, at_end)
+         CALL upf_next_line(parser, at_end)
          CPASSERT(.NOT. at_end)
          iline = parser%buffer%present_line_number
          line = TRIM(parser%buffer%input_lines(iline))
@@ -369,7 +431,7 @@ CONTAINS
 
       DO
          IF (parser_test_next_token(parser) == "EOL") THEN
-            CALL parser_get_next_line(parser, 1, at_end)
+            CALL upf_next_line(parser, at_end)
             CPASSERT(.NOT. at_end)
          END IF
          CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -452,7 +514,7 @@ CONTAINS
 
       DO
          IF (parser_test_next_token(parser) == "EOL") THEN
-            CALL parser_get_next_line(parser, 1, at_end)
+            CALL upf_next_line(parser, at_end)
             CPASSERT(.NOT. at_end)
          END IF
          CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -491,7 +553,7 @@ CONTAINS
       LOGICAL                                            :: at_end
 
       DO
-         CALL parser_get_next_line(parser, 1, at_end)
+         CALL upf_next_line(parser, at_end)
          CPASSERT(.NOT. at_end)
          CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
          SELECT CASE (string)
@@ -503,7 +565,7 @@ CONTAINS
                ! options
                DO
                   IF (parser_test_next_token(parser) == "EOL") THEN
-                     CALL parser_get_next_line(parser, 1, at_end)
+                     CALL upf_next_line(parser, at_end)
                      CPASSERT(.NOT. at_end)
                   END IF
                   CALL parser_get_object(parser, string2, lower_to_upper=.TRUE.)
@@ -527,7 +589,7 @@ CONTAINS
             icount = 1
             DO WHILE (icount <= ms)
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                ELSE
                   CALL parser_get_object(parser, pot%r(icount))
@@ -542,7 +604,7 @@ CONTAINS
                ! options
                DO
                   IF (parser_test_next_token(parser) == "EOL") THEN
-                     CALL parser_get_next_line(parser, 1, at_end)
+                     CALL upf_next_line(parser, at_end)
                      CPASSERT(.NOT. at_end)
                   END IF
                   CALL parser_get_object(parser, string2, lower_to_upper=.TRUE.)
@@ -566,7 +628,7 @@ CONTAINS
             icount = 1
             DO WHILE (icount <= ms)
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                ELSE
                   CALL parser_get_object(parser, pot%rab(icount))
@@ -603,7 +665,7 @@ CONTAINS
       IF (options) THEN
          DO
             IF (parser_test_next_token(parser) == "EOL") THEN
-               CALL parser_get_next_line(parser, 1, at_end)
+               CALL upf_next_line(parser, at_end)
                CPASSERT(.NOT. at_end)
             END IF
             CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -628,7 +690,7 @@ CONTAINS
       icount = 1
       DO WHILE (icount <= ms)
          IF (parser_test_next_token(parser) == "EOL") THEN
-            CALL parser_get_next_line(parser, 1, at_end)
+            CALL upf_next_line(parser, at_end)
             CPASSERT(.NOT. at_end)
          ELSE
             CALL parser_get_object(parser, pot%rho_nlcc(icount))
@@ -636,7 +698,7 @@ CONTAINS
          END IF
       END DO
 
-      CALL parser_get_next_line(parser, 1, at_end)
+      CALL upf_next_line(parser, at_end)
       CPASSERT(.NOT. at_end)
       CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
       CPASSERT(string == "</PP_NLCC>")
@@ -664,7 +726,7 @@ CONTAINS
       IF (options) THEN
          DO
             IF (parser_test_next_token(parser) == "EOL") THEN
-               CALL parser_get_next_line(parser, 1, at_end)
+               CALL upf_next_line(parser, at_end)
                CPASSERT(.NOT. at_end)
             END IF
             CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -689,7 +751,7 @@ CONTAINS
       icount = 1
       DO WHILE (icount <= ms)
          IF (parser_test_next_token(parser) == "EOL") THEN
-            CALL parser_get_next_line(parser, 1, at_end)
+            CALL upf_next_line(parser, at_end)
             CPASSERT(.NOT. at_end)
          ELSE
             CALL parser_get_object(parser, pot%vlocal(icount))
@@ -700,7 +762,7 @@ CONTAINS
       ! Ry -> Hartree
       pot%vlocal = 0.5_dp*pot%vlocal
 
-      CALL parser_get_next_line(parser, 1, at_end)
+      CALL upf_next_line(parser, at_end)
       CPASSERT(.NOT. at_end)
       CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
       CPASSERT(string == "</PP_LOCAL>")
@@ -732,7 +794,7 @@ CONTAINS
 
       ibeta = 0
       DO
-         CALL parser_get_next_line(parser, 1, at_end)
+         CALL upf_next_line(parser, at_end)
          CPASSERT(.NOT. at_end)
          CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
          IF (string(1:8) == "<PP_BETA") THEN
@@ -743,7 +805,7 @@ CONTAINS
             CPASSERT(ibeta <= nbeta)
             DO
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                END IF
                CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -771,7 +833,7 @@ CONTAINS
                CASE ("CUTOFF_RADIUS")
                   CALL parser_get_object(parser, line)
                   ! not used currently
-               CASE ("ULTRASOFT_CUTOFF_RADIUS")
+               CASE ("ULTRASOFT_CUTOFF_RADIUS", "NORM_CONSERVING_RADIUS")
                   CALL parser_get_object(parser, line)
                   ! not used currently
                CASE DEFAULT
@@ -782,7 +844,7 @@ CONTAINS
             icount = 1
             DO WHILE (icount <= ms)
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                ELSE
                   CALL parser_get_object(parser, pot%beta(icount, i1))
@@ -794,7 +856,7 @@ CONTAINS
             IF (string /= "<PP_DIJ>") THEN
                DO
                   IF (parser_test_next_token(parser) == "EOL") THEN
-                     CALL parser_get_next_line(parser, 1, at_end)
+                     CALL upf_next_line(parser, at_end)
                      CPASSERT(.NOT. at_end)
                   END IF
                   CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -816,7 +878,7 @@ CONTAINS
             icount = 1
             DO WHILE (icount <= ms)
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                ELSE
                   i1 = (icount - 1)/nbeta + 1
@@ -826,7 +888,7 @@ CONTAINS
                END IF
             END DO
          ELSE IF (string(1:16) == "<PP_AUGMENTATION") THEN
-            IF (readaug .AND. .NOT. pot%is_paw) CALL upf_augmentation_section(parser, pot)
+            IF (readaug) CALL upf_augmentation_section(parser, pot)
          ELSE IF (string(1:14) == "</PP_NONLOCAL>") THEN
             EXIT
          END IF
@@ -855,11 +917,13 @@ CONTAINS
       TYPE(atom_upfpot_type), INTENT(INOUT)              :: pot
 
       CHARACTER(LEN=default_string_length)               :: string, tag, value
-      INTEGER                                            :: i, j, k, l, lmax, m, nb, nc, nqf, nqlc, &
-                                                            pair, size_data, tag_i, tag_j, tag_l
+      INTEGER                                            :: i, iraug, j, k, l, lmax, m, nb, nc, nqf, &
+                                                            nqlc, pair, size_data, tag_i, tag_j, &
+                                                            tag_l
       LOGICAL                                            :: at_end, is_null, q_with_l, read_q, &
                                                             self_closing
       LOGICAL, ALLOCATABLE                               :: present_channel(:, :)
+      REAL(dp), ALLOCATABLE                              :: multipoles(:)
 
       CPASSERT(.NOT. ALLOCATED(pot%qij) .AND. .NOT. ALLOCATED(pot%qijl))
       CPASSERT(ALL(pot%lbeta >= 0))
@@ -869,9 +933,10 @@ CONTAINS
       q_with_l = .FALSE.
       nqf = -1
       nqlc = lmax + 1
+      iraug = -1
       DO
          IF (parser_test_next_token(parser) == "EOL") THEN
-            CALL parser_get_next_line(parser, 1, at_end)
+            CALL upf_next_line(parser, at_end)
             CPASSERT(.NOT. at_end)
          END IF
          CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -883,15 +948,43 @@ CONTAINS
             CALL parser_get_object(parser, nqf)
          CASE ("NQLC")
             CALL parser_get_object(parser, nqlc)
+         CASE ("SHAPE")
+            CPASSERT(ALLOCATED(pot%paw))
+            CALL parser_get_object(parser, pot%paw%augmentation_shape)
+         CASE ("CUTOFF_R")
+            CPASSERT(ALLOCATED(pot%paw))
+            CALL parser_get_object(parser, pot%paw%cutoff_radius)
+         CASE ("CUTOFF_R_INDEX")
+            CPASSERT(ALLOCATED(pot%paw))
+            CALL parser_get_object(parser, pot%paw%cutoff_index)
+         CASE ("IRAUG")
+            CPASSERT(ALLOCATED(pot%paw))
+            CALL parser_get_object(parser, iraug)
+         CASE ("L_MAX_AUG", "LMAX_AUG")
+            CPASSERT(ALLOCATED(pot%paw))
+            CALL parser_get_object(parser, pot%paw%lmax_aug)
+         CASE ("AUGMENTATION_EPSILON")
+            CPASSERT(ALLOCATED(pot%paw))
+            CALL parser_get_object(parser, pot%paw%augmentation_epsilon)
          CASE DEFAULT
             CPABORT("Unknown UPF PP_AUGMENTATION option <"//TRIM(string)//"> found")
          END SELECT
       END DO
       IF (.NOT. q_with_l .OR. nqf /= 0) THEN
-         CPABORT("Native USPP import requires angular-resolved PP_QIJL with nqf=0")
+         CPABORT("Native augmentation import requires angular-resolved PP_QIJL with nqf=0")
       END IF
       IF (nqlc == 0) nqlc = lmax + 1
       CPASSERT(nqlc >= lmax + 1)
+      IF (ALLOCATED(pot%paw)) THEN
+         IF (pot%paw%cutoff_index < 0) pot%paw%cutoff_index = iraug
+         IF (iraug >= 0) THEN
+            CPASSERT(iraug == pot%paw%cutoff_index)
+         END IF
+         CPASSERT(pot%paw%cutoff_index >= 1 .AND. pot%paw%cutoff_index <= m)
+         CPASSERT(pot%paw%lmax_aug >= 0 .AND. pot%paw%lmax_aug <= lmax)
+         CPASSERT(ieee_is_finite(pot%paw%augmentation_epsilon))
+         CPASSERT(pot%paw%augmentation_epsilon >= 0.0_dp)
+      END IF
       nc = nb*(nb + 1)/2
       ALLOCATE (pot%qij(nb, nb), pot%qijl(m, nc, 0:lmax), present_channel(nc, 0:lmax))
       pot%qij = 0.0_dp
@@ -899,12 +992,23 @@ CONTAINS
       present_channel = .FALSE.
       read_q = .FALSE.
       DO
-         CALL parser_get_next_line(parser, 1, at_end)
+         CALL upf_next_line(parser, at_end)
          CPASSERT(.NOT. at_end)
          CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
          IF (tag == "</PP_AUGMENTATION>") EXIT
          IF (tag(1:2) == "</") CYCLE
-         CPASSERT(tag(1:8) == "<PP_QIJL" .OR. tag == "<PP_Q" .OR. tag == "<PP_Q>")
+         IF (tag == "<PP_MULTIPOLES" .OR. tag == "<PP_MULTIPOLES>") THEN
+            CPASSERT(ALLOCATED(pot%paw))
+            CPASSERT(.NOT. ALLOCATED(pot%paw%multipoles))
+            ALLOCATE (multipoles(nb*nb*(lmax + 1)), pot%paw%multipoles(nb, nb, 0:lmax))
+            CALL upf_real_array(parser, tag, multipoles)
+            pot%paw%multipoles(:, :, :) = RESHAPE(multipoles, [nb, nb, lmax + 1])
+            DEALLOCATE (multipoles)
+            CYCLE
+         END IF
+         IF (.NOT. (tag(1:8) == "<PP_QIJL" .OR. tag == "<PP_Q" .OR. tag == "<PP_Q>")) THEN
+            CPABORT("Unexpected UPF augmentation tag "//TRIM(tag)//" in "//TRIM(pot%filename))
+         END IF
          i = -1
          j = -1
          l = -1
@@ -916,7 +1020,7 @@ CONTAINS
          IF (tag /= "<PP_Q>") THEN
             DO
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                END IF
                CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -970,7 +1074,7 @@ CONTAINS
             CPASSERT(.NOT. self_closing .AND. size_data == m)
             DO k = 1, m
                DO WHILE (parser_test_next_token(parser) == "EOL")
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                END DO
                CALL parser_get_object(parser, pot%qijl(k, pair, l))
@@ -981,7 +1085,7 @@ CONTAINS
             DO j = 1, nb
                DO i = 1, nb
                   DO WHILE (parser_test_next_token(parser) == "EOL")
-                     CALL parser_get_next_line(parser, 1, at_end)
+                     CALL upf_next_line(parser, at_end)
                      CPASSERT(.NOT. at_end)
                   END DO
                   CALL parser_get_object(parser, pot%qij(i, j))
@@ -991,15 +1095,229 @@ CONTAINS
          END IF
       END DO
       CPASSERT(read_q)
+      IF (ALLOCATED(pot%paw)) THEN
+         CPASSERT(ALLOCATED(pot%paw%multipoles))
+      END IF
       DO j = 1, nb
          DO i = 1, j
             pair = j*(j - 1)/2 + i
             DO l = ABS(pot%lbeta(i) - pot%lbeta(j)), pot%lbeta(i) + pot%lbeta(j), 2
+               ! PAW writers may omit channels below the stored multipole threshold.
+               IF (.NOT. present_channel(pair, l) .AND. ALLOCATED(pot%paw)) THEN
+                  IF (ABS(pot%paw%multipoles(i, j, l)) < pot%paw%augmentation_epsilon) CYCLE
+               END IF
                CPASSERT(present_channel(pair, l))
             END DO
          END DO
       END DO
    END SUBROUTINE upf_augmentation_section
+
+! **************************************************************************************************
+!> \brief Read a complete real UPF array and check its dimensions and closing tag.
+!> \param parser Token stream after the opening tag name.
+!> \param tag Opening tag, with or without its final greater-than sign.
+!> \param values Array in the original file convention.
+!> \param index_value Optional projector index attribute, or -1 if absent.
+!> \param angular_momentum Optional angular momentum attribute, or -1 if absent.
+! **************************************************************************************************
+   SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+      CHARACTER(LEN=*), INTENT(IN)                       :: tag
+      REAL(dp), INTENT(OUT)                              :: values(:)
+      INTEGER, INTENT(OUT), OPTIONAL                     :: index_value, angular_momentum
+
+      CHARACTER(LEN=default_string_length)               :: name, string, value
+      INTEGER                                            :: i, last, n
+      LOGICAL                                            :: at_end
+
+      n = SIZE(values)
+      last = LEN_TRIM(tag)
+      IF (PRESENT(index_value)) index_value = -1
+      IF (PRESENT(angular_momentum)) angular_momentum = -1
+      IF (tag(last:last) == ">") THEN
+         name = tag(2:last - 1)
+      ELSE
+         name = tag(2:last)
+         DO
+            IF (parser_test_next_token(parser) == "EOL") THEN
+               CALL upf_next_line(parser, at_end)
+               CPASSERT(.NOT. at_end)
+            END IF
+            CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
+            IF (string == ">") EXIT
+            SELECT CASE (string)
+            CASE ("TYPE")
+               CALL parser_get_object(parser, value, lower_to_upper=.TRUE.)
+               CPASSERT(value == "REAL")
+            CASE ("SIZE")
+               CALL parser_get_object(parser, n)
+               CPASSERT(n == SIZE(values))
+            CASE ("COLUMNS")
+               CALL parser_get_object(parser, value)
+            CASE ("INDEX")
+               CPASSERT(PRESENT(index_value))
+               CALL parser_get_object(parser, index_value)
+            CASE ("L")
+               CPASSERT(PRESENT(angular_momentum))
+               CALL parser_get_object(parser, angular_momentum)
+            CASE ("LABEL")
+               CALL parser_get_object(parser, value, allow_empty=.TRUE.)
+            CASE DEFAULT
+               CPABORT("Unknown UPF "//TRIM(name)//" option <"//TRIM(string)//"> found")
+            END SELECT
+         END DO
+      END IF
+      DO i = 1, n
+         DO WHILE (parser_test_next_token(parser) == "EOL")
+            CALL upf_next_line(parser, at_end)
+            CPASSERT(.NOT. at_end)
+         END DO
+         CALL parser_get_object(parser, values(i))
+      END DO
+      CPASSERT(ALL(ieee_is_finite(values)))
+      CALL upf_next_line(parser, at_end)
+      CPASSERT(.NOT. at_end)
+      CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
+      CPASSERT(string == "</"//TRIM(name)//">")
+   END SUBROUTINE upf_real_array
+
+! **************************************************************************************************
+!> \brief Import the two projector-indexed PAW partial-wave sets, retaining r*phi(r).
+!> \param parser Token stream after the PP_FULL_WFC tag name.
+!> \param pot UPF data.
+!> \param opening_tag PP_FULL_WFC opening tag.
+! **************************************************************************************************
+   SUBROUTINE upf_full_wfc_section(parser, pot, opening_tag)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+      TYPE(atom_upfpot_type), INTENT(INOUT)              :: pot
+      CHARACTER(LEN=*), INTENT(IN)                       :: opening_tag
+
+      CHARACTER(LEN=default_string_length)               :: string, suffix, tag
+      INTEGER                                            :: i, index_value, ios, l, last, m, n, nb, &
+                                                            wave_type
+      LOGICAL                                            :: at_end
+      LOGICAL, ALLOCATABLE                               :: found(:, :)
+      REAL(dp), ALLOCATABLE                              :: values(:)
+
+      nb = pot%number_of_proj
+      m = pot%mesh_size
+      CPASSERT(nb > 0 .AND. m > 0)
+      CPASSERT(.NOT. ALLOCATED(pot%paw%ae_wfc))
+      IF (opening_tag /= "<PP_FULL_WFC>") THEN
+         DO
+            IF (parser_test_next_token(parser) == "EOL") THEN
+               CALL upf_next_line(parser, at_end)
+               CPASSERT(.NOT. at_end)
+            END IF
+            CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
+            IF (string == ">") EXIT
+            CPASSERT(string == "NUMBER_OF_WFC")
+            CALL parser_get_object(parser, n)
+            CPASSERT(n == nb)
+         END DO
+      END IF
+      ALLOCATE (pot%paw%ae_wfc(m, nb), pot%paw%ps_wfc(m, nb), pot%paw%angular_momenta(nb))
+      ALLOCATE (found(nb, 2), values(m))
+      found = .FALSE.
+      pot%paw%angular_momenta = -1
+      DO
+         CALL upf_next_line(parser, at_end)
+         CPASSERT(.NOT. at_end)
+         CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
+         IF (tag == "</PP_FULL_WFC>") EXIT
+         SELECT CASE (tag(1:10))
+         CASE ("<PP_AEWFC.")
+            wave_type = 1
+         CASE ("<PP_PSWFC.")
+            wave_type = 2
+         CASE DEFAULT
+            CPABORT("Unknown UPF PAW partial-wave tag "//TRIM(tag))
+         END SELECT
+         last = LEN_TRIM(tag)
+         IF (tag(last:last) == ">") last = last - 1
+         suffix = tag(11:last)
+         READ (suffix, *, IOSTAT=ios) i
+         CPASSERT(ios == 0)
+         CPASSERT(i >= 1 .AND. i <= nb)
+         CPASSERT(.NOT. found(i, wave_type))
+         CALL upf_real_array(parser, tag, values, index_value, l)
+         IF (index_value /= -1) THEN
+            CPASSERT(index_value == i)
+         END IF
+         CPASSERT(l >= 0)
+         IF (pot%paw%angular_momenta(i) >= 0) THEN
+            CPASSERT(l == pot%paw%angular_momenta(i))
+         END IF
+         pot%paw%angular_momenta(i) = l
+         IF (wave_type == 1) THEN
+            pot%paw%ae_wfc(:, i) = values
+         ELSE
+            pot%paw%ps_wfc(:, i) = values
+         END IF
+         found(i, wave_type) = .TRUE.
+      END DO
+      CPASSERT(ALL(found))
+   END SUBROUTINE upf_full_wfc_section
+
+! **************************************************************************************************
+!> \brief Read PAW format-2 occupations, AE core density and local potential.
+!> \param parser Token stream after the PP_PAW tag name.
+!> \param pot UPF data; energies and potentials are converted from Ry to Hartree.
+! **************************************************************************************************
+   SUBROUTINE upf_paw_section(parser, pot)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+      TYPE(atom_upfpot_type), INTENT(INOUT)              :: pot
+
+      CHARACTER(LEN=default_string_length)               :: string, tag
+      LOGICAL                                            :: at_end
+
+      DO
+         IF (parser_test_next_token(parser) == "EOL") THEN
+            CALL upf_next_line(parser, at_end)
+            CPASSERT(.NOT. at_end)
+         END IF
+         CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
+         IF (string == ">") EXIT
+         SELECT CASE (string)
+         CASE ("PAW_DATA_FORMAT")
+            CPASSERT(pot%paw%data_format == -1)
+            CALL parser_get_object(parser, pot%paw%data_format)
+         CASE ("CORE_ENERGY")
+            CPASSERT(.NOT. pot%paw%has_core_energy)
+            CALL parser_get_object(parser, pot%paw%core_energy)
+            CPASSERT(ieee_is_finite(pot%paw%core_energy))
+            pot%paw%core_energy = 0.5_dp*pot%paw%core_energy
+            pot%paw%has_core_energy = .TRUE.
+         CASE DEFAULT
+            CPABORT("Unknown UPF PP_PAW option <"//TRIM(string)//"> found")
+         END SELECT
+      END DO
+      IF (pot%paw%data_format /= 2) CPABORT("Native PAW import requires paw_data_format=2")
+      DO
+         CALL upf_next_line(parser, at_end)
+         CPASSERT(.NOT. at_end)
+         CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
+         SELECT CASE (tag)
+         CASE ("</PP_PAW>")
+            EXIT
+         CASE ("<PP_OCCUPATIONS", "<PP_OCCUPATIONS>")
+            CPASSERT(.NOT. ALLOCATED(pot%paw%occupations))
+            ALLOCATE (pot%paw%occupations(pot%number_of_proj))
+            CALL upf_real_array(parser, tag, pot%paw%occupations)
+         CASE ("<PP_AE_NLCC", "<PP_AE_NLCC>")
+            CPASSERT(.NOT. ALLOCATED(pot%paw%rho_core))
+            ALLOCATE (pot%paw%rho_core(pot%mesh_size))
+            CALL upf_real_array(parser, tag, pot%paw%rho_core)
+         CASE ("<PP_AE_VLOC", "<PP_AE_VLOC>")
+            CPASSERT(.NOT. ALLOCATED(pot%paw%vlocal))
+            ALLOCATE (pot%paw%vlocal(pot%mesh_size))
+            CALL upf_real_array(parser, tag, pot%paw%vlocal)
+            pot%paw%vlocal = 0.5_dp*pot%paw%vlocal
+         CASE DEFAULT
+            CPABORT("Unknown UPF PAW data tag "//TRIM(tag))
+         END SELECT
+      END DO
+   END SUBROUTINE upf_paw_section
 
 ! **************************************************************************************************
 !> \brief ...
@@ -1021,7 +1339,7 @@ CONTAINS
 
       ib = 0
       DO
-         CALL parser_get_next_line(parser, 1, at_end)
+         CALL upf_next_line(parser, at_end)
          CPASSERT(.NOT. at_end)
          CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
          IF (string(1:7) == "<PP_VNL") THEN
@@ -1032,7 +1350,7 @@ CONTAINS
             CPASSERT(ib <= lmax + 1)
             DO
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                END IF
                CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -1056,7 +1374,7 @@ CONTAINS
             icount = 1
             DO WHILE (icount <= ms)
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                ELSE
                   CALL parser_get_object(parser, pot%vsemi(icount, i1))
