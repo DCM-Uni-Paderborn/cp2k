@@ -6,8 +6,10 @@
 !--------------------------------------------------------------------------------------------------!
 
 PROGRAM uspp_fourier_unittest
-   USE atom_upf,                        ONLY: atom_release_upf,&
+   USE atom_upf,                        ONLY: atom_read_upf,&
+                                              atom_release_upf,&
                                               atom_upfpot_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
@@ -18,11 +20,10 @@ PROGRAM uspp_fourier_unittest
    USE orbital_transformation_matrices, ONLY: orbtramat
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
-   USE uspp_augmentation,               ONLY: uspp_augmentation_collocate,&
-                                              uspp_augmentation_fourier,&
-                                              uspp_augmentation_init,&
-                                              uspp_augmentation_integrate,&
-                                              uspp_augmentation_type
+   USE uspp_augmentation,               ONLY: &
+        uspp_augmentation_collocate, uspp_augmentation_collocate_atom, uspp_augmentation_fourier, &
+        uspp_augmentation_init, uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
+        uspp_augmentation_prepare_realspace, uspp_augmentation_realspace, uspp_augmentation_type
 
    IMPLICIT NONE
    INTEGER, PARAMETER :: nb = 5, np = 19, nao = 7
@@ -31,6 +32,8 @@ PROGRAM uspp_fourier_unittest
    TYPE(upf_projector_type) :: projectors
    TYPE(uspp_augmentation_type) :: aug
    INTEGER :: grid, nr, i, j, l, pair, test
+   CHARACTER(len=1024) :: filename
+   LOGICAL :: source_root_argument
    REAL(KIND=dp) :: dx, g(3), error, max_error, vectors(3, 7), d(np, np), matrix(np, np), matrix_half(np, np)
    REAL(KIND=dp) :: weights(7), energy_grid, energy_matrix, b(nao, np), p(nao, nao), delta_s(nao, nao)
    COMPLEX(KIND=dp) :: qg(np, np), qminus(np, np), reference(np, np), rho(7), vg(7)
@@ -139,15 +142,253 @@ PROGRAM uspp_fourier_unittest
       vg(1) = CMPLX(2.3_dp, 0.0_dp, KIND=dp)
       CALL uspp_augmentation_integrate(aug, vectors, center, volume, vg, weights, matrix)
       IF (MAXVAL(ABS(matrix - 2.3_dp*aug%q)) > 1.e-13_dp) ERROR STOP 'Wrong constant-potential shift'
+      CALL check_realspace()
       CALL atom_release_upf(pot)
    END DO
    WRITE (*, *) 'USPP Fourier: 15 analytic s/p/d/f comparisons, maximum error =', max_error
+   DO i = 1, COMMAND_ARGUMENT_COUNT()
+      CALL GET_COMMAND_ARGUMENT(i, filename)
+      IF (i == 1) THEN
+         INQUIRE (FILE=TRIM(filename)//"/tests/UNIT_TESTS", EXIST=source_root_argument)
+         IF (source_root_argument) CYCLE
+      END IF
+      CALL check_upf_realspace(TRIM(filename))
+   END DO
    ! Release allocatables before LeakSanitizer inspects the main program at exit.
    aug = uspp_augmentation_type()
    projectors = upf_projector_type()
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Check source-node reproduction and finite center derivatives for optional UPF files.
+!> \param filename Scalar USPP dataset.
+! **************************************************************************************************
+   SUBROUTINE check_upf_realspace(filename)
+      CHARACTER(len=*), INTENT(IN)                       :: filename
+
+      INTEGER                                            :: i, j, l, node, p, pair, point, q
+      REAL(KIND=dp)                                      :: displacement(3), error, reference, scale
+      REAL(KIND=dp), ALLOCATABLE                         :: gradient(:, :, :), hessian(:, :, :, :), &
+                                                            value(:, :)
+      TYPE(atom_upfpot_type)                             :: dataset
+      TYPE(upf_projector_type)                           :: beta
+      TYPE(uspp_augmentation_type)                       :: augmentation
+
+      CALL atom_read_upf(dataset, filename, read_augmentation=.TRUE.)
+      CALL upf_projector_init(dataset, MAXVAL(dataset%lbeta), beta)
+      CALL uspp_augmentation_init(dataset, beta, augmentation)
+      CALL uspp_augmentation_prepare_realspace(dataset, augmentation)
+      p = augmentation%nproj
+      ALLOCATE (value(p, p), gradient(p, p, 3), hessian(p, p, 3, 3))
+      displacement = 0.0_dp
+      CALL uspp_augmentation_realspace(augmentation, displacement, value, gradient, hessian)
+      IF (.NOT. ALL(ieee_is_finite(value)) .OR. .NOT. ALL(ieee_is_finite(gradient)) .OR. &
+          .NOT. ALL(ieee_is_finite(hessian))) ERROR STOP 'Nonfinite augmentation at origin'
+      error = 0.0_dp
+      scale = 1.0_dp
+      DO point = 0, 8
+         node = MAX(2, 1 + (SIZE(dataset%r) - 1)*point/8)
+         displacement = [0.0_dp, 0.0_dp, dataset%r(node)]
+         CALL uspp_augmentation_realspace(augmentation, displacement, value, gradient, hessian)
+         IF (.NOT. ALL(ieee_is_finite(value)) .OR. .NOT. ALL(ieee_is_finite(gradient)) .OR. &
+             .NOT. ALL(ieee_is_finite(hessian))) ERROR STOP 'Nonfinite atom-grid augmentation'
+         DO q = 1, augmentation%nproj
+            j = augmentation%radial_index(q)
+            DO p = 1, augmentation%nproj
+               i = augmentation%radial_index(p)
+               pair = MAX(i, j)*(MAX(i, j) - 1)/2 + MIN(i, j)
+               reference = 0.0_dp
+               DO l = ABS(dataset%lbeta(i) - dataset%lbeta(j)), dataset%lbeta(i) + dataset%lbeta(j), 2
+                  reference = reference + augmentation%gaunt(p, q, l*l + l + 1)* &
+                              SQRT(REAL(2*l + 1, dp)/(4.0_dp*pi))*dataset%qijl(node, pair, l)/dataset%r(node)**2
+               END DO
+               error = MAX(error, ABS(value(p, q) - reference))
+               scale = MAX(scale, ABS(reference))
+            END DO
+         END DO
+      END DO
+      WRITE (*, *) 'USPP real-space table error:', error/scale, filename
+      IF (error/scale > 2.e-10_dp) ERROR STOP 'Atom-grid interpolation changes source nodes'
+      CALL atom_release_upf(dataset)
+   END SUBROUTINE check_upf_realspace
+
+! **************************************************************************************************
+!> \brief Atom-grid values and derivatives against independent Cartesian Gaussian products.
+! **************************************************************************************************
+   SUBROUTINE check_realspace()
+      REAL(KIND=dp), PARAMETER                           :: step = 1.e-6_dp
+
+      INTEGER                                            :: axis, point
+      REAL(KIND=dp) :: coordinate(3), derivative(np, np, 3), displaced(3), errors(3), &
+         exact(np, np), exact_d(np, np, 3), exact_dd(np, np, 3, 3), finite_difference_error, &
+         minus(np, np), minus_d(np, np, 3), plus(np, np), plus_d(np, np, 3), points(3, 7), &
+         second(np, np, 3, 3), value(np, np)
+
+      CALL uspp_augmentation_prepare_realspace(pot, aug)
+      points(:, 1) = 0.0_dp
+      points(:, 2) = [1.e-8_dp, -2.e-8_dp, 3.e-8_dp]
+      points(:, 3) = [0.2_dp, -0.7_dp, 0.9_dp]
+      points(:, 4) = [0.0_dp, 0.0_dp, 1.37_dp]
+      points(:, 5) = [1.23_dp, 0.0_dp, 0.0_dp]
+      points(:, 6) = [0.0_dp, pot%r(SIZE(pot%r)/2), 0.0_dp]
+      points(:, 7) = [0.0_dp, 0.0_dp, 1.1_dp*MAXVAL(pot%r)]
+      errors = 0.0_dp
+      finite_difference_error = 0.0_dp
+      DO point = 1, SIZE(points, 2)
+         coordinate = points(:, point)
+         CALL uspp_augmentation_realspace(aug, coordinate, value, derivative, second)
+         CALL gaussian_realspace(coordinate, exact, exact_d, exact_dd)
+         errors(1) = MAX(errors(1), MAXVAL(ABS(value - exact)))
+         errors(2) = MAX(errors(2), MAXVAL(ABS(derivative - exact_d)))
+         errors(3) = MAX(errors(3), MAXVAL(ABS(second - exact_dd)))
+         DO axis = 1, 3
+            displaced = coordinate
+            displaced(axis) = displaced(axis) + step
+            CALL uspp_augmentation_realspace(aug, displaced, plus, plus_d)
+            displaced(axis) = displaced(axis) - 2.0_dp*step
+            CALL uspp_augmentation_realspace(aug, displaced, minus, minus_d)
+            finite_difference_error = MAX(finite_difference_error, &
+                                          MAXVAL(ABS((plus - minus)/(2.0_dp*step) - derivative(:, :, axis))), &
+                                          MAXVAL(ABS((plus_d - minus_d)/(2.0_dp*step) - second(:, :, :, axis))))
+         END DO
+      END DO
+      WRITE (*, *) 'USPP real-space value/gradient/Hessian errors:', grid, errors
+      WRITE (*, *) 'USPP real-space finite-difference error:', grid, finite_difference_error
+      IF (errors(1) > 2.e-8_dp .OR. errors(2) > 2.e-6_dp .OR. errors(3) > 2.e-4_dp) THEN
+         ERROR STOP 'Atom-grid augmentation differs from Cartesian Gaussian products'
+      END IF
+      IF (finite_difference_error > 5.e-8_dp) ERROR STOP 'Inconsistent atom-grid augmentation derivatives'
+      CALL check_atom_adjoint(points(:, 1:5))
+   END SUBROUTINE check_realspace
+
+! **************************************************************************************************
+!> \brief Check the signed-quadrature adjoint and nonlinear density/center energy derivatives.
+!> \param points Atom-grid displacements, including the origin and axis points.
+! **************************************************************************************************
+   SUBROUTINE check_atom_adjoint(points)
+      REAL(KIND=dp), INTENT(IN)                          :: points(3, 5)
+
+      REAL(KIND=dp), PARAMETER :: step = 1.e-5_dp, &
+         weights(5) = [0.3_dp, -0.7_dp, 1.1_dp, 0.2_dp, -0.4_dp]
+
+      INTEGER                                            :: axis, i, j
+      REAL(KIND=dp) :: center_gradient(3), eminus, eplus, error, gradient(3, 5), matrix(np, np), &
+         pairing, rho(5), shifted(3, 5), trial(np, np)
+
+      rho = 0.4_dp
+      gradient = 0.05_dp
+      CALL uspp_augmentation_collocate_atom(aug, points, d, rho, gradient)
+      CALL uspp_augmentation_integrate_atom(aug, points, weights, rho**2, gradient, matrix, d, center_gradient)
+      pairing = SUM(weights*(rho**2*(rho - 0.4_dp) + SUM(gradient*(gradient - 0.05_dp), DIM=1)))
+      error = ABS(pairing - SUM(d*matrix))
+      IF (error > 1.e-13_dp) ERROR STOP 'Atom-grid augmentation operations are not adjoint'
+      DO j = 1, np
+         DO i = 1, np
+            trial(i, j) = 0.03_dp*COS(REAL(i*j, dp))
+         END DO
+      END DO
+      eplus = atom_test_energy(points, d + step*trial, weights)
+      eminus = atom_test_energy(points, d - step*trial, weights)
+      error = MAX(error, ABS((eplus - eminus)/(2.0_dp*step) - SUM(trial*matrix)))
+      DO axis = 1, 3
+         shifted = points
+         shifted(axis, :) = shifted(axis, :) - step
+         eplus = atom_test_energy(shifted, d, weights)
+         shifted(axis, :) = shifted(axis, :) + 2.0_dp*step
+         eminus = atom_test_energy(shifted, d, weights)
+         error = MAX(error, ABS((eplus - eminus)/(2.0_dp*step) - center_gradient(axis)))
+      END DO
+      WRITE (*, *) 'USPP atom-grid nonlinear derivative error:', grid, error
+      IF (error > 1.e-9_dp) ERROR STOP 'Inconsistent atom-grid nonlinear energy derivatives'
+   END SUBROUTINE check_atom_adjoint
+
+! **************************************************************************************************
+!> \brief Nonlinear surrogate energy with a fixed environmental density and gradient.
+!> \param points Atom-grid displacements.
+!> \param density On-site density matrix.
+!> \param weights Signed quadrature weights.
+!> \return Sum of n**3/3 + |grad(n)|**2/2 on the same quadrature.
+! **************************************************************************************************
+   FUNCTION atom_test_energy(points, density, weights) RESULT(energy)
+      REAL(KIND=dp), INTENT(IN)                          :: points(3, 5), density(np, np), weights(5)
+      REAL(KIND=dp)                                      :: energy
+
+      REAL(KIND=dp)                                      :: gradient(3, 5), rho(5)
+
+      rho = 0.4_dp
+      gradient = 0.05_dp
+      CALL uspp_augmentation_collocate_atom(aug, points, density, rho, gradient)
+      energy = SUM(weights*(rho**3/3.0_dp + 0.5_dp*SUM(gradient**2, DIM=1)))
+   END FUNCTION atom_test_energy
+
+! **************************************************************************************************
+!> \brief Independent monomial product rule, without Gaunt coefficients or radial interpolation.
+!> \param coordinate Cartesian displacement from the center.
+!> \param value Gaussian augmentation matrix.
+!> \param derivative Cartesian gradient.
+!> \param second Cartesian Hessian.
+! **************************************************************************************************
+   SUBROUTINE gaussian_realspace(coordinate, value, derivative, second)
+      REAL(KIND=dp), INTENT(IN)                          :: coordinate(3)
+      REAL(KIND=dp), INTENT(OUT)                         :: value(np, np), derivative(np, np, 3), &
+                                                            second(np, np, 3, 3)
+
+      INTEGER                                            :: a, axis, axis2, c, i, j, k, li, lj, mi, &
+                                                            mj, powers(3), u, v
+      REAL(KIND=dp)                                      :: coefficient, factors(3), first(0:6, 3), &
+                                                            functions(0:8, 3), twice(0:6, 3)
+
+      DO axis = 1, 3
+         DO k = 0, 8
+            functions(k, axis) = coordinate(axis)**k*EXP(-alpha*coordinate(axis)**2)
+         END DO
+         DO k = 0, 6
+            first(k, axis) = -2.0_dp*alpha*functions(k + 1, axis)
+            IF (k > 0) first(k, axis) = first(k, axis) + k*functions(k - 1, axis)
+            twice(k, axis) = -2.0_dp*alpha*(2*k + 1)*functions(k, axis) + &
+                             4.0_dp*alpha**2*functions(k + 2, axis)
+            IF (k > 1) twice(k, axis) = twice(k, axis) + k*(k - 1)*functions(k - 2, axis)
+         END DO
+      END DO
+      value = 0.0_dp
+      derivative = 0.0_dp
+      second = 0.0_dp
+      DO v = 1, np
+         j = projectors%radial_index(v)
+         lj = pot%lbeta(j)
+         mj = projectors%angular_index(v) - lj*lj
+         DO u = 1, np
+            i = projectors%radial_index(u)
+            li = pot%lbeta(i)
+            mi = projectors%angular_index(u) - li*li
+            DO c = 1, nco(lj)
+               DO a = 1, nco(li)
+                  powers = indco(:, ncoset(li - 1) + a) + indco(:, ncoset(lj - 1) + c)
+                  coefficient = (i + j)*0.1_dp*orbtramat(li)%slm(mi, a)*orbtramat(lj)%slm(mj, c)
+                  factors = [functions(powers(1), 1), functions(powers(2), 2), functions(powers(3), 3)]
+                  value(u, v) = value(u, v) + coefficient*PRODUCT(factors)
+                  DO axis = 1, 3
+                     factors(axis) = first(powers(axis), axis)
+                     derivative(u, v, axis) = derivative(u, v, axis) + coefficient*PRODUCT(factors)
+                     DO axis2 = 1, 3
+                        IF (axis2 == axis) THEN
+                           factors(axis2) = twice(powers(axis2), axis2)
+                        ELSE
+                           factors(axis2) = first(powers(axis2), axis2)
+                        END IF
+                        second(u, v, axis, axis2) = second(u, v, axis, axis2) + coefficient*PRODUCT(factors)
+                        factors(axis2) = functions(powers(axis2), axis2)
+                        factors(axis) = first(powers(axis), axis)
+                     END DO
+                     factors(axis) = functions(powers(axis), axis)
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE gaussian_realspace
 
 ! **************************************************************************************************
 !> \brief Independent full Cartesian Gaussian Fourier integrals, without Gaunt or Bessel sums.
