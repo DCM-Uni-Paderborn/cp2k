@@ -194,7 +194,9 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="EPSRHO0", &
                           variants=s2a("EPSVRHO0", "EPS_VRHO0"), &
                           description="GAPW: tolerance used to determine the range of the "// &
-                          "V(rho0-rho0_soft) compensation contribution.", &
+                          "V(rho0-rho0_soft) compensation contribution. Unless ALPHA0_HARD is specified, "// &
+                          "it also controls the automatically chosen hard compensation exponent. "// &
+                          "Smaller values can produce a harder compensation charge and require a larger MGRID cutoff.", &
                           usage="EPSRHO0 real", default_r_val=1.0E-6_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
