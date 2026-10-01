@@ -428,7 +428,6 @@ CONTAINS
          nlcc = atom%potential%gth_pot%nlcc
       ELSE IF (atom%potential%ppot_type == upf_pseudo) THEN
          nlcc = atom%potential%upf_pot%core_correction
-         CPASSERT(.NOT. nlcc)
       ELSE IF (atom%potential%ppot_type == sgp_pseudo) THEN
          nlcc = atom%potential%sgp_pot%has_nlcc
          CPASSERT(.NOT. nlcc)

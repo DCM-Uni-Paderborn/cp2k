@@ -6,13 +6,20 @@
 !--------------------------------------------------------------------------------------------------!
 
 PROGRAM paw_xc_unittest
+   USE atom_paw,                        ONLY: atom_paw_add,&
+                                              atom_paw_init,&
+                                              atom_paw_type
+   USE atom_types,                      ONLY: atom_basis_type,&
+                                              atom_potential_type,&
+                                              upf_pseudo
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
                                               atom_upfpot_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE input_cp2k_xc,                   ONLY: create_xc_fun_section
+   USE input_cp2k_xc,                   ONLY: create_xc_fun_section,&
+                                              create_xc_section
    USE input_section_types,             ONLY: section_release,&
                                               section_type,&
                                               section_vals_create,&
@@ -85,12 +92,137 @@ PROGRAM paw_xc_unittest
    CALL check_cartesian_fields()
    CALL check_local_exchange()
    CALL check_gga()
+   CALL check_atomic_projection()
    CALL original_datasets()
    CALL section_vals_release(functional)
    CALL section_release(specification)
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Atomic magnetic averaging against analytic p-shell exchange and AO directional derivatives.
+! **************************************************************************************************
+   SUBROUTINE check_atomic_projection()
+      REAL(dp), PARAMETER                                :: step = 1.e-5_dp
+
+      INTEGER                                            :: l, ns, spin
+      REAL(dp) :: amplitude, derivative, direction(2, 2, 0:1, 2), energy, errors(3), exchange, &
+         hartree, integral, jmat(2, 2, 0:1), matrix(2, 2, 0:1, 2), minus, occupation(2), &
+         p(2, 2, 0:1, 2), plus, prefactor, reference, scratch(2, 2, 0:1, 2), xmat(2, 2, 0:1, 2)
+      TYPE(atom_basis_type)                              :: basis
+      TYPE(atom_paw_type)                                :: cache
+      TYPE(atom_potential_type)                          :: potential
+      TYPE(section_type), POINTER                        :: xc_spec
+      TYPE(section_vals_type), POINTER                   :: xc
+
+      potential%ppot_type = upf_pseudo
+      potential%upf_pot = pot
+      potential%upf_pot%rho_nlcc(:) = 0.0_dp
+      potential%upf_pot%paw%rho_core(:) = 0.0_dp
+      CALL atom_paw_init(potential, cache)
+      basis%nbas(0:1) = 2
+      ALLOCATE (basis%uspp)
+      ALLOCATE (basis%uspp%lbeta, SOURCE=[0, 1])
+      ALLOCATE (basis%uspp%beta(2, 2))
+      basis%uspp%beta(:, 1) = [0.8_dp, -0.3_dp]
+      basis%uspp%beta(:, 2) = [0.6_dp, 0.4_dp]
+      NULLIFY (xc_spec, xc)
+      CALL create_xc_section(xc_spec)
+      CALL section_vals_create(xc, xc_spec)
+      CALL section_vals_val_set(xc, 'DENSITY_CUTOFF', r_val=1.e-20_dp)
+      CALL section_vals_val_set(xc, 'GRADIENT_CUTOFF', r_val=1.e-20_dp)
+      CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%XALPHA%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      ! Spherical p-shell density: N*beta**2*r**2*exp(-exponent*r**2)/(4*pi).
+      integral = 0.5_dp*GAMMA(17.0_dp/6.0_dp)*(4.0_dp*exponent/3.0_dp)**(-17.0_dp/6.0_dp)
+      errors = 0.0_dp
+      DO ns = 1, 2
+         occupation = [1.3_dp, 0.0_dp]
+         IF (ns == 2) occupation = [0.9_dp, 0.4_dp]
+         p = 0.0_dp
+         p(1, 1, 1, :) = occupation
+         jmat = 0.0_dp
+         xmat = 0.0_dp
+         hartree = 0.0_dp
+         exchange = 0.0_dp
+         IF (ns == 1) THEN
+            CALL atom_paw_add(cache, basis, xc, p(:, :, :, 1), hartree, exchange, jmat, xmat(:, :, :, 1))
+         ELSE
+            CALL atom_paw_add(cache, basis, xc, p(:, :, :, 1), hartree, exchange, jmat, xmat(:, :, :, 1), &
+                              pmatb=p(:, :, :, 2), xcmatb=xmat(:, :, :, 2))
+         END IF
+         prefactor = -0.75_dp*(3.0_dp/pi)**(1.0_dp/3.0_dp)*REAL(ns, dp)**(1.0_dp/3.0_dp)
+         reference = 0.0_dp
+         DO spin = 1, ns
+            amplitude = occupation(spin)*basis%uspp%beta(1, 2)**2/fourpi
+            energy = fourpi*prefactor*integral*amplitude**(4.0_dp/3.0_dp)*(1.0_dp - pseudo_scale**(4.0_dp/3.0_dp))
+            reference = reference + energy
+            derivative = (4.0_dp/3.0_dp)*energy/occupation(spin)
+            errors(2) = MAX(errors(2), ABS(xmat(1, 1, 1, spin) - derivative))
+         END DO
+         errors(1) = MAX(errors(1), ABS(exchange - reference))
+      END DO
+      IF (MAXVAL(errors(1:2)) > 2.e-10_dp) ERROR STOP 'Atomic PAW magnetic averaging differs from analytic p-shell exchange'
+
+      CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%XALPHA%_SECTION_PARAMETERS_', l_val=.FALSE.)
+      CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      DO ns = 1, 2
+         DO spin = 1, ns
+            DO l = 0, 1
+               p(:, :, l, spin) = RESHAPE([0.8_dp, 0.13_dp, 0.13_dp, 0.5_dp], [2, 2])/REAL(spin + l, dp)
+               direction(:, :, l, spin) = RESHAPE([0.2_dp, -0.07_dp, -0.07_dp, 0.09_dp], [2, 2])*REAL(spin + l, dp)
+            END DO
+         END DO
+         CALL atomic_correction(cache, basis, xc, p(:, :, :, :ns), energy, matrix(:, :, :, :ns))
+         CALL atomic_correction(cache, basis, xc, p(:, :, :, :ns) + step*direction(:, :, :, :ns), &
+                                plus, scratch(:, :, :, :ns))
+         CALL atomic_correction(cache, basis, xc, p(:, :, :, :ns) - step*direction(:, :, :, :ns), &
+                                minus, scratch(:, :, :, :ns))
+         derivative = SUM(matrix(:, :, :, :ns)*direction(:, :, :, :ns))
+         errors(3) = MAX(errors(3), ABS((plus - minus)/(2.0_dp*step) - derivative))
+      END DO
+      WRITE (*, '(A,3ES15.6)') 'Atomic PAW exchange/derivative/AO errors:', errors
+      IF (errors(3) > 2.e-9_dp) ERROR STOP 'Atomic PAW operator is not the correction energy derivative'
+      CALL section_vals_release(xc)
+      CALL section_release(xc_spec)
+      CALL atom_release_upf(potential%upf_pot)
+   END SUBROUTINE check_atomic_projection
+
+! **************************************************************************************************
+!> \brief Evaluate atomic correction and its complete AO derivative for either spin convention.
+!> \param cache Prepared PAW data.
+!> \param basis Radial basis with beta overlaps.
+!> \param xc XC input section.
+!> \param density Occupation-summed atomic density matrices.
+!> \param energy Hartree plus XC correction energy.
+!> \param matrix Derivative with respect to the atomic density matrices.
+! **************************************************************************************************
+   SUBROUTINE atomic_correction(cache, basis, xc, density, energy, matrix)
+      TYPE(atom_paw_type), INTENT(IN)                    :: cache
+      TYPE(atom_basis_type), INTENT(IN)                  :: basis
+      TYPE(section_vals_type), POINTER                   :: xc
+      REAL(dp), INTENT(IN)                               :: density(:, :, 0:, :)
+      REAL(dp), INTENT(OUT)                              :: energy, matrix(:, :, 0:, :)
+
+      INTEGER                                            :: spin
+      REAL(dp) :: exchange, hartree, &
+         coulomb(SIZE(density, 1), SIZE(density, 2), 0:UBOUND(density, 3))
+
+      hartree = 0.0_dp
+      exchange = 0.0_dp
+      coulomb = 0.0_dp
+      matrix = 0.0_dp
+      IF (SIZE(density, 4) == 1) THEN
+         CALL atom_paw_add(cache, basis, xc, density(:, :, :, 1), hartree, exchange, coulomb, matrix(:, :, :, 1))
+      ELSE
+         CALL atom_paw_add(cache, basis, xc, density(:, :, :, 1), hartree, exchange, coulomb, matrix(:, :, :, 1), &
+                           pmatb=density(:, :, :, 2), xcmatb=matrix(:, :, :, 2))
+      END IF
+      energy = hartree + exchange
+      DO spin = 1, SIZE(density, 4)
+         matrix(:, :, :, spin) = matrix(:, :, :, spin) + coulomb
+      END DO
+   END SUBROUTINE atomic_correction
 
 ! **************************************************************************************************
 !> \brief Optional original PAW files: polarized XC and its nonspherical projector-density derivative.

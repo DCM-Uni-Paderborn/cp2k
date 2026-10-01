@@ -64,6 +64,7 @@ list(
   atom_types.F
   atom_upf.F
   atom_uspp.F
+  atom_paw.F
   paw_onecenter.F
   paw_xc.F
   upf_projector_integrals.F
