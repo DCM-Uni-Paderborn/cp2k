@@ -11,11 +11,17 @@
 PROGRAM uspp_projector_operators_unittest
    USE atom_upf,                        ONLY: atom_release_upf,&
                                               atom_upfpot_type
+   USE atomic_kind_types,               ONLY: atomic_kind_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_copy, dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, &
         dbcsr_distribution_type, dbcsr_finalize, dbcsr_get_info, dbcsr_get_stored_coordinates, &
         dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
-        dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_put_block, dbcsr_release, dbcsr_type
+        dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_p_type, dbcsr_put_block, dbcsr_release, &
+        dbcsr_set, dbcsr_type
+   USE cp_subsys_types,                 ONLY: cp_subsys_release,&
+                                              cp_subsys_type
+   USE external_potential_types,        ONLY: allocate_potential,&
+                                              deallocate_potential
    USE fft_tools,                       ONLY: finalize_fft,&
                                               init_fft
    USE kinds,                           ONLY: dp
@@ -28,6 +34,7 @@ PROGRAM uspp_projector_operators_unittest
                                               nco,&
                                               ncoset
    USE orbital_transformation_matrices, ONLY: orbtramat
+   USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: FULLSPACE,&
                                               HALFSPACE,&
                                               pw_grid_type
@@ -36,7 +43,19 @@ PROGRAM uspp_projector_operators_unittest
    USE pw_methods,                      ONLY: pw_transfer
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
+   USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type,&
+                                              qs_ks_part_release,&
+                                              qs_ks_release,&
+                                              set_ks_env
+   USE qs_subsys_types,                 ONLY: qs_subsys_set,&
+                                              qs_subsys_type
+   USE qs_uspp_methods,                 ONLY: qs_uspp_init_ao_matrix
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_matrix
+   USE qs_uspp_types,                   ONLY: qs_uspp_init,&
+                                              qs_uspp_type,&
+                                              qs_uspp_update
    USE sap_kind_types,                  ONLY: release_sap_int,&
                                               sap_int_type
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
@@ -399,7 +418,10 @@ CONTAINS
          END IF
          sap(1)%alist(atom)%aatom = atom
          ALLOCATE (sap(1)%alist(atom)%clist(6))
+         sap(1)%alist(atom)%clist(:)%catom = 0
          DO center = 1, 2
+            IF (atom == 1 .AND. center == 2) CYCLE
+            IF (atom == 3 .AND. center == 1) CYCLE
             DO image = 1, 2
                ENTRY = 2*(center - 1) + image
                sap(1)%alist(atom)%clist(ENTRY)%catom = center
@@ -418,11 +440,134 @@ CONTAINS
       CALL qs_uspp_projector_matrix(sm, sap, [1, 2], pp_sizes, assembled)
       CALL gather(assembled, assembled_b)
       CALL check(MAXVAL(ABS(assembled_b - b)), 'Quickstep ABBA ownership and periodic images')
+      CALL check_state(sap)
       CALL release_sap_int(sap)
       ! Feed the assembled matrix to all subsequent AO/grid and variational tests.
       CALL dbcsr_release(bm)
       CALL dbcsr_copy(bm, assembled)
    END SUBROUTINE check_sap_assembly
+
+! **************************************************************************************************
+!> \brief Exercise mixed kinds, metric access, rebuilding and KS ownership on the MPI grid.
+!> \param sap Neighbor integrals from the periodic-image assembly test.
+! **************************************************************************************************
+   SUBROUTINE check_state(sap)
+      TYPE(sap_int_type), INTENT(INOUT)                  :: sap(:)
+
+      INTEGER                                            :: atom, ENTRY, iteration, k
+      REAL(KIND=dp)                                      :: dense(nao, nao), expected(nao, nao)
+      TYPE(atomic_kind_type), TARGET                     :: atomic_kinds(4)
+      TYPE(cp_subsys_type), POINTER                      :: cp_subsys
+      TYPE(dbcsr_p_type), POINTER                        :: gaussian(:), images(:, :), metric(:)
+      TYPE(dbcsr_type)                                   :: density_template
+      TYPE(particle_type)                                :: particles(3)
+      TYPE(qs_kind_type)                                 :: qs_kinds(4)
+      TYPE(qs_ks_env_type)                               :: ks
+      TYPE(qs_subsys_type), POINTER                      :: subsys
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+
+      NULLIFY (uspp)
+      DO k = 1, 4
+         atomic_kinds(k)%kind_number = k
+      END DO
+      ! Kind numbers differ from projector-center numbers; kind 2 is ordinary, 4 a ghost.
+      CALL allocate_potential(qs_kinds(3)%sgp_potential)
+      ALLOCATE (qs_kinds(3)%sgp_potential%upf_data, SOURCE=pot(1))
+      CALL allocate_potential(qs_kinds(1)%sgp_potential)
+      ALLOCATE (qs_kinds(1)%sgp_potential%upf_data, SOURCE=pot(2))
+      CALL allocate_potential(qs_kinds(4)%sgp_potential)
+      ALLOCATE (qs_kinds(4)%sgp_potential%upf_data, SOURCE=pot(1))
+      qs_kinds(4)%ghost = .TRUE.
+      particles(1)%atomic_kind => atomic_kinds(3)
+      particles(2)%atomic_kind => atomic_kinds(1)
+      particles(3)%atomic_kind => atomic_kinds(4)
+      particles(1)%r = positions(:, 1)
+      particles(2)%r = positions(:, 2)
+      CALL qs_uspp_init(uspp, qs_kinds, particles(3:))
+      IF (ASSOCIATED(uspp)) ERROR STOP 'Ghost atom acquired USPP augmentation'
+      particles(3)%atomic_kind => atomic_kinds(2)
+      CALL qs_uspp_init(uspp, qs_kinds, particles(3:))
+      IF (ASSOCIATED(uspp)) ERROR STOP 'NC atom acquired USPP augmentation'
+      CALL qs_uspp_init(uspp, qs_kinds, particles)
+      IF (.NOT. ASSOCIATED(uspp)) ERROR STOP 'Missing mixed-kind USPP state'
+      IF (ANY(uspp%center_atoms /= [1, 2])) ERROR STOP 'Incorrect augmentation-center mapping'
+      IF (ANY(uspp%center_kinds /= [3, 1])) ERROR STOP 'Incorrect augmentation-kind mapping'
+      IF (ANY(uspp%projector_sizes /= pp_sizes)) ERROR STOP 'Incorrect magnetic-projector count'
+      CALL qs_uspp_update(uspp, sm, sap, particles)
+
+      ALLOCATE (subsys, cp_subsys)
+      CALL qs_subsys_set(subsys, cp_subsys=cp_subsys)
+      CALL cp_subsys_release(cp_subsys)
+      ALLOCATE (gaussian(1))
+      ALLOCATE (gaussian(1)%matrix)
+      CALL dbcsr_copy(gaussian(1)%matrix, sm)
+      CALL set_ks_env(ks, subsys=subsys, matrix_s=gaussian)
+      CALL get_ks_env(ks, matrix_metric=metric, matrix_metric_kp=images)
+      IF (.NOT. ASSOCIATED(metric, gaussian)) ERROR STOP 'NC metric must alias Gaussian overlap'
+      IF (.NOT. ASSOCIATED(images(1, 1)%matrix, gaussian(1)%matrix)) ERROR STOP 'NC image metric mismatch'
+      CALL set_ks_env(ks, uspp=uspp)
+      CALL get_ks_env(ks, matrix_metric=metric, matrix_metric_kp=images)
+      IF (ASSOCIATED(metric(1)%matrix, gaussian(1)%matrix)) ERROR STOP 'USPP metric aliases Gaussian overlap'
+      IF (.NOT. ASSOCIATED(metric(1)%matrix, images(1, 1)%matrix)) ERROR STOP 'USPP image metric mismatch'
+      CALL gather(metric(1)%matrix, dense)
+      expected = sg + MATMUL(b, MATMUL(q, TRANSPOSE(b)))
+      CALL check(MAXVAL(ABS(dense - expected)), 'KS generalized metric access')
+
+      ! Higher augmentation multipoles can couple these blocks even when every q vanishes.
+      uspp%augmentation(1)%q = 0.0_dp
+      uspp%augmentation(3)%q = 0.0_dp
+      CALL qs_uspp_update(uspp, sm, sap, particles)
+      CALL get_ks_env(ks, matrix_metric=metric)
+      CALL gather(metric(1)%matrix, dense)
+      CALL check(MAXVAL(ABS(dense - sg)), 'zero integrated augmentation metric')
+      CALL gather(uspp%ao_pattern, dense)
+      expected = 1.0_dp
+      expected(1:2, 6) = 0.0_dp
+      expected(6, 1:2) = 0.0_dp
+      CALL check(MAXVAL(ABS(dense - expected)), 'projector connectivity independent of integrated q')
+      CALL dbcsr_copy(density_template, sm)
+      CALL qs_uspp_init_ao_matrix(ks, density_template)
+      CALL gather(density_template, dense)
+      CALL check(MAXVAL(ABS(dense)), 'expanded density initialized to zero')
+      CALL dbcsr_set(density_template, 1.0_dp)
+      CALL gather(density_template, dense)
+      CALL check(MAXVAL(ABS(dense - expected)), 'density retains all projector-mediated blocks')
+      CALL dbcsr_release(density_template)
+      uspp%augmentation(1)%q(:, :) = aug(2)%q
+      uspp%augmentation(3)%q(:, :) = aug(1)%q
+
+      ! A changed geometry changes B and positions. Repeating that update must not accumulate q.
+      DO atom = 1, SIZE(sap(1)%alist)
+         IF (.NOT. ASSOCIATED(sap(1)%alist(atom)%clist)) CYCLE
+         DO ENTRY = 1, 4
+            IF (.NOT. ASSOCIATED(sap(1)%alist(atom)%clist(ENTRY)%acint)) CYCLE
+            sap(1)%alist(atom)%clist(ENTRY)%acint = 0.6_dp*sap(1)%alist(atom)%clist(ENTRY)%acint
+         END DO
+      END DO
+      particles(1)%r = particles(1)%r + [0.1_dp, -0.3_dp, 0.2_dp]
+      expected = sg + 0.36_dp*MATMUL(b, MATMUL(q, TRANSPOSE(b)))
+      DO iteration = 1, 2
+         CALL qs_uspp_update(uspp, sm, sap, particles)
+         CALL get_ks_env(ks, matrix_metric=metric)
+         CALL gather(metric(1)%matrix, dense)
+         CALL check(MAXVAL(ABS(dense - expected)), 'rebuilt metric without stale or doubled augmentation')
+         CALL check(MAXVAL(ABS(uspp%position(:, 1) - particles(1)%r)), 'updated augmentation-center position')
+      END DO
+      CALL gather(gaussian(1)%matrix, dense)
+      CALL check(MAXVAL(ABS(dense - sg)), 'KS Gaussian overlap preserved across USPP updates')
+      CALL qs_ks_part_release(ks)
+      CALL get_ks_env(ks, uspp=uspp, matrix_metric=metric)
+      IF (ASSOCIATED(uspp)) ERROR STOP 'Partial KS release retained stale USPP state'
+      IF (.NOT. ASSOCIATED(metric, gaussian)) ERROR STOP 'Metric fallback after partial release'
+      CALL qs_uspp_init(uspp, qs_kinds, particles)
+      CALL qs_uspp_update(uspp, sm, sap, particles)
+      CALL set_ks_env(ks, uspp=uspp)
+      CALL qs_ks_release(ks)
+      NULLIFY (uspp, gaussian, metric, images, subsys)
+      DO k = 1, 4
+         IF (ASSOCIATED(qs_kinds(k)%sgp_potential)) CALL deallocate_potential(qs_kinds(k)%sgp_potential)
+      END DO
+   END SUBROUTINE check_state
 
 ! **************************************************************************************************
 !> \brief ...

@@ -69,6 +69,8 @@ list(
   uspp_augmentation.F
   uspp_projector_operators.F
   qs_uspp_projectors.F
+  qs_uspp_types.F
+  qs_uspp_methods.F
   atom_utils.F
   atom_xc.F
   auto_basis.F

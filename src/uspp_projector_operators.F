@@ -28,9 +28,32 @@ MODULE uspp_projector_operators
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'uspp_projector_operators'
 
    PUBLIC :: uspp_projector_density, uspp_projector_add_operator, uspp_projector_metric, &
-             uspp_projector_collocate, uspp_projector_integrate, uspp_projector_pullback
+             uspp_projector_collocate, uspp_projector_integrate, uspp_projector_pullback, uspp_projector_ao_pattern
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Union of Gaussian blocks and all AO block pairs sharing an augmentation center.
+!>        A zero integrated q_ij does not imply a zero Q_ij(G) or screened operator.
+!>        Therefore the pattern must depend on projector connectivity, not metric values.
+!> \param overlaps B, with one block column per augmentation center.
+!> \param gaussian_overlap Gaussian overlap defining the ordinary AO blocks.
+!> \param pattern New AO matrix with unit entries on the required block pattern.
+! **************************************************************************************************
+   SUBROUTINE uspp_projector_ao_pattern(overlaps, gaussian_overlap, pattern)
+      TYPE(dbcsr_type), INTENT(IN)                       :: overlaps, gaussian_overlap
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: pattern
+
+      TYPE(dbcsr_type)                                   :: connectivity
+
+      CALL dbcsr_copy(connectivity, overlaps)
+      CALL dbcsr_set(connectivity, 1.0_dp)
+      CALL dbcsr_copy(pattern, gaussian_overlap)
+      CALL dbcsr_set(pattern, 1.0_dp)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, connectivity, connectivity, 1.0_dp, pattern)
+      CALL dbcsr_set(pattern, 1.0_dp)
+      CALL dbcsr_release(connectivity)
+   END SUBROUTINE uspp_projector_ao_pattern
 
 ! **************************************************************************************************
 !> \brief Create an empty block-diagonal projector matrix on B's processor grid.
@@ -88,17 +111,17 @@ CONTAINS
 !> \brief Add B A B^T to an AO operator, allowing new AO blocks.
 !> \param overlaps B.
 !> \param onsite Block-diagonal A (overlap q or screened nonlocal potential).
-!> \param operator Existing AO matrix, updated without imposing its old sparsity pattern.
+!> \param ao_operator Existing AO matrix, updated without imposing its old sparsity pattern.
 ! **************************************************************************************************
-   SUBROUTINE uspp_projector_add_operator(overlaps, onsite, OPERATOR)
+   SUBROUTINE uspp_projector_add_operator(overlaps, onsite, ao_operator)
       TYPE(dbcsr_type), INTENT(IN)                       :: overlaps, onsite
-      TYPE(dbcsr_type), INTENT(INOUT)                    :: operator
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: ao_operator
 
       TYPE(dbcsr_type)                                   :: work
 
       CALL dbcsr_create(work, template=overlaps)
       CALL dbcsr_multiply('N', 'N', 1.0_dp, overlaps, onsite, 0.0_dp, work)
-      CALL dbcsr_multiply('N', 'T', 1.0_dp, work, overlaps, 1.0_dp, OPERATOR)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, work, overlaps, 1.0_dp, ao_operator)
       CALL dbcsr_release(work)
    END SUBROUTINE uspp_projector_add_operator
 

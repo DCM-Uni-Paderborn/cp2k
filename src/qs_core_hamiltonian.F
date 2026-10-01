@@ -128,6 +128,8 @@ MODULE qs_core_hamiltonian
    USE qs_overlap,                      ONLY: build_overlap_matrix
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_uspp_methods,                 ONLY: qs_uspp_init_ao_matrix,&
+                                              qs_uspp_prepare
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
 
@@ -326,6 +328,8 @@ CONTAINS
                                  sab_orb=sab_orb, &
                                  calculate_forces=calculate_forces, &
                                  eps_filter=eps_filter)
+
+      IF (.NOT. calculate_forces) CALL qs_uspp_prepare(ks_env, matrix_s(1, 1)%matrix)
 
       ! (Re-)allocate H matrix based on overlap matrix
       CALL get_ks_env(ks_env, complex_ks=h_is_complex)
@@ -568,6 +572,7 @@ CONTAINS
          ALLOCATE (matrix_h(1, img)%matrix)
          CALL dbcsr_create(matrix_h(1, img)%matrix, name=TRIM(headline), template=template)
          CALL cp_dbcsr_alloc_block_from_nbl(matrix_h(1, img)%matrix, sab_orb)
+         CALL qs_uspp_init_ao_matrix(ks_env, matrix_h(1, img)%matrix)
          CALL dbcsr_set(matrix_h(1, img)%matrix, 0.0_dp)
       END DO
       CALL set_ks_env(ks_env, matrix_h_kp=matrix_h)
