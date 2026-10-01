@@ -60,7 +60,8 @@ PROGRAM uspp_projector_operators_unittest
                                               qs_uspp_init_ao_matrix,&
                                               qs_uspp_integrate
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
-                                              qs_uspp_projector_matrix
+                                              qs_uspp_projector_matrix,&
+                                              qs_uspp_projector_pair
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
                                               qs_uspp_type,&
                                               qs_uspp_update
@@ -180,6 +181,7 @@ PROGRAM uspp_projector_operators_unittest
       CALL make_matrix(pm, 'USPP P', dist_ao, rs, cs, p, 'S')
       CALL make_matrix(sm, 'Gaussian S', dist_ao, rs, cs, sg, 'S')
       CALL check_sap_assembly()
+      CALL check_image_convolution()
       CALL uspp_projector_metric(bm, aug, kind, sm, gm)
       CALL gather(gm, metric)
       work = sg + MATMUL(b, MATMUL(q, TRANSPOSE(b)))
@@ -721,6 +723,214 @@ CONTAINS
       CALL dbcsr_release(bm)
       CALL dbcsr_copy(bm, assembled)
    END SUBROUTINE check_sap_assembly
+
+! **************************************************************************************************
+!> \brief Compare image-pair contractions with independent complex Bloch matrix products.
+!>        Three non-collinear images per AO/center, mixed centers, an omitted center, unequal
+!>        AO blocks and both natural atom orders exercise the real-space storage conventions.
+! **************************************************************************************************
+   SUBROUTINE check_image_convolution()
+      COMPLEX(KIND=dp) :: bgrad(nao, nproj), bk(nao, nproj), coeff(nao, nao), &
+         datom(nao, nproj, 3, 3), dcell(nao, nproj, 3, 3), hk(nao, nao), href(nao, nao), phase, &
+         pkmat(nao, nao)
+      INTEGER :: atom, atom_a, atom_b, axis, center, ENTRY, ia, ib, image, ix, iy, iz, ja, jaxis, &
+         jb, kp, moved, mycol, myrow, nc, owner, ra, rb, rcell(3), translations(3, 3, 2, 3)
+      REAL(KIND=dp) :: atom_grad(3, 3), cell_grad(3, 3), distance(3, 3, 2, 3), &
+         dlocal(nproj, nproj), dref(nproj, nproj), factor, image_error, &
+         image_values(nao, nproj, 3, 4), kpoints(3, 4), kvec(3), lattice(3, 3), &
+         onsite(nproj, nproj), pair_energy, previous_error, reference_energy, sites(3, 3), value
+      REAL(KIND=dp), ALLOCATABLE                         :: pair_h(:, :), pair_p(:, :), &
+                                                            pair_reverse(:, :)
+      TYPE(sap_int_type), POINTER                        :: sap(:)
+
+      previous_error = max_error
+      max_error = 0.0_dp
+      sites(:, 1:2) = positions
+      sites(:, 3) = [-0.6_dp, 0.8_dp, 1.7_dp]
+      lattice(:, 1) = [4.1_dp, 0.2_dp, 0.3_dp]
+      lattice(:, 2) = [0.0_dp, 4.7_dp, -0.4_dp]
+      lattice(:, 3) = [0.6_dp, 0.0_dp, 5.3_dp]
+      kpoints(:, 1) = 0.0_dp
+      kpoints(:, 2) = [0.173_dp, -0.219_dp, 0.137_dp]
+      kpoints(:, 3) = -kpoints(:, 2)
+      kpoints(:, 4) = [0.5_dp, 0.0_dp, 0.0_dp]
+      onsite = 0.0_dp
+      DO center = 1, 2
+         DO ib = first(center), last(center)
+            DO ia = first(center), last(center)
+               onsite(ia, ib) = 0.09_dp*SIN(REAL(ia + ib + center, dp))
+            END DO
+            onsite(ib, ib) = onsite(ib, ib) + 0.3_dp
+         END DO
+      END DO
+      image_values = 0.0_dp
+      ALLOCATE (sap(1))
+      ALLOCATE (sap(1)%alist(3))
+      CALL dbcsr_get_info(sm, my_prow=myrow, my_pcol=mycol)
+      ra = 1
+      DO atom = 1, 3
+         ia = ra + ao_sizes(atom) - 1
+         sap(1)%alist(atom)%aatom = atom
+         IF (ao_rows(atom) == myrow .OR. ao_cols(atom) == mycol) THEN
+            ALLOCATE (sap(1)%alist(atom)%clist(8))
+            sap(1)%alist(atom)%clist(:)%catom = 0
+            sap(1)%alist(atom)%clist(7)%catom = 3
+         END IF
+         DO center = 1, 2
+            IF (atom == 1 .AND. center == 2) CYCLE
+            IF (atom == 3 .AND. center == 1) CYCLE
+            ja = first(center)
+            jb = last(center)
+            nc = pp_sizes(center)
+            translations(:, atom, center, 1) = 0
+            translations(:, atom, center, 2) = [1, -1, MODULO(atom + center, 2)]
+            translations(:, atom, center, 3) = [-1, MODULO(atom, 2), -1]
+            DO image = 1, 3
+               image_values(ra:ia, ja:jb, image, 1) = &
+                  0.2_dp*image*b(ra:ia, ja:jb) + 0.02_dp*(image - 1)*db(ra:ia, ja:jb)
+               DO axis = 1, 3
+                  image_values(ra:ia, ja:jb, image, axis + 1) = &
+                     (0.2_dp*axis + 0.1_dp*image)*db(ra:ia, ja:jb)
+               END DO
+               distance(:, atom, center, image) = &
+                  sites(:, center) - sites(:, atom) + MATMUL(lattice, REAL(translations(:, atom, center, image), dp))
+               IF (.NOT. ASSOCIATED(sap(1)%alist(atom)%clist)) CYCLE
+               ENTRY = 3*(center - 1) + image
+               sap(1)%alist(atom)%clist(ENTRY)%catom = center
+               sap(1)%alist(atom)%clist(ENTRY)%cell = translations(:, atom, center, image)
+               sap(1)%alist(atom)%clist(ENTRY)%rac = distance(:, atom, center, image)
+               ALLOCATE (sap(1)%alist(atom)%clist(ENTRY)%acint(ao_sizes(atom), nc, 4))
+               sap(1)%alist(atom)%clist(ENTRY)%acint = image_values(ra:ia, ja:jb, image, :)
+            END DO
+         END DO
+         ra = ia + 1
+      END DO
+      DO kp = 1, SIZE(kpoints, 2)
+         kvec = kpoints(:, kp)
+         bk = CMPLX(0.0_dp, 0.0_dp, dp)
+         datom = CMPLX(0.0_dp, 0.0_dp, dp)
+         dcell = CMPLX(0.0_dp, 0.0_dp, dp)
+         ra = 1
+         DO atom = 1, 3
+            ia = ra + ao_sizes(atom) - 1
+            DO center = 1, 2
+               IF (atom == 1 .AND. center == 2) CYCLE
+               IF (atom == 3 .AND. center == 1) CYCLE
+               ja = first(center)
+               jb = last(center)
+               DO image = 1, 3
+                  phase = EXP(CMPLX(0.0_dp, 2.0_dp*pi*DOT_PRODUCT(kvec, REAL(translations(:, atom, center, image), dp)), dp))
+                  bk(ra:ia, ja:jb) = bk(ra:ia, ja:jb) + phase*image_values(ra:ia, ja:jb, image, 1)
+                  DO axis = 1, 3
+                     datom(ra:ia, ja:jb, axis, atom) = datom(ra:ia, ja:jb, axis, atom) &
+                                                       + phase*image_values(ra:ia, ja:jb, image, axis + 1)
+                     datom(ra:ia, ja:jb, axis, center) = datom(ra:ia, ja:jb, axis, center) &
+                                                         - phase*image_values(ra:ia, ja:jb, image, axis + 1)
+                     DO jaxis = 1, 3
+                        dcell(ra:ia, ja:jb, axis, jaxis) = dcell(ra:ia, ja:jb, axis, jaxis) &
+                                                           - phase*image_values(ra:ia, ja:jb, image, axis + 1) &
+                                                           *distance(jaxis, atom, center, image)
+                     END DO
+                  END DO
+               END DO
+            END DO
+            ra = ia + 1
+         END DO
+         DO ib = 1, nao
+            DO ia = 1, nao
+               coeff(ia, ib) = CMPLX(0.2_dp*SIN(0.3_dp*ia + 0.2_dp*ib), 0.1_dp*COS(0.1_dp*ia - 0.4_dp*ib), dp)
+            END DO
+         END DO
+         IF (kp == 1) coeff = CMPLX(REAL(coeff, dp), 0.0_dp, dp)
+         IF (kp == 3) coeff = CONJG(coeff)
+         pkmat = MATMUL(coeff, CONJG(TRANSPOSE(coeff)))
+         href = MATMUL(bk, MATMUL(CMPLX(onsite, 0.0_dp, dp), CONJG(TRANSPOSE(bk))))
+         dref = REAL(MATMUL(CONJG(TRANSPOSE(bk)), MATMUL(pkmat, bk)), dp)
+         dref(1:4, 5:6) = 0.0_dp
+         dref(5:6, 1:4) = 0.0_dp
+         bgrad = 2.0_dp*MATMUL(pkmat, MATMUL(bk, CMPLX(onsite, 0.0_dp, dp)))
+         hk = CMPLX(0.0_dp, 0.0_dp, dp)
+         dlocal = 0.0_dp
+         atom_grad = 0.0_dp
+         cell_grad = 0.0_dp
+         pair_energy = 0.0_dp
+         DO atom_a = 1, 3
+            DO atom_b = atom_a, 3
+               CALL dbcsr_get_stored_coordinates(sm, atom_a, atom_b, owner)
+               IF (owner /= rank) CYCLE
+               ia = atom_a
+               ib = atom_b
+               ! The second processor layout uses the reversed natural atom order.
+               IF (case_id == 2) THEN
+                  ia = atom_b
+                  ib = atom_a
+               END IF
+               ra = 1 + SUM(ao_sizes(:ia - 1))
+               rb = 1 + SUM(ao_sizes(:ib - 1))
+               ja = ra + ao_sizes(ia) - 1
+               jb = rb + ao_sizes(ib) - 1
+               ALLOCATE (pair_h(ao_sizes(ia), ao_sizes(ib)), pair_p(ao_sizes(ia), ao_sizes(ib)), &
+                         pair_reverse(ao_sizes(ib), ao_sizes(ia)))
+               factor = MERGE(1.0_dp, 2.0_dp, ia == ib)
+               DO iz = -2, 2
+                  DO iy = -2, 2
+                     DO ix = -2, 2
+                        rcell = [ix, iy, iz]
+                        phase = EXP(CMPLX(0.0_dp, 2.0_dp*pi*DOT_PRODUCT(kvec, REAL(rcell, dp)), dp))
+                        pair_p(:, :) = REAL(pkmat(ra:ja, rb:jb)*CONJG(phase), dp)
+                        pair_h = 0.0_dp
+                        pair_reverse = 0.0_dp
+                        DO center = 1, 2
+                           CALL qs_uspp_projector_pair(sap(1)%alist(ia), sap(1)%alist(ib), center, rcell, &
+                                                       onsite=onsite(first(center):last(center), first(center):last(center)), &
+                                                       ao_operator=pair_h, density=pair_p, &
+                                                       projected=dlocal(first(center):last(center), first(center):last(center)), &
+                                                       weight=factor, atom_gradient=atom_grad, cell_gradient=cell_grad)
+                           CALL qs_uspp_projector_pair(sap(1)%alist(ib), sap(1)%alist(ia), center, -rcell, &
+                                                       onsite=onsite(first(center):last(center), first(center):last(center)), &
+                                                       ao_operator=pair_reverse)
+                        END DO
+                        CALL check(MAXVAL(ABS(pair_h - TRANSPOSE(pair_reverse))), 'image-pair transpose and reversed cell')
+                        hk(ra:ja, rb:jb) = hk(ra:ja, rb:jb) + phase*pair_h
+                        IF (ia /= ib) hk(rb:jb, ra:ja) = hk(rb:jb, ra:ja) + CONJG(phase)*TRANSPOSE(pair_h)
+                        pair_energy = pair_energy + factor*SUM(pair_p*pair_h)
+                     END DO
+                  END DO
+               END DO
+               ! A cell outside every image difference has no operator contribution.
+               pair_h = 0.0_dp
+               CALL qs_uspp_projector_pair(sap(1)%alist(ia), sap(1)%alist(ib), 1, [3, 0, 0], &
+                                           onsite=onsite(1:4, 1:4), ao_operator=pair_h)
+               CALL check(MAXVAL(ABS(pair_h)), 'empty projector image pair')
+               DEALLOCATE (pair_h, pair_p, pair_reverse)
+            END DO
+         END DO
+         CALL comm%sum(hk)
+         CALL comm%sum(dlocal)
+         CALL comm%sum(atom_grad)
+         CALL comm%sum(cell_grad)
+         CALL comm%sum(pair_energy)
+         CALL check(MAXVAL(ABS(hk - href)), 'image operator versus complex Bloch product')
+         CALL check(MAXVAL(ABS(dlocal - dref)), 'image density versus complex Bloch projection')
+         reference_energy = REAL(SUM(CONJG(pkmat)*href), dp)
+         CALL check(ABS(pair_energy - reference_energy), 'image energy versus complex Bloch trace')
+         CALL check(ABS(SUM(onsite*dlocal) - reference_energy), 'image operator-density adjoint')
+         DO moved = 1, 3
+            DO axis = 1, 3
+               value = REAL(SUM(CONJG(bgrad)*datom(:, :, axis, moved)), dp)
+               CALL check(ABS(atom_grad(axis, moved) - value), 'image atomic derivative versus complex Bloch pullback')
+               value = REAL(SUM(CONJG(bgrad)*dcell(:, :, axis, moved)), dp)
+               CALL check(ABS(cell_grad(axis, moved) - value), 'image strain derivative versus complex Bloch pullback')
+            END DO
+         END DO
+         CALL check(MAXVAL(ABS(SUM(atom_grad, DIM=2))), 'image convolution translation sum rule')
+      END DO
+      CALL release_sap_int(sap)
+      image_error = max_error
+      CALL comm%max(image_error)
+      IF (rank == 0) WRITE (*, '(A,I0,A,ES23.15)') 'USPP image/Bloch checks: layout=', case_id, ', maximum error=', image_error
+      max_error = MAX(previous_error, image_error)
+   END SUBROUTINE check_image_convolution
 
 ! **************************************************************************************************
 !> \brief Exercise mixed kinds, metric access, rebuilding and KS ownership on the MPI grid.

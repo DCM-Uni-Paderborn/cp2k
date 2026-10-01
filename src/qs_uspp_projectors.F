@@ -6,7 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 
 ! **************************************************************************************************
-!> \brief Assemble the Gamma-point USPP projector matrix from Quickstep overlap lists.
+!> \brief USPP projector assembly and image-resolved contractions from Quickstep overlap lists.
 ! **************************************************************************************************
 MODULE qs_uspp_projectors
    USE cp_dbcsr_api,                    ONLY: &
@@ -15,15 +15,123 @@ MODULE qs_uspp_projectors
         dbcsr_get_stored_coordinates, dbcsr_reserve_blocks, dbcsr_set, dbcsr_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_comm_type
-   USE sap_kind_types,                  ONLY: sap_int_type
+   USE sap_kind_types,                  ONLY: alist_type,&
+                                              sap_int_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_projectors'
    PUBLIC :: qs_uspp_projector_matrix, qs_uspp_projector_gradient
+   PUBLIC :: qs_uspp_projector_pair
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Contract one AO pair and one augmentation center without summing away lattice images.
+!>        For the AO pair (a,0),(b,R), only projector images T,U with T-U=R contribute:
+!>        H_ab(R) = sum_T B_ac(T) A_c B_bc(T-R)^T. The optional reverse contraction
+!>        accumulates the real symmetric on-site density, the adjoint for scalar USPP.
+!>        Atom blocks use their natural a,b orientation, even when a>b; the caller handles
+!>        triangular storage, neighbor-list multiplicities and MPI reduction. No k weight
+!>        is applied here: real-space density blocks must already contain the weighted k sum.
+!> \param alist_a Uncompressed overlaps and AO-center derivatives for atom a.
+!> \param alist_b Uncompressed overlaps and AO-center derivatives for atom b.
+!> \param center_atom Global atom index of the selected non-ghost augmentation center.
+!> \param cell_b Lattice translation R of atom b relative to atom a.
+!> \param onsite Symmetric on-site operator A_c, required for operator and energy derivatives.
+!> \param ao_operator AO block H_ab(R), incremented in natural atom order.
+!> \param density Real-space AO density block in the same natural order.
+!> \param projected Real symmetric on-site density, incremented as the adjoint of ao_operator.
+!> \param weight AO-pair multiplicity for density and energy derivatives (default one).
+!> \param atom_gradient Local atomic energy gradients (3,natom), incremented without reduction.
+!> \param cell_gradient Local strain energy gradient at fixed reduced Bloch vectors.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_projector_pair(alist_a, alist_b, center_atom, cell_b, onsite, ao_operator, density, &
+                                     projected, weight, atom_gradient, cell_gradient)
+      TYPE(alist_type), INTENT(IN)                       :: alist_a, alist_b
+      INTEGER, INTENT(IN)                                :: center_atom, cell_b(3)
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: onsite(:, :)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: ao_operator(:, :)
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: density(:, :)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: projected(:, :)
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: weight
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :), cell_gradient(3, 3)
+
+      INTEGER                                            :: a, b, idir, na, nb, np
+      LOGICAL                                            :: derivatives
+      REAL(KIND=dp)                                      :: factor, ga, gb
+      REAL(KIND=dp), ALLOCATABLE                         :: local_density(:, :), weighted_a(:, :)
+
+      CPASSERT(center_atom > 0)
+      derivatives = PRESENT(atom_gradient) .OR. PRESENT(cell_gradient)
+      IF (PRESENT(ao_operator) .OR. derivatives) THEN
+         CPASSERT(PRESENT(onsite))
+      END IF
+      IF (PRESENT(projected) .OR. derivatives) THEN
+         CPASSERT(PRESENT(density))
+      END IF
+      IF (.NOT. ASSOCIATED(alist_a%clist) .OR. .NOT. ASSOCIATED(alist_b%clist)) RETURN
+      factor = 1.0_dp
+      IF (PRESENT(weight)) factor = weight
+      DO a = 1, SIZE(alist_a%clist)
+         IF (alist_a%clist(a)%catom /= center_atom) CYCLE
+         DO b = 1, SIZE(alist_b%clist)
+            IF (alist_b%clist(b)%catom /= center_atom) CYCLE
+            IF (ANY(cell_b + alist_b%clist(b)%cell - alist_a%clist(a)%cell /= 0)) CYCLE
+            CPASSERT(ASSOCIATED(alist_a%clist(a)%acint))
+            CPASSERT(ASSOCIATED(alist_b%clist(b)%acint))
+            ASSOCIATE (ba => alist_a%clist(a)%acint, bb => alist_b%clist(b)%acint)
+               na = SIZE(ba, 1)
+               nb = SIZE(bb, 1)
+               np = SIZE(ba, 2)
+               CPASSERT(SIZE(bb, 2) == np .AND. SIZE(ba, 3) >= 1 .AND. SIZE(bb, 3) >= 1)
+               IF (PRESENT(density)) THEN
+                  CPASSERT(ALL(SHAPE(density) == [na, nb]))
+               END IF
+               IF (PRESENT(projected)) THEN
+                  CPASSERT(ALL(SHAPE(projected) == [np, np]))
+                  ALLOCATE (local_density(np, np))
+                  local_density(:, :) = MATMUL(TRANSPOSE(ba(:, :, 1)), MATMUL(density, bb(:, :, 1)))
+                  projected = projected + 0.5_dp*factor*(local_density + TRANSPOSE(local_density))
+                  DEALLOCATE (local_density)
+               END IF
+               IF (PRESENT(ao_operator) .OR. derivatives) THEN
+                  CPASSERT(ALL(SHAPE(onsite) == [np, np]))
+                  ALLOCATE (weighted_a(na, np))
+                  weighted_a(:, :) = MATMUL(ba(:, :, 1), onsite)
+                  IF (PRESENT(ao_operator)) THEN
+                     CPASSERT(ALL(SHAPE(ao_operator) == [na, nb]))
+                     ao_operator = ao_operator + MATMUL(weighted_a, TRANSPOSE(bb(:, :, 1)))
+                  END IF
+                  IF (derivatives) THEN
+                     CPASSERT(SIZE(ba, 3) >= 4 .AND. SIZE(bb, 3) >= 4)
+                     DO idir = 1, 3
+                        ga = factor*SUM(density*MATMUL(MATMUL(ba(:, :, idir + 1), onsite), TRANSPOSE(bb(:, :, 1))))
+                        gb = factor*SUM(density*MATMUL(weighted_a, TRANSPOSE(bb(:, :, idir + 1))))
+                        IF (PRESENT(atom_gradient)) THEN
+                           CPASSERT(SIZE(atom_gradient, 1) == 3)
+                           CPASSERT(MIN(alist_a%aatom, alist_b%aatom) > 0)
+                           CPASSERT(alist_a%aatom <= SIZE(atom_gradient, 2))
+                           CPASSERT(alist_b%aatom <= SIZE(atom_gradient, 2))
+                           CPASSERT(center_atom <= SIZE(atom_gradient, 2))
+                           atom_gradient(idir, alist_a%aatom) = atom_gradient(idir, alist_a%aatom) + ga
+                           atom_gradient(idir, alist_b%aatom) = atom_gradient(idir, alist_b%aatom) + gb
+                           atom_gradient(idir, center_atom) = atom_gradient(idir, center_atom) - ga - gb
+                        END IF
+                        IF (PRESENT(cell_gradient)) THEN
+                           ! At fixed reduced k, the image phases do not change with strain.
+                           cell_gradient(idir, :) = cell_gradient(idir, :) &
+                                                    - ga*alist_a%clist(a)%rac - gb*alist_b%clist(b)%rac
+                        END IF
+                     END DO
+                  END IF
+                  DEALLOCATE (weighted_a)
+               END IF
+            END ASSOCIATE
+         END DO
+      END DO
+   END SUBROUTINE qs_uspp_projector_pair
 
 ! **************************************************************************************************
 !> \brief Sum all periodic images of <chi_mu|beta_i> into a rectangular DBCSR matrix.
