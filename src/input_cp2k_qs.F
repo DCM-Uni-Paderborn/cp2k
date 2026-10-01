@@ -212,7 +212,8 @@ CONTAINS
          "the local densities are computed even if hard and soft should be equal. "// &
          "If this keyword is not set to true, those atoms with soft basis sets are treated by a GPW scheme, i.e. "// &
          "the corresponding density contribution goes on the global grid and is expanded in PW. "// &
-         "This option nullifies the effect of the GPW_TYPE in the atomic KIND", &
+         "This option nullifies the effect of the GPW_TYPE in the atomic KIND. "// &
+         "It controls the Gaussian density decomposition, not the pseudopotential type.", &
          usage="FORCE_PAW", &
          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
@@ -470,7 +471,9 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="METHOD", &
-                          description="Specifies the electronic structure method that should be employed", &
+                          description="Specifies the electronic structure method. For GPW, GAPW_XC and GAPW, "// &
+                          "this selects the Gaussian density representation. The pseudopotential type is "// &
+                          "determined separately by the potential of each atomic KIND.", &
                           usage="METHOD GAPW", &
                           enum_c_vals=s2a("GAPW", "GAPW_XC", "GPW", "LRIGPW", "RIGPW", &
                                     "MNDO", "MNDOD", "AM1", "PM3", "PM6", "PM6-FM", "PDG", "RM1", "PNNL", "DFTB", "xTB", "OFGPW"), &
