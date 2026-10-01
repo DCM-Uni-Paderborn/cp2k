@@ -413,8 +413,10 @@ CONTAINS
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       CALL timeset('qs_uspp_prepare', handle)
       CALL get_ks_env(ks_env, do_kpoints=do_kpoints, sap_ppnl=sap_ppnl, dft_control=dft_control)
-      CPASSERT(dft_control%qs_control%gpw .OR. dft_control%qs_control%gapw_xc)
-      CPASSERT(.NOT. dft_control%qs_control%gapw)
+      IF (.NOT. (dft_control%qs_control%gpw .OR. dft_control%qs_control%gapw_xc .OR. &
+                 dft_control%qs_control%gapw)) THEN
+         CPABORT("USPP requires GPW, GAPW_XC or GAPW")
+      END IF
       CPASSERT(dft_control%qs_control%do_ppl_method == do_ppl_analytic)
       CPASSERT(.NOT. dft_control%use_kinetic_energy_density)
       CPASSERT(ASSOCIATED(sap_ppnl))

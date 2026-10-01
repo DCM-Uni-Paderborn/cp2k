@@ -465,7 +465,7 @@ CONTAINS
                       rho_atom_set=my_rho_atom_set, &
                       force=force)
 
-      IF (dft_control%qs_control%gapw_xc) THEN
+      IF (dft_control%qs_control%gapw_xc .OR. PRESENT(uspp_fields)) THEN
          CALL get_qs_env(qs_env=qs_env, rho_xc=rho_struct)
       ELSE
          CALL get_qs_env(qs_env=qs_env, rho=rho_struct)

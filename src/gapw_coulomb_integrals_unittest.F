@@ -8,7 +8,8 @@
 PROGRAM gapw_coulomb_integrals_unittest
    USE gapw_coulomb_integrals,          ONLY: gapw_augmentation_integrals,&
                                               gapw_compensated_potential,&
-                                              gapw_coulomb_init
+                                              gapw_coulomb_init,&
+                                              gapw_periodic_augmentation_integrals
    USE kinds,                           ONLY: dp
    USE lebedev,                         ONLY: deallocate_lebedev_grids,&
                                               get_number_of_lebedev_grid,&
@@ -29,6 +30,7 @@ PROGRAM gapw_coulomb_integrals_unittest
    max_error = 0.0_dp
    CALL check_multipoles()
    CALL check_augmentation()
+   CALL check_periodic()
    PRINT '(A,ES16.7)', 'GAPW compensated Coulomb maximum scaled error: ', max_error
    CALL cp2k_finalize()
 
@@ -227,6 +229,104 @@ CONTAINS
          gradient = radial*point/r
       END IF
    END SUBROUTINE gaussian_reference
+
+! **************************************************************************************************
+!> \brief Triclinic lattice, wrapped representatives and strain against analytic Gaussian pairs.
+! **************************************************************************************************
+   SUBROUTINE check_periodic()
+      INTEGER, PARAMETER                                 :: nr = 121
+      REAL(dp), PARAMETER                                :: a = 2.0_dp, b = 1.3_dp, dr = 0.05_dp, &
+                                                            eta = 0.55_dp, step = 2.e-5_dp
+
+      INTEGER                                            :: axis, axis2, ir, ix, iy, iz, lg, sample
+      REAL(dp) :: changed(3, 3), dref(3), fractional(3), h_inv(3, 3), hmat(3, 3), image_point(3), &
+         inverse(3, 3), minus(1, 1, 1, 13), plus(1, 1, 1, 13), point(3), radial_weights(nr), &
+         reference(13), shifted(1, 1, 1, 13), tensor(1, 1, 1, 13), value
+      TYPE(uspp_augmentation_type)                       :: aug
+
+      aug%nproj = 1
+      aug%lmax = 0
+      ALLOCATE (aug%r(nr), aug%weighted_q(nr, 1, 0:0), aug%radial_index(1), aug%lbeta(1), aug%gaunt(1, 1, 1))
+      aug%radial_index = 1
+      aug%lbeta = 0
+      aug%gaunt = 1.0_dp/SQRT(fourpi)
+      DO ir = 1, nr
+         aug%r(ir) = REAL(ir - 1, dp)*dr
+      END DO
+      radial_weights = 2.0_dp*dr/3.0_dp
+      radial_weights(2:nr - 1:2) = 4.0_dp*dr/3.0_dp
+      radial_weights([1, nr]) = dr/3.0_dp
+      aug%weighted_q(:, 1, 0) = radial_weights*aug%r**2*EXP(-a*aug%r**2)
+      hmat = RESHAPE([6.2_dp, 0.0_dp, 0.0_dp, 1.3_dp, 6.7_dp, 0.0_dp, -0.8_dp, 0.6_dp, 7.1_dp], [3, 3])
+      CALL triangular_inverse(hmat, h_inv)
+      point = [0.31_dp, -0.52_dp, 0.73_dp]
+      fractional = MATMUL(h_inv, point)
+      reference = 0.0_dp
+      DO iz = -4, 4
+         DO iy = -4, 4
+            DO ix = -4, 4
+               image_point = point + MATMUL(hmat, REAL([ix, iy, iz], dp))
+               CALL gaussian_reference(image_point, a, b, eta, value, dref)
+               reference(1) = reference(1) + value
+               reference(2:4) = reference(2:4) + dref
+               DO axis = 1, 3
+                  DO axis2 = 1, 3
+                     ir = 4 + axis + 3*(axis2 - 1)
+                     reference(ir) = reference(ir) + dref(axis)*image_point(axis2)
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      CALL init_lebedev_grids()
+      lg = get_number_of_lebedev_grid(n=194)
+      CALL gapw_periodic_augmentation_integrals(aug, point, b, 0, 0, eta, hmat, h_inv, &
+                                                lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-14_dp, tensor)
+      DO ir = 1, 13
+         CALL check_error(tensor(1, 1, 1, ir), reference(ir), 3.e-9_dp)
+      END DO
+      CALL gapw_periodic_augmentation_integrals(aug, point + MATMUL(hmat, REAL([2, -3, 1], dp)), b, 0, 0, &
+                                                eta, hmat, h_inv, lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-16_dp, shifted)
+      CALL check_error(MAXVAL(ABS(shifted - tensor)), 0.0_dp, 2.e-12_dp)
+      ! A diagonal strain and a shear, with fixed fractional centers and rigid radial functions.
+      DO sample = 1, 2
+         axis = 1
+         axis2 = sample
+         changed = hmat
+         changed(axis, :) = changed(axis, :) + step*hmat(axis2, :)
+         CALL triangular_inverse(changed, inverse)
+         CALL gapw_periodic_augmentation_integrals(aug, MATMUL(changed, fractional), b, 0, 0, eta, changed, &
+                                                   inverse, lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-14_dp, plus)
+         changed = hmat
+         changed(axis, :) = changed(axis, :) - step*hmat(axis2, :)
+         CALL triangular_inverse(changed, inverse)
+         CALL gapw_periodic_augmentation_integrals(aug, MATMUL(changed, fractional), b, 0, 0, eta, changed, &
+                                                   inverse, lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-14_dp, minus)
+         CALL check_error((plus(1, 1, 1, 1) - minus(1, 1, 1, 1))/(2.0_dp*step), &
+                          tensor(1, 1, 1, 4 + axis + 3*(axis2 - 1)), 3.e-9_dp)
+      END DO
+      CALL deallocate_lebedev_grids()
+   END SUBROUTINE check_periodic
+
+! **************************************************************************************************
+!> \brief Inverse of the upper-triangular test cell.
+!> \param hmat Test cell.
+!> \param inverse Inverse cell.
+! **************************************************************************************************
+   SUBROUTINE triangular_inverse(hmat, inverse)
+      REAL(dp), INTENT(IN)                               :: hmat(3, 3)
+      REAL(dp), INTENT(OUT)                              :: inverse(3, 3)
+
+      INTEGER                                            :: i
+
+      inverse = 0.0_dp
+      DO i = 1, 3
+         inverse(i, i) = 1.0_dp/hmat(i, i)
+      END DO
+      inverse(1, 2) = -hmat(1, 2)/(hmat(1, 1)*hmat(2, 2))
+      inverse(2, 3) = -hmat(2, 3)/(hmat(2, 2)*hmat(3, 3))
+      inverse(1, 3) = (hmat(1, 2)*hmat(2, 3)/hmat(2, 2) - hmat(1, 3))/(hmat(1, 1)*hmat(3, 3))
+   END SUBROUTINE triangular_inverse
 
 ! **************************************************************************************************
 !> \brief ...

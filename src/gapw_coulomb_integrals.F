@@ -31,6 +31,7 @@ MODULE gapw_coulomb_integrals
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'gapw_coulomb_integrals'
    PUBLIC :: gapw_coulomb_init, gapw_compensated_potential, gapw_augmentation_integrals
+   PUBLIC :: gapw_periodic_augmentation_integrals
 
 CONTAINS
 
@@ -291,5 +292,97 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE gapw_augmentation_integrals
+
+! **************************************************************************************************
+!> \brief Periodic compensated integrals and consistent displacement/strain derivatives.
+!>        Gaussian tails are screened using an absolute primitive-potential envelope, not the
+!>        current density coefficients. The original UPF radial mesh is never shortened.
+!> \param augmentation Original radial and angular augmentation data.
+!> \param displacement Augmentation center minus Gaussian center.
+!> \param alpha Gaussian exponent.
+!> \param power Additional radial power of r**2.
+!> \param l Gaussian multipole angular momentum.
+!> \param eta Compensation exponent.
+!> \param hmat Periodic cell in bohr.
+!> \param h_inv Inverse cell matrix.
+!> \param directions Unit vectors of the angular rule.
+!> \param weights Angular quadrature weights, summing to 4*pi.
+!> \param tolerance Absolute tolerance for screening compensated primitive tails.
+!> \param tensor Potential, three displacement derivatives and nine strain derivatives.
+! **************************************************************************************************
+   SUBROUTINE gapw_periodic_augmentation_integrals(augmentation, displacement, alpha, power, l, eta, &
+                                                   hmat, h_inv, directions, weights, tolerance, tensor)
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
+      REAL(dp), INTENT(IN)                               :: displacement(3), alpha
+      INTEGER, INTENT(IN)                                :: power, l
+      REAL(dp), INTENT(IN)                               :: eta, hmat(3, 3), h_inv(3, 3), &
+                                                            directions(:, :), weights(:), tolerance
+      REAL(dp), INTENT(OUT)                              :: tensor(:, :, :, :)
+
+      INTEGER                                            :: axis, axis2, i, ir, ix, iy, iz, &
+                                                            lower(3), n, upper(3)
+      REAL(dp)                                           :: c, ddh, dh, dh0, envelope, extent, &
+                                                            fractional(3), h, h0, padding, &
+                                                            point(3), qnorm, radius, rmax, s, &
+                                                            shell_factor
+      REAL(dp), ALLOCATABLE                              :: derivative(:, :, :, :), integral(:, :, :)
+
+      n = augmentation%nproj
+      CPASSERT(ALL(SHAPE(tensor) == [n, n, 2*l + 1, 13]))
+      CPASSERT(tolerance > 0.0_dp)
+      tensor = 0.0_dp
+      IF (alpha == eta .AND. power == 0) RETURN
+      rmax = 0.0_dp
+      DO ir = 1, SIZE(augmentation%r)
+         IF (ANY(augmentation%weighted_q(ir, :, :) /= 0.0_dp)) rmax = MAX(rmax, augmentation%r(ir))
+      END DO
+      IF (rmax == 0.0_dp) RETURN
+      c = (eta/alpha)**(REAL(l, dp) + 1.5_dp)
+      DO i = 1, power
+         c = c*(REAL(l + i, dp) + 0.5_dp)/alpha
+      END DO
+      qnorm = MAX(1.0_dp, SUM(ABS(augmentation%weighted_q))*SUM(ABS(augmentation%gaunt))* &
+                  SQRT(fourpi*REAL(2*augmentation%lmax + 1, dp)))
+      ! Start beyond all polynomial peaks; use separate absolute Gaussian tails so
+      ! an accidental cancellation of two exponents cannot underestimate the support.
+      radius = SQRT(8.0_dp*REAL(l + power + 2, dp)/MIN(alpha, eta))
+      DO
+         s = radius**2
+         CALL gaussian_coulomb_radial(alpha, power, l, s, .TRUE., h, dh, ddh)
+         CALL gaussian_coulomb_radial(eta, 0, l, s, .TRUE., h0, dh0, ddh)
+         envelope = SQRT(REAL(2*l + 1, dp)/fourpi)*radius**l* &
+                    (REAL(2*l + 2, dp)*(ABS(h) + c*ABS(h0)) + 2.0_dp*s*(ABS(dh) + c*ABS(dh0)))
+         shell_factor = (1.0_dp + 2.0_dp*(radius + rmax)*MAXVAL(SQRT(SUM(h_inv**2, DIM=2))))**3
+         IF (qnorm*shell_factor*envelope < tolerance) EXIT
+         radius = 1.2_dp*radius
+      END DO
+      extent = radius + rmax
+      fractional = MATMUL(h_inv, displacement)
+      fractional = fractional - ANINT(fractional)
+      DO axis = 1, 3
+         padding = extent*SQRT(SUM(h_inv(axis, :)**2))
+         lower(axis) = CEILING(-fractional(axis) - padding)
+         upper(axis) = FLOOR(-fractional(axis) + padding)
+      END DO
+      ALLOCATE (integral(n, n, 2*l + 1), derivative(n, n, 2*l + 1, 3))
+      DO iz = lower(3), upper(3)
+         DO iy = lower(2), upper(2)
+            DO ix = lower(1), upper(1)
+               point = MATMUL(hmat, fractional + REAL([ix, iy, iz], dp))
+               IF (SUM(point**2) > extent**2) CYCLE
+               CALL gapw_augmentation_integrals(augmentation, point, alpha, power, l, eta, &
+                                                directions, weights, integral, derivative)
+               tensor(:, :, :, 1) = tensor(:, :, :, 1) + integral
+               DO axis = 1, 3
+                  tensor(:, :, :, 1 + axis) = tensor(:, :, :, 1 + axis) + derivative(:, :, :, axis)
+                  DO axis2 = 1, 3
+                     i = 4 + axis + 3*(axis2 - 1)
+                     tensor(:, :, :, i) = tensor(:, :, :, i) + derivative(:, :, :, axis)*point(axis2)
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE gapw_periodic_augmentation_integrals
 
 END MODULE gapw_coulomb_integrals

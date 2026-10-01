@@ -71,6 +71,7 @@ list(
   qs_uspp_projectors.F
   qs_uspp_types.F
   qs_uspp_methods.F
+  qs_uspp_gapw.F
   atom_utils.F
   atom_xc.F
   auto_basis.F
@@ -237,6 +238,7 @@ list(
   grrm_utils.F
   gapw_1c_basis_set.F
   gapw_coulomb_integrals.F
+  gapw_coulomb_types.F
   gw_ri_rs_compute_Z_lP.F
   gw_ri_rs_compute_Z_lP_utils.F
   gw_auto_ri_generate_RI_basis.F
