@@ -338,7 +338,7 @@ CONTAINS
                                  calculate_forces=calculate_forces, &
                                  eps_filter=eps_filter)
 
-      IF (.NOT. calculate_forces) CALL qs_uspp_prepare(ks_env, matrix_s(1, 1)%matrix)
+      IF (.NOT. calculate_forces) CALL qs_uspp_prepare(ks_env, matrix_s(1, :))
 
       ! (Re-)allocate H matrix based on overlap matrix
       CALL get_ks_env(ks_env, complex_ks=h_is_complex)
@@ -366,10 +366,10 @@ CONTAINS
          CALL get_ks_env(ks_env, pw_env=pw_env)
          CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool)
          IF (calculate_forces) THEN
-            CALL qs_uspp_core_forces(ks_env, auxbas_pw_pool%pw_grid, matrix_h(1, 1)%matrix, &
-                                     matrix_p(:, 1), matrix_w(1, 1)%matrix)
+            CALL qs_uspp_core_forces(ks_env, auxbas_pw_pool%pw_grid, matrix_h(1, :), &
+                                     matrix_p, matrix_w(1, :))
          ELSE
-            CALL qs_uspp_core_matrix(uspp, qs_kind_set, particle_set, auxbas_pw_pool%pw_grid, matrix_h(1, 1)%matrix)
+            CALL qs_uspp_core_matrix(uspp, qs_kind_set, particle_set, auxbas_pw_pool%pw_grid, matrix_h(1, :))
          END IF
       END IF
 

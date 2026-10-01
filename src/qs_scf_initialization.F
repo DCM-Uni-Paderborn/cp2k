@@ -1234,7 +1234,7 @@ CONTAINS
                   CALL cp_abort(__LOCATION__, &
                                 "Lowdin DFT+U with k-points requires STANDARD diagonalization or OT")
                END IF
-               CALL get_qs_env(qs_env, kpoints=kpoints, matrix_s_kp=matrix_s_kp, matrix_w_kp=matrix_w_kp)
+               CALL get_qs_env(qs_env, kpoints=kpoints, matrix_metric_kp=matrix_s_kp, matrix_w_kp=matrix_w_kp)
                IF (scf_control%use_ot) THEN
                   IF (kpoints%use_real_wfn .OR. dft_control%restricted) THEN
                      CALL cp_abort(__LOCATION__, &
@@ -1244,7 +1244,7 @@ CONTAINS
                CALL diag_kp_smat(matrix_s_kp, kpoints, scf_env%scf_work1, lowdin_forces=ASSOCIATED(matrix_w_kp))
                CALL lowdin_kp_init(qs_env)
             ELSE
-               CALL get_qs_env(qs_env, matrix_s=matrix_s)
+               CALL get_qs_env(qs_env, matrix_metric=matrix_s)
                IF (s_minus_half_available) THEN
                   CALL cp_dbcsr_sm_fm_multiply(matrix_s(1)%matrix, scf_env%ortho, &
                                                scf_env%s_half, nao)

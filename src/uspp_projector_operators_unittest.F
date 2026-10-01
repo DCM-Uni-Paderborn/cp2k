@@ -60,13 +60,15 @@ PROGRAM uspp_projector_operators_unittest
                                               qs_uspp_init_ao_matrix,&
                                               qs_uspp_integrate
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
+                                              qs_uspp_projector_images,&
                                               qs_uspp_projector_matrix,&
                                               qs_uspp_projector_pair
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
                                               qs_uspp_type,&
                                               qs_uspp_update
    USE sap_kind_types,                  ONLY: release_sap_int,&
-                                              sap_int_type
+                                              sap_int_type,&
+                                              sap_sort
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
                                               upf_local_init,&
                                               upf_local_type
@@ -399,6 +401,7 @@ CONTAINS
       uspp%overlaps => bm
       ALLOCATE (uspp%center_atoms, SOURCE=[1, 2])
       ALLOCATE (uspp%center_kinds, SOURCE=kind)
+      ALLOCATE (uspp%projector_sizes, SOURCE=pp_sizes)
       ALLOCATE (uspp%position, SOURCE=positions)
       ALLOCATE (uspp%augmentation, SOURCE=aug)
       CALL set_ks_env(ks, uspp=uspp)
@@ -805,6 +808,7 @@ CONTAINS
          END DO
          ra = ia + 1
       END DO
+      CALL sap_sort(sap)
       DO kp = 1, SIZE(kpoints, 2)
          kvec = kpoints(:, kp)
          bk = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -924,6 +928,7 @@ CONTAINS
             END DO
          END DO
          CALL check(MAXVAL(ABS(SUM(atom_grad, DIM=2))), 'image convolution translation sum rule')
+         CALL check_image_driver(sap, onsite, pkmat, kvec, href, dref, atom_grad, cell_grad)
       END DO
       CALL release_sap_int(sap)
       image_error = max_error
@@ -931,6 +936,103 @@ CONTAINS
       IF (rank == 0) WRITE (*, '(A,I0,A,ES23.15)') 'USPP image/Bloch checks: layout=', case_id, ', maximum error=', image_error
       max_error = MAX(previous_error, image_error)
    END SUBROUTINE check_image_convolution
+
+! **************************************************************************************************
+!> \brief Check distributed image storage and reductions against the complex Bloch oracle.
+!> \param sap Image-resolved projector overlaps on the ABBA distribution.
+!> \param onsite Dense on-site operator.
+!> \param pkmat Complex Bloch density.
+!> \param kvec Reduced Bloch vector.
+!> \param href Independent Bloch operator.
+!> \param dref Independent on-site projected density.
+!> \param atom_ref Verified atomic energy gradients.
+!> \param cell_ref Verified strain energy gradients.
+! **************************************************************************************************
+   SUBROUTINE check_image_driver(sap, onsite, pkmat, kvec, href, dref, atom_ref, cell_ref)
+      TYPE(sap_int_type), INTENT(IN)                     :: sap(:)
+      REAL(KIND=dp), INTENT(IN)                          :: onsite(nproj, nproj)
+      COMPLEX(KIND=dp), INTENT(IN)                       :: pkmat(nao, nao)
+      REAL(KIND=dp), INTENT(IN)                          :: kvec(3)
+      COMPLEX(KIND=dp), INTENT(IN)                       :: href(nao, nao)
+      REAL(KIND=dp), INTENT(IN)                          :: dref(nproj, nproj), atom_ref(3, 3), &
+                                                            cell_ref(3, 3)
+
+      REAL(KIND=dp), PARAMETER                           :: scale = -0.7_dp
+
+      COMPLEX(KIND=dp)                                   :: hk(nao, nao), phase, stored_phase
+      INTEGER                                            :: cells(3, 125), ia, ib, image, ix, iy, &
+                                                            iz, ja, jb, pairs(8, 750), ra, rb, slot
+      REAL(KIND=dp)                                      :: atom_grad(3, 3), cell_grad(3, 3), &
+                                                            dense(nao, nao), &
+                                                            projected(nproj, nproj)
+      TYPE(dbcsr_p_type)                                 :: h_images(125), p_images(125)
+      TYPE(dbcsr_type)                                   :: density, OPERATOR
+
+      rs => pp_sizes; cs => pp_sizes
+      CALL make_matrix(OPERATOR, 'image onsite', dist_pp, rs, cs, onsite, 'N')
+      rs => ao_sizes; cs => ao_sizes
+      slot = 0
+      image = 0
+      DO iz = -2, 2
+         DO iy = -2, 2
+            DO ix = -2, 2
+               image = image + 1
+               cells(:, image) = [ix, iy, iz]
+               phase = EXP(CMPLX(0.0_dp, 2.0_dp*pi*DOT_PRODUCT(kvec, REAL(cells(:, image), dp)), dp))
+               dense = REAL(pkmat*CONJG(phase), dp)
+               DO ia = 1, 3
+                  ra = 1 + SUM(ao_sizes(:ia - 1)); ja = ra + ao_sizes(ia) - 1
+                  DO ib = ia, 3
+                     rb = 1 + SUM(ao_sizes(:ib - 1)); jb = rb + ao_sizes(ib) - 1
+                     slot = slot + 1
+                     ! Replicate metadata: only the stored AO block owner may contribute.
+                     pairs(:, slot) = [ia, ib, 1, 1, image, cells(:, image)]
+                     IF (case_id == 2 .AND. ia /= ib) THEN
+                        pairs(1:2, slot) = [ib, ia]
+                        dense(ra:ja, rb:jb) = REAL(pkmat(ra:ja, rb:jb)*phase, dp)
+                     END IF
+                  END DO
+               END DO
+               ALLOCATE (h_images(image)%matrix, p_images(image)%matrix)
+               CALL make_matrix(p_images(image)%matrix, 'image density', dist_ao, rs, cs, dense, 'S')
+               dense = 1.0_dp
+               CALL make_matrix(h_images(image)%matrix, 'image operator', dist_ao, rs, cs, dense, 'S')
+               CALL dbcsr_set(h_images(image)%matrix, 0.0_dp)
+            END DO
+         END DO
+      END DO
+      atom_grad = 0.0_dp
+      cell_grad = 0.0_dp
+      CALL qs_uspp_projector_images(bm, sap, pairs, 1, [1, 2], [1, 1], OPERATOR, h_images, p_images, density, &
+                                    atom_grad, cell_grad, alpha=scale)
+      CALL gather(density, projected)
+      CALL comm%sum(atom_grad)
+      CALL comm%sum(cell_grad)
+      CALL check(MAXVAL(ABS(projected - dref)), 'distributed image density versus Bloch projection')
+      CALL check(MAXVAL(ABS(atom_grad - scale*atom_ref)), 'distributed image atomic gradients')
+      CALL check(MAXVAL(ABS(cell_grad - scale*cell_ref)), 'distributed image strain gradients')
+      hk = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO image = 1, SIZE(h_images)
+         CALL gather(h_images(image)%matrix, dense)
+         phase = EXP(CMPLX(0.0_dp, 2.0_dp*pi*DOT_PRODUCT(kvec, REAL(cells(:, image), dp)), dp))
+         DO ia = 1, 3
+            ra = 1 + SUM(ao_sizes(:ia - 1)); ja = ra + ao_sizes(ia) - 1
+            DO ib = ia, 3
+               rb = 1 + SUM(ao_sizes(:ib - 1)); jb = rb + ao_sizes(ib) - 1
+               stored_phase = phase
+               IF (case_id == 2 .AND. ia /= ib) stored_phase = CONJG(phase)
+               hk(ra:ja, rb:jb) = hk(ra:ja, rb:jb) + stored_phase*dense(ra:ja, rb:jb)
+               IF (ia /= ib) hk(rb:jb, ra:ja) = hk(rb:jb, ra:ja) + CONJG(stored_phase)*TRANSPOSE(dense(ra:ja, rb:jb))
+            END DO
+         END DO
+         CALL dbcsr_release(h_images(image)%matrix)
+         CALL dbcsr_release(p_images(image)%matrix)
+         DEALLOCATE (h_images(image)%matrix, p_images(image)%matrix)
+      END DO
+      CALL check(MAXVAL(ABS(hk - scale*href)), 'distributed image operator versus Bloch product')
+      CALL dbcsr_release(OPERATOR)
+      CALL dbcsr_release(density)
+   END SUBROUTINE check_image_driver
 
 ! **************************************************************************************************
 !> \brief Exercise mixed kinds, metric access, rebuilding and KS ownership on the MPI grid.

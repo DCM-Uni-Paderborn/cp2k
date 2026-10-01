@@ -1656,10 +1656,10 @@ CONTAINS
                                        gapw=gapw .AND. .NOT. gapw_composite_direct_ao)
             END IF
             IF (calculate_forces) THEN
-               CALL qs_uspp_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, 1)%matrix, weighted=.TRUE., &
-                                      density=my_rho(ispin, 1)%matrix)
+               CALL qs_uspp_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, :), weighted=.TRUE., &
+                                      density=my_rho(ispin, :))
             ELSE
-               CALL qs_uspp_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, 1)%matrix, weighted=.TRUE.)
+               CALL qs_uspp_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, :), weighted=.TRUE.)
             END IF
             CALL auxbas_pw_pool%give_back_pw(v_rspace_new(ispin))
          END DO ! ispin
@@ -1767,10 +1767,10 @@ CONTAINS
                                        gapw=gapw)
             END IF
             IF (calculate_forces) THEN
-               CALL qs_uspp_integrate(ks_env, v_rspace_used, ks_matrix(ispin, 1)%matrix, weighted=.TRUE., &
-                                      density=my_rho(ispin, 1)%matrix)
+               CALL qs_uspp_integrate(ks_env, v_rspace_used, ks_matrix(ispin, :), weighted=.TRUE., &
+                                      density=my_rho(ispin, :))
             ELSE
-               CALL qs_uspp_integrate(ks_env, v_rspace_used, ks_matrix(ispin, 1)%matrix, weighted=.TRUE.)
+               CALL qs_uspp_integrate(ks_env, v_rspace_used, ks_matrix(ispin, :), weighted=.TRUE.)
             END IF
             IF (use_work_v_rspace) CALL auxbas_pw_pool%give_back_pw(v_rspace_work)
          END DO

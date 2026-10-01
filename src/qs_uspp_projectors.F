@@ -12,18 +12,21 @@ MODULE qs_uspp_projectors
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_create, dbcsr_distribution_get, dbcsr_distribution_new, dbcsr_distribution_release, &
         dbcsr_distribution_type, dbcsr_finalize, dbcsr_get_block_p, dbcsr_get_info, &
-        dbcsr_get_stored_coordinates, dbcsr_reserve_blocks, dbcsr_set, dbcsr_type
+        dbcsr_get_readonly_block_p, dbcsr_get_stored_coordinates, dbcsr_p_type, &
+        dbcsr_reserve_blocks, dbcsr_set, dbcsr_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_comm_type
    USE sap_kind_types,                  ONLY: alist_type,&
+                                              get_alist,&
                                               sap_int_type
+   USE uspp_projector_operators,        ONLY: uspp_projector_create_onsite
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_projectors'
    PUBLIC :: qs_uspp_projector_matrix, qs_uspp_projector_gradient
-   PUBLIC :: qs_uspp_projector_pair
+   PUBLIC :: qs_uspp_projector_pair, qs_uspp_projector_images
 
 CONTAINS
 
@@ -132,6 +135,134 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE qs_uspp_projector_pair
+
+! **************************************************************************************************
+!> \brief Distributed image-pair operator, adjoint density and energy gradients.
+!>        Pair columns contain a,b,kind(a),kind(b),image,R(1:3). The list and AO matrices
+!>        use the same distribution. Each stored AO block is contracted on its owner only.
+!> \param template Rectangular projector matrix defining center blocks and communicator.
+!> \param sap Sorted image-resolved overlaps, with derivatives when gradients are requested.
+!> \param pairs Local real-space AO neighbor pairs, including the cell index.
+!> \param nkind Number of kinds used to index sap.
+!> \param center_atoms Global atoms corresponding to projector columns.
+!> \param center_kinds Kinds corresponding to projector columns.
+!> \param onsite Optional distributed real on-site operator.
+!> \param ao_operator Optional AO image matrices, incremented in place.
+!> \param density Optional AO image densities, including spin occupations and k weights.
+!> \param projected Optional new block-diagonal projected density, globally reduced once.
+!> \param atom_gradient Optional local atomic energy gradients, not MPI-reduced.
+!> \param cell_gradient Optional local strain energy gradient, not MPI-reduced.
+!> \param alpha Optional prefactor for operator and its gradients, e.g. -1 for the metric.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_projector_images(template, sap, pairs, nkind, center_atoms, center_kinds, &
+                                       onsite, ao_operator, density, projected, atom_gradient, cell_gradient, alpha)
+      TYPE(dbcsr_type), INTENT(IN)                       :: template
+      TYPE(sap_int_type), INTENT(IN)                     :: sap(:)
+      INTEGER, INTENT(IN)                                :: pairs(:, :), nkind, center_atoms(:), &
+                                                            center_kinds(:)
+      TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: onsite
+      TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: ao_operator(:)
+      TYPE(dbcsr_p_type), INTENT(IN), OPTIONAL           :: density(:)
+      TYPE(dbcsr_type), INTENT(INOUT), OPTIONAL          :: projected
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :), cell_gradient(3, 3)
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: alpha
+
+      INTEGER                                            :: center, col, ENTRY, ia, iac, ib, ibc, &
+                                                            image, n, owner, row
+      INTEGER, POINTER                                   :: row_sizes(:), sizes(:)
+      LOGICAL                                            :: found
+      REAL(KIND=dp)                                      :: factor, scale
+      REAL(KIND=dp), ALLOCATABLE                         :: dm(:, :), matrix(:, :), pd(:, :), &
+                                                            ph(:, :)
+      REAL(KIND=dp), POINTER                             :: block(:, :)
+      TYPE(alist_type), POINTER                          :: alist_a, alist_b
+      TYPE(mp_comm_type)                                 :: group
+
+      CPASSERT(SIZE(pairs, 1) == 8)
+      CPASSERT(SIZE(sap) == nkind*nkind)
+      CALL dbcsr_get_info(template, group=group, row_blk_size=row_sizes, col_blk_size=sizes)
+      CPASSERT(SIZE(center_atoms) == SIZE(sizes))
+      CPASSERT(SIZE(center_kinds) == SIZE(sizes))
+      scale = 1.0_dp
+      IF (PRESENT(alpha)) scale = alpha
+      IF (PRESENT(projected)) CALL uspp_projector_create_onsite(template, projected)
+      DO center = 1, SIZE(center_atoms)
+         n = sizes(center)
+         IF (PRESENT(onsite)) THEN
+            ALLOCATE (matrix(n, n))
+            matrix = 0.0_dp
+            CALL dbcsr_get_readonly_block_p(onsite, center, center, block=block, found=found)
+            IF (found) matrix(:, :) = scale*block
+            CALL group%sum(matrix)
+         END IF
+         IF (PRESENT(projected)) THEN
+            ALLOCATE (dm(n, n))
+            dm = 0.0_dp
+         END IF
+         DO ENTRY = 1, SIZE(pairs, 2)
+            ia = pairs(1, ENTRY)
+            ib = pairs(2, ENTRY)
+            image = pairs(5, ENTRY)
+            row = MIN(ia, ib)
+            col = MAX(ia, ib)
+            IF (PRESENT(ao_operator)) THEN
+               CALL dbcsr_get_stored_coordinates(ao_operator(image)%matrix, row, col, owner)
+            ELSE
+               CPASSERT(PRESENT(density))
+               CALL dbcsr_get_stored_coordinates(density(image)%matrix, row, col, owner)
+            END IF
+            IF (owner /= group%mepos) CYCLE
+            iac = pairs(3, ENTRY) + nkind*(center_kinds(center) - 1)
+            ibc = pairs(4, ENTRY) + nkind*(center_kinds(center) - 1)
+            IF (.NOT. ASSOCIATED(sap(iac)%alist) .OR. .NOT. ASSOCIATED(sap(ibc)%alist)) CYCLE
+            CALL get_alist(sap(iac), alist_a, ia)
+            CALL get_alist(sap(ibc), alist_b, ib)
+            IF (.NOT. ASSOCIATED(alist_a) .OR. .NOT. ASSOCIATED(alist_b)) CYCLE
+            IF (PRESENT(ao_operator)) THEN
+               ALLOCATE (ph(row_sizes(ia), row_sizes(ib)))
+               ph = 0.0_dp
+            END IF
+            IF (PRESENT(density)) THEN
+               ALLOCATE (pd(row_sizes(ia), row_sizes(ib)))
+               pd = 0.0_dp
+               CALL dbcsr_get_block_p(density(image)%matrix, row, col, block, found)
+               IF (found) THEN
+                  IF (ia <= ib) THEN
+                     pd(:, :) = block
+                  ELSE
+                     pd(:, :) = TRANSPOSE(block)
+                  END IF
+               END IF
+            END IF
+            factor = MERGE(1.0_dp, 2.0_dp, ia == ib)
+            CALL qs_uspp_projector_pair(alist_a, alist_b, center_atoms(center), pairs(6:8, ENTRY), &
+                                        onsite=matrix, ao_operator=ph, density=pd, projected=dm, weight=factor, &
+                                        atom_gradient=atom_gradient, cell_gradient=cell_gradient)
+            IF (PRESENT(ao_operator)) THEN
+               CALL dbcsr_get_block_p(ao_operator(image)%matrix, row, col, block, found)
+               IF (found) THEN
+                  IF (ia <= ib) THEN
+                     block(:, :) = block + ph
+                  ELSE
+                     block(:, :) = block + TRANSPOSE(ph)
+                  END IF
+               ELSE
+                  ! A nonzero projector contribution must never be dropped by AO screening.
+                  CPASSERT(ALL(ph == 0.0_dp))
+               END IF
+               DEALLOCATE (ph)
+            END IF
+            IF (PRESENT(density)) DEALLOCATE (pd)
+         END DO
+         IF (PRESENT(projected)) THEN
+            CALL group%sum(dm)
+            CALL dbcsr_get_block_p(projected, center, center, block, found)
+            IF (found) block(:, :) = dm
+            DEALLOCATE (dm)
+         END IF
+         IF (PRESENT(onsite)) DEALLOCATE (matrix)
+      END DO
+   END SUBROUTINE qs_uspp_projector_images
 
 ! **************************************************************************************************
 !> \brief Sum all periodic images of <chi_mu|beta_i> into a rectangular DBCSR matrix.

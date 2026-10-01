@@ -9,21 +9,32 @@
 !> \brief Geometry-dependent scalar USPP state, separate from the Gaussian overlap.
 ! **************************************************************************************************
 MODULE qs_uspp_types
-   USE cp_dbcsr_api,                    ONLY: dbcsr_p_type,&
+   USE cp_dbcsr_api,                    ONLY: dbcsr_add,&
+                                              dbcsr_copy,&
+                                              dbcsr_get_block_p,&
+                                              dbcsr_p_type,&
+                                              dbcsr_release,&
                                               dbcsr_release_p,&
+                                              dbcsr_set,&
                                               dbcsr_type
    USE kinds,                           ONLY: dp
    USE kpoint_transitional,             ONLY: kpoint_transitional_release,&
                                               kpoint_transitional_type,&
-                                              set_1d_pointer
+                                              set_1d_pointer,&
+                                              set_2d_pointer
    USE particle_types,                  ONLY: particle_type
    USE qs_kind_types,                   ONLY: qs_kind_type
-   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_matrix
-   USE sap_kind_types,                  ONLY: sap_int_type
+   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
+   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_images,&
+                                              qs_uspp_projector_matrix
+   USE sap_kind_types,                  ONLY: release_sap_int,&
+                                              sap_int_type,&
+                                              sap_sort
    USE upf_projector_integrals,         ONLY: upf_projector_init
    USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
                                               uspp_augmentation_type
    USE uspp_projector_operators,        ONLY: uspp_projector_ao_pattern,&
+                                              uspp_projector_create_onsite,&
                                               uspp_projector_metric
 #include "./base/base_uses.f90"
 
@@ -37,9 +48,11 @@ MODULE qs_uspp_types
       TYPE(uspp_augmentation_type), ALLOCATABLE :: augmentation(:)
       TYPE(dbcsr_type), POINTER :: overlaps => NULL(), ao_pattern => NULL()
       TYPE(kpoint_transitional_type) :: metric
+      TYPE(sap_int_type), POINTER :: image_integrals(:) => NULL()
+      INTEGER, ALLOCATABLE :: image_pairs(:, :)
    END TYPE qs_uspp_type
 
-   PUBLIC :: qs_uspp_type, qs_uspp_init, qs_uspp_update, qs_uspp_release
+   PUBLIC :: qs_uspp_type, qs_uspp_init, qs_uspp_update, qs_uspp_update_images, qs_uspp_release
 
 CONTAINS
 
@@ -122,6 +135,8 @@ CONTAINS
       CALL dbcsr_release_p(uspp%overlaps)
       CALL dbcsr_release_p(uspp%ao_pattern)
       CALL kpoint_transitional_release(uspp%metric)
+      IF (ASSOCIATED(uspp%image_integrals)) CALL release_sap_int(uspp%image_integrals)
+      IF (ALLOCATED(uspp%image_pairs)) DEALLOCATE (uspp%image_pairs)
       DO center = 1, SIZE(uspp%center_atoms)
          atom = uspp%center_atoms(center)
          CPASSERT(atom >= 1 .AND. atom <= SIZE(particle_set))
@@ -140,6 +155,60 @@ CONTAINS
    END SUBROUTINE qs_uspp_update
 
 ! **************************************************************************************************
+!> \brief Retain image-resolved overlaps and build the generalized real-space metric.
+!> \param uspp Initialized USPP state.
+!> \param gaussian_overlap Gaussian overlap matrices for every lattice image.
+!> \param sap_int Overlaps whose ownership transfers to uspp; null on return.
+!> \param particle_set Current atoms.
+!> \param sab Complete AO pair list used by the lattice Fourier transformation.
+!> \param cell_to_index Current lattice image map.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_update_images(uspp, gaussian_overlap, sap_int, particle_set, sab, cell_to_index)
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: gaussian_overlap(:)
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+      TYPE(particle_type), INTENT(IN)                    :: particle_set(:)
+      TYPE(neighbor_list_set_p_type), INTENT(IN)         :: sab(:)
+      INTEGER, POINTER                                   :: cell_to_index(:, :, :)
+
+      INTEGER                                            :: cell(3), center, image, slot
+      LOGICAL                                            :: found
+      REAL(KIND=dp), POINTER                             :: block(:, :)
+      TYPE(dbcsr_p_type), POINTER                        :: metric(:, :)
+      TYPE(dbcsr_type)                                   :: onsite
+
+      CALL qs_uspp_update(uspp, gaussian_overlap(1)%matrix, sap_int, particle_set)
+      uspp%image_integrals => sap_int
+      NULLIFY (sap_int)
+      CALL sap_sort(uspp%image_integrals)
+      ALLOCATE (uspp%image_pairs(8, sab(1)%nl_size))
+      DO slot = 1, sab(1)%nl_size
+         cell = sab(1)%nlist_task(slot)%cell
+         image = cell_to_index(cell(1), cell(2), cell(3))
+         CPASSERT(image >= 1 .AND. image <= SIZE(gaussian_overlap))
+         uspp%image_pairs(:, slot) = [sab(1)%nlist_task(slot)%iatom, sab(1)%nlist_task(slot)%jatom, &
+                                      sab(1)%nlist_task(slot)%ikind, sab(1)%nlist_task(slot)%jkind, image, cell]
+      END DO
+      CALL kpoint_transitional_release(uspp%metric)
+      ALLOCATE (metric(1, SIZE(gaussian_overlap)))
+      DO image = 1, SIZE(gaussian_overlap)
+         ALLOCATE (metric(1, image)%matrix)
+         CALL dbcsr_copy(metric(1, image)%matrix, uspp%ao_pattern)
+         CALL dbcsr_set(metric(1, image)%matrix, 0.0_dp)
+         CALL dbcsr_add(metric(1, image)%matrix, gaussian_overlap(image)%matrix, 1.0_dp, 1.0_dp)
+      END DO
+      CALL uspp_projector_create_onsite(uspp%overlaps, onsite)
+      DO center = 1, SIZE(uspp%center_atoms)
+         CALL dbcsr_get_block_p(onsite, center, center, block, found)
+         IF (found) block(:, :) = uspp%augmentation(uspp%center_kinds(center))%q
+      END DO
+      CALL qs_uspp_projector_images(uspp%overlaps, uspp%image_integrals, uspp%image_pairs, SIZE(uspp%augmentation), &
+                                    uspp%center_atoms, uspp%center_kinds, onsite=onsite, ao_operator=metric(1, :))
+      CALL dbcsr_release(onsite)
+      CALL set_2d_pointer(uspp%metric, metric)
+   END SUBROUTINE qs_uspp_update_images
+
+! **************************************************************************************************
 !> \brief Release only USPP-owned matrices and data; safe also for an absent state.
 !> \param uspp Owned state, null on return.
 ! **************************************************************************************************
@@ -150,6 +219,7 @@ CONTAINS
       CALL dbcsr_release_p(uspp%overlaps)
       CALL dbcsr_release_p(uspp%ao_pattern)
       CALL kpoint_transitional_release(uspp%metric)
+      IF (ASSOCIATED(uspp%image_integrals)) CALL release_sap_int(uspp%image_integrals)
       DEALLOCATE (uspp)
    END SUBROUTINE qs_uspp_release
 

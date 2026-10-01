@@ -552,7 +552,7 @@ CONTAINS
                                  ks_env=ks_env, soft_valid=gapw, &
                                  task_list_external=task_list_external, &
                                  pw_env_external=pw_env_external)
-         CALL qs_uspp_collocate(ks_env, rho_ao(1)%matrix, rho_g(ispin), rho_r(ispin), tot_rho_r(ispin))
+         CALL qs_uspp_collocate(ks_env, rho_ao, rho_g(ispin), rho_r(ispin), tot_rho_r(ispin))
       END DO
       CALL qs_rho_set(rho_struct, rho_r_valid=.TRUE., rho_g_valid=.TRUE.)
 
@@ -610,7 +610,7 @@ CONTAINS
                                         drho_gspace=drho_g(:, ispin), &
                                         qs_env=qs_env, soft_valid=gapw)
                DO idir = 1, 3
-                  CALL qs_uspp_collocate(ks_env, rho_ao(1)%matrix, drho_g(idir, ispin), drho_r(idir, ispin), &
+                  CALL qs_uspp_collocate(ks_env, rho_ao, drho_g(idir, ispin), drho_r(idir, ispin), &
                                          derivative=[MERGE(1, 0, idir == 1), MERGE(1, 0, idir == 2), MERGE(1, 0, idir == 3)])
                END DO
             END DO
