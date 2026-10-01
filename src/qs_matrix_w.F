@@ -164,7 +164,7 @@ CONTAINS
             CALL get_qs_env(qs_env, &
                             matrix_w=matrix_w, &
                             matrix_ks=matrix_ks, &
-                            matrix_s=matrix_s, &
+                            matrix_metric=matrix_s, &
                             mo_derivs=mo_derivs, &
                             scf_control=scf_control, &
                             mos=mos, &

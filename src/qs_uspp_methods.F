@@ -9,10 +9,14 @@
 !> \brief Connect native USPP geometry, density, and operators to Quickstep GPW.
 ! **************************************************************************************************
 MODULE qs_uspp_methods
+   USE atomic_kind_types,               ONLY: atomic_kind_type,&
+                                              get_atomic_kind_set
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_add,&
+                                              dbcsr_copy,&
                                               dbcsr_get_block_p,&
                                               dbcsr_get_info,&
+                                              dbcsr_p_type,&
                                               dbcsr_release,&
                                               dbcsr_set,&
                                               dbcsr_type
@@ -30,11 +34,13 @@ MODULE qs_uspp_methods
                                               pw_transfer
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
+   USE qs_force_types,                  ONLY: qs_force_type
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type,&
                                               set_ks_env
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
+   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
                                               qs_uspp_type,&
                                               qs_uspp_update
@@ -46,14 +52,15 @@ MODULE qs_uspp_methods
    USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
                                               uspp_projector_collocate,&
                                               uspp_projector_create_onsite,&
-                                              uspp_projector_integrate
+                                              uspp_projector_integrate,&
+                                              uspp_projector_pullback
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_methods'
    PUBLIC :: qs_uspp_prepare, qs_uspp_init_ao_matrix, qs_uspp_collocate, qs_uspp_integrate
-   PUBLIC :: qs_uspp_core_matrix
+   PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces
 
 CONTAINS
 
@@ -174,18 +181,33 @@ CONTAINS
 !> \param potential Real potential; values include the volume element when weighted is true.
 !> \param hamiltonian AO Hamiltonian for one spin, incremented in place.
 !> \param weighted Whether potential already includes the real grid's volume element.
+!> \param density Optional force-path density; adds the augmentation energy gradients to the KS forces.
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_integrate(ks_env, potential, hamiltonian, weighted)
+   SUBROUTINE qs_uspp_integrate(ks_env, potential, hamiltonian, weighted, density)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
       TYPE(dbcsr_type), INTENT(INOUT)                    :: hamiltonian
       LOGICAL, INTENT(IN)                                :: weighted
+      TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density
 
+      INTEGER                                            :: natom
+      REAL(KIND=dp), ALLOCATABLE                         :: atom_gradient(:, :)
       TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
 
       CALL get_ks_env(ks_env, uspp=uspp)
       IF (.NOT. ASSOCIATED(uspp)) RETURN
-      CALL integrate_grid(uspp, potential, hamiltonian, weighted)
+      IF (PRESENT(density)) THEN
+         CALL get_ks_env(ks_env, natom=natom)
+         ALLOCATE (atom_gradient(3, natom))
+         atom_gradient = 0.0_dp
+         CALL build_derivatives(ks_env, sap_int)
+         CALL integrate_grid(uspp, potential, hamiltonian, weighted, density, sap_int, atom_gradient)
+         CALL accumulate_gradient(ks_env, atom_gradient)
+         CALL release_sap_int(sap_int)
+      ELSE
+         CALL integrate_grid(uspp, potential, hamiltonian, weighted)
+      END IF
    END SUBROUTINE qs_uspp_integrate
 
 ! **************************************************************************************************
@@ -194,15 +216,22 @@ CONTAINS
 !> \param potential Real local potential.
 !> \param hamiltonian AO Hamiltonian, incremented in place.
 !> \param weighted Whether the real potential includes dV.
+!> \param density Optional force-path AO density.
+!> \param sap_int Optional image-resolved projector derivatives.
+!> \param atom_gradient Optional local atomic energy gradients, incremented without MPI reduction.
 ! **************************************************************************************************
-   SUBROUTINE integrate_grid(uspp, potential, hamiltonian, weighted)
+   SUBROUTINE integrate_grid(uspp, potential, hamiltonian, weighted, density, sap_int, atom_gradient)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
       TYPE(dbcsr_type), INTENT(INOUT)                    :: hamiltonian
       LOGICAL, INTENT(IN)                                :: weighted
+      TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density
+      TYPE(sap_int_type), INTENT(IN), OPTIONAL           :: sap_int(:)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :)
 
-      INTEGER                                            :: handle
-      REAL(KIND=dp), ALLOCATABLE                         :: multiplicity(:)
+      INTEGER                                            :: center, handle
+      REAL(KIND=dp), ALLOCATABLE                         :: center_gradient(:, :), multiplicity(:)
+      TYPE(dbcsr_type)                                   :: gradient
       TYPE(pw_c1d_gs_type)                               :: potential_g
 
       CALL timeset('qs_uspp_integrate', handle)
@@ -216,9 +245,24 @@ CONTAINS
          multiplicity = 2.0_dp
          IF (potential%pw_grid%have_g0) multiplicity(1) = 1.0_dp
       END IF
-      CALL uspp_projector_integrate(uspp%overlaps, uspp%augmentation, uspp%center_kinds, &
-                                    uspp%position, potential%pw_grid%g, potential%pw_grid%vol, &
-                                    potential_g%array, multiplicity, hamiltonian)
+      CPASSERT(PRESENT(density) .EQV. PRESENT(sap_int))
+      CPASSERT(PRESENT(density) .EQV. PRESENT(atom_gradient))
+      IF (PRESENT(density)) THEN
+         ALLOCATE (center_gradient(3, SIZE(uspp%center_atoms)))
+         CALL uspp_projector_integrate(uspp%overlaps, uspp%augmentation, uspp%center_kinds, &
+                                       uspp%position, potential%pw_grid%g, potential%pw_grid%vol, &
+                                       potential_g%array, multiplicity, hamiltonian, density, gradient, center_gradient)
+         CALL qs_uspp_projector_gradient(gradient, sap_int, uspp%center_atoms, atom_gradient)
+         DO center = 1, SIZE(uspp%center_atoms)
+            atom_gradient(:, uspp%center_atoms(center)) = atom_gradient(:, uspp%center_atoms(center)) + &
+                                                          center_gradient(:, center)
+         END DO
+         CALL dbcsr_release(gradient)
+      ELSE
+         CALL uspp_projector_integrate(uspp%overlaps, uspp%augmentation, uspp%center_kinds, &
+                                       uspp%position, potential%pw_grid%g, potential%pw_grid%vol, &
+                                       potential_g%array, multiplicity, hamiltonian)
+      END IF
       CALL potential_g%release()
       CALL timestop(handle)
    END SUBROUTINE integrate_grid
@@ -233,24 +277,37 @@ CONTAINS
 !> \param particle_set All ions, not only augmentation centers.
 !> \param grid Same FFT grid as the physical electron density.
 !> \param hamiltonian Core Hamiltonian, incremented in place.
+!> \param density Optional total AO density for the force path.
+!> \param energy_weighted Optional total energy-weighted AO density.
+!> \param sap_int Optional uncompressed projector derivatives.
+!> \param atom_gradient Optional local atomic energy gradients, incremented without MPI reduction.
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_core_matrix(uspp, qs_kind_set, particle_set, grid, hamiltonian)
+   SUBROUTINE qs_uspp_core_matrix(uspp, qs_kind_set, particle_set, grid, hamiltonian, &
+                                  density, energy_weighted, sap_int, atom_gradient)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
       TYPE(qs_kind_type), INTENT(INOUT)                  :: qs_kind_set(:)
       TYPE(particle_type), INTENT(IN)                    :: particle_set(:)
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(dbcsr_type), INTENT(INOUT)                    :: hamiltonian
+      TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density, energy_weighted
+      TYPE(sap_int_type), INTENT(IN), OPTIONAL           :: sap_int(:)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :)
 
-      COMPLEX(KIND=dp), ALLOCATABLE                      :: ionic_g(:)
-      INTEGER                                            :: atom, center, handle, ikind
+      COMPLEX(KIND=dp), ALLOCATABLE                      :: ionic_derivative(:, :), ionic_g(:)
+      INTEGER                                            :: atom, center, handle, idir, ikind
       LOGICAL                                            :: found
+      REAL(KIND=dp)                                      :: charge
+      REAL(KIND=dp), ALLOCATABLE                         :: multiplicity(:)
       REAL(KIND=dp), POINTER                             :: block(:, :)
-      TYPE(dbcsr_type)                                   :: bare
-      TYPE(pw_c1d_gs_type)                               :: potential_g
-      TYPE(pw_r3d_rs_type)                               :: potential_r
+      TYPE(dbcsr_type)                                   :: bare, gradient
+      TYPE(pw_c1d_gs_type)                               :: potential_g, rho_g
+      TYPE(pw_r3d_rs_type)                               :: potential_r, rho_r
 
       CALL timeset('qs_uspp_core_matrix', handle)
       CALL check_grid(uspp, grid)
+      CPASSERT(PRESENT(density) .EQV. PRESENT(energy_weighted))
+      CPASSERT(PRESENT(density) .EQV. PRESENT(sap_int))
+      CPASSERT(PRESENT(density) .EQV. PRESENT(atom_gradient))
       CALL uspp_projector_create_onsite(uspp%overlaps, bare)
       DO center = 1, SIZE(uspp%center_kinds)
          ikind = uspp%center_kinds(center)
@@ -258,12 +315,41 @@ CONTAINS
          IF (found) block(:, :) = qs_kind_set(ikind)%sgp_potential%upf_projectors%d
       END DO
       CALL uspp_projector_add_operator(uspp%overlaps, bare, hamiltonian)
+      IF (PRESENT(density)) THEN
+         CALL uspp_projector_pullback(uspp%overlaps, density, bare, 1.0_dp, gradient)
+         CALL qs_uspp_projector_gradient(gradient, sap_int, uspp%center_atoms, atom_gradient)
+         CALL dbcsr_release(gradient)
+         DO center = 1, SIZE(uspp%center_kinds)
+            ikind = uspp%center_kinds(center)
+            CALL dbcsr_get_block_p(bare, center, center, block, found)
+            IF (found) block(:, :) = uspp%augmentation(ikind)%q
+         END DO
+         CALL uspp_projector_pullback(uspp%overlaps, energy_weighted, bare, -1.0_dp, gradient)
+         CALL qs_uspp_projector_gradient(gradient, sap_int, uspp%center_atoms, atom_gradient)
+         CALL dbcsr_release(gradient)
+      END IF
       CALL dbcsr_release(bare)
 
       CALL potential_g%create(grid)
       CALL potential_r%create(grid)
       ALLOCATE (ionic_g(SIZE(potential_g%array)))
       potential_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(density)) THEN
+         CALL rho_g%create(grid)
+         CALL rho_r%create(grid)
+         rho_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+         CALL uspp_projector_collocate(uspp%overlaps, density, uspp%augmentation, uspp%center_kinds, &
+                                       uspp%position, grid%g, grid%vol, rho_g%array, charge)
+         ! Self-adjoint real projection is needed before contracting a raw ionic derivative.
+         CALL pw_transfer(rho_g, rho_r)
+         CALL pw_transfer(rho_r, rho_g)
+         ALLOCATE (ionic_derivative(3, SIZE(ionic_g)), multiplicity(SIZE(ionic_g)))
+         multiplicity = 1.0_dp
+         IF (grid%grid_span == HALFSPACE) THEN
+            multiplicity = 2.0_dp
+            IF (grid%have_g0) multiplicity(1) = 1.0_dp
+         END IF
+      END IF
       DO atom = 1, SIZE(particle_set)
          ikind = particle_set(atom)%atomic_kind%kind_number
          IF (qs_kind_set(ikind)%ghost) CYCLE
@@ -273,17 +359,109 @@ CONTAINS
             IF (potential%upf_local%radial%degree < 0) THEN
                CALL upf_local_init(potential%upf_data, potential%alpha_core_charge, 0, potential%upf_local)
             END IF
-            CALL upf_local_fourier(potential%upf_local, grid%g, particle_set(atom)%r, grid%vol, ionic_g)
+            IF (PRESENT(density)) THEN
+               CALL upf_local_fourier(potential%upf_local, grid%g, particle_set(atom)%r, grid%vol, ionic_g, ionic_derivative)
+               DO idir = 1, 3
+                  atom_gradient(idir, atom) = atom_gradient(idir, atom) + grid%vol* &
+                                              SUM(multiplicity*REAL(CONJG(rho_g%array)*ionic_derivative(idir, :), KIND=dp))
+               END DO
+            ELSE
+               CALL upf_local_fourier(potential%upf_local, grid%g, particle_set(atom)%r, grid%vol, ionic_g)
+            END IF
             potential_g%array = potential_g%array + ionic_g
          END ASSOCIATE
       END DO
       ! Explicit real projection also treats aliased Nyquist pairs consistently on even grids.
       CALL pw_transfer(potential_g, potential_r)
-      CALL integrate_grid(uspp, potential_r, hamiltonian, weighted=.FALSE.)
+      CALL integrate_grid(uspp, potential_r, hamiltonian, weighted=.FALSE., &
+                          density=density, sap_int=sap_int, atom_gradient=atom_gradient)
+      IF (PRESENT(density)) THEN
+         CALL rho_g%release()
+         CALL rho_r%release()
+      END IF
       CALL potential_g%release()
       CALL potential_r%release()
       CALL timestop(handle)
    END SUBROUTINE qs_uspp_core_matrix
+
+! **************************************************************************************************
+!> \brief Core USPP operator and its stationary energy gradients, including the metric Pulay term.
+!> \param ks_env Current geometry and force accumulators.
+!> \param grid Physical density FFT grid.
+!> \param hamiltonian Core Hamiltonian to increment.
+!> \param density Spin densities; summed without modifying the originals.
+!> \param weighted_density Total energy-weighted density from both spins.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_core_forces(ks_env, grid, hamiltonian, density, weighted_density)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: hamiltonian
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:)
+      TYPE(dbcsr_type), INTENT(IN)                       :: weighted_density
+
+      INTEGER                                            :: ispin
+      REAL(KIND=dp), ALLOCATABLE                         :: atom_gradient(:, :)
+      TYPE(dbcsr_type)                                   :: total_density
+      TYPE(particle_type), POINTER                       :: particle_set(:)
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+
+      CALL get_ks_env(ks_env, uspp=uspp, qs_kind_set=qs_kind_set, particle_set=particle_set)
+      CPASSERT(ASSOCIATED(uspp))
+      CALL dbcsr_copy(total_density, density(1)%matrix)
+      DO ispin = 2, SIZE(density)
+         CALL dbcsr_add(total_density, density(ispin)%matrix, 1.0_dp, 1.0_dp)
+      END DO
+      ALLOCATE (atom_gradient(3, SIZE(particle_set)))
+      atom_gradient = 0.0_dp
+      CALL build_derivatives(ks_env, sap_int)
+      CALL qs_uspp_core_matrix(uspp, qs_kind_set, particle_set, grid, hamiltonian, &
+                               total_density, weighted_density, sap_int, atom_gradient)
+      CALL accumulate_gradient(ks_env, atom_gradient)
+      CALL release_sap_int(sap_int)
+      CALL dbcsr_release(total_density)
+   END SUBROUTINE qs_uspp_core_forces
+
+! **************************************************************************************************
+!> \brief Build image-resolved derivatives only on the force path.
+!> \param ks_env Current ABBA neighbor list and native radial projector data.
+!> \param sap_int Newly allocated uncompressed projector overlaps and derivatives.
+! **************************************************************************************************
+   SUBROUTINE build_derivatives(ks_env, sap_int)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+
+      TYPE(neighbor_list_set_p_type), POINTER            :: sap_ppnl(:)
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
+
+      CALL get_ks_env(ks_env, qs_kind_set=qs_kind_set, sap_ppnl=sap_ppnl)
+      ALLOCATE (sap_int(SIZE(qs_kind_set)**2))
+      CALL build_sap_ints(sap_int, sap_ppnl, qs_kind_set, nder=1)
+   END SUBROUTINE build_derivatives
+
+! **************************************************************************************************
+!> \brief Add unreduced USPP energy gradients to the normal Quickstep force accumulator.
+!> \param ks_env Kinds and force arrays; Quickstep later reduces and negates these gradients.
+!> \param atom_gradient Local energy gradients in global particle order.
+! **************************************************************************************************
+   SUBROUTINE accumulate_gradient(ks_env, atom_gradient)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      REAL(KIND=dp), INTENT(IN)                          :: atom_gradient(:, :)
+
+      INTEGER                                            :: atom, ia, ikind
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
+      TYPE(atomic_kind_type), POINTER                    :: atomic_kind_set(:)
+      TYPE(qs_force_type), POINTER                       :: force(:)
+
+      CALL get_ks_env(ks_env, atomic_kind_set=atomic_kind_set, force=force)
+      CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
+      DO atom = 1, SIZE(atom_gradient, 2)
+         ikind = kind_of(atom)
+         ia = atom_of_kind(atom)
+         force(ikind)%gth_ppnl(:, ia) = force(ikind)%gth_ppnl(:, ia) + atom_gradient(:, atom)
+      END DO
+   END SUBROUTINE accumulate_gradient
 
 ! **************************************************************************************************
 !> \brief Require every retained G to occur once over the projector communicator.

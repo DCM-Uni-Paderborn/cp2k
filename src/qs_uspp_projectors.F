@@ -21,7 +21,7 @@ MODULE qs_uspp_projectors
    IMPLICIT NONE
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_projectors'
-   PUBLIC :: qs_uspp_projector_matrix
+   PUBLIC :: qs_uspp_projector_matrix, qs_uspp_projector_gradient
 
 CONTAINS
 
@@ -108,5 +108,63 @@ CONTAINS
       END IF
       END DO
    END SUBROUTINE qs_uspp_projector_matrix
+
+! **************************************************************************************************
+!> \brief Contract dE/dB with all image-resolved AO-center projector derivatives.
+!>        Returns energy gradients, with equal and opposite AO/projector-center contributions.
+!>        The unique owner of each rectangular block supplies its contribution; no MPI sum here.
+!> \param gradient Distributed dE/dB, with the same row/column distribution as B.
+!> \param sap_int Uncompressed nder=1 projector overlaps from the ABBA neighbor list.
+!> \param center_atoms Global atom indices for the projector column blocks.
+!> \param atom_gradient Local energy gradients (3,natom), incremented in place.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_projector_gradient(gradient, sap_int, center_atoms, atom_gradient)
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: gradient
+      TYPE(sap_int_type), INTENT(IN)                     :: sap_int(:)
+      INTEGER, INTENT(IN)                                :: center_atoms(:)
+      REAL(KIND=dp), INTENT(INOUT)                       :: atom_gradient(:, :)
+
+      INTEGER                                            :: atom, catom, center, i, idir, j, k, owner
+      INTEGER, ALLOCATABLE                               :: atom_to_center(:)
+      LOGICAL                                            :: found
+      REAL(KIND=dp)                                      :: value
+      REAL(KIND=dp), POINTER                             :: block(:, :)
+      TYPE(mp_comm_type)                                 :: group
+
+      CPASSERT(SIZE(atom_gradient, 1) == 3)
+      ALLOCATE (atom_to_center(SIZE(atom_gradient, 2)))
+      atom_to_center = 0
+      DO center = 1, SIZE(center_atoms)
+         atom_to_center(center_atoms(center)) = center
+      END DO
+      CALL dbcsr_get_info(gradient, group=group)
+      DO i = 1, SIZE(sap_int)
+         IF (.NOT. ASSOCIATED(sap_int(i)%alist)) CYCLE
+         DO j = 1, SIZE(sap_int(i)%alist)
+            IF (.NOT. ASSOCIATED(sap_int(i)%alist(j)%clist)) CYCLE
+            atom = sap_int(i)%alist(j)%aatom
+            DO k = 1, SIZE(sap_int(i)%alist(j)%clist)
+               catom = sap_int(i)%alist(j)%clist(k)%catom
+               IF (catom == 0) CYCLE
+               CPASSERT(catom >= 1 .AND. catom <= SIZE(atom_to_center))
+               center = atom_to_center(catom)
+               IF (center == 0) CYCLE
+               CALL dbcsr_get_stored_coordinates(gradient, atom, center, owner)
+               IF (owner /= group%mepos) CYCLE
+               CALL dbcsr_get_block_p(gradient, atom, center, block, found)
+               IF (.NOT. found) CYCLE
+               CPASSERT(ASSOCIATED(sap_int(i)%alist(j)%clist(k)%acint))
+               ASSOCIATE (integrals => sap_int(i)%alist(j)%clist(k)%acint)
+                  CPASSERT(SIZE(integrals, 3) >= 4)
+                  DO idir = 1, 3
+                     value = SUM(block*integrals(:, :, idir + 1))
+                     atom_gradient(idir, atom) = atom_gradient(idir, atom) + value
+                     atom_gradient(idir, catom) = atom_gradient(idir, catom) - value
+                  END DO
+               END ASSOCIATE
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE qs_uspp_projector_gradient
 
 END MODULE qs_uspp_projectors

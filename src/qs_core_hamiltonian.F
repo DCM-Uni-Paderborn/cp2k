@@ -131,7 +131,8 @@ MODULE qs_core_hamiltonian
    USE qs_overlap,                      ONLY: build_overlap_matrix
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_uspp_methods,                 ONLY: qs_uspp_core_matrix,&
+   USE qs_uspp_methods,                 ONLY: qs_uspp_core_forces,&
+                                              qs_uspp_core_matrix,&
                                               qs_uspp_init_ao_matrix,&
                                               qs_uspp_prepare
    USE qs_uspp_types,                   ONLY: qs_uspp_type
@@ -362,12 +363,17 @@ CONTAINS
 
       CALL get_ks_env(ks_env, uspp=uspp)
       IF (ASSOCIATED(uspp)) THEN
-         IF (calculate_forces) THEN
-            CPABORT("USPP forces and stress are not implemented")
-         END IF
          CALL get_ks_env(ks_env, pw_env=pw_env)
          CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool)
-         CALL qs_uspp_core_matrix(uspp, qs_kind_set, particle_set, auxbas_pw_pool%pw_grid, matrix_h(1, 1)%matrix)
+         IF (calculate_forces) THEN
+            CALL get_ks_env(ks_env, virial=virial)
+            use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
+            IF (use_virial) CPABORT("USPP stress is not implemented")
+            CALL qs_uspp_core_forces(ks_env, auxbas_pw_pool%pw_grid, matrix_h(1, 1)%matrix, &
+                                     matrix_p(:, 1), matrix_w(1, 1)%matrix)
+         ELSE
+            CALL qs_uspp_core_matrix(uspp, qs_kind_set, particle_set, auxbas_pw_pool%pw_grid, matrix_h(1, 1)%matrix)
+         END IF
       END IF
 
       ! *** CNEO nuclear V_core

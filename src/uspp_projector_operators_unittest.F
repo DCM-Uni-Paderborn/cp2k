@@ -59,7 +59,8 @@ PROGRAM uspp_projector_operators_unittest
                                               qs_uspp_core_matrix,&
                                               qs_uspp_init_ao_matrix,&
                                               qs_uspp_integrate
-   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_matrix
+   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
+                                              qs_uspp_projector_matrix
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
                                               qs_uspp_type,&
                                               qs_uspp_update
@@ -86,13 +87,14 @@ PROGRAM uspp_projector_operators_unittest
    INTEGER, TARGET :: ao_rows(3), ao_cols(3), pp_rows(2), pp_cols(2)
    INTEGER, ALLOCATABLE, TARGET :: grid(:, :)
    INTEGER, POINTER :: pgrid(:, :), rs(:), cs(:), rd(:), cd(:)
-   INTEGER :: i, j, k, ip, iq, rank, nranks, nlocal, ig, case_id, nprows, npcols
+   INTEGER :: i, j, k, ip, iq, rank, nranks, nlocal, ig, case_id, nprows, npcols, idir, center
    INTEGER :: kind(2) = [1, 2], first(2) = [1, 5], last(2) = [4, 6]
    INTEGER, ALLOCATABLE :: local_index(:)
    REAL(KIND=dp), PARAMETER :: volume = 137.0_dp, step = 1.e-5_dp
    REAL(KIND=dp) :: b(nao, nproj), p(nao, nao), sg(nao, nao), metric(nao, nao), work(nao, nao)
    REAL(KIND=dp) :: h(nao, nao), q(nproj, nproj), d(nproj, nproj), a(nproj, nproj), projected(nproj, nproj)
    REAL(KIND=dp) :: db(nao, nproj), gradient(nao, nproj), positions(3, 2), gvecs(3, ng), weights(ng)
+   REAL(KIND=dp) :: center_gradient(3, 2), displacement
    REAL(KIND=dp) :: charge, energy, expected, plus, minus, max_error, alpha(2) = [1.1_dp, 0.7_dp]
    REAL(KIND=dp), ALLOCATABLE :: local_g(:, :), local_weight(:)
    COMPLEX(KIND=dp) :: vg(ng), rho_ref(ng), qg(nproj, nproj), rho_all(ng)
@@ -230,7 +232,32 @@ PROGRAM uspp_projector_operators_unittest
          CALL check(ABS(charge - volume*REAL(rho_all(1), dp)), 'augmentation G=0 charge')
          CALL check(ABS(SUM(p*sg) + charge - SUM(p*metric)), 'total charge equals Tr(P S)')
          CALL dbcsr_copy(hm, sm)
-         CALL uspp_projector_integrate(bm, aug, kind, positions, local_g, volume, local_v, local_weight, hm)
+         CALL uspp_projector_integrate(bm, aug, kind, positions, local_g, volume, local_v, local_weight, hm, &
+                                       pm, gradm, center_gradient)
+         CALL gather(gradm, gradient)
+         CALL check(MAXVAL(ABS(gradient - 2.0_dp*MATMUL(p, MATMUL(b, a)))), 'screened projector pullback')
+         CALL dbcsr_release(gradm)
+         CALL comm%sum(center_gradient)
+         DO center = 1, 2
+            DO idir = 1, 3
+               displacement = positions(idir, center)
+               positions(idir, center) = displacement + step
+               plus = 0.0_dp
+               DO ig = 1, iq
+                  CALL fourier_reference(gvecs(:, ig), qg)
+                  plus = plus + volume*weights(ig)*REAL(SUM(d*CONJG(qg))*vg(ig), dp)
+               END DO
+               positions(idir, center) = displacement - step
+               minus = 0.0_dp
+               DO ig = 1, iq
+                  CALL fourier_reference(gvecs(:, ig), qg)
+                  minus = minus + volume*weights(ig)*REAL(SUM(d*CONJG(qg))*vg(ig), dp)
+               END DO
+               positions(idir, center) = displacement
+               CALL check(ABS(center_gradient(idir, center) - (plus - minus)/(2.0_dp*step)), &
+                          'augmentation-center derivative versus independent Gaussian energy', 2.e-9_dp)
+            END DO
+         END DO
          CALL gather(hm, h)
          CALL check(MAXVAL(ABS(h - sg - MATMUL(b, MATMUL(a, TRANSPOSE(b))))), 'screened Hamiltonian')
          energy = volume*SUM(local_weight*REAL(CONJG(local_v)*local_rho, dp))
@@ -345,9 +372,8 @@ CONTAINS
       INTEGER                                            :: atom, idir, ix, iy, iz, k, nx, parity, &
                                                             span
       LOGICAL                                            :: odd
-      REAL(KIND=dp)                                      :: cell(3, 3), egrid, expected_charge, &
-                                                            hpw_dense(nao, nao), norm_g2, &
-                                                            total_charge
+      REAL(KIND=dp) :: atom_gradient(3, 4), cell(3, 3), egrid, eminus, eplus, expected_charge, &
+         hpw_dense(nao, nao), norm_g2, original, total_charge
       TYPE(atomic_kind_type), TARGET                     :: atomic_kinds(4)
       TYPE(cp_subsys_type), POINTER                      :: cp_subsys
       TYPE(dbcsr_type)                                   :: hpw
@@ -359,6 +385,7 @@ CONTAINS
       TYPE(qs_ks_env_type)                               :: ks
       TYPE(qs_subsys_type), POINTER                      :: subsys
       TYPE(qs_uspp_type), POINTER                        :: no_uspp, uspp
+      TYPE(sap_int_type)                                 :: empty_sap(0)
 
       ! Exercise the production adapter, using borrowed B and owned per-kind radial data.
       ALLOCATE (subsys, cp_subsys)
@@ -368,6 +395,7 @@ CONTAINS
       ALLOCATE (uspp)
       NULLIFY (no_uspp)
       uspp%overlaps => bm
+      ALLOCATE (uspp%center_atoms, SOURCE=[1, 2])
       ALLOCATE (uspp%center_kinds, SOURCE=kind)
       ALLOCATE (uspp%position, SOURCE=positions)
       ALLOCATE (uspp%augmentation, SOURCE=aug)
@@ -467,6 +495,34 @@ CONTAINS
                                           MATMUL(p, b(:, first(k):last(k))))*beta(k)%d)
             END DO
             CALL check(ABS(egrid - SUM(p*(hpw_dense - sg))), 'bare D0 plus all-ion augmentation core energy')
+            atom_gradient = 0.0_dp
+            CALL dbcsr_copy(hpw, sm)
+            CALL qs_uspp_core_matrix(uspp, qs_kinds, particles, pw_grid, hpw, pm, pm, empty_sap, atom_gradient)
+            CALL comm%sum(atom_gradient)
+            DO atom = 1, 4
+               DO idir = 1, 3
+                  original = particles(atom)%r(idir)
+                  particles(atom)%r(idir) = original + step
+                  IF (atom <= 2) uspp%position(idir, atom) = original + step
+                  CALL dbcsr_copy(hpw, sm)
+                  CALL qs_uspp_core_matrix(uspp, qs_kinds, particles, pw_grid, hpw)
+                  CALL gather(hpw, hpw_dense)
+                  eplus = SUM(p*hpw_dense)
+                  particles(atom)%r(idir) = original - step
+                  IF (atom <= 2) uspp%position(idir, atom) = original - step
+                  CALL dbcsr_copy(hpw, sm)
+                  CALL qs_uspp_core_matrix(uspp, qs_kinds, particles, pw_grid, hpw)
+                  CALL gather(hpw, hpw_dense)
+                  eminus = SUM(p*hpw_dense)
+                  particles(atom)%r(idir) = original
+                  IF (atom <= 2) uspp%position(idir, atom) = original
+                  CALL check(ABS(atom_gradient(idir, atom) - (eplus - eminus)/(2.0_dp*step)), &
+                             'FFT core augmentation center and all-ion derivative', 3.e-9_dp)
+               END DO
+            END DO
+            CALL dbcsr_copy(hpw, sm)
+            CALL qs_uspp_core_matrix(uspp, qs_kinds, particles, pw_grid, hpw)
+            CALL gather(hpw, hpw_dense)
             ! Ordinary calculations must leave their arrays and operators untouched.
             CALL set_ks_env(ks, uspp=no_uspp)
             CALL pw_copy(rho_g, reference_g)
@@ -501,9 +557,11 @@ CONTAINS
 !> \brief ...
 ! **************************************************************************************************
    SUBROUTINE check_sap_assembly()
-      INTEGER                                            :: atom, center, ENTRY, image, mycol, &
-                                                            myrow, r
-      REAL(KIND=dp)                                      :: assembled_b(nao, nproj), factor
+      INTEGER                                            :: atom, axis, center, ENTRY, idir, image, &
+                                                            moved, mycol, myrow, r
+      REAL(KIND=dp)                                      :: assembled_b(nao, nproj), &
+                                                            atom_gradient(3, 3), factor, fd, &
+                                                            perturb(nao, nproj)
       TYPE(sap_int_type), POINTER                        :: sap(:)
 
       ALLOCATE (sap(1))
@@ -526,10 +584,14 @@ CONTAINS
                ENTRY = 2*(center - 1) + image
                sap(1)%alist(atom)%clist(ENTRY)%catom = center
                sap(1)%alist(atom)%clist(ENTRY)%cell = [image - 1, 0, 0]
-               ALLOCATE (sap(1)%alist(atom)%clist(ENTRY)%acint(ao_sizes(atom), pp_sizes(center), 1))
+               ALLOCATE (sap(1)%alist(atom)%clist(ENTRY)%acint(ao_sizes(atom), pp_sizes(center), 4))
                factor = 0.3_dp
                IF (image == 2) factor = 0.7_dp
                sap(1)%alist(atom)%clist(ENTRY)%acint(:, :, 1) = factor*b(r:r + ao_sizes(atom) - 1, first(center):last(center))
+               DO idir = 1, 3
+                  sap(1)%alist(atom)%clist(ENTRY)%acint(:, :, idir + 1) = &
+                     factor*(0.2_dp*idir + 0.1_dp*image)*db(r:r + ao_sizes(atom) - 1, first(center):last(center))
+               END DO
             END DO
          END DO
          ! One non-USPP center and one unused neighbor must not enter B.
@@ -540,6 +602,29 @@ CONTAINS
       CALL qs_uspp_projector_matrix(sm, sap, [1, 2], pp_sizes, assembled)
       CALL gather(assembled, assembled_b)
       CALL check(MAXVAL(ABS(assembled_b - b)), 'Quickstep ABBA ownership and periodic images')
+      atom_gradient = 0.0_dp
+      CALL qs_uspp_projector_gradient(assembled, sap, [1, 2], atom_gradient)
+      CALL comm%sum(atom_gradient)
+      DO moved = 1, 3
+         DO axis = 1, 3
+            perturb = 0.0_dp
+            r = 1
+            DO atom = 1, 3
+               DO center = 1, 2
+                  IF (atom == 1 .AND. center == 2) CYCLE
+                  IF (atom == 3 .AND. center == 1) CYCLE
+                  ! Sum 0.3 and 0.7 weighted image derivatives independently.
+                  factor = (0.2_dp*axis + 0.17_dp)*(MERGE(1, 0, moved == atom) - MERGE(1, 0, moved == center))
+                  perturb(r:r + ao_sizes(atom) - 1, first(center):last(center)) = &
+                     factor*db(r:r + ao_sizes(atom) - 1, first(center):last(center))
+               END DO
+               r = r + ao_sizes(atom)
+            END DO
+            fd = (SUM((b + step*perturb)**2) - SUM((b - step*perturb)**2))/(4.0_dp*step)
+            CALL check(ABS(atom_gradient(axis, moved) - fd), 'image-resolved projector atomic derivative', 2.e-10_dp)
+         END DO
+      END DO
+      CALL check(MAXVAL(ABS(SUM(atom_gradient, DIM=2))), 'projector translation sum rule')
       CALL check_state(sap)
       CALL release_sap_int(sap)
       ! Feed the assembled matrix to all subsequent AO/grid and variational tests.

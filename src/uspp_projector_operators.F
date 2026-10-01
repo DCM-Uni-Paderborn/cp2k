@@ -215,8 +215,12 @@ CONTAINS
 !> \param vg Local Fourier potential coefficients, integral/volume (no grid-volume weight).
 !> \param multiplicity Conjugate-pair weights, one for self-conjugate coefficients.
 !> \param hamiltonian AO matrix, incremented by the screened augmentation operator.
+!> \param density Optional AO density for the derivatives; requires both gradient outputs.
+!> \param gradient Optional new B-shaped derivative matrix, distributed like overlaps.
+!> \param center_gradient Optional local center derivatives (3,ncenter), not MPI-reduced.
 ! **************************************************************************************************
-   SUBROUTINE uspp_projector_integrate(overlaps, augmentation, kind, position, gvecs, volume, vg, multiplicity, hamiltonian)
+   SUBROUTINE uspp_projector_integrate(overlaps, augmentation, kind, position, gvecs, volume, vg, multiplicity, hamiltonian, &
+                                       density, gradient, center_gradient)
       TYPE(dbcsr_type), INTENT(IN)                       :: overlaps
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation(:)
       INTEGER, INTENT(IN)                                :: kind(:)
@@ -224,28 +228,57 @@ CONTAINS
       COMPLEX(KIND=dp), INTENT(IN)                       :: vg(:)
       REAL(KIND=dp), INTENT(IN)                          :: multiplicity(:)
       TYPE(dbcsr_type), INTENT(INOUT)                    :: hamiltonian
+      TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density
+      TYPE(dbcsr_type), INTENT(INOUT), OPTIONAL          :: gradient
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: center_gradient(:, :)
 
-      INTEGER                                            :: i, n
+      INTEGER                                            :: i, idir, n
       LOGICAL                                            :: found
-      REAL(KIND=dp), ALLOCATABLE                         :: matrix(:, :)
+      REAL(KIND=dp), ALLOCATABLE                         :: derivative(:, :, :), dm(:, :), &
+                                                            matrix(:, :)
       REAL(KIND=dp), POINTER                             :: block(:, :)
-      TYPE(dbcsr_type)                                   :: onsite
+      TYPE(dbcsr_type)                                   :: onsite, projected
       TYPE(mp_comm_type)                                 :: group
 
       CALL check_centers(overlaps, augmentation, kind)
       CPASSERT(ALL(SHAPE(position) == [3, SIZE(kind)]))
       CALL dbcsr_get_info(overlaps, group=group)
       CALL uspp_projector_create_onsite(overlaps, onsite)
+      CPASSERT(PRESENT(density) .EQV. PRESENT(gradient))
+      CPASSERT(PRESENT(density) .EQV. PRESENT(center_gradient))
+      IF (PRESENT(density)) THEN
+         CPASSERT(ALL(SHAPE(center_gradient) == [3, SIZE(kind)]))
+         CALL uspp_projector_density(overlaps, density, projected)
+         center_gradient = 0.0_dp
+      END IF
       DO i = 1, SIZE(kind)
          n = augmentation(KIND(i))%nproj
          ALLOCATE (matrix(n, n))
-         CALL uspp_augmentation_integrate(augmentation(KIND(i)), gvecs, position(:, i), volume, vg, multiplicity, matrix)
+         IF (PRESENT(density)) THEN
+            ALLOCATE (dm(n, n), derivative(n, n, 3))
+            dm = 0.0_dp
+            CALL dbcsr_get_block_p(projected, i, i, block, found)
+            IF (found) dm(:, :) = block
+            CALL group%sum(dm)
+            CALL uspp_augmentation_integrate(augmentation(KIND(i)), gvecs, position(:, i), volume, vg, multiplicity, &
+                                             matrix, derivative)
+            DO idir = 1, 3
+               center_gradient(idir, i) = SUM(dm*derivative(:, :, idir))
+            END DO
+            DEALLOCATE (dm, derivative)
+         ELSE
+            CALL uspp_augmentation_integrate(augmentation(KIND(i)), gvecs, position(:, i), volume, vg, multiplicity, matrix)
+         END IF
          CALL group%sum(matrix)
          CALL dbcsr_get_block_p(onsite, i, i, block, found)
          IF (found) block(:, :) = matrix
          DEALLOCATE (matrix)
       END DO
       CALL uspp_projector_add_operator(overlaps, onsite, hamiltonian)
+      IF (PRESENT(density)) THEN
+         CALL uspp_projector_pullback(overlaps, density, onsite, 1.0_dp, gradient)
+         CALL dbcsr_release(projected)
+      END IF
       CALL dbcsr_release(onsite)
    END SUBROUTINE uspp_projector_integrate
 

@@ -198,25 +198,37 @@ CONTAINS
 !> \param vg Fourier potential coefficients (integral divided by volume).
 !> \param multiplicity One for a complete reciprocal list; two for a retained +/-G pair.
 !> \param matrix Real symmetric screened projector contribution, overwritten.
+!> \param derivative Optional derivatives of matrix with respect to the augmentation center.
 ! **************************************************************************************************
-   SUBROUTINE uspp_augmentation_integrate(augmentation, gvecs, position, volume, vg, multiplicity, matrix)
+   SUBROUTINE uspp_augmentation_integrate(augmentation, gvecs, position, volume, vg, multiplicity, matrix, derivative)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: gvecs(:, :), position(3), volume
       COMPLEX(KIND=dp), INTENT(IN)                       :: vg(:)
       REAL(KIND=dp), INTENT(IN)                          :: multiplicity(:)
       REAL(KIND=dp), INTENT(OUT)                         :: matrix(:, :)
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: derivative(:, :, :)
 
       COMPLEX(KIND=dp), ALLOCATABLE                      :: qg(:, :)
-      INTEGER                                            :: ig
+      INTEGER                                            :: idir, ig
 
       CPASSERT(SIZE(gvecs, 1) == 3 .AND. SIZE(gvecs, 2) == SIZE(vg))
       CPASSERT(SIZE(multiplicity) == SIZE(vg))
       CPASSERT(ALL(SHAPE(matrix) == augmentation%nproj))
       ALLOCATE (qg(augmentation%nproj, augmentation%nproj))
       matrix = 0.0_dp
+      IF (PRESENT(derivative)) THEN
+         CPASSERT(ALL(SHAPE(derivative) == [augmentation%nproj, augmentation%nproj, 3]))
+         derivative = 0.0_dp
+      END IF
       DO ig = 1, SIZE(vg)
          CALL uspp_augmentation_fourier(augmentation, gvecs(:, ig), position, volume, qg)
          matrix(:, :) = matrix + volume*multiplicity(ig)*REAL(CONJG(qg)*vg(ig), KIND=dp)
+         IF (PRESENT(derivative)) THEN
+            DO idir = 1, 3
+               derivative(:, :, idir) = derivative(:, :, idir) + volume*multiplicity(ig)* &
+                                        REAL(CMPLX(0.0_dp, gvecs(idir, ig), dp)*CONJG(qg)*vg(ig), KIND=dp)
+            END DO
+         END IF
       END DO
    END SUBROUTINE uspp_augmentation_integrate
 
