@@ -65,6 +65,7 @@ list(
   atom_upf.F
   atom_uspp.F
   paw_onecenter.F
+  paw_xc.F
   upf_projector_integrals.F
   upf_local_integrals.F
   uspp_augmentation.F
@@ -1605,6 +1606,7 @@ set(CP2K_PROGS_F
     atom_upf_unittest.F
     paw_upf_unittest.F
     paw_onecenter_unittest.F
+    paw_xc_unittest.F
     atom_uspp_unittest.F
     uspp_augmentation_unittest.F
     uspp_fourier_unittest.F
@@ -2045,6 +2047,7 @@ list(
   "atom_upf_unittest"
   "paw_upf_unittest"
   "paw_onecenter_unittest"
+  "paw_xc_unittest"
   "atom_uspp_unittest"
   "uspp_augmentation_unittest"
   "uspp_fourier_unittest"
@@ -2095,6 +2098,7 @@ add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
 add_executable(atom_upf_unittest atom_upf_unittest.F)
 add_executable(paw_upf_unittest paw_upf_unittest.F)
 add_executable(paw_onecenter_unittest paw_onecenter_unittest.F)
+add_executable(paw_xc_unittest paw_xc_unittest.F)
 add_executable(atom_uspp_unittest atom_uspp_unittest.F)
 add_executable(uspp_augmentation_unittest uspp_augmentation_unittest.F)
 add_executable(uspp_fourier_unittest uspp_fourier_unittest.F)
