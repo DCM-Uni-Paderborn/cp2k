@@ -163,7 +163,10 @@ PROGRAM quadratic_pseudospectrum_dbcsr_unittest
       CALL quadratic_solve(n, query, weights, 2, .TRUE., 10, 2000, 1.e-10_dp, &
                            apply, solve, trial, status, apply)
       IF (status /= -4) ERROR STOP 'Incorrect non-Hermitian adjoint was accepted'
-      IF (use_sparse) CALL sparse_inertia_finish(factors)
+      IF (use_sparse) THEN
+         CALL sparse_inertia_finish(factors)
+         DEALLOCATE (rows, cols, a, b, diagonal)
+      END IF
    END DO
    DO i = 1, 2
       CALL localizer_dbcsr_release(operators(i))

@@ -1218,6 +1218,16 @@ if(CP2K_USE_PEXSI)
           "    - Libraries: ${CP2K_PEXSI_LINK_LIBRARIES}\n")
 endif()
 
+if(CP2K_USE_MUMPS)
+  message("  - MUMPS\n" "    - Include directories: ${MUMPS_INCLUDE_DIR}\n"
+          "    - Libraries: ${MUMPS_LIBRARIES}\n")
+endif()
+
+if(CP2K_USE_TACHO)
+  message("  - Tacho sparse Pfaffian adapter\n"
+          "    - Package: ${ShyLU_NodeTacho_DIR}\n")
+endif()
+
 if(CP2K_USE_ACE)
   message(
     "  - ACE\n"
@@ -1313,6 +1323,12 @@ endif()
 
 if(NOT CP2K_USE_PEXSI)
   message("  - PEXSI")
+endif()
+if(NOT CP2K_USE_MUMPS)
+  message("  - MUMPS")
+endif()
+if(NOT CP2K_USE_TACHO)
+  message("  - Tacho")
 endif()
 
 if(NOT CP2K_USE_ACE)

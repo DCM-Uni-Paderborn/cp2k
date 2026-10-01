@@ -119,6 +119,7 @@ PROGRAM spectral_localizer_sparse_unittest
       CALL compare(matrix, metric, 0, 'singular metric')
       metric(2, 2) = 1.e-12_dp
       CALL compare(matrix, metric, 0, 'ill-conditioned metric')
+      DEALLOCATE (matrix, metric)
    END IF
    DEALLOCATE (para_env)
    CALL mp_world_finalize()
