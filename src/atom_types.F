@@ -2473,7 +2473,7 @@ CONTAINS
          CASE (upf_pseudo)
             CALL section_vals_val_get(potential_section, "POTENTIAL_FILE_NAME", c_val=pseudo_fn)
             CALL section_vals_val_get(potential_section, "POTENTIAL_NAME", c_val=pseudo_name)
-            CALL atom_read_upf(potential%upf_pot, pseudo_fn, read_augmentation=.TRUE.)
+            CALL atom_read_upf(potential%upf_pot, pseudo_fn, read_augmentation=.TRUE., read_paw=.TRUE.)
             potential%upf_pot%pname = pseudo_name
          CASE (sgp_pseudo)
             CPABORT("Pseudopotential type SGP is not implemented.")

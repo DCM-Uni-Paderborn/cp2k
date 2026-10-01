@@ -15,6 +15,9 @@ MODULE atom_electronic_structure
                                               atom_print_iteration,&
                                               atom_print_state,&
                                               atom_print_zmp_iteration
+   USE atom_paw,                        ONLY: atom_paw_add,&
+                                              atom_paw_init,&
+                                              atom_paw_type
    USE atom_types,                      ONLY: &
         atom_type, create_opgrid, create_opmat, ecp_pseudo, gth_pseudo, lmat, no_pseudo, &
         opgrid_type, opmat_type, release_opgrid, release_opmat, set_atom, setup_hf_section, &
@@ -94,12 +97,15 @@ CONTAINS
       method = atom%method_type
       IF (ALLOCATED(atom%basis%uspp)) THEN
          IF (method /= do_rks_atom .AND. method /= do_uks_atom) THEN
-            CPABORT("Atomic USPP currently requires density/gradient Kohn-Sham functionals")
+            CPABORT("Atomic USPP/PAW requires semilocal Kohn-Sham functionals")
          END IF
          IF (atom%relativistic /= do_nonrel_atom) THEN
-            CPABORT("Atomic USPP requires RELATIVISTIC OFF")
+            CPABORT("Atomic USPP/PAW requires RELATIVISTIC OFF")
          END IF
          atom%coulomb_integral_type = do_numeric
+         IF (atom%potential%upf_pot%is_paw .AND. (atom%do_zmp .OR. atom%read_vxc)) THEN
+            CPABORT("Atomic PAW requires a variational semilocal XC functional")
+         END IF
       END IF
 
       SELECT CASE (method)
@@ -148,11 +154,13 @@ CONTAINS
       REAL(KIND=dp)                                      :: deps, eps_scf, hf_frac
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: ext_density, ext_vxc, tmp_dens
       TYPE(atom_history_type)                            :: history
+      TYPE(atom_paw_type)                                :: paw
       TYPE(opgrid_type), POINTER                         :: cpot, density
       TYPE(opmat_type), POINTER                          :: fmat, hcore, jmat, kmat, xcmat
       TYPE(section_vals_type), POINTER                   :: xc_section
 
       CALL timeset(routineN, handle)
+      CALL atom_paw_init(atom%potential, paw)
 
       IF (PRESENT(noguess)) THEN
          doguess = .NOT. noguess
@@ -162,7 +170,7 @@ CONTAINS
 
       CALL setup_hf_section(hf_frac, do_hfx, atom, xc_section, atom%exchange_integral_type)
       IF (ALLOCATED(atom%basis%uspp) .AND. do_hfx) THEN
-         CPABORT("Atomic USPP exact-exchange augmentation is not implemented")
+         CPABORT("Atomic USPP/PAW exact-exchange augmentation is not implemented")
       END IF
 
       method = atom%method_type
@@ -304,7 +312,7 @@ CONTAINS
          atom%energy%epseudo = atom%energy%eploc + atom%energy%epnl
 
          ! Core energy
-         atom%energy%ecore = atom_trace(hcore%op, atom%orbitals%pmat)
+         atom%energy%ecore = atom_trace(hcore%op, atom%orbitals%pmat) + paw%core_energy
 
          ! Confinement energy
          IF (atom%potential%confinement) THEN
@@ -369,6 +377,9 @@ CONTAINS
 
          ! Zero this contribution
          atom%energy%elsd = 0._dp
+
+         CALL atom_paw_add(paw, atom%basis, xc_section, atom%orbitals%pmat, &
+                           atom%energy%ecoulomb, atom%energy%exc, jmat%op, xcmat%op)
 
          ! Total energy
          atom%energy%etot = atom%energy%ecore + atom%energy%ecoulomb + atom%energy%eexchange + atom%energy%exc
@@ -468,12 +479,14 @@ CONTAINS
       REAL(KIND=dp)                                      :: deps, depsa, depsb, eps_scf, hf_frac, &
                                                             ne, nm
       TYPE(atom_history_type)                            :: historya, historyb
+      TYPE(atom_paw_type)                                :: paw
       TYPE(opgrid_type), POINTER                         :: cpot, density, rhoa, rhob
       TYPE(opmat_type), POINTER                          :: fmata, fmatb, hcore, hlsd, jmat, kmata, &
                                                             kmatb, xcmata, xcmatb
       TYPE(section_vals_type), POINTER                   :: xc_section
 
       CALL timeset(routineN, handle)
+      CALL atom_paw_init(atom%potential, paw)
 
       IF (PRESENT(noguess)) THEN
          doguess = .NOT. noguess
@@ -483,7 +496,7 @@ CONTAINS
 
       CALL setup_hf_section(hf_frac, do_hfx, atom, xc_section, atom%exchange_integral_type)
       IF (ALLOCATED(atom%basis%uspp) .AND. do_hfx) THEN
-         CPABORT("Atomic USPP exact-exchange augmentation is not implemented")
+         CPABORT("Atomic USPP/PAW exact-exchange augmentation is not implemented")
       END IF
 
       method = atom%method_type
@@ -649,7 +662,7 @@ CONTAINS
          atom%energy%epseudo = atom%energy%eploc + atom%energy%epnl
 
          ! Core energy
-         atom%energy%ecore = atom_trace(hcore%op, atom%orbitals%pmat)
+         atom%energy%ecore = atom_trace(hcore%op, atom%orbitals%pmat) + paw%core_energy
 
          ! Confinement energy
          IF (atom%potential%confinement) THEN
@@ -722,6 +735,10 @@ CONTAINS
          ELSE
             atom%energy%elsd = 0._dp
          END IF
+
+         CALL atom_paw_add(paw, atom%basis, xc_section, atom%orbitals%pmata, &
+                           atom%energy%ecoulomb, atom%energy%exc, jmat%op, xcmata%op, &
+                           pmatb=atom%orbitals%pmatb, xcmatb=xcmatb%op)
 
          ! Total energy
          atom%energy%etot = atom%energy%ecore + atom%energy%ecoulomb + atom%energy%eexchange + atom%energy%exc

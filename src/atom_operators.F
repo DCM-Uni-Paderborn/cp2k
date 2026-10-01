@@ -692,7 +692,7 @@ CONTAINS
       ! get basis representation on UPF grid
       CALL atom_basis_gridrep(basis, gbasis, potential%upf_pot%r, potential%upf_pot%rab)
 
-      IF (potential%upf_pot%is_ultrasoft) THEN
+      IF (potential%upf_pot%is_ultrasoft .OR. potential%upf_pot%is_paw) THEN
          gbasis%grid%wr(:) = upf_radial_weights(potential%upf_pot)*potential%upf_pot%r**2
       END IF
 
@@ -700,7 +700,7 @@ CONTAINS
       integrals%core = 0._dp
       CALL numpot_matrix(integrals%core, potential%upf_pot%vlocal, gbasis, 0)
 
-      IF (potential%upf_pot%is_ultrasoft) THEN
+      IF (potential%upf_pot%is_ultrasoft .OR. potential%upf_pot%is_paw) THEN
          CPASSERT(ASSOCIATED(integrals%ovlp))
          n = SIZE(integrals%ovlp, 1)
          IF (ALLOCATED(integrals%metric)) DEALLOCATE (integrals%metric)
@@ -743,7 +743,7 @@ CONTAINS
       END IF
 
       ptype = ADJUSTL(TRIM(potential%upf_pot%pseudo_type))
-      IF (ptype(1:2) == "NC" .OR. ptype(1:2) == "US") THEN
+      IF (ptype(1:2) == "NC" .OR. ptype(1:2) == "US" .OR. potential%upf_pot%is_paw) THEN
          ! non local pseudopotential
          n = MAXVAL(integrals%n(:))
          m = potential%upf_pot%number_of_proj

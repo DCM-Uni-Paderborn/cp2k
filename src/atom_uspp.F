@@ -6,7 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 
 ! **************************************************************************************************
-!> \brief Spherical USPP augmentation for atomic initial guesses and atomic SCF.
+!> \brief Spherical USPP/PAW augmentation for atomic initial guesses and atomic SCF.
 ! **************************************************************************************************
 MODULE atom_uspp
    USE atom_types,                      ONLY: atom_basis_gridrep,&
@@ -34,7 +34,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Prepare spherical projector products; add local augmentation and metric correction.
-!> \param pot Scalar USPP in the original projector convention.
+!> \param pot Scalar USPP or PAW dataset in the original projector convention.
 !> \param basis Atomic basis and radial density quadrature.
 !> \param core Bare local matrix, augmented in place by the local ionic potential.
 !> \param metric Gaussian overlap on entry; generalized overlap on return.
@@ -53,7 +53,7 @@ CONTAINS
       TYPE(upf_projector_type)                           :: projectors
       TYPE(uspp_augmentation_type)                       :: core_field, reconstruction
 
-      CPASSERT(pot%is_ultrasoft .AND. .NOT. pot%is_paw .AND. .NOT. pot%has_so)
+      CPASSERT((pot%is_ultrasoft .OR. pot%is_paw) .AND. .NOT. pot%has_so)
       CPASSERT(ALLOCATED(pot%qijl))
       CPASSERT(ALL(basis%grid%rad > 0.0_dp))
       CPASSERT(SIZE(pot%r) >= 4)
@@ -95,6 +95,13 @@ CONTAINS
                values = 0.0_dp
                deriv = 0.0_dp
             END WHERE
+            IF (pot%is_paw) THEN
+               CPASSERT(ALLOCATED(pot%paw))
+               WHERE (basis%grid%rad > pot%r(pot%paw%cutoff_index))
+                  values = 0.0_dp
+                  deriv = 0.0_dp
+               END WHERE
+            END IF
             basis%uspp%radial(:, pair, 0) = values
             basis%uspp%radial(:, pair, 1) = deriv
          END DO
