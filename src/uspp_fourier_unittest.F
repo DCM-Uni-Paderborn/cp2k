@@ -143,6 +143,7 @@ PROGRAM uspp_fourier_unittest
       CALL uspp_augmentation_integrate(aug, vectors, center, volume, vg, weights, matrix)
       IF (MAXVAL(ABS(matrix - 2.3_dp*aug%q)) > 1.e-13_dp) ERROR STOP 'Wrong constant-potential shift'
       CALL check_realspace()
+      CALL check_compact_support()
       CALL atom_release_upf(pot)
    END DO
    WRITE (*, *) 'USPP Fourier: 15 analytic s/p/d/f comparisons, maximum error =', max_error
@@ -262,6 +263,58 @@ CONTAINS
       IF (finite_difference_error > 5.e-8_dp) ERROR STOP 'Inconsistent atom-grid augmentation derivatives'
       CALL check_atom_adjoint(points(:, 1:5))
    END SUBROUTINE check_realspace
+
+! **************************************************************************************************
+!> \brief Preserve exact zero suffixes without losing C2 continuity or energy derivatives.
+! **************************************************************************************************
+   SUBROUTINE check_compact_support()
+      INTEGER                                            :: axis, node, point
+      REAL(dp) :: coordinate(3), err, gradient(np, np, 3), hessian(np, np, 3, 3), join(3), &
+         minus(np, np), minus_d(np, np, 3), plus(np, np), plus_d(np, np, 3), radius, step, &
+         value(np, np)
+      TYPE(atom_upfpot_type), ALLOCATABLE                :: compact
+      TYPE(uspp_augmentation_type)                       :: compact_aug
+
+      ALLOCATE (compact)
+      compact = pot
+      node = MINLOC(ABS(pot%r - 1.4_dp), DIM=1)
+      radius = pot%r(node)
+      DO point = 1, SIZE(pot%r)
+         compact%qijl(point, :, :) = compact%qijl(point, :, :)*MAX(0.0_dp, 1.0_dp - (pot%r(point)/radius)**2)**3
+      END DO
+      CALL uspp_augmentation_init(compact, projectors, compact_aug)
+      CALL uspp_augmentation_prepare_realspace(compact, compact_aug)
+      IF (compact_aug%realspace_radius /= radius) ERROR STOP 'Incorrect compact augmentation support'
+      join = [pot%r(node - 1), 0.5_dp*(pot%r(node - 1) + radius), radius]
+      step = 1.e-7_dp
+      err = 0.0_dp
+      DO point = 1, SIZE(join)
+         coordinate = [0.0_dp, 0.0_dp, join(point)]
+         CALL uspp_augmentation_realspace(compact_aug, coordinate, value, gradient, hessian)
+         IF (point == 3) THEN
+            IF (MAXVAL(ABS(value)) + MAXVAL(ABS(gradient)) + MAXVAL(ABS(hessian)) /= 0.0_dp) THEN
+               ERROR STOP 'Augmentation closure does not vanish through second derivatives'
+            END IF
+         END IF
+         DO axis = 1, 3
+            coordinate(axis) = coordinate(axis) + step
+            CALL uspp_augmentation_realspace(compact_aug, coordinate, plus, plus_d)
+            coordinate(axis) = coordinate(axis) - 2.0_dp*step
+            CALL uspp_augmentation_realspace(compact_aug, coordinate, minus, minus_d)
+            coordinate(axis) = coordinate(axis) + step
+            err = MAX(err, MAXVAL(ABS((plus - minus)/(2.0_dp*step) - gradient(:, :, axis))), &
+                      MAXVAL(ABS((plus_d - minus_d)/(2.0_dp*step) - hessian(:, :, :, axis))))
+         END DO
+      END DO
+      coordinate = [0.0_dp, 0.0_dp, radius + 0.2_dp]
+      CALL uspp_augmentation_realspace(compact_aug, coordinate, value, gradient, hessian)
+      IF (MAXVAL(ABS(value)) + MAXVAL(ABS(gradient)) + MAXVAL(ABS(hessian)) /= 0.0_dp) THEN
+         ERROR STOP 'Nonzero augmentation in an exact tabulated zero suffix'
+      END IF
+      WRITE (*, *) 'USPP compact-support derivative error:', grid, err
+      IF (err > 5.e-6_dp) ERROR STOP 'Inconsistent derivatives at compact augmentation joins'
+      CALL atom_release_upf(compact)
+   END SUBROUTINE check_compact_support
 
 ! **************************************************************************************************
 !> \brief Check the signed-quadrature adjoint and nonlinear density/center energy derivatives.

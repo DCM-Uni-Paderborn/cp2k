@@ -33,7 +33,8 @@ MODULE uspp_augmentation
 
    TYPE uspp_augmentation_type
       INTEGER :: nproj = 0, lmax = -1
-      INTEGER, ALLOCATABLE :: radial_index(:), angular_index(:), lbeta(:)
+      INTEGER, ALLOCATABLE :: radial_index(:), angular_index(:), lbeta(:), radial_end(:, :)
+      REAL(dp) :: realspace_radius = 0.0_dp
       REAL(KIND=dp), ALLOCATABLE :: r(:), weighted_q(:, :, :), gaunt(:, :, :), q(:, :)
       REAL(KIND=dp), ALLOCATABLE :: radial_x(:), radial_value(:, :, :), radial_slope(:, :, :)
    END TYPE uspp_augmentation_type
@@ -124,7 +125,7 @@ CONTAINS
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(uspp_augmentation_type), INTENT(INOUT)        :: augmentation
 
-      INTEGER                                            :: first, l, n, nc, pair
+      INTEGER                                            :: first, l, last, n, nc, pair
       REAL(KIND=dp), ALLOCATABLE                         :: values(:), x(:)
 
       CPASSERT(ALLOCATED(pot%qijl) .AND. ALLOCATED(augmentation%r))
@@ -139,15 +140,26 @@ CONTAINS
       nc = SIZE(pot%qijl, 2)
       ALLOCATE (x(n), values(n), augmentation%radial_x(n + 1), &
                 augmentation%radial_value(n + 1, nc, 0:augmentation%lmax), &
-                augmentation%radial_slope(n + 1, nc, 0:augmentation%lmax))
+                augmentation%radial_slope(n + 1, nc, 0:augmentation%lmax), &
+                augmentation%radial_end(nc, 0:augmentation%lmax))
       x(:) = pot%r(first:)**2
       augmentation%radial_x(1) = 0.0_dp
       augmentation%radial_x(2:) = x
       augmentation%radial_value = 0.0_dp
       augmentation%radial_slope = 0.0_dp
+      augmentation%radial_end = 1
+      augmentation%realspace_radius = 0.0_dp
       DO l = 0, augmentation%lmax
          DO pair = 1, nc
             IF (ALL(pot%qijl(:, pair, l) == 0.0_dp)) CYCLE
+            ! Preserve the exact zero suffix of each supplied augmentation channel.
+            ! No numerical threshold is used, and a nonzero last node keeps the full mesh.
+            last = SIZE(pot%r)
+            DO WHILE (pot%qijl(last, pair, l) == 0.0_dp)
+               last = last - 1
+            END DO
+            augmentation%radial_end(pair, l) = last - first + 3
+            augmentation%realspace_radius = MAX(augmentation%realspace_radius, pot%r(MIN(last + 1, SIZE(pot%r))))
             values(:) = pot%qijl(first:, pair, l)/pot%r(first:)**(l + 2)
             ! The first interval continues the endpoint cubic to x=0. A tabulated
             ! r**2 Q value at r=0 alone does not determine the regular radial limit.
@@ -160,7 +172,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Evaluate the augmentation matrix and derivatives at a Cartesian displacement.
-!>        Uses the same cubic for values, gradients and Hessians. No angular division
+!>        Uses cubic splines with a C2 quintic closure into an exact tabulated zero suffix.
+!>        Values, gradients and Hessians share the same polynomial. No angular division
 !>        by radius is needed, including at the center and on coordinate axes.
 !> \param augmentation Data with an initialized real-space cache.
 !> \param displacement Evaluation point minus augmentation center, in bohr.
@@ -174,13 +187,41 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: qr(:, :)
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: gradient(:, :, :), hessian(:, :, :, :)
 
+      REAL(dp), ALLOCATABLE                              :: ddharmonics(:, :, :), dharmonics(:, :), &
+                                                            harmonics(:)
+
+      ALLOCATE (harmonics((augmentation%lmax + 1)**2), &
+                dharmonics(3, (augmentation%lmax + 1)**2), &
+                ddharmonics(3, 3, (augmentation%lmax + 1)**2))
+      CALL realspace_with_workspace(augmentation, displacement, qr, gradient, hessian, &
+                                    harmonics, dharmonics, ddharmonics)
+   END SUBROUTINE uspp_augmentation_realspace
+
+! **************************************************************************************************
+!> \brief Point kernel with reusable angular scratch space for atom-grid batches.
+!> \param augmentation Initialized radial and angular data
+!> \param displacement Point relative to augmentation center
+!> \param qr Augmentation matrix
+!> \param gradient Optional Cartesian gradient
+!> \param hessian Optional Cartesian Hessian
+!> \param harmonics Scratch values of solid harmonics
+!> \param dharmonics Scratch gradients of solid harmonics
+!> \param ddharmonics Scratch Hessians of solid harmonics
+! **************************************************************************************************
+   SUBROUTINE realspace_with_workspace(augmentation, displacement, qr, gradient, hessian, &
+                                       harmonics, dharmonics, ddharmonics)
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
+      REAL(KIND=dp), INTENT(IN)                          :: displacement(3)
+      REAL(KIND=dp), INTENT(OUT)                         :: qr(:, :)
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: gradient(:, :, :), hessian(:, :, :, :)
+      REAL(KIND=dp), INTENT(OUT)                         :: harmonics(:), dharmonics(:, :), &
+                                                            ddharmonics(:, :, :)
+
       INTEGER                                            :: a, axis, axis2, hi, i, j, l, lm, lo, m, &
                                                             mid, p, pair, powers(3), q, reduced(3)
-      REAL(KIND=dp) :: angular, angular_gradient(3), angular_hessian(3, 3), c0, c1, c2, c3, &
-         factor, h, radial, radial_d, radial_dd, s, t, term, value, value_gradient(3), &
+      REAL(KIND=dp) :: angular, angular_gradient(3), angular_hessian(3, 3), c0, c1, c2, c3, c4, &
+         c5, factor, h, radial, radial_d, radial_dd, s, t, term, value, value_gradient(3), &
          value_hessian(3, 3)
-      REAL(KIND=dp), ALLOCATABLE                         :: ddharmonics(:, :, :), dharmonics(:, :), &
-                                                            harmonics(:)
 
       CPASSERT(ALLOCATED(augmentation%radial_x))
       CPASSERT(ALL(SHAPE(qr) == augmentation%nproj))
@@ -195,7 +236,7 @@ CONTAINS
       END IF
       s = SUM(displacement**2)
       hi = SIZE(augmentation%radial_x)
-      IF (s > augmentation%radial_x(hi)) RETURN
+      IF (s > augmentation%realspace_radius**2) RETURN
       lo = 1
       DO WHILE (hi - lo > 1)
          mid = (lo + hi)/2
@@ -207,9 +248,6 @@ CONTAINS
       END DO
       h = augmentation%radial_x(hi) - augmentation%radial_x(lo)
       t = (s - augmentation%radial_x(lo))/h
-      ALLOCATE (harmonics((augmentation%lmax + 1)**2), &
-                dharmonics(3, (augmentation%lmax + 1)**2), &
-                ddharmonics(3, 3, (augmentation%lmax + 1)**2))
       harmonics = 0.0_dp
       dharmonics = 0.0_dp
       ddharmonics = 0.0_dp
@@ -244,15 +282,25 @@ CONTAINS
             pair = MAX(i, j)*(MAX(i, j) - 1)/2 + MIN(i, j)
             DO l = ABS(augmentation%lbeta(i) - augmentation%lbeta(j)), &
                augmentation%lbeta(i) + augmentation%lbeta(j), 2
+               IF (lo >= augmentation%radial_end(pair, l)) CYCLE
                c0 = augmentation%radial_value(lo, pair, l)
                c1 = h*augmentation%radial_slope(lo, pair, l)
                c2 = 3.0_dp*(augmentation%radial_value(hi, pair, l) - c0) - &
                     2.0_dp*c1 - h*augmentation%radial_slope(hi, pair, l)
                c3 = 2.0_dp*(c0 - augmentation%radial_value(hi, pair, l)) + &
                     c1 + h*augmentation%radial_slope(hi, pair, l)
-               radial = c0 + t*(c1 + t*(c2 + t*c3))
-               radial_d = (c1 + t*(2.0_dp*c2 + 3.0_dp*t*c3))/h
-               radial_dd = (2.0_dp*c2 + 6.0_dp*t*c3)/h**2
+               c4 = 0.0_dp
+               c5 = 0.0_dp
+               IF (hi == augmentation%radial_end(pair, l)) THEN
+                  ! Match value and first/second x derivatives at the last nonzero node;
+                  ! all three vanish at the first node of the exact zero suffix.
+                  c3 = -10.0_dp*c0 - 6.0_dp*c1 - 3.0_dp*c2
+                  c4 = 15.0_dp*c0 + 8.0_dp*c1 + 3.0_dp*c2
+                  c5 = -6.0_dp*c0 - 3.0_dp*c1 - c2
+               END IF
+               radial = c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*c5))))
+               radial_d = (c1 + t*(2.0_dp*c2 + t*(3.0_dp*c3 + t*(4.0_dp*c4 + t*5.0_dp*c5))))/h
+               radial_dd = (2.0_dp*c2 + t*(6.0_dp*c3 + t*(12.0_dp*c4 + t*20.0_dp*c5)))/h**2
                angular = 0.0_dp
                angular_gradient = 0.0_dp
                angular_hessian = 0.0_dp
@@ -287,7 +335,7 @@ CONTAINS
             IF (PRESENT(hessian)) hessian(q, p, :, :) = hessian(p, q, :, :)
          END DO
       END DO
-   END SUBROUTINE uspp_augmentation_realspace
+   END SUBROUTINE realspace_with_workspace
 
 ! **************************************************************************************************
 !> \brief Add one center's augmentation density and gradient to arbitrary atom-grid points.
@@ -303,6 +351,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(INOUT)                       :: rho(:), gradient(:, :)
 
       INTEGER                                            :: axis, n, point
+      REAL(dp), ALLOCATABLE                              :: ddharmonics(:, :, :), dharmonics(:, :), &
+                                                            harmonics(:)
       REAL(KIND=dp), ALLOCATABLE                         :: dqr(:, :, :), qr(:, :)
 
       n = augmentation%nproj
@@ -310,8 +360,12 @@ CONTAINS
       CPASSERT(ALL(SHAPE(displacements) == [3, SIZE(rho)]))
       CPASSERT(ALL(SHAPE(gradient) == SHAPE(displacements)))
       ALLOCATE (qr(n, n), dqr(n, n, 3))
+      ALLOCATE (harmonics((augmentation%lmax + 1)**2), &
+                dharmonics(3, (augmentation%lmax + 1)**2), &
+                ddharmonics(3, 3, (augmentation%lmax + 1)**2))
       DO point = 1, SIZE(rho)
-         CALL uspp_augmentation_realspace(augmentation, displacements(:, point), qr, dqr)
+         CALL realspace_with_workspace(augmentation, displacements(:, point), qr, dqr, &
+                                       harmonics=harmonics, dharmonics=dharmonics, ddharmonics=ddharmonics)
          rho(point) = rho(point) + SUM(density*qr)
          DO axis = 1, 3
             gradient(axis, point) = gradient(axis, point) + SUM(density*dqr(:, :, axis))
@@ -342,6 +396,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: center_gradient(3), point_gradient(:, :)
 
       INTEGER                                            :: axis, axis2, n, point
+      REAL(dp), ALLOCATABLE                              :: ddharmonics(:, :, :), dharmonics(:, :), &
+                                                            harmonics(:)
       REAL(KIND=dp)                                      :: derivative
       REAL(KIND=dp), ALLOCATABLE                         :: ddqr(:, :, :, :), dqr(:, :, :), qr(:, :)
 
@@ -351,6 +407,9 @@ CONTAINS
       CPASSERT(SIZE(v_rho) == SIZE(weights))
       CPASSERT(ALL(SHAPE(v_gradient) == SHAPE(displacements)))
       ALLOCATE (qr(n, n), dqr(n, n, 3))
+      ALLOCATE (harmonics((augmentation%lmax + 1)**2), &
+                dharmonics(3, (augmentation%lmax + 1)**2), &
+                ddharmonics(3, 3, (augmentation%lmax + 1)**2))
       matrix = 0.0_dp
       IF (PRESENT(center_gradient) .OR. PRESENT(point_gradient)) THEN
          CPASSERT(PRESENT(density))
@@ -363,10 +422,14 @@ CONTAINS
          point_gradient = 0.0_dp
       END IF
       DO point = 1, SIZE(weights)
+         IF (weights(point) == 0.0_dp) CYCLE
+         IF (v_rho(point) == 0.0_dp .AND. ALL(v_gradient(:, point) == 0.0_dp)) CYCLE
          IF (ALLOCATED(ddqr)) THEN
-            CALL uspp_augmentation_realspace(augmentation, displacements(:, point), qr, dqr, ddqr)
+            CALL realspace_with_workspace(augmentation, displacements(:, point), qr, dqr, ddqr, &
+                                          harmonics, dharmonics, ddharmonics)
          ELSE
-            CALL uspp_augmentation_realspace(augmentation, displacements(:, point), qr, dqr)
+            CALL realspace_with_workspace(augmentation, displacements(:, point), qr, dqr, &
+                                          harmonics=harmonics, dharmonics=dharmonics, ddharmonics=ddharmonics)
          END IF
          matrix(:, :) = matrix + weights(point)*v_rho(point)*qr
          DO axis = 1, 3

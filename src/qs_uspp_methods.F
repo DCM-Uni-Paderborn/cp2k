@@ -67,7 +67,7 @@ MODULE qs_uspp_methods
    PUBLIC :: qs_uspp_prepare, qs_uspp_init_ao_matrix, qs_uspp_collocate, qs_uspp_integrate
    PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces
    PUBLIC :: qs_uspp_atom_grid_type, qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_collocate, &
-             qs_uspp_atom_grid_integrate, qs_uspp_atom_grid_apply
+             qs_uspp_atom_grid_integrate, qs_uspp_atom_grid_apply, qs_uspp_atom_grid_apply_ks
 
    TYPE qs_uspp_atom_grid_type
       LOGICAL :: calculate_forces = .FALSE.
@@ -154,23 +154,27 @@ CONTAINS
       INTEGER                                            :: center, ikind, ix, iy, iz, lower(3), n, &
                                                             upper(3)
       REAL(KIND=dp)                                      :: image_position(3)
-      REAL(KIND=dp), ALLOCATABLE                         :: displacements(:, :)
+      REAL(KIND=dp), ALLOCATABLE                         :: displacements(:, :), &
+                                                            folded_points(:, :), point_images(:, :)
 
       CPASSERT(ALL(SHAPE(points) == [3, SIZE(rho)]))
       CPASSERT(ALL(SHAPE(gradient) == SHAPE(points)))
       CPASSERT(SIZE(fields%density, 3) == SIZE(uspp%center_atoms))
       IF (SIZE(rho) == 0) RETURN
       ALLOCATE (displacements(3, SIZE(rho)))
+      ALLOCATE (folded_points(3, SIZE(points, 2)), point_images(3, SIZE(points, 2)))
+      point_images(:, :) = MATMUL(cell%hmat, ANINT(MATMUL(cell%h_inv, points)))
+      folded_points(:, :) = points - point_images
       DO center = 1, SIZE(uspp%center_atoms)
          ikind = uspp%center_kinds(center)
          n = uspp%projector_sizes(center)
-         CALL atom_grid_image_bounds(cell, uspp%position(:, center), points, &
-                                     MAXVAL(uspp%augmentation(ikind)%r), lower, upper)
+         CALL atom_grid_image_bounds(cell, uspp%position(:, center), folded_points, &
+                                     uspp%augmentation(ikind)%realspace_radius, lower, upper)
          DO iz = lower(3), upper(3)
             DO iy = lower(2), upper(2)
                DO ix = lower(1), upper(1)
                   image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
-                  displacements(:, :) = points - SPREAD(image_position, 2, SIZE(rho))
+                  displacements(:, :) = folded_points - SPREAD(image_position, 2, SIZE(rho))
                   CALL uspp_augmentation_collocate_atom(uspp%augmentation(ikind), displacements, &
                                                         fields%density(:n, :n, center), rho, gradient)
                END DO
@@ -203,8 +207,10 @@ CONTAINS
       INTEGER                                            :: center, ikind, ix, iy, iz, jdir, &
                                                             lower(3), n, upper(3)
       REAL(KIND=dp)                                      :: derivative(3), image_position(3)
-      REAL(KIND=dp), ALLOCATABLE                         :: displacements(:, :), matrix(:, :), &
-                                                            point_derivative(:, :)
+      REAL(KIND=dp), ALLOCATABLE                         :: displacements(:, :), &
+                                                            folded_points(:, :), matrix(:, :), &
+                                                            point_derivative(:, :), &
+                                                            point_images(:, :)
 
       CPASSERT(ALL(SHAPE(points) == [3, SIZE(weights)]))
       CPASSERT(SIZE(v_rho) == SIZE(weights))
@@ -216,23 +222,29 @@ CONTAINS
       IF (SIZE(weights) == 0) RETURN
       ALLOCATE (displacements(3, SIZE(weights)))
       IF (fields%calculate_forces) ALLOCATE (point_derivative(3, SIZE(weights)))
+      ALLOCATE (folded_points(3, SIZE(points, 2)), point_images(3, SIZE(points, 2)))
+      point_images(:, :) = MATMUL(cell%hmat, ANINT(MATMUL(cell%h_inv, points)))
+      folded_points(:, :) = points - point_images
       DO center = 1, SIZE(uspp%center_atoms)
          ikind = uspp%center_kinds(center)
          n = uspp%projector_sizes(center)
          ALLOCATE (matrix(n, n))
-         CALL atom_grid_image_bounds(cell, uspp%position(:, center), points, &
-                                     MAXVAL(uspp%augmentation(ikind)%r), lower, upper)
+         CALL atom_grid_image_bounds(cell, uspp%position(:, center), folded_points, &
+                                     uspp%augmentation(ikind)%realspace_radius, lower, upper)
          DO iz = lower(3), upper(3)
             DO iy = lower(2), upper(2)
                DO ix = lower(1), upper(1)
                   image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
-                  displacements(:, :) = points - SPREAD(image_position, 2, SIZE(weights))
+                  displacements(:, :) = folded_points - SPREAD(image_position, 2, SIZE(weights))
                   IF (fields%calculate_forces) THEN
                      CALL uspp_augmentation_integrate_atom(uspp%augmentation(ikind), displacements, weights, &
                                                            v_rho, v_gradient, matrix, fields%density(:n, :n, center), &
                                                            derivative, point_derivative)
                      fields%center_gradient(:, center) = fields%center_gradient(:, center) + derivative
                      point_gradient = point_gradient + point_derivative
+                     ! Folding each target changes the image label of its source center.
+                     ! Restore that source-image strain at the original, unfolded point.
+                     fields%center_strain = fields%center_strain - MATMUL(point_derivative, TRANSPOSE(point_images))
                      ! Source centers and lattice images follow a homogeneous strain. The
                      ! target atom-grid center and weight contributions are supplied by the XC caller.
                      DO jdir = 1, 3
@@ -303,6 +315,49 @@ CONTAINS
    END SUBROUTINE qs_uspp_atom_grid_apply
 
 ! **************************************************************************************************
+!> \brief Apply atom-grid XC operators after the KS matrices have been initialized from Hcore.
+!> \param ks_env KS environment and force accumulators
+!> \param fields Local XC accumulators for each spin
+!> \param hamiltonian AO matrices indexed by spin and image
+!> \param density Corresponding AO densities for projector derivatives
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_atom_grid_apply_ks(ks_env, fields, hamiltonian, density)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_uspp_atom_grid_type), INTENT(IN)           :: fields(:)
+      TYPE(dbcsr_p_type), INTENT(INOUT)                  :: hamiltonian(:, :)
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:, :)
+
+      INTEGER                                            :: natom, spin
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), cell_gradient(:, :)
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+
+      CALL get_ks_env(ks_env, uspp=uspp)
+      CPASSERT(SIZE(fields) == SIZE(hamiltonian, 1))
+      NULLIFY (sap_int)
+      DO spin = 1, SIZE(fields)
+         IF (.NOT. ALLOCATED(fields(spin)%density)) CYCLE
+         IF (fields(spin)%calculate_forces) THEN
+            IF (.NOT. ASSOCIATED(sap_int)) THEN
+               CALL get_ks_env(ks_env, natom=natom)
+               ALLOCATE (atom_gradient(3, natom))
+               atom_gradient = 0.0_dp
+               CALL allocate_cell_gradient(ks_env, cell_gradient)
+               CALL build_derivatives(ks_env, sap_int)
+            END IF
+            CALL qs_uspp_atom_grid_apply(uspp, fields(spin), hamiltonian(spin, :), &
+                                         density(spin, :), sap_int, atom_gradient, cell_gradient)
+         ELSE
+            CALL qs_uspp_atom_grid_apply(uspp, fields(spin), hamiltonian(spin, :))
+         END IF
+      END DO
+      IF (ASSOCIATED(sap_int)) THEN
+         CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
+         CALL release_sap_int(sap_int)
+      END IF
+   END SUBROUTINE qs_uspp_atom_grid_apply_ks
+
+! **************************************************************************************************
 !> \brief Conservative image bounds for a radial support on an arbitrary triclinic cell.
 !> \param cell Auxiliary cell.
 !> \param center Original augmentation center.
@@ -358,8 +413,8 @@ CONTAINS
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       CALL timeset('qs_uspp_prepare', handle)
       CALL get_ks_env(ks_env, do_kpoints=do_kpoints, sap_ppnl=sap_ppnl, dft_control=dft_control)
-      CPASSERT(dft_control%qs_control%gpw)
-      CPASSERT(.NOT. dft_control%qs_control%gapw .AND. .NOT. dft_control%qs_control%gapw_xc)
+      CPASSERT(dft_control%qs_control%gpw .OR. dft_control%qs_control%gapw_xc)
+      CPASSERT(.NOT. dft_control%qs_control%gapw)
       CPASSERT(dft_control%qs_control%do_ppl_method == do_ppl_analytic)
       CPASSERT(.NOT. dft_control%use_kinetic_energy_density)
       CPASSERT(ASSOCIATED(sap_ppnl))

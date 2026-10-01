@@ -16,6 +16,7 @@ MODULE qs_vxc_atom
    USE cell_types,                      ONLY: cell_type
    USE cp_array_utils,                  ONLY: cp_3d_r_cp_type
    USE cp_control_types,                ONLY: dft_control_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
    USE external_potential_types,        ONLY: gth_potential_type,&
                                               sgp_potential_type
@@ -35,7 +36,8 @@ MODULE qs_vxc_atom
                                               init_lebedev_grids,&
                                               lebedev_grid
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_para_env_type
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE orbital_pointers,                ONLY: indco,&
                                               indso,&
                                               nco,&
@@ -65,6 +67,8 @@ MODULE qs_vxc_atom
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               has_nlcc,&
                                               qs_kind_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_linres_types,                 ONLY: nablavks_atom_type
    USE qs_native_grid_cache,            ONLY: fetch_native_grid_stencil,&
                                               native_grid_interp_npts,&
@@ -73,16 +77,24 @@ MODULE qs_vxc_atom
                                               native_grid_interpolation_stencil_type,&
                                               prepare_native_grid_cache,&
                                               store_native_grid_stencil
+   USE qs_nlcc_methods,                 ONLY: nlcc_atom_grid_evaluate,&
+                                              nlcc_atom_grid_init,&
+                                              nlcc_atom_grid_type
    USE qs_rho_atom_methods,             ONLY: replicate_rho_atom_radial
    USE qs_rho_atom_types,               ONLY: get_rho_atom,&
                                               rho_atom_coeff,&
                                               rho_atom_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_uspp_methods,                 ONLY: qs_uspp_atom_grid_collocate,&
+                                              qs_uspp_atom_grid_integrate,&
+                                              qs_uspp_atom_grid_prepare,&
+                                              qs_uspp_atom_grid_type
+   USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE qs_vxc_atom_utils,               ONLY: &
         calc_rho_angular, calc_rho_nlcc, calc_tau_atom, calc_weight_function, &
-        create_tau_basis_cache, dgaVtaudgb, evaluate_nlcc_primitive_fields, gaVxcgb_GC, &
-        gaVxcgb_noGC, gapw_atom_grid_support_radius, release_tau_basis_cache, tau_basis_cache_type
+        create_tau_basis_cache, dgaVtaudgb, gaVxcgb_GC, gaVxcgb_noGC, &
+        gapw_atom_grid_support_radius, release_tau_basis_cache, tau_basis_cache_type
    USE skala_gpw_features,              ONLY: build_periodic_atom_image_layout,&
                                               periodic_atom_image_partition,&
                                               periodic_atom_image_partition_from_layout,&
@@ -105,8 +117,11 @@ MODULE qs_vxc_atom
                                               xc_rho_set_atom_update
    USE xc_derivative_set_types,         ONLY: xc_derivative_set_type,&
                                               xc_dset_create,&
+                                              xc_dset_get_derivative,&
                                               xc_dset_release,&
                                               xc_dset_zero_all
+   USE xc_derivative_types,             ONLY: xc_derivative_get,&
+                                              xc_derivative_type
    USE xc_derivatives,                  ONLY: xc_functionals_get_needs
    USE xc_input_constants,              ONLY: skala_gapw_cp2k_default,&
                                               skala_gapw_direct_valence,&
@@ -222,12 +237,13 @@ CONTAINS
 !> \param composite_reference_active ...
 !> \param direct_valence_atom_grid evaluate the smooth valence fields on atom-centered grids
 !> \param atom_composite_grid evaluate GAPW primitive fields on atom-centered composite grids
+!> \param uspp_fields ...
 ! **************************************************************************************************
    SUBROUTINE calculate_vxc_atom(qs_env, energy_only, exc1, &
                                  adiabatic_rescale_factor, kind_set_external, &
                                  rho_atom_set_external, xc_section_external, calculate_forces, &
                                  composite_vxc_rho, composite_vxc_tau, composite_reference_active, &
-                                 direct_valence_atom_grid, atom_composite_grid)
+                                 direct_valence_atom_grid, atom_composite_grid, uspp_fields)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL, INTENT(IN)                                :: energy_only
@@ -244,6 +260,8 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL                     :: composite_reference_active
       LOGICAL, INTENT(IN), OPTIONAL                      :: direct_valence_atom_grid, &
                                                             atom_composite_grid
+      TYPE(qs_uspp_atom_grid_type), INTENT(INOUT), &
+         OPTIONAL                                        :: uspp_fields(:)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_vxc_atom'
 
@@ -269,8 +287,8 @@ CONTAINS
          evaluate_soft, gradient_f, image_partition_atom_composite, lsd, my_calculate_forces, &
          native_grid_diagnostics, nlcc, one_center_kind, paw_atom, paw_pseudopotentials, &
          requested_atom_composite_grid, rho_g_valid, skala_atom_grid, source_matrix_local, tau_f, &
-         tau_r_valid, use_atom_composite_density, use_atom_composite_gradient, &
-         use_atom_composite_tau, use_virial
+         tau_r_valid, temporary_smooth_tau, use_atom_composite_density, &
+         use_atom_composite_gradient, use_atom_composite_tau, use_virial
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: composite_partition_included
       REAL(dp) :: agr, alpha, atom_composite_exc, atom_composite_nelec, &
          composite_cross_cutoff_max, composite_cross_density_max, composite_cross_grad_max, &
@@ -279,14 +297,18 @@ CONTAINS
          cross_cutoff, density_cut, descriptor_window_adjoint, descriptor_window_weight, exc_h, &
          exc_s, feature_vxc_analytic, feature_vxc_fd, feature_vxc_minus, feature_vxc_plus, &
          feature_vxc_step, gradient_cut, local_partition_weight, my_adiabatic_rescale_factor, &
-         nlcc_density, nlcc_spin_factor
-      REAL(dp) :: one_center_density_field_contraction, one_center_density_matrix_contraction, &
+         nlcc_density
+      REAL(dp) :: nlcc_gradient_image_moment(3, 3, 3), nlcc_spin_factor, &
+         one_center_density_field_contraction, one_center_density_matrix_contraction, &
          one_center_field_contraction, one_center_gradient_field_contraction, &
          one_center_gradient_matrix_contraction, one_center_matrix_contraction, &
          one_center_rho_grad_field_contraction, one_center_rho_grad_matrix_contraction, &
          one_center_tau_field_contraction, one_center_tau_matrix_contraction, &
          one_center_tensor_contraction, partition_adjoint, partition_scale, partition_weight, &
-         smooth_grid_contraction, smooth_input_contraction, target_partition_adjoint, tau_cut, zeff
+         smooth_grid_contraction, smooth_input_contraction, target_partition_adjoint
+      REAL(dp) :: tau_cut, zeff
+      REAL(dp), ALLOCATABLE :: augmentation_grad(:, :), augmentation_point_gradient(:, :), &
+         augmentation_rho(:), augmentation_weights(:)
       REAL(dp), ALLOCATABLE, DIMENSION(:) :: composite_atomic_grid_weight_grad, &
          composite_atomic_grid_weights, composite_base_grid_weights, composite_distances, &
          composite_grid_weight_grad, composite_grid_weights, composite_partition_weights, fw
@@ -325,9 +347,10 @@ CONTAINS
          cross_kin_spatial
       REAL(dp), DIMENSION(3, 3) :: composite_cross_image_virial, &
          composite_cross_image_virial_local, composite_explicit_virial, composite_feature_virial, &
-         composite_interpolation_virial, composite_partition_strain_virial, &
-         local_descriptor_dstrain, local_partition_dstrain, nlcc_hessian, skala_atom_virial, &
-         skala_atom_virial_h, skala_atom_virial_s
+         composite_interpolation_virial, composite_nlcc_image_virial, &
+         composite_partition_strain_virial, local_descriptor_dstrain, local_partition_dstrain, &
+         nlcc_hessian, nlcc_rho_image_moment, skala_atom_virial, skala_atom_virial_h, &
+         skala_atom_virial_s
       REAL(dp), DIMENSION(3, 3, 2)                       :: cross_grad_spatial
       REAL(dp), DIMENSION(4)                             :: feature_component_analytic, &
                                                             feature_component_fd
@@ -343,6 +366,7 @@ CONTAINS
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_3d_r_cp_type), DIMENSION(3) :: composite_smooth_drho, composite_smooth_drhoa, &
          composite_smooth_drhob, smooth_drho, smooth_drhoa, smooth_drhob
+      TYPE(dbcsr_p_type), POINTER                        :: uspp_density(:, :)
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(grid_atom_type), POINTER                      :: grid_atom
       TYPE(gth_potential_type), POINTER                  :: gth_potential
@@ -350,6 +374,7 @@ CONTAINS
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(native_grid_interpolation_stencil_type)       :: interpolation_stencil
+      TYPE(nlcc_atom_grid_type), ALLOCATABLE             :: composite_nlcc(:)
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: smooth_rho_g
       TYPE(pw_env_type), POINTER                         :: pw_env
@@ -358,7 +383,9 @@ CONTAINS
                                                             smooth_vxc_rho, smooth_vxc_tau
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: my_kind_set
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_struct
+      TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: cpc_h, cpc_s, dr_h, dr_s, int_hh, &
                                                             int_ss, r_h, r_s
       TYPE(rho_atom_coeff), DIMENSION(:, :), POINTER     :: r_h_d, r_s_d
@@ -376,6 +403,7 @@ CONTAINS
 ! -------------------------------------------------------------------------
 
       CALL timeset(routineN, handle)
+      temporary_smooth_tau = .FALSE.
 
       NULLIFY (atom_list)
       NULLIFY (auxbas_pw_pool)
@@ -424,7 +452,7 @@ CONTAINS
       END IF
 
       CALL get_qs_env(qs_env=qs_env, &
-                      dft_control=dft_control, &
+                      dft_control=dft_control, ks_env=ks_env, &
                       cell=cell, &
                       para_env=para_env, &
                       atomic_kind_set=atomic_kind_set, &
@@ -500,6 +528,7 @@ CONTAINS
                                   paw_pseudopotentials)
       atom_composite_reference = atom_composite_reference .OR. requested_atom_composite_grid
       atom_composite_reference = atom_composite_reference .OR. direct_valence_atom_composite
+      atom_composite_reference = atom_composite_reference .OR. PRESENT(uspp_fields)
       atom_composite_active = atom_composite_diagnostic .OR. atom_composite_reference
       use_atom_composite_density = atom_composite_components <= 2
       use_atom_composite_gradient = atom_composite_components <= 2
@@ -517,6 +546,13 @@ CONTAINS
       ! when the physical Poisson problem is isolated or partially periodic.
       image_partition_atom_composite = atom_composite_active
       composite_image_periodicity = 1
+      IF (atom_composite_reference .AND. nlcc) THEN
+         ALLOCATE (composite_nlcc(SIZE(my_kind_set)))
+         DO ikind = 1, SIZE(my_kind_set)
+            CALL nlcc_atom_grid_init(my_kind_set(ikind), composite_nlcc(ikind), &
+                                     MIN(1.e-14_dp, dft_control%qs_control%eps_rho_rspace))
+         END DO
+      END IF
       IF (PRESENT(composite_reference_active)) composite_reference_active = atom_composite_reference
       gapw_density_partition = skala_gapw_density_partition_hard_minus_soft
       IF (skala_atom_grid) THEN
@@ -548,6 +584,9 @@ CONTAINS
          tau_f = (needs%tau .OR. needs%tau_spin) .OR. skala_atom_grid
 
          IF (atom_composite_active) THEN
+            ! The shared interpolation layout includes zero tau channels for LDA/GGA.
+            gradient_f = .TRUE.
+            tau_f = .TRUE.
             IF (lsd) THEN
                needs%rho_spin = .TRUE.
                needs%drho_spin = .TRUE.
@@ -659,13 +698,22 @@ CONTAINS
                             tau_r=smooth_tau_r, rho_g_valid=rho_g_valid, &
                             tau_r_valid=tau_r_valid)
             CPASSERT(rho_g_valid)
-            CPASSERT(tau_r_valid)
             CPASSERT(ASSOCIATED(smooth_rho_r))
             CPASSERT(ASSOCIATED(smooth_rho_g))
-            CPASSERT(ASSOCIATED(smooth_tau_r))
             CALL prepare_native_grid_cache(qs_env%native_grid_cache, smooth_rho_r(1)%pw_grid, &
                                            cell, composite_nflat, image_partition_atom_composite)
             CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool)
+            IF (.NOT. dft_control%use_kinetic_energy_density) THEN
+               ALLOCATE (smooth_tau_r(nspins))
+               DO ispin = 1, nspins
+                  CALL auxbas_pw_pool%create_pw(smooth_tau_r(ispin))
+                  smooth_tau_r(ispin)%array = 0.0_dp
+               END DO
+               temporary_smooth_tau = .TRUE.
+            ELSE
+               CPASSERT(tau_r_valid)
+               CPASSERT(ASSOCIATED(smooth_tau_r))
+            END IF
             CALL section_vals_val_get(my_xc_section, "XC_GRID%XC_DERIV", &
                                       i_val=xc_deriv_method_id)
             CALL section_vals_val_get(my_xc_section, "XC_GRID%XC_SMOOTH_RHO", &
@@ -882,6 +930,7 @@ CONTAINS
 !$OMP         gth_potential, nlcc_density, nlcc_gradient, nlcc_hessian, nlcc_spin_factor, &
 !$OMP         interpolation_stencil, partition_scale, partition_weight, sgp_potential, source_atom) &
 !$OMP SHARED(atom_composite_reference, cell, composite_atom_coords, composite_atom_kind, &
+!$OMP        composite_nlcc, composite_image_periodicity, &
 !$OMP        composite_atom_start, composite_atomic_grid_weights, composite_base_grid_weights, &
 !$OMP        composite_density, composite_descriptor_image_coords, &
 !$OMP        composite_descriptor_target_image, composite_distances, composite_grad, &
@@ -1027,16 +1076,12 @@ CONTAINS
                            END IF
                         END IF
                         IF (atom_composite_reference .AND. nlcc) THEN
-                           nlcc_spin_factor = MERGE(1.0_dp, 0.5_dp, lsd)
+                           nlcc_spin_factor = 0.5_dp
                            DO source_atom = 1, SIZE(particle_set)
-                              NULLIFY (gth_potential, sgp_potential)
-                              CALL get_qs_kind(my_kind_set(composite_atom_kind(source_atom)), &
-                                               gth_potential=gth_potential, &
-                                               sgp_potential=sgp_potential)
-                              CALL evaluate_nlcc_primitive_fields( &
-                                 composite_point, particle_set(source_atom)%r, &
-                                 gth_potential, sgp_potential, nlcc_density, &
-                                 nlcc_gradient, nlcc_hessian)
+                              CALL nlcc_atom_grid_evaluate( &
+                                 composite_nlcc(composite_atom_kind(source_atom)), cell, &
+                                 composite_image_periodicity, composite_point, particle_set(source_atom)%r, &
+                                 nlcc_density, nlcc_gradient, nlcc_hessian)
                               composite_density(composite_row, :) = &
                                  composite_density(composite_row, :) + &
                                  nlcc_spin_factor*nlcc_density
@@ -1212,10 +1257,13 @@ CONTAINS
                                    grid_atom=grid_atom, sgp_potential=sgp_potential, &
                                    zatom=zatom, zeff=zeff)
                   CALL get_qs_kind(my_kind_set(ikind), basis_set=basis_1c, basis_type="GAPW_1C")
-                  IF (.NOT. native_skala_uses_one_center_kind( &
-                      paw_atom, gapw_representation, &
-                      ASSOCIATED(gth_potential) .OR. ASSOCIATED(sgp_potential), &
-                      zeff, zatom)) CYCLE
+                  IF (.NOT. paw_atom) CYCLE
+                  IF (skala_atom_grid) THEN
+                     IF (.NOT. native_skala_uses_one_center_kind( &
+                         paw_atom, gapw_representation, &
+                         ASSOCIATED(gth_potential) .OR. ASSOCIATED(sgp_potential), &
+                         zeff, zatom)) CYCLE
+                  END IF
 
                   CALL replicate_rho_atom_radial( &
                      para_env, my_rho_atom_set, my_kind_set(ikind), atom_list, natom, nspins)
@@ -1366,18 +1414,63 @@ CONTAINS
             composite_kin(:, :) = composite_kin(:, :) + composite_cross_kin(:, :)
             DEALLOCATE (composite_cross_density, composite_cross_grad, composite_cross_kin)
 
+            IF (PRESENT(uspp_fields)) THEN
+               CALL get_ks_env(ks_env, uspp=uspp)
+               CPASSERT(ASSOCIATED(uspp))
+               CPASSERT(SIZE(uspp_fields) == nspins)
+               CALL qs_rho_get(rho_struct, rho_ao_kp=uspp_density)
+               ALLOCATE (augmentation_rho(composite_nflat), augmentation_grad(3, composite_nflat), &
+                         augmentation_weights(composite_nflat))
+               augmentation_weights = 1.0_dp
+               DO ispin = 1, nspins
+                  CALL qs_uspp_atom_grid_prepare(uspp, my_kind_set, uspp_density(ispin, :), &
+                                                 uspp_fields(ispin), my_calculate_forces)
+                  augmentation_rho = 0.0_dp
+                  augmentation_grad = 0.0_dp
+                  CALL qs_uspp_atom_grid_collocate(uspp, uspp_fields(ispin), cell, &
+                                                   composite_grid_coords, augmentation_rho, augmentation_grad)
+                  IF (lsd) THEN
+                     composite_density(:, ispin) = composite_density(:, ispin) + augmentation_rho
+                     composite_grad(:, :, ispin) = composite_grad(:, :, ispin) + TRANSPOSE(augmentation_grad)
+                  ELSE
+                     DO idir = 1, 2
+                        composite_density(:, idir) = composite_density(:, idir) + 0.5_dp*augmentation_rho
+                        composite_grad(:, :, idir) = composite_grad(:, :, idir) + 0.5_dp*TRANSPOSE(augmentation_grad)
+                     END DO
+                  END IF
+               END DO
+            END IF
+
             CPASSERT(ALL(composite_grid_weights >= 0.0_dp))
             atom_composite_nelec = SUM(composite_grid_weights* &
                                        (composite_density(:, 1) + composite_density(:, 2)))
             CALL para_env%sum(atom_composite_nelec)
             IF (atom_composite_reference .AND. my_calculate_forces) THEN
-               CALL skala_gapw_atom_composite_energy( &
-                  my_xc_section, para_env, composite_density, composite_grad, composite_kin, &
+               CALL atom_composite_energy( &
+                  my_xc_section, lsd, para_env, composite_density, composite_grad, composite_kin, &
                   composite_grid_coords, composite_grid_weights, composite_atomic_grid_weights, &
                   composite_local_grid_sizes, composite_local_atom_coords, atom_composite_exc, &
                   composite_density_grad, composite_grad_grad, composite_kin_grad, &
                   composite_grid_coord_grad, composite_grid_weight_grad, &
                   composite_atomic_grid_weight_grad, composite_atom_coord_grad)
+               IF (PRESENT(uspp_fields)) THEN
+                  ALLOCATE (augmentation_point_gradient(3, composite_nflat))
+                  augmentation_point_gradient = 0.0_dp
+                  DO ispin = 1, nspins
+                     IF (lsd) THEN
+                        augmentation_rho(:) = composite_density_grad(:, ispin)
+                        augmentation_grad(:, :) = TRANSPOSE(composite_grad_grad(:, :, ispin))
+                     ELSE
+                        augmentation_rho(:) = 0.5_dp*SUM(composite_density_grad, DIM=2)
+                        augmentation_grad(:, :) = 0.5_dp*TRANSPOSE(SUM(composite_grad_grad, DIM=3))
+                     END IF
+                     CALL qs_uspp_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
+                                                      composite_grid_coords, augmentation_weights, &
+                                                      augmentation_rho, augmentation_grad, augmentation_point_gradient)
+                  END DO
+                  composite_grid_coord_grad(:, :) = composite_grid_coord_grad + augmentation_point_gradient
+                  DEALLOCATE (augmentation_point_gradient)
+               END IF
                ALLOCATE (composite_cross_force(3, SIZE(particle_set)), &
                          composite_explicit_force(3, SIZE(particle_set)), &
                          composite_grid_coord_force(3, SIZE(particle_set)), &
@@ -1396,6 +1489,7 @@ CONTAINS
                composite_moving_smooth_force = 0.0_dp
                composite_nlcc_center_force = 0.0_dp
                composite_nlcc_target_force = 0.0_dp
+               composite_nlcc_image_virial = 0.0_dp
                composite_partition_force = 0.0_dp
                composite_explicit_virial = 0.0_dp
                composite_feature_virial = 0.0_dp
@@ -1451,13 +1545,16 @@ CONTAINS
 !$OMP PRIVATE(composite_local_atom, composite_row, descriptor_window_adjoint, &
 !$OMP         descriptor_window_weight, gth_potential, iatom, idir, ispin, jdir, &
 !$OMP         nlcc_density, nlcc_gradient, nlcc_hessian, nlcc_spatial_derivative, &
+!$OMP         nlcc_rho_image_moment, nlcc_gradient_image_moment, &
 !$OMP         nlcc_spin_factor, partition_adjoint, composite_nlcc_center_force_local, &
 !$OMP         composite_partition_force_local, local_descriptor_datom, &
 !$OMP         local_descriptor_dstrain, local_partition_datom, local_partition_dstrain, &
 !$OMP         local_partition_weight, sgp_potential, source_atom, &
 !$OMP         spatial_derivative, target_atom, target_partition_adjoint) &
 !$OMP REDUCTION(+:composite_interpolation_virial, composite_partition_strain_virial) &
+!$OMP REDUCTION(+:composite_nlcc_image_virial) &
 !$OMP SHARED(cell, composite_atom_coord_grad, composite_atom_coords, composite_atom_end, &
+!$OMP        composite_nlcc, &
 !$OMP        composite_atom_kind, composite_atom_start, composite_atomic_grid_weight_grad, &
 !$OMP        composite_atomic_grid_weights, composite_base_grid_weights, composite_density_grad, &
 !$OMP        composite_grad_grad, composite_grid_coord_force, composite_grid_coord_grad, &
@@ -1556,22 +1653,24 @@ CONTAINS
                      composite_moving_smooth_force(:, iatom) = &
                         composite_moving_smooth_force(:, iatom) + spatial_derivative
                      IF (nlcc) THEN
-                        nlcc_spin_factor = MERGE(1.0_dp, 0.5_dp, lsd)
+                        nlcc_spin_factor = 0.5_dp
                         DO source_atom = 1, SIZE(particle_set)
-                           NULLIFY (gth_potential, sgp_potential)
-                           CALL get_qs_kind(my_kind_set(composite_atom_kind(source_atom)), &
-                                            gth_potential=gth_potential, &
-                                            sgp_potential=sgp_potential)
-                           CALL evaluate_nlcc_primitive_fields( &
-                              composite_grid_coords(:, composite_row), &
-                              particle_set(source_atom)%r, gth_potential, sgp_potential, &
-                              nlcc_density, nlcc_gradient, nlcc_hessian)
+                           CALL nlcc_atom_grid_evaluate( &
+                              composite_nlcc(composite_atom_kind(source_atom)), cell, &
+                              composite_image_periodicity, composite_grid_coords(:, composite_row), &
+                              particle_set(source_atom)%r, nlcc_density, nlcc_gradient, nlcc_hessian, &
+                              nlcc_rho_image_moment, nlcc_gradient_image_moment)
                            nlcc_spatial_derivative = 0.0_dp
                            DO ispin = 1, 2
+                              composite_nlcc_image_virial = composite_nlcc_image_virial + &
+                                                 nlcc_spin_factor*composite_density_grad(composite_row, ispin)*nlcc_rho_image_moment
                               nlcc_spatial_derivative = nlcc_spatial_derivative + &
                                                         nlcc_spin_factor*composite_density_grad(composite_row, ispin)* &
                                                         nlcc_gradient
                               DO idir = 1, 3
+                                 composite_nlcc_image_virial = composite_nlcc_image_virial + &
+                                                               nlcc_spin_factor*composite_grad_grad(composite_row, idir, ispin)* &
+                                                               nlcc_gradient_image_moment(idir, :, :)
                                  DO jdir = 1, 3
                                     nlcc_spatial_derivative(jdir) = &
                                        nlcc_spatial_derivative(jdir) + nlcc_spin_factor* &
@@ -1657,10 +1756,13 @@ CONTAINS
                                       grid_atom=grid_atom, sgp_potential=sgp_potential, &
                                       zatom=zatom, zeff=zeff)
                      CALL get_qs_kind(my_kind_set(ikind), basis_set=basis_1c, basis_type="GAPW_1C")
-                     IF (.NOT. native_skala_uses_one_center_kind( &
-                         paw_atom, gapw_representation, &
-                         ASSOCIATED(gth_potential) .OR. ASSOCIATED(sgp_potential), &
-                         zeff, zatom)) CYCLE
+                     IF (.NOT. paw_atom) CYCLE
+                     IF (skala_atom_grid) THEN
+                        IF (.NOT. native_skala_uses_one_center_kind( &
+                            paw_atom, gapw_representation, &
+                            ASSOCIATED(gth_potential) .OR. ASSOCIATED(sgp_potential), &
+                            zeff, zatom)) CYCLE
+                     END IF
 
                      nr = grid_atom%nr
                      na = grid_atom%ng_sphere
@@ -1860,7 +1962,7 @@ CONTAINS
                END DO
                composite_explicit_virial = composite_explicit_virial + &
                                            composite_partition_strain_virial + &
-                                           composite_cross_image_virial
+                                           composite_cross_image_virial + composite_nlcc_image_virial
                IF (ASSOCIATED(force)) THEN
                   DO iatom = 1, SIZE(particle_set)
                      ikind = composite_atom_kind(iatom)
@@ -1956,11 +2058,28 @@ CONTAINS
                            composite_partition_datom, composite_partition_dstrain, &
                            composite_partition_force, composite_partition_included)
             ELSE
-               CALL skala_gapw_atom_composite_energy( &
-                  my_xc_section, para_env, composite_density, composite_grad, composite_kin, &
+               CALL atom_composite_energy( &
+                  my_xc_section, lsd, para_env, composite_density, composite_grad, composite_kin, &
                   composite_grid_coords, composite_grid_weights, composite_atomic_grid_weights, &
                   composite_local_grid_sizes, composite_local_atom_coords, atom_composite_exc, &
                   composite_density_grad, composite_grad_grad, composite_kin_grad)
+            END IF
+            IF (PRESENT(uspp_fields)) THEN
+               IF (.NOT. my_calculate_forces) THEN
+                  DO ispin = 1, nspins
+                     IF (lsd) THEN
+                        augmentation_rho(:) = composite_density_grad(:, ispin)
+                        augmentation_grad(:, :) = TRANSPOSE(composite_grad_grad(:, :, ispin))
+                     ELSE
+                        augmentation_rho(:) = 0.5_dp*SUM(composite_density_grad, DIM=2)
+                        augmentation_grad(:, :) = 0.5_dp*TRANSPOSE(SUM(composite_grad_grad, DIM=3))
+                     END IF
+                     CALL qs_uspp_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
+                                                      composite_grid_coords, augmentation_weights, &
+                                                      augmentation_rho, augmentation_grad)
+                  END DO
+               END IF
+               DEALLOCATE (augmentation_rho, augmentation_grad, augmentation_weights)
             END IF
             composite_pw_nflat = PRODUCT(smooth_rho_r(1)%pw_grid%npts)
             adjoint_nchannels = MERGE(2, 1, lsd)
@@ -2089,13 +2208,14 @@ CONTAINS
                                               smooth_tau_r(ispin)%array))
                IF (atom_composite_reference) THEN
                   CPASSERT(PRESENT(composite_vxc_rho))
-                  CPASSERT(PRESENT(composite_vxc_tau))
                   CPASSERT(ASSOCIATED(composite_vxc_rho))
-                  CPASSERT(ASSOCIATED(composite_vxc_tau))
                   CPASSERT(SIZE(composite_vxc_rho) == nspins)
-                  CPASSERT(SIZE(composite_vxc_tau) == nspins)
                   CALL pw_axpy(smooth_vxc_rho(ispin), composite_vxc_rho(ispin), 1.0_dp)
-                  CALL pw_axpy(smooth_vxc_tau(ispin), composite_vxc_tau(ispin), 1.0_dp)
+                  IF (dft_control%use_kinetic_energy_density) THEN
+                     CPASSERT(PRESENT(composite_vxc_tau))
+                     CPASSERT(ASSOCIATED(composite_vxc_tau))
+                     CALL pw_axpy(smooth_vxc_tau(ispin), composite_vxc_tau(ispin), 1.0_dp)
+                  END IF
                END IF
                CALL auxbas_pw_pool%give_back_pw(smooth_vxc_rho(ispin))
                CALL auxbas_pw_pool%give_back_pw(smooth_vxc_tau(ispin))
@@ -2122,10 +2242,13 @@ CONTAINS
                                    grid_atom=grid_atom, sgp_potential=sgp_potential, &
                                    zatom=zatom, zeff=zeff)
                   CALL get_qs_kind(my_kind_set(ikind), basis_set=basis_1c, basis_type="GAPW_1C")
-                  IF (.NOT. native_skala_uses_one_center_kind( &
-                      paw_atom, gapw_representation, &
-                      ASSOCIATED(gth_potential) .OR. ASSOCIATED(sgp_potential), &
-                      zeff, zatom)) CYCLE
+                  IF (.NOT. paw_atom) CYCLE
+                  IF (skala_atom_grid) THEN
+                     IF (.NOT. native_skala_uses_one_center_kind( &
+                         paw_atom, gapw_representation, &
+                         ASSOCIATED(gth_potential) .OR. ASSOCIATED(sgp_potential), &
+                         zeff, zatom)) CYCLE
+                  END IF
 
                   nr = grid_atom%nr
                   na = grid_atom%ng_sphere
@@ -2441,8 +2564,8 @@ CONTAINS
                      composite_grad = (1.0_dp + feature_vxc_step)*composite_grad
                      composite_kin = (1.0_dp + feature_vxc_step)*composite_kin
                   END SELECT
-                  CALL skala_gapw_atom_composite_energy( &
-                     my_xc_section, para_env, composite_density, composite_grad, composite_kin, &
+                  CALL atom_composite_energy( &
+                     my_xc_section, lsd, para_env, composite_density, composite_grad, composite_kin, &
                      composite_grid_coords, composite_grid_weights, composite_atomic_grid_weights, &
                      composite_local_grid_sizes, composite_local_atom_coords, feature_vxc_plus)
                   SELECT CASE (icomponent)
@@ -2463,8 +2586,8 @@ CONTAINS
                      composite_kin = ((1.0_dp - feature_vxc_step)/ &
                                       (1.0_dp + feature_vxc_step))*composite_kin
                   END SELECT
-                  CALL skala_gapw_atom_composite_energy( &
-                     my_xc_section, para_env, composite_density, composite_grad, composite_kin, &
+                  CALL atom_composite_energy( &
+                     my_xc_section, lsd, para_env, composite_density, composite_grad, composite_kin, &
                      composite_grid_coords, composite_grid_weights, composite_atomic_grid_weights, &
                      composite_local_grid_sizes, composite_local_atom_coords, feature_vxc_minus)
                   SELECT CASE (icomponent)
@@ -2548,7 +2671,7 @@ CONTAINS
                   CALL para_env%sum(composite_tau_integral)
                END IF
                iw = cp_logger_get_default_io_unit()
-               IF (iw > 0) THEN
+               IF (iw > 0 .AND. skala_atom_grid) THEN
                   WRITE (UNIT=iw, FMT="(T2,A,1X,ES24.16)") &
                      "SKALA_GPW| Active atom-composite XC energy", atom_composite_exc
                   IF (native_grid_diagnostics) THEN
@@ -2570,6 +2693,12 @@ CONTAINS
                END IF
             END IF
             CALL xc_rho_set_release(smooth_rho_set, pw_pool=auxbas_pw_pool)
+            IF (temporary_smooth_tau) THEN
+               DO ispin = 1, nspins
+                  CALL auxbas_pw_pool%give_back_pw(smooth_tau_r(ispin))
+               END DO
+               DEALLOCATE (smooth_tau_r)
+            END IF
             DEALLOCATE (composite_atomic_grid_sizes, composite_atom_kind, &
                         composite_atom_kind_index, composite_atom_start, composite_atom_end, &
                         composite_atom_coords, composite_local_atoms, composite_local_grid_sizes, &
@@ -2622,6 +2751,150 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE calculate_vxc_atom
+
+! **************************************************************************************************
+!> \brief Evaluate the complete atom-grid density and its weighted feature adjoints.
+!>        Ordinary LDA/GGA uses CP2K's XC evaluator; the nonlocal model keeps its own evaluator.
+!> \param xc_section XC input section
+!> \param lsd Spin-polarized evaluation; otherwise the two input channels are summed
+!> \param group Communicator over disjoint local grid batches
+!> \param density Spin densities, including the environment and all augmentation centers
+!> \param grad Cartesian spin-density gradients
+!> \param kin Spin kinetic-energy densities for the nonlocal model
+!> \param grid_coords Local Cartesian grid points
+!> \param grid_weights Full quadrature weights, including the periodic partition
+!> \param atomic_grid_weights Atomic descriptor weights for the nonlocal model
+!> \param atomic_grid_sizes Number of points on each local atom
+!> \param atomic_coords Local grid-center coordinates
+!> \param exc Replicated total XC energy
+!> \param density_grad_out Weighted density derivatives
+!> \param grad_grad_out Weighted Cartesian gradient derivatives
+!> \param kin_grad_out Weighted kinetic-energy-density derivatives
+!> \param grid_coord_grad_out Explicit coordinate derivatives at fixed features and weights
+!> \param grid_weight_grad_out Unweighted energy density, derivative with respect to the full weight
+!> \param atomic_grid_weight_grad_out Derivatives with respect to descriptor weights
+!> \param atom_coord_grad_out Explicit model atom-coordinate derivatives
+! **************************************************************************************************
+   SUBROUTINE atom_composite_energy(xc_section, lsd, group, density, grad, kin, &
+                                    grid_coords, grid_weights, atomic_grid_weights, &
+                                    atomic_grid_sizes, atomic_coords, exc, &
+                                    density_grad_out, grad_grad_out, kin_grad_out, &
+                                    grid_coord_grad_out, grid_weight_grad_out, &
+                                    atomic_grid_weight_grad_out, atom_coord_grad_out)
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      LOGICAL, INTENT(IN)                                :: lsd
+
+      CLASS(mp_comm_type), INTENT(IN) :: group
+      REAL(dp), ALLOCATABLE, INTENT(IN) :: density(:, :), grad(:, :, :), kin(:, :), &
+                                           grid_coords(:, :), grid_weights(:), atomic_grid_weights(:), atomic_coords(:, :)
+      INTEGER(KIND=int_8), ALLOCATABLE, INTENT(IN) :: atomic_grid_sizes(:)
+      REAL(dp), INTENT(OUT) :: exc
+      REAL(dp), ALLOCATABLE, OPTIONAL, INTENT(OUT) :: density_grad_out(:, :), grad_grad_out(:, :, :), &
+                                                      kin_grad_out(:, :), grid_coord_grad_out(:, :), grid_weight_grad_out(:), &
+                                                      atomic_grid_weight_grad_out(:), atom_coord_grad_out(:, :)
+
+      INTEGER :: first, last, n, nspin, spin, channel, idir, bounds(2, 3)
+      REAL(dp) :: batch_energy
+      REAL(dp), ALLOCATABLE :: rho(:, :, :), drho(:, :, :, :), tau(:, :, :), weights(:, :)
+      REAL(dp), POINTER :: vxc(:, :, :), vxg(:, :, :, :), vtau(:, :, :), energy_density(:, :, :)
+      TYPE(section_vals_type), POINTER :: functional
+      TYPE(xc_derivative_type), POINTER :: energy_derivative
+      TYPE(xc_derivative_set_type) :: derivatives
+      TYPE(xc_rho_set_type) :: rho_set
+      TYPE(xc_rho_cflags_type) :: needs
+
+      IF (xc_section_uses_gauxc_model(xc_section)) THEN
+         CALL skala_gapw_atom_composite_energy(xc_section, group, density, grad, kin, &
+                                               grid_coords, grid_weights, atomic_grid_weights, &
+                                               atomic_grid_sizes, atomic_coords, exc, &
+                                               density_grad_out, grad_grad_out, kin_grad_out, &
+                                               grid_coord_grad_out, grid_weight_grad_out, &
+                                               atomic_grid_weight_grad_out, atom_coord_grad_out)
+         RETURN
+      END IF
+      n = SIZE(density, 1)
+      nspin = MERGE(2, 1, lsd)
+      CPASSERT(SIZE(density, 2) == 2)
+      CPASSERT(ALL(SHAPE(grad) == [n, 3, 2]))
+      CPASSERT(SIZE(grid_weights) == n)
+      IF (PRESENT(density_grad_out)) ALLOCATE (density_grad_out(n, 2))
+      IF (PRESENT(grad_grad_out)) ALLOCATE (grad_grad_out(n, 3, 2))
+      IF (PRESENT(kin_grad_out)) THEN
+         ALLOCATE (kin_grad_out(n, 2))
+         kin_grad_out = 0.0_dp
+      END IF
+      IF (PRESENT(grid_weight_grad_out)) ALLOCATE (grid_weight_grad_out(n))
+      IF (PRESENT(grid_coord_grad_out)) THEN
+         ALLOCATE (grid_coord_grad_out(3, n))
+         grid_coord_grad_out = 0.0_dp
+      END IF
+      IF (PRESENT(atomic_grid_weight_grad_out)) THEN
+         ALLOCATE (atomic_grid_weight_grad_out(n))
+         atomic_grid_weight_grad_out = 0.0_dp
+      END IF
+      IF (PRESENT(atom_coord_grad_out)) THEN
+         ALLOCATE (atom_coord_grad_out(3, SIZE(atomic_coords, 2)))
+         atom_coord_grad_out = 0.0_dp
+      END IF
+      functional => section_vals_get_subs_vals(xc_section, "XC_FUNCTIONAL")
+      needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
+      CPASSERT(.NOT. (needs%tau .OR. needs%tau_spin))
+      CPASSERT(.NOT. (needs%laplace_rho .OR. needs%laplace_rho_spin))
+      exc = 0.0_dp
+      DO first = 1, n, 2048
+         last = MIN(n, first + 2047)
+         bounds = 1
+         bounds(2, 1) = last - first + 1
+         ALLOCATE (rho(bounds(2, 1), 1, nspin), drho(4, bounds(2, 1), 1, nspin), &
+                   tau(bounds(2, 1), 1, nspin), weights(bounds(2, 1), 1), &
+                   vxc(bounds(2, 1), 1, nspin), vxg(3, bounds(2, 1), 1, nspin), vtau(bounds(2, 1), 1, nspin))
+         weights(:, 1) = grid_weights(first:last)
+         tau = 0.0_dp
+         vxc = 0.0_dp
+         vxg = 0.0_dp
+         vtau = 0.0_dp
+         DO spin = 1, nspin
+            IF (lsd) THEN
+               rho(:, 1, spin) = density(first:last, spin)
+               drho(1:3, :, 1, spin) = TRANSPOSE(grad(first:last, :, spin))
+            ELSE
+               rho(:, 1, spin) = SUM(density(first:last, :), DIM=2)
+               drho(1:3, :, 1, spin) = TRANSPOSE(SUM(grad(first:last, :, :), DIM=3))
+            END IF
+            drho(4, :, 1, spin) = SQRT(SUM(drho(1:3, :, 1, spin)**2, DIM=1))
+         END DO
+         CALL xc_rho_set_create(rho_set, bounds, rho_cutoff=section_get_rval(xc_section, "DENSITY_CUTOFF"), &
+                                drho_cutoff=section_get_rval(xc_section, "GRADIENT_CUTOFF"), &
+                                tau_cutoff=section_get_rval(xc_section, "TAU_CUTOFF"))
+         CALL xc_rho_set_atom_update(rho_set, needs, nspin, bounds)
+         CALL fill_rho_set(rho_set, lsd, nspin, needs, rho, drho, tau, bounds(2, 1), 1)
+         CALL xc_dset_create(derivatives, local_bounds=bounds)
+         CALL vxc_of_r_new(functional, rho_set, derivatives, 1, needs, weights, lsd, bounds(2, 1), 1, &
+                           batch_energy, vxc, vxg, vtau)
+         exc = exc + batch_energy
+         DO channel = 1, 2
+            spin = MERGE(channel, 1, lsd)
+            IF (PRESENT(density_grad_out)) density_grad_out(first:last, channel) = vxc(:, 1, spin)
+            IF (PRESENT(grad_grad_out)) THEN
+               DO idir = 1, 3
+                  grad_grad_out(first:last, idir, channel) = vxg(idir, :, 1, spin)
+               END DO
+            END IF
+         END DO
+         IF (PRESENT(grid_weight_grad_out)) THEN
+            energy_derivative => xc_dset_get_derivative(derivatives, [INTEGER::])
+            grid_weight_grad_out(first:last) = 0.0_dp
+            IF (ASSOCIATED(energy_derivative)) THEN
+               CALL xc_derivative_get(energy_derivative, deriv_data=energy_density)
+               grid_weight_grad_out(first:last) = energy_density(:, 1, 1)
+            END IF
+         END IF
+         CALL xc_dset_release(derivatives)
+         CALL xc_rho_set_release(rho_set)
+         DEALLOCATE (rho, drho, tau, weights, vxc, vxg, vtau)
+      END DO
+      CALL group%sum(exc)
+   END SUBROUTINE atom_composite_energy
 
 ! **************************************************************************************************
 !> \brief Add the GAPW one-center correction to CDFT values and operators.
