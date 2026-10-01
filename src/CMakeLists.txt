@@ -63,6 +63,7 @@ list(
   atoms_input.F
   atom_types.F
   atom_upf.F
+  atom_uspp.F
   upf_projector_integrals.F
   upf_local_integrals.F
   uspp_augmentation.F
@@ -1596,6 +1597,7 @@ set(CP2K_PROGS_F
     common/memory_utilities_unittest.F
     common/parallel_rng_types_unittest.F
     atom_upf_unittest.F
+    atom_uspp_unittest.F
     uspp_augmentation_unittest.F
     uspp_fourier_unittest.F
     uspp_projector_operators_unittest.F
@@ -2032,6 +2034,7 @@ list(
   "memory_utilities_unittest"
   "parallel_rng_types_unittest"
   "atom_upf_unittest"
+  "atom_uspp_unittest"
   "uspp_augmentation_unittest"
   "uspp_fourier_unittest"
   "uspp_projector_operators_unittest"
@@ -2078,6 +2081,7 @@ add_executable(gemm_square_unittest common/gemm_square_unittest.F)
 add_executable(memory_utilities_unittest common/memory_utilities_unittest.F)
 add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
 add_executable(atom_upf_unittest atom_upf_unittest.F)
+add_executable(atom_uspp_unittest atom_uspp_unittest.F)
 add_executable(uspp_augmentation_unittest uspp_augmentation_unittest.F)
 add_executable(uspp_fourier_unittest uspp_fourier_unittest.F)
 add_executable(uspp_projector_operators_unittest

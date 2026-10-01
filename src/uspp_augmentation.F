@@ -11,7 +11,8 @@
 !>        The overlap correction is the zero-frequency limit of this same transform.
 ! **************************************************************************************************
 MODULE uspp_augmentation
-   USE atom_upf,                        ONLY: atom_upfpot_type
+   USE atom_upf,                        ONLY: atom_upfpot_type,&
+                                              upf_radial_weights
    USE bessel_lib,                      ONLY: bessel0
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
@@ -48,7 +49,7 @@ CONTAINS
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       TYPE(uspp_augmentation_type), INTENT(OUT)          :: augmentation
 
-      INTEGER                                            :: i, j, l, m, n, nc, ns, p, pair, q, s
+      INTEGER                                            :: i, j, l, m, n, nc, p, pair, q, s
       REAL(KIND=dp), ALLOCATABLE                         :: weights(:)
 
       CPASSERT(.NOT. pot%has_so .AND. .NOT. pot%is_paw)
@@ -66,15 +67,7 @@ CONTAINS
       CPASSERT(LBOUND(pot%qijl, 3) == 0)
       ALLOCATE (augmentation%r(n), weights(n))
       augmentation%r(:) = pot%r
-      ! Composite Simpson in the radial mesh index, with a final trapezoid for even n.
-      weights = 0.0_dp
-      ns = n - 1 + MODULO(n, 2)
-      weights(1:ns:2) = 2.0_dp/3.0_dp
-      weights(2:ns - 1:2) = 4.0_dp/3.0_dp
-      weights(1) = 1.0_dp/3.0_dp
-      weights(ns) = 1.0_dp/3.0_dp
-      IF (ns < n) weights(n - 1:n) = weights(n - 1:n) + 0.5_dp
-      weights(:) = weights*pot%rab
+      weights(:) = upf_radial_weights(pot)
       ALLOCATE (augmentation%weighted_q(n, nc, 0:augmentation%lmax))
       DO l = 0, augmentation%lmax
          DO pair = 1, nc

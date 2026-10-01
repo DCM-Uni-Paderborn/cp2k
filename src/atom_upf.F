@@ -90,13 +90,37 @@ MODULE atom_upf
    END TYPE atom_upfpot_type
 
    PRIVATE
-   PUBLIC  :: atom_read_upf, atom_upfpot_type, atom_release_upf
+   PUBLIC  :: atom_read_upf, atom_upfpot_type, atom_release_upf, upf_radial_weights
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'atom_upf'
 
 ! **************************************************************************************************
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Composite Simpson weights for dr on the supplied UPF mesh index.
+!> \param pot Original radial coordinates and dr/d(index).
+!> \return Radial weights, with a last trapezoidal interval for an even mesh size.
+! **************************************************************************************************
+   FUNCTION upf_radial_weights(pot) RESULT(weights)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      REAL(dp)                                           :: weights(SIZE(pot%r))
+
+      INTEGER                                            :: n, ns
+
+      n = SIZE(pot%r)
+      CPASSERT(n >= 3 .AND. SIZE(pot%rab) == n)
+      CPASSERT(ALL(pot%r(2:) > pot%r(:n - 1)) .AND. ALL(pot%rab > 0.0_dp))
+      ns = n - 1 + MODULO(n, 2)
+      weights = 0.0_dp
+      weights(1:ns:2) = 2.0_dp/3.0_dp
+      weights(2:ns - 1:2) = 4.0_dp/3.0_dp
+      weights(1) = 1.0_dp/3.0_dp
+      weights(ns) = 1.0_dp/3.0_dp
+      IF (ns < n) weights(n - 1:n) = weights(n - 1:n) + 0.5_dp
+      weights(:) = weights*pot%rab
+   END FUNCTION upf_radial_weights
 
 ! **************************************************************************************************
 !> \brief ...
