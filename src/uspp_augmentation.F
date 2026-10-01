@@ -330,15 +330,16 @@ CONTAINS
 !> \param density Optional on-site density, required for center_gradient.
 !> \param center_gradient Optional energy gradient from translating this center at fixed grid points.
 !>        Projector, moving-grid and partition-weight derivatives are separate contributions.
+!> \param point_gradient Optional energy gradient of each quadrature point at fixed center and weights.
 ! **************************************************************************************************
    SUBROUTINE uspp_augmentation_integrate_atom(augmentation, displacements, weights, v_rho, v_gradient, &
-                                               matrix, density, center_gradient)
+                                               matrix, density, center_gradient, point_gradient)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: displacements(:, :), weights(:), &
                                                             v_rho(:), v_gradient(:, :)
       REAL(KIND=dp), INTENT(OUT)                         :: matrix(:, :)
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: density(:, :)
-      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: center_gradient(3)
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: center_gradient(3), point_gradient(:, :)
 
       INTEGER                                            :: axis, axis2, n, point
       REAL(KIND=dp)                                      :: derivative
@@ -351,14 +352,18 @@ CONTAINS
       CPASSERT(ALL(SHAPE(v_gradient) == SHAPE(displacements)))
       ALLOCATE (qr(n, n), dqr(n, n, 3))
       matrix = 0.0_dp
-      IF (PRESENT(center_gradient)) THEN
+      IF (PRESENT(center_gradient) .OR. PRESENT(point_gradient)) THEN
          CPASSERT(PRESENT(density))
          CPASSERT(ALL(SHAPE(density) == n))
-         center_gradient = 0.0_dp
          ALLOCATE (ddqr(n, n, 3, 3))
       END IF
+      IF (PRESENT(center_gradient)) center_gradient = 0.0_dp
+      IF (PRESENT(point_gradient)) THEN
+         CPASSERT(ALL(SHAPE(point_gradient) == SHAPE(displacements)))
+         point_gradient = 0.0_dp
+      END IF
       DO point = 1, SIZE(weights)
-         IF (PRESENT(center_gradient)) THEN
+         IF (ALLOCATED(ddqr)) THEN
             CALL uspp_augmentation_realspace(augmentation, displacements(:, point), qr, dqr, ddqr)
          ELSE
             CALL uspp_augmentation_realspace(augmentation, displacements(:, point), qr, dqr)
@@ -367,13 +372,14 @@ CONTAINS
          DO axis = 1, 3
             matrix(:, :) = matrix + weights(point)*v_gradient(axis, point)*dqr(:, :, axis)
          END DO
-         IF (PRESENT(center_gradient)) THEN
+         IF (ALLOCATED(ddqr)) THEN
             DO axis = 1, 3
                derivative = v_rho(point)*SUM(density*dqr(:, :, axis))
                DO axis2 = 1, 3
                   derivative = derivative + v_gradient(axis2, point)*SUM(density*ddqr(:, :, axis2, axis))
                END DO
-               center_gradient(axis) = center_gradient(axis) - weights(point)*derivative
+               IF (PRESENT(center_gradient)) center_gradient(axis) = center_gradient(axis) - weights(point)*derivative
+               IF (PRESENT(point_gradient)) point_gradient(axis, point) = weights(point)*derivative
             END DO
          END IF
       END DO

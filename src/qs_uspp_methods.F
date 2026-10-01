@@ -6,11 +6,12 @@
 !--------------------------------------------------------------------------------------------------!
 
 ! **************************************************************************************************
-!> \brief Connect native USPP geometry, density, and operators to Quickstep GPW.
+!> \brief Connect native USPP geometry, density, and operators to Quickstep.
 ! **************************************************************************************************
 MODULE qs_uspp_methods
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
                                               get_atomic_kind_set
+   USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_get_block_p, dbcsr_get_info, dbcsr_p_type, dbcsr_release, &
@@ -49,7 +50,10 @@ MODULE qs_uspp_methods
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
                                               upf_local_init
    USE uspp_augmentation,               ONLY: uspp_augmentation_collocate,&
-                                              uspp_augmentation_integrate
+                                              uspp_augmentation_collocate_atom,&
+                                              uspp_augmentation_integrate,&
+                                              uspp_augmentation_integrate_atom,&
+                                              uspp_augmentation_prepare_realspace
    USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
                                               uspp_projector_create_onsite,&
                                               uspp_projector_density,&
@@ -62,6 +66,14 @@ MODULE qs_uspp_methods
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_methods'
    PUBLIC :: qs_uspp_prepare, qs_uspp_init_ao_matrix, qs_uspp_collocate, qs_uspp_integrate
    PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces
+   PUBLIC :: qs_uspp_atom_grid_type, qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_collocate, &
+             qs_uspp_atom_grid_integrate, qs_uspp_atom_grid_apply
+
+   TYPE qs_uspp_atom_grid_type
+      LOGICAL :: calculate_forces = .FALSE.
+      REAL(KIND=dp), ALLOCATABLE :: density(:, :, :), potential(:, :, :), center_gradient(:, :)
+      REAL(KIND=dp) :: center_strain(3, 3) = 0.0_dp
+   END TYPE qs_uspp_atom_grid_type
 
    INTERFACE qs_uspp_collocate
       MODULE PROCEDURE qs_uspp_collocate_single, qs_uspp_collocate_images
@@ -74,6 +86,251 @@ MODULE qs_uspp_methods
    END INTERFACE
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Prepare replicated on-site densities once per spin for distributed atom-grid batches.
+!> \param uspp Geometry state, whose real-space radial caches are initialized lazily.
+!> \param qs_kind_set Kinds retaining the original UPF radial data.
+!> \param density Spin AO density over real-space images.
+!> \param fields Owned batch state; previous allocations and accumulated operators are discarded.
+!> \param calculate_forces Whether to accumulate center, point and source-center strain derivatives.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_atom_grid_prepare(uspp, qs_kind_set, density, fields, calculate_forces)
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
+      TYPE(qs_kind_type), INTENT(IN)                     :: qs_kind_set(:)
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:)
+      TYPE(qs_uspp_atom_grid_type), INTENT(INOUT)        :: fields
+      LOGICAL, INTENT(IN)                                :: calculate_forces
+
+      INTEGER                                            :: center, ikind, n, nmax
+      LOGICAL                                            :: found
+      REAL(KIND=dp), POINTER                             :: block(:, :)
+      TYPE(dbcsr_type)                                   :: projected
+      TYPE(mp_comm_type)                                 :: group
+
+      IF (ALLOCATED(fields%density)) DEALLOCATE (fields%density)
+      IF (ALLOCATED(fields%potential)) DEALLOCATE (fields%potential)
+      IF (ALLOCATED(fields%center_gradient)) DEALLOCATE (fields%center_gradient)
+      nmax = MAXVAL(uspp%projector_sizes)
+      ALLOCATE (fields%density(nmax, nmax, SIZE(uspp%center_atoms)), &
+                fields%potential(nmax, nmax, SIZE(uspp%center_atoms)), &
+                fields%center_gradient(3, SIZE(uspp%center_atoms)))
+      fields%calculate_forces = calculate_forces
+      fields%density = 0.0_dp
+      fields%potential = 0.0_dp
+      fields%center_gradient = 0.0_dp
+      fields%center_strain = 0.0_dp
+      CALL dbcsr_get_info(uspp%overlaps, group=group)
+      CALL project_density(uspp, density, projected)
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         n = uspp%projector_sizes(center)
+         CALL uspp_augmentation_prepare_realspace(qs_kind_set(ikind)%sgp_potential%upf_data, uspp%augmentation(ikind))
+         CALL dbcsr_get_block_p(projected, center, center, block, found)
+         IF (found) fields%density(:n, :n, center) = block
+      END DO
+      CALL group%sum(fields%density)
+      CALL dbcsr_release(projected)
+   END SUBROUTINE qs_uspp_atom_grid_prepare
+
+! **************************************************************************************************
+!> \brief Add augmentation from all centers and their periodic images to local quadrature points.
+!>        The auxiliary density is periodic in all three cell directions, as on Quickstep's PW grid.
+!>        Different ranks may supply different point counts, including zero; no collective occurs here.
+!> \param uspp Geometry state used to prepare fields; must not change during a batch evaluation.
+!> \param fields Replicated spin density and batch accumulators.
+!> \param cell Auxiliary simulation cell, including its inverse matrix.
+!> \param points Cartesian quadrature points in bohr, with arbitrary cell representatives.
+!> \param rho Density values, incremented without quadrature weights.
+!> \param gradient Cartesian density gradients, incremented without quadrature weights.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_atom_grid_collocate(uspp, fields, cell, points, rho, gradient)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(qs_uspp_atom_grid_type), INTENT(IN)           :: fields
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(KIND=dp), INTENT(IN)                          :: points(:, :)
+      REAL(KIND=dp), INTENT(INOUT)                       :: rho(:), gradient(:, :)
+
+      INTEGER                                            :: center, ikind, ix, iy, iz, lower(3), n, &
+                                                            upper(3)
+      REAL(KIND=dp)                                      :: image_position(3)
+      REAL(KIND=dp), ALLOCATABLE                         :: displacements(:, :)
+
+      CPASSERT(ALL(SHAPE(points) == [3, SIZE(rho)]))
+      CPASSERT(ALL(SHAPE(gradient) == SHAPE(points)))
+      CPASSERT(SIZE(fields%density, 3) == SIZE(uspp%center_atoms))
+      IF (SIZE(rho) == 0) RETURN
+      ALLOCATE (displacements(3, SIZE(rho)))
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         n = uspp%projector_sizes(center)
+         CALL atom_grid_image_bounds(cell, uspp%position(:, center), points, &
+                                     MAXVAL(uspp%augmentation(ikind)%r), lower, upper)
+         DO iz = lower(3), upper(3)
+            DO iy = lower(2), upper(2)
+               DO ix = lower(1), upper(1)
+                  image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                  displacements(:, :) = points - SPREAD(image_position, 2, SIZE(rho))
+                  CALL uspp_augmentation_collocate_atom(uspp%augmentation(ikind), displacements, &
+                                                        fields%density(:n, :n, center), rho, gradient)
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE qs_uspp_atom_grid_collocate
+
+! **************************************************************************************************
+!> \brief Accumulate the adjoint of all-center augmentation collocation for one local grid batch.
+!>        The same image sum is differentiated, including overlapping augmentation regions.
+!> \param uspp Geometry state used in collocation.
+!> \param fields On-site operators and source-center derivatives, incremented locally without MPI reduction.
+!> \param cell Auxiliary simulation cell used in collocation.
+!> \param points Cartesian quadrature points in bohr.
+!> \param weights Local quadrature weights, including any partition or hard/soft sign.
+!> \param v_rho Unweighted energy-density derivative with respect to this spin density.
+!> \param v_gradient Unweighted derivative with respect to the Cartesian spin-density gradient.
+!> \param point_gradient Weighted energy derivatives with respect to point coordinates, incremented.
+!>        Required when calculate_forces was selected. Moving-grid and weight derivatives are the caller's task.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_atom_grid_integrate(uspp, fields, cell, points, weights, v_rho, v_gradient, point_gradient)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(qs_uspp_atom_grid_type), INTENT(INOUT)        :: fields
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(KIND=dp), INTENT(IN)                          :: points(:, :), weights(:), v_rho(:), &
+                                                            v_gradient(:, :)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: point_gradient(:, :)
+
+      INTEGER                                            :: center, ikind, ix, iy, iz, jdir, &
+                                                            lower(3), n, upper(3)
+      REAL(KIND=dp)                                      :: derivative(3), image_position(3)
+      REAL(KIND=dp), ALLOCATABLE                         :: displacements(:, :), matrix(:, :), &
+                                                            point_derivative(:, :)
+
+      CPASSERT(ALL(SHAPE(points) == [3, SIZE(weights)]))
+      CPASSERT(SIZE(v_rho) == SIZE(weights))
+      CPASSERT(ALL(SHAPE(v_gradient) == SHAPE(points)))
+      CPASSERT(PRESENT(point_gradient) .EQV. fields%calculate_forces)
+      IF (PRESENT(point_gradient)) THEN
+         CPASSERT(ALL(SHAPE(point_gradient) == SHAPE(points)))
+      END IF
+      IF (SIZE(weights) == 0) RETURN
+      ALLOCATE (displacements(3, SIZE(weights)))
+      IF (fields%calculate_forces) ALLOCATE (point_derivative(3, SIZE(weights)))
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         n = uspp%projector_sizes(center)
+         ALLOCATE (matrix(n, n))
+         CALL atom_grid_image_bounds(cell, uspp%position(:, center), points, &
+                                     MAXVAL(uspp%augmentation(ikind)%r), lower, upper)
+         DO iz = lower(3), upper(3)
+            DO iy = lower(2), upper(2)
+               DO ix = lower(1), upper(1)
+                  image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                  displacements(:, :) = points - SPREAD(image_position, 2, SIZE(weights))
+                  IF (fields%calculate_forces) THEN
+                     CALL uspp_augmentation_integrate_atom(uspp%augmentation(ikind), displacements, weights, &
+                                                           v_rho, v_gradient, matrix, fields%density(:n, :n, center), &
+                                                           derivative, point_derivative)
+                     fields%center_gradient(:, center) = fields%center_gradient(:, center) + derivative
+                     point_gradient = point_gradient + point_derivative
+                     ! Source centers and lattice images follow a homogeneous strain. The
+                     ! target atom-grid center and weight contributions are supplied by the XC caller.
+                     DO jdir = 1, 3
+                        fields%center_strain(:, jdir) = fields%center_strain(:, jdir) + derivative*image_position(jdir)
+                     END DO
+                  ELSE
+                     CALL uspp_augmentation_integrate_atom(uspp%augmentation(ikind), displacements, weights, &
+                                                           v_rho, v_gradient, matrix)
+                  END IF
+                  fields%potential(:n, :n, center) = fields%potential(:n, :n, center) + matrix
+               END DO
+            END DO
+         END DO
+         DEALLOCATE (matrix)
+      END DO
+   END SUBROUTINE qs_uspp_atom_grid_integrate
+
+! **************************************************************************************************
+!> \brief Reduce accumulated atom-grid operators and apply the complete AO/projector adjoint once.
+!> \param uspp Current geometry state, with Gamma or image-resolved projector overlaps.
+!> \param fields Local batch accumulators; preserved so the caller can inspect the quadrature contractions.
+!> \param hamiltonian AO image matrices to increment.
+!> \param density Optional spin AO image densities, required for the force path.
+!> \param sap_int Optional projector derivatives, required for the force path.
+!> \param atom_gradient Optional atomic energy gradients, incremented locally before the usual force reduction.
+!> \param cell_gradient Optional strain energy gradient. Includes source-center and projector terms only;
+!>        the caller must add moving-target-grid and quadrature-weight strain derivatives.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_atom_grid_apply(uspp, fields, hamiltonian, density, sap_int, atom_gradient, cell_gradient)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(qs_uspp_atom_grid_type), INTENT(IN)           :: fields
+      TYPE(dbcsr_p_type), INTENT(INOUT)                  :: hamiltonian(:)
+      TYPE(dbcsr_p_type), INTENT(IN), OPTIONAL           :: density(:)
+      TYPE(sap_int_type), INTENT(IN), OPTIONAL           :: sap_int(:)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :), cell_gradient(3, 3)
+
+      INTEGER                                            :: center, n
+      LOGICAL                                            :: found
+      REAL(KIND=dp), ALLOCATABLE                         :: matrix(:, :)
+      REAL(KIND=dp), POINTER                             :: block(:, :)
+      TYPE(dbcsr_type)                                   :: onsite
+      TYPE(mp_comm_type)                                 :: group
+
+      CPASSERT(PRESENT(density) .EQV. fields%calculate_forces)
+      CPASSERT(PRESENT(atom_gradient) .EQV. fields%calculate_forces)
+      CPASSERT(PRESENT(sap_int) .EQV. fields%calculate_forces)
+      IF (PRESENT(cell_gradient)) THEN
+         CPASSERT(fields%calculate_forces)
+      END IF
+      CALL dbcsr_get_info(uspp%overlaps, group=group)
+      CALL uspp_projector_create_onsite(uspp%overlaps, onsite)
+      DO center = 1, SIZE(uspp%center_atoms)
+         n = uspp%projector_sizes(center)
+         ALLOCATE (matrix(n, n))
+         matrix(:, :) = fields%potential(:n, :n, center)
+         CALL group%sum(matrix)
+         CALL dbcsr_get_block_p(onsite, center, center, block, found)
+         IF (found) block = matrix
+         IF (PRESENT(atom_gradient)) THEN
+            atom_gradient(:, uspp%center_atoms(center)) = atom_gradient(:, uspp%center_atoms(center)) &
+                                                          + fields%center_gradient(:, center)
+         END IF
+         DEALLOCATE (matrix)
+      END DO
+      IF (PRESENT(cell_gradient)) cell_gradient = cell_gradient + fields%center_strain
+      CALL apply_operator(uspp, onsite, hamiltonian, density, sap_int, atom_gradient, cell_gradient)
+      CALL dbcsr_release(onsite)
+   END SUBROUTINE qs_uspp_atom_grid_apply
+
+! **************************************************************************************************
+!> \brief Conservative image bounds for a radial support on an arbitrary triclinic cell.
+!> \param cell Auxiliary cell.
+!> \param center Original augmentation center.
+!> \param points Nonempty Cartesian point batch.
+!> \param radius Full supplied radial support; no minimum-image approximation or tail truncation.
+!> \param lower First included integer image in each cell direction.
+!> \param upper Last included integer image in each cell direction.
+! **************************************************************************************************
+   SUBROUTINE atom_grid_image_bounds(cell, center, points, radius, lower, upper)
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(KIND=dp), INTENT(IN)                          :: center(3), points(:, :), radius
+      INTEGER, INTENT(OUT)                               :: lower(3), upper(3)
+
+      INTEGER                                            :: axis
+      REAL(KIND=dp)                                      :: padding
+      REAL(KIND=dp), ALLOCATABLE                         :: fractional(:, :)
+
+      CPASSERT(SIZE(points, 2) > 0)
+      ALLOCATE (fractional(3, SIZE(points, 2)))
+      fractional(:, :) = MATMUL(cell%h_inv, points - SPREAD(center, 2, SIZE(points, 2)))
+      DO axis = 1, 3
+         padding = radius*SQRT(SUM(cell%h_inv(axis, :)**2))
+         ! Include numerical boundary points; the radial evaluator enforces the spherical support.
+         padding = padding + 32.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, padding, MAXVAL(ABS(fractional(axis, :))))
+         lower(axis) = CEILING(MINVAL(fractional(axis, :)) - padding)
+         upper(axis) = FLOOR(MAXVAL(fractional(axis, :)) + padding)
+      END DO
+   END SUBROUTINE atom_grid_image_bounds
 
 ! **************************************************************************************************
 !> \brief Prepare USPP centers, unweighted projector overlaps, and the generalized metric.
