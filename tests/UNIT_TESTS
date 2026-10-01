@@ -27,6 +27,7 @@ atom_upf_unittest
 paw_upf_unittest
 paw_onecenter_unittest
 paw_xc_unittest
+xc_pbe_unittest
 uspp_augmentation_unittest
 atom_uspp_unittest
 uspp_fourier_unittest

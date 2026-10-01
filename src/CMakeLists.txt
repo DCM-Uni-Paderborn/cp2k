@@ -1607,6 +1607,7 @@ set(CP2K_PROGS_F
     paw_upf_unittest.F
     paw_onecenter_unittest.F
     paw_xc_unittest.F
+    xc/xc_pbe_unittest.F
     atom_uspp_unittest.F
     uspp_augmentation_unittest.F
     uspp_fourier_unittest.F
@@ -2048,6 +2049,7 @@ list(
   "paw_upf_unittest"
   "paw_onecenter_unittest"
   "paw_xc_unittest"
+  "xc_pbe_unittest"
   "atom_uspp_unittest"
   "uspp_augmentation_unittest"
   "uspp_fourier_unittest"
@@ -2099,6 +2101,7 @@ add_executable(atom_upf_unittest atom_upf_unittest.F)
 add_executable(paw_upf_unittest paw_upf_unittest.F)
 add_executable(paw_onecenter_unittest paw_onecenter_unittest.F)
 add_executable(paw_xc_unittest paw_xc_unittest.F)
+add_executable(xc_pbe_unittest xc/xc_pbe_unittest.F)
 add_executable(atom_uspp_unittest atom_uspp_unittest.F)
 add_executable(uspp_augmentation_unittest uspp_augmentation_unittest.F)
 add_executable(uspp_fourier_unittest uspp_fourier_unittest.F)
