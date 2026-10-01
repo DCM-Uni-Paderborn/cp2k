@@ -24,7 +24,8 @@ MODULE uspp_augmentation
                                               orbtramat
    USE spherical_harmonics,             ONLY: y_lm
    USE splines,                         ONLY: spline3ders
-   USE upf_projector_integrals,         ONLY: upf_projector_type
+   USE upf_projector_integrals,         ONLY: upf_projector_product_gaunt,&
+                                              upf_projector_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -57,7 +58,7 @@ CONTAINS
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       TYPE(uspp_augmentation_type), INTENT(OUT)          :: augmentation
 
-      INTEGER                                            :: i, j, l, m, n, nc, p, pair, q, s
+      INTEGER                                            :: i, j, l, n, nc, p, pair, q
       REAL(KIND=dp), ALLOCATABLE                         :: weights(:)
 
       CPASSERT(.NOT. pot%has_so .AND. .NOT. pot%is_paw)
@@ -90,21 +91,13 @@ CONTAINS
       augmentation%radial_index(:) = projectors%radial_index
       augmentation%angular_index(:) = projectors%angular_index
       augmentation%lbeta(:) = pot%lbeta
-      ALLOCATE (augmentation%gaunt(n, n, (augmentation%lmax + 1)**2), augmentation%q(n, n))
-      augmentation%gaunt = 0.0_dp
+      CALL upf_projector_product_gaunt(projectors, augmentation%gaunt)
+      ALLOCATE (augmentation%q(n, n))
       augmentation%q = 0.0_dp
       DO q = 1, n
          j = projectors%radial_index(q)
-         l = pot%lbeta(j)
-         m = projectors%angular_index(q) - l*l
          DO p = 1, n
             i = projectors%radial_index(p)
-            ! Contract the existing analytic monomial/Y/Y integrals with Y_j's polynomial.
-            DO s = 1, nco(l)
-               augmentation%gaunt(p, q, :) = augmentation%gaunt(p, q, :) + &
-                                             orbtramat(l)%slm(m, s)*projectors%gaunt(ncoset(l - 1) + s, &
-                                                                           projectors%angular_index(p), :(augmentation%lmax + 1)**2)
-            END DO
             pair = MAX(i, j)*(MAX(i, j) - 1)/2 + MIN(i, j)
             IF (projectors%angular_index(p) == projectors%angular_index(q)) THEN
                augmentation%q(p, q) = SUM(augmentation%weighted_q(:, pair, 0))
