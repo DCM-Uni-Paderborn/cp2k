@@ -103,10 +103,39 @@ charge/metric equality, reciprocal conjugation, projector symmetry, adjointness,
 reciprocal-list agreement and a constant-potential shift. Both one- and two-rank MPI runs pass.
 These checks establish the kernel; they are not end-to-end USPP energies or a performance benchmark.
 
-Next integration steps are the generalized atomic initial guess, projector density and metric
-assembly, augmentation contributions to the local effective potential and total energy, and their
-force/stress derivatives. Direct quadrature is retained as a correctness reference when introducing
-reciprocal interpolation and distributed grid operations.
+The distributed AO bridge is implemented in `uspp_projector_operators.F`: it forms the atomic blocks
+of `B^T P B`, constructs `S_G+B q B^T` without modifying `S_G`, and adds `B A B^T` to an AO
+operator. The latter permits projector-mediated blocks outside the original Gaussian overlap
+pattern. Only atomic diagonal blocks of the projector density are retained; those blocks are reduced
+from their unique DBCSR owner to the grid communicator. Potential integration reduces local
+reciprocal contributions before storing the on-site blocks. Thus process-grid replication must not
+multiply either the charge or the Hamiltonian.
+
+`qs_uspp_projectors.F` assembles Gamma-point B from the uncompressed `build_sap_ints` overlap lists.
+It retains the AO row distribution used by the ABBA neighbor lists and assigns each projector block
+to a unique DBCSR owner. ABBA already supplies all projector centers to ranks holding the AO row or
+column. Periodic images are summed after reserving and finalizing the block pattern, so pending
+DBCSR work blocks cannot overwrite an earlier image. The H-weighted `achint` is not used. Non-Gamma
+Bloch phases still need a separate implementation.
+
+The new distributed regression includes two kinds, unequal AO/projector block sizes, sparse B, both
+triangles of a symmetric density matrix, new AO couplings, replicated neighbor lists, multiple
+periodic images and non-USPP centers. A dense Cartesian Gaussian Fourier oracle checks the complete
+grid/operator chain. Charge, adjointness, a constant-potential metric shift and finite differences
+with respect to P and B are checked on tall and wide MPI processor grids, including ranks with no G
+vectors. The projector pullback is `2 alpha P B A`; the force assembly must combine the potential
+term with `-2 W B q` and augmentation-center derivatives.
+
+The regression also uses actual CP2K PW grids and FFT transfers in a sheared cell. It checks the
+real-space integrated charge and the real-space/grid-operator energy identity for full reciprocal
+grids with odd/even dimensions and the odd half-space grids selected by Quickstep. Half-space grids
+with even dimensions are not a Quickstep configuration (`pw_env_methods.F`).
+
+These routines are callable building blocks, not yet connected to the SCF lifecycle. Remaining steps
+are initialization from the selected USPP kinds, preservation and use of S_G/S by the correct
+consumers, generalized atomic initial guesses, SCF density and Hamiltonian hooks, the all-center
+short-range ionic potential, and complete force/stress derivatives. Direct radial quadrature is
+retained as a correctness reference for subsequent acceleration.
 
 ## Hamiltonian and local-potential accounting
 

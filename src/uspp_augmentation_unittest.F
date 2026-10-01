@@ -18,6 +18,8 @@ PROGRAM uspp_augmentation_unittest
                                               cp2k_init
 
    IMPLICIT NONE
+   LOGICAL :: source_root_argument
+
    CHARACTER(LEN=*), PARAMETER :: fixture = 'uspp-augmentation-test.upf'
    CHARACTER(LEN=default_path_length) :: filename
    INTEGER :: unit, i, j, l, n, ns, pair, channels
@@ -100,6 +102,11 @@ PROGRAM uspp_augmentation_unittest
    ! Optional SSSP files: export invariants for an independent XML-reader comparison.
    DO i = 1, COMMAND_ARGUMENT_COUNT()
       CALL GET_COMMAND_ARGUMENT(i, filename)
+      ! do_regtest.py passes the CP2K source root before any optional UPF audit files.
+      IF (i == 1) THEN
+         INQUIRE (FILE=TRIM(filename)//"/tests/UNIT_TESTS", EXIST=source_root_argument)
+         IF (source_root_argument) CYCLE
+      END IF
       CALL atom_read_upf(pot, TRIM(filename), read_augmentation=.TRUE.)
       IF (.NOT. ALL(ieee_is_finite(pot%qij)) .OR. .NOT. ALL(ieee_is_finite(pot%qijl))) THEN
          ERROR STOP 'Nonfinite USPP augmentation'

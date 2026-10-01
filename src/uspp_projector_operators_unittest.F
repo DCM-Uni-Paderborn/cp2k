@@ -1,0 +1,563 @@
+!--------------------------------------------------------------------------------------------------!
+!   CP2K: A general program to perform molecular dynamics simulations                              !
+!   Copyright 2000-2026 CP2K developers group <https://cp2k.org>                                   !
+!                                                                                                  !
+!   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
+!--------------------------------------------------------------------------------------------------!
+
+! **************************************************************************************************
+!> \brief MPI regression for AO/projector/grid coupling, with a dense Cartesian Gaussian oracle.
+! **************************************************************************************************
+PROGRAM uspp_projector_operators_unittest
+   USE atom_upf,                        ONLY: atom_release_upf,&
+                                              atom_upfpot_type
+   USE cp_dbcsr_api,                    ONLY: &
+        dbcsr_copy, dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, &
+        dbcsr_distribution_type, dbcsr_finalize, dbcsr_get_info, dbcsr_get_stored_coordinates, &
+        dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
+        dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_put_block, dbcsr_release, dbcsr_type
+   USE fft_tools,                       ONLY: finalize_fft,&
+                                              init_fft
+   USE kinds,                           ONLY: dp
+   USE libcp2k,                         ONLY: cp2k_finalize,&
+                                              cp2k_init
+   USE mathconstants,                   ONLY: pi
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_comm_world
+   USE orbital_pointers,                ONLY: indco,&
+                                              nco,&
+                                              ncoset
+   USE orbital_transformation_matrices, ONLY: orbtramat
+   USE pw_grid_types,                   ONLY: FULLSPACE,&
+                                              HALFSPACE,&
+                                              pw_grid_type
+   USE pw_grids,                        ONLY: pw_grid_create,&
+                                              pw_grid_release
+   USE pw_methods,                      ONLY: pw_transfer
+   USE pw_types,                        ONLY: pw_c1d_gs_type,&
+                                              pw_r3d_rs_type
+   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_matrix
+   USE sap_kind_types,                  ONLY: release_sap_int,&
+                                              sap_int_type
+   USE upf_projector_integrals,         ONLY: upf_projector_init,&
+                                              upf_projector_type
+   USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
+                                              uspp_augmentation_type
+   USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
+                                              uspp_projector_collocate,&
+                                              uspp_projector_density,&
+                                              uspp_projector_integrate,&
+                                              uspp_projector_metric,&
+                                              uspp_projector_pullback
+
+   IMPLICIT NONE
+
+   INTEGER, PARAMETER :: nao = 6, nproj = 6, ng = 7
+   INTEGER, TARGET :: ao_sizes(3) = [2, 3, 1], pp_sizes(2) = [4, 2]
+   INTEGER, TARGET :: ao_rows(3), ao_cols(3), pp_rows(2), pp_cols(2)
+   INTEGER, ALLOCATABLE, TARGET :: grid(:, :)
+   INTEGER, POINTER :: pgrid(:, :), rs(:), cs(:), rd(:), cd(:)
+   INTEGER :: i, j, k, ip, iq, rank, nranks, nlocal, ig, case_id, nprows, npcols
+   INTEGER :: kind(2) = [1, 2], first(2) = [1, 5], last(2) = [4, 6]
+   INTEGER, ALLOCATABLE :: local_index(:)
+   REAL(KIND=dp), PARAMETER :: volume = 137.0_dp, step = 1.e-5_dp
+   REAL(KIND=dp) :: b(nao, nproj), p(nao, nao), sg(nao, nao), metric(nao, nao), work(nao, nao)
+   REAL(KIND=dp) :: h(nao, nao), q(nproj, nproj), d(nproj, nproj), a(nproj, nproj), projected(nproj, nproj)
+   REAL(KIND=dp) :: db(nao, nproj), gradient(nao, nproj), positions(3, 2), gvecs(3, ng), weights(ng)
+   REAL(KIND=dp) :: charge, energy, expected, plus, minus, max_error, alpha(2) = [1.1_dp, 0.7_dp]
+   REAL(KIND=dp), ALLOCATABLE :: local_g(:, :), local_weight(:)
+   COMPLEX(KIND=dp) :: vg(ng), rho_ref(ng), qg(nproj, nproj), rho_all(ng)
+   COMPLEX(KIND=dp), ALLOCATABLE :: local_rho(:), local_v(:)
+   TYPE(atom_upfpot_type) :: pot(2)
+   TYPE(upf_projector_type) :: beta(2)
+   TYPE(uspp_augmentation_type), ALLOCATABLE :: aug(:)
+   TYPE(dbcsr_type) :: bm, pm, sm, gm, hm, dm, am, gradm, assembled
+   TYPE(dbcsr_distribution_type) :: dist_ao, dist_b, dist_pp
+   TYPE(mp_comm_type) :: comm
+
+   CALL cp2k_init()
+   CALL comm%set_handle(mp_comm_world%get_handle())
+   rank = comm%mepos
+   nranks = comm%num_pe
+   CALL init_fft("FFTSG", alltoall=.FALSE., pool_limit=4, wisdom_file="", plan_style=1)
+   max_error = 0.0_dp
+   ALLOCATE (aug(2))
+   DO k = 1, 2
+      CALL make_augmentation(k)
+   END DO
+   positions(:, 1) = [0.21_dp, -0.4_dp, 0.7_dp]
+   positions(:, 2) = [1.3_dp, 0.9_dp, -0.8_dp]
+   gvecs(:, 1) = 0.0_dp
+   gvecs(:, 2) = [0.3_dp, -0.7_dp, 1.1_dp]
+   gvecs(:, 3) = [2.1_dp, 0.2_dp, -0.4_dp]
+   gvecs(:, 4) = [0.0_dp, 0.0_dp, 2.8_dp]
+   gvecs(:, 5:7) = -gvecs(:, 2:4)
+   vg(1) = CMPLX(0.37_dp, 0.0_dp, dp)
+   vg(2:4) = [CMPLX(0.2_dp, -0.3_dp, dp), CMPLX(-0.5_dp, 0.8_dp, dp), CMPLX(1.1_dp, 0.4_dp, dp)]
+   vg(5:7) = CONJG(vg(2:4))
+   DO j = 1, nproj
+      DO i = 1, nao
+         b(i, j) = 0.13_dp*SIN(REAL(i*j, dp))
+         db(i, j) = 0.17_dp*COS(REAL(2*i + j, dp))
+      END DO
+   END DO
+   b(1:2, 5:6) = 0.0_dp
+   b(6, 1:4) = 0.0_dp
+   db(1:2, 5:6) = 0.0_dp
+   db(6, 1:4) = 0.0_dp
+   p = MATMUL(b, TRANSPOSE(b))
+   sg = 0.0_dp
+   DO i = 1, nao
+      p(i, i) = p(i, i) + 0.7_dp
+      sg(i, i) = 1.0_dp + 0.03_dp*i
+   END DO
+   q = 0.0_dp
+   DO k = 1, 2
+      q(first(k):last(k), first(k):last(k)) = aug(k)%q
+   END DO
+
+   ! Exercise both tall and wide MPI processor grids, including more ranks than centers.
+   DO case_id = 1, 2
+      nprows = nranks
+      npcols = 1
+      IF (case_id == 2) THEN
+         nprows = 1
+         npcols = nranks
+      END IF
+      ALLOCATE (grid(0:nprows - 1, 0:npcols - 1))
+      grid(:, :) = RESHAPE([(i, i=0, nranks - 1)], [nprows, npcols])
+      pgrid => grid
+      DO i = 1, 3
+         ao_rows(i) = MODULO(i - 1, nprows)
+         ao_cols(i) = MODULO(i, npcols)
+      END DO
+      DO i = 1, 2
+         pp_rows(i) = MODULO(i, nprows)
+         pp_cols(i) = MODULO(i - 1, npcols)
+      END DO
+      rd => ao_rows; cd => ao_cols
+      CALL dbcsr_distribution_new(dist_ao, group=comm%get_handle(), pgrid=pgrid, row_dist=rd, col_dist=cd)
+      rd => ao_rows; cd => pp_cols
+      CALL dbcsr_distribution_new(dist_b, group=comm%get_handle(), pgrid=pgrid, row_dist=rd, col_dist=cd)
+      rd => pp_rows; cd => pp_cols
+      CALL dbcsr_distribution_new(dist_pp, group=comm%get_handle(), pgrid=pgrid, row_dist=rd, col_dist=cd)
+      rs => ao_sizes; cs => pp_sizes
+      CALL make_matrix(bm, 'USPP B', dist_b, rs, cs, b, 'N')
+      rs => ao_sizes; cs => ao_sizes
+      CALL make_matrix(pm, 'USPP P', dist_ao, rs, cs, p, 'S')
+      CALL make_matrix(sm, 'Gaussian S', dist_ao, rs, cs, sg, 'S')
+      CALL check_sap_assembly()
+      CALL uspp_projector_metric(bm, aug, kind, sm, gm)
+      CALL gather(gm, metric)
+      work = sg + MATMUL(b, MATMUL(q, TRANSPOSE(b)))
+      CALL check(MAXVAL(ABS(metric - work)), 'generalized metric including new AO blocks')
+      IF (MAXVAL(ABS(metric(1:2, 3:5))) < 1.e-6_dp) ERROR STOP 'Missing projector-mediated AO coupling'
+      CALL gather(sm, work)
+      CALL check(MAXVAL(ABS(work - sg)), 'Gaussian overlap preserved')
+      CALL uspp_projector_density(bm, pm, dm)
+      CALL gather(dm, projected)
+      d = MATMUL(TRANSPOSE(b), MATMUL(p, b))
+      d(1:4, 5:6) = 0.0_dp
+      d(5:6, 1:4) = 0.0_dp
+      CALL check(MAXVAL(ABS(projected - d)), 'distributed on-site density, both triangles of P')
+      CALL dbcsr_release(dm)
+
+      ! Full and conjugate-pair G lists, then G=0 alone (some MPI ranks have no G).
+      DO ip = 1, 3
+         iq = ng
+         weights = 1.0_dp
+         IF (ip == 2) THEN
+            iq = 4
+            weights(2:4) = 2.0_dp
+         ELSE IF (ip == 3) THEN
+            iq = 1
+         END IF
+         nlocal = COUNT([(MODULO(ig - 1, nranks) == rank, ig=1, iq)])
+         ALLOCATE (local_index(nlocal), local_g(3, nlocal), local_weight(nlocal), local_rho(nlocal), local_v(nlocal))
+         j = 0
+         DO ig = 1, iq
+            IF (MODULO(ig - 1, nranks) /= rank) CYCLE
+            j = j + 1
+            local_index(j) = ig
+            local_g(:, j) = gvecs(:, ig)
+            local_v(j) = vg(ig)
+            local_weight(j) = weights(ig)
+         END DO
+         rho_ref = CMPLX(0.0_dp, 0.0_dp, dp)
+         a = 0.0_dp
+         DO ig = 1, iq
+            CALL fourier_reference(gvecs(:, ig), qg)
+            rho_ref(ig) = SUM(d*qg)
+            a = a + volume*weights(ig)*REAL(CONJG(qg)*vg(ig), dp)
+         END DO
+         local_rho = CMPLX(0.0_dp, 0.0_dp, dp)
+         CALL uspp_projector_collocate(bm, pm, aug, kind, positions, local_g, volume, local_rho, charge)
+         rho_all = CMPLX(0.0_dp, 0.0_dp, dp)
+         rho_all(local_index) = local_rho
+         CALL comm%sum(rho_all)
+         CALL check(volume*MAXVAL(ABS(rho_all - rho_ref)), 'distributed density versus Cartesian Gaussian integrals')
+         CALL check(ABS(charge - volume*REAL(rho_all(1), dp)), 'augmentation G=0 charge')
+         CALL check(ABS(SUM(p*sg) + charge - SUM(p*metric)), 'total charge equals Tr(P S)')
+         CALL dbcsr_copy(hm, sm)
+         CALL uspp_projector_integrate(bm, aug, kind, positions, local_g, volume, local_v, local_weight, hm)
+         CALL gather(hm, h)
+         CALL check(MAXVAL(ABS(h - sg - MATMUL(b, MATMUL(a, TRANSPOSE(b))))), 'screened Hamiltonian')
+         energy = volume*SUM(local_weight*REAL(CONJG(local_v)*local_rho, dp))
+         CALL comm%sum(energy)
+         CALL check(ABS(energy - SUM(p*(h - sg))), 'AO/grid adjoint identity')
+         IF (ip == 3) CALL check(MAXVAL(ABS(h - sg - REAL(vg(1), dp)*(metric - sg))), 'constant-potential metric shift')
+         ! Repeat collocation to test accumulation and stable, independent spin use.
+         CALL uspp_projector_collocate(bm, pm, aug, kind, positions, local_g, volume, local_rho, charge)
+         IF (nlocal > 0) CALL check(volume*MAXVAL(ABS(local_rho - 2.0_dp*rho_ref(local_index))), 'density accumulation')
+         CALL dbcsr_release(hm)
+         DEALLOCATE (local_index, local_g, local_weight, local_rho, local_v)
+      END DO
+
+      ! Variational derivative with respect to P, through the sparse AO operator.
+      rs => pp_sizes; cs => pp_sizes
+      CALL make_matrix(am, 'USPP onsite', dist_pp, rs, cs, a, 'N')
+      CALL dbcsr_copy(hm, sm)
+      CALL uspp_projector_add_operator(bm, am, hm)
+      CALL gather(hm, h)
+      work = 0.5_dp*(db + TRANSPOSE(db))
+      plus = SUM(MATMUL(TRANSPOSE(b), MATMUL(p + step*work, b))*a)
+      minus = SUM(MATMUL(TRANSPOSE(b), MATMUL(p - step*work, b))*a)
+      expected = SUM(work*(h - sg))
+      CALL check(ABS((plus - minus)/(2.0_dp*step) - expected), 'density derivative of augmentation energy', 1.e-9_dp)
+      ! B derivative and sign of the generalized-metric Pulay contraction.
+      DO ip = 1, 2
+         expected = REAL(3 - 2*ip, dp)
+         CALL uspp_projector_pullback(bm, pm, am, expected, gradm)
+         CALL gather(gradm, gradient)
+         plus = expected*SUM(MATMUL(TRANSPOSE(b + step*db), MATMUL(p, b + step*db))*a)
+         minus = expected*SUM(MATMUL(TRANSPOSE(b - step*db), MATMUL(p, b - step*db))*a)
+         CALL check(ABS((plus - minus)/(2.0_dp*step) - SUM(gradient*db)), 'projector variational derivative', 1.e-9_dp)
+         CALL dbcsr_release(gradm)
+      END DO
+      IF (case_id == 1) CALL check_pw_grid()
+      CALL dbcsr_release(am)
+      CALL dbcsr_release(hm)
+      CALL dbcsr_release(bm)
+      CALL dbcsr_release(pm)
+      CALL dbcsr_release(sm)
+      CALL dbcsr_release(gm)
+      CALL dbcsr_release(assembled)
+      CALL dbcsr_distribution_release(dist_ao)
+      CALL dbcsr_distribution_release(dist_b)
+      CALL dbcsr_distribution_release(dist_pp)
+      DEALLOCATE (grid)
+   END DO
+   CALL comm%max(max_error)
+   IF (rank == 0) WRITE (*, '(A,I0,A,ES23.15)') 'USPP distributed AO/grid checks: ranks=', nranks, ', maximum error=', max_error
+   DO k = 1, 2
+      CALL atom_release_upf(pot(k))
+      BLOCK
+         TYPE(upf_projector_type) :: empty
+         beta(k) = empty
+      END BLOCK
+   END DO
+   DEALLOCATE (aug)
+   CALL finalize_fft(comm, "")
+   CALL cp2k_finalize()
+
+CONTAINS
+
+! **************************************************************************************************
+!> \brief ...
+! **************************************************************************************************
+
+   SUBROUTINE check_pw_grid()
+      INTEGER                                            :: ix, iy, iz, nx, parity, span
+      LOGICAL                                            :: odd
+      REAL(KIND=dp)                                      :: aug_charge, cell(3, 3), egrid, &
+                                                            hpw_dense(nao, nao), total_charge
+      REAL(KIND=dp), ALLOCATABLE                         :: multiplicity(:)
+      TYPE(dbcsr_type)                                   :: hpw
+      TYPE(pw_c1d_gs_type)                               :: rho_g, v_g
+      TYPE(pw_grid_type), POINTER                        :: pw_grid
+      TYPE(pw_r3d_rs_type)                               :: rho_r, v_r
+
+      NULLIFY (pw_grid)
+      cell = 0.0_dp
+      cell(1, 1) = 5.0_dp; cell(2, 2) = 6.0_dp; cell(3, 3) = 4.5_dp
+      cell(1, 2) = 0.7_dp
+      DO span = FULLSPACE, HALFSPACE, -1
+         DO parity = 1, 2
+            ! Quickstep uses HALFSPACE only with odd grids (pw_env_methods).
+            IF (span == HALFSPACE .AND. parity == 2) CYCLE
+            odd = parity == 1
+            nx = 4 + parity
+            CALL pw_grid_create(pw_grid, comm, cell, grid_span=span, npts=[nx, nx, nx], &
+                                odd=odd, fft_usage=.TRUE., rs_dims=[nranks, 1])
+            CALL rho_g%create(pw_grid)
+            CALL v_g%create(pw_grid)
+            CALL rho_r%create(pw_grid)
+            CALL v_r%create(pw_grid)
+            rho_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+            CALL uspp_projector_collocate(bm, pm, aug, kind, positions, pw_grid%g, pw_grid%vol, rho_g%array, aug_charge)
+            CALL pw_transfer(rho_g, rho_r)
+            total_charge = SUM(rho_r%array)*pw_grid%dvol
+            CALL comm%sum(total_charge)
+            CALL check(ABS(total_charge - aug_charge), 'CP2K FFT integrated augmentation charge')
+            DO iz = LBOUND(v_r%array, 3), UBOUND(v_r%array, 3)
+               DO iy = LBOUND(v_r%array, 2), UBOUND(v_r%array, 2)
+                  DO ix = LBOUND(v_r%array, 1), UBOUND(v_r%array, 1)
+                     v_r%array(ix, iy, iz) = 0.37_dp + SIN(0.17_dp*REAL(ix*iy, dp)) + COS(0.23_dp*REAL(iz + 2*ix, dp))
+                  END DO
+               END DO
+            END DO
+            CALL pw_transfer(v_r, v_g)
+            ALLOCATE (multiplicity(SIZE(v_g%array)))
+            multiplicity = 1.0_dp
+            IF (span == HALFSPACE) THEN
+               multiplicity = 2.0_dp
+               IF (pw_grid%have_g0) multiplicity(1) = 1.0_dp
+            END IF
+            CALL dbcsr_copy(hpw, sm)
+            CALL uspp_projector_integrate(bm, aug, kind, positions, pw_grid%g, pw_grid%vol, v_g%array, multiplicity, hpw)
+            CALL gather(hpw, hpw_dense)
+            egrid = SUM(v_r%array*rho_r%array)*pw_grid%dvol
+            CALL comm%sum(egrid)
+            CALL check(ABS(egrid - SUM(p*(hpw_dense - sg))), 'CP2K real-space FFT/DBCSR adjoint identity')
+            CALL dbcsr_release(hpw)
+            DEALLOCATE (multiplicity)
+            CALL rho_g%release()
+            CALL v_g%release()
+            CALL rho_r%release()
+            CALL v_r%release()
+            CALL pw_grid_release(pw_grid)
+         END DO
+      END DO
+   END SUBROUTINE check_pw_grid
+
+! **************************************************************************************************
+!> \brief ...
+! **************************************************************************************************
+   SUBROUTINE check_sap_assembly()
+      INTEGER                                            :: atom, center, ENTRY, image, mycol, &
+                                                            myrow, r
+      REAL(KIND=dp)                                      :: assembled_b(nao, nproj), factor
+      TYPE(sap_int_type), POINTER                        :: sap(:)
+
+      ALLOCATE (sap(1))
+      ALLOCATE (sap(1)%alist(3))
+      CALL dbcsr_get_info(sm, my_prow=myrow, my_pcol=mycol)
+      r = 1
+      DO atom = 1, 3
+         ! Emulate ABBA's union of the local AO row and column atom lists.
+         IF (ao_rows(atom) /= myrow .AND. ao_cols(atom) /= mycol) THEN
+            r = r + ao_sizes(atom)
+            CYCLE
+         END IF
+         sap(1)%alist(atom)%aatom = atom
+         ALLOCATE (sap(1)%alist(atom)%clist(6))
+         DO center = 1, 2
+            DO image = 1, 2
+               ENTRY = 2*(center - 1) + image
+               sap(1)%alist(atom)%clist(ENTRY)%catom = center
+               sap(1)%alist(atom)%clist(ENTRY)%cell = [image - 1, 0, 0]
+               ALLOCATE (sap(1)%alist(atom)%clist(ENTRY)%acint(ao_sizes(atom), pp_sizes(center), 1))
+               factor = 0.3_dp
+               IF (image == 2) factor = 0.7_dp
+               sap(1)%alist(atom)%clist(ENTRY)%acint(:, :, 1) = factor*b(r:r + ao_sizes(atom) - 1, first(center):last(center))
+            END DO
+         END DO
+         ! One non-USPP center and one unused neighbor must not enter B.
+         sap(1)%alist(atom)%clist(5)%catom = 3
+         sap(1)%alist(atom)%clist(6)%catom = 0
+         r = r + ao_sizes(atom)
+      END DO
+      CALL qs_uspp_projector_matrix(sm, sap, [1, 2], pp_sizes, assembled)
+      CALL gather(assembled, assembled_b)
+      CALL check(MAXVAL(ABS(assembled_b - b)), 'Quickstep ABBA ownership and periodic images')
+      CALL release_sap_int(sap)
+      ! Feed the assembled matrix to all subsequent AO/grid and variational tests.
+      CALL dbcsr_release(bm)
+      CALL dbcsr_copy(bm, assembled)
+   END SUBROUTINE check_sap_assembly
+
+! **************************************************************************************************
+!> \brief ...
+!> \param value ...
+!> \param label ...
+!> \param tolerance ...
+! **************************************************************************************************
+   SUBROUTINE check(value, label, tolerance)
+      REAL(KIND=dp), INTENT(IN)                          :: value
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: tolerance
+
+      REAL(KIND=dp)                                      :: tol
+
+      tol = 2.e-12_dp
+      IF (PRESENT(tolerance)) tol = tolerance
+      max_error = MAX(max_error, value)
+      IF (value > tol) THEN
+         WRITE (*, *) rank, TRIM(label), value, tol
+         ERROR STOP 'USPP distributed operator mismatch'
+      END IF
+   END SUBROUTINE check
+
+! **************************************************************************************************
+!> \brief ...
+!> \param k ...
+! **************************************************************************************************
+   SUBROUTINE make_augmentation(k)
+      INTEGER, INTENT(IN)                                :: k
+
+      INTEGER, PARAMETER                                 :: nr = 1601
+
+      INTEGER                                            :: i, j, l, pair
+
+      pot(k)%number_of_proj = 2
+      pot(k)%is_ultrasoft = .TRUE.
+      ALLOCATE (pot(k)%lbeta(2), pot(k)%dion(2, 2), pot(k)%qij(2, 2))
+      pot(k)%lbeta(:) = [0, 2 - k]
+      pot(k)%dion = 0.0_dp
+      pot(k)%qij = 42.0_dp
+      ALLOCATE (pot(k)%r(nr), pot(k)%rab(nr), pot(k)%beta(nr, 2), pot(k)%qijl(nr, 3, 0:2*(2 - k)))
+      pot(k)%r(:) = [(REAL(i - 1, dp)*0.00625_dp, i=1, nr)]
+      pot(k)%rab = 0.00625_dp
+      pot(k)%qijl = 0.0_dp
+      DO j = 1, 2
+         pot(k)%beta(:, j) = pot(k)%r**pot(k)%lbeta(j)*EXP(-alpha(k)*pot(k)%r**2)
+         DO i = 1, j
+            pair = j*(j - 1)/2 + i
+            DO l = ABS(pot(k)%lbeta(i) - pot(k)%lbeta(j)), pot(k)%lbeta(i) + pot(k)%lbeta(j), 2
+               pot(k)%qijl(:, pair, l) = coefficient(i, j, k)*pot(k)%r**(pot(k)%lbeta(i) + pot(k)%lbeta(j) + 2) &
+                                         *EXP(-alpha(k)*pot(k)%r**2)
+            END DO
+         END DO
+      END DO
+      CALL upf_projector_init(pot(k), 1, beta(k))
+      CALL uspp_augmentation_init(pot(k), beta(k), aug(k))
+   END SUBROUTINE make_augmentation
+
+! **************************************************************************************************
+!> \brief ...
+!> \param i ...
+!> \param j ...
+!> \param k ...
+!> \return ...
+! **************************************************************************************************
+   REAL(KIND=dp) FUNCTION coefficient(i, j, k)
+      INTEGER, INTENT(IN)                                :: i, j, k
+
+      coefficient = 0.04_dp*(i + j + k)
+      IF (i /= j) coefficient = -coefficient
+   END FUNCTION coefficient
+
+! **************************************************************************************************
+!> \brief ...
+!> \param g ...
+!> \param RESULT ...
+! **************************************************************************************************
+   SUBROUTINE fourier_reference(g, RESULT)
+      REAL(KIND=dp), INTENT(IN)                          :: g(3)
+      COMPLEX(KIND=dp), INTENT(OUT)                      :: result(nproj, nproj)
+
+      COMPLEX(KIND=dp)                                   :: moments(0:2, 3), phase, term
+      INTEGER                                            :: a, axis, c, i, j, k, li, lj, mi, mj, &
+                                                            powers(3), u, v
+
+      RESULT = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO k = 1, 2
+         DO axis = 1, 3
+            moments(0, axis) = SQRT(pi/alpha(k))*EXP(-g(axis)**2/(4.0_dp*alpha(k)))
+            moments(1, axis) = CMPLX(0.0_dp, -g(axis)/(2.0_dp*alpha(k)), dp)*moments(0, axis)
+            moments(2, axis) = moments(0, axis)/(2.0_dp*alpha(k)) &
+                               + CMPLX(0.0_dp, -g(axis)/(2.0_dp*alpha(k)), dp)*moments(1, axis)
+         END DO
+         phase = EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g, positions(:, k)), dp))/volume
+         DO v = 1, aug(k)%nproj
+            j = beta(k)%radial_index(v); lj = pot(k)%lbeta(j); mj = beta(k)%angular_index(v) - lj*lj
+            DO u = 1, aug(k)%nproj
+               i = beta(k)%radial_index(u); li = pot(k)%lbeta(i); mi = beta(k)%angular_index(u) - li*li
+               DO c = 1, nco(lj)
+                  DO a = 1, nco(li)
+                     powers = indco(:, ncoset(li - 1) + a) + indco(:, ncoset(lj - 1) + c)
+                     term = PRODUCT([moments(powers(1), 1), moments(powers(2), 2), moments(powers(3), 3)])
+                     RESULT(first(k) + u - 1, first(k) + v - 1) = RESULT(first(k) + u - 1, first(k) + v - 1) &
+                                                 + orbtramat(li)%slm(mi, a)*orbtramat(lj)%slm(mj, c)*term*phase*coefficient(i, j, k)
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE fourier_reference
+
+! **************************************************************************************************
+!> \brief ...
+!> \param matrix ...
+!> \param name ...
+!> \param dist ...
+!> \param row_size ...
+!> \param col_size ...
+!> \param dense ...
+!> \param sym ...
+! **************************************************************************************************
+   SUBROUTINE make_matrix(matrix, name, dist, row_size, col_size, dense, sym)
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix
+      CHARACTER(LEN=*), INTENT(IN)                       :: name
+      TYPE(dbcsr_distribution_type), INTENT(IN)          :: dist
+      INTEGER, INTENT(INOUT), POINTER                    :: row_size(:), col_size(:)
+      REAL(KIND=dp), INTENT(IN)                          :: dense(:, :)
+      CHARACTER, INTENT(IN)                              :: sym
+
+      INTEGER                                            :: c, i, j, owner, r
+
+      CALL dbcsr_create(matrix, name, dist, sym, row_size, col_size)
+      r = 1
+      DO i = 1, SIZE(row_size)
+         c = 1
+         DO j = 1, SIZE(col_size)
+            IF (sym == 'S' .AND. j < i) THEN
+               c = c + col_size(j)
+               CYCLE
+            END IF
+            CALL dbcsr_get_stored_coordinates(matrix, i, j, owner)
+            IF (owner == rank .AND. ANY(dense(r:r + row_size(i) - 1, c:c + col_size(j) - 1) /= 0.0_dp)) THEN
+               CALL dbcsr_put_block(matrix, i, j, dense(r:r + row_size(i) - 1, c:c + col_size(j) - 1))
+            END IF
+            c = c + col_size(j)
+         END DO
+         r = r + row_size(i)
+      END DO
+      CALL dbcsr_finalize(matrix)
+   END SUBROUTINE make_matrix
+
+! **************************************************************************************************
+!> \brief ...
+!> \param matrix ...
+!> \param dense ...
+! **************************************************************************************************
+   SUBROUTINE gather(matrix, dense)
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix
+      REAL(KIND=dp), INTENT(OUT)                         :: dense(:, :)
+
+      CHARACTER                                          :: sym
+      INTEGER                                            :: c, i, j, nc, nr, r
+      INTEGER, POINTER                                   :: cols(:), rows(:)
+      LOGICAL                                            :: transposed
+      REAL(KIND=dp), POINTER                             :: block(:, :)
+      TYPE(dbcsr_iterator_type)                          :: iter
+
+      CALL dbcsr_get_info(matrix, row_blk_offset=rows, col_blk_offset=cols, matrix_type=sym)
+      dense = 0.0_dp
+      CALL dbcsr_iterator_start(iter, matrix)
+      DO WHILE (dbcsr_iterator_blocks_left(iter))
+         CALL dbcsr_iterator_next_block(iter, i, j, block, transposed=transposed)
+         r = rows(i); c = cols(j)
+         nr = SIZE(block, 1); nc = SIZE(block, 2)
+         IF (transposed) THEN
+            dense(r:r + nc - 1, c:c + nr - 1) = TRANSPOSE(block)
+            IF (sym == 'S' .AND. i /= j) dense(c:c + nr - 1, r:r + nc - 1) = block
+         ELSE
+            dense(r:r + nr - 1, c:c + nc - 1) = block
+            IF (sym == 'S' .AND. i /= j) dense(c:c + nc - 1, r:r + nr - 1) = TRANSPOSE(block)
+         END IF
+      END DO
+      CALL dbcsr_iterator_stop(iter)
+      CALL comm%sum(dense)
+   END SUBROUTINE gather
+END PROGRAM uspp_projector_operators_unittest
