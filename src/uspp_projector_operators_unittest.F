@@ -39,6 +39,9 @@ PROGRAM uspp_projector_operators_unittest
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_matrix
    USE sap_kind_types,                  ONLY: release_sap_int,&
                                               sap_int_type
+   USE upf_local_integrals,             ONLY: upf_local_fourier,&
+                                              upf_local_init,&
+                                              upf_local_type
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
    USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
@@ -95,6 +98,7 @@ PROGRAM uspp_projector_operators_unittest
    vg(1) = CMPLX(0.37_dp, 0.0_dp, dp)
    vg(2:4) = [CMPLX(0.2_dp, -0.3_dp, dp), CMPLX(-0.5_dp, 0.8_dp, dp), CMPLX(1.1_dp, 0.4_dp, dp)]
    vg(5:7) = CONJG(vg(2:4))
+   CALL add_ionic_potential()
    DO j = 1, nproj
       DO i = 1, nao
          b(i, j) = 0.13_dp*SIN(REAL(i*j, dp))
@@ -261,6 +265,50 @@ PROGRAM uspp_projector_operators_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Include local potentials on both augmentation centers and a third ordinary ion.
+! **************************************************************************************************
+   SUBROUTINE add_ionic_potential()
+      COMPLEX(KIND=dp)                                   :: analytic(ng), values(ng)
+      INTEGER                                            :: center, ig, ir
+      REAL(KIND=dp)                                      :: amplitude, exponent, position(3), &
+                                                            potential, radius
+      TYPE(atom_upfpot_type)                             :: ion
+      TYPE(upf_local_type)                               :: local
+
+      ALLOCATE (ion%r(4001), ion%rab(4001), ion%vlocal(4001))
+      ion%zion = 3.0_dp
+      DO center = 1, 3
+         amplitude = (-1.0_dp)**center*(0.5_dp + center)
+         exponent = 0.35_dp + 0.6_dp*center
+         IF (center <= 2) THEN
+            position = positions(:, center)
+         ELSE
+            position = [-0.3_dp, 1.6_dp, 0.2_dp]
+         END IF
+         DO ir = 1, SIZE(ion%r)
+            radius = REAL(ir - 1, dp)*0.003_dp
+            ion%r(ir) = radius
+            ion%rab(ir) = 0.003_dp
+            potential = amplitude*EXP(-exponent*radius**2)
+            IF (radius > 0.0_dp) THEN
+               ion%vlocal(ir) = potential - ion%zion*ERF(SQRT(0.9_dp)*radius)/radius
+            ELSE
+               ion%vlocal(ir) = potential - 2.0_dp*ion%zion*SQRT(0.9_dp/pi)
+            END IF
+         END DO
+         CALL upf_local_init(ion, 0.9_dp, 0, local)
+         CALL upf_local_fourier(local, gvecs, position, volume, values)
+         DO ig = 1, ng
+            analytic(ig) = amplitude*(pi/exponent)**1.5_dp/volume* &
+                           EXP(CMPLX(-SUM(gvecs(:, ig)**2)/(4.0_dp*exponent), -DOT_PRODUCT(gvecs(:, ig), position), dp))
+         END DO
+         CALL check(MAXVAL(ABS(values - analytic)), 'all-center local ionic Fourier potential')
+         vg = vg + values
+      END DO
+      CALL atom_release_upf(ion)
+   END SUBROUTINE add_ionic_potential
 
 ! **************************************************************************************************
 !> \brief ...

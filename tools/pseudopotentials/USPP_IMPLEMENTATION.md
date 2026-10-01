@@ -151,6 +151,20 @@ part is already included when Hartree electrostatics is evaluated on the augment
 plus the signed Gaussian core density. Its self-energy and ion-ion corrections must follow the
 existing NC bookkeeping.
 
+`upf_local_fourier` supplies the short-range ionic potential from the same radial cache as the
+native AO integrals. It evaluates `4*pi/Omega * exp(-i*G.R) * integral r^2 V_sr(r) j_0(G*r) dr`,
+including the finite G=0 term. Center derivatives use the translation phase; Cartesian G derivatives
+include both the phase and `d j_0(G*r)/dG = -r*j_1(G*r)`. The explicit volume derivative is
+`-V_sr(G)/Omega`. All potential centers must be summed before integrating against any atom's
+augmentation. In particular, an ordinary NC center also screens a neighboring USPP augmentation.
+This transform remains a reference with direct radial quadrature and is not yet a Quickstep SCF
+hook. Signed Gaussian potentials test the transform and both derivatives on odd/even linear and
+shifted logarithmic meshes, including zero, small, and large G. The maximum absolute error is
+7.32e-14 in the tested atomic-unit quantities. The distributed operator regression also includes
+ionic potentials from two augmentation centers and a third ordinary ion. The updated tests pass on
+1, 2, and 4 MPI ranks; the standard six-unit UPF/USPP regression harness passes with two ranks in
+the Debug build.
+
 The implementation must retain the ordinary Gaussian overlap S_G separately from the generalized
 metric S. Audit every consumer of the overlap rather than replacing an array globally. The SCF
 eigensolver, occupations, orbital orthonormalization and electron-count checks need S; AO integrals
@@ -159,6 +173,12 @@ and the unaugmented density still refer to the original Gaussian basis.
 Atomic initial guesses also require attention: the present SGP conversion returns no USPP operators.
 Enabling the parser without replacing that path would produce an invalid atomic reference. A radial
 generalized atomic solver and its augmentation density are part of the native implementation.
+`atom_kind_orbitals.F` uses diagonal entries of `atom%integrals%ovlp` to convert atomic density
+matrices, Fock matrices, and orbital coefficients to the normalized Quickstep basis. These
+conversion factors require the Gaussian overlap even after the atomic eigensolver acquires the USPP
+metric. The spherical atomic density used by Hartree/XC must include augmentation from the same
+atomic projector overlaps; changing only the eigenproblem would leave an inconsistent atomic
+functional.
 
 ## Derivatives and subsequent decompositions
 
