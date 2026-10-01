@@ -677,6 +677,9 @@ list(
   qs_ks_utils.F
   qs_ks_reference.F
   qs_kubo_transport.F
+  localizer_sparse_inertia.F
+  localizer_sparse_pfaffian.F
+  spectral_localizer_sparse.F
   qs_spectral_localizer.F
   qs_localizer_torus.F
   spectral_localizer.F
@@ -1574,6 +1577,11 @@ list(APPEND CP2K_SRCS_F grpp/libgrpp.F)
 set(CP2K_FPGA_SRC_C pw/fpga/fft_fpga.c pw/fpga/opencl_utils.c)
 set(CP2K_PW_SRCS_C pw/gpu/pw_gpu_internal.c)
 set(CP2K_SRCS_CPP torch_c_api.cpp ace_c_api.cpp)
+if(CP2K_USE_TACHO)
+  list(APPEND CP2K_SRCS_CPP tacho_c_api.cpp)
+else()
+  list(APPEND CP2K_EXCLUDED_SRCS_CPP tacho_c_api.cpp)
+endif()
 
 list(APPEND CP2K_SRCS_C "${CP2K_OFFLOAD_SRCS_C}" "${CP2K_MPIWRAP_SRCS_C}")
 
@@ -1611,6 +1619,8 @@ set(CP2K_PROGS_F
     kpoint_lattice_fft_unittest.F
     kpoint_smearing_unittest.F
     topology_wilson_unittest.F
+    quadratic_dbcsr_unittest.F
+    spectral_localizer_sparse_unittest.F
     spectral_localizer_unittest.F
     quadratic_pseudospectrum_unittest.F
     pw/pw_unittest.F
@@ -1707,7 +1717,8 @@ if(CP2K_ENABLE_CONSISTENCY_CHECKS)
     "${CP2K_GRID_SRCS_GPU};${CP2K_GRID_SRCS_HIP};${CP2K_DBM_SRCS_GPU};${CP2K_PW_SRCS_GPU}"
     "*.cu"
     "")
-  cp2k_compare_src_with_list("${CP2K_SRCS_CPP}" "*.cpp" "")
+  cp2k_compare_src_with_list("${CP2K_SRCS_CPP}" "*.cpp"
+                             "${CP2K_EXCLUDED_SRCS_CPP}")
   return()
 endif()
 
@@ -1871,6 +1882,7 @@ target_link_libraries(
     $<$<BOOL:${CP2K_USE_DEEPMD}>:DeePMD::deepmd
     DeePMD::deepmd_c>
     $<$<BOOL:${CP2K_USE_PEXSI}>:PEXSI::PEXSI>
+    $<$<BOOL:${CP2K_USE_MUMPS}>:MUMPS::MUMPS>
     $<$<BOOL:${CP2K_USE_ACE}>:pace::pace>
     $<$<BOOL:${CP2K_USE_TBLITE}>:cp2k::tblite>
     $<$<BOOL:${CP2K_USE_TBLITE}>:s-dftd3::s-dftd3>
@@ -1952,6 +1964,7 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_USE_DFTD4}>:__DFTD4>
     $<$<BOOL:${CP2K_USE_DEEPMD}>:__DEEPMD>
     $<$<BOOL:${CP2K_USE_PEXSI}>:__PEXSI>
+    $<$<BOOL:${CP2K_USE_MUMPS}>:__MUMPS>
     $<$<BOOL:${CP2K_USE_ACE}>:__ACE>
     $<$<BOOL:${CP2K_USE_SIRIUS}>:__SIRIUS>
     $<$<BOOL:${CP2K_USE_LIBVDWXC}>:__LIBVDWXC>
@@ -2011,6 +2024,10 @@ if(CP2K_USE_CUDA
 endif()
 
 add_dependencies(cp2k cp2k_build_info)
+if(CP2K_USE_TACHO)
+  target_link_libraries(cp2k PRIVATE ShyLU_NodeTacho::all_libs Boost::headers)
+  target_compile_definitions(cp2k PUBLIC __TACHO)
+endif()
 
 # add an alias for the FetchContent. Note that FindPackage will automatically
 # have this alias available.
@@ -2046,6 +2063,8 @@ list(
   "kpoint_lattice_fft_unittest"
   "kpoint_smearing_unittest"
   "topology_wilson_unittest"
+  "quadratic_dbcsr_unittest"
+  "spectral_localizer_sparse_unittest"
   "spectral_localizer_unittest"
   "quadratic_pseudospectrum_unittest"
   "pw_unittest"
@@ -2092,6 +2111,9 @@ add_executable(gapw_1c_basis_unittest gapw_1c_basis_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
 add_executable(kpoint_smearing_unittest kpoint_smearing_unittest.F)
 add_executable(topology_wilson_unittest topology_wilson_unittest.F)
+add_executable(quadratic_dbcsr_unittest quadratic_dbcsr_unittest.F)
+add_executable(spectral_localizer_sparse_unittest
+               spectral_localizer_sparse_unittest.F)
 add_executable(spectral_localizer_unittest spectral_localizer_unittest.F)
 add_executable(quadratic_pseudospectrum_unittest
                quadratic_pseudospectrum_unittest.F)

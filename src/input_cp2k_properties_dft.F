@@ -3405,8 +3405,13 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="SOLVER", type_of_var=enum_t, &
-                          description="Dense LAPACK reference calculation in the AO overlap metric.", &
-                          enum_c_vals=s2a("DENSE"), enum_i_vals=[0], default_i_val=0)
+                          description="DENSE uses LAPACK LDL inertia checked against generalized eigenvalues. "// &
+                          "For DIMENSION 3 it uses real LU/QR determinant signs and a generalized chiral gap. "// &
+                          "MUMPS uses distributed sparse inertia and shifted-factorization gap brackets; "// &
+                          "requires an MPI build linked with MUMPS and supports CHERN. "// &
+                          "TACHO uses sparse skew-LDL Pfaffians for Z2 with MUMPS gap validation; "// &
+                          "requires CP2K_USE_TACHO. Pfaffian factors reside on the source rank.", &
+                          enum_c_vals=s2a("DENSE", "MUMPS", "TACHO"), enum_i_vals=[0, 1, 2], default_i_val=0)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="INVARIANT", type_of_var=enum_t, &
@@ -3515,10 +3520,16 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="MAX_AO", &
-                          description="Safety limit on scalar AO dimension for the dense solver. "// &
+                          description="Safety limit on scalar AO dimension for either solver. "// &
                           "DENSE uses replicated localizers and source-rank diagonalization, "// &
                           "quadratic memory and cubic runtime; the SOC Hermitian localizer has dimension "// &
                           "4*NAO (DIMENSION 2) or 8*NAO (DIMENSION 3).", default_i_val=512)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="PFAFFIAN_MEMORY", &
+                          description="Limit in MiB for numerical Pfaffian factor, frontal, update and solve buffers "// &
+                          "with SOLVER TACHO. Excludes sparse input, matching, symbolic ordering and MUMPS memory. "// &
+                          "Exceeding this limit aborts without reporting an index.", default_i_val=4096)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
    END SUBROUTINE create_spectral_localizer_section
@@ -3581,8 +3592,10 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="SOLVER", type_of_var=enum_t, &
-                          description="Dense LAPACK reference calculation in the AO overlap metric.", &
-                          enum_c_vals=s2a("DENSE"), enum_i_vals=[0], default_i_val=0)
+                          description="DENSE is a replicated small-system reference. ITERATIVE applies Q using "// &
+                          "DBCSR products and reusable MUMPS metric factors, without constructing Q or S inverse. "// &
+                          "ITERATIVE requires CP2K_USE_MUMPS and keeps a bounded replicated vector subspace.", &
+                          enum_c_vals=s2a("DENSE", "ITERATIVE"), enum_i_vals=[0, 1], default_i_val=0)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="POSITION", &
@@ -3607,18 +3620,27 @@ CONTAINS
                           description="Number of lowest quadratic-operator eigenstates, S-normalized.")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="MAX_SUBSPACE", default_i_val=48, &
+                          description="Maximum iterative Ritz-space dimension. Must allow at least twice NSTATES "// &
+                          "unless the entire AO/spinor space fits. Storage scales as NAO times MAX_SUBSPACE.")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="MAX_ITER", default_i_val=300, &
+                          description="Maximum iterative Ritz steps. Unconverged states are not reported as results.")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="EPS_EIGEN", default_r_val=1.e-8_dp, &
                           description="Convergence criterion: S-inverse residual norm <= EPS_EIGEN times "// &
                           "max(1,abs(eigenvalue)), with eigenvalues in atomic units of energy squared.")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="EPS_METRIC", default_r_val=1.e-10_dp, &
-                          description="Minimum AO metric eigenvalue ratio. "// &
+                          description="Minimum AO metric eigenvalue ratio (conservative lower bound with MUMPS). "// &
                           "Ill-conditioned directions are rejected, not silently discarded.")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="MAX_AO", default_i_val=512, &
-                          description="Scalar AO safety limit for the dense solver, including all periodic torus cells. "// &
+                          description="Scalar AO safety limit for either solver, including all periodic torus cells. "// &
                           "Increase deliberately for large systems. "// &
                           "SOC doubles the operator dimension; DENSE uses quadratic memory.")
       CALL section_add_keyword(section, keyword)

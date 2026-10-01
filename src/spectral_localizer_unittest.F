@@ -1096,6 +1096,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE :: result(:, :)
       REAL(dp) :: energies(n), residuals(4), difference, maximum_error, energy, scale, gap(2), metric_ratio, exact_gap
       INTEGER :: i, j, mode, nr, nc, io, status
+      LOGICAL :: sparse
       CHARACTER(LEN=32) :: argument
 
       ALLOCATE (para_env)
@@ -1108,12 +1109,14 @@ CONTAINS
       CALL init_fft('FFTSG', alltoall=.FALSE., pool_limit=4, wisdom_file='', plan_style=1)
       nr = para_env%num_pe
       nc = 1
+      sparse = .FALSE.
       DO i = 1, command_argument_count()
          CALL get_command_argument(i, argument)
          IF (TRIM(argument) == '--column-grid') THEN
             nr = 1
             nc = para_env%num_pe
          END IF
+         IF (TRIM(argument) == '--sparse') sparse = .TRUE.
       END DO
       ALLOCATE (process_grid(0:nr - 1, 0:nc - 1), row_dist(nb), col_dist(nb), sizes(nb))
       process_grid = RESHAPE([(i, i=0, para_env%num_pe - 1)], [nr, nc])
@@ -1199,7 +1202,7 @@ CONTAINS
          END IF
          DEALLOCATE (RESULT)
          CALL localizer_dbcsr_release(flat)
-         CALL localizer_flatten_checked(h, s, energy, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, &
+         CALL localizer_flatten_checked(h, s, energy, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, sparse, &
                                         para_env, flat, gap, metric_ratio, residuals, status)
          IF (status /= 0) CPABORT('Checked flattening failed')
          exact_gap = MINVAL(ABS(energies - energy))
@@ -1230,7 +1233,7 @@ CONTAINS
       CALL make_operator(sdense, s)
       CALL localizer_flatten_dbcsr(h, s, 0.0_dp, scale, 1.e-9_dp, para_env, flat, residuals, status)
       IF (status /= 1) CPABORT('Singular spectral sign was accepted')
-      CALL localizer_flatten_checked(h, s, 0.0_dp, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, &
+      CALL localizer_flatten_checked(h, s, 0.0_dp, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, sparse, &
                                      para_env, flat, gap, metric_ratio, residuals, status)
       IF (status /= 1) CPABORT('Checked flattening accepted a zero spectral mode')
       CALL localizer_flatten_dbcsr(h, s, energy, -scale, 1.e-9_dp, para_env, flat, residuals, status)
@@ -1254,19 +1257,19 @@ CONTAINS
       hdense(1, 1) = 1.e-11_dp
       CALL make_operator(hdense, h)
       CALL make_operator(sdense, s)
-      CALL localizer_flatten_checked(h, s, 0.0_dp, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, &
+      CALL localizer_flatten_checked(h, s, 0.0_dp, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, sparse, &
                                      para_env, flat, gap, metric_ratio, residuals, status)
       IF (status /= 1) CPABORT('Unresolved near-zero spectral mode was accepted')
       CALL localizer_dbcsr_release(s)
       sdense(1, 1) = -1.0_dp
       CALL make_operator(sdense, s)
-      CALL localizer_flatten_checked(h, s, 0.0_dp, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, &
+      CALL localizer_flatten_checked(h, s, 0.0_dp, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, sparse, &
                                      para_env, flat, gap, metric_ratio, residuals, status)
       IF (status /= -2) CPABORT('Indefinite metric was accepted')
       CALL localizer_dbcsr_release(s)
       sdense(1, 1) = 1.e-12_dp
       CALL make_operator(sdense, s)
-      CALL localizer_flatten_checked(h, s, 0.0_dp, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, &
+      CALL localizer_flatten_checked(h, s, 0.0_dp, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, sparse, &
                                      para_env, flat, gap, metric_ratio, residuals, status)
       IF (status /= -2) CPABORT('Ill-conditioned metric was accepted')
       CALL localizer_dbcsr_release(h)
@@ -1357,7 +1360,7 @@ CONTAINS
                CPABORT('Bloch flattening differs from exact full-torus reference')
             END IF
             CALL localizer_dbcsr_release(flat)
-            CALL localizer_flatten_checked(h, s, energy, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, &
+            CALL localizer_flatten_checked(h, s, energy, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, sparse, &
                                            para_env, flat, gap, metric_ratio, residuals, status)
             IF (status /= 0) CPABORT('Full-torus reference flattening failed')
             CALL localizer_dbcsr_dense(flat, para_env, RESULT)

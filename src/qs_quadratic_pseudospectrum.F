@@ -32,6 +32,11 @@ MODULE qs_quadratic_pseudospectrum
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
+   USE localizer_sparse_inertia,        ONLY: sparse_inertia_available,&
+                                              sparse_inertia_finish,&
+                                              sparse_inertia_type,&
+                                              sparse_metric_solve,&
+                                              sparse_metric_start
    USE mathconstants,                   ONLY: twopi
    USE message_passing,                 ONLY: mp_para_env_type
    USE qs_ao_translations,              ONLY: ao_translation_matrices
@@ -42,11 +47,14 @@ MODULE qs_quadratic_pseudospectrum
    USE qs_localizer_torus,              ONLY: localizer_torus_operators,&
                                               torus_translation_operators
    USE quadratic_pseudospectrum,        ONLY: quadratic_dense,&
-                                              quadratic_result_type
+                                              quadratic_result_type,&
+                                              quadratic_solve
    USE reference_manager,               ONLY: cite_reference
    USE spectral_localizer_dbcsr,        ONLY: localizer_ao_operators,&
+                                              localizer_dbcsr_apply,&
                                               localizer_dbcsr_check,&
                                               localizer_dbcsr_dense,&
+                                              localizer_dbcsr_pencil,&
                                               localizer_dbcsr_release,&
                                               localizer_matrix_type
 #include "./base/base_uses.f90"
@@ -61,40 +69,35 @@ CONTAINS
 !> \param qs_env Converged Quickstep environment
 ! **************************************************************************************************
    SUBROUTINE qs_scf_post_quadratic(qs_env)
-      TYPE(qs_environment_type), POINTER                 :: qs_env
-
+      TYPE(qs_environment_type), POINTER :: qs_env
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_scf_post_quadratic'
-
-      CHARACTER(len=256)                                 :: matrix_error
-      COMPLEX(dp), ALLOCATABLE                           :: complex_shift(:), dense_metric(:, :), &
-                                                            dense_operators(:, :, :), &
-                                                            temporary(:, :)
-      INTEGER :: ao, axis, cell_periodic, formulation, handle, i, ie, ik, ip, iw, j, max_ao, &
-         max_iter, max_space, n, nao, ndim, nobs, npositions, nstates, nt, output_unit, periodic, &
-         spin, status
-      INTEGER, ALLOCATABLE                               :: directions(:)
-      INTEGER, POINTER                                   :: grid(:)
-      LOGICAL :: active, do_kpoints, do_soc, explicit_grid, explicit_value, periodic_analysis, &
-         torus_analysis, translation_analysis, valid
-      LOGICAL, ALLOCATABLE                               :: unitary(:)
-      REAL(dp)                                           :: eps_eigen, eps_metric, &
-                                                            hermiticity_error, &
-                                                            max_hermiticity_error, query(3)
-      REAL(dp), ALLOCATABLE                              :: angles(:), radii(:), shift(:), &
-                                                            translations(:, :), weights(:)
-      REAL(dp), POINTER                                  :: energies(:), kappas(:), point(:)
-      TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(dbcsr_p_type), POINTER                        :: cosines(:), images_h(:, :), &
-                                                            images_s(:, :), matrix_ks(:), &
-                                                            matrix_s(:), positions(:), sines(:), &
-                                                            soc(:, :)
-      TYPE(dft_control_type), POINTER                    :: dft_control
-      TYPE(localizer_matrix_type)                        :: metric
-      TYPE(localizer_matrix_type), ALLOCATABLE           :: operators(:)
-      TYPE(mp_para_env_type), POINTER                    :: para_env
-      TYPE(quadratic_result_type)                        :: result
-      TYPE(section_vals_type), POINTER                   :: input, section
+      CHARACTER(len=256) :: matrix_error
+      TYPE(section_vals_type), POINTER :: input, section
+      TYPE(cp_logger_type), POINTER :: logger
+      TYPE(mp_para_env_type), POINTER :: para_env
+      TYPE(cell_type), POINTER :: cell
+      TYPE(dft_control_type), POINTER :: dft_control
+      TYPE(dbcsr_p_type), POINTER :: matrix_s(:), matrix_ks(:), positions(:), soc(:, :)
+      TYPE(dbcsr_p_type), POINTER :: images_s(:, :), images_h(:, :), cosines(:), sines(:)
+      TYPE(localizer_matrix_type) :: metric
+      TYPE(localizer_matrix_type), ALLOCATABLE :: operators(:)
+      TYPE(sparse_inertia_type) :: factors
+      TYPE(quadratic_result_type) :: result
+      REAL(dp), POINTER :: energies(:), kappas(:), point(:)
+      REAL(dp), ALLOCATABLE :: a(:), b(:), identity(:)
+      REAL(dp), ALLOCATABLE :: shift(:), weights(:), radii(:), angles(:)
+      REAL(dp), ALLOCATABLE :: translations(:, :)
+      COMPLEX(dp), ALLOCATABLE :: complex_shift(:)
+      LOGICAL, ALLOCATABLE :: unitary(:)
+      COMPLEX(dp), ALLOCATABLE :: dense_operators(:, :, :), dense_metric(:, :), temporary(:, :)
+      INTEGER, ALLOCATABLE :: rows(:), cols(:)
+      INTEGER, ALLOCATABLE :: directions(:)
+      INTEGER, POINTER :: grid(:)
+      REAL(dp) :: eps_eigen, eps_metric, ratio, query(3), hermiticity_error, max_hermiticity_error
+      INTEGER :: handle, iw, output_unit, nao, n, order, max_ao, solver, spin, nstates, max_space, max_iter, &
+                 periodic, npositions, ip, ie, ik, i, j, status, ao, cell_periodic, formulation, ndim, nobs, axis, nt
+      LOGICAL :: active, do_soc, valid, periodic_analysis, explicit_grid, do_kpoints
+      LOGICAL :: translation_analysis, torus_analysis, explicit_value
 
       CALL timeset(routineN, handle)
       CALL get_qs_env(qs_env, input=input)
@@ -191,6 +194,10 @@ CONTAINS
          END IF
       END IF
       ALLOCATE (operators(nobs), shift(nobs), weights(nobs))
+      CALL section_vals_val_get(section, 'SOLVER', i_val=solver)
+      IF (solver == 1 .AND. .NOT. sparse_inertia_available()) THEN
+         CPABORT('Quadratic ITERATIVE solver requires an MPI build with CP2K_USE_MUMPS.')
+      END IF
       CALL section_vals_val_get(section, 'SPIN_CHANNEL', i_val=spin)
       IF (spin < 1 .OR. spin > SIZE(matrix_ks)) THEN
          CPABORT('Quadratic SPIN_CHANNEL is unavailable.')
@@ -207,8 +214,8 @@ CONTAINS
       n = nao
       IF (do_soc) n = 2*nao
       CALL section_vals_val_get(section, 'NSTATES', i_val=nstates)
-      max_space = n
-      max_iter = 1
+      CALL section_vals_val_get(section, 'MAX_SUBSPACE', i_val=max_space)
+      CALL section_vals_val_get(section, 'MAX_ITER', i_val=max_iter)
       CALL section_vals_val_get(section, 'EPS_EIGEN', r_val=eps_eigen)
       CALL section_vals_val_get(section, 'EPS_METRIC', r_val=eps_metric)
       CALL section_vals_val_get(section, 'ENERGY', r_vals=energies)
@@ -220,6 +227,10 @@ CONTAINS
       END IF
       IF (nstates < 1 .OR. nstates > n .OR. max_iter < 1) THEN
          CPABORT('Invalid quadratic state/iteration limits.')
+      END IF
+      IF (solver == 1 .AND. (MIN(max_space, n) < nstates .OR. &
+                             (max_space < n .AND. max_space < 2*nstates))) THEN
+         CPABORT('Quadratic MAX_SUBSPACE is too small for NSTATES.')
       END IF
       IF (.NOT. ALL(ieee_is_finite([energies, kappas, eps_eigen, eps_metric]))) THEN
          CPABORT('Quadratic analysis requires finite parameters.')
@@ -279,13 +290,23 @@ CONTAINS
             CPABORT(TRIM(matrix_error))
          END IF
       END DO
-      ALLOCATE (dense_operators(n, n, nobs))
-      CALL localizer_dbcsr_dense(metric, para_env, dense_metric)
-      DO i = 1, nobs
-         CALL localizer_dbcsr_dense(operators(i), para_env, temporary)
-         dense_operators(:, :, i) = temporary
-         DEALLOCATE (temporary)
-      END DO
+      IF (solver == 0) THEN
+         ALLOCATE (dense_operators(n, n, nobs))
+         CALL localizer_dbcsr_dense(metric, para_env, dense_metric)
+         DO i = 1, nobs
+            CALL localizer_dbcsr_dense(operators(i), para_env, temporary)
+            dense_operators(:, :, i) = temporary
+            DEALLOCATE (temporary)
+         END DO
+      ELSE
+         CALL localizer_dbcsr_pencil(operators(1), metric, para_env, order, rows, cols, a, b, identity)
+         CALL sparse_metric_start(factors, order, rows, cols, b, identity, eps_metric, para_env, ratio, status)
+         DEALLOCATE (rows, cols, a, b, identity)
+         IF (status /= 0) THEN
+            CALL sparse_inertia_finish(factors)
+            CPABORT('Quadratic sparse metric is invalid or could not be factored.')
+         END IF
+      END IF
       logger => cp_get_default_logger()
       output_unit = cp_logger_get_default_io_unit(logger)
       iw = cp_print_key_unit_nr(logger, section, 'STATES', extension='.states')
@@ -294,7 +315,12 @@ CONTAINS
       IF (output_unit > 0) THEN
          WRITE (output_unit, '(/,T2,A,I0)') 'QUADRATIC_PSEUDOSPECTRUM| AO/spinor dimension: ', n
          WRITE (output_unit, '(T2,A,ES23.14)') 'QUADRATIC_PSEUDOSPECTRUM| Relative Hermiticity error: ', max_hermiticity_error
-         WRITE (output_unit, '(T2,A)') 'QUADRATIC_PSEUDOSPECTRUM| Dense finite-basis reference'
+         IF (solver == 0) THEN
+            WRITE (output_unit, '(T2,A)') 'QUADRATIC_PSEUDOSPECTRUM| Dense finite-basis reference'
+         ELSE
+            WRITE (output_unit, '(T2,A)') 'QUADRATIC_PSEUDOSPECTRUM| DBCSR operator / MUMPS metric / block Ritz'
+            WRITE (output_unit, '(T2,A,ES23.14)') 'QUADRATIC_PSEUDOSPECTRUM| Metric ratio lower bound: ', ratio
+         END IF
          WRITE (output_unit, '(T2,A)') 'QUADRATIC_PSEUDOSPECTRUM| Joint approximate states, not a topology index.'
          IF (translation_analysis) THEN
             WRITE (output_unit, '(T2,A)') 'QUADRATIC_PSEUDOSPECTRUM| Continuum translations U(a) psi(r) = psi(r+a).'
@@ -352,18 +378,30 @@ CONTAINS
                      weights(2*i:2*i + 1) = kappas(ik)*radii(i)
                   END DO
                END IF
-               IF (para_env%is_source()) THEN
+               IF (solver == 0) THEN
+                  IF (para_env%is_source()) THEN
+                     IF (translation_analysis) THEN
+                        complex_shift(1) = energies(ie)
+                        CALL quadratic_dense(dense_operators, dense_metric, complex_shift, weights, nstates, .FALSE., max_space, &
+                                             max_iter, eps_eigen, eps_metric, RESULT, status, unitary)
+                     ELSE
+                        CALL quadratic_dense(dense_operators, dense_metric, shift, weights, nstates, .FALSE., max_space, &
+                                             max_iter, eps_eigen, eps_metric, RESULT, status)
+                     END IF
+                  END IF
+                  CALL para_env%bcast(status, para_env%source)
+               ELSE
                   IF (translation_analysis) THEN
                      complex_shift(1) = energies(ie)
-                     CALL quadratic_dense(dense_operators, dense_metric, complex_shift, weights, nstates, .FALSE., max_space, &
-                                          max_iter, eps_eigen, eps_metric, RESULT, status, unitary)
+                     CALL quadratic_solve(n, complex_shift, weights, nstates, .TRUE., max_space, max_iter, eps_eigen, &
+                                          apply, solve, RESULT, status, adjoint, unitary)
                   ELSE
-                     CALL quadratic_dense(dense_operators, dense_metric, shift, weights, nstates, .FALSE., max_space, &
-                                          max_iter, eps_eigen, eps_metric, RESULT, status)
+                     CALL quadratic_solve(n, shift, weights, nstates, .TRUE., max_space, max_iter, eps_eigen, &
+                                          apply, solve, RESULT, status)
                   END IF
                END IF
-               CALL para_env%bcast(status, para_env%source)
                IF (status /= 0) THEN
+                  IF (solver == 1) CALL sparse_inertia_finish(factors)
                   IF (status == 1) THEN
                      IF (output_unit > 0) THEN
                         WRITE (output_unit, '(T2,A,I0,A,ES23.14)') &
@@ -434,10 +472,67 @@ CONTAINS
          END DO
       END DO
       CALL cp_print_key_finished_output(iw, logger, section, 'STATES')
+      IF (solver == 1) CALL sparse_inertia_finish(factors)
       DO i = 1, nobs
          CALL localizer_dbcsr_release(operators(i))
       END DO
       CALL localizer_dbcsr_release(metric)
       CALL timestop(handle)
+   CONTAINS
+! **************************************************************************************************
+!> \brief DBCSR operator callback; result vectors are replicated, AO matrices are distributed.
+!> \param OPERATOR Zero for metric or H/X/Y/Z index
+!> \param v Input vectors
+!> \param y Output vectors
+!> \param status Return status
+! **************************************************************************************************
+      SUBROUTINE apply(OPERATOR, v, y, status)
+      INTEGER, INTENT(IN)                                :: operator
+      COMPLEX(dp), INTENT(IN)                            :: v(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
+      INTEGER, INTENT(OUT)                               :: status
+
+         IF (OPERATOR == 0) THEN
+            CALL localizer_dbcsr_apply(metric, v, y, para_env)
+         ELSE
+            CALL localizer_dbcsr_apply(operators(OPERATOR), v, y, para_env)
+         END IF
+         status = 0
+      END SUBROUTINE apply
+! **************************************************************************************************
+!> \brief Actual adjoint of a possibly nonsymmetric translation matrix.
+!> \param OPERATOR Positive operator index
+!> \param v Input block
+!> \param y Adjoint product
+!> \param status Return status
+! **************************************************************************************************
+      SUBROUTINE adjoint(OPERATOR, v, y, status)
+      INTEGER, INTENT(IN)                                :: operator
+      COMPLEX(dp), INTENT(IN)                            :: v(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
+      INTEGER, INTENT(OUT)                               :: status
+
+         CALL localizer_dbcsr_apply(operators(OPERATOR), v, y, para_env, adjoint=.TRUE.)
+         status = 0
+      END SUBROUTINE adjoint
+! **************************************************************************************************
+!> \brief Reuse distributed factors of the realified metric for complex right hand sides.
+!> \param v Input covariant vectors
+!> \param y Contravariant metric solutions
+!> \param status Return status
+! **************************************************************************************************
+      SUBROUTINE solve(v, y, status)
+      COMPLEX(dp), INTENT(IN)                            :: v(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
+      INTEGER, INTENT(OUT)                               :: status
+
+      REAL(dp), ALLOCATABLE                              :: rhs(:, :)
+
+         ALLOCATE (rhs(2*n, SIZE(v, 2)))
+         rhs(:n, :) = REAL(v, dp)
+         rhs(n + 1:, :) = AIMAG(v)
+         CALL sparse_metric_solve(factors, rhs, para_env, status)
+         y = CMPLX(rhs(:n, :), rhs(n + 1:, :), dp)
+      END SUBROUTINE solve
    END SUBROUTINE qs_scf_post_quadratic
 END MODULE qs_quadratic_pseudospectrum

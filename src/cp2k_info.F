@@ -151,6 +151,12 @@ CONTAINS
 #if defined(__PEXSI)
       flags = TRIM(flags)//" pexsi"
 #endif
+#if defined(__MUMPS)
+      flags = TRIM(flags)//" mumps"
+#endif
+#if defined(__TACHO)
+      flags = TRIM(flags)//" tacho"
+#endif
 #if defined(__ELPA)
       flags = TRIM(flags)//" elpa"
 #endif

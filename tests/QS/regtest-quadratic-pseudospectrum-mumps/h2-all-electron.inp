@@ -1,0 +1,5 @@
+@SET QS_METHOD GAPW
+@SET H_BASIS SVP-MOLOPT-GGA-ae
+@SET H_POTENTIAL ALL
+@SET QUADRATIC_SOLVER ITERATIVE
+@INCLUDE ../regtest-quadratic-pseudospectrum/h2-common.inc

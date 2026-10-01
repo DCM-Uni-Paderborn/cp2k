@@ -41,7 +41,12 @@ MODULE qs_spectral_localizer
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
+   USE localizer_sparse_inertia,        ONLY: sparse_inertia_available,&
+                                              sparse_inertia_type
+   USE localizer_sparse_pfaffian,       ONLY: sparse_pfaffian_available,&
+                                              sparse_z2_evaluate
    USE mathconstants,                   ONLY: twopi
    USE message_passing,                 ONLY: mp_para_env_type
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -58,10 +63,13 @@ MODULE qs_spectral_localizer
    USE spectral_localizer_dbcsr,        ONLY: localizer_ao_operators,&
                                               localizer_dbcsr_3d_build,&
                                               localizer_dbcsr_build,&
+                                              localizer_dbcsr_check,&
                                               localizer_dbcsr_dense,&
+                                              localizer_dbcsr_pencil,&
                                               localizer_dbcsr_release,&
                                               localizer_matrix_type
    USE spectral_localizer_flatten,      ONLY: localizer_flatten_checked
+   USE spectral_localizer_sparse,       ONLY: localizer_sparse_evaluate
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -84,15 +92,19 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE                      :: local_dense(:, :), metric_dense(:, :)
       INTEGER :: after, axis, directions(3), flatten_handle, formulation, handle, ie, ik, &
-         invariant, ip, iw, max_ao, n, nao, ndim, nposition, output_unit, plane, poisson_periodic, &
-         spin_channel, status, topology
+         invariant, ip, iw, max_ao, n, nao, ndim, nposition, order, output_unit, pfaffian_memory, &
+         plane, poisson_periodic, solver, spin_channel, status, topology
+      INTEGER(int_8)                                     :: pfaffian_fill, pfaffian_peak
+      INTEGER, ALLOCATABLE                               :: cols(:), rows(:)
       INTEGER, POINTER                                   :: grid(:)
       LOGICAL :: active, aii, do_kpoints, do_soc, explicit_scale, flatten, omit_headers, &
-         periodic_localizer, print_position, print_soc, time_reversal, torus
+         periodic_localizer, print_position, print_soc, time_reversal, torus, valid
       REAL(dp) :: build_energy, electronic_gap(2), eps_electronic_gap, eps_flattening, &
-         flatten_residuals(4), flatten_scale, local_point(3), physical_ratio
-      REAL(KIND=dp)                                      :: eps_gap, eps_metric, gap, &
+         flatten_residuals(4), flatten_scale, local_point(3), pfaffian_residual, physical_ratio
+      REAL(KIND=dp)                                      :: eps_gap, eps_metric, gap, gap_upper, &
                                                             matrix_tolerance, metric_ratio
+      REAL(KIND=dp), ALLOCATABLE                         :: sparse_a(:), sparse_b(:), &
+                                                            sparse_identity(:)
       REAL(KIND=dp), POINTER                             :: energies(:), kappas(:), point(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -106,6 +118,7 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), POINTER            :: sab_orb(:)
       TYPE(section_vals_type), POINTER                   :: input, section
+      TYPE(sparse_inertia_type)                          :: statistics
 
       CALL timeset(routineN, handle)
       NULLIFY (input, section, cell, dft_control, para_env, sab_orb, matrix_ks, matrix_s, &
@@ -192,6 +205,16 @@ CONTAINS
          CPABORT('AO position/localizer currently supports GPW and GAPW only.')
       END SELECT
       IF (active) THEN
+         CALL section_vals_val_get(section, 'SOLVER', i_val=solver)
+         IF (ndim == 3 .AND. solver /= 0) CPABORT('The 3D determinant path requires SOLVER DENSE.')
+         CALL section_vals_val_get(section, 'PFAFFIAN_MEMORY', i_val=pfaffian_memory)
+         IF (pfaffian_memory <= 0) CPABORT('PFAFFIAN_MEMORY must be positive.')
+         IF (solver /= 0 .AND. .NOT. sparse_inertia_available()) THEN
+            CPABORT('Sparse SPECTRAL_LOCALIZER requires an MPI build with CP2K_USE_MUMPS.')
+         END IF
+         IF (solver == 2 .AND. .NOT. sparse_pfaffian_available()) THEN
+            CPABORT('SOLVER TACHO requires CP2K_USE_TACHO and the skew-LDL extension.')
+         END IF
          IF (.NOT. qs_env%scf_convergence_available .OR. .NOT. qs_env%scf_converged) THEN
             CPABORT('SPECTRAL_LOCALIZER requires a converged SCF calculation.')
          END IF
@@ -256,6 +279,12 @@ CONTAINS
       CALL section_vals_val_get(section, 'INVARIANT', i_val=topology)
       aii = topology == 1
       IF (ndim == 3 .AND. .NOT. aii) CPABORT('DIMENSION 3 requires INVARIANT Z2.')
+      IF (aii .AND. solver == 1) THEN
+         CPABORT('Sparse inertia is not a Z2 Pfaffian solver; use SOLVER DENSE or TACHO.')
+      END IF
+      IF (.NOT. aii .AND. solver == 2) THEN
+         CPABORT('SOLVER TACHO requires INVARIANT Z2.')
+      END IF
       IF (aii .AND. ndim == 2) CALL cite_reference(Wong2026)
       IF (ndim == 3) CALL cite_reference(Loring2015)
       CALL section_vals_val_get(section, 'SOC', l_val=do_soc)
@@ -326,10 +355,17 @@ CONTAINS
          ELSE
             WRITE (output_unit, '(/,T2,A)') 'SPECTRAL_LOCALIZER| Finite-system DBCSR localizer'
          END IF
-         IF (ndim == 3) THEN
-            WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| LAPACK real LU/QR sign; independent generalized chiral gap.'
+         IF (solver == 0) THEN
+            IF (ndim == 3) THEN
+               WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| LAPACK real LU/QR sign; independent generalized chiral gap.'
+            ELSE
+               WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| LAPACK LDL inertia with eigenvalue validation.'
+            END IF
+         ELSE IF (solver == 1) THEN
+            WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| MUMPS sparse inertia and generalized gap brackets.'
          ELSE
-            WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| LAPACK LDL inertia with eigenvalue validation.'
+            WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| Tacho sparse Pfaffian with independent MUMPS gap brackets.'
+            WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| Pfaffian factorization on source rank; sparse COO collection.'
          END IF
          WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Localizer dimension: ', MERGE(4*n, 2*n, ndim == 3)
          IF (ndim == 3) THEN
@@ -374,7 +410,7 @@ CONTAINS
                electronic_gap(2) = electronic_gap(1)
             ELSE
                CALL localizer_flatten_checked(physical_h(1), physical_metric, energies(ie), flatten_scale, eps_flattening, &
-                                              eps_metric, eps_electronic_gap, para_env, flat_hamiltonian, &
+                                              eps_metric, eps_electronic_gap, solver /= 0, para_env, flat_hamiltonian, &
                                               electronic_gap, physical_ratio, flatten_residuals, status)
             END IF
             CALL timestop(flatten_handle)
@@ -428,34 +464,72 @@ CONTAINS
                                              local_point(:2), build_energy, kappas(ik), localizer, metric, &
                                              periodic_cosines=cosines, shifted_hamiltonian=flat_hamiltonian)
                END IF
-               CALL localizer_dbcsr_dense(localizer, para_env, local_dense)
-               CALL localizer_dbcsr_dense(metric, para_env, metric_dense)
-               IF (para_env%is_source()) THEN
-                  IF (ndim == 3) THEN
-                     CALL localizer_3d_matrix_evaluate(local_dense, metric_dense(:n, :n), &
-                                                       matrix_tolerance, eps_metric, eps_gap, invariant, gap, &
-                                                       metric_ratio, status)
-                  ELSE
-                     CALL localizer_matrix_evaluate(local_dense, metric_dense(:n, :n), aii, &
-                                                    matrix_tolerance, eps_metric, eps_gap, invariant, gap, metric_ratio, status)
+               IF (solver == 0) THEN
+                  CALL localizer_dbcsr_dense(localizer, para_env, local_dense)
+                  CALL localizer_dbcsr_dense(metric, para_env, metric_dense)
+                  IF (para_env%is_source()) THEN
+                     IF (ndim == 3) THEN
+                        CALL localizer_3d_matrix_evaluate(local_dense, metric_dense(:n, :n), &
+                                                          matrix_tolerance, eps_metric, eps_gap, invariant, gap, &
+                                                          metric_ratio, status)
+                     ELSE
+                        CALL localizer_matrix_evaluate(local_dense, metric_dense(:n, :n), aii, &
+                                                       matrix_tolerance, eps_metric, eps_gap, invariant, gap, metric_ratio, status)
+                     END IF
+                     IF (status < 0 .AND. output_unit > 0 .AND. ndim == 2) THEN
+                        WRITE (output_unit, '(T2,A,I0,2ES14.5)') &
+                           'SPECTRAL_LOCALIZER| Failure status and L/B Hermiticity residuals: ', status, &
+                           MAXVAL(ABS(local_dense - CONJG(TRANSPOSE(local_dense)))), &
+                           MAXVAL(ABS(metric_dense - CONJG(TRANSPOSE(metric_dense))))
+                     END IF
                   END IF
-                  IF (status < 0 .AND. output_unit > 0 .AND. ndim == 2) THEN
-                     WRITE (output_unit, '(T2,A,I0,2ES14.5)') &
-                        'SPECTRAL_LOCALIZER| Failure status and L/B Hermiticity residuals: ', status, &
-                        MAXVAL(ABS(local_dense - CONJG(TRANSPOSE(local_dense)))), &
-                        MAXVAL(ABS(metric_dense - CONJG(TRANSPOSE(metric_dense))))
+                  DEALLOCATE (local_dense, metric_dense)
+               ELSE
+                  CALL localizer_dbcsr_check(localizer, para_env, matrix_tolerance, valid)
+                  IF (.NOT. valid) THEN
+                     CPABORT('SPECTRAL_LOCALIZER: nonfinite or non-Hermitian sparse localizer.')
                   END IF
+                  CALL localizer_dbcsr_check(metric, para_env, matrix_tolerance, valid)
+                  IF (.NOT. valid) THEN
+                     CPABORT('SPECTRAL_LOCALIZER: nonfinite or non-Hermitian sparse metric.')
+                  END IF
+                  CALL localizer_dbcsr_pencil(localizer, metric, para_env, order, rows, cols, &
+                                              sparse_a, sparse_b, sparse_identity)
+                  CALL localizer_sparse_evaluate(order, rows, cols, sparse_a, sparse_b, sparse_identity, para_env, &
+                                                 eps_metric, eps_gap, invariant, gap, gap_upper, metric_ratio, statistics, status)
+                  pfaffian_residual = 0.0_dp
+                  pfaffian_fill = 0
+                  pfaffian_peak = 0
+                  IF (aii .AND. status == 0) THEN
+                     IF (invariant /= 0) THEN
+                        status = -3
+                     ELSE
+                        CALL sparse_z2_evaluate(order, rows, cols, sparse_a, sparse_b, para_env, &
+                                                matrix_tolerance, metric_ratio, gap, invariant, &
+                                                pfaffian_residual, pfaffian_fill, status, &
+                                                max_memory_bytes=INT(pfaffian_memory, int_8)*1024_int_8**2, &
+                                                peak_memory_bytes=pfaffian_peak)
+                     END IF
+                  END IF
+                  DEALLOCATE (rows, cols, sparse_a, sparse_b, sparse_identity)
                END IF
-               DEALLOCATE (local_dense, metric_dense)
                CALL localizer_dbcsr_release(localizer)
                CALL localizer_dbcsr_release(metric)
                CALL para_env%bcast(status, para_env%source)
                IF (status < 0 .OR. status > 1) THEN
+                  IF (solver /= 0 .AND. output_unit > 0) THEN
+                     IF (statistics%error_code /= 0 .OR. statistics%error_detail /= 0) THEN
+                        WRITE (output_unit, '(T2,A,2I12)') 'SPECTRAL_LOCALIZER| MUMPS error code/detail: ', &
+                           statistics%error_code, statistics%error_detail
+                     END IF
+                  END IF
                   SELECT CASE (status)
                   CASE (-2)
                      CPABORT('SPECTRAL_LOCALIZER: invalid AO metric; check basis/EPS_METRIC.')
                   CASE (-3)
                      CPABORT('SPECTRAL_LOCALIZER: broken physical TR/AII structure.')
+                  CASE (-6)
+                     CPABORT('Pfaffian memory exhausted: check PFAFFIAN_MEMORY.')
                   CASE DEFAULT
                      CPABORT('SPECTRAL_LOCALIZER: invalid data or factorization failure.')
                   END SELECT
@@ -471,7 +545,25 @@ CONTAINS
                   ELSE
                      WRITE (output_unit, '(T2,A,ES23.14)') 'SPECTRAL_LOCALIZER| Kappa [hartree/bohr]: ', kappas(ik)
                   END IF
-                  WRITE (output_unit, '(T2,A,ES23.14)') 'SPECTRAL_LOCALIZER| Metric ratio: ', metric_ratio
+                  IF (solver == 0) THEN
+                     WRITE (output_unit, '(T2,A,ES23.14)') 'SPECTRAL_LOCALIZER| Metric ratio: ', metric_ratio
+                  ELSE
+                     WRITE (output_unit, '(T2,A,ES23.14)') 'SPECTRAL_LOCALIZER| Metric ratio lower bound: ', metric_ratio
+                     WRITE (output_unit, '(T2,A,2ES23.14)') 'SPECTRAL_LOCALIZER| Gap bracket [hartree]: ', gap, gap_upper
+                     WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Sparse factorizations: ', statistics%factorizations
+                     WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Workspace retries: ', statistics%workspace_retries
+                     WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Sparse input entries: ', statistics%input_entries
+                     WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Factor entries: ', statistics%factor_entries
+                     WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Factor real workspace entries: ', &
+                        statistics%factor_workspace_entries
+                     WRITE (output_unit, '(T2,A,F14.3)') 'SPECTRAL_LOCALIZER| Solver memory sum [MB]: ', statistics%peak_memory_mb
+                     IF (solver == 2) THEN
+                        WRITE (output_unit, '(T2,A,ES23.14)') 'SPECTRAL_LOCALIZER| Pfaffian solve residual: ', pfaffian_residual
+                        WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Pfaffian scalar panel entries: ', pfaffian_fill
+                        WRITE (output_unit, '(T2,A,F14.3)') 'SPECTRAL_LOCALIZER| Pfaffian numerical buffers [MiB]: ', &
+                           REAL(pfaffian_peak, dp)/1024.0_dp**2
+                     END IF
+                  END IF
                   WRITE (output_unit, '(T2,A,ES23.14)') 'SPECTRAL_LOCALIZER| Gap [hartree]: ', gap
                   IF (status == 1) THEN
                      WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| UNRESOLVED: gap or factorization below accuracy; no index.'

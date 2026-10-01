@@ -200,6 +200,14 @@ typically SuperLU_DIST together with ParMETIS or PT-Scotch.
   Manual builds are also possible when a compatible PEXSI installation and its dependencies are
   available to CMake. It's not supported to install PEXSI through toolchain
 
+## MUMPS and Tacho (optional sparse spectral localizers)
+
+`CP2K_USE_MUMPS=ON` enables distributed sparse inertia and generalized gap brackets for
+finite-system spectral localizers. `CP2K_USE_TACHO=ON` additionally enables single-rank sparse Z2
+Pfaffians through the experimental Tacho skew-LDL extension, not standard Trilinos. Neither is
+enabled by default. See [MUMPS](mumps.md) and [Tacho](tacho.md) for dependencies, tested versions
+and limitations.
+
 ## PLUMED (enables various enhanced sampling methods)
 
 PLUMED is a plugin library for enhanced sampling and free energy algorithms in molecular dynamics.

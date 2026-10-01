@@ -1,0 +1,2 @@
+@SET QUADRATIC_SOLVER ITERATIVE
+@INCLUDE ../regtest-quadratic-pseudospectrum/neon-common.inc

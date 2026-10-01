@@ -10,12 +10,14 @@
 !> \author Thomas D. Kuehne, tkuehne@cp2k.org
 ! **************************************************************************************************
 MODULE spectral_localizer_dbcsr
+   USE arnoldi_vector,                  ONLY: create_col_vec_from_matrix
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_desymmetrize, dbcsr_distribution_get, &
         dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, &
         dbcsr_finalize, dbcsr_get_info, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
-        dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_p_type, &
-        dbcsr_put_block, dbcsr_release, dbcsr_transposed, dbcsr_type, dbcsr_type_no_symmetry
+        dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, &
+        dbcsr_p_type, dbcsr_put_block, dbcsr_release, dbcsr_transposed, dbcsr_type, &
+        dbcsr_type_no_symmetry
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_para_env_type
@@ -25,8 +27,8 @@ MODULE spectral_localizer_dbcsr
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'spectral_localizer_dbcsr'
    PUBLIC :: localizer_dbcsr_build, localizer_dbcsr_dense, localizer_dbcsr_release, localizer_matrix_type
-   PUBLIC :: localizer_dbcsr_check
-   PUBLIC :: localizer_ao_operators
+   PUBLIC :: localizer_dbcsr_pencil, localizer_dbcsr_check
+   PUBLIC :: localizer_ao_operators, localizer_dbcsr_apply
    PUBLIC :: localizer_dbcsr_realify, localizer_dbcsr_from_real
    PUBLIC :: localizer_dbcsr_gap_pencil
    PUBLIC :: localizer_dbcsr_3d_build
@@ -258,6 +260,71 @@ CONTAINS
          CALL add_real_blocks(soc(3, 1)%matrix, factors, operators(1))
       END IF
    END SUBROUTINE localizer_ao_operators
+
+! **************************************************************************************************
+!> \brief Apply complex AO matrices with DBCSR skinny-matrix products; no dense AO matrix.
+!> \param matrix Fully stored real/imaginary DBCSR operator
+!> \param v Replicated input coefficient block
+!> \param y Replicated output block (linear in AO dimension times block size)
+!> \param para_env Communicator
+!> \param adjoint Apply the conjugate transpose instead of the forward operator
+! **************************************************************************************************
+   SUBROUTINE localizer_dbcsr_apply(matrix, v, y, para_env, adjoint)
+      TYPE(localizer_matrix_type), INTENT(INOUT)         :: matrix
+      COMPLEX(dp), INTENT(IN)                            :: v(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      LOGICAL, INTENT(IN), OPTIONAL                      :: adjoint
+
+      CHARACTER                                          :: transpose_mode
+      INTEGER                                            :: last, nv, row
+      REAL(dp)                                           :: imaginary_sign
+      REAL(dp), POINTER                                  :: block(:, :)
+      TYPE(dbcsr_iterator_type)                          :: iterator
+      TYPE(dbcsr_type)                                   :: imaginary_image, real_image, vectors
+
+      nv = SIZE(v, 2)
+      transpose_mode = 'N'
+      imaginary_sign = 1.0_dp
+      IF (PRESENT(adjoint)) THEN
+         IF (adjoint) THEN
+            transpose_mode = 'T'
+            imaginary_sign = -1.0_dp
+         END IF
+      END IF
+      CALL create_col_vec_from_matrix(vectors, matrix%real_part, 2*nv)
+      CALL create_col_vec_from_matrix(real_image, matrix%real_part, 2*nv)
+      CALL create_col_vec_from_matrix(imaginary_image, matrix%real_part, 2*nv)
+      CALL dbcsr_iterator_start(iterator, vectors)
+      DO WHILE (dbcsr_iterator_blocks_left(iterator))
+         CALL dbcsr_iterator_next_block(iterator, block=block, row_offset=row)
+         last = row + SIZE(block, 1) - 1
+         block(:, :nv) = REAL(v(row:last, :), dp)
+         block(:, nv + 1:) = AIMAG(v(row:last, :))
+      END DO
+      CALL dbcsr_iterator_stop(iterator)
+      CALL dbcsr_multiply(transpose_mode, 'N', 1.0_dp, matrix%real_part, vectors, 0.0_dp, real_image)
+      CALL dbcsr_multiply(transpose_mode, 'N', 1.0_dp, matrix%imaginary_part, vectors, 0.0_dp, imaginary_image)
+      y = CMPLX(0.0_dp, 0.0_dp, dp)
+      CALL dbcsr_iterator_start(iterator, real_image)
+      DO WHILE (dbcsr_iterator_blocks_left(iterator))
+         CALL dbcsr_iterator_next_block(iterator, block=block, row_offset=row)
+         last = row + SIZE(block, 1) - 1
+         y(row:last, :) = CMPLX(block(:, :nv), block(:, nv + 1:), dp)
+      END DO
+      CALL dbcsr_iterator_stop(iterator)
+      CALL dbcsr_iterator_start(iterator, imaginary_image)
+      DO WHILE (dbcsr_iterator_blocks_left(iterator))
+         CALL dbcsr_iterator_next_block(iterator, block=block, row_offset=row)
+         last = row + SIZE(block, 1) - 1
+         y(row:last, :) = y(row:last, :) + imaginary_sign*CMPLX(-block(:, nv + 1:), block(:, :nv), dp)
+      END DO
+      CALL dbcsr_iterator_stop(iterator)
+      CALL para_env%sum(y)
+      CALL dbcsr_release(vectors)
+      CALL dbcsr_release(real_image)
+      CALL dbcsr_release(imaginary_image)
+   END SUBROUTINE localizer_dbcsr_apply
 
 ! **************************************************************************************************
 !> \brief Pair H-E*S with its negative to reuse the metric-aware localizer gap solvers.
@@ -596,5 +663,111 @@ CONTAINS
       CALL dbcsr_release(matrix%real_part)
       CALL dbcsr_release(matrix%imaginary_part)
    END SUBROUTINE localizer_dbcsr_release
+
+! **************************************************************************************************
+!> \brief Distributed lower COO for realification R(A)=[Re(A),-Im(A);Im(A),Re(A)].
+!> \param localizer Hermitian complex sparse matrix
+!> \param metric Positive complex sparse metric
+!> \param para_env Matrix communicator
+!> \param order Realified dimension; each complex eigenvalue occurs twice
+!> \param rows Local lower row coordinates
+!> \param cols Local lower column coordinates
+!> \param a Local localizer values (duplicate coordinates are additive)
+!> \param b Local metric values
+!> \param identity Local identity values for conditioning checks
+! **************************************************************************************************
+   SUBROUTINE localizer_dbcsr_pencil(localizer, metric, para_env, order, rows, cols, a, b, identity)
+      TYPE(localizer_matrix_type), INTENT(INOUT)         :: localizer, metric
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(OUT)                               :: order
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: rows(:), cols(:)
+      REAL(KIND=dp), ALLOCATABLE, INTENT(OUT)            :: a(:), b(:), identity(:)
+
+      INTEGER                                            :: i, n, nb, ni, nl, total
+      INTEGER, ALLOCATABLE                               :: bc(:), bi(:), bj(:), br(:), lc(:), &
+                                                            li(:), lj(:), lr(:)
+      REAL(KIND=dp), ALLOCATABLE                         :: biv(:), bv(:), liv(:), lv(:)
+
+      CALL dbcsr_get_info(localizer%real_part, nfullrows_total=n)
+      order = 2*n
+      CALL realified_coo(localizer%real_part, .FALSE., n, lr, lc, lv)
+      CALL realified_coo(localizer%imaginary_part, .TRUE., n, li, lj, liv)
+      CALL realified_coo(metric%real_part, .FALSE., n, br, bc, bv)
+      CALL realified_coo(metric%imaginary_part, .TRUE., n, bi, bj, biv)
+      nl = SIZE(lv) + SIZE(liv)
+      nb = SIZE(bv) + SIZE(biv)
+      ni = 0
+      IF (para_env%is_source()) ni = order
+      total = nl + nb + ni
+      ALLOCATE (rows(total), cols(total), a(total), b(total), identity(total))
+      rows(:nl + nb) = [lr, li, br, bi]
+      cols(:nl + nb) = [lc, lj, bc, bj]
+      a = 0.0_dp
+      b = 0.0_dp
+      identity = 0.0_dp
+      a(:nl) = [lv, liv]
+      b(nl + 1:nl + nb) = [bv, biv]
+      DO i = 1, ni
+         rows(nl + nb + i) = i
+         cols(nl + nb + i) = i
+         identity(nl + nb + i) = 1.0_dp
+      END DO
+   END SUBROUTINE localizer_dbcsr_pencil
+
+! **************************************************************************************************
+!> \brief Expand one real/imaginary component directly to a distributed lower real triangle.
+!> \param source Fully stored real component
+!> \param imaginary Whether this is the antisymmetric imaginary component
+!> \param n Complex matrix order
+!> \param rows Local realified rows
+!> \param cols Local realified columns
+!> \param values Local realified values
+! **************************************************************************************************
+   SUBROUTINE realified_coo(source, imaginary, n, rows, cols, values)
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: source
+      LOGICAL, INTENT(IN)                                :: imaginary
+      INTEGER, INTENT(IN)                                :: n
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: rows(:), cols(:)
+      REAL(KIND=dp), ALLOCATABLE, INTENT(OUT)            :: values(:)
+
+      INTEGER                                            :: col, count, i, ir, j, jc, pass, row
+      LOGICAL                                            :: transposed
+      REAL(KIND=dp), POINTER                             :: block(:, :)
+      TYPE(dbcsr_iterator_type)                          :: iterator
+
+      DO pass = 1, 2
+         count = 0
+         CALL dbcsr_iterator_start(iterator, source)
+         DO WHILE (dbcsr_iterator_blocks_left(iterator))
+            CALL dbcsr_iterator_next_block(iterator, block=block, row_offset=row, col_offset=col, &
+                                           transposed=transposed)
+            CPASSERT(.NOT. transposed)
+            DO j = 1, SIZE(block, 2)
+               DO i = 1, SIZE(block, 1)
+                  IF (block(i, j) == 0.0_dp) CYCLE
+                  ir = row + i - 1
+                  jc = col + j - 1
+                  IF (imaginary) THEN
+                     count = count + 1
+                     IF (pass == 2) THEN
+                        rows(count) = ir + n
+                        cols(count) = jc
+                        values(count) = block(i, j)
+                     END IF
+                  ELSE IF (ir >= jc) THEN
+                     count = count + 2
+                     IF (pass == 2) THEN
+                        rows(count - 1:count) = [ir, ir + n]
+                        cols(count - 1:count) = [jc, jc + n]
+                        values(count - 1:count) = block(i, j)
+                     END IF
+                  END IF
+               END DO
+            END DO
+         END DO
+         CALL dbcsr_iterator_stop(iterator)
+         IF (pass == 1) ALLOCATE (rows(count), cols(count), values(count))
+      END DO
+   END SUBROUTINE realified_coo
 
 END MODULE spectral_localizer_dbcsr

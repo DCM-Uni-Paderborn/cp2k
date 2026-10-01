@@ -22,15 +22,18 @@ MODULE spectral_localizer_flatten
    USE iterate_matrix,                  ONLY: invert_Hotelling,&
                                               matrix_sign_Newton_Schulz
    USE kinds,                           ONLY: dp
+   USE localizer_sparse_inertia,        ONLY: sparse_inertia_type
    USE message_passing,                 ONLY: mp_para_env_type
    USE spectral_localizer,              ONLY: localizer_matrix_evaluate
    USE spectral_localizer_dbcsr,        ONLY: localizer_dbcsr_check,&
                                               localizer_dbcsr_dense,&
                                               localizer_dbcsr_from_real,&
                                               localizer_dbcsr_gap_pencil,&
+                                              localizer_dbcsr_pencil,&
                                               localizer_dbcsr_realify,&
                                               localizer_dbcsr_release,&
                                               localizer_matrix_type
+   USE spectral_localizer_sparse,       ONLY: localizer_sparse_evaluate
 
    IMPLICIT NONE
    PRIVATE
@@ -47,28 +50,33 @@ CONTAINS
 !> \param tolerance Matrix-sign residual and Hermiticity tolerance
 !> \param metric_tolerance Minimum overlap eigenvalue ratio
 !> \param gap_tolerance Absolute minimum original electronic gap
+!> \param sparse Use MUMPS shifted inertia instead of a dense spectral reference
 !> \param para_env Communicator
 !> \param flattened Newly initialized shifted Hamiltonian only on success
 !> \param gap Original electronic gap lower and upper bounds, not the flattened localizer gap
-!> \param metric_ratio Overlap eigenvalue ratio
+!> \param metric_ratio Overlap eigenvalue ratio, or a conservative lower bound for MUMPS
 !> \param residuals Four matrix-sign residuals
 !> \param status 0 success, 1 unresolved input gap, -1 input, -2 metric, -4 solver,
-!>        -6 matrix-sign iteration or structure failure
+!>        -5 unavailable sparse backend, -6 matrix-sign iteration or structure failure
 ! **************************************************************************************************
-   SUBROUTINE localizer_flatten_checked(h, s, energy, scale, tolerance, metric_tolerance, gap_tolerance, &
+   SUBROUTINE localizer_flatten_checked(h, s, energy, scale, tolerance, metric_tolerance, gap_tolerance, sparse, &
                                         para_env, flattened, gap, metric_ratio, residuals, status)
       TYPE(localizer_matrix_type), INTENT(INOUT)         :: h, s
       REAL(dp), INTENT(IN)                               :: energy, scale, tolerance, &
                                                             metric_tolerance, gap_tolerance
+      LOGICAL, INTENT(IN)                                :: sparse
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(localizer_matrix_type), INTENT(OUT)           :: flattened
       REAL(dp), INTENT(OUT)                              :: gap(2), metric_ratio, residuals(4)
       INTEGER, INTENT(OUT)                               :: status
 
       COMPLEX(dp), ALLOCATABLE                           :: dense(:, :), dense_metric(:, :)
-      INTEGER                                            :: invariant, n, ns
+      INTEGER                                            :: invariant, n, ns, order
+      INTEGER, ALLOCATABLE                               :: cols(:), rows(:)
       LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: a(:), b(:), identity(:)
       TYPE(localizer_matrix_type)                        :: metric, pencil
+      TYPE(sparse_inertia_type)                          :: statistics
 
       status = -1
       gap = 0.0_dp
@@ -85,13 +93,19 @@ CONTAINS
       CALL localizer_dbcsr_check(s, para_env, tolerance, valid)
       IF (.NOT. valid) RETURN
       CALL localizer_dbcsr_gap_pencil(h, s, energy, pencil, metric)
-      CALL localizer_dbcsr_dense(pencil, para_env, dense)
-      CALL localizer_dbcsr_dense(metric, para_env, dense_metric)
-      IF (para_env%is_source()) THEN
-         CALL localizer_matrix_evaluate(dense, dense_metric(:n, :n), .FALSE., tolerance, metric_tolerance, &
-                                        gap_tolerance, invariant, gap(1), metric_ratio, status)
-         IF (status > 1) status = -4
-         gap(2) = gap(1)
+      IF (sparse) THEN
+         CALL localizer_dbcsr_pencil(pencil, metric, para_env, order, rows, cols, a, b, identity)
+         CALL localizer_sparse_evaluate(order, rows, cols, a, b, identity, para_env, metric_tolerance, gap_tolerance, &
+                                        invariant, gap(1), gap(2), metric_ratio, statistics, status)
+      ELSE
+         CALL localizer_dbcsr_dense(pencil, para_env, dense)
+         CALL localizer_dbcsr_dense(metric, para_env, dense_metric)
+         IF (para_env%is_source()) THEN
+            CALL localizer_matrix_evaluate(dense, dense_metric(:n, :n), .FALSE., tolerance, metric_tolerance, &
+                                           gap_tolerance, invariant, gap(1), metric_ratio, status)
+            IF (status > 1) status = -4
+            gap(2) = gap(1)
+         END IF
       END IF
       CALL localizer_dbcsr_release(pencil)
       CALL localizer_dbcsr_release(metric)
