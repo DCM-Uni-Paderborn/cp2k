@@ -14,7 +14,9 @@ MODULE uspp_augmentation
    USE atom_upf,                        ONLY: atom_upfpot_type,&
                                               upf_radial_weights
    USE bessel_lib,                      ONLY: bessel0
-   USE kinds,                           ONLY: dp
+   USE cp_array_sort,                   ONLY: cp_1d_r_sort
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE mathconstants,                   ONLY: fourpi
    USE orbital_pointers,                ONLY: indco,&
                                               init_orbital_pointers,&
@@ -39,11 +41,15 @@ MODULE uspp_augmentation
       ! weighted_q can omit an exact zero suffix; r retains the full mesh for real-space splines.
       REAL(KIND=dp), ALLOCATABLE :: r(:), weighted_q(:, :, :), gaunt(:, :, :), q(:, :)
       REAL(KIND=dp), ALLOCATABLE :: radial_x(:), radial_value(:, :, :), radial_slope(:, :, :)
+      INTEGER(int_8) :: fourier_budget = -1_int_8
+      INTEGER, ALLOCATABLE :: fourier_map(:)
+      REAL(dp), ALLOCATABLE :: fourier_norm(:), fourier_radial(:, :, :), fourier_next(:, :, :)
    END TYPE uspp_augmentation_type
 
    PUBLIC :: uspp_augmentation_type, uspp_augmentation_init, uspp_augmentation_fourier, &
              uspp_augmentation_collocate, uspp_augmentation_integrate, &
              uspp_augmentation_prepare_realspace, uspp_augmentation_realspace, &
+             uspp_augmentation_prepare_fourier, &
              uspp_augmentation_collocate_atom, uspp_augmentation_integrate_atom
 
 CONTAINS
@@ -455,6 +461,111 @@ CONTAINS
    END SUBROUTINE uspp_augmentation_integrate_atom
 
 ! **************************************************************************************************
+!> \brief Cache exact radial transforms for repeated reciprocal-vector lengths.
+!>        The retained arrays are bounded; uncached lengths use direct quadrature.
+!>        Initialization of a new augmentation object also releases this cache.
+!> \param augmentation Prepared radial data, with the cache updated in place.
+!> \param gvecs Local Cartesian reciprocal vectors, in their current ordering.
+!> \param max_bytes Optional retained-memory limit per kind and rank (default 64 MiB).
+! **************************************************************************************************
+   SUBROUTINE uspp_augmentation_prepare_fourier(augmentation, gvecs, max_bytes)
+      TYPE(uspp_augmentation_type), INTENT(INOUT)        :: augmentation
+      REAL(dp), INTENT(IN)                               :: gvecs(:, :)
+      INTEGER(int_8), INTENT(IN), OPTIONAL               :: max_bytes
+
+      INTEGER                                            :: capacity, ig, index, lmax, nc, ng, unique
+      INTEGER(int_8)                                     :: budget, entry_bytes, index_bytes
+      INTEGER, ALLOCATABLE                               :: order(:)
+      REAL(dp)                                           :: previous
+      REAL(dp), ALLOCATABLE                              :: norms(:), sorted(:)
+
+      CPASSERT(SIZE(gvecs, 1) == 3)
+      budget = 64_int_8*1024*1024
+      IF (PRESENT(max_bytes)) budget = max_bytes
+      CPASSERT(budget >= 0_int_8)
+      ng = SIZE(gvecs, 2)
+      nc = SIZE(augmentation%weighted_q, 2)
+      lmax = augmentation%lmax
+      CPASSERT(nc > 0 .AND. lmax >= 0)
+      index_bytes = INT(ng, int_8)*(STORAGE_SIZE(0.0_dp) + STORAGE_SIZE(0))/8
+      entry_bytes = 2_int_8*nc*(lmax + 1)*STORAGE_SIZE(0.0_dp)/8
+      capacity = INT(MIN(INT(ng, int_8), MAX(0_int_8, (budget - index_bytes)/entry_bytes)))
+      IF (capacity > 0) THEN
+         ALLOCATE (norms(ng))
+         DO ig = 1, ng
+            norms(ig) = SQRT(SUM(gvecs(:, ig)*gvecs(:, ig)))
+         END DO
+         IF (ALLOCATED(augmentation%fourier_norm) .AND. augmentation%fourier_budget == budget) THEN
+            IF (SIZE(augmentation%fourier_norm) == ng) THEN
+               IF (ALL(augmentation%fourier_norm == norms)) RETURN
+            END IF
+         END IF
+      END IF
+      IF (ALLOCATED(augmentation%fourier_norm)) THEN
+         DEALLOCATE (augmentation%fourier_norm, augmentation%fourier_map, &
+                     augmentation%fourier_radial, augmentation%fourier_next)
+      END IF
+      augmentation%fourier_budget = budget
+      IF (capacity == 0) RETURN
+      ALLOCATE (augmentation%fourier_norm, SOURCE=norms)
+      ALLOCATE (augmentation%fourier_map(ng), order(ng), sorted(ng))
+      augmentation%fourier_map = 0
+      sorted(:) = norms
+      CALL cp_1d_r_sort(sorted, ng, order)
+      unique = 0
+      previous = -1.0_dp
+      DO ig = 1, ng
+         IF (sorted(ig) == 0.0_dp) CYCLE
+         IF (sorted(ig) /= previous) unique = unique + 1
+         previous = sorted(ig)
+      END DO
+      capacity = MIN(capacity, unique)
+      ALLOCATE (augmentation%fourier_radial(nc, 0:lmax, capacity), &
+                augmentation%fourier_next(nc, 0:lmax, capacity))
+      index = 0
+      previous = -1.0_dp
+      DO ig = 1, ng
+         IF (sorted(ig) == 0.0_dp) CYCLE
+         IF (sorted(ig) /= previous) THEN
+            IF (index == capacity) EXIT
+            index = index + 1
+            previous = sorted(ig)
+            CALL augmentation_radial(augmentation%r, augmentation%weighted_q, previous, &
+                                     augmentation%fourier_radial(:, :, index), augmentation%fourier_next(:, :, index))
+         END IF
+         augmentation%fourier_map(order(ig)) = index
+      END DO
+   END SUBROUTINE uspp_augmentation_prepare_fourier
+
+! **************************************************************************************************
+!> \brief Direct radial quadrature shared by cached and uncached Fourier evaluations.
+!> \param r Original radial mesh.
+!> \param weighted_q Weighted radial augmentation.
+!> \param norm_g Reciprocal-vector length.
+!> \param radial Integrals against j_l(Gr).
+!> \param radial_next Optional integrals against r*j_(l+1)(Gr), for strain derivatives.
+! **************************************************************************************************
+   SUBROUTINE augmentation_radial(r, weighted_q, norm_g, radial, radial_next)
+      REAL(dp), INTENT(IN)                               :: r(:), weighted_q(:, :, 0:), norm_g
+      REAL(dp), INTENT(OUT)                              :: radial(:, 0:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: radial_next(:, 0:)
+
+      INTEGER                                            :: l, nr
+      REAL(dp), ALLOCATABLE                              :: work(:)
+
+      nr = SIZE(weighted_q, 1)
+      ALLOCATE (work(nr))
+      DO l = 0, UBOUND(weighted_q, 3)
+         IF (PRESENT(radial_next)) THEN
+            work(:) = r(:nr)*bessel0(norm_g*r(:nr), l + 1)
+            radial_next(:, l) = MATMUL(work, weighted_q(:, :, l))
+         END IF
+         work(:) = bessel0(norm_g*r(:nr), l)
+         radial(:, l) = MATMUL(work, weighted_q(:, :, l))
+      END DO
+   END SUBROUTINE augmentation_radial
+
+! **************************************************************************************************
 !> \brief Evaluate Q_ij(G) = integral Q_ij(r-R) exp(-i G.r) dr / volume.
 !>        Direct radial quadrature is a reference without reciprocal interpolation.
 !> \param augmentation Prepared data.
@@ -464,22 +575,23 @@ CONTAINS
 !> \param qg Complex symmetric form-factor matrix. Q(-G) = conjugate(Q(G)).
 !> \param strain Optional dQ/d epsilon_ab at fixed fractional center and reciprocal index.
 !>        Includes the inverse-volume derivative; the center phase is strain invariant.
+!> \param grid_index Optional index in the prepared Fourier cache; absent entries use direct quadrature.
 ! **************************************************************************************************
-   SUBROUTINE uspp_augmentation_fourier(augmentation, g, position, volume, qg, strain)
+   SUBROUTINE uspp_augmentation_fourier(augmentation, g, position, volume, qg, strain, grid_index)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: g(3), position(3), volume
       COMPLEX(KIND=dp), INTENT(OUT)                      :: qg(:, :)
       COMPLEX(KIND=dp), INTENT(OUT), OPTIONAL            :: strain(:, :, :, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: grid_index
 
       COMPLEX(KIND=dp)                                   :: phase, phase_l
-      INTEGER                                            :: a, axis, i, j, l, lm, m, nr, p, pair, &
-                                                            powers(3), q
+      INTEGER                                            :: a, axis, cached, i, j, l, lm, m, p, &
+                                                            pair, powers(3), q
       REAL(KIND=dp)                                      :: angular, angular_derivative(3), &
                                                             direction(3, 1), monomial, norm_g, &
                                                             value(1)
       REAL(KIND=dp), ALLOCATABLE                         :: harmonics(:), radial(:, :), &
-                                                            radial_next(:, :), &
-                                                            solid_gradient(:, :), work(:)
+                                                            radial_next(:, :), solid_gradient(:, :)
 
       CPASSERT(volume > 0.0_dp)
       CPASSERT(ALL(SHAPE(qg) == augmentation%nproj))
@@ -498,21 +610,28 @@ CONTAINS
          RETURN
       END IF
       direction(:, 1) = g/norm_g
-      nr = SIZE(augmentation%weighted_q, 1)
-      ALLOCATE (work(nr), harmonics((augmentation%lmax + 1)**2))
+      ALLOCATE (harmonics((augmentation%lmax + 1)**2))
       ALLOCATE (radial(SIZE(augmentation%weighted_q, 2), 0:augmentation%lmax))
       IF (PRESENT(strain)) THEN
          ALLOCATE (solid_gradient(3, (augmentation%lmax + 1)**2), &
                    radial_next(SIZE(radial, 1), 0:augmentation%lmax))
          solid_gradient = 0.0_dp
       END IF
-      DO l = 0, augmentation%lmax
-         IF (PRESENT(strain)) THEN
-            work(:) = augmentation%r(:nr)*bessel0(norm_g*augmentation%r(:nr), l + 1)
-            radial_next(:, l) = MATMUL(work, augmentation%weighted_q(:, :, l))
+      cached = 0
+      IF (PRESENT(grid_index) .AND. ALLOCATED(augmentation%fourier_map)) THEN
+         ! Independent callers can supply a changed or reordered list without preparing it.
+         ! Reuse only a matching length; the direct path remains valid for every other vector.
+         IF (grid_index >= 1 .AND. grid_index <= SIZE(augmentation%fourier_map)) THEN
+            IF (augmentation%fourier_norm(grid_index) == norm_g) cached = augmentation%fourier_map(grid_index)
          END IF
-         work(:) = bessel0(norm_g*augmentation%r(:nr), l)
-         radial(:, l) = MATMUL(work, augmentation%weighted_q(:, :, l))
+      END IF
+      IF (cached > 0) THEN
+         radial(:, :) = augmentation%fourier_radial(:, :, cached)
+         IF (PRESENT(strain)) radial_next(:, :) = augmentation%fourier_next(:, :, cached)
+      ELSE
+         CALL augmentation_radial(augmentation%r, augmentation%weighted_q, norm_g, radial, radial_next)
+      END IF
+      DO l = 0, augmentation%lmax
          DO m = -l, l
             lm = l*l + l + m + 1
             CALL y_lm(direction, value, l, m)
@@ -590,7 +709,7 @@ CONTAINS
       CPASSERT(ALL(SHAPE(density_matrix) == augmentation%nproj))
       ALLOCATE (qg(augmentation%nproj, augmentation%nproj))
       DO ig = 1, SIZE(rho)
-         CALL uspp_augmentation_fourier(augmentation, gvecs(:, ig), position, volume, qg)
+         CALL uspp_augmentation_fourier(augmentation, gvecs(:, ig), position, volume, qg, grid_index=ig)
          rho(ig) = rho(ig) + SUM(density_matrix*qg)
       END DO
    END SUBROUTINE uspp_augmentation_collocate
@@ -633,7 +752,7 @@ CONTAINS
          strain = 0.0_dp
       END IF
       DO ig = 1, SIZE(vg)
-         CALL uspp_augmentation_fourier(augmentation, gvecs(:, ig), position, volume, qg, dq)
+         CALL uspp_augmentation_fourier(augmentation, gvecs(:, ig), position, volume, qg, dq, grid_index=ig)
          IF (PRESENT(strain)) THEN
             DO jdir = 1, 3
                DO idir = 1, 3

@@ -11,7 +11,8 @@ PROGRAM uspp_fourier_unittest
                                               atom_upfpot_type,&
                                               upf_radial_weights
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
    USE mathconstants,                   ONLY: pi
@@ -24,7 +25,8 @@ PROGRAM uspp_fourier_unittest
    USE uspp_augmentation,               ONLY: &
         uspp_augmentation_collocate, uspp_augmentation_collocate_atom, uspp_augmentation_fourier, &
         uspp_augmentation_init, uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
-        uspp_augmentation_prepare_realspace, uspp_augmentation_realspace, uspp_augmentation_type
+        uspp_augmentation_prepare_fourier, uspp_augmentation_prepare_realspace, &
+        uspp_augmentation_realspace, uspp_augmentation_type
 
    IMPLICIT NONE
    INTEGER, PARAMETER :: nb = 5, np = 19, nao = 7
@@ -143,6 +145,7 @@ PROGRAM uspp_fourier_unittest
       vg(1) = CMPLX(2.3_dp, 0.0_dp, KIND=dp)
       CALL uspp_augmentation_integrate(aug, vectors, center, volume, vg, weights, matrix)
       IF (MAXVAL(ABS(matrix - 2.3_dp*aug%q)) > 1.e-13_dp) ERROR STOP 'Wrong constant-potential shift'
+      CALL check_fourier_cache()
       CALL check_realspace()
       CALL check_compact_support()
       CALL atom_release_upf(pot)
@@ -162,6 +165,81 @@ PROGRAM uspp_fourier_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Cached/direct agreement for density, matrix, center and all strain derivatives.
+!>        Exercise reuse, changed cells/order, partial caches, and empty local grids.
+! **************************************************************************************************
+   SUBROUTINE check_fourier_cache()
+      COMPLEX(dp)                                        :: density(7), exact_density(7), &
+                                                            potential(7)
+      INTEGER                                            :: check, ig
+      REAL(dp) :: cell(np, np, 3, 3), cell_volume, derivative(np, np, 3), exact(np, np), &
+         exact_cell(np, np, 3, 3), exact_derivative(np, np, 3), multiplicity(7), position(3), &
+         values(np, np), wavevectors(3, 7)
+      TYPE(uspp_augmentation_type)                       :: direct
+
+      direct = aug
+      CALL uspp_augmentation_prepare_fourier(direct, vectors, max_bytes=0_int_8)
+      potential(1) = CMPLX(0.37_dp, 0.0_dp, dp)
+      potential(2:4) = [CMPLX(0.2_dp, -0.3_dp, dp), CMPLX(-0.5_dp, 0.8_dp, dp), CMPLX(1.1_dp, 0.4_dp, dp)]
+      potential(5:7) = CONJG(potential(2:4))
+      multiplicity = 1.0_dp
+      CALL uspp_augmentation_prepare_fourier(aug, vectors)
+      IF (SIZE(aug%fourier_radial, 3) /= 3) ERROR STOP 'Fourier cache did not combine equal lengths'
+      DO check = 1, 9
+         wavevectors = vectors
+         position = center
+         cell_volume = volume
+         SELECT CASE (check)
+         CASE (1)
+            CALL uspp_augmentation_prepare_fourier(aug, wavevectors)
+         CASE (2)
+            ! Same lengths, new angular factors, phase and normalization.
+            wavevectors = -vectors
+            position = 1.3_dp*center
+            cell_volume = 0.7_dp*volume
+         CASE (3:4)
+            wavevectors = vectors(:, [7, 6, 5, 4, 3, 2, 1])
+            IF (check == 4) CALL uspp_augmentation_prepare_fourier(aug, wavevectors)
+         CASE (5:6)
+            wavevectors(1, :) = 1.1_dp*vectors(1, :)
+            IF (check == 6) CALL uspp_augmentation_prepare_fourier(aug, wavevectors)
+         CASE (7)
+            CALL uspp_augmentation_prepare_fourier(aug, wavevectors, max_bytes=2048_int_8)
+            IF (SIZE(aug%fourier_radial, 3) /= 1) ERROR STOP 'Fourier cache exceeded its memory budget'
+            IF (COUNT(aug%fourier_map > 0) /= 2) ERROR STOP 'Partial Fourier cache has wrong coverage'
+         CASE (8)
+            CALL uspp_augmentation_prepare_fourier(aug, wavevectors(:, :4))
+         CASE (9)
+            CALL uspp_augmentation_prepare_fourier(aug, wavevectors, max_bytes=0_int_8)
+            IF (ALLOCATED(aug%fourier_radial)) ERROR STOP 'Disabled Fourier cache retains storage'
+         END SELECT
+         density = CMPLX(0.0_dp, 0.0_dp, dp)
+         exact_density = density
+         CALL uspp_augmentation_collocate(aug, wavevectors, position, cell_volume, d, density)
+         CALL uspp_augmentation_collocate(direct, wavevectors, position, cell_volume, d, exact_density)
+         CALL uspp_augmentation_integrate(aug, wavevectors, position, cell_volume, potential, multiplicity, &
+                                          values, derivative, cell)
+         CALL uspp_augmentation_integrate(direct, wavevectors, position, cell_volume, potential, multiplicity, &
+                                          exact, exact_derivative, exact_cell)
+         IF (MAXVAL(ABS(density - exact_density)) > 1.e-13_dp) ERROR STOP 'Fourier cache changes density'
+         IF (MAXVAL(ABS(values - exact)) > 1.e-13_dp) ERROR STOP 'Fourier cache changes matrix'
+         IF (MAXVAL(ABS(derivative - exact_derivative)) > 1.e-13_dp) ERROR STOP 'Fourier cache changes center derivative'
+         IF (MAXVAL(ABS(cell - exact_cell)) > 1.e-13_dp) ERROR STOP 'Fourier cache changes strain derivative'
+         DO ig = 1, 7
+            CALL uspp_augmentation_fourier(aug, wavevectors(:, ig), position, cell_volume, qg, grid_index=ig)
+            CALL uspp_augmentation_fourier(direct, wavevectors(:, ig), position, cell_volume, reference)
+            IF (MAXVAL(ABS(qg - reference)) > 1.e-13_dp) ERROR STOP 'Fourier cache changes form factor'
+         END DO
+      END DO
+      CALL uspp_augmentation_prepare_fourier(aug, vectors(:, :0))
+      IF (ALLOCATED(aug%fourier_norm)) ERROR STOP 'Empty Fourier list retains cache storage'
+      CALL uspp_augmentation_prepare_fourier(aug, vectors(:, :1))
+      IF (ANY(aug%fourier_map /= 0)) ERROR STOP 'Zero frequency must use the overlap integral'
+      CALL uspp_augmentation_init(pot, projectors, aug)
+      IF (ALLOCATED(aug%fourier_norm)) ERROR STOP 'New dataset retains stale Fourier cache'
+   END SUBROUTINE check_fourier_cache
 
 ! **************************************************************************************************
 !> \brief Check source-node reproduction and finite center derivatives for optional UPF files.

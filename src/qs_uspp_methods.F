@@ -60,6 +60,7 @@ MODULE qs_uspp_methods
                                               uspp_augmentation_collocate_atom,&
                                               uspp_augmentation_integrate,&
                                               uspp_augmentation_integrate_atom,&
+                                              uspp_augmentation_prepare_fourier,&
                                               uspp_augmentation_prepare_realspace
    USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
                                               uspp_projector_create_onsite,&
@@ -571,7 +572,7 @@ CONTAINS
 !> \param cell_gradient Optional strain energy gradient, incremented without MPI reduction.
 ! **************************************************************************************************
    SUBROUTINE integrate_grid(uspp, potential, hamiltonian, weighted, density, sap_int, atom_gradient, cell_gradient)
-      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
       TYPE(dbcsr_p_type), INTENT(INOUT)                  :: hamiltonian(:)
       LOGICAL, INTENT(IN)                                :: weighted
@@ -579,7 +580,7 @@ CONTAINS
       TYPE(sap_int_type), INTENT(IN), OPTIONAL           :: sap_int(:)
       REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: atom_gradient(:, :), cell_gradient(3, 3)
 
-      INTEGER                                            :: center, handle, idir, jdir, n
+      INTEGER                                            :: center, handle, idir, ikind, jdir, n
       LOGICAL                                            :: found
       REAL(KIND=dp), ALLOCATABLE                         :: derivative(:, :, :), dm(:, :), &
                                                             matrix(:, :), multiplicity(:), &
@@ -591,6 +592,10 @@ CONTAINS
 
       CALL timeset('qs_uspp_integrate', handle)
       CALL check_grid(uspp, potential%pw_grid)
+      DO ikind = 1, SIZE(uspp%augmentation)
+         IF (uspp%augmentation(ikind)%nproj == 0) CYCLE
+         CALL uspp_augmentation_prepare_fourier(uspp%augmentation(ikind), potential%pw_grid%g)
+      END DO
       CALL potential_g%create(potential%pw_grid)
       CALL pw_transfer(potential, potential_g)
       IF (weighted) CALL pw_scale(potential_g, 1.0_dp/potential%pw_grid%dvol)
@@ -666,7 +671,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_core_matrix_images(uspp, qs_kind_set, particle_set, grid, hamiltonian, &
                                          density, energy_weighted, sap_int, atom_gradient, cell_gradient)
-      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
       TYPE(qs_kind_type), INTENT(INOUT)                  :: qs_kind_set(:)
       TYPE(particle_type), INTENT(IN)                    :: particle_set(:)
       TYPE(pw_grid_type), POINTER                        :: grid
@@ -1037,7 +1042,7 @@ CONTAINS
 !> \param charge Replicated total augmentation charge.
 ! **************************************************************************************************
    SUBROUTINE collocate_density(uspp, density, grid, rho, charge)
-      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
       TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:)
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       COMPLEX(KIND=dp), INTENT(INOUT)                    :: rho(:)
@@ -1052,6 +1057,10 @@ CONTAINS
 
       CALL dbcsr_get_info(uspp%overlaps, group=group)
       CALL project_density(uspp, density, projected)
+      DO ikind = 1, SIZE(uspp%augmentation)
+         IF (uspp%augmentation(ikind)%nproj == 0) CYCLE
+         CALL uspp_augmentation_prepare_fourier(uspp%augmentation(ikind), grid%g)
+      END DO
       charge = 0.0_dp
       DO center = 1, SIZE(uspp%center_atoms)
          n = uspp%projector_sizes(center)
@@ -1185,7 +1194,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_core_matrix_single(uspp, qs_kind_set, particle_set, grid, hamiltonian, &
                                          density, energy_weighted, sap_int, atom_gradient, cell_gradient)
-      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
       TYPE(qs_kind_type), INTENT(INOUT)                  :: qs_kind_set(:)
       TYPE(particle_type), INTENT(IN)                    :: particle_set(:)
       TYPE(pw_grid_type), POINTER                        :: grid
