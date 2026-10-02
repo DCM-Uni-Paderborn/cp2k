@@ -326,6 +326,27 @@ CONTAINS
 
 #if defined(__SIRIUS_XC_POINT_CALLBACK) && defined(__LIBTORCH)
 ! **************************************************************************************************
+!> \brief Check that an atom quadrature still belongs to the current host geometry.
+! **************************************************************************************************
+   LOGICAL FUNCTION grid_geometry_current(state) RESULT(current)
+      TYPE(skala_sirius_state_type), INTENT(IN)          :: state
+
+      INTEGER                                            :: a
+
+      current = .TRUE.
+      IF (state%nradial == 0) RETURN
+      current = .FALSE.
+      IF (.NOT. ASSOCIATED(state%particles) .OR. .NOT. ASSOCIATED(state%cell)) RETURN
+      IF (.NOT. ALLOCATED(state%grid_centres)) RETURN
+      IF (SIZE(state%particles) /= SIZE(state%grid_centres, 2)) RETURN
+      IF (MAXVAL(ABS(state%cell%hmat - state%grid_lattice)) > 1.0e-12_dp) RETURN
+      DO a = 1, SIZE(state%particles)
+         IF (MAXVAL(ABS(state%particles(a)%r - state%grid_centres(:, a))) > 1.0e-12_dp) RETURN
+      END DO
+      current = .TRUE.
+   END FUNCTION
+
+! **************************************************************************************************
 !> \brief Return raw discrete covectors for joint fields, without dividing by quadrature weights.
 ! **************************************************************************************************
    SUBROUTINE evaluate_skala_points(user_data, nr, ns, nb, fcomm, coordinates, energy_weights, &
@@ -365,6 +386,9 @@ CONTAINS
       invalid = 0
       IF (.NOT. ASSOCIATED(state)) invalid = 1
       IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2])) invalid = 1
+      IF (ASSOCIATED(state)) THEN
+         IF (.NOT. grid_geometry_current(state)) invalid = 1
+      END IF
       CALL comm%max(invalid)
       IF (invalid /= 0) RETURN
       CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
@@ -463,8 +487,7 @@ CONTAINS
       DO a = 1, natom
          centres(:, a) = state%particles(a)%r
       END DO
-      IF (MAXVAL(ABS(centres - state%grid_centres)) > 1.0e-12_dp .OR. &
-          MAXVAL(ABS(state%cell%hmat - state%grid_lattice)) > 1.0e-12_dp) invalid = 1
+      IF (.NOT. grid_geometry_current(state)) invalid = 1
       CALL comm%max(invalid)
       IF (invalid /= 0) RETURN
       CALL skala_atom_grid_pullback(comm, state%cell%hmat, centres, state%nradial, state%nangular, state%shell, &
