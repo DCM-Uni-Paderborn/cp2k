@@ -37,6 +37,7 @@ PROGRAM paw_xc_unittest
    USE paw_xc,                          ONLY: paw_xc_collocate,&
                                               paw_xc_evaluate,&
                                               paw_xc_init,&
+                                              paw_xc_kinetic_adjoint,&
                                               paw_xc_type
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
@@ -90,6 +91,7 @@ PROGRAM paw_xc_unittest
    CALL create_xc_fun_section(specification)
    CALL section_vals_create(functional, specification)
    CALL check_cartesian_fields()
+   CALL check_kinetic_adjoint()
    CALL check_local_exchange()
    CALL check_gga()
    CALL check_atomic_projection()
@@ -99,6 +101,51 @@ PROGRAM paw_xc_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Derivative of an independent quadratic kinetic-density functional, with one or two spins.
+! **************************************************************************************************
+   SUBROUTINE check_kinetic_adjoint()
+      REAL(dp), PARAMETER                                :: step = 1.e-5_dp
+
+      INTEGER                                            :: ir, ns, p, q, side, spin
+      REAL(dp) :: density(4, 4, 2), derivative, direction(4, 4, 2), error, &
+         gradient(3, grid%na, 2), minus, plus, potential(4, 4, 2), rho(grid%na, 2), &
+         tau(grid%na, 2), weighted(grid%na, 2)
+
+      error = 0.0_dp
+      DO spin = 1, 2
+         DO q = 1, 4
+            DO p = 1, 4
+               density(p, q, spin) = SIN(0.3_dp*p*spin)*SIN(0.3_dp*q*spin)
+               IF (p == q) density(p, q, spin) = density(p, q, spin) + 0.2_dp
+               direction(p, q, spin) = COS(0.23_dp*(p + q)*spin)
+            END DO
+         END DO
+      END DO
+      DO ns = 1, 2
+         DO side = 1, 2
+            DO ir = 51, 151, 50
+               CALL paw_xc_collocate(grid, onecenter, density(:, :, :ns), ir, side, &
+                                     rho(:, :ns), gradient(:, :, :ns), tau(:, :ns))
+               DO spin = 1, ns
+                  weighted(:, spin) = 2.0_dp*tau(:, spin)*grid%wa*grid%wr(ir)
+               END DO
+               CALL paw_xc_kinetic_adjoint(grid, onecenter, ir, side, weighted(:, :ns), potential(:, :, :ns))
+               derivative = SUM(potential(:, :, :ns)*direction(:, :, :ns))
+               CALL paw_xc_collocate(grid, onecenter, density(:, :, :ns) + step*direction(:, :, :ns), ir, side, &
+                                     rho(:, :ns), gradient(:, :, :ns), tau(:, :ns))
+               plus = SUM(MATMUL(grid%wa, tau(:, :ns)**2))*grid%wr(ir)
+               CALL paw_xc_collocate(grid, onecenter, density(:, :, :ns) - step*direction(:, :, :ns), ir, side, &
+                                     rho(:, :ns), gradient(:, :, :ns), tau(:, :ns))
+               minus = SUM(MATMUL(grid%wa, tau(:, :ns)**2))*grid%wr(ir)
+               error = MAX(error, ABS((plus - minus)/(2.0_dp*step) - derivative))
+            END DO
+         END DO
+      END DO
+      WRITE (*, '(A,ES15.6)') 'PAW kinetic-density adjoint error:', error
+      IF (error > 1.e-10_dp) ERROR STOP 'PAW kinetic potential is not the energy derivative'
+   END SUBROUTINE check_kinetic_adjoint
 
 ! **************************************************************************************************
 !> \brief Atomic magnetic averaging against analytic p-shell exchange and AO directional derivatives.
@@ -298,7 +345,8 @@ CONTAINS
       INTEGER                                            :: a, axis, ir, p, q, shell, side, spin
       REAL(dp) :: basis(4), core, dbasis(4, 3), density(4, 4, 2), exact, exact_gradient(3), &
          factor, field_error, gradient(3, grid%na, 2), gradient_error, point(3), polynomial, &
-         rho(grid%na, 2), scale
+         rho(grid%na, 2), scale, tau(grid%na, 2), tau_error, tau_reference, tau_scale, &
+         wave_gradient(4)
 
       DO spin = 1, 2
          DO q = 1, 4
@@ -314,12 +362,14 @@ CONTAINS
       dbasis(4, 1) = SQRT(3.0_dp)
       field_error = 0.0_dp
       gradient_error = 0.0_dp
+      tau_error = 0.0_dp
       DO shell = 1, 3
          ir = 1 + 50*shell
          DO side = 1, 2
             scale = MERGE(1.0_dp, pseudo_scale, side == 1)
             core = MERGE(0.2_dp, 0.1_dp, side == 1)/2.0_dp
-            CALL paw_xc_collocate(grid, onecenter, density, ir, side, rho, gradient)
+            tau_scale = MERGE(1.0_dp, 0.8_dp**2, side == 1)
+            CALL paw_xc_collocate(grid, onecenter, density, ir, side, rho, gradient, tau)
             DO a = 1, grid%na
                point = grid%r(ir)*grid%directions(:, a)
                basis = [1.0_dp, SQRT(3.0_dp)*point(2), SQRT(3.0_dp)*point(3), SQRT(3.0_dp)*point(1)]
@@ -327,13 +377,18 @@ CONTAINS
                DO spin = 1, 2
                   polynomial = DOT_PRODUCT(basis, MATMUL(density(:, :, spin), basis))
                   exact = factor*(scale*polynomial/fourpi + core)
+                  tau_reference = 0.0_dp
                   DO axis = 1, 3
                      exact_gradient(axis) = scale*factor*2.0_dp* &
                                             DOT_PRODUCT(dbasis(:, axis), MATMUL(density(:, :, spin), basis))/fourpi &
                                             - 2.0_dp*exponent*point(axis)*exact
+                     wave_gradient = dbasis(:, axis) - exponent*point(axis)*basis
+                     tau_reference = tau_reference + 0.5_dp*tau_scale*factor* &
+                                     DOT_PRODUCT(wave_gradient, MATMUL(density(:, :, spin), wave_gradient))/fourpi
                   END DO
                   field_error = MAX(field_error, ABS(rho(a, spin) - exact))
                   gradient_error = MAX(gradient_error, MAXVAL(ABS(gradient(:, a, spin) - exact_gradient)))
+                  tau_error = MAX(tau_error, ABS(tau(a, spin) - tau_reference))
                END DO
             END DO
          END DO
@@ -341,6 +396,8 @@ CONTAINS
       WRITE (*, '(A,2ES15.6)') 'PAW XC Cartesian density/gradient errors:', field_error, gradient_error
       IF (field_error > 2.e-13_dp) ERROR STOP 'PAW XC density differs from Cartesian Gaussian result'
       IF (gradient_error > 2.e-8_dp) ERROR STOP 'PAW XC gradient differs from Cartesian Gaussian result'
+      WRITE (*, '(A,ES15.6)') 'PAW Cartesian partial-wave kinetic-density error:', tau_error
+      IF (tau_error > 2.e-8_dp) ERROR STOP 'PAW kinetic density differs from Cartesian Gaussian result'
    END SUBROUTINE check_cartesian_fields
 
 ! **************************************************************************************************

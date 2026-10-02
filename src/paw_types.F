@@ -25,6 +25,8 @@ MODULE paw_types
       REAL(dp), ALLOCATABLE :: r(:), wr(:), wa(:), directions(:, :), harmonics(:, :), angular_gradient(:, :, :)
       ! Final dimension: 1 is AE, 2 is compensated PS. Radial arrays contain true densities.
       REAL(dp), ALLOCATABLE :: radial(:, :, :, :), radial_gradient(:, :, :, :), core(:, :), core_gradient(:, :)
+      ! Valence partial-wave kinetic density, 1/2 grad(phi_i).grad(phi_j), without charge compensation.
+      REAL(dp), ALLOCATABLE :: kinetic_radial(:, :, :, :)
    END TYPE paw_xc_type
 
    TYPE paw_kind_type

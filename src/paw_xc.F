@@ -45,6 +45,7 @@ MODULE paw_xc
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'paw_xc'
 
    PUBLIC :: paw_xc_type, paw_xc_init, paw_xc_evaluate, paw_xc_collocate
+   PUBLIC :: paw_xc_kinetic_adjoint
 
 CONTAINS
 
@@ -62,8 +63,8 @@ CONTAINS
       INTEGER                                            :: a, axis, first, i, j, l, lm, m, nb, nr, &
                                                             ns, pair, powers(3), reduced(3), rule, &
                                                             s, side
-      REAL(dp)                                           :: factor
-      REAL(dp), ALLOCATABLE                              :: values(:)
+      REAL(dp)                                           :: angular_factor, factor
+      REAL(dp), ALLOCATABLE                              :: derivatives(:, :), values(:), waves(:, :)
 
       CPASSERT(pot%is_paw .AND. .NOT. pot%has_so .AND. ALLOCATED(pot%paw))
       CPASSERT(ALLOCATED(pot%qijl))
@@ -148,6 +149,34 @@ CONTAINS
             END DO
          END DO
       END DO
+      ALLOCATE (grid%kinetic_radial(grid%nval, grid%npair, 0:grid%lmax, 2), &
+                waves(grid%nval, nb), derivatives(grid%nval, nb))
+      grid%kinetic_radial = 0.0_dp
+      DO side = 1, 2
+         DO i = 1, nb
+            IF (side == 1) THEN
+               values(first:) = pot%paw%ae_wfc(first:ns, i)/pot%r(first:ns)
+            ELSE
+               values(first:) = pot%paw%ps_wfc(first:ns, i)/pot%r(first:ns)
+            END IF
+            CALL spline3ders(pot%r(first:ns), values(first:), pot%r(:grid%nval), &
+                             ynew=waves(:, i), dynew=derivatives(:, i))
+         END DO
+         DO j = 1, nb
+            DO i = 1, j
+               pair = j*(j - 1)/2 + i
+               DO l = ABS(pot%lbeta(i) - pot%lbeta(j)), pot%lbeta(i) + pot%lbeta(j), 2
+                  ! grad_Omega(Y_i).grad_Omega(Y_j) has the same Gaunt coefficients,
+                  ! multiplied by [l_i(l_i+1)+l_j(l_j+1)-L(L+1)]/2.
+                  angular_factor = 0.5_dp*REAL(pot%lbeta(i)*(pot%lbeta(i) + 1) + &
+                                               pot%lbeta(j)*(pot%lbeta(j) + 1) - l*(l + 1), dp)
+                  grid%kinetic_radial(first:, pair, l, side) = 0.5_dp*( &
+                                                               derivatives(first:, i)*derivatives(first:, j) + &
+                                                         angular_factor*waves(first:, i)*waves(first:, j)/pot%r(first:grid%nval)**2)
+               END DO
+            END DO
+         END DO
+      END DO
    END SUBROUTINE paw_xc_init
 
 ! **************************************************************************************************
@@ -185,12 +214,14 @@ CONTAINS
 !> \param side AE (1) or compensated PS (2).
 !> \param rho Angular point by spin density.
 !> \param gradient Cartesian direction by angular point by spin gradient.
+!> \param kinetic Optional valence partial-wave kinetic density; frozen core is not included.
 ! **************************************************************************************************
-   SUBROUTINE collocate_coefficients(grid, coefficients, ir, side, rho, gradient)
+   SUBROUTINE collocate_coefficients(grid, coefficients, ir, side, rho, gradient, kinetic)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       REAL(dp), INTENT(IN)                               :: coefficients(:, :, :)
       INTEGER, INTENT(IN)                                :: ir, side
       REAL(dp), INTENT(OUT)                              :: rho(:, :), gradient(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: kinetic(:, :)
 
       INTEGER                                            :: axis, l, lm, nlm, nspin, spin
       REAL(dp) :: radial_derivative(SIZE(coefficients, 2)), harmonics(SIZE(coefficients, 2)), &
@@ -219,6 +250,17 @@ CONTAINS
             gradient(axis, :, spin) = grid%directions(axis, :)*radial_field + &
                                       MATMUL(grid%angular_gradient(axis, :, :), harmonics)/grid%r(ir)
          END DO
+         IF (PRESENT(kinetic)) THEN
+            CPASSERT(ALL(SHAPE(kinetic) == SHAPE(rho)))
+            harmonics = 0.0_dp
+            IF (ir <= grid%nval) THEN
+               DO lm = 1, nlm
+                  l = INT(SQRT(REAL(lm - 1, dp)))
+                  harmonics(lm) = SUM(coefficients(:, lm, spin)*grid%kinetic_radial(ir, :, l, side))
+               END DO
+            END IF
+            kinetic(:, spin) = MATMUL(grid%harmonics, harmonics)
+         END IF
       END DO
    END SUBROUTINE collocate_coefficients
 
@@ -231,20 +273,63 @@ CONTAINS
 !> \param side AE (1) or compensated PS (2).
 !> \param rho Angular point by spin density including frozen core.
 !> \param gradient Cartesian direction by angular point by spin gradient.
+!> \param kinetic Optional valence partial-wave kinetic density, excluding frozen core and charge compensation.
 ! **************************************************************************************************
-   SUBROUTINE paw_xc_collocate(grid, onecenter, density, ir, side, rho, gradient)
+   SUBROUTINE paw_xc_collocate(grid, onecenter, density, ir, side, rho, gradient, kinetic)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
       REAL(dp), INTENT(IN)                               :: density(:, :, :)
       INTEGER, INTENT(IN)                                :: ir, side
       REAL(dp), INTENT(OUT)                              :: rho(:, :), gradient(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: kinetic(:, :)
 
       REAL(dp) :: coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3))
 
       CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
       CALL density_coefficients(onecenter, density, coefficients)
-      CALL collocate_coefficients(grid, coefficients, ir, side, rho, gradient)
+      CALL collocate_coefficients(grid, coefficients, ir, side, rho, gradient, kinetic)
    END SUBROUTINE paw_xc_collocate
+
+! **************************************************************************************************
+!> \brief Adjoint of valence kinetic-density collocation on a single radial shell.
+!> \param grid Prepared PAW radial and angular data.
+!> \param onecenter Projector indices and Gaunt coefficients.
+!> \param ir Nonzero radial node.
+!> \param side AE (1) or PS (2), without charge compensation in either kinetic field.
+!> \param weighted_potential Kinetic-density potential, including all integration weights.
+!> \param potential Projector-density derivative from this shell, separately for each spin.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_kinetic_adjoint(grid, onecenter, ir, side, weighted_potential, potential)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      INTEGER, INTENT(IN)                                :: ir, side
+      REAL(dp), INTENT(IN)                               :: weighted_potential(:, :)
+      REAL(dp), INTENT(OUT)                              :: potential(:, :, :)
+
+      INTEGER                                            :: l, lm, p, pair, q, spin
+      REAL(dp) :: derivative(onecenter%npair, SIZE(onecenter%gaunt, 3)), &
+         angular_value(SIZE(onecenter%gaunt, 3))
+
+      CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
+      CPASSERT(ir >= 1 .AND. ir <= grid%nr .AND. side >= 1 .AND. side <= 2)
+      CPASSERT(SIZE(weighted_potential, 1) == grid%na)
+      CPASSERT(ALL(SHAPE(potential) == [onecenter%nproj, onecenter%nproj, SIZE(weighted_potential, 2)]))
+      potential = 0.0_dp
+      IF (ir > grid%nval) RETURN
+      DO spin = 1, SIZE(weighted_potential, 2)
+         angular_value = MATMUL(TRANSPOSE(grid%harmonics), weighted_potential(:, spin))
+         DO lm = 1, SIZE(angular_value)
+            l = INT(SQRT(REAL(lm - 1, dp)))
+            derivative(:, lm) = angular_value(lm)*grid%kinetic_radial(ir, :, l, side)
+         END DO
+         DO q = 1, onecenter%nproj
+            DO p = 1, onecenter%nproj
+               pair = onecenter%pair_index(p, q)
+               potential(p, q, spin) = SUM(onecenter%gaunt(p, q, :)*derivative(pair, :))
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE paw_xc_kinetic_adjoint
 
 ! **************************************************************************************************
 !> \brief Semilocal PAW XC correction and its full projector-density derivative.
