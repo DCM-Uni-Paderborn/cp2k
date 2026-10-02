@@ -346,9 +346,9 @@ CONTAINS
                taumat = 0._dp
 
                xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-               CALL numpot_matrix(xcmat%op, xcpot(:, 1, 1), atom%basis, 2)
+               CALL numpot_matrix(xcmat%op, xcpot(:, 1, 1), atom%basis, 2, charge_augmentation=.FALSE.)
                xcpot(:, 1, 1) = xcpot(:, 1, 1)/atom%basis%grid%rad2(:)
-               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0)
+               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0, charge_augmentation=.FALSE.)
                DO l = 0, 3
                   xcmat%op(:, :, l) = xcmat%op(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
                END DO
@@ -567,9 +567,9 @@ CONTAINS
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
                taumat = 0._dp
                xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-               CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1), atom%basis, 2)
+               CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1), atom%basis, 2, charge_augmentation=.FALSE.)
                xcpot(:, 1, 1) = xcpot(:, 1, 1)/atom%basis%grid%rad2(:)
-               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0)
+               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0, charge_augmentation=.FALSE.)
                DO l = 0, 3
                   xcmata%op(:, :, l) = xcmata%op(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
                END DO
@@ -578,9 +578,9 @@ CONTAINS
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
                taumat = 0._dp
                xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-               CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1), atom%basis, 2)
+               CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1), atom%basis, 2, charge_augmentation=.FALSE.)
                xcpot(:, 1, 1) = xcpot(:, 1, 1)/atom%basis%grid%rad2(:)
-               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0)
+               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0, charge_augmentation=.FALSE.)
                DO l = 0, 3
                   xcmatb%op(:, :, l) = xcmatb%op(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
                END DO
@@ -755,9 +755,9 @@ CONTAINS
             taumat = 0._dp
 
             xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-            CALL numpot_matrix(xcmat, xcpot(:, 1, 1), basis, 2)
+            CALL numpot_matrix(xcmat, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
-            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0)
+            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0, charge_augmentation=.FALSE.)
             DO l = 0, 3
                xcmat(:, :, l) = xcmat(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
             END DO
@@ -928,9 +928,9 @@ CONTAINS
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
             taumat = 0._dp
             xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-            CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 2)
+            CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
-            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0)
+            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0, charge_augmentation=.FALSE.)
             DO l = 0, 3
                xcmata(:, :, l) = xcmata(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
             END DO
@@ -939,9 +939,9 @@ CONTAINS
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
             taumat = 0._dp
             xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-            CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 2)
+            CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
-            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0)
+            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0, charge_augmentation=.FALSE.)
             DO l = 0, 3
                xcmatb(:, :, l) = xcmatb(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
             END DO

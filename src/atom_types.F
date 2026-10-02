@@ -77,6 +77,7 @@ MODULE atom_types
 !> \brief Provides all information about a basis set
 ! **************************************************************************************************
    TYPE atom_uspp_type
+      LOGICAL :: is_paw = .FALSE.
       INTEGER, ALLOCATABLE :: lbeta(:)
       REAL(dp), ALLOCATABLE :: beta(:, :), radial(:, :, :)
    END TYPE atom_uspp_type

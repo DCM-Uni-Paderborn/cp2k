@@ -429,7 +429,28 @@ CONTAINS
          CPABORT("USPP/PAW requires analytic local-potential integrals")
       END IF
       IF (dft_control%use_kinetic_energy_density) THEN
-         CPABORT("USPP/PAW augmentation for kinetic-energy-density functionals is not implemented")
+         IF (dft_control%use_gauxc) THEN
+            CPABORT("USPP/PAW kinetic-density coupling to GauXC/Skala is not implemented")
+         END IF
+         DO ikind = 1, SIZE(qs_kind_set)
+            IF (.NOT. ASSOCIATED(qs_kind_set(ikind)%sgp_potential)) CYCLE
+            ASSOCIATE (potential => qs_kind_set(ikind)%sgp_potential)
+               IF (.NOT. ALLOCATED(potential%upf_data)) CYCLE
+               IF (potential%upf_data%is_ultrasoft .AND. .NOT. potential%upf_data%is_paw) THEN
+                  CPABORT("USPP kinetic-density functionals require kinetic augmentation data")
+               END IF
+               IF (potential%upf_data%is_paw) THEN
+                  IF (ANY(potential%upf_data%paw%rho_core /= 0.0_dp)) THEN
+                     CPABORT("PAW tau XC requires AE and PS core kinetic densities")
+                  END IF
+                  IF (ALLOCATED(potential%upf_data%rho_nlcc)) THEN
+                     IF (ANY(potential%upf_data%rho_nlcc /= 0.0_dp)) THEN
+                        CPABORT("PAW tau XC requires AE and PS core kinetic densities")
+                     END IF
+                  END IF
+               END IF
+            END ASSOCIATE
+         END DO
       END IF
       DO ikind = 1, SIZE(qs_kind_set)
          IF (.NOT. uspp%paw(ikind)%active) CYCLE

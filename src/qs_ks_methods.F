@@ -984,7 +984,8 @@ CONTAINS
             ALLOCATE (uspp_xc_fields(nspins))
             CALL calculate_vxc_atom(qs_env, just_energy_xc, energy%exc1, &
                                     xc_section_external=xc_section, calculate_forces=calculate_forces, &
-                                    composite_vxc_rho=v_rspace_new, uspp_fields=uspp_xc_fields)
+                                    composite_vxc_rho=v_rspace_new, composite_vxc_tau=v_tau_rspace, &
+                                    uspp_fields=uspp_xc_fields)
          ELSE
             CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
                                vxc_rho=v_rspace_new, vxc_tau=v_tau_rspace, exc=energy%exc, &

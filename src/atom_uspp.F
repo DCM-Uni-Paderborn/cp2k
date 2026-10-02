@@ -49,6 +49,7 @@ CONTAINS
       CPASSERT(SIZE(pot%r) >= 4)
       IF (ALLOCATED(basis%uspp)) DEALLOCATE (basis%uspp)
       ALLOCATE (basis%uspp)
+      basis%uspp%is_paw = pot%is_paw
       m = pot%number_of_proj
       n = MAXVAL(basis%nbas)
       nr = basis%grid%nr
@@ -144,7 +145,7 @@ CONTAINS
 !> \param pmat Atomic density matrices, with occupations summed over magnetic states.
 !> \param basis Atomic basis and prepared augmentation.
 !> \param maxl Largest occupied angular momentum.
-!> \param typ RHO or DER.
+!> \param typ RHO or DER; PAW KIN retains the unaugmented pseudo-orbital kinetic density.
 ! **************************************************************************************************
    SUBROUTINE atom_uspp_density(density, pmat, basis, maxl, typ)
       REAL(dp), INTENT(INOUT)                            :: density(:)
@@ -162,6 +163,11 @@ CONTAINS
          order = 0
       CASE ('DER')
          order = 1
+      CASE ('KIN')
+         ! PAW kinetic augmentation is evaluated by the separate AE-minus-PS
+         ! one-center functional. Charge compensation does not contribute to tau.
+         IF (basis%uspp%is_paw) RETURN
+         CPABORT("Atomic USPP kinetic augmentation is not implemented")
       CASE DEFAULT
          CPABORT("Atomic USPP kinetic/Laplacian augmentation is not implemented")
       END SELECT

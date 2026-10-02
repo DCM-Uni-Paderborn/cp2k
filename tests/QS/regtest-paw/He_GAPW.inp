@@ -20,8 +20,8 @@
       METHOD GAPW
     &END QS
     &SCF
-      EPS_SCF 1.E-11
-      MAX_SCF 40
+      EPS_SCF 1.E-12
+      MAX_SCF 80
       SCF_GUESS ATOMIC
       &OT
         ENERGY_GAP 0.001
@@ -32,7 +32,9 @@
     &XC
       DENSITY_CUTOFF 1.E-14
       GRADIENT_CUTOFF 1.E-14
-      &XC_FUNCTIONAL PBE
+      &XC_FUNCTIONAL
+        &TPSS
+        &END TPSS
       &END XC_FUNCTIONAL
     &END XC
   &END DFT

@@ -1,5 +1,6 @@
 # Original SSSP v2.0 PBE PAW He; compact energy, force and stress checks.
 # These numerical settings target regression coverage, not basis/grid convergence.
+# The full GAPW case also exercises the PAW and Gaussian kinetic-density adjoints.
 "He2_GPW.inp" = [
   {matcher="M011", tol=1e-11, ref=-5.341385075511983},
   {matcher="M031", tol=1e-7, ref=38241.47709},
@@ -11,7 +12,7 @@
   {matcher="Atomic_force_1_z", tol=1e-6, ref=-2.19469461E-01},
 ]
 "He_GAPW.inp" = [
-  {matcher="M011", tol=1e-11, ref=-2.693538768281472},
-  {matcher="M031", tol=1e-7, ref=-5710.9975525},
-  {matcher="Atomic_force_1_z", tol=1e-6, ref=-3.82717938E-02},
+  {matcher="M011", tol=1e-11, ref=-2.697000066949484},
+  {matcher="M031", tol=1e-7, ref=-4162.53327497},
+  {matcher="Atomic_force_1_z", tol=1e-6, ref=-3.88329485E-02},
 ]
