@@ -186,8 +186,9 @@ CONTAINS
          spin_scale, step_h, sum_descriptor, sum_weights, w, weight_covector, z
       REAL(dp), ALLOCATABLE :: centres(:, :), dc(:, :), dd(:), de(:), descriptor_weights(:), &
          dg(:, :, :), dr(:, :), dt(:, :), dx(:, :), energy_weights(:), g(:, :, :), &
-         gathered(:, :, :), hg(:, :, :), hr(:, :), ht(:, :), pc(:, :), pd(:), pe(:), pg(:, :, :), &
-         plus_g(:, :, :), plus_r(:, :), plus_t(:, :), points(:, :), pr(:, :), pt(:, :), px(:, :), &
+         gathered(:, :, :), hc(:, :), hd(:), he(:), hg(:, :, :), hr(:, :), ht(:, :), hx(:, :), &
+         pc(:, :), pd(:), pe(:), pg(:, :, :), plus_c(:, :), plus_d(:), plus_e(:), plus_g(:, :, :), &
+         plus_r(:, :), plus_t(:, :), plus_x(:, :), points(:, :), pr(:, :), pt(:, :), px(:, :), &
          r(:, :), reference_grad(:, :, :), t(:, :)
 
       pi = ACOS(-1.0_dp)
@@ -208,6 +209,8 @@ CONTAINS
                       dr(nr_local, nspin), dg(nr_local, 3, nspin), dt(nr_local, nspin), &
                       pr(nr_local, nspin), pg(nr_local, 3, nspin), pt(nr_local, nspin), &
                       dx(3, nr_local), dc(3, na_local), de(nr_local), dd(nr_local), &
+                      hx(3, nr_local), hc(3, na_local), he(nr_local), hd(nr_local), &
+                      plus_x(3, nr_local), plus_c(3, na_local), plus_e(nr_local), plus_d(nr_local), &
                       px(3, nr_local), pc(3, na_local), pe(nr_local), pd(nr_local), &
                       hr(nr_local, nspin), hg(nr_local, 3, nspin), ht(nr_local, nspin), &
                       plus_r(nr_local, nspin), plus_g(nr_local, 3, nspin), plus_t(nr_local, nspin))
@@ -302,16 +305,22 @@ CONTAINS
                      point_covector = 0.0_dp
                      IF (model_mode == "geometry") THEN
                         displacement = points(:, row) - centres(:, b)
-                        energy_density = energy_density + 0.04_dp*SUM(displacement**2) + 0.03_dp*SUM(mean_point**2)
-                        point_covector = 0.08_dp*w*displacement + 0.06_dp*sum_weights*dw*mean_point/sum_descriptor
+                        energy_density = energy_density + 0.04_dp*SUM(displacement**2) + &
+                                         (0.03_dp + 0.02_dp*mean)*SUM(mean_point**2)
+                        point_covector = 0.08_dp*w*displacement + &
+                                         (0.06_dp + 0.04_dp*mean)*sum_weights*dw*mean_point/sum_descriptor
                         weight_covector = weight_covector + &
-                                          0.06_dp*sum_weights*SUM(mean_point*(displacement - mean_point))/sum_descriptor
+                                          (0.06_dp + 0.04_dp*mean)*sum_weights* &
+                                          SUM(mean_point*(displacement - mean_point))/sum_descriptor + &
+                                          0.02_dp*sum_weights*SUM(mean_point**2)*(SUM(r(row, :)) - mean)/sum_descriptor
                      END IF
                      expected = expected + w*energy_density
                      centre_covector = centre_covector - point_covector
                      err = MAX(err, ABS(pe(row) - energy_density), ABS(pd(row) - weight_covector), &
                                MAXVAL(ABS(px(:, row) - point_covector)))
                      rho_sum = 0.1_dp*mean*sum_weights*dw/sum_descriptor
+                     IF (model_mode == "geometry") &
+                        rho_sum = rho_sum + 0.02_dp*SUM(mean_point**2)*sum_weights*dw/sum_descriptor
                      DO spin = 1, nspin
                         err = MAX(err, ABS(pr(row, spin) - &
                                            (w*spin_scale*(1.4_dp*r(row, spin) + 0.2_dp*t(row, spin)) + rho_sum)))
@@ -380,6 +389,45 @@ CONTAINS
                   ERROR STOP "Arbitrary-point Hessian-vector product fails finite differences"
                END IF
             END DO
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
+                                  dr, dg, dt, dx, dc, de, dd)
+            DO ih = 1, 2
+               step_h = step_size/REAL(ih, dp)
+               CALL skala_point_eval(comm, points + step_h*dx, energy_weights + step_h*de, &
+                                     descriptor_weights + step_h*dd, sizes, centres + step_h*dc, &
+                                     r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, &
+                                     plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d)
+               CALL skala_point_eval(comm, points - step_h*dx, energy_weights - step_h*de, &
+                                     descriptor_weights - step_h*dd, sizes, centres - step_h*dc, &
+                                     r - step_h*dr, g - step_h*dg, t - step_h*dt, xc, minus, &
+                                     pr, pg, pt, px, pc, pe, pd)
+               err = 0.0_dp
+               IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - (plus_r - pr)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hg - (plus_g - pg)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(ht - (plus_t - pt)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hx - (plus_x - px)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hc - (plus_c - pc)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(he - (plus_e - pe)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hd - (plus_d - pd)/(2.0_dp*step_h))))
+               CALL comm%max(err)
+               IF (err > derivative_tolerance) &
+                  ERROR STOP "Joint field/geometry Hessian-vector product fails finite differences"
+               maximum_error = MAX(maximum_error, err)
+            END DO
+            ! Check the two mixed blocks independently, including the scalar-spin chain rule.
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
+                                  response_density=dr, response_gradient=dg, response_kinetic=dt)
+            expected = SUM(hx*dx) + SUM(hc*dc) + SUM(he*de) + SUM(hd*dd)
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, &
+                                  response_density=0.0_dp*dr, response_gradient=0.0_dp*dg, response_kinetic=0.0_dp*dt, &
+                                  response_points=dx, response_atom_coords=dc, response_energy_weights=de, &
+                                  response_descriptor_weights=dd)
+            err = SUM(hr*dr) + SUM(hg*dg) + SUM(ht*dt) - expected
+            CALL comm%sum(err)
+            IF (ABS(err) > derivative_tolerance) ERROR STOP "Mixed field/geometry Hessian is not symmetric"
             DO c = 1, 7
                DO ih = 1, 2
                   step_h = step_size/REAL(ih, dp)
@@ -447,7 +495,7 @@ CONTAINS
             IF (err > 1.0e-12_dp) ERROR STOP "Zero energy weights must give zero Hessian-vector product"
             DEALLOCATE (sizes, centres, points, ids, energy_weights, descriptor_weights, &
                         r, g, t, dr, dg, dt, pr, pg, pt, dx, dc, de, dd, px, pc, pe, pd, &
-                        hr, hg, ht, plus_r, plus_g, plus_t)
+                        hr, hg, ht, hx, hc, he, hd, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d)
          END DO
          DEALLOCATE (gathered, reference_grad)
       END DO

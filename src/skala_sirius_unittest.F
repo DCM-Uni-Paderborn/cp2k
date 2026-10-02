@@ -451,7 +451,7 @@ PROGRAM skala_sirius_unittest
             IF (mode == 2 .AND. fd_step > 0.0_dp) THEN
                CALL sirius_check_external_xc_response(gs, fd_step, response_errors, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "SIRIUS Skala field response check failed"
-               IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "XC field response relative errors: ", response_errors
+               IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "XC field/point response relative errors: ", response_errors
                IF (.NOT. ALL(ieee_is_finite(response_errors))) ERROR STOP "Nonfinite XC field response errors"
                IF (MAXVAL(response_errors) > MERGE(1.0e-4_dp, 1.0e-8_dp, model_mode == "skala-float32")) &
                   ERROR STOP "XC field response mismatch"

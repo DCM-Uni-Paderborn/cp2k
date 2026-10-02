@@ -941,6 +941,10 @@ if(CP2K_USE_SIRIUS)
      use sirius, only: sirius_set_xc_point_response_callback, sirius_check_external_xc_response
      end program" CP2K_SIRIUS_XC_POINT_RESPONSE SRC_EXT F90)
   check_fortran_source_compiles(
+    "program check_xc_point_hessian
+     use sirius, only: sirius_set_xc_point_hessian_callback
+     end program" CP2K_SIRIUS_XC_POINT_HESSIAN SRC_EXT F90)
+  check_fortran_source_compiles(
     "program check_xc_point_update
      use sirius, only: sirius_update_xc_point_set
      end program" CP2K_SIRIUS_XC_POINT_UPDATE SRC_EXT F90)

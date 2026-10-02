@@ -109,10 +109,14 @@ CONTAINS
 !> \param datom_coords Optional block-centre covectors at fixed point coordinates.
 !> \param denergy_weights Optional energy-weight covectors at fixed descriptor weights.
 !> \param ddescriptor_weights Optional descriptor-weight covectors at fixed energy weights.
-!> \param response_density Optional density direction for a fixed-geometry Hessian-vector product.
+!> \param response_density Optional density direction for a Hessian-vector product.
 !> \param response_gradient Gradient direction, supplied with both other response fields.
 !> \param response_kinetic Kinetic-density direction. In response mode the output covectors
 !>        are their directional derivatives and exc remains the base-state energy.
+!> \param response_points Point-coordinate direction, supplied with the other three geometry directions.
+!> \param response_atom_coords Atom-block-centre direction.
+!> \param response_energy_weights Energy-weight direction.
+!> \param response_descriptor_weights Descriptor-weight direction.
 !> \note Fields must be reconstructed before this call. No AE-minus-pseudo energy
 !>       decomposition, density clipping, weight multiplication of physical fields,
 !>       or removal of zero-energy-weight descriptor rows is performed here.
@@ -123,7 +127,8 @@ CONTAINS
    SUBROUTINE skala_point_eval(group, points, energy_weights, descriptor_weights, atom_sizes, &
                                atom_coords, density, gradient, kinetic, xc_section, exc, drho, &
                                dgradient, dtau, dpoints, datom_coords, denergy_weights, ddescriptor_weights, &
-                               response_density, response_gradient, response_kinetic)
+                               response_density, response_gradient, response_kinetic, response_points, &
+                               response_atom_coords, response_energy_weights, response_descriptor_weights)
       CLASS(mp_comm_type), INTENT(IN)                    :: group
       REAL(KIND=dp), INTENT(IN)                          :: points(:, :), energy_weights(:), &
                                                             descriptor_weights(:), atom_coords(:, :), &
@@ -134,26 +139,34 @@ CONTAINS
       REAL(KIND=dp), OPTIONAL, INTENT(OUT)               :: dpoints(:, :), datom_coords(:, :), &
                                                             denergy_weights(:), ddescriptor_weights(:)
       REAL(KIND=dp), OPTIONAL, INTENT(IN)                :: response_density(:, :), response_gradient(:, :, :), &
-                                                            response_kinetic(:, :)
+                                                            response_kinetic(:, :), response_points(:, :), &
+                                                            response_atom_coords(:, :), response_energy_weights(:), &
+                                                            response_descriptor_weights(:)
 
       CHARACTER(len=default_path_length)                 :: model_path
-      INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin, i_response
-      LOGICAL                                            :: geometry_grad, use_cuda, response
+      INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin, i_response, &
+                                                            n_response
+      LOGICAL                                            :: geometry_grad, use_cuda, response, geometry_response
       REAL(KIND=dp), ALLOCATABLE                         :: direction_rho(:, :), direction_grad(:, :, :), &
-                                                            direction_tau(:, :)
+                                                            direction_tau(:, :), direction_points(:, :), &
+                                                            direction_centres(:, :), direction_energy(:), &
+                                                            direction_descriptor(:)
       REAL(KIND=dp), POINTER                             :: density_grad(:, :), grad_grad(:, :, :), kin_grad(:, :)
       REAL(KIND=dp), POINTER                             :: coord_grad(:, :), weight_grad(:)
       TYPE(section_vals_type), POINTER                   :: gauxc_section
       TYPE(skala_gpw_feature_type)                       :: features
       TYPE(torch_tensor_type)                            :: exc_tensor, density_grad_t, grad_grad_t, kin_grad_t
       TYPE(torch_tensor_type)                            :: geometry_grad_t
-      TYPE(torch_tensor_type)                            :: directions(3), responses(3)
+      TYPE(torch_tensor_type)                            :: hessian_inputs(7), directions(7), responses(7)
 
       CALL timeset("skala_point_eval", handle)
       npoint = SIZE(density, 1)
       nspin = SIZE(density, 2)
       invalid = 0
-      response = PRESENT(response_density) .OR. PRESENT(response_gradient) .OR. PRESENT(response_kinetic)
+      geometry_response = PRESENT(response_points) .OR. PRESENT(response_atom_coords) .OR. &
+                          PRESENT(response_energy_weights) .OR. PRESENT(response_descriptor_weights)
+      response = geometry_response .OR. PRESENT(response_density) .OR. PRESENT(response_gradient) .OR. &
+                 PRESENT(response_kinetic)
       IF (response) THEN
          IF (.NOT. (PRESENT(response_density) .AND. PRESENT(response_gradient) .AND. &
                     PRESENT(response_kinetic))) THEN
@@ -166,8 +179,21 @@ CONTAINS
                 .NOT. ALL(ieee_is_finite(response_gradient)) .OR. &
                 .NOT. ALL(ieee_is_finite(response_kinetic))) invalid = 1
          END IF
-         IF (PRESENT(dpoints) .OR. PRESENT(datom_coords) .OR. PRESENT(denergy_weights) .OR. &
-             PRESENT(ddescriptor_weights)) invalid = 1
+      END IF
+      IF (geometry_response) THEN
+         IF (.NOT. (PRESENT(response_points) .AND. PRESENT(response_atom_coords) .AND. &
+                    PRESENT(response_energy_weights) .AND. PRESENT(response_descriptor_weights))) THEN
+            invalid = 1
+         ELSE
+            IF (ANY(SHAPE(response_points) /= SHAPE(points))) invalid = 1
+            IF (ANY(SHAPE(response_atom_coords) /= SHAPE(atom_coords))) invalid = 1
+            IF (SIZE(response_energy_weights) /= SIZE(energy_weights)) invalid = 1
+            IF (SIZE(response_descriptor_weights) /= SIZE(descriptor_weights)) invalid = 1
+            IF (.NOT. ALL(ieee_is_finite(response_points)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_atom_coords)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_energy_weights)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_descriptor_weights))) invalid = 1
+         END IF
       END IF
       IF (ALL(nspin /= [1, 2])) invalid = 1
       IF (ANY(SHAPE(points) /= [3, npoint])) invalid = 1
@@ -218,7 +244,7 @@ CONTAINS
       IF (PRESENT(datom_coords)) datom_coords = 0.0_dp
       IF (PRESENT(denergy_weights)) denergy_weights = 0.0_dp
       IF (PRESENT(ddescriptor_weights)) ddescriptor_weights = 0.0_dp
-      geometry_grad = PRESENT(dpoints) .OR. PRESENT(datom_coords) .OR. &
+      geometry_grad = geometry_response .OR. PRESENT(dpoints) .OR. PRESENT(datom_coords) .OR. &
                       PRESENT(denergy_weights) .OR. PRESENT(ddescriptor_weights)
       IF (npoint > 0) THEN
          CALL ensure_model_loaded(model_path, -1)
@@ -242,8 +268,31 @@ CONTAINS
             CALL torch_tensor_from_array(directions(1), direction_rho)
             CALL torch_tensor_from_array(directions(2), direction_grad)
             CALL torch_tensor_from_array(directions(3), direction_tau)
-            CALL torch_tensor_hessian_vector(exc_tensor, [features%density_t, features%grad_t, features%kin_t], &
-                                             directions, responses)
+            hessian_inputs(1:3) = [features%density_t, features%grad_t, features%kin_t]
+            n_response = 3
+            IF (geometry_grad) THEN
+               n_response = 7
+               hessian_inputs(4:7) = [features%grid_coords_t, features%coarse_0_atomic_coords_t, &
+                                      features%grid_weights_t, features%atomic_grid_weights_t]
+               ALLOCATE (direction_points(3, npoint), direction_centres(3, SIZE(atom_sizes)), &
+                         direction_energy(npoint), direction_descriptor(npoint))
+               direction_points = 0.0_dp
+               direction_centres = 0.0_dp
+               direction_energy = 0.0_dp
+               direction_descriptor = 0.0_dp
+               IF (geometry_response) THEN
+                  direction_points = response_points
+                  direction_centres = response_atom_coords
+                  direction_energy = response_energy_weights
+                  direction_descriptor = response_descriptor_weights
+               END IF
+               CALL torch_tensor_from_array(directions(4), direction_points)
+               CALL torch_tensor_from_array(directions(5), direction_centres)
+               CALL torch_tensor_from_array(directions(6), direction_energy)
+               CALL torch_tensor_from_array(directions(7), direction_descriptor)
+            END IF
+            CALL torch_tensor_hessian_vector(exc_tensor, hessian_inputs(:n_response), &
+                                             directions(:n_response), responses(:n_response))
             density_grad_t = responses(1)
             grad_grad_t = responses(2)
             kin_grad_t = responses(3)
@@ -251,7 +300,7 @@ CONTAINS
             CALL torch_tensor_data_ptr(density_grad_t, density_grad)
             CALL torch_tensor_data_ptr(grad_grad_t, grad_grad)
             CALL torch_tensor_data_ptr(kin_grad_t, kin_grad)
-            DO i_response = 1, 3
+            DO i_response = 1, n_response
                CALL torch_tensor_release(directions(i_response))
             END DO
          ELSE
@@ -272,32 +321,53 @@ CONTAINS
          CALL torch_tensor_release(grad_grad_t)
          CALL torch_tensor_release(kin_grad_t)
          IF (PRESENT(dpoints)) THEN
-            CALL torch_tensor_grad(features%grid_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            IF (response) THEN
+               geometry_grad_t = responses(4)
+            ELSE
+               CALL torch_tensor_grad(features%grid_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            END IF
             NULLIFY (coord_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, coord_grad)
             dpoints = coord_grad
-            CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
          END IF
          IF (PRESENT(datom_coords)) THEN
-            CALL torch_tensor_grad(features%coarse_0_atomic_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            IF (response) THEN
+               geometry_grad_t = responses(5)
+            ELSE
+               CALL torch_tensor_grad(features%coarse_0_atomic_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            END IF
             NULLIFY (coord_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, coord_grad)
             datom_coords = coord_grad
-            CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
          END IF
          IF (PRESENT(denergy_weights)) THEN
-            CALL torch_tensor_grad(features%grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            IF (response) THEN
+               geometry_grad_t = responses(6)
+            ELSE
+               CALL torch_tensor_grad(features%grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            END IF
             NULLIFY (weight_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, weight_grad)
             denergy_weights = weight_grad
-            CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
          END IF
          IF (PRESENT(ddescriptor_weights)) THEN
-            CALL torch_tensor_grad(features%atomic_grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            IF (response) THEN
+               geometry_grad_t = responses(7)
+            ELSE
+               CALL torch_tensor_grad(features%atomic_grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            END IF
             NULLIFY (weight_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, weight_grad)
             ddescriptor_weights = weight_grad
-            CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
+         END IF
+         IF (response .AND. geometry_grad) THEN
+            DO i_response = 4, 7
+               CALL torch_tensor_release(responses(i_response))
+            END DO
          END IF
          CALL torch_tensor_release(exc_tensor)
          CALL skala_gpw_feature_release(features)

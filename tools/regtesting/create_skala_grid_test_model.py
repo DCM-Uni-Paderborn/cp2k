@@ -40,7 +40,9 @@ class GridTestFunctional(torch.nn.Module):
                 )
                 centre = (delta * local_weight[:, None]).sum(0) / local_weight.sum()
                 energy[begin:end] = (
-                    energy[begin:end] + 0.04 * (delta**2).sum(1) + 0.03 * (centre**2).sum()
+                    energy[begin:end]
+                    + 0.04 * (delta**2).sum(1)
+                    + (0.03 + 0.02 * mean) * (centre**2).sum()
                 )
             begin = end
         return energy

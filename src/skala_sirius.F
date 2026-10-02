@@ -32,6 +32,9 @@ MODULE skala_sirius
 #if defined(__SIRIUS_XC_POINT_RESPONSE) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_set_xc_point_response_callback
 #endif
+#if defined(__SIRIUS_XC_POINT_HESSIAN) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_point_hessian_callback
+#endif
 #if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_update_xc_point_set
 #endif
@@ -181,7 +184,11 @@ CONTAINS
       CALL sirius_set_xc_point_callback(context, C_FUNLOC(evaluate_skala_points), C_LOC(state%token), nr, nb, &
                                         points, energy_weights, descriptor_weights, atom_sizes, atom_coords, error)
       IF (error /= 0) CPABORT("Could not register the SIRIUS Skala point callback")
-#if defined(__SIRIUS_XC_POINT_RESPONSE)
+#if defined(__SIRIUS_XC_POINT_HESSIAN)
+      CALL sirius_set_xc_point_hessian_callback(context, C_FUNLOC(evaluate_skala_point_hessian), &
+                                                C_LOC(state%token), error)
+      IF (error /= 0) CPABORT("Could not register the SIRIUS Skala joint Hessian callback")
+#elif defined(__SIRIUS_XC_POINT_RESPONSE)
       CALL sirius_set_xc_point_response_callback(context, C_FUNLOC(evaluate_skala_point_response), &
                                                  C_LOC(state%token), error)
       IF (error /= 0) CPABORT("Could not register the SIRIUS Skala response callback")
@@ -446,7 +453,7 @@ CONTAINS
    END SUBROUTINE
 #endif
 
-#if (defined(__SIRIUS_XC_POINT_GEOMETRY) || defined(__SIRIUS_XC_POINT_RESPONSE)) && defined(__LIBTORCH)
+#if (defined(__SIRIUS_XC_POINT_GEOMETRY) || defined(__SIRIUS_XC_POINT_RESPONSE) || defined(__SIRIUS_XC_POINT_HESSIAN)) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief Return the registry entry without exporting Fortran pointers across the C ABI.
 ! **************************************************************************************************
@@ -506,6 +513,57 @@ CONTAINS
       CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
                             rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
                             response_density=delta_rho, response_gradient=delta_gradient, response_kinetic=delta_tau)
+      status = 0
+   END SUBROUTINE
+#endif
+
+#if defined(__SIRIUS_XC_POINT_HESSIAN) && defined(__LIBTORCH)
+! **************************************************************************************************
+!> \brief Joint Hessian-vector product of all independent Skala point inputs.
+! **************************************************************************************************
+   SUBROUTINE evaluate_skala_point_hessian(user_data, nr, ns, nb, fcomm, coordinates, energy_weights, &
+                                           descriptor_weights, atom_sizes, atom_coords, rho, gradient, tau, &
+                                           delta_rho, delta_gradient, delta_tau, delta_points, delta_energy, &
+                                           delta_descriptor, delta_centres, drho, dgradient, dtau, &
+                                           dpoints, denergy, ddescriptor, dcentres, status) BIND(C)
+      TYPE(C_PTR), VALUE                                 :: user_data
+      INTEGER(C_INT), VALUE                              :: nr, ns, nb, fcomm
+      REAL(C_DOUBLE), INTENT(IN)                         :: coordinates(3, nr), energy_weights(nr), &
+                                                            descriptor_weights(nr)
+      INTEGER(C_INT), INTENT(IN)                         :: atom_sizes(nb)
+      REAL(C_DOUBLE), INTENT(IN) :: atom_coords(3, nb), rho(nr, ns), gradient(nr, 3, ns), &
+         tau(nr, ns), delta_rho(nr, ns), delta_gradient(nr, 3, ns), delta_tau(nr, ns), &
+         delta_points(3, nr), delta_energy(nr), delta_descriptor(nr), delta_centres(3, nb)
+      REAL(C_DOUBLE), INTENT(OUT) :: drho(nr, ns), dgradient(nr, 3, ns), dtau(nr, ns), &
+         dpoints(3, nr), denergy(nr), ddescriptor(nr), dcentres(3, nb)
+      INTEGER(C_INT), INTENT(OUT)                        :: status
+
+      INTEGER                                            :: invalid
+      REAL(dp)                                           :: energy
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(skala_sirius_state_type), POINTER             :: state
+
+      CALL comm%set_handle(INT(fcomm))
+      state => callback_state(user_data)
+      status = 1
+      drho = 0.0_dp
+      dgradient = 0.0_dp
+      dtau = 0.0_dp
+      dpoints = 0.0_dp
+      denergy = 0.0_dp
+      ddescriptor = 0.0_dp
+      dcentres = 0.0_dp
+      invalid = 0
+      IF (.NOT. ASSOCIATED(state) .OR. nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2])) invalid = 1
+      IF (ASSOCIATED(state)) THEN
+         IF (.NOT. grid_geometry_current(state)) invalid = 1
+      END IF
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
+                            rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
+                            dpoints, dcentres, denergy, ddescriptor, delta_rho, delta_gradient, delta_tau, &
+                            delta_points, delta_centres, delta_energy, delta_descriptor)
       status = 0
    END SUBROUTINE
 #endif
