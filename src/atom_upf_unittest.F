@@ -6,6 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 
 PROGRAM atom_upf_unittest
+   USE atom_basis,                      ONLY: atom_basis_opt
    USE atom_kind_orbitals,              ONLY: sgp_potential_conversion
    USE atom_operators,                  ONLY: atom_ppint_release,&
                                               atom_ppint_setup
@@ -24,12 +25,14 @@ PROGRAM atom_upf_unittest
    USE cell_types,                      ONLY: cell_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
+   USE cp_output_handling,              ONLY: silent_print_level
    USE external_potential_types,        ONLY: allocate_potential,&
                                               deallocate_potential,&
                                               init_potential,&
                                               sgp_potential_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE input_constants,                 ONLY: contracted_gto
+   USE input_constants,                 ONLY: contracted_gto,&
+                                              do_rhf_atom
    USE input_cp2k_atom,                 ONLY: create_atom_section
    USE input_section_types,             ONLY: section_release,&
                                               section_type,&
@@ -74,6 +77,7 @@ PROGRAM atom_upf_unittest
    CALL check_basis_origin()
    CALL check_basis_derivatives()
    CALL check_contracted_basis_reader()
+   CALL check_basis_optimization_export()
 
    ! The same temporary is reused for successive KIND sections in Quickstep.
    ALLOCATE (pot%rho_nlcc(3))
@@ -131,6 +135,71 @@ PROGRAM atom_upf_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Exported contraction coefficients must belong to the best basis, not the last trial.
+! **************************************************************************************************
+   SUBROUTINE check_basis_optimization_export()
+      CHARACTER(LEN=160)                                 :: line
+      INTEGER                                            :: i, j, status, unit
+      REAL(dp)                                           :: alpha(2), coefficient(2), norm
+      REAL(dp), POINTER                                  :: exponents(:)
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(section_type), POINTER                        :: specification
+      TYPE(section_vals_type), POINTER                   :: input
+
+      NULLIFY (specification, input)
+      CALL create_atom_section(specification)
+      CALL section_vals_create(input, specification)
+      CALL section_vals_val_set(input, 'ELEMENT', c_val='He')
+      CALL section_vals_val_set(input, 'ELECTRON_CONFIGURATION', c_val='1s2')
+      CALL section_vals_val_set(input, 'MAX_ANGULAR_MOMENTUM', i_val=0)
+      CALL section_vals_val_set(input, 'AE_BASIS%NUM_GTO', i_val=2)
+      ALLOCATE (exponents(2))
+      exponents = [2.0_dp, 0.4_dp]
+      CALL section_vals_val_set(input, 'AE_BASIS%S_EXPONENTS', r_vals_ptr=exponents)
+      CALL section_vals_val_set(input, 'METHOD%METHOD_TYPE', i_val=do_rhf_atom)
+      CALL section_vals_val_set(input, 'OPTIMIZATION%EPS_SCF', r_val=1.e-10_dp)
+      CALL section_vals_val_set(input, 'OPTIMIZATION%N_DIIS', i_val=8)
+      CALL section_vals_val_set(input, 'OPTIMIZATION%MAX_ITER', i_val=100)
+      CALL section_vals_val_set(input, 'POWELL%MAX_FUN', i_val=5)
+      CALL section_vals_val_set(input, 'POWELL%STEP_SIZE', r_val=0.15_dp)
+      CALL section_vals_val_set(input, 'POWELL%ACCURACY', r_val=1.e-5_dp)
+      CALL section_vals_val_set(input, 'PRINT%FIT_BASIS%_SECTION_PARAMETERS_', i_val=silent_print_level)
+      CALL atom_basis_opt(input)
+      CALL section_vals_release(input)
+      CALL section_release(specification)
+
+      logger => cp_get_default_logger()
+      CALL logger%para_env%sync()
+      OPEN (NEWUNIT=unit, FILE='OPT_BASIS', STATUS='OLD', ACTION='READ')
+      DO
+         READ (unit, '(A)', IOSTAT=status) line
+         IF (status /= 0) ERROR STOP 'Missing optimized basis orbital coefficients'
+         IF (INDEX(line, 'L Quantum Number:') > 0) EXIT
+      END DO
+      DO i = 1, 2
+         READ (unit, *) alpha(i), coefficient(i)
+      END DO
+      CLOSE (unit)
+      IF (alpha(1) <= 2.0_dp) ERROR STOP 'Optimization did not restore the earlier best exponent'
+      norm = 0.0_dp
+      DO i = 1, 2
+         DO j = 1, 2
+            norm = norm + coefficient(i)*coefficient(j)* &
+                   (2.0_dp*SQRT(alpha(i)*alpha(j))/(alpha(i) + alpha(j)))**1.5_dp
+         END DO
+      END DO
+      ! The export rounds its coefficients to eight decimal places.
+      IF (.NOT. ieee_is_finite(norm) .OR. ABS(norm - 1.0_dp) > 1.e-7_dp) THEN
+         ERROR STOP 'Exported orbital is inconsistent with the optimized basis'
+      END IF
+      CALL logger%para_env%sync()
+      IF (logger%para_env%is_source()) THEN
+         OPEN (NEWUNIT=unit, FILE='OPT_BASIS', STATUS='OLD')
+         CLOSE (unit, STATUS='DELETE')
+      END IF
+   END SUBROUTINE check_basis_optimization_export
 
 ! **************************************************************************************************
 !> \brief Exercise independent shell, primitive and set counts in file and inline atomic bases.
