@@ -50,7 +50,8 @@
     &END KIND
     &KIND Br
       BASIS_SET DZVP-MOLOPT-PBE-GTH-q7
-      POTENTIAL UPF Br.nc.pbe.z_7.oncvpsp4.spms.v1.upf
+      POTENTIAL UPF
+      POTENTIAL_FILE_NAME Br.nc.pbe.z_7.oncvpsp4.spms.v1.upf
     &END KIND
   &END SUBSYS
 &END FORCE_EVAL

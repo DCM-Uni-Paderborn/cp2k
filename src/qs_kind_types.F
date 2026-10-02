@@ -1818,13 +1818,14 @@ CONTAINS
       INTEGER, PARAMETER                                 :: maxbas = 20
 
       CHARACTER(LEN=2)                                   :: element_symbol
-      CHARACTER(len=default_path_length)                 :: kg_potential_fn_kind, potential_fn_kind
+      CHARACTER(len=default_path_length)                 :: kg_potential_fn_kind, potential_fn_kind, &
+                                                            potential_name
       CHARACTER(LEN=default_path_length), DIMENSION(:), &
          POINTER                                         :: dft_potential_file_names, &
                                                             potential_file_names
       CHARACTER(LEN=default_string_length)               :: akind_name, basis_type, keyword, &
                                                             kgpot_name, kgpot_type, &
-                                                            potential_name, potential_type, tmp
+                                                            potential_type, tmp
       CHARACTER(LEN=default_string_length), DIMENSION(4) :: description
       CHARACTER(LEN=default_string_length), &
          DIMENSION(:), POINTER                           :: tmpstringlist
@@ -2067,7 +2068,7 @@ CONTAINS
                   IF (ipos > 1) THEN
                      potential_type = potential_name(:ipos - 1)
                   ELSE
-                     potential_type = potential_name
+                     potential_type = tmpstringlist(1)
                   END IF
                END IF
             ELSE IF (SIZE(tmpstringlist) == 2) THEN
@@ -2078,6 +2079,21 @@ CONTAINS
             END IF
          END IF
          CALL uppercase(potential_type)
+         IF (potential_type == "UPF") THEN
+            IF (explicit) THEN
+               IF (SIZE(tmpstringlist) == 1) THEN
+                  tmp = tmpstringlist(1)
+                  CALL uppercase(tmp)
+                  IF (tmp == "UPF") potential_name = ""
+               END IF
+            END IF
+            IF (potential_name == "") THEN
+               IF (potential_fn_kind == "-" .OR. potential_fn_kind == "") THEN
+                  CPABORT("POTENTIAL UPF requires a filename or POTENTIAL_FILE_NAME in the same KIND")
+               END IF
+               potential_name = potential_fn_kind
+            END IF
+         END IF
 
          ! Parse KG POTENTIAL
          CALL section_vals_val_get(kind_section, i_rep_section=k_rep, &
@@ -3487,11 +3503,11 @@ CONTAINS
             END IF
             IF (qs_kind%paw_atom) THEN
                WRITE (UNIT=output_unit, FMT="(/,T6,A)") &
-                  "The atoms of this atomic kind are PAW atoms (GAPW):"
+                  "Gaussian one-center density decomposition (GAPW):"
                WRITE (UNIT=output_unit, FMT="(T8,A,T71,F10.3)") &
                   "Hard Gaussian function radius:", qs_kind%hard_radius, &
                   "Rho0 radius:", qs_kind%hard0_radius, &
-                  "Maximum GTO radius used for PAW projector construction:", &
+                  "Maximum GTO radius used for GAPW projector construction:", &
                   qs_kind%max_rad_local
                NULLIFY (tmp_basis)
                CALL get_basis_from_container(qs_kind%basis_sets, basis_set=tmp_basis, &

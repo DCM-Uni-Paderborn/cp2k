@@ -3103,13 +3103,23 @@ CONTAINS
       INTEGER, INTENT(in)                                :: output_unit
 
       CHARACTER(LEN=40)                                  :: string
-      INTEGER                                            :: i, l
+      INTEGER                                            :: i, l, nprojectors
       CHARACTER(LEN=1), DIMENSION(0:10), PARAMETER :: &
          slqval = ["s", "p", "d", "f", "g", "h", "j", "k", "l", "m", "n"]
 
       IF (output_unit > 0) THEN
-         WRITE (UNIT=output_unit, FMT="(/,T6,A,T41,A40,/)") &
-            "SGP Potential information for", ADJUSTR(TRIM(potential%name))
+         IF (ALLOCATED(potential%upf_data)) THEN
+            WRITE (UNIT=output_unit, FMT="(/,T6,A,T41,A40,/)") &
+               "UPF Potential information for", ADJUSTR(TRIM(potential%name))
+            string = potential%upf_data%pseudo_type
+            IF (potential%upf_data%is_ultrasoft) string = "USPP"
+            IF (potential%upf_data%is_paw) string = "PAW"
+            WRITE (UNIT=output_unit, FMT="(T8,A,T61,A20)") &
+               "UPF dataset type:", ADJUSTR(TRIM(string))
+         ELSE
+            WRITE (UNIT=output_unit, FMT="(/,T6,A,T41,A40,/)") &
+               "SGP Potential information for", ADJUSTR(TRIM(potential%name))
+         END IF
          WRITE (UNIT=output_unit, FMT="(T8,A,T25,A56)") &
             "Description: ", ADJUSTR(TRIM(potential%description(1))), &
             "             ", ADJUSTR(TRIM(potential%description(2))), &
@@ -3155,8 +3165,10 @@ CONTAINS
          END IF
          ! nonlocal PP
          IF (ALLOCATED(potential%upf_data)) THEN
+            nprojectors = 0
+            IF (ALLOCATED(potential%upf_data%lbeta)) nprojectors = SUM(2*potential%upf_data%lbeta + 1)
             WRITE (UNIT=output_unit, FMT="(/,T8,A)") 'Nonlocal UPF potential: original radial projectors'
-            WRITE (UNIT=output_unit, FMT="(T8,A,T71,I10)") 'Total number of projectors:', potential%nppnl
+            WRITE (UNIT=output_unit, FMT="(T8,A,T71,I10)") 'Total number of projectors:', nprojectors
             WRITE (UNIT=output_unit, FMT="(T8,A)") 'Analytic angular integration and radial mesh quadrature'
          ELSE IF (potential%n_nonlocal > 0) THEN
             WRITE (UNIT=output_unit, FMT="(/,T8,'Nonlocal pseudopotential')")
