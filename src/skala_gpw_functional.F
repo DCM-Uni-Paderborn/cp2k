@@ -13,6 +13,7 @@ MODULE skala_gpw_functional
                                               pbc
    USE cp_array_utils,                  ONLY: cp_3d_r_cp_type
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_section_types,             ONLY: section_get_rval,&
                                               section_vals_get_subs_vals,&
                                               section_vals_get_subs_vals2,&
@@ -35,7 +36,8 @@ MODULE skala_gpw_functional
         skala_gpw_atom_partition_hard, skala_gpw_atom_partition_smooth, &
         skala_gpw_atom_subchunk_count, skala_gpw_atom_subchunk_layout, skala_gpw_feature_build, &
         skala_gpw_feature_build_atom_subchunk_bounds, skala_gpw_feature_release, &
-        skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives
+        skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives, skala_grid_feature_build, &
+        skala_grid_layout_type, skala_point_feature_build
    USE skala_torch_api,                 ONLY: skala_torch_model_get_exc,&
                                               skala_torch_model_get_exc_density,&
                                               skala_torch_model_load,&
@@ -72,7 +74,8 @@ MODULE skala_gpw_functional
                                            skala_gapw_density_partition_none = 4
 
    PUBLIC :: ensure_native_skala_grid_scope, get_gauxc_section, skala_gapw_atom_vxc_of_r, &
-             native_skala_gapw_density_partition, skala_gpw_eval, skala_gpw_exc_density, &
+             native_skala_gapw_density_partition, skala_gpw_eval, skala_gpw_exc_density, skala_grid_eval, &
+             skala_point_eval, &
              xc_section_uses_native_skala_grid, xc_section_uses_gauxc_model
 
    TYPE(skala_torch_model_type), SAVE                  :: cached_model
@@ -85,6 +88,217 @@ MODULE skala_gpw_functional
                                                           logged_cuda_request = -3
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Evaluate Skala on distributed complete atom blocks with arbitrary quadrature.
+!> \param group Communicator owning each complete atom block exactly once.
+!> \param points Cartesian point coordinates, shaped (3,local rows), in bohr.
+!> \param energy_weights Integration and energy-partition weights, one per row.
+!> \param descriptor_weights Independent descriptor-domain quadrature weights.
+!> \param atom_sizes Consecutive row counts for complete, rank-local atom blocks.
+!> \param atom_coords Cartesian centres of those blocks, shaped (3,local atoms).
+!> \param density Reconstructed density, total or spin-up/down, in atomic units.
+!> \param gradient Reconstructed Cartesian gradients, shaped (local rows,3,spin).
+!> \param kinetic Reconstructed positive kinetic-energy density.
+!> \param xc_section XC input specifying the Skala model.
+!> \param exc Globally summed XC energy, identical on all group ranks.
+!> \param drho Raw derivative of the complete discrete energy with respect to density.
+!> \param dgradient Raw gradient covectors, with all model weights already included.
+!> \param dtau Raw kinetic-density covectors, without division by quadrature weights.
+!> \note Fields must be reconstructed before this call. No AE-minus-pseudo energy
+!>       decomposition, density clipping, weight multiplication of physical fields,
+!>       or removal of zero-energy-weight descriptor rows is performed here.
+!>       The host sums covectors when point rows represent the same physical source.
+! **************************************************************************************************
+   SUBROUTINE skala_point_eval(group, points, energy_weights, descriptor_weights, atom_sizes, &
+                               atom_coords, density, gradient, kinetic, xc_section, exc, drho, &
+                               dgradient, dtau)
+      CLASS(mp_comm_type), INTENT(IN)                    :: group
+      REAL(KIND=dp), INTENT(IN)                          :: points(:, :), energy_weights(:), &
+                                                            descriptor_weights(:), atom_coords(:, :), &
+                                                            density(:, :), gradient(:, :, :), kinetic(:, :)
+      INTEGER, INTENT(IN)                                :: atom_sizes(:)
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      REAL(KIND=dp), INTENT(OUT)                         :: exc, drho(:, :), dgradient(:, :, :), dtau(:, :)
+
+      CHARACTER(len=default_path_length)                 :: model_path
+      INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin
+      LOGICAL                                            :: use_cuda
+      REAL(KIND=dp), POINTER                             :: density_grad(:, :), grad_grad(:, :, :), kin_grad(:, :)
+      TYPE(section_vals_type), POINTER                   :: gauxc_section
+      TYPE(skala_gpw_feature_type)                       :: features
+      TYPE(torch_tensor_type)                            :: exc_tensor, density_grad_t, grad_grad_t, kin_grad_t
+
+      CALL timeset("skala_point_eval", handle)
+      npoint = SIZE(density, 1)
+      nspin = SIZE(density, 2)
+      invalid = 0
+      IF (ALL(nspin /= [1, 2])) invalid = 1
+      IF (ANY(SHAPE(points) /= [3, npoint])) invalid = 1
+      IF (SIZE(energy_weights) /= npoint .OR. SIZE(descriptor_weights) /= npoint) invalid = 1
+      IF (ANY(SHAPE(atom_coords) /= [3, SIZE(atom_sizes)])) invalid = 1
+      IF (ANY(SHAPE(kinetic) /= SHAPE(density))) invalid = 1
+      IF (ANY(SHAPE(gradient) /= [npoint, 3, nspin])) invalid = 1
+      IF (ANY(SHAPE(drho) /= SHAPE(density)) .OR. ANY(SHAPE(dtau) /= SHAPE(kinetic))) invalid = 1
+      IF (ANY(SHAPE(dgradient) /= SHAPE(gradient))) invalid = 1
+      IF (ANY(atom_sizes <= 0)) invalid = 1
+      IF (SUM(INT(atom_sizes, int_8)) /= INT(npoint, int_8)) invalid = 1
+      IF (.NOT. ALL(ieee_is_finite(points)) .OR. .NOT. ALL(ieee_is_finite(atom_coords))) invalid = 1
+      IF (.NOT. ALL(ieee_is_finite(energy_weights)) .OR. &
+          .NOT. ALL(ieee_is_finite(descriptor_weights))) invalid = 1
+      IF (.NOT. ALL(ieee_is_finite(density)) .OR. .NOT. ALL(ieee_is_finite(gradient)) .OR. &
+          .NOT. ALL(ieee_is_finite(kinetic))) invalid = 1
+      min_spin = nspin
+      max_spin = nspin
+      CALL group%min(min_spin)
+      CALL group%max(max_spin)
+      IF (min_spin /= max_spin) invalid = 1
+      CALL group%max(invalid)
+      IF (invalid /= 0) CPABORT("Invalid or nonfinite distributed Skala atom-block fields")
+
+      CALL ensure_native_skala_grid_scope(xc_section)
+      CALL get_skala_model_path(xc_section, model_path)
+      gauxc_section => get_gauxc_section(xc_section)
+      CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_USE_CUDA", l_val=use_cuda)
+      IF (use_cuda) CPABORT("The arbitrary-point Skala evaluator currently requires CPU tensors")
+      CALL torch_use_cuda(.FALSE.)
+      exc = 0.0_dp
+      drho = 0.0_dp
+      dgradient = 0.0_dp
+      dtau = 0.0_dp
+      IF (npoint > 0) THEN
+         CALL ensure_model_loaded(model_path, -1)
+         CALL skala_point_feature_build(features, points, energy_weights, descriptor_weights, &
+                                        atom_sizes, atom_coords, density, gradient, kinetic)
+         CALL skala_torch_model_get_exc(cached_model, features%inputs, features%grid_weights_t, exc_tensor, exc)
+         CALL torch_tensor_backward_scalar(exc_tensor)
+         CALL get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
+                                     density_grad, grad_grad, kin_grad)
+         IF (nspin == 1) THEN
+            drho(:, 1) = 0.5_dp*SUM(density_grad, DIM=2)
+            dgradient(:, :, 1) = 0.5_dp*SUM(grad_grad, DIM=3)
+            dtau(:, 1) = 0.5_dp*SUM(kin_grad, DIM=2)
+         ELSE
+            drho = density_grad
+            dgradient = grad_grad
+            dtau = kin_grad
+         END IF
+         CALL torch_tensor_release(density_grad_t)
+         CALL torch_tensor_release(grad_grad_t)
+         CALL torch_tensor_release(kin_grad_t)
+         CALL torch_tensor_release(exc_tensor)
+         CALL skala_gpw_feature_release(features)
+      END IF
+      CALL group%sum(exc)
+      invalid = 0
+      IF (.NOT. ieee_is_finite(exc) .OR. .NOT. ALL(ieee_is_finite(drho)) .OR. &
+          .NOT. ALL(ieee_is_finite(dgradient)) .OR. .NOT. ALL(ieee_is_finite(dtau))) invalid = 1
+      CALL group%max(invalid)
+      IF (invalid /= 0) THEN
+         CPABORT("Nonfinite Skala atom-block energy or derivatives")
+      END IF
+      CALL torch_use_cuda(.TRUE.)
+      CALL timestop(handle)
+   END SUBROUTINE skala_point_eval
+
+! **************************************************************************************************
+!> \brief Evaluate Skala and its primitive-field derivatives on a distributed regular grid.
+!> \param grid Geometry and communicator partitioning one complete grid.
+!> \param density Total density for one channel, or spin-up/down densities for two.
+!> \param gradient Cartesian density gradients, shaped (local points,3,spin channels).
+!> \param kinetic Positive kinetic-energy density, shaped (local points,spin channels).
+!> \param xc_section XC input including XC_FUNCTIONAL%GAUXC.
+!> \param particle_set Atomic coordinates.
+!> \param cell Periodic cell.
+!> \param exc Total XC energy, replicated on the grid communicator.
+!> \param vrho Derivative with respect to density, divided by the point weight.
+!> \param vgradient Derivative with respect to gradients, divided by the point weight.
+!> \param vtau Derivative with respect to kinetic density, divided by the point weight.
+! **************************************************************************************************
+   SUBROUTINE skala_grid_eval(grid, density, gradient, kinetic, xc_section, particle_set, cell, &
+                              exc, vrho, vgradient, vtau)
+      TYPE(skala_grid_layout_type), INTENT(IN)           :: grid
+      REAL(KIND=dp), INTENT(IN)                          :: density(:, :), gradient(:, :, :), &
+                                                            kinetic(:, :)
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(particle_type), POINTER                       :: particle_set(:)
+      TYPE(cell_type), POINTER                           :: cell
+      REAL(KIND=dp), INTENT(OUT)                         :: exc, vrho(:, :), vgradient(:, :, :), &
+                                                            vtau(:, :)
+
+      CHARACTER(len=default_path_length)                 :: model_path
+      INTEGER                                            :: handle, max_rows, nchunks, nspins, &
+                                                            partition
+      LOGICAL                                            :: atom_chunks, has_work, routing, &
+                                                            subchunks, use_cuda
+      REAL(KIND=dp), ALLOCATABLE                         :: density_grad(:, :), grad_grad(:, :, :), &
+                                                            kin_grad(:, :)
+      TYPE(section_vals_type), POINTER                   :: gauxc_section
+      TYPE(skala_gpw_feature_type)                       :: features
+      TYPE(torch_tensor_type)                            :: exc_tensor
+
+      CALL timeset("skala_grid_eval", handle)
+      CPASSERT(ALL(SHAPE(vrho) == SHAPE(density)))
+      CPASSERT(ALL(SHAPE(vgradient) == SHAPE(gradient)))
+      CPASSERT(ALL(SHAPE(vtau) == SHAPE(kinetic)))
+      nspins = SIZE(density, 2)
+      CALL ensure_native_skala_grid_scope(xc_section)
+      CALL get_skala_model_path(xc_section, model_path)
+      gauxc_section => get_gauxc_section(xc_section)
+      CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_USE_CUDA", l_val=use_cuda)
+      IF (use_cuda) CPABORT("The array-level Skala evaluator currently requires CPU tensors")
+      CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_CHUNKS", l_val=atom_chunks)
+      CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_CHUNK_ROUTING", l_val=routing)
+      CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_CHUNK_MAX_ROWS", i_val=max_rows)
+      CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_PARTITION", i_val=partition)
+      IF (max_rows < -1) CPABORT("NATIVE_GRID_ATOM_CHUNK_MAX_ROWS must be -1, zero, or positive")
+      atom_chunks = atom_chunks .OR. routing
+      routing = atom_chunks
+      CALL torch_use_cuda(.FALSE.)
+      CALL ensure_model_loaded(model_path, -1)
+      CALL skala_grid_feature_build(features, grid, density, gradient, kinetic, particle_set, cell, &
+                                    requires_grad=.TRUE., use_atom_chunks=atom_chunks, &
+                                    route_atom_chunks=routing, atom_partition=partition)
+      nchunks = 1
+      IF (features%uses_atom_chunks .AND. max_rows > 0) THEN
+         nchunks = skala_gpw_atom_subchunk_count(max_rows)
+         CALL grid%group%max(nchunks)
+      END IF
+      subchunks = features%uses_atom_chunks .AND. nchunks > 1
+      has_work = .NOT. features%uses_atom_chunks .OR. features%chunk_feature_count > 0
+      exc = 0.0_dp
+      IF (subchunks) THEN
+         CALL evaluate_atom_subchunks(features, grid%group, max_rows, compute_grads=.TRUE., &
+                                      exc=exc, density_grad=density_grad, grad_grad=grad_grad, &
+                                      kin_grad=kin_grad, collapse_spin_grads=(nspins == 1))
+      ELSE
+         IF (has_work) THEN
+            CALL skala_torch_model_get_exc(cached_model, features%inputs, features%grid_weights_t, exc_tensor, exc)
+            CALL torch_tensor_backward_scalar(exc_tensor)
+         END IF
+         IF (features%uses_atom_chunks) THEN
+            CALL fetch_and_gather_atom_chunk_grads(features, grid%group, density_grad, grad_grad, kin_grad)
+         ELSE
+            CALL fetch_local_feature_grads(features, density_grad, grad_grad, kin_grad)
+         END IF
+      END IF
+      IF (features%uses_atom_chunks) CALL grid%group%sum(exc)
+
+      ! The host applies the gradient and tau adjoints. Return primitive derivatives only.
+      IF (nspins == 1) THEN
+         vrho(:, 1) = 0.5_dp*(density_grad(:, 1) + density_grad(:, 2))/grid%dvol
+         vgradient(:, :, 1) = 0.5_dp*(grad_grad(:, :, 1) + grad_grad(:, :, 2))/grid%dvol
+         vtau(:, 1) = 0.5_dp*(kin_grad(:, 1) + kin_grad(:, 2))/grid%dvol
+      ELSE
+         vrho = density_grad/grid%dvol
+         vgradient = grad_grad/grid%dvol
+         vtau = kin_grad/grid%dvol
+      END IF
+      IF (.NOT. subchunks .AND. has_work) CALL torch_tensor_release(exc_tensor)
+      CALL skala_gpw_feature_release(features)
+      CALL torch_use_cuda(.TRUE.)
+      CALL timestop(handle)
+   END SUBROUTINE skala_grid_eval
 
 ! **************************************************************************************************
 !> \brief Return true if the GAUXC subsection requests the CP2K-native GPW grid path.

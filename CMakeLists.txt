@@ -920,6 +920,29 @@ endif()
 # SIRIUS
 if(CP2K_USE_SIRIUS)
   find_package(sirius 7.7.0 REQUIRED)
+  include(CheckFortranSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  set(CMAKE_REQUIRED_LIBRARIES sirius::sirius)
+  check_fortran_source_compiles(
+    "program check_xc_callback
+     use sirius, only: sirius_set_xc_callback
+     end program" CP2K_SIRIUS_XC_CALLBACK SRC_EXT F90)
+  check_fortran_source_compiles(
+    "program check_xc_point_callback
+     use sirius, only: sirius_set_xc_point_callback
+     end program" CP2K_SIRIUS_XC_POINT_CALLBACK SRC_EXT F90)
+  check_fortran_source_compiles(
+    "program check_xc_derivative
+     use sirius, only: sirius_check_external_xc_derivative
+     end program" CP2K_SIRIUS_XC_DERIVATIVE SRC_EXT F90)
+  check_fortran_source_compiles(
+    "program check_finalize
+     use sirius, only: sirius_finalize
+     integer :: error
+     call sirius_finalize(.false., .false., error)
+     end program" CP2K_SIRIUS_FINALIZE_NO_FFTW SRC_EXT F90)
+  cmake_pop_check_state()
 endif()
 
 if(CP2K_USE_PLUMED)

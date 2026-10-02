@@ -100,6 +100,32 @@ CONTAINS
       CALL keyword_release(keyword)
 
       NULLIFY (subsection)
+      CALL section_create(subsection, __LOCATION__, name="SKALA_GRID", &
+                          description="Experimental fixed periodic atom quadrature for native Skala with SIRIUS. "// &
+                          "Required for joint PAW or FP-LAPW field reconstruction. Uses Gauss-Legendre radial and Lebedev "// &
+                          "angular integration, periodic Becke energy partitions and independent self-image "// &
+                          "descriptor windows. Only fixed-geometry CPU energy calculations are supported. "// &
+                          "Converge the quadrature and image shell for the system studied.")
+      CALL keyword_create(keyword, __LOCATION__, name="N_RADIAL", default_i_val=100, &
+                          description="Number of radial nodes with r = RADIAL_SCALE*t/(1-t).")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="N_ANGULAR", default_i_val=434, &
+                          description="Exact number of points of an available positive Lebedev rule (up to 974).")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="IMAGE_SHELL", default_i_val=1, &
+                          description="Compact periodic seed window is unity through this fractional-cell "// &
+                          "distance and vanishes smoothly one cell farther out in each direction.")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="RADIAL_SCALE", default_r_val=1.0_dp, &
+                          unit_str="bohr", description="Scale of the rational radial mapping.")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
       CALL create_sirius_section(subsection, 'control')
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)

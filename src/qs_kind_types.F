@@ -185,6 +185,7 @@ MODULE qs_kind_types
    TYPE qs_kind_type
       CHARACTER(LEN=default_string_length)   :: name = ""
       CHARACTER(LEN=2)                       :: element_symbol = ""
+      CHARACTER(LEN=default_path_length)     :: sirius_atom_file = ""
       INTEGER                                :: natom = -1
       TYPE(all_potential_type), POINTER      :: all_potential => Null()
       TYPE(local_potential_type), POINTER    :: tnadd_potential => Null()
@@ -464,6 +465,7 @@ CONTAINS
 !> \param pao_potentials ...
 !> \param pao_descriptors ...
 !> \param nelec ...
+!> \param sirius_atom_file Full-potential SIRIUS atom data file.
 ! **************************************************************************************************
    SUBROUTINE get_qs_kind(qs_kind, &
                           basis_set, basis_type, ncgf, nsgf, &
@@ -482,7 +484,7 @@ CONTAINS
                           max_scf, eps_scf, smear, u_ramping, u_minus_j_target, eps_u_ramping, proj_shell_charge, &
                           lr_atom, do_mtlr, u_j_loop, ao_coef, &
                           init_u_ramping_each_scf, reltmat, ghost, monovalent, floating, name, element_symbol, &
-                          pao_basis_size, pao_model_file, pao_potentials, pao_descriptors, nelec)
+                          pao_basis_size, pao_model_file, pao_potentials, pao_descriptors, nelec, sirius_atom_file)
 
       TYPE(qs_kind_type)                                 :: qs_kind
       TYPE(gto_basis_set_type), OPTIONAL, POINTER        :: basis_set
@@ -548,6 +550,7 @@ CONTAINS
       TYPE(pao_descriptor_type), DIMENSION(:), &
          OPTIONAL, POINTER                               :: pao_descriptors
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: nelec
+      CHARACTER(len=*), INTENT(OUT), OPTIONAL            :: sirius_atom_file
 
       CHARACTER(LEN=default_string_length)               :: my_basis_type
       INTEGER                                            :: l
@@ -602,6 +605,7 @@ CONTAINS
       IF (PRESENT(xtb_parameter)) xtb_parameter => qs_kind%xtb_parameter
       IF (PRESENT(element_symbol)) element_symbol = qs_kind%element_symbol
       IF (PRESENT(name)) name = qs_kind%name
+      IF (PRESENT(sirius_atom_file)) sirius_atom_file = qs_kind%sirius_atom_file
       IF (PRESENT(dftb3_param)) dftb3_param = qs_kind%dudq_dftb3
       IF (PRESENT(elec_conf)) elec_conf => qs_kind%elec_conf
       IF (PRESENT(alpha_core_charge)) THEN
@@ -1964,6 +1968,11 @@ CONTAINS
             END IF
          END IF
          CALL uppercase(potential_type)
+         CALL section_vals_val_get(kind_section, i_rep_section=k_rep, &
+                                   keyword_name="SIRIUS_ATOM_FILE", c_val=qs_kind%sirius_atom_file)
+         IF (LEN_TRIM(qs_kind%sirius_atom_file) > 0 .AND. method_id /= do_method_pw) THEN
+            CPABORT("SIRIUS_ATOM_FILE requires FORCE_EVAL/METHOD SIRIUS")
+         END IF
 
          ! Parse KG POTENTIAL
          CALL section_vals_val_get(kind_section, i_rep_section=k_rep, &
@@ -2524,52 +2533,78 @@ CONTAINS
 
       CASE (do_method_pw)
          ! PW DFT
-         ! Allocate and initialise the potential data set structure
-         IF (potential_name /= '') THEN
-            SELECT CASE (TRIM(potential_type))
-            CASE ("ALL", "ECP", "CNEO")
+         CALL section_vals_val_get(force_env_section, "PW_DFT%PARAMETERS%ELECTRONIC_STRUCTURE_METHOD", c_val=tmp)
+         CALL uppercase(tmp)
+         IF (TRIM(tmp) == "FULL_POTENTIAL_LAPWLO") THEN
+            IF (LEN_TRIM(qs_kind%sirius_atom_file) == 0) THEN
+               CPABORT("SIRIUS FP-LAPW requires SIRIUS_ATOM_FILE for KIND "//TRIM(qs_kind%name))
+            END IF
+            IF ((potential_type /= "" .AND. potential_type /= "ALL") .OR. explicit_potential) THEN
                CALL cp_abort(__LOCATION__, &
-                             "PW DFT calculations only with potential type UPF or GTH possible."// &
-                             " <"//TRIM(potential_type)//"> was specified "// &
-                             "for the atomic kind <"//TRIM(qs_kind%name))
-            CASE ("GTH")
-               IF (potential_fn_kind == "-") THEN
-                  CALL section_vals_val_get(dft_section, "POTENTIAL_FILE_NAME", c_val=potential_file_name)
-               ELSE
-                  potential_file_name = potential_fn_kind
-               END IF
-               CALL allocate_potential(qs_kind%gth_potential)
-               CALL read_potential(qs_kind%element_symbol, potential_name, &
-                                   qs_kind%gth_potential, zeff_correction, para_env, &
-                                   potential_file_name, potential_section, update_input, &
-                                   monovalent=qs_kind%monovalent)
-               CALL set_potential(qs_kind%gth_potential, z=z)
-               CALL get_qs_kind(qs_kind, elec_conf=elec_conf)
-               IF (.NOT. ASSOCIATED(elec_conf)) THEN
-                  CALL get_potential(potential=qs_kind%gth_potential, elec_conf=elec_conf)
-                  CALL set_qs_kind(qs_kind, elec_conf=elec_conf)
-               ELSE
-                  CALL set_potential(potential=qs_kind%gth_potential, elec_conf=elec_conf)
-               END IF
-            CASE ("UPF")
-               ALLOCATE (qs_kind%upf_potential)
-               qs_kind%upf_potential%zion = 0
-               qs_kind%upf_potential%filename = ADJUSTL(TRIM(potential_name))
-               CALL get_qs_kind(qs_kind, elec_conf=elec_conf)
-               IF (.NOT. ASSOCIATED(elec_conf)) THEN
-                  CALL set_qs_kind(qs_kind, elec_conf=qs_kind%upf_potential%econf)
-               END IF
-            CASE DEFAULT
+                             "SIRIUS FP-LAPW uses SIRIUS_ATOM_FILE, not a pseudopotential or POTENTIAL subsection")
+            END IF
+            IF (nb_rep > 0 .OR. explicit_basis) THEN
                CALL cp_abort(__LOCATION__, &
-                             "An invalid potential type <"// &
-                             TRIM(potential_type)//"> was specified "// &
-                             "for the atomic kind <"// &
-                             TRIM(qs_kind%name))
-            END SELECT
+                             "SIRIUS FP-LAPW reads its orbital basis from SIRIUS_ATOM_FILE, not BASIS_SET or BASIS")
+            END IF
+            IF (qs_kind%ghost .OR. qs_kind%floating .OR. ABS(zeff_correction) > 0.0_dp) THEN
+               CPABORT("SIRIUS FP-LAPW requires physical nuclei without KIND charge corrections")
+            END IF
+            CALL allocate_potential(qs_kind%all_potential)
+            CALL set_default_all_potential(qs_kind%all_potential, z, zeff_correction)
+            CALL get_potential(potential=qs_kind%all_potential, elec_conf=elec_conf)
+            CALL set_qs_kind(qs_kind, elec_conf=elec_conf)
          ELSE
-            CALL cp_abort(__LOCATION__, &
-                          "No potential type was defined for the "// &
-                          "atomic kind <"//TRIM(qs_kind%name)//">")
+            IF (LEN_TRIM(qs_kind%sirius_atom_file) > 0) THEN
+               CPABORT("SIRIUS_ATOM_FILE requires ELECTRONIC_STRUCTURE_METHOD full_potential_lapwlo")
+            END IF
+            ! Allocate and initialise the potential data set structure
+            IF (potential_name /= '') THEN
+               SELECT CASE (TRIM(potential_type))
+               CASE ("ALL", "ECP", "CNEO")
+                  CALL cp_abort(__LOCATION__, &
+                                "PW DFT calculations only with potential type UPF or GTH possible."// &
+                                " <"//TRIM(potential_type)//"> was specified "// &
+                                "for the atomic kind <"//TRIM(qs_kind%name))
+               CASE ("GTH")
+                  IF (potential_fn_kind == "-") THEN
+                     CALL section_vals_val_get(dft_section, "POTENTIAL_FILE_NAME", c_val=potential_file_name)
+                  ELSE
+                     potential_file_name = potential_fn_kind
+                  END IF
+                  CALL allocate_potential(qs_kind%gth_potential)
+                  CALL read_potential(qs_kind%element_symbol, potential_name, &
+                                      qs_kind%gth_potential, zeff_correction, para_env, &
+                                      potential_file_name, potential_section, update_input, &
+                                      monovalent=qs_kind%monovalent)
+                  CALL set_potential(qs_kind%gth_potential, z=z)
+                  CALL get_qs_kind(qs_kind, elec_conf=elec_conf)
+                  IF (.NOT. ASSOCIATED(elec_conf)) THEN
+                     CALL get_potential(potential=qs_kind%gth_potential, elec_conf=elec_conf)
+                     CALL set_qs_kind(qs_kind, elec_conf=elec_conf)
+                  ELSE
+                     CALL set_potential(potential=qs_kind%gth_potential, elec_conf=elec_conf)
+                  END IF
+               CASE ("UPF")
+                  ALLOCATE (qs_kind%upf_potential)
+                  qs_kind%upf_potential%zion = 0
+                  qs_kind%upf_potential%filename = ADJUSTL(TRIM(potential_name))
+                  CALL get_qs_kind(qs_kind, elec_conf=elec_conf)
+                  IF (.NOT. ASSOCIATED(elec_conf)) THEN
+                     CALL set_qs_kind(qs_kind, elec_conf=qs_kind%upf_potential%econf)
+                  END IF
+               CASE DEFAULT
+                  CALL cp_abort(__LOCATION__, &
+                                "An invalid potential type <"// &
+                                TRIM(potential_type)//"> was specified "// &
+                                "for the atomic kind <"// &
+                                TRIM(qs_kind%name))
+               END SELECT
+            ELSE
+               CALL cp_abort(__LOCATION__, &
+                             "No potential type was defined for the "// &
+                             "atomic kind <"//TRIM(qs_kind%name)//">")
+            END IF
          END IF
 
       CASE DEFAULT
@@ -3393,7 +3428,13 @@ CONTAINS
                CALL write_orb_basis_set(tmp_basis, output_unit, "GAPW Soft Basis Set")
             END IF
             ! Potentials
-            IF (ASSOCIATED(qs_kind%all_potential)) CALL write_potential(qs_kind%all_potential, output_unit)
+            IF (LEN_TRIM(qs_kind%sirius_atom_file) > 0) THEN
+               WRITE (UNIT=output_unit, FMT="(/,T6,A,/,T8,A)") &
+                  "SIRIUS FP-LAPW atom data (radial basis and core configuration):", &
+                  TRIM(qs_kind%sirius_atom_file)
+            ELSE IF (ASSOCIATED(qs_kind%all_potential)) THEN
+               CALL write_potential(qs_kind%all_potential, output_unit)
+            END IF
             IF (ASSOCIATED(qs_kind%gth_potential)) CALL write_potential(qs_kind%gth_potential, output_unit)
             IF (ASSOCIATED(qs_kind%sgp_potential)) CALL write_potential(qs_kind%sgp_potential, output_unit)
             IF (ASSOCIATED(qs_kind%tnadd_potential)) CALL write_potential(qs_kind%tnadd_potential, output_unit)

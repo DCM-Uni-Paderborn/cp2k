@@ -814,8 +814,10 @@ list(
   semi_empirical_utils.F
   simpar_types.F
   sirius_interface.F
+  skala_atom_grid.F
   skala_gpw_functional.F
   skala_gpw_features.F
+  skala_sirius.F
   skala_torch_api.F
   smeagol_control_types.F
   smeagol_emtoptions.F
@@ -1543,6 +1545,8 @@ set(CP2K_PROGS_F
     motion/dumpdcd.F
     motion/xyz2dcd.F
     nequip_unittest.F
+    skala_atom_grid_unittest.F
+    skala_grid_unittest.F
     gx_ac_unittest.F)
 
 if(CP2K_USE_CUDA
@@ -1876,6 +1880,9 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_USE_LIBGINT}>:__LIBGINT>
     $<$<BOOL:${CP2K_USE_LIBFCI}>:__LIBFCI>
     $<$<BOOL:${CP2K_USE_LIBTORCH}>:__LIBTORCH>
+    $<$<BOOL:${CP2K_SIRIUS_XC_CALLBACK}>:__SIRIUS_XC_CALLBACK>
+    $<$<BOOL:${CP2K_SIRIUS_XC_POINT_CALLBACK}>:__SIRIUS_XC_POINT_CALLBACK>
+    $<$<BOOL:${CP2K_SIRIUS_FINALIZE_NO_FFTW}>:__SIRIUS_FINALIZE_NO_FFTW>
     $<$<BOOL:${CP2K_USE_COSMA}>:__COSMA>
     $<$<BOOL:${CP2K_USE_LIBXS}>:__LIBXS>
     $<$<BOOL:${CP2K_USE_LIBXS}>:__BLAS>
@@ -1944,6 +1951,21 @@ list(
   "dbt_unittest"
   "dbt_tas_unittest"
   "gx_ac_unittest")
+
+list(APPEND __CP2K_APPS "skala_atom_grid_unittest")
+add_executable(skala_atom_grid_unittest skala_atom_grid_unittest.F)
+
+if(CP2K_USE_LIBTORCH)
+  list(APPEND __CP2K_APPS "skala_grid_unittest")
+  add_executable(skala_grid_unittest skala_grid_unittest.F)
+  if(CP2K_USE_SIRIUS AND CP2K_SIRIUS_XC_POINT_CALLBACK)
+    list(APPEND __CP2K_APPS "skala_sirius_unittest")
+    add_executable(skala_sirius_unittest skala_sirius_unittest.F)
+    target_compile_definitions(
+      skala_sirius_unittest
+      PRIVATE $<$<BOOL:${CP2K_SIRIUS_XC_DERIVATIVE}>:__SIRIUS_XC_DERIVATIVE>)
+  endif()
+endif()
 
 add_executable(cp2k-bin start/cp2k.F)
 # for linking
