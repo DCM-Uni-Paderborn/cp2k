@@ -103,6 +103,7 @@ CONTAINS
          DO a = 1, nco(l)
             powers = indco(:, ncoset(l - 1) + a)
             factor = orbtramat(l)%slm(m, a)
+            IF (factor == 0.0_dp) CYCLE
             angular = angular + factor*PRODUCT(displacement**powers)
             DO axis = 1, 3
                IF (powers(axis) == 0) CYCLE
@@ -110,13 +111,15 @@ CONTAINS
                reduced(axis) = reduced(axis) - 1
                term = factor*REAL(powers(axis), dp)
                dangular(axis) = dangular(axis) + term*PRODUCT(displacement**reduced)
-               DO axis2 = 1, 3
-                  IF (reduced(axis2) == 0) CYCLE
-                  reduced(axis2) = reduced(axis2) - 1
-                  ddangular(axis, axis2) = ddangular(axis, axis2) + &
-                                           term*REAL(reduced(axis2) + 1, dp)*PRODUCT(displacement**reduced)
-                  reduced(axis2) = reduced(axis2) + 1
-               END DO
+               IF (PRESENT(hessian)) THEN
+                  DO axis2 = 1, 3
+                     IF (reduced(axis2) == 0) CYCLE
+                     reduced(axis2) = reduced(axis2) - 1
+                     ddangular(axis, axis2) = ddangular(axis, axis2) + &
+                                              term*REAL(reduced(axis2) + 1, dp)*PRODUCT(displacement**reduced)
+                     reduced(axis2) = reduced(axis2) + 1
+                  END DO
+               END IF
             END DO
          END DO
          potential(m) = h*angular
@@ -274,6 +277,7 @@ CONTAINS
                   radial = augmentation%weighted_q(ir, pair, la)
                   IF (radial == 0.0_dp) CYCLE
                   DO lm = la*la + 1, (la + 1)**2
+                     IF (augmentation%gaunt(p, q, lm) == 0.0_dp) CYCLE
                      integral(p, q, :) = integral(p, q, :) + &
                                          radial*augmentation%gaunt(p, q, lm)*projected(lm, :)
                      IF (PRESENT(derivative)) THEN
