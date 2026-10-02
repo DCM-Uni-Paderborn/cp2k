@@ -25,6 +25,7 @@ MODULE skala_atom_grid
 
    TYPE seed_environment_type
       REAL(dp), ALLOCATABLE :: displacement(:, :), distance(:), membership(:)
+      INTEGER, ALLOCATABLE :: atom(:), image(:, :)
    END TYPE
 
    TYPE skala_partition_type
@@ -37,7 +38,7 @@ MODULE skala_atom_grid
    END TYPE
 
    PUBLIC :: skala_partition_type, skala_partition_init, skala_partition_weights, &
-             skala_atom_grid_build, skala_radial_grid
+             skala_partition_pullback, skala_atom_grid_build, skala_atom_grid_pullback, skala_radial_grid
 
 CONTAINS
 
@@ -76,6 +77,7 @@ CONTAINS
       TYPE(seed_environment_type), INTENT(OUT)           :: environment
 
       INTEGER                                            :: b, capacity, count, hi(3), i, j, k, lo(3)
+      INTEGER, ALLOCATABLE                               :: atoms(:), images(:, :)
       REAL(dp)                                           :: capacity_real, delta(3), distance, &
                                                             fractional(3), weight
       REAL(dp), ALLOCATABLE                              :: distances(:), offsets(:, :), weights(:)
@@ -84,6 +86,7 @@ CONTAINS
       CPASSERT(capacity_real < REAL(HUGE(capacity), dp))
       capacity = SIZE(partition%centres, 2)*(2*partition%shell + 3)**3
       ALLOCATE (offsets(3, capacity), weights(capacity), distances(capacity))
+      ALLOCATE (atoms(capacity), images(3, capacity))
       count = 0
       DO b = 1, SIZE(partition%centres, 2)
          IF (self_only .AND. b /= atom) CYCLE
@@ -103,6 +106,8 @@ CONTAINS
                   offsets(:, count) = MATMUL(partition%lattice, fractional)
                   distances(count) = distance
                   weights(count) = weight
+                  atoms(count) = b
+                  images(:, count) = [i, j, k]
                END DO
             END DO
          END DO
@@ -110,6 +115,8 @@ CONTAINS
       environment%displacement = offsets(:, :count)
       environment%distance = distances(:count)
       environment%membership = weights(:count)
+      environment%atom = atoms(:count)
+      environment%image = images(:, :count)
    END SUBROUTINE
 
 ! **************************************************************************************************
@@ -150,11 +157,12 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Normalize all nonzero translated seeds using a scaled log sum.
 ! **************************************************************************************************
-   FUNCTION normalized_seed(partition, atom, offset, self_only) RESULT(weight)
+   FUNCTION normalized_seed(partition, atom, offset, self_only, log_max, scaled_sum) RESULT(weight)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
       INTEGER, INTENT(IN)                                :: atom
       REAL(dp), INTENT(IN)                               :: offset(3)
       LOGICAL, INTENT(IN)                                :: self_only
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: log_max, scaled_sum
       REAL(dp)                                           :: weight
 
       INTEGER                                            :: b, hi(3), i, j, k, lo(3)
@@ -195,7 +203,166 @@ CONTAINS
       IF (total <= 0.0_dp) CPABORT("Empty periodic Skala partition")
       weight = 0.0_dp
       IF (TARGET /= -HUGE(1.0_dp)) weight = EXP(TARGET - largest)/total
+      IF (PRESENT(log_max)) log_max = largest
+      IF (PRESENT(scaled_sum)) scaled_sum = total
    END FUNCTION
+
+! **************************************************************************************************
+!> \brief Pull back independent energy and descriptor partition weights at fixed row topology.
+!> \param partition Cached geometry.
+!> \param atom Target atom block.
+!> \param offset Cartesian displacement from that atom, independent of the lattice.
+!> \param energy_adjoint Derivative with respect to the energy partition weight.
+!> \param descriptor_adjoint Derivative with respect to the descriptor domain window.
+!> \param doffset Derivative with respect to the independent Cartesian offset.
+!> \param dcentres Derivatives with respect to all Cartesian atom positions at fixed offset.
+!> \param dlattice Derivative with respect to lattice columns at fixed Cartesian centres and offset.
+! **************************************************************************************************
+   SUBROUTINE skala_partition_pullback(partition, atom, offset, energy_adjoint, descriptor_adjoint, &
+                                       doffset, dcentres, dlattice)
+      TYPE(skala_partition_type), INTENT(IN)             :: partition
+      INTEGER, INTENT(IN)                                :: atom
+      REAL(dp), INTENT(IN)                               :: offset(3), energy_adjoint, &
+                                                            descriptor_adjoint
+      REAL(dp), INTENT(OUT)                              :: doffset(3), dcentres(:, :), &
+                                                            dlattice(3, 3)
+
+      REAL(dp)                                           :: adjoint, d, z
+
+      CPASSERT(atom >= 1 .AND. atom <= SIZE(partition%centres, 2))
+      CPASSERT(ALL(SHAPE(dcentres) == SHAPE(partition%centres)))
+      CPASSERT(ALL(ieee_is_finite(offset)))
+      CPASSERT(ieee_is_finite(energy_adjoint) .AND. ieee_is_finite(descriptor_adjoint))
+      doffset = 0.0_dp
+      dcentres = 0.0_dp
+      dlattice = 0.0_dp
+      IF (compact_window(MATMUL(partition%inverse, offset), partition%shell) == 0.0_dp) RETURN
+      adjoint = 0.0_dp
+      IF (descriptor_adjoint /= 0.0_dp) THEN
+         d = normalized_seed(partition, atom, offset, .TRUE.)
+         IF (d > 1.0e-12_dp .AND. d < 1.0e-11_dp) THEN
+            z = (d - 1.0e-12_dp)/9.0e-12_dp
+            adjoint = descriptor_adjoint*30.0_dp*z*z*(1.0_dp - z)**2/9.0e-12_dp
+         END IF
+      END IF
+      IF (SIZE(partition%centres, 2) == 1) THEN
+         adjoint = adjoint + energy_adjoint
+      ELSE IF (energy_adjoint /= 0.0_dp) THEN
+         CALL seed_pullback(partition, atom, offset, .FALSE., energy_adjoint, doffset, dcentres, dlattice)
+      END IF
+      IF (adjoint /= 0.0_dp) THEN
+         CALL seed_pullback(partition, atom, offset, .TRUE., adjoint, doffset, dcentres, dlattice)
+      END IF
+      CPASSERT(ALL(ieee_is_finite(doffset)))
+      CPASSERT(ALL(ieee_is_finite(dcentres)))
+      CPASSERT(ALL(ieee_is_finite(dlattice)))
+   END SUBROUTINE
+
+! **************************************************************************************************
+!> \brief Reverse the normalized image sum without differentiating its log-sum scaling.
+! **************************************************************************************************
+   SUBROUTINE seed_pullback(partition, atom, offset, self_only, adjoint, doffset, dcentres, dlattice)
+      TYPE(skala_partition_type), INTENT(IN)             :: partition
+      INTEGER, INTENT(IN)                                :: atom
+      REAL(dp), INTENT(IN)                               :: offset(3)
+      LOGICAL, INTENT(IN)                                :: self_only
+      REAL(dp), INTENT(IN)                               :: adjoint
+      REAL(dp), INTENT(INOUT)                            :: doffset(3), dcentres(:, :), &
+                                                            dlattice(3, 3)
+
+      INTEGER                                            :: b, hi(3), i, j, k, lo(3)
+      REAL(dp)                                           :: coefficient, fractional(3), gx(3), &
+                                                            largest, relative(3), total, value, &
+                                                            weight, x(3)
+
+      weight = normalized_seed(partition, atom, offset, self_only, largest, total)
+      IF (weight == 0.0_dp) RETURN
+      DO b = 1, SIZE(partition%centres, 2)
+         IF (self_only .AND. b /= atom) CYCLE
+         relative = offset + partition%centres(:, atom) - partition%centres(:, b)
+         fractional = MATMUL(partition%inverse, relative)
+         lo = CEILING(fractional - (partition%shell + 1))
+         hi = FLOOR(fractional + (partition%shell + 1))
+         DO k = lo(3), hi(3)
+            DO j = lo(2), hi(2)
+               DO i = lo(1), hi(1)
+                  x = relative - MATMUL(partition%lattice, REAL([i, j, k], dp))
+                  IF (self_only) THEN
+                     value = log_seed(partition, partition%self_neighbours, x)
+                  ELSE
+                     value = log_seed(partition, partition%neighbours(b), x)
+                  END IF
+                  IF (value == -HUGE(1.0_dp)) CYCLE
+                  coefficient = -EXP(value - largest)/total
+                  IF (b == atom .AND. ALL([i, j, k] == 0)) coefficient = coefficient + 1.0_dp
+                  coefficient = coefficient*weight*adjoint
+                  IF (coefficient == 0.0_dp) CYCLE
+                  IF (self_only) THEN
+                     CALL log_seed_pullback(partition, partition%self_neighbours, b, .TRUE., x, coefficient, &
+                                            gx, dcentres, dlattice)
+                  ELSE
+                     CALL log_seed_pullback(partition, partition%neighbours(b), b, .FALSE., x, coefficient, &
+                                            gx, dcentres, dlattice)
+                  END IF
+                  doffset = doffset + gx
+                  dcentres(:, atom) = dcentres(:, atom) + gx
+                  dcentres(:, b) = dcentres(:, b) - gx
+                  dlattice = dlattice - SPREAD(gx, 2, 3)*SPREAD(REAL([i, j, k], dp), 1, 3)
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE
+
+! **************************************************************************************************
+!> \brief Differentiate a nonzero seed, including image distances and neighbour membership.
+! **************************************************************************************************
+   SUBROUTINE log_seed_pullback(partition, environment, atom, self_only, x, adjoint, gx, dcentres, dlattice)
+      TYPE(skala_partition_type), INTENT(IN)             :: partition
+      TYPE(seed_environment_type), INTENT(IN)            :: environment
+      INTEGER, INTENT(IN)                                :: atom
+      LOGICAL, INTENT(IN)                                :: self_only
+      REAL(dp), INTENT(IN)                               :: x(3), adjoint
+      REAL(dp), INTENT(OUT)                              :: gx(3)
+      REAL(dp), INTENT(INOUT)                            :: dcentres(:, :), dlattice(3, 3)
+
+      INTEGER                                            :: b, n
+      REAL(dp) :: c, delta(3), distance, factor, fractional(3), gc(3), gd(3), gmu, mu0, radius, &
+         slope, switch, unit(3), unit_x(3), window_grad(3)
+
+      fractional = MATMUL(partition%inverse, x)
+      c = compact_window(fractional, partition%shell, window_grad)
+      CPASSERT(c > 0.0_dp)
+      gx = MATMUL(TRANSPOSE(partition%inverse), window_grad)*(adjoint/c)
+      dlattice = dlattice - SPREAD(gx, 2, 3)*SPREAD(fractional, 1, 3)
+      radius = NORM2(x)
+      unit_x = 0.0_dp
+      IF (radius > 0.0_dp) unit_x = x/radius
+      DO n = 1, SIZE(environment%distance)
+         delta = environment%displacement(:, n)
+         distance = NORM2(x - delta)
+         unit = 0.0_dp
+         IF (distance > 0.0_dp) unit = (x - delta)/distance
+         mu0 = (radius - distance)/environment%distance(n)
+         CALL becke_switch(mu0, switch, slope)
+         c = environment%membership(n)
+         factor = (1.0_dp - c) + c*switch
+         CPASSERT(factor > 0.0_dp)
+         gmu = adjoint*c*slope/factor
+         gx = gx + gmu*(unit_x - unit)/environment%distance(n)
+         gd = gmu*(unit - mu0*delta/environment%distance(n))/environment%distance(n)
+         fractional = MATMUL(partition%inverse, delta)
+         c = compact_window(fractional, partition%shell, window_grad)
+         gc = MATMUL(TRANSPOSE(partition%inverse), window_grad)*(adjoint*(switch - 1.0_dp)/factor)
+         gd = gd + gc
+         b = environment%atom(n)
+         IF (self_only) b = atom
+         dcentres(:, b) = dcentres(:, b) + gd
+         dcentres(:, atom) = dcentres(:, atom) - gd
+         dlattice = dlattice + SPREAD(gd, 2, 3)*SPREAD(REAL(environment%image(:, n), dp), 1, 3) - &
+                    SPREAD(gc, 2, 3)*SPREAD(fractional, 1, 3)
+      END DO
+   END SUBROUTINE
 
 ! **************************************************************************************************
 !> \brief Compact Becke seed with triple-cubic pair switches and smooth neighbour membership.
@@ -206,8 +373,8 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: x(3)
       REAL(dp)                                           :: value
 
-      INTEGER                                            :: n, repetition
-      REAL(dp)                                           :: c, factor, mu, radius
+      INTEGER                                            :: n
+      REAL(dp)                                           :: c, factor, mu, radius, switch
 
       value = -HUGE(1.0_dp)
       c = compact_window(MATMUL(partition%inverse, x), partition%shell)
@@ -216,12 +383,9 @@ CONTAINS
       radius = NORM2(x)
       DO n = 1, SIZE(environment%distance)
          mu = (radius - NORM2(x - environment%displacement(:, n)))/environment%distance(n)
-         mu = MAX(-1.0_dp, MIN(1.0_dp, mu))
-         DO repetition = 1, 3
-            mu = 0.5_dp*mu*(3.0_dp - mu*mu)
-         END DO
+         CALL becke_switch(mu, switch)
          c = environment%membership(n)
-         factor = (1.0_dp - c) + c*MAX(0.0_dp, 0.5_dp*(1.0_dp - mu))
+         factor = (1.0_dp - c) + c*switch
          IF (factor == 0.0_dp) THEN
             value = -HUGE(1.0_dp)
             RETURN
@@ -231,25 +395,58 @@ CONTAINS
    END FUNCTION
 
 ! **************************************************************************************************
+!> \brief Triple-cubic Becke switch without the final subtraction of nearly equal numbers.
+! **************************************************************************************************
+   PURE SUBROUTINE becke_switch(mu, weight, derivative)
+      REAL(dp), INTENT(IN)                               :: mu
+      REAL(dp), INTENT(OUT)                              :: weight
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: derivative
+
+      INTEGER                                            :: repetition
+      REAL(dp)                                           :: slope
+
+      weight = 0.5_dp*(1.0_dp - MAX(-1.0_dp, MIN(1.0_dp, mu)))
+      slope = -0.5_dp
+      DO repetition = 1, 3
+         slope = slope*6.0_dp*weight*(1.0_dp - weight)
+         weight = weight*weight*(3.0_dp - 2.0_dp*weight)
+      END DO
+      IF (PRESENT(derivative)) derivative = slope
+   END SUBROUTINE
+
+! **************************************************************************************************
 !> \brief C2 compact window, evaluated without cancellation at the outer edge.
 ! **************************************************************************************************
-   PURE FUNCTION compact_window(fractional, shell) RESULT(weight)
+   FUNCTION compact_window(fractional, shell, gradient) RESULT(weight)
       REAL(dp), INTENT(IN)                               :: fractional(3)
       INTEGER, INTENT(IN)                                :: shell
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(3)
       REAL(dp)                                           :: weight
 
       INTEGER                                            :: direction
-      REAL(dp)                                           :: z
+      REAL(dp)                                           :: factors(3), slope(3), z
 
       weight = 1.0_dp
+      factors = 1.0_dp
+      slope = 0.0_dp
+      IF (PRESENT(gradient)) gradient = 0.0_dp
       DO direction = 1, 3
          z = MAX(0.0_dp, ABS(fractional(direction)) - shell)
          IF (z >= 1.0_dp) THEN
             weight = 0.0_dp
             RETURN
          END IF
+         IF (PRESENT(gradient)) THEN
+            factors(direction) = (1.0_dp - z)**3*(1.0_dp + 3.0_dp*z + 6.0_dp*z*z)
+            slope(direction) = -30.0_dp*z*z*(1.0_dp - z)**2*SIGN(1.0_dp, fractional(direction))
+         END IF
          weight = weight*(1.0_dp - z)**3*(1.0_dp + 3.0_dp*z + 6.0_dp*z*z)
       END DO
+      IF (PRESENT(gradient)) THEN
+         DO direction = 1, 3
+            gradient(direction) = slope(direction)*PRODUCT(factors(:direction - 1))*PRODUCT(factors(direction + 1:))
+         END DO
+      END IF
    END FUNCTION
 
 ! **************************************************************************************************
@@ -282,7 +479,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Build Gauss-Legendre/Lebedev blocks, owned once across the communicator.
-!> \note Geometry derivatives are not provided. Never drop a descriptor-only row.
+!> \note Never drop a descriptor-only row.
 ! **************************************************************************************************
    SUBROUTINE skala_atom_grid_build(group, lattice, centres, nradial, nangular, shell, scale, &
                                     points, energy_weights, descriptor_weights, block_sizes, block_centres)
@@ -345,5 +542,80 @@ CONTAINS
       points = positions(:, :row)
       energy_weights = energy(:row)
       descriptor_weights = descriptor(:row)
+   END SUBROUTINE
+
+! **************************************************************************************************
+!> \brief Return global geometry covectors for the atom grid at fixed radial scale and angular rule.
+!> \note Inputs are local raw covectors, including both independent quadrature weights.
+!>       Include the point-position dependence of reconstructed fields in dpoints.
+!>       The host adds their explicit atom and cell derivatives separately.
+!>       dcentres and dlattice are energy derivatives, not forces or stress. Lattice columns
+!>       vary at fixed Cartesian centres, without affine deformation of the radial offsets.
+! **************************************************************************************************
+   SUBROUTINE skala_atom_grid_pullback(group, lattice, centres, nradial, nangular, shell, scale, block_sizes, &
+                                       dpoints, denergy_weights, ddescriptor_weights, dblock_centres, dcentres, dlattice)
+      TYPE(mp_comm_type), INTENT(IN)                     :: group
+      REAL(dp), INTENT(IN)                               :: lattice(3, 3), centres(:, :)
+      INTEGER, INTENT(IN)                                :: nradial, nangular, shell
+      REAL(dp), INTENT(IN)                               :: scale
+      INTEGER, INTENT(IN)                                :: block_sizes(:)
+      REAL(dp), INTENT(IN)                               :: dpoints(:, :), denergy_weights(:), &
+                                                            ddescriptor_weights(:), &
+                                                            dblock_centres(:, :)
+      REAL(dp), INTENT(OUT)                              :: dcentres(:, :), dlattice(3, 3)
+
+      INTEGER                                            :: a, angular_grid, b, ia, ir, row, start
+      REAL(dp)                                           :: base_weight, d, gh(3, 3), gx(3), &
+                                                            offset(3), p, radial_weights(nradial), &
+                                                            radii(nradial), gr(3, SIZE(centres, 2))
+      TYPE(skala_partition_type)                         :: partition
+
+      CPASSERT(nradial >= 2 .AND. nangular >= 6 .AND. nangular <= 974)
+      CPASSERT(ALL(SHAPE(dcentres) == SHAPE(centres)))
+      CPASSERT(ALL(SHAPE(dpoints) == [3, SUM(block_sizes)]))
+      CPASSERT(ALL(SHAPE(dblock_centres) == [3, SIZE(block_sizes)]))
+      CPASSERT(ALL(block_sizes > 0))
+      CPASSERT(SIZE(denergy_weights) == SUM(block_sizes))
+      CPASSERT(SIZE(ddescriptor_weights) == SUM(block_sizes))
+      CPASSERT(ALL(ieee_is_finite(dpoints)))
+      CPASSERT(ALL(ieee_is_finite(dblock_centres)))
+      CPASSERT(ALL(ieee_is_finite(denergy_weights)))
+      CPASSERT(ALL(ieee_is_finite(ddescriptor_weights)))
+      CALL skala_partition_init(partition, lattice, centres, shell)
+      angular_grid = get_number_of_lebedev_grid(n=nangular)
+      CPASSERT(lebedev_grid(angular_grid)%n == nangular)
+      CPASSERT(ALL(lebedev_grid(angular_grid)%w >= 0.0_dp))
+      CALL skala_radial_grid(nradial, scale, radii, radial_weights)
+      dcentres = 0.0_dp
+      dlattice = 0.0_dp
+      row = 0
+      b = 0
+      DO a = group%mepos + 1, SIZE(centres, 2), group%num_pe
+         b = b + 1
+         CPASSERT(b <= SIZE(block_sizes))
+         start = row
+         dcentres(:, a) = dcentres(:, a) + dblock_centres(:, b)
+         DO ir = 1, nradial
+            DO ia = 1, nangular
+               offset = radii(ir)*lebedev_grid(angular_grid)%r(:, ia)
+               CALL skala_partition_weights(partition, a, offset, p, d)
+               IF (p == 0.0_dp .AND. d == 0.0_dp) CYCLE
+               row = row + 1
+               CPASSERT(row <= SIZE(denergy_weights))
+               base_weight = fourpi*radial_weights(ir)*lebedev_grid(angular_grid)%w(ia)
+               CALL skala_partition_pullback(partition, a, offset, base_weight*denergy_weights(row), &
+                                             base_weight*ddescriptor_weights(row), gx, gr, gh)
+               dcentres = dcentres + gr
+               dcentres(:, a) = dcentres(:, a) + dpoints(:, row)
+               dlattice = dlattice + gh
+            END DO
+         END DO
+         CPASSERT(row - start == block_sizes(b))
+      END DO
+      CPASSERT(b == SIZE(block_sizes) .AND. row == SIZE(denergy_weights))
+      CALL group%sum(dcentres)
+      CALL group%sum(dlattice)
+      CPASSERT(ALL(ieee_is_finite(dcentres)))
+      CPASSERT(ALL(ieee_is_finite(dlattice)))
    END SUBROUTINE
 END MODULE skala_atom_grid

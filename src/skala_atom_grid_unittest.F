@@ -16,7 +16,9 @@ PROGRAM skala_atom_grid_unittest
                                               mp_comm_type,&
                                               mp_comm_world
    USE skala_atom_grid,                 ONLY: skala_atom_grid_build,&
+                                              skala_atom_grid_pullback,&
                                               skala_partition_init,&
+                                              skala_partition_pullback,&
                                               skala_partition_type,&
                                               skala_partition_weights,&
                                               skala_radial_grid
@@ -82,6 +84,9 @@ PROGRAM skala_atom_grid_unittest
    END DO
    CALL skala_partition_weights(partition, 1, centres(:, 2) - centres(:, 1), p, d)
    IF (p /= 0.0_dp .OR. d <= 0.0_dp) ERROR STOP "A foreign nucleus must remain a descriptor-only target"
+   CALL partition_derivatives(centres)
+   CALL partition_derivatives(centres(:, :1))
+   CALL quadrature_derivatives()
 
    coarse_error = HUGE(1.0_dp)
    DO level = 1, 2
@@ -126,6 +131,179 @@ PROGRAM skala_atom_grid_unittest
    IF (comm%mepos == 0) WRITE (*, '(A)') "Periodic Skala atom-grid checks passed"
    CALL cp2k_finalize()
 CONTAINS
+   SUBROUTINE partition_derivatives(positions)
+      REAL(dp), INTENT(IN)                               :: positions(:, :)
+
+      INTEGER                                            :: atom, case_id, component, derivative, &
+                                                            iteration, trial
+      REAL(dp) :: ad, adjoint(2), dh(3, 3), dmw, dpw, dx(3), err, fd, gh(3, 3), gx(3), h, hi, &
+         hm(3, 3), hp(3, 3), lo, maximum, mid, pm, pp, shifted_gh(3, 3), shifted_gx(3), xm(3), &
+         xp(3), shifted_gr(3, SIZE(positions, 2)), rp(3, SIZE(positions, 2)), &
+         rm(3, SIZE(positions, 2)), gr(3, SIZE(positions, 2)), dr(3, SIZE(positions, 2))
+      TYPE(skala_partition_type)                         :: minus_partition, plus_partition, &
+                                                            reference_partition
+
+      dx = [0.13_dp, -0.17_dp, 0.11_dp]
+      DO atom = 1, SIZE(positions, 2)
+         dr(:, atom) = 0.2_dp*SIN(REAL(atom + [1, 2, 3], dp))
+      END DO
+      dh = RESHAPE([0.13_dp, 0.09_dp, -0.17_dp, 0.22_dp, -0.19_dp, 0.16_dp, 0.11_dp, -0.21_dp, 0.18_dp], [3, 3])
+      CALL skala_partition_init(reference_partition, lattice, positions, 1)
+      maximum = 0.0_dp
+      DO atom = 1, SIZE(positions, 2)
+         DO case_id = 1, 4
+            SELECT CASE (case_id)
+            CASE (1)
+               x = MATMUL(lattice, [0.37_dp, 0.21_dp, 0.19_dp])
+            CASE (2)
+               x = positions(:, MOD(atom, SIZE(positions, 2)) + 1) - positions(:, atom)
+            CASE (3)
+               ! Exercise the narrow self-image descriptor turn-on rather than its flat region.
+               lo = 0.0_dp
+               hi = 1.0_dp
+               DO iteration = 1, 55
+                  mid = 0.5_dp*(lo + hi)
+                  CALL skala_partition_weights(reference_partition, atom, mid*lattice(:, 1), pp, dpw)
+                  IF (dpw > 0.5_dp) THEN
+                     lo = mid
+                  ELSE
+                     hi = mid
+                  END IF
+               END DO
+               x = mid*lattice(:, 1)
+               IF (ABS(dpw - 0.5_dp) > 1.0e-3_dp) ERROR STOP "Descriptor transition fixture is not resolved"
+            CASE (4)
+               x = MATMUL(lattice, [2.1_dp, 0.0_dp, 0.0_dp])
+            END SELECT
+            DO derivative = 1, 2
+               adjoint = 0.0_dp
+               adjoint(derivative) = 1.0_dp
+               CALL skala_partition_pullback(reference_partition, atom, x, adjoint(1), adjoint(2), gx, gr, gh)
+               IF (MAXVAL(ABS(SUM(gr, DIM=2))) > 1.0e-10_dp) &
+                  ERROR STOP "Partition centre derivatives violate translation invariance"
+               IF (derivative == 2 .AND. MAXVAL(ABS(gr)) > 1.0e-10_dp) &
+                  ERROR STOP "Self-image descriptor depends on independent Cartesian atom centres"
+               IF (case_id == 1) THEN
+                  rp = positions
+                  rp(:, SIZE(positions, 2)) = rp(:, SIZE(positions, 2)) + MATMUL(lattice, [2.0_dp, -1.0_dp, 1.0_dp])
+                  CALL skala_partition_init(plus_partition, lattice, rp, 1)
+                  CALL skala_partition_pullback(plus_partition, atom, x, adjoint(1), adjoint(2), &
+                                                shifted_gx, shifted_gr, shifted_gh)
+                  shifted_gh = shifted_gh + SPREAD(gr(:, SIZE(positions, 2)), 2, 3)* &
+                               SPREAD([2.0_dp, -1.0_dp, 1.0_dp], 1, 3)
+                  IF (MAX(MAXVAL(ABS(gx - shifted_gx)), MAXVAL(ABS(gr - shifted_gr)), &
+                          MAXVAL(ABS(gh - shifted_gh))) > 1.0e-10_dp) &
+                     ERROR STOP "Rewrapping an atom changes partition geometry covectors"
+               END IF
+               DO component = 1, 3
+                  ad = 0.0_dp
+                  IF (component == 1) ad = SUM(gx*dx)
+                  IF (component == 2) ad = SUM(gr*dr)
+                  IF (component == 3) ad = SUM(gh*dh)
+                  DO trial = 1, 2
+                     h = 1.0e-5_dp/REAL(trial, dp)
+                     xp = x
+                     xm = x
+                     rp = positions
+                     rm = positions
+                     hp = lattice
+                     hm = lattice
+                     SELECT CASE (component)
+                     CASE (1)
+                        xp = x + h*dx
+                        xm = x - h*dx
+                     CASE (2)
+                        rp = positions + h*dr
+                        rm = positions - h*dr
+                     CASE (3)
+                        hp = lattice + h*dh
+                        hm = lattice - h*dh
+                     END SELECT
+                     CALL skala_partition_init(plus_partition, hp, rp, 1)
+                     CALL skala_partition_init(minus_partition, hm, rm, 1)
+                     CALL skala_partition_weights(plus_partition, atom, xp, pp, dpw)
+                     CALL skala_partition_weights(minus_partition, atom, xm, pm, dmw)
+                     fd = (adjoint(1)*(pp - pm) + adjoint(2)*(dpw - dmw))/(2.0_dp*h)
+                     err = ABS(ad - fd)/MAX(1.0_dp, ABS(ad))
+                     maximum = MAX(maximum, err)
+                     IF (err > 2.0e-6_dp) THEN
+                        WRITE (*, '(A,5I3,3ES18.8)') "Partition FD (atom,case,weight,component,step,AD,FD,error): ", &
+                           atom, case_id, derivative, component, trial, ad, fd, err
+                        ERROR STOP "Periodic partition derivative fails finite differences"
+                     END IF
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum partition derivative error: ", maximum
+   END SUBROUTINE
+
+   SUBROUTINE quadrature_derivatives()
+      INTEGER                                            :: component, trial
+      REAL(dp)                                           :: ad, dh(3, 3), dr(3, 2), e, em, ep, err, &
+                                                            es, gh(3, 3), gr(3, 2), h, maximum, &
+                                                            sh(3, 3), sr(3, 2)
+
+      dr = RESHAPE([0.21_dp, -0.11_dp, 0.09_dp, -0.17_dp, 0.23_dp, 0.14_dp], [3, 2])
+      dh = RESHAPE([0.13_dp, 0.09_dp, -0.17_dp, 0.22_dp, -0.19_dp, 0.16_dp, 0.11_dp, -0.21_dp, 0.18_dp], [3, 3])
+      e = grid_energy(comm, lattice, centres, gr, gh)
+      es = grid_energy(single, lattice, centres, sr, sh)
+      IF (MAX(ABS(e - es), MAXVAL(ABS(gr - sr)), MAXVAL(ABS(gh - sh))) > 1.0e-10_dp) &
+         ERROR STOP "Distributed quadrature geometry covectors differ"
+      maximum = 0.0_dp
+      DO component = 1, 2
+         DO trial = 1, 2
+            h = 1.0e-4_dp/REAL(trial, dp)
+            IF (component == 1) THEN
+               ad = SUM(gr*dr)
+               ep = grid_energy(comm, lattice, centres + h*dr)
+               em = grid_energy(comm, lattice, centres - h*dr)
+            ELSE
+               ad = SUM(gh*dh)
+               ep = grid_energy(comm, lattice + h*dh, centres)
+               em = grid_energy(comm, lattice - h*dh, centres)
+            END IF
+            err = ABS(ad - (ep - em)/(2.0_dp*h))/MAX(1.0_dp, ABS(ad))
+            maximum = MAX(maximum, err)
+            IF (err > 2.0e-6_dp) THEN
+               WRITE (*, '(A,2I3,3ES18.8)') "Grid geometry FD (component,step,AD,FD,error): ", &
+                  component, trial, ad, (ep - em)/(2.0_dp*h), err
+               ERROR STOP "Atom-grid geometry derivative fails finite differences"
+            END IF
+         END DO
+      END DO
+      IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum quadrature geometry derivative error: ", maximum
+   END SUBROUTINE
+
+   FUNCTION grid_energy(group, hmat, positions, gr, gh) RESULT(e)
+      TYPE(mp_comm_type), INTENT(IN)                     :: group
+      REAL(dp), INTENT(IN)                               :: hmat(3, 3), positions(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gr(:, :), gh(:, :)
+      REAL(dp)                                           :: e
+
+      INTEGER                                            :: row
+      INTEGER, ALLOCATABLE                               :: sizes(:)
+      REAL(dp), ALLOCATABLE                              :: blocks(:, :), descriptor_weights(:), &
+                                                            energy_weights(:), pd(:), pe(:), &
+                                                            px(:, :), xyz(:, :)
+
+      CALL skala_atom_grid_build(group, hmat, positions, 12, 14, 1, 1.0_dp, &
+                                 xyz, energy_weights, descriptor_weights, sizes, blocks)
+      ALLOCATE (pe(SIZE(energy_weights)), pd(SIZE(energy_weights)), px(3, SIZE(energy_weights)))
+      DO row = 1, SIZE(energy_weights)
+         pe(row) = EXP(-SUM(xyz(:, row)**2)/20.0_dp)
+         pd(row) = 0.3_dp*EXP(-SUM(xyz(:, row)**2)/30.0_dp)
+         px(:, row) = -xyz(:, row)*(energy_weights(row)*pe(row)/10.0_dp + descriptor_weights(row)*pd(row)/15.0_dp)
+      END DO
+      e = SUM(energy_weights*pe + descriptor_weights*pd) + 0.02_dp*SUM(blocks**2)
+      CALL group%sum(e)
+      IF (PRESENT(gr) .AND. PRESENT(gh)) THEN
+         CALL skala_atom_grid_pullback(group, hmat, positions, 12, 14, 1, 1.0_dp, sizes, &
+                                       px, pe, pd, 0.04_dp*blocks, gr, gh)
+      END IF
+   END FUNCTION
+
    FUNCTION integrals(positions, weights) RESULT(values)
       REAL(dp), INTENT(IN)                               :: positions(:, :), weights(:)
       REAL(dp)                                           :: values(4)
