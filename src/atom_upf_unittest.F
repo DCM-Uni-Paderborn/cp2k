@@ -13,14 +13,9 @@ PROGRAM atom_upf_unittest
                                               atom_sgp_release,&
                                               fit_core_density_gaussians,&
                                               sgp_construction
-   USE atom_types,                      ONLY: CGTO_BASIS,&
-                                              atom_basis_gridrep,&
-                                              atom_basis_type,&
-                                              atom_integrals,&
-                                              atom_potential_type,&
-                                              init_atom_basis_default_pp,&
-                                              release_atom_basis,&
-                                              sgp_pseudo
+   USE atom_types,                      ONLY: &
+        CGTO_BASIS, atom_basis_gridrep, atom_basis_type, atom_integrals, atom_potential_type, &
+        init_atom_basis, init_atom_basis_default_pp, release_atom_basis, sgp_pseudo
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
                                               atom_upfpot_type
@@ -34,6 +29,15 @@ PROGRAM atom_upf_unittest
                                               init_potential,&
                                               sgp_potential_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE input_constants,                 ONLY: contracted_gto
+   USE input_cp2k_atom,                 ONLY: create_atom_section
+   USE input_section_types,             ONLY: section_release,&
+                                              section_type,&
+                                              section_vals_create,&
+                                              section_vals_get_subs_vals,&
+                                              section_vals_release,&
+                                              section_vals_type,&
+                                              section_vals_val_set
    USE kinds,                           ONLY: default_path_length,&
                                               dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
@@ -69,6 +73,7 @@ PROGRAM atom_upf_unittest
    CALL check_nlcc_fit()
    CALL check_basis_origin()
    CALL check_basis_derivatives()
+   CALL check_contracted_basis_reader()
 
    ! The same temporary is reused for successive KIND sections in Quickstep.
    ALLOCATE (pot%rho_nlcc(3))
@@ -126,6 +131,102 @@ PROGRAM atom_upf_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Exercise independent shell, primitive and set counts in file and inline atomic bases.
+! **************************************************************************************************
+   SUBROUTINE check_contracted_basis_reader()
+      INTEGER, PARAMETER :: contractions(3) = [11, 1, 1], lower_l(3) = [0, 1, 2], &
+         primitives(3) = [11, 41, 2], sets(3) = [1, 1, 21], upper_l(3) = [3, 6, 3]
+      CHARACTER(LEN=1600), ALLOCATABLE                   :: lines(:)
+      INTEGER                                            :: b, c, i, j, l, mode, n, nc, np, ns, row, &
+                                                            s, t, unit
+      REAL(dp)                                           :: alpha, coefficient, expected, &
+                                                            normalization
+      TYPE(atom_basis_type)                              :: basis
+      CHARACTER(LEN=*), PARAMETER :: fixture = "atom-contracted-basis-test"
+
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(section_type), POINTER                        :: specification
+      TYPE(section_vals_type), POINTER                   :: input, pp_basis
+
+      logger => cp_get_default_logger()
+      DO b = 1, SIZE(sets)
+         np = primitives(b)
+         nc = contractions(b)
+         ns = sets(b)
+         ALLOCATE (lines(1 + ns*(np + 1)))
+         WRITE (lines(1), '(I0)') ns
+         row = 1
+         DO s = 1, ns
+            row = row + 1
+            WRITE (lines(row), '(*(I0,1X))') 1, lower_l(b), upper_l(b), np, (nc, l=lower_l(b), upper_l(b))
+            DO i = 1, np
+               row = row + 1
+               alpha = REAL(10*s + i, dp)/20.0_dp
+               WRITE (lines(row), '(*(F12.6,1X))') alpha, &
+                  ((REAL(100*s + 10*i + c + 5*l, dp)/1000.0_dp, c=1, nc), l=lower_l(b), upper_l(b))
+            END DO
+         END DO
+         IF (logger%para_env%is_source()) THEN
+            OPEN (NEWUNIT=unit, FILE=fixture, STATUS="REPLACE", ACTION="WRITE")
+            WRITE (unit, '(A)') 'H READER-TEST', (TRIM(lines(i)), i=1, SIZE(lines))
+            CLOSE (unit)
+         END IF
+         CALL logger%para_env%sync()
+         DO mode = 1, 2
+            NULLIFY (specification, input)
+            CALL create_atom_section(specification)
+            CALL section_vals_create(input, specification)
+            pp_basis => section_vals_get_subs_vals(input, 'PP_BASIS')
+            CALL section_vals_val_set(pp_basis, 'BASIS_TYPE', i_val=contracted_gto)
+            CALL section_vals_val_set(pp_basis, 'GRID_POINTS', i_val=32)
+            CALL section_vals_val_set(pp_basis, 'BASIS_SET', c_val='READER-TEST')
+            CALL section_vals_val_set(pp_basis, 'BASIS_SET_FILE_NAME', c_val=fixture)
+            IF (mode == 2) THEN
+               DO i = 1, SIZE(lines)
+                  CALL section_vals_val_set(pp_basis, 'BASIS%_DEFAULT_KEYWORD_', i_rep_val=i, c_val=TRIM(lines(i)))
+               END DO
+            END IF
+            CALL init_atom_basis(basis, pp_basis, 1, 'PP')
+            DO l = 0, UBOUND(basis%nbas, 1)
+               n = 0
+               IF (l >= lower_l(b) .AND. l <= upper_l(b)) n = ns
+               IF (basis%nprim(l) /= n*np .OR. basis%nbas(l) /= n*nc) THEN
+                  ERROR STOP "Incorrect atomic contracted basis dimensions"
+               END IF
+               DO s = 1, n
+                  DO i = 1, np
+                     alpha = REAL(10*s + i, dp)/20.0_dp
+                     j = (s - 1)*np + i
+                     IF (ABS(basis%am(j, l) - alpha) > 1.e-14_dp) ERROR STOP "Incorrect contracted basis exponent"
+                     ! Inverse square root of the analytic radial Gaussian norm.
+                     normalization = SQRT(2.0_dp*(2.0_dp*alpha)**(l + 1.5_dp)/GAMMA(l + 1.5_dp))
+                     DO t = 1, n
+                        DO c = 1, nc
+                           coefficient = 0.0_dp
+                           IF (s == t) coefficient = REAL(100*s + 10*i + c + 5*l, dp)/1000.0_dp
+                           expected = normalization*coefficient
+                           IF (ABS(basis%cm(j, (t - 1)*nc + c, l) - expected) > 1.e-12_dp*MAX(1.0_dp, ABS(expected))) THEN
+                              ERROR STOP "Incorrect contracted basis coefficient or normalization"
+                           END IF
+                        END DO
+                     END DO
+                  END DO
+               END DO
+            END DO
+            CALL release_atom_basis(basis)
+            CALL section_vals_release(input)
+            CALL section_release(specification)
+         END DO
+         CALL logger%para_env%sync()
+         IF (logger%para_env%is_source()) THEN
+            OPEN (NEWUNIT=unit, FILE=fixture, STATUS="OLD")
+            CLOSE (unit, STATUS="DELETE")
+         END IF
+         DEALLOCATE (lines)
+      END DO
+   END SUBROUTINE check_contracted_basis_reader
 
 ! **************************************************************************************************
 !> \brief Check primitive and contracted Gaussian derivatives on UPF meshes starting at zero.
