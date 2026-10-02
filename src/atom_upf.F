@@ -31,15 +31,19 @@ MODULE atom_upf
    ! use same value as in atom_types!
    INTEGER, PARAMETER                                :: lmat = 3
 
-   TYPE upf_paw_type
+   TYPE upf_partial_waves_type
+      ! Original r*phi(r) partial waves, one per beta projector, without normalization.
+      REAL(dp), ALLOCATABLE                          :: ae_wfc(:, :), ps_wfc(:, :)
+      INTEGER, ALLOCATABLE                           :: angular_momenta(:)
+   END TYPE upf_partial_waves_type
+
+   TYPE, EXTENDS(upf_partial_waves_type) :: upf_paw_type
       INTEGER                                        :: data_format = -1, cutoff_index = -1, lmax_aug = -1
       CHARACTER(LEN=default_string_length)           :: augmentation_shape = ""
       REAL(dp)                                       :: cutoff_radius = -1.0_dp, augmentation_epsilon = 1.e-12_dp
       REAL(dp)                                       :: core_energy = 0.0_dp
       LOGICAL                                        :: has_core_energy = .FALSE.
-      ! Original r*phi(r) partial waves, one per beta projector, without normalization.
-      REAL(dp), ALLOCATABLE                          :: ae_wfc(:, :), ps_wfc(:, :), occupations(:)
-      INTEGER, ALLOCATABLE                           :: angular_momenta(:)
+      REAL(dp), ALLOCATABLE                          :: occupations(:)
       ! Multipoles have the same beta convention as PP_Q; L starts at zero.
       REAL(dp), ALLOCATABLE                          :: multipoles(:, :, :)
       ! True core density (without 4*pi*r**2), AE local potential and core energy in Hartree.
@@ -101,13 +105,15 @@ MODULE atom_upf
       ! The pair index is j*(j-1)/2+i for i<=j; the last dimension starts at L=0.
       REAL(dp), DIMENSION(:, :), ALLOCATABLE         :: qij
       REAL(dp), DIMENSION(:, :, :), ALLOCATABLE      :: qijl
+      ! Optional full USPP partial waves; PP_PSWFC atomic guesses are a different set.
+      TYPE(upf_partial_waves_type), ALLOCATABLE       :: partial_waves
       TYPE(upf_paw_type), ALLOCATABLE                 :: paw
       ! <SEMILOCAL>
       REAL(dp), DIMENSION(:, :), ALLOCATABLE         :: vsemi
    END TYPE atom_upfpot_type
 
    PRIVATE
-   PUBLIC  :: atom_read_upf, atom_upfpot_type, atom_release_upf, upf_radial_weights
+   PUBLIC  :: atom_read_upf, atom_upfpot_type, atom_release_upf, upf_radial_weights, upf_partial_waves_type
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'atom_upf'
 
@@ -169,7 +175,7 @@ CONTAINS
 !> \param pot ...
 !> \param upf_filename ...
 !> \param read_header ...
-!> \param read_augmentation Import scalar USPP augmentation data explicitly.
+!> \param read_augmentation Import scalar USPP augmentation data and optional full partial waves explicitly.
 !>        This reader option does not enable USPP in a calculation method.
 !> \param read_paw Import scalar PAW partial waves and one-center data, including augmentation.
 !>        Calculation methods must explicitly support the PAW energy functional before using this option.
@@ -315,6 +321,10 @@ CONTAINS
                   CPASSERT(.NOT. ALLOCATED(pot%paw))
                   ALLOCATE (pot%paw)
                END IF
+               IF (readaug .AND. pot%is_ultrasoft .AND. .NOT. pot%is_paw .AND. pot%has_wfc) THEN
+                  CPASSERT(.NOT. ALLOCATED(pot%partial_waves))
+                  ALLOCATE (pot%partial_waves)
+               END IF
             ELSE IF (nametag(2:8) == "PP_MESH") THEN
                IF (.NOT. (nametag(9:9) == ">")) THEN
                   CALL upf_mesh_option(parser, pot)
@@ -340,7 +350,11 @@ CONTAINS
             ELSE IF (nametag(2:9) == "PP_PSWFC") THEN
                ! skip section for now
             ELSE IF (nametag(2:12) == "PP_FULL_WFC") THEN
-               IF (ALLOCATED(pot%paw)) CALL upf_full_wfc_section(parser, pot, nametag)
+               IF (ALLOCATED(pot%paw)) THEN
+                  CALL upf_full_wfc_section(parser, pot%paw, nametag, pot%mesh_size, pot%number_of_proj)
+               ELSE IF (ALLOCATED(pot%partial_waves)) THEN
+                  CALL upf_full_wfc_section(parser, pot%partial_waves, nametag, pot%mesh_size, pot%number_of_proj)
+               END IF
             ELSE IF (nametag(2:11) == "PP_RHOATOM") THEN
                ! skip section for now
             ELSE IF (nametag(2:7) == "PP_PAW") THEN
@@ -377,6 +391,10 @@ CONTAINS
       END IF
       IF (readaug .AND. (pot%is_ultrasoft .OR. pot%is_paw) .AND. (.NOT. pot%is_paw .OR. readpaw)) THEN
          CPASSERT(ALLOCATED(pot%qij) .AND. ALLOCATED(pot%qijl))
+      END IF
+      IF (ALLOCATED(pot%partial_waves)) THEN
+         CPASSERT(ALLOCATED(pot%partial_waves%ae_wfc) .AND. ALLOCATED(pot%partial_waves%ps_wfc))
+         CPASSERT(ALL(pot%partial_waves%angular_momenta == pot%lbeta))
       END IF
       IF (ALLOCATED(pot%paw)) THEN
          CPASSERT(ALLOCATED(pot%paw%ae_wfc) .AND. ALLOCATED(pot%paw%ps_wfc))
@@ -1182,15 +1200,19 @@ CONTAINS
    END SUBROUTINE upf_real_array
 
 ! **************************************************************************************************
-!> \brief Import the two projector-indexed PAW partial-wave sets, retaining r*phi(r).
+!> \brief Import the two projector-indexed USPP or PAW partial-wave sets, retaining r*phi(r).
 !> \param parser Token stream after the PP_FULL_WFC tag name.
-!> \param pot UPF data.
+!> \param waves Neutral full-wave data, including the inherited PAW components.
 !> \param opening_tag PP_FULL_WFC opening tag.
+!> \param mesh_size Number of radial samples in PP_HEADER.
+!> \param number_of_proj Number of beta projectors, distinct from PP_HEADER number_of_wfc.
 ! **************************************************************************************************
-   SUBROUTINE upf_full_wfc_section(parser, pot, opening_tag)
+   SUBROUTINE upf_full_wfc_section(parser, waves, opening_tag, mesh_size, number_of_proj)
       TYPE(cp_parser_type), INTENT(INOUT)                :: parser
-      TYPE(atom_upfpot_type), INTENT(INOUT)              :: pot
+
+      CLASS(upf_partial_waves_type), INTENT(INOUT)        :: waves
       CHARACTER(LEN=*), INTENT(IN)                       :: opening_tag
+      INTEGER, INTENT(IN)                                :: mesh_size, number_of_proj
 
       CHARACTER(LEN=default_string_length)               :: string, suffix, tag
       INTEGER                                            :: i, index_value, ios, l, last, m, n, nb, &
@@ -1199,10 +1221,11 @@ CONTAINS
       LOGICAL, ALLOCATABLE                               :: found(:, :)
       REAL(dp), ALLOCATABLE                              :: values(:)
 
-      nb = pot%number_of_proj
-      m = pot%mesh_size
+      nb = number_of_proj
+      m = mesh_size
       CPASSERT(nb > 0 .AND. m > 0)
-      CPASSERT(.NOT. ALLOCATED(pot%paw%ae_wfc))
+      CPASSERT(.NOT. ALLOCATED(waves%ae_wfc) .AND. .NOT. ALLOCATED(waves%ps_wfc))
+      CPASSERT(.NOT. ALLOCATED(waves%angular_momenta))
       IF (opening_tag /= "<PP_FULL_WFC>") THEN
          DO
             IF (parser_test_next_token(parser) == "EOL") THEN
@@ -1216,10 +1239,10 @@ CONTAINS
             CPASSERT(n == nb)
          END DO
       END IF
-      ALLOCATE (pot%paw%ae_wfc(m, nb), pot%paw%ps_wfc(m, nb), pot%paw%angular_momenta(nb))
+      ALLOCATE (waves%ae_wfc(m, nb), waves%ps_wfc(m, nb), waves%angular_momenta(nb))
       ALLOCATE (found(nb, 2), values(m))
       found = .FALSE.
-      pot%paw%angular_momenta = -1
+      waves%angular_momenta = -1
       DO
          CALL upf_next_line(parser, at_end)
          CPASSERT(.NOT. at_end)
@@ -1231,7 +1254,7 @@ CONTAINS
          CASE ("<PP_PSWFC.")
             wave_type = 2
          CASE DEFAULT
-            CPABORT("Unknown UPF PAW partial-wave tag "//TRIM(tag))
+            CPABORT("Unknown UPF full partial-wave tag "//TRIM(tag))
          END SELECT
          last = LEN_TRIM(tag)
          IF (tag(last:last) == ">") last = last - 1
@@ -1245,14 +1268,14 @@ CONTAINS
             CPASSERT(index_value == i)
          END IF
          CPASSERT(l >= 0)
-         IF (pot%paw%angular_momenta(i) >= 0) THEN
-            CPASSERT(l == pot%paw%angular_momenta(i))
+         IF (waves%angular_momenta(i) >= 0) THEN
+            CPASSERT(l == waves%angular_momenta(i))
          END IF
-         pot%paw%angular_momenta(i) = l
+         waves%angular_momenta(i) = l
          IF (wave_type == 1) THEN
-            pot%paw%ae_wfc(:, i) = values
+            waves%ae_wfc(:, i) = values
          ELSE
-            pot%paw%ps_wfc(:, i) = values
+            waves%ps_wfc(:, i) = values
          END IF
          found(i, wave_type) = .TRUE.
       END DO
