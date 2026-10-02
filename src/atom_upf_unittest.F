@@ -8,16 +8,20 @@
 PROGRAM atom_upf_unittest
    USE atom_basis,                      ONLY: atom_basis_opt
    USE atom_kind_orbitals,              ONLY: sgp_potential_conversion
-   USE atom_operators,                  ONLY: atom_ppint_release,&
+   USE atom_operators,                  ONLY: atom_int_release,&
+                                              atom_int_setup,&
+                                              atom_ppint_release,&
                                               atom_ppint_setup
+   USE atom_paw,                        ONLY: atom_paw_guess
    USE atom_sgp,                        ONLY: atom_sgp_potential_type,&
                                               atom_sgp_release,&
                                               fit_core_density_gaussians,&
                                               sgp_construction
    USE atom_types,                      ONLY: &
         CGTO_BASIS, atom_basis_gridrep, atom_basis_type, atom_integrals, atom_potential_type, &
-        init_atom_basis, init_atom_basis_default_pp, init_atom_potential, release_atom_basis, &
-        release_atom_potential, sgp_pseudo, upf_pseudo
+        atom_type, create_atom_orbs, create_atom_type, init_atom_basis, &
+        init_atom_basis_default_pp, init_atom_potential, release_atom_basis, &
+        release_atom_potential, release_atom_type, sgp_pseudo, upf_pseudo
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
                                               atom_upfpot_type
@@ -33,7 +37,8 @@ PROGRAM atom_upf_unittest
                                               sgp_potential_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: contracted_gto,&
-                                              do_rhf_atom
+                                              do_rhf_atom,&
+                                              geometrical_gto
    USE input_cp2k_atom,                 ONLY: create_atom_section
    USE input_section_types,             ONLY: section_release,&
                                               section_type,&
@@ -79,6 +84,7 @@ PROGRAM atom_upf_unittest
    CALL check_basis_derivatives()
    CALL check_contracted_basis_reader()
    CALL check_basis_optimization_export()
+   CALL check_paw_reference_guess()
 
    ! The same temporary is reused for successive KIND sections in Quickstep.
    ALLOCATE (pot%rho_nlcc(3))
@@ -136,6 +142,85 @@ PROGRAM atom_upf_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Reference-wave projection, generalized orthogonality, and incomplete-data fallback.
+! **************************************************************************************************
+   SUBROUTINE check_paw_reference_guess()
+      INTEGER, PARAMETER                                 :: nr = 801
+
+      INTEGER                                            :: i, l, n
+      INTEGER, POINTER                                   :: counts(:)
+      LOGICAL                                            :: success
+      REAL(dp)                                           :: error, radius
+      REAL(dp), ALLOCATABLE                              :: overlap(:, :)
+      TYPE(atom_type), POINTER                           :: atom
+      TYPE(section_type), POINTER                        :: specification
+      TYPE(section_vals_type), POINTER                   :: basis_section, input
+
+      NULLIFY (atom, specification, input)
+      CALL create_atom_type(atom)
+      ALLOCATE (atom%basis, atom%potential, atom%integrals, atom%state)
+      NULLIFY (atom%basis%grid)
+      CALL create_atom_section(specification)
+      CALL section_vals_create(input, specification)
+      basis_section => section_vals_get_subs_vals(input, 'PP_BASIS')
+      CALL section_vals_val_set(basis_section, 'BASIS_TYPE', i_val=geometrical_gto)
+      ALLOCATE (counts(2))
+      counts = [2, 1]
+      CALL section_vals_val_set(basis_section, 'NUM_GTO', i_vals_ptr=counts)
+      CALL section_vals_val_set(basis_section, 'GEO_START_VALUE', r_val=0.5_dp)
+      CALL section_vals_val_set(basis_section, 'GEOMETRICAL_FACTOR', r_val=1.7_dp)
+      CALL init_atom_basis(atom%basis, basis_section, 10, 'PP')
+      CALL atom_int_setup(atom%integrals, atom%basis)
+      ALLOCATE (atom%integrals%metric, MOLD=atom%integrals%ovlp)
+      atom%integrals%metric(:, :, :) = 1.4_dp*atom%integrals%ovlp
+      atom%state%maxl_occ = 1
+      atom%state%maxn_occ(0:1) = [2, 1]
+      CALL create_atom_orbs(atom%orbitals, 2, 2)
+      atom%potential%ppot_type = upf_pseudo
+      ASSOCIATE (pot => atom%potential%upf_pot)
+         pot%is_paw = .TRUE.
+         pot%number_of_proj = 3
+         ALLOCATE (pot%paw, pot%r(nr), pot%rab(nr), pot%lbeta(3))
+         ALLOCATE (pot%paw%occupations(3), pot%paw%ps_wfc(nr, 3))
+         pot%lbeta(:) = [0, 0, 1]
+         pot%paw%occupations(:) = [2.0_dp, 2.0_dp, 6.0_dp]
+         pot%rab = 0.01_dp
+         DO i = 1, nr
+            radius = REAL(i - 1, dp)*0.01_dp
+            pot%r(i) = radius
+            pot%paw%ps_wfc(i, :) = [radius*EXP(-0.5_dp*radius**2), &
+                                    radius*EXP(-0.85_dp*radius**2), radius**2*EXP(-0.5_dp*radius**2)]
+         END DO
+         CALL atom_paw_guess(atom, success)
+         IF (.NOT. success) ERROR STOP 'PAW reference guess rejected representable states'
+         DO l = 0, 1
+            n = atom%state%maxn_occ(l)
+            ALLOCATE (overlap(n, n))
+            overlap(:, :) = MATMUL(TRANSPOSE(atom%orbitals%wfn(:, :n, l)), &
+                                   MATMUL(atom%integrals%metric(:, :, l), atom%orbitals%wfn(:, :n, l)))
+            DO i = 1, n
+               overlap(i, i) = overlap(i, i) - 1.0_dp
+            END DO
+            IF (MAXVAL(ABS(overlap)) > 1.e-12_dp) ERROR STOP 'PAW reference guess is not metric orthonormal'
+            DEALLOCATE (overlap)
+         END DO
+         error = ABS(atom%orbitals%wfn(1, 1, 0)*SQRT(atom%integrals%metric(1, 1, 0)) - 1.0_dp)
+         IF (error > 1.e-7_dp) ERROR STOP 'PAW reference-wave projection is inaccurate'
+         pot%paw%occupations(2) = 0.0_dp
+         CALL atom_paw_guess(atom, success)
+         IF (success) ERROR STOP 'Incomplete PAW references should retain the default guess'
+         IF (ANY(atom%orbitals%wfn /= atom%orbitals%wfna)) ERROR STOP 'Failed PAW guess changed the orbitals'
+      END ASSOCIATE
+      CALL atom_int_release(atom%integrals)
+      CALL release_atom_basis(atom%basis)
+      CALL release_atom_potential(atom%potential)
+      DEALLOCATE (atom%integrals, atom%basis, atom%potential)
+      CALL release_atom_type(atom)
+      CALL section_vals_release(input)
+      CALL section_release(specification)
+   END SUBROUTINE check_paw_reference_guess
 
 ! **************************************************************************************************
 !> \brief Exported contraction coefficients must belong to the best basis, not the last trial.

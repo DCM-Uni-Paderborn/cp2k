@@ -9,13 +9,18 @@
 !> \brief PAW one-center corrections for spherical atomic Kohn-Sham calculations.
 ! **************************************************************************************************
 MODULE atom_paw
-   USE atom_types,                      ONLY: atom_basis_type,&
+   USE atom_types,                      ONLY: atom_basis_gridrep,&
+                                              atom_basis_type,&
                                               atom_potential_type,&
+                                              atom_type,&
+                                              release_atom_basis,&
                                               upf_pseudo
+   USE atom_upf,                        ONLY: upf_radial_weights
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
+   USE mathlib,                         ONLY: jacobi
    USE paw_onecenter,                   ONLY: paw_onecenter_hartree,&
                                               paw_onecenter_init,&
                                               paw_onecenter_type
@@ -38,9 +43,85 @@ MODULE atom_paw
       TYPE(paw_xc_type) :: xcgrid
    END TYPE atom_paw_type
 
-   PUBLIC :: atom_paw_type, atom_paw_init, atom_paw_add
+   PUBLIC :: atom_paw_type, atom_paw_init, atom_paw_add, atom_paw_guess
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Project occupied PAW reference waves into the atomic basis for a physical SCF start.
+!>        The L2 projection uses the ordinary overlap; the resulting orbitals are orthonormalized
+!>        in the PAW metric. Missing or linearly dependent reference states retain the default guess.
+!> \param atom Atomic basis, overlap, original PAW data and requested occupations.
+!> \param success Whether every occupied radial state received a usable reference wave.
+! **************************************************************************************************
+   SUBROUTINE atom_paw_guess(atom, success)
+      TYPE(atom_type), POINTER                           :: atom
+      LOGICAL, INTENT(OUT)                               :: success
+
+      INTEGER                                            :: i, j, k, l, n, ns, pass
+      REAL(dp)                                           :: norm, projection
+      REAL(dp), ALLOCATABLE :: coefficients(:), diagonal_norm(:), eigenvalues(:), &
+         eigenvectors(:, :), guess(:, :, :), overlap(:, :), rhs(:), weights(:)
+      TYPE(atom_basis_type)                              :: radial
+
+      success = .FALSE.
+      IF (atom%potential%ppot_type /= upf_pseudo) RETURN
+      IF (.NOT. atom%potential%upf_pot%is_paw) RETURN
+      ASSOCIATE (pot => atom%potential%upf_pot, basis => atom%basis, integrals => atom%integrals)
+         DO l = 0, atom%state%maxl_occ
+            IF (COUNT(pot%lbeta == l .AND. pot%paw%occupations > 0.0_dp) < atom%state%maxn_occ(l)) RETURN
+         END DO
+         ALLOCATE (guess, MOLD=atom%orbitals%wfn)
+         guess = 0.0_dp
+         CALL atom_basis_gridrep(basis, radial, pot%r, pot%rab)
+         ALLOCATE (weights, SOURCE=upf_radial_weights(pot)*pot%r)
+         DO l = 0, atom%state%maxl_occ
+            ns = atom%state%maxn_occ(l)
+            IF (ns == 0) CYCLE
+            n = basis%nbas(l)
+            ALLOCATE (overlap(n, n), diagonal_norm(n), eigenvalues(n), eigenvectors(n, n), rhs(n), coefficients(n))
+            DO i = 1, n
+               diagonal_norm(i) = SQRT(integrals%ovlp(i, i, l))
+            END DO
+            DO j = 1, n
+               overlap(:, j) = integrals%ovlp(:n, j, l)/(diagonal_norm(:)*diagonal_norm(j))
+            END DO
+            CALL jacobi(overlap, eigenvalues, eigenvectors)
+            j = 0
+            DO k = 1, pot%number_of_proj
+               IF (pot%lbeta(k) /= l .OR. pot%paw%occupations(k) <= 0.0_dp) CYCLE
+               j = j + 1
+               IF (j > ns) EXIT
+               rhs(:) = MATMUL(TRANSPOSE(radial%bf(:, :n, l)), weights*pot%paw%ps_wfc(:, k))/diagonal_norm
+               coefficients = 0.0_dp
+               DO i = 1, n
+                  IF (eigenvalues(i) <= basis%eps_eig) CYCLE
+                  coefficients(:) = coefficients + eigenvectors(:, i)*DOT_PRODUCT(eigenvectors(:, i), rhs)/eigenvalues(i)
+               END DO
+               guess(:n, j, l) = coefficients/diagonal_norm
+               ! Reorthogonalize in the generalized metric before constructing a density.
+               DO pass = 1, 2
+                  DO i = 1, j - 1
+                     projection = DOT_PRODUCT(guess(:n, i, l), MATMUL(integrals%metric(:n, :n, l), guess(:n, j, l)))
+                     guess(:n, j, l) = guess(:n, j, l) - projection*guess(:n, i, l)
+                  END DO
+               END DO
+               norm = DOT_PRODUCT(guess(:n, j, l), MATMUL(integrals%metric(:n, :n, l), guess(:n, j, l)))
+               IF (norm <= MAX(basis%eps_eig, 1.e-12_dp)) THEN
+                  CALL release_atom_basis(radial)
+                  RETURN
+               END IF
+               guess(:n, j, l) = guess(:n, j, l)/SQRT(norm)
+            END DO
+            DEALLOCATE (overlap, diagonal_norm, eigenvalues, eigenvectors, rhs, coefficients)
+         END DO
+         CALL release_atom_basis(radial)
+      END ASSOCIATE
+      atom%orbitals%wfn = guess
+      atom%orbitals%wfna = guess
+      atom%orbitals%wfnb = guess
+      success = .TRUE.
+   END SUBROUTINE atom_paw_guess
 
 ! **************************************************************************************************
 !> \brief Prepare immutable PAW data once per atomic SCF, leaving other potentials inactive.
