@@ -12,6 +12,7 @@
 MODULE paw_xc
    USE atom_upf,                        ONLY: atom_upfpot_type,&
                                               upf_radial_weights
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: dp
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
@@ -341,23 +342,26 @@ CONTAINS
 !> \param gradient_cutoff XC evaluator gradient cutoff.
 !> \param energy AE-minus-compensated-PS XC energy.
 !> \param potential Derivative dE/d(density), separately for each spin.
+!> \param core_kinetic Optional spin-summed frozen-core kinetic density on the UPF mesh, AE then PS.
+!>        Required for tau-dependent XC when either frozen-core density is nonzero.
 ! **************************************************************************************************
-   SUBROUTINE paw_xc_evaluate(grid, onecenter, functional, density, density_cutoff, gradient_cutoff, energy, potential)
+   SUBROUTINE paw_xc_evaluate(grid, onecenter, functional, density, density_cutoff, gradient_cutoff, energy, potential, &
+                              core_kinetic)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
       TYPE(section_vals_type), POINTER                   :: functional
       REAL(dp), INTENT(IN)                               :: density(:, :, :), density_cutoff, &
                                                             gradient_cutoff
       REAL(dp), INTENT(OUT)                              :: energy, potential(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: core_kinetic(:, :)
 
       INTEGER                                            :: axis, bounds(2, 3), first, ir, jr, l, &
                                                             lm, na, nlm, nr, nspin, p, pair, q, &
                                                             side, spin
-      LOGICAL                                            :: lsd
+      LOGICAL                                            :: lsd, use_tau
       REAL(dp)                                           :: batch_energy, sign
-      REAL(dp), ALLOCATABLE                              :: angular_value(:), drho(:, :, :, :), &
-                                                            radial_value(:), rho(:, :, :), &
-                                                            tau(:, :, :), weights(:, :)
+      REAL(dp), ALLOCATABLE :: angular_value(:), drho(:, :, :, :), kinetic_value(:), &
+         radial_value(:), rho(:, :, :), tau(:, :, :), weights(:, :)
       REAL(dp), POINTER                                  :: vtau(:, :, :), vxc(:, :, :), &
                                                             vxg(:, :, :, :)
       REAL(dp) :: &
@@ -375,8 +379,17 @@ CONTAINS
       na = grid%na
       nlm = SIZE(onecenter%gaunt, 3)
       needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
-      IF (needs%tau .OR. needs%tau_spin .OR. needs%laplace_rho .OR. needs%laplace_rho_spin) THEN
-         CPABORT("PAW one-center XC currently requires a density/gradient semilocal functional")
+      IF (needs%laplace_rho .OR. needs%laplace_rho_spin) THEN
+         CPABORT("PAW one-center XC Laplacian dependence is not implemented")
+      END IF
+      use_tau = needs%tau .OR. needs%tau_spin
+      IF (use_tau) THEN
+         IF (PRESENT(core_kinetic)) THEN
+            CPASSERT(ALL(SHAPE(core_kinetic) == [grid%nr, 2]))
+            CPASSERT(ALL(ieee_is_finite(core_kinetic)) .AND. ALL(core_kinetic >= 0.0_dp))
+         ELSE IF (ANY(grid%core /= 0.0_dp)) THEN
+            CPABORT("PAW tau-dependent XC requires explicit AE and PS frozen-core kinetic densities")
+         END IF
       END IF
       bounds = 1
       bounds(2, 1) = na
@@ -385,8 +398,8 @@ CONTAINS
       nr = MIN(grid%nr, MAX(1, 2048/na))
       bounds(2, 2) = nr
       ALLOCATE (rho(na, nr, nspin), drho(4, na, nr, nspin), tau(na, nr, nspin), weights(na, nr), &
-                vxc(na, nr, nspin), vxg(3, na, nr, nspin), vtau(na, nr, nspin), angular_value(nlm), radial_value(nlm))
-      tau = 0.0_dp
+                vxc(na, nr, nspin), vxg(3, na, nr, nspin), vtau(na, nr, nspin), &
+                angular_value(nlm), radial_value(nlm), kinetic_value(nlm))
       CALL xc_rho_set_create(rho_set, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
       CALL xc_rho_set_atom_update(rho_set, needs, nspin, bounds)
       CALL xc_dset_create(derivatives, local_bounds=bounds)
@@ -397,12 +410,19 @@ CONTAINS
          DO first = 1, grid%nr, nr
             rho = 0.0_dp
             drho = 0.0_dp
+            tau = 0.0_dp
             weights = 0.0_dp
             DO jr = 1, nr
                ir = first + jr - 1
                IF (ir <= grid%nr) THEN
                   IF (grid%r(ir) > 0.0_dp) THEN
-                     CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :))
+                     IF (use_tau) THEN
+                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), &
+                                                    drho(1:3, :, jr, :), tau(:, jr, :))
+                        IF (PRESENT(core_kinetic)) tau(:, jr, :) = tau(:, jr, :) + core_kinetic(ir, side)/REAL(nspin, dp)
+                     ELSE
+                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :))
+                     END IF
                      drho(4, :, jr, :) = SQRT(SUM(drho(1:3, :, jr, :)**2, DIM=1))
                      weights(:, jr) = grid%wr(ir)*grid%wa
                   END IF
@@ -433,6 +453,15 @@ CONTAINS
                      coefficient_derivative(:, lm, spin) = coefficient_derivative(:, lm, spin) + sign*( &
                               angular_value(lm)*grid%radial(ir, :, l, side) + radial_value(lm)*grid%radial_gradient(ir, :, l, side))
                   END DO
+                  IF (use_tau) THEN
+                     ! vxc_of_r_new has already included radial and angular weights.
+                     kinetic_value(:) = MATMUL(TRANSPOSE(grid%harmonics), vtau(:, jr, spin))
+                     DO lm = 1, nlm
+                        l = INT(SQRT(REAL(lm - 1, dp)))
+                        coefficient_derivative(:, lm, spin) = coefficient_derivative(:, lm, spin) + &
+                                                              sign*kinetic_value(lm)*grid%kinetic_radial(ir, :, l, side)
+                     END DO
+                  END IF
                END DO
             END DO
          END DO

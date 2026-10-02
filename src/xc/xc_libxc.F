@@ -1892,8 +1892,8 @@ CONTAINS
                                          e_rho_rho, e_ndrho_rho, e_ndrho_ndrho, e_rho_laplace_rho, e_rho_tau, e_ndrho_laplace_rho, &
                                                  e_ndrho_tau, e_laplace_rho_laplace_rho, e_laplace_rho_tau, e_tau_tau, e_rho_rho_rho
    ! Derivatives with respect to the reduced gradient gamma = |grad rho|^2.
-   ! These are LibXC's own sigma derivatives, copied through unchanged: unlike
-   ! the norm_drho ones they need no chain rule and carry no 1/|grad rho|.
+   ! These use LibXC's sigma variables, with the tau-bound chain rule applied.
+   ! Unlike norm_drho derivatives, they carry no 1/|grad rho|.
    #:for descs, arr, idx in umgga_all
       REAL(KIND=dp), DIMENSION(*), INTENT(INOUT)         :: e_${'_'.join(descs)}$
    #:endfor
@@ -1966,6 +1966,13 @@ CONTAINS
 
          ! one LibXC call for the whole block, on the host or the device
          CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
+         IF (is_mgga .AND. grad_deriv >= 1) THEN
+            DO i = 1, nb
+               IF (w%tau(1, i) > tau(i0 + i)) THEN
+                  CALL libxc_tau_pullback(w, i, 1, grad_deriv, eps_rho, has_laplace)
+               END IF
+            END DO
+         END IF
 
          ! accumulate; each derivative is added by exactly one loop
          IF (grad_deriv >= 0) THEN
@@ -2285,6 +2292,16 @@ ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace,
 
       ! one LibXC call for the whole block, on the host or the device
       CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
+      IF (is_mgga .AND. grad_deriv >= 1) THEN
+         DO i = 1, nb
+            IF (w%tau(1, i) > tau_a(i0 + i)) THEN
+               CALL libxc_tau_pullback(w, i, 1, grad_deriv, eps_rho, has_laplace)
+            END IF
+            IF (w%tau(2, i) > tau_b(i0 + i)) THEN
+               CALL libxc_tau_pullback(w, i, 2, grad_deriv, eps_rho, has_laplace)
+            END IF
+         END DO
+      END IF
       ! accumulate; one loop per group of derivatives, selected by the
       ! order requested and the family
       IF (grad_deriv >= 0) THEN
@@ -2464,6 +2481,141 @@ ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace,
 END ASSOCIATE
 
 END SUBROUTINE libxc_spin_polarized_calc
+#endif
+
+! **************************************************************************************************
+!> \brief Pull back LibXC derivatives through one active tau = sigma/(8 rho) bound.
+!> \param w worker containing the derivatives at the bounded inputs
+!> \param point grid point in the worker block
+!> \param spin channel whose tau was bounded; apply both channels successively
+!> \param order highest derivative order, from one to three
+!> \param eps_rho lower bound on the denominator density
+!> \param has_laplace whether the functional supplies Laplacian derivatives
+!> \note The bound is piecewise differentiable; the caller selects its active branch.
+! **************************************************************************************************
+#if defined(__LIBXC)
+SUBROUTINE libxc_tau_pullback(w, point, spin, order, eps_rho, has_laplace)
+   TYPE(libxc_worker_type), INTENT(INOUT)              :: w
+   INTEGER, INTENT(IN)                                :: point, spin, order
+   REAL(dp), INTENT(IN)                               :: eps_rho
+   LOGICAL, INTENT(IN)                                :: has_laplace
+
+   INTEGER                                            :: i, j, k, nr, ns, nt, nv
+   REAL(dp)                                           :: inverse_rho, tau_w
+   REAL(dp), DIMENSION(9)                             :: d1, h1
+   REAL(dp), DIMENSION(9, 9)                          :: d2, h2
+   REAL(dp), DIMENSION(9, 9, 9)                       :: d3, h3
+
+   CPASSERT(order >= 1 .AND. order <= 3)
+   d1 = 0.0_dp
+   IF (order >= 2) d2 = 0.0_dp
+   IF (order >= 3) d3 = 0.0_dp
+   #:for nspin, variables, tables in [(1, umgga_vars, [umgga_deriv_1, umgga_deriv_2, umgga_deriv_3]), (2, mgga_vars, [mgga_deriv_1, mgga_deriv_2, mgga_deriv_3])]
+      IF (SIZE(w%rho, 1) == ${nspin}$) THEN
+         #:for degree, table in enumerate(tables, 1)
+            IF (order >= ${degree}$) THEN
+               #:for descs, arr, component in table
+                  #:set inds = tuple(variables.index(desc) + 1 for desc in descs)
+                  #:if degree == 1
+                     #:set permutations = [inds]
+                  #:elif degree == 2
+                     #:set permutations = sorted(set([inds, inds[::-1]]))
+                  #:else
+                     #:set a, b, c = inds
+                     #:set permutations = sorted(set([(a,b,c), (a,c,b), (b,a,c), (b,c,a), (c,a,b), (c,b,a)]))
+                  #:endif
+                  #:set guard = 'IF (has_laplace) ' if has_lap((descs, arr, component)) else ''
+                  #:for perm in permutations
+                     ${guard}$d${degree}$ (${', '.join(str(index) for index in perm)}$) = w%${arr}$ (${component}$, point)
+                  #:endfor
+               #:endfor
+            END IF
+         #:endfor
+      END IF
+   #:endfor
+
+   IF (SIZE(w%rho, 1) == 1) THEN
+      nv = 4
+      nr = 1
+      ns = 2
+      nt = 4
+   ELSE
+      nv = 9
+      nr = spin
+      ns = 2*spin + 1
+      nt = 7 + spin
+   END IF
+   inverse_rho = 1.0_dp/MAX(w%rho(spin, point), eps_rho)
+   tau_w = w%tau(spin, point)
+   h1 = 0.0_dp
+   h1(ns) = inverse_rho/8.0_dp
+   IF (w%rho(spin, point) > eps_rho) h1(nr) = -tau_w*inverse_rho
+   IF (order >= 2) THEN
+      h2 = 0.0_dp
+      IF (w%rho(spin, point) > eps_rho) THEN
+         h2(nr, nr) = 2.0_dp*tau_w*inverse_rho**2
+         h2(nr, ns) = -inverse_rho**2/8.0_dp
+         h2(ns, nr) = h2(nr, ns)
+      END IF
+   END IF
+   IF (order >= 3) THEN
+      h3 = 0.0_dp
+      IF (w%rho(spin, point) > eps_rho) THEN
+         h3(nr, nr, nr) = -6.0_dp*tau_w*inverse_rho**3
+         h3(nr, nr, ns) = inverse_rho**3/4.0_dp
+         h3(nr, ns, nr) = h3(nr, nr, ns)
+         h3(ns, nr, nr) = h3(nr, nr, ns)
+      END IF
+      ! Update higher orders first and retain all tau rows until each
+      ! order is finished, so every right-hand side uses original derivatives.
+      DO k = 1, nv
+         IF (k == nt) CYCLE
+         DO j = 1, nv
+            IF (j == nt) CYCLE
+            DO i = 1, nv
+               IF (i == nt) CYCLE
+               d3(i, j, k) = d3(i, j, k) + &
+                             d3(nt, j, k)*h1(i) + d3(i, nt, k)*h1(j) + d3(i, j, nt)*h1(k) + &
+                             d3(nt, nt, k)*h1(i)*h1(j) + d3(nt, j, nt)*h1(i)*h1(k) + &
+                             d3(i, nt, nt)*h1(j)*h1(k) + d3(nt, nt, nt)*h1(i)*h1(j)*h1(k) + &
+                             d2(nt, i)*h2(j, k) + d2(nt, j)*h2(i, k) + d2(nt, k)*h2(i, j) + &
+                             d2(nt, nt)*(h2(i, j)*h1(k) + h2(i, k)*h1(j) + h2(j, k)*h1(i)) + &
+                             d1(nt)*h3(i, j, k)
+            END DO
+         END DO
+      END DO
+      d3(nt, :, :) = 0.0_dp
+      d3(:, nt, :) = 0.0_dp
+      d3(:, :, nt) = 0.0_dp
+   END IF
+   IF (order >= 2) THEN
+      DO j = 1, nv
+         IF (j == nt) CYCLE
+         DO i = 1, nv
+            IF (i == nt) CYCLE
+            d2(i, j) = d2(i, j) + d2(i, nt)*h1(j) + d2(nt, j)*h1(i) + &
+                       d2(nt, nt)*h1(i)*h1(j) + d1(nt)*h2(i, j)
+         END DO
+      END DO
+      d2(nt, :) = 0.0_dp
+      d2(:, nt) = 0.0_dp
+   END IF
+   d1(:) = d1 + d1(nt)*h1
+   d1(nt) = 0.0_dp
+
+   #:for nspin, variables, tables in [(1, umgga_vars, [umgga_deriv_1, umgga_deriv_2, umgga_deriv_3]), (2, mgga_vars, [mgga_deriv_1, mgga_deriv_2, mgga_deriv_3])]
+      IF (SIZE(w%rho, 1) == ${nspin}$) THEN
+         #:for degree, table in enumerate(tables, 1)
+            IF (order >= ${degree}$) THEN
+               #:for descs, arr, component in table
+                  #:set inds = ', '.join(str(variables.index(desc) + 1) for desc in descs)
+                  w%${arr}$ (${component}$, point) = d${degree}$ (${inds}$)
+               #:endfor
+            END IF
+         #:endfor
+      END IF
+   #:endfor
+END SUBROUTINE libxc_tau_pullback
 #endif
 
 END MODULE xc_libxc

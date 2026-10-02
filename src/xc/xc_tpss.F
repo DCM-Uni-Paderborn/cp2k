@@ -217,7 +217,8 @@ CONTAINS
       INTEGER, INTENT(inout)                             :: non_coer
 
       INTEGER                                            :: abs_grad_deriv, ii
-      LOGICAL                                            :: t571, t639
+      LOGICAL                                            :: regularized, t571, t639
+      REAL(dp)                                           :: v_grad, v_rho, v_tau
       REAL(kind=dp) :: A, A_1, A_2, A_s1, A_s1rho, A_s2, A_s2rho, alpha, alpha_1_1, alpha_1_2, &
          alphanorm_drho, alpharho, alphatau, Arho, b, beta, beta_1_1, beta_1_2, beta_2_1, &
          beta_2_2, beta_3_1, beta_3_2, beta_4_1, beta_4_2, c, d, e_c_u_0, e_c_u_0rho, e_c_u_1_s1, &
@@ -312,12 +313,14 @@ CONTAINS
             t254 = my_ndrho**2
             tau_w = t254*t7/0.8e1_dp
 
-            IF (my_tau < tau_w) THEN
-               ! enforce z=norm_rho**2/(8._dp*rho*tau) <1
+            regularized = my_tau < tau_w
+            IF (regularized) THEN
+               ! Enforce z=norm_drho**2/(8*rho*tau) <= 1.
                m = 0.5_dp*t254 + 4.0_dp*my_rho*my_tau
                my_tau = m/8._dp/my_rho
                my_ndrho = SQRT(m)
                t254 = m
+               tau_w = my_tau
                non_coer = non_coer + 1
             END IF
 
@@ -624,10 +627,10 @@ CONTAINS
                t659 = t256*t271
 
                IF (grad_deriv >= 1 .OR. grad_deriv == -1) THEN
-                  e_rho(ii) = e_rho(ii) + &
-                              scale_ec*(epsilon_cRevPKZB*t274 + my_rho* &
-                                        epsilon_cRevPKZBrho*t274 + t267*(d*epsilon_cRevPKZBrho*t272 &
-                                                                         + 0.3e1_dp*t268*t659*tau_wrho)) + scale_ex*(ex_unif*Fx - &
+                  v_rho = &
+                     scale_ec*(epsilon_cRevPKZB*t274 + my_rho* &
+                               epsilon_cRevPKZBrho*t274 + t267*(d*epsilon_cRevPKZBrho*t272 &
+                                                                + 0.3e1_dp*t268*t659*tau_wrho)) + scale_ex*(ex_unif*Fx - &
                                                                                              my_rho*pi*t1*t371*Fx/0.4e1_dp + t337* &
                                                                              t490*(((0.2e1_dp*t445*t303*zrho - 0.4e1_dp*t450*t452* &
                                                                             zrho)*p + t305*prho + 0.292e3_dp/0.2025e4_dp*tildeq_b* &
@@ -674,10 +677,10 @@ CONTAINS
                                                                                            mbnorm_drho/0.2e1_dp))*t265
 
                IF (grad_deriv >= 1 .OR. grad_deriv == -1) THEN
-                  e_ndrho(ii) = e_ndrho(ii) + &
-                                scale_ec*(my_rho*epsilon_cRevPKZBnorm_drho* &
-                                          t274 + t267*(d*epsilon_cRevPKZBnorm_drho*t272 + 0.3e1_dp* &
-                                                       t268*t659*tau_wnorm_drho)) + scale_ex*t337*t490*((( &
+                  v_grad = &
+                     scale_ec*(my_rho*epsilon_cRevPKZBnorm_drho* &
+                               t274 + t267*(d*epsilon_cRevPKZBnorm_drho*t272 + 0.3e1_dp* &
+                                            t268*t659*tau_wnorm_drho)) + scale_ex*t337*t490*((( &
                                                                                0.2e1_dp*t445*t303*znorm_drho - 0.4e1_dp*t450*t452* &
                                                                          znorm_drho)*p + t305*pnorm_drho + 0.292e3_dp/0.2025e4_dp* &
                                                                                tildeq_b*tildeq_bnorm_drho - 0.73e2_dp/0.4050e4_dp* &
@@ -685,7 +688,7 @@ CONTAINS
                                                                                0.36e2_dp*z*znorm_drho + 0.100e3_dp*p*pnorm_drho) + &
                                                                        0.200e3_dp/0.6561e4_dp*t472*pnorm_drho + 0.8e1_dp/0.45e2_dp &
                                                                           *t475*znorm_drho + 0.3e1_dp*t322*t310*pnorm_drho)*t329 - &
-                                                                                                      0.2e1_dp*t485*t319*pnorm_drho)
+                                                                                             0.2e1_dp*t485*t319*pnorm_drho)
                END IF
 
                epsilon_cRevPKZBtau = -0.2e1_dp*t263*t271
@@ -696,14 +699,27 @@ CONTAINS
                              0.40e2_dp*t437*(b*alphatau*t290 + t291*alphatau)
 
                IF (grad_deriv >= 1 .OR. grad_deriv == -1) THEN
-                  e_tau(ii) = e_tau(ii) + &
-                              scale_ec*(my_rho*epsilon_cRevPKZBtau*t274 + t267* &
-                                        (d*epsilon_cRevPKZBtau*t272 - 0.3e1_dp*t268*t269/t799)) + &
-                              scale_ex*t337*t490*((0.2e1_dp*t445*t303*ztau - 0.4e1_dp &
-                                                   *t450*t452*ztau)*p + 0.292e3_dp/0.2025e4_dp*tildeq_b* &
-                                                  tildeq_btau - 0.73e2_dp/0.4050e4_dp*tildeq_btau*t313 - &
-                                                  0.73e2_dp/0.225e3_dp*t464*z*ztau + 0.8e1_dp/0.45e2_dp* &
-                                                  t475*ztau)*t329
+                  v_tau = &
+                     scale_ec*(my_rho*epsilon_cRevPKZBtau*t274 + t267* &
+                               (d*epsilon_cRevPKZBtau*t272 - 0.3e1_dp*t268*t269/t799)) + &
+                     scale_ex*t337*t490*((0.2e1_dp*t445*t303*ztau - 0.4e1_dp &
+                                          *t450*t452*ztau)*p + 0.292e3_dp/0.2025e4_dp*tildeq_b* &
+                                         tildeq_btau - 0.73e2_dp/0.4050e4_dp*tildeq_btau*t313 - &
+                                         0.73e2_dp/0.225e3_dp*t464*z*ztau + 0.8e1_dp/0.45e2_dp* &
+                                         t475*ztau)*t329
+                  IF (regularized) THEN
+                     ! Pull back through g'=sqrt(g**2/2+4*rho*tau) and
+                     ! tau'=g**2/(16*rho)+tau/2, using the original fields.
+                     e_rho(ii) = e_rho(ii) + v_rho + v_grad*2.0_dp*tau(ii)/my_ndrho - &
+                                 v_tau*norm_drho(ii)**2/(16.0_dp*my_rho**2)
+                     e_ndrho(ii) = e_ndrho(ii) + v_grad*norm_drho(ii)/(2.0_dp*my_ndrho) + &
+                                   v_tau*norm_drho(ii)/(8.0_dp*my_rho)
+                     e_tau(ii) = e_tau(ii) + v_grad*2.0_dp*my_rho/my_ndrho + 0.5_dp*v_tau
+                  ELSE
+                     e_rho(ii) = e_rho(ii) + v_rho
+                     e_ndrho(ii) = e_ndrho(ii) + v_grad
+                     e_tau(ii) = e_tau(ii) + v_tau
+                  END IF
                END IF
             END IF
          END IF
