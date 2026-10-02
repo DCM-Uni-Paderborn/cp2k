@@ -75,6 +75,7 @@ MODULE qs_vxc_atom
                                               native_grid_interp_offset_max,&
                                               native_grid_interp_offset_min,&
                                               native_grid_interpolation_stencil_type,&
+                                              native_grid_interpolation_weights,&
                                               prepare_native_grid_cache,&
                                               store_native_grid_stencil
    USE qs_nlcc_methods,                 ONLY: nlcc_atom_grid_evaluate,&
@@ -3285,15 +3286,15 @@ CONTAINS
       DO idir = 1, 3
          IF (cell%perd(idir) == 1 .OR. wrap_grid) THEN
             relative(idir) = MODULO(relative(idir), REAL(pw_grid%npts(idir), KIND=dp))
-         ELSE IF (relative(idir) <= -REAL(native_grid_interp_offset_max, dp) .OR. &
+         ELSE IF (relative(idir) <= -REAL(native_grid_interp_offset_max, dp) - 0.5_dp .OR. &
                   relative(idir) >= REAL(pw_grid%npts(idir) - &
-                                         native_grid_interp_offset_min, KIND=dp)) THEN
+                                         native_grid_interp_offset_min, KIND=dp) - 0.5_dp) THEN
             RETURN
          END IF
-         base(idir) = FLOOR(relative(idir))
+         base(idir) = FLOOR(relative(idir) + 0.5_dp)
          FRACTION(idir) = relative(idir) - REAL(base(idir), KIND=dp)
          IF (build_weights) THEN
-            CALL native_grid_lagrange_weights(FRACTION(idir), stencil%weight(:, idir))
+            CALL native_grid_interpolation_weights(FRACTION(idir), stencil%weight(:, idir))
          END IF
          DO inode = 1, native_grid_interp_npts
             relative_index = base(idir) + native_grid_interp_offset_min + inode - 1
@@ -3618,15 +3619,15 @@ CONTAINS
       DO idir = 1, 3
          IF (cell%perd(idir) == 1 .OR. wrap_grid) THEN
             relative(idir) = MODULO(relative(idir), REAL(pw_grid%npts(idir), KIND=dp))
-         ELSE IF (relative(idir) <= -REAL(native_grid_interp_offset_max, dp) .OR. &
+         ELSE IF (relative(idir) <= -REAL(native_grid_interp_offset_max, dp) - 0.5_dp .OR. &
                   relative(idir) >= REAL(pw_grid%npts(idir) - &
-                                         native_grid_interp_offset_min, KIND=dp)) THEN
+                                         native_grid_interp_offset_min, KIND=dp) - 0.5_dp) THEN
             value = 0.0_dp
             RETURN
          END IF
-         base(idir) = FLOOR(relative(idir))
+         base(idir) = FLOOR(relative(idir) + 0.5_dp)
          FRACTION(idir) = relative(idir) - REAL(base(idir), KIND=dp)
-         CALL native_grid_lagrange_weights(FRACTION(idir), weights(:, idir))
+         CALL native_grid_interpolation_weights(FRACTION(idir), weights(:, idir))
       END DO
 
       value = 0.0_dp
@@ -3692,15 +3693,15 @@ CONTAINS
       DO idir = 1, 3
          IF (cell%perd(idir) == 1 .OR. wrap_grid) THEN
             relative(idir) = MODULO(relative(idir), REAL(pw_grid%npts(idir), KIND=dp))
-         ELSE IF (relative(idir) <= -REAL(native_grid_interp_offset_max, dp) .OR. &
+         ELSE IF (relative(idir) <= -REAL(native_grid_interp_offset_max, dp) - 0.5_dp .OR. &
                   relative(idir) >= REAL(pw_grid%npts(idir) - &
-                                         native_grid_interp_offset_min, KIND=dp)) THEN
+                                         native_grid_interp_offset_min, KIND=dp) - 0.5_dp) THEN
             gradient = 0.0_dp
             RETURN
          END IF
-         base(idir) = FLOOR(relative(idir))
+         base(idir) = FLOOR(relative(idir) + 0.5_dp)
          FRACTION(idir) = relative(idir) - REAL(base(idir), KIND=dp)
-         CALL native_grid_lagrange_weights( &
+         CALL native_grid_interpolation_weights( &
             FRACTION(idir), weights(:, idir), derivative_weights(:, idir))
       END DO
 
@@ -3741,54 +3742,6 @@ CONTAINS
       gradient = MATMUL(TRANSPOSE(pw_grid%dh_inv), gradient_relative)
 
    END FUNCTION interpolate_native_grid_gradient
-
-! **************************************************************************************************
-!> \brief Build the value and optional derivative weights for the native-grid interpolation.
-!> \param fraction fractional coordinate between two grid points
-!> \param weights interpolation weights
-!> \param derivative_weights optional derivatives with respect to fraction
-! **************************************************************************************************
-   SUBROUTINE native_grid_lagrange_weights(fraction, weights, derivative_weights)
-      REAL(KIND=dp), INTENT(IN)                          :: fraction
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: weights
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT), OPTIONAL :: derivative_weights
-
-      INTEGER                                            :: inode, jnode, knode, npoints
-      REAL(KIND=dp)                                      :: denominator, derivative, numerator
-      REAL(KIND=dp), DIMENSION(SIZE(weights))            :: nodes
-
-      npoints = SIZE(weights)
-      IF (PRESENT(derivative_weights)) THEN
-         CPASSERT(SIZE(derivative_weights) == npoints)
-      END IF
-      DO inode = 1, npoints
-         nodes(inode) = REAL(native_grid_interp_offset_min + inode - 1, dp)
-      END DO
-      DO inode = 1, npoints
-         denominator = 1.0_dp
-         numerator = 1.0_dp
-         DO jnode = 1, npoints
-            IF (jnode == inode) CYCLE
-            denominator = denominator*(nodes(inode) - nodes(jnode))
-            numerator = numerator*(fraction - nodes(jnode))
-         END DO
-         weights(inode) = numerator/denominator
-         IF (PRESENT(derivative_weights)) THEN
-            derivative = 0.0_dp
-            DO knode = 1, npoints
-               IF (knode == inode) CYCLE
-               numerator = 1.0_dp
-               DO jnode = 1, npoints
-                  IF (jnode == inode .OR. jnode == knode) CYCLE
-                  numerator = numerator*(fraction - nodes(jnode))
-               END DO
-               derivative = derivative + numerator/denominator
-            END DO
-            derivative_weights(inode) = derivative
-         END IF
-      END DO
-
-   END SUBROUTINE native_grid_lagrange_weights
 
 ! **************************************************************************************************
 !> \brief Conservatively bound periodic images that can intersect a Cartesian support sphere.

@@ -20,6 +20,9 @@ PROGRAM uspp_fourier_unittest
                                               nco,&
                                               ncoset
    USE orbital_transformation_matrices, ONLY: orbtramat
+   USE qs_native_grid_cache,            ONLY: native_grid_interp_npts,&
+                                              native_grid_interp_offset_min,&
+                                              native_grid_interpolation_weights
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
    USE uspp_augmentation,               ONLY: &
@@ -44,6 +47,7 @@ PROGRAM uspp_fourier_unittest
 
    CALL cp2k_init()
    max_error = 0.0_dp
+   CALL check_native_grid_interpolation()
    DO grid = 1, 3
       pot%number_of_proj = nb
       pot%is_ultrasoft = .TRUE.
@@ -165,6 +169,152 @@ PROGRAM uspp_fourier_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Polynomial exactness, reflection, C2 continuity and tensor-product field/position adjoints.
+! **************************************************************************************************
+   SUBROUTINE check_native_grid_interpolation()
+      INTEGER, PARAMETER                                 :: n = native_grid_interp_npts
+      REAL(dp), PARAMETER :: multipliers(4) = [0.41_dp, -0.53_dp, 0.27_dp, 0.63_dp], &
+         points(5) = [-0.5_dp, -0.37_dp, 0.0_dp, 0.123_dp, 0.5_dp], step = 1.e-5_dp
+
+      INTEGER                                            :: axis, base(3), degree, i, ix, iy, iz, &
+                                                            point
+      REAL(dp) :: adjoint(-8:8, -8:8, -8:8), coordinates(3, 4), delta(-8:8, -8:8, -8:8), &
+         derivative(n, 3), displaced(3), field(-8:8, -8:8, -8:8), force, force_fd, left(n), &
+         left_d(n), left_dd(n), nodes(n), polynomial(n), reference, response, rhs, scale, &
+         test_error, value(n), value_d(n), value_dd(n), weight(n, 3)
+
+      DO i = 1, n
+         nodes(i) = REAL(native_grid_interp_offset_min + i - 1, dp)/6.0_dp
+      END DO
+      test_error = 0.0_dp
+      DO point = 1, SIZE(points)
+         CALL native_grid_interpolation_weights(points(point), value, value_d, value_dd)
+         test_error = MAX(test_error, ABS(SUM(value) - 1.0_dp), ABS(SUM(value_d)), ABS(SUM(value_dd)))
+         CALL native_grid_interpolation_weights(-points(point), left, left_d, left_dd)
+         test_error = MAX(test_error, MAXVAL(ABS(value - left(n:1:-1))), &
+                          MAXVAL(ABS(value_d + left_d(n:1:-1))), MAXVAL(ABS(value_dd - left_dd(n:1:-1))))
+         DO degree = 0, 11
+            polynomial = nodes**degree
+            reference = (points(point)/6.0_dp)**degree
+            test_error = MAX(test_error, ABS(DOT_PRODUCT(value, polynomial) - reference))
+            reference = 0.0_dp
+            IF (degree > 0) reference = REAL(degree, dp)/6.0_dp*(points(point)/6.0_dp)**(degree - 1)
+            test_error = MAX(test_error, ABS(DOT_PRODUCT(value_d, polynomial) - reference))
+            reference = 0.0_dp
+            IF (degree > 1) reference = REAL(degree*(degree - 1), dp)/36.0_dp*(points(point)/6.0_dp)**(degree - 2)
+            test_error = MAX(test_error, ABS(DOT_PRODUCT(value_dd, polynomial) - reference))
+         END DO
+      END DO
+      CALL native_grid_interpolation_weights(0.0_dp, value)
+      value(1 - native_grid_interp_offset_min) = value(1 - native_grid_interp_offset_min) - 1.0_dp
+      test_error = MAX(test_error, MAXVAL(ABS(value)))
+      ! The nearest-node interval changes at half-grid coordinates. Compare coefficients
+      ! in a common global node frame, including their first and second derivatives.
+      CALL native_grid_interpolation_weights(0.5_dp, value, value_d, value_dd)
+      CALL native_grid_interpolation_weights(-0.5_dp, left, left_d, left_dd)
+      test_error = MAX(test_error, MAXVAL(ABS(value(2:) - left(:n - 1))), &
+                       MAXVAL(ABS(value_d(2:) - left_d(:n - 1))), MAXVAL(ABS(value_dd(2:) - left_dd(:n - 1))), &
+                       ABS(value(1)), ABS(value_d(1)), ABS(value_dd(1)), ABS(left(n)), ABS(left_d(n)), ABS(left_dd(n)))
+      IF (test_error > 3.e-12_dp) ERROR STOP 'Native-grid C2 interpolation invariants'
+
+      DO iz = -8, 8
+         DO iy = -8, 8
+            DO ix = -8, 8
+               field(ix, iy, iz) = SIN(0.73_dp*ix + 0.43_dp*iy - 0.31_dp*iz) + 0.12_dp*COS(0.17_dp*ix*iy)
+               delta(ix, iy, iz) = COS(0.11_dp*ix*iz - 0.19_dp*iy)
+            END DO
+         END DO
+      END DO
+      coordinates(:, 1) = [0.0_dp, 0.31_dp, -0.22_dp]
+      coordinates(:, 2) = [0.5_dp, -0.5_dp, 0.137_dp]
+      coordinates(:, 3) = [0.50002_dp, 0.71_dp, -0.239_dp]
+      coordinates(:, 4) = [-0.5_dp, 0.21_dp, 0.731_dp]
+      adjoint = 0.0_dp
+      response = 0.0_dp
+      DO point = 1, SIZE(coordinates, 2)
+         base = FLOOR(coordinates(:, point) + 0.5_dp)
+         DO axis = 1, 3
+            CALL native_grid_interpolation_weights(coordinates(axis, point) - REAL(base(axis), dp), &
+                                                   weight(:, axis), derivative(:, axis))
+         END DO
+         response = response + multipliers(point)*native_grid_test_value(delta, coordinates(:, point))
+         DO iz = 1, n
+            DO iy = 1, n
+               DO ix = 1, n
+                  adjoint(base(1) + native_grid_interp_offset_min + ix - 1, &
+                          base(2) + native_grid_interp_offset_min + iy - 1, &
+                          base(3) + native_grid_interp_offset_min + iz - 1) = &
+                     adjoint(base(1) + native_grid_interp_offset_min + ix - 1, &
+                             base(2) + native_grid_interp_offset_min + iy - 1, &
+                             base(3) + native_grid_interp_offset_min + iz - 1) + &
+                     multipliers(point)*weight(ix, 1)*weight(iy, 2)*weight(iz, 3)
+               END DO
+            END DO
+         END DO
+         DO axis = 1, 3
+            force = 0.0_dp
+            DO iz = 1, n
+               DO iy = 1, n
+                  DO ix = 1, n
+                     SELECT CASE (axis)
+                     CASE (1)
+                        rhs = derivative(ix, 1)*weight(iy, 2)*weight(iz, 3)
+                     CASE (2)
+                        rhs = weight(ix, 1)*derivative(iy, 2)*weight(iz, 3)
+                     CASE (3)
+                        rhs = weight(ix, 1)*weight(iy, 2)*derivative(iz, 3)
+                     END SELECT
+                     force = force - multipliers(point)*rhs* &
+                             field(base(1) + native_grid_interp_offset_min + ix - 1, &
+                                   base(2) + native_grid_interp_offset_min + iy - 1, &
+                                   base(3) + native_grid_interp_offset_min + iz - 1)
+                  END DO
+               END DO
+            END DO
+            displaced = coordinates(:, point)
+            displaced(axis) = displaced(axis) + step
+            force_fd = -multipliers(point)*native_grid_test_value(field, displaced)
+            displaced(axis) = displaced(axis) - 2.0_dp*step
+            force_fd = (force_fd + multipliers(point)*native_grid_test_value(field, displaced))/(2.0_dp*step)
+            scale = MAX(1.0_dp, ABS(force))
+            test_error = MAX(test_error, ABS(force - force_fd)/scale)
+         END DO
+      END DO
+      test_error = MAX(test_error, ABS(response - SUM(adjoint*delta)))
+      WRITE (*, *) 'Native-grid C2 interpolation error:', test_error
+      IF (test_error > 3.e-9_dp) ERROR STOP 'Native-grid interpolation field/position adjoints'
+      max_error = MAX(max_error, test_error)
+   END SUBROUTINE check_native_grid_interpolation
+
+! **************************************************************************************************
+!> \brief Independent factored tensor contraction of a bounded non-polynomial test field.
+!> \param field Global nodal field.
+!> \param point Evaluation point in grid-coordinate units.
+!> \return Interpolated field value.
+! **************************************************************************************************
+   FUNCTION native_grid_test_value(field, point) RESULT(value)
+      REAL(dp), INTENT(IN)                               :: field(-8:8, -8:8, -8:8), point(3)
+      REAL(dp)                                           :: value
+
+      INTEGER                                            :: axis, base(3), iy, iz
+      REAL(dp) :: weights(native_grid_interp_npts, 3)
+
+      base = FLOOR(point + 0.5_dp)
+      DO axis = 1, 3
+         CALL native_grid_interpolation_weights(point(axis) - REAL(base(axis), dp), weights(:, axis))
+      END DO
+      value = 0.0_dp
+      DO iz = 1, native_grid_interp_npts
+         DO iy = 1, native_grid_interp_npts
+            value = value + weights(iy, 2)*weights(iz, 3)* &
+                    DOT_PRODUCT(weights(:, 1), field(base(1) - 6:base(1) + 6, &
+                                                     base(2) + native_grid_interp_offset_min + iy - 1, &
+                                                     base(3) + native_grid_interp_offset_min + iz - 1))
+         END DO
+      END DO
+   END FUNCTION native_grid_test_value
 
 ! **************************************************************************************************
 !> \brief Cached/direct agreement for density, matrix, center and all strain derivatives.
