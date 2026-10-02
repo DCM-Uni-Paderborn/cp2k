@@ -8,7 +8,8 @@
 PROGRAM uspp_fourier_unittest
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
-                                              atom_upfpot_type
+                                              atom_upfpot_type,&
+                                              upf_radial_weights
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
@@ -164,7 +165,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check source-node reproduction and finite center derivatives for optional UPF files.
-!> \param filename Scalar USPP dataset.
+!> \param filename Scalar USPP or PAW dataset.
 ! **************************************************************************************************
    SUBROUTINE check_upf_realspace(filename)
       CHARACTER(len=*), INTENT(IN)                       :: filename
@@ -177,9 +178,10 @@ CONTAINS
       TYPE(upf_projector_type)                           :: beta
       TYPE(uspp_augmentation_type)                       :: augmentation
 
-      CALL atom_read_upf(dataset, filename, read_augmentation=.TRUE.)
+      CALL atom_read_upf(dataset, filename, read_augmentation=.TRUE., read_paw=.TRUE.)
       CALL upf_projector_init(dataset, MAXVAL(dataset%lbeta), beta)
       CALL uspp_augmentation_init(dataset, beta, augmentation)
+      CALL check_fourier_tail(dataset, augmentation)
       CALL uspp_augmentation_prepare_realspace(dataset, augmentation)
       p = augmentation%nproj
       ALLOCATE (value(p, p), gradient(p, p, 3), hessian(p, p, 3, 3))
@@ -283,6 +285,7 @@ CONTAINS
          compact%qijl(point, :, :) = compact%qijl(point, :, :)*MAX(0.0_dp, 1.0_dp - (pot%r(point)/radius)**2)**3
       END DO
       CALL uspp_augmentation_init(compact, projectors, compact_aug)
+      CALL check_fourier_tail(compact, compact_aug)
       CALL uspp_augmentation_prepare_realspace(compact, compact_aug)
       IF (compact_aug%realspace_radius /= radius) ERROR STOP 'Incorrect compact augmentation support'
       join = [pot%r(node - 1), 0.5_dp*(pot%r(node - 1) + radius), radius]
@@ -313,8 +316,64 @@ CONTAINS
       END IF
       WRITE (*, *) 'USPP compact-support derivative error:', grid, err
       IF (err > 5.e-6_dp) ERROR STOP 'Inconsistent derivatives at compact augmentation joins'
+      compact%qijl = 0.0_dp
+      CALL uspp_augmentation_init(compact, projectors, compact_aug)
+      CALL check_fourier_tail(compact, compact_aug)
       CALL atom_release_upf(compact)
    END SUBROUTINE check_compact_support
+
+! **************************************************************************************************
+!> \brief Compare Fourier values and strain with quadrature over the entire original mesh.
+!> \param dataset Original radial mesh and augmentation channels.
+!> \param augmentation Prepared augmentation with exact zero tails omitted.
+! **************************************************************************************************
+   SUBROUTINE check_fourier_tail(dataset, augmentation)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: dataset
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
+
+      COMPLEX(dp), ALLOCATABLE                           :: compact_strain(:, :, :, :), &
+                                                            compact_value(:, :), &
+                                                            full_strain(:, :, :, :), &
+                                                            full_value(:, :)
+      INTEGER                                            :: channel, degree, n, sample
+      REAL(dp)                                           :: err, gv(3), scale
+      REAL(dp), ALLOCATABLE                              :: radial_weights(:)
+      TYPE(uspp_augmentation_type)                       :: full
+
+      full = augmentation
+      DEALLOCATE (full%weighted_q)
+      ALLOCATE (radial_weights(SIZE(dataset%r)))
+      radial_weights(:) = upf_radial_weights(dataset)
+      ALLOCATE (full%weighted_q(SIZE(dataset%r), SIZE(dataset%qijl, 2), 0:full%lmax))
+      DO degree = 0, full%lmax
+         DO channel = 1, SIZE(dataset%qijl, 2)
+            full%weighted_q(:, channel, degree) = radial_weights*dataset%qijl(:, channel, degree)
+         END DO
+      END DO
+      n = augmentation%nproj
+      ALLOCATE (compact_value(n, n), full_value(n, n), &
+                compact_strain(n, n, 3, 3), full_strain(n, n, 3, 3))
+      err = 0.0_dp
+      DO sample = 1, 4
+         SELECT CASE (sample)
+         CASE (1)
+            gv = [1.e-8_dp, -2.e-8_dp, 3.e-8_dp]
+         CASE (2)
+            gv = [0.2_dp, -0.7_dp, 0.9_dp]
+         CASE (3)
+            gv = [3.7_dp, -2.3_dp, 1.5_dp]
+         CASE (4)
+            gv = [0.0_dp, 0.0_dp, 19.0_dp]
+         END SELECT
+         CALL uspp_augmentation_fourier(augmentation, gv, center, volume, compact_value, compact_strain)
+         CALL uspp_augmentation_fourier(full, gv, center, volume, full_value, full_strain)
+         scale = MAX(1.0_dp, volume*MAXVAL(ABS(full_value)), volume*MAXVAL(ABS(full_strain)))
+         err = MAX(err, volume*MAXVAL(ABS(compact_value - full_value))/scale, &
+                   volume*MAXVAL(ABS(compact_strain - full_strain))/scale)
+      END DO
+      WRITE (*, *) 'USPP Fourier tail equivalence:', SIZE(augmentation%weighted_q, 1), SIZE(dataset%r), err
+      IF (err > 2.e-13_dp) ERROR STOP 'Omitting a zero tail changed augmentation quadrature'
+   END SUBROUTINE check_fourier_tail
 
 ! **************************************************************************************************
 !> \brief Check the signed-quadrature adjoint and nonlinear density/center energy derivatives.

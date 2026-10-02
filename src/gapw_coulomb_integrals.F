@@ -248,7 +248,7 @@ CONTAINS
       END DO
       integral = 0.0_dp
       IF (PRESENT(derivative)) derivative = 0.0_dp
-      DO ir = 1, SIZE(augmentation%r)
+      DO ir = 1, SIZE(augmentation%weighted_q, 1)
          IF (ALL(augmentation%weighted_q(ir, :, :) == 0.0_dp)) CYCLE
          projected = 0.0_dp
          dprojected = 0.0_dp
@@ -333,7 +333,7 @@ CONTAINS
       tensor = 0.0_dp
       IF (alpha == eta .AND. power == 0) RETURN
       rmax = 0.0_dp
-      DO ir = 1, SIZE(augmentation%r)
+      DO ir = 1, SIZE(augmentation%weighted_q, 1)
          IF (ANY(augmentation%weighted_q(ir, :, :) /= 0.0_dp)) rmax = MAX(rmax, augmentation%r(ir))
       END DO
       IF (rmax == 0.0_dp) RETURN

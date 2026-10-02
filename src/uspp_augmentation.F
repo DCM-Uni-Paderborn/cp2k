@@ -36,6 +36,7 @@ MODULE uspp_augmentation
       INTEGER :: nproj = 0, lmax = -1
       INTEGER, ALLOCATABLE :: radial_index(:), angular_index(:), lbeta(:), radial_end(:, :)
       REAL(dp) :: realspace_radius = 0.0_dp
+      ! weighted_q can omit an exact zero suffix; r retains the full mesh for real-space splines.
       REAL(KIND=dp), ALLOCATABLE :: r(:), weighted_q(:, :, :), gaunt(:, :, :), q(:, :)
       REAL(KIND=dp), ALLOCATABLE :: radial_x(:), radial_value(:, :, :), radial_slope(:, :, :)
    END TYPE uspp_augmentation_type
@@ -84,10 +85,17 @@ CONTAINS
       ALLOCATE (augmentation%r(n), weights(n))
       augmentation%r(:) = pot%r
       weights(:) = upf_radial_weights(pot)
+      ! Keep the quadrature weights of the original mesh. Only an exact zero
+      ! suffix can be omitted; shortening the mesh before forming its weights
+      ! would change the endpoint rule and hence the augmentation metric.
+      DO WHILE (n > 0)
+         IF (ANY(pot%qijl(n, :, :) /= 0.0_dp)) EXIT
+         n = n - 1
+      END DO
       ALLOCATE (augmentation%weighted_q(n, nc, 0:augmentation%lmax))
       DO l = 0, augmentation%lmax
          DO pair = 1, nc
-            augmentation%weighted_q(:, pair, l) = weights*pot%qijl(:, pair, l)
+            augmentation%weighted_q(:, pair, l) = weights(:n)*pot%qijl(:n, pair, l)
          END DO
       END DO
       n = augmentation%nproj
@@ -464,7 +472,7 @@ CONTAINS
       COMPLEX(KIND=dp), INTENT(OUT), OPTIONAL            :: strain(:, :, :, :)
 
       COMPLEX(KIND=dp)                                   :: phase, phase_l
-      INTEGER                                            :: a, axis, i, j, l, lm, m, p, pair, &
+      INTEGER                                            :: a, axis, i, j, l, lm, m, nr, p, pair, &
                                                             powers(3), q
       REAL(KIND=dp)                                      :: angular, angular_derivative(3), &
                                                             direction(3, 1), monomial, norm_g, &
@@ -490,7 +498,8 @@ CONTAINS
          RETURN
       END IF
       direction(:, 1) = g/norm_g
-      ALLOCATE (work(SIZE(augmentation%r)), harmonics((augmentation%lmax + 1)**2))
+      nr = SIZE(augmentation%weighted_q, 1)
+      ALLOCATE (work(nr), harmonics((augmentation%lmax + 1)**2))
       ALLOCATE (radial(SIZE(augmentation%weighted_q, 2), 0:augmentation%lmax))
       IF (PRESENT(strain)) THEN
          ALLOCATE (solid_gradient(3, (augmentation%lmax + 1)**2), &
@@ -499,10 +508,10 @@ CONTAINS
       END IF
       DO l = 0, augmentation%lmax
          IF (PRESENT(strain)) THEN
-            work(:) = augmentation%r*bessel0(norm_g*augmentation%r, l + 1)
+            work(:) = augmentation%r(:nr)*bessel0(norm_g*augmentation%r(:nr), l + 1)
             radial_next(:, l) = MATMUL(work, augmentation%weighted_q(:, :, l))
          END IF
-         work(:) = bessel0(norm_g*augmentation%r, l)
+         work(:) = bessel0(norm_g*augmentation%r(:nr), l)
          radial(:, l) = MATMUL(work, augmentation%weighted_q(:, :, l))
          DO m = -l, l
             lm = l*l + l + m + 1

@@ -242,7 +242,7 @@ CONTAINS
       REAL(dp) :: changed(3, 3), dref(3), fractional(3), h_inv(3, 3), hmat(3, 3), image_point(3), &
          inverse(3, 3), minus(1, 1, 1, 13), plus(1, 1, 1, 13), point(3), radial_weights(nr), &
          reference(13), shifted(1, 1, 1, 13), tensor(1, 1, 1, 13), value
-      TYPE(uspp_augmentation_type)                       :: aug
+      TYPE(uspp_augmentation_type)                       :: aug, compact
 
       aug%nproj = 1
       aug%lmax = 0
@@ -305,6 +305,23 @@ CONTAINS
          CALL check_error((plus(1, 1, 1, 1) - minus(1, 1, 1, 1))/(2.0_dp*step), &
                           tensor(1, 1, 1, 4 + axis + 3*(axis2 - 1)), 3.e-9_dp)
       END DO
+      ! A zero radial suffix may be omitted from weighted_q while r retains the
+      ! original mesh for spline construction. Check all thirteen tensor entries.
+      aug%weighted_q(nr/2 + 1:, :, :) = 0.0_dp
+      CALL gapw_periodic_augmentation_integrals(aug, point, b, 0, 0, eta, hmat, h_inv, &
+                                                lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-14_dp, tensor)
+      compact = aug
+      DEALLOCATE (compact%weighted_q)
+      ALLOCATE (compact%weighted_q(nr/2, 1, 0:0))
+      compact%weighted_q(:, :, :) = aug%weighted_q(:nr/2, :, :)
+      CALL gapw_periodic_augmentation_integrals(compact, point, b, 0, 0, eta, hmat, h_inv, &
+                                                lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-14_dp, shifted)
+      CALL check_error(MAXVAL(ABS(shifted - tensor)), 0.0_dp, 1.e-14_dp)
+      DEALLOCATE (compact%weighted_q)
+      ALLOCATE (compact%weighted_q(0, 1, 0:0))
+      CALL gapw_periodic_augmentation_integrals(compact, point, b, 0, 0, eta, hmat, h_inv, &
+                                                lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-14_dp, shifted)
+      CALL check_error(MAXVAL(ABS(shifted)), 0.0_dp, 0.0_dp)
       CALL deallocate_lebedev_grids()
    END SUBROUTINE check_periodic
 
