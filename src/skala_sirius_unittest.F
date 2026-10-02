@@ -10,10 +10,12 @@ PROGRAM skala_sirius_unittest
    USE cell_types, ONLY: cell_release, &
                          cell_type
    USE ieee_arithmetic, ONLY: ieee_is_finite
+   USE input_cp2k_pwdft, ONLY: create_pwdft_section
    USE input_cp2k_xc, ONLY: create_xc_section
    USE input_section_types, ONLY: section_release, &
                                   section_type, &
                                   section_vals_create, &
+                                  section_vals_get_subs_vals, &
                                   section_vals_release, &
                                   section_vals_type, &
                                   section_vals_val_set
@@ -38,8 +40,12 @@ PROGRAM skala_sirius_unittest
 #if defined(__SIRIUS_XC_DERIVATIVE)
    USE sirius, ONLY: sirius_check_external_xc_derivative
 #endif
+#if defined(__SIRIUS_XC_POINT_GEOMETRY)
+   USE sirius, ONLY: sirius_get_xc_geometry_derivatives
+#endif
    USE sirius_interface, ONLY: cp_sirius_init
-   USE skala_sirius, ONLY: skala_sirius_register_points, &
+   USE skala_sirius, ONLY: skala_sirius_register_atom_grid, &
+                           skala_sirius_register_points, &
                            skala_sirius_release, &
                            skala_sirius_state_type
 
@@ -50,13 +56,15 @@ PROGRAM skala_sirius_unittest
    TYPE(cell_type), POINTER :: cell => NULL()
    TYPE(particle_type), POINTER :: atoms(:) => NULL()
    TYPE(section_type), POINTER :: definition => NULL()
+   TYPE(section_type), POINTER :: pwdft_definition => NULL()
    TYPE(section_vals_type), POINTER :: xc => NULL()
+   TYPE(section_vals_type), POINTER :: pwdft => NULL(), grid => NULL()
    TYPE(skala_sirius_state_type), POINTER :: state => NULL()
    TYPE(sirius_context_handler) :: ctx
    TYPE(sirius_kpoint_set_handler) :: ks
    TYPE(sirius_ground_state_handler) :: gs
    CHARACTER(len=default_path_length) :: model, paw_setup
-   CHARACTER(len=32) :: side_arg, step_arg
+   CHARACTER(len=32) :: side_arg, step_arg, grid_arg
    INTEGER :: i, l, mode, mag, nr, nb, x, y, z, ierr, side, first_mode, last_mode
    REAL(dp) :: lattice(3, 3), r(nrad), v(nrad), rho(nrad), orbital(nrad), dion(1, 1), &
                energy, exc, repeat_exc, kpoint(3, 1), reference(3, 2), fd_step, &
@@ -64,14 +72,23 @@ PROGRAM skala_sirius_unittest
 #if defined(__SIRIUS_XC_DERIVATIVE)
    REAL(dp) :: derivatives(3, 2), errors(2, 2)
 #endif
+#if defined(__SIRIUS_XC_POINT_GEOMETRY)
+   REAL(dp) :: atom_derivative(3, 1), cell_derivative(3, 3), repeat_atom(3, 1), repeat_cell(3, 3)
+#endif
    REAL(dp), ALLOCATABLE :: points(:, :), weights(:), descriptor_weights(:), centres(:, :)
    INTEGER, ALLOCATABLE :: sizes(:)
-   LOGICAL :: converged
+   LOGICAL :: converged, atom_grid
 
    CALL get_command_argument(1, model)
    CALL get_command_argument(2, paw_setup)
    CALL get_command_argument(3, side_arg)
    CALL get_command_argument(4, step_arg)
+   CALL get_command_argument(5, grid_arg)
+   atom_grid = TRIM(grid_arg) == "atom-grid"
+   IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. atom_grid) ERROR STOP "Optional grid must be atom-grid"
+#if !defined(__SIRIUS_XC_POINT_GEOMETRY)
+   IF (atom_grid) ERROR STOP "SIRIUS lacks the point geometry callbacks"
+#endif
    fd_step = 0.0_dp
    IF (LEN_TRIM(step_arg) > 0) THEN
       READ (step_arg, *, IOSTAT=ierr) fd_step
@@ -101,11 +118,24 @@ PROGRAM skala_sirius_unittest
    CALL cp_sirius_init()
    comm = mp_comm_world
    CALL comm%init()
-   IF (comm%mepos == 0) WRITE (*, '(A,I0,2A)') "Points per block: ", side**3, "; PAW setup: ", TRIM(paw_setup)
+   IF (comm%mepos == 0) THEN
+      IF (atom_grid) THEN
+         WRITE (*, '(2A)') "Periodic atom quadrature; PAW setup: ", TRIM(paw_setup)
+      ELSE
+         WRITE (*, '(A,I0,2A)') "Points per block: ", side**3, "; PAW setup: ", TRIM(paw_setup)
+      END IF
+   END IF
    CALL create_xc_section(definition)
    CALL section_vals_create(xc, definition)
    CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%MODEL", c_val=TRIM(model))
    CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID", l_val=.TRUE.)
+   IF (atom_grid) THEN
+      CALL create_pwdft_section(pwdft_definition)
+      CALL section_vals_create(pwdft, pwdft_definition)
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=100)
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=110)
+      grid => section_vals_get_subs_vals(pwdft, "SKALA_GRID")
+   END IF
    lattice = 0.0_dp
    lattice(1, 1) = 8.0_dp
    lattice(2, 2) = 9.0_dp
@@ -214,7 +244,11 @@ PROGRAM skala_sirius_unittest
             END IF
          END IF
          CALL sirius_add_atom(ctx, "He", [0.2_dp, 0.3_dp, 0.4_dp])
-         CALL skala_sirius_register_points(ctx, xc, atoms, cell, points, weights, descriptor_weights, sizes, centres, state)
+         IF (atom_grid) THEN
+            CALL skala_sirius_register_atom_grid(ctx, xc, atoms, cell, comm, grid, state)
+         ELSE
+            CALL skala_sirius_register_points(ctx, xc, atoms, cell, points, weights, descriptor_weights, sizes, centres, state)
+         END IF
          CALL sirius_initialize_context(ctx)
          CALL sirius_create_kset(ctx, 1, kpoint, [1.0_dp], .TRUE., ks)
          CALL sirius_create_ground_state(ks, gs)
@@ -233,6 +267,36 @@ PROGRAM skala_sirius_unittest
          CALL sirius_generate_effective_potential(gs)
          CALL sirius_get_energy(gs, "exc", repeat_exc)
          IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Unchanged density changed the point XC energy"
+#if defined(__SIRIUS_XC_POINT_GEOMETRY)
+         IF (atom_grid) THEN
+            CALL sirius_get_xc_geometry_derivatives(gs, 1, atom_derivative, cell_derivative, error_code=ierr)
+            IF (ierr /= 0) ERROR STOP "SIRIUS Skala geometry callback failed"
+            IF (.NOT. ALL(ieee_is_finite(atom_derivative)) .OR. .NOT. ALL(ieee_is_finite(cell_derivative))) &
+               ERROR STOP "Nonfinite explicit XC geometry derivatives"
+            IF (MAXVAL(ABS(cell_derivative)) < 1.0e-8_dp) ERROR STOP "Vacuous XC cell derivative check"
+            IF (comm%mepos == 0) WRITE (*, '(A,12ES19.10)') "Explicit XC atom/cell derivatives: ", &
+               atom_derivative, cell_derivative
+            CALL sirius_get_xc_geometry_derivatives(gs, 1, repeat_atom, repeat_cell, error_code=ierr)
+            IF (ierr /= 0) ERROR STOP "Repeated geometry callback failed"
+            IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "XC geometry warmup differences: ", &
+               MAXVAL(ABS(repeat_atom - atom_derivative)), MAXVAL(ABS(repeat_cell - cell_derivative))
+            ! TorchScript can specialize its graph on the first geometry-gradient evaluation.
+            atom_derivative = repeat_atom
+            cell_derivative = repeat_cell
+            CALL sirius_get_xc_geometry_derivatives(gs, 1, repeat_atom, repeat_cell, error_code=ierr)
+            IF (ierr /= 0) ERROR STOP "Third geometry callback failed"
+            IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "Repeated XC atom/cell derivative differences: ", &
+               MAXVAL(ABS(repeat_atom - atom_derivative)), MAXVAL(ABS(repeat_cell - cell_derivative))
+            IF (MAXVAL(ABS(repeat_atom - atom_derivative)) > 1.0e-12_dp .OR. &
+                MAXVAL(ABS(repeat_cell - cell_derivative)) > 1.0e-12_dp) ERROR STOP "Geometry callback is not repeatable"
+            CALL sirius_get_energy(gs, "exc", repeat_exc)
+            IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Geometry callback changed the ground-state XC energy"
+            IF (comm%mepos == 0) atoms(1)%r(1) = 1.601_dp
+            CALL sirius_get_xc_geometry_derivatives(gs, 1, repeat_atom, repeat_cell, error_code=ierr)
+            atoms(1)%r(1) = 1.6_dp
+            IF (ierr == 0) ERROR STOP "Geometry callback accepted a stale CP2K atom grid"
+         END IF
+#endif
 #if defined(__SIRIUS_XC_DERIVATIVE)
          IF (fd_step > 0.0_dp) THEN
             CALL sirius_check_external_xc_derivative(gs, fd_step, derivatives, error_code=ierr)
@@ -266,5 +330,10 @@ PROGRAM skala_sirius_unittest
    CALL cell_release(cell)
    CALL section_vals_release(xc)
    CALL section_release(definition)
+   IF (atom_grid) THEN
+      NULLIFY (grid)
+      CALL section_vals_release(pwdft)
+      CALL section_release(pwdft_definition)
+   END IF
    CALL cp2k_finalize()
 END PROGRAM skala_sirius_unittest

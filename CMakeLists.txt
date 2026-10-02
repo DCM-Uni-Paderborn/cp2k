@@ -933,6 +933,10 @@ if(CP2K_USE_SIRIUS)
      use sirius, only: sirius_set_xc_point_callback
      end program" CP2K_SIRIUS_XC_POINT_CALLBACK SRC_EXT F90)
   check_fortran_source_compiles(
+    "program check_xc_point_geometry
+     use sirius, only: sirius_set_xc_point_geometry_callbacks, sirius_get_xc_geometry_derivatives
+     end program" CP2K_SIRIUS_XC_POINT_GEOMETRY SRC_EXT F90)
+  check_fortran_source_compiles(
     "program check_xc_derivative
      use sirius, only: sirius_check_external_xc_derivative
      end program" CP2K_SIRIUS_XC_DERIVATIVE SRC_EXT F90)

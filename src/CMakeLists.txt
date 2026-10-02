@@ -1882,6 +1882,7 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_USE_LIBTORCH}>:__LIBTORCH>
     $<$<BOOL:${CP2K_SIRIUS_XC_CALLBACK}>:__SIRIUS_XC_CALLBACK>
     $<$<BOOL:${CP2K_SIRIUS_XC_POINT_CALLBACK}>:__SIRIUS_XC_POINT_CALLBACK>
+    $<$<BOOL:${CP2K_SIRIUS_XC_POINT_GEOMETRY}>:__SIRIUS_XC_POINT_GEOMETRY>
     $<$<BOOL:${CP2K_SIRIUS_FINALIZE_NO_FFTW}>:__SIRIUS_FINALIZE_NO_FFTW>
     $<$<BOOL:${CP2K_USE_COSMA}>:__COSMA>
     $<$<BOOL:${CP2K_USE_LIBXS}>:__LIBXS>
@@ -1963,7 +1964,8 @@ if(CP2K_USE_LIBTORCH)
     add_executable(skala_sirius_unittest skala_sirius_unittest.F)
     target_compile_definitions(
       skala_sirius_unittest
-      PRIVATE $<$<BOOL:${CP2K_SIRIUS_XC_DERIVATIVE}>:__SIRIUS_XC_DERIVATIVE>)
+      PRIVATE $<$<BOOL:${CP2K_SIRIUS_XC_DERIVATIVE}>:__SIRIUS_XC_DERIVATIVE>
+              $<$<BOOL:${CP2K_SIRIUS_XC_POINT_GEOMETRY}>:__SIRIUS_XC_POINT_GEOMETRY>)
   endif()
 endif()
 

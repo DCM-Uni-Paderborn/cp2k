@@ -15,7 +15,7 @@ MODULE skala_sirius
    USE kinds, ONLY: dp
    USE message_passing, ONLY: mp_comm_type
    USE particle_types, ONLY: particle_type
-   USE skala_atom_grid, ONLY: skala_atom_grid_build
+   USE skala_atom_grid, ONLY: skala_atom_grid_build, skala_atom_grid_pullback
    USE skala_gpw_features, ONLY: skala_grid_layout_type
    USE skala_gpw_functional, ONLY: skala_grid_eval, skala_point_eval
 #if defined(__SIRIUS)
@@ -25,6 +25,9 @@ MODULE skala_sirius
 #endif
 #if defined(__SIRIUS_XC_POINT_CALLBACK) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_set_xc_point_callback
+#endif
+#if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_point_geometry_callbacks
 #endif
 #endif
 #include "./base/base_uses.f90"
@@ -46,6 +49,10 @@ MODULE skala_sirius
       TYPE(cell_type), POINTER :: cell => NULL()
       TYPE(particle_type), POINTER :: particles(:) => NULL()
       TYPE(section_vals_type), POINTER :: xc_section => NULL()
+      INTEGER :: nradial = 0, nangular = 0, shell = 0
+      REAL(dp) :: scale = 0.0_dp
+      REAL(dp) :: grid_lattice(3, 3) = 0.0_dp
+      REAL(dp), ALLOCATABLE :: grid_centres(:, :)
       TYPE(skala_sirius_state_type), POINTER :: next => NULL()
    END TYPE
 
@@ -68,7 +75,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: grid_section
       TYPE(skala_sirius_state_type), POINTER             :: state
 
-      INTEGER                                            :: a, na, nr, shell
+      INTEGER                                            :: a, error, na, nr, shell
       INTEGER, ALLOCATABLE                               :: sizes(:)
       REAL(dp)                                           :: scale
       REAL(dp), ALLOCATABLE                              :: block_centres(:, :), centres(:, :), &
@@ -89,6 +96,19 @@ CONTAINS
                                  points, energy, descriptor, sizes, block_centres)
       CALL skala_sirius_register_points(context, xc_section, particles, cell, points, energy, descriptor, &
                                         sizes, block_centres, state)
+      state%nradial = nr
+      state%nangular = na
+      state%shell = shell
+      state%scale = scale
+      state%grid_lattice = cell%hmat
+      state%grid_centres = centres
+#if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
+      CALL sirius_set_xc_point_geometry_callbacks(context, C_FUNLOC(evaluate_skala_point_geometry), &
+                                                  C_FUNLOC(pullback_skala_quadrature), C_LOC(state%token), error)
+      IF (error /= 0) CPABORT("Could not register the SIRIUS Skala geometry callbacks")
+#else
+      MARK_USED(error)
+#endif
    END SUBROUTINE
 
 ! **************************************************************************************************
@@ -349,6 +369,106 @@ CONTAINS
       IF (invalid /= 0) RETURN
       CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
                             rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau)
+      status = 0
+   END SUBROUTINE
+#endif
+
+#if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
+! **************************************************************************************************
+!> \brief Return the registry entry without exporting Fortran pointers across the C ABI.
+! **************************************************************************************************
+   FUNCTION geometry_state(user_data) RESULT(state)
+      TYPE(C_PTR), VALUE                                 :: user_data
+      TYPE(skala_sirius_state_type), POINTER             :: state
+
+      TYPE(callback_token_type), POINTER                 :: token
+
+      NULLIFY (state)
+      IF (.NOT. C_ASSOCIATED(user_data)) RETURN
+      CALL C_F_POINTER(user_data, token)
+      state => states
+      DO WHILE (ASSOCIATED(state))
+         IF (state%token%id == token%id) EXIT
+         state => state%next
+      END DO
+   END FUNCTION
+
+! **************************************************************************************************
+!> \brief Differentiate the model's independent fields, coordinates and quadrature weights.
+! **************************************************************************************************
+   SUBROUTINE evaluate_skala_point_geometry(user_data, nr, ns, nb, fcomm, coordinates, energy_weights, &
+                                            descriptor_weights, atom_sizes, atom_coords, rho, gradient, tau, &
+                                            energy, drho, dgradient, dtau, dpoints, denergy, ddescriptor, &
+                                            dcentres, status) BIND(C)
+      TYPE(C_PTR), VALUE                                 :: user_data
+      INTEGER(C_INT), VALUE                              :: nr, ns, nb, fcomm
+      REAL(C_DOUBLE), INTENT(IN)                         :: coordinates(3, nr), energy_weights(nr), &
+                                                            descriptor_weights(nr)
+      INTEGER(C_INT), INTENT(IN)                         :: atom_sizes(nb)
+      REAL(C_DOUBLE), INTENT(IN)                         :: atom_coords(3, nb), rho(nr, ns), &
+                                                            gradient(nr, 3, ns), tau(nr, ns)
+      REAL(C_DOUBLE), INTENT(OUT) :: energy, drho(nr, ns), dgradient(nr, 3, ns), dtau(nr, ns), &
+         dpoints(3, nr), denergy(nr), ddescriptor(nr), dcentres(3, nb)
+      INTEGER(C_INT), INTENT(OUT)                        :: status
+
+      INTEGER                                            :: invalid
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(skala_sirius_state_type), POINTER             :: state
+
+      CALL comm%set_handle(INT(fcomm))
+      status = 1
+      state => geometry_state(user_data)
+      invalid = 0
+      IF (.NOT. ASSOCIATED(state)) invalid = 1
+      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2])) invalid = 1
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
+                            rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
+                            dpoints, dcentres, denergy, ddescriptor)
+      status = 0
+   END SUBROUTINE
+
+! **************************************************************************************************
+!> \brief Pull back combined model and field-sampling covectors through the periodic atom grid.
+! **************************************************************************************************
+   SUBROUTINE pullback_skala_quadrature(user_data, nr, nb, natom, fcomm, atom_sizes, dpoints, &
+                                        denergy, ddescriptor, dcentres, datoms, dlattice, status) BIND(C)
+      TYPE(C_PTR), VALUE                                 :: user_data
+      INTEGER(C_INT), VALUE                              :: nr, nb, natom, fcomm
+      INTEGER(C_INT), INTENT(IN)                         :: atom_sizes(nb)
+      REAL(C_DOUBLE), INTENT(IN)                         :: dpoints(3, nr), denergy(nr), &
+                                                            ddescriptor(nr), dcentres(3, nb)
+      REAL(C_DOUBLE), INTENT(OUT)                        :: datoms(3, natom), dlattice(3, 3)
+      INTEGER(C_INT), INTENT(OUT)                        :: status
+
+      INTEGER                                            :: a, invalid
+      REAL(dp)                                           :: centres(3, natom)
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(skala_sirius_state_type), POINTER             :: state
+
+      CALL comm%set_handle(INT(fcomm))
+      status = 1
+      datoms = 0.0_dp
+      dlattice = 0.0_dp
+      state => geometry_state(user_data)
+      invalid = 0
+      IF (.NOT. ASSOCIATED(state)) invalid = 1
+      IF (nr < 0 .OR. nb < 0 .OR. natom < 1) invalid = 1
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      IF (SIZE(state%particles) /= natom .OR. state%nradial < 2) invalid = 1
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      DO a = 1, natom
+         centres(:, a) = state%particles(a)%r
+      END DO
+      IF (MAXVAL(ABS(centres - state%grid_centres)) > 1.0e-12_dp .OR. &
+          MAXVAL(ABS(state%cell%hmat - state%grid_lattice)) > 1.0e-12_dp) invalid = 1
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      CALL skala_atom_grid_pullback(comm, state%cell%hmat, centres, state%nradial, state%nangular, state%shell, &
+                                    state%scale, atom_sizes, dpoints, denergy, ddescriptor, dcentres, datoms, dlattice)
       status = 0
    END SUBROUTINE
 #endif
