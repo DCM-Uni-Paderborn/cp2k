@@ -28,7 +28,8 @@ MODULE qs_uspp_methods
    USE particle_types,                  ONLY: particle_type
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_cartesian,&
                                               paw_core_kinetic_fourier
-   USE paw_onecenter,                   ONLY: paw_onecenter_exchange,&
+   USE paw_onecenter,                   ONLY: paw_onecenter_core_exchange_init,&
+                                              paw_onecenter_exchange,&
                                               paw_onecenter_hartree,&
                                               paw_onecenter_init
    USE paw_xc,                          ONLY: paw_xc_evaluate,&
@@ -1190,16 +1191,15 @@ CONTAINS
    END SUBROUTINE qs_paw_correction
 
 ! **************************************************************************************************
-!> \brief Unscreened PAW valence exchange energy, AO operator and projector force/strain derivatives.
+!> \brief Unscreened PAW exchange energy, AO operator and projector force/strain derivatives.
 !>        The fixed radial Coulomb cache has no geometry response. Both projector-overlap legs
 !>        are differentiated through the same projected density as used for the energy.
-!>        Frozen-core datasets require additional core-valence exchange and a core-core reference,
-!>        and remain rejected until those contributions are implemented.
+!>        Verified original closed-core orbitals supply core-valence exchange and the core-core reference.
 !> \param ks_env Prepared PAW caches, projector overlaps and force accumulators.
 !> \param density Spin and image AO densities, including occupations and k-point weights.
 !>        One Quickstep spin block is a restricted spin sum; two blocks are physical spin densities.
 !> \param fraction Sum of unscreened Coulomb exact-exchange fractions; zero skips the entire path.
-!> \param exchange PAW valence exchange correction, reset and returned replicated.
+!> \param exchange PAW exchange correction including the closed-core terms, reset and returned replicated.
 !> \param calculate_forces Whether to differentiate projectors at fixed AO density.
 !>        The generalized-overlap Pulay contribution is accumulated separately.
 !> \param hamiltonian Optional spin and image AO matrices to increment.
@@ -1233,7 +1233,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       IF (.NOT. ALLOCATED(uspp%paw)) RETURN
       IF (.NOT. ANY(uspp%paw%active)) RETURN
-      ! Check original core data before evaluating a valence-only PAW contribution.
+      ! Prepare the immutable original-data core contribution once per PAW kind.
       DO ikind = 1, SIZE(uspp%paw)
          IF (.NOT. uspp%paw(ikind)%active) CYCLE
          CALL get_qs_kind(qs_kind_set(ikind), zatom=nuclear_charge)
@@ -1247,7 +1247,14 @@ CONTAINS
                frozen_core = frozen_core .OR. ANY(pot%rho_nlcc /= 0.0_dp)
             END IF
             IF (frozen_core) THEN
-               CPABORT("PAW frozen-core exact exchange requires core-valence/core-core terms")
+               IF (.NOT. uspp%paw(ikind)%onecenter%core_exchange_initialized) THEN
+                  CALL paw_onecenter_core_exchange_init(pot, qs_kind_set(ikind)%sgp_potential%upf_projectors, &
+                                                        uspp%paw(ikind)%onecenter)
+               END IF
+               IF (.NOT. uspp%paw(ikind)%onecenter%core_exchange_available) THEN
+                  CALL cp_abort(__LOCATION__, &
+                                'PAW frozen-core exact exchange: '//TRIM(uspp%paw(ikind)%onecenter%core_exchange_reason))
+               END IF
             END IF
          END ASSOCIATE
       END DO

@@ -15,9 +15,11 @@ MODULE paw_onecenter
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_build_ae
    USE paw_types,                       ONLY: paw_onecenter_type
    USE splines,                         ONLY: spline3ders
-   USE upf_projector_integrals,         ONLY: upf_projector_product_gaunt,&
+   USE upf_projector_integrals,         ONLY: upf_projector_angular_init,&
+                                              upf_projector_product_gaunt,&
                                               upf_projector_type
 #include "./base/base_uses.f90"
 
@@ -26,7 +28,7 @@ MODULE paw_onecenter
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'paw_onecenter'
 
    PUBLIC :: paw_onecenter_type, paw_onecenter_init, paw_onecenter_hartree, &
-             paw_onecenter_exchange, paw_radial_coulomb
+             paw_onecenter_exchange, paw_onecenter_core_exchange_init, paw_radial_coulomb
 
 CONTAINS
 
@@ -86,6 +88,134 @@ CONTAINS
    END SUBROUTINE paw_onecenter_init
 
 ! **************************************************************************************************
+!> \brief Original-data core-valence operator and core-core exchange reference for a closed PAW core.
+!>        These are AE contributions: smooth RI exchange contains only valence transitions.
+!>        Both use the complete supplied mesh, without truncating core tails at the augmentation sphere.
+!>        The usual PAW core-locality and partial-wave completeness assumptions remain applicable.
+!> \param pot Original scalar PAW data; neither core nor valence waves are normalized or fitted.
+!> \param projectors Original valence magnetic ordering.
+!> \param onecenter Prepared valence cache, with the lazy unit-fraction core exchange cache overwritten.
+! **************************************************************************************************
+   SUBROUTINE paw_onecenter_core_exchange_init(pot, projectors, onecenter)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(upf_projector_type), INTENT(IN)               :: projectors
+      TYPE(paw_onecenter_type), INTENT(INOUT)            :: onecenter
+
+      INTEGER                                            :: c, d, first_c, first_d, i, j, l, lc, ld, &
+                                                            lm, nb, nr, nshell, p, q, shell, t
+      INTEGER, ALLOCATABLE                               :: angular(:), selected(:), shells(:)
+      LOGICAL                                            :: available
+      REAL(dp)                                           :: angular_factor, core_fraction, &
+                                                            multiplicity, scalar_coulomb(1, 1)
+      REAL(dp), ALLOCATABLE                              :: coulomb(:, :), gaunt(:, :, :), &
+                                                            products(:, :), scalar_product(:, :), &
+                                                            tau_ae(:)
+      TYPE(upf_projector_type)                           :: combined
+
+      CPASSERT(onecenter%nproj == projectors%nproj)
+      onecenter%core_exchange_initialized = .TRUE.
+      onecenter%core_exchange_available = .FALSE.
+      onecenter%core_exchange_energy = 0.0_dp
+      IF (ALLOCATED(onecenter%core_exchange_matrix)) DEALLOCATE (onecenter%core_exchange_matrix)
+      CALL paw_core_kinetic_build_ae(pot, tau_ae, available, onecenter%core_exchange_reason, selected)
+      IF (.NOT. available) RETURN
+      DEALLOCATE (tau_ae)
+      ALLOCATE (onecenter%core_exchange_matrix(onecenter%nproj, onecenter%nproj), SOURCE=0.0_dp)
+      nshell = COUNT(selected > 0)
+      IF (nshell == 0) THEN
+         onecenter%core_exchange_available = .TRUE.
+         onecenter%core_exchange_reason = ''
+         RETURN
+      END IF
+      nb = pot%number_of_proj
+      nr = SIZE(pot%r)
+      CPASSERT(ALL(pot%lbeta == projectors%lbeta))
+      onecenter%core_exchange_reason = 'PAW core exchange requires complete original AE partial waves'
+      IF (.NOT. ALLOCATED(pot%paw%ae_wfc)) RETURN
+      IF (.NOT. ALL(SHAPE(pot%paw%ae_wfc) == [nr, nb])) RETURN
+      IF (.NOT. ALL(ieee_is_finite(pot%paw%ae_wfc))) RETURN
+      ALLOCATE (shells(nshell), angular(nb + nshell))
+      angular(:nb) = pot%lbeta
+      shell = 0
+      DO i = 1, SIZE(selected)
+         IF (selected(i) == 0) CYCLE
+         shell = shell + 1
+         shells(shell) = i
+         angular(nb + shell) = pot%paw%gipaw_core_orbitals%angular_momenta(i)
+      END DO
+      CALL upf_projector_angular_init(angular, MAXVAL(angular), combined)
+      CALL upf_projector_product_gaunt(combined, gaunt)
+      CPASSERT(ALL(combined%radial_index(:onecenter%nproj) == projectors%radial_index))
+      CPASSERT(ALL(combined%angular_index(:onecenter%nproj) == projectors%angular_index))
+      ALLOCATE (products(nr, nb), coulomb(nb, nb), scalar_product(nr, 1))
+      first_c = onecenter%nproj + 1
+      DO shell = 1, nshell
+         i = shells(shell)
+         lc = angular(nb + shell)
+         core_fraction = REAL(selected(i), dp)/REAL(2*(2*lc + 1), dp)
+         ! Each closed-core magnetic state has this occupation in either spin.
+         DO l = 0, MAXVAL(pot%lbeta) + lc
+            products = 0.0_dp
+            DO j = 1, nb
+               IF (l < ABS(pot%lbeta(j) - lc) .OR. l > pot%lbeta(j) + lc) CYCLE
+               IF (MODULO(l + pot%lbeta(j) + lc, 2) /= 0) CYCLE
+               products(:, j) = pot%paw%ae_wfc(:, j)*pot%paw%gipaw_core_orbitals%wfc(:, i)
+            END DO
+            IF (.NOT. ANY(products /= 0.0_dp)) CYCLE
+            CALL paw_radial_coulomb(pot%r, products, l, coulomb)
+            DO q = 1, onecenter%nproj
+               DO p = 1, q
+                  angular_factor = 0.0_dp
+                  DO c = first_c, first_c + 2*lc
+                     DO lm = l*l + 1, (l + 1)**2
+                        angular_factor = angular_factor + gaunt(p, c, lm)*gaunt(q, c, lm)
+                     END DO
+                  END DO
+                  onecenter%core_exchange_matrix(p, q) = onecenter%core_exchange_matrix(p, q) - &
+                                        core_fraction*angular_factor*coulomb(projectors%radial_index(p), projectors%radial_index(q))
+               END DO
+            END DO
+         END DO
+         first_d = onecenter%nproj + 1
+         DO t = 1, shell
+            j = shells(t)
+            ld = angular(nb + t)
+            ! Two physical spins cancel the exchange energy factor 1/2.
+            ! The off-diagonal shell pair occurs in both ordered summations.
+            multiplicity = MERGE(1.0_dp, 2.0_dp, t == shell)*core_fraction* &
+                           REAL(selected(j), dp)/REAL(2*(2*ld + 1), dp)
+            scalar_product(:, 1) = pot%paw%gipaw_core_orbitals%wfc(:, i)* &
+                                   pot%paw%gipaw_core_orbitals%wfc(:, j)
+            DO l = ABS(lc - ld), lc + ld, 2
+               CALL paw_radial_coulomb(pot%r, scalar_product, l, scalar_coulomb)
+               angular_factor = 0.0_dp
+               DO d = first_d, first_d + 2*ld
+                  DO c = first_c, first_c + 2*lc
+                     DO lm = l*l + 1, (l + 1)**2
+                        angular_factor = angular_factor + gaunt(c, d, lm)**2
+                     END DO
+                  END DO
+               END DO
+               onecenter%core_exchange_energy = onecenter%core_exchange_energy - &
+                                                multiplicity*angular_factor*scalar_coulomb(1, 1)
+            END DO
+            first_d = first_d + 2*ld + 1
+         END DO
+         first_c = first_c + 2*lc + 1
+      END DO
+      DO q = 1, onecenter%nproj
+         DO p = q + 1, onecenter%nproj
+            onecenter%core_exchange_matrix(p, q) = onecenter%core_exchange_matrix(q, p)
+         END DO
+      END DO
+      onecenter%core_exchange_reason = 'Nonfinite original-data PAW core exchange integral'
+      IF (.NOT. ALL(ieee_is_finite(onecenter%core_exchange_matrix))) RETURN
+      IF (.NOT. ieee_is_finite(onecenter%core_exchange_energy)) RETURN
+      onecenter%core_exchange_available = .TRUE.
+      onecenter%core_exchange_reason = ''
+   END SUBROUTINE paw_onecenter_core_exchange_init
+
+! **************************************************************************************************
 !> \brief Evaluate the valence Hartree correction and its derivative in projector space.
 !> \param onecenter Prepared PAW data.
 !> \param density Real symmetric projector density, summed over spins and k points.
@@ -129,12 +259,12 @@ CONTAINS
 !> \brief Unscreened scalar PAW valence exact-exchange correction and projector derivative.
 !>        Delta J_ij,kl is the AE-minus-compensated-PS pair Coulomb integral. Exchange
 !>        crosses the density indices: E=-fraction/2 sum_sigma,ijkl D_ik D_jl Delta J_ij,kl.
-!>        Frozen-core/valence exchange and core/core constants are separate contributions.
+!>        An initialized original-data core cache supplies linear core-valence and constant core-core terms.
 !> \param onecenter Prepared radial Coulomb and magnetic Gaunt data.
 !> \param density Real symmetric, physically spin-resolved projector densities.
 !>        A spin-summed restricted density must be supplied as two identical half-density blocks.
 !> \param fraction Exact-exchange fraction.
-!> \param energy Valence-only one-center exchange correction in Hartree.
+!> \param energy One-center exchange correction including an available initialized closed core, in Hartree.
 !> \param potential Full-matrix derivative V_pq=-fraction sum_jk D_jk Delta J_pj,qk per spin.
 ! **************************************************************************************************
    SUBROUTINE paw_onecenter_exchange(onecenter, density, fraction, energy, potential)
@@ -185,6 +315,15 @@ CONTAINS
          END DO
       END DO
       energy = 0.5_dp*SUM(density*potential)
+      IF (onecenter%core_exchange_initialized) THEN
+         CPASSERT(onecenter%core_exchange_available)
+         DO spin = 1, SIZE(density, 3)
+            ! The core-valence contribution is linear, without the valence-valence factor 1/2.
+            energy = energy + fraction*SUM(density(:, :, spin)*onecenter%core_exchange_matrix)
+            potential(:, :, spin) = potential(:, :, spin) + fraction*onecenter%core_exchange_matrix
+         END DO
+         energy = energy + fraction*onecenter%core_exchange_energy
+      END IF
    END SUBROUTINE paw_onecenter_exchange
 
 ! **************************************************************************************************

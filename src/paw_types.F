@@ -19,6 +19,11 @@ MODULE paw_types
       INTEGER :: nproj = 0, npair = 0, lmax = -1
       INTEGER, ALLOCATABLE :: pair_index(:, :)
       REAL(dp), ALLOCATABLE :: gaunt(:, :, :), hartree(:, :, :)
+      ! Lazy original-data frozen-core exchange; matrix is the unit-fraction spin operator.
+      LOGICAL :: core_exchange_initialized = .FALSE., core_exchange_available = .FALSE.
+      CHARACTER(LEN=256) :: core_exchange_reason = 'PAW core exchange has not been initialized'
+      REAL(dp) :: core_exchange_energy = 0.0_dp
+      REAL(dp), ALLOCATABLE :: core_exchange_matrix(:, :)
    END TYPE paw_onecenter_type
 
    TYPE paw_xc_type
