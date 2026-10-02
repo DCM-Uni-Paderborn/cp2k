@@ -394,7 +394,7 @@ CONTAINS
          ! XC
          IF (need_xc) THEN
             xcmat%op = 0._dp
-            CALL calculate_atom_vxc_lda(xcmat, atom, xc_section)
+            CALL calculate_atom_vxc_lda(xcmat, atom, xc_section, paw%xcgrid%core_kinetic)
             ! ZMP added options for the zmp calculations, building external density and vxc potential
          ELSE IF (need_zmp) THEN
             xcmat%op = 0._dp
@@ -752,7 +752,7 @@ CONTAINS
          IF (need_xc) THEN
             xcmata%op = 0._dp
             xcmatb%op = 0._dp
-            CALL calculate_atom_vxc_lsd(xcmata, xcmatb, atom, xc_section)
+            CALL calculate_atom_vxc_lsd(xcmata, xcmatb, atom, xc_section, paw%xcgrid%core_kinetic)
          ELSE
             xcmata%op = 0._dp
             xcmatb%op = 0._dp

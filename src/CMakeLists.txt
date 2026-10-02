@@ -65,6 +65,7 @@ list(
   atom_upf.F
   atom_uspp.F
   atom_paw.F
+  paw_core_kinetic.F
   paw_types.F
   paw_onecenter.F
   paw_xc.F

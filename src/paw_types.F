@@ -10,6 +10,7 @@
 ! **************************************************************************************************
 MODULE paw_types
    USE kinds,                           ONLY: dp
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_type
 
    IMPLICIT NONE
    PRIVATE
@@ -21,6 +22,7 @@ MODULE paw_types
    END TYPE paw_onecenter_type
 
    TYPE paw_xc_type
+      TYPE(paw_core_kinetic_type) :: core_kinetic
       INTEGER :: na = 0, nr = 0, nval = 0, npair = 0, lmax = -1
       REAL(dp), ALLOCATABLE :: r(:), wr(:), wa(:), directions(:, :), harmonics(:, :), angular_gradient(:, :, :)
       ! Final dimension: 1 is AE, 2 is compensated PS. Radial arrays contain true densities.

@@ -33,6 +33,8 @@ MODULE atom_xc
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_type,&
+                                              paw_core_kinetic_values
    USE xc_atom,                         ONLY: xc_rho_set_atom_update
    USE xc_derivative_desc,              ONLY: &
         deriv_norm_drho, deriv_norm_drhoa, deriv_norm_drhob, deriv_rho, deriv_rhoa, deriv_rhob, &
@@ -191,15 +193,17 @@ CONTAINS
 !> \param xcmat       exchange-correlation potential expressed in the atomic basis set
 !> \param atom        information about the atomic kind
 !> \param xc_section  XC input section
+!> \param core_kinetic Optional shared PAW AE/PS frozen-core kinetic fields.
 !> \par History
 !>    * 03.2010 extension of GTH pseudo-potential definition [Juerg Hutter]
 !>    * 02.2010 renamed to calculate_atom_vxc_lda() [Juerg Hutter]
 !>    * 08.2008 created [Juerg Hutter]
 ! **************************************************************************************************
-   SUBROUTINE calculate_atom_vxc_lda(xcmat, atom, xc_section)
+   SUBROUTINE calculate_atom_vxc_lda(xcmat, atom, xc_section, core_kinetic)
       TYPE(opmat_type), POINTER                          :: xcmat
       TYPE(atom_type), INTENT(INOUT)                     :: atom
       TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(paw_core_kinetic_type), INTENT(IN), OPTIONAL  :: core_kinetic
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_atom_vxc_lda'
 
@@ -279,7 +283,7 @@ CONTAINS
                ALLOCATE (tau(nr, 1))
                CALL atom_density(tau(:, 1), atom%orbitals%pmat, atom%basis, atom%state%maxl_occ, &
                                  typ="KIN", rr=atom%basis%grid%rad2)
-               CALL add_uspp_core_kinetic(atom, tau)
+               CALL add_paw_core_kinetic(atom, tau, core_kinetic)
             END IF
             IF (needs%laplace_rho) THEN
                ALLOCATE (lap(nr, 1))
@@ -400,13 +404,15 @@ CONTAINS
 !> \param xcmatb      spin-beta exchange-correlation potential matrix
 !> \param atom        information about the atomic kind
 !> \param xc_section  XC input section
+!> \param core_kinetic Optional shared PAW AE/PS frozen-core kinetic fields.
 !> \par History
 !>    * 02.2010 created [Juerg Hutter]
 ! **************************************************************************************************
-   SUBROUTINE calculate_atom_vxc_lsd(xcmata, xcmatb, atom, xc_section)
+   SUBROUTINE calculate_atom_vxc_lsd(xcmata, xcmatb, atom, xc_section, core_kinetic)
       TYPE(opmat_type), POINTER                          :: xcmata, xcmatb
       TYPE(atom_type), INTENT(INOUT)                     :: atom
       TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(paw_core_kinetic_type), INTENT(IN), OPTIONAL  :: core_kinetic
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_atom_vxc_lsd'
 
@@ -502,7 +508,7 @@ CONTAINS
                                  typ="KIN", rr=atom%basis%grid%rad2)
                CALL atom_density(tau(:, 2), atom%orbitals%pmatb, atom%basis, atom%state%maxl_occ, &
                                  typ="KIN", rr=atom%basis%grid%rad2)
-               CALL add_uspp_core_kinetic(atom, tau)
+               CALL add_paw_core_kinetic(atom, tau, core_kinetic)
             END IF
             IF (needs%laplace_rho_spin) THEN
                ALLOCATE (lap(nr, 2))
@@ -1346,15 +1352,19 @@ CONTAINS
    END SUBROUTINE lsd_pade
 
 ! **************************************************************************************************
-!> \brief Add the spin-summed USPP model-core tau once to atomic XC arguments.
+!> \brief Add the shared spin-summed PS core kinetic field once to the atomic smooth XC arguments.
 !> \param atom Atomic potential and existing orbital-basis quadrature.
 !> \param tau Gaussian valence kinetic densities, with equally split closed cores for two spins.
+!> \param core_kinetic Optional shared PAW core fields prepared once with the atomic PAW cache.
 ! **************************************************************************************************
-   SUBROUTINE add_uspp_core_kinetic(atom, tau)
+   SUBROUTINE add_paw_core_kinetic(atom, tau, core_kinetic)
       TYPE(atom_type), INTENT(IN)                        :: atom
       REAL(dp), INTENT(INOUT)                            :: tau(:, :)
+      TYPE(paw_core_kinetic_type), INTENT(IN), OPTIONAL  :: core_kinetic
 
       INTEGER                                            :: spin
+      LOGICAL                                            :: has_core
+      REAL(dp)                                           :: core(SIZE(tau, 1))
 
       IF (atom%potential%ppot_type /= upf_pseudo) RETURN
       IF (atom%potential%upf_pot%is_ultrasoft .AND. .NOT. atom%potential%upf_pot%is_paw) THEN
@@ -1367,6 +1377,25 @@ CONTAINS
          END DO
          RETURN
       END IF
-   END SUBROUTINE add_uspp_core_kinetic
+      IF (.NOT. atom%potential%upf_pot%is_paw) RETURN
+      has_core = ANY(atom%potential%upf_pot%paw%rho_core /= 0.0_dp)
+      IF (ALLOCATED(atom%potential%upf_pot%rho_nlcc)) THEN
+         has_core = has_core .OR. ANY(atom%potential%upf_pot%rho_nlcc /= 0.0_dp)
+      END IF
+      IF (.NOT. PRESENT(core_kinetic)) THEN
+         IF (has_core) THEN
+            CPABORT("Atomic PAW tau XC requires shared frozen-core kinetic fields")
+         END IF
+         RETURN
+      END IF
+      IF (.NOT. core_kinetic%available) THEN
+         IF (has_core) CALL cp_abort(__LOCATION__, TRIM(core_kinetic%failure_reason))
+         RETURN
+      END IF
+      CALL paw_core_kinetic_values(core_kinetic, atom%basis%grid%rad, core)
+      DO spin = 1, SIZE(tau, 2)
+         tau(:, spin) = tau(:, spin) + core/REAL(SIZE(tau, 2), dp)
+      END DO
+   END SUBROUTINE add_paw_core_kinetic
 
 END MODULE atom_xc
