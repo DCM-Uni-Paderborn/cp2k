@@ -11,17 +11,22 @@ PROGRAM paw_upf_unittest
                                               atom_upfpot_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: default_path_length,&
                                               dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
+   USE paw_xc,                          ONLY: paw_xc_build_ae_core_tau
 
    IMPLICIT NONE
    CHARACTER(LEN=*), PARAMETER :: fixture = 'paw-import-test.upf'
    CHARACTER(LEN=default_path_length) :: filename
    CHARACTER(LEN=16) :: lmax_attribute
+   CHARACTER(LEN=160) :: core_reason
    INTEGER :: unit, variant, i
-   LOGICAL :: source_root_argument
+   INTEGER, ALLOCATABLE :: core_occupations(:)
+   LOGICAL :: source_root_argument, core_available
+   REAL(dp), ALLOCATABLE :: core_tau(:)
    TYPE(atom_upfpot_type) :: pot
    TYPE(cp_logger_type), POINTER :: logger
 
@@ -118,6 +123,26 @@ PROGRAM paw_upf_unittest
             SUM(pot%paw%ae_wfc), SUM(pot%paw%ps_wfc), SUM(pot%paw%occupations), &
             SUM(pot%paw%rho_core), SUM(pot%paw%vlocal), SUM(pot%paw%multipoles), &
             pot%paw%core_energy, SUM(pot%qijl)
+      END IF
+      ! Optional original files exercise import and closed-core identification
+      ! together. Availability is dataset dependent and checked by the caller.
+      CALL paw_xc_build_ae_core_tau(pot, core_tau, core_available, core_reason, core_occupations)
+      IF (core_available) THEN
+         IF (.NOT. ALLOCATED(core_tau) .OR. .NOT. ALLOCATED(core_occupations)) &
+            ERROR STOP 'Available AE core tau has no fields or occupations'
+         IF (SIZE(core_tau) /= SIZE(pot%r)) ERROR STOP 'AE core tau does not cover the original mesh'
+         IF (.NOT. ALL(ieee_is_finite(core_tau)) .OR. ANY(core_tau < 0.0_dp)) &
+            ERROR STOP 'Invalid AE core kinetic density'
+         IF (logger%para_env%is_source()) &
+            WRITE (*, '(A,1X,A,1X,L1,1X,I0,1X,ES25.16)') &
+            'PAW core tau:', TRIM(filename), core_available, SUM(core_occupations), SUM(core_tau)
+         DEALLOCATE (core_tau, core_occupations)
+      ELSE
+         IF (ALLOCATED(core_tau) .OR. ALLOCATED(core_occupations)) &
+            ERROR STOP 'Unavailable AE core tau returned fields or occupations'
+         IF (LEN_TRIM(core_reason) == 0) ERROR STOP 'Unavailable AE core tau has no cause'
+         IF (logger%para_env%is_source()) &
+            WRITE (*, '(A,1X,A,1X,L1,1X,A)') 'PAW core tau:', TRIM(filename), core_available, TRIM(core_reason)
       END IF
       CALL atom_release_upf(pot)
    END DO

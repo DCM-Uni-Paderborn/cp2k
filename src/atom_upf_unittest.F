@@ -89,6 +89,7 @@ PROGRAM atom_upf_unittest
    CALL check_upf_units()
    CALL check_core_kinetic_convention()
    CALL check_uspp_partial_waves()
+   CALL check_gipaw_core_orbitals()
    CALL check_nlcc_fit()
    CALL check_basis_origin()
    CALL check_basis_derivatives()
@@ -164,6 +165,113 @@ PROGRAM atom_upf_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief GIPAW orbitals are optional PAW data, with independent indices and unchanged signed u=r*R.
+! **************************************************************************************************
+   SUBROUTINE check_gipaw_core_orbitals()
+      CHARACTER(LEN=*), PARAMETER :: fixture = 'paw-gipaw-orbitals-test.upf'
+
+      CHARACTER(LEN=5)                                   :: has_gipaw
+      INTEGER                                            :: unit, variant
+      TYPE(atom_upfpot_type)                             :: potential
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      logger => cp_get_default_logger()
+      DO variant = 1, 5
+         has_gipaw = 'true'
+         IF (variant == 5) has_gipaw = 'false'
+         IF (logger%para_env%is_source()) THEN
+            OPEN (NEWUNIT=unit, FILE=fixture, STATUS='REPLACE', ACTION='WRITE')
+            WRITE (unit, '(A)') &
+               '<UPF version="2.0.1">', &
+               '<PP_HEADER element="He" pseudo_type="PAW" is_ultrasoft="true" is_paw="true"', &
+               ' has_wfc="true" has_gipaw="'//TRIM(has_gipaw)//'" paw_as_gipaw="true"', &
+               ' z_valence="2" mesh_size="3" number_of_proj="1" number_of_wfc="1" l_max="0"/>', &
+               '<PP_MESH mesh="3">', &
+               '<PP_R>', '0.5 1 1.5', '</PP_R>', &
+               '<PP_RAB>', '0.5 0.5 0.5', '</PP_RAB>', '</PP_MESH>', &
+               '<PP_LOCAL>', '6 4 2', '</PP_LOCAL>', &
+               '<PP_NONLOCAL>', &
+               '<PP_BETA.1 index="1" angular_momentum="0" size="3">', '1 4 9', '</PP_BETA.1>', &
+               '<PP_DIJ>', '2', '</PP_DIJ>', &
+               '<PP_AUGMENTATION q_with_l="T" nqf="0" nqlc="1" cutoff_r_index="3" l_max_aug="0">', &
+               '<PP_Q>', '1', '</PP_Q>', &
+               '<PP_MULTIPOLES>', '1', '</PP_MULTIPOLES>', &
+               '<PP_QIJL.1.1.0 first_index="1" second_index="1" composite_index="1" angular_momentum="0">', &
+               '1 2 3', '</PP_QIJL.1.1.0>', '</PP_AUGMENTATION>', '</PP_NONLOCAL>', &
+               '<PP_FULL_WFC number_of_wfc="1">', &
+               '<PP_AEWFC.1 index="1" l="0">', '-3 5 -7', '</PP_AEWFC.1>', &
+               '<PP_PSWFC.1 index="1" l="0">', '1 -2 3', '</PP_PSWFC.1>', '</PP_FULL_WFC>', &
+               '<PP_PAW paw_data_format="2" core_energy="0">', &
+               '<PP_OCCUPATIONS>', '2', '</PP_OCCUPATIONS>', &
+               '<PP_AE_NLCC>', '0 0 0', '</PP_AE_NLCC>', &
+               '<PP_AE_VLOC>', '6 4 2', '</PP_AE_VLOC>', '</PP_PAW>'
+            IF (variant /= 5) THEN
+               WRITE (unit, '(A)') '<PP_GIPAW gipaw_data_format="2">'
+               SELECT CASE (variant)
+               CASE (1)
+                  ! This coreless He fixture still supplies GIPAW states. Their
+                  ! count and l values are independent of the one PAW projector.
+                  WRITE (unit, '(A)') &
+                     '<PP_GIPAW_CORE_ORBITALS number_of_core_orbitals="2">', &
+                     '<PP_GIPAW_CORE_ORBITAL.2 type="real" size="3" columns="3" index="2"', &
+                     ' label="2P" n="2.000000000000e0" l="1.000000000000e0">', &
+                     '2 -3 4', '</PP_GIPAW_CORE_ORBITAL.2>', &
+                     '<PP_GIPAW_CORE_ORBITAL.1 index="1" label="1S" n="1" l="0">', &
+                     '-7 11 -13', '</PP_GIPAW_CORE_ORBITAL.1>', '</PP_GIPAW_CORE_ORBITALS>'
+               CASE (2)
+                  WRITE (unit, '(A)') '<PP_GIPAW_CORE_ORBITALS number_of_core_orbitals="0"/>'
+               CASE (3)
+                  WRITE (unit, '(A)') '<PP_GIPAW_CORE_ORBITALS number_of_core_orbitals="0">', &
+                     '</PP_GIPAW_CORE_ORBITALS>'
+               CASE (4)
+                  WRITE (unit, '(A)') '<PP_GIPAW_ORBITALS number_of_valence_orbitals="0"/>'
+               END SELECT
+               WRITE (unit, '(A)') '</PP_GIPAW>'
+            END IF
+            WRITE (unit, '(A)') '</UPF>'
+            CLOSE (unit)
+         END IF
+         CALL logger%para_env%sync()
+         IF (variant == 1) THEN
+            CALL atom_read_upf(potential, fixture, read_header=.TRUE., read_augmentation=.TRUE.)
+            IF (ALLOCATED(potential%paw)) ERROR STOP 'GIPAW PAW data imported without a PAW request'
+            CALL atom_release_upf(potential)
+         END IF
+         CALL atom_read_upf(potential, fixture, read_paw=.TRUE.)
+         IF (.NOT. ALLOCATED(potential%paw)) ERROR STOP 'Missing PAW data in GIPAW fixture'
+         IF (variant <= 3) THEN
+            IF (.NOT. ALLOCATED(potential%paw%gipaw_core_orbitals)) ERROR STOP 'Missing optional GIPAW orbital table'
+            ASSOCIATE (orbitals => potential%paw%gipaw_core_orbitals)
+               IF (orbitals%data_format /= 2) ERROR STOP 'Wrong GIPAW data format'
+               IF (variant == 1) THEN
+                  IF (ANY(SHAPE(orbitals%wfc) /= [3, 2])) ERROR STOP 'GIPAW orbital count was tied to PAW projectors'
+                  IF (ANY(orbitals%indices /= [1, 2])) ERROR STOP 'Wrong GIPAW orbital indices'
+                  IF (ANY(orbitals%principal_quantum_numbers /= [1, 2])) ERROR STOP 'Wrong GIPAW principal quantum numbers'
+                  IF (ANY(orbitals%angular_momenta /= [0, 1])) ERROR STOP 'Wrong GIPAW angular momenta'
+                  IF (ANY(orbitals%wfc /= RESHAPE([-7._dp, 11._dp, -13._dp, 2._dp, -3._dp, 4._dp], [3, 2]))) THEN
+                     ERROR STOP 'GIPAW orbital signs, order or original normalization changed'
+                  END IF
+               ELSE
+                  IF (ANY(SHAPE(orbitals%wfc) /= [3, 0])) ERROR STOP 'Empty GIPAW orbital table changed dimensions'
+                  IF (SIZE(orbitals%indices) /= 0) ERROR STOP 'Empty GIPAW orbital table acquired indices'
+               END IF
+            END ASSOCIATE
+         ELSE
+            IF (ALLOCATED(potential%paw%gipaw_core_orbitals)) ERROR STOP 'Absent GIPAW orbital table acquired data'
+         END IF
+         IF (ANY(potential%paw%rho_core /= 0.0_dp)) ERROR STOP 'GIPAW orbitals changed the PAW core density'
+         IF (ANY(potential%paw%occupations /= [2._dp])) ERROR STOP 'GIPAW orbitals changed PAW valence occupations'
+         CALL atom_release_upf(potential)
+         IF (ALLOCATED(potential%paw)) ERROR STOP 'PAW GIPAW orbital data not released'
+         CALL logger%para_env%sync()
+      END DO
+      IF (logger%para_env%is_source()) THEN
+         OPEN (NEWUNIT=unit, FILE=fixture, STATUS='OLD')
+         CLOSE (unit, STATUS='DELETE')
+      END IF
+   END SUBROUTINE check_gipaw_core_orbitals
 
 ! **************************************************************************************************
 !> \brief Reference-wave projection, generalized orthogonality, and incomplete-data fallback.

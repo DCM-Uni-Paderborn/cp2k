@@ -36,6 +36,15 @@ MODULE atom_upf
       REAL(dp), ALLOCATABLE                          :: ae_wfc(:, :), ps_wfc(:, :)
       INTEGER, ALLOCATABLE                           :: angular_momenta(:)
    END TYPE upf_partial_waves_type
+
+   TYPE upf_gipaw_orbitals_type
+      ! Original signed u=r*R(r), without occupations or a frozen-core assignment.
+      ! PP_GIPAW_CORE_ORBITALS may contain valence states or an incomplete core set.
+      INTEGER                                        :: data_format = -1
+      REAL(dp), ALLOCATABLE                          :: wfc(:, :)
+      INTEGER, ALLOCATABLE                           :: indices(:), principal_quantum_numbers(:), angular_momenta(:)
+   END TYPE upf_gipaw_orbitals_type
+
    TYPE, EXTENDS(upf_partial_waves_type) :: upf_paw_type
       INTEGER                                        :: data_format = -1, cutoff_index = -1, lmax_aug = -1
       CHARACTER(LEN=default_string_length)           :: augmentation_shape = ""
@@ -48,6 +57,7 @@ MODULE atom_upf
       REAL(dp), ALLOCATABLE                          :: multipoles(:, :, :)
       ! True core density (without 4*pi*r**2), AE local potential and core energy in Hartree.
       REAL(dp), ALLOCATABLE                          :: rho_core(:), vlocal(:)
+      TYPE(upf_gipaw_orbitals_type), ALLOCATABLE      :: gipaw_core_orbitals
    END TYPE upf_paw_type
 
    TYPE atom_upfpot_type
@@ -119,7 +129,7 @@ MODULE atom_upf
 
    PRIVATE
    PUBLIC  :: atom_read_upf, atom_upfpot_type, atom_release_upf, upf_radial_weights, &
-              upf_partial_waves_type, upf_nlcc_kinetic
+              upf_partial_waves_type, upf_nlcc_kinetic, upf_gipaw_orbitals_type
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'atom_upf'
 
@@ -229,7 +239,7 @@ CONTAINS
 !> \param read_header ...
 !> \param read_augmentation Import scalar USPP augmentation data and optional full partial waves explicitly.
 !>        This reader option does not enable USPP in a calculation method.
-!> \param read_paw Import scalar PAW partial waves and one-center data, including augmentation.
+!> \param read_paw Import scalar PAW partial waves and one-center data, including augmentation and optional GIPAW orbitals.
 !>        Calculation methods must explicitly support the PAW energy functional before using this option.
 ! **************************************************************************************************
    SUBROUTINE atom_read_upf(pot, upf_filename, read_header, read_augmentation, read_paw)
@@ -420,6 +430,8 @@ CONTAINS
                ! skip section for now
             ELSE IF (nametag(2:7) == "PP_PAW") THEN
                IF (ALLOCATED(pot%paw)) CALL upf_paw_section(parser, pot)
+            ELSE IF (nametag == "<PP_GIPAW" .OR. nametag == "<PP_GIPAW>") THEN
+               IF (ALLOCATED(pot%paw)) CALL upf_gipaw_section(parser, pot, nametag)
             ELSE IF (nametag(2:6) == "/UPF>") THEN
                EXIT
             END IF
@@ -1204,21 +1216,25 @@ CONTAINS
 !> \param values Array in the original file convention.
 !> \param index_value Optional projector index attribute, or -1 if absent.
 !> \param angular_momentum Optional angular momentum attribute, or -1 if absent.
+!> \param principal_quantum_number Optional principal quantum number attribute, or -1 if absent.
 ! **************************************************************************************************
-   SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum)
+   SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum, principal_quantum_number)
       TYPE(cp_parser_type), INTENT(INOUT)                :: parser
       CHARACTER(LEN=*), INTENT(IN)                       :: tag
       REAL(dp), INTENT(OUT)                              :: values(:)
-      INTEGER, INTENT(OUT), OPTIONAL                     :: index_value, angular_momentum
+      INTEGER, INTENT(OUT), OPTIONAL                     :: index_value, angular_momentum, &
+                                                            principal_quantum_number
 
       CHARACTER(LEN=default_string_length)               :: name, string, value
       INTEGER                                            :: i, last, n
       LOGICAL                                            :: at_end
+      REAL(dp)                                           :: quantum_number
 
       n = SIZE(values)
       last = LEN_TRIM(tag)
       IF (PRESENT(index_value)) index_value = -1
       IF (PRESENT(angular_momentum)) angular_momentum = -1
+      IF (PRESENT(principal_quantum_number)) principal_quantum_number = -1
       IF (tag(last:last) == ">") THEN
          name = tag(2:last - 1)
       ELSE
@@ -1244,7 +1260,19 @@ CONTAINS
                CALL parser_get_object(parser, index_value)
             CASE ("L")
                CPASSERT(PRESENT(angular_momentum))
-               CALL parser_get_object(parser, angular_momentum)
+               ! QE also writes these integer-valued attributes as REAL literals.
+               CALL parser_get_object(parser, quantum_number)
+               CPASSERT(ieee_is_finite(quantum_number))
+               CPASSERT(quantum_number >= 0.0_dp .AND. quantum_number < REAL(HUGE(0), dp))
+               CPASSERT(quantum_number == REAL(NINT(quantum_number), dp))
+               angular_momentum = NINT(quantum_number)
+            CASE ("N")
+               CPASSERT(PRESENT(principal_quantum_number))
+               CALL parser_get_object(parser, quantum_number)
+               CPASSERT(ieee_is_finite(quantum_number))
+               CPASSERT(quantum_number >= 1.0_dp .AND. quantum_number < REAL(HUGE(0), dp))
+               CPASSERT(quantum_number == REAL(NINT(quantum_number), dp))
+               principal_quantum_number = NINT(quantum_number)
             CASE ("LABEL")
                CALL parser_get_object(parser, value, allow_empty=.TRUE.)
             CASE DEFAULT
@@ -1327,6 +1355,124 @@ CONTAINS
          END SELECT
       END DO
    END SUBROUTINE upf_paw_section
+
+! **************************************************************************************************
+!> \brief Import optional PAW GIPAW orbitals without assigning frozen-core states or occupations.
+!> \param parser Token stream after the PP_GIPAW tag name.
+!> \param pot Explicitly requested scalar PAW data.
+!> \param opening_tag PP_GIPAW opening tag.
+! **************************************************************************************************
+   SUBROUTINE upf_gipaw_section(parser, pot, opening_tag)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+      TYPE(atom_upfpot_type), INTENT(INOUT)              :: pot
+      CHARACTER(LEN=*), INTENT(IN)                       :: opening_tag
+
+      CHARACTER(LEN=default_string_length)               :: string, tag
+      INTEGER                                            :: data_format
+      LOGICAL                                            :: at_end
+
+      data_format = -1
+      IF (opening_tag /= "<PP_GIPAW>") THEN
+         DO
+            IF (parser_test_next_token(parser) == "EOL") THEN
+               CALL upf_next_line(parser, at_end)
+               CPASSERT(.NOT. at_end)
+            END IF
+            CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
+            IF (string == ">") EXIT
+            CPASSERT(string == "GIPAW_DATA_FORMAT" .AND. data_format == -1)
+            CALL parser_get_object(parser, data_format)
+            CPASSERT(data_format >= 0)
+         END DO
+      END IF
+      DO
+         CALL upf_next_line(parser, at_end)
+         CPASSERT(.NOT. at_end)
+         CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
+         IF (tag == "</PP_GIPAW>") EXIT
+         IF (tag == "<PP_GIPAW_CORE_ORBITALS" .OR. tag == "<PP_GIPAW_CORE_ORBITALS>") THEN
+            CPASSERT(.NOT. ALLOCATED(pot%paw%gipaw_core_orbitals))
+            ALLOCATE (pot%paw%gipaw_core_orbitals)
+            pot%paw%gipaw_core_orbitals%data_format = data_format
+            CALL upf_gipaw_core_section(parser, pot%paw%gipaw_core_orbitals, tag, pot%mesh_size)
+         END IF
+         ! Other GIPAW reconstruction sections do not describe this orbital table.
+      END DO
+   END SUBROUTINE upf_gipaw_section
+
+! **************************************************************************************************
+!> \brief Read the original indexed GIPAW radial orbitals, including an explicitly empty table.
+!> \param parser Token stream after the PP_GIPAW_CORE_ORBITALS tag name.
+!> \param orbitals Neutral data; no relation to beta indices or PAW valence occupations is imposed.
+!> \param opening_tag PP_GIPAW_CORE_ORBITALS opening tag.
+!> \param mesh_size Number of radial samples in PP_HEADER.
+! **************************************************************************************************
+   SUBROUTINE upf_gipaw_core_section(parser, orbitals, opening_tag, mesh_size)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+      TYPE(upf_gipaw_orbitals_type), INTENT(INOUT)       :: orbitals
+      CHARACTER(LEN=*), INTENT(IN)                       :: opening_tag
+      INTEGER, INTENT(IN)                                :: mesh_size
+
+      CHARACTER(LEN=*), PARAMETER :: prefix = "<PP_GIPAW_CORE_ORBITAL."
+
+      CHARACTER(LEN=default_string_length)               :: string, tag
+      INTEGER                                            :: count, i, index_value, ios, l, last, n
+      LOGICAL                                            :: at_end, self_closing
+      LOGICAL, ALLOCATABLE                               :: found(:)
+      REAL(dp), ALLOCATABLE                              :: values(:)
+
+      count = -1
+      self_closing = .FALSE.
+      CPASSERT(mesh_size > 0)
+      CPASSERT(opening_tag /= "<PP_GIPAW_CORE_ORBITALS>")
+      DO
+         IF (parser_test_next_token(parser) == "EOL") THEN
+            CALL upf_next_line(parser, at_end)
+            CPASSERT(.NOT. at_end)
+         END IF
+         CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
+         IF (string == ">") EXIT
+         IF (string == "/>") THEN
+            self_closing = .TRUE.
+            EXIT
+         END IF
+         CPASSERT(string == "NUMBER_OF_CORE_ORBITALS" .AND. count == -1)
+         CALL parser_get_object(parser, count)
+         CPASSERT(count >= 0)
+      END DO
+      CPASSERT(count >= 0)
+      ALLOCATE (orbitals%wfc(mesh_size, count), orbitals%indices(count), &
+                orbitals%principal_quantum_numbers(count), orbitals%angular_momenta(count))
+      ALLOCATE (found(count), values(mesh_size))
+      found = .FALSE.
+      IF (self_closing) THEN
+         CPASSERT(count == 0)
+         RETURN
+      END IF
+      DO
+         CALL upf_next_line(parser, at_end)
+         CPASSERT(.NOT. at_end)
+         CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
+         IF (tag == "</PP_GIPAW_CORE_ORBITALS>") EXIT
+         CPASSERT(tag(1:LEN(prefix)) == prefix)
+         last = LEN_TRIM(tag)
+         IF (tag(last:last) == ">") last = last - 1
+         string = tag(LEN(prefix) + 1:last)
+         READ (string, *, IOSTAT=ios) i
+         CPASSERT(ios == 0)
+         CPASSERT(i >= 1 .AND. i <= count)
+         CPASSERT(.NOT. found(i))
+         CALL upf_real_array(parser, tag, values, index_value, l, n)
+         CPASSERT(index_value == i)
+         CPASSERT(n >= 1 .AND. l >= 0 .AND. n > l)
+         orbitals%wfc(:, i) = values
+         orbitals%indices(i) = index_value
+         orbitals%principal_quantum_numbers(i) = n
+         orbitals%angular_momenta(i) = l
+         found(i) = .TRUE.
+      END DO
+      CPASSERT(ALL(found))
+   END SUBROUTINE upf_gipaw_core_section
 
 ! **************************************************************************************************
 !> \brief ...
