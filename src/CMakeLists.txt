@@ -1715,6 +1715,11 @@ foreach(cp2k_prog ${CP2K_PROGS_F})
     ${cp2k_prog} PROPERTIES COMPILE_DEFINITIONS __SHORT_FILE__="${cp2k_prog}")
 endforeach()
 
+set_property(
+  SOURCE ${CMAKE_CURRENT_BINARY_DIR}/skala_sirius.F
+  APPEND PROPERTY COMPILE_DEFINITIONS
+                  $<$<BOOL:${CP2K_SIRIUS_XC_POINT_UPDATE}>:__SIRIUS_XC_POINT_UPDATE>)
+
 if(BUILD_SHARED_LIBS)
   add_library(cp2k SHARED
               "${CP2K_SRCS};${CP2K_SRCS_C};${CP2K_SRCS_GPU};${CP2K_SRCS_CPP}")
@@ -1965,7 +1970,8 @@ if(CP2K_USE_LIBTORCH)
     target_compile_definitions(
       skala_sirius_unittest
       PRIVATE $<$<BOOL:${CP2K_SIRIUS_XC_DERIVATIVE}>:__SIRIUS_XC_DERIVATIVE>
-              $<$<BOOL:${CP2K_SIRIUS_XC_POINT_GEOMETRY}>:__SIRIUS_XC_POINT_GEOMETRY>)
+              $<$<BOOL:${CP2K_SIRIUS_XC_POINT_GEOMETRY}>:__SIRIUS_XC_POINT_GEOMETRY>
+              $<$<BOOL:${CP2K_SIRIUS_XC_POINT_UPDATE}>:__SIRIUS_XC_POINT_UPDATE>)
   endif()
 endif()
 

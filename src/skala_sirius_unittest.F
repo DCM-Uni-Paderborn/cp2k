@@ -6,7 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 
 PROGRAM skala_sirius_unittest
-   USE cell_methods, ONLY: cell_create
+   USE cell_methods, ONLY: cell_create, init_cell
    USE cell_types, ONLY: cell_release, &
                          cell_type
    USE ieee_arithmetic, ONLY: ieee_is_finite
@@ -34,6 +34,7 @@ PROGRAM skala_sirius_unittest
       sirius_create_kset, sirius_find_ground_state, sirius_free_handler, &
       sirius_generate_effective_potential, sirius_get_energy, sirius_ground_state_handler, &
       sirius_get_forces, &
+      sirius_get_max_num_gkvec, sirius_set_atom_position, sirius_update_ground_state, &
       sirius_import_parameters, sirius_initialize_context, sirius_kpoint_set_handler, &
       sirius_set_atom_type_dion, sirius_set_atom_type_paw, sirius_set_atom_type_radial_grid, &
       sirius_set_atom_type_radial_grid_inf, &
@@ -48,7 +49,7 @@ PROGRAM skala_sirius_unittest
    USE skala_sirius, ONLY: skala_sirius_register_atom_grid, &
                            skala_sirius_register_points, &
                            skala_sirius_release, &
-                           skala_sirius_state_type
+                           skala_sirius_state_type, skala_sirius_update
 
    IMPLICIT NONE
 
@@ -67,12 +68,14 @@ PROGRAM skala_sirius_unittest
    CHARACTER(len=default_path_length) :: model, paw_setup
    CHARACTER(len=32) :: side_arg, step_arg, grid_arg
    INTEGER :: i, l, mode, mag, nr, nb, x, y, z, ierr, side, first_mode, last_mode, geometry, natoms
+   INTEGER :: updated_basis, fresh_basis
    REAL(dp) :: lattice(3, 3), r(nrad), v(nrad), rho(nrad), orbital(nrad), dion(1, 1), &
                energy, exc, repeat_exc, kpoint(3, 1), reference(3, 2), fd_step, &
                rmt(nmt), rfree(nfree), rhofree(nfree)
    REAL(dp), PARAMETER :: force_steps(5) = [0.0_dp, 2.0e-4_dp, -2.0e-4_dp, 1.0e-4_dp, -1.0e-4_dp], &
                           direction(3) = [0.7_dp, -0.4_dp, 0.2_dp]
    REAL(dp) :: force_energy(5), force_derivative, force_fd, entropy, density_tol, energy_tol
+   REAL(dp) :: updated_energy, updated_exc
    REAL(dp), ALLOCATABLE :: forces(:, :)
 #if defined(__SIRIUS_XC_DERIVATIVE)
    REAL(dp) :: derivatives(3, 2), errors(2, 2)
@@ -83,7 +86,7 @@ PROGRAM skala_sirius_unittest
 #endif
    REAL(dp), ALLOCATABLE :: points(:, :), weights(:), descriptor_weights(:), centres(:, :)
    INTEGER, ALLOCATABLE :: sizes(:)
-   LOGICAL :: converged, atom_grid, force_test
+   LOGICAL :: converged, atom_grid, force_test, update_test
 
    CALL get_command_argument(1, model)
    CALL get_command_argument(2, paw_setup)
@@ -91,8 +94,12 @@ PROGRAM skala_sirius_unittest
    CALL get_command_argument(4, step_arg)
    CALL get_command_argument(5, grid_arg)
    force_test = TRIM(grid_arg) == "atom-grid-forces"
-   atom_grid = TRIM(grid_arg) == "atom-grid" .OR. force_test
-   IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. atom_grid) ERROR STOP "Optional grid must be atom-grid or atom-grid-forces"
+   update_test = TRIM(grid_arg) == "atom-grid-update"
+   atom_grid = TRIM(grid_arg) == "atom-grid" .OR. force_test .OR. update_test
+   IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. atom_grid) ERROR STOP "Unknown atom-grid test mode"
+#if !defined(__SIRIUS_XC_POINT_UPDATE)
+   IF (update_test) ERROR STOP "SIRIUS lacks the point-quadrature update API"
+#endif
    IF (force_test .AND. TRIM(paw_setup) == "LAPW") ERROR STOP "LAPW forces require basis and boundary derivatives"
 #if !defined(__SIRIUS_XC_POINT_GEOMETRY)
    IF (atom_grid) ERROR STOP "SIRIUS lacks the point geometry callbacks"
@@ -149,13 +156,13 @@ PROGRAM skala_sirius_unittest
    lattice(2, 2) = 9.0_dp
    lattice(3, 3) = 10.0_dp
    CALL cell_create(cell, hmat=lattice, periodic=[1, 1, 1])
-   natoms = MERGE(2, 1, force_test)
+   natoms = MERGE(2, 1, force_test .OR. (update_test .AND. first_mode /= 2))
    ALLOCATE (atoms(natoms), forces(3, natoms))
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
    ALLOCATE (atom_derivative(3, natoms), repeat_atom(3, natoms))
 #endif
    atoms(1)%r = [1.6_dp, 2.7_dp, 4.0_dp]
-   IF (force_test) atoms(2)%r = [3.84_dp, 4.59_dp, 5.9_dp]
+   IF (natoms == 2) atoms(2)%r = [3.84_dp, 4.59_dp, 5.9_dp]
    nr = 0
    nb = 0
    IF (comm%mepos == 0) THEN
@@ -183,9 +190,10 @@ PROGRAM skala_sirius_unittest
    kpoint(:, 1) = [0.07_dp, 0.03_dp, 0.02_dp]
 
    DO mode = first_mode, last_mode
-      DO mag = MERGE(mode, 0, force_test), MERGE(mode, 1, force_test)
-         DO geometry = 1, MERGE(5, 1, force_test)
+      DO mag = MERGE(MIN(mode, 1), 0, force_test .OR. update_test), MERGE(MIN(mode, 1), 1, force_test .OR. update_test)
+         DO geometry = 1, MERGE(5, MERGE(2, 1, update_test), force_test)
             atoms(1)%r = [1.6_dp, 2.7_dp, 4.0_dp] + force_steps(geometry)*direction
+            IF (update_test) CALL set_update_geometry(geometry == 2)
             CALL sirius_create_context(comm%get_handle(), ctx)
             IF (mode == 2) THEN
                CALL sirius_import_parameters(ctx, &
@@ -259,7 +267,7 @@ PROGRAM skala_sirius_unittest
                END IF
             END IF
             DO i = 1, natoms
-               CALL sirius_add_atom(ctx, "He", atoms(i)%r/[8.0_dp, 9.0_dp, 10.0_dp])
+               CALL sirius_add_atom(ctx, "He", MATMUL(cell%h_inv, atoms(i)%r))
             END DO
             IF (atom_grid) THEN
                CALL skala_sirius_register_atom_grid(ctx, xc, atoms, cell, comm, grid, state)
@@ -270,10 +278,10 @@ PROGRAM skala_sirius_unittest
             CALL sirius_create_kset(ctx, 1, kpoint, [1.0_dp], .TRUE., ks)
             CALL sirius_create_ground_state(ks, gs)
             converged = .FALSE.
-            density_tol = MERGE(1.0e-10_dp, 2.0e-6_dp, force_test)
-            energy_tol = MERGE(1.0e-11_dp, 2.0e-7_dp, force_test)
+            density_tol = MERGE(1.0e-10_dp, 2.0e-6_dp, force_test .OR. update_test)
+            energy_tol = MERGE(1.0e-11_dp, 2.0e-7_dp, force_test .OR. update_test)
             CALL sirius_find_ground_state(gs, density_tol=density_tol, energy_tol=energy_tol, &
-                                          iter_solver_tol=MERGE(1.0e-11_dp, 1.0e-9_dp, force_test), &
+                                          iter_solver_tol=MERGE(1.0e-11_dp, 1.0e-9_dp, force_test .OR. update_test), &
                                           max_niter=150, save_state=.FALSE., converged=converged, error_code=ierr)
             IF (ierr /= 0) ERROR STOP "SIRIUS Skala SCF failed"
             CALL sirius_get_energy(gs, "total", energy)
@@ -299,7 +307,7 @@ PROGRAM skala_sirius_unittest
             CALL sirius_get_energy(gs, "exc", repeat_exc)
             IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Unchanged density changed the point XC energy"
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
-            IF (atom_grid .AND. .NOT. force_test) THEN
+            IF (atom_grid .AND. .NOT. force_test .AND. .NOT. update_test) THEN
                CALL sirius_get_xc_geometry_derivatives(gs, natoms, atom_derivative, cell_derivative, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "SIRIUS Skala geometry callback failed"
                IF (.NOT. ALL(ieee_is_finite(atom_derivative)) .OR. .NOT. ALL(ieee_is_finite(cell_derivative))) &
@@ -332,6 +340,51 @@ PROGRAM skala_sirius_unittest
                IF (ierr /= 0) ERROR STOP "Restoring the atom grid did not restore energy evaluation"
             END IF
 #endif
+            IF (update_test) THEN
+               IF (geometry == 1) THEN
+                  CALL sirius_get_max_num_gkvec(ks, updated_basis)
+                  CALL set_update_geometry(.TRUE.)
+                  CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
+                  DO i = 1, natoms
+                     CALL sirius_set_atom_position(ctx, i, MATMUL(cell%h_inv, atoms(i)%r))
+                  END DO
+                  CALL skala_sirius_update(ctx, state, atoms, cell, comm)
+                  CALL sirius_update_ground_state(gs)
+                  CALL skala_sirius_update(ctx, state, atoms, cell, comm)
+                  converged = .FALSE.
+                  CALL sirius_find_ground_state(gs, density_tol=density_tol, energy_tol=energy_tol, &
+                                                iter_solver_tol=1.0e-11_dp, initial_guess=.FALSE., &
+                                                max_niter=150, save_state=.FALSE., converged=converged, error_code=ierr)
+                  IF (ierr /= 0 .OR. .NOT. converged) ERROR STOP "Updated geometry SCF did not converge"
+                  CALL sirius_get_energy(gs, "total", updated_energy)
+                  CALL sirius_get_energy(gs, "exc", updated_exc)
+                  IF (.NOT. ieee_is_finite(updated_energy) .OR. .NOT. ieee_is_finite(updated_exc)) &
+                     ERROR STOP "Nonfinite energy after geometry update"
+                  IF (ABS(updated_energy - energy) < 1.0e-7_dp) ERROR STOP "Vacuous geometry-update check"
+#if defined(__SIRIUS_XC_POINT_GEOMETRY)
+                  CALL sirius_get_xc_geometry_derivatives(gs, natoms, atom_derivative, cell_derivative, error_code=ierr)
+                  IF (ierr /= 0) ERROR STOP "Updated geometry callback failed"
+#endif
+               ELSE
+                  CALL sirius_get_max_num_gkvec(ks, fresh_basis)
+                  IF (updated_basis /= fresh_basis) ERROR STOP "Geometry-update fixture crosses the orbital cutoff"
+                  IF (comm%mepos == 0) WRITE (*, '(A,2I3,2ES19.10)') "Updated/fresh energy differences (method,mag,E,Exc): ", &
+                     mode, mag, ABS(updated_energy - energy), ABS(updated_exc - exc)
+                  IF (ABS(updated_energy - energy) > 2.0e-7_dp .OR. ABS(updated_exc - exc) > 2.0e-7_dp) &
+                     ERROR STOP "Updated and fresh geometry energies differ"
+#if defined(__SIRIUS_XC_POINT_GEOMETRY)
+                  CALL sirius_get_xc_geometry_derivatives(gs, natoms, repeat_atom, repeat_cell, error_code=ierr)
+                  IF (ierr /= 0) ERROR STOP "Fresh geometry callback failed"
+                  IF (.NOT. ALL(ieee_is_finite(atom_derivative)) .OR. .NOT. ALL(ieee_is_finite(cell_derivative)) .OR. &
+                      .NOT. ALL(ieee_is_finite(repeat_atom)) .OR. .NOT. ALL(ieee_is_finite(repeat_cell))) &
+                     ERROR STOP "Nonfinite geometry derivatives in update comparison"
+                  IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "Updated/fresh XC geometry derivative differences: ", &
+                     MAXVAL(ABS(repeat_atom - atom_derivative)), MAXVAL(ABS(repeat_cell - cell_derivative))
+                  IF (MAXVAL(ABS(repeat_atom - atom_derivative)) > 2.0e-6_dp .OR. &
+                      MAXVAL(ABS(repeat_cell - cell_derivative)) > 2.0e-6_dp) ERROR STOP "Updated geometry derivatives differ"
+#endif
+               END IF
+            END IF
 #if defined(__SIRIUS_XC_DERIVATIVE)
             IF (fd_step > 0.0_dp) THEN
                CALL sirius_check_external_xc_derivative(gs, fd_step, derivatives, error_code=ierr)
@@ -369,7 +422,7 @@ PROGRAM skala_sirius_unittest
          END IF
       END DO
    END DO
-   IF (.NOT. force_test .AND. ANY(ABS(reference(:, 1) - reference(:, 2)) > 2.0e-5_dp)) &
+   IF (.NOT. force_test .AND. .NOT. update_test .AND. ANY(ABS(reference(:, 1) - reference(:, 2)) > 2.0e-5_dp)) &
       ERROR STOP "Scalar and unpolarized collinear SCF energies differ"
    DEALLOCATE (points, weights, descriptor_weights, centres, sizes, atoms, forces)
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
@@ -384,4 +437,21 @@ PROGRAM skala_sirius_unittest
       CALL section_release(pwdft_definition)
    END IF
    CALL cp2k_finalize()
+CONTAINS
+   SUBROUTINE set_update_geometry(moved)
+      LOGICAL, INTENT(IN)                                :: moved
+
+      lattice = 0.0_dp
+      lattice(1, 1) = 8.0_dp
+      lattice(2, 2) = 9.0_dp
+      lattice(3, 3) = 10.0_dp
+      atoms(1)%r = [1.6_dp, 2.7_dp, 4.0_dp]
+      IF (moved) THEN
+         ! Cell strain must not change the cutoff-selected basis in this comparison.
+         lattice(1, 1) = 8.001_dp
+         lattice(1, 2) = 0.0003_dp
+         atoms(1)%r = atoms(1)%r + 0.01_dp*direction
+      END IF
+      CALL init_cell(cell, lattice)
+   END SUBROUTINE
 END PROGRAM skala_sirius_unittest

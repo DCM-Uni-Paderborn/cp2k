@@ -661,7 +661,6 @@ CONTAINS
 
 ! new atomic positions
       CALL qs_subsys_get(qs_subsys, particle_set=particle_set)
-      CALL skala_sirius_update(pwdft_env%skala_state, particle_set, my_cell)
       natom = SIZE(particle_set)
       DO iatom = 1, natom
          vr(1:3) = particle_set(iatom)%r(1:3)
@@ -669,6 +668,7 @@ CONTAINS
          v2(1:3) = vs(1:3)
          CALL sirius_set_atom_position(sctx, iatom, v2(1))
       END DO
+      CALL skala_sirius_update(sctx, pwdft_env%skala_state, particle_set, my_cell, pwdft_env%para_env%mp_comm_type)
 
 ! update ground-state class
       CALL sirius_update_ground_state(gs_handler)

@@ -29,14 +29,17 @@ MODULE skala_sirius
 #if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_set_xc_point_geometry_callbacks
 #endif
+#if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_update_xc_point_set
+#endif
 #endif
 #include "./base/base_uses.f90"
    IMPLICIT NONE
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'skala_sirius'
-   PUBLIC :: skala_sirius_state_type, skala_sirius_release, skala_sirius_update
+   PUBLIC :: skala_sirius_state_type, skala_sirius_release
 #if defined(__SIRIUS)
-   PUBLIC :: skala_sirius_register, skala_sirius_register_points, skala_sirius_register_atom_grid
+   PUBLIC :: skala_sirius_register, skala_sirius_register_points, skala_sirius_register_atom_grid, skala_sirius_update
 #endif
 
    TYPE, BIND(C) :: callback_token_type
@@ -64,7 +67,7 @@ CONTAINS
 
 #if defined(__SIRIUS)
 ! **************************************************************************************************
-!> \brief Construct a fixed periodic atom grid and register the joint field callback.
+!> \brief Construct a periodic atom grid and register the joint field callback.
 ! **************************************************************************************************
    SUBROUTINE skala_sirius_register_atom_grid(context, xc_section, particles, cell, group, grid_section, state)
       TYPE(sirius_context_handler), INTENT(IN)           :: context
@@ -206,28 +209,66 @@ CONTAINS
       next_id = next_id + 1
       state%token%id = next_id
       state%xc_section => xc_section
-      CALL skala_sirius_update(state, particles, cell)
+      CPASSERT(ASSOCIATED(particles))
+      CPASSERT(ASSOCIATED(cell))
+      state%particles => particles
+      state%cell => cell
       state%next => states
       states => state
    END SUBROUTINE
 
+#if defined(__SIRIUS)
 ! **************************************************************************************************
-!> \brief Refresh borrowed geometry pointers when the PWDFT subsystem changes.
+!> \brief Refresh the atom grid after setting SIRIUS geometry and before updating its ground state.
+!> \param context Initialized SIRIUS context with the new atoms and lattice.
 !> \param state Callback state.
 !> \param particles Current particle set.
 !> \param cell Current cell.
+!> \param group Context communicator.
 ! **************************************************************************************************
-   SUBROUTINE skala_sirius_update(state, particles, cell)
+   SUBROUTINE skala_sirius_update(context, state, particles, cell, group)
+      TYPE(sirius_context_handler), INTENT(IN)           :: context
       TYPE(skala_sirius_state_type), POINTER             :: state
       TYPE(particle_type), POINTER                       :: particles(:)
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(mp_comm_type), INTENT(IN)                     :: group
+
+      INTEGER                                            :: changed
+#if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
+      INTEGER                                            :: a, error
+      INTEGER, ALLOCATABLE                               :: sizes(:)
+      REAL(dp), ALLOCATABLE                              :: block_centres(:, :), centres(:, :), &
+                                                            descriptor(:), energy(:), points(:, :)
+#endif
 
       IF (.NOT. ASSOCIATED(state)) RETURN
       CPASSERT(ASSOCIATED(particles))
       CPASSERT(ASSOCIATED(cell))
       state%particles => particles
       state%cell => cell
+      changed = MERGE(0, 1, grid_geometry_current(state))
+      CALL group%max(changed)
+      IF (changed == 0) RETURN
+#if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
+      CPASSERT(ALL(cell%perd == 1))
+      CPASSERT(SIZE(particles) == SIZE(state%grid_centres, 2))
+      ALLOCATE (centres(3, SIZE(particles)))
+      DO a = 1, SIZE(particles)
+         centres(:, a) = particles(a)%r
+      END DO
+      CALL skala_atom_grid_build(group, cell%hmat, centres, state%nradial, state%nangular, state%shell, state%scale, &
+                                 points, energy, descriptor, sizes, block_centres)
+      CALL sirius_update_xc_point_set(context, SIZE(energy), SIZE(sizes), points, energy, descriptor, &
+                                      sizes, block_centres, error_code=error)
+      IF (error /= 0) CPABORT("Could not update the SIRIUS Skala atom quadrature")
+      state%grid_lattice = cell%hmat
+      CALL MOVE_ALLOC(centres, state%grid_centres)
+#else
+      MARK_USED(context)
+      CPABORT("Moving Skala atom grids require the SIRIUS point-quadrature update API")
+#endif
    END SUBROUTINE
+#endif
 
 ! **************************************************************************************************
 !> \brief Release callback state after the associated SIRIUS context has been destroyed.
@@ -324,7 +365,6 @@ CONTAINS
    END SUBROUTINE
 #endif
 
-#if defined(__SIRIUS_XC_POINT_CALLBACK) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief Check that an atom quadrature still belongs to the current host geometry.
 ! **************************************************************************************************
@@ -346,6 +386,7 @@ CONTAINS
       current = .TRUE.
    END FUNCTION
 
+#if defined(__SIRIUS_XC_POINT_CALLBACK) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief Return raw discrete covectors for joint fields, without dividing by quadrature weights.
 ! **************************************************************************************************
