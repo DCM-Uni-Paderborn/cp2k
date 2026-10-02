@@ -16,7 +16,8 @@ PROGRAM atom_upf_unittest
                                               sgp_construction
    USE atom_types,                      ONLY: &
         CGTO_BASIS, atom_basis_gridrep, atom_basis_type, atom_integrals, atom_potential_type, &
-        init_atom_basis, init_atom_basis_default_pp, release_atom_basis, sgp_pseudo
+        init_atom_basis, init_atom_basis_default_pp, init_atom_potential, release_atom_basis, &
+        release_atom_potential, sgp_pseudo, upf_pseudo
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
                                               atom_upfpot_type
@@ -465,11 +466,15 @@ CONTAINS
 !>        operator unchanged but would require rescaling USPP augmentation data too.
 ! **************************************************************************************************
    SUBROUTINE check_upf_units()
-      CHARACTER(LEN=*), PARAMETER                        :: fixture = "upf-units-test.upf"
+      CHARACTER(LEN=*), PARAMETER :: fixture = &
+         'upf-units-test-with-a-potential-filename-longer-than-'// &
+         'the-default-eighty-character-string-buffer.upf'
 
       INTEGER                                            :: unit
-      TYPE(atom_upfpot_type)                             :: potential
+      TYPE(atom_potential_type)                          :: atomic
       TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(section_type), POINTER                        :: specification
+      TYPE(section_vals_type), POINTER                   :: input, potential_section
 
       logger => cp_get_default_logger()
       IF (logger%para_env%is_source()) THEN
@@ -504,20 +509,30 @@ CONTAINS
          CLOSE (unit)
       END IF
       CALL logger%para_env%sync()
-      CALL atom_read_upf(potential, fixture)
-      IF (MAXVAL(ABS(potential%vlocal - [3.0_dp, 2.0_dp, 1.0_dp])) > 1.e-14_dp) THEN
-         ERROR STOP "UPF local potential is not in Hartree"
-      END IF
-      IF (MAXVAL(ABS(potential%beta(:, 1) - [2.0_dp, 4.0_dp, 6.0_dp])) > 1.e-14_dp) THEN
-         ERROR STOP "UPF changed the first tabulated projector amplitude"
-      END IF
-      IF (MAXVAL(ABS(potential%beta(:, 2) - [4.0_dp, -1.0_dp, 2.0_dp])) > 1.e-14_dp) THEN
-         ERROR STOP "UPF changed the second tabulated projector amplitude"
-      END IF
-      IF (MAXVAL(ABS(potential%dion - RESHAPE([1.0_dp, 0.2_dp, 0.2_dp, 4.0_dp], [2, 2]))) > 1.e-14_dp) THEN
-         ERROR STOP "UPF D matrix is not in the tabulated-projector convention"
-      END IF
-      CALL atom_release_upf(potential)
+      NULLIFY (specification, input)
+      CALL create_atom_section(specification)
+      CALL section_vals_create(input, specification)
+      potential_section => section_vals_get_subs_vals(input, 'POTENTIAL')
+      CALL section_vals_val_set(potential_section, 'PSEUDO_TYPE', i_val=upf_pseudo)
+      CALL section_vals_val_set(potential_section, 'POTENTIAL_FILE_NAME', c_val=fixture)
+      CALL init_atom_potential(atomic, potential_section, 2)
+      ASSOCIATE (potential => atomic%upf_pot)
+         IF (MAXVAL(ABS(potential%vlocal - [3.0_dp, 2.0_dp, 1.0_dp])) > 1.e-14_dp) THEN
+            ERROR STOP "UPF local potential is not in Hartree"
+         END IF
+         IF (MAXVAL(ABS(potential%beta(:, 1) - [2.0_dp, 4.0_dp, 6.0_dp])) > 1.e-14_dp) THEN
+            ERROR STOP "UPF changed the first tabulated projector amplitude"
+         END IF
+         IF (MAXVAL(ABS(potential%beta(:, 2) - [4.0_dp, -1.0_dp, 2.0_dp])) > 1.e-14_dp) THEN
+            ERROR STOP "UPF changed the second tabulated projector amplitude"
+         END IF
+         IF (MAXVAL(ABS(potential%dion - RESHAPE([1.0_dp, 0.2_dp, 0.2_dp, 4.0_dp], [2, 2]))) > 1.e-14_dp) THEN
+            ERROR STOP "UPF D matrix is not in the tabulated-projector convention"
+         END IF
+      END ASSOCIATE
+      CALL release_atom_potential(atomic)
+      CALL section_vals_release(input)
+      CALL section_release(specification)
       CALL logger%para_env%sync()
       IF (logger%para_env%is_source()) THEN
          OPEN (NEWUNIT=unit, FILE=fixture, STATUS="OLD")

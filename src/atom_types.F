@@ -2445,7 +2445,8 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: potential_section
       INTEGER, INTENT(IN)                                :: zval
 
-      CHARACTER(LEN=default_string_length)               :: pseudo_fn, pseudo_name
+      CHARACTER(LEN=default_path_length)                 :: pseudo_fn
+      CHARACTER(LEN=default_string_length)               :: pseudo_name
       INTEGER                                            :: ic
       REAL(dp), DIMENSION(:), POINTER                    :: convals
       TYPE(section_vals_type), POINTER                   :: ecp_potential_section, &
