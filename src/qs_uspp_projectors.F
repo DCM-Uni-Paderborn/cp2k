@@ -274,13 +274,15 @@ CONTAINS
 !> \param sap_int Uncompressed overlaps from build_sap_ints (not H-weighted achint).
 !> \param center_atoms Global atom indices for the USPP centers, in column-block order.
 !> \param projector_sizes Magnetic-projector count per selected center.
-!> \param overlaps New Gamma-point B matrix. Non-Gamma phases require a separate path.
+!> \param overlaps New unweighted B matrix, summed over the selected images.
+!> \param projector_cell Optional lattice cell T; retain only B(AO^0,P^T).
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_projector_matrix(template, sap_int, center_atoms, projector_sizes, overlaps)
+   SUBROUTINE qs_uspp_projector_matrix(template, sap_int, center_atoms, projector_sizes, overlaps, projector_cell)
       TYPE(dbcsr_type), INTENT(IN)                       :: template
       TYPE(sap_int_type), INTENT(IN)                     :: sap_int(:)
       INTEGER, INTENT(IN)                                :: center_atoms(:), projector_sizes(:)
       TYPE(dbcsr_type), INTENT(INOUT)                    :: overlaps
+      INTEGER, INTENT(IN), OPTIONAL                      :: projector_cell(3)
 
       INTEGER                                            :: atom, center, i, j, k, npcols, owner, &
                                                             pass
@@ -320,6 +322,9 @@ CONTAINS
                ! Unused entries have catom=0 and no integral storage.
                center = sap_int(i)%alist(j)%clist(k)%catom
                IF (center == 0) CYCLE
+               IF (PRESENT(projector_cell)) THEN
+                  IF (ANY(sap_int(i)%alist(j)%clist(k)%cell /= projector_cell)) CYCLE
+               END IF
                CPASSERT(center >= 1 .AND. center <= SIZE(atom_to_center))
                center = atom_to_center(center)
                IF (center == 0) CYCLE
@@ -357,13 +362,15 @@ CONTAINS
 !> \param center_atoms Global atom indices for the projector column blocks.
 !> \param atom_gradient Local energy gradients (3,natom), incremented in place.
 !> \param cell_gradient Optional strain energy gradient, including each periodic image.
+!> \param projector_cell Optional same lattice cell T as the forward B(AO^0,P^T).
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_projector_gradient(gradient, sap_int, center_atoms, atom_gradient, cell_gradient)
+   SUBROUTINE qs_uspp_projector_gradient(gradient, sap_int, center_atoms, atom_gradient, cell_gradient, projector_cell)
       TYPE(dbcsr_type), INTENT(INOUT)                    :: gradient
       TYPE(sap_int_type), INTENT(IN)                     :: sap_int(:)
       INTEGER, INTENT(IN)                                :: center_atoms(:)
       REAL(KIND=dp), INTENT(INOUT)                       :: atom_gradient(:, :)
       REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: cell_gradient(3, 3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: projector_cell(3)
 
       INTEGER                                            :: atom, catom, center, i, idir, j, k, owner
       INTEGER, ALLOCATABLE                               :: atom_to_center(:)
@@ -387,6 +394,9 @@ CONTAINS
             DO k = 1, SIZE(sap_int(i)%alist(j)%clist)
                catom = sap_int(i)%alist(j)%clist(k)%catom
                IF (catom == 0) CYCLE
+               IF (PRESENT(projector_cell)) THEN
+                  IF (ANY(sap_int(i)%alist(j)%clist(k)%cell /= projector_cell)) CYCLE
+               END IF
                CPASSERT(catom >= 1 .AND. catom <= SIZE(atom_to_center))
                center = atom_to_center(catom)
                IF (center == 0) CYCLE

@@ -39,7 +39,8 @@ PROGRAM qs_uspp_hfx_unittest
                                               qs_uspp_hfx_native_tensor,&
                                               qs_uspp_hfx_transition_adjoint,&
                                               qs_uspp_hfx_transition_tensor
-   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient
+   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
+                                              qs_uspp_projector_matrix
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE sap_kind_types,                  ONLY: release_sap_int,&
                                               sap_int_type
@@ -56,6 +57,8 @@ PROGRAM qs_uspp_hfx_unittest
    REAL(dp), PARAMETER :: gamma(nao) = [0.7_dp, 0.55_dp, 0.9_dp, 0.62_dp]
    REAL(dp), PARAMETER :: anisotropy(3) = [1.0_dp, 1.3_dp, 0.7_dp]
    REAL(dp), PARAMETER :: fraction = 0.27_dp, spin = 0.5_dp, pref = -fraction*spin, step = 2.e-5_dp
+   INTEGER, PARAMETER :: ncell = 3, cells(3, ncell) = RESHAPE([-1, 0, 0, 0, 0, 0, 1, 0, 0], [3, ncell])
+   REAL(dp), PARAMETER :: image_vector(3) = [1.1_dp, 0.3_dp, -0.25_dp]
    INTEGER, TARGET :: ao_sizes(natom) = [1, 2, 1], pp_sizes(ncenter) = [1, 1]
    INTEGER, TARGET :: ao_rows(natom), pp_cols(ncenter)
    INTEGER, ALLOCATABLE, TARGET :: grid(:, :)
@@ -128,6 +131,7 @@ PROGRAM qs_uspp_hfx_unittest
       CALL dbt_pgrid_create(comm, dims, native_grid)
       CALL dbt_pgrid_create(comm, target_dims, target_grid)
       CALL check_distributed_path()
+      CALL check_image_path()
       CALL dbt_pgrid_destroy(target_grid)
       CALL dbt_pgrid_destroy(native_grid)
       CALL dbcsr_distribution_release(distribution)
@@ -353,6 +357,317 @@ CONTAINS
    END SUBROUTINE check_distributed_path
 
 ! **************************************************************************************************
+!> \brief Independent image legs, stacked RI cells, selected SAP images and all affine derivatives.
+! **************************************************************************************************
+   SUBROUTINE check_image_path()
+      INTEGER                                            :: a, cell, idir, jdir, mu, nu, p
+      INTEGER, ALLOCATABLE                               :: d1(:), d2(:), d3(:)
+      REAL(dp) :: adjoint(ncell*naux, nao, nao), atom_gradient(3, natom), bleft(nao, ncenter), &
+         bright(nao, ncenter), c(ncell*naux, ncenter, ncenter), cell_gradient(3, 3), &
+         cref(ncell*naux, ncenter, ncenter), direction(3), fd, gathered(nao, ncenter), &
+         gb_left(nao, ncenter), gb_right(nao, ncenter), gc(ncell*naux, ncenter, ncenter), &
+         left_shift(3), minus, moved(3, natom), perturbed(ncell*naux, nao, nao), plus, &
+         right_shift(3), shifted(3, ncell), shifts(3, ncell), TARGET(ncell*naux, nao, nao), &
+         test_left(nao, ncenter), test_right(nao, ncenter), zero_left(nao, ncenter)
+      TYPE(dbcsr_type)                                   :: empty, gradient_left, gradient_right, &
+                                                            left, right, summed
+      TYPE(dbcsr_type), TARGET                           :: template
+      TYPE(dbt_type)                                     :: auxiliary, auxiliary_gradient, tensor, &
+                                                            tensor_adjoint
+      TYPE(sap_int_type), POINTER                        :: sap(:)
+
+      DO cell = 1, ncell
+         shifts(:, cell) = REAL(cells(1, cell), dp)*image_vector
+      END DO
+      left_shift = shifts(:, 3)
+      right_shift = shifts(:, 1)
+      CALL image_data(positions, shifts, left_shift, right_shift, bleft, bright, cref)
+      CALL make_overlap(bleft, template)
+      CALL make_image_sap(template, shifts, sap)
+      CALL qs_uspp_projector_matrix(template, sap, center_atom, pp_sizes, left, cells(:, 3))
+      CALL qs_uspp_projector_matrix(template, sap, center_atom, pp_sizes, right, cells(:, 1))
+      CALL gather_matrix(left, gathered)
+      CALL check(MAXVAL(ABS(gathered - bleft)), 'left projector cell selected exactly')
+      CALL gather_matrix(right, gathered)
+      CALL check(MAXVAL(ABS(gathered - bright)), 'right projector cell selected exactly')
+      CALL qs_uspp_projector_matrix(template, sap, center_atom, pp_sizes, summed)
+      CALL gather_matrix(summed, gathered)
+      CALL image_data(positions, shifts, [0.0_dp, 0.0_dp, 0.0_dp], right_shift, zero_left, test_right, c)
+      CALL check(MAXVAL(ABS(gathered - bleft - bright - zero_left)), 'unfiltered Gamma projector sum unchanged')
+      CALL qs_uspp_projector_matrix(template, sap, center_atom, pp_sizes, empty, [2, 0, 0])
+      CALL gather_matrix(empty, gathered)
+      CALL check(MAXVAL(ABS(gathered)), 'absent projector image has no overlaps')
+      CALL dbcsr_release(empty)
+      CALL dbcsr_release(summed)
+
+      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, native_grid, auxiliary, shifts, left_shift)
+      CALL gather_tensor(auxiliary, c)
+      CALL check(MAXVAL(ABS(c - cref)), 'stacked translated native C against Gaussian Coulomb', 3.e-8_dp)
+      CALL create_3c_tensor(tensor, d1, d2, d3, target_grid, [(1, p=1, ncell*naux)], &
+                            [(1, mu=1, nao)], [(1, nu=1, nao)], [1], [2, 3], name='Native image transition')
+      DEALLOCATE (d1, d2, d3)
+      CALL qs_uspp_hfx_transition_tensor(left, auxiliary, tensor, right)
+      CALL gather_tensor(tensor, TARGET)
+      CALL dense_transition(bleft, c, perturbed, bright)
+      CALL check(MAXVAL(ABS(TARGET - perturbed)), 'independent image legs and stacked RI reblocking')
+      IF (MAXVAL(ABS(TARGET(:, 2, 3) - TARGET(:, 3, 2))) < 1.e-4_dp) THEN
+         ERROR STOP 'Image fixture lost independent AO leg ordering'
+      END IF
+      CALL check_image_fourier(TARGET)
+      DO nu = 1, nao
+         DO mu = 1, nao
+            DO p = 1, ncell*naux
+               adjoint(p, mu, nu) = SIN(0.17_dp*p + 0.29_dp*mu - 0.43_dp*nu)
+            END DO
+         END DO
+      END DO
+      CALL create_3c_tensor(tensor_adjoint, d1, d2, d3, target_grid, [(1, p=1, ncell*naux)], &
+                            [(1, mu=1, nao)], [(1, nu=1, nao)], [1], [2, 3], name='Native image adjoint')
+      DEALLOCATE (d1, d2, d3)
+      CALL put_tensor(tensor_adjoint, adjoint)
+      CALL qs_uspp_hfx_transition_adjoint(left, auxiliary, tensor_adjoint, pref, &
+                                          gradient_left, auxiliary_gradient, right, gradient_right)
+      CALL gather_matrix(gradient_left, gb_left)
+      CALL gather_matrix(gradient_right, gb_right)
+      CALL gather_tensor(auxiliary_gradient, gc)
+      DO a = 1, ncenter
+         DO mu = 1, nao
+            test_left = bleft
+            test_left(mu, a) = test_left(mu, a) + step
+            CALL dense_transition(test_left, c, perturbed, bright)
+            plus = pref*SUM(adjoint*perturbed)
+            test_left(mu, a) = test_left(mu, a) - 2.0_dp*step
+            CALL dense_transition(test_left, c, perturbed, bright)
+            minus = pref*SUM(adjoint*perturbed)
+            CALL check(ABS((plus - minus)/(2.0_dp*step) - gb_left(mu, a)), 'independent left image adjoint FD', 2.e-9_dp)
+            test_right = bright
+            test_right(mu, a) = test_right(mu, a) + step
+            CALL dense_transition(bleft, c, perturbed, test_right)
+            plus = pref*SUM(adjoint*perturbed)
+            test_right(mu, a) = test_right(mu, a) - 2.0_dp*step
+            CALL dense_transition(bleft, c, perturbed, test_right)
+            minus = pref*SUM(adjoint*perturbed)
+            CALL check(ABS((plus - minus)/(2.0_dp*step) - gb_right(mu, a)), 'independent right image adjoint FD', 2.e-9_dp)
+         END DO
+         DO p = 1, ncell*naux
+            fd = pref*SUM(adjoint(p, :, :)*SPREAD(bleft(:, a), 2, nao)*SPREAD(bright(:, a), 1, nao))
+            CALL check(ABS(gc(p, a, a) - fd), 'stacked center-diagonal image C adjoint')
+         END DO
+      END DO
+      CALL check(MAXVAL(ABS(gc(:, 1, 2))) + MAXVAL(ABS(gc(:, 2, 1))), 'no off-center image C variables')
+      atom_gradient = 0.0_dp
+      cell_gradient = 0.0_dp
+      CALL qs_uspp_projector_gradient(gradient_left, sap, center_atom, atom_gradient, cell_gradient, cells(:, 3))
+      CALL qs_uspp_projector_gradient(gradient_right, sap, center_atom, atom_gradient, cell_gradient, cells(:, 1))
+      CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
+                                       atom_gradient, cell_gradient, shifts, left_shift)
+      CALL comm%sum(atom_gradient)
+      CALL comm%sum(cell_gradient)
+      CALL check(MAXVAL(ABS(SUM(atom_gradient, DIM=2))), 'image native and projector translation sum rule')
+      direction = [0.3_dp, -0.2_dp, 0.4_dp]
+      DO a = 1, natom
+         moved = positions
+         moved(:, a) = moved(:, a) + step*direction
+         plus = image_energy(moved, shifts, left_shift, right_shift, adjoint)
+         moved(:, a) = moved(:, a) - 2.0_dp*step*direction
+         minus = image_energy(moved, shifts, left_shift, right_shift, adjoint)
+         fd = (plus - minus)/(2.0_dp*step)
+         CALL check(ABS(fd - SUM(atom_gradient(:, a)*direction)), 'image native and both SAP legs atomic FD', 8.e-8_dp)
+      END DO
+      DO jdir = 1, 3
+         DO idir = 1, 3
+            moved = positions
+            shifted = shifts
+            left_shift = shifts(:, 3)
+            right_shift = shifts(:, 1)
+            moved(idir, :) = moved(idir, :) + step*positions(jdir, :)
+            shifted(idir, :) = shifted(idir, :) + step*shifts(jdir, :)
+            left_shift(idir) = left_shift(idir) + step*shifts(jdir, 3)
+            right_shift(idir) = right_shift(idir) + step*shifts(jdir, 1)
+            plus = image_energy(moved, shifted, left_shift, right_shift, adjoint)
+            moved = positions
+            shifted = shifts
+            left_shift = shifts(:, 3)
+            right_shift = shifts(:, 1)
+            moved(idir, :) = moved(idir, :) - step*positions(jdir, :)
+            shifted(idir, :) = shifted(idir, :) - step*shifts(jdir, :)
+            left_shift(idir) = left_shift(idir) - step*shifts(jdir, 3)
+            right_shift(idir) = right_shift(idir) - step*shifts(jdir, 1)
+            minus = image_energy(moved, shifted, left_shift, right_shift, adjoint)
+            fd = (plus - minus)/(2.0_dp*step)
+            CALL check(ABS(fd - cell_gradient(idir, jdir)), 'image native and both SAP legs affine FD', 8.e-8_dp)
+         END DO
+      END DO
+      CALL dbcsr_release(gradient_left)
+      CALL dbcsr_release(gradient_right)
+      CALL dbcsr_release(left)
+      CALL dbcsr_release(right)
+      CALL dbcsr_release(template)
+      CALL dbt_destroy(auxiliary_gradient)
+      CALL dbt_destroy(auxiliary)
+      CALL dbt_destroy(tensor_adjoint)
+      CALL dbt_destroy(tensor)
+      CALL release_sap_int(sap)
+   END SUBROUTINE check_image_path
+
+! **************************************************************************************************
+!> \brief Cartesian closed Gaussian B and C with independent T, U and stacked S.
+!> \param coords Original atomic coordinates.
+!> \param shifts RI-cell Cartesian translations S.
+!> \param left_shift Projector translation T for the first AO leg and Q.
+!> \param right_shift Projector translation U=T-R for the second AO leg.
+!> \param bleft Independent left overlaps.
+!> \param bright Independent right overlaps.
+!> \param c Full translated analytic Coulomb integrals.
+! **************************************************************************************************
+   SUBROUTINE image_data(coords, shifts, left_shift, right_shift, bleft, bright, c)
+      REAL(dp), INTENT(IN)                               :: coords(3, natom), shifts(3, ncell), &
+                                                            left_shift(3), right_shift(3)
+      REAL(dp), INTENT(OUT) :: bleft(nao, ncenter), bright(nao, ncenter), &
+         c(ncell*naux, ncenter, ncenter)
+
+      INTEGER                                            :: a, atom, cell, mu, p, shell
+      REAL(dp)                                           :: distance(3), f0, kappa, t
+
+      c = 0.0_dp
+      DO a = 1, ncenter
+         DO mu = 1, nao
+            distance = coords(:, ao_atom(mu)) - coords(:, center_atom(a)) - left_shift
+            bleft(mu, a) = amplitude(mu)*EXP(-gamma(mu)*SUM(anisotropy*distance**2))
+            distance = coords(:, ao_atom(mu)) - coords(:, center_atom(a)) - right_shift
+            bright(mu, a) = amplitude(mu)*EXP(-gamma(mu)*SUM(anisotropy*distance**2))
+         END DO
+         DO cell = 1, ncell
+            DO atom = 1, natom
+               distance = coords(:, center_atom(a)) + left_shift - coords(:, atom) - shifts(:, cell)
+               DO shell = 1, 2
+                  p = (cell - 1)*naux + 2*(atom - 1) + shell
+                  kappa = alpha(shell)*beta/(alpha(shell) + beta)
+                  t = kappa*SUM(distance**2)
+                  f0 = 1.0_dp
+                  IF (t > 0.0_dp) f0 = SQRT(pi)*ERF(SQRT(t))/(2.0_dp*SQRT(t))
+                  c(p, a, a) = coefficient(shell)*2.0_dp*pi**2.5_dp*f0/ &
+                               (fourpi*alpha(shell)*beta*SQRT(alpha(shell) + beta))
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE image_data
+
+! **************************************************************************************************
+!> \brief Replicated synthetic SAP images with actual translated displacements and derivatives.
+!> \param matrix Matrix row distribution matching the SAP ownership.
+!> \param shifts Cartesian translations in cells order.
+!> \param sap New unweighted image overlap list.
+! **************************************************************************************************
+   SUBROUTINE make_image_sap(matrix, shifts, sap)
+      TYPE(dbcsr_type), INTENT(IN)                       :: matrix
+      REAL(dp), INTENT(IN)                               :: shifts(3, ncell)
+      TYPE(sap_int_type), POINTER                        :: sap(:)
+
+      INTEGER                                            :: a, atom, axis, cell, first, mu, myrow, &
+                                                            slot
+      REAL(dp)                                           :: distance(3), value
+
+      ALLOCATE (sap(1))
+      ALLOCATE (sap(1)%alist(natom))
+      CALL dbcsr_get_info(matrix, my_prow=myrow)
+      DO atom = 1, natom
+         IF (ao_rows(atom) /= myrow) CYCLE
+         first = SUM(ao_sizes(:atom - 1)) + 1
+         sap(1)%alist(atom)%aatom = atom
+         ALLOCATE (sap(1)%alist(atom)%clist(ncenter*ncell))
+         DO cell = 1, ncell
+            DO a = 1, ncenter
+               slot = (cell - 1)*ncenter + a
+               distance = positions(:, center_atom(a)) + shifts(:, cell) - positions(:, atom)
+               ASSOCIATE (ENTRY => sap(1)%alist(atom)%clist(slot))
+                  entry%catom = center_atom(a)
+                  entry%cell = cells(:, cell)
+                  entry%rac = distance
+                  ALLOCATE (entry%acint(ao_sizes(atom), 1, 4))
+                  DO mu = first, first + ao_sizes(atom) - 1
+                     value = amplitude(mu)*EXP(-gamma(mu)*SUM(anisotropy*distance**2))
+                     entry%acint(mu - first + 1, 1, 1) = value
+                     DO axis = 1, 3
+                        entry%acint(mu - first + 1, 1, axis + 1) = 2.0_dp*gamma(mu)*anisotropy(axis)*distance(axis)*value
+                     END DO
+                  END DO
+               END ASSOCIATE
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE make_image_sap
+
+! **************************************************************************************************
+!> \brief Energy of the independent analytic image fixture at a fixed nonsymmetric adjoint.
+!> \param coords Original atomic coordinates.
+!> \param shifts Translated RI cells, including their affine motion.
+!> \param left_shift Projector translation T.
+!> \param right_shift Projector translation T-R.
+!> \param adjoint Fixed unsplit image transition adjoint, without pref.
+!> \return Linear test energy; all derivatives follow the same Cartesian image geometry.
+! **************************************************************************************************
+   FUNCTION image_energy(coords, shifts, left_shift, right_shift, adjoint) RESULT(energy)
+      REAL(dp), INTENT(IN)                               :: coords(3, natom), shifts(3, ncell), &
+                                                            left_shift(3), right_shift(3), &
+                                                            adjoint(ncell*naux, nao, nao)
+      REAL(dp)                                           :: energy
+
+      REAL(dp) :: bleft(nao, ncenter), bright(nao, ncenter), c(ncell*naux, ncenter, ncenter), &
+         tensor(ncell*naux, nao, nao)
+
+      CALL image_data(coords, shifts, left_shift, right_shift, bleft, bright, c)
+      CALL dense_transition(bleft, c, tensor, bright)
+      energy = pref*SUM(adjoint*tensor)
+   END FUNCTION image_energy
+
+! **************************************************************************************************
+!> \brief Compare explicit three-cell Gamma replication and complex Fourier image transforms.
+!>        This checks image phase and RI stacking algebra, not a production periodic HFX calculation.
+!> \param tensor A single R=T-U=2 image component with RI cells S=-1,0,+1.
+! **************************************************************************************************
+   SUBROUTINE check_image_fourier(tensor)
+      REAL(dp), INTENT(IN)                               :: tensor(ncell*naux, nao, nao)
+
+      COMPLEX(dp)                                        :: direct(naux, nao, nao), phase, &
+                                                            replica(naux, nao, nao)
+      INTEGER                                            :: a, b, ik, jk, q, s, slot
+      REAL(dp)                                           :: angle, imaginary
+
+      imaginary = 0.0_dp
+      DO ik = 0, ncell - 1
+         DO jk = 0, ncell - 1
+            DO q = 0, ncell - 1
+               direct = CMPLX(0.0_dp, 0.0_dp, dp)
+               IF (q == MODULO(jk - ik, ncell)) THEN
+                  DO slot = 1, ncell
+                     angle = 2.0_dp*pi*REAL(2*jk - q*cells(1, slot), dp)/REAL(ncell, dp)
+                     phase = CMPLX(COS(angle), SIN(angle), dp)
+                     direct = direct + phase*tensor((slot - 1)*naux + 1:slot*naux, :, :)/SQRT(REAL(ncell, dp))
+                  END DO
+               END IF
+               replica = CMPLX(0.0_dp, 0.0_dp, dp)
+               DO a = 0, ncell - 1
+                  DO b = 0, ncell - 1
+                     IF (MODULO(b - a, ncell) /= 2) CYCLE
+                     DO s = 0, ncell - 1
+                        slot = MODULO(s - a + 1, ncell) + 1
+                        angle = 2.0_dp*pi*REAL(-q*s - ik*a + jk*b, dp)/REAL(ncell, dp)
+                        phase = CMPLX(COS(angle), SIN(angle), dp)
+                        replica = replica + phase*tensor((slot - 1)*naux + 1:slot*naux, :, :)/REAL(ncell, dp)**1.5_dp
+                     END DO
+                  END DO
+               END DO
+               CALL check(MAXVAL(ABS(replica - direct)), 'complex k phases versus explicit Gamma-cell transform')
+               imaginary = MAX(imaginary, MAXVAL(ABS(AIMAG(direct))))
+            END DO
+         END DO
+      END DO
+      IF (imaginary < 1.e-4_dp) ERROR STOP 'Image Fourier fixture does not exercise complex k phases'
+   END SUBROUTINE check_image_fourier
+
+! **************************************************************************************************
 !> \brief Closed Gaussian-Gaussian erf formula and analytic overlap values, independent of native grids.
 !> \param coords ...
 !> \param b ...
@@ -392,20 +707,25 @@ CONTAINS
 !> \param b ...
 !> \param c ...
 !> \param tensor ...
+!> \param right_b Optional independent right projector leg.
 ! **************************************************************************************************
-   SUBROUTINE dense_transition(b, c, tensor)
+   SUBROUTINE dense_transition(b, c, tensor, right_b)
       REAL(dp), INTENT(IN)                               :: b(:, :), c(:, :, :)
-      REAL(dp), INTENT(OUT)                              :: tensor(naux, nao, nao)
+      REAL(dp), INTENT(OUT)                              :: tensor(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: right_b(:, :)
 
       INTEGER                                            :: a, d, mu, nu, p
+      REAL(dp)                                           :: right_value
 
       tensor = 0.0_dp
       DO nu = 1, nao
          DO mu = 1, nao
             DO d = 1, SIZE(b, 2)
                DO a = 1, SIZE(b, 2)
-                  DO p = 1, naux
-                     tensor(p, mu, nu) = tensor(p, mu, nu) + b(mu, a)*c(p, a, d)*b(nu, d)
+                  right_value = b(nu, d)
+                  IF (PRESENT(right_b)) right_value = right_b(nu, d)
+                  DO p = 1, SIZE(tensor, 1)
+                     tensor(p, mu, nu) = tensor(p, mu, nu) + b(mu, a)*c(p, a, d)*right_value
                   END DO
                END DO
             END DO

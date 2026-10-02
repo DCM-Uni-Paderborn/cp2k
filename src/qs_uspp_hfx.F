@@ -25,6 +25,7 @@ MODULE qs_uspp_hfx
         dbt_iterator_blocks_left, dbt_iterator_next_block, dbt_iterator_start, dbt_iterator_stop, &
         dbt_iterator_type, dbt_pgrid_type, dbt_put_block, dbt_scale, dbt_type
    USE hfx_types,                       ONLY: hfx_ri_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_potential_coulomb
    USE input_cp2k_hfx,                  ONLY: ri_pmat
    USE kinds,                           ONLY: dp
@@ -141,16 +142,20 @@ CONTAINS
 !> \param overlaps Original rectangular distributed B matrix; never globally replicated.
 !> \param auxiliary Complete native C, with unsplit RI and magnetic-projector blocks.
 !> \param tensor Target full (RI,AO,AO), incremented after reblocking and redistribution.
+!> \param right_overlaps Optional independent right B, e.g. B(AO^0,P^(T-R)) for an AO image R.
+!>        The default is the same B on both legs. No AO symmetry or phase is imposed.
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_hfx_transition_tensor(overlaps, auxiliary, tensor)
+   SUBROUTINE qs_uspp_hfx_transition_tensor(overlaps, auxiliary, tensor, right_overlaps)
       TYPE(dbcsr_type), INTENT(IN), TARGET               :: overlaps
       TYPE(dbt_type), INTENT(INOUT)                      :: auxiliary, tensor
+      TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: right_overlaps
 
-      TYPE(dbt_type)                                     :: b, full, u
+      TYPE(dbt_type)                                     :: b, full, right_b, u
 
       CALL transition_templates(overlaps, auxiliary, b, u, full)
       CALL dbt_copy_matrix_to_tensor(overlaps, b)
-      CALL dbt_contract(1.0_dp, auxiliary, b, 0.0_dp, u, &
+      CALL right_transition_tensor(overlaps, right_overlaps, right_b)
+      CALL dbt_contract(1.0_dp, auxiliary, right_b, 0.0_dp, u, &
                         contract_1=[3], notcontract_1=[1, 2], &
                         contract_2=[2], notcontract_2=[1], map_1=[1, 2], map_2=[3], filter_eps=0.0_dp)
       CALL dbt_contract(1.0_dp, b, u, 0.0_dp, full, &
@@ -160,6 +165,7 @@ CONTAINS
       CALL dbt_destroy(full)
       CALL dbt_destroy(u)
       CALL dbt_destroy(b)
+      CALL dbt_destroy(right_b)
    END SUBROUTINE qs_uspp_hfx_transition_tensor
 
 ! **************************************************************************************************
@@ -171,42 +177,57 @@ CONTAINS
 !> \param pref Prefactor applied once before the reverse contractions.
 !> \param overlap_gradient New dE/dB matrix on B's original rectangular distribution.
 !> \param auxiliary_gradient New dE/dC on C's original center-diagonal distribution.
+!> \param right_overlaps Optional independent right B, as in the forward transition.
+!> \param right_overlap_gradient New right-leg dE/dB; present iff right_overlaps is present.
+!>        Otherwise both legs are accumulated into overlap_gradient, as in the Gamma path.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_transition_adjoint(overlaps, auxiliary, tensor_adjoint, pref, &
-                                             overlap_gradient, auxiliary_gradient)
+                                             overlap_gradient, auxiliary_gradient, right_overlaps, right_overlap_gradient)
       TYPE(dbcsr_type), INTENT(IN), TARGET               :: overlaps
       TYPE(dbt_type), INTENT(INOUT)                      :: auxiliary, tensor_adjoint
       REAL(dp), INTENT(IN)                               :: pref
       TYPE(dbcsr_type), INTENT(OUT)                      :: overlap_gradient
       TYPE(dbt_type), INTENT(OUT)                        :: auxiliary_gradient
+      TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: right_overlaps
+      TYPE(dbcsr_type), INTENT(OUT), OPTIONAL            :: right_overlap_gradient
 
-      TYPE(dbt_type)                                     :: b, bar_b, bar_u, full, u
+      TYPE(dbt_type)                                     :: b, bar_b, bar_right_b, bar_u, full, &
+                                                            right_b, u
 
+      CPASSERT(PRESENT(right_overlaps) .EQV. PRESENT(right_overlap_gradient))
       CALL transition_templates(overlaps, auxiliary, b, u, full)
       CALL dbt_copy_matrix_to_tensor(overlaps, b)
-      CALL dbt_contract(1.0_dp, auxiliary, b, 0.0_dp, u, &
+      CALL right_transition_tensor(overlaps, right_overlaps, right_b)
+      CALL dbt_contract(1.0_dp, auxiliary, right_b, 0.0_dp, u, &
                         contract_1=[3], notcontract_1=[1, 2], &
                         contract_2=[2], notcontract_2=[1], map_1=[1, 2], map_2=[3], filter_eps=0.0_dp)
       CALL dbt_copy(tensor_adjoint, full)
       CALL dbt_scale(full, pref)
       CALL dbt_create(u, bar_u)
       CALL dbt_create(b, bar_b)
+      CALL dbt_create(right_b, bar_right_b)
       CALL dbt_contract(1.0_dp, full, u, 0.0_dp, bar_b, &
                         contract_1=[1, 3], notcontract_1=[2], &
                         contract_2=[1, 3], notcontract_2=[2], map_1=[1], map_2=[2], filter_eps=0.0_dp)
       CALL dbt_contract(1.0_dp, full, b, 0.0_dp, bar_u, &
                         contract_1=[2], notcontract_1=[1, 3], &
                         contract_2=[1], notcontract_2=[2], map_1=[1, 3], map_2=[2], filter_eps=0.0_dp)
-      CALL dbt_contract(1.0_dp, bar_u, auxiliary, 1.0_dp, bar_b, &
+      CALL dbt_contract(1.0_dp, bar_u, auxiliary, 0.0_dp, bar_right_b, &
                         contract_1=[1, 2], notcontract_1=[3], &
                         contract_2=[1, 2], notcontract_2=[3], map_1=[1], map_2=[2], filter_eps=0.0_dp)
       CALL dbt_create(auxiliary, auxiliary_gradient)
       CALL dbt_copy(auxiliary, auxiliary_gradient)
-      CALL dbt_contract(1.0_dp, bar_u, b, 0.0_dp, auxiliary_gradient, &
+      CALL dbt_contract(1.0_dp, bar_u, right_b, 0.0_dp, auxiliary_gradient, &
                         contract_1=[3], notcontract_1=[1, 2], &
                         contract_2=[1], notcontract_2=[2], map_1=[1, 2], map_2=[3], filter_eps=0.0_dp, &
                         retain_sparsity=.TRUE.)
       ! bar_b retains the same matrix-derived block layout and ownership as the original B.
+      IF (PRESENT(right_overlaps)) THEN
+         CALL dbcsr_create(right_overlap_gradient, template=right_overlaps)
+         CALL dbt_copy_tensor_to_matrix(bar_right_b, right_overlap_gradient)
+      ELSE
+         CALL dbt_copy(bar_right_b, bar_b, summation=.TRUE.)
+      END IF
       CALL dbcsr_create(overlap_gradient, template=overlaps)
       CALL dbt_copy_tensor_to_matrix(bar_b, overlap_gradient)
       CALL dbt_destroy(bar_b)
@@ -214,7 +235,38 @@ CONTAINS
       CALL dbt_destroy(full)
       CALL dbt_destroy(u)
       CALL dbt_destroy(b)
+      CALL dbt_destroy(bar_right_b)
+      CALL dbt_destroy(right_b)
    END SUBROUTINE qs_uspp_hfx_transition_adjoint
+
+! **************************************************************************************************
+!> \brief Copy the selected right projector leg, retaining its own sparse matrix distribution.
+!> \param overlaps Left B, defining the common AO and magnetic-projector block ordering.
+!> \param right_overlaps Optional independent right B; defaults to the left B.
+!> \param right_b New matrix-derived tensor of the selected right leg.
+! **************************************************************************************************
+   SUBROUTINE right_transition_tensor(overlaps, right_overlaps, right_b)
+      TYPE(dbcsr_type), INTENT(IN)                       :: overlaps
+      TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: right_overlaps
+      TYPE(dbt_type), INTENT(OUT)                        :: right_b
+
+      INTEGER, POINTER                                   :: left_cols(:), left_rows(:), &
+                                                            right_cols(:), right_rows(:)
+      LOGICAL                                            :: compatible
+
+      IF (PRESENT(right_overlaps)) THEN
+         CALL dbcsr_get_info(overlaps, row_blk_size=left_rows, col_blk_size=left_cols)
+         CALL dbcsr_get_info(right_overlaps, row_blk_size=right_rows, col_blk_size=right_cols)
+         CPASSERT(SIZE(left_rows) == SIZE(right_rows) .AND. SIZE(left_cols) == SIZE(right_cols))
+         compatible = ALL(left_rows == right_rows) .AND. ALL(left_cols == right_cols)
+         CPASSERT(compatible)
+         CALL dbt_create(right_overlaps, right_b)
+         CALL dbt_copy_matrix_to_tensor(right_overlaps, right_b)
+      ELSE
+         CALL dbt_create(overlaps, right_b)
+         CALL dbt_copy_matrix_to_tensor(overlaps, right_b)
+      END IF
+   END SUBROUTINE right_transition_tensor
 
 ! **************************************************************************************************
 !> \brief Build all native (RI|Coulomb|Q) center-diagonal blocks on their unique DBT owners.
@@ -225,31 +277,41 @@ CONTAINS
 !> \param nang Per-kind angular grid control, augmented by the polynomial angular minimum.
 !> \param pgrid Three-dimensional tensor process grid.
 !> \param auxiliary New C(RI,P,P), with atomwise RI and centerwise projector blocks.
+!> \param ri_displacements Optional Cartesian RI-cell translations S, stacked in the RI dimension.
+!> \param augmentation_displacement Optional Cartesian projector-cell translation T.
+!>        The integral retains the full displacement (R_Q+T)-(R_RI+S).
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary)
+   SUBROUTINE qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, &
+                                        ri_displacements, augmentation_displacement)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
       INTEGER, INTENT(IN)                                :: nang(:)
       TYPE(dbt_pgrid_type), INTENT(IN)                   :: pgrid
       TYPE(dbt_type), INTENT(OUT)                        :: auxiliary
+      REAL(dp), INTENT(IN), OPTIONAL                     :: ri_displacements(:, :), &
+                                                            augmentation_displacement(3)
 
       INTEGER                                            :: atom, center, first, ikind, iset, &
-                                                            kind_q, n, nset, owner, rule
+                                                            kind_q, n, nset, owner, ri_cell, row, &
+                                                            rule
       INTEGER, ALLOCATABLE                               :: d1(:), d2(:), d3(:), sizes(:)
       INTEGER, POINTER                                   :: nsgf_set(:)
-      REAL(dp), ALLOCATABLE                              :: block(:, :, :)
+      REAL(dp)                                           :: qshift(3), ri_position(3)
+      REAL(dp), ALLOCATABLE                              :: block(:, :, :), shifts(:, :)
       TYPE(gto_basis_set_type), POINTER                  :: ri_basis
 
       CALL initialize_native(uspp, basis)
-      ALLOCATE (sizes(SIZE(particles)))
-      DO atom = 1, SIZE(particles)
+      CALL native_image_displacements(ri_displacements, augmentation_displacement, shifts, qshift)
+      ALLOCATE (sizes(SIZE(particles)*SIZE(shifts, 2)))
+      DO row = 1, SIZE(sizes)
+         atom = MODULO(row - 1, SIZE(particles)) + 1
          CPASSERT(ASSOCIATED(particles(atom)%atomic_kind))
          ikind = particles(atom)%atomic_kind%kind_number
          CPASSERT(ikind >= 1 .AND. ikind <= SIZE(basis))
          CPASSERT(ASSOCIATED(basis(ikind)%gto_basis_set))
-         CALL get_gto_basis_set(basis(ikind)%gto_basis_set, nsgf=sizes(atom))
-         CPASSERT(sizes(atom) > 0)
+         CALL get_gto_basis_set(basis(ikind)%gto_basis_set, nsgf=sizes(row))
+         CPASSERT(sizes(row) > 0)
       END DO
       CALL create_3c_tensor(auxiliary, d1, d2, d3, pgrid, sizes, uspp%projector_sizes, uspp%projector_sizes, &
                             [1], [2, 3], name="Native RI Q")
@@ -257,22 +319,25 @@ CONTAINS
       DO center = 1, SIZE(uspp%center_atoms)
          kind_q = uspp%center_kinds(center)
          n = uspp%projector_sizes(center)
-         DO atom = 1, SIZE(particles)
-            CALL dbt_get_stored_coordinates(auxiliary, [atom, center, center], owner)
+         DO row = 1, SIZE(sizes)
+            atom = MODULO(row - 1, SIZE(particles)) + 1
+            ri_cell = (row - 1)/SIZE(particles) + 1
+            ri_position = particles(atom)%r + shifts(:, ri_cell)
+            CALL dbt_get_stored_coordinates(auxiliary, [row, center, center], owner)
             IF (owner /= auxiliary%pgrid%mp_comm_2d%mepos) CYCLE
             ikind = particles(atom)%atomic_kind%kind_number
             ri_basis => basis(ikind)%gto_basis_set
             CALL get_gto_basis_set(ri_basis, nset=nset, nsgf_set=nsgf_set)
             rule = angular_rule(uspp, kind_q, ri_basis, nang(kind_q))
-            ALLOCATE (block(sizes(atom), n, n), SOURCE=0.0_dp)
+            ALLOCATE (block(sizes(row), n, n), SOURCE=0.0_dp)
             first = 1
             DO iset = 1, nset
-               CALL uspp_hfx_auxiliary_integrals(uspp%augmentation(kind_q), ri_basis, iset, particles(atom)%r, &
-                                                 uspp%position(:, center), lebedev_grid(rule)%r, &
+               CALL uspp_hfx_auxiliary_integrals(uspp%augmentation(kind_q), ri_basis, iset, ri_position, &
+                                                 uspp%position(:, center) + qshift, lebedev_grid(rule)%r, &
                                                  fourpi*lebedev_grid(rule)%w, block(first:first + nsgf_set(iset) - 1, :, :))
                first = first + nsgf_set(iset)
             END DO
-            CALL dbt_put_block(auxiliary, [atom, center, center], SHAPE(block), block)
+            CALL dbt_put_block(auxiliary, [row, center, center], SHAPE(block), block)
             DEALLOCATE (block)
          END DO
       END DO
@@ -288,9 +353,11 @@ CONTAINS
 !> \param auxiliary_gradient Already scaled dE/dC, center-diagonal, in unsplit native layout.
 !> \param atom_gradient Local energy gradients (3,natom), incremented without reduction.
 !> \param cell_gradient Optional physical affine-strain energy gradient, incremented in place.
+!> \param ri_displacements Same Cartesian RI-cell translations S and stacking as the forward C.
+!> \param augmentation_displacement Same Cartesian projector-cell translation T.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
-                                          atom_gradient, cell_gradient)
+                                          atom_gradient, cell_gradient, ri_displacements, augmentation_displacement)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
@@ -298,26 +365,33 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: auxiliary_gradient
       REAL(dp), INTENT(INOUT)                            :: atom_gradient(:, :)
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: cell_gradient(3, 3)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: ri_displacements(:, :), &
+                                                            augmentation_displacement(3)
 
       INTEGER                                            :: atom, axis, center, first, ikind, &
                                                             ind(3), iset, kind_q, n, nset, qatom, &
-                                                            rule
+                                                            ri_cell, rule
       INTEGER, POINTER                                   :: nsgf_set(:)
       LOGICAL                                            :: found, valid
-      REAL(dp)                                           :: displacement(3), gq(3)
+      REAL(dp)                                           :: displacement(3), gq(3), qshift(3), &
+                                                            ri_position(3)
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :), block(:, :, :), &
-                                                            derivative(:, :, :, :)
+                                                            derivative(:, :, :, :), shifts(:, :)
       TYPE(dbt_iterator_type)                            :: iter
       TYPE(gto_basis_set_type), POINTER                  :: ri_basis
 
       valid = ALL(SHAPE(atom_gradient) == [3, SIZE(particles)])
       CPASSERT(valid)
       CALL initialize_native(uspp, basis)
+      CALL native_image_displacements(ri_displacements, augmentation_displacement, shifts, qshift)
       CALL dbt_iterator_start(iter, auxiliary_gradient)
       DO WHILE (dbt_iterator_blocks_left(iter))
          CALL dbt_iterator_next_block(iter, ind)
          CPASSERT(ind(2) == ind(3))
-         atom = ind(1)
+         CPASSERT(ind(1) >= 1 .AND. ind(1) <= SIZE(particles)*SIZE(shifts, 2))
+         atom = MODULO(ind(1) - 1, SIZE(particles)) + 1
+         ri_cell = (ind(1) - 1)/SIZE(particles) + 1
+         ri_position = particles(atom)%r + shifts(:, ri_cell)
          center = ind(2)
          qatom = uspp%center_atoms(center)
          kind_q = uspp%center_kinds(center)
@@ -332,8 +406,8 @@ CONTAINS
          first = 1
          DO iset = 1, nset
             ALLOCATE (block(nsgf_set(iset), n, n), derivative(3, nsgf_set(iset), n, n))
-            CALL uspp_hfx_auxiliary_integrals(uspp%augmentation(kind_q), ri_basis, iset, particles(atom)%r, &
-                                              uspp%position(:, center), lebedev_grid(rule)%r, &
+            CALL uspp_hfx_auxiliary_integrals(uspp%augmentation(kind_q), ri_basis, iset, ri_position, &
+                                              uspp%position(:, center) + qshift, lebedev_grid(rule)%r, &
                                               fourpi*lebedev_grid(rule)%w, block, augmentation_derivative=derivative)
             DO axis = 1, 3
                gq(axis) = gq(axis) + SUM(adjoint(first:first + nsgf_set(iset) - 1, :, :)*derivative(axis, :, :, :))
@@ -344,7 +418,7 @@ CONTAINS
          atom_gradient(:, atom) = atom_gradient(:, atom) - gq
          atom_gradient(:, qatom) = atom_gradient(:, qatom) + gq
          IF (PRESENT(cell_gradient)) THEN
-            displacement = uspp%position(:, center) - particles(atom)%r
+            displacement = uspp%position(:, center) + qshift - ri_position
             DO axis = 1, 3
                cell_gradient(axis, :) = cell_gradient(axis, :) + gq(axis)*displacement
             END DO
@@ -353,6 +427,33 @@ CONTAINS
       END DO
       CALL dbt_iterator_stop(iter)
    END SUBROUTINE qs_uspp_hfx_native_gradient
+
+! **************************************************************************************************
+!> \brief Validate and retain Cartesian cell shifts, with an unchanged zero-image default.
+!> \param ri_displacements Optional stack of RI-cell translations.
+!> \param augmentation_displacement Optional translation of the augmentation center.
+!> \param shifts Validated RI-cell translations, with a single zero cell by default.
+!> \param qshift Validated augmentation translation, zero by default.
+! **************************************************************************************************
+   SUBROUTINE native_image_displacements(ri_displacements, augmentation_displacement, shifts, qshift)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: ri_displacements(:, :), &
+                                                            augmentation_displacement(3)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: shifts(:, :)
+      REAL(dp), INTENT(OUT)                              :: qshift(3)
+
+      IF (PRESENT(ri_displacements)) THEN
+         CPASSERT(SIZE(ri_displacements, 1) == 3 .AND. SIZE(ri_displacements, 2) > 0)
+         CPASSERT(ALL(ieee_is_finite(ri_displacements)))
+         ALLOCATE (shifts, SOURCE=ri_displacements)
+      ELSE
+         ALLOCATE (shifts(3, 1), SOURCE=0.0_dp)
+      END IF
+      qshift = 0.0_dp
+      IF (PRESENT(augmentation_displacement)) THEN
+         CPASSERT(ALL(ieee_is_finite(augmentation_displacement)))
+         qshift = augmentation_displacement
+      END IF
+   END SUBROUTINE native_image_displacements
 
 ! **************************************************************************************************
 !> \brief Set up original RI basis and check the implemented production operator and orbital scope.
