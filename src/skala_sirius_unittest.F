@@ -66,9 +66,9 @@ PROGRAM skala_sirius_unittest
    TYPE(sirius_kpoint_set_handler) :: ks
    TYPE(sirius_ground_state_handler) :: gs
    CHARACTER(len=default_path_length) :: model, paw_setup
-   CHARACTER(len=32) :: side_arg, step_arg, grid_arg
+   CHARACTER(len=32) :: side_arg, step_arg, grid_arg, model_mode
    INTEGER :: i, l, mode, mag, nr, nb, x, y, z, ierr, side, first_mode, last_mode, geometry, natoms
-   INTEGER :: updated_basis, fresh_basis
+   INTEGER :: updated_basis, fresh_basis, max_scf_iterations
    REAL(dp) :: lattice(3, 3), r(nrad), v(nrad), rho(nrad), orbital(nrad), dion(1, 1), &
                energy, exc, repeat_exc, kpoint(3, 1), reference(3, 2), fd_step, &
                rmt(nmt), rfree(nfree), rhofree(nfree)
@@ -93,6 +93,9 @@ PROGRAM skala_sirius_unittest
    CALL get_command_argument(3, side_arg)
    CALL get_command_argument(4, step_arg)
    CALL get_command_argument(5, grid_arg)
+   CALL get_command_argument(6, model_mode)
+   IF (LEN_TRIM(model_mode) > 0 .AND. TRIM(model_mode) /= "skala-float32") &
+      ERROR STOP "Unknown model mode (expected skala-float32 or no mode for the analytic fixture)"
    force_test = TRIM(grid_arg) == "atom-grid-forces"
    update_test = TRIM(grid_arg) == "atom-grid-update"
    atom_grid = TRIM(grid_arg) == "atom-grid" .OR. force_test .OR. update_test
@@ -139,6 +142,20 @@ PROGRAM skala_sirius_unittest
       ELSE
          WRITE (*, '(A,I0,2A)') "Points per block: ", side**3, "; PAW setup: ", TRIM(paw_setup)
       END IF
+   END IF
+   density_tol = MERGE(1.0e-10_dp, 2.0e-6_dp, force_test .OR. update_test)
+   energy_tol = MERGE(1.0e-11_dp, 2.0e-7_dp, force_test .OR. update_test)
+   max_scf_iterations = 150
+   IF (model_mode == "skala-float32") THEN
+      ! The serialized Skala network explicitly casts its neural features to Float32.
+      ! Keep the analytic double-precision checks and all comparison bounds unchanged.
+      density_tol = 1.0e-8_dp
+      energy_tol = 1.0e-9_dp
+      max_scf_iterations = 300
+   END IF
+   IF (comm%mepos == 0) THEN
+      WRITE (*, '(A,2ES12.3)') "SCF density and energy thresholds: ", density_tol, energy_tol
+      WRITE (*, '(A,I0)') "Maximum SCF iterations: ", max_scf_iterations
    END IF
    CALL create_xc_section(definition)
    CALL section_vals_create(xc, definition)
@@ -278,11 +295,9 @@ PROGRAM skala_sirius_unittest
             CALL sirius_create_kset(ctx, 1, kpoint, [1.0_dp], .TRUE., ks)
             CALL sirius_create_ground_state(ks, gs)
             converged = .FALSE.
-            density_tol = MERGE(1.0e-10_dp, 2.0e-6_dp, force_test .OR. update_test)
-            energy_tol = MERGE(1.0e-11_dp, 2.0e-7_dp, force_test .OR. update_test)
             CALL sirius_find_ground_state(gs, density_tol=density_tol, energy_tol=energy_tol, &
                                           iter_solver_tol=MERGE(1.0e-11_dp, 1.0e-9_dp, force_test .OR. update_test), &
-                                          max_niter=150, save_state=.FALSE., converged=converged, error_code=ierr)
+                                          max_niter=max_scf_iterations, save_state=.FALSE., converged=converged, error_code=ierr)
             IF (ierr /= 0) ERROR STOP "SIRIUS Skala SCF failed"
             CALL sirius_get_energy(gs, "total", energy)
             CALL sirius_get_energy(gs, "exc", exc)
@@ -354,7 +369,7 @@ PROGRAM skala_sirius_unittest
                   converged = .FALSE.
                   CALL sirius_find_ground_state(gs, density_tol=density_tol, energy_tol=energy_tol, &
                                                 iter_solver_tol=1.0e-11_dp, initial_guess=.FALSE., &
-                                                max_niter=150, save_state=.FALSE., converged=converged, error_code=ierr)
+                                             max_niter=max_scf_iterations, save_state=.FALSE., converged=converged, error_code=ierr)
                   IF (ierr /= 0 .OR. .NOT. converged) ERROR STOP "Updated geometry SCF did not converge"
                   CALL sirius_get_energy(gs, "total", updated_energy)
                   CALL sirius_get_energy(gs, "exc", updated_exc)
