@@ -18,7 +18,8 @@ PROGRAM paw_onecenter_unittest
                                               cp2k_init
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
-   USE paw_onecenter,                   ONLY: paw_onecenter_hartree,&
+   USE paw_onecenter,                   ONLY: paw_onecenter_exchange,&
+                                              paw_onecenter_hartree,&
                                               paw_onecenter_init,&
                                               paw_onecenter_type,&
                                               paw_radial_coulomb
@@ -215,11 +216,179 @@ CONTAINS
       IF (ABS((plus - minus)/(2.0_dp*step) - directional) > 1.e-9_dp*MAX(1.0_dp, ABS(directional))) THEN
          ERROR STOP 'PAW projector-density derivative differs from energy finite difference'
       END IF
+      CALL exchange_functional(onecenter, projectors, exact)
       pot%paw%ae_wfc(cutoff + 1:, :) = 1.e8_dp
       pot%paw%ps_wfc(cutoff + 1:, :) = -2.e8_dp
       pot%qijl(cutoff + 1:, :, :) = 1.e20_dp
       CALL paw_onecenter_init(pot, projectors, changed_tail)
       IF (ANY(changed_tail%hartree /= onecenter%hartree)) ERROR STOP 'PAW radial cutoff ignored'
    END SUBROUTINE projector_functional
+
+! **************************************************************************************************
+!> \brief Independent crossed-index exchange tensor, spin and full-matrix derivative checks.
+!> \param onecenter Original s/p/d Coulomb cache.
+!> \param projectors Independent radial-to-magnetic mapping for the four-index oracle.
+!> \param s_hartree Analytic single-occupation compensated s-channel Hartree energy.
+! **************************************************************************************************
+   SUBROUTINE exchange_functional(onecenter, projectors, s_hartree)
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      TYPE(upf_projector_type), INTENT(IN)               :: projectors
+      REAL(dp), INTENT(IN)                               :: s_hartree
+
+      REAL(dp), PARAMETER :: fractions(3) = [0.0_dp, 0.37_dp, 1.0_dp], step = 1.e-5_dp
+
+      INTEGER                                            :: i, ij, j, k, kl, l, lm, np, p, q, spin, variant
+      INTEGER, ALLOCATABLE                               :: permutation(:)
+      REAL(dp)                                           :: directional, energy, fraction, minus, plus, &
+                                                            reference_energy, scale, single_energy, &
+                                                            tensor_error, uncrossed_energy
+      REAL(dp), ALLOCATABLE                              :: coulomb(:, :, :, :), density(:, :, :), &
+                                                            direction(:, :, :), permuted_density(:, :, :), &
+                                                            potential(:, :, :), reference(:, :, :), scratch(:, :, :)
+      TYPE(paw_onecenter_type)                           :: permuted
+
+      np = onecenter%nproj
+      ALLOCATE (coulomb(np, np, np, np), density(np, np, 2), direction(np, np, 2), &
+                permuted_density(np, np, 2), potential(np, np, 2), reference(np, np, 2), &
+                scratch(np, np, 2), permutation(np))
+      coulomb(:, :, :, :) = 0.0_dp
+      ! Build (ij|kl) before contracting densities, with independent radial-pair
+      ! indices from the projector mapping rather than the production pair cache.
+      DO l = 1, np
+         DO k = 1, np
+            kl = MAX(projectors%radial_index(k), projectors%radial_index(l))
+            kl = kl*(kl - 1)/2 + MIN(projectors%radial_index(k), projectors%radial_index(l))
+            DO j = 1, np
+               DO i = 1, np
+                  ij = MAX(projectors%radial_index(i), projectors%radial_index(j))
+                  ij = ij*(ij - 1)/2 + MIN(projectors%radial_index(i), projectors%radial_index(j))
+                  DO lm = 1, SIZE(onecenter%gaunt, 3)
+                     p = INT(SQRT(REAL(lm - 1, dp)))
+                     coulomb(i, j, k, l) = coulomb(i, j, k, l) + &
+                                          onecenter%gaunt(i, j, lm)*onecenter%gaunt(k, l, lm)* &
+                                          onecenter%hartree(ij, kl, p)
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      tensor_error = 0.0_dp
+      DO l = 1, np
+         DO k = 1, np
+            DO j = 1, np
+               DO i = 1, np
+                  tensor_error = MAX(tensor_error, ABS(coulomb(i, j, k, l) - coulomb(j, i, k, l)), &
+                                     ABS(coulomb(i, j, k, l) - coulomb(i, j, l, k)), &
+                                     ABS(coulomb(i, j, k, l) - coulomb(k, l, i, j)))
+               END DO
+            END DO
+         END DO
+      END DO
+      IF (tensor_error > 1.e-13_dp*MAX(1.0_dp, MAXVAL(ABS(coulomb)))) &
+         ERROR STOP 'PAW exchange Coulomb tensor permutations differ'
+
+      density(:, :, :) = 0.0_dp
+      density(1, 1, 1) = 1.0_dp
+      CALL paw_onecenter_exchange(onecenter, density, fractions(2), energy, potential)
+      IF (ABS(energy + fractions(2)*s_hartree) > 2.e-9_dp) &
+         ERROR STOP 'Wrong PAW exchange fraction, sign, compensation or angular normalization'
+      IF (ABS(potential(1, 1, 1) + 2.0_dp*fractions(2)*s_hartree) > 4.e-9_dp) &
+         ERROR STOP 'Wrong PAW exchange single-spin matrix factor'
+
+      DO spin = 1, 2
+         DO q = 1, np
+            DO p = 1, np
+               density(p, q, spin) = SIN((0.17_dp + 0.13_dp*spin)*p)*SIN((0.17_dp + 0.13_dp*spin)*q) + &
+                                     0.4_dp*COS((0.41_dp + 0.07_dp*spin)*p)*COS((0.41_dp + 0.07_dp*spin)*q)
+            END DO
+         END DO
+      END DO
+      DO variant = 1, SIZE(fractions)
+         fraction = fractions(variant)
+         reference(:, :, :) = 0.0_dp
+         reference_energy = 0.0_dp
+         uncrossed_energy = 0.0_dp
+         DO spin = 1, 2
+            DO l = 1, np
+               DO k = 1, np
+                  DO j = 1, np
+                     DO i = 1, np
+                        reference_energy = reference_energy - 0.5_dp*fraction* &
+                                           density(i, k, spin)*density(j, l, spin)*coulomb(i, j, k, l)
+                        uncrossed_energy = uncrossed_energy - 0.5_dp*fraction* &
+                                          density(i, j, spin)*density(k, l, spin)*coulomb(i, j, k, l)
+                        reference(i, k, spin) = reference(i, k, spin) - &
+                                               fraction*density(j, l, spin)*coulomb(i, j, k, l)
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END DO
+         CALL paw_onecenter_exchange(onecenter, density, fraction, energy, potential)
+         scale = MAX(1.0_dp, ABS(reference_energy), MAXVAL(ABS(reference)))
+         IF (ABS(energy - reference_energy) > 1.e-12_dp*scale .OR. &
+             MAXVAL(ABS(potential - reference)) > 1.e-12_dp*scale) &
+            ERROR STOP 'PAW exchange differs from independent crossed-index four-index contraction'
+         IF (fraction > 0.0_dp) THEN
+            IF (ABS(uncrossed_energy - reference_energy) < 1.e-6_dp*scale) &
+               ERROR STOP 'PAW exchange fixture cannot distinguish Hartree and exchange density indices'
+         END IF
+         DO spin = 1, 2
+            IF (ANY(potential(:, :, spin) /= TRANSPOSE(potential(:, :, spin)))) &
+               ERROR STOP 'Asymmetric PAW exchange derivative'
+            DO q = 1, np
+               DO p = 1, np
+                  direction(p, q, :) = 0.0_dp
+                  direction(p, q, spin) = COS(0.23_dp*(p + q) + 0.19_dp*spin)
+               END DO
+            END DO
+            CALL paw_onecenter_exchange(onecenter, density + step*direction, fraction, plus, scratch)
+            CALL paw_onecenter_exchange(onecenter, density - step*direction, fraction, minus, scratch)
+            directional = SUM(potential*direction)
+            IF (ABS((plus - minus)/(2.0_dp*step) - directional) > 1.e-9_dp*scale) &
+               ERROR STOP 'PAW exchange spin derivative differs from energy finite difference'
+            direction(:, :, :) = 0.0_dp
+            direction(2, 6, spin) = 0.7_dp
+            direction(6, 2, spin) = 0.7_dp
+            CALL paw_onecenter_exchange(onecenter, density + step*direction, fraction, plus, scratch)
+            IF (ANY(scratch(:, :, 3 - spin) /= potential(:, :, 3 - spin))) &
+               ERROR STOP 'PAW exchange coupled different spin density blocks'
+            CALL paw_onecenter_exchange(onecenter, density - step*direction, fraction, minus, scratch)
+            directional = 1.4_dp*potential(2, 6, spin)
+            IF (ABS((plus - minus)/(2.0_dp*step) - directional) > 1.e-9_dp*scale) &
+               ERROR STOP 'PAW exchange off-diagonal full-matrix factor differs from energy finite difference'
+         END DO
+      END DO
+
+      ! Relabel radial/magnetic projectors, including mixed-l density entries.
+      permuted = onecenter
+      permutation(:) = [(np + 1 - p, p=1, np)]
+      DO q = 1, np
+         DO p = 1, np
+            permuted%pair_index(p, q) = onecenter%pair_index(permutation(p), permutation(q))
+            permuted%gaunt(p, q, :) = onecenter%gaunt(permutation(p), permutation(q), :)
+            permuted_density(p, q, :) = density(permutation(p), permutation(q), :)
+         END DO
+      END DO
+      CALL paw_onecenter_exchange(permuted, permuted_density, fraction, plus, scratch)
+      IF (ABS(plus - energy) > 1.e-12_dp*scale) ERROR STOP 'PAW exchange depends on projector ordering'
+      DO q = 1, np
+         DO p = 1, np
+            IF (MAXVAL(ABS(scratch(p, q, :) - potential(permutation(p), permutation(q), :))) > 1.e-12_dp*scale) &
+               ERROR STOP 'PAW exchange matrix does not follow projector permutation'
+         END DO
+      END DO
+
+      ! A single physical spin channel and two half-density restricted channels
+      ! differ by exactly a factor two in both energy and per-spin potential.
+      CALL paw_onecenter_exchange(onecenter, density(:, :, 1:1), fraction, single_energy, scratch(:, :, 1:1))
+      density(:, :, 2) = 0.5_dp*density(:, :, 1)
+      density(:, :, 1) = density(:, :, 2)
+      CALL paw_onecenter_exchange(onecenter, density, fraction, energy, potential)
+      IF (ABS(energy - 0.5_dp*single_energy) > 1.e-12_dp*scale .OR. &
+          MAXVAL(ABS(potential(:, :, 1) - 0.5_dp*scratch(:, :, 1))) > 1.e-12_dp*scale .OR. &
+          ANY(potential(:, :, 1) /= potential(:, :, 2))) &
+         ERROR STOP 'PAW exchange restricted spin-summed conversion factor differs'
+   END SUBROUTINE exchange_functional
 
 END PROGRAM paw_onecenter_unittest

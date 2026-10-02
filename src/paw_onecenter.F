@@ -6,12 +6,13 @@
 !--------------------------------------------------------------------------------------------------!
 
 ! **************************************************************************************************
-!> \brief PAW valence Hartree correction on the original partial-wave radial mesh.
+!> \brief PAW valence Hartree and exchange corrections on the original partial-wave radial mesh.
 !>        The pseudo one-center density includes the UPF compensation functions.
 !>        Core densities belong to XC, while fixed kinetic and ionic terms are in PP_DIJ.
 ! **************************************************************************************************
 MODULE paw_onecenter
    USE atom_upf,                        ONLY: atom_upfpot_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
    USE paw_types,                       ONLY: paw_onecenter_type
@@ -24,7 +25,8 @@ MODULE paw_onecenter
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'paw_onecenter'
 
-   PUBLIC :: paw_onecenter_type, paw_onecenter_init, paw_onecenter_hartree, paw_radial_coulomb
+   PUBLIC :: paw_onecenter_type, paw_onecenter_init, paw_onecenter_hartree, &
+             paw_onecenter_exchange, paw_radial_coulomb
 
 CONTAINS
 
@@ -122,6 +124,68 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE paw_onecenter_hartree
+
+! **************************************************************************************************
+!> \brief Unscreened scalar PAW valence exact-exchange correction and projector derivative.
+!>        Delta J_ij,kl is the AE-minus-compensated-PS pair Coulomb integral. Exchange
+!>        crosses the density indices: E=-fraction/2 sum_sigma,ijkl D_ik D_jl Delta J_ij,kl.
+!>        Frozen-core/valence exchange and core/core constants are separate contributions.
+!> \param onecenter Prepared radial Coulomb and magnetic Gaunt data.
+!> \param density Real symmetric, physically spin-resolved projector densities.
+!>        A spin-summed restricted density must be supplied as two identical half-density blocks.
+!> \param fraction Exact-exchange fraction.
+!> \param energy Valence-only one-center exchange correction in Hartree.
+!> \param potential Full-matrix derivative V_pq=-fraction sum_jk D_jk Delta J_pj,qk per spin.
+! **************************************************************************************************
+   SUBROUTINE paw_onecenter_exchange(onecenter, density, fraction, energy, potential)
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      REAL(dp), INTENT(IN)                               :: density(:, :, :), fraction
+      REAL(dp), INTENT(OUT)                              :: energy, potential(:, :, :)
+
+      INTEGER                                            :: j, k, l, lm, p, pair_pj, pair_qk, q, spin
+      LOGICAL                                            :: symmetric
+      REAL(dp)                                           :: exchange, gaunt_pj, gaunt_qk
+
+      CPASSERT(SIZE(density, 1) == onecenter%nproj .AND. SIZE(density, 2) == onecenter%nproj)
+      CPASSERT(SIZE(density, 3) == 1 .OR. SIZE(density, 3) == 2)
+      CPASSERT(ALL(SHAPE(potential) == SHAPE(density)))
+      CPASSERT(ieee_is_finite(fraction) .AND. ALL(ieee_is_finite(density)))
+      DO spin = 1, SIZE(density, 3)
+         symmetric = MAXVAL(ABS(density(:, :, spin) - TRANSPOSE(density(:, :, spin)))) <= &
+            64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(density(:, :, spin))))
+         CPASSERT(symmetric)
+      END DO
+      potential(:, :, :) = 0.0_dp
+      DO spin = 1, SIZE(density, 3)
+         DO lm = 1, SIZE(onecenter%gaunt, 3)
+            l = INT(SQRT(REAL(lm - 1, dp)))
+            DO q = 1, onecenter%nproj
+               DO p = 1, q
+                  exchange = 0.0_dp
+                  DO j = 1, onecenter%nproj
+                     gaunt_pj = onecenter%gaunt(p, j, lm)
+                     IF (gaunt_pj == 0.0_dp) CYCLE
+                     pair_pj = onecenter%pair_index(p, j)
+                     DO k = 1, onecenter%nproj
+                        gaunt_qk = onecenter%gaunt(q, k, lm)
+                        IF (gaunt_qk == 0.0_dp) CYCLE
+                        pair_qk = onecenter%pair_index(q, k)
+                        exchange = exchange + density(j, k, spin)*gaunt_pj*gaunt_qk* &
+                                   onecenter%hartree(pair_pj, pair_qk, l)
+                     END DO
+                  END DO
+                  potential(p, q, spin) = potential(p, q, spin) - fraction*exchange
+               END DO
+            END DO
+         END DO
+         DO q = 1, onecenter%nproj
+            DO p = q + 1, onecenter%nproj
+               potential(p, q, spin) = potential(q, p, spin)
+            END DO
+         END DO
+      END DO
+      energy = 0.5_dp*SUM(density*potential)
+   END SUBROUTINE paw_onecenter_exchange
 
 ! **************************************************************************************************
 !> \brief Coulomb bilinear form for tabulated r**2*rho_LM radial channels.

@@ -71,6 +71,7 @@ list(
   upf_projector_integrals.F
   upf_local_integrals.F
   uspp_augmentation.F
+  uspp_hfx_integrals.F
   uspp_projector_operators.F
   qs_uspp_projectors.F
   qs_uspp_types.F
@@ -1613,6 +1614,7 @@ set(CP2K_PROGS_F
     atom_uspp_unittest.F
     uspp_augmentation_unittest.F
     uspp_fourier_unittest.F
+    uspp_hfx_integrals_unittest.F
     uspp_projector_operators_unittest.F
     upf_projector_integrals_unittest.F
     upf_local_integrals_unittest.F
@@ -2056,6 +2058,7 @@ list(
   "atom_uspp_unittest"
   "uspp_augmentation_unittest"
   "uspp_fourier_unittest"
+  "uspp_hfx_integrals_unittest"
   "uspp_projector_operators_unittest"
   "upf_projector_integrals_unittest"
   "upf_local_integrals_unittest"
@@ -2110,6 +2113,7 @@ add_executable(xc_pbe_unittest xc/xc_pbe_unittest.F)
 add_executable(atom_uspp_unittest atom_uspp_unittest.F)
 add_executable(uspp_augmentation_unittest uspp_augmentation_unittest.F)
 add_executable(uspp_fourier_unittest uspp_fourier_unittest.F)
+add_executable(uspp_hfx_integrals_unittest uspp_hfx_integrals_unittest.F)
 add_executable(uspp_projector_operators_unittest
                uspp_projector_operators_unittest.F)
 add_executable(upf_projector_integrals_unittest

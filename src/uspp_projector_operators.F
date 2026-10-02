@@ -30,8 +30,75 @@ MODULE uspp_projector_operators
    PUBLIC :: uspp_projector_density, uspp_projector_add_operator, uspp_projector_metric, &
              uspp_projector_collocate, uspp_projector_integrate, uspp_projector_pullback, uspp_projector_ao_pattern
    PUBLIC :: uspp_projector_create_onsite
+   PUBLIC :: uspp_transition_block, uspp_transition_pullback
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Add one center's complete augmentation to a real AO transition-density RI tensor block.
+!>        T(A,mu,nu) += sum_ij B_left(mu,i) A(A,i,j) B_right(nu,j).
+!>        The tensor retains both AO indices; reducing it to an on-site total density loses
+!>        intercenter QQ exchange. Packing, symmetry weights and screening belong to the caller.
+!> \param left Original AO/projector overlaps for the left AO block.
+!> \param right Original AO/projector overlaps for the right AO block at the same center.
+!> \param auxiliary Full Gaussian-auxiliary/Q integrals, ordered (RI,i,j).
+!> \param tensor Complete, unpacked (RI,left AO,right AO) tensor, incremented in place.
+! **************************************************************************************************
+   SUBROUTINE uspp_transition_block(left, right, auxiliary, tensor)
+      REAL(dp), INTENT(IN)                               :: left(:, :), right(:, :), &
+                                                            auxiliary(:, :, :)
+      REAL(dp), INTENT(INOUT)                            :: tensor(:, :, :)
+
+      INTEGER                                            :: a
+      LOGICAL                                            :: compatible
+
+      compatible = SIZE(left, 2) == SIZE(auxiliary, 2) .AND. SIZE(right, 2) == SIZE(auxiliary, 3) .AND. &
+                   ALL(SHAPE(tensor) == [SIZE(auxiliary, 1), SIZE(left, 1), SIZE(right, 1)])
+      CPASSERT(compatible)
+      DO a = 1, SIZE(auxiliary, 1)
+         tensor(a, :, :) = tensor(a, :, :) + &
+                           MATMUL(MATMUL(left, auxiliary(a, :, :)), TRANSPOSE(right))
+      END DO
+   END SUBROUTINE uspp_transition_block
+
+! **************************************************************************************************
+!> \brief Pull back the full real transition-tensor adjoint to both overlaps and native Q integrals.
+!>        For identical left/right blocks the two overlap adjoints must be added by the caller.
+!>        No symmetry, spin, RI-metric, exchange-fraction or energy factors are inserted here.
+!> \param left Original left AO/projector block.
+!> \param right Original right AO/projector block.
+!> \param auxiliary Original full (RI,i,j) Gaussian/Q integral block.
+!> \param tensor_adjoint Derivative with respect to the complete unpacked transition tensor.
+!> \param left_adjoint Overlap derivative, incremented in place.
+!> \param right_adjoint Overlap derivative, incremented in place.
+!> \param auxiliary_adjoint Native Gaussian/Q integral derivative, incremented in place.
+! **************************************************************************************************
+   SUBROUTINE uspp_transition_pullback(left, right, auxiliary, tensor_adjoint, &
+                                       left_adjoint, right_adjoint, auxiliary_adjoint)
+      REAL(dp), INTENT(IN)                               :: left(:, :), right(:, :), &
+                                                            auxiliary(:, :, :), &
+                                                            tensor_adjoint(:, :, :)
+      REAL(dp), INTENT(INOUT)                            :: left_adjoint(:, :), right_adjoint(:, :), &
+                                                            auxiliary_adjoint(:, :, :)
+
+      INTEGER                                            :: a
+      LOGICAL                                            :: compatible
+
+      compatible = SIZE(left, 2) == SIZE(auxiliary, 2) .AND. SIZE(right, 2) == SIZE(auxiliary, 3) .AND. &
+                   ALL(SHAPE(tensor_adjoint) == [SIZE(auxiliary, 1), SIZE(left, 1), SIZE(right, 1)]) .AND. &
+                   ALL(SHAPE(left_adjoint) == SHAPE(left)) .AND. &
+                   ALL(SHAPE(right_adjoint) == SHAPE(right)) .AND. &
+                   ALL(SHAPE(auxiliary_adjoint) == SHAPE(auxiliary))
+      CPASSERT(compatible)
+      DO a = 1, SIZE(auxiliary, 1)
+         left_adjoint(:, :) = left_adjoint(:, :) + &
+                              MATMUL(tensor_adjoint(a, :, :), MATMUL(right, TRANSPOSE(auxiliary(a, :, :))))
+         right_adjoint(:, :) = right_adjoint(:, :) + &
+                               MATMUL(TRANSPOSE(tensor_adjoint(a, :, :)), MATMUL(left, auxiliary(a, :, :)))
+         auxiliary_adjoint(a, :, :) = auxiliary_adjoint(a, :, :) + &
+                                      MATMUL(MATMUL(TRANSPOSE(left), tensor_adjoint(a, :, :)), right)
+      END DO
+   END SUBROUTINE uspp_transition_pullback
 
 ! **************************************************************************************************
 !> \brief Union of Gaussian blocks and all AO block pairs sharing an augmentation center.

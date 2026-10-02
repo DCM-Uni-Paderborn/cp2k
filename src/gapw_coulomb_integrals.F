@@ -32,6 +32,7 @@ MODULE gapw_coulomb_integrals
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'gapw_coulomb_integrals'
    PUBLIC :: gapw_coulomb_init, gapw_compensated_potential, gapw_augmentation_integrals
    PUBLIC :: gapw_periodic_augmentation_integrals
+   PUBLIC :: gaussian_coulomb_radial
 
 CONTAINS
 

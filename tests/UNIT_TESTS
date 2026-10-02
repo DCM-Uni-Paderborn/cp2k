@@ -31,6 +31,7 @@ xc_pbe_unittest
 uspp_augmentation_unittest
 atom_uspp_unittest
 uspp_fourier_unittest
+uspp_hfx_integrals_unittest
 uspp_projector_operators_unittest
 upf_projector_integrals_unittest
 upf_local_integrals_unittest

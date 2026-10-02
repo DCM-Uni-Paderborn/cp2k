@@ -83,7 +83,9 @@ PROGRAM uspp_projector_operators_unittest
                                               uspp_projector_density,&
                                               uspp_projector_integrate,&
                                               uspp_projector_metric,&
-                                              uspp_projector_pullback
+                                              uspp_projector_pullback,&
+                                              uspp_transition_block,&
+                                              uspp_transition_pullback
 
    IMPLICIT NONE
 
@@ -153,6 +155,7 @@ PROGRAM uspp_projector_operators_unittest
    DO k = 1, 2
       q(first(k):last(k), first(k):last(k)) = aug(k)%q
    END DO
+   CALL check_transition_tensor()
 
    ! Exercise both tall and wide MPI processor grids, including more ranks than centers.
    DO case_id = 1, 2
@@ -325,6 +328,234 @@ PROGRAM uspp_projector_operators_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Complete transition-density and independent exchange/pullback checks for two centers.
+! **************************************************************************************************
+   SUBROUTINE check_transition_tensor()
+      INTEGER, PARAMETER                                 :: naux = 4
+      REAL(dp), PARAMETER                                :: delta = 1.e-6_dp
+
+      INTEGER                                            :: aidx, bidx, c, ipr, jpr, kap, lam, mu, &
+                                                            npp, nu
+      REAL(dp) :: adjoint(naux, 2, 4), auxblock(naux, 2, 2), baseline(naux, 2, 4), &
+         block(naux, 2, 4), bra(nao, nproj), changed_block(naux, 2, 4), cross_energy, &
+         cross_reference, da(naux, 2, 2), dl(2, 2), dr(4, 2), expected_derivative, fd, gmu, gnu, &
+         individual(naux, nao, nao, 2), kernel(naux, naux), left(2, 2), &
+         minus_tensor(naux, nao, nao), oracle_energy, plus_tensor(naux, nao, nao), &
+         qvalues(naux, nproj, nproj), reference(naux, nao, nao), repeated_adjoint(naux, nao, nao), &
+         repeated_auxiliary(naux, nproj, nproj), repeated_left(nao, nproj), &
+         repeated_right(nao, nproj), right(4, 2)
+      REAL(dp) :: smooth(naux, nao, nao), tensor(naux, nao, nao)
+
+      qvalues = 0.0_dp
+      kernel = 0.0_dp
+      DO aidx = 1, naux
+         DO bidx = 1, naux
+            kernel(aidx, bidx) = 0.03_dp*REAL(aidx*bidx, dp)
+         END DO
+         kernel(aidx, aidx) = kernel(aidx, aidx) + 0.4_dp
+         DO mu = 1, nao
+            gmu = EXP(-0.03_dp*REAL((aidx - mu)**2, dp))
+            DO nu = 1, nao
+               gnu = EXP(-0.03_dp*REAL((aidx - nu)**2, dp))
+               smooth(aidx, mu, nu) = gmu*gnu
+            END DO
+         END DO
+         DO c = 1, 2
+            DO ipr = first(c), last(c)
+               DO jpr = first(c), last(c)
+                  qvalues(aidx, ipr, jpr) = &
+                     (0.09_dp*c + 0.02_dp*aidx)*COS(REAL(ipr*jpr + aidx, dp))
+               END DO
+            END DO
+         END DO
+      END DO
+      tensor = smooth
+      reference = smooth
+      individual = 0.0_dp
+      DO c = 1, 2
+         CALL uspp_transition_block(b(:, first(c):last(c)), b(:, first(c):last(c)), &
+                                    qvalues(:, first(c):last(c), first(c):last(c)), individual(:, :, :, c))
+         tensor = tensor + individual(:, :, :, c)
+         ! Independent point-density oracle, retaining both AO indices and all
+         ! projector pairs. It never reduces the field to an atomic total density.
+         DO aidx = 1, naux
+            DO nu = 1, nao
+               DO mu = 1, nao
+                  DO jpr = first(c), last(c)
+                     DO ipr = first(c), last(c)
+                        reference(aidx, mu, nu) = reference(aidx, mu, nu) + &
+                                                  b(mu, ipr)*b(nu, jpr)*qvalues(aidx, ipr, jpr)
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      CALL check(MAXVAL(ABS(tensor - reference)), 'USPP complete transition-density tensor')
+      DO aidx = 1, naux
+         CALL check(MAXVAL(ABS(tensor(aidx, :, :) - TRANSPOSE(tensor(aidx, :, :)))), &
+                    'USPP transition-density symmetry')
+      END DO
+      oracle_energy = 0.0_dp
+      cross_reference = 0.0_dp
+      DO kap = 1, nao
+         DO lam = 1, nao
+            DO nu = 1, nao
+               DO mu = 1, nao
+                  DO bidx = 1, naux
+                     DO aidx = 1, naux
+                        oracle_energy = oracle_energy - 0.5_dp*p(mu, nu)*p(lam, kap)*kernel(aidx, bidx)* &
+                                        reference(aidx, mu, lam)*reference(bidx, nu, kap)
+                        cross_reference = cross_reference - 0.5_dp*p(mu, nu)*p(lam, kap)*kernel(aidx, bidx)* &
+                                          (individual(aidx, mu, lam, 1)*individual(bidx, nu, kap, 2) + &
+                                           individual(aidx, mu, lam, 2)*individual(bidx, nu, kap, 1))
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      CALL check(ABS(transition_exchange(tensor, kernel) - oracle_energy), 'USPP full exchange contraction')
+      cross_energy = transition_exchange(individual(:, :, :, 1) + individual(:, :, :, 2), kernel) - &
+                     transition_exchange(individual(:, :, :, 1), kernel) - &
+                     transition_exchange(individual(:, :, :, 2), kernel)
+      IF (ABS(cross_reference) < 1.e-8_dp) ERROR STOP 'USPP intercenter QQ fixture is degenerate'
+      CALL check(ABS(cross_energy - cross_reference), 'USPP intercenter QQ exchange')
+
+      ! A rectangular block and nonsymmetric adjoint exercise the two distinct
+      ! AO legs. Seed outputs prove accumulation rather than replacement.
+      left = b(1:2, 1:2)
+      right = b(3:6, 1:2)
+      auxblock = qvalues(:, 1:2, 1:2)
+      DO nu = 1, 4
+         DO mu = 1, 2
+            DO aidx = 1, naux
+               adjoint(aidx, mu, nu) = 0.13_dp*SIN(REAL(2*aidx + 3*mu - nu, dp))
+            END DO
+         END DO
+      END DO
+      baseline = 0.21_dp
+      block = baseline
+      CALL uspp_transition_block(left, right, auxblock, block)
+      changed_block = baseline
+      DO nu = 1, 4
+         DO mu = 1, 2
+            DO jpr = 1, 2
+               DO ipr = 1, 2
+                  changed_block(:, mu, nu) = changed_block(:, mu, nu) + &
+                                             left(mu, ipr)*right(nu, jpr)*auxblock(:, ipr, jpr)
+               END DO
+            END DO
+         END DO
+      END DO
+      CALL check(MAXVAL(ABS(block - changed_block)), 'USPP rectangular transition block accumulation')
+      dl = 0.17_dp
+      dr = -0.09_dp
+      da = 0.11_dp
+      CALL uspp_transition_pullback(left, right, auxblock, adjoint, dl, dr, da)
+      dl = dl - 0.17_dp
+      dr = dr + 0.09_dp
+      da = da - 0.11_dp
+      DO jpr = 1, 2
+         DO mu = 1, 2
+            left(mu, jpr) = left(mu, jpr) + delta
+            changed_block = baseline
+            CALL uspp_transition_block(left, right, auxblock, changed_block)
+            fd = SUM(adjoint*changed_block)
+            left(mu, jpr) = left(mu, jpr) - 2.0_dp*delta
+            changed_block = baseline
+            CALL uspp_transition_block(left, right, auxblock, changed_block)
+            fd = (fd - SUM(adjoint*changed_block))/(2.0_dp*delta)
+            left(mu, jpr) = left(mu, jpr) + delta
+            CALL check(ABS(fd - dl(mu, jpr)), 'USPP transition left overlap pullback', 2.e-10_dp)
+         END DO
+         DO nu = 1, 4
+            right(nu, jpr) = right(nu, jpr) + delta
+            changed_block = baseline
+            CALL uspp_transition_block(left, right, auxblock, changed_block)
+            fd = SUM(adjoint*changed_block)
+            right(nu, jpr) = right(nu, jpr) - 2.0_dp*delta
+            changed_block = baseline
+            CALL uspp_transition_block(left, right, auxblock, changed_block)
+            fd = (fd - SUM(adjoint*changed_block))/(2.0_dp*delta)
+            right(nu, jpr) = right(nu, jpr) + delta
+            CALL check(ABS(fd - dr(nu, jpr)), 'USPP transition right overlap pullback', 2.e-10_dp)
+         END DO
+         DO ipr = 1, 2
+            DO aidx = 1, naux
+               auxblock(aidx, ipr, jpr) = auxblock(aidx, ipr, jpr) + delta
+               changed_block = baseline
+               CALL uspp_transition_block(left, right, auxblock, changed_block)
+               fd = SUM(adjoint*changed_block)
+               auxblock(aidx, ipr, jpr) = auxblock(aidx, ipr, jpr) - 2.0_dp*delta
+               changed_block = baseline
+               CALL uspp_transition_block(left, right, auxblock, changed_block)
+               fd = (fd - SUM(adjoint*changed_block))/(2.0_dp*delta)
+               auxblock(aidx, ipr, jpr) = auxblock(aidx, ipr, jpr) + delta
+               CALL check(ABS(fd - da(aidx, ipr, jpr)), 'USPP transition Q integral pullback', 2.e-10_dp)
+            END DO
+         END DO
+      END DO
+
+      ! A repeated AO block must receive both overlap derivatives, not an
+      ! implicit doubling of an already packed tensor or a second Pulay term.
+      bra = b
+      repeated_adjoint = 0.0_dp
+      repeated_adjoint(1, 3, 3) = 1.0_dp
+      DO c = 1, 2
+         npp = last(c) - first(c) + 1
+         plus_tensor = 0.0_dp
+         minus_tensor = 0.0_dp
+         bra(3, first(c)) = b(3, first(c)) + delta
+         CALL uspp_transition_block(bra(:, first(c):last(c)), bra(:, first(c):last(c)), &
+                                    qvalues(:, first(c):last(c), first(c):last(c)), plus_tensor)
+         bra(3, first(c)) = b(3, first(c)) - delta
+         CALL uspp_transition_block(bra(:, first(c):last(c)), bra(:, first(c):last(c)), &
+                                    qvalues(:, first(c):last(c), first(c):last(c)), minus_tensor)
+         bra(3, first(c)) = b(3, first(c))
+         expected_derivative = 0.0_dp
+         DO jpr = 1, npp
+            expected_derivative = expected_derivative + &
+                                  qvalues(1, first(c), first(c) + jpr - 1)*b(3, first(c) + jpr - 1) + &
+                                  qvalues(1, first(c) + jpr - 1, first(c))*b(3, first(c) + jpr - 1)
+         END DO
+         CALL check(ABS((plus_tensor(1, 3, 3) - minus_tensor(1, 3, 3))/(2.0_dp*delta) - expected_derivative), &
+                    'USPP transition repeated AO legs', 2.e-10_dp)
+         repeated_left = 0.0_dp
+         repeated_right = 0.0_dp
+         repeated_auxiliary = 0.0_dp
+         CALL uspp_transition_pullback(b(:, first(c):last(c)), b(:, first(c):last(c)), &
+                                       qvalues(:, first(c):last(c), first(c):last(c)), repeated_adjoint, &
+                                       repeated_left(:, first(c):last(c)), repeated_right(:, first(c):last(c)), &
+                                       repeated_auxiliary(:, first(c):last(c), first(c):last(c)))
+         CALL check(ABS(repeated_left(3, first(c)) + repeated_right(3, first(c)) - expected_derivative), &
+                    'USPP transition repeated overlap pullback', 2.e-10_dp)
+      END DO
+      auxblock = 0.0_dp
+      changed_block = baseline
+      CALL uspp_transition_block(left, right, auxblock, changed_block)
+      CALL check(MAXVAL(ABS(changed_block - baseline)), 'USPP zero-Q transition leaves NC tensor unchanged')
+   END SUBROUTINE check_transition_tensor
+
+! **************************************************************************************************
+!> \brief RI exchange oracle with a full non-diagonal positive metric.
+! **************************************************************************************************
+   FUNCTION transition_exchange(tensor, kernel) RESULT(RESULT)
+      REAL(dp), INTENT(IN)                               :: tensor(:, :, :), kernel(:, :)
+      REAL(dp)                                           :: result
+
+      INTEGER                                            :: aidx, bidx
+
+      RESULT = 0.0_dp
+      DO bidx = 1, SIZE(kernel, 2)
+         DO aidx = 1, SIZE(kernel, 1)
+            RESULT = RESULT - 0.5_dp*kernel(aidx, bidx)* &
+                     SUM(p*MATMUL(MATMUL(tensor(aidx, :, :), p), TRANSPOSE(tensor(bidx, :, :))))
+         END DO
+      END DO
+   END FUNCTION transition_exchange
 
 ! **************************************************************************************************
 !> \brief Include local potentials on both augmentation centers and a third ordinary ion.
