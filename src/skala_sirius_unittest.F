@@ -33,7 +33,7 @@ PROGRAM skala_sirius_unittest
       sirius_context_handler, sirius_create_context, sirius_create_ground_state, &
       sirius_create_kset, sirius_find_ground_state, sirius_free_handler, &
       sirius_generate_effective_potential, sirius_get_energy, sirius_ground_state_handler, &
-      sirius_get_forces, &
+      sirius_get_forces, sirius_get_stress_tensor, &
       sirius_get_max_num_gkvec, sirius_set_atom_position, sirius_update_ground_state, &
       sirius_import_parameters, sirius_initialize_context, sirius_kpoint_set_handler, &
       sirius_set_atom_type_dion, sirius_set_atom_type_paw, sirius_set_atom_type_radial_grid, &
@@ -75,6 +75,7 @@ PROGRAM skala_sirius_unittest
    REAL(dp), PARAMETER :: force_steps(5) = [0.0_dp, 2.0e-4_dp, -2.0e-4_dp, 1.0e-4_dp, -1.0e-4_dp], &
                           direction(3) = [0.7_dp, -0.4_dp, 0.2_dp]
    REAL(dp) :: force_energy(5), force_derivative, force_fd, entropy, density_tol, energy_tol
+   REAL(dp) :: stress(3, 3), strain(3, 3)
    REAL(dp) :: updated_energy, updated_exc
    REAL(dp), ALLOCATABLE :: forces(:, :)
 #if defined(__SIRIUS_XC_DERIVATIVE)
@@ -86,7 +87,7 @@ PROGRAM skala_sirius_unittest
 #endif
    REAL(dp), ALLOCATABLE :: points(:, :), weights(:), descriptor_weights(:), centres(:, :)
    INTEGER, ALLOCATABLE :: sizes(:)
-   LOGICAL :: converged, atom_grid, force_test, update_test
+   LOGICAL :: converged, atom_grid, force_test, stress_test, derivative_test, update_test
 
    CALL get_command_argument(1, model)
    CALL get_command_argument(2, paw_setup)
@@ -97,13 +98,16 @@ PROGRAM skala_sirius_unittest
    IF (LEN_TRIM(model_mode) > 0 .AND. TRIM(model_mode) /= "skala-float32") &
       ERROR STOP "Unknown model mode (expected skala-float32 or no mode for the analytic fixture)"
    force_test = TRIM(grid_arg) == "atom-grid-forces"
+   stress_test = TRIM(grid_arg) == "atom-grid-stress"
+   derivative_test = force_test .OR. stress_test
    update_test = TRIM(grid_arg) == "atom-grid-update"
-   atom_grid = TRIM(grid_arg) == "atom-grid" .OR. force_test .OR. update_test
+   atom_grid = TRIM(grid_arg) == "atom-grid" .OR. derivative_test .OR. update_test
    IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. atom_grid) ERROR STOP "Unknown atom-grid test mode"
 #if !defined(__SIRIUS_XC_POINT_UPDATE)
    IF (update_test) ERROR STOP "SIRIUS lacks the point-quadrature update API"
 #endif
-   IF (force_test .AND. TRIM(paw_setup) == "LAPW") ERROR STOP "LAPW forces require basis and boundary derivatives"
+   IF (derivative_test .AND. TRIM(paw_setup) == "LAPW") &
+      ERROR STOP "LAPW forces and stress require basis and boundary derivatives"
 #if !defined(__SIRIUS_XC_POINT_GEOMETRY)
    IF (atom_grid) ERROR STOP "SIRIUS lacks the point geometry callbacks"
 #endif
@@ -143,8 +147,8 @@ PROGRAM skala_sirius_unittest
          WRITE (*, '(A,I0,2A)') "Points per block: ", side**3, "; PAW setup: ", TRIM(paw_setup)
       END IF
    END IF
-   density_tol = MERGE(1.0e-10_dp, 2.0e-6_dp, force_test .OR. update_test)
-   energy_tol = MERGE(1.0e-11_dp, 2.0e-7_dp, force_test .OR. update_test)
+   density_tol = MERGE(1.0e-10_dp, 2.0e-6_dp, derivative_test .OR. update_test)
+   energy_tol = MERGE(1.0e-11_dp, 2.0e-7_dp, derivative_test .OR. update_test)
    max_scf_iterations = 150
    IF (model_mode == "skala-float32") THEN
       ! The serialized Skala network explicitly casts its neural features to Float32.
@@ -173,7 +177,8 @@ PROGRAM skala_sirius_unittest
    lattice(2, 2) = 9.0_dp
    lattice(3, 3) = 10.0_dp
    CALL cell_create(cell, hmat=lattice, periodic=[1, 1, 1])
-   natoms = MERGE(2, 1, force_test .OR. (update_test .AND. first_mode /= 2))
+   natoms = MERGE(2, 1, derivative_test .OR. (update_test .AND. first_mode /= 2))
+   strain = RESHAPE([0.3_dp, 0.1_dp, -0.07_dp, 0.1_dp, -0.2_dp, 0.06_dp, -0.07_dp, 0.06_dp, 0.15_dp], [3, 3])
    ALLOCATE (atoms(natoms), forces(3, natoms))
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
    ALLOCATE (atom_derivative(3, natoms), repeat_atom(3, natoms))
@@ -207,10 +212,20 @@ PROGRAM skala_sirius_unittest
    kpoint(:, 1) = [0.07_dp, 0.03_dp, 0.02_dp]
 
    DO mode = first_mode, last_mode
-      DO mag = MERGE(MIN(mode, 1), 0, force_test .OR. update_test), MERGE(MIN(mode, 1), 1, force_test .OR. update_test)
-         DO geometry = 1, MERGE(5, MERGE(2, 1, update_test), force_test)
+      DO mag = MERGE(MIN(mode, 1), 0, derivative_test .OR. update_test), MERGE(MIN(mode, 1), 1, derivative_test .OR. update_test)
+         DO geometry = 1, MERGE(5, MERGE(2, 1, update_test), derivative_test)
             atoms(1)%r = [1.6_dp, 2.7_dp, 4.0_dp] + force_steps(geometry)*direction
             IF (update_test) CALL set_update_geometry(geometry == 2)
+            IF (stress_test) THEN
+               lattice = 0.0_dp
+               lattice(1, 1) = 8.0_dp
+               lattice(2, 2) = 9.0_dp
+               lattice(3, 3) = 10.0_dp
+               lattice = lattice + force_steps(geometry)*MATMUL(strain, lattice)
+               CALL init_cell(cell, hmat=lattice)
+               atoms(1)%r = MATMUL(lattice, [0.2_dp, 0.3_dp, 0.4_dp])
+               atoms(2)%r = MATMUL(lattice, [0.48_dp, 0.51_dp, 0.59_dp])
+            END IF
             CALL sirius_create_context(comm%get_handle(), ctx)
             IF (mode == 2) THEN
                CALL sirius_import_parameters(ctx, &
@@ -296,7 +311,7 @@ PROGRAM skala_sirius_unittest
             CALL sirius_create_ground_state(ks, gs)
             converged = .FALSE.
             CALL sirius_find_ground_state(gs, density_tol=density_tol, energy_tol=energy_tol, &
-                                          iter_solver_tol=MERGE(1.0e-11_dp, 1.0e-9_dp, force_test .OR. update_test), &
+                                          iter_solver_tol=MERGE(1.0e-11_dp, 1.0e-9_dp, derivative_test .OR. update_test), &
                                           max_niter=max_scf_iterations, save_state=.FALSE., converged=converged, error_code=ierr)
             IF (ierr /= 0) ERROR STOP "SIRIUS Skala SCF failed"
             CALL sirius_get_energy(gs, "total", energy)
@@ -307,22 +322,28 @@ PROGRAM skala_sirius_unittest
                ERROR STOP "SIRIUS Skala point SCF did not converge with finite energies"
             IF (ABS(exc) < 1.0e-6_dp) ERROR STOP "The model must produce a nontrivial XC energy"
             IF (geometry == 1) reference(mode + 1, mag + 1) = energy
-            IF (force_test) THEN
+            IF (derivative_test) THEN
                CALL sirius_get_energy(gs, "demet", entropy)
                ! At fractional occupations forces differentiate the free energy E-TS.
                force_energy(geometry) = energy + entropy
                IF (geometry == 1) THEN
-                  CALL sirius_get_forces(gs, "total", forces, error_code=ierr)
-                  IF (ierr /= 0 .OR. .NOT. ALL(ieee_is_finite(forces))) ERROR STOP "SIRIUS Skala total forces failed"
-                  force_derivative = -DOT_PRODUCT(forces(:, 1), direction)
-                  IF (MAXVAL(ABS(SUM(forces, DIM=2))) > 2.0e-6_dp) ERROR STOP "Total forces violate translation invariance"
+                  IF (stress_test) THEN
+                     CALL sirius_get_stress_tensor(gs, "total", stress, error_code=ierr)
+                     IF (ierr /= 0 .OR. .NOT. ALL(ieee_is_finite(stress))) ERROR STOP "SIRIUS Skala stress failed"
+                     force_derivative = cell%deth*SUM(stress*strain)
+                  ELSE
+                     CALL sirius_get_forces(gs, "total", forces, error_code=ierr)
+                     IF (ierr /= 0 .OR. .NOT. ALL(ieee_is_finite(forces))) ERROR STOP "SIRIUS Skala total forces failed"
+                     force_derivative = -DOT_PRODUCT(forces(:, 1), direction)
+                     IF (MAXVAL(ABS(SUM(forces, DIM=2))) > 2.0e-6_dp) ERROR STOP "Total forces violate translation invariance"
+                  END IF
                END IF
             END IF
             CALL sirius_generate_effective_potential(gs)
             CALL sirius_get_energy(gs, "exc", repeat_exc)
             IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Unchanged density changed the point XC energy"
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
-            IF (atom_grid .AND. .NOT. force_test .AND. .NOT. update_test) THEN
+            IF (atom_grid .AND. .NOT. derivative_test .AND. .NOT. update_test) THEN
                CALL sirius_get_xc_geometry_derivatives(gs, natoms, atom_derivative, cell_derivative, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "SIRIUS Skala geometry callback failed"
                IF (.NOT. ALL(ieee_is_finite(atom_derivative)) .OR. .NOT. ALL(ieee_is_finite(cell_derivative))) &
@@ -426,18 +447,19 @@ PROGRAM skala_sirius_unittest
             CALL skala_sirius_release(state)
             IF (ASSOCIATED(state)) ERROR STOP "Callback state was not released"
          END DO
-         IF (force_test) THEN
+         IF (derivative_test) THEN
             DO i = 2, 4, 2
                force_fd = (force_energy(i) - force_energy(i + 1))/(2*force_steps(i))
-               IF (comm%mepos == 0) WRITE (*, '(A,2I3,4ES19.10)') "Total force (method,mag,h,analytic,FD,error): ", &
+               IF (comm%mepos == 0) WRITE (*, '(3A,2I3,4ES19.10)') "Total ", MERGE("strain", "force ", stress_test), &
+                  " derivative (method,mag,h,analytic,FD,error): ", &
                   mode, mag, force_steps(i), force_derivative, force_fd, ABS(force_fd - force_derivative)
                IF (.NOT. ieee_is_finite(force_fd) .OR. ABS(force_fd - force_derivative) > 2.0e-5_dp) &
-                  ERROR STOP "Total force disagrees with the finite-difference free energy"
+                  ERROR STOP "Geometry derivative disagrees with the finite-difference free energy"
             END DO
          END IF
       END DO
    END DO
-   IF (.NOT. force_test .AND. .NOT. update_test .AND. ANY(ABS(reference(:, 1) - reference(:, 2)) > 2.0e-5_dp)) &
+   IF (.NOT. derivative_test .AND. .NOT. update_test .AND. ANY(ABS(reference(:, 1) - reference(:, 2)) > 2.0e-5_dp)) &
       ERROR STOP "Scalar and unpolarized collinear SCF energies differ"
    DEALLOCATE (points, weights, descriptor_weights, centres, sizes, atoms, forces)
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
