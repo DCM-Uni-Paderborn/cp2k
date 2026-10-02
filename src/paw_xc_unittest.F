@@ -94,6 +94,7 @@ PROGRAM paw_xc_unittest
    CALL check_kinetic_adjoint()
    CALL check_local_exchange()
    CALL check_gga()
+   CALL check_meta_gga()
    CALL check_atomic_projection()
    CALL original_datasets()
    CALL section_vals_release(functional)
@@ -101,6 +102,103 @@ PROGRAM paw_xc_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief TPSS energy derivatives, spin symmetry, and explicit frozen-core kinetic fields.
+! **************************************************************************************************
+   SUBROUTINE check_meta_gga()
+      REAL(dp), PARAMETER                                :: step = 1.e-5_dp
+#if defined(__LIBXC)
+      INTEGER, PARAMETER                                 :: nvariant = 2
+#else
+      INTEGER, PARAMETER                                 :: nvariant = 1
+#endif
+
+      INTEGER                                            :: core_case, maxspin, ns, p, q, side, variant
+      REAL(dp) :: check_energy, core_kinetic(n, 2), density(4, 4, 2), derivative, &
+                  direction(4, 4, 2), energy, errors(2), minus, plus, potential(4, 4, 2), &
+                  restricted(4, 4, 1), restricted_potential(4, 4, 1), scratch(4, 4, 2), spin_error
+      TYPE(paw_xc_type)                                  :: xcgrid
+
+      DO q = 1, 4
+         DO p = 1, 4
+            restricted(p, q, 1) = SIN(0.31_dp*p)*SIN(0.31_dp*q)
+            IF (p == q) restricted(p, q, 1) = restricted(p, q, 1) + 0.3_dp
+            direction(p, q, 1) = COS(0.23_dp*(p + q))
+            direction(p, q, 2) = SIN(0.37_dp*(p + q))
+         END DO
+      END DO
+      DO variant = 1, nvariant
+         maxspin = variant
+         CALL section_vals_release(functional)
+         CALL section_vals_create(functional, specification)
+         IF (variant == 1) THEN
+            CALL section_vals_val_set(functional, 'TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+         END IF
+#if defined(__LIBXC)
+         IF (variant == 2) THEN
+            CALL section_vals_val_set(functional, 'MGGA_X_TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+            CALL section_vals_val_set(functional, 'MGGA_C_TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+         END IF
+#endif
+         DO core_case = 1, 2
+            xcgrid = grid
+            IF (core_case == 1) THEN
+               xcgrid%core = 0.0_dp
+               xcgrid%core_gradient = 0.0_dp
+            END IF
+            ! The synthetic spherical core is a Gaussian s orbital on each side.
+            DO side = 1, 2
+               core_kinetic(:, side) = 0.5_dp*exponent**2*grid%r**2*xcgrid%core(:, side)
+            END DO
+            CALL paw_xc_evaluate(xcgrid, onecenter, functional, restricted, 1.e-20_dp, 1.e-20_dp, &
+                                 energy, restricted_potential, core_kinetic)
+            IF (core_case == 1) THEN
+               CALL paw_xc_evaluate(xcgrid, onecenter, functional, restricted, 1.e-20_dp, 1.e-20_dp, &
+                                    check_energy, scratch(:, :, :1))
+               IF (ABS(check_energy - energy) > 1.e-13_dp) ERROR STOP 'Core-free PAW TPSS depends on optional zero core'
+            END IF
+            spin_error = 0.0_dp
+            IF (maxspin == 2) THEN
+               density(:, :, 1) = 0.5_dp*restricted(:, :, 1)
+               density(:, :, 2) = density(:, :, 1)
+               CALL paw_xc_evaluate(xcgrid, onecenter, functional, density, 1.e-20_dp, 1.e-20_dp, &
+                                    check_energy, potential, core_kinetic)
+               IF (ABS(check_energy - energy) > 2.e-10_dp) ERROR STOP 'Restricted and unpolarized spin PAW TPSS differ'
+               spin_error = MAXVAL(ABS(potential(:, :, 1) - restricted_potential(:, :, 1)))
+            END IF
+            errors = 0.0_dp
+            DO ns = 1, maxspin
+               density(:, :, 1) = restricted(:, :, 1)
+               IF (ns == 2) THEN
+                  density(:, :, 1) = 0.7_dp*restricted(:, :, 1)
+                  density(:, :, 2) = 0.3_dp*restricted(:, :, 1)
+               END IF
+               CALL paw_xc_evaluate(xcgrid, onecenter, functional, density(:, :, :ns), 1.e-20_dp, 1.e-20_dp, &
+                                    energy, potential(:, :, :ns), core_kinetic)
+               CALL paw_xc_evaluate(xcgrid, onecenter, functional, density(:, :, :ns) + step*direction(:, :, :ns), &
+                                    1.e-20_dp, 1.e-20_dp, plus, scratch(:, :, :ns), core_kinetic)
+               CALL paw_xc_evaluate(xcgrid, onecenter, functional, density(:, :, :ns) - step*direction(:, :, :ns), &
+                                    1.e-20_dp, 1.e-20_dp, minus, scratch(:, :, :ns), core_kinetic)
+               derivative = SUM(potential(:, :, :ns)*direction(:, :, :ns))
+               errors(ns) = ABS((plus - minus)/(2.0_dp*step) - derivative)
+            END DO
+            WRITE (*, '(A,2I2,2ES15.6)') 'PAW TPSS projector-density derivative errors:', core_case, maxspin, errors(:maxspin)
+            WRITE (*, '(A,ES15.6)') 'PAW TPSS unpolarized spin derivative error:', spin_error
+            IF (MAXVAL(errors) > 3.e-8_dp) ERROR STOP 'PAW TPSS XC matrix is not the energy derivative'
+            IF (spin_error > 2.e-9_dp) ERROR STOP 'Restricted and unpolarized spin PAW TPSS derivatives differ'
+            IF (maxspin == 2) THEN
+               CALL paw_xc_evaluate(xcgrid, onecenter, functional, density(:, :, 2:1:-1), 1.e-20_dp, 1.e-20_dp, &
+                                    check_energy, scratch, core_kinetic)
+               IF (ABS(check_energy - energy) > 2.e-12_dp) ERROR STOP 'PAW TPSS spin exchange changed energy'
+            IF (MAXVAL(ABS(scratch - potential(:, :, 2:1:-1))) > 2.e-11_dp) ERROR STOP 'PAW TPSS spin derivative permutation failed'
+            END IF
+         END DO
+      END DO
+      CALL section_vals_release(functional)
+      CALL section_vals_create(functional, specification)
+      CALL section_vals_val_set(functional, 'PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+   END SUBROUTINE check_meta_gga
 
 ! **************************************************************************************************
 !> \brief Derivative of an independent quadratic kinetic-density functional, with one or two spins.
