@@ -15,7 +15,7 @@ MODULE skala_sirius
    USE kinds, ONLY: dp
    USE message_passing, ONLY: mp_comm_type
    USE particle_types, ONLY: particle_type
-   USE skala_atom_grid, ONLY: skala_atom_grid_build, skala_atom_grid_pullback
+   USE skala_atom_grid, ONLY: skala_atom_grid_build, skala_atom_grid_pullback, skala_atom_grid_direction
    USE skala_gpw_features, ONLY: skala_grid_layout_type
    USE skala_gpw_functional, ONLY: skala_grid_eval, skala_point_eval
 #if defined(__SIRIUS)
@@ -34,6 +34,9 @@ MODULE skala_sirius
 #endif
 #if defined(__SIRIUS_XC_POINT_HESSIAN) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_set_xc_point_hessian_callback
+#endif
+#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_quadrature_direction_callback
 #endif
 #if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_update_xc_point_set
@@ -117,6 +120,11 @@ CONTAINS
       IF (error /= 0) CPABORT("Could not register the SIRIUS Skala geometry callbacks")
 #else
       MARK_USED(error)
+#endif
+#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
+      CALL sirius_set_xc_quadrature_direction_callback(context, C_FUNLOC(differentiate_skala_quadrature), &
+                                                       C_LOC(state%token), error)
+      IF (error /= 0) CPABORT("Could not register the SIRIUS Skala quadrature direction callback")
 #endif
    END SUBROUTINE
 
@@ -453,7 +461,7 @@ CONTAINS
    END SUBROUTINE
 #endif
 
-#if (defined(__SIRIUS_XC_POINT_GEOMETRY) || defined(__SIRIUS_XC_POINT_RESPONSE) || defined(__SIRIUS_XC_POINT_HESSIAN)) && defined(__LIBTORCH)
+#if (defined(__SIRIUS_XC_POINT_GEOMETRY) || defined(__SIRIUS_XC_POINT_RESPONSE) || defined(__SIRIUS_XC_POINT_HESSIAN) || defined(__SIRIUS_XC_QUADRATURE_DIRECTION)) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief Return the registry entry without exporting Fortran pointers across the C ABI.
 ! **************************************************************************************************
@@ -645,6 +653,49 @@ CONTAINS
       IF (invalid /= 0) RETURN
       CALL skala_atom_grid_pullback(comm, state%cell%hmat, centres, state%nradial, state%nangular, state%shell, &
                                     state%scale, atom_sizes, dpoints, denergy, ddescriptor, dcentres, datoms, dlattice)
+      status = 0
+   END SUBROUTINE
+#endif
+
+#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
+! **************************************************************************************************
+!> \brief Forward the host atom/cell direction through the complete local atom quadrature.
+! **************************************************************************************************
+   SUBROUTINE differentiate_skala_quadrature(user_data, nr, nb, natom, fcomm, atom_sizes, datoms, dlattice, &
+                                             dpoints, denergy, ddescriptor, dcentres, status) BIND(C)
+      TYPE(C_PTR), VALUE                                 :: user_data
+      INTEGER(C_INT), VALUE                              :: nr, nb, natom, fcomm
+      INTEGER(C_INT), INTENT(IN)                         :: atom_sizes(nb)
+      REAL(C_DOUBLE), INTENT(IN)                         :: datoms(3, natom), dlattice(3, 3)
+      REAL(C_DOUBLE), INTENT(OUT)                        :: dpoints(3, nr), denergy(nr), &
+                                                            ddescriptor(nr), dcentres(3, nb)
+      INTEGER(C_INT), INTENT(OUT)                        :: status
+
+      INTEGER                                            :: a, invalid
+      REAL(dp)                                           :: centres(3, natom)
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(skala_sirius_state_type), POINTER             :: state
+
+      CALL comm%set_handle(INT(fcomm))
+      status = 1
+      dpoints = 0.0_dp
+      denergy = 0.0_dp
+      ddescriptor = 0.0_dp
+      dcentres = 0.0_dp
+      state => callback_state(user_data)
+      invalid = 0
+      IF (.NOT. ASSOCIATED(state) .OR. nr < 0 .OR. nb < 0 .OR. natom < 1) invalid = 1
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      IF (SIZE(state%particles) /= natom .OR. state%nradial < 2) invalid = 1
+      IF (.NOT. grid_geometry_current(state)) invalid = 1
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      DO a = 1, natom
+         centres(:, a) = state%particles(a)%r
+      END DO
+      CALL skala_atom_grid_direction(comm, state%cell%hmat, centres, state%nradial, state%nangular, state%shell, &
+                                     state%scale, atom_sizes, datoms, dlattice, dpoints, denergy, ddescriptor, dcentres)
       status = 0
    END SUBROUTINE
 #endif

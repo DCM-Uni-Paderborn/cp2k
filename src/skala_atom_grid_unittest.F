@@ -16,6 +16,7 @@ PROGRAM skala_atom_grid_unittest
                                               mp_comm_type,&
                                               mp_comm_world
    USE skala_atom_grid,                 ONLY: skala_atom_grid_build,&
+                                              skala_atom_grid_direction,&
                                               skala_atom_grid_pullback,&
                                               skala_partition_init,&
                                               skala_partition_pullback,&
@@ -87,6 +88,7 @@ PROGRAM skala_atom_grid_unittest
    CALL partition_derivatives(centres)
    CALL partition_derivatives(centres(:, :1))
    CALL quadrature_derivatives()
+   CALL quadrature_direction()
 
    coarse_error = HUGE(1.0_dp)
    DO level = 1, 2
@@ -274,6 +276,71 @@ CONTAINS
          END DO
       END DO
       IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum quadrature geometry derivative error: ", maximum
+   END SUBROUTINE
+
+   SUBROUTINE quadrature_direction()
+      INTEGER                                            :: component, row, trial
+      INTEGER, ALLOCATABLE                               :: minus_sizes(:), plus_sizes(:), sizes(:)
+      REAL(dp)                                           :: ad, ah(3, 3), ar(3, 2), dh(3, 3), &
+                                                            dr(3, 2), error, gh(3, 3), gr(3, 2), &
+                                                            h, maximum, reverse
+      REAL(dp), ALLOCATABLE :: ab(:, :), adesc(:), ae(:), ax(:, :), blocks(:, :), d(:), db(:, :), &
+         dd(:), de(:), dx(:, :), e(:), mb(:, :), md(:), me(:), mx(:, :), pb(:, :), pd(:), pe(:), &
+         px(:, :), xyz(:, :)
+
+      CALL skala_atom_grid_build(comm, lattice, centres, 12, 14, 1, 1.0_dp, xyz, e, d, sizes, blocks)
+      ALLOCATE (dx(3, SIZE(e)), de(SIZE(e)), dd(SIZE(e)), db(3, SIZE(sizes)))
+      ALLOCATE (ax(3, SIZE(e)), ae(SIZE(e)), adesc(SIZE(e)), ab(3, SIZE(sizes)))
+      ax = SIN(xyz)
+      ae = COS(SUM(xyz, DIM=1))
+      adesc = SIN(SUM(xyz, DIM=1))
+      ab = COS(blocks)
+      CALL skala_atom_grid_pullback(comm, lattice, centres, 12, 14, 1, 1.0_dp, sizes, &
+                                    ax, ae, adesc, ab, gr, gh)
+      dr = RESHAPE([0.21_dp, -0.11_dp, 0.09_dp, -0.17_dp, 0.23_dp, 0.14_dp], [3, 2])
+      dh = RESHAPE([0.13_dp, 0.09_dp, -0.17_dp, 0.22_dp, -0.19_dp, 0.16_dp, 0.11_dp, -0.21_dp, 0.18_dp], [3, 3])
+      maximum = 0.0_dp
+      DO component = 1, 3
+         ar = dr
+         ah = dh
+         IF (component == 1) ah = 0.0_dp
+         IF (component == 2) ar = 0.0_dp
+         CALL skala_atom_grid_direction(comm, lattice, centres, 12, 14, 1, 1.0_dp, sizes, &
+                                        ar, ah, dx, de, dd, db)
+         ad = SUM(ax*dx) + SUM(ae*de) + SUM(adesc*dd) + SUM(ab*db)
+         CALL comm%sum(ad)
+         reverse = SUM(gr*ar) + SUM(gh*ah)
+         IF (ABS(ad - reverse)/MAX(1.0_dp, ABS(ad), ABS(reverse)) > 2.0e-12_dp) &
+            ERROR STOP "Atom-grid forward and reverse geometry derivatives differ"
+         DO trial = 1, 2
+            h = 1.0e-4_dp/REAL(trial, dp)
+            CALL skala_atom_grid_build(comm, lattice + h*ah, centres + h*ar, 12, 14, 1, 1.0_dp, &
+                                       px, pe, pd, plus_sizes, pb)
+            CALL skala_atom_grid_build(comm, lattice - h*ah, centres - h*ar, 12, 14, 1, 1.0_dp, &
+                                       mx, me, md, minus_sizes, mb)
+            IF (SIZE(plus_sizes) /= SIZE(sizes) .OR. SIZE(minus_sizes) /= SIZE(sizes)) &
+               ERROR STOP "Atom-grid direction changes block ownership"
+            IF (ANY(plus_sizes /= sizes) .OR. ANY(minus_sizes /= sizes)) &
+               ERROR STOP "Atom-grid direction fixture changes row topology"
+            error = MAX(0.0_dp, MAXVAL(ABS(dx - (px - mx)/(2*h))), MAXVAL(ABS(db - (pb - mb)/(2*h))))
+            DO row = 1, SIZE(e)
+               error = MAX(error, ABS(de(row) - (pe(row) - me(row))/(2*h))/MAX(1.0_dp, ABS(de(row))), &
+                           ABS(dd(row) - (pd(row) - md(row))/(2*h))/MAX(1.0_dp, ABS(dd(row))))
+            END DO
+            CALL comm%max(error)
+            maximum = MAX(maximum, error)
+            IF (error > 2.0e-6_dp) ERROR STOP "Atom-grid forward derivative fails finite differences"
+         END DO
+      END DO
+      DO component = 1, 2
+         ar(:, component) = [0.04_dp, -0.02_dp, 0.03_dp]
+      END DO
+      ah = 0.0_dp
+      CALL skala_atom_grid_direction(comm, lattice, centres, 12, 14, 1, 1.0_dp, sizes, ar, ah, dx, de, dd, db)
+      error = MAX(0.0_dp, MAXVAL(ABS(de)), MAXVAL(ABS(dd)))
+      CALL comm%max(error)
+      IF (error > 2.0e-12_dp) ERROR STOP "Rigid translation changes atom-grid weights"
+      IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum quadrature forward derivative error: ", maximum
    END SUBROUTINE
 
    FUNCTION grid_energy(group, hmat, positions, gr, gh) RESULT(e)

@@ -38,7 +38,8 @@ MODULE skala_atom_grid
    END TYPE
 
    PUBLIC :: skala_partition_type, skala_partition_init, skala_partition_weights, &
-             skala_partition_pullback, skala_atom_grid_build, skala_atom_grid_pullback, skala_radial_grid
+             skala_partition_pullback, skala_atom_grid_build, skala_atom_grid_pullback, &
+             skala_atom_grid_direction, skala_radial_grid
 
 CONTAINS
 
@@ -542,6 +543,79 @@ CONTAINS
       points = positions(:, :row)
       energy_weights = energy(:row)
       descriptor_weights = descriptor(:row)
+   END SUBROUTINE
+
+! **************************************************************************************************
+!> \brief Differentiate the local atom quadrature at fixed radial scale, angular rule and row topology.
+!> \note Cartesian atom and lattice-column directions are independent and replicated.
+!>       Radial offsets do not deform affinely with the cell.
+! **************************************************************************************************
+   SUBROUTINE skala_atom_grid_direction(group, lattice, centres, nradial, nangular, shell, scale, block_sizes, &
+                                        atom_direction, lattice_direction, points, energy_weights, &
+                                        descriptor_weights, block_centres)
+      TYPE(mp_comm_type), INTENT(IN)                     :: group
+      REAL(dp), INTENT(IN)                               :: lattice(3, 3), centres(:, :)
+      INTEGER, INTENT(IN)                                :: nradial, nangular, shell
+      REAL(dp), INTENT(IN)                               :: scale
+      INTEGER, INTENT(IN)                                :: block_sizes(:)
+      REAL(dp), INTENT(IN)                               :: atom_direction(:, :), &
+                                                            lattice_direction(3, 3)
+      REAL(dp), INTENT(OUT)                              :: points(:, :), energy_weights(:), &
+                                                            descriptor_weights(:), &
+                                                            block_centres(:, :)
+
+      INTEGER                                            :: a, angular_grid, b, ia, ir, row, start
+      REAL(dp)                                           :: base_weight, d, gh(3, 3), gx(3), &
+                                                            offset(3), p, radial_weights(nradial), &
+                                                            radii(nradial), gr(3, SIZE(centres, 2))
+      TYPE(skala_partition_type)                         :: partition
+
+      CPASSERT(nradial >= 2 .AND. nangular >= 6 .AND. nangular <= 974)
+      CPASSERT(ALL(SHAPE(atom_direction) == SHAPE(centres)))
+      CPASSERT(ALL(ieee_is_finite(atom_direction)) .AND. ALL(ieee_is_finite(lattice_direction)))
+      CPASSERT(ALL(SHAPE(points) == [3, SUM(block_sizes)]))
+      CPASSERT(ALL(SHAPE(block_centres) == [3, SIZE(block_sizes)]))
+      CPASSERT(ALL(block_sizes > 0))
+      CPASSERT(SIZE(energy_weights) == SUM(block_sizes))
+      CPASSERT(SIZE(descriptor_weights) == SUM(block_sizes))
+      CALL skala_partition_init(partition, lattice, centres, shell)
+      angular_grid = get_number_of_lebedev_grid(n=nangular)
+      CPASSERT(lebedev_grid(angular_grid)%n == nangular)
+      CPASSERT(ALL(lebedev_grid(angular_grid)%w >= 0.0_dp))
+      CALL skala_radial_grid(nradial, scale, radii, radial_weights)
+      points = 0.0_dp
+      energy_weights = 0.0_dp
+      descriptor_weights = 0.0_dp
+      block_centres = 0.0_dp
+      row = 0
+      b = 0
+      DO a = group%mepos + 1, SIZE(centres, 2), group%num_pe
+         b = b + 1
+         CPASSERT(b <= SIZE(block_sizes))
+         start = row
+         block_centres(:, b) = atom_direction(:, a)
+         DO ir = 1, nradial
+            DO ia = 1, nangular
+               offset = radii(ir)*lebedev_grid(angular_grid)%r(:, ia)
+               CALL skala_partition_weights(partition, a, offset, p, d)
+               IF (p == 0.0_dp .AND. d == 0.0_dp) CYCLE
+               row = row + 1
+               CPASSERT(row <= SIZE(energy_weights))
+               points(:, row) = atom_direction(:, a)
+               base_weight = fourpi*radial_weights(ir)*lebedev_grid(angular_grid)%w(ia)
+               ! Contract the existing analytic partition covectors with the host direction.
+               CALL skala_partition_pullback(partition, a, offset, 1.0_dp, 0.0_dp, gx, gr, gh)
+               energy_weights(row) = base_weight*(SUM(gr*atom_direction) + SUM(gh*lattice_direction))
+               CALL skala_partition_pullback(partition, a, offset, 0.0_dp, 1.0_dp, gx, gr, gh)
+               descriptor_weights(row) = base_weight*(SUM(gr*atom_direction) + SUM(gh*lattice_direction))
+            END DO
+         END DO
+         CPASSERT(row - start == block_sizes(b))
+      END DO
+      CPASSERT(b == SIZE(block_sizes) .AND. row == SIZE(energy_weights))
+      CPASSERT(ALL(ieee_is_finite(points)) .AND. ALL(ieee_is_finite(block_centres)))
+      CPASSERT(ALL(ieee_is_finite(energy_weights)))
+      CPASSERT(ALL(ieee_is_finite(descriptor_weights)))
    END SUBROUTINE
 
 ! **************************************************************************************************
