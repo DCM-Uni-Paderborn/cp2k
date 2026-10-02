@@ -87,7 +87,9 @@ MODULE qs_vxc_atom
                                               rho_atom_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_uspp_methods,                 ONLY: qs_uspp_atom_grid_collocate,&
+   USE qs_uspp_methods,                 ONLY: qs_paw_core_tau_atom_collocate,&
+                                              qs_paw_core_tau_atom_integrate,&
+                                              qs_uspp_atom_grid_collocate,&
                                               qs_uspp_atom_grid_integrate,&
                                               qs_uspp_atom_grid_prepare,&
                                               qs_uspp_atom_grid_type
@@ -1426,6 +1428,13 @@ CONTAINS
                ALLOCATE (augmentation_rho(composite_nflat), augmentation_grad(3, composite_nflat), &
                          augmentation_weights(composite_nflat))
                augmentation_weights = 1.0_dp
+               IF (tau_f) THEN
+                  augmentation_rho = 0.0_dp
+                  CALL qs_paw_core_tau_atom_collocate(uspp, cell, composite_grid_coords, augmentation_rho)
+                  DO ispin = 1, 2
+                     composite_kin(:, ispin) = composite_kin(:, ispin) + 0.5_dp*augmentation_rho
+                  END DO
+               END IF
                DO ispin = 1, nspins
                   CALL qs_uspp_atom_grid_prepare(uspp, my_kind_set, uspp_density(ispin, :), &
                                                  uspp_fields(ispin), my_calculate_forces)
@@ -1513,6 +1522,13 @@ CONTAINS
                                                       augmentation_rho, augmentation_grad, augmentation_point_gradient)
                   END DO
                   composite_grid_coord_grad(:, :) = composite_grid_coord_grad + augmentation_point_gradient
+                  IF (tau_f) THEN
+                     augmentation_point_gradient = 0.0_dp
+                     augmentation_rho(:) = 0.5_dp*SUM(composite_kin_grad, DIM=2)
+                     CALL qs_paw_core_tau_atom_integrate(uspp, uspp_fields(1), cell, composite_grid_coords, &
+                                                         augmentation_rho, augmentation_point_gradient)
+                     composite_grid_coord_grad(:, :) = composite_grid_coord_grad + augmentation_point_gradient
+                  END IF
                   DEALLOCATE (augmentation_point_gradient)
                END IF
                ALLOCATE (composite_cross_force(3, SIZE(particle_set)), &

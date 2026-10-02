@@ -996,7 +996,7 @@ CONTAINS
             CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
                                vxc_rho=v_rspace_new, vxc_tau=v_tau_rspace, exc=energy%exc, &
                                edisp=edisp, dispersion_env=qs_env%dispersion_env, &
-                               just_energy=just_energy_xc)
+                               just_energy=just_energy_xc, core_tau_forces=calculate_forces)
             IF (edisp /= 0.0_dp) energy%dispersion = edisp
             IF (qs_env%requires_matrix_vxc .AND. ASSOCIATED(v_rspace_new)) THEN
                CALL compute_matrix_vxc(qs_env=qs_env, v_rspace=v_rspace_new, matrix_vxc=matrix_vxc)

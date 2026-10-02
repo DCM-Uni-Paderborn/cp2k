@@ -26,6 +26,8 @@ MODULE qs_uspp_methods
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_comm_unequal
    USE particle_types,                  ONLY: particle_type
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_cartesian,&
+                                              paw_core_kinetic_fourier
    USE paw_onecenter,                   ONLY: paw_onecenter_exchange,&
                                               paw_onecenter_hartree,&
                                               paw_onecenter_init
@@ -77,6 +79,8 @@ MODULE qs_uspp_methods
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_methods'
    PUBLIC :: qs_uspp_prepare, qs_uspp_init_ao_matrix, qs_uspp_collocate, qs_uspp_integrate
    PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces, qs_paw_correction, qs_paw_exchange
+   PUBLIC :: qs_paw_core_tau_present, qs_paw_core_tau_field, qs_paw_core_tau_forces
+   PUBLIC :: qs_paw_core_tau_atom_collocate, qs_paw_core_tau_atom_integrate
    PUBLIC :: qs_uspp_atom_grid_type, qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_collocate, &
              qs_uspp_atom_grid_integrate, qs_uspp_atom_grid_apply, qs_uspp_atom_grid_apply_ks
 
@@ -97,6 +101,226 @@ MODULE qs_uspp_methods
    END INTERFACE
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Whether a nonzero verified PAW pseudo core kinetic field is present.
+!> \param ks_env Current PAW caches.
+!> \return True for at least one nonzero auxiliary PS core field.
+! **************************************************************************************************
+   FUNCTION qs_paw_core_tau_present(ks_env) RESULT(present_core)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      LOGICAL                                            :: present_core
+
+      INTEGER                                            :: ikind
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+
+      present_core = .FALSE.
+      CALL get_ks_env(ks_env, uspp=uspp)
+      IF (.NOT. ASSOCIATED(uspp)) RETURN
+      DO ikind = 1, SIZE(uspp%paw)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         ASSOCIATE (cache => uspp%paw(ikind)%xcgrid%core_kinetic)
+            IF (.NOT. cache%available) CYCLE
+            IF (ANY(cache%weighted /= 0.0_dp)) present_core = .TRUE.
+         END ASSOCIATE
+      END DO
+   END FUNCTION qs_paw_core_tau_present
+
+! **************************************************************************************************
+!> \brief Spin-summed periodic PS core kinetic field on the requested XC grid.
+!>        The R-to-G adjoint of the real projection is used by the force routine.
+!> \param ks_env Current PAW centers and verified radial caches.
+!> \param field Allocated real PW field, overwritten without changing any valence density.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_core_tau_field(ks_env, field)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: field
+
+      COMPLEX(dp)                                        :: coefficient
+      INTEGER                                            :: center, ig, ikind
+      TYPE(pw_c1d_gs_type)                               :: core_g
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+
+      CALL get_ks_env(ks_env, uspp=uspp)
+      CPASSERT(ASSOCIATED(uspp))
+      CALL check_grid(uspp, field%pw_grid)
+      CALL core_g%create(field%pw_grid)
+      core_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         ASSOCIATE (cache => uspp%paw(ikind)%xcgrid%core_kinetic)
+            IF (.NOT. cache%available) CYCLE
+            IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
+            DO ig = 1, SIZE(core_g%array)
+               CALL paw_core_kinetic_fourier(cache, field%pw_grid%g(:, ig), uspp%position(:, center), &
+                                             field%pw_grid%vol, coefficient)
+               core_g%array(ig) = core_g%array(ig) + coefficient
+            END DO
+         END ASSOCIATE
+      END DO
+      CALL pw_transfer(core_g, field)
+      CALL core_g%release()
+   END SUBROUTINE qs_paw_core_tau_field
+
+! **************************************************************************************************
+!> \brief Center and affine-strain adjoints of the smooth PW core kinetic field.
+!>        This fixed core field has no AO density-matrix derivative.
+!> \param ks_env Current centers and unreduced force/virial accumulators.
+!> \param potential Unweighted derivative of XC energy density with respect to spin tau.
+!> \param spin_fraction Fraction of the spin-summed closed core in this channel.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_core_tau_forces(ks_env, potential, spin_fraction)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      REAL(dp), INTENT(IN)                               :: spin_fraction
+
+      COMPLEX(dp)                                        :: coefficient, derivative(3), &
+                                                            strain(3, 3), weighted
+      INTEGER                                            :: center, ig, ikind, natom
+      REAL(dp)                                           :: multiplicity
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), cell_gradient(:, :)
+      TYPE(pw_c1d_gs_type)                               :: potential_g
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+
+      IF (.NOT. qs_paw_core_tau_present(ks_env)) RETURN
+      CALL get_ks_env(ks_env, uspp=uspp, natom=natom)
+      CALL check_grid(uspp, potential%pw_grid)
+      ALLOCATE (atom_gradient(3, natom), SOURCE=0.0_dp)
+      CALL allocate_cell_gradient(ks_env, cell_gradient)
+      CALL potential_g%create(potential%pw_grid)
+      CALL pw_transfer(potential, potential_g)
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         ASSOCIATE (cache => uspp%paw(ikind)%xcgrid%core_kinetic)
+            IF (.NOT. cache%available) CYCLE
+            IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
+            DO ig = 1, SIZE(potential_g%array)
+               multiplicity = 1.0_dp
+               IF (potential%pw_grid%grid_span == HALFSPACE) THEN
+                  multiplicity = 2.0_dp
+                  IF (potential%pw_grid%have_g0 .AND. ig == 1) multiplicity = 1.0_dp
+               END IF
+               weighted = spin_fraction*potential%pw_grid%vol*multiplicity*potential_g%array(ig)
+               IF (ALLOCATED(cell_gradient)) THEN
+                  CALL paw_core_kinetic_fourier(cache, potential%pw_grid%g(:, ig), uspp%position(:, center), &
+                                                potential%pw_grid%vol, coefficient, strain, derivative)
+                  cell_gradient(:, :) = cell_gradient + REAL(CONJG(strain)*weighted, dp)
+               ELSE
+                  CALL paw_core_kinetic_fourier(cache, potential%pw_grid%g(:, ig), uspp%position(:, center), &
+                                                potential%pw_grid%vol, coefficient, center_derivative=derivative)
+               END IF
+               atom_gradient(:, uspp%center_atoms(center)) = atom_gradient(:, uspp%center_atoms(center)) + &
+                                                             REAL(CONJG(derivative)*weighted, dp)
+            END DO
+         END ASSOCIATE
+      END DO
+      CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
+      CALL potential_g%release()
+   END SUBROUTINE qs_paw_core_tau_forces
+
+! **************************************************************************************************
+!> \brief Add spin-summed PS core tau from all centers and auxiliary-cell images.
+!> \param uspp Current PAW centers and original-data kinetic caches.
+!> \param cell Auxiliary periodic cell, as in augmentation collocation.
+!> \param points Unfolded Cartesian atom-grid points.
+!> \param kinetic Spin-summed core tau values, incremented without quadrature weights.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_core_tau_atom_collocate(uspp, cell, points, kinetic)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(dp), INTENT(IN)                               :: points(:, :)
+      REAL(dp), INTENT(INOUT)                            :: kinetic(:)
+
+      INTEGER                                            :: center, ikind, ix, iy, iz, lower(3), &
+                                                            point, upper(3)
+      REAL(dp)                                           :: image_position(3), value
+      REAL(dp), ALLOCATABLE                              :: folded(:, :)
+
+      CPASSERT(ALL(SHAPE(points) == [3, SIZE(kinetic)]))
+      IF (SIZE(kinetic) == 0) RETURN
+      ALLOCATE (folded, SOURCE=points - MATMUL(cell%hmat, ANINT(MATMUL(cell%h_inv, points))))
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         ASSOCIATE (cache => uspp%paw(ikind)%xcgrid%core_kinetic)
+            IF (.NOT. cache%available) CYCLE
+            IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
+            CALL atom_grid_image_bounds(cell, uspp%position(:, center), folded, cache%support_radius, lower, upper)
+            DO iz = lower(3), upper(3)
+               DO iy = lower(2), upper(2)
+                  DO ix = lower(1), upper(1)
+                     image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                     DO point = 1, SIZE(kinetic)
+                        CALL paw_core_kinetic_cartesian(cache, folded(:, point) - image_position, value)
+                        kinetic(point) = kinetic(point) + value
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END ASSOCIATE
+      END DO
+   END SUBROUTINE qs_paw_core_tau_atom_collocate
+
+! **************************************************************************************************
+!> \brief Exact center and point adjoints of periodic atom-grid PS core tau collocation.
+!> \param uspp Same PAW state as the forward map.
+!> \param fields Accumulators for source-center and source-image strain derivatives.
+!> \param cell Auxiliary cell used by the forward map.
+!> \param points Same unfolded quadrature points.
+!> \param potential Weighted derivative with respect to spin-summed core tau, including spin fractions.
+!> \param point_gradient Weighted point energy gradients, incremented; caller handles target-grid motion.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_core_tau_atom_integrate(uspp, fields, cell, points, potential, point_gradient)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(qs_uspp_atom_grid_type), INTENT(INOUT)        :: fields
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(dp), INTENT(IN)                               :: points(:, :), potential(:)
+      REAL(dp), INTENT(INOUT)                            :: point_gradient(:, :)
+
+      INTEGER                                            :: center, ikind, ix, iy, iz, jdir, &
+                                                            lower(3), point, upper(3)
+      REAL(dp)                                           :: derivative(3), image_position(3), &
+                                                            spatial(3), value
+      REAL(dp), ALLOCATABLE                              :: folded(:, :), images(:, :), &
+                                                            point_derivative(:, :)
+
+      CPASSERT(fields%calculate_forces)
+      CPASSERT(ALL(SHAPE(points) == [3, SIZE(potential)]))
+      CPASSERT(ALL(SHAPE(point_gradient) == SHAPE(points)))
+      IF (SIZE(potential) == 0) RETURN
+      ALLOCATE (images, SOURCE=MATMUL(cell%hmat, ANINT(MATMUL(cell%h_inv, points))))
+      ALLOCATE (folded, SOURCE=points - images)
+      ALLOCATE (point_derivative(3, SIZE(potential)))
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         ASSOCIATE (cache => uspp%paw(ikind)%xcgrid%core_kinetic)
+            IF (.NOT. cache%available) CYCLE
+            IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
+            CALL atom_grid_image_bounds(cell, uspp%position(:, center), folded, cache%support_radius, lower, upper)
+            DO iz = lower(3), upper(3)
+               DO iy = lower(2), upper(2)
+                  DO ix = lower(1), upper(1)
+                     image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                     DO point = 1, SIZE(potential)
+                        CALL paw_core_kinetic_cartesian(cache, folded(:, point) - image_position, value, spatial)
+                        point_derivative(:, point) = potential(point)*spatial
+                     END DO
+                     derivative = -SUM(point_derivative, DIM=2)
+                     fields%center_gradient(:, center) = fields%center_gradient(:, center) + derivative
+                     point_gradient = point_gradient + point_derivative
+                     fields%center_strain = fields%center_strain - MATMUL(point_derivative, TRANSPOSE(images))
+                     DO jdir = 1, 3
+                        fields%center_strain(:, jdir) = fields%center_strain(:, jdir) + derivative*image_position(jdir)
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END ASSOCIATE
+      END DO
+   END SUBROUTINE qs_paw_core_tau_atom_integrate
 
 ! **************************************************************************************************
 !> \brief Prepare replicated on-site densities once per spin for distributed atom-grid batches.
@@ -442,16 +666,6 @@ CONTAINS
                IF (potential%upf_data%is_ultrasoft .AND. .NOT. potential%upf_data%is_paw) THEN
                   CPABORT("USPP kinetic-density functionals require kinetic augmentation data")
                END IF
-               IF (potential%upf_data%is_paw) THEN
-                  IF (ANY(potential%upf_data%paw%rho_core /= 0.0_dp)) THEN
-                     CPABORT("PAW tau XC requires AE and PS core kinetic densities")
-                  END IF
-                  IF (ALLOCATED(potential%upf_data%rho_nlcc)) THEN
-                     IF (ANY(potential%upf_data%rho_nlcc /= 0.0_dp)) THEN
-                        CPABORT("PAW tau XC requires AE and PS core kinetic densities")
-                     END IF
-                  END IF
-               END IF
             END ASSOCIATE
          END DO
       END IF
@@ -460,6 +674,11 @@ CONTAINS
          ASSOCIATE (potential => qs_kind_set(ikind)%sgp_potential, cache => uspp%paw(ikind))
             CALL paw_onecenter_init(potential%upf_data, potential%upf_projectors, cache%onecenter)
             CALL paw_xc_init(potential%upf_data, qs_kind_set(ikind)%ngrid_ang, cache%xcgrid)
+            IF (dft_control%use_kinetic_energy_density) THEN
+               IF (.NOT. cache%xcgrid%core_kinetic%available .AND. ANY(cache%xcgrid%core /= 0.0_dp)) THEN
+                  CALL cp_abort(__LOCATION__, TRIM(cache%xcgrid%core_kinetic%failure_reason))
+               END IF
+            END IF
             cache%core_energy = potential%upf_data%paw%core_energy
          END ASSOCIATE
       END DO

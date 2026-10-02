@@ -18,6 +18,7 @@ PROGRAM paw_xc_unittest
    USE atom_utils,                      ONLY: atom_density
    USE atom_xc,                         ONLY: atom_vxc_lda,&
                                               atom_vxc_lsd
+   USE cell_types,                      ONLY: cell_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
@@ -35,6 +36,7 @@ PROGRAM paw_xc_unittest
                                               cp2k_init
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
+   USE mathlib,                         ONLY: invmat
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_cartesian,&
                                               paw_core_kinetic_fourier,&
                                               paw_core_kinetic_init,&
@@ -48,6 +50,10 @@ PROGRAM paw_xc_unittest
                                               paw_xc_init,&
                                               paw_xc_kinetic_adjoint,&
                                               paw_xc_type
+   USE qs_uspp_methods,                 ONLY: qs_paw_core_tau_atom_collocate,&
+                                              qs_paw_core_tau_atom_integrate,&
+                                              qs_uspp_atom_grid_type
+   USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
    USE xc_atom,                         ONLY: xc_rho_set_atom_update
@@ -302,6 +308,7 @@ CONTAINS
          CALL paw_core_kinetic_init(original, DATA)
          IF (.NOT. data%available) ERROR STOP 'Verified Gaussian core has no shared kinetic fields'
          IF (SUM(data%occupations) /= 10) ERROR STOP 'Shared kinetic fields changed the closed-core selection'
+         IF (origin == 0) CALL check_periodic_core_tau(DATA)
          rc = data%smoothing_radius
          radius = [0.0_dp, 1.e-14_dp, 0.0003_dp, 0.237_dp, 0.914_dp, 1.783_dp, rc, rc + 0.031_dp, &
                    data%taper_radius, data%taper_radius + 0.007_dp, data%support_radius, data%support_radius + 0.1_dp]
@@ -379,6 +386,127 @@ CONTAINS
       IF (cartesian_error > 1.e-8_dp) ERROR STOP 'Core spatial gradient is not the field derivative'
       IF (reciprocal_error > 1.e-8_dp) ERROR STOP 'Complex core Fourier adjoints are not transform derivatives'
    END SUBROUTINE check_shared_core_tau
+
+! **************************************************************************************************
+!> \brief Periodic core image sums and center/point/all affine-strain adjoints on a triclinic cell.
+!> \param cache Verified Gaussian frozen-core fields, already checked against analytic radial formulas.
+! **************************************************************************************************
+   SUBROUTINE check_periodic_core_tau(cache)
+      TYPE(paw_core_kinetic_type), INTENT(IN)            :: cache
+
+      REAL(dp), PARAMETER :: potential(3) = [0.37_dp, -0.19_dp, 0.29_dp], step = 2.e-6_dp
+
+      INTEGER                                            :: a, b, center, info, ix, iy, iz, point, &
+                                                            sign
+      REAL(dp) :: affine(3, 3), anchor, derivative, energy(2), error, exact(3), gradient(3, 3), &
+         points(3, 3), radius, shift(3), shifted(3, 3), strain(3, 3), unused, value, values(3)
+      TYPE(cell_type)                                    :: cell, changed
+      TYPE(qs_uspp_atom_grid_type)                       :: fields
+      TYPE(qs_uspp_type)                                 :: uspp, varied
+
+      cell%hmat = RESHAPE([3.1_dp, 0.0_dp, 0.2_dp, 0.4_dp, 3.7_dp, 0.0_dp, 0.0_dp, 0.3_dp, 4.2_dp], [3, 3])
+      cell%h_inv = cell%hmat
+      CALL invmat(cell%h_inv, info)
+      IF (info /= 0) ERROR STOP 'Invalid periodic core test cell'
+      ALLOCATE (uspp%center_atoms(2), uspp%center_kinds(2), uspp%position(3, 2), uspp%paw(1))
+      uspp%center_atoms(:) = [1, 2]
+      uspp%center_kinds = 1
+      uspp%position(:, 1) = [0.3_dp, -0.7_dp, 0.2_dp]
+      uspp%position(:, 2) = [1.7_dp, 0.4_dp, -0.9_dp]
+      uspp%paw(1)%active = .TRUE.
+      uspp%paw(1)%xcgrid%core_kinetic = cache
+      points(:, 1) = [0.23_dp, 0.51_dp, -0.67_dp]
+      points(:, 2) = [8.7_dp, -2.2_dp, 4.9_dp]
+      points(:, 3) = [-1.2_dp, 5.5_dp, -7.4_dp]
+      values = 0.0_dp
+      CALL qs_paw_core_tau_atom_collocate(uspp, cell, points, values)
+      exact = 0.0_dp
+      CALL gaussian_core_kinetic(cache%smoothing_radius, anchor, unused)
+      DO center = 1, 2
+         DO iz = -7, 7
+            DO iy = -7, 7
+               DO ix = -7, 7
+                  shift = MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                  DO point = 1, 3
+                     radius = SQRT(SUM((points(:, point) - uspp%position(:, center) - shift)**2))
+                     CALL gaussian_core_kinetic(radius, value, derivative)
+                     CALL gaussian_core_blend(radius, cache%smoothing_radius, cache%taper_radius, &
+                                              cache%support_radius, anchor, value, derivative)
+                     exact(point) = exact(point) + value
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      IF (MAXVAL(ABS(values - exact)) > 2.e-6_dp) ERROR STOP 'Periodic core images differ from Gaussian sum'
+      IF (ABS(SUM(potential*values)) < 1.e-6_dp) ERROR STOP 'Vacuous periodic core energy test'
+      shifted = points + SPREAD(MATMUL(cell%hmat, [2.0_dp, -1.0_dp, 3.0_dp]), 2, 3)
+      exact = 0.0_dp
+      CALL qs_paw_core_tau_atom_collocate(uspp, cell, shifted, exact)
+      IF (MAXVAL(ABS(values - exact)) > 1.e-12_dp) ERROR STOP 'Core field depends on target cell representative'
+      varied = uspp
+      varied%position(:, 2) = varied%position(:, 2) + MATMUL(cell%hmat, [-3.0_dp, 2.0_dp, -1.0_dp])
+      exact = 0.0_dp
+      CALL qs_paw_core_tau_atom_collocate(varied, cell, points, exact)
+      IF (MAXVAL(ABS(values - exact)) > 1.e-12_dp) ERROR STOP 'Core field depends on source cell representative'
+
+      fields%calculate_forces = .TRUE.
+      ALLOCATE (fields%center_gradient(3, 2), SOURCE=0.0_dp)
+      gradient = 0.0_dp
+      CALL qs_paw_core_tau_atom_integrate(uspp, fields, cell, points(:, :1), potential(:1), gradient(:, :1))
+      CALL qs_paw_core_tau_atom_integrate(uspp, fields, cell, points(:, 2:), potential(2:), gradient(:, 2:))
+      CALL qs_paw_core_tau_atom_integrate(uspp, fields, cell, points(:, :0), potential(:0), gradient(:, :0))
+      IF (MAXVAL(ABS(SUM(gradient, DIM=2) + SUM(fields%center_gradient, DIM=2))) > 1.e-12_dp) THEN
+         ERROR STOP 'Periodic core force violates translation covariance'
+      END IF
+      strain = fields%center_strain + MATMUL(gradient, TRANSPOSE(points))
+      error = 0.0_dp
+      DO a = 1, 3
+         DO point = 1, 3
+            DO sign = 1, 2
+               shifted = points
+               shifted(a, point) = shifted(a, point) + REAL(2*sign - 3, dp)*step
+               exact = 0.0_dp
+               CALL qs_paw_core_tau_atom_collocate(uspp, cell, shifted, exact)
+               energy(sign) = SUM(potential*exact)
+            END DO
+            error = MAX(error, ABS((energy(2) - energy(1))/(2.0_dp*step) - gradient(a, point)))
+         END DO
+         DO center = 1, 2
+            DO sign = 1, 2
+               varied = uspp
+               varied%position(a, center) = varied%position(a, center) + REAL(2*sign - 3, dp)*step
+               exact = 0.0_dp
+               CALL qs_paw_core_tau_atom_collocate(varied, cell, points, exact)
+               energy(sign) = SUM(potential*exact)
+            END DO
+            error = MAX(error, ABS((energy(2) - energy(1))/(2.0_dp*step) - fields%center_gradient(a, center)))
+         END DO
+         DO b = 1, 3
+            DO sign = 1, 2
+               affine = 0.0_dp
+               DO point = 1, 3
+                  affine(point, point) = 1.0_dp
+               END DO
+               affine(a, b) = affine(a, b) + REAL(2*sign - 3, dp)*step
+               changed = cell
+               changed%hmat = MATMUL(affine, cell%hmat)
+               changed%h_inv = changed%hmat
+               CALL invmat(changed%h_inv, info)
+               IF (info /= 0) ERROR STOP 'Invalid strained core test cell'
+               varied = uspp
+               varied%position(:, :) = MATMUL(affine, uspp%position)
+               shifted = MATMUL(affine, points)
+               exact = 0.0_dp
+               CALL qs_paw_core_tau_atom_collocate(varied, changed, shifted, exact)
+               energy(sign) = SUM(potential*exact)
+            END DO
+            error = MAX(error, ABS((energy(2) - energy(1))/(2.0_dp*step) - strain(a, b)))
+         END DO
+      END DO
+      WRITE (*, '(A,ES15.6)') 'Periodic PAW core tau point/center/strain error:', error
+      IF (error > 1.e-8_dp) ERROR STOP 'Periodic PAW core kinetic adjoints differ from energy derivatives'
+   END SUBROUTINE check_periodic_core_tau
 
 ! **************************************************************************************************
 !> \brief Closed-form independent s/p frozen-core kinetic density and radial derivative.
