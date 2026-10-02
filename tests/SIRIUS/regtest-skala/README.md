@@ -53,6 +53,16 @@ length as `ae_core_charge_density`, after checking that this setup has no core
 electrons. Nonzero core charge requires independently supplied core tau.
 The carbon fixture requires a four-valence-electron PAW setup whose
 `paw_data.ae_core_kinetic_density` matches its two-electron AE core density.
+For example, convert the matching carbon UPF and ATOMPAW XML files from the
+[JTH PAW datasets](https://www.abinit.org/atomic_data/paw/) with SIRIUS:
+
+```sh
+upf_to_json C.UPF --paw-core-xml C.xml -o C-paw-core.json
+```
+
+The optional XML import verifies the element, valence charge and both core
+charge profiles before adding the supplied AE and pseudo core kinetic densities.
+Use both exports from the same atomic calculation. Resampling uses shared GSL.
 
 Run an input with `OMP_NUM_THREADS=1 cp2k.psmp -i input.inp -o output.out`.
 Check both SCF and band-solver convergence, and compare serial and MPI energies.
