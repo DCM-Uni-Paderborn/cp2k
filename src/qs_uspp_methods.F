@@ -986,6 +986,7 @@ CONTAINS
          DO ikind = 1, SIZE(qs_kind_set)
             IF (uspp%augmentation(ikind)%nproj == 0) CYCLE
             ASSOCIATE (potential => qs_kind_set(ikind)%sgp_potential)
+               IF (potential%upf_data%is_paw) CYCLE
                BLOCK
                   CHARACTER(LEN=256) :: reason
                   LOGICAL :: available

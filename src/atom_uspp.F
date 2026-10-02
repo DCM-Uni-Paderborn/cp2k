@@ -59,6 +59,7 @@ CONTAINS
       CPASSERT(SIZE(pot%r) >= 4)
       IF (ALLOCATED(basis%uspp)) DEALLOCATE (basis%uspp)
       ALLOCATE (basis%uspp)
+      basis%uspp%is_paw = pot%is_paw
       m = pot%number_of_proj
       n = MAXVAL(basis%nbas)
       nr = basis%grid%nr
@@ -184,7 +185,7 @@ CONTAINS
 !> \param pmat Atomic density matrices, with occupations summed over magnetic states.
 !> \param basis Atomic basis and prepared augmentation.
 !> \param maxl Largest occupied angular momentum.
-!> \param typ RHO, DER or KIN.
+!> \param typ RHO, DER or KIN; PAW KIN retains the unaugmented pseudo-orbital kinetic density.
 ! **************************************************************************************************
    SUBROUTINE atom_uspp_density(density, pmat, basis, maxl, typ)
       REAL(dp), INTENT(INOUT)                            :: density(:)
@@ -203,6 +204,8 @@ CONTAINS
       CASE ('DER')
          order = 1
       CASE ('KIN')
+         ! PAW tau uses the separate one-center correction.
+         IF (basis%uspp%is_paw) RETURN
          IF (.NOT. ALLOCATED(basis%uspp%kinetic)) THEN
             CALL cp_abort(__LOCATION__, TRIM(basis%uspp%kinetic_failure_reason))
          END IF

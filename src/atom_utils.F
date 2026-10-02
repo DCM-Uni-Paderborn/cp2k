@@ -1866,7 +1866,7 @@ CONTAINS
 !> \param cpot         potential on the atomic radial grid
 !> \param basis        atomic basis set
 !> \param derivatives  order of derivatives
-!> \param charge_augmentation Include USPP charge augmentation; false for kinetic operators.
+!> \param charge_augmentation Include USPP/PAW charge augmentation; false for kinetic operators.
 !> \par History
 !>    * 08.2008 created [Juerg Hutter]
 ! **************************************************************************************************
