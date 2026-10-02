@@ -45,6 +45,9 @@ PROGRAM skala_sirius_unittest
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
    USE sirius, ONLY: sirius_get_xc_geometry_derivatives
 #endif
+#if defined(__SIRIUS_XC_POINT_RESPONSE)
+   USE sirius, ONLY: sirius_check_external_xc_response
+#endif
    USE sirius_interface, ONLY: cp_sirius_init
    USE skala_sirius, ONLY: skala_sirius_register_atom_grid, &
                            skala_sirius_register_points, &
@@ -80,6 +83,9 @@ PROGRAM skala_sirius_unittest
    REAL(dp), ALLOCATABLE :: forces(:, :)
 #if defined(__SIRIUS_XC_DERIVATIVE)
    REAL(dp) :: derivatives(3, 2), errors(2, 2)
+#endif
+#if defined(__SIRIUS_XC_POINT_RESPONSE)
+   REAL(dp) :: response_errors(2)
 #endif
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
    REAL(dp) :: cell_derivative(3, 3), repeat_cell(3, 3)
@@ -439,6 +445,18 @@ PROGRAM skala_sirius_unittest
                CALL sirius_generate_effective_potential(gs)
                CALL sirius_get_energy(gs, "exc", repeat_exc)
                IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Orbital diagnostic did not restore the callback"
+            END IF
+#endif
+#if defined(__SIRIUS_XC_POINT_RESPONSE)
+            IF (mode == 2 .AND. fd_step > 0.0_dp) THEN
+               CALL sirius_check_external_xc_response(gs, fd_step, response_errors, error_code=ierr)
+               IF (ierr /= 0) ERROR STOP "SIRIUS Skala field response check failed"
+               IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "XC field response relative errors: ", response_errors
+               IF (.NOT. ALL(ieee_is_finite(response_errors))) ERROR STOP "Nonfinite XC field response errors"
+               IF (MAXVAL(response_errors) > MERGE(1.0e-4_dp, 1.0e-8_dp, model_mode == "skala-float32")) &
+                  ERROR STOP "XC field response mismatch"
+               CALL sirius_get_energy(gs, "exc", repeat_exc)
+               IF (exc /= repeat_exc) ERROR STOP "Field response check changed the ground-state XC energy"
             END IF
 #endif
             CALL sirius_free_handler(gs)

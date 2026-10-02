@@ -47,8 +47,8 @@ MODULE skala_gpw_functional
    USE torch_api,                       ONLY: &
         torch_cuda_device_count, torch_cuda_is_available, torch_dict_create, torch_dict_insert, &
         torch_dict_release, torch_dict_type, torch_tensor_backward_scalar, torch_tensor_data_ptr, &
-        torch_tensor_from_array, torch_tensor_grad, torch_tensor_release, &
-        torch_tensor_to_device_leaf, torch_tensor_type, torch_use_cuda
+        torch_tensor_from_array, torch_tensor_grad, torch_tensor_hessian_vector, &
+        torch_tensor_release, torch_tensor_to_device_leaf, torch_tensor_type, torch_use_cuda
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_rho_set_types,                ONLY: xc_rho_set_create,&
                                               xc_rho_set_get,&
@@ -109,6 +109,10 @@ CONTAINS
 !> \param datom_coords Optional block-centre covectors at fixed point coordinates.
 !> \param denergy_weights Optional energy-weight covectors at fixed descriptor weights.
 !> \param ddescriptor_weights Optional descriptor-weight covectors at fixed energy weights.
+!> \param response_density Optional density direction for a fixed-geometry Hessian-vector product.
+!> \param response_gradient Gradient direction, supplied with both other response fields.
+!> \param response_kinetic Kinetic-density direction. In response mode the output covectors
+!>        are their directional derivatives and exc remains the base-state energy.
 !> \note Fields must be reconstructed before this call. No AE-minus-pseudo energy
 !>       decomposition, density clipping, weight multiplication of physical fields,
 !>       or removal of zero-energy-weight descriptor rows is performed here.
@@ -118,7 +122,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE skala_point_eval(group, points, energy_weights, descriptor_weights, atom_sizes, &
                                atom_coords, density, gradient, kinetic, xc_section, exc, drho, &
-                               dgradient, dtau, dpoints, datom_coords, denergy_weights, ddescriptor_weights)
+                               dgradient, dtau, dpoints, datom_coords, denergy_weights, ddescriptor_weights, &
+                               response_density, response_gradient, response_kinetic)
       CLASS(mp_comm_type), INTENT(IN)                    :: group
       REAL(KIND=dp), INTENT(IN)                          :: points(:, :), energy_weights(:), &
                                                             descriptor_weights(:), atom_coords(:, :), &
@@ -128,21 +133,42 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: exc, drho(:, :), dgradient(:, :, :), dtau(:, :)
       REAL(KIND=dp), OPTIONAL, INTENT(OUT)               :: dpoints(:, :), datom_coords(:, :), &
                                                             denergy_weights(:), ddescriptor_weights(:)
+      REAL(KIND=dp), OPTIONAL, INTENT(IN)                :: response_density(:, :), response_gradient(:, :, :), &
+                                                            response_kinetic(:, :)
 
       CHARACTER(len=default_path_length)                 :: model_path
-      INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin
-      LOGICAL                                            :: geometry_grad, use_cuda
+      INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin, i_response
+      LOGICAL                                            :: geometry_grad, use_cuda, response
+      REAL(KIND=dp), ALLOCATABLE                         :: direction_rho(:, :), direction_grad(:, :, :), &
+                                                            direction_tau(:, :)
       REAL(KIND=dp), POINTER                             :: density_grad(:, :), grad_grad(:, :, :), kin_grad(:, :)
       REAL(KIND=dp), POINTER                             :: coord_grad(:, :), weight_grad(:)
       TYPE(section_vals_type), POINTER                   :: gauxc_section
       TYPE(skala_gpw_feature_type)                       :: features
       TYPE(torch_tensor_type)                            :: exc_tensor, density_grad_t, grad_grad_t, kin_grad_t
       TYPE(torch_tensor_type)                            :: geometry_grad_t
+      TYPE(torch_tensor_type)                            :: directions(3), responses(3)
 
       CALL timeset("skala_point_eval", handle)
       npoint = SIZE(density, 1)
       nspin = SIZE(density, 2)
       invalid = 0
+      response = PRESENT(response_density) .OR. PRESENT(response_gradient) .OR. PRESENT(response_kinetic)
+      IF (response) THEN
+         IF (.NOT. (PRESENT(response_density) .AND. PRESENT(response_gradient) .AND. &
+                    PRESENT(response_kinetic))) THEN
+            invalid = 1
+         ELSE
+            IF (ANY(SHAPE(response_density) /= SHAPE(density))) invalid = 1
+            IF (ANY(SHAPE(response_gradient) /= SHAPE(gradient))) invalid = 1
+            IF (ANY(SHAPE(response_kinetic) /= SHAPE(kinetic))) invalid = 1
+            IF (.NOT. ALL(ieee_is_finite(response_density)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_gradient)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_kinetic))) invalid = 1
+         END IF
+         IF (PRESENT(dpoints) .OR. PRESENT(datom_coords) .OR. PRESENT(denergy_weights) .OR. &
+             PRESENT(ddescriptor_weights)) invalid = 1
+      END IF
       IF (ALL(nspin /= [1, 2])) invalid = 1
       IF (ANY(SHAPE(points) /= [3, npoint])) invalid = 1
       IF (SIZE(energy_weights) /= npoint .OR. SIZE(descriptor_weights) /= npoint) invalid = 1
@@ -199,9 +225,40 @@ CONTAINS
          CALL skala_point_feature_build(features, points, energy_weights, descriptor_weights, &
                                         atom_sizes, atom_coords, density, gradient, kinetic, geometry_grad)
          CALL skala_torch_model_get_exc(cached_model, features%inputs, features%grid_weights_t, exc_tensor, exc)
-         CALL torch_tensor_backward_scalar(exc_tensor)
-         CALL get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
-                                     density_grad, grad_grad, kin_grad)
+         IF (response) THEN
+            ALLOCATE (direction_rho(npoint, 2), direction_grad(npoint, 3, 2), direction_tau(npoint, 2))
+            IF (nspin == 1) THEN
+               direction_rho(:, 1) = 0.5_dp*response_density(:, 1)
+               direction_grad(:, :, 1) = 0.5_dp*response_gradient(:, :, 1)
+               direction_tau(:, 1) = 0.5_dp*response_kinetic(:, 1)
+               direction_rho(:, 2) = direction_rho(:, 1)
+               direction_grad(:, :, 2) = direction_grad(:, :, 1)
+               direction_tau(:, 2) = direction_tau(:, 1)
+            ELSE
+               direction_rho = response_density
+               direction_grad = response_gradient
+               direction_tau = response_kinetic
+            END IF
+            CALL torch_tensor_from_array(directions(1), direction_rho)
+            CALL torch_tensor_from_array(directions(2), direction_grad)
+            CALL torch_tensor_from_array(directions(3), direction_tau)
+            CALL torch_tensor_hessian_vector(exc_tensor, [features%density_t, features%grad_t, features%kin_t], &
+                                             directions, responses)
+            density_grad_t = responses(1)
+            grad_grad_t = responses(2)
+            kin_grad_t = responses(3)
+            NULLIFY (density_grad, grad_grad, kin_grad)
+            CALL torch_tensor_data_ptr(density_grad_t, density_grad)
+            CALL torch_tensor_data_ptr(grad_grad_t, grad_grad)
+            CALL torch_tensor_data_ptr(kin_grad_t, kin_grad)
+            DO i_response = 1, 3
+               CALL torch_tensor_release(directions(i_response))
+            END DO
+         ELSE
+            CALL torch_tensor_backward_scalar(exc_tensor)
+            CALL get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
+                                        density_grad, grad_grad, kin_grad)
+         END IF
          IF (nspin == 1) THEN
             drho(:, 1) = 0.5_dp*SUM(density_grad, DIM=2)
             dgradient(:, :, 1) = 0.5_dp*SUM(grad_grad, DIM=3)

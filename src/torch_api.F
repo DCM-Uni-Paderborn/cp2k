@@ -79,6 +79,7 @@ MODULE torch_api
    PUBLIC :: torch_tensor_reset_from_array
    PUBLIC :: torch_tensor_data_ptr, torch_tensor_backward, torch_tensor_backward_scalar
    PUBLIC :: torch_tensor_grad
+   PUBLIC :: torch_tensor_hessian_vector
    PUBLIC :: torch_tensor_to_device_leaf
    PUBLIC :: torch_tensor_item_double, torch_tensor_weighted_sum
    PUBLIC :: torch_dict_type, torch_dict_clone, torch_dict_create, torch_dict_insert
@@ -384,6 +385,52 @@ CONTAINS
       MARK_USED(tensor)
 #endif
    END SUBROUTINE torch_tensor_backward_scalar
+
+! **************************************************************************************************
+!> \brief Apply the Hessian of a scalar tensor to independent input directions.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_hessian_vector(tensor, inputs, directions, responses)
+      TYPE(torch_tensor_type), INTENT(IN)                :: tensor, inputs(:), directions(:)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: responses(:)
+#if defined(__LIBTORCH)
+      TYPE(C_PTR)                                        :: input_ptrs(SIZE(inputs)), &
+                                                            direction_ptrs(SIZE(inputs)), response_ptrs(SIZE(inputs))
+      INTEGER                                            :: i
+      INTERFACE
+         SUBROUTINE torch_c_tensor_hessian_vector(tensor, count, inputs, directions, responses) &
+            BIND(C, name="torch_c_tensor_hessian_vector")
+            IMPORT :: C_INT, C_PTR
+            TYPE(C_PTR), VALUE                           :: tensor
+            INTEGER(C_INT), VALUE                        :: count
+            TYPE(C_PTR), INTENT(IN)                      :: inputs(*), directions(*)
+            TYPE(C_PTR), INTENT(OUT)                     :: responses(*)
+         END SUBROUTINE
+      END INTERFACE
+      CPASSERT(C_ASSOCIATED(tensor%c_ptr))
+      CPASSERT(SIZE(inputs) > 0)
+      CPASSERT(SIZE(directions) == SIZE(inputs))
+      CPASSERT(SIZE(responses) == SIZE(inputs))
+      DO i = 1, SIZE(inputs)
+         CPASSERT(C_ASSOCIATED(inputs(i)%c_ptr))
+         CPASSERT(C_ASSOCIATED(directions(i)%c_ptr))
+         CPASSERT(.NOT. C_ASSOCIATED(responses(i)%c_ptr))
+         input_ptrs(i) = inputs(i)%c_ptr
+         direction_ptrs(i) = directions(i)%c_ptr
+      END DO
+      CALL torch_c_tensor_hessian_vector(tensor%c_ptr, INT(SIZE(inputs), C_INT), &
+                                         input_ptrs, direction_ptrs, response_ptrs)
+      DO i = 1, SIZE(inputs)
+         responses(i)%c_ptr = response_ptrs(i)
+         CPASSERT(C_ASSOCIATED(responses(i)%c_ptr))
+      END DO
+#else
+      MARK_USED(tensor)
+      MARK_USED(inputs)
+      MARK_USED(directions)
+      MARK_USED(responses)
+      CPABORT("CP2K was compiled without LibTorch support.")
+#endif
+   END SUBROUTINE torch_tensor_hessian_vector
 
 ! **************************************************************************************************
 !> \brief Moves a tensor to the active Torch device and makes it an autograd leaf.

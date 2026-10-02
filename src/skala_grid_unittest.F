@@ -180,14 +180,15 @@ CONTAINS
                                                             nr_local, nspin, row, source, spin, &
                                                             sx, sy, sz
       INTEGER, ALLOCATABLE                               :: ids(:), sizes(:)
-      REAL(dp) :: ad(7), charge, descriptor_derivative, direction(3), displacement(3), dw, e, err, &
-                  expected, mean, minus, occupation, phi, pi, plus, point(3), radius, ref_e, rho_sum, &
-                  spin_scale, step_h, sum_descriptor, sum_weights, w, z, mean_point(3), &
-                  energy_density, point_covector(3), centre_covector(3), weight_covector
-      REAL(dp), ALLOCATABLE :: centres(:, :), descriptor_weights(:), dg(:, :, :), dr(:, :), &
-                               dt(:, :), energy_weights(:), g(:, :, :), gathered(:, :, :), pg(:, :, :), points(:, :), &
-                               pr(:, :), pt(:, :), r(:, :), reference_grad(:, :, :), t(:, :), &
-                               dx(:, :), dc(:, :), de(:), dd(:), px(:, :), pc(:, :), pe(:), pd(:)
+      REAL(dp) :: ad(7), centre_covector(3), charge, descriptor_derivative, direction(3), &
+         displacement(3), dw, e, energy_density, err, expected, mean, mean_point(3), minus, &
+         occupation, phi, pi, plus, point(3), point_covector(3), radius, ref_e, rho_sum, &
+         spin_scale, step_h, sum_descriptor, sum_weights, w, weight_covector, z
+      REAL(dp), ALLOCATABLE :: centres(:, :), dc(:, :), dd(:), de(:), descriptor_weights(:), &
+         dg(:, :, :), dr(:, :), dt(:, :), dx(:, :), energy_weights(:), g(:, :, :), &
+         gathered(:, :, :), hg(:, :, :), hr(:, :), ht(:, :), pc(:, :), pd(:), pe(:), pg(:, :, :), &
+         plus_g(:, :, :), plus_r(:, :), plus_t(:, :), points(:, :), pr(:, :), pt(:, :), px(:, :), &
+         r(:, :), reference_grad(:, :, :), t(:, :)
 
       pi = ACOS(-1.0_dp)
       DO nspin = 1, 2
@@ -207,7 +208,9 @@ CONTAINS
                       dr(nr_local, nspin), dg(nr_local, 3, nspin), dt(nr_local, nspin), &
                       pr(nr_local, nspin), pg(nr_local, 3, nspin), pt(nr_local, nspin), &
                       dx(3, nr_local), dc(3, na_local), de(nr_local), dd(nr_local), &
-                      px(3, nr_local), pc(3, na_local), pe(nr_local), pd(nr_local))
+                      px(3, nr_local), pc(3, na_local), pe(nr_local), pd(nr_local), &
+                      hr(nr_local, nspin), hg(nr_local, 3, nspin), ht(nr_local, nspin), &
+                      plus_r(nr_local, nspin), plus_g(nr_local, 3, nspin), plus_t(nr_local, nspin))
             b = 0
             row = 0
             DO a = 1, 2
@@ -357,6 +360,26 @@ CONTAINS
                ERROR STOP "Point and block-centre derivatives violate translation invariance"
             ad = [SUM(pr*dr), SUM(pg*dg), SUM(pt*dt), SUM(px*dx), SUM(pc*dc), SUM(pe*de), SUM(pd*dd)]
             CALL comm%sum(ad)
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, &
+                                  response_density=dr, response_gradient=dg, response_kinetic=dt)
+            DO ih = 1, 2
+               step_h = step_size/REAL(ih, dp)
+               CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                     r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, plus_r, plus_g, plus_t)
+               CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                     r - step_h*dr, g - step_h*dg, t - step_h*dt, xc, minus, pr, pg, pt)
+               err = 0.0_dp
+               IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - (plus_r - pr)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hg - (plus_g - pg)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(ht - (plus_t - pt)/(2.0_dp*step_h))))
+               CALL comm%max(err)
+               IF (err > derivative_tolerance) THEN
+                  WRITE (*, '(A,3I3,ES18.8)') "Point Hessian failure (spin,distribution,step,error): ", &
+                     nspin, distribution, ih, err
+                  ERROR STOP "Arbitrary-point Hessian-vector product fails finite differences"
+               END IF
+            END DO
             DO c = 1, 7
                DO ih = 1, 2
                   step_h = step_size/REAL(ih, dp)
@@ -415,8 +438,16 @@ CONTAINS
                                         MAXVAL(ABS(px)), MAXVAL(ABS(pc)), MAXVAL(ABS(pd)))
             CALL comm%max(err)
             IF (err > 1.0e-12_dp) ERROR STOP "Zero energy weights must give zero energy, field and geometry covectors"
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, &
+                                  response_density=dr, response_gradient=dg, response_kinetic=dt)
+            err = 0.0_dp
+            IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr)), MAXVAL(ABS(hg)), MAXVAL(ABS(ht)))
+            CALL comm%max(err)
+            IF (err > 1.0e-12_dp) ERROR STOP "Zero energy weights must give zero Hessian-vector product"
             DEALLOCATE (sizes, centres, points, ids, energy_weights, descriptor_weights, &
-                        r, g, t, dr, dg, dt, pr, pg, pt, dx, dc, de, dd, px, pc, pe, pd)
+                        r, g, t, dr, dg, dt, pr, pg, pt, dx, dc, de, dd, px, pc, pe, pd, &
+                        hr, hg, ht, plus_r, plus_g, plus_t)
          END DO
          DEALLOCATE (gathered, reference_grad)
       END DO

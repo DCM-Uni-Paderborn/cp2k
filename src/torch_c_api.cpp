@@ -10,6 +10,7 @@
 #include <ATen/Parallel.h>
 #include <c10/core/DeviceGuard.h>
 #include <torch/csrc/api/include/torch/cuda.h>
+#include <torch/csrc/autograd/autograd.h>
 #include <torch/script.h>
 
 #include "offload/offload_library.h"
@@ -398,6 +399,54 @@ void torch_c_tensor_backward_scalar(const torch_c_tensor_t *tensor) {
   c10::OptionalDeviceGuard guard;
   get_device_with_guard(guard);
   tensor->backward();
+}
+
+/*******************************************************************************
+ * \brief Apply a scalar tensor's Hessian to directions of its independent
+ * inputs.
+ ******************************************************************************/
+void torch_c_tensor_hessian_vector(const torch_c_tensor_t *tensor,
+                                   const int count,
+                                   const torch_c_tensor_t *const inputs[],
+                                   const torch_c_tensor_t *const directions[],
+                                   torch_c_tensor_t *responses[]) {
+  TorchFloatingPointMaskGuard fpe_guard;
+  c10::OptionalDeviceGuard guard;
+  get_device_with_guard(guard);
+  TORCH_CHECK(count > 0 && tensor->numel() == 1,
+              "Hessian-vector evaluation requires a scalar and input tensors");
+  std::vector<torch::Tensor> variables;
+  for (int i = 0; i < count; i++) {
+    TORCH_CHECK(inputs[i]->requires_grad() &&
+                    inputs[i]->sizes() == directions[i]->sizes() &&
+                    inputs[i]->device() == directions[i]->device(),
+                "Hessian-vector inputs and directions must have matching "
+                "shapes and devices");
+    variables.push_back(*inputs[i]);
+  }
+  std::vector<torch::Tensor> first(count);
+  if (tensor->requires_grad()) {
+    first = torch::autograd::grad({*tensor}, variables, {}, true, true, true);
+  }
+  torch::Tensor contraction;
+  for (int i = 0; i < count; i++) {
+    if (first[i].defined() && first[i].requires_grad()) {
+      auto term = (first[i] * directions[i]->detach()).sum();
+      contraction = contraction.defined() ? contraction + term : term;
+    }
+  }
+  std::vector<torch::Tensor> second(count);
+  if (contraction.defined()) {
+    second =
+        torch::autograd::grad({contraction}, variables, {}, false, false, true);
+  }
+  for (int i = 0; i < count; i++) {
+    responses[i] = new torch_c_tensor_t((second[i].defined()
+                                             ? second[i].detach()
+                                             : torch::zeros_like(*inputs[i]))
+                                            .cpu()
+                                            .contiguous());
+  }
 }
 
 /*******************************************************************************

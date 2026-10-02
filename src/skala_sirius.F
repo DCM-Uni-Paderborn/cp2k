@@ -29,6 +29,9 @@ MODULE skala_sirius
 #if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_set_xc_point_geometry_callbacks
 #endif
+#if defined(__SIRIUS_XC_POINT_RESPONSE) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_point_response_callback
+#endif
 #if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_update_xc_point_set
 #endif
@@ -178,6 +181,11 @@ CONTAINS
       CALL sirius_set_xc_point_callback(context, C_FUNLOC(evaluate_skala_points), C_LOC(state%token), nr, nb, &
                                         points, energy_weights, descriptor_weights, atom_sizes, atom_coords, error)
       IF (error /= 0) CPABORT("Could not register the SIRIUS Skala point callback")
+#if defined(__SIRIUS_XC_POINT_RESPONSE)
+      CALL sirius_set_xc_point_response_callback(context, C_FUNLOC(evaluate_skala_point_response), &
+                                                 C_LOC(state%token), error)
+      IF (error /= 0) CPABORT("Could not register the SIRIUS Skala response callback")
+#endif
 #else
       MARK_USED(context)
       MARK_USED(xc_section)
@@ -438,11 +446,11 @@ CONTAINS
    END SUBROUTINE
 #endif
 
-#if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
+#if (defined(__SIRIUS_XC_POINT_GEOMETRY) || defined(__SIRIUS_XC_POINT_RESPONSE)) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief Return the registry entry without exporting Fortran pointers across the C ABI.
 ! **************************************************************************************************
-   FUNCTION geometry_state(user_data) RESULT(state)
+   FUNCTION callback_state(user_data) RESULT(state)
       TYPE(C_PTR), VALUE                                 :: user_data
       TYPE(skala_sirius_state_type), POINTER             :: state
 
@@ -457,6 +465,52 @@ CONTAINS
          state => state%next
       END DO
    END FUNCTION
+#endif
+
+#if defined(__SIRIUS_XC_POINT_RESPONSE) && defined(__LIBTORCH)
+! **************************************************************************************************
+!> \brief Apply Skala's XC Hessian to reconstructed field directions at fixed quadrature.
+! **************************************************************************************************
+   SUBROUTINE evaluate_skala_point_response(user_data, nr, ns, nb, fcomm, coordinates, energy_weights, &
+                                            descriptor_weights, atom_sizes, atom_coords, rho, gradient, tau, &
+                                            delta_rho, delta_gradient, delta_tau, drho, dgradient, dtau, status) BIND(C)
+      TYPE(C_PTR), VALUE                                 :: user_data
+      INTEGER(C_INT), VALUE                              :: nr, ns, nb, fcomm
+      REAL(C_DOUBLE), INTENT(IN)                         :: coordinates(3, nr), energy_weights(nr), &
+                                                            descriptor_weights(nr)
+      INTEGER(C_INT), INTENT(IN)                         :: atom_sizes(nb)
+      REAL(C_DOUBLE), INTENT(IN) :: atom_coords(3, nb), rho(nr, ns), gradient(nr, 3, ns), &
+         tau(nr, ns), delta_rho(nr, ns), delta_gradient(nr, 3, ns), delta_tau(nr, ns)
+      REAL(C_DOUBLE), INTENT(OUT)                        :: drho(nr, ns), dgradient(nr, 3, ns), &
+                                                            dtau(nr, ns)
+      INTEGER(C_INT), INTENT(OUT)                        :: status
+
+      INTEGER                                            :: invalid
+      REAL(dp)                                           :: energy
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(skala_sirius_state_type), POINTER             :: state
+
+      CALL comm%set_handle(INT(fcomm))
+      state => callback_state(user_data)
+      drho = 0.0_dp
+      dgradient = 0.0_dp
+      dtau = 0.0_dp
+      status = 1
+      invalid = 0
+      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2]) .OR. .NOT. ASSOCIATED(state)) invalid = 1
+      IF (ASSOCIATED(state)) THEN
+         IF (.NOT. grid_geometry_current(state)) invalid = 1
+      END IF
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
+                            rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
+                            response_density=delta_rho, response_gradient=delta_gradient, response_kinetic=delta_tau)
+      status = 0
+   END SUBROUTINE
+#endif
+
+#if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
 
 ! **************************************************************************************************
 !> \brief Differentiate the model's independent fields, coordinates and quadrature weights.
@@ -482,7 +536,7 @@ CONTAINS
 
       CALL comm%set_handle(INT(fcomm))
       status = 1
-      state => geometry_state(user_data)
+      state => callback_state(user_data)
       invalid = 0
       IF (.NOT. ASSOCIATED(state)) invalid = 1
       IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2])) invalid = 1
@@ -516,7 +570,7 @@ CONTAINS
       status = 1
       datoms = 0.0_dp
       dlattice = 0.0_dp
-      state => geometry_state(user_data)
+      state => callback_state(user_data)
       invalid = 0
       IF (.NOT. ASSOCIATED(state)) invalid = 1
       IF (nr < 0 .OR. nb < 0 .OR. natom < 1) invalid = 1
