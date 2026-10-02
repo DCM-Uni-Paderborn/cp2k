@@ -35,6 +35,7 @@ MODULE gapw_coulomb_types
 
    TYPE gapw_coulomb_cache_type
       REAL(dp) :: eta = 0.0_dp, hmat(3, 3) = 0.0_dp
+      INTEGER :: periodicity(3) = 1
       REAL(dp), ALLOCATABLE :: position(:, :)
       TYPE(gapw_coulomb_kind_type), ALLOCATABLE :: kind(:)
       TYPE(gapw_coulomb_pair_type), ALLOCATABLE :: pair(:, :)

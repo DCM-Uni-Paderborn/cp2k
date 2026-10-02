@@ -313,18 +313,20 @@ CONTAINS
 !> \param weights Angular quadrature weights, summing to 4*pi.
 !> \param tolerance Absolute tolerance for screening compensated primitive tails.
 !> \param tensor Potential, three displacement derivatives and nine strain derivatives.
+!> \param periodicity Periodic lattice directions (zero or one); defaults to three dimensions.
 ! **************************************************************************************************
    SUBROUTINE gapw_periodic_augmentation_integrals(augmentation, displacement, alpha, power, l, eta, &
-                                                   hmat, h_inv, directions, weights, tolerance, tensor)
+                                                   hmat, h_inv, directions, weights, tolerance, tensor, periodicity)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(dp), INTENT(IN)                               :: displacement(3), alpha
       INTEGER, INTENT(IN)                                :: power, l
       REAL(dp), INTENT(IN)                               :: eta, hmat(3, 3), h_inv(3, 3), &
                                                             directions(:, :), weights(:), tolerance
       REAL(dp), INTENT(OUT)                              :: tensor(:, :, :, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3)
 
       INTEGER                                            :: axis, axis2, i, ir, ix, iy, iz, &
-                                                            lower(3), n, upper(3)
+                                                            lower(3), n, periodic(3), upper(3)
       REAL(dp)                                           :: c, ddh, dh, dh0, envelope, extent, &
                                                             fractional(3), h, h0, padding, &
                                                             point(3), qnorm, radius, rmax, s, &
@@ -334,6 +336,9 @@ CONTAINS
       n = augmentation%nproj
       CPASSERT(ALL(SHAPE(tensor) == [n, n, 2*l + 1, 13]))
       CPASSERT(tolerance > 0.0_dp)
+      periodic = 1
+      IF (PRESENT(periodicity)) periodic = periodicity
+      CPASSERT(ALL(periodic == 0 .OR. periodic == 1))
       tensor = 0.0_dp
       IF (alpha == eta .AND. power == 0) RETURN
       rmax = 0.0_dp
@@ -362,8 +367,11 @@ CONTAINS
       END DO
       extent = radius + rmax
       fractional = MATMUL(h_inv, displacement)
-      fractional = fractional - ANINT(fractional)
+      fractional = fractional - REAL(periodic, dp)*ANINT(fractional)
+      lower = 0
+      upper = 0
       DO axis = 1, 3
+         IF (periodic(axis) == 0) CYCLE
          padding = extent*SQRT(SUM(h_inv(axis, :)**2))
          lower(axis) = CEILING(-fractional(axis) - padding)
          upper(axis) = FLOOR(-fractional(axis) + padding)

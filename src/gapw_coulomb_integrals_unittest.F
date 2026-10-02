@@ -238,10 +238,12 @@ CONTAINS
       REAL(dp), PARAMETER                                :: a = 2.0_dp, b = 1.3_dp, dr = 0.05_dp, &
                                                             eta = 0.55_dp, step = 2.e-5_dp
 
-      INTEGER                                            :: axis, axis2, ir, ix, iy, iz, lg, sample
-      REAL(dp) :: changed(3, 3), dref(3), fractional(3), h_inv(3, 3), hmat(3, 3), image_point(3), &
-         inverse(3, 3), minus(1, 1, 1, 13), plus(1, 1, 1, 13), point(3), radial_weights(nr), &
-         reference(13), shifted(1, 1, 1, 13), tensor(1, 1, 1, 13), value
+      INTEGER                                            :: axis, axis2, boundary, ir, ix, iy, iz, &
+                                                            lg, periodicity(3), sample
+      REAL(dp) :: boundary_point(3), changed(3, 3), dref(3), fractional(3), h_inv(3, 3), &
+         hmat(3, 3), image_point(3), inverse(3, 3), minus(1, 1, 1, 13), plus(1, 1, 1, 13), &
+         point(3), radial_weights(nr), reference(13), shifted(1, 1, 1, 13), tensor(1, 1, 1, 13), &
+         value
       TYPE(uspp_augmentation_type)                       :: aug, compact
 
       aug%nproj = 1
@@ -304,6 +306,50 @@ CONTAINS
                                                    inverse, lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-14_dp, minus)
          CALL check_error((plus(1, 1, 1, 1) - minus(1, 1, 1, 1))/(2.0_dp*step), &
                           tensor(1, 1, 1, 4 + axis + 3*(axis2 - 1)), 3.e-9_dp)
+      END DO
+      ! Isolated, wire and slab boundaries, including nonconsecutive periodic axes.
+      ! Move beyond a nonperiodic face to detect accidental minimum-image wrapping.
+      DO boundary = 0, 2
+         SELECT CASE (boundary)
+         CASE (0)
+            periodicity = [0, 0, 0]
+         CASE (1)
+            periodicity = [0, 1, 0]
+         CASE (2)
+            periodicity = [1, 0, 1]
+         END SELECT
+         DO axis = 1, 3
+            IF (periodicity(axis) == 0) EXIT
+         END DO
+         boundary_point = point + 0.55_dp*hmat(:, axis)
+         reference = 0.0_dp
+         DO iz = -4*periodicity(3), 4*periodicity(3)
+            DO iy = -4*periodicity(2), 4*periodicity(2)
+               DO ix = -4*periodicity(1), 4*periodicity(1)
+                  image_point = boundary_point + MATMUL(hmat, REAL([ix, iy, iz], dp))
+                  CALL gaussian_reference(image_point, a, b, eta, value, dref)
+                  reference(1) = reference(1) + value
+                  reference(2:4) = reference(2:4) + dref
+                  DO axis = 1, 3
+                     DO axis2 = 1, 3
+                        ir = 4 + axis + 3*(axis2 - 1)
+                        reference(ir) = reference(ir) + dref(axis)*image_point(axis2)
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END DO
+         CALL gapw_periodic_augmentation_integrals(aug, boundary_point, b, 0, 0, eta, hmat, h_inv, &
+                                                   lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-14_dp, tensor, &
+                                                   periodicity=periodicity)
+         DO ir = 1, 13
+            CALL check_error(tensor(1, 1, 1, ir), reference(ir), 3.e-9_dp)
+         END DO
+         boundary_point = boundary_point + MATMUL(hmat, REAL(periodicity*[2, -3, 1], dp))
+         CALL gapw_periodic_augmentation_integrals(aug, boundary_point, b, 0, 0, eta, hmat, h_inv, &
+                                                   lebedev_grid(lg)%r, fourpi*lebedev_grid(lg)%w, 1.e-14_dp, shifted, &
+                                                   periodicity=periodicity)
+         CALL check_error(MAXVAL(ABS(shifted - tensor)), 0.0_dp, 2.e-12_dp)
       END DO
       ! A zero radial suffix may be omitted from weighted_q while r retains the
       ! original mesh for spline construction. Check all thirteen tensor entries.

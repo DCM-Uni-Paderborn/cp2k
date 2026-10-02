@@ -31,8 +31,13 @@ MODULE qs_uspp_gapw
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
-   USE pw_poisson_types,                ONLY: pw_poisson_periodic,&
-                                              pw_poisson_type
+   USE pw_poisson_types,                ONLY: pw_poisson_analytic,&
+                                              pw_poisson_hockney,&
+                                              pw_poisson_mt,&
+                                              pw_poisson_multipole,&
+                                              pw_poisson_periodic,&
+                                              pw_poisson_type,&
+                                              pw_poisson_wavelet
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_force_types,                  ONLY: qs_force_type
@@ -110,15 +115,25 @@ CONTAINS
                       local_rho_set=local_rho, rho_atom_set=rho_atom, dft_control=dft_control, &
                       force=force, virial=virial, pw_env=pw_env)
       CALL pw_env_get(pw_env, poisson_env=poisson_env)
-      IF (poisson_env%method /= pw_poisson_periodic .OR. ANY(cell%perd /= 1)) THEN
-         CPABORT("USPP GAPW Coulomb coupling requires fully periodic electrostatics")
+      SELECT CASE (poisson_env%method)
+      CASE (pw_poisson_periodic, pw_poisson_analytic, pw_poisson_mt, pw_poisson_hockney, &
+            pw_poisson_multipole, pw_poisson_wavelet)
+         ! These solvers use the free-space Coulomb kernel and its physical images.
+      CASE DEFAULT
+         CPABORT("USPP/PAW GAPW Coulomb coupling requires a vacuum Poisson solver")
+      END SELECT
+      IF (poisson_env%parameters%has_dielectric) THEN
+         CPABORT("USPP/PAW GAPW Coulomb coupling with a dielectric is not implemented")
+      END IF
+      IF (ANY(poisson_env%parameters%periodic /= cell%perd)) THEN
+         CPABORT("USPP/PAW GAPW requires matching cell and Poisson periodicity")
       END IF
       ! Quantum nuclear densities require an additional product map.
       IF (ASSOCIATED(local_rho%rhoz_cneo_set)) THEN
          CPABORT("USPP GAPW Coulomb coupling with CNEO is not implemented")
       END IF
       IF (ALLOCATED(uspp%coulomb)) THEN
-         IF (ANY(uspp%coulomb%hmat /= cell%hmat) .OR. &
+         IF (ANY(uspp%coulomb%hmat /= cell%hmat) .OR. ANY(uspp%coulomb%periodicity /= cell%perd) .OR. &
              uspp%coulomb%eta /= local_rho%rho0_mpole%zet0_h) DEALLOCATE (uspp%coulomb)
       END IF
       IF (ALLOCATED(uspp%coulomb)) THEN
@@ -363,7 +378,7 @@ CONTAINS
 !> \param kinds Current Gaussian kinds.
 !> \param atomic_kind_set Global per-kind atom lists.
 !> \param particles Current positions.
-!> \param cell Auxiliary periodic cell.
+!> \param cell Cell vectors and physical periodicity.
 !> \param para_env Gaussian atom distribution.
 !> \param local_rho Compensation exponents and represented multipoles.
 !> \param dft_control GAPW settings.
@@ -388,6 +403,7 @@ CONTAINS
 
       cache%eta = local_rho%rho0_mpole%zet0_h
       cache%hmat = cell%hmat
+      cache%periodicity = cell%perd
       ALLOCATE (cache%kind(SIZE(kinds)), cache%pair(SIZE(particles), SIZE(uspp%center_atoms)), &
                 cache%position(3, SIZE(particles)))
       DO atom = 1, SIZE(particles)
@@ -429,13 +445,15 @@ CONTAINS
                      last = term%offset + 2*term%l + 1
                      CALL gapw_periodic_augmentation_integrals(uspp%augmentation(uspp%center_kinds(center)), &
                                                    displacement, term%alpha, term%power, term%l, cache%eta, cell%hmat, cell%h_inv, &
-                                             directions, weights, tolerance, cache%pair(atom, center)%integral(:, :, first:last, :))
+                                           directions, weights, tolerance, cache%pair(atom, center)%integral(:, :, first:last, :), &
+                                                               periodicity=cache%periodicity)
                   END ASSOCIATE
                END DO
                last = cache%kind(ikind)%ncomponent
                CALL gapw_periodic_augmentation_integrals(uspp%augmentation(uspp%center_kinds(center)), &
                                             displacement, alpha_core, 0, 0, cache%eta, cell%hmat, cell%h_inv, directions, weights, &
-                                                         tolerance, cache%pair(atom, center)%integral(:, :, last:last, :))
+                                                         tolerance, cache%pair(atom, center)%integral(:, :, last:last, :), &
+                                                         periodicity=cache%periodicity)
                DEALLOCATE (directions, weights)
             END DO
          END DO
