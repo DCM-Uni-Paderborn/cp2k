@@ -76,6 +76,7 @@ MODULE qs_linres_kernel
                                               integrate_v_rspace_one_center
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               get_qs_kind_set,&
+                                              has_uspp,&
                                               qs_kind_type
    USE qs_kpp1_env_methods,             ONLY: kpp1_check_i_alloc
    USE qs_kpp1_env_types,               ONLY: qs_kpp1_env_type
@@ -900,7 +901,7 @@ CONTAINS
 
       INTEGER                                            :: handle, irep, ispin, mspin, n_rep_hf, &
                                                             nspins
-      LOGICAL                                            :: distribute_fock_matrix, &
+      LOGICAL                                            :: distribute_fock_matrix, do_hfx, &
                                                             hfx_treat_lsd_in_core, &
                                                             s_mstruct_changed
       REAL(KIND=dp)                                      :: eh1, ehfx
@@ -908,16 +909,23 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(hfx_type), DIMENSION(:, :), POINTER           :: x_data
       TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (dft_control, para_env, matrix_ks_kp, rho_ao_kp, x_data)
+      NULLIFY (dft_control, para_env, matrix_ks_kp, rho_ao_kp, x_data, qs_kind_set)
 
       CALL get_qs_env(qs_env=qs_env, &
                       dft_control=dft_control, &
                       para_env=para_env, &
                       s_mstruct_changed=s_mstruct_changed, &
-                      x_data=x_data)
+                      x_data=x_data, qs_kind_set=qs_kind_set)
+
+      ! This response entry also accepts external HF data and bypasses response_solver.
+      CALL section_vals_get(hfx_sections, explicit=do_hfx)
+      IF (has_uspp(qs_kind_set) .AND. do_hfx) THEN
+         CPABORT("USPP/PAW hybrid response requires an exchange augmentation kernel")
+      END IF
 
       IF (PRESENT(external_x_data)) x_data => external_x_data
 

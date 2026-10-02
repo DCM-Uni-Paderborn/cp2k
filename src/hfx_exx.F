@@ -64,6 +64,8 @@ MODULE hfx_exx
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_integrate_potential,          ONLY: integrate_v_rspace
+   USE qs_kind_types,                   ONLY: has_uspp,&
+                                              qs_kind_type
    USE qs_ks_reference,                 ONLY: ks_ref_potential
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
@@ -115,8 +117,8 @@ CONTAINS
 
       INTEGER                                            :: handle, i, irep, ispin, mspin, n_rep_hf, &
                                                             nspins
-      LOGICAL                                            :: calc_ints, hfx_treat_lsd_in_core, &
-                                                            use_virial
+      LOGICAL                                            :: calc_ints, do_hfx, &
+                                                            hfx_treat_lsd_in_core, use_virial
       REAL(KIND=dp)                                      :: eh1, ehfx, t1, t2, tf1, tf2
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_ks_aux_fit, rho_ao, &
                                                             rho_ao_aux_fit, rho_ao_resp
@@ -124,6 +126,7 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_energy_type), POINTER                      :: energy
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
       TYPE(qs_rho_type), POINTER                         :: rho, rho_aux_fit
       TYPE(section_vals_type), POINTER                   :: input
       TYPE(virial_type), POINTER                         :: virial
@@ -134,6 +137,13 @@ CONTAINS
 
       NULLIFY (input, para_env, matrix_ks, matrix_ks_aux_fit, rho, rho_ao, virial, &
                dft_control, rho_aux_fit, rho_ao_aux_fit)
+
+      ! The actual HF section may belong to energy correction rather than ground-state XC.
+      CALL get_qs_env(qs_env, qs_kind_set=qs_kind_set)
+      CALL section_vals_get(hfx_sections, explicit=do_hfx)
+      IF (has_uspp(qs_kind_set) .AND. do_hfx) THEN
+         CPABORT("USPP/PAW post-SCF exchange is not implemented")
+      END IF
 
       CALL exx_pre_hfx(hfx_sections, x_data, reuse_hfx)
 
@@ -802,4 +812,3 @@ CONTAINS
    END SUBROUTINE remove_exc_energy
 
 END MODULE hfx_exx
-

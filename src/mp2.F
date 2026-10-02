@@ -87,7 +87,8 @@ MODULE mp2
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
-   USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_kind_types,                   ONLY: has_uspp,&
+                                              qs_kind_type
    USE qs_mo_types,                     ONLY: allocate_mo_set,&
                                               deallocate_mo_set,&
                                               get_mo_set,&
@@ -228,6 +229,15 @@ CONTAINS
                          mp2_env=mp2_env, &
                          admm_env=admm_env)
 
+      END IF
+
+      ! These post-SCF exchange paths have no native PAW one-center operator or kernel.
+      IF (has_uspp(qs_kind_set)) THEN
+         hfx_sections => section_vals_get_subs_vals(input, "DFT%XC%WF_CORRELATION%RI_RPA%HF")
+         CALL section_vals_get(hfx_sections, explicit=do_exx)
+         IF (do_exx .OR. mp2_env%ri_rpa%do_ri_g0w0 .OR. mp2_env%ri_rpa%do_rse) THEN
+            CPABORT("USPP/PAW post-SCF exchange is not implemented")
+         END IF
       END IF
 
       ! IF DO_BSE In TDDFT, SAVE ks_matrix to ex_env

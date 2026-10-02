@@ -16,6 +16,7 @@ MODULE qs_uspp_methods
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_get_block_p, dbcsr_get_info, dbcsr_p_type, dbcsr_release, &
         dbcsr_scale, dbcsr_set, dbcsr_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_ppl_analytic
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -25,7 +26,8 @@ MODULE qs_uspp_methods
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_comm_unequal
    USE particle_types,                  ONLY: particle_type
-   USE paw_onecenter,                   ONLY: paw_onecenter_hartree,&
+   USE paw_onecenter,                   ONLY: paw_onecenter_exchange,&
+                                              paw_onecenter_hartree,&
                                               paw_onecenter_init
    USE paw_xc,                          ONLY: paw_xc_evaluate,&
                                               paw_xc_init
@@ -39,7 +41,8 @@ MODULE qs_uspp_methods
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_force_types,                  ONLY: qs_force_type
-   USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type,&
                                               set_ks_env
@@ -73,7 +76,7 @@ MODULE qs_uspp_methods
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_methods'
    PUBLIC :: qs_uspp_prepare, qs_uspp_init_ao_matrix, qs_uspp_collocate, qs_uspp_integrate
-   PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces, qs_paw_correction
+   PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces, qs_paw_correction, qs_paw_exchange
    PUBLIC :: qs_uspp_atom_grid_type, qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_collocate, &
              qs_uspp_atom_grid_integrate, qs_uspp_atom_grid_apply, qs_uspp_atom_grid_apply_ks
 
@@ -966,6 +969,144 @@ CONTAINS
       END IF
       CALL timestop(handle)
    END SUBROUTINE qs_paw_correction
+
+! **************************************************************************************************
+!> \brief Unscreened PAW valence exchange energy, AO operator and projector force/strain derivatives.
+!>        The fixed radial Coulomb cache has no geometry response. Both projector-overlap legs
+!>        are differentiated through the same projected density as used for the energy.
+!>        Frozen-core datasets require additional core-valence exchange and a core-core reference,
+!>        and remain rejected until those contributions are implemented.
+!> \param ks_env Prepared PAW caches, projector overlaps and force accumulators.
+!> \param density Spin and image AO densities, including occupations and k-point weights.
+!>        One Quickstep spin block is a restricted spin sum; two blocks are physical spin densities.
+!> \param fraction Sum of unscreened Coulomb exact-exchange fractions; zero skips the entire path.
+!> \param exchange PAW valence exchange correction, reset and returned replicated.
+!> \param calculate_forces Whether to differentiate projectors at fixed AO density.
+!>        The generalized-overlap Pulay contribution is accumulated separately.
+!> \param hamiltonian Optional spin and image AO matrices to increment.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_exchange(ks_env, density, fraction, exchange, calculate_forces, hamiltonian)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:, :)
+      REAL(dp), INTENT(IN)                               :: fraction
+      REAL(dp), INTENT(OUT)                              :: exchange
+      LOGICAL, INTENT(IN)                                :: calculate_forces
+      TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: hamiltonian(:, :)
+
+      INTEGER                                            :: center, handle, ikind, n, natom, ns, &
+                                                            nuclear_charge, spin
+      LOGICAL                                            :: found, frozen_core, valid_shape
+      REAL(dp)                                           :: center_exchange
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), &
+                                                            cell_gradient(:, :), dm(:, :, :), &
+                                                            potential(:, :, :)
+      REAL(dp), POINTER                                  :: block(:, :)
+      TYPE(dbcsr_type), ALLOCATABLE                      :: onsite(:), projected(:)
+      TYPE(mp_comm_type)                                 :: group
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+
+      exchange = 0.0_dp
+      CPASSERT(ieee_is_finite(fraction))
+      IF (fraction == 0.0_dp) RETURN
+      CALL get_ks_env(ks_env, uspp=uspp, qs_kind_set=qs_kind_set)
+      IF (.NOT. ASSOCIATED(uspp)) RETURN
+      IF (.NOT. ALLOCATED(uspp%paw)) RETURN
+      IF (.NOT. ANY(uspp%paw%active)) RETURN
+      ! Check original core data before evaluating a valence-only PAW contribution.
+      DO ikind = 1, SIZE(uspp%paw)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         CALL get_qs_kind(qs_kind_set(ikind), zatom=nuclear_charge)
+         ASSOCIATE (pot => qs_kind_set(ikind)%sgp_potential%upf_data)
+            CPASSERT(ALLOCATED(pot%paw))
+            CPASSERT(ieee_is_finite(pot%zion))
+            frozen_core = ABS(REAL(nuclear_charge, dp) - pot%zion) > &
+                          64.0_dp*EPSILON(1.0_dp)*REAL(nuclear_charge, dp)
+            frozen_core = frozen_core .OR. ANY(pot%paw%rho_core /= 0.0_dp)
+            IF (ALLOCATED(pot%rho_nlcc)) THEN
+               frozen_core = frozen_core .OR. ANY(pot%rho_nlcc /= 0.0_dp)
+            END IF
+            IF (frozen_core) THEN
+               CPABORT("PAW frozen-core exact exchange requires core-valence/core-core terms")
+            END IF
+         END ASSOCIATE
+      END DO
+      CALL timeset('qs_paw_exchange', handle)
+      ns = SIZE(density, 1)
+      CPASSERT(ns == 1 .OR. ns == 2)
+      IF (PRESENT(hamiltonian)) THEN
+         valid_shape = ALL(SHAPE(hamiltonian) == SHAPE(density))
+         CPASSERT(valid_shape)
+      END IF
+      CALL dbcsr_get_info(uspp%overlaps, group=group)
+      ALLOCATE (projected(ns), onsite(ns))
+      DO spin = 1, ns
+         CALL project_density(uspp, density(spin, :), projected(spin))
+         CALL uspp_projector_create_onsite(uspp%overlaps, onsite(spin))
+      END DO
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         ! All spin blocks have the same owner; count each center exactly once.
+         CALL dbcsr_get_block_p(projected(1), center, center, block, found)
+         IF (.NOT. found) CYCLE
+         n = uspp%projector_sizes(center)
+         ALLOCATE (dm(n, n, 2), potential(n, n, 2))
+         IF (ns == 1) THEN
+            dm(:, :, 1) = 0.5_dp*block
+            dm(:, :, 2) = dm(:, :, 1)
+         ELSE
+            DO spin = 1, ns
+               CALL dbcsr_get_block_p(projected(spin), center, center, block, found)
+               CPASSERT(found)
+               dm(:, :, spin) = block
+            END DO
+         END IF
+         CALL paw_onecenter_exchange(uspp%paw(ikind)%onecenter, dm, fraction, center_exchange, potential)
+         exchange = exchange + center_exchange
+         DO spin = 1, ns
+            CALL dbcsr_get_block_p(onsite(spin), center, center, block, found)
+            CPASSERT(found)
+            IF (ns == 1) THEN
+               ! dE/dDtotal=(Vup+Vdown)/2 because Dspin=Dtotal/2.
+               block(:, :) = 0.5_dp*(potential(:, :, 1) + potential(:, :, 2))
+            ELSE
+               block(:, :) = potential(:, :, spin)
+            END IF
+         END DO
+         DEALLOCATE (dm, potential)
+      END DO
+      CALL group%sum(exchange)
+      NULLIFY (sap_int)
+      IF (calculate_forces) THEN
+         CALL get_ks_env(ks_env, natom=natom)
+         ALLOCATE (atom_gradient(3, natom))
+         atom_gradient(:, :) = 0.0_dp
+         CALL allocate_cell_gradient(ks_env, cell_gradient)
+         CALL build_derivatives(ks_env, sap_int)
+      END IF
+      DO spin = 1, ns
+         IF (calculate_forces) THEN
+            IF (PRESENT(hamiltonian)) THEN
+               CALL apply_operator(uspp, onsite(spin), hamiltonian(spin, :), density(spin, :), &
+                                   sap_int, atom_gradient, cell_gradient)
+            ELSE
+               CALL apply_operator(uspp, onsite(spin), density=density(spin, :), &
+                                   sap_int=sap_int, atom_gradient=atom_gradient, cell_gradient=cell_gradient)
+            END IF
+         ELSE IF (PRESENT(hamiltonian)) THEN
+            CALL apply_operator(uspp, onsite(spin), hamiltonian(spin, :))
+         END IF
+         CALL dbcsr_release(projected(spin))
+         CALL dbcsr_release(onsite(spin))
+      END DO
+      IF (calculate_forces) THEN
+         CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
+         CALL release_sap_int(sap_int)
+      END IF
+      CALL timestop(handle)
+   END SUBROUTINE qs_paw_exchange
 
 ! **************************************************************************************************
 !> \brief Build image-resolved derivatives only on the force path.

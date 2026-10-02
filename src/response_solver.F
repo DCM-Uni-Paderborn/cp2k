@@ -112,6 +112,7 @@ MODULE response_solver
                                               integrate_v_rspace
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               get_qs_kind_set,&
+                                              has_uspp,&
                                               qs_kind_type
    USE qs_ks_atom,                      ONLY: update_ks_atom
    USE qs_ks_methods,                   ONLY: calc_rho_tot_gspace
@@ -172,6 +173,27 @@ MODULE response_solver
 CONTAINS
 
 ! **************************************************************************************************
+!> \brief Reject native USPP/PAW hybrid response until its one-center exchange kernel is available.
+!> \param qs_env Current kinds and input; NC and calculations without explicit HF pass unchanged.
+! **************************************************************************************************
+   SUBROUTINE check_native_hfx_response(qs_env)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+
+      LOGICAL                                            :: do_hfx
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
+      TYPE(section_vals_type), POINTER                   :: hfx_section, input
+
+      CALL get_qs_env(qs_env, qs_kind_set=qs_kind_set)
+      IF (.NOT. has_uspp(qs_kind_set)) RETURN
+      CALL get_qs_env(qs_env, input=input)
+      hfx_section => section_vals_get_subs_vals(input, "DFT%XC%HF")
+      CALL section_vals_get(hfx_section, explicit=do_hfx)
+      IF (do_hfx) THEN
+         CPABORT("USPP/PAW hybrid response requires an exchange augmentation kernel")
+      END IF
+   END SUBROUTINE check_native_hfx_response
+
+! **************************************************************************************************
 !> \brief Initializes solver of linear response equation for energy correction
 !> \brief Call AO or MO based linear response solver for energy correction
 !>
@@ -211,6 +233,7 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(section_vals_type), POINTER                   :: input, solver_section
 
+      CALL check_native_hfx_response(qs_env)
       CALL timeset(routineN, handle)
 
       NULLIFY (admm_env, dft_control, energy, logger, matrix_s, matrix_s_aux, mo_coeff, mos, para_env, &
@@ -594,6 +617,7 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
 
+      CALL check_native_hfx_response(qs_env)
       CALL timeset(routineN, handle)
 
       NULLIFY (dft_control, matrix_ks, mo_coeff, mos)
@@ -708,6 +732,7 @@ CONTAINS
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_orb
 
+      CALL check_native_hfx_response(qs_env)
       CALL timeset(routineN, handle)
 
       ! initialized linres_control
@@ -927,6 +952,7 @@ CONTAINS
       TYPE(virial_type), POINTER                         :: virial
       TYPE(xc_rho_cflags_type)                           :: needs
 
+      CALL check_native_hfx_response(qs_env)
       CALL timeset(routineN, handle)
 
       IF (PRESENT(debug)) THEN

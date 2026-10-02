@@ -108,6 +108,7 @@ MODULE hfx_admm_utils
    USE qs_interactions,                 ONLY: init_interaction_radii
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               get_qs_kind_set,&
+                                              has_uspp,&
                                               init_gapw_basis_set,&
                                               init_gapw_nlcc,&
                                               qs_kind_type
@@ -2507,6 +2508,7 @@ CONTAINS
       TYPE(hfx_type), DIMENSION(:, :), POINTER           :: x_data
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_energy_type), POINTER                      :: energy
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
       TYPE(section_vals_type), POINTER                   :: hfx_sections, input
 
       CALL timeset(routineN, handle)
@@ -2527,6 +2529,11 @@ CONTAINS
       IF (PRESENT(external_hfx_sections)) hfx_sections => external_hfx_sections
       IF (PRESENT(external_x_data)) x_data => external_x_data
       IF (PRESENT(external_para_env)) para_env => external_para_env
+
+      CALL get_qs_env(qs_env, qs_kind_set=qs_kind_set)
+      IF (has_uspp(qs_kind_set)) THEN
+         CPABORT("USPP/PAW hybrid response requires an exchange augmentation kernel")
+      END IF
 
       my_update_energy = .TRUE.
       IF (PRESENT(update_energy)) my_update_energy = update_energy
