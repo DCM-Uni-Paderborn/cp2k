@@ -2061,6 +2061,7 @@ list(
   "gapw_background_unittest"
   "gapw_1c_basis_unittest"
   "gapw_coulomb_integrals_unittest"
+  "periodic_atom_partition_unittest"
   "kpoint_lattice_fft_unittest"
   "kpoint_smearing_unittest"
   "topology_wilson_unittest"
@@ -2116,6 +2117,8 @@ add_executable(gapw_background_unittest gapw_background_unittest.F)
 add_executable(gapw_1c_basis_unittest gapw_1c_basis_unittest.F)
 add_executable(gapw_coulomb_integrals_unittest
                gapw_coulomb_integrals_unittest.F)
+add_executable(periodic_atom_partition_unittest
+               periodic_atom_partition_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
 add_executable(kpoint_smearing_unittest kpoint_smearing_unittest.F)
 add_executable(topology_wilson_unittest topology_wilson_unittest.F)

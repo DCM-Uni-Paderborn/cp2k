@@ -268,13 +268,13 @@ CONTAINS
       INTEGER :: adjoint_bin, adjoint_entry, adjoint_nbins, adjoint_nchannels, &
          adjoint_tile_count(3), adjoint_tile_lower(3), adjoint_tile_upper(3), &
          atom_composite_components, bo(2), composite_descriptor_target_image, &
-         composite_image_periodicity(3), composite_local_atom, composite_local_natom, &
-         composite_nflat, composite_partition_target_image, composite_pw_nflat, composite_row, &
-         gapw_density_partition, gapw_representation, handle, ia, iat, iatom, icomponent, idir, &
-         ikind, image_i1, image_i2, image_i3, image_lower(3), image_shell(3), image_shift(3), &
-         image_upper(3), ir, ispin, iw, jdir, myfun, na
-      INTEGER :: natom, nr, nspins, num_pe, on, source_atom, target_atom, xc_deriv_method_id, &
-         xc_rho_smooth_id, zatom
+         composite_image_periodicity(3), composite_image_shell(3), composite_local_atom, &
+         composite_local_natom, composite_nflat, composite_partition_target_image, &
+         composite_pw_nflat, composite_row, gapw_density_partition, gapw_representation, handle, &
+         ia, iat, iatom, icomponent, idir, ikind, image_i1, image_i2, image_i3, image_lower(3), &
+         image_shell(3), image_shift(3), image_upper(3), ir
+      INTEGER :: ispin, iw, jdir, myfun, na, natom, nr, nspins, num_pe, on, source_atom, &
+         target_atom, xc_deriv_method_id, xc_rho_smooth_id, zatom
       INTEGER(KIND=int_8), ALLOCATABLE, DIMENSION(:)     :: composite_atomic_grid_sizes, &
                                                             composite_local_grid_sizes
       INTEGER, ALLOCATABLE, DIMENSION(:) :: adjoint_bin_offsets, adjoint_bin_rows, &
@@ -547,6 +547,7 @@ CONTAINS
       ! when the physical Poisson problem is isolated or partially periodic.
       image_partition_atom_composite = atom_composite_active
       composite_image_periodicity = 1
+      composite_image_shell = dft_control%qs_control%gapw_control%atom_grid_image_shell
       IF (atom_composite_reference .AND. nlcc) THEN
          ALLOCATE (composite_nlcc(SIZE(my_kind_set)))
          DO ikind = 1, SIZE(my_kind_set)
@@ -918,11 +919,11 @@ CONTAINS
                   IF (image_partition_atom_composite) THEN
                      CALL build_periodic_atom_image_layout( &
                         composite_atom_coords, cell, iatom, composite_image_periodicity, &
-                        composite_partition_image_coords, composite_partition_target_image)
+                        composite_partition_image_coords, composite_partition_target_image, composite_image_shell)
                      CALL build_periodic_atom_image_layout( &
                         composite_atom_coords(:, iatom:iatom), cell, 1, &
                         composite_image_periodicity, composite_descriptor_image_coords, &
-                        composite_descriptor_target_image)
+                        composite_descriptor_target_image, composite_image_shell)
                   END IF
 !$OMP PARALLEL DO COLLAPSE(2) IF (image_partition_atom_composite) SCHEDULE(STATIC) DEFAULT(NONE) &
 !$OMP PRIVATE(composite_row, composite_point, composite_smooth_density_value, &
@@ -1596,7 +1597,7 @@ CONTAINS
 !$OMP        composite_atomic_grid_weights, composite_base_grid_weights, composite_density_grad, &
 !$OMP        composite_smooth_density_grad, composite_smooth_grad_grad, &
 !$OMP        composite_grad_grad, composite_grid_coord_force, composite_grid_coord_grad, &
-!$OMP        composite_grid_coords, composite_grid_weight_grad, composite_image_periodicity, &
+!$OMP        composite_grid_coords, composite_grid_weight_grad, composite_image_periodicity, composite_image_shell, &
 !$OMP        composite_kin_grad, composite_local_atoms, composite_local_natom, &
 !$OMP        composite_model_atom_force, composite_moving_smooth_force, &
 !$OMP        composite_nlcc_center_force, composite_nlcc_target_force, composite_partition_datom, &
@@ -1727,12 +1728,12 @@ CONTAINS
                         CALL periodic_atom_image_partition( &
                            composite_grid_coords(:, composite_row), composite_atom_coords, cell, &
                            iatom, local_partition_weight, local_partition_datom, &
-                           local_partition_dstrain, composite_image_periodicity)
+                           local_partition_dstrain, composite_image_periodicity, composite_image_shell)
                         CALL periodic_atom_image_partition( &
                            composite_grid_coords(:, composite_row), &
                            composite_atom_coords(:, iatom:iatom), cell, 1, &
                            descriptor_window_weight, local_descriptor_datom, &
-                           local_descriptor_dstrain, composite_image_periodicity)
+                           local_descriptor_dstrain, composite_image_periodicity, composite_image_shell)
                         ! Its atom derivative cancels against the moving target grid; periodic
                         ! image strain remains an explicit contribution to the virial.
                         target_partition_adjoint = composite_base_grid_weights(composite_row)* &

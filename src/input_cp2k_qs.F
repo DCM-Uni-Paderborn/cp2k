@@ -167,6 +167,18 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="ATOM_GRID_IMAGE_SHELL", &
+                          description="Number of neighboring lattice cells in each direction for the "// &
+                          "periodic Becke partition of the composite atom-centered XC grid. Applies "// &
+                          "to USPP/PAW GAPW_XC and GAPW and other composite atom-grid XC paths. "// &
+                          "Increase these values to converge the image partition independently of "// &
+                          "radial/angular quadrature. Equal shell counts in different supercells "// &
+                          "do not imply equal sets of physical atom images.", &
+                          usage="ATOM_GRID_IMAGE_SHELL 1 1 1", type_of_var=integer_t, &
+                          default_i_vals=[1, 1, 1], n_var=3)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="EPSFIT", &
                           variants=["EPS_FIT"], &
                           description="GAPW: tolerance controlling the split of Gaussian basis functions "// &

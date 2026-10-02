@@ -37,6 +37,7 @@ upf_local_integrals_unittest
 gapw_background_unittest
 gapw_1c_basis_unittest
 gapw_coulomb_integrals_unittest
+periodic_atom_partition_unittest
 qs_fod_unittest
 qs_ot_complex_ref_unittest
 realspace_grid_cube_unittest
