@@ -16,6 +16,7 @@ MODULE atom_electronic_structure
                                               atom_print_state,&
                                               atom_print_zmp_iteration
    USE atom_paw,                        ONLY: atom_paw_add,&
+                                              atom_paw_guess,&
                                               atom_paw_init,&
                                               atom_paw_type
    USE atom_types,                      ONLY: &
@@ -74,7 +75,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER                        :: routineN = 'calculate_atom'
 
       INTEGER                                            :: handle, method
-      LOGICAL                                            :: default_paw_xc, explicit
+      LOGICAL                                            :: default_paw_xc, explicit, skip_guess
       TYPE(section_type), POINTER                        :: xc_specification
       TYPE(section_vals_type), POINTER                   :: sub_section
 
@@ -131,11 +132,18 @@ CONTAINS
          END IF
       END IF
 
+      skip_guess = .FALSE.
+      IF (PRESENT(noguess)) skip_guess = noguess
+      IF (.NOT. skip_guess .AND. .NOT. atom%doread) THEN
+         CALL atom_paw_guess(atom, skip_guess)
+         IF (skip_guess .AND. iw > 0) WRITE (iw, '(A)') ' PAW atomic guess from occupied UPF reference waves'
+      END IF
+
       SELECT CASE (method)
       CASE (do_rks_atom, do_rhf_atom)
-         CALL calculate_atom_restricted(atom, iw, noguess, converged)
+         CALL calculate_atom_restricted(atom, iw, skip_guess, converged)
       CASE (do_uks_atom, do_uhf_atom)
-         CALL calculate_atom_unrestricted(atom, iw, noguess, converged)
+         CALL calculate_atom_unrestricted(atom, iw, skip_guess, converged)
       CASE (do_rohf_atom)
          CPABORT("The ROHF method is not yet implemented in the ATOM code.")
       CASE DEFAULT
