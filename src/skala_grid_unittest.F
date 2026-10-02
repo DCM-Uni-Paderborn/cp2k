@@ -54,14 +54,14 @@ PROGRAM skala_grid_unittest
    routing_tolerance = 1.0e-11_dp
    derivative_tolerance = 1.0e-8_dp
    SELECT CASE (TRIM(model_mode))
-   CASE ("")
+   CASE ("", "geometry")
       CONTINUE
    CASE ("skala-float32")
       step_size = 1.0e-2_dp
       routing_tolerance = 1.0e-5_dp
       derivative_tolerance = 1.0e-4_dp
    CASE DEFAULT
-      ERROR STOP "Unknown model mode (expected skala-float32 or no mode for the analytic fixture)"
+      ERROR STOP "Unknown model mode (expected geometry, skala-float32 or no mode for the analytic fixture)"
    END SELECT
    CALL cp2k_init()
    comm = mp_comm_world
@@ -164,7 +164,7 @@ PROGRAM skala_grid_unittest
    END DO
    CALL arbitrary_points()
    CALL comm%max(maximum_error)
-   IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum primitive-field derivative error: ", maximum_error
+   IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum field/geometry derivative error: ", maximum_error
    DEALLOCATE (atoms)
    CALL cell_release(cell)
    CALL section_vals_release(xc)
@@ -180,16 +180,18 @@ CONTAINS
                                                             nr_local, nspin, row, source, spin, &
                                                             sx, sy, sz
       INTEGER, ALLOCATABLE                               :: ids(:), sizes(:)
-      REAL(dp) :: ad(3), charge, descriptor_derivative, direction(3), displacement(3), dw, e, err, &
-         expected, mean, minus, occupation, phi, pi, plus, point(3), radius, ref_e, rho_sum, &
-         spin_scale, step_h, sum_descriptor, sum_weights, w, z
+      REAL(dp) :: ad(7), charge, descriptor_derivative, direction(3), displacement(3), dw, e, err, &
+                  expected, mean, minus, occupation, phi, pi, plus, point(3), radius, ref_e, rho_sum, &
+                  spin_scale, step_h, sum_descriptor, sum_weights, w, z, mean_point(3), &
+                  energy_density, point_covector(3), centre_covector(3), weight_covector
       REAL(dp), ALLOCATABLE :: centres(:, :), descriptor_weights(:), dg(:, :, :), dr(:, :), &
-         dt(:, :), energy_weights(:), g(:, :, :), gathered(:, :, :), pg(:, :, :), points(:, :), &
-         pr(:, :), pt(:, :), r(:, :), reference_grad(:, :, :), t(:, :)
+                               dt(:, :), energy_weights(:), g(:, :, :), gathered(:, :, :), pg(:, :, :), points(:, :), &
+                               pr(:, :), pt(:, :), r(:, :), reference_grad(:, :, :), t(:, :), &
+                               dx(:, :), dc(:, :), de(:), dd(:), px(:, :), pc(:, :), pe(:), pd(:)
 
       pi = ACOS(-1.0_dp)
       DO nspin = 1, 2
-         ALLOCATE (gathered(total_rows, 5, nspin), reference_grad(total_rows, 5, nspin))
+         ALLOCATE (gathered(total_rows, 13, nspin), reference_grad(total_rows, 13, nspin))
          DO distribution = 0, 1
             na_local = 0
             nr_local = 0
@@ -203,7 +205,9 @@ CONTAINS
                       energy_weights(nr_local), descriptor_weights(nr_local), &
                       r(nr_local, nspin), g(nr_local, 3, nspin), t(nr_local, nspin), &
                       dr(nr_local, nspin), dg(nr_local, 3, nspin), dt(nr_local, nspin), &
-                      pr(nr_local, nspin), pg(nr_local, 3, nspin), pt(nr_local, nspin))
+                      pr(nr_local, nspin), pg(nr_local, 3, nspin), pt(nr_local, nspin), &
+                      dx(3, nr_local), dc(3, na_local), de(nr_local), dd(nr_local), &
+                      px(3, nr_local), pc(3, na_local), pe(nr_local), pd(nr_local))
             b = 0
             row = 0
             DO a = 1, 2
@@ -212,6 +216,7 @@ CONTAINS
                b = b + 1
                sizes(b) = block_sizes(a)
                centres(:, b) = atoms(a)%r
+               dc(:, b) = 0.03_dp*COS(REAL(a + [1, 2, 3], dp))
                DO ir = 1, block_sizes(a)/nang
                   radius = 0.12_dp + (REAL(ir, dp) - 0.5_dp)*0.24_dp
                   DO ia = 1, nang
@@ -227,6 +232,9 @@ CONTAINS
                      energy_weights(row) = descriptor_weights(row)*(0.6_dp + 0.1_dp*COS(phi))
                      ! This row still participates in the nonlocal descriptor.
                      IF (ir == 1 .AND. ia == 1) energy_weights(row) = 0.0_dp
+                     dx(:, row) = 0.01_dp*SIN(REAL(global_row + [1, 2, 3], dp))
+                     de(row) = 0.02_dp*descriptor_weights(row)*COS(REAL(global_row, dp))
+                     dd(row) = 0.03_dp*descriptor_weights(row)*SIN(REAL(global_row, dp))
                      r(row, :) = 0.0_dp
                      g(row, :, :) = 0.0_dp
                      t(row, :) = 0.0_dp
@@ -259,10 +267,10 @@ CONTAINS
                END DO
             END DO
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                  r, g, t, xc, e, pr, pg, pt)
+                                  r, g, t, xc, e, pr, pg, pt, px, pc, pe, pd)
             IF (model_mode == "skala-float32" .AND. e >= -1.0e-6_dp) &
                ERROR STOP "The arbitrary-point fixture must have a nontrivial Skala energy"
-            IF (model_mode == "") THEN
+            IF (model_mode /= "skala-float32") THEN
                expected = 0.0_dp
                err = 0.0_dp
                descriptor_derivative = 0.0_dp
@@ -271,17 +279,35 @@ CONTAINS
                IF (nspin == 1) spin_scale = 0.5_dp
                DO b = 1, na_local
                   mean = 0.0_dp
+                  mean_point = 0.0_dp
+                  centre_covector = 0.0_dp
                   sum_weights = SUM(energy_weights(first:first + sizes(b) - 1))
                   sum_descriptor = SUM(descriptor_weights(first:first + sizes(b) - 1))
                   DO row = first, first + sizes(b) - 1
                      mean = mean + SUM(r(row, :))*descriptor_weights(row)/sum_descriptor
+                     IF (model_mode == "geometry") THEN
+                        mean_point = mean_point + (points(:, row) - centres(:, b))*descriptor_weights(row)/sum_descriptor
+                     END IF
                   END DO
                   DO row = first, first + sizes(b) - 1
                      w = energy_weights(row)
                      dw = descriptor_weights(row)
-                     expected = expected + w*(spin_scale*(0.7_dp*SUM(r(row, :)**2) + &
-                                                          0.3_dp*SUM(t(row, :)**2) + 0.2_dp*SUM(r(row, :)*t(row, :)) + &
-                                                          0.1_dp*SUM(g(row, :, :)**2)) + 0.05_dp*mean**2)
+                     energy_density = spin_scale*(0.7_dp*SUM(r(row, :)**2) + &
+                                                  0.3_dp*SUM(t(row, :)**2) + 0.2_dp*SUM(r(row, :)*t(row, :)) + &
+                                                  0.1_dp*SUM(g(row, :, :)**2)) + 0.05_dp*mean**2
+                     weight_covector = 0.1_dp*mean*sum_weights*(SUM(r(row, :)) - mean)/sum_descriptor
+                     point_covector = 0.0_dp
+                     IF (model_mode == "geometry") THEN
+                        displacement = points(:, row) - centres(:, b)
+                        energy_density = energy_density + 0.04_dp*SUM(displacement**2) + 0.03_dp*SUM(mean_point**2)
+                        point_covector = 0.08_dp*w*displacement + 0.06_dp*sum_weights*dw*mean_point/sum_descriptor
+                        weight_covector = weight_covector + &
+                                          0.06_dp*sum_weights*SUM(mean_point*(displacement - mean_point))/sum_descriptor
+                     END IF
+                     expected = expected + w*energy_density
+                     centre_covector = centre_covector - point_covector
+                     err = MAX(err, ABS(pe(row) - energy_density), ABS(pd(row) - weight_covector), &
+                               MAXVAL(ABS(px(:, row) - point_covector)))
                      rho_sum = 0.1_dp*mean*sum_weights*dw/sum_descriptor
                      DO spin = 1, nspin
                         err = MAX(err, ABS(pr(row, spin) - &
@@ -291,6 +317,7 @@ CONTAINS
                         err = MAX(err, MAXVAL(ABS(pg(row, :, spin) - w*spin_scale*0.2_dp*g(row, :, spin))))
                      END DO
                   END DO
+                  err = MAX(err, MAXVAL(ABS(pc(:, b) - centre_covector)))
                   descriptor_derivative = MAX(descriptor_derivative, MAXVAL(ABS(pr(first, :))))
                   first = first + sizes(b)
                END DO
@@ -307,6 +334,14 @@ CONTAINS
                gathered(ids(row), 1, :) = pr(row, :)
                gathered(ids(row), 2:4, :) = pg(row, :, :)
                gathered(ids(row), 5, :) = pt(row, :)
+               gathered(ids(row), 6:8, 1) = px(:, row)
+               gathered(ids(row), 9, 1) = pe(row)
+               gathered(ids(row), 10, 1) = pd(row)
+            END DO
+            first = 1
+            DO b = 1, na_local
+               gathered(ids(first), 11:13, 1) = pc(:, b)
+               first = first + sizes(b)
             END DO
             CALL comm%sum(gathered)
             IF (distribution == 0) THEN
@@ -316,9 +351,13 @@ CONTAINS
                IF (MAX(ABS(e - ref_e), MAXVAL(ABS(gathered - reference_grad))) > routing_tolerance) &
                   ERROR STOP "Redistributing complete atom blocks changed Skala energy or derivatives"
             END IF
-            ad = [SUM(pr*dr), SUM(pg*dg), SUM(pt*dt)]
+            point = SUM(px, DIM=2) + SUM(pc, DIM=2)
+            CALL comm%sum(point)
+            IF (MAXVAL(ABS(point)) > derivative_tolerance) &
+               ERROR STOP "Point and block-centre derivatives violate translation invariance"
+            ad = [SUM(pr*dr), SUM(pg*dg), SUM(pt*dt), SUM(px*dx), SUM(pc*dc), SUM(pe*de), SUM(pd*dd)]
             CALL comm%sum(ad)
-            DO c = 1, 3
+            DO c = 1, 7
                DO ih = 1, 2
                   step_h = step_size/REAL(ih, dp)
                   SELECT CASE (c)
@@ -337,6 +376,26 @@ CONTAINS
                                            r, g, t + step_h*dt, xc, plus, pr, pg, pt)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                            r, g, t - step_h*dt, xc, minus, pr, pg, pt)
+                  CASE (4)
+                     CALL skala_point_eval(comm, points + step_h*dx, energy_weights, descriptor_weights, sizes, centres, &
+                                           r, g, t, xc, plus, pr, pg, pt)
+                     CALL skala_point_eval(comm, points - step_h*dx, energy_weights, descriptor_weights, sizes, centres, &
+                                           r, g, t, xc, minus, pr, pg, pt)
+                  CASE (5)
+                     CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres + step_h*dc, &
+                                           r, g, t, xc, plus, pr, pg, pt)
+                     CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres - step_h*dc, &
+                                           r, g, t, xc, minus, pr, pg, pt)
+                  CASE (6)
+                     CALL skala_point_eval(comm, points, energy_weights + step_h*de, descriptor_weights, sizes, centres, &
+                                           r, g, t, xc, plus, pr, pg, pt)
+                     CALL skala_point_eval(comm, points, energy_weights - step_h*de, descriptor_weights, sizes, centres, &
+                                           r, g, t, xc, minus, pr, pg, pt)
+                  CASE (7)
+                     CALL skala_point_eval(comm, points, energy_weights, descriptor_weights + step_h*dd, sizes, centres, &
+                                           r, g, t, xc, plus, pr, pg, pt)
+                     CALL skala_point_eval(comm, points, energy_weights, descriptor_weights - step_h*dd, sizes, centres, &
+                                           r, g, t, xc, minus, pr, pg, pt)
                   END SELECT
                   err = ABS((plus - minus)/(2.0_dp*step_h) - ad(c))
                   maximum_error = MAX(maximum_error, err)
@@ -349,13 +408,15 @@ CONTAINS
             END DO
             energy_weights = 0.0_dp
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                  r, g, t, xc, e, pr, pg, pt)
+                                  r, g, t, xc, e, pr, pg, pt, px, pc, pe, pd)
             err = ABS(e)
-            IF (nr_local > 0) err = MAX(err, MAXVAL(ABS(pr)), MAXVAL(ABS(pg)), MAXVAL(ABS(pt)))
+            ! The energy-weight derivative itself need not vanish at zero weights.
+            IF (nr_local > 0) err = MAX(err, MAXVAL(ABS(pr)), MAXVAL(ABS(pg)), MAXVAL(ABS(pt)), &
+                                        MAXVAL(ABS(px)), MAXVAL(ABS(pc)), MAXVAL(ABS(pd)))
             CALL comm%max(err)
-            IF (err > 1.0e-12_dp) ERROR STOP "Zero total energy weight must give zero energy and covectors"
+            IF (err > 1.0e-12_dp) ERROR STOP "Zero energy weights must give zero energy, field and geometry covectors"
             DEALLOCATE (sizes, centres, points, ids, energy_weights, descriptor_weights, &
-                        r, g, t, dr, dg, dt, pr, pg, pt)
+                        r, g, t, dr, dg, dt, pr, pg, pt, dx, dc, de, dd, px, pc, pe, pd)
          END DO
          DEALLOCATE (gathered, reference_grad)
       END DO

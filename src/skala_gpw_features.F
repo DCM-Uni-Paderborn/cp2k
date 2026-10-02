@@ -199,15 +199,17 @@ CONTAINS
 !> \param density Total density or two spin-resolved densities.
 !> \param gradient Cartesian gradients, shaped (number of points,3,spin channels).
 !> \param kinetic Positive kinetic-energy density in the same spin convention.
+!> \param requires_geometry_grad Differentiate coordinates and both independent weight sets.
 ! **************************************************************************************************
    SUBROUTINE skala_point_feature_build(features, points, energy_weights, descriptor_weights, &
-                                        atom_sizes, atom_coords, density, gradient, kinetic)
+                                        atom_sizes, atom_coords, density, gradient, kinetic, requires_geometry_grad)
       TYPE(skala_gpw_feature_type), INTENT(INOUT)        :: features
       REAL(KIND=dp), INTENT(IN)                          :: points(:, :), energy_weights(:), &
                                                             descriptor_weights(:)
       INTEGER, INTENT(IN)                                :: atom_sizes(:)
       REAL(KIND=dp), INTENT(IN)                          :: atom_coords(:, :), density(:, :), &
                                                             gradient(:, :, :), kinetic(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: requires_geometry_grad
 
       INTEGER                                            :: npoint, nspin, s
 
@@ -249,7 +251,7 @@ CONTAINS
       features%grid_weight_sum = SUM(energy_weights)
       features%electron_count = SUM(SUM(features%chunk_density, DIM=2)*energy_weights)
       features%spin_moment = SUM((features%chunk_density(:, 1) - features%chunk_density(:, 2))*energy_weights)
-      CALL add_owned_feature_tensors(features, .TRUE.)
+      CALL add_owned_feature_tensors(features, .TRUE., requires_geometry_grad)
       features%active = .TRUE.
    END SUBROUTINE skala_point_feature_build
 
@@ -2088,10 +2090,17 @@ CONTAINS
 !> \brief Insert owned subchunk arrays into a Torch dictionary.
 !> \param features ...
 !> \param requires_grad ...
+!> \param requires_geometry_grad ...
 ! **************************************************************************************************
-   SUBROUTINE add_owned_feature_tensors(features, requires_grad)
+   SUBROUTINE add_owned_feature_tensors(features, requires_grad, requires_geometry_grad)
       TYPE(skala_gpw_feature_type), INTENT(INOUT)        :: features
       LOGICAL, INTENT(IN)                                :: requires_grad
+      LOGICAL, INTENT(IN), OPTIONAL                      :: requires_geometry_grad
+
+      LOGICAL                                            :: geometry_grad
+
+      geometry_grad = .FALSE.
+      IF (PRESENT(requires_geometry_grad)) geometry_grad = requires_geometry_grad
 
       CPASSERT(ALLOCATED(features%chunk_density))
       CPASSERT(ALLOCATED(features%chunk_grad))
@@ -2109,16 +2118,16 @@ CONTAINS
       features%owns_static_tensors = .TRUE.
 
       CALL torch_tensor_from_array(features%grid_coords_t, features%grid_coords)
-      CALL torch_tensor_to_device_leaf(features%grid_coords_t, .FALSE.)
+      CALL torch_tensor_to_device_leaf(features%grid_coords_t, geometry_grad)
       CALL torch_tensor_from_array(features%grid_weights_t, features%grid_weights)
-      CALL torch_tensor_to_device_leaf(features%grid_weights_t, .FALSE.)
+      CALL torch_tensor_to_device_leaf(features%grid_weights_t, geometry_grad)
       CALL torch_tensor_from_array(features%atomic_grid_weights_t, features%atomic_grid_weights)
-      CALL torch_tensor_to_device_leaf(features%atomic_grid_weights_t, .FALSE.)
+      CALL torch_tensor_to_device_leaf(features%atomic_grid_weights_t, geometry_grad)
       CALL torch_tensor_from_array(features%atomic_grid_sizes_t, features%atomic_grid_sizes)
       CALL torch_tensor_to_device_leaf(features%atomic_grid_sizes_t, .FALSE.)
       CALL torch_tensor_from_array(features%coarse_0_atomic_coords_t, &
                                    features%coarse_0_atomic_coords)
-      CALL torch_tensor_to_device_leaf(features%coarse_0_atomic_coords_t, .FALSE.)
+      CALL torch_tensor_to_device_leaf(features%coarse_0_atomic_coords_t, geometry_grad)
       CALL torch_tensor_from_array(features%atomic_grid_size_bound_shape_t, &
                                    features%atomic_grid_size_bound_shape)
       CALL torch_tensor_to_device_leaf(features%atomic_grid_size_bound_shape_t, .FALSE.)

@@ -105,14 +105,20 @@ CONTAINS
 !> \param drho Raw derivative of the complete discrete energy with respect to density.
 !> \param dgradient Raw gradient covectors, with all model weights already included.
 !> \param dtau Raw kinetic-density covectors, without division by quadrature weights.
+!> \param dpoints Optional coordinate covectors at fixed physical fields and weights.
+!> \param datom_coords Optional block-centre covectors at fixed point coordinates.
+!> \param denergy_weights Optional energy-weight covectors at fixed descriptor weights.
+!> \param ddescriptor_weights Optional descriptor-weight covectors at fixed energy weights.
 !> \note Fields must be reconstructed before this call. No AE-minus-pseudo energy
 !>       decomposition, density clipping, weight multiplication of physical fields,
 !>       or removal of zero-energy-weight descriptor rows is performed here.
 !>       The host sums covectors when point rows represent the same physical source.
+!>       Geometry covectors are partial derivatives, not atomic forces. The host must
+!>       also differentiate field reconstruction, point placement and quadrature.
 ! **************************************************************************************************
    SUBROUTINE skala_point_eval(group, points, energy_weights, descriptor_weights, atom_sizes, &
                                atom_coords, density, gradient, kinetic, xc_section, exc, drho, &
-                               dgradient, dtau)
+                               dgradient, dtau, dpoints, datom_coords, denergy_weights, ddescriptor_weights)
       CLASS(mp_comm_type), INTENT(IN)                    :: group
       REAL(KIND=dp), INTENT(IN)                          :: points(:, :), energy_weights(:), &
                                                             descriptor_weights(:), atom_coords(:, :), &
@@ -120,14 +126,18 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: atom_sizes(:)
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(KIND=dp), INTENT(OUT)                         :: exc, drho(:, :), dgradient(:, :, :), dtau(:, :)
+      REAL(KIND=dp), OPTIONAL, INTENT(OUT)               :: dpoints(:, :), datom_coords(:, :), &
+                                                            denergy_weights(:), ddescriptor_weights(:)
 
       CHARACTER(len=default_path_length)                 :: model_path
       INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin
-      LOGICAL                                            :: use_cuda
+      LOGICAL                                            :: geometry_grad, use_cuda
       REAL(KIND=dp), POINTER                             :: density_grad(:, :), grad_grad(:, :, :), kin_grad(:, :)
+      REAL(KIND=dp), POINTER                             :: coord_grad(:, :), weight_grad(:)
       TYPE(section_vals_type), POINTER                   :: gauxc_section
       TYPE(skala_gpw_feature_type)                       :: features
       TYPE(torch_tensor_type)                            :: exc_tensor, density_grad_t, grad_grad_t, kin_grad_t
+      TYPE(torch_tensor_type)                            :: geometry_grad_t
 
       CALL timeset("skala_point_eval", handle)
       npoint = SIZE(density, 1)
@@ -141,6 +151,18 @@ CONTAINS
       IF (ANY(SHAPE(gradient) /= [npoint, 3, nspin])) invalid = 1
       IF (ANY(SHAPE(drho) /= SHAPE(density)) .OR. ANY(SHAPE(dtau) /= SHAPE(kinetic))) invalid = 1
       IF (ANY(SHAPE(dgradient) /= SHAPE(gradient))) invalid = 1
+      IF (PRESENT(dpoints)) THEN
+         IF (ANY(SHAPE(dpoints) /= SHAPE(points))) invalid = 1
+      END IF
+      IF (PRESENT(datom_coords)) THEN
+         IF (ANY(SHAPE(datom_coords) /= SHAPE(atom_coords))) invalid = 1
+      END IF
+      IF (PRESENT(denergy_weights)) THEN
+         IF (SIZE(denergy_weights) /= npoint) invalid = 1
+      END IF
+      IF (PRESENT(ddescriptor_weights)) THEN
+         IF (SIZE(ddescriptor_weights) /= npoint) invalid = 1
+      END IF
       IF (ANY(atom_sizes <= 0)) invalid = 1
       IF (SUM(INT(atom_sizes, int_8)) /= INT(npoint, int_8)) invalid = 1
       IF (.NOT. ALL(ieee_is_finite(points)) .OR. .NOT. ALL(ieee_is_finite(atom_coords))) invalid = 1
@@ -166,10 +188,16 @@ CONTAINS
       drho = 0.0_dp
       dgradient = 0.0_dp
       dtau = 0.0_dp
+      IF (PRESENT(dpoints)) dpoints = 0.0_dp
+      IF (PRESENT(datom_coords)) datom_coords = 0.0_dp
+      IF (PRESENT(denergy_weights)) denergy_weights = 0.0_dp
+      IF (PRESENT(ddescriptor_weights)) ddescriptor_weights = 0.0_dp
+      geometry_grad = PRESENT(dpoints) .OR. PRESENT(datom_coords) .OR. &
+                      PRESENT(denergy_weights) .OR. PRESENT(ddescriptor_weights)
       IF (npoint > 0) THEN
          CALL ensure_model_loaded(model_path, -1)
          CALL skala_point_feature_build(features, points, energy_weights, descriptor_weights, &
-                                        atom_sizes, atom_coords, density, gradient, kinetic)
+                                        atom_sizes, atom_coords, density, gradient, kinetic, geometry_grad)
          CALL skala_torch_model_get_exc(cached_model, features%inputs, features%grid_weights_t, exc_tensor, exc)
          CALL torch_tensor_backward_scalar(exc_tensor)
          CALL get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
@@ -186,6 +214,34 @@ CONTAINS
          CALL torch_tensor_release(density_grad_t)
          CALL torch_tensor_release(grad_grad_t)
          CALL torch_tensor_release(kin_grad_t)
+         IF (PRESENT(dpoints)) THEN
+            CALL torch_tensor_grad(features%grid_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            NULLIFY (coord_grad)
+            CALL torch_tensor_data_ptr(geometry_grad_t, coord_grad)
+            dpoints = coord_grad
+            CALL torch_tensor_release(geometry_grad_t)
+         END IF
+         IF (PRESENT(datom_coords)) THEN
+            CALL torch_tensor_grad(features%coarse_0_atomic_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            NULLIFY (coord_grad)
+            CALL torch_tensor_data_ptr(geometry_grad_t, coord_grad)
+            datom_coords = coord_grad
+            CALL torch_tensor_release(geometry_grad_t)
+         END IF
+         IF (PRESENT(denergy_weights)) THEN
+            CALL torch_tensor_grad(features%grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            NULLIFY (weight_grad)
+            CALL torch_tensor_data_ptr(geometry_grad_t, weight_grad)
+            denergy_weights = weight_grad
+            CALL torch_tensor_release(geometry_grad_t)
+         END IF
+         IF (PRESENT(ddescriptor_weights)) THEN
+            CALL torch_tensor_grad(features%atomic_grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            NULLIFY (weight_grad)
+            CALL torch_tensor_data_ptr(geometry_grad_t, weight_grad)
+            ddescriptor_weights = weight_grad
+            CALL torch_tensor_release(geometry_grad_t)
+         END IF
          CALL torch_tensor_release(exc_tensor)
          CALL skala_gpw_feature_release(features)
       END IF
@@ -193,6 +249,18 @@ CONTAINS
       invalid = 0
       IF (.NOT. ieee_is_finite(exc) .OR. .NOT. ALL(ieee_is_finite(drho)) .OR. &
           .NOT. ALL(ieee_is_finite(dgradient)) .OR. .NOT. ALL(ieee_is_finite(dtau))) invalid = 1
+      IF (PRESENT(dpoints)) THEN
+         IF (.NOT. ALL(ieee_is_finite(dpoints))) invalid = 1
+      END IF
+      IF (PRESENT(datom_coords)) THEN
+         IF (.NOT. ALL(ieee_is_finite(datom_coords))) invalid = 1
+      END IF
+      IF (PRESENT(denergy_weights)) THEN
+         IF (.NOT. ALL(ieee_is_finite(denergy_weights))) invalid = 1
+      END IF
+      IF (PRESENT(ddescriptor_weights)) THEN
+         IF (.NOT. ALL(ieee_is_finite(ddescriptor_weights))) invalid = 1
+      END IF
       CALL group%max(invalid)
       IF (invalid /= 0) THEN
          CPABORT("Nonfinite Skala atom-block energy or derivatives")

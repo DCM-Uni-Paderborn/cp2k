@@ -18,18 +18,22 @@ From the source root, replacing `build` with the build directory:
 ```sh
 python tools/regtesting/create_skala_grid_test_model.py build/grid-test.fun
 OMP_NUM_THREADS=1 build/bin/skala_grid_unittest.psmp build/grid-test.fun
+python tools/regtesting/create_skala_grid_test_model.py build/grid-geometry-test.fun --geometry
+OMP_NUM_THREADS=1 build/bin/skala_grid_unittest.psmp build/grid-geometry-test.fun geometry
 OMP_NUM_THREADS=1 build/bin/skala_atom_grid_unittest.psmp
 OMP_NUM_THREADS=1 build/bin/skala_sirius_unittest.psmp build/grid-test.fun
 python tools/regtesting/check_sirius_lapw_input.py build/bin/cp2k.psmp build/lapw-input-guards
 python tools/regtesting/test_sirius_lapw_test_atom.py
 ```
 
-The tests cover primitive-field derivatives, periodic quadrature, reconstructed
-fields, orbital derivatives, SCF energy accounting and input validation.
+The tests cover primitive-field and coordinate/weight derivatives, periodic
+quadrature, reconstructed fields, orbital derivatives, SCF energy accounting
+and input validation.
 Repeat the three executables with `mpiexec -n 2`; four ranks additionally
 exercise empty FFT slabs and atom blocks. The input checker accepts
 `--launcher 'mpirun -n 2'`. Its output directory must not already exist.
-The generated analytic model is a test fixture, not Skala.
+The generated analytic models are test fixtures, not Skala. Coordinate and weight
+derivatives hold the physical fields fixed and are not complete atomic forces.
 
 ## Actual-model inputs
 

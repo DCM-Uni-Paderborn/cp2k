@@ -423,12 +423,18 @@ void torch_c_use_cuda(const bool use_cuda) { use_cuda_if_available = use_cuda; }
  * \author Ole Schuett
  ******************************************************************************/
 void torch_c_tensor_grad(const torch_c_tensor_t *tensor,
-                         torch_c_tensor_t **grad) {
+                         torch_c_tensor_t **grad, const bool allow_unused) {
   c10::OptionalDeviceGuard guard;
   get_device_with_guard(guard);
   const torch::Tensor maybe_grad = tensor->grad();
-  assert(maybe_grad.defined());
-  *grad = new torch_c_tensor_t(maybe_grad.cpu().contiguous());
+  TORCH_CHECK(tensor->requires_grad(),
+              "Gradient requested for a non-differentiable tensor");
+  TORCH_CHECK(maybe_grad.defined() || allow_unused,
+              "Autograd did not compute the requested tensor gradient");
+  *grad = new torch_c_tensor_t(
+      (maybe_grad.defined() ? maybe_grad : torch::zeros_like(*tensor))
+          .cpu()
+          .contiguous());
 }
 
 /*******************************************************************************
