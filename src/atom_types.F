@@ -41,7 +41,8 @@ MODULE atom_types
                                               section_vals_val_get
    USE input_val_types,                 ONLY: val_get,&
                                               val_type
-   USE kinds,                           ONLY: default_string_length,&
+   USE kinds,                           ONLY: default_path_length,&
+                                              default_string_length,&
                                               dp
    USE mathconstants,                   ONLY: dfac,&
                                               fac,&
@@ -404,7 +405,8 @@ CONTAINS
          27508345.793637_dp, 51649961.080194_dp, 96978513.342764_dp, 182087882.613702_dp, &
          341890134.751331_dp]
 
-      CHARACTER(LEN=default_string_length)               :: basis_fn, basis_name
+      CHARACTER(LEN=default_path_length)                 :: basis_fn
+      CHARACTER(LEN=default_string_length)               :: basis_name
       INTEGER                                            :: basistype, handle, i, j, k, l, ll, m, &
                                                             ngp, nl, nr, nu, quadtype
       INTEGER, DIMENSION(0:lmat)                         :: starti
