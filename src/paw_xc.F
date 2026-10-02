@@ -265,10 +265,11 @@ CONTAINS
                                                             gradient_cutoff
       REAL(dp), INTENT(OUT)                              :: energy, potential(:, :, :)
 
-      INTEGER                                            :: axis, bounds(2, 3), ir, l, lm, na, nlm, &
-                                                            nspin, p, pair, q, side, spin
+      INTEGER                                            :: axis, bounds(2, 3), first, ir, jr, l, &
+                                                            lm, na, nlm, nr, nspin, p, pair, q, &
+                                                            side, spin
       LOGICAL                                            :: lsd
-      REAL(dp)                                           :: shell_energy, sign
+      REAL(dp)                                           :: batch_energy, sign
       REAL(dp), ALLOCATABLE                              :: angular_value(:), drho(:, :, :, :), &
                                                             radial_value(:), rho(:, :, :), &
                                                             tau(:, :, :), weights(:, :)
@@ -294,8 +295,12 @@ CONTAINS
       END IF
       bounds = 1
       bounds(2, 1) = na
-      ALLOCATE (rho(na, 1, nspin), drho(4, na, 1, nspin), tau(na, 1, nspin), weights(na, 1), &
-                vxc(na, 1, nspin), vxg(3, na, 1, nspin), vtau(na, 1, nspin), angular_value(nlm), radial_value(nlm))
+      ! Batch radial shells to amortize the functional setup without changing
+      ! their quadrature. Zero-weight padding keeps the final batch rectangular.
+      nr = MIN(grid%nr, MAX(1, 2048/na))
+      bounds(2, 2) = nr
+      ALLOCATE (rho(na, nr, nspin), drho(4, na, nr, nspin), tau(na, nr, nspin), weights(na, nr), &
+                vxc(na, nr, nspin), vxg(3, na, nr, nspin), vtau(na, nr, nspin), angular_value(nlm), radial_value(nlm))
       tau = 0.0_dp
       CALL xc_rho_set_create(rho_set, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
       CALL xc_rho_set_atom_update(rho_set, needs, nspin, bounds)
@@ -304,33 +309,45 @@ CONTAINS
       coefficient_derivative = 0.0_dp
       DO side = 1, 2
          sign = REAL(3 - 2*side, dp)
-         DO ir = 1, grid%nr
-            IF (grid%r(ir) == 0.0_dp) CYCLE
-            CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, 1, :), drho(1:3, :, 1, :))
-            drho(4, :, 1, :) = SQRT(SUM(drho(1:3, :, 1, :)**2, DIM=1))
-            weights(:, 1) = grid%wr(ir)*grid%wa
-            CALL fill_rho_set(rho_set, lsd, nspin, needs, rho, drho, tau, na, 1)
+         DO first = 1, grid%nr, nr
+            rho = 0.0_dp
+            drho = 0.0_dp
+            weights = 0.0_dp
+            DO jr = 1, nr
+               ir = first + jr - 1
+               IF (ir <= grid%nr) THEN
+                  IF (grid%r(ir) > 0.0_dp) THEN
+                     CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :))
+                     drho(4, :, jr, :) = SQRT(SUM(drho(1:3, :, jr, :)**2, DIM=1))
+                     weights(:, jr) = grid%wr(ir)*grid%wa
+                  END IF
+               END IF
+               CALL fill_rho_set(rho_set, lsd, nspin, needs, rho, drho, tau, na, jr)
+            END DO
             CALL xc_dset_zero_all(derivatives)
             vxc = 0.0_dp
             vxg = 0.0_dp
             vtau = 0.0_dp
-            CALL vxc_of_r_new(functional, rho_set, derivatives, 1, needs, weights, lsd, na, 1, &
-                              shell_energy, vxc, vxg, vtau)
-            energy = energy + sign*shell_energy
-            IF (ir > grid%nval) CYCLE
-            DO spin = 1, nspin
-               angular_value(:) = MATMUL(TRANSPOSE(grid%harmonics), vxc(:, 1, spin))
-               radial_value = 0.0_dp
-               DO axis = 1, 3
-                  angular_value(:) = angular_value + &
-                                     MATMUL(TRANSPOSE(grid%angular_gradient(axis, :, :)), vxg(axis, :, 1, spin))/grid%r(ir)
-                  radial_value(:) = radial_value + &
-                                    MATMUL(TRANSPOSE(grid%harmonics), grid%directions(axis, :)*vxg(axis, :, 1, spin))
-               END DO
-               DO lm = 1, nlm
-                  l = INT(SQRT(REAL(lm - 1, dp)))
-                  coefficient_derivative(:, lm, spin) = coefficient_derivative(:, lm, spin) + sign*( &
+            CALL vxc_of_r_new(functional, rho_set, derivatives, 1, needs, weights, lsd, na, nr, &
+                              batch_energy, vxc, vxg, vtau)
+            energy = energy + sign*batch_energy
+            DO jr = 1, MIN(nr, grid%nval - first + 1)
+               ir = first + jr - 1
+               IF (grid%r(ir) == 0.0_dp) CYCLE
+               DO spin = 1, nspin
+                  angular_value(:) = MATMUL(TRANSPOSE(grid%harmonics), vxc(:, jr, spin))
+                  radial_value = 0.0_dp
+                  DO axis = 1, 3
+                     angular_value(:) = angular_value + &
+                                        MATMUL(TRANSPOSE(grid%angular_gradient(axis, :, :)), vxg(axis, :, jr, spin))/grid%r(ir)
+                     radial_value(:) = radial_value + &
+                                       MATMUL(TRANSPOSE(grid%harmonics), grid%directions(axis, :)*vxg(axis, :, jr, spin))
+                  END DO
+                  DO lm = 1, nlm
+                     l = INT(SQRT(REAL(lm - 1, dp)))
+                     coefficient_derivative(:, lm, spin) = coefficient_derivative(:, lm, spin) + sign*( &
                               angular_value(lm)*grid%radial(ir, :, l, side) + radial_value(lm)*grid%radial_gradient(ir, :, l, side))
+                  END DO
                END DO
             END DO
          END DO
