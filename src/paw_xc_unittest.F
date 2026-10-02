@@ -15,6 +15,9 @@ PROGRAM paw_xc_unittest
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
                                               atom_upfpot_type
+   USE atom_utils,                      ONLY: atom_density
+   USE atom_xc,                         ONLY: atom_vxc_lda,&
+                                              atom_vxc_lsd
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
@@ -32,6 +35,11 @@ PROGRAM paw_xc_unittest
                                               cp2k_init
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_cartesian,&
+                                              paw_core_kinetic_fourier,&
+                                              paw_core_kinetic_init,&
+                                              paw_core_kinetic_type,&
+                                              paw_core_kinetic_values
    USE paw_onecenter,                   ONLY: paw_onecenter_init,&
                                               paw_onecenter_type
    USE paw_xc,                          ONLY: paw_xc_build_ae_core_tau,&
@@ -114,7 +122,9 @@ PROGRAM paw_xc_unittest
    CALL check_gga()
    CALL check_meta_gga()
    CALL check_ae_core_tau()
+   CALL check_shared_core_tau()
    CALL check_atomic_projection()
+   CALL check_atomic_gradient_norm()
    CALL original_datasets()
    CALL section_vals_release(functional)
    CALL section_release(specification)
@@ -149,8 +159,9 @@ CONTAINS
          IF (.NOT. ALLOCATED(occupations)) ERROR STOP 'Available PAW core occupations not allocated'
          IF (SIZE(tau) /= n) ERROR STOP 'PAW core tau truncated at the augmentation cutoff'
          IF (ANY(occupations /= [2, 2, 6, 0])) ERROR STOP 'GIPAW valence orbital was assigned to the frozen core'
-         IF (ANY(baseline%paw%gipaw_core_orbitals%wfc /= original_u)) &
+         IF (ANY(baseline%paw%gipaw_core_orbitals%wfc /= original_u)) THEN
             ERROR STOP 'AE core tau changed original signed GIPAW orbital amplitudes'
+         END IF
          IF (.NOT. ALL(ieee_is_finite(tau)) .OR. ANY(tau < 0.0_dp)) ERROR STOP 'Invalid Gaussian AE core tau'
          ALLOCATE (reference(n))
          reference(:) = 0.0_dp
@@ -159,12 +170,12 @@ CONTAINS
          DO i = 1, 2
             amplitude = 2.0_dp*core_exponents(i)**1.5_dp/GAMMA(1.5_dp)
             reference(:) = reference + amplitude*core_exponents(i)**2*baseline%r**2* &
-                        EXP(-core_exponents(i)*baseline%r**2)/fourpi
+                           EXP(-core_exponents(i)*baseline%r**2)/fourpi
          END DO
          amplitude = 2.0_dp*core_exponents(3)**2.5_dp/GAMMA(2.5_dp)
          reference(:) = reference + 3.0_dp*amplitude*EXP(-core_exponents(3)*baseline%r**2)* &
-                     (3.0_dp - 2.0_dp*core_exponents(3)*baseline%r**2 + &
-                      core_exponents(3)**2*baseline%r**4)/fourpi
+                        (3.0_dp - 2.0_dp*core_exponents(3)*baseline%r**2 + &
+                         core_exponents(3)**2*baseline%r**4)/fourpi
          first = 1
          IF (origin == 1) THEN
             first = 2
@@ -229,7 +240,7 @@ CONTAINS
       ! A one-node perturbation violates the maximum check while its radial
       ! integral is small enough to satisfy both charge and L1 requirements.
       changed%paw%rho_core(peak_index) = changed%paw%rho_core(peak_index) + &
-                                       3.e-6_dp*peak/(fourpi*changed%r(peak_index)**2)
+                                         3.e-6_dp*peak/(fourpi*changed%r(peak_index)**2)
       CALL require_core_tau_unavailable(changed, 'maximum')
 
       ! Independent Simpson weights on this known uniform, odd-sized fixture.
@@ -254,8 +265,9 @@ CONTAINS
       CALL paw_xc_build_ae_core_tau(changed, tau, available, reason, occupations)
       IF (.NOT. available) ERROR STOP 'Core-free He unavailable with GIPAW valence orbitals'
       IF (.NOT. ALLOCATED(tau) .OR. .NOT. ALLOCATED(occupations)) ERROR STOP 'Missing core-free He outputs'
-      IF (ANY(tau /= 0.0_dp) .OR. ANY(occupations /= 0)) &
+      IF (ANY(tau /= 0.0_dp) .OR. ANY(occupations /= 0)) THEN
          ERROR STOP 'Core-free He acquired core tau from GIPAW valence orbitals'
+      END IF
       DEALLOCATE (changed%paw%gipaw_core_orbitals)
       CALL paw_xc_build_ae_core_tau(changed, tau, available, reason)
       IF (.NOT. available) ERROR STOP 'Core-free PAW tau requires GIPAW orbitals'
@@ -265,6 +277,177 @@ CONTAINS
       CALL atom_release_upf(changed)
       CALL atom_release_upf(s_core)
    END SUBROUTINE check_ae_core_tau
+
+! **************************************************************************************************
+!> \brief Independent Gaussian smooth-core values and derivatives, including complex Fourier adjoints.
+! **************************************************************************************************
+   SUBROUTINE check_shared_core_tau()
+      REAL(dp), PARAMETER                                :: step = 2.e-6_dp
+
+      COMPLEX(dp)                                        :: center(3), cminus, coefficient, cplus, &
+                                                            strain(3, 3)
+      INTEGER                                            :: a, b, i, mode, origin
+      REAL(dp) :: analytic, analytic_derivative, anchor, cartesian_error, derivative_error, error, &
+         g(3), gm(3), gp(3), gradient(3), minus, plus, pm(3), point(3), position(3), pp(3), &
+         radius(12), rc, reciprocal_error, shifted(3), slope(12), tau(12), unused, value, vm, vp
+      TYPE(atom_upfpot_type)                             :: original
+      TYPE(paw_core_kinetic_type)                        :: data
+
+      error = 0.0_dp
+      derivative_error = 0.0_dp
+      cartesian_error = 0.0_dp
+      reciprocal_error = 0.0_dp
+      DO origin = 0, 1
+         CALL make_core_tau_fixture(original, origin == 1)
+         CALL paw_core_kinetic_init(original, DATA)
+         IF (.NOT. data%available) ERROR STOP 'Verified Gaussian core has no shared kinetic fields'
+         IF (SUM(data%occupations) /= 10) ERROR STOP 'Shared kinetic fields changed the closed-core selection'
+         rc = data%smoothing_radius
+         radius = [0.0_dp, 1.e-14_dp, 0.0003_dp, 0.237_dp, 0.914_dp, 1.783_dp, rc, rc + 0.031_dp, &
+                   data%taper_radius, data%taper_radius + 0.007_dp, data%support_radius, data%support_radius + 0.1_dp]
+         CALL paw_core_kinetic_values(DATA, radius, tau, slope)
+         IF (.NOT. ALL(ieee_is_finite(tau)) .OR. ANY(tau < 0.0_dp)) ERROR STOP 'Invalid smooth core tau'
+         CALL gaussian_core_kinetic(rc, anchor, unused)
+         DO i = 1, SIZE(radius)
+            CALL gaussian_core_kinetic(radius(i), analytic, analytic_derivative)
+            CALL gaussian_core_blend(radius(i), rc, data%taper_radius, data%support_radius, anchor, &
+                                     analytic, analytic_derivative)
+            error = MAX(error, ABS(tau(i) - analytic))
+            derivative_error = MAX(derivative_error, ABS(slope(i) - analytic_derivative))
+         END DO
+         IF (slope(1) /= 0.0_dp .OR. tau(11) /= 0.0_dp .OR. slope(11) /= 0.0_dp) THEN
+            ERROR STOP 'Smooth core origin or compact support closure is incorrect'
+         END IF
+         point = [0.713_dp, -0.491_dp, 0.317_dp]
+         CALL paw_core_kinetic_cartesian(DATA, point, value, gradient)
+         DO a = 1, 3
+            shifted = point
+            shifted(a) = shifted(a) + step
+            CALL paw_core_kinetic_cartesian(DATA, shifted, plus)
+            shifted(a) = shifted(a) - 2.0_dp*step
+            CALL paw_core_kinetic_cartesian(DATA, shifted, minus)
+            cartesian_error = MAX(cartesian_error, ABS((plus - minus)/(2.0_dp*step) - gradient(a)))
+         END DO
+         position = [0.31_dp, -0.73_dp, 0.19_dp]
+         DO mode = 0, 1
+            g = REAL(mode, dp)*[0.71_dp, -0.37_dp, 1.13_dp]
+            CALL paw_core_kinetic_fourier(DATA, g, position, 17.0_dp, coefficient, strain, center)
+            IF (mode == 0) THEN
+               IF (ABS(coefficient - SUM(data%weighted)/17.0_dp) > 1.e-14_dp) THEN
+                  ERROR STOP 'Zero-G core kinetic normalization is incorrect'
+               END IF
+            ELSE
+               IF (ABS(AIMAG(coefficient)) < 1.e-8_dp) ERROR STOP 'Core transform lost its complex center phase'
+            END IF
+            DO a = 1, 3
+               pp = position
+               pp(a) = pp(a) + step
+               CALL paw_core_kinetic_fourier(DATA, g, pp, 17.0_dp, cplus)
+               pp(a) = pp(a) - 2.0_dp*step
+               CALL paw_core_kinetic_fourier(DATA, g, pp, 17.0_dp, cminus)
+               reciprocal_error = MAX(reciprocal_error, ABS((cplus - cminus)/(2.0_dp*step) - center(a)))
+               DO b = 1, 3
+                  gp = g
+                  gm = g
+                  pp = position
+                  pm = position
+                  pp(a) = pp(a) + step*position(b)
+                  pm(a) = pm(a) - step*position(b)
+                  vp = 17.0_dp
+                  vm = 17.0_dp
+                  IF (a == b) THEN
+                     gp(a) = g(a)/(1.0_dp + step)
+                     gm(a) = g(a)/(1.0_dp - step)
+                     vp = vp*(1.0_dp + step)
+                     vm = vm*(1.0_dp - step)
+                  ELSE
+                     gp(b) = gp(b) - step*g(a)
+                     gm(b) = gm(b) + step*g(a)
+                  END IF
+                  CALL paw_core_kinetic_fourier(DATA, gp, pp, vp, cplus)
+                  CALL paw_core_kinetic_fourier(DATA, gm, pm, vm, cminus)
+                  reciprocal_error = MAX(reciprocal_error, ABS((cplus - cminus)/(2.0_dp*step) - strain(a, b)))
+               END DO
+            END DO
+         END DO
+         CALL atom_release_upf(original)
+      END DO
+      WRITE (*, '(A,4ES15.6)') 'PAW shared core tau value/radial/Cartesian/Fourier errors:', &
+         error, derivative_error, cartesian_error, reciprocal_error
+      IF (error > 2.e-6_dp) ERROR STOP 'Smooth core tau differs from independent Gaussian values'
+      IF (derivative_error > 2.e-5_dp) ERROR STOP 'Smooth core slope differs from independent Gaussian derivatives'
+      IF (cartesian_error > 1.e-8_dp) ERROR STOP 'Core spatial gradient is not the field derivative'
+      IF (reciprocal_error > 1.e-8_dp) ERROR STOP 'Complex core Fourier adjoints are not transform derivatives'
+   END SUBROUTINE check_shared_core_tau
+
+! **************************************************************************************************
+!> \brief Closed-form independent s/p frozen-core kinetic density and radial derivative.
+!> \param radius Evaluation radius.
+!> \param value Spin-summed kinetic density.
+!> \param derivative Radial derivative.
+! **************************************************************************************************
+   SUBROUTINE gaussian_core_kinetic(radius, value, derivative)
+      REAL(dp), INTENT(IN)                               :: radius
+      REAL(dp), INTENT(OUT)                              :: value, derivative
+
+      INTEGER                                            :: i
+      REAL(dp)                                           :: a, amplitude, factor, polynomial
+
+      value = 0.0_dp
+      derivative = 0.0_dp
+      DO i = 1, 2
+         a = core_exponents(i)
+         amplitude = 2.0_dp*a**1.5_dp/GAMMA(1.5_dp)
+         factor = amplitude*EXP(-a*radius**2)/fourpi
+         value = value + factor*a**2*radius**2
+         derivative = derivative + factor*a**2*(2.0_dp*radius - 2.0_dp*a*radius**3)
+      END DO
+      a = core_exponents(3)
+      amplitude = 2.0_dp*a**2.5_dp/GAMMA(2.5_dp)
+      factor = 3.0_dp*amplitude*EXP(-a*radius**2)/fourpi
+      polynomial = 3.0_dp - 2.0_dp*a*radius**2 + a**2*radius**4
+      value = value + factor*polynomial
+      derivative = derivative + factor*(-4.0_dp*a*radius + 4.0_dp*a**2*radius**3 - 2.0_dp*a*radius*polynomial)
+   END SUBROUTINE gaussian_core_kinetic
+
+! **************************************************************************************************
+!> \brief Independent analytic auxiliary profile used with the closed-form Gaussian core oracle.
+!> \param radius Evaluation radius.
+!> \param rc Augmentation radius.
+!> \param taper Start of the compact outer taper.
+!> \param support End of the radial support.
+!> \param anchor AE core tau at rc.
+!> \param value AE input, overwritten by the auxiliary PS value.
+!> \param derivative AE derivative input, overwritten by the auxiliary PS derivative.
+! **************************************************************************************************
+   SUBROUTINE gaussian_core_blend(radius, rc, taper, support, anchor, value, derivative)
+      REAL(dp), INTENT(IN)                               :: radius, rc, taper, support, anchor
+      REAL(dp), INTENT(INOUT)                            :: value, derivative
+
+      REAL(dp)                                           :: blend, dw, gaussian, slope, t, u, window
+
+      IF (radius >= support) THEN
+         value = 0.0_dp
+         derivative = 0.0_dp
+         RETURN
+      END IF
+      IF (radius < rc) THEN
+         u = (radius/rc)**2
+         blend = 10.0_dp*u**3 - 15.0_dp*u**4 + 6.0_dp*u**5
+         slope = (30.0_dp*u**2 - 60.0_dp*u**3 + 30.0_dp*u**4)*2.0_dp*radius/rc**2
+         gaussian = anchor*EXP(1.0_dp - u)
+         derivative = blend*derivative + slope*(value - gaussian) - &
+                      (1.0_dp - blend)*2.0_dp*radius/rc**2*gaussian
+         value = blend*value + (1.0_dp - blend)*gaussian
+      END IF
+      IF (radius > taper) THEN
+         t = (radius - taper)/(support - taper)
+         window = 1.0_dp - 10.0_dp*t**3 + 15.0_dp*t**4 - 6.0_dp*t**5
+         dw = (-30.0_dp*t**2 + 60.0_dp*t**3 - 30.0_dp*t**4)/(support - taper)
+         derivative = window*derivative + dw*value
+         value = window*value
+      END IF
+   END SUBROUTINE gaussian_core_blend
 
 ! **************************************************************************************************
 !> \brief Build normalized Gaussian radial s/p cores plus an unassigned signed valence orbital.
@@ -306,7 +489,7 @@ CONTAINS
             IF (i == 4) CYCLE
             occupation = REAL(2*(2*l + 1), dp)
             potential%paw%rho_core(:) = potential%paw%rho_core + occupation*amplitude**2* &
-                                    potential%r**(2*l)*EXP(-core_exponents(i)*potential%r**2)/fourpi
+                                        potential%r**(2*l)*EXP(-core_exponents(i)*potential%r**2)/fourpi
          END DO
       END ASSOCIATE
    END SUBROUTINE make_core_tau_fixture
@@ -382,6 +565,21 @@ CONTAINS
             END DO
             CALL paw_xc_evaluate(xcgrid, onecenter, functional, restricted, 1.e-20_dp, 1.e-20_dp, &
                                  energy, restricted_potential, core_kinetic)
+            IF (ALLOCATED(xcgrid%core_kinetic%kinetic)) DEALLOCATE (xcgrid%core_kinetic%kinetic)
+            ALLOCATE (xcgrid%core_kinetic%kinetic, SOURCE=core_kinetic)
+            xcgrid%core_kinetic%available = .TRUE.
+            CALL paw_xc_evaluate(xcgrid, onecenter, functional, restricted, 1.e-20_dp, 1.e-20_dp, &
+                                 check_energy, scratch(:, :, :1))
+            IF (ABS(check_energy - energy) > 1.e-13_dp .OR. &
+                MAXVAL(ABS(scratch(:, :, :1) - restricted_potential)) > 1.e-13_dp) THEN
+               ERROR STOP 'Shared and explicit PAW core kinetic fields disagree'
+            END IF
+            ! An explicit caller field has precedence over the cached auxiliary profile.
+            xcgrid%core_kinetic%kinetic(:, :) = 2.0_dp*core_kinetic + 0.1_dp
+            CALL paw_xc_evaluate(xcgrid, onecenter, functional, restricted, 1.e-20_dp, 1.e-20_dp, &
+                                 check_energy, scratch(:, :, :1), core_kinetic)
+            IF (ABS(check_energy - energy) > 1.e-13_dp) ERROR STOP 'Explicit PAW core tau did not override the cache'
+            xcgrid%core_kinetic%kinetic(:, :) = core_kinetic
             IF (core_case == 1) THEN
                CALL paw_xc_evaluate(xcgrid, onecenter, functional, restricted, 1.e-20_dp, 1.e-20_dp, &
                                     check_energy, scratch(:, :, :1))
@@ -394,6 +592,12 @@ CONTAINS
                CALL paw_xc_evaluate(xcgrid, onecenter, functional, density, 1.e-20_dp, 1.e-20_dp, &
                                     check_energy, potential, core_kinetic)
                IF (ABS(check_energy - energy) > 2.e-10_dp) ERROR STOP 'Restricted and unpolarized spin PAW TPSS differ'
+               CALL paw_xc_evaluate(xcgrid, onecenter, functional, density, 1.e-20_dp, 1.e-20_dp, &
+                                    check_energy, scratch)
+               IF (ABS(check_energy - energy) > 2.e-10_dp .OR. MAXVAL(ABS(scratch - potential)) > 1.e-13_dp) THEN
+                  ERROR STOP 'Spin-split shared PAW core tau differs from the explicit field'
+               END IF
+
                spin_error = MAXVAL(ABS(potential(:, :, 1) - restricted_potential(:, :, 1)))
             END IF
             errors = 0.0_dp
@@ -458,8 +662,9 @@ CONTAINS
          trial = x
          trial(2) = 1.e-100_dp
          CALL evaluate_tpss_point(trial, plus, scratch)
-         IF (ABS(plus - energy) > 1.e-13_dp .OR. ABS(scratch(2)) > 1.e-20_dp) &
+         IF (ABS(plus - energy) > 1.e-13_dp .OR. ABS(scratch(2)) > 1.e-20_dp) THEN
             ERROR STOP 'TPSS does not approach its zero-gradient limit continuously'
+         END IF
          x(2) = 1.e-4_dp
          CALL evaluate_tpss_point(x, energy, gradient)
          trial = x
@@ -512,8 +717,9 @@ CONTAINS
          CALL xc_derivative_get(derivative, deriv_data=values)
          gradient(i) = values(1, 1, 1)
       END DO
-      IF (.NOT. ieee_is_finite(energy) .OR. .NOT. ALL(ieee_is_finite(gradient))) &
+      IF (.NOT. ieee_is_finite(energy) .OR. .NOT. ALL(ieee_is_finite(gradient))) THEN
          ERROR STOP 'TPSS energy or first derivative is nonfinite at a stationary density point'
+      END IF
       CALL xc_dset_release(derivatives)
       CALL xc_rho_set_release(rho_set)
    END SUBROUTINE evaluate_tpss_point
@@ -652,6 +858,116 @@ CONTAINS
    END SUBROUTINE check_atomic_projection
 
 ! **************************************************************************************************
+!> \brief Atomic gradient norms and matrix pullbacks for same-sign and opposing spin radial slopes.
+!>        This functional consistency check uses analytic Gaussian s/p fields, not a basis benchmark.
+! **************************************************************************************************
+   SUBROUTINE check_atomic_gradient_norm()
+      REAL(dp), PARAMETER :: step = 2.e-6_dp
+#if defined(__LIBXC)
+      INTEGER, PARAMETER :: nvariant = 3
+#else
+      INTEGER, PARAMETER :: nvariant = 2
+#endif
+      INTEGER :: i, j, l, ns, variant
+      REAL(dp) :: a, derivative, energy, plus, minus, errors(3), &
+                  p(2, 2, 0:1, 2), trial(2, 2, 0:1, 2), direction(2, 2, 0:1, 2), &
+                  matrix(2, 2, 0:1, 2), scratch(2, 2, 0:1, 2), slopes(n, 2)
+      TYPE(atom_basis_type), POINTER :: basis
+      TYPE(section_type), POINTER :: xc_spec
+      TYPE(section_vals_type), POINTER :: xc
+
+      ALLOCATE (basis)
+      ALLOCATE (basis%grid)
+      basis%nbas(0:1) = 2
+      basis%grid%nr = n
+      ALLOCATE (basis%grid%rad(n), basis%grid%rad2(n), basis%grid%wr(n))
+      basis%grid%rad(:) = [(0.01_dp*(REAL(i, dp) - 0.5_dp), i=1, n)]
+      basis%grid%rad2(:) = basis%grid%rad**2
+      basis%grid%wr(:) = 0.01_dp*basis%grid%rad2
+      ALLOCATE (basis%bf(n, 2, 0:1), basis%dbf(n, 2, 0:1))
+      DO j = 1, 2
+         a = 0.5_dp + 0.3_dp*REAL(j, dp)
+         DO l = 0, 1
+            basis%bf(:, j, l) = basis%grid%rad**l*EXP(-a*basis%grid%rad2)
+            IF (l == 0) THEN
+               basis%dbf(:, j, l) = -2.0_dp*a*basis%grid%rad*basis%bf(:, j, l)
+            ELSE
+               basis%dbf(:, j, l) = (1.0_dp - 2.0_dp*a*basis%grid%rad2)*EXP(-a*basis%grid%rad2)
+            END IF
+         END DO
+      END DO
+      p(:, :, 0, 1) = RESHAPE([0.8_dp, 0.03_dp, 0.03_dp, 0.3_dp], [2, 2])
+      p(:, :, 1, 1) = 0.1_dp*p(:, :, 0, 1)
+      p(:, :, 0, 2) = 0.1_dp*p(:, :, 0, 1)
+      p(:, :, 1, 2) = 2.0_dp*p(:, :, 0, 1)
+      CALL atom_density(slopes(:, 1), p(:, :, :, 1), basis, 1, typ="DER")
+      CALL atom_density(slopes(:, 2), p(:, :, :, 2), basis, 1, typ="DER")
+      IF (.NOT. ANY(slopes(:, 1)*slopes(:, 2) < 0.0_dp)) ERROR STOP 'Atomic norm fixture lacks opposing spin slopes'
+      DO ns = 1, 2
+         DO l = 0, 1
+            direction(:, :, l, ns) = REAL(l + ns, dp)*RESHAPE([0.13_dp, -0.02_dp, -0.02_dp, 0.07_dp], [2, 2])
+         END DO
+      END DO
+      NULLIFY (xc_spec, xc)
+      CALL create_xc_section(xc_spec)
+      errors = 0.0_dp
+      DO variant = 1, nvariant
+         CALL section_vals_create(xc, xc_spec)
+         IF (variant == 1) CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+         IF (variant == 2) CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+#if defined(__LIBXC)
+         IF (variant == 3) THEN
+            CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_X_TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+            CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_C_TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+         END IF
+#endif
+         DO ns = 1, 2
+            IF (variant == 2 .AND. ns == 2) CYCLE
+            trial = p
+            IF (ns == 1) trial(:, :, :, 1) = SUM(p, DIM=4)
+            CALL atomic_smooth_xc(basis, xc, trial(:, :, :, :ns), energy, matrix(:, :, :, :ns))
+            IF (ABS(energy) < 1.e-8_dp) ERROR STOP 'Atomic norm test did not evaluate an XC functional'
+            CALL atomic_smooth_xc(basis, xc, trial(:, :, :, :ns) + step*direction(:, :, :, :ns), &
+                                  plus, scratch(:, :, :, :ns))
+            CALL atomic_smooth_xc(basis, xc, trial(:, :, :, :ns) - step*direction(:, :, :, :ns), &
+                                  minus, scratch(:, :, :, :ns))
+            derivative = SUM(matrix(:, :, :, :ns)*direction(:, :, :, :ns))
+            errors(variant) = MAX(errors(variant), ABS((plus - minus)/(2.0_dp*step) - derivative))
+         END DO
+         CALL section_vals_release(xc)
+      END DO
+      WRITE (*, '(A,3ES15.6)') 'Atomic gradient-norm PBE/TPSS/Libxc matrix errors:', errors
+      IF (MAXVAL(errors) > 2.e-7_dp) ERROR STOP 'Atomic gradient-norm matrix is not the XC energy derivative'
+      CALL section_release(xc_spec)
+      DEALLOCATE (basis%bf, basis%dbf, basis%grid%rad, basis%grid%rad2, basis%grid%wr)
+      DEALLOCATE (basis%grid)
+      DEALLOCATE (basis)
+   END SUBROUTINE check_atomic_gradient_norm
+
+! **************************************************************************************************
+!> \brief Smooth atomic functional and Gaussian matrix for either spin convention.
+!> \param basis Analytic Gaussian radial fixture and its quadrature.
+!> \param xc Atomic XC section.
+!> \param density Physical spin density matrices.
+!> \param energy Smooth XC energy.
+!> \param matrix Its Gaussian density-matrix derivative.
+! **************************************************************************************************
+   SUBROUTINE atomic_smooth_xc(basis, xc, density, energy, matrix)
+      TYPE(atom_basis_type), POINTER                     :: basis
+      TYPE(section_vals_type), POINTER                   :: xc
+      REAL(dp), INTENT(IN)                               :: density(:, :, 0:, :)
+      REAL(dp), INTENT(OUT)                              :: energy, matrix(:, :, 0:, :)
+
+      matrix = 0.0_dp
+      IF (SIZE(density, 4) == 1) THEN
+         CALL atom_vxc_lda(basis, density(:, :, :, 1), 1, xc, energy, matrix(:, :, :, 1))
+      ELSE
+         CALL atom_vxc_lsd(basis, density(:, :, :, 1), density(:, :, :, 2), 1, xc, energy, &
+                           matrix(:, :, :, 1), matrix(:, :, :, 2))
+      END IF
+   END SUBROUTINE atomic_smooth_xc
+
+! **************************************************************************************************
 !> \brief Evaluate atomic correction and its complete AO derivative for either spin convention.
 !> \param cache Prepared PAW data.
 !> \param basis Radial basis with beta overlaps.
@@ -749,10 +1065,70 @@ CONTAINS
             WRITE (*, '(A,1X,A,3(1X,ES25.16))') 'PAW XC:', TRIM(filename), energy, derivative, error
          END IF
          IF (error > 5.e-7_dp) ERROR STOP 'Original-dataset PAW XC matrix is not the energy derivative'
+         IF (xcgrid%core_kinetic%available) CALL original_core_tau_matrices(xcgrid, centered, density, direction)
          DEALLOCATE (density, direction, potential, scratch)
          CALL atom_release_upf(original)
       END DO
    END SUBROUTINE original_datasets
+
+! **************************************************************************************************
+!> \brief Original-dataset PAW TPSS matrix derivatives with the automatically supplied shared core.
+!> \param xcgrid Original PAW radial cache.
+!> \param centered Original one-center projection.
+!> \param density Positive two-spin projector density.
+!> \param direction Nonspherical two-spin variation.
+! **************************************************************************************************
+   SUBROUTINE original_core_tau_matrices(xcgrid, centered, density, direction)
+      TYPE(paw_xc_type), INTENT(IN) :: xcgrid
+      TYPE(paw_onecenter_type), INTENT(IN) :: centered
+      REAL(dp), INTENT(IN) :: density(:, :, :), direction(:, :, :)
+      REAL(dp), PARAMETER :: step = 1.e-4_dp
+#if defined(__LIBXC)
+      INTEGER, PARAMETER :: nvariant = 2
+#else
+      INTEGER, PARAMETER :: nvariant = 1
+#endif
+      INTEGER :: ns
+      REAL(dp) :: energy, plus, minus, derivative, error
+      REAL(dp) :: trial(SIZE(density, 1), SIZE(density, 2), 2), &
+                  variation(SIZE(density, 1), SIZE(density, 2), 2), &
+                  potential(SIZE(density, 1), SIZE(density, 2), 2), &
+                  scratch(SIZE(density, 1), SIZE(density, 2), 2)
+      TYPE(cp_logger_type), POINTER :: logger
+
+      logger => cp_get_default_logger()
+      DO ns = 1, nvariant
+         CALL section_vals_release(functional)
+         CALL section_vals_create(functional, specification)
+         trial = density
+         variation = direction
+         IF (ns == 1) THEN
+            CALL section_vals_val_set(functional, 'TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+            trial(:, :, 1) = SUM(density, DIM=3)
+            variation(:, :, 1) = SUM(direction, DIM=3)
+         END IF
+#if defined(__LIBXC)
+         IF (ns == 2) THEN
+            CALL section_vals_val_set(functional, 'MGGA_X_TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+            CALL section_vals_val_set(functional, 'MGGA_C_TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+         END IF
+#endif
+         CALL paw_xc_evaluate(xcgrid, centered, functional, trial(:, :, :ns), &
+                              1.e-14_dp, 1.e-14_dp, energy, potential(:, :, :ns))
+         CALL paw_xc_evaluate(xcgrid, centered, functional, trial(:, :, :ns) + step*variation(:, :, :ns), &
+                              1.e-14_dp, 1.e-14_dp, plus, scratch(:, :, :ns))
+         CALL paw_xc_evaluate(xcgrid, centered, functional, trial(:, :, :ns) - step*variation(:, :, :ns), &
+                              1.e-14_dp, 1.e-14_dp, minus, scratch(:, :, :ns))
+         derivative = SUM(potential(:, :, :ns)*variation(:, :, :ns))
+         error = ABS((plus - minus)/(2.0_dp*step) - derivative)/MAX(1.0_dp, ABS(derivative))
+         IF (logger%para_env%is_source()) WRITE (*, '(A,I2,3ES25.16)') &
+            'Original shared-core PAW TPSS:', ns, energy, derivative, error
+         IF (error > 5.e-7_dp) ERROR STOP 'Original shared-core PAW TPSS matrix is not the energy derivative'
+      END DO
+      CALL section_vals_release(functional)
+      CALL section_vals_create(functional, specification)
+      CALL section_vals_val_set(functional, 'PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+   END SUBROUTINE original_core_tau_matrices
 
 ! **************************************************************************************************
 !> \brief Independent Cartesian s/p polynomial density and gradient at every angular direction.

@@ -16,6 +16,8 @@ PROGRAM paw_upf_unittest
                                               dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_init,&
+                                              paw_core_kinetic_type
    USE paw_xc,                          ONLY: paw_xc_build_ae_core_tau
 
    IMPLICIT NONE
@@ -28,6 +30,7 @@ PROGRAM paw_upf_unittest
    LOGICAL :: source_root_argument, core_available
    REAL(dp), ALLOCATABLE :: core_tau(:)
    TYPE(atom_upfpot_type) :: pot
+   TYPE(paw_core_kinetic_type) :: core_fields
    TYPE(cp_logger_type), POINTER :: logger
 
    CALL cp2k_init()
@@ -127,22 +130,37 @@ PROGRAM paw_upf_unittest
       ! Optional original files exercise import and closed-core identification
       ! together. Availability is dataset dependent and checked by the caller.
       CALL paw_xc_build_ae_core_tau(pot, core_tau, core_available, core_reason, core_occupations)
+      CALL paw_core_kinetic_init(pot, core_fields)
+      IF (core_available .NEQV. core_fields%available) ERROR STOP 'Shared PAW core kinetic availability differs'
       IF (core_available) THEN
-         IF (.NOT. ALLOCATED(core_tau) .OR. .NOT. ALLOCATED(core_occupations)) &
+         IF (.NOT. ALLOCATED(core_tau) .OR. .NOT. ALLOCATED(core_occupations)) THEN
             ERROR STOP 'Available AE core tau has no fields or occupations'
+         END IF
          IF (SIZE(core_tau) /= SIZE(pot%r)) ERROR STOP 'AE core tau does not cover the original mesh'
-         IF (.NOT. ALL(ieee_is_finite(core_tau)) .OR. ANY(core_tau < 0.0_dp)) &
+         IF (.NOT. ALL(ieee_is_finite(core_tau)) .OR. ANY(core_tau < 0.0_dp)) THEN
             ERROR STOP 'Invalid AE core kinetic density'
-         IF (logger%para_env%is_source()) &
+         END IF
+         IF (logger%para_env%is_source()) THEN
             WRITE (*, '(A,1X,A,1X,L1,1X,I0,1X,ES25.16)') &
-            'PAW core tau:', TRIM(filename), core_available, SUM(core_occupations), SUM(core_tau)
+               'PAW core tau:', TRIM(filename), core_available, SUM(core_occupations), SUM(core_tau)
+         END IF
+         IF (ANY(core_fields%kinetic(:, 1) /= core_tau)) ERROR STOP 'Shared PAW cache changed original AE kinetic data'
+         IF (.NOT. ALL(ieee_is_finite(core_fields%kinetic(:, 2))) .OR. ANY(core_fields%kinetic(:, 2) < 0.0_dp)) THEN
+            ERROR STOP 'Invalid shared PS core kinetic field'
+         END IF
+         IF (logger%para_env%is_source()) THEN
+            WRITE (*, '(A,1X,A,1X,L1,1X,ES25.16)') &
+               'PAW shared core tau:', TRIM(filename), core_fields%available, SUM(core_fields%weighted)
+         END IF
          DEALLOCATE (core_tau, core_occupations)
       ELSE
-         IF (ALLOCATED(core_tau) .OR. ALLOCATED(core_occupations)) &
+         IF (ALLOCATED(core_tau) .OR. ALLOCATED(core_occupations)) THEN
             ERROR STOP 'Unavailable AE core tau returned fields or occupations'
+         END IF
          IF (LEN_TRIM(core_reason) == 0) ERROR STOP 'Unavailable AE core tau has no cause'
-         IF (logger%para_env%is_source()) &
+         IF (logger%para_env%is_source()) THEN
             WRITE (*, '(A,1X,A,1X,L1,1X,A)') 'PAW core tau:', TRIM(filename), core_available, TRIM(core_reason)
+         END IF
       END IF
       CALL atom_release_upf(pot)
    END DO

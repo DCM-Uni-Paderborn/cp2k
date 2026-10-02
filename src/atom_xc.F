@@ -32,6 +32,8 @@ MODULE atom_xc
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_type,&
+                                              paw_core_kinetic_values
    USE xc_atom,                         ONLY: xc_rho_set_atom_update
    USE xc_derivative_desc,              ONLY: &
         deriv_norm_drho, deriv_norm_drhoa, deriv_norm_drhob, deriv_rho, deriv_rhoa, deriv_rhob, &
@@ -190,15 +192,17 @@ CONTAINS
 !> \param xcmat       exchange-correlation potential expressed in the atomic basis set
 !> \param atom        information about the atomic kind
 !> \param xc_section  XC input section
+!> \param core_kinetic Optional shared PAW AE/PS frozen-core kinetic fields.
 !> \par History
 !>    * 03.2010 extension of GTH pseudo-potential definition [Juerg Hutter]
 !>    * 02.2010 renamed to calculate_atom_vxc_lda() [Juerg Hutter]
 !>    * 08.2008 created [Juerg Hutter]
 ! **************************************************************************************************
-   SUBROUTINE calculate_atom_vxc_lda(xcmat, atom, xc_section)
+   SUBROUTINE calculate_atom_vxc_lda(xcmat, atom, xc_section, core_kinetic)
       TYPE(opmat_type), POINTER                          :: xcmat
       TYPE(atom_type), INTENT(INOUT)                     :: atom
       TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(paw_core_kinetic_type), INTENT(IN), OPTIONAL  :: core_kinetic
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_atom_vxc_lda'
 
@@ -278,6 +282,7 @@ CONTAINS
                ALLOCATE (tau(nr, 1))
                CALL atom_density(tau(:, 1), atom%orbitals%pmat, atom%basis, atom%state%maxl_occ, &
                                  typ="KIN", rr=atom%basis%grid%rad2)
+               CALL add_paw_core_kinetic(atom, tau, core_kinetic)
             END IF
             IF (needs%laplace_rho) THEN
                ALLOCATE (lap(nr, 1))
@@ -326,7 +331,7 @@ CONTAINS
             IF (needs%norm_drho) THEN
                deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drho], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
-               CALL numpot_matrix(xcmat%op, xcpot(:, 1, 1), atom%basis, 1)
+               CALL numpot_matrix(xcmat%op, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 1)), atom%basis, 1)
                IF (.FALSE.) THEN
                   CALL open_file(unit_number=unit_nr, file_status="UNKNOWN", file_action="WRITE", file_name="atomdpot.dat")
                   DO i = 1, SIZE(xcpot(:, 1, 1))
@@ -397,13 +402,15 @@ CONTAINS
 !> \param xcmatb      spin-beta exchange-correlation potential matrix
 !> \param atom        information about the atomic kind
 !> \param xc_section  XC input section
+!> \param core_kinetic Optional shared PAW AE/PS frozen-core kinetic fields.
 !> \par History
 !>    * 02.2010 created [Juerg Hutter]
 ! **************************************************************************************************
-   SUBROUTINE calculate_atom_vxc_lsd(xcmata, xcmatb, atom, xc_section)
+   SUBROUTINE calculate_atom_vxc_lsd(xcmata, xcmatb, atom, xc_section, core_kinetic)
       TYPE(opmat_type), POINTER                          :: xcmata, xcmatb
       TYPE(atom_type), INTENT(INOUT)                     :: atom
       TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(paw_core_kinetic_type), INTENT(IN), OPTIONAL  :: core_kinetic
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_atom_vxc_lsd'
 
@@ -499,6 +506,7 @@ CONTAINS
                                  typ="KIN", rr=atom%basis%grid%rad2)
                CALL atom_density(tau(:, 2), atom%orbitals%pmatb, atom%basis, atom%state%maxl_occ, &
                                  typ="KIN", rr=atom%basis%grid%rad2)
+               CALL add_paw_core_kinetic(atom, tau, core_kinetic)
             END IF
             IF (needs%laplace_rho_spin) THEN
                ALLOCATE (lap(nr, 2))
@@ -541,19 +549,19 @@ CONTAINS
                NULLIFY (deriv)
                deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drhoa], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
-               CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1), atom%basis, 1)
+               CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 1)), atom%basis, 1)
                ! drhob
                NULLIFY (deriv)
                deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drhob], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
-               CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1), atom%basis, 1)
+               CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 2)), atom%basis, 1)
                ! Cross Terms
                NULLIFY (deriv)
                deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drho])
                IF (ASSOCIATED(deriv)) THEN
                   CALL xc_derivative_get(deriv, deriv_data=xcpot)
-                  CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1), atom%basis, 1)
-                  CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1), atom%basis, 1)
+                  CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1)*SIGN(1.0_dp, SUM(drho, DIM=2)), atom%basis, 1)
+                  CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1)*SIGN(1.0_dp, SUM(drho, DIM=2)), atom%basis, 1)
                END IF
                DEALLOCATE (drho)
             END IF
@@ -646,11 +654,11 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE atom_vxc_lda(basis, pmat, maxl, xc_section, fexc, xcmat)
       TYPE(atom_basis_type), POINTER                     :: basis
-      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: pmat
+      REAL(KIND=dp), DIMENSION(:, :, 0:), INTENT(IN)     :: pmat
       INTEGER, INTENT(IN)                                :: maxl
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(KIND=dp), INTENT(OUT)                         :: fexc
-      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: xcmat
+      REAL(KIND=dp), DIMENSION(:, :, 0:), INTENT(INOUT)  :: xcmat
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'atom_vxc_lda'
 
@@ -742,7 +750,7 @@ CONTAINS
          IF (needs%norm_drho) THEN
             deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drho], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
-            CALL numpot_matrix(xcmat, xcpot(:, 1, 1), basis, 1)
+            CALL numpot_matrix(xcmat, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 1)), basis, 1)
             DEALLOCATE (drho)
          END IF
          IF (needs%tau) THEN
@@ -758,7 +766,7 @@ CONTAINS
             CALL numpot_matrix(xcmat, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
             CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0, charge_augmentation=.FALSE.)
-            DO l = 0, 3
+            DO l = 0, n3 - 1
                xcmat(:, :, l) = xcmat(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
             END DO
 
@@ -797,11 +805,11 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE atom_vxc_lsd(basis, pmata, pmatb, maxl, xc_section, fexc, xcmata, xcmatb)
       TYPE(atom_basis_type), POINTER                     :: basis
-      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: pmata, pmatb
+      REAL(KIND=dp), DIMENSION(:, :, 0:), INTENT(IN)     :: pmata, pmatb
       INTEGER, INTENT(IN)                                :: maxl
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(KIND=dp), INTENT(OUT)                         :: fexc
-      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: xcmata, xcmatb
+      REAL(KIND=dp), DIMENSION(:, :, 0:), INTENT(INOUT)  :: xcmata, xcmatb
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'atom_vxc_lsd'
 
@@ -902,19 +910,19 @@ CONTAINS
             NULLIFY (deriv)
             deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drhoa], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
-            CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 1)
+            CALL numpot_matrix(xcmata, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 1)), basis, 1)
             ! drhob
             NULLIFY (deriv)
             deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drhob], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
-            CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 1)
+            CALL numpot_matrix(xcmatb, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 2)), basis, 1)
             ! Cross Terms
             NULLIFY (deriv)
             deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drho])
             IF (ASSOCIATED(deriv)) THEN
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
-               CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 1)
-               CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 1)
+               CALL numpot_matrix(xcmata, xcpot(:, 1, 1)*SIGN(1.0_dp, SUM(drho, DIM=2)), basis, 1)
+               CALL numpot_matrix(xcmatb, xcpot(:, 1, 1)*SIGN(1.0_dp, SUM(drho, DIM=2)), basis, 1)
             END IF
             DEALLOCATE (drho)
          END IF
@@ -931,7 +939,7 @@ CONTAINS
             CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
             CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0, charge_augmentation=.FALSE.)
-            DO l = 0, 3
+            DO l = 0, n3 - 1
                xcmata(:, :, l) = xcmata(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
             END DO
 
@@ -942,7 +950,7 @@ CONTAINS
             CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
             CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0, charge_augmentation=.FALSE.)
-            DO l = 0, 3
+            DO l = 0, n3 - 1
                xcmatb(:, :, l) = xcmatb(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
             END DO
 
@@ -1092,10 +1100,12 @@ CONTAINS
             rho_set%owns%rho = .TRUE.
             rho_set%has%rho = .TRUE.
          END IF
+         ! Functionals receive a norm. Matrix integration pulls its potential
+         ! back with the sign of the original radial derivative.
          ! Give the norm of the gradient of the density
          IF (needs%norm_drho) THEN
             DO ia = 1, na
-               rho_set%norm_drho(ia, 1, 1) = drho(ia, 1)
+               rho_set%norm_drho(ia, 1, 1) = ABS(drho(ia, 1))
             END DO
             rho_set%owns%norm_drho = .TRUE.
             rho_set%has%norm_drho = .TRUE.
@@ -1114,7 +1124,7 @@ CONTAINS
          ! Give the norm of the total gradient of the density
          IF (needs%norm_drho) THEN
             DO ia = 1, na
-               rho_set%norm_drho(ia, 1, 1) = drho(ia, 1) + drho(ia, 2)
+               rho_set%norm_drho(ia, 1, 1) = ABS(drho(ia, 1) + drho(ia, 2))
             END DO
             rho_set%owns%norm_drho = .TRUE.
             rho_set%has%norm_drho = .TRUE.
@@ -1140,8 +1150,8 @@ CONTAINS
          ! Give the norm of the gradient of rhoa and of rhob separatedly
          IF (needs%norm_drho_spin) THEN
             DO ia = 1, na
-               rho_set%norm_drhoa(ia, 1, 1) = drho(ia, 1)
-               rho_set%norm_drhob(ia, 1, 1) = drho(ia, 2)
+               rho_set%norm_drhoa(ia, 1, 1) = ABS(drho(ia, 1))
+               rho_set%norm_drhob(ia, 1, 1) = ABS(drho(ia, 2))
             END DO
             rho_set%owns%norm_drho_spin = .TRUE.
             rho_set%has%norm_drho_spin = .TRUE.
@@ -1333,5 +1343,42 @@ CONTAINS
       END DO
 
    END SUBROUTINE lsd_pade
+
+! **************************************************************************************************
+!> \brief Add the shared spin-summed PS core kinetic field once to the atomic smooth XC arguments.
+!> \param atom Atomic potential and existing orbital-basis quadrature.
+!> \param tau Gaussian valence kinetic densities, with equally split closed cores for two spins.
+!> \param core_kinetic Optional shared PAW core fields prepared once with the atomic PAW cache.
+! **************************************************************************************************
+   SUBROUTINE add_paw_core_kinetic(atom, tau, core_kinetic)
+      TYPE(atom_type), INTENT(IN)                        :: atom
+      REAL(dp), INTENT(INOUT)                            :: tau(:, :)
+      TYPE(paw_core_kinetic_type), INTENT(IN), OPTIONAL  :: core_kinetic
+
+      INTEGER                                            :: spin
+      LOGICAL                                            :: has_core
+      REAL(dp)                                           :: core(SIZE(tau, 1))
+
+      IF (atom%potential%ppot_type /= upf_pseudo) RETURN
+      IF (.NOT. atom%potential%upf_pot%is_paw) RETURN
+      has_core = ANY(atom%potential%upf_pot%paw%rho_core /= 0.0_dp)
+      IF (ALLOCATED(atom%potential%upf_pot%rho_nlcc)) THEN
+         has_core = has_core .OR. ANY(atom%potential%upf_pot%rho_nlcc /= 0.0_dp)
+      END IF
+      IF (.NOT. PRESENT(core_kinetic)) THEN
+         IF (has_core) THEN
+            CPABORT("Atomic PAW tau XC requires shared frozen-core kinetic fields")
+         END IF
+         RETURN
+      END IF
+      IF (.NOT. core_kinetic%available) THEN
+         IF (has_core) CALL cp_abort(__LOCATION__, TRIM(core_kinetic%failure_reason))
+         RETURN
+      END IF
+      CALL paw_core_kinetic_values(core_kinetic, atom%basis%grid%rad, core)
+      DO spin = 1, SIZE(tau, 2)
+         tau(:, spin) = tau(:, spin) + core/REAL(SIZE(tau, 2), dp)
+      END DO
+   END SUBROUTINE add_paw_core_kinetic
 
 END MODULE atom_xc
