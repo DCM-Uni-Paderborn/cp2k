@@ -1616,6 +1616,7 @@ set(CP2K_PROGS_F
     uspp_projector_operators_unittest.F
     upf_projector_integrals_unittest.F
     upf_local_integrals_unittest.F
+    qs_grid_atom_unittest.F
     gapw_background_unittest.F
     gapw_1c_basis_unittest.F
     gapw_coulomb_integrals_unittest.F
@@ -2058,6 +2059,7 @@ list(
   "uspp_projector_operators_unittest"
   "upf_projector_integrals_unittest"
   "upf_local_integrals_unittest"
+  "qs_grid_atom_unittest"
   "gapw_background_unittest"
   "gapw_1c_basis_unittest"
   "gapw_coulomb_integrals_unittest"
@@ -2113,6 +2115,7 @@ add_executable(uspp_projector_operators_unittest
 add_executable(upf_projector_integrals_unittest
                upf_projector_integrals_unittest.F)
 add_executable(upf_local_integrals_unittest upf_local_integrals_unittest.F)
+add_executable(qs_grid_atom_unittest qs_grid_atom_unittest.F)
 add_executable(gapw_background_unittest gapw_background_unittest.F)
 add_executable(gapw_1c_basis_unittest gapw_1c_basis_unittest.F)
 add_executable(gapw_coulomb_integrals_unittest
