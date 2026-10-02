@@ -26,6 +26,7 @@ MODULE paw_xc
                                               orbtramat
    USE paw_onecenter,                   ONLY: paw_onecenter_type
    USE paw_types,                       ONLY: paw_xc_type
+   USE periodic_table,                  ONLY: get_ptable_info
    USE splines,                         ONLY: spline3ders
    USE xc_atom,                         ONLY: fill_rho_set,&
                                               vxc_of_r_new,&
@@ -47,8 +48,210 @@ MODULE paw_xc
 
    PUBLIC :: paw_xc_type, paw_xc_init, paw_xc_evaluate, paw_xc_collocate
    PUBLIC :: paw_xc_kinetic_adjoint
+   PUBLIC :: paw_xc_build_ae_core_tau
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Reconstruct AE frozen-core kinetic density from a uniquely verified closed GIPAW core.
+!>        This helper does not provide PS core kinetic density or enable a tau-dependent XC method.
+!> \param pot Original scalar PAW UPF data; orbital amplitudes are never normalized or modified.
+!> \param tau_ae True spin-summed kinetic density, including 1/2, on the full original radial mesh.
+!>        Allocated only on success. At r=0 the stored zero has zero cubature weight and is not
+!>        a physical limit or a valid interpolation anchor; derivatives use only positive radii.
+!> \param available Whether a unique complete closed core passed all independent data checks.
+!> \param failure_reason Specific unavailable-data cause, empty on success.
+!> \param occupations Optional selected spin-summed occupations in the original GIPAW index order.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_build_ae_core_tau(pot, tau_ae, available, failure_reason, occupations)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: tau_ae(:)
+      LOGICAL, INTENT(OUT)                               :: available
+      CHARACTER(LEN=*), INTENT(OUT)                      :: failure_reason
+      INTEGER, ALLOCATABLE, INTENT(OUT), OPTIONAL         :: occupations(:)
+
+      ! Original SSSP tables have maxima 1.45e-5 (norm), 3.45e-5 (charge),
+      ! 1.34e-7 (q maximum) and 7.96e-8 (q radial L1). These are independent
+      ! original-tabulation consistency checks, not decimal-rounding estimates.
+      REAL(dp), PARAMETER :: norm_tolerance = 1.e-4_dp, charge_tolerance = 1.e-4_dp, &
+                             maximum_tolerance = 1.e-6_dp, radial_tolerance = 1.e-6_dp
+
+      INTEGER                                            :: first, i, j, l, matches, ncore, norb, nr, &
+                                                            nuclear_charge, number_of_candidates, &
+                                                            normalized_candidates
+      INTEGER, ALLOCATABLE                               :: chosen(:), closed(:), selected(:), &
+                                                            remaining(:)
+      LOGICAL                                            :: found, maximum_passed, radial_passed
+      REAL(dp)                                           :: charge, core_count, peak, radial_scale
+      REAL(dp), ALLOCATABLE                              :: derivative(:), norm(:), q_core(:), &
+                                                            q_orbital(:, :), radial(:), weights(:)
+
+      available = .FALSE.
+      failure_reason = 'AE core tau requires scalar PAW data'
+      IF (.NOT. pot%is_paw .OR. pot%has_so) RETURN
+      IF (.NOT. ALLOCATED(pot%paw)) RETURN
+      failure_reason = 'Missing AE core density or radial mesh'
+      IF (.NOT. ALLOCATED(pot%r) .OR. .NOT. ALLOCATED(pot%rab)) RETURN
+      IF (.NOT. ALLOCATED(pot%paw%rho_core)) RETURN
+      nr = SIZE(pot%r)
+      failure_reason = 'Invalid AE core density or radial mesh'
+      IF (nr < 3) RETURN
+      IF (SIZE(pot%rab) /= nr .OR. SIZE(pot%paw%rho_core) /= nr) RETURN
+      IF (.NOT. ALL(ieee_is_finite(pot%r)) .OR. .NOT. ALL(ieee_is_finite(pot%rab))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(pot%paw%rho_core))) RETURN
+      IF (ANY(pot%r < 0.0_dp) .OR. ANY(pot%rab <= 0.0_dp) .OR. ANY(pot%paw%rho_core < 0.0_dp)) RETURN
+      IF (ANY(pot%r(2:) <= pot%r(:nr - 1))) RETURN
+      failure_reason = 'Invalid PAW core electron count'
+      CALL get_ptable_info(ADJUSTL(pot%symbol), number=nuclear_charge, found=found)
+      IF (.NOT. found) RETURN
+      IF (nuclear_charge < 1 .OR. .NOT. ieee_is_finite(pot%zion)) RETURN
+      core_count = REAL(nuclear_charge, dp) - pot%zion
+      IF (core_count < 0.0_dp .OR. core_count > REAL(nuclear_charge, dp)) RETURN
+      ncore = NINT(core_count)
+      IF (ABS(core_count - REAL(ncore, dp)) > 64.0_dp*EPSILON(1.0_dp)*REAL(nuclear_charge, dp)) RETURN
+
+      IF (ncore == 0) THEN
+         failure_reason = 'Core-free PAW data contain nonzero AE core density'
+         IF (ANY(pot%paw%rho_core /= 0.0_dp)) RETURN
+         ALLOCATE (tau_ae(nr), SOURCE=0.0_dp)
+         IF (PRESENT(occupations)) THEN
+            norb = 0
+            IF (ALLOCATED(pot%paw%gipaw_core_orbitals)) THEN
+               IF (ALLOCATED(pot%paw%gipaw_core_orbitals%wfc)) norb = SIZE(pot%paw%gipaw_core_orbitals%wfc, 2)
+            END IF
+            ALLOCATE (occupations(norb), SOURCE=0)
+         END IF
+         available = .TRUE.
+         failure_reason = ''
+         RETURN
+      END IF
+
+      ALLOCATE (weights, SOURCE=upf_radial_weights(pot))
+      ALLOCATE (q_core, SOURCE=fourpi*pot%r**2*pot%paw%rho_core)
+      charge = SUM(weights*q_core)
+      failure_reason = 'AE core charge does not match Z minus Z_valence'
+      IF (.NOT. ieee_is_finite(charge)) RETURN
+      IF (ABS(charge - REAL(ncore, dp)) > charge_tolerance) RETURN
+      failure_reason = 'Missing GIPAW core orbital table'
+      IF (.NOT. ALLOCATED(pot%paw%gipaw_core_orbitals)) RETURN
+      ASSOCIATE (orbitals => pot%paw%gipaw_core_orbitals)
+         IF (.NOT. ALLOCATED(orbitals%wfc) .OR. .NOT. ALLOCATED(orbitals%indices)) RETURN
+         IF (.NOT. ALLOCATED(orbitals%principal_quantum_numbers) .OR. .NOT. ALLOCATED(orbitals%angular_momenta)) RETURN
+         norb = SIZE(orbitals%wfc, 2)
+         failure_reason = 'Invalid GIPAW core orbital table'
+         IF (SIZE(orbitals%wfc, 1) /= nr .OR. SIZE(orbitals%indices) /= norb) RETURN
+         IF (SIZE(orbitals%principal_quantum_numbers) /= norb .OR. SIZE(orbitals%angular_momenta) /= norb) RETURN
+         IF (.NOT. ALL(ieee_is_finite(orbitals%wfc))) RETURN
+         IF (ANY(orbitals%angular_momenta < 0)) RETURN
+         IF (ANY(orbitals%principal_quantum_numbers <= orbitals%angular_momenta)) RETURN
+         DO i = 1, norb
+            IF (orbitals%indices(i) /= i) RETURN
+         END DO
+         ALLOCATE (closed(norb), selected(norb), chosen(norb), remaining(norb + 1), &
+                   norm(norb), q_orbital(nr, norb))
+         DO i = 1, norb
+            l = orbitals%angular_momenta(i)
+            ! A shell larger than this entire core cannot be selected. Capping
+            ! its count also avoids integer overflow for invalid large l metadata.
+            closed(i) = ncore + 1
+            IF (l <= (ncore - 2)/4) closed(i) = 2*(2*l + 1)
+            norm(i) = SUM(weights*orbitals%wfc(:, i)**2)
+            q_orbital(:, i) = REAL(closed(i), dp)*orbitals%wfc(:, i)**2
+         END DO
+      END ASSOCIATE
+      failure_reason = 'Nonfinite GIPAW core orbital norm'
+      IF (.NOT. ALL(ieee_is_finite(norm)) .OR. .NOT. ALL(ieee_is_finite(q_orbital))) RETURN
+      remaining(norb + 1) = 0
+      DO i = norb, 1, -1
+         remaining(i) = MIN(ncore, remaining(i + 1) + MIN(ncore, closed(i)))
+      END DO
+      failure_reason = 'Incomplete GIPAW core set: insufficient closed-shell electrons'
+      IF (remaining(1) < ncore) RETURN
+      selected(:) = 0
+      chosen(:) = 0
+      matches = 0
+      number_of_candidates = 0
+      normalized_candidates = 0
+      maximum_passed = .FALSE.
+      radial_passed = .FALSE.
+      peak = MAXVAL(q_core)
+      radial_scale = SUM(weights*ABS(q_core))
+      CALL visit_core_subset(1, 0)
+      IF (matches == 0) THEN
+         IF (number_of_candidates == 0) THEN
+            failure_reason = 'No closed-shell GIPAW subset matches the core electron count'
+         ELSE IF (normalized_candidates == 0) THEN
+            failure_reason = 'GIPAW core orbital normalization check failed'
+         ELSE IF (.NOT. maximum_passed) THEN
+            failure_reason = 'GIPAW core radial q maximum check failed'
+         ELSE IF (.NOT. radial_passed) THEN
+            failure_reason = 'GIPAW core radial q L1 check failed'
+         ELSE
+            failure_reason = 'No GIPAW core subset passes both radial q checks'
+         END IF
+         RETURN
+      END IF
+      failure_reason = 'Ambiguous GIPAW closed-core assignment'
+      IF (matches > 1) RETURN
+
+      first = 1
+      IF (pot%r(1) == 0.0_dp) first = 2
+      failure_reason = 'AE core tau requires at least four positive radial samples'
+      IF (nr - first + 1 < 4) RETURN
+      ALLOCATE (tau_ae(nr), SOURCE=0.0_dp)
+      ALLOCATE (radial(nr - first + 1), derivative(nr - first + 1))
+      DO i = 1, norb
+         IF (chosen(i) == 0) CYCLE
+         radial(:) = pot%paw%gipaw_core_orbitals%wfc(first:, i)/pot%r(first:)
+         CALL spline3ders(pot%r(first:), radial, pot%r(first:), dynew=derivative)
+         l = pot%paw%gipaw_core_orbitals%angular_momenta(i)
+         tau_ae(first:) = tau_ae(first:) + 0.5_dp*REAL(chosen(i), dp)/fourpi* &
+                         (derivative**2 + REAL(l, dp)*(REAL(l, dp) + 1.0_dp)*(radial/pot%r(first:))**2)
+      END DO
+      failure_reason = 'Nonfinite reconstructed AE core tau'
+      IF (.NOT. ALL(ieee_is_finite(tau_ae))) THEN
+         DEALLOCATE (tau_ae)
+         RETURN
+      END IF
+      IF (PRESENT(occupations)) ALLOCATE (occupations, SOURCE=chosen)
+      available = .TRUE.
+      failure_reason = ''
+
+   CONTAINS
+
+      RECURSIVE SUBROUTINE visit_core_subset(index, electrons)
+         INTEGER, INTENT(IN)                             :: index, electrons
+
+         REAL(dp)                                        :: maximum_error, radial_error
+         REAL(dp)                                        :: delta(nr)
+
+         IF (matches > 1 .OR. electrons > ncore) RETURN
+         IF (electrons + remaining(index) < ncore) RETURN
+         IF (index <= norb) THEN
+            selected(index) = 0
+            CALL visit_core_subset(index + 1, electrons)
+            selected(index) = closed(index)
+            CALL visit_core_subset(index + 1, electrons + closed(index))
+            selected(index) = 0
+            RETURN
+         END IF
+         number_of_candidates = number_of_candidates + 1
+         IF (ANY(ABS(norm - 1.0_dp) > norm_tolerance .AND. selected > 0)) RETURN
+         normalized_candidates = normalized_candidates + 1
+         delta = -q_core
+         DO j = 1, norb
+            IF (selected(j) > 0) delta = delta + q_orbital(:, j)
+         END DO
+         maximum_error = MAXVAL(ABS(delta))/peak
+         radial_error = SUM(weights*ABS(delta))/radial_scale
+         maximum_passed = maximum_passed .OR. maximum_error <= maximum_tolerance
+         radial_passed = radial_passed .OR. radial_error <= radial_tolerance
+         IF (maximum_error > maximum_tolerance .OR. radial_error > radial_tolerance) RETURN
+         matches = matches + 1
+         chosen(:) = selected
+      END SUBROUTINE visit_core_subset
+
+   END SUBROUTINE paw_xc_build_ae_core_tau
 
 ! **************************************************************************************************
 !> \brief Prepare radial density products, gradients, frozen cores and angular quadrature.

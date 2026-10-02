@@ -34,7 +34,8 @@ PROGRAM paw_xc_unittest
                                               pi
    USE paw_onecenter,                   ONLY: paw_onecenter_init,&
                                               paw_onecenter_type
-   USE paw_xc,                          ONLY: paw_xc_collocate,&
+   USE paw_xc,                          ONLY: paw_xc_build_ae_core_tau,&
+                                              paw_xc_collocate,&
                                               paw_xc_evaluate,&
                                               paw_xc_init,&
                                               paw_xc_kinetic_adjoint,&
@@ -63,6 +64,7 @@ PROGRAM paw_xc_unittest
    IMPLICIT NONE
    INTEGER, PARAMETER :: n = 801
    REAL(dp), PARAMETER :: exponent = 0.9_dp, pseudo_scale = 0.8_dp**2 + 0.07_dp
+   REAL(dp), PARAMETER :: core_exponents(4) = [1.3_dp, 0.55_dp, 0.8_dp, 0.25_dp]
    TYPE(atom_upfpot_type) :: pot
    TYPE(upf_projector_type) :: projectors
    TYPE(paw_onecenter_type) :: onecenter
@@ -111,6 +113,7 @@ PROGRAM paw_xc_unittest
    CALL check_local_exchange()
    CALL check_gga()
    CALL check_meta_gga()
+   CALL check_ae_core_tau()
    CALL check_atomic_projection()
    CALL original_datasets()
    CALL section_vals_release(functional)
@@ -118,6 +121,215 @@ PROGRAM paw_xc_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Independent Gaussian core tau, complete-core assignment and unavailable-data guards.
+! **************************************************************************************************
+   SUBROUTINE check_ae_core_tau()
+      CHARACTER(LEN=256)                                 :: reason
+      INTEGER                                            :: first, i, origin, peak_index
+      INTEGER, ALLOCATABLE                               :: occupations(:)
+      LOGICAL                                            :: available
+      REAL(dp)                                           :: amplitude, error, peak, positive_weight
+      REAL(dp), ALLOCATABLE                              :: delta(:), original_u(:, :), q_core(:), &
+                                                            reference(:), tau(:), weights(:)
+      TYPE(atom_upfpot_type)                             :: baseline, changed, s_core
+
+      error = 0.0_dp
+      DO origin = 0, 1
+         CALL make_core_tau_fixture(baseline, origin == 1)
+         ALLOCATE (original_u, SOURCE=baseline%paw%gipaw_core_orbitals%wfc)
+         CALL paw_xc_build_ae_core_tau(baseline, tau, available, reason, occupations)
+         IF (.NOT. available) THEN
+            PRINT *, 'Complete Gaussian PAW core unavailable:', TRIM(reason)
+            ERROR STOP 'Complete Gaussian PAW core unavailable'
+         END IF
+         IF (LEN_TRIM(reason) /= 0) ERROR STOP 'Available PAW core retained an unavailable-data reason'
+         IF (.NOT. ALLOCATED(tau)) ERROR STOP 'Available PAW core tau not allocated'
+         IF (.NOT. ALLOCATED(occupations)) ERROR STOP 'Available PAW core occupations not allocated'
+         IF (SIZE(tau) /= n) ERROR STOP 'PAW core tau truncated at the augmentation cutoff'
+         IF (ANY(occupations /= [2, 2, 6, 0])) ERROR STOP 'GIPAW valence orbital was assigned to the frozen core'
+         IF (ANY(baseline%paw%gipaw_core_orbitals%wfc /= original_u)) &
+            ERROR STOP 'AE core tau changed original signed GIPAW orbital amplitudes'
+         IF (.NOT. ALL(ieee_is_finite(tau)) .OR. ANY(tau < 0.0_dp)) ERROR STOP 'Invalid Gaussian AE core tau'
+         ALLOCATE (reference(n))
+         reference(:) = 0.0_dp
+         ! For normalized Gaussian radial orbitals the independent analytic
+         ! s-shell factor is a**2*r**2; the p shell is 3-2*a*r**2+a**2*r**4.
+         DO i = 1, 2
+            amplitude = 2.0_dp*core_exponents(i)**1.5_dp/GAMMA(1.5_dp)
+            reference(:) = reference + amplitude*core_exponents(i)**2*baseline%r**2* &
+                        EXP(-core_exponents(i)*baseline%r**2)/fourpi
+         END DO
+         amplitude = 2.0_dp*core_exponents(3)**2.5_dp/GAMMA(2.5_dp)
+         reference(:) = reference + 3.0_dp*amplitude*EXP(-core_exponents(3)*baseline%r**2)* &
+                     (3.0_dp - 2.0_dp*core_exponents(3)*baseline%r**2 + &
+                      core_exponents(3)**2*baseline%r**4)/fourpi
+         first = 1
+         IF (origin == 1) THEN
+            first = 2
+            ! A nonzero analytic p-shell origin is deliberately not replaced by
+            ! the storage convention. This node is excluded from all derivatives.
+            IF (tau(1) /= 0.0_dp .OR. reference(1) <= 0.0_dp) ERROR STOP 'PAW core tau origin convention changed'
+         END IF
+         error = MAX(error, MAXVAL(ABS(tau(first:) - reference(first:)))/MAXVAL(reference(first:)))
+         IF (MAXVAL(tau(baseline%paw%cutoff_index + 1:)) <= 0.0_dp) ERROR STOP 'PAW core tau tail lost'
+         DEALLOCATE (reference, original_u)
+         CALL atom_release_upf(baseline)
+      END DO
+      WRITE (*, '(A,ES15.6)') 'PAW Gaussian AE core kinetic-density relative error:', error
+      IF (error > 2.e-6_dp) ERROR STOP 'PAW AE core tau differs from independent Gaussian formula'
+
+      CALL make_core_tau_fixture(baseline, .FALSE.)
+      changed = baseline
+      DEALLOCATE (changed%paw%gipaw_core_orbitals)
+      CALL require_core_tau_unavailable(changed, 'Missing')
+
+      changed = baseline
+      ! Removing the p shell leaves only six supplied closed-shell electrons,
+      ! while the independent AE core density and element still require ten.
+      DEALLOCATE (changed%paw%gipaw_core_orbitals%wfc, changed%paw%gipaw_core_orbitals%indices, &
+                  changed%paw%gipaw_core_orbitals%principal_quantum_numbers, &
+                  changed%paw%gipaw_core_orbitals%angular_momenta)
+      ALLOCATE (changed%paw%gipaw_core_orbitals%wfc(n, 3), SOURCE=baseline%paw%gipaw_core_orbitals%wfc(:, [1, 2, 4]))
+      ALLOCATE (changed%paw%gipaw_core_orbitals%indices(3), SOURCE=[1, 2, 3])
+      ALLOCATE (changed%paw%gipaw_core_orbitals%principal_quantum_numbers(3), SOURCE=[1, 2, 3])
+      ALLOCATE (changed%paw%gipaw_core_orbitals%angular_momenta(3), SOURCE=[0, 0, 0])
+      CALL require_core_tau_unavailable(changed, 'insufficient')
+
+      changed = baseline
+      changed%symbol = 'Be'
+      changed%zion = 2.0_dp
+      changed%paw%rho_core(:) = 2.0_dp*baseline%paw%gipaw_core_orbitals%wfc(:, 1)**2/(fourpi*baseline%r**2)
+      changed%paw%gipaw_core_orbitals%wfc(:, 2) = -changed%paw%gipaw_core_orbitals%wfc(:, 1)
+      CALL require_core_tau_unavailable(changed, 'Ambiguous')
+
+      s_core = baseline
+      s_core%symbol = 'Be'
+      s_core%zion = 2.0_dp
+      DEALLOCATE (s_core%paw%gipaw_core_orbitals%wfc, s_core%paw%gipaw_core_orbitals%indices, &
+                  s_core%paw%gipaw_core_orbitals%principal_quantum_numbers, &
+                  s_core%paw%gipaw_core_orbitals%angular_momenta)
+      ALLOCATE (s_core%paw%gipaw_core_orbitals%wfc(n, 1), SOURCE=baseline%paw%gipaw_core_orbitals%wfc(:, 1:1))
+      ALLOCATE (s_core%paw%gipaw_core_orbitals%indices(1), SOURCE=[1])
+      ALLOCATE (s_core%paw%gipaw_core_orbitals%principal_quantum_numbers(1), SOURCE=[1])
+      ALLOCATE (s_core%paw%gipaw_core_orbitals%angular_momenta(1), SOURCE=[0])
+      s_core%paw%rho_core(:) = 2.0_dp*s_core%paw%gipaw_core_orbitals%wfc(:, 1)**2/(fourpi*s_core%r**2)
+      changed = s_core
+      changed%paw%gipaw_core_orbitals%wfc(:, :) = 1.01_dp*changed%paw%gipaw_core_orbitals%wfc
+      CALL require_core_tau_unavailable(changed, 'normalization')
+      changed = s_core
+      changed%paw%rho_core(:) = 1.001_dp*changed%paw%rho_core
+      CALL require_core_tau_unavailable(changed, 'charge')
+
+      ALLOCATE (q_core, SOURCE=fourpi*s_core%r**2*s_core%paw%rho_core)
+      peak = MAXVAL(q_core)
+      peak_index = MAXLOC(q_core, DIM=1)
+      changed = s_core
+      ! A one-node perturbation violates the maximum check while its radial
+      ! integral is small enough to satisfy both charge and L1 requirements.
+      changed%paw%rho_core(peak_index) = changed%paw%rho_core(peak_index) + &
+                                       3.e-6_dp*peak/(fourpi*changed%r(peak_index)**2)
+      CALL require_core_tau_unavailable(changed, 'maximum')
+
+      ! Independent Simpson weights on this known uniform, odd-sized fixture.
+      ALLOCATE (weights(n), delta(n))
+      weights(:) = (2.0_dp/3.0_dp)*s_core%rab
+      weights(2:n - 1:2) = (4.0_dp/3.0_dp)*s_core%rab(2:n - 1:2)
+      weights(1) = s_core%rab(1)/3.0_dp
+      weights(n) = s_core%rab(n)/3.0_dp
+      delta(:) = 0.0_dp
+      WHERE (s_core%r >= 0.5_dp .AND. s_core%r <= 2.5_dp) delta(:) = -0.9e-6_dp*peak
+      positive_weight = -SUM(weights*delta)/SUM(weights, MASK=s_core%r > 2.5_dp)
+      WHERE (s_core%r > 2.5_dp) delta(:) = positive_weight
+      changed = s_core
+      changed%paw%rho_core(:) = changed%paw%rho_core + delta/(fourpi*changed%r**2)
+      IF (ANY(changed%paw%rho_core < 0.0_dp)) ERROR STOP 'Invalid positive core-density L1 fixture'
+      CALL require_core_tau_unavailable(changed, 'L1')
+
+      changed = baseline
+      changed%symbol = 'He'
+      changed%zion = 2.0_dp
+      changed%paw%rho_core(:) = 0.0_dp
+      CALL paw_xc_build_ae_core_tau(changed, tau, available, reason, occupations)
+      IF (.NOT. available) ERROR STOP 'Core-free He unavailable with GIPAW valence orbitals'
+      IF (.NOT. ALLOCATED(tau) .OR. .NOT. ALLOCATED(occupations)) ERROR STOP 'Missing core-free He outputs'
+      IF (ANY(tau /= 0.0_dp) .OR. ANY(occupations /= 0)) &
+         ERROR STOP 'Core-free He acquired core tau from GIPAW valence orbitals'
+      DEALLOCATE (changed%paw%gipaw_core_orbitals)
+      CALL paw_xc_build_ae_core_tau(changed, tau, available, reason)
+      IF (.NOT. available) ERROR STOP 'Core-free PAW tau requires GIPAW orbitals'
+      IF (.NOT. ALLOCATED(tau)) ERROR STOP 'Missing core-free PAW tau'
+      IF (ANY(tau /= 0.0_dp)) ERROR STOP 'Core-free PAW tau is not zero on the full mesh'
+      CALL atom_release_upf(baseline)
+      CALL atom_release_upf(changed)
+      CALL atom_release_upf(s_core)
+   END SUBROUTINE check_ae_core_tau
+
+! **************************************************************************************************
+!> \brief Build normalized Gaussian radial s/p cores plus an unassigned signed valence orbital.
+!> \param potential Synthetic PAW data, without projector or PS kinetic-density assumptions.
+!> \param zero_origin Whether the unused zero-radius node is present.
+! **************************************************************************************************
+   SUBROUTINE make_core_tau_fixture(potential, zero_origin)
+      TYPE(atom_upfpot_type), INTENT(OUT)                :: potential
+      LOGICAL, INTENT(IN)                                :: zero_origin
+
+      INTEGER                                            :: i, ir, l
+      REAL(dp)                                           :: amplitude, first_radius, occupation
+
+      potential%symbol = 'Ar'
+      potential%zion = 8.0_dp
+      potential%is_paw = .TRUE.
+      potential%mesh_size = n
+      ALLOCATE (potential%paw, potential%r(n), potential%rab(n))
+      ALLOCATE (potential%paw%rho_core(n), potential%paw%gipaw_core_orbitals)
+      potential%paw%cutoff_index = n/2
+      ASSOCIATE (orbitals => potential%paw%gipaw_core_orbitals)
+         orbitals%data_format = 2
+         ALLOCATE (orbitals%wfc(n, 4), orbitals%indices(4), orbitals%principal_quantum_numbers(4), &
+                   orbitals%angular_momenta(4))
+         orbitals%indices(:) = [1, 2, 3, 4]
+         orbitals%principal_quantum_numbers(:) = [1, 2, 2, 3]
+         orbitals%angular_momenta(:) = [0, 0, 1, 0]
+         first_radius = MERGE(0.0_dp, 1.e-4_dp, zero_origin)
+         potential%rab(:) = 8.0_dp/REAL(n - 1, dp)
+         DO ir = 1, n
+            potential%r(ir) = first_radius + REAL(ir - 1, dp)*potential%rab(ir)
+         END DO
+         potential%paw%rho_core(:) = 0.0_dp
+         DO i = 1, 4
+            l = orbitals%angular_momenta(i)
+            amplitude = SQRT(2.0_dp*core_exponents(i)**(REAL(l, dp) + 1.5_dp)/GAMMA(REAL(l, dp) + 1.5_dp))
+            orbitals%wfc(:, i) = amplitude*potential%r**(l + 1)*EXP(-0.5_dp*core_exponents(i)*potential%r**2)
+            IF (i == 2) orbitals%wfc(:, i) = -orbitals%wfc(:, i)
+            IF (i == 4) CYCLE
+            occupation = REAL(2*(2*l + 1), dp)
+            potential%paw%rho_core(:) = potential%paw%rho_core + occupation*amplitude**2* &
+                                    potential%r**(2*l)*EXP(-core_exponents(i)*potential%r**2)/fourpi
+         END DO
+      END ASSOCIATE
+   END SUBROUTINE make_core_tau_fixture
+
+! **************************************************************************************************
+!> \brief Require a specific unavailable-data diagnostic and no usable tau output.
+!> \param potential Invalid or incomplete synthetic core data.
+!> \param cause Expected diagnostic category.
+! **************************************************************************************************
+   SUBROUTINE require_core_tau_unavailable(potential, cause)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: potential
+      CHARACTER(LEN=*), INTENT(IN)                       :: cause
+
+      CHARACTER(LEN=256)                                 :: reason
+      LOGICAL                                            :: available
+      REAL(dp), ALLOCATABLE                              :: tau(:)
+
+      CALL paw_xc_build_ae_core_tau(potential, tau, available, reason)
+      IF (available .OR. ALLOCATED(tau) .OR. INDEX(reason, cause) == 0) THEN
+         PRINT *, 'PAW core tau availability/cause:', available, TRIM(reason), TRIM(cause)
+         ERROR STOP 'Invalid PAW core data accepted or unavailable-data cause lost'
+      END IF
+   END SUBROUTINE require_core_tau_unavailable
 
 ! **************************************************************************************************
 !> \brief TPSS energy derivatives, spin symmetry, and explicit frozen-core kinetic fields.
