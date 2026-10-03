@@ -77,7 +77,7 @@ PROGRAM skala_sirius_unittest
                rmt(nmt), rfree(nfree), rhofree(nfree)
    REAL(dp) :: force_steps(5) = [0.0_dp, 2.0e-4_dp, -2.0e-4_dp, 1.0e-4_dp, -1.0e-4_dp]
    REAL(dp), PARAMETER :: direction(3) = [0.7_dp, -0.4_dp, 0.2_dp]
-   REAL(dp) :: force_energy(5), force_derivative, force_fd, entropy, density_tol, energy_tol
+   REAL(dp) :: force_energy(5), force_derivative, force_fd, entropy, descf, density_tol, energy_tol
    REAL(dp) :: stress(3, 3), strain(3, 3)
    REAL(dp) :: updated_energy, updated_exc
    REAL(dp), ALLOCATABLE :: forces(:, :)
@@ -347,6 +347,8 @@ PROGRAM skala_sirius_unittest
                                           max_niter=max_scf_iterations, save_state=.FALSE., converged=converged, error_code=ierr)
             IF (ierr /= 0) ERROR STOP "SIRIUS Skala SCF failed"
             CALL sirius_get_energy(gs, "total", energy)
+            CALL sirius_get_energy(gs, "descf", descf)
+            energy = energy + descf
             CALL sirius_get_energy(gs, "exc", exc)
             IF (comm%mepos == 0) WRITE (*, '(A,2I3,L3,2ES22.12)') "Point SCF (method 0=PW 1=PAW 2=LAPW,mag,converged,E,Exc): ", &
                mode, mag, converged, energy, exc
@@ -425,6 +427,8 @@ PROGRAM skala_sirius_unittest
                                              max_niter=max_scf_iterations, save_state=.FALSE., converged=converged, error_code=ierr)
                   IF (ierr /= 0 .OR. .NOT. converged) ERROR STOP "Updated geometry SCF did not converge"
                   CALL sirius_get_energy(gs, "total", updated_energy)
+                  CALL sirius_get_energy(gs, "descf", descf)
+                  updated_energy = updated_energy + descf
                   CALL sirius_get_energy(gs, "exc", updated_exc)
                   IF (.NOT. ieee_is_finite(updated_energy) .OR. .NOT. ieee_is_finite(updated_exc)) &
                      ERROR STOP "Nonfinite energy after geometry update"

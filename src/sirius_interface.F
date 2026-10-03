@@ -839,6 +839,9 @@ CONTAINS
       etotal = 0.0_C_DOUBLE
       CALL sirius_get_energy(gs_handler, 'total', etotal)
       energy%etotal = etotal
+      ! The API returns the SCF correction separately from the total energy.
+      CALL sirius_get_energy(gs_handler, 'descf', etotal)
+      energy%etotal = energy%etotal + etotal
 
       ! extract entropy (TS returned by sirius is always negative, sign
       ! convention in QE)
