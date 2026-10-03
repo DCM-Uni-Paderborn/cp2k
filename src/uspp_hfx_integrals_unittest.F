@@ -28,7 +28,8 @@ PROGRAM uspp_hfx_integrals_unittest
    USE orbital_transformation_matrices, ONLY: orbtramat
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
-   USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
+   USE uspp_augmentation,               ONLY: paw_reconstruction_init,&
+                                              uspp_augmentation_init,&
                                               uspp_augmentation_type
    USE uspp_hfx_integrals,              ONLY: uspp_hfx_auxiliary_integrals,&
                                               uspp_hfx_integrals_init,&
@@ -50,7 +51,7 @@ PROGRAM uspp_hfx_integrals_unittest
    CALL init_lebedev_grids()
    rule = get_number_of_lebedev_grid(n=110)
    max_error = 0.0_dp
-   DO grid = 1, 2
+   DO grid = 1, 4
       CALL make_augmentation(grid, augmentation)
       DO sample = 1, 2
          displacement = REAL(sample - 1, dp)*[0.31_dp, -0.52_dp, 0.73_dp]
@@ -63,11 +64,13 @@ PROGRAM uspp_hfx_integrals_unittest
                 .NOT. ALL(ieee_is_finite(dg(:, :, :2*l + 1, :)))) ERROR STOP 'Nonfinite native RI-Q primitive'
             CALL check_error(MAXVAL(ABS(integral(:, :, :2*l + 1) - reference(:, :, :2*l + 1))), 3.e-8_dp)
             CALL check_error(MAXVAL(ABS(dg(:, :, :2*l + 1, :) - dref(:, :, :2*l + 1, :))), 3.e-8_dp)
-            IF (ANY(dg(:, :, :2*l + 1, :) + dq(:, :, :2*l + 1, :) /= 0.0_dp)) &
+            IF (ANY(dg(:, :, :2*l + 1, :) + dq(:, :, :2*l + 1, :) /= 0.0_dp)) THEN
                ERROR STOP 'Native RI-Q derivatives violate translational invariance'
+            END IF
             DO axis = 1, 2*l + 1
-               IF (ANY(integral(:, :, axis) /= TRANSPOSE(integral(:, :, axis)))) &
+               IF (ANY(integral(:, :, axis) /= TRANSPOSE(integral(:, :, axis)))) THEN
                   ERROR STOP 'Native RI-Q integral lost projector-pair symmetry'
+               END IF
             END DO
             IF (l /= 0) CYCLE
             ! Closed Gaussian-Gaussian formula independent of both production paths.
@@ -97,7 +100,7 @@ PROGRAM uspp_hfx_integrals_unittest
       END DO
       IF (grid == 2) CALL check_auxiliary(augmentation, rule)
    END DO
-   PRINT '(A,ES16.7)', 'Native USPP RI-Q Coulomb maximum absolute error: ', max_error
+   PRINT '(A,ES16.7)', 'Native USPP/PAW transition Coulomb maximum absolute error: ', max_error
    CALL deallocate_lebedev_grids()
    CALL cp2k_finalize()
 
@@ -106,6 +109,8 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Native s/p Q pairs equal products of Cartesian Gaussian polynomials.
 !>        Linear and exponential meshes retain the original UPF quadrature and Jacobian.
+!> \param grid ...
+!> \param augmentation ...
 ! **************************************************************************************************
    SUBROUTINE make_augmentation(grid, augmentation)
       INTEGER, INTENT(IN)                                :: grid
@@ -117,7 +122,7 @@ CONTAINS
       TYPE(upf_projector_type)                           :: projectors
 
       nr = 601
-      IF (grid == 2) nr = 801
+      IF (MODULO(grid, 2) == 0) nr = 801
       pot%is_ultrasoft = .TRUE.
       pot%number_of_proj = 2
       ALLOCATE (pot%lbeta(2), pot%dion(2, 2), pot%qij(2, 2), pot%r(nr), pot%rab(nr), pot%beta(nr, 2), &
@@ -126,7 +131,7 @@ CONTAINS
       pot%dion = 0.0_dp
       pot%qij = 0.0_dp
       DO i = 1, nr
-         IF (grid == 1) THEN
+         IF (MODULO(grid, 2) == 1) THEN
             pot%r(i) = 8.0_dp*REAL(i - 1, dp)/REAL(nr - 1, dp)
             pot%rab(i) = 8.0_dp/REAL(nr - 1, dp)
          ELSE
@@ -146,7 +151,23 @@ CONTAINS
          END DO
       END DO
       CALL upf_projector_init(pot, 2, projectors)
-      CALL uspp_augmentation_init(pot, projectors, augmentation)
+      IF (grid <= 2) THEN
+         CALL uspp_augmentation_init(pot, projectors, augmentation)
+      ELSE
+         pot%is_paw = .TRUE.
+         ALLOCATE (pot%paw)
+         ALLOCATE (pot%paw%ae_wfc(nr, 2), pot%paw%ps_wfc(nr, 2))
+         pot%paw%cutoff_index = nr - 20
+         DO j = 1, 2
+            pot%paw%ps_wfc(:, j) = pot%r**(pot%lbeta(j) + 1)*EXP(-0.5_dp*beta*pot%r**2)
+         END DO
+         pot%paw%ae_wfc(:, :) = SQRT(2.0_dp)*pot%paw%ps_wfc
+         pot%paw%ae_wfc(nr - 19:, :) = 1.e8_dp
+         pot%paw%ps_wfc(nr - 19:, :) = -2.e8_dp
+         ! Compensation differs from the AE-minus-PS Gaussian used by the Cartesian oracle.
+         pot%qijl(:, :, :) = 7.0_dp*pot%qijl
+         CALL paw_reconstruction_init(pot, projectors, augmentation)
+      END IF
       IF (augmentation%nproj /= np) ERROR STOP 'Wrong native RI-Q magnetic-projector count'
       CALL atom_release_upf(pot)
    END SUBROUTINE make_augmentation
@@ -154,6 +175,11 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Independent analytic Cartesian two-center Coulomb recurrence, with explicit Gaussian derivative.
 !>        Q_s,s=g/(4*pi), Q_s,p_i=sqrt(3)*x_i*g/(4*pi), Q_p_i,p_j=3*x_i*x_j*g/(4*pi).
+!> \param alpha ...
+!> \param degree ...
+!> \param displacement ...
+!> \param values ...
+!> \param derivatives ...
 ! **************************************************************************************************
    SUBROUTINE cartesian_reference(alpha, degree, displacement, values, derivatives)
       REAL(dp), INTENT(IN)                               :: alpha
@@ -202,6 +228,11 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Contract the independent Cartesian oracle to one normalized angular multipole.
+!> \param alpha ...
+!> \param l ...
+!> \param displacement ...
+!> \param reference ...
+!> \param derivative ...
 ! **************************************************************************************************
    SUBROUTINE primitive_reference(alpha, l, displacement, reference, derivative)
       REAL(dp), INTENT(IN)                               :: alpha
@@ -230,6 +261,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Full sphi contraction, mixed sets, Cartesian trace channel and both-center energy adjoints.
+!> \param augmentation ...
+!> \param rule ...
 ! **************************************************************************************************
    SUBROUTINE check_auxiliary(augmentation, rule)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
@@ -283,8 +316,9 @@ CONTAINS
                    raw(ncoset(basis%lmax(iset)), np, np), draw(3, ncoset(basis%lmax(iset)), np, np))
          CALL uspp_hfx_auxiliary_integrals(augmentation, basis, iset, center_g, center_q, lebedev_grid(rule)%r, &
                                            fourpi*lebedev_grid(rule)%w, integral, dg, dq)
-         IF (.NOT. ALL(ieee_is_finite(integral)) .OR. .NOT. ALL(ieee_is_finite(dg))) &
+         IF (.NOT. ALL(ieee_is_finite(integral)) .OR. .NOT. ALL(ieee_is_finite(dg))) THEN
             ERROR STOP 'Nonfinite contracted RI-Q integral'
+         END IF
          reference = 0.0_dp
          dref = 0.0_dp
          first = SUM(basis%nsgf_set(:iset - 1)) + 1
@@ -334,6 +368,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check an absolute error in the finite synthetic integral fixture.
+!> \param error ...
+!> \param tolerance ...
 ! **************************************************************************************************
    SUBROUTINE check_error(error, tolerance)
       REAL(dp), INTENT(IN)                               :: error, tolerance

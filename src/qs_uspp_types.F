@@ -33,7 +33,8 @@ MODULE qs_uspp_types
                                               sap_int_type,&
                                               sap_sort
    USE upf_projector_integrals,         ONLY: upf_projector_init
-   USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
+   USE uspp_augmentation,               ONLY: paw_reconstruction_init,&
+                                              uspp_augmentation_init,&
                                               uspp_augmentation_type
    USE uspp_projector_operators,        ONLY: uspp_projector_ao_pattern,&
                                               uspp_projector_create_onsite,&
@@ -48,6 +49,7 @@ MODULE qs_uspp_types
       INTEGER, ALLOCATABLE :: center_atoms(:), center_kinds(:), projector_sizes(:)
       REAL(KIND=dp), ALLOCATABLE :: position(:, :)
       TYPE(uspp_augmentation_type), ALLOCATABLE :: augmentation(:)
+      TYPE(uspp_augmentation_type), ALLOCATABLE :: paw_reconstruction(:)
       TYPE(paw_kind_type), ALLOCATABLE :: paw(:)
       TYPE(dbcsr_type), POINTER :: overlaps => NULL(), ao_pattern => NULL()
       TYPE(kpoint_transitional_type) :: metric
@@ -57,6 +59,7 @@ MODULE qs_uspp_types
    END TYPE qs_uspp_type
 
    PUBLIC :: qs_uspp_type, qs_uspp_init, qs_uspp_update, qs_uspp_update_images, qs_uspp_release
+   PUBLIC :: qs_uspp_prepare_paw_reconstruction
 
 CONTAINS
 
@@ -120,6 +123,30 @@ CONTAINS
          uspp%position(:, center) = particle_set(atom)%r
       END DO
    END SUBROUTINE qs_uspp_init
+
+! **************************************************************************************************
+!> \brief Lazily retain original PAW valence reconstruction separately from compensated charge Q.
+!> \param uspp Initialized scalar USPP/PAW state; immutable kind data survive geometry updates.
+!> \param qs_kind_set Original PAW partial waves and the same prepared native projectors.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_prepare_paw_reconstruction(uspp, qs_kind_set)
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
+      TYPE(qs_kind_type), INTENT(IN)                     :: qs_kind_set(:)
+
+      INTEGER                                            :: ikind
+
+      CPASSERT(SIZE(qs_kind_set) == SIZE(uspp%paw))
+      IF (.NOT. ANY(uspp%paw%active)) RETURN
+      IF (.NOT. ALLOCATED(uspp%paw_reconstruction)) ALLOCATE (uspp%paw_reconstruction(SIZE(qs_kind_set)))
+      DO ikind = 1, SIZE(qs_kind_set)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         IF (uspp%paw_reconstruction(ikind)%nproj > 0) CYCLE
+         CPASSERT(ASSOCIATED(qs_kind_set(ikind)%sgp_potential))
+         ASSOCIATE (potential => qs_kind_set(ikind)%sgp_potential)
+            CALL paw_reconstruction_init(potential%upf_data, potential%upf_projectors, uspp%paw_reconstruction(ikind))
+         END ASSOCIATE
+      END DO
+   END SUBROUTINE qs_uspp_prepare_paw_reconstruction
 
 ! **************************************************************************************************
 !> \brief Rebuild B and S from current neighbor integrals, allowing projector-mediated fill-in.

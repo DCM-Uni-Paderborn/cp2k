@@ -50,7 +50,8 @@ PROGRAM qs_uspp_hfx_unittest
                                               sap_int_type
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
-   USE uspp_augmentation,               ONLY: uspp_augmentation_init
+   USE uspp_augmentation,               ONLY: paw_reconstruction_init,&
+                                              uspp_augmentation_init
 
    IMPLICIT NONE
 
@@ -67,10 +68,11 @@ PROGRAM qs_uspp_hfx_unittest
    INTEGER, TARGET :: ao_rows(natom), pp_cols(ncenter)
    INTEGER, ALLOCATABLE, TARGET :: grid(:, :)
    INTEGER, POINTER :: matrix_grid(:, :), row_sizes(:), col_sizes(:), row_dist(:), col_dist(:)
-   INTEGER :: atom, axis, case_id, i, j, nprows, npcols, rank, nranks, dims(3), target_dims(3)
+   INTEGER :: atom, axis, case_id, representation, i, j, nprows, npcols, rank, nranks, dims(3), target_dims(3)
    INTEGER :: nang(1) = [194]
    REAL(dp) :: positions(3, natom), density(nao, nao), inverse(naux, naux), smooth(naux, nao, nao)
-   REAL(dp) :: max_error
+   REAL(dp) :: max_error, native_amplitude
+   LOGICAL :: reconstructed_paw
    TYPE(atomic_kind_type), TARGET :: atomic_kind
    TYPE(particle_type) :: particles(natom)
    TYPE(gto_basis_set_p_type) :: basis(1)
@@ -111,37 +113,42 @@ PROGRAM qs_uspp_hfx_unittest
       END DO
    END DO
 
-   ! Matrix and tensor grids change independently, including ranks without native centers.
-   DO case_id = 1, 2
-      nprows = nranks
-      npcols = 1
-      dims = [nranks, 1, 1]
-      target_dims = [1, 1, nranks]
-      IF (case_id == 2) THEN
-         nprows = 1
-         npcols = nranks
-         dims = [1, nranks, 1]
-         target_dims = [nranks, 1, 1]
-      END IF
-      ALLOCATE (grid(0:nprows - 1, 0:npcols - 1))
-      grid(:, :) = RESHAPE([(i, i=0, nranks - 1)], [nprows, npcols])
-      matrix_grid => grid
-      ao_rows = [(MODULO(i - 1, nprows), i=1, natom)]
-      pp_cols = [(MODULO(i - 1, npcols), i=1, ncenter)]
-      row_dist => ao_rows
-      col_dist => pp_cols
-      CALL dbcsr_distribution_new(distribution, group=comm%get_handle(), pgrid=matrix_grid, &
-                                  row_dist=row_dist, col_dist=col_dist)
-      CALL dbt_pgrid_create(comm, dims, native_grid)
-      CALL dbt_pgrid_create(comm, target_dims, target_grid)
-      CALL check_distributed_path()
-      CALL check_image_path()
-      CALL check_lattice_path()
-      CALL dbt_pgrid_destroy(target_grid)
-      CALL dbt_pgrid_destroy(native_grid)
-      CALL dbcsr_distribution_release(distribution)
-      DEALLOCATE (grid)
-      NULLIFY (matrix_grid)
+   ! Distinct compensated Q and reconstructed AE-minus-PS data share the complete image map.
+   DO representation = 1, 2
+      reconstructed_paw = representation == 2
+      native_amplitude = REAL(representation, dp)
+      ! Matrix and tensor grids change independently, including ranks without native centers.
+      DO case_id = 1, 2
+         nprows = nranks
+         npcols = 1
+         dims = [nranks, 1, 1]
+         target_dims = [1, 1, nranks]
+         IF (case_id == 2) THEN
+            nprows = 1
+            npcols = nranks
+            dims = [1, nranks, 1]
+            target_dims = [nranks, 1, 1]
+         END IF
+         ALLOCATE (grid(0:nprows - 1, 0:npcols - 1))
+         grid(:, :) = RESHAPE([(i, i=0, nranks - 1)], [nprows, npcols])
+         matrix_grid => grid
+         ao_rows = [(MODULO(i - 1, nprows), i=1, natom)]
+         pp_cols = [(MODULO(i - 1, npcols), i=1, ncenter)]
+         row_dist => ao_rows
+         col_dist => pp_cols
+         CALL dbcsr_distribution_new(distribution, group=comm%get_handle(), pgrid=matrix_grid, &
+                                     row_dist=row_dist, col_dist=col_dist)
+         CALL dbt_pgrid_create(comm, dims, native_grid)
+         CALL dbt_pgrid_create(comm, target_dims, target_grid)
+         CALL check_distributed_path()
+         CALL check_image_path()
+         CALL check_lattice_path()
+         CALL dbt_pgrid_destroy(target_grid)
+         CALL dbt_pgrid_destroy(native_grid)
+         CALL dbcsr_distribution_release(distribution)
+         DEALLOCATE (grid)
+         NULLIFY (matrix_grid)
+      END DO
    END DO
    CALL deallocate_gto_basis_set(basis(1)%gto_basis_set)
    CALL comm%max(max_error)
@@ -155,7 +162,7 @@ CONTAINS
 !> \brief One original radial s-projector and two independently contracted Gaussian s shell sets.
 ! **************************************************************************************************
    SUBROUTINE make_native_data()
-      INTEGER, PARAMETER                                 :: nr = 601
+      INTEGER, PARAMETER                                 :: nr = 161
 
       INTEGER                                            :: ir
       TYPE(atom_upfpot_type)                             :: pot
@@ -179,6 +186,18 @@ CONTAINS
                 uspp%projector_sizes(ncenter), uspp%position(3, ncenter))
       CALL uspp_augmentation_init(pot, projectors, uspp%augmentation(1))
       IF (uspp%augmentation(1)%nproj /= 1) ERROR STOP 'Wrong native s-projector count'
+      pot%is_paw = .TRUE.
+      ALLOCATE (pot%paw)
+      ALLOCATE (pot%paw%ae_wfc(nr, 1), pot%paw%ps_wfc(nr, 1))
+      pot%paw%cutoff_index = nr - 30
+      pot%paw%ps_wfc(:, 1) = pot%r*EXP(-0.5_dp*beta*pot%r**2)
+      pot%paw%ae_wfc(:, 1) = SQRT(3.0_dp)*pot%paw%ps_wfc(:, 1)
+      ! Supplied unbound tails must never enter the valence reconstruction sphere.
+      pot%paw%ae_wfc(nr - 29:, :) = 1.e8_dp
+      pot%paw%ps_wfc(nr - 29:, :) = -2.e8_dp
+      ALLOCATE (uspp%paw(1), uspp%paw_reconstruction(1))
+      uspp%paw(1)%active = .TRUE.
+      CALL paw_reconstruction_init(pot, projectors, uspp%paw_reconstruction(1))
       uspp%center_atoms(:) = center_atom
       uspp%center_kinds = 1
       uspp%projector_sizes(:) = pp_sizes
@@ -222,7 +241,8 @@ CONTAINS
       CALL closed_data(positions, b, cref)
       CALL make_overlap(b, overlaps)
       CALL make_sap(b, overlaps, sap)
-      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, native_grid, auxiliary)
+      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, native_grid, auxiliary, &
+                                     reconstructed_paw=reconstructed_paw)
       CALL gather_tensor(auxiliary, c)
       CALL check(MAXVAL(ABS(c - cref)), 'native C against closed Gaussian Coulomb', 3.e-8_dp)
       CALL create_3c_tensor(tensor, d1, d2, d3, target_grid, [(1, p=1, naux)], &
@@ -285,7 +305,8 @@ CONTAINS
          gc = gc + gc_batch
          CALL qs_uspp_projector_gradient(overlap_gradient, sap, center_atom, atom_gradient, cell_gradient)
          CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
-                                          atom_gradient, cell_gradient)
+                                          atom_gradient, cell_gradient, &
+                                          reconstructed_paw=reconstructed_paw)
          CALL dbcsr_release(overlap_gradient)
          CALL dbt_destroy(auxiliary_gradient)
          CALL dbt_destroy(tensor_adjoint)
@@ -405,7 +426,8 @@ CONTAINS
       CALL dbcsr_release(empty)
       CALL dbcsr_release(summed)
 
-      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, native_grid, auxiliary, shifts, left_shift)
+      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, native_grid, auxiliary, shifts, left_shift, &
+                                     reconstructed_paw=reconstructed_paw)
       CALL gather_tensor(auxiliary, c)
       CALL check(MAXVAL(ABS(c - cref)), 'stacked translated native C against Gaussian Coulomb', 3.e-8_dp)
       CALL create_3c_tensor(tensor, d1, d2, d3, target_grid, [(1, p=1, ncell*naux)], &
@@ -465,7 +487,8 @@ CONTAINS
       CALL qs_uspp_projector_gradient(gradient_left, sap, center_atom, atom_gradient, cell_gradient, cells(:, 3))
       CALL qs_uspp_projector_gradient(gradient_right, sap, center_atom, atom_gradient, cell_gradient, cells(:, 1))
       CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
-                                       atom_gradient, cell_gradient, shifts, left_shift)
+                                       atom_gradient, cell_gradient, shifts, left_shift, &
+                                       reconstructed_paw=reconstructed_paw)
       CALL comm%sum(atom_gradient)
       CALL comm%sum(cell_gradient)
       CALL check(MAXVAL(ABS(SUM(atom_gradient, DIM=2))), 'image native and projector translation sum rule')
@@ -591,10 +614,12 @@ CONTAINS
          END DO
          IF (mode == 1) THEN
             CALL qs_uspp_hfx_lattice_tensor(template, sap, uspp, basis, particles, nang, native_grid, &
-                                            lattice, cells, ao_cells, tensor)
+                                            lattice, cells, ao_cells, tensor, &
+                                            reconstructed_paw=reconstructed_paw)
          ELSE
             CALL qs_uspp_hfx_lattice_tensor(template, sap, uspp, basis, particles, nang, native_grid, &
-                                            lattice, cells, ao_cells, tensor, domain)
+                                            lattice, cells, ao_cells, tensor, domain, &
+                                            reconstructed_paw=reconstructed_paw)
          END IF
          DO image = 1, nimage
             CALL gather_tensor(tensor(image), gathered)
@@ -608,11 +633,13 @@ CONTAINS
          IF (mode == 1) THEN
             CALL qs_uspp_hfx_lattice_gradient(template, sap, uspp, basis, particles, nang, native_grid, &
                                               lattice, cells, ao_cells, tensor_adjoint, pref, &
-                                              atom_gradient, cell_gradient)
+                                              atom_gradient, cell_gradient, &
+                                              reconstructed_paw=reconstructed_paw)
          ELSE
             CALL qs_uspp_hfx_lattice_gradient(template, sap, uspp, basis, particles, nang, native_grid, &
                                               lattice, cells, ao_cells, tensor_adjoint, pref, &
-                                              atom_gradient, cell_gradient, domain)
+                                              atom_gradient, cell_gradient, domain, &
+                                              reconstructed_paw=reconstructed_paw)
          END IF
          CALL comm%sum(atom_gradient)
          CALL comm%sum(cell_gradient)
@@ -737,7 +764,8 @@ CONTAINS
       END DO
       uspp%position(:, :) = RESHAPE([particles(1)%r, particles(3)%r], [3, ncenter])
       CALL image_data(folded, shifts, shifts(:, 3), shifts(:, 1), bleft, bright, c)
-      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, native_grid, auxiliary, shifts, shifts(:, 3), cell)
+      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, native_grid, auxiliary, shifts, shifts(:, 3), cell, &
+                                     reconstructed_paw=reconstructed_paw)
       CALL gather_tensor(auxiliary, gathered)
       CALL check(MAXVAL(ABS(gathered - c)), 'native folded atom origins against closed Gaussian C', 3.e-8_dp)
       adjoint = 0.0_dp
@@ -751,7 +779,8 @@ CONTAINS
       atom_gradient = 0.0_dp
       cell_gradient = 0.0_dp
       CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_adjoint, &
-                                       atom_gradient, cell_gradient, shifts, shifts(:, 3), cell)
+                                       atom_gradient, cell_gradient, shifts, shifts(:, 3), cell, &
+                                       reconstructed_paw=reconstructed_paw)
       CALL comm%sum(atom_gradient)
       CALL comm%sum(cell_gradient)
       direction = [0.3_dp, -0.2_dp, 0.4_dp]
@@ -828,7 +857,7 @@ CONTAINS
                   t = kappa*SUM(distance**2)
                   f0 = 1.0_dp
                   IF (t > 0.0_dp) f0 = SQRT(pi)*ERF(SQRT(t))/(2.0_dp*SQRT(t))
-                  c(p, a, a) = coefficient(shell)*2.0_dp*pi**2.5_dp*f0/ &
+                  c(p, a, a) = native_amplitude*coefficient(shell)*2.0_dp*pi**2.5_dp*f0/ &
                                (fourpi*alpha(shell)*beta*SQRT(alpha(shell) + beta))
                END DO
             END DO
@@ -977,7 +1006,7 @@ CONTAINS
                t = kappa*SUM(distance**2)
                f0 = 1.0_dp
                IF (t > 0.0_dp) f0 = SQRT(pi)*ERF(SQRT(t))/(2.0_dp*SQRT(t))
-               c(p, a, a) = coefficient(shell)*2.0_dp*pi**2.5_dp*f0/ &
+               c(p, a, a) = native_amplitude*coefficient(shell)*2.0_dp*pi**2.5_dp*f0/ &
                             (fourpi*alpha(shell)*beta*SQRT(alpha(shell) + beta))
             END DO
          END DO
