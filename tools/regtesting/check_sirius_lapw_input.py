@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Check FP-LAPW input rejection through the CP2K executable, without an SCF run."""
+"""Check SIRIUS Skala input rejection through the CP2K executable, without SCF."""
 
 import argparse
 import json
@@ -52,6 +52,13 @@ def main():
             "requires PW_DFT/SKALA_GRID",
         ),
         ("wrong-element", source, "does not match the requested element"),
+        (
+            "missing-force-grid",
+            (root / "tests/SIRIUS/regtest-skala/H2.inp").read_text().replace(
+                "RUN_TYPE ENERGY", "RUN_TYPE ENERGY_FORCE"
+            ),
+            "Native Skala forces and stress with SIRIUS require PW_DFT/SKALA_GRID",
+        ),
     ]
     for name, text, expected in cases:
         directory = output / name
@@ -80,6 +87,8 @@ def main():
         )
         if result == 0 or expected not in message:
             raise RuntimeError(f"{name}: expected rejection was not observed; see {directory}")
+        if "[find] iteration :" in message:
+            raise RuntimeError(f"{name}: rejection must precede SCF; see {directory}")
         print(f"{name}: rejected as expected", flush=True)
 
 

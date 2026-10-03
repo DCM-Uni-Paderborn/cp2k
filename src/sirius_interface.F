@@ -792,7 +792,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: calculate_forces, calculate_stress_tensor
 
       INTEGER                                            :: iw, n1, n2
-      LOGICAL                                            :: do_print, gs_converged
+      LOGICAL                                            :: atom_quadrature, do_print, gs_converged
       REAL(KIND=C_DOUBLE)                                :: etotal
       REAL(KIND=C_DOUBLE), ALLOCATABLE, DIMENSION(:, :)  :: cforces
       REAL(KIND=C_DOUBLE), DIMENSION(3, 3)               :: cstress
@@ -800,7 +800,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: forces
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(pwdft_energy_type), POINTER                   :: energy
-      TYPE(section_vals_type), POINTER                   :: print_section, pwdft_input
+      TYPE(section_vals_type), POINTER                   :: grid_section, print_section, pwdft_input
       TYPE(sirius_ground_state_handler)                  :: gs_handler
 
       CPASSERT(ASSOCIATED(pwdft_env))
@@ -810,6 +810,13 @@ CONTAINS
       iw = cp_logger_get_default_io_unit(logger)
 
       CALL pwdft_env_get(pwdft_env=pwdft_env, gs_handler=gs_handler)
+      IF ((calculate_forces .OR. calculate_stress_tensor) .AND. ASSOCIATED(pwdft_env%skala_state)) THEN
+         CALL pwdft_env_get(pwdft_env=pwdft_env, pwdft_input=pwdft_input)
+         grid_section => section_vals_get_subs_vals(pwdft_input, "SKALA_GRID")
+         CALL section_vals_get(grid_section, explicit=atom_quadrature)
+         IF (.NOT. atom_quadrature) &
+            CPABORT("Native Skala forces and stress with SIRIUS require PW_DFT/SKALA_GRID")
+      END IF
       CALL sirius_find_ground_state(gs_handler, converged=gs_converged)
 
       IF (gs_converged) THEN
