@@ -348,6 +348,12 @@ CONTAINS
          CALL becke_switch(mu0, switch, slope)
          c = environment%membership(n)
          factor = (1.0_dp - c) + c*switch
+         IF (factor == 0.0_dp) THEN
+            ! A tiny forward seed can round to a saturated pair switch on recomputation.
+            ! The weighted seed derivative vanishes at this endpoint, as does membership's gradient.
+            CPASSERT(c == 1.0_dp .AND. switch == 0.0_dp .AND. slope == 0.0_dp)
+            CYCLE
+         END IF
          CPASSERT(factor > 0.0_dp)
          gmu = adjoint*c*slope/factor
          gx = gx + gmu*(unit_x - unit)/environment%distance(n)

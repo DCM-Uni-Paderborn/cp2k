@@ -89,6 +89,7 @@ PROGRAM skala_atom_grid_unittest
    CALL partition_derivatives(centres(:, :1))
    CALL quadrature_derivatives()
    CALL quadrature_direction()
+   CALL cubic_quadrature_derivatives()
 
    coarse_error = HUGE(1.0_dp)
    DO level = 1, 2
@@ -343,19 +344,62 @@ CONTAINS
       IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum quadrature forward derivative error: ", maximum
    END SUBROUTINE
 
-   FUNCTION grid_energy(group, hmat, positions, gr, gh) RESULT(e)
+   SUBROUTINE cubic_quadrature_derivatives()
+      INTEGER                                            :: component, trial
+      REAL(dp)                                           :: ad, dh(3, 3), dr(3, 1), em, ep, err, &
+                                                            gh(3, 3), gr(3, 1), h, hmat(3, 3), &
+                                                            maximum, positions(3, 1), reference
+
+      hmat = 0.0_dp
+      DO component = 1, 3
+         hmat(component, component) = 6.0_dp
+      END DO
+      positions(:, 1) = MATMUL(hmat, [0.3_dp, 0.4_dp, 0.3_dp])
+      dr(:, 1) = [0.21_dp, -0.11_dp, 0.09_dp]
+      dh = RESHAPE([0.13_dp, 0.09_dp, -0.17_dp, 0.22_dp, -0.19_dp, 0.16_dp, 0.11_dp, -0.21_dp, 0.18_dp], [3, 3])
+      reference = grid_energy(comm, hmat, positions, gr, gh, 100, 110)
+      maximum = 0.0_dp
+      DO component = 1, 2
+         DO trial = 1, 2
+            h = 1.0e-4_dp/REAL(trial, dp)
+            IF (component == 1) THEN
+               ad = SUM(gr*dr)
+               ep = grid_energy(comm, hmat, positions + h*dr, nradial=100, nangular=110)
+               em = grid_energy(comm, hmat, positions - h*dr, nradial=100, nangular=110)
+            ELSE
+               ad = SUM(gh*dh)
+               ep = grid_energy(comm, hmat + h*dh, positions, nradial=100, nangular=110)
+               em = grid_energy(comm, hmat - h*dh, positions, nradial=100, nangular=110)
+            END IF
+            err = ABS(ad - (ep - em)/(2*h))/MAX(1.0_dp, ABS(ad))
+            maximum = MAX(maximum, err)
+            IF (err > 2.0e-6_dp) ERROR STOP "Cubic atom-grid geometry derivative fails finite differences"
+         END DO
+      END DO
+      IF (comm%mepos == 0) THEN
+         WRITE (*, '(A,ES12.4)') "Cubic quadrature reference energy: ", reference
+         WRITE (*, '(A,ES12.4)') "Maximum cubic quadrature derivative error: ", maximum
+      END IF
+   END SUBROUTINE
+
+   FUNCTION grid_energy(group, hmat, positions, gr, gh, nradial, nangular) RESULT(e)
       TYPE(mp_comm_type), INTENT(IN)                     :: group
       REAL(dp), INTENT(IN)                               :: hmat(3, 3), positions(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gr(:, :), gh(:, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: nradial, nangular
       REAL(dp)                                           :: e
 
-      INTEGER                                            :: row
+      INTEGER                                            :: na, nr, row
       INTEGER, ALLOCATABLE                               :: sizes(:)
       REAL(dp), ALLOCATABLE                              :: blocks(:, :), descriptor_weights(:), &
                                                             energy_weights(:), pd(:), pe(:), &
                                                             px(:, :), xyz(:, :)
 
-      CALL skala_atom_grid_build(group, hmat, positions, 12, 14, 1, 1.0_dp, &
+      nr = 12
+      na = 14
+      IF (PRESENT(nradial)) nr = nradial
+      IF (PRESENT(nangular)) na = nangular
+      CALL skala_atom_grid_build(group, hmat, positions, nr, na, 1, 1.0_dp, &
                                  xyz, energy_weights, descriptor_weights, sizes, blocks)
       ALLOCATE (pe(SIZE(energy_weights)), pd(SIZE(energy_weights)), px(3, SIZE(energy_weights)))
       DO row = 1, SIZE(energy_weights)
@@ -366,7 +410,7 @@ CONTAINS
       e = SUM(energy_weights*pe + descriptor_weights*pd) + 0.02_dp*SUM(blocks**2)
       CALL group%sum(e)
       IF (PRESENT(gr) .AND. PRESENT(gh)) THEN
-         CALL skala_atom_grid_pullback(group, hmat, positions, 12, 14, 1, 1.0_dp, sizes, &
+         CALL skala_atom_grid_pullback(group, hmat, positions, nr, na, 1, 1.0_dp, sizes, &
                                        px, pe, pd, 0.04_dp*blocks, gr, gh)
       END IF
    END FUNCTION
