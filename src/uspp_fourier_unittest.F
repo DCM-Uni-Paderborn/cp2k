@@ -16,6 +16,7 @@ PROGRAM uspp_fourier_unittest
    USE atom_uspp,                       ONLY: atom_uspp_density,&
                                               atom_uspp_integrate,&
                                               atom_uspp_setup
+   USE cell_types,                      ONLY: cell_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp,&
                                               int_8
@@ -29,6 +30,10 @@ PROGRAM uspp_fourier_unittest
    USE qs_native_grid_cache,            ONLY: native_grid_interp_npts,&
                                               native_grid_interp_offset_min,&
                                               native_grid_interpolation_weights
+   USE qs_uspp_methods,                 ONLY: qs_upf_core_tau_atom_collocate,&
+                                              qs_upf_core_tau_atom_integrate,&
+                                              qs_uspp_atom_grid_type
+   USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE upf_core_kinetic,                ONLY: upf_core_kinetic_cartesian,&
                                               upf_core_kinetic_fourier,&
                                               upf_core_kinetic_init,&
@@ -185,6 +190,73 @@ PROGRAM uspp_fourier_unittest
 CONTAINS
 
 ! **************************************************************************************************
+!> \brief Test the USPP cache selector and periodic atom-grid geometry against a Gaussian image sum.
+!> \param cache Explicit scalar model-core field, independent of charge augmentation.
+!> \param amplitude Gaussian amplitude in the declared volume units.
+!> \param exponent Gaussian exponent.
+! **************************************************************************************************
+   SUBROUTINE check_model_core_atom_grid(cache, amplitude, exponent)
+      TYPE(upf_core_kinetic_type), INTENT(IN)            :: cache
+      REAL(dp), INTENT(IN)                               :: amplitude, exponent
+
+      INTEGER                                            :: a, b, ix, iy, iz, point
+      REAL(dp) :: displacement(3), error, exact(4), exact_gradient(3, 4), exact_strain(3, 3), &
+         image(3), kinetic(4), point_gradient(3, 4), points(3, 4), potential(4), spatial(3), value
+      TYPE(cell_type)                                    :: cell
+      TYPE(qs_uspp_atom_grid_type)                       :: fields
+      TYPE(qs_uspp_type)                                 :: uspp
+
+      cell%hmat = 0.0_dp
+      cell%h_inv = 0.0_dp
+      DO a = 1, 3
+         cell%hmat(a, a) = 7.0_dp
+         cell%h_inv(a, a) = 1.0_dp/7.0_dp
+      END DO
+      ALLOCATE (uspp%model_core_kinetic(1))
+      uspp%model_core_kinetic(1) = cache
+      ALLOCATE (uspp%center_atoms(1), uspp%center_kinds(1), SOURCE=1)
+      ALLOCATE (uspp%position(3, 1))
+      uspp%position(:, 1) = center
+      ALLOCATE (fields%center_gradient(3, 1), SOURCE=0.0_dp)
+      fields%calculate_forces = .TRUE.
+      fields%center_strain = 0.0_dp
+      points(:, 1) = [0.12_dp, -0.37_dp, 1.31_dp]
+      points(:, 2) = [7.25_dp, 0.19_dp, 0.82_dp]
+      points(:, 3) = [-0.73_dp, -7.11_dp, 1.49_dp]
+      points(:, 4) = [1.37_dp, 0.31_dp, 7.43_dp]
+      potential = [0.7_dp, -0.2_dp, 0.4_dp, 0.9_dp]
+      kinetic = 0.0_dp
+      point_gradient = 0.0_dp
+      CALL qs_upf_core_tau_atom_collocate(uspp, cell, points, kinetic)
+      CALL qs_upf_core_tau_atom_integrate(uspp, fields, cell, points, potential, point_gradient)
+      exact = 0.0_dp
+      exact_gradient = 0.0_dp
+      exact_strain = 0.0_dp
+      DO iz = -3, 3
+         DO iy = -3, 3
+            DO ix = -3, 3
+               image = 7.0_dp*REAL([ix, iy, iz], dp)
+               DO point = 1, 4
+                  displacement = points(:, point) - center - image
+                  value = amplitude*EXP(-exponent*SUM(displacement**2))
+                  spatial = -2.0_dp*exponent*displacement*value
+                  exact(point) = exact(point) + value
+                  exact_gradient(:, point) = exact_gradient(:, point) + potential(point)*spatial
+                  DO b = 1, 3
+                     exact_strain(:, b) = exact_strain(:, b) + potential(point)*spatial*displacement(b)
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      error = MAX(MAXVAL(ABS(kinetic - exact)), MAXVAL(ABS(point_gradient - exact_gradient)), &
+                  MAXVAL(ABS(fields%center_gradient(:, 1) + SUM(exact_gradient, DIM=2))), &
+                  MAXVAL(ABS(fields%center_strain + MATMUL(point_gradient, TRANSPOSE(points)) - exact_strain)))
+      WRITE (*, *) 'USPP model-core atom-grid value/center/point/strain error:', error
+      IF (error > 2.e-6_dp) ERROR STOP 'USPP model-core atom-grid geometry differs from Gaussian image sum'
+   END SUBROUTINE check_model_core_atom_grid
+
+! **************************************************************************************************
 !> \brief Check an explicitly supplied model-core field against independent Gaussian formulas.
 !>        Values, center derivatives and all affine-strain components retain the declared units.
 ! **************************************************************************************************
@@ -243,6 +315,7 @@ CONTAINS
       END DO
       WRITE (*, *) 'Original model-core Fourier/center/strain error:', error
       IF (error > 1.e-10_dp) ERROR STOP 'Model-core kinetic Fourier geometry differs from Gaussian reference'
+      CALL check_model_core_atom_grid(cache, amplitude, exponent)
       CALL atom_release_upf(dataset)
    END SUBROUTINE check_model_core_kinetic
 

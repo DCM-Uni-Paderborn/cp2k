@@ -1485,7 +1485,7 @@ CONTAINS
       CALL pw_env_get(pw_env, poisson_env=poisson_env, auxbas_pw_pool=auxbas_pw_pool)
       gapw = dft_control%qs_control%gapw
       gapw_xc = dft_control%qs_control%gapw_xc
-      separate_xc = gapw_xc .OR. (gapw .AND. has_uspp(qs_kind_set))
+      separate_xc = gapw_xc .OR. (has_uspp(qs_kind_set) .AND. (gapw .OR. dft_control%use_gauxc))
       xc_section => section_vals_get_subs_vals(input, "DFT%XC")
       gapw_composite_reference = native_skala_gapw_composite_reference(xc_section) .AND. &
                                  (gapw .OR. gapw_xc)
@@ -1532,7 +1532,7 @@ CONTAINS
                                        pmat_kp=rho_ao, hmat_kp=ksmat, &
                                        qs_env=qs_env, &
                                        calculate_forces=calculate_forces, &
-                                       gapw=separate_xc)
+                                       gapw=(gapw .OR. gapw_xc))
 
                ! Hartree uses the full basis in GAPW_XC and the soft basis in GAPW.
                ! The USPP grid adjoint sees only Hartree; XC augmentation is integrated on atoms.
@@ -1819,6 +1819,13 @@ CONTAINS
                                     calculate_forces=calculate_forces, compute_tau=.TRUE., &
                                     gapw=(gapw .OR. gapw_xc) .AND. &
                                     .NOT. gapw_composite_direct_ao)
+            IF (.NOT. (gapw .OR. gapw_xc)) THEN
+               IF (calculate_forces) THEN
+                  CALL qs_uspp_integrate(ks_env, v_tau_rspace(ispin), ksmat, .TRUE., rho_ao, kinetic=.TRUE.)
+               ELSE
+                  CALL qs_uspp_integrate(ks_env, v_tau_rspace(ispin), ksmat, .TRUE., kinetic=.TRUE.)
+               END IF
+            END IF
             CALL auxbas_pw_pool%give_back_pw(v_tau_rspace(ispin))
          END DO
          DEALLOCATE (v_tau_rspace)

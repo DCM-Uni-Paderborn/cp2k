@@ -542,7 +542,7 @@ CONTAINS
       nimg = dft_control%nimages
       gapw = dft_control%qs_control%gapw
       gapw_xc = dft_control%qs_control%gapw_xc
-      separate_xc = gapw_xc .OR. (gapw .AND. has_uspp(qs_kind_set))
+      separate_xc = gapw_xc .OR. (has_uspp(qs_kind_set) .AND. (gapw .OR. dft_control%use_gauxc))
 
       CALL qs_rho_get(rho_struct, rho_ao_kp=rho_ao_kp)
       DO ispin = 1, nspins
@@ -581,7 +581,7 @@ CONTAINS
                                     rho=rho_xc_r(ispin), &
                                     rho_gspace=rho_xc_g(ispin), &
                                     total_rho=tot_rho_r_xc(ispin), &
-                                    ks_env=ks_env, soft_valid=separate_xc, &
+                                    ks_env=ks_env, soft_valid=(gapw .OR. gapw_xc), &
                                     task_list_external=task_list_external_soft, &
                                     pw_env_external=pw_env_external)
          END DO
@@ -631,6 +631,7 @@ CONTAINS
                                        compute_tau=.TRUE., &
                                        task_list_external=task_list_external, &
                                        pw_env_external=pw_env_external)
+               CALL qs_uspp_collocate(ks_env, rho_ao, tau_g(ispin), tau_r(ispin), kinetic=.TRUE.)
             END DO
             CALL qs_rho_set(rho_struct, tau_r_valid=.TRUE., tau_g_valid=.TRUE.)
          END IF
@@ -648,7 +649,7 @@ CONTAINS
                CALL calculate_drho_elec(matrix_p_kp=rho_ao, &
                                         drho=drho_xc_r(:, ispin), &
                                         drho_gspace=drho_xc_g(:, ispin), &
-                                        qs_env=qs_env, soft_valid=separate_xc)
+                                        qs_env=qs_env, soft_valid=(gapw .OR. gapw_xc))
             END DO
             CALL qs_rho_set(rho_xc, drho_r_valid=.TRUE., drho_g_valid=.TRUE.)
          END IF
@@ -659,7 +660,7 @@ CONTAINS
                CALL calculate_rho_elec(matrix_p_kp=rho_ao, &
                                        rho=tau_xc_r(ispin), &
                                        rho_gspace=tau_xc_g(ispin), &
-                                       ks_env=ks_env, soft_valid=separate_xc, &
+                                       ks_env=ks_env, soft_valid=(gapw .OR. gapw_xc), &
                                        compute_tau=.TRUE., &
                                        task_list_external=task_list_external_soft, &
                                        pw_env_external=pw_env_external)

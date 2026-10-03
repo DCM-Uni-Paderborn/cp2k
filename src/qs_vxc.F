@@ -57,6 +57,9 @@ MODULE qs_vxc
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_uspp_methods,                 ONLY: qs_upf_core_tau_field,&
+                                              qs_upf_core_tau_forces,&
+                                              qs_upf_core_tau_present
    USE skala_gpw_functional,            ONLY: get_gauxc_section,&
                                               native_skala_gapw_composite_direct_ao,&
                                               native_skala_gapw_composite_reference,&
@@ -105,6 +108,7 @@ CONTAINS
 !>        native SKALA evaluation to the atom-centered GAPW composite path
 !> \param exclude_nlcc omit the core density when it is evaluated in a separate atom-grid functional
 !> \param smooth_reference integrate the smooth XC reference over the whole uniform grid
+!> \param core_tau_forces accumulate the fixed UPF model-core tau geometry adjoint on the actual XC grid
 !> \par History
 !>      - 05.2002 modified to use the mp_allgather function each pe
 !>        computes only part of the grid and this is broadcasted to all
@@ -118,7 +122,8 @@ CONTAINS
    SUBROUTINE qs_vxc_create(ks_env, rho_struct, xc_section, vxc_rho, vxc_tau, exc, &
                             just_energy, edisp, dispersion_env, adiabatic_rescale_factor, &
                             pw_env_external, native_skala_atom_force, qs_env_external, &
-                            native_gapw_composite_override, native_skala_defer_to_atom_composite, exclude_nlcc, smooth_reference)
+                            native_gapw_composite_override, native_skala_defer_to_atom_composite, &
+                            exclude_nlcc, smooth_reference, core_tau_forces)
 
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_struct
@@ -134,14 +139,15 @@ CONTAINS
          OPTIONAL                                        :: native_skala_atom_force
       TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env_external
       LOGICAL, INTENT(in), OPTIONAL :: native_gapw_composite_override, &
-         native_skala_defer_to_atom_composite, exclude_nlcc, smooth_reference
+         native_skala_defer_to_atom_composite, exclude_nlcc, smooth_reference, core_tau_forces
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'qs_vxc_create'
 
       INTEGER                                            :: handle, i, ispin, j, k, mspin, myfun, &
                                                             nelec_spin(2), np, output_unit, vdw
-      LOGICAL :: compute_virial, defer_native_skala_to_atom_composite, do_adiabatic_rescaling, &
-         my_just_energy, native_gapw_composite_direct_ao, native_gapw_composite_reference, &
+      LOGICAL :: compute_virial, core_tau_added, defer_native_skala_to_atom_composite, &
+         do_adiabatic_rescaling, include_core_tau, my_just_energy, &
+         native_gapw_composite_direct_ao, native_gapw_composite_reference, &
          native_grid_diagnostics, native_skala_grid, rho_g_valid, sic_scaling_b_zero, tau_g_valid, &
          tau_r_valid, uf_grid, vdW_nl
       REAL(KIND=dp) :: composite_hard_integral, composite_rho_max, composite_rho_min, &
@@ -166,7 +172,7 @@ CONTAINS
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool, diagnostics_pw_pool, &
                                                             vdw_pw_pool, xc_pw_pool
-      TYPE(pw_r3d_rs_type)                               :: vxcnl
+      TYPE(pw_r3d_rs_type)                               :: core_tau, vxcnl
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER :: my_vxc_rho, my_vxc_tau, rho_direct_r, &
          rho_hard_r, rho_m_rspace, rho_r, rho_smooth_model_r, rho_smooth_r, rho_struct_r, tau, &
          tau_direct_r, tau_hard_r, tau_smooth_model_r, tau_smooth_r, tau_struct_r
@@ -191,6 +197,8 @@ CONTAINS
                tau_smooth_model_g, tau_smooth_model_r, tau_smooth_r, gauxc_section)
 
       exc = 0.0_dp
+      include_core_tau = .TRUE.
+      core_tau_added = .FALSE.
       my_just_energy = .FALSE.
       IF (PRESENT(just_energy)) my_just_energy = just_energy
       my_adiabatic_rescale_factor = 1.0_dp
@@ -212,6 +220,7 @@ CONTAINS
                       rho_nlcc_g=rho_nlcc_g)
       IF (PRESENT(exclude_nlcc)) THEN
          IF (exclude_nlcc) NULLIFY (rho_nlcc, rho_nlcc_g)
+         include_core_tau = .NOT. exclude_nlcc
       END IF
       IF (PRESENT(smooth_reference)) THEN
          IF (smooth_reference) NULLIFY (weights)
@@ -622,7 +631,20 @@ CONTAINS
             END IF
          END IF
 
-         ! NLCC augments rho and grad(rho); tau remains valence-only.
+         ! The explicitly normalized UPF model-core tau enters the same full XC field
+         ! as NLCC. Atom-grid full-minus-smooth evaluations add it separately.
+         IF (tau_r_valid .AND. include_core_tau) THEN
+            IF (qs_upf_core_tau_present(ks_env)) THEN
+               CALL xc_pw_pool%create_pw(core_tau)
+               CALL qs_upf_core_tau_field(ks_env, core_tau)
+               DO ispin = 1, mspin
+                  CALL pw_axpy(core_tau, tau(ispin), 1.0_dp/REAL(mspin, dp))
+               END DO
+               core_tau_added = .TRUE.
+            END IF
+         END IF
+
+         ! NLCC augments rho and grad(rho).
          IF (ASSOCIATED(rho_nlcc_use)) THEN
             factor = 1.0_dp
             DO ispin = 1, mspin
@@ -778,6 +800,12 @@ CONTAINS
          END IF
 
          ! remove the nlcc densities (keep stuff in original state)
+         IF (core_tau_added) THEN
+            DO ispin = 1, mspin
+               CALL pw_axpy(core_tau, tau(ispin), -1.0_dp/REAL(mspin, dp))
+            END DO
+            CALL xc_pw_pool%give_back_pw(core_tau)
+         END IF
          IF (ASSOCIATED(rho_nlcc_use)) THEN
             factor = -1.0_dp
             DO ispin = 1, mspin
@@ -807,6 +835,16 @@ CONTAINS
             IF (ASSOCIATED(my_vxc_tau)) THEN
                DO ispin = 1, SIZE(my_vxc_tau)
                   CALL pw_scale(my_vxc_tau(ispin), my_scaling)
+               END DO
+            END IF
+         END IF
+
+         ! Different XC grids retain core Fourier components outside the valence
+         ! grid. Differentiate the core field before restricting its potential.
+         IF (PRESENT(core_tau_forces)) THEN
+            IF (core_tau_forces .AND. core_tau_added .AND. ASSOCIATED(my_vxc_tau)) THEN
+               DO ispin = 1, mspin
+                  CALL qs_upf_core_tau_forces(ks_env, my_vxc_tau(ispin), 1.0_dp/REAL(mspin, dp))
                END DO
             END IF
          END IF
@@ -1250,8 +1288,9 @@ CONTAINS
 
       INTEGER                                            :: handle, ispin, mspin, myfun, np, nspins, &
                                                             vdw
-      LOGICAL                                            :: rho_g_valid, tau_g_valid, tau_r_valid, &
-                                                            uf_grid, vdW_nl
+      LOGICAL                                            :: core_tau_added, rho_g_valid, &
+                                                            tau_g_valid, tau_r_valid, uf_grid, &
+                                                            vdW_nl
       REAL(KIND=dp)                                      :: edisp, excint, factor, rho_cutoff
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rhonl
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: drhonl
@@ -1263,13 +1302,14 @@ CONTAINS
       TYPE(pw_c1d_gs_type), POINTER                      :: rho_nlcc_g, rho_nlcc_g_use, rho_nlcc_g_xc
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool, vdw_pw_pool, xc_pw_pool
-      TYPE(pw_r3d_rs_type)                               :: exc_r, vxcnl
+      TYPE(pw_r3d_rs_type)                               :: core_tau, exc_r, vxcnl
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r, rho_struct_r, tau_r, &
                                                             tau_struct_r, vxc_rho, vxc_tau
       TYPE(pw_r3d_rs_type), POINTER                      :: rho_nlcc, rho_nlcc_use, rho_nlcc_xc, &
                                                             weights, weights_use, weights_xc
 
       CALL timeset(routineN, handle)
+      core_tau_added = .FALSE.
 
       NULLIFY (dft_control, pw_env, auxbas_pw_pool, xc_pw_pool, vdw_pw_pool, cell, &
                rho_g, rho_struct_g, tau_g, tau_struct_g, rho_nlcc, rho_nlcc_g, &
@@ -1379,6 +1419,17 @@ CONTAINS
             END IF
          END IF
 
+         IF (tau_r_valid .AND. dft_control%qs_control%gpw) THEN
+            IF (qs_upf_core_tau_present(ks_env)) THEN
+               CALL xc_pw_pool%create_pw(core_tau)
+               CALL qs_upf_core_tau_field(ks_env, core_tau)
+               DO ispin = 1, mspin
+                  CALL pw_axpy(core_tau, tau_r(ispin), 1.0_dp/REAL(mspin, dp))
+               END DO
+               core_tau_added = .TRUE.
+            END IF
+         END IF
+
          ! add the nlcc densities
          IF (ASSOCIATED(rho_nlcc_use)) THEN
             factor = 1.0_dp
@@ -1416,6 +1467,12 @@ CONTAINS
             DEALLOCATE (rhonl, drhonl)
          END IF
 
+         IF (core_tau_added) THEN
+            DO ispin = 1, mspin
+               CALL pw_axpy(core_tau, tau_r(ispin), -1.0_dp/REAL(mspin, dp))
+            END DO
+            CALL xc_pw_pool%give_back_pw(core_tau)
+         END IF
          ! remove the nlcc densities (keep stuff in original state)
          IF (ASSOCIATED(rho_nlcc_use)) THEN
             factor = -1.0_dp

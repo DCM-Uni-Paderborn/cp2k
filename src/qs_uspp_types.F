@@ -31,6 +31,7 @@ MODULE qs_uspp_types
    USE sap_kind_types,                  ONLY: release_sap_int,&
                                               sap_int_type,&
                                               sap_sort
+   USE upf_core_kinetic,                ONLY: upf_core_kinetic_type
    USE upf_projector_integrals,         ONLY: upf_projector_init
    USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
                                               uspp_augmentation_type
@@ -46,7 +47,11 @@ MODULE qs_uspp_types
    TYPE qs_uspp_type
       INTEGER, ALLOCATABLE :: center_atoms(:), center_kinds(:), projector_sizes(:)
       REAL(KIND=dp), ALLOCATABLE :: position(:, :)
-      TYPE(uspp_augmentation_type), ALLOCATABLE :: augmentation(:)
+      TYPE(uspp_augmentation_type), ALLOCATABLE :: augmentation(:), kinetic_augmentation(:)
+      ! Original XC fields remain independent of compensated charge and the overlap metric.
+      LOGICAL :: global_xc_ready = .FALSE.
+      TYPE(uspp_augmentation_type), ALLOCATABLE :: xc_density(:), xc_kinetic(:), xc_core_density(:), xc_core_kinetic(:)
+      TYPE(upf_core_kinetic_type), ALLOCATABLE :: model_core_kinetic(:)
       TYPE(dbcsr_type), POINTER :: overlaps => NULL(), ao_pattern => NULL()
       TYPE(kpoint_transitional_type) :: metric
       TYPE(sap_int_type), POINTER :: image_integrals(:) => NULL()
