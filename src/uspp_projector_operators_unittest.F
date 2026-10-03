@@ -60,7 +60,8 @@ PROGRAM uspp_projector_operators_unittest
    USE qs_uspp_methods,                 ONLY: &
         qs_uspp_atom_grid_apply, qs_uspp_atom_grid_collocate, qs_uspp_atom_grid_integrate, &
         qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_type, qs_uspp_collocate, qs_uspp_core_matrix, &
-        qs_uspp_init_ao_matrix, qs_uspp_integrate
+        qs_uspp_fixed_atom_grid_integrate, qs_uspp_fixed_atom_grid_prepare, &
+        qs_uspp_fixed_atom_grid_type, qs_uspp_init_ao_matrix, qs_uspp_integrate
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
                                               qs_uspp_projector_images,&
                                               qs_uspp_projector_matrix,&
@@ -76,7 +77,8 @@ PROGRAM uspp_projector_operators_unittest
                                               upf_local_type
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
-   USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
+   USE uspp_augmentation,               ONLY: upf_radial_scalar_init,&
+                                              uspp_augmentation_init,&
                                               uspp_augmentation_type
    USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
                                               uspp_projector_collocate,&
@@ -1419,6 +1421,62 @@ CONTAINS
       CALL atom_grid_gaussian_reference(cell, points, projected, rho_ref, grad_ref)
       CALL check(MAXVAL(ABS(rho - rho_ref - 0.4_dp)), 'periodic atom-grid Gaussian density oracle', 2.e-10_dp)
       CALL check(MAXVAL(ABS(grad - grad_ref - 0.07_dp)), 'periodic atom-grid Gaussian gradient oracle', 2.e-8_dp)
+      BLOCK
+         INTEGER :: ix, iy, iz
+         REAL(dp) :: fixed_points(3, 3), fixed_rho(3), fixed_grad(3, 3), spatial(3), &
+                     image_position(3), delta(3), value, scalar_potential(3), source_strain(3, 3)
+         TYPE(qs_uspp_fixed_atom_grid_type) :: fixed
+         TYPE(uspp_augmentation_type) :: scalar_cache(SIZE(uspp%augmentation))
+
+         ! A frozen scalar on only the second source must bypass the AO/overlap cache.
+         CALL upf_radial_scalar_init(pot(2), EXP(-alpha(2)*pot(2)%r**2), scalar_cache(uspp%center_kinds(2)))
+         CALL qs_uspp_fixed_atom_grid_prepare(uspp, scalar_cache, fixed, .TRUE.)
+         CALL check(REAL(SIZE(fixed%source_centers) - 1, dp), 'fixed-field source selection')
+         CALL check(REAL(fixed%source_centers(1) - 2, dp), 'fixed-field source mapping')
+         fixed_points = points + SPREAD(MATMUL(cell%hmat, [2.0_dp, -1.0_dp, 1.0_dp]), 2, 3)
+         fixed_rho = 0.0_dp
+         fixed_grad = 0.0_dp
+         CALL qs_uspp_atom_grid_collocate(fixed%geometry, fixed%fields, cell, fixed_points, &
+                                          fixed_rho, fixed_grad, scalar_cache)
+         rho_ref = 0.0_dp
+         grad_ref = 0.0_dp
+         source_strain = 0.0_dp
+         scalar_potential = [0.2_dp, -0.3_dp, 0.7_dp]
+         DO iz = -6, 6
+            DO iy = -6, 6
+               DO ix = -6, 6
+                  image_position = positions(:, 2) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                  DO sample = 1, 3
+                     delta = fixed_points(:, sample) - image_position
+                     value = EXP(-alpha(2)*SUM(delta**2))
+                     spatial = -2.0_dp*alpha(2)*value*delta
+                     rho_ref(sample) = rho_ref(sample) + value
+                     grad_ref(:, sample) = grad_ref(:, sample) + spatial
+                     DO jdir = 1, 3
+                        source_strain(:, jdir) = source_strain(:, jdir) - &
+                                                 w(sample)*scalar_potential(sample)*spatial*image_position(jdir)
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END DO
+         CALL check(MAXVAL(ABS(fixed_rho - rho_ref)), 'fixed-field Gaussian value oracle', 2.e-10_dp)
+         CALL check(MAXVAL(ABS(fixed_grad - grad_ref)), 'fixed-field Gaussian gradient oracle', 2.e-8_dp)
+         ALLOCATE (probe, SOURCE=fields)
+         probe_point_grad = 0.0_dp
+         vgrad = 0.0_dp
+         CALL qs_uspp_fixed_atom_grid_integrate(fixed, scalar_cache, probe, cell, fixed_points, &
+                                                w, scalar_potential, vgrad, probe_point_grad)
+         grad_ref = grad_ref*SPREAD(w*scalar_potential, 1, 3)
+         CALL check(MAXVAL(ABS(probe_point_grad - grad_ref)), 'fixed-field target adjoint', 2.e-8_dp)
+         CALL check(MAXVAL(ABS(probe%center_gradient(:, 2) + SUM(grad_ref, DIM=2))), &
+                    'fixed-field center adjoint', 2.e-8_dp)
+         CALL check(MAXVAL(ABS(probe%center_strain - source_strain)), 'fixed-field image strain adjoint', 2.e-7_dp)
+         CALL check(MAXVAL(ABS(probe%center_gradient(:, 1))), 'fixed-field inactive source')
+         CALL check(MAXVAL(ABS(probe%potential)), 'fixed-field has no AO operator')
+         CALL check(MAXVAL(ABS(probe%density - fields%density)), 'fixed-field leaves AO density unchanged')
+         DEALLOCATE (probe)
+      END BLOCK
       ! Independent transition fields must not silently select the charge/overlap cache.
       ALLOCATE (radial_fields, SOURCE=uspp%augmentation)
       DO center = 1, SIZE(radial_fields)

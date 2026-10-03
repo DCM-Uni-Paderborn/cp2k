@@ -87,12 +87,19 @@ MODULE qs_uspp_methods
    PUBLIC :: qs_paw_core_tau_atom_collocate, qs_paw_core_tau_atom_integrate
    PUBLIC :: qs_uspp_atom_grid_type, qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_collocate, &
              qs_uspp_atom_grid_integrate, qs_uspp_atom_grid_apply, qs_uspp_atom_grid_apply_ks
+   PUBLIC :: qs_uspp_fixed_atom_grid_type, qs_uspp_fixed_atom_grid_prepare, qs_uspp_fixed_atom_grid_integrate
 
    TYPE qs_uspp_atom_grid_type
       LOGICAL :: calculate_forces = .FALSE.
       REAL(KIND=dp), ALLOCATABLE :: density(:, :, :), potential(:, :, :), center_gradient(:, :)
       REAL(KIND=dp) :: center_strain(3, 3) = 0.0_dp
    END TYPE qs_uspp_atom_grid_type
+
+   TYPE qs_uspp_fixed_atom_grid_type
+      TYPE(qs_uspp_type) :: geometry
+      TYPE(qs_uspp_atom_grid_type) :: fields
+      INTEGER, ALLOCATABLE :: source_centers(:)
+   END TYPE qs_uspp_fixed_atom_grid_type
 
    INTERFACE qs_uspp_collocate
       MODULE PROCEDURE qs_uspp_collocate_single, qs_uspp_collocate_images
@@ -371,6 +378,85 @@ CONTAINS
       CALL group%sum(fields%density)
       CALL dbcsr_release(projected)
    END SUBROUTINE qs_uspp_atom_grid_prepare
+
+! **************************************************************************************************
+!> \brief Fixed unit-amplitude scalar fields reuse the atom-grid image and derivative transport.
+!>        Only kinds with scalar caches contribute. They have no AO or overlap dependence.
+!> \param uspp Current source-center geometry; ghost centers are already excluded.
+!> \param radial_fields Original scalar caches, with nproj=1 for contributing kinds.
+!> \param fixed Independent geometry and unit amplitudes, replaced on entry.
+!> \param calculate_forces Accumulate center, target and source-image strain derivatives.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_fixed_atom_grid_prepare(uspp, radial_fields, fixed, calculate_forces)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: radial_fields(:)
+      TYPE(qs_uspp_fixed_atom_grid_type), INTENT(OUT)    :: fixed
+      LOGICAL, INTENT(IN)                                :: calculate_forces
+
+      INTEGER                                            :: center, count, kind
+
+      CPASSERT(SIZE(radial_fields) == SIZE(uspp%augmentation))
+      count = 0
+      DO center = 1, SIZE(uspp%center_atoms)
+         kind = uspp%center_kinds(center)
+         CPASSERT(radial_fields(kind)%nproj == 0 .OR. radial_fields(kind)%nproj == 1)
+         IF (radial_fields(kind)%nproj == 1) count = count + 1
+      END DO
+      ALLOCATE (fixed%source_centers(count))
+      count = 0
+      DO center = 1, SIZE(uspp%center_atoms)
+         IF (radial_fields(uspp%center_kinds(center))%nproj == 0) CYCLE
+         count = count + 1
+         fixed%source_centers(count) = center
+      END DO
+      ALLOCATE (fixed%geometry%center_atoms(count), fixed%geometry%center_kinds(count), &
+                fixed%geometry%position(3, count))
+      fixed%geometry%center_atoms(:) = uspp%center_atoms(fixed%source_centers)
+      fixed%geometry%center_kinds(:) = uspp%center_kinds(fixed%source_centers)
+      fixed%geometry%position(:, :) = uspp%position(:, fixed%source_centers)
+      ALLOCATE (fixed%geometry%projector_sizes(count), SOURCE=1)
+      ! The independent caches are supplied to both forward and adjoint calls.
+      ALLOCATE (fixed%geometry%augmentation(SIZE(radial_fields)))
+      ALLOCATE (fixed%fields%density(1, 1, count), SOURCE=1.0_dp)
+      ALLOCATE (fixed%fields%potential(1, 1, count), fixed%fields%center_gradient(3, count), SOURCE=0.0_dp)
+      fixed%fields%calculate_forces = calculate_forces
+   END SUBROUTINE qs_uspp_fixed_atom_grid_prepare
+
+! **************************************************************************************************
+!> \brief Fixed-field adjoints add geometry derivatives to the ordinary source accumulators.
+!>        Discard the scalar amplitude adjoint: frozen cores have no AO density dependence.
+!> \param fixed Same fixed geometry and unit amplitudes as in collocation.
+!> \param radial_fields Same original scalar caches as in collocation.
+!> \param fields Ordinary source-center accumulators; density and AO potential remain unchanged.
+!> \param cell Same auxiliary cell as in collocation.
+!> \param points Same unfolded atom-grid points.
+!> \param weights Local quadrature weights.
+!> \param v_rho Derivative with respect to the scalar field, including spin fractions.
+!> \param v_gradient Derivative with respect to its Cartesian gradient.
+!> \param point_gradient Weighted target-coordinate derivatives, incremented when forces are requested.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_fixed_atom_grid_integrate(fixed, radial_fields, fields, cell, points, &
+                                                weights, v_rho, v_gradient, point_gradient)
+      TYPE(qs_uspp_fixed_atom_grid_type), INTENT(INOUT)  :: fixed
+      TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: radial_fields(:)
+      TYPE(qs_uspp_atom_grid_type), INTENT(INOUT)        :: fields
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(dp), INTENT(IN)                               :: points(:, :), weights(:), v_rho(:), &
+                                                            v_gradient(:, :)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: point_gradient(:, :)
+
+      CPASSERT(fields%calculate_forces .EQV. fixed%fields%calculate_forces)
+      fixed%fields%potential = 0.0_dp
+      fixed%fields%center_gradient = 0.0_dp
+      fixed%fields%center_strain = 0.0_dp
+      CALL qs_uspp_atom_grid_integrate(fixed%geometry, fixed%fields, cell, points, weights, &
+                                       v_rho, v_gradient, point_gradient, radial_fields)
+      IF (fields%calculate_forces) THEN
+         fields%center_gradient(:, fixed%source_centers) = &
+            fields%center_gradient(:, fixed%source_centers) + fixed%fields%center_gradient
+         fields%center_strain = fields%center_strain + fixed%fields%center_strain
+      END IF
+   END SUBROUTINE qs_uspp_fixed_atom_grid_integrate
 
 ! **************************************************************************************************
 !> \brief Add augmentation from all centers and their periodic images to local quadrature points.
