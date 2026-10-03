@@ -114,7 +114,8 @@ MODULE hfx_ri
                                               distribution_3d_type,&
                                               neighbor_list_3c_type,&
                                               split_block_sizes
-   USE qs_uspp_hfx,                     ONLY: qs_uspp_hfx_add_tensor,&
+   USE qs_uspp_hfx,                     ONLY: qs_uspp_hfx_add_kp_tensor,&
+                                              qs_uspp_hfx_add_tensor,&
                                               qs_uspp_hfx_gradient
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE string_utilities,                ONLY: uppercase
@@ -666,6 +667,9 @@ CONTAINS
                END IF
             END DO
          END DO
+
+         ! Preserve native image pairs before reordering and local RI metric contraction.
+         CALL qs_uspp_hfx_add_kp_tensor(qs_env, ri_data, t_3c_int(1, :))
 
          DO i_img = 1, nimg
             CALL dbt_destroy(t_3c_int_batched(i_img, 1))

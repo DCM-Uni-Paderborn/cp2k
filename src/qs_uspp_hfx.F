@@ -22,17 +22,22 @@ MODULE qs_uspp_hfx
                                               dbcsr_type
    USE dbt_api,                         ONLY: &
         dbt_clear, dbt_contract, dbt_copy, dbt_copy_matrix_to_tensor, dbt_copy_tensor_to_matrix, &
-        dbt_create, dbt_destroy, dbt_get_block, dbt_get_info, dbt_get_stored_coordinates, &
-        dbt_iterator_blocks_left, dbt_iterator_next_block, dbt_iterator_start, dbt_iterator_stop, &
-        dbt_iterator_type, dbt_pgrid_type, dbt_put_block, dbt_scale, dbt_type
+        dbt_create, dbt_destroy, dbt_finalize, dbt_get_block, dbt_get_info, &
+        dbt_get_stored_coordinates, dbt_iterator_blocks_left, dbt_iterator_next_block, &
+        dbt_iterator_start, dbt_iterator_stop, dbt_iterator_type, dbt_pgrid_type, dbt_put_block, &
+        dbt_scale, dbt_type
    USE hfx_types,                       ONLY: hfx_ri_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_potential_coulomb
    USE input_cp2k_hfx,                  ONLY: ri_pmat
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
+   USE kpoint_types,                    ONLY: get_kpoint_info,&
+                                              kpoint_type
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
                                               lebedev_grid
    USE mathconstants,                   ONLY: fourpi
+   USE message_passing,                 ONLY: mp_comm_type
    USE particle_types,                  ONLY: particle_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
@@ -61,8 +66,145 @@ MODULE qs_uspp_hfx
    PUBLIC :: qs_uspp_hfx_transition_tensor, qs_uspp_hfx_transition_adjoint
    PUBLIC :: qs_uspp_hfx_native_tensor, qs_uspp_hfx_native_gradient
    PUBLIC :: qs_uspp_hfx_lattice_tensor, qs_uspp_hfx_lattice_gradient
+   PUBLIC :: qs_uspp_hfx_add_kp_tensor, qs_uspp_hfx_kp_gradient
+   PUBLIC :: qs_uspp_hfx_unstack_adjoint, qs_uspp_hfx_collect_adjoint
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Sum a batched image adjoint into its original image tensors on the same subgroup.
+!> \param tensors Image adjoints with the repeated third-index distribution of stack.
+!> \param stack Adjoint stacked along the third AO dimension.
+!> \param images Image indices used by the forward stacking operation; zero denotes an absent image.
+!> \param first First position in images represented by this batch.
+!> \param pref Exchange and spin prefactor, included exactly once in the accumulated adjoint.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_hfx_unstack_adjoint(tensors, stack, images, first, pref)
+      TYPE(dbt_type), INTENT(INOUT)                      :: tensors(:), stack
+      INTEGER, INTENT(IN)                                :: images(:), first
+      REAL(dp), INTENT(IN)                               :: pref
+
+      INTEGER                                            :: image, ind(3), nblks(3), slot, TARGET(3)
+      LOGICAL                                            :: found
+      REAL(dp), ALLOCATABLE                              :: block(:, :, :)
+      TYPE(dbt_iterator_type)                            :: iter
+
+      CPASSERT(SIZE(tensors) > 0 .AND. first > 0)
+      CALL dbt_get_info(tensors(1), nblks_total=nblks)
+      CALL dbt_iterator_start(iter, stack)
+      DO WHILE (dbt_iterator_blocks_left(iter))
+         CALL dbt_iterator_next_block(iter, ind)
+         slot = (ind(3) - 1)/nblks(3) + 1
+         CPASSERT(first + slot - 1 <= SIZE(images))
+         image = images(first + slot - 1)
+         IF (image == 0) CYCLE
+         CPASSERT(image > 0 .AND. image <= SIZE(tensors))
+         TARGET = [ind(1), ind(2), MODULO(ind(3) - 1, nblks(3)) + 1]
+         CALL dbt_get_block(stack, ind, block, found)
+         CPASSERT(found)
+         block(:, :, :) = pref*block(:, :, :)
+         CALL dbt_put_block(tensors(image), TARGET, SHAPE(block), block, summation=.TRUE.)
+         DEALLOCATE (block)
+      END DO
+      CALL dbt_iterator_stop(iter)
+   END SUBROUTINE qs_uspp_hfx_unstack_adjoint
+
+! **************************************************************************************************
+!> \brief Sum subgroup-local image adjoints onto a world tensor without a global dense block map.
+!> \param world_tensor World tensor, incremented with every independently computed contribution.
+!> \param source Tensor on the caller's subgroup, with the same block sizes and index order.
+!> \param comm World communicator shared by all subgroup ranks; call after their local loops finish.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_hfx_collect_adjoint(world_tensor, source, comm)
+      TYPE(dbt_type), INTENT(INOUT)                      :: world_tensor, source
+
+      CLASS(mp_comm_type), INTENT(IN)                    :: comm
+
+      INTEGER                                            :: owner, iproc, i, ind(3), sizes(3), nblks(3), &
+                                                            position, offset, length, nproc
+      INTEGER, ALLOCATABLE :: send_blocks(:), recv_blocks(:), send_values(:), recv_values(:), &
+                              send_ind_offset(:), recv_ind_offset(:), send_value_offset(:), recv_value_offset(:), &
+                              next_ind(:), next_value(:), send_ind(:), recv_ind(:), b1(:), b2(:), b3(:)
+      LOGICAL                                            :: found
+      REAL(dp), ALLOCATABLE                              :: send_data(:), recv_data(:), block(:, :, :)
+      TYPE(dbt_iterator_type)                            :: iter
+
+      nproc = comm%num_pe
+      ALLOCATE (send_blocks(0:nproc - 1), recv_blocks(0:nproc - 1), &
+                send_values(0:nproc - 1), recv_values(0:nproc - 1), &
+                send_ind_offset(0:nproc - 1), recv_ind_offset(0:nproc - 1), &
+                send_value_offset(0:nproc - 1), recv_value_offset(0:nproc - 1), &
+                next_ind(0:nproc - 1), next_value(0:nproc - 1))
+      send_blocks = 0
+      send_values = 0
+      CALL dbt_iterator_start(iter, source)
+      DO WHILE (dbt_iterator_blocks_left(iter))
+         CALL dbt_iterator_next_block(iter, ind)
+         CALL dbt_get_stored_coordinates(world_tensor, ind, owner)
+         CALL dbt_get_block(source, ind, block, found)
+         CPASSERT(found)
+         CPASSERT(INT(send_values(owner), int_8) + SIZE(block, KIND=int_8) <= INT(HUGE(0), int_8))
+         send_blocks(owner) = send_blocks(owner) + 1
+         send_values(owner) = send_values(owner) + SIZE(block)
+         DEALLOCATE (block)
+      END DO
+      CALL dbt_iterator_stop(iter)
+      CALL comm%alltoall(send_blocks, recv_blocks, 1)
+      CALL comm%alltoall(send_values, recv_values, 1)
+      CPASSERT(SUM(INT(send_blocks, int_8)) <= INT(HUGE(0)/3, int_8))
+      CPASSERT(SUM(INT(recv_blocks, int_8)) <= INT(HUGE(0)/3, int_8))
+      CPASSERT(SUM(INT(send_values, int_8)) <= INT(HUGE(0), int_8))
+      CPASSERT(SUM(INT(recv_values, int_8)) <= INT(HUGE(0), int_8))
+      send_ind_offset(0) = 0
+      recv_ind_offset(0) = 0
+      send_value_offset(0) = 0
+      recv_value_offset(0) = 0
+      DO iproc = 1, nproc - 1
+         send_ind_offset(iproc) = send_ind_offset(iproc - 1) + 3*send_blocks(iproc - 1)
+         recv_ind_offset(iproc) = recv_ind_offset(iproc - 1) + 3*recv_blocks(iproc - 1)
+         send_value_offset(iproc) = send_value_offset(iproc - 1) + send_values(iproc - 1)
+         recv_value_offset(iproc) = recv_value_offset(iproc - 1) + recv_values(iproc - 1)
+      END DO
+      ALLOCATE (send_ind(3*SUM(send_blocks)), recv_ind(3*SUM(recv_blocks)), &
+                send_data(SUM(send_values)), recv_data(SUM(recv_values)))
+      next_ind(:) = send_ind_offset(:)
+      next_value(:) = send_value_offset(:)
+      CALL dbt_iterator_start(iter, source)
+      DO WHILE (dbt_iterator_blocks_left(iter))
+         CALL dbt_iterator_next_block(iter, ind)
+         CALL dbt_get_stored_coordinates(world_tensor, ind, owner)
+         CALL dbt_get_block(source, ind, block, found)
+         CPASSERT(found)
+         position = next_ind(owner)
+         send_ind(position + 1:position + 3) = ind
+         length = SIZE(block)
+         offset = next_value(owner)
+         send_data(offset + 1:offset + length) = RESHAPE(block, [length])
+         next_ind(owner) = position + 3
+         next_value(owner) = offset + length
+         DEALLOCATE (block)
+      END DO
+      CALL dbt_iterator_stop(iter)
+      CALL comm%alltoall(send_ind, 3*send_blocks, send_ind_offset, recv_ind, 3*recv_blocks, recv_ind_offset)
+      CALL comm%alltoall(send_data, send_values, send_value_offset, recv_data, recv_values, recv_value_offset)
+      CALL dbt_get_info(world_tensor, nblks_total=nblks)
+      ALLOCATE (b1(nblks(1)), b2(nblks(2)), b3(nblks(3)))
+      CALL dbt_get_info(world_tensor, blk_size_1=b1, blk_size_2=b2, blk_size_3=b3)
+      DO iproc = 0, nproc - 1
+         offset = recv_value_offset(iproc)
+         DO i = 1, recv_blocks(iproc)
+            position = recv_ind_offset(iproc) + 3*(i - 1)
+            ind = recv_ind(position + 1:position + 3)
+            sizes = [b1(ind(1)), b2(ind(2)), b3(ind(3))]
+            length = PRODUCT(sizes)
+            CALL dbt_put_block(world_tensor, ind, sizes, RESHAPE(recv_data(offset + 1:offset + length), sizes), &
+                               summation=.TRUE.)
+            offset = offset + length
+         END DO
+         CPASSERT(offset == recv_value_offset(iproc) + recv_values(iproc))
+      END DO
+      CALL dbt_finalize(world_tensor)
+   END SUBROUTINE qs_uspp_hfx_collect_adjoint
 
 ! **************************************************************************************************
 !> \brief Add full native augmentation after GG AO desymmetrization, before combined filtering.
@@ -139,6 +281,110 @@ CONTAINS
       CALL dbt_destroy(auxiliary_gradient)
       CALL dbt_destroy(auxiliary)
    END SUBROUTINE qs_uspp_hfx_gradient
+
+! **************************************************************************************************
+!> \brief Add native image sums before the periodic RI metric and image reordering.
+!> \param qs_env Prepared image-resolved projector environment.
+!> \param ri_data Coulomb RI-RHO configuration with original RI and AO image maps.
+!> \param tensors Full (stacked RI,AO,AO) tensors in the original AO-image order.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_hfx_add_kp_tensor(qs_env, ri_data, tensors)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
+      TYPE(dbt_type), INTENT(INOUT)                      :: tensors(:)
+
+      INTEGER, ALLOCATABLE                               :: ao_cells(:, :), nang(:), ri_cells(:, :)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: basis(:)
+      TYPE(particle_type), POINTER                       :: particles(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(sap_int_type), POINTER                        :: sap(:)
+
+      CALL setup(qs_env, ri_data, ks_env, uspp, kinds, particles, basis, nang, with_images=.TRUE.)
+      IF (.NOT. ASSOCIATED(uspp)) RETURN
+      CALL prepare_lattice(qs_env, ks_env, ri_data, SIZE(kinds), 0, cell, sap, ri_cells, ao_cells)
+      CALL qs_uspp_hfx_lattice_tensor(uspp%overlaps, sap, uspp, basis, particles, nang, ri_data%pgrid, &
+                                      cell%hmat, ri_cells, ao_cells, tensors, cell=cell)
+      CALL release_sap_int(sap)
+   END SUBROUTINE qs_uspp_hfx_add_kp_tensor
+
+! **************************************************************************************************
+!> \brief Pull back complete world-communicator image adjoints to atoms and physical affine strain.
+!> \param qs_env Same prepared environment as the forward map.
+!> \param ri_data Same Coulomb RI-RHO configuration and image order.
+!> \param tensor_adjoint Complete image adjoints after metric/bump/density contractions.
+!> \param atom_gradient Local positive energy gradients, incremented without MPI reduction.
+!> \param cell_gradient Optional physical affine-strain gradient, incremented without reduction.
+!>        The image adjoints already contain their exchange/spin prefactor.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_hfx_kp_gradient(qs_env, ri_data, tensor_adjoint, atom_gradient, cell_gradient)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
+      TYPE(dbt_type), INTENT(INOUT)                      :: tensor_adjoint(:)
+      REAL(dp), INTENT(INOUT)                            :: atom_gradient(:, :)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: cell_gradient(3, 3)
+
+      INTEGER, ALLOCATABLE                               :: ao_cells(:, :), nang(:), ri_cells(:, :)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: basis(:)
+      TYPE(particle_type), POINTER                       :: particles(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(sap_int_type), POINTER                        :: sap(:)
+
+      CALL setup(qs_env, ri_data, ks_env, uspp, kinds, particles, basis, nang, with_images=.TRUE.)
+      IF (.NOT. ASSOCIATED(uspp)) RETURN
+      CALL prepare_lattice(qs_env, ks_env, ri_data, SIZE(kinds), 1, cell, sap, ri_cells, ao_cells)
+      CALL qs_uspp_hfx_lattice_gradient(uspp%overlaps, sap, uspp, basis, particles, nang, ri_data%pgrid, &
+                                        cell%hmat, ri_cells, ao_cells, tensor_adjoint, 1.0_dp, &
+                                        atom_gradient, cell_gradient, cell=cell)
+      CALL release_sap_int(sap)
+   END SUBROUTINE qs_uspp_hfx_kp_gradient
+
+! **************************************************************************************************
+!> \brief Preserve the original integer image maps and SAP coordinate-folding convention.
+!> \param qs_env ...
+!> \param ks_env ...
+!> \param ri_data ...
+!> \param nkind ...
+!> \param nder ...
+!> \param cell ...
+!> \param sap ...
+!> \param ri_cells ...
+!> \param ao_cells ...
+! **************************************************************************************************
+   SUBROUTINE prepare_lattice(qs_env, ks_env, ri_data, nkind, nder, cell, sap, ri_cells, ao_cells)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
+      INTEGER, INTENT(IN)                                :: nkind, nder
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(sap_int_type), POINTER                        :: sap(:)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: ri_cells(:, :), ao_cells(:, :)
+
+      INTEGER, POINTER                                   :: index_to_cell(:, :)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(neighbor_list_set_p_type), POINTER            :: sap_ppnl(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      CALL get_qs_env(qs_env, cell=cell, kpoints=kpoints, qs_kind_set=kinds)
+      CPASSERT(ASSOCIATED(kpoints))
+      CALL get_kpoint_info(kpoints, index_to_cell=index_to_cell)
+      CPASSERT(ri_data%nimg <= SIZE(index_to_cell, 2))
+      CPASSERT(ALL(ri_data%RI_cell_to_img > 0))
+      CPASSERT(ALL(ri_data%RI_cell_to_img <= SIZE(index_to_cell, 2)))
+      ALLOCATE (ri_cells(3, ri_data%ncell_RI), ao_cells(3, ri_data%nimg))
+      ri_cells(:, :) = index_to_cell(:, ri_data%RI_cell_to_img)
+      ao_cells(:, :) = index_to_cell(:, 1:ri_data%nimg)
+      CALL get_ks_env(ks_env, sap_ppnl=sap_ppnl)
+      CPASSERT(ASSOCIATED(sap_ppnl))
+      ALLOCATE (sap(nkind*nkind))
+      CALL build_sap_ints(sap, sap_ppnl, kinds, nder=nder)
+      CALL sap_sort(sap)
+   END SUBROUTINE prepare_lattice
 
 ! **************************************************************************************************
 !> \brief Assemble all original projector-image pairs into unfiltered AO image tensors.
@@ -736,8 +982,9 @@ CONTAINS
 !> \param particles ...
 !> \param basis ...
 !> \param nang ...
+!> \param with_images Use explicit independent projector images for the k-point engine.
 ! **************************************************************************************************
-   SUBROUTINE setup(qs_env, ri_data, ks_env, uspp, kinds, particles, basis, nang)
+   SUBROUTINE setup(qs_env, ri_data, ks_env, uspp, kinds, particles, basis, nang, with_images)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -746,9 +993,10 @@ CONTAINS
       TYPE(particle_type), POINTER                       :: particles(:)
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: basis(:)
       INTEGER, ALLOCATABLE                               :: nang(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: with_images
 
       INTEGER                                            :: ikind
-      LOGICAL                                            :: do_kpoints, supported
+      LOGICAL                                            :: do_kpoints, image_resolved, supported
       TYPE(cell_type), POINTER                           :: cell
 
       CALL get_qs_env(qs_env, ks_env=ks_env)
@@ -756,12 +1004,18 @@ CONTAINS
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       CALL get_qs_env(qs_env, qs_kind_set=kinds, particle_set=particles, cell=cell)
       CALL get_ks_env(ks_env, do_kpoints=do_kpoints)
-      supported = ri_data%flavor == ri_pmat .AND. .NOT. do_kpoints .AND. ALL(cell%perd == 0) .AND. &
-                  TRIM(ri_data%orb_basis_type) == 'ORB' .AND. ri_data%same_op .AND. &
+      image_resolved = .FALSE.
+      IF (PRESENT(with_images)) image_resolved = with_images
+      supported = ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == 'ORB' .AND. &
                   ri_data%ri_metric%potential_type == do_potential_coulomb .AND. &
                   ri_data%hfx_pot%potential_type == do_potential_coulomb
+      IF (image_resolved) THEN
+         supported = supported .AND. do_kpoints
+      ELSE
+         supported = supported .AND. .NOT. do_kpoints .AND. ALL(cell%perd == 0) .AND. ri_data%same_op
+      END IF
       IF (.NOT. supported) THEN
-         CPABORT('Native USPP HFX requires isolated Gamma Coulomb RI-RHO and ORB')
+         CPABORT('Unsupported native Coulomb RI-HFX image setup')
       END IF
       CPASSERT(ASSOCIATED(uspp%overlaps))
       CPASSERT(ASSOCIATED(ri_data%pgrid))
