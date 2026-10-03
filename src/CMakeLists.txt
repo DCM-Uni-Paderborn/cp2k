@@ -67,6 +67,7 @@ list(
   upf_projector_integrals.F
   upf_local_integrals.F
   uspp_augmentation.F
+  upf_core_kinetic.F
   uspp_projector_operators.F
   qs_uspp_projectors.F
   qs_uspp_types.F

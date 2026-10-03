@@ -20,7 +20,8 @@ PROGRAM atom_upf_unittest
         release_atom_potential, sgp_pseudo, upf_pseudo
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
-                                              atom_upfpot_type
+                                              atom_upfpot_type,&
+                                              upf_nlcc_kinetic
    USE atom_utils,                      ONLY: atom_core_density,&
                                               atom_density
    USE cell_types,                      ONLY: cell_type
@@ -81,6 +82,8 @@ PROGRAM atom_upf_unittest
    CALL check_projector_addition_theorem()
    CALL check_atomic_potential()
    CALL check_upf_units()
+   CALL check_core_kinetic_convention()
+   CALL check_uspp_partial_waves()
    CALL check_nlcc_fit()
    CALL check_basis_origin()
    CALL check_basis_derivatives()
@@ -92,12 +95,16 @@ PROGRAM atom_upf_unittest
 
    ! The same temporary is reused for successive KIND sections in Quickstep.
    ALLOCATE (pot%rho_nlcc(3))
+   ALLOCATE (pot%tau_nlcc(3), pot%tau_atom(3), SOURCE=1.0_dp)
+   pot%with_metagga_info = .TRUE.
    pot%rho_nlcc = 1.0_dp
    pot%core_correction = .TRUE.
    pot%econf = [2, 4, 0, 0]
    pot%pname = "previous kind"
    CALL atom_release_upf(pot)
    IF (ALLOCATED(pot%rho_nlcc)) ERROR STOP "UPF release leaked the core density"
+   IF (ALLOCATED(pot%tau_nlcc) .OR. ALLOCATED(pot%tau_atom)) ERROR STOP "UPF release leaked kinetic densities"
+   IF (pot%with_metagga_info) ERROR STOP "UPF release retained meta-GGA metadata"
    IF (pot%core_correction) ERROR STOP "UPF release retained core-correction metadata"
    IF (ANY(pot%econf /= 0)) ERROR STOP "UPF release retained the previous electron configuration"
    IF (pot%pname /= "") ERROR STOP "UPF release retained the previous potential name"
@@ -359,6 +366,7 @@ CONTAINS
 
       INTEGER                                            :: unit
       TYPE(atom_potential_type)                          :: atomic
+      TYPE(atom_upfpot_type)                             :: header
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(section_type), POINTER                        :: specification
       TYPE(section_vals_type), POINTER                   :: input, potential_section
@@ -369,7 +377,7 @@ CONTAINS
          WRITE (unit, '(A)') &
             '<UPF version="2.0.1">', &
             '<PP_HEADER element="He" pseudo_type="NC" z_valence="2"', &
-            ' mesh_size="3" number_of_proj="2" l_max="0" />', &
+            ' mesh_size="3" number_of_proj="2" l_max="0" with_metagga_info="true" />', &
             '<PP_MESH mesh="3">', &
             '<PP_R type="real" size="3">', &
             '0.5 1.0 1.5', &
@@ -392,10 +400,16 @@ CONTAINS
             '2.0 0.4 0.4 8.0', &
             '</PP_DIJ>', &
             '</PP_NONLOCAL>', &
+            '<PP_TAUMOD type="real" size="3" columns="3" convention="hartree_per_volume">', &
+            '-3.0 2.0 1.0', '</PP_TAUMOD>', &
+            '<PP_TAUATOM>', '0.2 0.4 0.6', '</PP_TAUATOM>', &
             '</UPF>'
          CLOSE (unit)
       END IF
       CALL logger%para_env%sync()
+      CALL atom_read_upf(header, fixture, read_header=.TRUE.)
+      IF (.NOT. header%with_metagga_info) ERROR STOP "UPF kinetic metadata header read failed"
+      CALL atom_release_upf(header)
       NULLIFY (specification, input)
       CALL create_atom_section(specification)
       CALL section_vals_create(input, specification)
@@ -404,6 +418,12 @@ CONTAINS
       CALL section_vals_val_set(potential_section, 'POTENTIAL_FILE_NAME', c_val=fixture)
       CALL init_atom_potential(atomic, potential_section, 2)
       ASSOCIATE (potential => atomic%upf_pot)
+         IF (.NOT. potential%with_metagga_info) ERROR STOP "UPF meta-GGA header was not imported"
+         IF (potential%tau_nlcc_convention /= 'HARTREE_PER_VOLUME') ERROR STOP 'UPF kinetic convention was lost'
+         IF (ANY(potential%tau_nlcc /= [-3.0_dp, 2.0_dp, 1.0_dp]) .OR. &
+             ANY(potential%tau_atom /= [0.2_dp, 0.4_dp, 0.6_dp])) THEN
+            ERROR STOP "UPF kinetic densities were rescaled or confused with charge density"
+         END IF
          IF (MAXVAL(ABS(potential%vlocal - [3.0_dp, 2.0_dp, 1.0_dp])) > 1.e-14_dp) THEN
             ERROR STOP "UPF local potential is not in Hartree"
          END IF
@@ -426,6 +446,118 @@ CONTAINS
          CLOSE (unit, STATUS="DELETE")
       END IF
    END SUBROUTINE check_upf_units
+
+! **************************************************************************************************
+!> \brief Reject ambiguous legacy core-kinetic units and preserve explicitly normalized samples.
+! **************************************************************************************************
+   SUBROUTINE check_core_kinetic_convention()
+      CHARACTER(LEN=256)                                 :: reason
+      LOGICAL                                            :: available
+      REAL(dp), ALLOCATABLE                              :: kinetic(:)
+      TYPE(atom_upfpot_type)                             :: dataset
+
+      ALLOCATE (dataset%r(3), SOURCE=[0.0_dp, 0.5_dp, 1.0_dp])
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (.NOT. available .OR. ANY(kinetic /= 0.0_dp)) ERROR STOP 'Core-free UPF requires no supplementary tau'
+      ALLOCATE (dataset%rho_nlcc(3), SOURCE=1.0_dp)
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (available) ERROR STOP 'Missing model-core kinetic field was invented'
+      ALLOCATE (dataset%tau_nlcc(3), SOURCE=[2.0_dp, -0.1_dp, 0.0_dp])
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (available) ERROR STOP 'Legacy kinetic units were guessed'
+      dataset%tau_nlcc_convention = 'HARTREE_PER_VOLUME'
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (.NOT. available .OR. ANY(kinetic /= dataset%tau_nlcc)) ERROR STOP 'Declared model-core kinetic units changed'
+      dataset%rho_nlcc = 0.0_dp
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (available) ERROR STOP 'Kinetic core without NLCC charge was accepted'
+      CALL atom_release_upf(dataset)
+   END SUBROUTINE check_core_kinetic_convention
+
+! **************************************************************************************************
+!> \brief Optional USPP full waves are beta-indexed, not atomic guesses, and retain r*phi.
+! **************************************************************************************************
+   SUBROUTINE check_uspp_partial_waves()
+      CHARACTER(LEN=*), PARAMETER :: fixture = 'uspp-partial-waves-test.upf'
+
+      CHARACTER(LEN=5)                                   :: has_wfc
+      INTEGER                                            :: unit, variant
+      TYPE(atom_upfpot_type)                             :: potential
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      logger => cp_get_default_logger()
+      DO variant = 1, 2
+         has_wfc = 'false'
+         IF (variant == 1) has_wfc = 'true'
+         IF (logger%para_env%is_source()) THEN
+            OPEN (NEWUNIT=unit, FILE=fixture, STATUS='REPLACE', ACTION='WRITE')
+            WRITE (unit, '(A)') &
+               '<UPF version="2.0.1">', &
+               '<PP_HEADER element="H" pseudo_type="US" is_ultrasoft="true" is_paw="false"', &
+               ' has_wfc="'//TRIM(has_wfc)//'" z_valence="1" mesh_size="3"', &
+               ' number_of_proj="2" number_of_wfc="1" l_max="1"/>', &
+               '<PP_MESH mesh="3">', &
+               '<PP_R>', '0.5 1 1.5', '</PP_R>', &
+               '<PP_RAB>', '0.5 0.5 0.5', '</PP_RAB>', '</PP_MESH>', &
+               '<PP_LOCAL>', '6 4 2', '</PP_LOCAL>', &
+               '<PP_NONLOCAL>', &
+               '<PP_BETA.1 index="1" angular_momentum="0" size="3">', '1 4 9', '</PP_BETA.1>', &
+               '<PP_BETA.2 index="2" angular_momentum="1" size="3">', '2 -1 3', '</PP_BETA.2>', &
+               '<PP_DIJ>', '2 0 0 8', '</PP_DIJ>', &
+               '<PP_AUGMENTATION q_with_l="T" nqf="0" nqlc="3">', &
+               '<PP_Q>', '2 0 0 3', '</PP_Q>', &
+               '<PP_QIJL.1.1.0 first_index="1" second_index="1" composite_index="1" angular_momentum="0">', &
+               '1 2 3', '</PP_QIJL.1.1.0>', &
+               '<PP_QIJL.1.2.1 first_index="1" second_index="2" composite_index="2" angular_momentum="1">', &
+               '4 -5 6', '</PP_QIJL.1.2.1>', &
+               '<PP_QIJL.2.2.0 first_index="2" second_index="2" composite_index="3" angular_momentum="0">', &
+               '-3 4 5', '</PP_QIJL.2.2.0>', &
+               '<PP_QIJL.2.2.2 first_index="2" second_index="2" composite_index="3" angular_momentum="2">', &
+               '0 0 0', '</PP_QIJL.2.2.2>', '</PP_AUGMENTATION>', '</PP_NONLOCAL>', &
+               '<PP_PSWFC>', '<PP_CHI.1 l="0">', '999 999 999', '</PP_CHI.1>', '</PP_PSWFC>'
+            IF (variant == 1) THEN
+               ! Reordered, deliberately unnormalized waves distinguish every index and side.
+               WRITE (unit, '(A)') &
+                  '<PP_FULL_WFC number_of_wfc="2">', &
+                  '<PP_PSWFC.2 type="real" size="3" l="1">', '2 3 -4', '</PP_PSWFC.2>', &
+                  '<PP_AEWFC.1 index="1" l="0">', '-3 5 -7', '</PP_AEWFC.1>', &
+                  '<PP_AEWFC.2 index="2" l="1">', '5 -7 9', '</PP_AEWFC.2>', &
+                  '<PP_PSWFC.1 l="0">', '1 -2 3', '</PP_PSWFC.1>', '</PP_FULL_WFC>'
+            END IF
+            WRITE (unit, '(A)') '</UPF>'
+            CLOSE (unit)
+         END IF
+         CALL logger%para_env%sync()
+         IF (variant == 1) THEN
+            CALL atom_read_upf(potential, fixture, read_header=.TRUE.)
+            IF (ALLOCATED(potential%partial_waves)) ERROR STOP 'USPP full waves imported without augmentation request'
+            CALL atom_release_upf(potential)
+         END IF
+         CALL atom_read_upf(potential, fixture, read_augmentation=.TRUE.)
+         IF (variant == 1) THEN
+            IF (.NOT. ALLOCATED(potential%partial_waves)) ERROR STOP 'Missing optional USPP full waves'
+            ASSOCIATE (waves => potential%partial_waves)
+               IF (ANY(SHAPE(waves%ae_wfc) /= [3, 2])) ERROR STOP 'USPP full-wave count differs from beta count'
+               IF (ANY(waves%ae_wfc /= RESHAPE([-3._dp, 5._dp, -7._dp, 5._dp, -7._dp, 9._dp], [3, 2]))) THEN
+                  ERROR STOP 'USPP AE full-wave order or original normalization changed'
+               END IF
+               IF (ANY(waves%ps_wfc /= RESHAPE([1._dp, -2._dp, 3._dp, 2._dp, 3._dp, -4._dp], [3, 2]))) THEN
+                  ERROR STOP 'USPP PS full waves changed or were confused with atomic guesses'
+               END IF
+               IF (ANY(waves%angular_momenta /= [0, 1])) ERROR STOP 'Wrong USPP full-wave angular momenta'
+            END ASSOCIATE
+         ELSE
+            IF (ALLOCATED(potential%partial_waves)) ERROR STOP 'USPP without full waves allocated partial-wave data'
+         END IF
+         CALL atom_release_upf(potential)
+         IF (ALLOCATED(potential%partial_waves)) ERROR STOP 'USPP full-wave data not released'
+         CALL logger%para_env%sync()
+      END DO
+      IF (logger%para_env%is_source()) THEN
+         OPEN (NEWUNIT=unit, FILE=fixture, STATUS='OLD')
+         CLOSE (unit, STATUS='DELETE')
+      END IF
+   END SUBROUTINE check_uspp_partial_waves
 
 ! **************************************************************************************************
 !> \brief Compare the converted atomic SGP operator with analytic Gaussian integrals.

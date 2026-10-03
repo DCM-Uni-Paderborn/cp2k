@@ -17,6 +17,7 @@ MODULE atom_xc
                                               opmat_type,&
                                               sgp_pseudo,&
                                               upf_pseudo
+   USE atom_uspp,                       ONLY: atom_uspp_integrate
    USE atom_utils,                      ONLY: atom_core_density,&
                                               atom_density,&
                                               coulomb_potential_numeric,&
@@ -278,6 +279,7 @@ CONTAINS
                ALLOCATE (tau(nr, 1))
                CALL atom_density(tau(:, 1), atom%orbitals%pmat, atom%basis, atom%state%maxl_occ, &
                                  typ="KIN", rr=atom%basis%grid%rad2)
+               CALL add_uspp_core_kinetic(atom, tau)
             END IF
             IF (needs%laplace_rho) THEN
                ALLOCATE (lap(nr, 1))
@@ -326,7 +328,7 @@ CONTAINS
             IF (needs%norm_drho) THEN
                deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drho], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
-               CALL numpot_matrix(xcmat%op, xcpot(:, 1, 1), atom%basis, 1)
+               CALL numpot_matrix(xcmat%op, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 1)), atom%basis, 1)
                IF (.FALSE.) THEN
                   CALL open_file(unit_number=unit_nr, file_status="UNKNOWN", file_action="WRITE", file_name="atomdpot.dat")
                   DO i = 1, SIZE(xcpot(:, 1, 1))
@@ -345,10 +347,11 @@ CONTAINS
                ALLOCATE (taumat(n1, n2, 0:n3 - 1))
                taumat = 0._dp
 
+               CALL atom_uspp_integrate(xcmat%op, xcpot(:, 1, 1), atom%basis, 2)
                xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-               CALL numpot_matrix(xcmat%op, xcpot(:, 1, 1), atom%basis, 2)
+               CALL numpot_matrix(xcmat%op, xcpot(:, 1, 1), atom%basis, 2, charge_augmentation=.FALSE.)
                xcpot(:, 1, 1) = xcpot(:, 1, 1)/atom%basis%grid%rad2(:)
-               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0)
+               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0, charge_augmentation=.FALSE.)
                DO l = 0, 3
                   xcmat%op(:, :, l) = xcmat%op(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
                END DO
@@ -428,7 +431,6 @@ CONTAINS
          nlcc = atom%potential%gth_pot%nlcc
       ELSE IF (atom%potential%ppot_type == upf_pseudo) THEN
          nlcc = atom%potential%upf_pot%core_correction
-         CPASSERT(.NOT. nlcc)
       ELSE IF (atom%potential%ppot_type == sgp_pseudo) THEN
          nlcc = atom%potential%sgp_pot%has_nlcc
          CPASSERT(.NOT. nlcc)
@@ -500,6 +502,7 @@ CONTAINS
                                  typ="KIN", rr=atom%basis%grid%rad2)
                CALL atom_density(tau(:, 2), atom%orbitals%pmatb, atom%basis, atom%state%maxl_occ, &
                                  typ="KIN", rr=atom%basis%grid%rad2)
+               CALL add_uspp_core_kinetic(atom, tau)
             END IF
             IF (needs%laplace_rho_spin) THEN
                ALLOCATE (lap(nr, 2))
@@ -542,19 +545,19 @@ CONTAINS
                NULLIFY (deriv)
                deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drhoa], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
-               CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1), atom%basis, 1)
+               CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 1)), atom%basis, 1)
                ! drhob
                NULLIFY (deriv)
                deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drhob], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
-               CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1), atom%basis, 1)
+               CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 2)), atom%basis, 1)
                ! Cross Terms
                NULLIFY (deriv)
                deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drho])
                IF (ASSOCIATED(deriv)) THEN
                   CALL xc_derivative_get(deriv, deriv_data=xcpot)
-                  CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1), atom%basis, 1)
-                  CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1), atom%basis, 1)
+                  CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1)*SIGN(1.0_dp, SUM(drho, DIM=2)), atom%basis, 1)
+                  CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1)*SIGN(1.0_dp, SUM(drho, DIM=2)), atom%basis, 1)
                END IF
                DEALLOCATE (drho)
             END IF
@@ -567,10 +570,11 @@ CONTAINS
                deriv => xc_dset_get_derivative(deriv_set, [deriv_tau_a], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
                taumat = 0._dp
+               CALL atom_uspp_integrate(xcmata%op, xcpot(:, 1, 1), atom%basis, 2)
                xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-               CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1), atom%basis, 2)
+               CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1), atom%basis, 2, charge_augmentation=.FALSE.)
                xcpot(:, 1, 1) = xcpot(:, 1, 1)/atom%basis%grid%rad2(:)
-               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0)
+               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0, charge_augmentation=.FALSE.)
                DO l = 0, 3
                   xcmata%op(:, :, l) = xcmata%op(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
                END DO
@@ -578,10 +582,11 @@ CONTAINS
                deriv => xc_dset_get_derivative(deriv_set, [deriv_tau_b], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
                taumat = 0._dp
+               CALL atom_uspp_integrate(xcmatb%op, xcpot(:, 1, 1), atom%basis, 2)
                xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-               CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1), atom%basis, 2)
+               CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1), atom%basis, 2, charge_augmentation=.FALSE.)
                xcpot(:, 1, 1) = xcpot(:, 1, 1)/atom%basis%grid%rad2(:)
-               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0)
+               CALL numpot_matrix(taumat, xcpot(:, 1, 1), atom%basis, 0, charge_augmentation=.FALSE.)
                DO l = 0, 3
                   xcmatb%op(:, :, l) = xcmatb%op(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
                END DO
@@ -647,11 +652,11 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE atom_vxc_lda(basis, pmat, maxl, xc_section, fexc, xcmat)
       TYPE(atom_basis_type), POINTER                     :: basis
-      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: pmat
+      REAL(KIND=dp), DIMENSION(:, :, 0:), INTENT(IN)     :: pmat
       INTEGER, INTENT(IN)                                :: maxl
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(KIND=dp), INTENT(OUT)                         :: fexc
-      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: xcmat
+      REAL(KIND=dp), DIMENSION(:, :, 0:), INTENT(INOUT)  :: xcmat
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'atom_vxc_lda'
 
@@ -743,7 +748,7 @@ CONTAINS
          IF (needs%norm_drho) THEN
             deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drho], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
-            CALL numpot_matrix(xcmat, xcpot(:, 1, 1), basis, 1)
+            CALL numpot_matrix(xcmat, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 1)), basis, 1)
             DEALLOCATE (drho)
          END IF
          IF (needs%tau) THEN
@@ -755,11 +760,12 @@ CONTAINS
             ALLOCATE (taumat(n1, n2, 0:n3 - 1))
             taumat = 0._dp
 
+            CALL atom_uspp_integrate(xcmat, xcpot(:, 1, 1), basis, 2)
             xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-            CALL numpot_matrix(xcmat, xcpot(:, 1, 1), basis, 2)
+            CALL numpot_matrix(xcmat, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
-            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0)
-            DO l = 0, 3
+            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0, charge_augmentation=.FALSE.)
+            DO l = 0, n3 - 1
                xcmat(:, :, l) = xcmat(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
             END DO
 
@@ -798,11 +804,11 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE atom_vxc_lsd(basis, pmata, pmatb, maxl, xc_section, fexc, xcmata, xcmatb)
       TYPE(atom_basis_type), POINTER                     :: basis
-      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: pmata, pmatb
+      REAL(KIND=dp), DIMENSION(:, :, 0:), INTENT(IN)     :: pmata, pmatb
       INTEGER, INTENT(IN)                                :: maxl
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(KIND=dp), INTENT(OUT)                         :: fexc
-      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: xcmata, xcmatb
+      REAL(KIND=dp), DIMENSION(:, :, 0:), INTENT(INOUT)  :: xcmata, xcmatb
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'atom_vxc_lsd'
 
@@ -903,19 +909,19 @@ CONTAINS
             NULLIFY (deriv)
             deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drhoa], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
-            CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 1)
+            CALL numpot_matrix(xcmata, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 1)), basis, 1)
             ! drhob
             NULLIFY (deriv)
             deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drhob], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
-            CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 1)
+            CALL numpot_matrix(xcmatb, xcpot(:, 1, 1)*SIGN(1.0_dp, drho(:, 2)), basis, 1)
             ! Cross Terms
             NULLIFY (deriv)
             deriv => xc_dset_get_derivative(deriv_set, [deriv_norm_drho])
             IF (ASSOCIATED(deriv)) THEN
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
-               CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 1)
-               CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 1)
+               CALL numpot_matrix(xcmata, xcpot(:, 1, 1)*SIGN(1.0_dp, SUM(drho, DIM=2)), basis, 1)
+               CALL numpot_matrix(xcmatb, xcpot(:, 1, 1)*SIGN(1.0_dp, SUM(drho, DIM=2)), basis, 1)
             END IF
             DEALLOCATE (drho)
          END IF
@@ -928,22 +934,24 @@ CONTAINS
             deriv => xc_dset_get_derivative(deriv_set, [deriv_tau_a], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
             taumat = 0._dp
+            CALL atom_uspp_integrate(xcmata, xcpot(:, 1, 1), basis, 2)
             xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-            CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 2)
+            CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
-            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0)
-            DO l = 0, 3
+            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0, charge_augmentation=.FALSE.)
+            DO l = 0, n3 - 1
                xcmata(:, :, l) = xcmata(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
             END DO
 
             deriv => xc_dset_get_derivative(deriv_set, [deriv_tau_b], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
             taumat = 0._dp
+            CALL atom_uspp_integrate(xcmatb, xcpot(:, 1, 1), basis, 2)
             xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
-            CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 2)
+            CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
-            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0)
-            DO l = 0, 3
+            CALL numpot_matrix(taumat, xcpot(:, 1, 1), basis, 0, charge_augmentation=.FALSE.)
+            DO l = 0, n3 - 1
                xcmatb(:, :, l) = xcmatb(:, :, l) + REAL(l*(l + 1), dp)*taumat(:, :, l)
             END DO
 
@@ -1093,10 +1101,12 @@ CONTAINS
             rho_set%owns%rho = .TRUE.
             rho_set%has%rho = .TRUE.
          END IF
+         ! Functionals receive a norm. Matrix integration pulls its potential
+         ! back with the sign of the original radial derivative.
          ! Give the norm of the gradient of the density
          IF (needs%norm_drho) THEN
             DO ia = 1, na
-               rho_set%norm_drho(ia, 1, 1) = drho(ia, 1)
+               rho_set%norm_drho(ia, 1, 1) = ABS(drho(ia, 1))
             END DO
             rho_set%owns%norm_drho = .TRUE.
             rho_set%has%norm_drho = .TRUE.
@@ -1115,7 +1125,7 @@ CONTAINS
          ! Give the norm of the total gradient of the density
          IF (needs%norm_drho) THEN
             DO ia = 1, na
-               rho_set%norm_drho(ia, 1, 1) = drho(ia, 1) + drho(ia, 2)
+               rho_set%norm_drho(ia, 1, 1) = ABS(drho(ia, 1) + drho(ia, 2))
             END DO
             rho_set%owns%norm_drho = .TRUE.
             rho_set%has%norm_drho = .TRUE.
@@ -1141,8 +1151,8 @@ CONTAINS
          ! Give the norm of the gradient of rhoa and of rhob separatedly
          IF (needs%norm_drho_spin) THEN
             DO ia = 1, na
-               rho_set%norm_drhoa(ia, 1, 1) = drho(ia, 1)
-               rho_set%norm_drhob(ia, 1, 1) = drho(ia, 2)
+               rho_set%norm_drhoa(ia, 1, 1) = ABS(drho(ia, 1))
+               rho_set%norm_drhob(ia, 1, 1) = ABS(drho(ia, 2))
             END DO
             rho_set%owns%norm_drho_spin = .TRUE.
             rho_set%has%norm_drho_spin = .TRUE.
@@ -1334,5 +1344,29 @@ CONTAINS
       END DO
 
    END SUBROUTINE lsd_pade
+
+! **************************************************************************************************
+!> \brief Add the spin-summed USPP model-core tau once to atomic XC arguments.
+!> \param atom Atomic potential and existing orbital-basis quadrature.
+!> \param tau Gaussian valence kinetic densities, with equally split closed cores for two spins.
+! **************************************************************************************************
+   SUBROUTINE add_uspp_core_kinetic(atom, tau)
+      TYPE(atom_type), INTENT(IN)                        :: atom
+      REAL(dp), INTENT(INOUT)                            :: tau(:, :)
+
+      INTEGER                                            :: spin
+
+      IF (atom%potential%ppot_type /= upf_pseudo) RETURN
+      IF (atom%potential%upf_pot%is_ultrasoft .AND. .NOT. atom%potential%upf_pot%is_paw) THEN
+         CPASSERT(ALLOCATED(atom%basis%uspp))
+         IF (.NOT. ALLOCATED(atom%basis%uspp%core_kinetic)) THEN
+            CALL cp_abort(__LOCATION__, TRIM(atom%basis%uspp%kinetic_failure_reason))
+         END IF
+         DO spin = 1, SIZE(tau, 2)
+            tau(:, spin) = tau(:, spin) + atom%basis%uspp%core_kinetic/REAL(SIZE(tau, 2), dp)
+         END DO
+         RETURN
+      END IF
+   END SUBROUTINE add_uspp_core_kinetic
 
 END MODULE atom_xc

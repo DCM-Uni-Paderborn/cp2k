@@ -6,10 +6,16 @@
 !--------------------------------------------------------------------------------------------------!
 
 PROGRAM uspp_fourier_unittest
+   USE atom_types,                      ONLY: atom_basis_type,&
+                                              init_atom_basis_default_pp,&
+                                              release_atom_basis
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
                                               atom_upfpot_type,&
                                               upf_radial_weights
+   USE atom_uspp,                       ONLY: atom_uspp_density,&
+                                              atom_uspp_integrate,&
+                                              atom_uspp_setup
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp,&
                                               int_8
@@ -23,11 +29,17 @@ PROGRAM uspp_fourier_unittest
    USE qs_native_grid_cache,            ONLY: native_grid_interp_npts,&
                                               native_grid_interp_offset_min,&
                                               native_grid_interpolation_weights
+   USE upf_core_kinetic,                ONLY: upf_core_kinetic_cartesian,&
+                                              upf_core_kinetic_fourier,&
+                                              upf_core_kinetic_init,&
+                                              upf_core_kinetic_type,&
+                                              upf_core_kinetic_values
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
    USE uspp_augmentation,               ONLY: &
-        uspp_augmentation_collocate, uspp_augmentation_collocate_atom, uspp_augmentation_fourier, &
-        uspp_augmentation_init, uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
+        upf_kinetic_reconstruction_init, upf_radial_scalar_init, uspp_augmentation_collocate, &
+        uspp_augmentation_collocate_atom, uspp_augmentation_fourier, uspp_augmentation_init, &
+        uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
         uspp_augmentation_prepare_fourier, uspp_augmentation_prepare_realspace, &
         uspp_augmentation_realspace, uspp_augmentation_type
 
@@ -48,6 +60,8 @@ PROGRAM uspp_fourier_unittest
    CALL cp2k_init()
    max_error = 0.0_dp
    CALL check_native_grid_interpolation()
+   CALL check_model_core_kinetic()
+   CALL check_partial_wave_kinetic()
    DO grid = 1, 3
       pot%number_of_proj = nb
       pot%is_ultrasoft = .TRUE.
@@ -169,6 +183,216 @@ PROGRAM uspp_fourier_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Check an explicitly supplied model-core field against independent Gaussian formulas.
+!>        Values, center derivatives and all affine-strain components retain the declared units.
+! **************************************************************************************************
+   SUBROUTINE check_model_core_kinetic()
+      REAL(dp), PARAMETER :: amplitude = 0.37_dp, exponent = 0.7_dp, &
+         radii(4) = [0.0_dp, 0.217_dp, 1.37_dp, 11.0_dp]
+
+      COMPLEX(dp)                                        :: coefficient, exact, gradient(3), &
+                                                            strain(3, 3), strain_exact(3, 3)
+      INTEGER                                            :: a, b, i, test
+      REAL(dp)                                           :: coordinate(3), derivatives(4), error, &
+                                                            field, spatial(3), values(4), &
+                                                            wavevector(3)
+      TYPE(atom_upfpot_type)                             :: dataset
+      TYPE(upf_core_kinetic_type)                        :: cache
+
+      ALLOCATE (dataset%r(1001), dataset%rab(1001), dataset%rho_nlcc(1001), dataset%tau_nlcc(1001))
+      dataset%r(:) = [(REAL(i - 1, dp)*0.01_dp, i=1, 1001)]
+      dataset%rab = 0.01_dp
+      dataset%rho_nlcc(:) = EXP(-dataset%r**2)
+      dataset%tau_nlcc(:) = amplitude*EXP(-exponent*dataset%r**2)
+      dataset%tau_nlcc_convention = 'HARTREE_PER_VOLUME'
+      CALL upf_core_kinetic_init(dataset, cache)
+      IF (.NOT. cache%available) ERROR STOP 'Explicit model-core kinetic table was rejected'
+      CALL upf_core_kinetic_values(cache, radii, values, derivatives)
+      error = MAXVAL(ABS(values - amplitude*EXP(-exponent*radii**2)))
+      IF (error > 2.e-7_dp) ERROR STOP 'Original model-core kinetic values changed'
+      error = MAXVAL(ABS(derivatives + 2.0_dp*exponent*radii*amplitude*EXP(-exponent*radii**2)))
+      IF (error > 3.e-6_dp) ERROR STOP 'Model-core kinetic radial derivative is inconsistent'
+      coordinate = [0.19_dp, -0.31_dp, 0.47_dp]
+      CALL upf_core_kinetic_cartesian(cache, coordinate, field, spatial)
+      error = ABS(field - amplitude*EXP(-exponent*SUM(coordinate**2)))
+      error = MAX(error, MAXVAL(ABS(spatial + 2.0_dp*exponent*coordinate*amplitude*EXP(-exponent*SUM(coordinate**2)))))
+      IF (error > 3.e-6_dp) ERROR STOP 'Model-core kinetic Cartesian gradient is inconsistent'
+      error = 0.0_dp
+      DO test = 1, 3
+         SELECT CASE (test)
+         CASE (1)
+            wavevector = 0.0_dp
+         CASE (2)
+            wavevector = [0.31_dp, -0.72_dp, 1.17_dp]
+         CASE (3)
+            wavevector = [-3.3_dp, 1.7_dp, 0.9_dp]
+         END SELECT
+         exact = amplitude*(pi/exponent)**1.5_dp*EXP(-SUM(wavevector**2)/(4.0_dp*exponent))* &
+                 EXP(CMPLX(0.0_dp, -DOT_PRODUCT(wavevector, center), dp))/volume
+         CALL upf_core_kinetic_fourier(cache, wavevector, center, volume, coefficient, strain, gradient)
+         DO b = 1, 3
+            DO a = 1, 3
+               strain_exact(a, b) = exact*wavevector(a)*wavevector(b)/(2.0_dp*exponent)
+            END DO
+            strain_exact(b, b) = strain_exact(b, b) - exact
+         END DO
+         error = MAX(error, ABS(coefficient - exact), MAXVAL(ABS(strain - strain_exact)), &
+                     MAXVAL(ABS(gradient - CMPLX(0.0_dp, -wavevector, dp)*exact)))
+      END DO
+      WRITE (*, *) 'Original model-core Fourier/center/strain error:', error
+      IF (error > 1.e-10_dp) ERROR STOP 'Model-core kinetic Fourier geometry differs from Gaussian reference'
+      CALL atom_release_upf(dataset)
+   END SUBROUTINE check_model_core_kinetic
+
+! **************************************************************************************************
+!> \brief Kinetic s/p products against direct Cartesian gradients; absent data remain unavailable.
+! **************************************************************************************************
+   SUBROUTINE check_partial_wave_kinetic()
+      CHARACTER(LEN=256)                                 :: reason
+      INTEGER                                            :: axis, k, point
+      LOGICAL                                            :: available
+      REAL(dp) :: coordinate(3), error, exact(4, 4), gradients(4, 3), points(3, 2), radius2, &
+         samples(81), scalar_gradient(1, 1, 3), scalar_value(1, 1), sign, value(4, 4)
+      TYPE(atom_upfpot_type)                             :: dataset
+      TYPE(upf_projector_type)                           :: native
+      TYPE(uspp_augmentation_type)                       :: kinetic, scalar
+
+      dataset%number_of_proj = 2
+      dataset%is_ultrasoft = .TRUE.
+      ALLOCATE (dataset%lbeta(2), SOURCE=[0, 1])
+      ALLOCATE (dataset%r(81), dataset%rab(81), dataset%beta(81, 2), dataset%dion(2, 2))
+      dataset%r(:) = [(0.05_dp*REAL(k - 1, dp), k=1, 81)]
+      dataset%rab = 0.05_dp
+      dataset%beta(:, 1) = EXP(-dataset%r**2)
+      dataset%beta(:, 2) = dataset%r*EXP(-dataset%r**2)
+      dataset%dion = 0.0_dp
+      CALL upf_projector_init(dataset, 1, native)
+      CALL upf_kinetic_reconstruction_init(dataset, native, kinetic, available, reason)
+      IF (available .OR. LEN_TRIM(reason) == 0) ERROR STOP 'Missing kinetic partial waves accepted'
+      ALLOCATE (dataset%partial_waves)
+      ALLOCATE (dataset%partial_waves%ae_wfc(81, 2), dataset%partial_waves%ps_wfc(81, 2))
+      dataset%partial_waves%ae_wfc(:, 1) = dataset%r*(1.0_dp + dataset%r**2)
+      dataset%partial_waves%ps_wfc(:, 1) = dataset%r*(1.0_dp + 0.3_dp*dataset%r**2)
+      dataset%partial_waves%ae_wfc(:, 2) = 2.0_dp*dataset%r**2
+      dataset%partial_waves%ps_wfc(:, 2) = 0.7_dp*dataset%r**2
+      points(:, 1) = 0.0_dp
+      points(:, 2) = [0.2_dp, -0.7_dp, 0.9_dp]
+      error = 0.0_dp
+      samples = 2.0_dp + 0.6_dp*dataset%r**2 + 0.04_dp*dataset%r**4
+      CALL upf_radial_scalar_init(dataset, samples, scalar)
+      DO point = 1, SIZE(points, 2)
+         coordinate = points(:, point)
+         radius2 = SUM(coordinate**2)
+         CALL uspp_augmentation_realspace(scalar, coordinate, scalar_value, scalar_gradient)
+         error = MAX(error, ABS(scalar_value(1, 1) - (2.0_dp + 0.6_dp*radius2 + 0.04_dp*radius2**2)), &
+                     MAXVAL(ABS(scalar_gradient(1, 1, :) - (1.2_dp + 0.16_dp*radius2)*coordinate)))
+      END DO
+      CALL upf_kinetic_reconstruction_init(dataset, native, kinetic, available, reason)
+      IF (.NOT. available .OR. LEN_TRIM(reason) /= 0) ERROR STOP 'Complete kinetic partial waves rejected'
+      BLOCK
+         INTEGER :: nr, n
+         REAL(dp), ALLOCATABLE :: matrix(:, :, :), metric(:, :, :), dm(:, :, :), tau(:), potential(:)
+         REAL(dp) :: expected, trace
+         TYPE(atom_basis_type) :: basis
+
+         ALLOCATE (dataset%qijl(81, 3, 0:2), dataset%vlocal(81), SOURCE=0.0_dp)
+         CALL init_atom_basis_default_pp(basis)
+         nr = basis%grid%nr
+         n = MAXVAL(basis%nbas)
+         ALLOCATE (matrix(n, n, 0:3), metric(n, n, 0:3), dm(n, n, 0:3), tau(nr), potential(nr))
+         matrix = 0.0_dp
+         metric = 0.0_dp
+         CALL atom_uspp_setup(dataset, basis, matrix, metric)
+         IF (.NOT. ALLOCATED(basis%uspp%kinetic)) ERROR STOP 'Atomic USPP kinetic data unavailable'
+         DO k = 1, nr
+            IF (basis%grid%rad(k) > 3.9_dp) CYCLE
+            error = MAX(error, ABS(basis%uspp%kinetic(k, 1) - 1.82_dp*basis%grid%rad2(k)), &
+                        ABS(basis%uspp%kinetic(k, 3) - 5.265_dp))
+         END DO
+         ! A distinct signed AO direction checks occupations, off-diagonals and the kinetic adjoint.
+         dm = 0.0_dp
+         dm(1:2, 1:2, 0) = RESHAPE([0.7_dp, -0.2_dp, -0.2_dp, 0.3_dp], [2, 2])
+         dm(1:2, 1:2, 1) = RESHAPE([0.1_dp, 0.4_dp, 0.4_dp, -0.2_dp], [2, 2])
+         potential(:) = EXP(-basis%grid%rad2)*(1.0_dp + basis%grid%rad)
+         tau = 0.0_dp
+         CALL atom_uspp_density(tau, dm, basis, 1, 'KIN')
+         expected = SUM(tau*potential*basis%grid%wr)
+         CALL atom_uspp_integrate(matrix, potential, basis, 2)
+         trace = SUM(matrix*dm)
+         IF (ABS(expected - trace) > 2.e-11_dp*MAX(1.0_dp, ABS(expected))) THEN
+            ERROR STOP 'Atomic kinetic augmentation and its AO operator are not adjoints'
+         END IF
+         IF (ANY(basis%uspp%radial /= 0.0_dp) .OR. ANY(metric /= 0.0_dp)) THEN
+            ERROR STOP 'Kinetic augmentation changed charge or the generalized metric'
+         END IF
+         CALL release_atom_basis(basis)
+      END BLOCK
+      DO point = 1, SIZE(points, 2)
+         coordinate = points(:, point)
+         exact = 0.0_dp
+         DO k = 1, 2
+            sign = MERGE(1.0_dp, -1.0_dp, k == 1)
+            gradients = 0.0_dp
+            gradients(1, :) = 2.0_dp*MERGE(1.0_dp, 0.3_dp, k == 1)*coordinate*orbtramat(0)%slm(1, 1)
+            DO axis = 1, 3
+               ! Degree-one real harmonics are Cartesian linear forms.
+               gradients(2:4, axis) = MERGE(2.0_dp, 0.7_dp, k == 1)*orbtramat(1)%slm(:, axis)
+            END DO
+            exact = exact + 0.5_dp*sign*MATMUL(gradients, TRANSPOSE(gradients))
+         END DO
+         CALL uspp_augmentation_realspace(kinetic, coordinate, value)
+         error = MAX(error, MAXVAL(ABS(value - exact)))
+      END DO
+      IF (error > 2.e-10_dp) ERROR STOP 'Radial reconstruction differs from Cartesian scalar/orbital fields'
+      WRITE (*, *) 'UPF partial-wave kinetic reconstruction error:', error
+      CALL atom_release_upf(dataset)
+      BLOCK
+         REAL(dp), PARAMETER :: step = 1.e-6_dp
+         INTEGER :: axis, k
+         REAL(dp) :: coordinate(3), gradient(1, 1, 3), hessian(1, 1, 3, 3), &
+                     left(1, 1), left_gradient(1, 1, 3), right(1, 1), right_gradient(1, 1, 3), &
+                     samples(9), value(1, 1), x0
+         TYPE(atom_upfpot_type) :: mesh
+         TYPE(uspp_augmentation_type) :: original, continued
+
+         ALLOCATE (mesh%r(9), mesh%rab(9))
+         mesh%r(:) = [(0.2_dp*REAL(k, dp), k=1, 9)]
+         mesh%rab = 0.2_dp
+         x0 = mesh%r(1)**2
+         ! All supplied samples are positive, but the endpoint cubic is negative at zero.
+         samples = mesh%r**2 - 0.5_dp*x0
+         CALL upf_radial_scalar_init(mesh, samples, original)
+         CALL upf_radial_scalar_init(mesh, samples, continued, logarithmic_origin=.TRUE.)
+         DO k = 1, SIZE(samples)
+            coordinate = [mesh%r(k), 0.0_dp, 0.0_dp]
+            CALL uspp_augmentation_realspace(continued, coordinate, value)
+            IF (ABS(value(1, 1) - samples(k)) > 1.e-12_dp) ERROR STOP 'Origin continuation changed a supplied node'
+         END DO
+         error = 0.0_dp
+         DO k = 0, 2
+            coordinate = [0.1_dp*REAL(k, dp), 0.0_dp, 0.0_dp]
+            CALL uspp_augmentation_realspace(continued, coordinate, value, gradient, hessian)
+            IF (value(1, 1) <= 0.0_dp) ERROR STOP 'Positive core field changed sign below the first radius'
+            DO axis = 1, 3
+               coordinate(axis) = coordinate(axis) + step
+               CALL uspp_augmentation_realspace(continued, coordinate, right, right_gradient)
+               coordinate(axis) = coordinate(axis) - 2.0_dp*step
+               CALL uspp_augmentation_realspace(continued, coordinate, left, left_gradient)
+               coordinate(axis) = coordinate(axis) + step
+               error = MAX(error, ABS((right(1, 1) - left(1, 1))/(2.0_dp*step) - gradient(1, 1, axis)), &
+                           MAXVAL(ABS((right_gradient(1, 1, :) - left_gradient(1, 1, :))/(2.0_dp*step) - &
+                                      hessian(1, 1, :, axis))))
+            END DO
+         END DO
+         CALL uspp_augmentation_realspace(original, [0.0_dp, 0.0_dp, 0.0_dp], value)
+         IF (value(1, 1) >= 0.0_dp) ERROR STOP 'Origin regression fixture did not expose cubic sign reversal'
+         IF (error > 2.e-4_dp) ERROR STOP 'Origin continuation Cartesian derivatives or C2 join failed'
+         WRITE (*, *) 'UPF positive-mesh origin derivative error:', error
+         CALL atom_release_upf(mesh)
+      END BLOCK
+   END SUBROUTINE check_partial_wave_kinetic
 
 ! **************************************************************************************************
 !> \brief Polynomial exactness, reflection, C2 continuity and tensor-product field/position adjoints.
