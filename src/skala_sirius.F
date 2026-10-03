@@ -11,6 +11,7 @@
 MODULE skala_sirius
    USE ISO_C_BINDING, ONLY: C_ASSOCIATED, C_DOUBLE, C_F_POINTER, C_FUNLOC, C_INT, C_LOC, C_PTR
    USE cell_types, ONLY: cell_type
+   USE ieee_arithmetic, ONLY: ieee_is_finite
    USE input_section_types, ONLY: section_vals_type, section_vals_val_get
    USE kinds, ONLY: dp
    USE message_passing, ONLY: mp_comm_type
@@ -34,6 +35,9 @@ MODULE skala_sirius
 #endif
 #if defined(__SIRIUS_XC_POINT_HESSIAN) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_set_xc_point_hessian_callback
+#endif
+#if defined(__SIRIUS_XC_RESPONSE_TOLERANCE) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_response_tolerance
 #endif
 #if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_set_xc_quadrature_direction_callback
@@ -89,7 +93,7 @@ CONTAINS
 
       INTEGER                                            :: a, error, na, nr, shell
       INTEGER, ALLOCATABLE                               :: sizes(:)
-      REAL(dp)                                           :: scale
+      REAL(dp)                                           :: scale, response_tolerance
       REAL(dp), ALLOCATABLE                              :: block_centres(:, :), centres(:, :), &
                                                             descriptor(:), energy(:), points(:, :)
 
@@ -100,6 +104,9 @@ CONTAINS
       CALL section_vals_val_get(grid_section, "N_ANGULAR", i_val=na)
       CALL section_vals_val_get(grid_section, "IMAGE_SHELL", i_val=shell)
       CALL section_vals_val_get(grid_section, "RADIAL_SCALE", r_val=scale)
+      CALL section_vals_val_get(grid_section, "EPS_RESPONSE", r_val=response_tolerance)
+      IF (.NOT. ieee_is_finite(response_tolerance) .OR. response_tolerance <= 0.0_dp .OR. &
+          response_tolerance >= 1.0_dp) CPABORT("SIRIUS Skala EPS_RESPONSE must be between zero and one")
       ALLOCATE (centres(3, SIZE(particles)))
       DO a = 1, SIZE(particles)
          centres(:, a) = particles(a)%r
@@ -108,6 +115,10 @@ CONTAINS
                                  points, energy, descriptor, sizes, block_centres)
       CALL skala_sirius_register_points(context, xc_section, particles, cell, points, energy, descriptor, &
                                         sizes, block_centres, state)
+#if defined(__SIRIUS_XC_RESPONSE_TOLERANCE) && defined(__LIBTORCH)
+      CALL sirius_set_xc_response_tolerance(context, response_tolerance, error)
+      IF (error /= 0) CPABORT("Could not set the SIRIUS Skala response tolerance")
+#endif
       state%nradial = nr
       state%nangular = na
       state%shell = shell

@@ -75,8 +75,8 @@ PROGRAM skala_sirius_unittest
    REAL(dp) :: lattice(3, 3), r(nrad), v(nrad), rho(nrad), orbital(nrad), dion(1, 1), &
                energy, exc, repeat_exc, kpoint(3, 1), reference(3, 2), fd_step, &
                rmt(nmt), rfree(nfree), rhofree(nfree)
-   REAL(dp), PARAMETER :: force_steps(5) = [0.0_dp, 2.0e-4_dp, -2.0e-4_dp, 1.0e-4_dp, -1.0e-4_dp], &
-                          direction(3) = [0.7_dp, -0.4_dp, 0.2_dp]
+   REAL(dp) :: force_steps(5) = [0.0_dp, 2.0e-4_dp, -2.0e-4_dp, 1.0e-4_dp, -1.0e-4_dp]
+   REAL(dp), PARAMETER :: direction(3) = [0.7_dp, -0.4_dp, 0.2_dp]
    REAL(dp) :: force_energy(5), force_derivative, force_fd, entropy, density_tol, energy_tol
    REAL(dp) :: stress(3, 3), strain(3, 3)
    REAL(dp) :: updated_energy, updated_exc
@@ -162,6 +162,8 @@ PROGRAM skala_sirius_unittest
       density_tol = 1.0e-8_dp
       energy_tol = 1.0e-9_dp
       max_scf_iterations = 300
+      ! Resolve the checkpoint's Float32 energy noise without relaxing the force error bound.
+      IF (force_test) force_steps = 10.0_dp*force_steps
    END IF
    IF (comm%mepos == 0) THEN
       WRITE (*, '(A,2ES12.3)') "SCF density and energy thresholds: ", density_tol, energy_tol
@@ -176,6 +178,8 @@ PROGRAM skala_sirius_unittest
       CALL section_vals_create(pwdft, pwdft_definition)
       CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=MERGE(30, 100, force_test .AND. first_mode == 2))
       CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=MERGE(50, 110, force_test .AND. first_mode == 2))
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%EPS_RESPONSE", &
+                                r_val=MERGE(1.0e-6_dp, 1.0e-8_dp, model_mode == "skala-float32"))
       grid => section_vals_get_subs_vals(pwdft, "SKALA_GRID")
    END IF
    lattice = 0.0_dp

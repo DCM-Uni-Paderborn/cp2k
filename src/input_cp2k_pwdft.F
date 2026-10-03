@@ -107,7 +107,8 @@ CONTAINS
                           "descriptor windows. Geometry changes require SIRIUS with the point-quadrature update API. "// &
                           "Only CPU scalar or collinear calculations are supported. "// &
                           "PW and PAW forces and stress require the point geometry callbacks. "// &
-                          "FP-LAPW forces and stress are not supported. "// &
+                          "Nonrelativistic FP-LAPW forces require the joint Hessian and quadrature-direction callbacks, "// &
+                          "with full variation for collinear states. FP-LAPW stress is not supported. "// &
                           "Converge the quadrature and image shell for the system studied.")
       CALL keyword_create(keyword, __LOCATION__, name="N_RADIAL", default_i_val=100, &
                           description="Number of radial nodes with r = RADIAL_SCALE*t/(1-t).")
@@ -115,6 +116,12 @@ CONTAINS
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="N_ANGULAR", default_i_val=434, &
                           description="Exact number of points of an available positive Lebedev rule (up to 974).")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="EPS_RESPONSE", default_r_val=1.0e-6_dp, &
+                          description="Relative residual tolerance of the coupled FP-LAPW field response. "// &
+                          "The default accommodates Skala's internal Float32 Hessian evaluation. "// &
+                          "Independent of the ground-state SCF thresholds.")
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="IMAGE_SHELL", default_i_val=1, &

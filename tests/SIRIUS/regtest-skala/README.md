@@ -90,6 +90,9 @@ checks use `skala_grid_unittest.psmp SKALA skala-float32`.
 
 Total-force checks use `skala_sirius_unittest.psmp MODEL LAPW 18 "" atom-grid-forces`
 with an analytic model, or append `skala-float32` when using `SKALA` as the model.
+The Float32 preset uses 0.002 and 0.001 bohr force stencils and a relative
+LAPW response tolerance of `1e-6`. Analytic models retain `1e-8` and shorter
+stencils. Both presets enforce the same force-error and translation bounds.
 
 On macOS, pass any required `DYLD_LIBRARY_PATH` through `mpiexec ... env` so
 all ranks load the same OpenMP runtime. Do not use `KMP_DUPLICATE_LIB_OK`.

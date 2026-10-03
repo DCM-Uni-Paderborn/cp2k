@@ -945,6 +945,10 @@ if(CP2K_USE_SIRIUS)
      use sirius, only: sirius_set_xc_point_hessian_callback
      end program" CP2K_SIRIUS_XC_POINT_HESSIAN SRC_EXT F90)
   check_fortran_source_compiles(
+    "program check_xc_response_tolerance
+     use sirius, only: sirius_set_xc_response_tolerance
+     end program" CP2K_SIRIUS_XC_RESPONSE_TOLERANCE SRC_EXT F90)
+  check_fortran_source_compiles(
     "program check_xc_quadrature_direction
      use sirius, only: sirius_set_xc_quadrature_direction_callback
      end program" CP2K_SIRIUS_XC_QUADRATURE_DIRECTION SRC_EXT F90)
