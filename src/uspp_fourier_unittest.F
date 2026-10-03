@@ -260,6 +260,50 @@ CONTAINS
       IF (error > 2.e-10_dp) ERROR STOP 'Radial reconstruction differs from Cartesian scalar/orbital fields'
       WRITE (*, *) 'UPF partial-wave kinetic reconstruction error:', error
       CALL atom_release_upf(dataset)
+      BLOCK
+         REAL(dp), PARAMETER :: step = 1.e-6_dp
+         INTEGER :: axis, k
+         REAL(dp) :: coordinate(3), gradient(1, 1, 3), hessian(1, 1, 3, 3), &
+                     left(1, 1), left_gradient(1, 1, 3), right(1, 1), right_gradient(1, 1, 3), &
+                     samples(9), value(1, 1), x0
+         TYPE(atom_upfpot_type) :: mesh
+         TYPE(uspp_augmentation_type) :: original, continued
+
+         ALLOCATE (mesh%r(9), mesh%rab(9))
+         mesh%r(:) = [(0.2_dp*REAL(k, dp), k=1, 9)]
+         mesh%rab = 0.2_dp
+         x0 = mesh%r(1)**2
+         ! All supplied samples are positive, but the endpoint cubic is negative at zero.
+         samples = mesh%r**2 - 0.5_dp*x0
+         CALL upf_radial_scalar_init(mesh, samples, original)
+         CALL upf_radial_scalar_init(mesh, samples, continued, logarithmic_origin=.TRUE.)
+         DO k = 1, SIZE(samples)
+            coordinate = [mesh%r(k), 0.0_dp, 0.0_dp]
+            CALL uspp_augmentation_realspace(continued, coordinate, value)
+            IF (ABS(value(1, 1) - samples(k)) > 1.e-12_dp) ERROR STOP 'Origin continuation changed a supplied node'
+         END DO
+         error = 0.0_dp
+         DO k = 0, 2
+            coordinate = [0.1_dp*REAL(k, dp), 0.0_dp, 0.0_dp]
+            CALL uspp_augmentation_realspace(continued, coordinate, value, gradient, hessian)
+            IF (value(1, 1) <= 0.0_dp) ERROR STOP 'Positive core field changed sign below the first radius'
+            DO axis = 1, 3
+               coordinate(axis) = coordinate(axis) + step
+               CALL uspp_augmentation_realspace(continued, coordinate, right, right_gradient)
+               coordinate(axis) = coordinate(axis) - 2.0_dp*step
+               CALL uspp_augmentation_realspace(continued, coordinate, left, left_gradient)
+               coordinate(axis) = coordinate(axis) + step
+               error = MAX(error, ABS((right(1, 1) - left(1, 1))/(2.0_dp*step) - gradient(1, 1, axis)), &
+                           MAXVAL(ABS((right_gradient(1, 1, :) - left_gradient(1, 1, :))/(2.0_dp*step) - &
+                                      hessian(1, 1, :, axis))))
+            END DO
+         END DO
+         CALL uspp_augmentation_realspace(original, [0.0_dp, 0.0_dp, 0.0_dp], value)
+         IF (value(1, 1) >= 0.0_dp) ERROR STOP 'Origin regression fixture did not expose cubic sign reversal'
+         IF (error > 2.e-4_dp) ERROR STOP 'Origin continuation Cartesian derivatives or C2 join failed'
+         WRITE (*, *) 'UPF positive-mesh origin derivative error:', error
+         CALL atom_release_upf(mesh)
+      END BLOCK
    END SUBROUTINE check_partial_wave_kinetic
 
 ! **************************************************************************************************
