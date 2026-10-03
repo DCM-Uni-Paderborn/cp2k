@@ -15,16 +15,17 @@ PROGRAM qs_uspp_hfx_unittest
    USE basis_set_types,                 ONLY: allocate_gto_basis_set,&
                                               deallocate_gto_basis_set,&
                                               gto_basis_set_p_type
+   USE cell_types,                      ONLY: cell_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, &
         dbcsr_finalize, dbcsr_get_info, dbcsr_get_stored_coordinates, dbcsr_iterator_blocks_left, &
         dbcsr_iterator_next_block, dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, &
         dbcsr_put_block, dbcsr_release, dbcsr_type
    USE dbt_api,                         ONLY: &
-        dbt_destroy, dbt_get_block, dbt_get_info, dbt_get_stored_coordinates, &
-        dbt_iterator_blocks_left, dbt_iterator_next_block, dbt_iterator_start, dbt_iterator_stop, &
-        dbt_iterator_type, dbt_pgrid_create, dbt_pgrid_destroy, dbt_pgrid_type, dbt_put_block, &
-        dbt_type
+        dbt_clear, dbt_create, dbt_destroy, dbt_get_block, dbt_get_info, &
+        dbt_get_stored_coordinates, dbt_iterator_blocks_left, dbt_iterator_next_block, &
+        dbt_iterator_start, dbt_iterator_stop, dbt_iterator_type, dbt_pgrid_create, &
+        dbt_pgrid_destroy, dbt_pgrid_type, dbt_put_block, dbt_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
@@ -35,11 +36,14 @@ PROGRAM qs_uspp_hfx_unittest
                                               mp_comm_world
    USE particle_types,                  ONLY: particle_type
    USE qs_tensors_types,                ONLY: create_3c_tensor
-   USE qs_uspp_hfx,                     ONLY: qs_uspp_hfx_native_gradient,&
+   USE qs_uspp_hfx,                     ONLY: qs_uspp_hfx_lattice_gradient,&
+                                              qs_uspp_hfx_lattice_tensor,&
+                                              qs_uspp_hfx_native_gradient,&
                                               qs_uspp_hfx_native_tensor,&
                                               qs_uspp_hfx_transition_adjoint,&
                                               qs_uspp_hfx_transition_tensor
-   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
+   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_cells,&
+                                              qs_uspp_projector_gradient,&
                                               qs_uspp_projector_matrix
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE sap_kind_types,                  ONLY: release_sap_int,&
@@ -132,6 +136,7 @@ PROGRAM qs_uspp_hfx_unittest
       CALL dbt_pgrid_create(comm, target_dims, target_grid)
       CALL check_distributed_path()
       CALL check_image_path()
+      CALL check_lattice_path()
       CALL dbt_pgrid_destroy(target_grid)
       CALL dbt_pgrid_destroy(native_grid)
       CALL dbcsr_distribution_release(distribution)
@@ -509,6 +514,283 @@ CONTAINS
       CALL dbt_destroy(tensor)
       CALL release_sap_int(sap)
    END SUBROUTINE check_image_path
+
+! **************************************************************************************************
+!> \brief Complete image sum, independent local RI support, and its geometry transpose.
+! **************************************************************************************************
+   SUBROUTINE check_lattice_path()
+      INTEGER, PARAMETER :: nimage = 5, ao_cells(3, nimage) = RESHAPE([-2, 0, 0, -1, 0, 0, 0, 0, 0,&
+         1, 0, 0, 2, 0, 0], [3, nimage])
+
+      INTEGER                                            :: a, idir, image, jdir, mode, mu, nu, p
+      INTEGER, ALLOCATABLE                               :: d1(:), d2(:), d3(:), discovered(:, :)
+      LOGICAL                                            :: domain(ncell*natom, natom)
+      REAL(dp) :: adjoint(ncell*naux, nao, nao, nimage), atom_gradient(3, natom), &
+         bleft(nao, ncenter), bright(nao, ncenter), cell_gradient(3, 3), &
+         cref(ncell*naux, ncenter, ncenter), direction(3), fd, gathered(ncell*naux, nao, nao), &
+         lattice(3, 3), minus, moved(3, natom), plus, seed(ncell*naux, nao, nao, nimage), &
+         strained(3, 3), TARGET(ncell*naux, nao, nao, nimage)
+      TYPE(dbcsr_type), TARGET                           :: template
+      TYPE(dbt_type)                                     :: tensor(nimage), tensor_adjoint(nimage)
+      TYPE(sap_int_type), POINTER                        :: metadata(:), sap(:)
+
+      lattice = 0.0_dp
+      lattice(:, 1) = image_vector
+      lattice(2, 2) = 5.0_dp
+      lattice(3, 3) = 6.0_dp
+      CALL image_data(positions, MATMUL(lattice, REAL(cells, dp)), &
+                      image_vector, -image_vector, bleft, bright, cref)
+      CALL make_overlap(bleft, template)
+      CALL make_image_sap(template, MATMUL(lattice, REAL(cells, dp)), sap)
+      CALL qs_uspp_projector_cells(template, sap, center_atom, discovered)
+      IF (SIZE(discovered, 2) /= ncell) ERROR STOP 'Incomplete original projector cell support'
+      IF (ANY(discovered /= cells)) ERROR STOP 'Projector cells lost deterministic order'
+      DEALLOCATE (discovered)
+      CALL qs_uspp_projector_cells(template, sap, [2], discovered)
+      IF (SIZE(discovered, 2) /= 0) ERROR STOP 'Unselected centers added projector cells'
+      DEALLOCATE (discovered)
+      ! Only rank zero retains metadata; ranks with empty lists still participate.
+      IF (rank == 0) THEN
+         CALL qs_uspp_projector_cells(template, sap, center_atom, discovered)
+      ELSE
+         ALLOCATE (metadata(1))
+         CALL qs_uspp_projector_cells(template, metadata, center_atom, discovered)
+         CALL release_sap_int(metadata)
+      END IF
+      IF (SIZE(discovered, 2) /= ncell) ERROR STOP 'Empty local SAP lost global projector cells'
+      IF (ANY(discovered /= cells)) ERROR STOP 'Distributed projector support is inconsistent'
+      DEALLOCATE (discovered)
+      DO image = 1, nimage
+         CALL create_3c_tensor(tensor(image), d1, d2, d3, target_grid, [(1, p=1, ncell*naux)], &
+                               [(1, mu=1, nao)], [(1, nu=1, nao)], [1], [2, 3], name='Native lattice sum')
+         DEALLOCATE (d1, d2, d3)
+         CALL dbt_create(tensor(image), tensor_adjoint(image))
+         DO nu = 1, nao
+            DO mu = 1, nao
+               DO p = 1, ncell*naux
+                  adjoint(p, mu, nu, image) = SIN(0.17_dp*p + 0.29_dp*mu - 0.43_dp*nu + 0.31_dp*image)
+                  seed(p, mu, nu, image) = 0.003_dp*COS(REAL(p + 2*mu + 3*nu + image, dp))
+               END DO
+            END DO
+         END DO
+         CALL put_tensor(tensor_adjoint(image), adjoint(:, :, :, image))
+      END DO
+      DO mode = 1, 2
+         domain = .TRUE.
+         IF (mode == 2) THEN
+            DO a = 1, natom
+               DO p = 1, ncell*natom
+                  domain(p, a) = MODULO(p + a, 3) /= 0
+               END DO
+            END DO
+         END IF
+         CALL lattice_reference(positions, lattice, ao_cells, TARGET, domain)
+         DO image = 1, nimage
+            CALL dbt_clear(tensor(image))
+            CALL put_tensor(tensor(image), seed(:, :, :, image))
+         END DO
+         IF (mode == 1) THEN
+            CALL qs_uspp_hfx_lattice_tensor(template, sap, uspp, basis, particles, nang, native_grid, &
+                                            lattice, cells, ao_cells, tensor)
+         ELSE
+            CALL qs_uspp_hfx_lattice_tensor(template, sap, uspp, basis, particles, nang, native_grid, &
+                                            lattice, cells, ao_cells, tensor, domain)
+         END IF
+         DO image = 1, nimage
+            CALL gather_tensor(tensor(image), gathered)
+            CALL check(MAXVAL(ABS(gathered - seed(:, :, :, image) - TARGET(:, :, :, image))), &
+                       'complete lattice sum and fixed RI support against Gaussian oracle', 3.e-8_dp)
+         END DO
+         ! The R=0 tensor must include all three equal-image pairs, not Gamma-summed B.
+         IF (MAXVAL(ABS(TARGET(:, :, :, 3))) < 1.e-4_dp) ERROR STOP 'Empty R=0 lattice fixture'
+         atom_gradient = 0.0_dp
+         cell_gradient = 0.0_dp
+         IF (mode == 1) THEN
+            CALL qs_uspp_hfx_lattice_gradient(template, sap, uspp, basis, particles, nang, native_grid, &
+                                              lattice, cells, ao_cells, tensor_adjoint, pref, &
+                                              atom_gradient, cell_gradient)
+         ELSE
+            CALL qs_uspp_hfx_lattice_gradient(template, sap, uspp, basis, particles, nang, native_grid, &
+                                              lattice, cells, ao_cells, tensor_adjoint, pref, &
+                                              atom_gradient, cell_gradient, domain)
+         END IF
+         CALL comm%sum(atom_gradient)
+         CALL comm%sum(cell_gradient)
+         CALL check(MAXVAL(ABS(SUM(atom_gradient, DIM=2))), 'complete lattice rigid translation sum rule')
+         direction = [0.3_dp, -0.2_dp, 0.4_dp]
+         DO a = 1, natom
+            moved = positions
+            moved(:, a) = moved(:, a) + step*direction
+            CALL lattice_reference(moved, lattice, ao_cells, TARGET, domain)
+            plus = pref*SUM(adjoint*TARGET)
+            moved(:, a) = moved(:, a) - 2.0_dp*step*direction
+            CALL lattice_reference(moved, lattice, ao_cells, TARGET, domain)
+            minus = pref*SUM(adjoint*TARGET)
+            fd = (plus - minus)/(2.0_dp*step)
+            CALL check(ABS(fd - SUM(atom_gradient(:, a)*direction)), 'complete lattice atomic adjoint FD', 8.e-8_dp)
+         END DO
+         DO jdir = 1, 3
+            DO idir = 1, 3
+               moved = positions
+               strained = lattice
+               moved(idir, :) = moved(idir, :) + step*positions(jdir, :)
+               strained(idir, :) = strained(idir, :) + step*lattice(jdir, :)
+               CALL lattice_reference(moved, strained, ao_cells, TARGET, domain)
+               plus = pref*SUM(adjoint*TARGET)
+               moved = positions
+               strained = lattice
+               moved(idir, :) = moved(idir, :) - step*positions(jdir, :)
+               strained(idir, :) = strained(idir, :) - step*lattice(jdir, :)
+               CALL lattice_reference(moved, strained, ao_cells, TARGET, domain)
+               minus = pref*SUM(adjoint*TARGET)
+               fd = (plus - minus)/(2.0_dp*step)
+               CALL check(ABS(fd - cell_gradient(idir, jdir)), 'complete lattice affine adjoint FD', 8.e-8_dp)
+            END DO
+         END DO
+         DO image = 1, nimage
+            CALL gather_tensor(tensor_adjoint(image), gathered)
+            CALL check(MAXVAL(ABS(gathered - adjoint(:, :, :, image))), 'complete lattice adjoint remains unchanged')
+         END DO
+      END DO
+      DO image = 1, nimage
+         CALL dbt_destroy(tensor(image))
+         CALL dbt_destroy(tensor_adjoint(image))
+      END DO
+      CALL release_sap_int(sap)
+      CALL dbcsr_release(template)
+      CALL check_folded_native(lattice)
+   END SUBROUTINE check_lattice_path
+
+! **************************************************************************************************
+!> \brief Independent finite image sum of closed Gaussian Coulomb and analytic projector overlaps.
+!> \param coords Atomic coordinates, including their affine motion.
+!> \param lattice Cartesian cell vectors.
+!> \param ao_cells Requested AO images R.
+!> \param tensor Full image sum, without an energy prefactor.
+!> \param domain Fixed local RI support on (RI atom/cell,first AO atom).
+! **************************************************************************************************
+   SUBROUTINE lattice_reference(coords, lattice, ao_cells, tensor, domain)
+      REAL(dp), INTENT(IN)                               :: coords(3, natom), lattice(3, 3)
+      INTEGER, INTENT(IN)                                :: ao_cells(:, :)
+      REAL(dp), INTENT(OUT)                              :: tensor(:, :, :, :)
+      LOGICAL, INTENT(IN)                                :: domain(:, :)
+
+      INTEGER                                            :: a, image, mu, nu, p, ri_atom, t, u
+      REAL(dp) :: bleft(nao, ncenter), bright(nao, ncenter), c(ncell*naux, ncenter, ncenter), &
+         shifts(3, ncell)
+
+      shifts = MATMUL(lattice, REAL(cells, dp))
+      tensor = 0.0_dp
+      DO image = 1, SIZE(ao_cells, 2)
+         DO t = 1, ncell
+            DO u = 1, ncell
+               IF (ANY(cells(:, t) - cells(:, u) /= ao_cells(:, image))) CYCLE
+               CALL image_data(coords, shifts, shifts(:, t), shifts(:, u), bleft, bright, c)
+               DO mu = 1, nao
+                  DO p = 1, ncell*naux
+                     ri_atom = (p - 1)/2 + 1
+                     IF (.NOT. domain(ri_atom, ao_atom(mu))) CYCLE
+                     DO nu = 1, nao
+                        DO a = 1, ncenter
+                           tensor(p, mu, nu, image) = tensor(p, mu, nu, image) + &
+                                                      bleft(mu, a)*c(p, a, a)*bright(nu, a)
+                        END DO
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE lattice_reference
+
+! **************************************************************************************************
+!> \brief Native C uses the same folded origin as the original SAP image labels.
+!> \param lattice Triclinic cell with analytically known inverse and atom image branches.
+! **************************************************************************************************
+   SUBROUTINE check_folded_native(lattice)
+      REAL(dp), INTENT(IN)                               :: lattice(3, 3)
+
+      INTEGER                                            :: a, idir, jdir, p
+      REAL(dp) :: adjoint(ncell*naux, ncenter, ncenter), atom_gradient(3, natom), &
+         bleft(nao, ncenter), bright(nao, ncenter), c(ncell*naux, ncenter, ncenter), &
+         cell_gradient(3, 3), direction(3), fd, folded(3, natom), &
+         gathered(ncell*naux, ncenter, ncenter), minus, moved(3, natom), plus, shifted(3, ncell), &
+         shifts(3, ncell)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(cell_type), TARGET                            :: cell_value
+      TYPE(dbt_type)                                     :: auxiliary, auxiliary_adjoint
+
+      cell => cell_value
+      cell%hmat = lattice
+      cell%h_inv = 0.0_dp
+      cell%h_inv(1, 1) = 1.0_dp/lattice(1, 1)
+      cell%h_inv(2, 1) = -lattice(2, 1)/(lattice(2, 2)*lattice(1, 1))
+      cell%h_inv(2, 2) = 1.0_dp/lattice(2, 2)
+      cell%h_inv(3, 1) = -lattice(3, 1)/(lattice(3, 3)*lattice(1, 1))
+      cell%h_inv(3, 3) = 1.0_dp/lattice(3, 3)
+      cell%perd = 1
+      folded = positions
+      folded(:, 3) = folded(:, 3) - lattice(:, 1)
+      shifts = MATMUL(lattice, REAL(cells, dp))
+      DO a = 1, natom
+         particles(a)%r = positions(:, a) + MATMUL(lattice, REAL([a - 2, 2 - a, MODULO(a, 2)], dp))
+      END DO
+      uspp%position(:, :) = RESHAPE([particles(1)%r, particles(3)%r], [3, ncenter])
+      CALL image_data(folded, shifts, shifts(:, 3), shifts(:, 1), bleft, bright, c)
+      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, native_grid, auxiliary, shifts, shifts(:, 3), cell)
+      CALL gather_tensor(auxiliary, gathered)
+      CALL check(MAXVAL(ABS(gathered - c)), 'native folded atom origins against closed Gaussian C', 3.e-8_dp)
+      adjoint = 0.0_dp
+      DO a = 1, ncenter
+         DO p = 1, ncell*naux
+            adjoint(p, a, a) = SIN(0.37_dp*p + 0.29_dp*a)
+         END DO
+      END DO
+      CALL dbt_create(auxiliary, auxiliary_adjoint)
+      CALL put_tensor(auxiliary_adjoint, adjoint)
+      atom_gradient = 0.0_dp
+      cell_gradient = 0.0_dp
+      CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_adjoint, &
+                                       atom_gradient, cell_gradient, shifts, shifts(:, 3), cell)
+      CALL comm%sum(atom_gradient)
+      CALL comm%sum(cell_gradient)
+      direction = [0.3_dp, -0.2_dp, 0.4_dp]
+      DO a = 1, natom
+         moved = folded
+         moved(:, a) = moved(:, a) + step*direction
+         CALL image_data(moved, shifts, shifts(:, 3), shifts(:, 1), bleft, bright, c)
+         plus = SUM(adjoint*c)
+         moved(:, a) = moved(:, a) - 2.0_dp*step*direction
+         CALL image_data(moved, shifts, shifts(:, 3), shifts(:, 1), bleft, bright, c)
+         minus = SUM(adjoint*c)
+         fd = (plus - minus)/(2.0_dp*step)
+         CALL check(ABS(fd - SUM(atom_gradient(:, a)*direction)), 'folded native atomic adjoint FD', 8.e-8_dp)
+      END DO
+      DO jdir = 1, 3
+         DO idir = 1, 3
+            moved = folded
+            shifted = shifts
+            moved(idir, :) = moved(idir, :) + step*folded(jdir, :)
+            shifted(idir, :) = shifted(idir, :) + step*shifts(jdir, :)
+            CALL image_data(moved, shifted, shifted(:, 3), shifted(:, 1), bleft, bright, c)
+            plus = SUM(adjoint*c)
+            moved = folded
+            shifted = shifts
+            moved(idir, :) = moved(idir, :) - step*folded(jdir, :)
+            shifted(idir, :) = shifted(idir, :) - step*shifts(jdir, :)
+            CALL image_data(moved, shifted, shifted(:, 3), shifted(:, 1), bleft, bright, c)
+            minus = SUM(adjoint*c)
+            fd = (plus - minus)/(2.0_dp*step)
+            CALL check(ABS(fd - cell_gradient(idir, jdir)), 'folded native affine adjoint FD', 8.e-8_dp)
+         END DO
+      END DO
+      DO a = 1, natom
+         particles(a)%r = positions(:, a)
+      END DO
+      uspp%position(:, :) = positions(:, center_atom)
+      CALL dbt_destroy(auxiliary_adjoint)
+      CALL dbt_destroy(auxiliary)
+   END SUBROUTINE check_folded_native
 
 ! **************************************************************************************************
 !> \brief Cartesian closed Gaussian B and C with independent T, U and stacked S.

@@ -26,7 +26,7 @@ MODULE qs_uspp_projectors
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_projectors'
    PUBLIC :: qs_uspp_projector_matrix, qs_uspp_projector_gradient
-   PUBLIC :: qs_uspp_projector_pair, qs_uspp_projector_images
+   PUBLIC :: qs_uspp_projector_pair, qs_uspp_projector_images, qs_uspp_projector_cells
 
 CONTAINS
 
@@ -263,6 +263,78 @@ CONTAINS
          IF (PRESENT(onsite)) DEALLOCATE (matrix)
       END DO
    END SUBROUTINE qs_uspp_projector_images
+
+! **************************************************************************************************
+!> \brief Global distinct projector cells in deterministic lexicographic order.
+!>        Only original SAP entries for selected augmentation centers contribute. Integer metadata
+!>        is reduced; neither overlap values nor Gaussian AO-pair sparsity determine this support.
+!> \param template Matrix defining the SAP communicator.
+!> \param sap_int Original image-resolved overlaps, possibly replicated along matrix rows/columns.
+!> \param center_atoms Selected augmentation atoms.
+!> \param cells New (3,ncell) list, identical on every process, including empty local SAP lists.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_projector_cells(template, sap_int, center_atoms, cells)
+      TYPE(dbcsr_type), INTENT(IN)                       :: template
+      TYPE(sap_int_type), INTENT(IN)                     :: sap_int(:)
+      INTEGER, INTENT(IN)                                :: center_atoms(:)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: cells(:, :)
+
+      INTEGER                                            :: hi(3), i, ix, iy, iz, j, k, lo(3), n, &
+                                                            t(3)
+      INTEGER, ALLOCATABLE                               :: present(:, :, :)
+      TYPE(mp_comm_type)                                 :: group
+
+      CALL dbcsr_get_info(template, group=group)
+      lo = HUGE(0)
+      hi = -HUGE(0)
+      DO i = 1, SIZE(sap_int)
+         IF (.NOT. ASSOCIATED(sap_int(i)%alist)) CYCLE
+         DO j = 1, SIZE(sap_int(i)%alist)
+            IF (.NOT. ASSOCIATED(sap_int(i)%alist(j)%clist)) CYCLE
+            DO k = 1, SIZE(sap_int(i)%alist(j)%clist)
+               ASSOCIATE (ENTRY => sap_int(i)%alist(j)%clist(k))
+                  IF (.NOT. ANY(center_atoms == entry%catom)) CYCLE
+                  IF (.NOT. ASSOCIATED(entry%acint)) CYCLE
+                  lo = MIN(lo, entry%cell)
+                  hi = MAX(hi, entry%cell)
+               END ASSOCIATE
+            END DO
+         END DO
+      END DO
+      CALL group%min(lo)
+      CALL group%max(hi)
+      IF (ANY(lo > hi)) THEN
+         ALLOCATE (cells(3, 0))
+         RETURN
+      END IF
+      ALLOCATE (PRESENT(lo(1):hi(1), lo(2):hi(2), lo(3):hi(3)), SOURCE=0)
+      DO i = 1, SIZE(sap_int)
+         IF (.NOT. ASSOCIATED(sap_int(i)%alist)) CYCLE
+         DO j = 1, SIZE(sap_int(i)%alist)
+            IF (.NOT. ASSOCIATED(sap_int(i)%alist(j)%clist)) CYCLE
+            DO k = 1, SIZE(sap_int(i)%alist(j)%clist)
+               ASSOCIATE (ENTRY => sap_int(i)%alist(j)%clist(k))
+                  IF (.NOT. ANY(center_atoms == entry%catom)) CYCLE
+                  IF (.NOT. ASSOCIATED(entry%acint)) CYCLE
+                  t = entry%cell
+                  PRESENT(t(1), t(2), t(3)) = 1
+               END ASSOCIATE
+            END DO
+         END DO
+      END DO
+      CALL group%sum(present)
+      ALLOCATE (cells(3, COUNT(present > 0)))
+      n = 0
+      DO ix = lo(1), hi(1)
+         DO iy = lo(2), hi(2)
+            DO iz = lo(3), hi(3)
+               IF (PRESENT(ix, iy, iz) == 0) CYCLE
+               n = n + 1
+               cells(:, n) = [ix, iy, iz]
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE qs_uspp_projector_cells
 
 ! **************************************************************************************************
 !> \brief Sum all periodic images of <chi_mu|beta_i> into a rectangular DBCSR matrix.

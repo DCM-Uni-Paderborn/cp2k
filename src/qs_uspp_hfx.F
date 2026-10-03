@@ -14,14 +14,15 @@ MODULE qs_uspp_hfx
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_p_type,&
                                               gto_basis_set_type
-   USE cell_types,                      ONLY: cell_type
+   USE cell_types,                      ONLY: cell_type,&
+                                              pbc
    USE cp_dbcsr_api,                    ONLY: dbcsr_create,&
                                               dbcsr_get_info,&
                                               dbcsr_release,&
                                               dbcsr_type
    USE dbt_api,                         ONLY: &
-        dbt_contract, dbt_copy, dbt_copy_matrix_to_tensor, dbt_copy_tensor_to_matrix, dbt_create, &
-        dbt_destroy, dbt_get_block, dbt_get_info, dbt_get_stored_coordinates, &
+        dbt_clear, dbt_contract, dbt_copy, dbt_copy_matrix_to_tensor, dbt_copy_tensor_to_matrix, &
+        dbt_create, dbt_destroy, dbt_get_block, dbt_get_info, dbt_get_stored_coordinates, &
         dbt_iterator_blocks_left, dbt_iterator_next_block, dbt_iterator_start, dbt_iterator_stop, &
         dbt_iterator_type, dbt_pgrid_type, dbt_put_block, dbt_scale, dbt_type
    USE hfx_types,                       ONLY: hfx_ri_type
@@ -41,7 +42,9 @@ MODULE qs_uspp_hfx
                                               qs_ks_env_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_tensors_types,                ONLY: create_3c_tensor
-   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient
+   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_cells,&
+                                              qs_uspp_projector_gradient,&
+                                              qs_uspp_projector_matrix
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE sap_kind_types,                  ONLY: build_sap_ints,&
                                               release_sap_int,&
@@ -57,6 +60,7 @@ MODULE qs_uspp_hfx
    PUBLIC :: qs_uspp_hfx_add_tensor, qs_uspp_hfx_gradient
    PUBLIC :: qs_uspp_hfx_transition_tensor, qs_uspp_hfx_transition_adjoint
    PUBLIC :: qs_uspp_hfx_native_tensor, qs_uspp_hfx_native_gradient
+   PUBLIC :: qs_uspp_hfx_lattice_tensor, qs_uspp_hfx_lattice_gradient
 
 CONTAINS
 
@@ -135,6 +139,259 @@ CONTAINS
       CALL dbt_destroy(auxiliary_gradient)
       CALL dbt_destroy(auxiliary)
    END SUBROUTINE qs_uspp_hfx_gradient
+
+! **************************************************************************************************
+!> \brief Assemble all original projector-image pairs into unfiltered AO image tensors.
+!>        T_Q(S,R) = sum_T B(T) C(S,T) B(T-R)^T, before the local RI inverse and bump.
+!> \param template Matrix defining the SAP row distribution and communicator.
+!> \param sap Original unweighted image-resolved projector overlaps.
+!> \param uspp Original augmentation data and projector block ordering.
+!> \param basis Original RI Gaussian bases.
+!> \param particles Current RI atoms.
+!> \param nang Per-kind angular controls.
+!> \param pgrid Native tensor process grid on the template communicator.
+!> \param cell_matrix Cartesian lattice vectors, including affine cell motion.
+!> \param ri_cells Integer RI cells S in the first-dimension stacking order.
+!> \param ao_cells Integer AO cells R in tensors order; no reciprocal phase or k weight here.
+!> \param tensors Full (RI,AO,AO) image tensors, incremented without a Gaussian support restriction.
+!> \param ri_domain Optional fixed local RI support (stacked RI atom,first AO atom).
+!> \param cell Optional cell folding convention shared with the SAP labels.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_hfx_lattice_tensor(template, sap, uspp, basis, particles, nang, pgrid, &
+                                         cell_matrix, ri_cells, ao_cells, tensors, ri_domain, cell)
+      TYPE(dbcsr_type), INTENT(IN)                       :: template
+      TYPE(sap_int_type), INTENT(IN)                     :: sap(:)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
+      TYPE(particle_type), INTENT(IN)                    :: particles(:)
+      INTEGER, INTENT(IN)                                :: nang(:)
+      TYPE(dbt_pgrid_type), INTENT(IN)                   :: pgrid
+      REAL(dp), INTENT(IN)                               :: cell_matrix(3, 3)
+      INTEGER, INTENT(IN)                                :: ri_cells(:, :), ao_cells(:, :)
+      TYPE(dbt_type), INTENT(INOUT)                      :: tensors(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ri_domain(:, :)
+      TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+
+      CALL lattice_action(template, sap, uspp, basis, particles, nang, pgrid, cell_matrix, &
+                          ri_cells, ao_cells, tensors, ri_domain, cell)
+   END SUBROUTINE qs_uspp_hfx_lattice_tensor
+
+! **************************************************************************************************
+!> \brief Exact geometry transpose of the complete projector-image sum on compatible process grids.
+!>        Apply the same local RI mask before either B leg or the native C pullback. The caller
+!>        supplies a complete image adjoint after its metric/bump/density contractions and performs
+!>        MPI force reduction. Subgroup adjoints must first be lifted to this communicator.
+!> \param template Same SAP distribution as the forward assembly.
+!> \param sap Original overlaps with nder=1.
+!> \param uspp Same original augmentation data.
+!> \param basis Same original RI bases.
+!> \param particles Current RI atoms.
+!> \param nang Same angular controls.
+!> \param pgrid Same native process grid and communicator.
+!> \param cell_matrix Same Cartesian lattice vectors.
+!> \param ri_cells Same RI-cell stack S.
+!> \param ao_cells Same AO images R.
+!> \param tensor_adjoint Complete image adjoints, unchanged.
+!> \param pref Energy prefactor, applied exactly once.
+!> \param atom_gradient Local positive energy gradients, incremented without MPI reduction.
+!> \param cell_gradient Optional physical affine-strain gradient, incremented without reduction.
+!> \param ri_domain Same optional fixed local RI support.
+!> \param cell Same optional atom folding convention.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_hfx_lattice_gradient(template, sap, uspp, basis, particles, nang, pgrid, &
+                                           cell_matrix, ri_cells, ao_cells, tensor_adjoint, pref, &
+                                           atom_gradient, cell_gradient, ri_domain, cell)
+      TYPE(dbcsr_type), INTENT(IN)                       :: template
+      TYPE(sap_int_type), INTENT(IN)                     :: sap(:)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
+      TYPE(particle_type), INTENT(IN)                    :: particles(:)
+      INTEGER, INTENT(IN)                                :: nang(:)
+      TYPE(dbt_pgrid_type), INTENT(IN)                   :: pgrid
+      REAL(dp), INTENT(IN)                               :: cell_matrix(3, 3)
+      INTEGER, INTENT(IN)                                :: ri_cells(:, :), ao_cells(:, :)
+      TYPE(dbt_type), INTENT(INOUT)                      :: tensor_adjoint(:)
+      REAL(dp), INTENT(IN)                               :: pref
+      REAL(dp), INTENT(INOUT)                            :: atom_gradient(:, :)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: cell_gradient(3, 3)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ri_domain(:, :)
+      TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+
+      CALL lattice_action(template, sap, uspp, basis, particles, nang, pgrid, cell_matrix, &
+                          ri_cells, ao_cells, tensor_adjoint, ri_domain, cell, pref, atom_gradient, cell_gradient)
+   END SUBROUTINE qs_uspp_hfx_lattice_gradient
+
+! **************************************************************************************************
+!> \brief Shared image-pair traversal for the forward map and its geometry transpose.
+!> \param template ...
+!> \param sap ...
+!> \param uspp ...
+!> \param basis ...
+!> \param particles ...
+!> \param nang ...
+!> \param pgrid ...
+!> \param cell_matrix ...
+!> \param ri_cells ...
+!> \param ao_cells ...
+!> \param tensors ...
+!> \param ri_domain ...
+!> \param cell ...
+!> \param pref ...
+!> \param atom_gradient ...
+!> \param cell_gradient ...
+! **************************************************************************************************
+   SUBROUTINE lattice_action(template, sap, uspp, basis, particles, nang, pgrid, cell_matrix, &
+                             ri_cells, ao_cells, tensors, ri_domain, cell, pref, atom_gradient, cell_gradient)
+      TYPE(dbcsr_type), INTENT(IN)                       :: template
+      TYPE(sap_int_type), INTENT(IN)                     :: sap(:)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
+      TYPE(particle_type), INTENT(IN)                    :: particles(:)
+      INTEGER, INTENT(IN)                                :: nang(:)
+      TYPE(dbt_pgrid_type), INTENT(IN)                   :: pgrid
+      REAL(dp), INTENT(IN)                               :: cell_matrix(3, 3)
+      INTEGER, INTENT(IN)                                :: ri_cells(:, :), ao_cells(:, :)
+      TYPE(dbt_type), INTENT(INOUT)                      :: tensors(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ri_domain(:, :)
+      TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+      REAL(dp), INTENT(IN), OPTIONAL                     :: pref
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: atom_gradient(:, :), cell_gradient(3, 3)
+
+      INTEGER                                            :: image, nblks(3), t, u
+      INTEGER, ALLOCATABLE                               :: d1(:), d2(:), d3(:), pp_cells(:, :), &
+                                                            sizes_ri(:)
+      INTEGER, POINTER                                   :: sizes_ao(:)
+      REAL(dp)                                           :: qshift(3)
+      REAL(dp), ALLOCATABLE                              :: shifts(:, :)
+      TYPE(dbcsr_type)                                   :: gradient_left, gradient_right
+      TYPE(dbcsr_type), ALLOCATABLE                      :: overlaps(:)
+      TYPE(dbt_type)                                     :: auxiliary, auxiliary_gradient, &
+                                                            auxiliary_total, full
+
+      CPASSERT(SIZE(ri_cells, 1) == 3 .AND. SIZE(ri_cells, 2) > 0)
+      CPASSERT(SIZE(ao_cells, 1) == 3 .AND. SIZE(ao_cells, 2) == SIZE(tensors))
+      CPASSERT(ALL(ieee_is_finite(cell_matrix)))
+      DO image = 1, SIZE(ao_cells, 2)
+         CPASSERT(cell_column(ao_cells, ao_cells(:, image)) == image)
+      END DO
+      DO image = 1, SIZE(ri_cells, 2)
+         CPASSERT(cell_column(ri_cells, ri_cells(:, image)) == image)
+      END DO
+      CPASSERT(PRESENT(pref) .EQV. PRESENT(atom_gradient))
+      IF (PRESENT(cell_gradient)) THEN
+         CPASSERT(PRESENT(atom_gradient))
+      END IF
+      CALL dbcsr_get_info(template, row_blk_size=sizes_ao)
+      CPASSERT(SIZE(sizes_ao) == SIZE(particles))
+      IF (PRESENT(ri_domain)) THEN
+         CPASSERT(SIZE(ri_domain, 1) == SIZE(particles)*SIZE(ri_cells, 2))
+         CPASSERT(SIZE(ri_domain, 2) == SIZE(particles))
+      END IF
+      CALL qs_uspp_projector_cells(template, sap, uspp%center_atoms, pp_cells)
+      ALLOCATE (overlaps(SIZE(pp_cells, 2)))
+      DO t = 1, SIZE(pp_cells, 2)
+         CALL qs_uspp_projector_matrix(template, sap, uspp%center_atoms, uspp%projector_sizes, &
+                                       overlaps(t), pp_cells(:, t))
+      END DO
+      ALLOCATE (shifts(3, SIZE(ri_cells, 2)))
+      shifts(:, :) = MATMUL(cell_matrix, REAL(ri_cells, dp))
+      DO t = 1, SIZE(pp_cells, 2)
+         qshift = MATMUL(cell_matrix, REAL(pp_cells(:, t), dp))
+         CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, shifts, qshift, cell)
+         CALL dbt_get_info(auxiliary, nblks_total=nblks)
+         ALLOCATE (sizes_ri(nblks(1)))
+         CALL dbt_get_info(auxiliary, blk_size_1=sizes_ri)
+         CALL create_3c_tensor(full, d1, d2, d3, pgrid, sizes_ri, sizes_ao, sizes_ao, &
+                               [1], [2, 3], name='Native lattice transition')
+         DEALLOCATE (d1, d2, d3, sizes_ri)
+         IF (PRESENT(atom_gradient)) CALL dbt_create(auxiliary, auxiliary_total)
+         DO u = 1, SIZE(pp_cells, 2)
+            image = cell_column(ao_cells, pp_cells(:, t) - pp_cells(:, u))
+            IF (image == 0) CYCLE
+            CALL dbt_clear(full)
+            IF (PRESENT(atom_gradient)) THEN
+               CALL dbt_copy(tensors(image), full)
+               CALL apply_ri_domain(full, ri_domain)
+               CALL qs_uspp_hfx_transition_adjoint(overlaps(t), auxiliary, full, pref, &
+                                                   gradient_left, auxiliary_gradient, overlaps(u), gradient_right)
+               CALL qs_uspp_projector_gradient(gradient_left, sap, uspp%center_atoms, atom_gradient, &
+                                               cell_gradient, pp_cells(:, t))
+               CALL qs_uspp_projector_gradient(gradient_right, sap, uspp%center_atoms, atom_gradient, &
+                                               cell_gradient, pp_cells(:, u))
+               CALL dbt_copy(auxiliary_gradient, auxiliary_total, summation=.TRUE., move_data=.TRUE.)
+               CALL dbcsr_release(gradient_left)
+               CALL dbcsr_release(gradient_right)
+               CALL dbt_destroy(auxiliary_gradient)
+            ELSE
+               CALL qs_uspp_hfx_transition_tensor(overlaps(t), auxiliary, full, overlaps(u))
+               CALL apply_ri_domain(full, ri_domain)
+               CALL dbt_copy(full, tensors(image), summation=.TRUE., move_data=.TRUE.)
+            END IF
+         END DO
+         IF (PRESENT(atom_gradient)) THEN
+            CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_total, atom_gradient, &
+                                             cell_gradient, shifts, qshift, cell)
+            CALL dbt_destroy(auxiliary_total)
+         END IF
+         CALL dbt_destroy(full)
+         CALL dbt_destroy(auxiliary)
+      END DO
+      DO t = 1, SIZE(overlaps)
+         CALL dbcsr_release(overlaps(t))
+      END DO
+   END SUBROUTINE lattice_action
+
+! **************************************************************************************************
+!> \brief Locate an exact integer image; absent images remain outside the caller's finite domain.
+!> \param cells Distinct integer image columns.
+!> \param requested_cell Requested integer cell.
+!> \return Matching column, or zero.
+! **************************************************************************************************
+   FUNCTION cell_column(cells, requested_cell) RESULT(index)
+      INTEGER, INTENT(IN)                                :: cells(:, :), requested_cell(3)
+      INTEGER                                            :: index
+
+      INTEGER                                            :: i
+
+      index = 0
+      DO i = 1, SIZE(cells, 2)
+         IF (ALL(cells(:, i) == requested_cell)) THEN
+            CPASSERT(index == 0)
+            index = i
+         END IF
+      END DO
+   END FUNCTION cell_column
+
+! **************************************************************************************************
+!> \brief Apply the same fixed local RI mask to an unsplit forward tensor or its adjoint.
+!>        No Gaussian derivative or AO-pair support mask is applied. The smooth RI bump is
+!>        part of the subsequent local metric contraction, with its own geometry derivative.
+!> \param tensor Unsplit (RI atom/cell,AO atom,AO atom) tensor.
+!> \param domain Optional fixed support; absence retains every native block.
+! **************************************************************************************************
+   SUBROUTINE apply_ri_domain(tensor, domain)
+      TYPE(dbt_type), INTENT(INOUT)                      :: tensor
+      LOGICAL, INTENT(IN), OPTIONAL                      :: domain(:, :)
+
+      INTEGER                                            :: ind(3)
+      LOGICAL                                            :: found
+      REAL(dp), ALLOCATABLE                              :: block(:, :, :)
+      TYPE(dbt_iterator_type)                            :: iter
+
+      IF (.NOT. PRESENT(domain)) RETURN
+      CALL dbt_iterator_start(iter, tensor)
+      DO WHILE (dbt_iterator_blocks_left(iter))
+         CALL dbt_iterator_next_block(iter, ind)
+         CPASSERT(ind(1) <= SIZE(domain, 1) .AND. ind(2) <= SIZE(domain, 2))
+         IF (domain(ind(1), ind(2))) CYCLE
+         CALL dbt_get_block(tensor, ind, block, found)
+         CPASSERT(found)
+         block = 0.0_dp
+         CALL dbt_put_block(tensor, ind, SHAPE(block), block)
+         DEALLOCATE (block)
+      END DO
+      CALL dbt_iterator_stop(iter)
+   END SUBROUTINE apply_ri_domain
 
 ! **************************************************************************************************
 !> \brief Distributed T += B C B^T with C(RI,P,P), B(AO,P); no packing or symmetry factor.
@@ -280,9 +537,10 @@ CONTAINS
 !> \param ri_displacements Optional Cartesian RI-cell translations S, stacked in the RI dimension.
 !> \param augmentation_displacement Optional Cartesian projector-cell translation T.
 !>        The integral retains the full displacement (R_Q+T)-(R_RI+S).
+!> \param cell Optional cell; fold atom coordinates to the same origin as the SAP image labels.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, &
-                                        ri_displacements, augmentation_displacement)
+                                        ri_displacements, augmentation_displacement, cell)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
@@ -291,13 +549,14 @@ CONTAINS
       TYPE(dbt_type), INTENT(OUT)                        :: auxiliary
       REAL(dp), INTENT(IN), OPTIONAL                     :: ri_displacements(:, :), &
                                                             augmentation_displacement(3)
+      TYPE(cell_type), OPTIONAL, POINTER                 :: cell
 
       INTEGER                                            :: atom, center, first, ikind, iset, &
                                                             kind_q, n, nset, owner, ri_cell, row, &
                                                             rule
       INTEGER, ALLOCATABLE                               :: d1(:), d2(:), d3(:), sizes(:)
       INTEGER, POINTER                                   :: nsgf_set(:)
-      REAL(dp)                                           :: qshift(3), ri_position(3)
+      REAL(dp)                                           :: q_position(3), qshift(3), ri_position(3)
       REAL(dp), ALLOCATABLE                              :: block(:, :, :), shifts(:, :)
       TYPE(gto_basis_set_type), POINTER                  :: ri_basis
 
@@ -319,10 +578,15 @@ CONTAINS
       DO center = 1, SIZE(uspp%center_atoms)
          kind_q = uspp%center_kinds(center)
          n = uspp%projector_sizes(center)
+         q_position = uspp%position(:, center)
+         IF (PRESENT(cell)) q_position = pbc(q_position, cell)
+         q_position = q_position + qshift
          DO row = 1, SIZE(sizes)
             atom = MODULO(row - 1, SIZE(particles)) + 1
             ri_cell = (row - 1)/SIZE(particles) + 1
-            ri_position = particles(atom)%r + shifts(:, ri_cell)
+            ri_position = particles(atom)%r
+            IF (PRESENT(cell)) ri_position = pbc(ri_position, cell)
+            ri_position = ri_position + shifts(:, ri_cell)
             CALL dbt_get_stored_coordinates(auxiliary, [row, center, center], owner)
             IF (owner /= auxiliary%pgrid%mp_comm_2d%mepos) CYCLE
             ikind = particles(atom)%atomic_kind%kind_number
@@ -333,7 +597,7 @@ CONTAINS
             first = 1
             DO iset = 1, nset
                CALL uspp_hfx_auxiliary_integrals(uspp%augmentation(kind_q), ri_basis, iset, ri_position, &
-                                                 uspp%position(:, center) + qshift, lebedev_grid(rule)%r, &
+                                                 q_position, lebedev_grid(rule)%r, &
                                                  fourpi*lebedev_grid(rule)%w, block(first:first + nsgf_set(iset) - 1, :, :))
                first = first + nsgf_set(iset)
             END DO
@@ -355,9 +619,10 @@ CONTAINS
 !> \param cell_gradient Optional physical affine-strain energy gradient, incremented in place.
 !> \param ri_displacements Same Cartesian RI-cell translations S and stacking as the forward C.
 !> \param augmentation_displacement Same Cartesian projector-cell translation T.
+!> \param cell Same optional cell and atom folding as the forward C.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
-                                          atom_gradient, cell_gradient, ri_displacements, augmentation_displacement)
+                                          atom_gradient, cell_gradient, ri_displacements, augmentation_displacement, cell)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
@@ -367,14 +632,15 @@ CONTAINS
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: cell_gradient(3, 3)
       REAL(dp), INTENT(IN), OPTIONAL                     :: ri_displacements(:, :), &
                                                             augmentation_displacement(3)
+      TYPE(cell_type), OPTIONAL, POINTER                 :: cell
 
       INTEGER                                            :: atom, axis, center, first, ikind, &
                                                             ind(3), iset, kind_q, n, nset, qatom, &
                                                             ri_cell, rule
       INTEGER, POINTER                                   :: nsgf_set(:)
       LOGICAL                                            :: found, valid
-      REAL(dp)                                           :: displacement(3), gq(3), qshift(3), &
-                                                            ri_position(3)
+      REAL(dp)                                           :: displacement(3), gq(3), q_position(3), &
+                                                            qshift(3), ri_position(3)
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :), block(:, :, :), &
                                                             derivative(:, :, :, :), shifts(:, :)
       TYPE(dbt_iterator_type)                            :: iter
@@ -391,8 +657,13 @@ CONTAINS
          CPASSERT(ind(1) >= 1 .AND. ind(1) <= SIZE(particles)*SIZE(shifts, 2))
          atom = MODULO(ind(1) - 1, SIZE(particles)) + 1
          ri_cell = (ind(1) - 1)/SIZE(particles) + 1
-         ri_position = particles(atom)%r + shifts(:, ri_cell)
+         ri_position = particles(atom)%r
+         IF (PRESENT(cell)) ri_position = pbc(ri_position, cell)
+         ri_position = ri_position + shifts(:, ri_cell)
          center = ind(2)
+         q_position = uspp%position(:, center)
+         IF (PRESENT(cell)) q_position = pbc(q_position, cell)
+         q_position = q_position + qshift
          qatom = uspp%center_atoms(center)
          kind_q = uspp%center_kinds(center)
          n = uspp%projector_sizes(center)
@@ -407,7 +678,7 @@ CONTAINS
          DO iset = 1, nset
             ALLOCATE (block(nsgf_set(iset), n, n), derivative(3, nsgf_set(iset), n, n))
             CALL uspp_hfx_auxiliary_integrals(uspp%augmentation(kind_q), ri_basis, iset, ri_position, &
-                                              uspp%position(:, center) + qshift, lebedev_grid(rule)%r, &
+                                              q_position, lebedev_grid(rule)%r, &
                                               fourpi*lebedev_grid(rule)%w, block, augmentation_derivative=derivative)
             DO axis = 1, 3
                gq(axis) = gq(axis) + SUM(adjoint(first:first + nsgf_set(iset) - 1, :, :)*derivative(axis, :, :, :))
@@ -418,7 +689,7 @@ CONTAINS
          atom_gradient(:, atom) = atom_gradient(:, atom) - gq
          atom_gradient(:, qatom) = atom_gradient(:, qatom) + gq
          IF (PRESENT(cell_gradient)) THEN
-            displacement = uspp%position(:, center) + qshift - ri_position
+            displacement = q_position - ri_position
             DO axis = 1, 3
                cell_gradient(axis, :) = cell_gradient(axis, :) + gq(axis)*displacement
             END DO
