@@ -71,7 +71,10 @@ Use both exports from the same atomic calculation. Resampling uses shared GSL.
 Run an input with `OMP_NUM_THREADS=1 cp2k.psmp -i input.inp -o output.out`.
 Check both SCF and band-solver convergence, and compare serial and MPI energies.
 The low cutoffs and quadratures test integration, not physical convergence.
-Forces, stress, GPU, SOC and noncollinear support are not included.
+Point-quadrature forces and stress are supported for PW and PAW. Nonrelativistic
+FP-LAPW forces require the joint Hessian and quadrature-direction callbacks,
+with full variation for collinear states. FP-LAPW stress, GPU, SOC and
+noncollinear support remain unavailable.
 
 ## Orbital derivatives
 
@@ -84,6 +87,9 @@ These variations hold occupations, radial functions and core states fixed.
 PAW orbital rotations preserve the plane-wave norm but not necessarily the
 PAW overlap norm. No density renormalization is applied. Primitive-field
 checks use `skala_grid_unittest.psmp SKALA skala-float32`.
+
+Total-force checks use `skala_sirius_unittest.psmp MODEL LAPW 18 "" atom-grid-forces`
+with an analytic model, or append `skala-float32` when using `SKALA` as the model.
 
 On macOS, pass any required `DYLD_LIBRARY_PATH` through `mpiexec ... env` so
 all ranks load the same OpenMP runtime. Do not use `KMP_DUPLICATE_LIB_OK`.

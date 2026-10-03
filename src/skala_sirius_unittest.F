@@ -112,8 +112,8 @@ PROGRAM skala_sirius_unittest
 #if !defined(__SIRIUS_XC_POINT_UPDATE)
    IF (update_test) ERROR STOP "SIRIUS lacks the point-quadrature update API"
 #endif
-   IF (derivative_test .AND. TRIM(paw_setup) == "LAPW") &
-      ERROR STOP "LAPW forces and stress require basis and boundary derivatives"
+   IF (stress_test .AND. TRIM(paw_setup) == "LAPW") &
+      ERROR STOP "LAPW stress requires the complete basis and boundary derivatives"
 #if !defined(__SIRIUS_XC_POINT_GEOMETRY)
    IF (atom_grid) ERROR STOP "SIRIUS lacks the point geometry callbacks"
 #endif
@@ -174,8 +174,8 @@ PROGRAM skala_sirius_unittest
    IF (atom_grid) THEN
       CALL create_pwdft_section(pwdft_definition)
       CALL section_vals_create(pwdft, pwdft_definition)
-      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=100)
-      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=110)
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=MERGE(30, 100, force_test .AND. first_mode == 2))
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=MERGE(50, 110, force_test .AND. first_mode == 2))
       grid => section_vals_get_subs_vals(pwdft, "SKALA_GRID")
    END IF
    lattice = 0.0_dp
@@ -191,6 +191,7 @@ PROGRAM skala_sirius_unittest
 #endif
    atoms(1)%r = [1.6_dp, 2.7_dp, 4.0_dp]
    IF (natoms == 2) atoms(2)%r = [3.84_dp, 4.59_dp, 5.9_dp]
+   IF (force_test .AND. first_mode == 2) atoms(2)%r = [5.44_dp, 5.29_dp, 6.6_dp]
    nr = 0
    nb = 0
    IF (comm%mepos == 0) THEN
@@ -243,6 +244,10 @@ PROGRAM skala_sirius_unittest
                                              '"control":{"mpi_grid_dims":[1,1],"processing_unit":"CPU","verbosity":1},'// &
                                              '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
                                              '"iterative_solver":{"type":"exact","min_tolerance":1e-11}}')
+               IF (force_test) THEN
+                  CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":false}}')
+                  CALL sirius_set_parameters(ctx, pw_cutoff=9.0_dp)
+               END IF
             ELSE
                CALL sirius_import_parameters(ctx, &
                                              '{"parameters":{"electronic_structure_method":"pseudopotential",'// &
