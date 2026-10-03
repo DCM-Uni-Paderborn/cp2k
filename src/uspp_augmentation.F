@@ -12,6 +12,7 @@
 ! **************************************************************************************************
 MODULE uspp_augmentation
    USE atom_upf,                        ONLY: atom_upfpot_type,&
+                                              upf_partial_waves_type,&
                                               upf_radial_weights
    USE bessel_lib,                      ONLY: bessel0
    USE cp_array_sort,                   ONLY: cp_1d_r_sort
@@ -47,6 +48,7 @@ MODULE uspp_augmentation
    END TYPE uspp_augmentation_type
 
    PUBLIC :: uspp_augmentation_type, uspp_augmentation_init, paw_reconstruction_init, uspp_augmentation_fourier, &
+             upf_kinetic_reconstruction_init, &
              uspp_augmentation_collocate, uspp_augmentation_integrate, &
              uspp_augmentation_prepare_realspace, uspp_augmentation_realspace, &
              uspp_augmentation_prepare_fourier, &
@@ -166,6 +168,95 @@ CONTAINS
       END DO
       CALL uspp_augmentation_init(transition, projectors, reconstruction)
    END SUBROUTINE paw_reconstruction_init
+
+! **************************************************************************************************
+!> \brief AE-minus-PS valence kinetic density from original projector partial waves.
+!>        The angular gradient product uses the density Gaunt tensor with its Laplacian factor.
+!>        Keep this cache separate from charge augmentation and the generalized overlap.
+!>        No kinetic moments are inferred from PP_Q, PP_KDIFF or occupied reference waves.
+!> \param pot Scalar PAW or USPP dataset with complete per-beta AE/PS partial waves.
+!> \param projectors Original radial and magnetic projector mapping.
+!> \param reconstruction Kinetic transition cache, including Cartesian value/derivative splines.
+!> \param available Whether the supplied data determine the kinetic transition field.
+!> \param reason Diagnostic for unavailable data; empty on success.
+! **************************************************************************************************
+   SUBROUTINE upf_kinetic_reconstruction_init(pot, projectors, reconstruction, available, reason)
+      TYPE(atom_upfpot_type), INTENT(IN), TARGET         :: pot
+      TYPE(upf_projector_type), INTENT(IN)               :: projectors
+      TYPE(uspp_augmentation_type), INTENT(OUT)          :: reconstruction
+      LOGICAL, INTENT(OUT)                               :: available
+      CHARACTER(LEN=*), INTENT(OUT)                      :: reason
+
+      CLASS(upf_partial_waves_type), POINTER             :: partial
+      INTEGER                                            :: first, i, j, l, nb, nr, ns, nval, pair, side
+      REAL(dp)                                           :: angular_factor, sign
+      REAL(dp), ALLOCATABLE                              :: derivatives(:, :), values(:), waves(:, :)
+      TYPE(atom_upfpot_type)                             :: transition
+
+      available = .FALSE.
+      reason = 'Kinetic augmentation requires complete per-beta AE/PS partial waves'
+      NULLIFY (partial)
+      IF (pot%is_paw) THEN
+         IF (.NOT. ALLOCATED(pot%paw)) RETURN
+         partial => pot%paw
+      ELSE IF (pot%is_ultrasoft) THEN
+         IF (.NOT. ALLOCATED(pot%partial_waves)) RETURN
+         partial => pot%partial_waves
+      ELSE
+         RETURN
+      END IF
+      IF (.NOT. ALLOCATED(partial%ae_wfc) .OR. .NOT. ALLOCATED(partial%ps_wfc)) RETURN
+      CPASSERT(.NOT. pot%has_so)
+      nb = pot%number_of_proj
+      nr = SIZE(pot%r)
+      CPASSERT(ALL(SHAPE(partial%ae_wfc) == [nr, nb]))
+      CPASSERT(ALL(SHAPE(partial%ps_wfc) == [nr, nb]))
+      IF (ALLOCATED(partial%angular_momenta)) THEN
+         CPASSERT(ALL(partial%angular_momenta == pot%lbeta))
+      END IF
+      first = 1
+      IF (pot%r(1) == 0.0_dp) first = 2
+      nval = nr
+      IF (pot%is_paw) nval = pot%paw%cutoff_index
+      CPASSERT(nval >= 4 .AND. nval <= nr)
+      ! Differentiate the original continuation, rather than an artificial zero at the sphere.
+      ns = MIN(nr, nval + 3)
+      CPASSERT(ns - first + 1 >= 4)
+      transition%number_of_proj = nb
+      ALLOCATE (transition%r, SOURCE=pot%r)
+      ALLOCATE (transition%rab, SOURCE=pot%rab)
+      ALLOCATE (transition%lbeta, SOURCE=pot%lbeta)
+      ALLOCATE (transition%qijl(nr, nb*(nb + 1)/2, 0:2*MAXVAL(pot%lbeta)), SOURCE=0.0_dp)
+      ALLOCATE (values(ns - first + 1), waves(nval, nb), derivatives(nval, nb))
+      DO side = 1, 2
+         sign = MERGE(1.0_dp, -1.0_dp, side == 1)
+         DO i = 1, nb
+            IF (side == 1) THEN
+               values(:) = partial%ae_wfc(first:ns, i)/pot%r(first:ns)
+            ELSE
+               values(:) = partial%ps_wfc(first:ns, i)/pot%r(first:ns)
+            END IF
+            CALL spline3ders(pot%r(first:ns), values, pot%r(:nval), ynew=waves(:, i), dynew=derivatives(:, i))
+         END DO
+         DO j = 1, nb
+            DO i = 1, j
+               pair = j*(j - 1)/2 + i
+               DO l = ABS(pot%lbeta(i) - pot%lbeta(j)), pot%lbeta(i) + pot%lbeta(j), 2
+                  angular_factor = 0.5_dp*REAL(pot%lbeta(i)*(pot%lbeta(i) + 1) + &
+                                               pot%lbeta(j)*(pot%lbeta(j) + 1) - l*(l + 1), dp)
+                  ! Store r^2 T_ij^L, with T = 1/2 grad(phi_i).grad(phi_j).
+                  transition%qijl(:nval, pair, l) = transition%qijl(:nval, pair, l) + 0.5_dp*sign*( &
+                                                    pot%r(:nval)**2*derivatives(:, i)*derivatives(:, j) + &
+                                                    angular_factor*waves(:, i)*waves(:, j))
+               END DO
+            END DO
+         END DO
+      END DO
+      CALL uspp_augmentation_init(transition, projectors, reconstruction)
+      CALL uspp_augmentation_prepare_realspace(transition, reconstruction)
+      available = .TRUE.
+      reason = ''
+   END SUBROUTINE upf_kinetic_reconstruction_init
 
 ! **************************************************************************************************
 !> \brief Prepare regular radial splines for atom-grid augmentation quadrature.

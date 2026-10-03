@@ -26,8 +26,9 @@ PROGRAM uspp_fourier_unittest
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
    USE uspp_augmentation,               ONLY: &
-        uspp_augmentation_collocate, uspp_augmentation_collocate_atom, uspp_augmentation_fourier, &
-        uspp_augmentation_init, uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
+        upf_kinetic_reconstruction_init, uspp_augmentation_collocate, &
+        uspp_augmentation_collocate_atom, uspp_augmentation_fourier, uspp_augmentation_init, &
+        uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
         uspp_augmentation_prepare_fourier, uspp_augmentation_prepare_realspace, &
         uspp_augmentation_realspace, uspp_augmentation_type
 
@@ -48,6 +49,7 @@ PROGRAM uspp_fourier_unittest
    CALL cp2k_init()
    max_error = 0.0_dp
    CALL check_native_grid_interpolation()
+   CALL check_partial_wave_kinetic()
    DO grid = 1, 3
       pot%number_of_proj = nb
       pot%is_ultrasoft = .TRUE.
@@ -169,6 +171,73 @@ PROGRAM uspp_fourier_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Kinetic s/p products against direct Cartesian gradients; absent data remain unavailable.
+! **************************************************************************************************
+   SUBROUTINE check_partial_wave_kinetic()
+      CHARACTER(LEN=256)                                 :: reason
+      INTEGER                                            :: axis, k, mode, point
+      LOGICAL                                            :: available
+      REAL(dp)                                           :: coordinate(3), error, exact(4, 4), &
+                                                            gradients(4, 3), points(3, 2), sign, &
+                                                            value(4, 4)
+      TYPE(atom_upfpot_type)                             :: dataset
+      TYPE(upf_projector_type)                           :: native
+      TYPE(uspp_augmentation_type)                       :: kinetic
+
+      dataset%number_of_proj = 2
+      dataset%is_ultrasoft = .TRUE.
+      ALLOCATE (dataset%lbeta(2), SOURCE=[0, 1])
+      ALLOCATE (dataset%r(81), dataset%rab(81), dataset%beta(81, 2), dataset%dion(2, 2))
+      dataset%r(:) = [(0.05_dp*REAL(k - 1, dp), k=1, 81)]
+      dataset%rab = 0.05_dp
+      dataset%beta(:, 1) = EXP(-dataset%r**2)
+      dataset%beta(:, 2) = dataset%r*EXP(-dataset%r**2)
+      dataset%dion = 0.0_dp
+      CALL upf_projector_init(dataset, 1, native)
+      CALL upf_kinetic_reconstruction_init(dataset, native, kinetic, available, reason)
+      IF (available .OR. LEN_TRIM(reason) == 0) ERROR STOP 'Missing kinetic partial waves accepted'
+      ALLOCATE (dataset%partial_waves)
+      ALLOCATE (dataset%partial_waves%ae_wfc(81, 2), dataset%partial_waves%ps_wfc(81, 2))
+      dataset%partial_waves%ae_wfc(:, 1) = dataset%r*(1.0_dp + dataset%r**2)
+      dataset%partial_waves%ps_wfc(:, 1) = dataset%r*(1.0_dp + 0.3_dp*dataset%r**2)
+      dataset%partial_waves%ae_wfc(:, 2) = 2.0_dp*dataset%r**2
+      dataset%partial_waves%ps_wfc(:, 2) = 0.7_dp*dataset%r**2
+      points(:, 1) = 0.0_dp
+      points(:, 2) = [0.2_dp, -0.7_dp, 0.9_dp]
+      error = 0.0_dp
+      DO mode = 1, 2
+         IF (mode == 2) THEN
+            dataset%is_paw = .TRUE.
+            ALLOCATE (dataset%paw)
+            dataset%paw%cutoff_index = SIZE(dataset%r)
+            ALLOCATE (dataset%paw%ae_wfc, SOURCE=dataset%partial_waves%ae_wfc)
+            ALLOCATE (dataset%paw%ps_wfc, SOURCE=dataset%partial_waves%ps_wfc)
+         END IF
+         CALL upf_kinetic_reconstruction_init(dataset, native, kinetic, available, reason)
+         IF (.NOT. available .OR. LEN_TRIM(reason) /= 0) ERROR STOP 'Complete kinetic partial waves rejected'
+         DO point = 1, SIZE(points, 2)
+            coordinate = points(:, point)
+            exact = 0.0_dp
+            DO k = 1, 2
+               sign = MERGE(1.0_dp, -1.0_dp, k == 1)
+               gradients = 0.0_dp
+               gradients(1, :) = 2.0_dp*MERGE(1.0_dp, 0.3_dp, k == 1)*coordinate*orbtramat(0)%slm(1, 1)
+               DO axis = 1, 3
+                  ! Degree-one real harmonics are Cartesian linear forms.
+                  gradients(2:4, axis) = MERGE(2.0_dp, 0.7_dp, k == 1)*orbtramat(1)%slm(:, axis)
+               END DO
+               exact = exact + 0.5_dp*sign*MATMUL(gradients, TRANSPOSE(gradients))
+            END DO
+            CALL uspp_augmentation_realspace(kinetic, coordinate, value)
+            error = MAX(error, MAXVAL(ABS(value - exact)))
+         END DO
+      END DO
+      IF (error > 2.e-10_dp) ERROR STOP 'Kinetic Gaunt field differs from Cartesian partial-wave gradients'
+      WRITE (*, *) 'UPF partial-wave kinetic reconstruction error:', error
+      CALL atom_release_upf(dataset)
+   END SUBROUTINE check_partial_wave_kinetic
 
 ! **************************************************************************************************
 !> \brief Polynomial exactness, reflection, C2 continuity and tensor-product field/position adjoints.
