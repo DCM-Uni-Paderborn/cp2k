@@ -107,8 +107,8 @@ CONTAINS
                           "descriptor windows. Geometry changes require SIRIUS with the point-quadrature update API. "// &
                           "Only CPU scalar or collinear calculations are supported. "// &
                           "PW and PAW forces and stress require the point geometry callbacks. "// &
-                          "Nonrelativistic FP-LAPW forces require the joint Hessian and quadrature-direction callbacks, "// &
-                          "with full variation for collinear states. FP-LAPW stress is not supported. "// &
+                          "Nonrelativistic FP-LAPW forces and total stress require the joint Hessian and "// &
+                          "quadrature-direction callbacks, with full variation for collinear states. "// &
                           "Converge the quadrature and image shell for the system studied.")
       CALL keyword_create(keyword, __LOCATION__, name="N_RADIAL", default_i_val=100, &
                           description="Number of radial nodes with r = RADIAL_SCALE*t/(1-t).")

@@ -110,7 +110,7 @@ PROGRAM skala_sirius_unittest
    atom_grid = TRIM(grid_arg) == "atom-grid" .OR. derivative_test .OR. update_test
    IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. atom_grid) ERROR STOP "Unknown atom-grid test mode"
 #if !defined(__SIRIUS_XC_POINT_UPDATE)
-   IF (update_test .OR. stress_test) ERROR STOP "SIRIUS lacks the point-quadrature update API"
+   IF (update_test .OR. derivative_test) ERROR STOP "SIRIUS lacks the point-quadrature update API"
 #endif
 #if !defined(__SIRIUS_XC_POINT_GEOMETRY)
    IF (atom_grid) ERROR STOP "SIRIUS lacks the point geometry callbacks"
@@ -235,100 +235,104 @@ PROGRAM skala_sirius_unittest
                atoms(2)%r = MATMUL(lattice, [0.48_dp, 0.51_dp, 0.59_dp])
                IF (mode == 2) atoms(2)%r = MATMUL(lattice, [0.68_dp, 5.29_dp/9.0_dp, 0.66_dp])
             END IF
-            CALL sirius_create_context(comm%get_handle(), ctx)
-            IF (mode == 2) THEN
-               CALL sirius_import_parameters(ctx, &
-                                             '{"parameters":{"electronic_structure_method":"full_potential_lapwlo",'// &
-                                             '"use_symmetry":false,"pw_cutoff":5.0,"gk_cutoff":1.5,"num_bands":4,'// &
-                                             '"xc_functionals":[],"smearing_width":0.01,"auto_rmt":0,'// &
-                                             '"core_relativity":"none","valence_relativity":"none",'// &
-                                             '"lmax_apw":3,"lmax_rho":6,"lmax_pot":6},'// &
-                                             '"control":{"mpi_grid_dims":[1,1],"processing_unit":"CPU","verbosity":1},'// &
-                                             '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
-                                             '"iterative_solver":{"type":"exact","min_tolerance":1e-11}}')
-               IF (derivative_test) THEN
-                  CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":false}}')
-                  CALL sirius_set_parameters(ctx, pw_cutoff=9.0_dp)
-               END IF
-            ELSE
-               CALL sirius_import_parameters(ctx, &
-                                             '{"parameters":{"electronic_structure_method":"pseudopotential",'// &
-                                             '"use_symmetry":false,"pw_cutoff":8.0,"gk_cutoff":2.6,"num_bands":4,'// &
-                                             '"xc_functionals":[],"smearing_width":0.01},'// &
-                                             '"control":{"mpi_grid_dims":[1,1],"processing_unit":"CPU","verbosity":1},'// &
-                                             '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
-                                             '"iterative_solver":{"type":"exact","min_tolerance":1e-11,"num_steps":80}}')
-            END IF
-            CALL sirius_set_parameters(ctx, num_mag_dims=mag)
-            CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
-            IF (mode == 2) THEN
-               CALL sirius_add_atom_type(ctx, "He", zn=2)
-               DO i = 1, nmt
-                  rmt(i) = 1.0e-6_dp + (1.8_dp - 1.0e-6_dp)*(REAL(i - 1, dp)/REAL(nmt - 1, dp))**2
-               END DO
-               DO i = 1, nfree
-                  rfree(i) = 1.0e-7_dp + (20.0_dp - 1.0e-7_dp)*(REAL(i - 1, dp)/REAL(nfree - 1, dp))**3
-               END DO
-               rhofree = 16.0_dp/ACOS(-1.0_dp)*EXP(-4*rfree)
-               CALL sirius_set_atom_type_radial_grid(ctx, "He", nmt, rmt)
-               CALL sirius_set_atom_type_radial_grid_inf(ctx, "He", nfree, rfree)
-               CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_rho", rhofree, nfree)
-               DO l = 0, 3
-                  CALL sirius_add_atom_type_aw_descriptor(ctx, "He", l + 1, l, -0.3_dp, 0, .FALSE.)
-                  CALL sirius_add_atom_type_aw_descriptor(ctx, "He", l + 1, l, -0.3_dp, 1, .FALSE.)
-               END DO
-               CALL sirius_add_atom_type_lo_descriptor(ctx, "He", 1, 1, 0, -0.7_dp, 0, .FALSE.)
-               CALL sirius_add_atom_type_lo_descriptor(ctx, "He", 1, 1, 0, -0.7_dp, 1, .FALSE.)
-            ELSE IF (mode == 1 .AND. LEN_TRIM(paw_setup) > 0) THEN
-               CALL sirius_add_atom_type(ctx, "He", fname=TRIM(paw_setup))
-            ELSE
-               CALL sirius_add_atom_type(ctx, "He", zn=2)
-               DO i = 1, nrad
-                  r(i) = 20.0_dp*(REAL(i - 1, dp)/REAL(nrad - 1, dp))**2
-                  IF (mode == 1) r(i) = 0.001_dp + 2.999_dp*(REAL(i - 1, dp)/REAL(nrad - 1, dp))**2
-               END DO
-               v = -2.0_dp/SQRT(1.0_dp + r**2)
-               rho = 4.0_dp*EXP(-r**2)*r
-               orbital = EXP(-r)
-               CALL sirius_set_atom_type_radial_grid(ctx, "He", nrad, r)
-               CALL sirius_add_atom_type_radial_function(ctx, "He", "vloc", v, nrad)
-               CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_rho_total", rho, nrad)
-               CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_atomic_wf", orbital, nrad, n=1, l=0)
-               dion = 0.0_dp
-               IF (mode == 1) THEN
-                  ! Deliberately synthetic setup: tests the coupled implementation, not PAW accuracy.
-                  CALL sirius_add_atom_type_radial_function(ctx, "He", "beta", 0.2_dp*r*EXP(-2*r**2), nrad, l=0)
-                  CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_wf", r*EXP(-r**2), nrad)
-                  CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_paw_wf", r*EXP(-0.8_dp*r**2), nrad)
-                  CALL sirius_add_atom_type_radial_function(ctx, "He", "q_aug", 0.05_dp*r**2*EXP(-2*r**2), nrad, &
-                                                            l=0, idxrf1=1, idxrf2=1)
-                  CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_core", 0.02_dp*EXP(-3*r**2), nrad)
-                  CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_core_tau", 0.03_dp*EXP(-3*r**2), nrad)
-                  CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_rho_core", 0.01_dp*EXP(-2*r**2), nrad)
-                  CALL sirius_set_atom_type_dion(ctx, "He", 1, dion)
-                  CALL sirius_set_atom_type_paw(ctx, "He", 0.0_dp, [2.0_dp], 1)
+            IF (.NOT. derivative_test .OR. geometry == 1) THEN
+               CALL sirius_create_context(comm%get_handle(), ctx)
+               IF (mode == 2) THEN
+                  CALL sirius_import_parameters(ctx, &
+                                                '{"parameters":{"electronic_structure_method":"full_potential_lapwlo",'// &
+                                                '"use_symmetry":false,"pw_cutoff":5.0,"gk_cutoff":1.5,"num_bands":4,'// &
+                                                '"xc_functionals":[],"smearing_width":0.01,"auto_rmt":0,'// &
+                                                '"core_relativity":"none","valence_relativity":"none",'// &
+                                                '"lmax_apw":3,"lmax_rho":6,"lmax_pot":6},'// &
+                                                '"control":{"mpi_grid_dims":[1,1],"processing_unit":"CPU","verbosity":1},'// &
+                                                '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
+                                                '"iterative_solver":{"type":"exact","min_tolerance":1e-11}}')
+                  IF (derivative_test) THEN
+                     CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":false}}')
+                     CALL sirius_set_parameters(ctx, pw_cutoff=9.0_dp)
+                  END IF
                ELSE
-                  CALL sirius_set_atom_type_dion(ctx, "He", 0, dion(:0, :0))
+                  CALL sirius_import_parameters(ctx, &
+                                                '{"parameters":{"electronic_structure_method":"pseudopotential",'// &
+                                                '"use_symmetry":false,"pw_cutoff":8.0,"gk_cutoff":2.6,"num_bands":4,'// &
+                                                '"xc_functionals":[],"smearing_width":0.01},'// &
+                                                '"control":{"mpi_grid_dims":[1,1],"processing_unit":"CPU","verbosity":1},'// &
+                                                '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
+                                                '"iterative_solver":{"type":"exact","min_tolerance":1e-11,"num_steps":80}}')
                END IF
+               CALL sirius_set_parameters(ctx, num_mag_dims=mag)
+               CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
+               IF (mode == 2) THEN
+                  CALL sirius_add_atom_type(ctx, "He", zn=2)
+                  DO i = 1, nmt
+                     rmt(i) = 1.0e-6_dp + (1.8_dp - 1.0e-6_dp)*(REAL(i - 1, dp)/REAL(nmt - 1, dp))**2
+                  END DO
+                  DO i = 1, nfree
+                     rfree(i) = 1.0e-7_dp + (20.0_dp - 1.0e-7_dp)*(REAL(i - 1, dp)/REAL(nfree - 1, dp))**3
+                  END DO
+                  rhofree = 16.0_dp/ACOS(-1.0_dp)*EXP(-4*rfree)
+                  CALL sirius_set_atom_type_radial_grid(ctx, "He", nmt, rmt)
+                  CALL sirius_set_atom_type_radial_grid_inf(ctx, "He", nfree, rfree)
+                  CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_rho", rhofree, nfree)
+                  DO l = 0, 3
+                     CALL sirius_add_atom_type_aw_descriptor(ctx, "He", l + 1, l, -0.3_dp, 0, .FALSE.)
+                     CALL sirius_add_atom_type_aw_descriptor(ctx, "He", l + 1, l, -0.3_dp, 1, .FALSE.)
+                  END DO
+                  CALL sirius_add_atom_type_lo_descriptor(ctx, "He", 1, 1, 0, -0.7_dp, 0, .FALSE.)
+                  CALL sirius_add_atom_type_lo_descriptor(ctx, "He", 1, 1, 0, -0.7_dp, 1, .FALSE.)
+               ELSE IF (mode == 1 .AND. LEN_TRIM(paw_setup) > 0) THEN
+                  CALL sirius_add_atom_type(ctx, "He", fname=TRIM(paw_setup))
+               ELSE
+                  CALL sirius_add_atom_type(ctx, "He", zn=2)
+                  DO i = 1, nrad
+                     r(i) = 20.0_dp*(REAL(i - 1, dp)/REAL(nrad - 1, dp))**2
+                     IF (mode == 1) r(i) = 0.001_dp + 2.999_dp*(REAL(i - 1, dp)/REAL(nrad - 1, dp))**2
+                  END DO
+                  v = -2.0_dp/SQRT(1.0_dp + r**2)
+                  rho = 4.0_dp*EXP(-r**2)*r
+                  orbital = EXP(-r)
+                  CALL sirius_set_atom_type_radial_grid(ctx, "He", nrad, r)
+                  CALL sirius_add_atom_type_radial_function(ctx, "He", "vloc", v, nrad)
+                  CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_rho_total", rho, nrad)
+                  CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_atomic_wf", orbital, nrad, n=1, l=0)
+                  dion = 0.0_dp
+                  IF (mode == 1) THEN
+                     ! Deliberately synthetic setup: tests the coupled implementation, not PAW accuracy.
+                     CALL sirius_add_atom_type_radial_function(ctx, "He", "beta", 0.2_dp*r*EXP(-2*r**2), nrad, l=0)
+                     CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_wf", r*EXP(-r**2), nrad)
+                     CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_paw_wf", r*EXP(-0.8_dp*r**2), nrad)
+                     CALL sirius_add_atom_type_radial_function(ctx, "He", "q_aug", 0.05_dp*r**2*EXP(-2*r**2), nrad, &
+                                                               l=0, idxrf1=1, idxrf2=1)
+                     CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_core", 0.02_dp*EXP(-3*r**2), nrad)
+                     CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_core_tau", 0.03_dp*EXP(-3*r**2), nrad)
+                     CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_rho_core", 0.01_dp*EXP(-2*r**2), nrad)
+                     CALL sirius_set_atom_type_dion(ctx, "He", 1, dion)
+                     CALL sirius_set_atom_type_paw(ctx, "He", 0.0_dp, [2.0_dp], 1)
+                  ELSE
+                     CALL sirius_set_atom_type_dion(ctx, "He", 0, dion(:0, :0))
+                  END IF
+               END IF
+               DO i = 1, natoms
+                  CALL sirius_add_atom(ctx, "He", MATMUL(cell%h_inv, atoms(i)%r))
+               END DO
+               IF (atom_grid) THEN
+                  CALL skala_sirius_register_atom_grid(ctx, xc, atoms, cell, comm, grid, state)
+               ELSE
+                 CALL skala_sirius_register_points(ctx, xc, atoms, cell, points, weights, descriptor_weights, sizes, centres, state)
+               END IF
+               CALL sirius_initialize_context(ctx)
+               CALL sirius_create_kset(ctx, 1, kpoint, [1.0_dp], .TRUE., ks)
+               CALL sirius_create_ground_state(ks, gs)
             END IF
-            DO i = 1, natoms
-               CALL sirius_add_atom(ctx, "He", MATMUL(cell%h_inv, atoms(i)%r))
-            END DO
-            IF (atom_grid) THEN
-               CALL skala_sirius_register_atom_grid(ctx, xc, atoms, cell, comm, grid, state)
-            ELSE
-               CALL skala_sirius_register_points(ctx, xc, atoms, cell, points, weights, descriptor_weights, sizes, centres, state)
-            END IF
-            CALL sirius_initialize_context(ctx)
-            CALL sirius_create_kset(ctx, 1, kpoint, [1.0_dp], .TRUE., ks)
-            CALL sirius_create_ground_state(ks, gs)
-            IF (stress_test .AND. geometry > 1) THEN
+            IF (derivative_test .AND. geometry > 1) THEN
                ! Preserve both density and orbital index sets throughout the strain stencil.
-               lattice = lattice + force_steps(geometry)*MATMUL(strain, lattice)
-               CALL init_cell(cell, hmat=lattice)
-               atoms(1)%r = MATMUL(lattice, [0.2_dp, 0.3_dp, 0.4_dp])
-               atoms(2)%r = MATMUL(lattice, [0.48_dp, 0.51_dp, 0.59_dp])
-               IF (mode == 2) atoms(2)%r = MATMUL(lattice, [0.68_dp, 5.29_dp/9.0_dp, 0.66_dp])
+               IF (stress_test) THEN
+                  lattice = lattice + force_steps(geometry)*MATMUL(strain, lattice)
+                  CALL init_cell(cell, hmat=lattice)
+                  atoms(1)%r = MATMUL(lattice, [0.2_dp, 0.3_dp, 0.4_dp])
+                  atoms(2)%r = MATMUL(lattice, [0.48_dp, 0.51_dp, 0.59_dp])
+                  IF (mode == 2) atoms(2)%r = MATMUL(lattice, [0.68_dp, 5.29_dp/9.0_dp, 0.66_dp])
+               END IF
                CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
                DO i = 1, natoms
                   CALL sirius_set_atom_position(ctx, i, MATMUL(cell%h_inv, atoms(i)%r))
@@ -339,6 +343,7 @@ PROGRAM skala_sirius_unittest
             converged = .FALSE.
             CALL sirius_find_ground_state(gs, density_tol=density_tol, energy_tol=energy_tol, &
                                           iter_solver_tol=MERGE(1.0e-11_dp, 1.0e-9_dp, derivative_test .OR. update_test), &
+                                          initial_guess=(.NOT. derivative_test .OR. geometry == 1), &
                                           max_niter=max_scf_iterations, save_state=.FALSE., converged=converged, error_code=ierr)
             IF (ierr /= 0) ERROR STOP "SIRIUS Skala SCF failed"
             CALL sirius_get_energy(gs, "total", energy)
@@ -480,11 +485,13 @@ PROGRAM skala_sirius_unittest
                IF (exc /= repeat_exc) ERROR STOP "Field response check changed the ground-state XC energy"
             END IF
 #endif
-            CALL sirius_free_handler(gs)
-            CALL sirius_free_handler(ks)
-            CALL sirius_free_handler(ctx)
-            CALL skala_sirius_release(state)
-            IF (ASSOCIATED(state)) ERROR STOP "Callback state was not released"
+            IF (.NOT. derivative_test .OR. geometry == 5) THEN
+               CALL sirius_free_handler(gs)
+               CALL sirius_free_handler(ks)
+               CALL sirius_free_handler(ctx)
+               CALL skala_sirius_release(state)
+               IF (ASSOCIATED(state)) ERROR STOP "Callback state was not released"
+            END IF
          END DO
          IF (derivative_test) THEN
             DO i = 2, 4, 2

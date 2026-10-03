@@ -11,6 +11,8 @@ on atom quadratures for PAW and FP-LAPW. PAW requires setup-consistent positive
 core kinetic density. FP-LAPW requires a `SIRIUS_ATOM_FILE` in each `KIND`,
 not a UPF file or Gaussian basis.
 
+The periodic atom-quadrature and adjoint checks run in CP2K's standard unit tests.
+
 ## Model-independent checks
 
 From the source root, replacing `build` with the build directory:
@@ -20,7 +22,6 @@ python tools/regtesting/create_skala_grid_test_model.py build/grid-test.fun
 OMP_NUM_THREADS=1 build/bin/skala_grid_unittest.psmp build/grid-test.fun
 python tools/regtesting/create_skala_grid_test_model.py build/grid-geometry-test.fun --geometry
 OMP_NUM_THREADS=1 build/bin/skala_grid_unittest.psmp build/grid-geometry-test.fun geometry
-OMP_NUM_THREADS=1 build/bin/skala_atom_grid_unittest.psmp
 OMP_NUM_THREADS=1 build/bin/skala_sirius_unittest.psmp build/grid-test.fun
 python tools/regtesting/check_sirius_lapw_input.py build/bin/cp2k.psmp build/lapw-input-guards
 python tools/regtesting/test_sirius_lapw_test_atom.py
@@ -91,6 +92,7 @@ checks use `skala_grid_unittest.psmp SKALA skala-float32`.
 Total-force checks use `skala_sirius_unittest.psmp MODEL LAPW 18 "" atom-grid-forces`
 with an analytic model, or append `skala-float32` when using `SKALA` as the model.
 Replace `atom-grid-forces` with `atom-grid-stress` to check the total strain derivative.
+The finite-difference geometries reuse the converged state through the geometry-update API.
 The Float32 preset uses steps of 0.002 and 0.001 (bohr for forces, dimensionless
 for stress) and a relative LAPW response tolerance of `1e-6`. Analytic models
 retain `1e-8` and shorter stencils. Both presets enforce the same derivative-error
