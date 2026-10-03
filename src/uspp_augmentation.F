@@ -16,6 +16,7 @@ MODULE uspp_augmentation
                                               upf_radial_weights
    USE bessel_lib,                      ONLY: bessel0
    USE cp_array_sort,                   ONLY: cp_1d_r_sort
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE mathconstants,                   ONLY: fourpi
@@ -48,13 +49,52 @@ MODULE uspp_augmentation
    END TYPE uspp_augmentation_type
 
    PUBLIC :: uspp_augmentation_type, uspp_augmentation_init, paw_reconstruction_init, uspp_augmentation_fourier, &
-             upf_kinetic_reconstruction_init, &
+             upf_kinetic_reconstruction_init, upf_radial_scalar_init, &
              uspp_augmentation_collocate, uspp_augmentation_integrate, &
              uspp_augmentation_prepare_realspace, uspp_augmentation_realspace, &
              uspp_augmentation_prepare_fourier, &
              uspp_augmentation_collocate_atom, uspp_augmentation_integrate_atom
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Scalar field on an original UPF mesh, using the common radial/grid transport cache.
+!>        Its one-dimensional amplitude is fixed at one. It has no AO or overlap correction.
+!>        Retain every supplied sample and the original radial quadrature, without fitted tails.
+!> \param pot Original radial mesh and weights.
+!> \param values Scalar density or kinetic-density samples in Cartesian volume units.
+!> \param field Independent radial cache with its value and Cartesian derivatives.
+! **************************************************************************************************
+   SUBROUTINE upf_radial_scalar_init(pot, values, field)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      REAL(dp), INTENT(IN)                               :: values(:)
+      TYPE(uspp_augmentation_type), INTENT(OUT)          :: field
+
+      INTEGER                                            :: nr
+      TYPE(atom_upfpot_type)                             :: radial
+
+      nr = SIZE(pot%r)
+      CPASSERT(SIZE(values) == nr .AND. ALL(ieee_is_finite(values)))
+      field%nproj = 1
+      field%lmax = 0
+      CALL init_orbital_pointers(0)
+      CALL init_spherical_harmonics(0, -1)
+      ALLOCATE (field%r, SOURCE=pot%r)
+      ALLOCATE (field%lbeta(1), SOURCE=0)
+      ALLOCATE (field%radial_index(1), field%angular_index(1), SOURCE=1)
+      ALLOCATE (field%gaunt(1, 1, 1), SOURCE=1.0_dp/SQRT(fourpi))
+      ALLOCATE (field%weighted_q(nr, 1, 0:0), field%q(1, 1))
+      ! Y_00 squared is 1/(4*pi); this normalization gives the supplied scalar field.
+      radial%number_of_proj = 1
+      ALLOCATE (radial%r, SOURCE=pot%r)
+      ALLOCATE (radial%rab, SOURCE=pot%rab)
+      ALLOCATE (radial%lbeta(1), SOURCE=0)
+      ALLOCATE (radial%qijl(nr, 1, 0:0))
+      radial%qijl(:, 1, 0) = fourpi*pot%r**2*values
+      field%weighted_q(:, 1, 0) = upf_radial_weights(pot)*radial%qijl(:, 1, 0)
+      field%q(1, 1) = SUM(field%weighted_q(:, 1, 0))
+      CALL uspp_augmentation_prepare_realspace(radial, field)
+   END SUBROUTINE upf_radial_scalar_init
 
 ! **************************************************************************************************
 !> \brief Prepare radial quadrature and Gaunt coefficients in the native beta convention.
@@ -134,11 +174,13 @@ CONTAINS
 !> \param pot Scalar PAW dataset with the original r*phi partial waves.
 !> \param projectors Original radial and magnetic projector mapping.
 !> \param reconstruction Immutable radial and angular transition data, without compensation.
+!> \param realspace Prepare the same pair densities for Cartesian atom-grid evaluation.
 ! **************************************************************************************************
-   SUBROUTINE paw_reconstruction_init(pot, projectors, reconstruction)
+   SUBROUTINE paw_reconstruction_init(pot, projectors, reconstruction, realspace)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       TYPE(uspp_augmentation_type), INTENT(OUT)          :: reconstruction
+      LOGICAL, INTENT(IN), OPTIONAL                      :: realspace
 
       INTEGER                                            :: i, j, l, n, nb, nr, pair
       TYPE(atom_upfpot_type)                             :: transition
@@ -167,6 +209,9 @@ CONTAINS
          END DO
       END DO
       CALL uspp_augmentation_init(transition, projectors, reconstruction)
+      IF (PRESENT(realspace)) THEN
+         IF (realspace) CALL uspp_augmentation_prepare_realspace(transition, reconstruction)
+      END IF
    END SUBROUTINE paw_reconstruction_init
 
 ! **************************************************************************************************

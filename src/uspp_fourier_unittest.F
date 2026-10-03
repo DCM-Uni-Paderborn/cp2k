@@ -26,9 +26,9 @@ PROGRAM uspp_fourier_unittest
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
    USE uspp_augmentation,               ONLY: &
-        upf_kinetic_reconstruction_init, uspp_augmentation_collocate, &
-        uspp_augmentation_collocate_atom, uspp_augmentation_fourier, uspp_augmentation_init, &
-        uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
+        paw_reconstruction_init, upf_kinetic_reconstruction_init, upf_radial_scalar_init, &
+        uspp_augmentation_collocate, uspp_augmentation_collocate_atom, uspp_augmentation_fourier, &
+        uspp_augmentation_init, uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
         uspp_augmentation_prepare_fourier, uspp_augmentation_prepare_realspace, &
         uspp_augmentation_realspace, uspp_augmentation_type
 
@@ -179,12 +179,11 @@ CONTAINS
       CHARACTER(LEN=256)                                 :: reason
       INTEGER                                            :: axis, k, mode, point
       LOGICAL                                            :: available
-      REAL(dp)                                           :: coordinate(3), error, exact(4, 4), &
-                                                            gradients(4, 3), points(3, 2), sign, &
-                                                            value(4, 4)
+      REAL(dp) :: coordinate(3), error, exact(4, 4), gradients(4, 3), orbitals(4), points(3, 2), &
+         radius2, samples(81), scalar_gradient(1, 1, 3), scalar_value(1, 1), sign, value(4, 4)
       TYPE(atom_upfpot_type)                             :: dataset
       TYPE(upf_projector_type)                           :: native
-      TYPE(uspp_augmentation_type)                       :: kinetic
+      TYPE(uspp_augmentation_type)                       :: kinetic, reconstructed, scalar
 
       dataset%number_of_proj = 2
       dataset%is_ultrasoft = .TRUE.
@@ -207,6 +206,15 @@ CONTAINS
       points(:, 1) = 0.0_dp
       points(:, 2) = [0.2_dp, -0.7_dp, 0.9_dp]
       error = 0.0_dp
+      samples = 2.0_dp + 0.6_dp*dataset%r**2 + 0.04_dp*dataset%r**4
+      CALL upf_radial_scalar_init(dataset, samples, scalar)
+      DO point = 1, SIZE(points, 2)
+         coordinate = points(:, point)
+         radius2 = SUM(coordinate**2)
+         CALL uspp_augmentation_realspace(scalar, coordinate, scalar_value, scalar_gradient)
+         error = MAX(error, ABS(scalar_value(1, 1) - (2.0_dp + 0.6_dp*radius2 + 0.04_dp*radius2**2)), &
+                     MAXVAL(ABS(scalar_gradient(1, 1, :) - (1.2_dp + 0.16_dp*radius2)*coordinate)))
+      END DO
       DO mode = 1, 2
          IF (mode == 2) THEN
             dataset%is_paw = .TRUE.
@@ -233,8 +241,23 @@ CONTAINS
             CALL uspp_augmentation_realspace(kinetic, coordinate, value)
             error = MAX(error, MAXVAL(ABS(value - exact)))
          END DO
+         IF (mode == 2) THEN
+            CALL paw_reconstruction_init(dataset, native, reconstructed, realspace=.TRUE.)
+            DO point = 1, SIZE(points, 2)
+               coordinate = points(:, point)
+               exact = 0.0_dp
+               DO k = 1, 2
+                  sign = MERGE(1.0_dp, -1.0_dp, k == 1)
+                  orbitals(1) = (1.0_dp + MERGE(1.0_dp, 0.3_dp, k == 1)*SUM(coordinate**2))*orbtramat(0)%slm(1, 1)
+                  orbitals(2:4) = MERGE(2.0_dp, 0.7_dp, k == 1)*MATMUL(orbtramat(1)%slm, coordinate)
+                  exact = exact + sign*SPREAD(orbitals, 1, 4)*SPREAD(orbitals, 2, 4)
+               END DO
+               CALL uspp_augmentation_realspace(reconstructed, coordinate, value)
+               error = MAX(error, MAXVAL(ABS(value - exact)))
+            END DO
+         END IF
       END DO
-      IF (error > 2.e-10_dp) ERROR STOP 'Kinetic Gaunt field differs from Cartesian partial-wave gradients'
+      IF (error > 2.e-10_dp) ERROR STOP 'Radial reconstruction differs from Cartesian scalar/orbital fields'
       WRITE (*, *) 'UPF partial-wave kinetic reconstruction error:', error
       CALL atom_release_upf(dataset)
    END SUBROUTINE check_partial_wave_kinetic
