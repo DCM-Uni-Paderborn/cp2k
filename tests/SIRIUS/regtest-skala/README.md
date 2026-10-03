@@ -72,9 +72,9 @@ Run an input with `OMP_NUM_THREADS=1 cp2k.psmp -i input.inp -o output.out`.
 Check both SCF and band-solver convergence, and compare serial and MPI energies.
 The low cutoffs and quadratures test integration, not physical convergence.
 Point-quadrature forces and stress are supported for PW and PAW. Nonrelativistic
-FP-LAPW forces require the joint Hessian and quadrature-direction callbacks,
-with full variation for collinear states. FP-LAPW stress, GPU, SOC and
-noncollinear support remain unavailable.
+FP-LAPW forces and total stress require the joint Hessian and quadrature-direction
+callbacks, with full variation for collinear states. GPU, SOC and noncollinear
+support remain unavailable.
 
 ## Orbital derivatives
 
@@ -90,9 +90,11 @@ checks use `skala_grid_unittest.psmp SKALA skala-float32`.
 
 Total-force checks use `skala_sirius_unittest.psmp MODEL LAPW 18 "" atom-grid-forces`
 with an analytic model, or append `skala-float32` when using `SKALA` as the model.
-The Float32 preset uses 0.002 and 0.001 bohr force stencils and a relative
-LAPW response tolerance of `1e-6`. Analytic models retain `1e-8` and shorter
-stencils. Both presets enforce the same force-error and translation bounds.
+Replace `atom-grid-forces` with `atom-grid-stress` to check the total strain derivative.
+The Float32 preset uses steps of 0.002 and 0.001 (bohr for forces, dimensionless
+for stress) and a relative LAPW response tolerance of `1e-6`. Analytic models
+retain `1e-8` and shorter stencils. Both presets enforce the same derivative-error
+bounds. Force checks also test translation invariance.
 
 On macOS, pass any required `DYLD_LIBRARY_PATH` through `mpiexec ... env` so
 all ranks load the same OpenMP runtime. Do not use `KMP_DUPLICATE_LIB_OK`.

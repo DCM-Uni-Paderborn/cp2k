@@ -110,10 +110,8 @@ PROGRAM skala_sirius_unittest
    atom_grid = TRIM(grid_arg) == "atom-grid" .OR. derivative_test .OR. update_test
    IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. atom_grid) ERROR STOP "Unknown atom-grid test mode"
 #if !defined(__SIRIUS_XC_POINT_UPDATE)
-   IF (update_test) ERROR STOP "SIRIUS lacks the point-quadrature update API"
+   IF (update_test .OR. stress_test) ERROR STOP "SIRIUS lacks the point-quadrature update API"
 #endif
-   IF (stress_test .AND. TRIM(paw_setup) == "LAPW") &
-      ERROR STOP "LAPW stress requires the complete basis and boundary derivatives"
 #if !defined(__SIRIUS_XC_POINT_GEOMETRY)
    IF (atom_grid) ERROR STOP "SIRIUS lacks the point geometry callbacks"
 #endif
@@ -162,8 +160,8 @@ PROGRAM skala_sirius_unittest
       density_tol = 1.0e-8_dp
       energy_tol = 1.0e-9_dp
       max_scf_iterations = 300
-      ! Resolve the checkpoint's Float32 energy noise without relaxing the force error bound.
-      IF (force_test) force_steps = 10.0_dp*force_steps
+      ! Resolve the checkpoint's Float32 energy noise without relaxing the derivative error bound.
+      IF (derivative_test) force_steps = 10.0_dp*force_steps
    END IF
    IF (comm%mepos == 0) THEN
       WRITE (*, '(A,2ES12.3)') "SCF density and energy thresholds: ", density_tol, energy_tol
@@ -176,8 +174,8 @@ PROGRAM skala_sirius_unittest
    IF (atom_grid) THEN
       CALL create_pwdft_section(pwdft_definition)
       CALL section_vals_create(pwdft, pwdft_definition)
-      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=MERGE(30, 100, force_test .AND. first_mode == 2))
-      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=MERGE(50, 110, force_test .AND. first_mode == 2))
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=MERGE(30, 100, derivative_test .AND. first_mode == 2))
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=MERGE(50, 110, derivative_test .AND. first_mode == 2))
       CALL section_vals_val_set(pwdft, "SKALA_GRID%EPS_RESPONSE", &
                                 r_val=MERGE(1.0e-6_dp, 1.0e-8_dp, model_mode == "skala-float32"))
       grid => section_vals_get_subs_vals(pwdft, "SKALA_GRID")
@@ -195,7 +193,7 @@ PROGRAM skala_sirius_unittest
 #endif
    atoms(1)%r = [1.6_dp, 2.7_dp, 4.0_dp]
    IF (natoms == 2) atoms(2)%r = [3.84_dp, 4.59_dp, 5.9_dp]
-   IF (force_test .AND. first_mode == 2) atoms(2)%r = [5.44_dp, 5.29_dp, 6.6_dp]
+   IF (derivative_test .AND. first_mode == 2) atoms(2)%r = [5.44_dp, 5.29_dp, 6.6_dp]
    nr = 0
    nb = 0
    IF (comm%mepos == 0) THEN
@@ -232,10 +230,10 @@ PROGRAM skala_sirius_unittest
                lattice(1, 1) = 8.0_dp
                lattice(2, 2) = 9.0_dp
                lattice(3, 3) = 10.0_dp
-               lattice = lattice + force_steps(geometry)*MATMUL(strain, lattice)
                CALL init_cell(cell, hmat=lattice)
                atoms(1)%r = MATMUL(lattice, [0.2_dp, 0.3_dp, 0.4_dp])
                atoms(2)%r = MATMUL(lattice, [0.48_dp, 0.51_dp, 0.59_dp])
+               IF (mode == 2) atoms(2)%r = MATMUL(lattice, [0.68_dp, 5.29_dp/9.0_dp, 0.66_dp])
             END IF
             CALL sirius_create_context(comm%get_handle(), ctx)
             IF (mode == 2) THEN
@@ -248,7 +246,7 @@ PROGRAM skala_sirius_unittest
                                              '"control":{"mpi_grid_dims":[1,1],"processing_unit":"CPU","verbosity":1},'// &
                                              '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
                                              '"iterative_solver":{"type":"exact","min_tolerance":1e-11}}')
-               IF (force_test) THEN
+               IF (derivative_test) THEN
                   CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":false}}')
                   CALL sirius_set_parameters(ctx, pw_cutoff=9.0_dp)
                END IF
@@ -324,6 +322,20 @@ PROGRAM skala_sirius_unittest
             CALL sirius_initialize_context(ctx)
             CALL sirius_create_kset(ctx, 1, kpoint, [1.0_dp], .TRUE., ks)
             CALL sirius_create_ground_state(ks, gs)
+            IF (stress_test .AND. geometry > 1) THEN
+               ! Preserve both density and orbital index sets throughout the strain stencil.
+               lattice = lattice + force_steps(geometry)*MATMUL(strain, lattice)
+               CALL init_cell(cell, hmat=lattice)
+               atoms(1)%r = MATMUL(lattice, [0.2_dp, 0.3_dp, 0.4_dp])
+               atoms(2)%r = MATMUL(lattice, [0.48_dp, 0.51_dp, 0.59_dp])
+               IF (mode == 2) atoms(2)%r = MATMUL(lattice, [0.68_dp, 5.29_dp/9.0_dp, 0.66_dp])
+               CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
+               DO i = 1, natoms
+                  CALL sirius_set_atom_position(ctx, i, MATMUL(cell%h_inv, atoms(i)%r))
+               END DO
+               CALL skala_sirius_update(ctx, state, atoms, cell, comm)
+               CALL sirius_update_ground_state(gs)
+            END IF
             converged = .FALSE.
             CALL sirius_find_ground_state(gs, density_tol=density_tol, energy_tol=energy_tol, &
                                           iter_solver_tol=MERGE(1.0e-11_dp, 1.0e-9_dp, derivative_test .OR. update_test), &
