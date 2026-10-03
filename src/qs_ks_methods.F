@@ -1463,12 +1463,28 @@ CONTAINS
       END IF
 
       IF (do_hfx .AND. ASSOCIATED(uspp)) THEN
-         IF (just_energy) THEN
+         IF (dokp) THEN
+            ! Reconstructed valence RI includes all valence cross terms. Only original-data
+            ! core exchange is added here, separately for each physical interaction radius.
+            DO irep_hfx = 1, SIZE(hfx_data, 1)
+               hfx_fraction = hfx_data(irep_hfx, 1)%general_parameter%fraction
+               IF (hfx_fraction*hfx_spin_factor <= EPSILON(0.0_dp)) CYCLE
+               IF (just_energy) THEN
+                  CALL qs_paw_exchange(ks_env, rho_ao, hfx_fraction, paw_exchange, calculate_forces, &
+                                       cutoff_radius=hfx_data(irep_hfx, 1)%ri_data%hfx_pot%cutoff_radius)
+               ELSE
+                  CALL qs_paw_exchange(ks_env, rho_ao, hfx_fraction, paw_exchange, calculate_forces, ks_matrix, &
+                                       cutoff_radius=hfx_data(irep_hfx, 1)%ri_data%hfx_pot%cutoff_radius)
+               END IF
+               energy%ex = energy%ex + paw_exchange
+            END DO
+         ELSE IF (just_energy) THEN
             CALL qs_paw_exchange(ks_env, rho_ao, uspp_hfx_fraction, paw_exchange, calculate_forces)
+            energy%ex = energy%ex + paw_exchange
          ELSE
             CALL qs_paw_exchange(ks_env, rho_ao, uspp_hfx_fraction, paw_exchange, calculate_forces, ks_matrix)
+            energy%ex = energy%ex + paw_exchange
          END IF
-         energy%ex = energy%ex + paw_exchange
       END IF
 
       !Calculation of Mulliken restraint, if requested

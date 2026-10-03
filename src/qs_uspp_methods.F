@@ -28,7 +28,9 @@ MODULE qs_uspp_methods
    USE particle_types,                  ONLY: particle_type
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_cartesian,&
                                               paw_core_kinetic_fourier
-   USE paw_onecenter,                   ONLY: paw_onecenter_core_exchange_init,&
+   USE paw_onecenter,                   ONLY: paw_onecenter_core_exchange,&
+                                              paw_onecenter_core_exchange_init,&
+                                              paw_onecenter_core_exchange_prepare,&
                                               paw_onecenter_exchange,&
                                               paw_onecenter_hartree,&
                                               paw_onecenter_init
@@ -1191,29 +1193,32 @@ CONTAINS
    END SUBROUTINE qs_paw_correction
 
 ! **************************************************************************************************
-!> \brief Unscreened PAW exchange energy, AO operator and projector force/strain derivatives.
-!>        The fixed radial Coulomb cache has no geometry response. Both projector-overlap legs
+!> \brief PAW exchange energy, AO operator and projector force/strain derivatives.
+!>        The fixed physical radial interaction has no geometry response. Both projector-overlap legs
 !>        are differentiated through the same projected density as used for the energy.
 !>        Verified original closed-core orbitals supply core-valence exchange and the core-core reference.
 !> \param ks_env Prepared PAW caches, projector overlaps and force accumulators.
 !> \param density Spin and image AO densities, including occupations and k-point weights.
 !>        One Quickstep spin block is a restricted spin sum; two blocks are physical spin densities.
-!> \param fraction Sum of unscreened Coulomb exact-exchange fractions; zero skips the entire path.
+!> \param fraction Exchange fraction; Coulomb replicas may be summed, finite radii remain separate.
 !> \param exchange PAW exchange correction including the closed-core terms, reset and returned replicated.
 !> \param calculate_forces Whether to differentiate projectors at fixed AO density.
 !>        The generalized-overlap Pulay contribution is accumulated separately.
 !> \param hamiltonian Optional spin and image AO matrices to increment.
+!> \param cutoff_radius Optional truncated interaction for reconstructed-valence RI: only core terms are added.
 ! **************************************************************************************************
-   SUBROUTINE qs_paw_exchange(ks_env, density, fraction, exchange, calculate_forces, hamiltonian)
+   SUBROUTINE qs_paw_exchange(ks_env, density, fraction, exchange, calculate_forces, hamiltonian, cutoff_radius)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:, :)
       REAL(dp), INTENT(IN)                               :: fraction
       REAL(dp), INTENT(OUT)                              :: exchange
       LOGICAL, INTENT(IN)                                :: calculate_forces
       TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: hamiltonian(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius
 
       INTEGER                                            :: center, handle, ikind, n, natom, ns, &
                                                             nuclear_charge, spin
+      INTEGER, ALLOCATABLE                               :: core_cache(:)
       LOGICAL                                            :: found, frozen_core, valid_shape
       REAL(dp)                                           :: center_exchange
       REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), &
@@ -1233,6 +1238,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       IF (.NOT. ALLOCATED(uspp%paw)) RETURN
       IF (.NOT. ANY(uspp%paw%active)) RETURN
+      ALLOCATE (core_cache(SIZE(uspp%paw)), SOURCE=0)
       ! Prepare the immutable original-data core contribution once per PAW kind.
       DO ikind = 1, SIZE(uspp%paw)
          IF (.NOT. uspp%paw(ikind)%active) CYCLE
@@ -1246,7 +1252,15 @@ CONTAINS
             IF (ALLOCATED(pot%rho_nlcc)) THEN
                frozen_core = frozen_core .OR. ANY(pot%rho_nlcc /= 0.0_dp)
             END IF
-            IF (frozen_core) THEN
+            IF (PRESENT(cutoff_radius)) THEN
+               CALL paw_onecenter_core_exchange_prepare(pot, qs_kind_set(ikind)%sgp_potential%upf_projectors, &
+                                                        uspp%paw(ikind)%onecenter, cutoff_radius, core_cache(ikind))
+               ASSOCIATE (core => uspp%paw(ikind)%onecenter%truncated_core_exchange(core_cache(ikind)))
+                  IF (.NOT. core%available) THEN
+                     CALL cp_abort(__LOCATION__, 'PAW frozen-core exact exchange: '//TRIM(core%reason))
+                  END IF
+               END ASSOCIATE
+            ELSE IF (frozen_core) THEN
                IF (.NOT. uspp%paw(ikind)%onecenter%core_exchange_initialized) THEN
                   CALL paw_onecenter_core_exchange_init(pot, qs_kind_set(ikind)%sgp_potential%upf_projectors, &
                                                         uspp%paw(ikind)%onecenter)
@@ -1289,7 +1303,12 @@ CONTAINS
                dm(:, :, spin) = block
             END DO
          END IF
-         CALL paw_onecenter_exchange(uspp%paw(ikind)%onecenter, dm, fraction, center_exchange, potential)
+         IF (PRESENT(cutoff_radius)) THEN
+            CALL paw_onecenter_core_exchange(uspp%paw(ikind)%onecenter, dm, fraction, core_cache(ikind), &
+                                             center_exchange, potential)
+         ELSE
+            CALL paw_onecenter_exchange(uspp%paw(ikind)%onecenter, dm, fraction, center_exchange, potential)
+         END IF
          exchange = exchange + center_exchange
          DO spin = 1, ns
             CALL dbcsr_get_block_p(onsite(spin), center, center, block, found)
