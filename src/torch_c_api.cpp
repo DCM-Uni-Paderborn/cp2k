@@ -416,6 +416,8 @@ void torch_c_tensor_hessian_vector(const torch_c_tensor_t *tensor,
   TORCH_CHECK(count > 0 && tensor->numel() == 1,
               "Hessian-vector evaluation requires a scalar and input tensors");
   std::vector<torch::Tensor> variables;
+  std::vector<torch::Tensor> active_variables;
+  std::vector<torch::Tensor> active_directions;
   for (int i = 0; i < count; i++) {
     TORCH_CHECK(inputs[i]->requires_grad() &&
                     inputs[i]->sizes() == directions[i]->sizes() &&
@@ -423,20 +425,26 @@ void torch_c_tensor_hessian_vector(const torch_c_tensor_t *tensor,
                 "Hessian-vector inputs and directions must have matching "
                 "shapes and devices");
     variables.push_back(*inputs[i]);
+    if (directions[i]->count_nonzero().item<int64_t>() != 0) {
+      active_variables.push_back(*inputs[i]);
+      active_directions.push_back(directions[i]->detach());
+    }
   }
-  std::vector<torch::Tensor> first(count);
-  if (tensor->requires_grad()) {
-    first = torch::autograd::grad({*tensor}, variables, {}, true, true, true);
+  std::vector<torch::Tensor> first(active_variables.size());
+  if (tensor->requires_grad() && !active_variables.empty()) {
+    first =
+        torch::autograd::grad({*tensor}, active_variables, {}, true, true, true);
   }
   torch::Tensor contraction;
-  for (int i = 0; i < count; i++) {
+  for (size_t i = 0; i < first.size(); i++) {
     if (first[i].defined() && first[i].requires_grad()) {
-      auto term = (first[i] * directions[i]->detach()).sum();
+      auto term = (first[i] * active_directions[i]).sum();
       contraction = contraction.defined() ? contraction + term : term;
     }
   }
   std::vector<torch::Tensor> second(count);
   if (contraction.defined()) {
+    // Retain all mixed responses, even for inputs with a zero direction.
     second =
         torch::autograd::grad({contraction}, variables, {}, false, false, true);
   }

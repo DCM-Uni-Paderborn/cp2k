@@ -373,18 +373,24 @@ CONTAINS
             ad = [SUM(pr*dr), SUM(pg*dg), SUM(pt*dt), SUM(px*dx), SUM(pc*dc), SUM(pe*de), SUM(pd*dd)]
             CALL comm%sum(ad)
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                  r, g, t, xc, e, hr, hg, ht, &
+                                  r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
                                   response_density=dr, response_gradient=dg, response_kinetic=dt)
             DO ih = 1, 2
                step_h = response_step_size/REAL(ih, dp)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                     r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, plus_r, plus_g, plus_t)
+                                     r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, &
+                                     plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                     r - step_h*dr, g - step_h*dg, t - step_h*dt, xc, minus, pr, pg, pt)
+                                     r - step_h*dr, g - step_h*dg, t - step_h*dt, xc, minus, &
+                                     pr, pg, pt, px, pc, pe, pd)
                err = 0.0_dp
                IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - (plus_r - pr)/(2.0_dp*step_h))), &
                                            MAXVAL(ABS(hg - (plus_g - pg)/(2.0_dp*step_h))), &
-                                           MAXVAL(ABS(ht - (plus_t - pt)/(2.0_dp*step_h))))
+                                           MAXVAL(ABS(ht - (plus_t - pt)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hx - (plus_x - px)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hc - (plus_c - pc)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(he - (plus_e - pe)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hd - (plus_d - pd)/(2.0_dp*step_h))))
                CALL comm%max(err)
                IF (err > derivative_tolerance) THEN
                   WRITE (*, '(A,3I3,ES18.8)') "Point Hessian failure (spin,distribution,step,error): ", &
@@ -399,7 +405,16 @@ CONTAINS
                   END IF
                   ERROR STOP "Arbitrary-point Hessian-vector product fails finite differences"
                END IF
+               maximum_error = MAX(maximum_error, err)
             END DO
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
+                                  response_density=0.0_dp*dr, response_gradient=0.0_dp*dg, response_kinetic=0.0_dp*dt)
+            err = 0.0_dp
+            IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr)), MAXVAL(ABS(hg)), MAXVAL(ABS(ht)), &
+                                        MAXVAL(ABS(hx)), MAXVAL(ABS(hc)), MAXVAL(ABS(he)), MAXVAL(ABS(hd)))
+            CALL comm%max(err)
+            IF (err /= 0.0_dp) ERROR STOP "A zero direction must give zero field and geometry Hessian responses"
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
                                   dr, dg, dt, dx, dc, de, dd)
