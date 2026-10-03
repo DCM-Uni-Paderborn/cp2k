@@ -5,9 +5,10 @@ API. They are not registered in `TEST_FILES.toml`. Run them in a separate output
 directory with `GAUXC_SKALA_MODEL` pointing to the CPU TorchScript model and
 `CP2K_DATA_DIR` to CP2K's data directory.
 
-The regular-grid callback supports norm-conserving pseudopotentials without
+The regular-grid energy callback supports norm-conserving pseudopotentials without
 nonlinear core corrections. `PW_DFT/SKALA_GRID` selects reconstructed fields
-on atom quadratures for PAW and FP-LAPW. PAW requires setup-consistent positive
+on atom quadratures for PAW and FP-LAPW and is required for forces and stress
+in all three methods. PAW requires setup-consistent positive
 core kinetic density. FP-LAPW requires a `SIRIUS_ATOM_FILE` in each `KIND`,
 not a UPF file or Gaussian basis.
 
@@ -40,11 +41,11 @@ derivatives hold the physical fields fixed and are not complete atomic forces.
 
 | Input | Coverage | Required atom data |
 | --- | --- | --- |
-| `H2.inp` | Norm-conserving molecular SCF | CP2K data directory |
-| `H-spin-kpoints.inp` | Collinear spin and shifted k points | CP2K data directory |
+| `H2.inp` | Norm-conserving molecular SCF on the regular grid | CP2K data directory |
+| `H-spin-kpoints.inp` | Collinear norm-conserving energy, forces and stress with shifted k points | CP2K data directory |
 | `H-paw-atom-grid.inp` | Core-free PAW with atom quadrature | `H-paw-no-core.json` |
-| `C-paw-core.inp` | Collinear PAW with two core and four valence electrons | `C-paw-core.json` |
-| `He-lapw-atom-grid.inp` | All-valence FP-LAPW with atom quadrature | `He-lapw.json` |
+| `C-paw-core.inp` | Collinear PAW energy, forces and stress with two core and four valence electrons | `C-paw-core.json` |
+| `He-lapw-atom-grid.inp` | All-valence FP-LAPW energy, forces and stress | `He-lapw.json` |
 | `Ne-lapw-atom-grid.inp` | FP-LAPW with an explicit 1s core | `Ne-lapw.json` |
 
 Generate LAPW data with `create_sirius_lapw_test_atom.py He-lapw.json` or
@@ -53,11 +54,11 @@ The Ne fixture includes local 2s and 2p orbitals to resolve its valence shell
 at the small test plane-wave cutoff.
 For PAW hydrogen, start from SIRIUS's
 `examples/pp-pw/C42H58ClNO2Si_420_atoms/H.pz-kjpaw_psl.0.1.UPF.json` and add
-`paw_data.ae_core_kinetic_density` as an explicit zero array of the same
-length as `ae_core_charge_density`, after checking that this setup has no core
-electrons. Nonzero core charge requires independently supplied core tau.
+an explicit zero `ae_core_kinetic_density` array inside `pseudo_potential.paw_data`,
+with the same length as `ae_core_charge_density`, after checking that this setup
+has no core electrons. Nonzero core charge requires independently supplied core tau.
 The carbon fixture requires a four-valence-electron PAW setup whose
-`paw_data.ae_core_kinetic_density` matches its two-electron AE core density.
+`pseudo_potential.paw_data.ae_core_kinetic_density` matches its two-electron AE core density.
 For example, convert the matching carbon UPF and ATOMPAW XML files from the
 [JTH PAW datasets](https://www.abinit.org/atomic_data/paw/) with SIRIUS:
 

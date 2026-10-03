@@ -2,11 +2,12 @@
 ! Generate He-lapw.json with tools/regtesting/create_sirius_lapw_test_atom.py.
 &GLOBAL
   PROJECT He-lapw-atom-grid
-  RUN_TYPE ENERGY
+  RUN_TYPE ENERGY_FORCE
   PRINT_LEVEL MEDIUM
 &END GLOBAL
 &FORCE_EVAL
   METHOD SIRIUS
+  STRESS_TENSOR ANALYTICAL
   &DFT
     &XC
       &XC_FUNCTIONAL
@@ -24,6 +25,7 @@
       N_ANGULAR 110
       IMAGE_SHELL 1
       RADIAL_SCALE 1.0
+      EPS_RESPONSE 1e-6
     &END SKALA_GRID
     &CONTROL
       PROCESSING_UNIT cpu
@@ -45,9 +47,9 @@
       LMAX_APW 3
       LMAX_RHO 6
       LMAX_POT 6
-      DENSITY_TOL 2e-6
-      ENERGY_TOL 2e-7
-      NUM_DFT_ITER 150
+      DENSITY_TOL 1e-8
+      ENERGY_TOL 1e-9
+      NUM_DFT_ITER 300
       SMEARING_WIDTH 0.01
     &END PARAMETERS
     &SETTINGS
@@ -76,4 +78,10 @@
       SIRIUS_ATOM_FILE He-lapw.json
     &END KIND
   &END SUBSYS
+  &PRINT
+    &FORCES ON
+    &END FORCES
+    &STRESS_TENSOR ON
+    &END STRESS_TENSOR
+  &END PRINT
 &END FORCE_EVAL
