@@ -24,6 +24,7 @@ MODULE qs_uspp_types
                                               set_1d_pointer,&
                                               set_2d_pointer
    USE particle_types,                  ONLY: particle_type
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_type
    USE paw_types,                       ONLY: paw_kind_type
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
@@ -48,9 +49,13 @@ MODULE qs_uspp_types
    TYPE qs_uspp_type
       INTEGER, ALLOCATABLE :: center_atoms(:), center_kinds(:), projector_sizes(:)
       REAL(KIND=dp), ALLOCATABLE :: position(:, :)
-      TYPE(uspp_augmentation_type), ALLOCATABLE :: augmentation(:)
+      TYPE(uspp_augmentation_type), ALLOCATABLE :: augmentation(:), kinetic_augmentation(:)
       TYPE(uspp_augmentation_type), ALLOCATABLE :: paw_reconstruction(:)
+      ! Global XC primitive fields are independent of compensated charge and RI reconstruction.
+      LOGICAL :: global_xc_ready = .FALSE.
+      TYPE(uspp_augmentation_type), ALLOCATABLE :: xc_density(:), xc_kinetic(:), xc_core_density(:), xc_core_kinetic(:)
       TYPE(paw_kind_type), ALLOCATABLE :: paw(:)
+      TYPE(paw_core_kinetic_type), ALLOCATABLE :: model_core_kinetic(:)
       TYPE(dbcsr_type), POINTER :: overlaps => NULL(), ao_pattern => NULL()
       TYPE(kpoint_transitional_type) :: metric
       TYPE(sap_int_type), POINTER :: image_integrals(:) => NULL()

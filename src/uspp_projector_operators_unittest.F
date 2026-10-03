@@ -61,7 +61,8 @@ PROGRAM uspp_projector_operators_unittest
         qs_uspp_atom_grid_apply, qs_uspp_atom_grid_collocate, qs_uspp_atom_grid_integrate, &
         qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_type, qs_uspp_collocate, qs_uspp_core_matrix, &
         qs_uspp_fixed_atom_grid_integrate, qs_uspp_fixed_atom_grid_prepare, &
-        qs_uspp_fixed_atom_grid_type, qs_uspp_init_ao_matrix, qs_uspp_integrate
+        qs_uspp_fixed_atom_grid_type, qs_uspp_global_atom_grid_collocate, &
+        qs_uspp_global_atom_grid_integrate, qs_uspp_init_ao_matrix, qs_uspp_integrate
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
                                               qs_uspp_projector_images,&
                                               qs_uspp_projector_matrix,&
@@ -1489,6 +1490,36 @@ CONTAINS
       CALL qs_uspp_atom_grid_collocate(uspp, fields, cell, points, rho_ref, grad_ref, radial_fields)
       CALL check(MAXVAL(ABS(rho_ref - 2.0_dp*(rho - 0.4_dp))), 'independent transition field selection')
       CALL check(MAXVAL(ABS(grad_ref - 2.0_dp*(grad - 0.07_dp))), 'independent transition gradient selection')
+      BLOCK
+         REAL(dp) :: density_values(3), density_gradient(3, 3), kinetic_values(3), kinetic_adjoint(3)
+         TYPE(qs_uspp_atom_grid_type) :: combined
+
+         ! Different density/tau fields must both reach the AO operator through their own adjoints.
+         ALLOCATE (uspp%xc_density, SOURCE=uspp%augmentation)
+         ALLOCATE (uspp%xc_kinetic, SOURCE=radial_fields)
+         uspp%global_xc_ready = .TRUE.
+         density_values = 0.0_dp
+         density_gradient = 0.0_dp
+         kinetic_values = 0.0_dp
+         CALL qs_uspp_global_atom_grid_collocate(uspp, fields, cell, points, &
+                                                 density_values, density_gradient, kinetic_values)
+         CALL check(MAXVAL(ABS(density_values - (rho - 0.4_dp))), 'global density cache selection')
+         CALL check(MAXVAL(ABS(kinetic_values - 2.0_dp*(rho - 0.4_dp))), 'global kinetic cache selection')
+         kinetic_adjoint = [0.15_dp, -0.25_dp, 0.35_dp]
+         combined = fields
+         combined%calculate_forces = .FALSE.
+         CALL qs_uspp_global_atom_grid_integrate(uspp, combined, cell, points, w, &
+                                                 rho**2, grad, kinetic_adjoint)
+         CALL qs_uspp_atom_grid_apply(uspp, combined, hmats)
+         CALL gather(hmats(1)%matrix, dense)
+         local_energy = SUM(w*(rho**2*density_values + SUM(grad*density_gradient, DIM=1) + &
+                               kinetic_adjoint*kinetic_values))
+         CALL comm%sum(local_energy)
+         CALL check(ABS(SUM(p*dense) - local_energy), 'joint original density/tau AO adjoint')
+         CALL dbcsr_set(hmats(1)%matrix, 0.0_dp)
+         DEALLOCATE (uspp%xc_density, uspp%xc_kinetic)
+         uspp%global_xc_ready = .FALSE.
+      END BLOCK
       shifted = points + SPREAD(MATMUL(cell%hmat, [2.0_dp, -1.0_dp, 1.0_dp]), 2, 3)
       rho_ref = 0.4_dp
       grad_ref = 0.07_dp

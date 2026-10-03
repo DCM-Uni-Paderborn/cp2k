@@ -80,6 +80,9 @@ MODULE atom_types
       LOGICAL :: is_paw = .FALSE.
       INTEGER, ALLOCATABLE :: lbeta(:)
       REAL(dp), ALLOCATABLE :: beta(:, :), radial(:, :, :)
+      REAL(dp), ALLOCATABLE :: kinetic(:, :)
+      REAL(dp), ALLOCATABLE :: core_kinetic(:)
+      CHARACTER(LEN=256) :: kinetic_failure_reason = ''
    END TYPE atom_uspp_type
 
    TYPE atom_basis_type

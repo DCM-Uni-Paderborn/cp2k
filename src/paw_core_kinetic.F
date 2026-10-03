@@ -11,6 +11,7 @@
 ! **************************************************************************************************
 MODULE paw_core_kinetic
    USE atom_upf,                        ONLY: atom_upfpot_type,&
+                                              upf_nlcc_kinetic,&
                                               upf_radial_weights
    USE bessel_lib,                      ONLY: bessel0
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
@@ -18,6 +19,9 @@ MODULE paw_core_kinetic
    USE mathconstants,                   ONLY: fourpi
    USE periodic_table,                  ONLY: get_ptable_info
    USE splines,                         ONLY: spline3ders
+   USE uspp_augmentation,               ONLY: upf_radial_scalar_init,&
+                                              uspp_augmentation_realspace,&
+                                              uspp_augmentation_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -33,12 +37,41 @@ MODULE paw_core_kinetic
       ! Signed occupied R=u/r waves and their spline slopes use positive radii only.
       REAL(dp), ALLOCATABLE :: r(:), wave(:, :), slope(:, :)
       INTEGER, ALLOCATABLE :: angular(:), occupations(:)
+      ! An explicitly normalized original model-core table does not require AE reconstruction.
+      TYPE(uspp_augmentation_type), ALLOCATABLE :: model_field
    END TYPE paw_core_kinetic_type
 
    PUBLIC :: paw_core_kinetic_type, paw_core_kinetic_init, paw_core_kinetic_build_ae
+   PUBLIC :: upf_core_kinetic_init
    PUBLIC :: paw_core_kinetic_values, paw_core_kinetic_cartesian, paw_core_kinetic_fourier
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Prepare the explicitly supplied UPF model-core tau on its original mesh and quadrature.
+!>        This cache is used by scalar USPP; PAW keeps its independent AE/PS core construction.
+!> \param pot Original UPF data, including the declared model-core kinetic convention.
+!> \param cache Shared fixed-field value, Fourier and geometry-derivative cache.
+! **************************************************************************************************
+   SUBROUTINE upf_core_kinetic_init(pot, cache)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(paw_core_kinetic_type), INTENT(OUT)           :: cache
+
+      LOGICAL                                            :: available
+      REAL(dp), ALLOCATABLE                              :: kinetic(:)
+
+      CPASSERT(.NOT. pot%is_paw)
+      CALL upf_nlcc_kinetic(pot, kinetic, available, cache%failure_reason)
+      IF (.NOT. available) RETURN
+      ALLOCATE (cache%radial_mesh, SOURCE=pot%r)
+      ALLOCATE (cache%kinetic(SIZE(pot%r), 2), SOURCE=0.0_dp)
+      cache%kinetic(:, 2) = kinetic
+      ALLOCATE (cache%weighted, SOURCE=fourpi*upf_radial_weights(pot)*pot%r**2*kinetic)
+      ALLOCATE (cache%model_field)
+      CALL upf_radial_scalar_init(pot, kinetic, cache%model_field, logarithmic_origin=.TRUE.)
+      cache%support_radius = cache%model_field%realspace_radius
+      cache%available = .TRUE.
+   END SUBROUTINE upf_core_kinetic_init
 
 ! **************************************************************************************************
 !> \brief Cache a verified AE core and one explicit smooth, nonnegative auxiliary PS kinetic field.
@@ -217,13 +250,17 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: value, derivative
 
       INTEGER                                            :: i
-      REAL(dp)                                           :: angular, blend, complement, dblend, &
-                                                            dquotient, dwindow, factor, gaussian, &
-                                                            h, quotient, rsecond, rslope, rvalue, &
-                                                            t, u, window
+      REAL(dp) :: angular, blend, complement, dblend, dquotient, dwindow, factor, gaussian, h, &
+         model(1, 1), model_gradient(1, 1, 3), quotient, rsecond, rslope, rvalue, t, u, window
 
       value = 0.0_dp
       derivative = 0.0_dp
+      IF (ALLOCATED(cache%model_field)) THEN
+         CALL uspp_augmentation_realspace(cache%model_field, [radius, 0.0_dp, 0.0_dp], model, model_gradient)
+         value = model(1, 1)
+         derivative = model_gradient(1, 1, 1)
+         RETURN
+      END IF
       IF (.NOT. ALLOCATED(cache%wave)) RETURN
       IF (radius >= cache%support_radius) RETURN
       IF (radius < cache%smoothing_radius) THEN

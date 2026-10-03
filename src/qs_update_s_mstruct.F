@@ -326,7 +326,7 @@ CONTAINS
                       rho_external=rho_external)
 
       separate_xc = dft_control%qs_control%gapw_xc .OR. &
-                    (dft_control%qs_control%gapw .AND. has_uspp(qs_kind_set))
+                    (has_uspp(qs_kind_set) .AND. (dft_control%qs_control%gapw .OR. dft_control%use_gauxc))
       do_admm = dft_control%do_admm
       CALL qs_rho_rebuild(rho, qs_env=qs_env, &
                           rebuild_ao=rebuild_ao, rebuild_grids=rebuild_grids)

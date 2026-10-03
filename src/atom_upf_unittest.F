@@ -24,7 +24,8 @@ PROGRAM atom_upf_unittest
         release_atom_potential, release_atom_type, sgp_pseudo, upf_pseudo
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
-                                              atom_upfpot_type
+                                              atom_upfpot_type,&
+                                              upf_nlcc_kinetic
    USE atom_utils,                      ONLY: atom_core_density,&
                                               atom_density
    USE cell_types,                      ONLY: cell_type
@@ -86,6 +87,7 @@ PROGRAM atom_upf_unittest
    CALL check_projector_addition_theorem()
    CALL check_atomic_potential()
    CALL check_upf_units()
+   CALL check_core_kinetic_convention()
    CALL check_uspp_partial_waves()
    CALL check_gipaw_core_orbitals()
    CALL check_nlcc_fit()
@@ -98,12 +100,16 @@ PROGRAM atom_upf_unittest
 
    ! The same temporary is reused for successive KIND sections in Quickstep.
    ALLOCATE (pot%rho_nlcc(3))
+   ALLOCATE (pot%tau_nlcc(3), pot%tau_atom(3), SOURCE=1.0_dp)
+   pot%with_metagga_info = .TRUE.
    pot%rho_nlcc = 1.0_dp
    pot%core_correction = .TRUE.
    pot%econf = [2, 4, 0, 0]
    pot%pname = "previous kind"
    CALL atom_release_upf(pot)
    IF (ALLOCATED(pot%rho_nlcc)) ERROR STOP "UPF release leaked the core density"
+   IF (ALLOCATED(pot%tau_nlcc) .OR. ALLOCATED(pot%tau_atom)) ERROR STOP "UPF release leaked kinetic densities"
+   IF (pot%with_metagga_info) ERROR STOP "UPF release retained meta-GGA metadata"
    IF (pot%core_correction) ERROR STOP "UPF release retained core-correction metadata"
    IF (ANY(pot%econf /= 0)) ERROR STOP "UPF release retained the previous electron configuration"
    IF (pot%pname /= "") ERROR STOP "UPF release retained the previous potential name"
@@ -152,6 +158,33 @@ PROGRAM atom_upf_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Reject ambiguous legacy core-kinetic units and preserve explicitly normalized samples.
+! **************************************************************************************************
+   SUBROUTINE check_core_kinetic_convention()
+      CHARACTER(LEN=256)                                 :: reason
+      LOGICAL                                            :: available
+      REAL(dp), ALLOCATABLE                              :: kinetic(:)
+      TYPE(atom_upfpot_type)                             :: dataset
+
+      ALLOCATE (dataset%r(3), SOURCE=[0.0_dp, 0.5_dp, 1.0_dp])
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (.NOT. available .OR. ANY(kinetic /= 0.0_dp)) ERROR STOP 'Core-free UPF requires no supplementary tau'
+      ALLOCATE (dataset%rho_nlcc(3), SOURCE=1.0_dp)
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (available) ERROR STOP 'Missing model-core kinetic field was invented'
+      ALLOCATE (dataset%tau_nlcc(3), SOURCE=[2.0_dp, -0.1_dp, 0.0_dp])
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (available) ERROR STOP 'Legacy kinetic units were guessed'
+      dataset%tau_nlcc_convention = 'HARTREE_PER_VOLUME'
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (.NOT. available .OR. ANY(kinetic /= dataset%tau_nlcc)) ERROR STOP 'Declared model-core kinetic units changed'
+      dataset%rho_nlcc = 0.0_dp
+      CALL upf_nlcc_kinetic(dataset, kinetic, available, reason)
+      IF (available) ERROR STOP 'Kinetic core without NLCC charge was accepted'
+      CALL atom_release_upf(dataset)
+   END SUBROUTINE check_core_kinetic_convention
 
 ! **************************************************************************************************
 !> \brief Check the repaired radial maps at the size that exposes endpoint cancellation.
@@ -793,6 +826,7 @@ CONTAINS
 
       INTEGER                                            :: unit
       TYPE(atom_potential_type)                          :: atomic
+      TYPE(atom_upfpot_type)                             :: header
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(section_type), POINTER                        :: specification
       TYPE(section_vals_type), POINTER                   :: input, potential_section
@@ -803,7 +837,7 @@ CONTAINS
          WRITE (unit, '(A)') &
             '<UPF version="2.0.1">', &
             '<PP_HEADER element="He" pseudo_type="NC" z_valence="2"', &
-            ' mesh_size="3" number_of_proj="2" l_max="0" />', &
+            ' mesh_size="3" number_of_proj="2" l_max="0" with_metagga_info="true" />', &
             '<PP_MESH mesh="3">', &
             '<PP_R type="real" size="3">', &
             '0.5 1.0 1.5', &
@@ -826,10 +860,16 @@ CONTAINS
             '2.0 0.4 0.4 8.0', &
             '</PP_DIJ>', &
             '</PP_NONLOCAL>', &
+            '<PP_TAUMOD type="real" size="3" columns="3" convention="hartree_per_volume">', &
+            '-3.0 2.0 1.0', '</PP_TAUMOD>', &
+            '<PP_TAUATOM>', '0.2 0.4 0.6', '</PP_TAUATOM>', &
             '</UPF>'
          CLOSE (unit)
       END IF
       CALL logger%para_env%sync()
+      CALL atom_read_upf(header, fixture, read_header=.TRUE.)
+      IF (.NOT. header%with_metagga_info) ERROR STOP "UPF kinetic metadata header read failed"
+      CALL atom_release_upf(header)
       NULLIFY (specification, input)
       CALL create_atom_section(specification)
       CALL section_vals_create(input, specification)
@@ -838,6 +878,12 @@ CONTAINS
       CALL section_vals_val_set(potential_section, 'POTENTIAL_FILE_NAME', c_val=fixture)
       CALL init_atom_potential(atomic, potential_section, 2)
       ASSOCIATE (potential => atomic%upf_pot)
+         IF (.NOT. potential%with_metagga_info) ERROR STOP "UPF meta-GGA header was not imported"
+         IF (potential%tau_nlcc_convention /= 'HARTREE_PER_VOLUME') ERROR STOP 'UPF kinetic convention was lost'
+         IF (ANY(potential%tau_nlcc /= [-3.0_dp, 2.0_dp, 1.0_dp]) .OR. &
+             ANY(potential%tau_atom /= [0.2_dp, 0.4_dp, 0.6_dp])) THEN
+            ERROR STOP "UPF kinetic densities were rescaled or confused with charge density"
+         END IF
          IF (MAXVAL(ABS(potential%vlocal - [3.0_dp, 2.0_dp, 1.0_dp])) > 1.e-14_dp) THEN
             ERROR STOP "UPF local potential is not in Hartree"
          END IF

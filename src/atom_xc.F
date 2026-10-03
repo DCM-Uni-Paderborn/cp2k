@@ -17,6 +17,7 @@ MODULE atom_xc
                                               opmat_type,&
                                               sgp_pseudo,&
                                               upf_pseudo
+   USE atom_uspp,                       ONLY: atom_uspp_integrate
    USE atom_utils,                      ONLY: atom_core_density,&
                                               atom_density,&
                                               coulomb_potential_numeric,&
@@ -350,6 +351,7 @@ CONTAINS
                ALLOCATE (taumat(n1, n2, 0:n3 - 1))
                taumat = 0._dp
 
+               CALL atom_uspp_integrate(xcmat%op, xcpot(:, 1, 1), atom%basis, 2)
                xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
                CALL numpot_matrix(xcmat%op, xcpot(:, 1, 1), atom%basis, 2, charge_augmentation=.FALSE.)
                xcpot(:, 1, 1) = xcpot(:, 1, 1)/atom%basis%grid%rad2(:)
@@ -574,6 +576,7 @@ CONTAINS
                deriv => xc_dset_get_derivative(deriv_set, [deriv_tau_a], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
                taumat = 0._dp
+               CALL atom_uspp_integrate(xcmata%op, xcpot(:, 1, 1), atom%basis, 2)
                xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
                CALL numpot_matrix(xcmata%op, xcpot(:, 1, 1), atom%basis, 2, charge_augmentation=.FALSE.)
                xcpot(:, 1, 1) = xcpot(:, 1, 1)/atom%basis%grid%rad2(:)
@@ -585,6 +588,7 @@ CONTAINS
                deriv => xc_dset_get_derivative(deriv_set, [deriv_tau_b], allocate_deriv=.FALSE.)
                CALL xc_derivative_get(deriv, deriv_data=xcpot)
                taumat = 0._dp
+               CALL atom_uspp_integrate(xcmatb%op, xcpot(:, 1, 1), atom%basis, 2)
                xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
                CALL numpot_matrix(xcmatb%op, xcpot(:, 1, 1), atom%basis, 2, charge_augmentation=.FALSE.)
                xcpot(:, 1, 1) = xcpot(:, 1, 1)/atom%basis%grid%rad2(:)
@@ -762,6 +766,7 @@ CONTAINS
             ALLOCATE (taumat(n1, n2, 0:n3 - 1))
             taumat = 0._dp
 
+            CALL atom_uspp_integrate(xcmat, xcpot(:, 1, 1), basis, 2)
             xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
             CALL numpot_matrix(xcmat, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
@@ -935,6 +940,7 @@ CONTAINS
             deriv => xc_dset_get_derivative(deriv_set, [deriv_tau_a], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
             taumat = 0._dp
+            CALL atom_uspp_integrate(xcmata, xcpot(:, 1, 1), basis, 2)
             xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
             CALL numpot_matrix(xcmata, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
@@ -946,6 +952,7 @@ CONTAINS
             deriv => xc_dset_get_derivative(deriv_set, [deriv_tau_b], allocate_deriv=.FALSE.)
             CALL xc_derivative_get(deriv, deriv_data=xcpot)
             taumat = 0._dp
+            CALL atom_uspp_integrate(xcmatb, xcpot(:, 1, 1), basis, 2)
             xcpot(:, 1, 1) = 0.5_dp*xcpot(:, 1, 1)
             CALL numpot_matrix(xcmatb, xcpot(:, 1, 1), basis, 2, charge_augmentation=.FALSE.)
             xcpot(:, 1, 1) = xcpot(:, 1, 1)/basis%grid%rad2(:)
@@ -1345,7 +1352,7 @@ CONTAINS
    END SUBROUTINE lsd_pade
 
 ! **************************************************************************************************
-!> \brief Add the shared spin-summed PS core kinetic field once to the atomic smooth XC arguments.
+!> \brief Add a spin-summed USPP model-core or shared PAW PS core tau once to atomic XC arguments.
 !> \param atom Atomic potential and existing orbital-basis quadrature.
 !> \param tau Gaussian valence kinetic densities, with equally split closed cores for two spins.
 !> \param core_kinetic Optional shared PAW core fields prepared once with the atomic PAW cache.
@@ -1360,6 +1367,16 @@ CONTAINS
       REAL(dp)                                           :: core(SIZE(tau, 1))
 
       IF (atom%potential%ppot_type /= upf_pseudo) RETURN
+      IF (atom%potential%upf_pot%is_ultrasoft .AND. .NOT. atom%potential%upf_pot%is_paw) THEN
+         CPASSERT(ALLOCATED(atom%basis%uspp))
+         IF (.NOT. ALLOCATED(atom%basis%uspp%core_kinetic)) THEN
+            CALL cp_abort(__LOCATION__, TRIM(atom%basis%uspp%kinetic_failure_reason))
+         END IF
+         DO spin = 1, SIZE(tau, 2)
+            tau(:, spin) = tau(:, spin) + atom%basis%uspp%core_kinetic/REAL(SIZE(tau, 2), dp)
+         END DO
+         RETURN
+      END IF
       IF (.NOT. atom%potential%upf_pot%is_paw) RETURN
       has_core = ANY(atom%potential%upf_pot%paw%rho_core /= 0.0_dp)
       IF (ALLOCATED(atom%potential%upf_pot%rho_nlcc)) THEN

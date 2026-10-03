@@ -87,12 +87,14 @@ MODULE qs_vxc_atom
                                               rho_atom_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_uspp_methods,                 ONLY: qs_paw_core_tau_atom_collocate,&
-                                              qs_paw_core_tau_atom_integrate,&
-                                              qs_uspp_atom_grid_collocate,&
-                                              qs_uspp_atom_grid_integrate,&
-                                              qs_uspp_atom_grid_prepare,&
-                                              qs_uspp_atom_grid_type
+   USE qs_uspp_methods,                 ONLY: &
+        qs_paw_core_tau_atom_collocate, qs_paw_core_tau_atom_integrate, &
+        qs_uspp_atom_grid_collocate, qs_uspp_atom_grid_integrate, qs_uspp_atom_grid_prepare, &
+        qs_uspp_atom_grid_type, qs_uspp_fixed_atom_grid_integrate, &
+        qs_uspp_fixed_atom_grid_prepare, qs_uspp_fixed_atom_grid_type, &
+        qs_uspp_global_atom_grid_collocate, qs_uspp_global_atom_grid_integrate, &
+        qs_uspp_kinetic_atom_grid_collocate, qs_uspp_kinetic_atom_grid_integrate, &
+        qs_uspp_prepare_global_xc
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE qs_vxc_atom_utils,               ONLY: &
         calc_rho_angular, calc_rho_nlcc, calc_tau_atom, calc_weight_function, &
@@ -288,10 +290,11 @@ CONTAINS
       LOGICAL :: accint, atom_composite_active, atom_composite_diagnostic, &
          atom_composite_reference, direct_valence_atom_composite, donlcc, evaluate_hard, &
          evaluate_soft, gradient_f, image_partition_atom_composite, lsd, my_calculate_forces, &
-         native_grid_diagnostics, nlcc, one_center_kind, paw_atom, paw_pseudopotentials, &
-         requested_atom_composite_grid, rho_g_valid, skala_atom_grid, source_matrix_local, tau_f, &
-         tau_r_valid, temporary_smooth_tau, use_atom_composite_density, &
-         use_atom_composite_gradient, use_atom_composite_tau, use_virial
+         native_grid_diagnostics, nlcc, one_center_kind, original_global_xc, paw_atom, &
+         paw_pseudopotentials, requested_atom_composite_grid, rho_g_valid, skala_atom_grid, &
+         source_matrix_local, tau_f, tau_r_valid, temporary_smooth_tau, &
+         use_atom_composite_density, use_atom_composite_gradient, use_atom_composite_tau, &
+         use_virial
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: composite_partition_included
       REAL(dp) :: agr, alpha, atom_composite_exc, atom_composite_nelec, &
          composite_cross_cutoff_max, composite_cross_density_max, composite_cross_grad_max, &
@@ -311,9 +314,9 @@ CONTAINS
          smooth_grid_contraction, smooth_input_contraction, smooth_reference_exc
       REAL(dp) :: target_partition_adjoint, tau_cut, zeff
       REAL(dp), ALLOCATABLE :: augmentation_grad(:, :), augmentation_point_gradient(:, :), &
-         augmentation_rho(:), augmentation_weights(:), composite_smooth_density_grad(:, :), &
-         composite_smooth_grad_grad(:, :, :), composite_smooth_kin_grad(:, :), &
-         smooth_reference_weight_grad(:)
+         augmentation_rho(:), augmentation_tau(:), augmentation_weights(:), &
+         composite_smooth_density_grad(:, :), composite_smooth_grad_grad(:, :, :), &
+         composite_smooth_kin_grad(:, :), smooth_reference_weight_grad(:)
       REAL(dp), ALLOCATABLE, DIMENSION(:) :: composite_atomic_grid_weight_grad, &
          composite_atomic_grid_weights, composite_base_grid_weights, composite_distances, &
          composite_grid_weight_grad, composite_grid_weights, composite_partition_weights, fw
@@ -390,6 +393,7 @@ CONTAINS
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: my_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_struct
+      TYPE(qs_uspp_fixed_atom_grid_type)                 :: fixed_core_density, fixed_core_kinetic
       TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: cpc_h, cpc_s, dr_h, dr_s, int_hh, &
                                                             int_ss, r_h, r_s
@@ -489,6 +493,13 @@ CONTAINS
       CALL section_vals_val_get(xc_fun_section, "_SECTION_PARAMETERS_", &
                                 i_val=myfun)
       skala_atom_grid = xc_section_uses_gauxc_model(my_xc_section)
+      original_global_xc = PRESENT(uspp_fields) .AND. skala_atom_grid
+      IF (original_global_xc) THEN
+         CPASSERT(xc_section_uses_native_skala_evaluator(my_xc_section))
+         CALL get_ks_env(ks_env, uspp=uspp)
+         CPASSERT(ASSOCIATED(uspp))
+         CALL qs_uspp_prepare_global_xc(uspp, my_kind_set)
+      END IF
       gapw_representation = skala_gapw_cp2k_default
       atom_composite_diagnostic = .FALSE.
       atom_composite_reference = .FALSE.
@@ -547,6 +558,12 @@ CONTAINS
          use_atom_composite_gradient = .FALSE.
          use_atom_composite_tau = .FALSE.
       END IF
+      IF (original_global_xc .AND. .NOT. direct_valence_atom_composite) THEN
+         gapw_representation = skala_gapw_paw_one_center
+         use_atom_composite_density = .TRUE.
+         use_atom_composite_gradient = .TRUE.
+         use_atom_composite_tau = .TRUE.
+      END IF
       ! CP2K's auxiliary PW fields are represented on one index-periodic cell even
       ! when the physical Poisson problem is isolated or partially periodic.
       image_partition_atom_composite = atom_composite_active
@@ -555,6 +572,9 @@ CONTAINS
       IF (atom_composite_reference .AND. nlcc) THEN
          ALLOCATE (composite_nlcc(SIZE(my_kind_set)))
          DO ikind = 1, SIZE(my_kind_set)
+            IF (original_global_xc) THEN
+               IF (uspp%augmentation(ikind)%nproj > 0) CYCLE
+            END IF
             CALL nlcc_atom_grid_init(my_kind_set(ikind), composite_nlcc(ikind), &
                                      MIN(1.e-14_dp, dft_control%qs_control%eps_rho_rspace))
          END DO
@@ -564,6 +584,7 @@ CONTAINS
       IF (skala_atom_grid) THEN
          gapw_density_partition = native_skala_gapw_density_partition(my_xc_section)
       END IF
+      IF (original_global_xc) gapw_density_partition = skala_gapw_density_partition_hard_minus_soft
       use_virial = ASSOCIATED(virial)
       IF (use_virial) use_virial = my_calculate_forces .AND. &
                                    virial%pv_calculate .AND. (.NOT. virial%pv_numer)
@@ -1084,6 +1105,7 @@ CONTAINS
                         IF (atom_composite_reference .AND. nlcc) THEN
                            nlcc_spin_factor = 0.5_dp
                            DO source_atom = 1, SIZE(particle_set)
+                              IF (.NOT. ALLOCATED(composite_nlcc(composite_atom_kind(source_atom))%radius)) CYCLE
                               CALL nlcc_atom_grid_evaluate( &
                                  composite_nlcc(composite_atom_kind(source_atom)), cell, &
                                  composite_image_periodicity, composite_point, particle_set(source_atom)%r, &
@@ -1428,7 +1450,28 @@ CONTAINS
                ALLOCATE (augmentation_rho(composite_nflat), augmentation_grad(3, composite_nflat), &
                          augmentation_weights(composite_nflat))
                augmentation_weights = 1.0_dp
-               IF (tau_f) THEN
+               IF (original_global_xc .OR. tau_f) ALLOCATE (augmentation_tau(composite_nflat))
+               IF (original_global_xc) THEN
+                  CALL qs_uspp_fixed_atom_grid_prepare(uspp, uspp%xc_core_density, fixed_core_density, my_calculate_forces)
+                  CALL qs_uspp_fixed_atom_grid_prepare(uspp, uspp%xc_core_kinetic, fixed_core_kinetic, my_calculate_forces)
+                  augmentation_rho = 0.0_dp
+                  augmentation_grad = 0.0_dp
+                  CALL qs_uspp_atom_grid_collocate(fixed_core_density%geometry, fixed_core_density%fields, cell, &
+                                                   composite_grid_coords, augmentation_rho, augmentation_grad, &
+                                                   uspp%xc_core_density)
+                  DO ispin = 1, 2
+                     composite_density(:, ispin) = composite_density(:, ispin) + 0.5_dp*augmentation_rho
+                     composite_grad(:, :, ispin) = composite_grad(:, :, ispin) + 0.5_dp*TRANSPOSE(augmentation_grad)
+                  END DO
+                  augmentation_tau = 0.0_dp
+                  augmentation_grad = 0.0_dp
+                  CALL qs_uspp_atom_grid_collocate(fixed_core_kinetic%geometry, fixed_core_kinetic%fields, cell, &
+                                                   composite_grid_coords, augmentation_tau, augmentation_grad, &
+                                                   uspp%xc_core_kinetic)
+                  DO ispin = 1, 2
+                     composite_kin(:, ispin) = composite_kin(:, ispin) + 0.5_dp*augmentation_tau
+                  END DO
+               ELSE IF (tau_f) THEN
                   augmentation_rho = 0.0_dp
                   CALL qs_paw_core_tau_atom_collocate(uspp, cell, composite_grid_coords, augmentation_rho)
                   DO ispin = 1, 2
@@ -1440,8 +1483,34 @@ CONTAINS
                                                  uspp_fields(ispin), my_calculate_forces)
                   augmentation_rho = 0.0_dp
                   augmentation_grad = 0.0_dp
-                  CALL qs_uspp_atom_grid_collocate(uspp, uspp_fields(ispin), cell, &
-                                                   composite_grid_coords, augmentation_rho, augmentation_grad)
+                  IF (original_global_xc) THEN
+                     augmentation_tau = 0.0_dp
+                     CALL qs_uspp_global_atom_grid_collocate(uspp, uspp_fields(ispin), cell, &
+                                                             composite_grid_coords, augmentation_rho, augmentation_grad, &
+                                                             augmentation_tau)
+                     IF (lsd) THEN
+                        composite_kin(:, ispin) = composite_kin(:, ispin) + augmentation_tau
+                     ELSE
+                        DO idir = 1, 2
+                           composite_kin(:, idir) = composite_kin(:, idir) + 0.5_dp*augmentation_tau
+                        END DO
+                     END IF
+                  ELSE
+                     CALL qs_uspp_atom_grid_collocate(uspp, uspp_fields(ispin), cell, &
+                                                      composite_grid_coords, augmentation_rho, augmentation_grad)
+                     IF (tau_f) THEN
+                        augmentation_tau = 0.0_dp
+                        CALL qs_uspp_kinetic_atom_grid_collocate(uspp, uspp_fields(ispin), cell, &
+                                                                 composite_grid_coords, augmentation_tau)
+                        IF (lsd) THEN
+                           composite_kin(:, ispin) = composite_kin(:, ispin) + augmentation_tau
+                        ELSE
+                           DO idir = 1, 2
+                              composite_kin(:, idir) = composite_kin(:, idir) + 0.5_dp*augmentation_tau
+                           END DO
+                        END IF
+                     END IF
+                  END IF
                   IF (lsd) THEN
                      composite_density(:, ispin) = composite_density(:, ispin) + augmentation_rho
                      composite_grad(:, :, ispin) = composite_grad(:, :, ispin) + TRANSPOSE(augmentation_grad)
@@ -1458,7 +1527,8 @@ CONTAINS
             ! the atom quadrature. Only the smooth-field adjoint is subtracted; the
             ! augmentation, core and hard-minus-soft fields retain the full adjoint.
             smooth_reference_exc = 0.0_dp
-            IF (PRESENT(uspp_fields)) THEN
+            ! Nonlocal XC acts on all original primitives together; it has no smooth-reference subtraction.
+            IF (PRESENT(uspp_fields) .AND. .NOT. original_global_xc) THEN
                ALLOCATE (composite_cross_density(composite_nflat, 2), &
                          composite_cross_grad(composite_nflat, 3, 2), &
                          composite_cross_kin(composite_nflat, 2))
@@ -1517,12 +1587,48 @@ CONTAINS
                         augmentation_rho(:) = 0.5_dp*SUM(composite_density_grad, DIM=2)
                         augmentation_grad(:, :) = 0.5_dp*TRANSPOSE(SUM(composite_grad_grad, DIM=3))
                      END IF
-                     CALL qs_uspp_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
-                                                      composite_grid_coords, augmentation_weights, &
-                                                      augmentation_rho, augmentation_grad, augmentation_point_gradient)
+                     IF (original_global_xc) THEN
+                        IF (lsd) THEN
+                           augmentation_tau(:) = composite_kin_grad(:, ispin)
+                        ELSE
+                           augmentation_tau(:) = 0.5_dp*SUM(composite_kin_grad, DIM=2)
+                        END IF
+                        CALL qs_uspp_global_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
+                                                                composite_grid_coords, augmentation_weights, &
+                                                                augmentation_rho, augmentation_grad, augmentation_tau, &
+                                                                augmentation_point_gradient)
+                     ELSE
+                        CALL qs_uspp_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
+                                                         composite_grid_coords, augmentation_weights, &
+                                                         augmentation_rho, augmentation_grad, augmentation_point_gradient)
+                        IF (tau_f) THEN
+                           IF (lsd) THEN
+                              augmentation_tau(:) = composite_kin_grad(:, ispin)
+                           ELSE
+                              augmentation_tau(:) = 0.5_dp*SUM(composite_kin_grad, DIM=2)
+                           END IF
+                           CALL qs_uspp_kinetic_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
+                                                                    composite_grid_coords, augmentation_weights, &
+                                                                    augmentation_tau, augmentation_point_gradient)
+                        END IF
+                     END IF
                   END DO
+                  IF (original_global_xc) THEN
+                     augmentation_rho(:) = 0.5_dp*SUM(composite_density_grad, DIM=2)
+                     augmentation_grad(:, :) = 0.5_dp*TRANSPOSE(SUM(composite_grad_grad, DIM=3))
+                     CALL qs_uspp_fixed_atom_grid_integrate(fixed_core_density, uspp%xc_core_density, &
+                                                            uspp_fields(1), cell, composite_grid_coords, &
+                                                            augmentation_weights, augmentation_rho, augmentation_grad, &
+                                                            augmentation_point_gradient)
+                     augmentation_rho(:) = 0.5_dp*SUM(composite_kin_grad, DIM=2)
+                     augmentation_grad = 0.0_dp
+                     CALL qs_uspp_fixed_atom_grid_integrate(fixed_core_kinetic, uspp%xc_core_kinetic, &
+                                                            uspp_fields(1), cell, composite_grid_coords, &
+                                                            augmentation_weights, augmentation_rho, augmentation_grad, &
+                                                            augmentation_point_gradient)
+                  END IF
                   composite_grid_coord_grad(:, :) = composite_grid_coord_grad + augmentation_point_gradient
-                  IF (tau_f) THEN
+                  IF (tau_f .AND. .NOT. original_global_xc) THEN
                      augmentation_point_gradient = 0.0_dp
                      augmentation_rho(:) = 0.5_dp*SUM(composite_kin_grad, DIM=2)
                      CALL qs_paw_core_tau_atom_integrate(uspp, uspp_fields(1), cell, composite_grid_coords, &
@@ -1716,6 +1822,7 @@ CONTAINS
                      IF (nlcc) THEN
                         nlcc_spin_factor = 0.5_dp
                         DO source_atom = 1, SIZE(particle_set)
+                           IF (.NOT. ALLOCATED(composite_nlcc(composite_atom_kind(source_atom))%radius)) CYCLE
                            CALL nlcc_atom_grid_evaluate( &
                               composite_nlcc(composite_atom_kind(source_atom)), cell, &
                               composite_image_periodicity, composite_grid_coords(:, composite_row), &
@@ -2142,12 +2249,34 @@ CONTAINS
                         augmentation_rho(:) = 0.5_dp*SUM(composite_density_grad, DIM=2)
                         augmentation_grad(:, :) = 0.5_dp*TRANSPOSE(SUM(composite_grad_grad, DIM=3))
                      END IF
-                     CALL qs_uspp_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
-                                                      composite_grid_coords, augmentation_weights, &
-                                                      augmentation_rho, augmentation_grad)
+                     IF (original_global_xc) THEN
+                        IF (lsd) THEN
+                           augmentation_tau(:) = composite_kin_grad(:, ispin)
+                        ELSE
+                           augmentation_tau(:) = 0.5_dp*SUM(composite_kin_grad, DIM=2)
+                        END IF
+                        CALL qs_uspp_global_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
+                                                                composite_grid_coords, augmentation_weights, &
+                                                                augmentation_rho, augmentation_grad, augmentation_tau)
+                     ELSE
+                        CALL qs_uspp_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
+                                                         composite_grid_coords, augmentation_weights, &
+                                                         augmentation_rho, augmentation_grad)
+                        IF (tau_f) THEN
+                           IF (lsd) THEN
+                              augmentation_tau(:) = composite_kin_grad(:, ispin)
+                           ELSE
+                              augmentation_tau(:) = 0.5_dp*SUM(composite_kin_grad, DIM=2)
+                           END IF
+                           CALL qs_uspp_kinetic_atom_grid_integrate(uspp, uspp_fields(ispin), cell, &
+                                                                    composite_grid_coords, augmentation_weights, &
+                                                                    augmentation_tau)
+                        END IF
+                     END IF
                   END DO
                END IF
                DEALLOCATE (augmentation_rho, augmentation_grad, augmentation_weights)
+               IF (ALLOCATED(augmentation_tau)) DEALLOCATE (augmentation_tau)
             END IF
             composite_pw_nflat = PRODUCT(smooth_rho_r(1)%pw_grid%npts)
             adjoint_nchannels = MERGE(2, 1, lsd)

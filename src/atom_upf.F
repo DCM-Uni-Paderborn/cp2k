@@ -86,6 +86,7 @@ MODULE atom_upf
       LOGICAL                                        :: has_gipaw = .FALSE.
       LOGICAL                                        :: paw_as_gipaw = .FALSE.
       LOGICAL                                        :: core_correction = .FALSE.
+      LOGICAL                                        :: with_metagga_info = .FALSE.
       REAL(dp)                                       :: total_psenergy = 0.0_dp
       REAL(dp)                                       :: wfc_cutoff = 0.0_dp
       REAL(dp)                                       :: rho_cutoff = 0.0_dp
@@ -103,6 +104,10 @@ MODULE atom_upf
       REAL(dp), DIMENSION(:), ALLOCATABLE            :: r, rab
       ! <NLCC>
       REAL(dp), DIMENSION(:), ALLOCATABLE            :: rho_nlcc
+      ! Preserve PP_TAUMOD and PP_TAUATOM samples as supplied. Their normalization
+      ! must be established for the generator before use as volume kinetic densities.
+      REAL(dp), DIMENSION(:), ALLOCATABLE            :: tau_nlcc, tau_atom
+      CHARACTER(LEN=default_string_length)           :: tau_nlcc_convention = "", tau_atom_convention = ""
       ! <LOCAL>
       REAL(dp), DIMENSION(:), ALLOCATABLE            :: vlocal
       ! <NONLOCAL>: keep the tabulated projector amplitude; D includes Ry -> Hartree.
@@ -123,13 +128,59 @@ MODULE atom_upf
 
    PRIVATE
    PUBLIC  :: atom_read_upf, atom_upfpot_type, atom_release_upf, upf_radial_weights, upf_partial_waves_type, &
-              upf_gipaw_orbitals_type
+              upf_gipaw_orbitals_type, upf_nlcc_kinetic
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'atom_upf'
 
 ! **************************************************************************************************
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Return an explicitly normalized model-core kinetic density, without guessing its units.
+!>        Supplementary generators use convention="hartree_per_volume" on PP_TAUMOD.
+!>        Legacy unlabelled arrays remain available as raw data, but cannot enter XC silently.
+!> \param pot Original radial data and optional PP_TAUMOD samples.
+!> \param kinetic Spin-summed model-core tau in Hartree/Bohr**3 on the original mesh.
+!> \param available Whether the original data determine this field in the declared convention.
+!> \param reason Diagnostic for unavailable or inconsistent data.
+! **************************************************************************************************
+   SUBROUTINE upf_nlcc_kinetic(pot, kinetic, available, reason)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: kinetic(:)
+      LOGICAL, INTENT(OUT)                               :: available
+      CHARACTER(LEN=*), INTENT(OUT)                      :: reason
+
+      LOGICAL                                            :: has_core
+
+      CPASSERT(ALLOCATED(pot%r))
+      ALLOCATE (kinetic(SIZE(pot%r)), SOURCE=0.0_dp)
+      available = .FALSE.
+      reason = 'UPF model-core kinetic density has not been supplied'
+      has_core = .FALSE.
+      IF (ALLOCATED(pot%rho_nlcc)) has_core = ANY(pot%rho_nlcc /= 0.0_dp)
+      IF (.NOT. has_core) THEN
+         IF (ALLOCATED(pot%tau_nlcc)) THEN
+            IF (ANY(pot%tau_nlcc /= 0.0_dp)) THEN
+               reason = 'UPF has a nonzero model-core kinetic density without a nonzero NLCC density'
+               RETURN
+            END IF
+         END IF
+         available = .TRUE.
+         reason = ''
+         RETURN
+      END IF
+      IF (.NOT. ALLOCATED(pot%tau_nlcc)) RETURN
+      IF (TRIM(pot%tau_nlcc_convention) /= 'HARTREE_PER_VOLUME') THEN
+         reason = 'UPF PP_TAUMOD requires an explicit hartree_per_volume convention before use in XC'
+         RETURN
+      END IF
+      CPASSERT(SIZE(pot%tau_nlcc) == SIZE(pot%r))
+      CPASSERT(ALL(ieee_is_finite(pot%tau_nlcc)))
+      kinetic(:) = pot%tau_nlcc
+      available = .TRUE.
+      reason = ''
+   END SUBROUTINE upf_nlcc_kinetic
 
 ! **************************************************************************************************
 !> \brief Composite Simpson weights for dr on the supplied UPF mesh index.
@@ -346,6 +397,14 @@ CONTAINS
                ELSE
                   CALL upf_nlcc_section(parser, pot, .TRUE.)
                END IF
+            ELSE IF (nametag(2:10) == "PP_TAUMOD") THEN
+               CPASSERT(pot%mesh_size > 0 .AND. .NOT. ALLOCATED(pot%tau_nlcc))
+               ALLOCATE (pot%tau_nlcc(pot%mesh_size))
+               CALL upf_real_array(parser, nametag, pot%tau_nlcc, convention=pot%tau_nlcc_convention)
+            ELSE IF (nametag(2:11) == "PP_TAUATOM") THEN
+               CPASSERT(pot%mesh_size > 0 .AND. .NOT. ALLOCATED(pot%tau_atom))
+               ALLOCATE (pot%tau_atom(pot%mesh_size))
+               CALL upf_real_array(parser, nametag, pot%tau_atom, convention=pot%tau_atom_convention)
             ELSE IF (nametag(2:9) == "PP_LOCAL") THEN
                IF (nametag(10:10) == ">") THEN
                   CALL upf_local_section(parser, pot, .FALSE.)
@@ -379,6 +438,9 @@ CONTAINS
       CALL parser_release(parser)
 
       CPASSERT(ntag > 0)
+      IF (readall .AND. pot%with_metagga_info) THEN
+         CPASSERT(ALLOCATED(pot%tau_nlcc) .AND. ALLOCATED(pot%tau_atom))
+      END IF
 
       ! rescale projectors
       IF (ALLOCATED(pot%beta)) THEN
@@ -504,6 +566,8 @@ CONTAINS
             CALL parser_get_object(parser, pot%zion)
          CASE ("TOTAL_PSENERGY")
             CALL parser_get_object(parser, pot%total_psenergy)
+         CASE ("WITH_METAGGA_INFO")
+            CALL parser_get_object(parser, pot%with_metagga_info)
          CASE ("WFC_CUTOFF")
             CALL parser_get_object(parser, pot%wfc_cutoff)
          CASE ("RHO_CUTOFF")
@@ -1150,13 +1214,15 @@ CONTAINS
 !> \param index_value Optional projector index attribute, or -1 if absent.
 !> \param angular_momentum Optional angular momentum attribute, or -1 if absent.
 !> \param principal_quantum_number Optional principal quantum number attribute, or -1 if absent.
+!> \param convention ...
 ! **************************************************************************************************
-   SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum, principal_quantum_number)
+   SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum, principal_quantum_number, convention)
       TYPE(cp_parser_type), INTENT(INOUT)                :: parser
       CHARACTER(LEN=*), INTENT(IN)                       :: tag
       REAL(dp), INTENT(OUT)                              :: values(:)
       INTEGER, INTENT(OUT), OPTIONAL                     :: index_value, angular_momentum, &
                                                             principal_quantum_number
+      CHARACTER(LEN=*), INTENT(OUT), OPTIONAL            :: convention
 
       CHARACTER(LEN=default_string_length)               :: name, string, value
       INTEGER                                            :: i, last, n
@@ -1168,6 +1234,7 @@ CONTAINS
       IF (PRESENT(index_value)) index_value = -1
       IF (PRESENT(angular_momentum)) angular_momentum = -1
       IF (PRESENT(principal_quantum_number)) principal_quantum_number = -1
+      IF (PRESENT(convention)) convention = ''
       IF (tag(last:last) == ">") THEN
          name = tag(2:last - 1)
       ELSE
@@ -1188,6 +1255,9 @@ CONTAINS
                CPASSERT(n == SIZE(values))
             CASE ("COLUMNS")
                CALL parser_get_object(parser, value)
+            CASE ("CONVENTION")
+               CPASSERT(PRESENT(convention))
+               CALL parser_get_object(parser, convention, lower_to_upper=.TRUE.)
             CASE ("INDEX")
                CPASSERT(PRESENT(index_value))
                CALL parser_get_object(parser, index_value)
