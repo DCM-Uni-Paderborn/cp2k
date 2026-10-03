@@ -800,7 +800,8 @@ CONTAINS
       CALL cp_print_key_section_create(print_key, __LOCATION__, "RI_DENSITY_COEFFS", &
                                        description="Controls the printing of the projection of the elecontric "// &
                                        "density on the RI_HFX basis. n(r) = sum_s c_s*phi_RI_s(r), "// &
-                                       "where c_s = sum_pqr P_pq (pq|r) (r|s)^-1 and | is the RI_METRIC", &
+                                       "where c_s = sum_pqr P_pq (pq|r) (r|s)^-1 and | is the RI_METRIC. "// &
+                                       "Available for Gamma-point calculations without KPOINTS.", &
                                        print_level=high_print_level, filename="RI_DENSITY_COEFFS", &
                                        common_iter_levels=3)
 
@@ -835,7 +836,7 @@ CONTAINS
 
       CALL cp_print_key_section_create(print_key, __LOCATION__, "RI_METRIC_2C_INTS", &
                                        description="Controls the printing of RI 2-center integrals for the "// &
-                                       "HFX potential.", &
+                                       "HFX potential. Available for Gamma-point calculations without KPOINTS.", &
                                        print_level=high_print_level, filename="RI_2C_INTS", &
                                        common_iter_levels=3)
       CALL section_add_subsection(subsection, print_key)

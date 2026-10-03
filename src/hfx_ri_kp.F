@@ -2230,7 +2230,7 @@ CONTAINS
       CALL basis_set_list_setup(basis_set_RI, ri_data%ri_basis_type, qs_kind_set)
 
       CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
-                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, do_kpoints=.TRUE.)
 
       ALLOCATE (present_atoms_i(natom, nimg), present_atoms_j(natom, nimg))
       present_atoms_i = 0
@@ -2243,6 +2243,7 @@ CONTAINS
 
          dij = NORM2(rij)
 
+         IF (ANY(cell_j < LBOUND(cell_to_index)) .OR. ANY(cell_j > UBOUND(cell_to_index))) CYCLE
          j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
          IF (j_img > nimg .OR. j_img < 1) CYCLE
 
@@ -4446,7 +4447,7 @@ CONTAINS
       !(mu^0 sigma^a|P^0) (P^0|Q^b) (Q^b|nu^b lambda^a+c), if there is no contact between
       !any P^0 and Q^b, then image b does not contribute
       CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%hfx_pot, &
-                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, do_kpoints=.TRUE.)
 
       ALLOCATE (present_img(nimg), RI_cells(nimg), nRI_per_atom(natom))
       present_img = 0
@@ -4459,6 +4460,7 @@ CONTAINS
 
          dij = NORM2(rij)
 
+         IF (ANY(cell_j < kp_index_lbounds) .OR. ANY(cell_j > kp_index_ubounds)) CYCLE
          j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
          IF (j_img > nimg .OR. j_img < 1) CYCLE
 
@@ -4506,7 +4508,7 @@ CONTAINS
       !between mu^0 and P^i if smaller or equal to the kind radius of mu^0
       CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, &
                                    ri_data%ri_metric, "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., &
-                                   own_dist=.TRUE.)
+                                   own_dist=.TRUE., do_kpoints=.TRUE.)
 
       CALL neighbor_list_3c_iterator_create(nl_3c_iter, nl_3c)
       DO WHILE (neighbor_list_3c_iterate(nl_3c_iter) == 0)
@@ -4998,7 +5000,7 @@ CONTAINS
       CALL dbt_pgrid_destroy(pgrid)
 
       CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, ri_data%ri_metric, &
-                                   "HFX_3c_nl", qs_env, op_pos=2, sym_jk=.FALSE., own_dist=.TRUE.)
+                                   "HFX_3c_nl", qs_env, op_pos=2, sym_jk=.FALSE., own_dist=.TRUE., do_kpoints=.TRUE.)
 
       n_mem = ri_data%n_mem
       CALL create_tensor_batches(ri_data%bsizes_RI, n_mem, dummy_start, dummy_end, &
@@ -5089,14 +5091,14 @@ CONTAINS
 
       !HFX potential derivatives
       CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%hfx_pot, &
-                                   "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+                                   "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, do_kpoints=.TRUE.)
       CALL build_2c_derivatives(mat_der_pot, ri_data%filter_eps_2c, qs_env, nl_2c, &
                                 basis_set_RI, basis_set_RI, ri_data%hfx_pot, do_kpoints=.TRUE.)
       CALL release_neighbor_list_sets(nl_2c)
 
       !RI metric derivatives
       CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
-                                   "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+                                   "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, do_kpoints=.TRUE.)
       CALL build_2c_derivatives(mat_der_metric, ri_data%filter_eps_2c, qs_env, nl_2c, &
                                 basis_set_RI, basis_set_RI, ri_data%ri_metric, do_kpoints=.TRUE.)
       CALL release_neighbor_list_sets(nl_2c)

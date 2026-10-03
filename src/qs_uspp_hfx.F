@@ -7,7 +7,7 @@
 
 ! **************************************************************************************************
 !> \brief Distributed native USPP transition densities and their RI-HFX geometry adjoint.
-!>        The initial operator is isolated scalar Coulomb, Gamma, RI-RHO, and the ORB basis.
+!>        Coulomb-metric RI-RHO uses the ORB basis for isolated Coulomb or image-resolved exchange.
 !>        Complete AO pairs are retained: the global RI contraction includes intercenter QQ.
 ! **************************************************************************************************
 MODULE qs_uspp_hfx
@@ -28,7 +28,8 @@ MODULE qs_uspp_hfx
         dbt_scale, dbt_type
    USE hfx_types,                       ONLY: hfx_ri_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE input_constants,                 ONLY: do_potential_coulomb
+   USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              do_potential_truncated
    USE input_cp2k_hfx,                  ONLY: ri_pmat
    USE kinds,                           ONLY: dp,&
                                               int_8
@@ -1007,12 +1008,13 @@ CONTAINS
       image_resolved = .FALSE.
       IF (PRESENT(with_images)) image_resolved = with_images
       supported = ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == 'ORB' .AND. &
-                  ri_data%ri_metric%potential_type == do_potential_coulomb .AND. &
-                  ri_data%hfx_pot%potential_type == do_potential_coulomb
+                  ri_data%ri_metric%potential_type == do_potential_coulomb
       IF (image_resolved) THEN
-         supported = supported .AND. do_kpoints
+         supported = supported .AND. do_kpoints .AND. &
+                     ri_data%hfx_pot%potential_type == do_potential_truncated
       ELSE
-         supported = supported .AND. .NOT. do_kpoints .AND. ALL(cell%perd == 0) .AND. ri_data%same_op
+         supported = supported .AND. .NOT. do_kpoints .AND. ALL(cell%perd == 0) .AND. &
+                     ri_data%same_op .AND. ri_data%hfx_pot%potential_type == do_potential_coulomb
       END IF
       IF (.NOT. supported) THEN
          CPABORT('Unsupported native Coulomb RI-HFX image setup')

@@ -557,7 +557,7 @@ CONTAINS
                                name="O (RI AO | AO)")
 
          CALL build_3c_neighbor_lists(nl_3c, basis_set_RI, basis_set_AO, basis_set_AO, dist_3d, ri_data%ri_metric, &
-                                      "HFX_3c_nl", qs_env, op_pos=1, sym_jk=.TRUE., own_dist=.TRUE.)
+                                      "HFX_3c_nl", qs_env, op_pos=1, sym_jk=.TRUE., own_dist=.TRUE., do_kpoints=do_kpoints_prv)
 
          DO i_mem = 1, n_mem
             CALL build_3c_integrals(t_3c_int_batched, ri_data%filter_eps/2, qs_env, nl_3c, &
@@ -637,7 +637,7 @@ CONTAINS
 
          ! create 3c tensor for storage of ints
          CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, ri_data%ri_metric, &
-                                      "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., own_dist=.TRUE.)
+                                      "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., own_dist=.TRUE., do_kpoints=do_kpoints_prv)
 
          CALL create_3c_tensor(t_3c_int(1, 1), dist_RI, dist_AO_1, dist_AO_2, ri_data%pgrid, &
                                sizes_RI_ext_split, ri_data%bsizes_AO_split, ri_data%bsizes_AO_split, &
@@ -682,7 +682,7 @@ CONTAINS
 
       CALL build_2c_neighbor_lists(nl_2c_pot, basis_set_RI, basis_set_RI, ri_data%hfx_pot, &
                                    "HFX_2c_nl_pot", qs_env, sym_ij=.NOT. do_kpoints_prv, &
-                                   dist_2d=dist_2d)
+                                   dist_2d=dist_2d, do_kpoints=do_kpoints_prv)
 
       CALL cp_dbcsr_dist2d_to_dist(dist_2d, dbcsr_dist)
       ALLOCATE (row_bsize(SIZE(sizes_RI)))
@@ -716,7 +716,7 @@ CONTAINS
       IF (.NOT. ri_data%same_op) THEN
          CALL build_2c_neighbor_lists(nl_2c_RI, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
                                       "HFX_2c_nl_RI", qs_env, sym_ij=.NOT. do_kpoints_prv, &
-                                      dist_2d=dist_2d)
+                                      dist_2d=dist_2d, do_kpoints=do_kpoints_prv)
 
          CALL build_2c_integrals(t_2c_int_RI, ri_data%filter_eps_2c, qs_env, nl_2c_RI, basis_set_RI, basis_set_RI, &
                                  ri_data%ri_metric, do_kpoints=do_kpoints_prv, do_hfx_kpoints=do_kpoints_prv)
@@ -3688,7 +3688,7 @@ CONTAINS
       INTEGER, DIMENSION(3)                              :: periodic
       INTEGER, DIMENSION(:), POINTER                     :: npgf, nshell
       INTEGER, DIMENSION(:, :), POINTER                  :: lshell
-      LOGICAL                                            :: mult_by_S, print_density, &
+      LOGICAL                                            :: do_kpoints, mult_by_S, print_density, &
                                                             print_ri_metric, skip_ri_metric
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: density_coeffs, density_coeffs_2
       REAL(dp), DIMENSION(3, 3)                          :: hmat
@@ -3708,11 +3708,12 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(section_vals_type), POINTER                   :: input, print_section
 
       NULLIFY (rho_ao, input, print_section, logger, rho, particle_set, qs_kind_set, ri_basis, &
-               para_env, blacs_env, fm_struct, orb_basis, dft_control)
+               para_env, blacs_env, fm_struct, orb_basis, dft_control, ks_env)
 
       CALL get_qs_env(qs_env, input=input, dft_control=dft_control)
       logger => cp_get_default_logger()
@@ -3725,6 +3726,15 @@ CONTAINS
                 cp_p_file)) print_density = .TRUE.
       IF (BTEST(cp_print_key_should_output(logger%iter_info, print_section, "RI_METRIC_2C_INTS"), &
                 cp_p_file)) print_ri_metric = .TRUE.
+
+      IF (.NOT. (print_density .OR. print_ri_metric)) RETURN
+      CALL get_qs_env(qs_env, ks_env=ks_env)
+      CALL get_ks_env(ks_env, do_kpoints=do_kpoints)
+      IF (do_kpoints) THEN
+         ! These diagnostics contract Gamma tensors, not the image-resolved k-point RI tensors.
+         CPWARN("RI density coefficients and RI metric matrix printing is unavailable with KPOINTS; skipping")
+         RETURN
+      END IF
 
       !common stuff
       IF (print_density .OR. print_ri_metric) THEN
