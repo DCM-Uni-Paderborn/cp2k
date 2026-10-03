@@ -1087,7 +1087,9 @@ CONTAINS
          END IF
 
          CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool, poisson_env=poisson_env)
-         eh1 = ehfx - eold
+         ! K-point RI returns the current replica energy; its matrix was already added.
+         eh1 = ehfx
+         ehfx = eold + ehfx
          CALL pw_hfx(qs_env, eh1, hfx_sections, poisson_env, auxbas_pw_pool, irep)
          eold = ehfx
 

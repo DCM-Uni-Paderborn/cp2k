@@ -27,11 +27,25 @@
       SCF_GUESS ATOMIC
     &END SCF
     &XC
+      ! Identical HF kernels with fractions summing to one retain the single-kernel reference.
       &HF
+        FRACTION 0.4
         &INTERACTION_POTENTIAL
           !this is too small for a real calculation. The only requirement is that it is
           !smaller than N_kp * L/2 in each direction. Potential range has a drastic effect
           !on efficiency, as it greatly increses the number of periodic images to consider
+          POTENTIAL_TYPE IDENTITY
+        &END INTERACTION_POTENTIAL
+        &RI
+          EPS_FILTER 1.0E-10
+          MEMORY_CUT 2
+          NGROUPS 2
+          RI_METRIC IDENTITY
+        &END RI
+      &END HF
+      &HF
+        FRACTION 0.6
+        &INTERACTION_POTENTIAL
           POTENTIAL_TYPE IDENTITY
         &END INTERACTION_POTENTIAL
         &RI
