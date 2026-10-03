@@ -1119,11 +1119,6 @@ CONTAINS
          IF (.NOT. dokp .AND. ANY(cell%perd /= 0)) THEN
             CPABORT("Periodic USPP/PAW exact exchange requires explicit KPOINTS")
          END IF
-         IF (dokp .AND. ALLOCATED(uspp%paw)) THEN
-            IF (ANY(uspp%paw%active)) THEN
-               CPABORT("Periodic PAW exchange requires kernel-consistent one-center corrections (NYI)")
-            END IF
-         END IF
          IF (dft_control%do_admm .OR. ace_active .OR. do_adiabatic_rescaling .OR. &
              qs_env%run_rtp .OR. dft_control%roks) THEN
             CPABORT("USPP/PAW exchange acceleration and response extensions are not implemented")
@@ -1144,7 +1139,7 @@ CONTAINS
                END IF
                IF (dokp) THEN
                   IF (ri%hfx_pot%potential_type /= do_potential_truncated) THEN
-                     CPABORT("USPP k-point RI-HFX requires truncated Coulomb exchange")
+                     CPABORT("USPP/PAW k-point RI-HFX requires truncated Coulomb exchange")
                   END IF
                ELSE IF (.NOT. ri%same_op .OR. ri%hfx_pot%potential_type /= do_potential_coulomb) THEN
                   CPABORT("Isolated USPP/PAW RI-HFX requires Coulomb exchange")
