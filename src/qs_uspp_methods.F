@@ -69,7 +69,8 @@ MODULE qs_uspp_methods
                                               uspp_augmentation_integrate,&
                                               uspp_augmentation_integrate_atom,&
                                               uspp_augmentation_prepare_fourier,&
-                                              uspp_augmentation_prepare_realspace
+                                              uspp_augmentation_prepare_realspace,&
+                                              uspp_augmentation_type
    USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
                                               uspp_projector_create_onsite,&
                                               uspp_projector_density,&
@@ -381,23 +382,31 @@ CONTAINS
 !> \param points Cartesian quadrature points in bohr, with arbitrary cell representatives.
 !> \param rho Density values, incremented without quadrature weights.
 !> \param gradient Cartesian density gradients, incremented without quadrature weights.
+!> \param radial_fields Optional independent per-kind transition caches, such as valence kinetic density.
+!>        They share the native projector ordering; charge augmentation and the metric remain unchanged.
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_atom_grid_collocate(uspp, fields, cell, points, rho, gradient)
-      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+   SUBROUTINE qs_uspp_atom_grid_collocate(uspp, fields, cell, points, rho, gradient, radial_fields)
+      TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
       TYPE(qs_uspp_atom_grid_type), INTENT(IN)           :: fields
       TYPE(cell_type), INTENT(IN)                        :: cell
       REAL(KIND=dp), INTENT(IN)                          :: points(:, :)
       REAL(KIND=dp), INTENT(INOUT)                       :: rho(:), gradient(:, :)
+      TYPE(uspp_augmentation_type), INTENT(IN), &
+         OPTIONAL, TARGET                                :: radial_fields(:)
 
       INTEGER                                            :: center, ikind, ix, iy, iz, lower(3), n, &
                                                             upper(3)
       REAL(KIND=dp)                                      :: image_position(3)
       REAL(KIND=dp), ALLOCATABLE                         :: displacements(:, :), &
                                                             folded_points(:, :), point_images(:, :)
+      TYPE(uspp_augmentation_type), POINTER              :: cache
 
       CPASSERT(ALL(SHAPE(points) == [3, SIZE(rho)]))
       CPASSERT(ALL(SHAPE(gradient) == SHAPE(points)))
       CPASSERT(SIZE(fields%density, 3) == SIZE(uspp%center_atoms))
+      IF (PRESENT(radial_fields)) THEN
+         CPASSERT(SIZE(radial_fields) == SIZE(uspp%augmentation))
+      END IF
       IF (SIZE(rho) == 0) RETURN
       ALLOCATE (displacements(3, SIZE(rho)))
       ALLOCATE (folded_points(3, SIZE(points, 2)), point_images(3, SIZE(points, 2)))
@@ -406,14 +415,17 @@ CONTAINS
       DO center = 1, SIZE(uspp%center_atoms)
          ikind = uspp%center_kinds(center)
          n = uspp%projector_sizes(center)
+         cache => uspp%augmentation(ikind)
+         IF (PRESENT(radial_fields)) cache => radial_fields(ikind)
+         CPASSERT(cache%nproj == n)
          CALL atom_grid_image_bounds(cell, uspp%position(:, center), folded_points, &
-                                     uspp%augmentation(ikind)%realspace_radius, lower, upper)
+                                     cache%realspace_radius, lower, upper)
          DO iz = lower(3), upper(3)
             DO iy = lower(2), upper(2)
                DO ix = lower(1), upper(1)
                   image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
                   displacements(:, :) = folded_points - SPREAD(image_position, 2, SIZE(rho))
-                  CALL uspp_augmentation_collocate_atom(uspp%augmentation(ikind), displacements, &
+                  CALL uspp_augmentation_collocate_atom(cache, displacements, &
                                                         fields%density(:n, :n, center), rho, gradient)
                END DO
             END DO
@@ -433,14 +445,18 @@ CONTAINS
 !> \param v_gradient Unweighted derivative with respect to the Cartesian spin-density gradient.
 !> \param point_gradient Weighted energy derivatives with respect to point coordinates, incremented.
 !>        Required when calculate_forces was selected. Moving-grid and weight derivatives are the caller's task.
+!> \param radial_fields Same optional transition caches as in the forward collocation.
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_atom_grid_integrate(uspp, fields, cell, points, weights, v_rho, v_gradient, point_gradient)
-      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+   SUBROUTINE qs_uspp_atom_grid_integrate(uspp, fields, cell, points, weights, v_rho, v_gradient, &
+                                          point_gradient, radial_fields)
+      TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
       TYPE(qs_uspp_atom_grid_type), INTENT(INOUT)        :: fields
       TYPE(cell_type), INTENT(IN)                        :: cell
       REAL(KIND=dp), INTENT(IN)                          :: points(:, :), weights(:), v_rho(:), &
                                                             v_gradient(:, :)
       REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: point_gradient(:, :)
+      TYPE(uspp_augmentation_type), INTENT(IN), &
+         OPTIONAL, TARGET                                :: radial_fields(:)
 
       INTEGER                                            :: center, ikind, ix, iy, iz, jdir, &
                                                             lower(3), n, upper(3)
@@ -449,11 +465,15 @@ CONTAINS
                                                             folded_points(:, :), matrix(:, :), &
                                                             point_derivative(:, :), &
                                                             point_images(:, :)
+      TYPE(uspp_augmentation_type), POINTER              :: cache
 
       CPASSERT(ALL(SHAPE(points) == [3, SIZE(weights)]))
       CPASSERT(SIZE(v_rho) == SIZE(weights))
       CPASSERT(ALL(SHAPE(v_gradient) == SHAPE(points)))
       CPASSERT(PRESENT(point_gradient) .EQV. fields%calculate_forces)
+      IF (PRESENT(radial_fields)) THEN
+         CPASSERT(SIZE(radial_fields) == SIZE(uspp%augmentation))
+      END IF
       IF (PRESENT(point_gradient)) THEN
          CPASSERT(ALL(SHAPE(point_gradient) == SHAPE(points)))
       END IF
@@ -466,16 +486,19 @@ CONTAINS
       DO center = 1, SIZE(uspp%center_atoms)
          ikind = uspp%center_kinds(center)
          n = uspp%projector_sizes(center)
+         cache => uspp%augmentation(ikind)
+         IF (PRESENT(radial_fields)) cache => radial_fields(ikind)
+         CPASSERT(cache%nproj == n)
          ALLOCATE (matrix(n, n))
          CALL atom_grid_image_bounds(cell, uspp%position(:, center), folded_points, &
-                                     uspp%augmentation(ikind)%realspace_radius, lower, upper)
+                                     cache%realspace_radius, lower, upper)
          DO iz = lower(3), upper(3)
             DO iy = lower(2), upper(2)
                DO ix = lower(1), upper(1)
                   image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
                   displacements(:, :) = folded_points - SPREAD(image_position, 2, SIZE(weights))
                   IF (fields%calculate_forces) THEN
-                     CALL uspp_augmentation_integrate_atom(uspp%augmentation(ikind), displacements, weights, &
+                     CALL uspp_augmentation_integrate_atom(cache, displacements, weights, &
                                                            v_rho, v_gradient, matrix, fields%density(:n, :n, center), &
                                                            derivative, point_derivative)
                      fields%center_gradient(:, center) = fields%center_gradient(:, center) + derivative
@@ -489,7 +512,7 @@ CONTAINS
                         fields%center_strain(:, jdir) = fields%center_strain(:, jdir) + derivative*image_position(jdir)
                      END DO
                   ELSE
-                     CALL uspp_augmentation_integrate_atom(uspp%augmentation(ikind), displacements, weights, &
+                     CALL uspp_augmentation_integrate_atom(cache, displacements, weights, &
                                                            v_rho, v_gradient, matrix)
                   END IF
                   fields%potential(:n, :n, center) = fields%potential(:n, :n, center) + matrix

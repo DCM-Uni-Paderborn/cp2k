@@ -541,6 +541,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief RI exchange oracle with a full non-diagonal positive metric.
+!> \param tensor ...
+!> \param kernel ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION transition_exchange(tensor, kernel) RESULT(RESULT)
       REAL(dp), INTENT(IN)                               :: tensor(:, :, :), kernel(:, :)
@@ -1376,10 +1379,12 @@ CONTAINS
       REAL(KIND=dp) :: atom_grad(3, 3), cell_grad(3, 3), dense(nao, nao), distance(3), &
          energies(2), factor, grad(3, 3), grad_ref(3, 3), local_energy, old_positions(3, 2), &
          perturb(nao, nproj), point_change(3, 3), point_grad(3, 3), points(3, 3), &
-         projected(nproj, nproj), rho(3), rho_ref(3), shifted(3, 3), vgrad(3, 3), vrho(3), w(3)
+         probe_point_grad(3, 3), projected(nproj, nproj), rho(3), rho_ref(3), shifted(3, 3), &
+         vgrad(3, 3), vrho(3), w(3)
       TYPE(cell_type)                                    :: cell, varied_cell
       TYPE(dbcsr_p_type)                                 :: dmats(1), hmats(1)
-      TYPE(qs_uspp_atom_grid_type), ALLOCATABLE          :: fields, trial
+      TYPE(qs_uspp_atom_grid_type), ALLOCATABLE          :: fields, probe, trial
+      TYPE(uspp_augmentation_type), ALLOCATABLE          :: radial_fields(:)
 
       ALLOCATE (fields, trial)
       old_positions = uspp%position
@@ -1414,6 +1419,18 @@ CONTAINS
       CALL atom_grid_gaussian_reference(cell, points, projected, rho_ref, grad_ref)
       CALL check(MAXVAL(ABS(rho - rho_ref - 0.4_dp)), 'periodic atom-grid Gaussian density oracle', 2.e-10_dp)
       CALL check(MAXVAL(ABS(grad - grad_ref - 0.07_dp)), 'periodic atom-grid Gaussian gradient oracle', 2.e-8_dp)
+      ! Independent transition fields must not silently select the charge/overlap cache.
+      ALLOCATE (radial_fields, SOURCE=uspp%augmentation)
+      DO center = 1, SIZE(radial_fields)
+         IF (.NOT. ALLOCATED(radial_fields(center)%radial_value)) CYCLE
+         radial_fields(center)%radial_value(:, :, :) = 2.0_dp*radial_fields(center)%radial_value
+         radial_fields(center)%radial_slope(:, :, :) = 2.0_dp*radial_fields(center)%radial_slope
+      END DO
+      rho_ref = 0.0_dp
+      grad_ref = 0.0_dp
+      CALL qs_uspp_atom_grid_collocate(uspp, fields, cell, points, rho_ref, grad_ref, radial_fields)
+      CALL check(MAXVAL(ABS(rho_ref - 2.0_dp*(rho - 0.4_dp))), 'independent transition field selection')
+      CALL check(MAXVAL(ABS(grad_ref - 2.0_dp*(grad - 0.07_dp))), 'independent transition gradient selection')
       shifted = points + SPREAD(MATMUL(cell%hmat, [2.0_dp, -1.0_dp, 1.0_dp]), 2, 3)
       rho_ref = 0.4_dp
       grad_ref = 0.07_dp
@@ -1423,6 +1440,10 @@ CONTAINS
       vrho = rho**2
       vgrad = grad
       point_grad = 0.0_dp
+      ALLOCATE (probe, SOURCE=fields)
+      probe_point_grad = 0.0_dp
+      CALL qs_uspp_atom_grid_integrate(uspp, probe, cell, points, w, vrho, vgrad, &
+                                       probe_point_grad, radial_fields)
       ! Rank-local point batches are unequal and empty when rank >= three.
       DO sample = rank + 1, 3, nranks
          CALL qs_uspp_atom_grid_integrate(uspp, fields, cell, points(:, sample:sample), w(sample:sample), &
@@ -1431,6 +1452,12 @@ CONTAINS
       CALL qs_uspp_atom_grid_collocate(uspp, fields, cell, points(:, :0), rho_ref(:0), grad_ref(:, :0))
       CALL qs_uspp_atom_grid_integrate(uspp, fields, cell, points(:, :0), w(:0), vrho(:0), vgrad(:, :0), &
                                        point_grad(:, :0))
+      CALL check(MAXVAL(ABS(probe%potential - 2.0_dp*fields%potential)), 'independent transition matrix adjoint')
+      CALL check(MAXVAL(ABS(probe%center_gradient - 2.0_dp*fields%center_gradient)), &
+                 'independent transition center adjoint')
+      CALL check(MAXVAL(ABS(probe%center_strain - 2.0_dp*fields%center_strain)), &
+                 'independent transition source-image strain adjoint')
+      CALL check(MAXVAL(ABS(probe_point_grad - 2.0_dp*point_grad)), 'independent transition point adjoint')
       atom_grad = 0.0_dp
       cell_grad = 0.0_dp
       CALL qs_uspp_atom_grid_apply(uspp, fields, hmats, dmats, sap, atom_grad, cell_grad)
