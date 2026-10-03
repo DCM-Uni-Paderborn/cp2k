@@ -60,7 +60,9 @@ PROGRAM uspp_projector_operators_unittest
    USE qs_uspp_methods,                 ONLY: &
         qs_uspp_atom_grid_apply, qs_uspp_atom_grid_collocate, qs_uspp_atom_grid_integrate, &
         qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_type, qs_uspp_collocate, qs_uspp_core_matrix, &
-        qs_uspp_init_ao_matrix, qs_uspp_integrate
+        qs_uspp_fixed_atom_grid_integrate, qs_uspp_fixed_atom_grid_prepare, &
+        qs_uspp_fixed_atom_grid_type, qs_uspp_global_atom_grid_collocate, &
+        qs_uspp_global_atom_grid_integrate, qs_uspp_init_ao_matrix, qs_uspp_integrate
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
                                               qs_uspp_projector_images,&
                                               qs_uspp_projector_matrix,&
@@ -76,7 +78,8 @@ PROGRAM uspp_projector_operators_unittest
                                               upf_local_type
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
-   USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
+   USE uspp_augmentation,               ONLY: upf_radial_scalar_init,&
+                                              uspp_augmentation_init,&
                                               uspp_augmentation_type
    USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
                                               uspp_projector_collocate,&
@@ -1145,10 +1148,12 @@ CONTAINS
       REAL(KIND=dp) :: atom_grad(3, 3), cell_grad(3, 3), dense(nao, nao), distance(3), &
          energies(2), factor, grad(3, 3), grad_ref(3, 3), local_energy, old_positions(3, 2), &
          perturb(nao, nproj), point_change(3, 3), point_grad(3, 3), points(3, 3), &
-         projected(nproj, nproj), rho(3), rho_ref(3), shifted(3, 3), vgrad(3, 3), vrho(3), w(3)
+         probe_point_grad(3, 3), projected(nproj, nproj), rho(3), rho_ref(3), shifted(3, 3), &
+         vgrad(3, 3), vrho(3), w(3)
       TYPE(cell_type)                                    :: cell, varied_cell
       TYPE(dbcsr_p_type)                                 :: dmats(1), hmats(1)
-      TYPE(qs_uspp_atom_grid_type), ALLOCATABLE          :: fields, trial
+      TYPE(qs_uspp_atom_grid_type), ALLOCATABLE          :: fields, probe, trial
+      TYPE(uspp_augmentation_type), ALLOCATABLE          :: radial_fields(:)
 
       ALLOCATE (fields, trial)
       old_positions = uspp%position
@@ -1183,6 +1188,104 @@ CONTAINS
       CALL atom_grid_gaussian_reference(cell, points, projected, rho_ref, grad_ref)
       CALL check(MAXVAL(ABS(rho - rho_ref - 0.4_dp)), 'periodic atom-grid Gaussian density oracle', 2.e-10_dp)
       CALL check(MAXVAL(ABS(grad - grad_ref - 0.07_dp)), 'periodic atom-grid Gaussian gradient oracle', 2.e-8_dp)
+      BLOCK
+         INTEGER :: ix, iy, iz
+         REAL(dp) :: fixed_points(3, 3), fixed_rho(3), fixed_grad(3, 3), spatial(3), &
+                     image_position(3), delta(3), value, scalar_potential(3), source_strain(3, 3)
+         TYPE(qs_uspp_fixed_atom_grid_type) :: fixed
+         TYPE(uspp_augmentation_type) :: scalar_cache(SIZE(uspp%augmentation))
+
+         ! A frozen scalar on only the second source must bypass the AO/overlap cache.
+         CALL upf_radial_scalar_init(pot(2), EXP(-alpha(2)*pot(2)%r**2), scalar_cache(uspp%center_kinds(2)))
+         CALL qs_uspp_fixed_atom_grid_prepare(uspp, scalar_cache, fixed, .TRUE.)
+         CALL check(REAL(SIZE(fixed%source_centers) - 1, dp), 'fixed-field source selection')
+         CALL check(REAL(fixed%source_centers(1) - 2, dp), 'fixed-field source mapping')
+         fixed_points = points + SPREAD(MATMUL(cell%hmat, [2.0_dp, -1.0_dp, 1.0_dp]), 2, 3)
+         fixed_rho = 0.0_dp
+         fixed_grad = 0.0_dp
+         CALL qs_uspp_atom_grid_collocate(fixed%geometry, fixed%fields, cell, fixed_points, &
+                                          fixed_rho, fixed_grad, scalar_cache)
+         rho_ref = 0.0_dp
+         grad_ref = 0.0_dp
+         source_strain = 0.0_dp
+         scalar_potential = [0.2_dp, -0.3_dp, 0.7_dp]
+         DO iz = -6, 6
+            DO iy = -6, 6
+               DO ix = -6, 6
+                  image_position = positions(:, 2) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                  DO sample = 1, 3
+                     delta = fixed_points(:, sample) - image_position
+                     value = EXP(-alpha(2)*SUM(delta**2))
+                     spatial = -2.0_dp*alpha(2)*value*delta
+                     rho_ref(sample) = rho_ref(sample) + value
+                     grad_ref(:, sample) = grad_ref(:, sample) + spatial
+                     DO jdir = 1, 3
+                        source_strain(:, jdir) = source_strain(:, jdir) - &
+                                                 w(sample)*scalar_potential(sample)*spatial*image_position(jdir)
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END DO
+         CALL check(MAXVAL(ABS(fixed_rho - rho_ref)), 'fixed-field Gaussian value oracle', 2.e-10_dp)
+         CALL check(MAXVAL(ABS(fixed_grad - grad_ref)), 'fixed-field Gaussian gradient oracle', 2.e-8_dp)
+         ALLOCATE (probe, SOURCE=fields)
+         probe_point_grad = 0.0_dp
+         vgrad = 0.0_dp
+         CALL qs_uspp_fixed_atom_grid_integrate(fixed, scalar_cache, probe, cell, fixed_points, &
+                                                w, scalar_potential, vgrad, probe_point_grad)
+         grad_ref = grad_ref*SPREAD(w*scalar_potential, 1, 3)
+         CALL check(MAXVAL(ABS(probe_point_grad - grad_ref)), 'fixed-field target adjoint', 2.e-8_dp)
+         CALL check(MAXVAL(ABS(probe%center_gradient(:, 2) + SUM(grad_ref, DIM=2))), &
+                    'fixed-field center adjoint', 2.e-8_dp)
+         CALL check(MAXVAL(ABS(probe%center_strain - source_strain)), 'fixed-field image strain adjoint', 2.e-7_dp)
+         CALL check(MAXVAL(ABS(probe%center_gradient(:, 1))), 'fixed-field inactive source')
+         CALL check(MAXVAL(ABS(probe%potential)), 'fixed-field has no AO operator')
+         CALL check(MAXVAL(ABS(probe%density - fields%density)), 'fixed-field leaves AO density unchanged')
+         DEALLOCATE (probe)
+      END BLOCK
+      ! Independent transition fields must not silently select the charge/overlap cache.
+      ALLOCATE (radial_fields, SOURCE=uspp%augmentation)
+      DO center = 1, SIZE(radial_fields)
+         IF (.NOT. ALLOCATED(radial_fields(center)%radial_value)) CYCLE
+         radial_fields(center)%radial_value(:, :, :) = 2.0_dp*radial_fields(center)%radial_value
+         radial_fields(center)%radial_slope(:, :, :) = 2.0_dp*radial_fields(center)%radial_slope
+      END DO
+      rho_ref = 0.0_dp
+      grad_ref = 0.0_dp
+      CALL qs_uspp_atom_grid_collocate(uspp, fields, cell, points, rho_ref, grad_ref, radial_fields)
+      CALL check(MAXVAL(ABS(rho_ref - 2.0_dp*(rho - 0.4_dp))), 'independent transition field selection')
+      CALL check(MAXVAL(ABS(grad_ref - 2.0_dp*(grad - 0.07_dp))), 'independent transition gradient selection')
+      BLOCK
+         REAL(dp) :: density_values(3), density_gradient(3, 3), kinetic_values(3), kinetic_adjoint(3)
+         TYPE(qs_uspp_atom_grid_type) :: combined
+
+         ! Different density/tau fields must both reach the AO operator through their own adjoints.
+         ALLOCATE (uspp%xc_density, SOURCE=uspp%augmentation)
+         ALLOCATE (uspp%xc_kinetic, SOURCE=radial_fields)
+         uspp%global_xc_ready = .TRUE.
+         density_values = 0.0_dp
+         density_gradient = 0.0_dp
+         kinetic_values = 0.0_dp
+         CALL qs_uspp_global_atom_grid_collocate(uspp, fields, cell, points, &
+                                                 density_values, density_gradient, kinetic_values)
+         CALL check(MAXVAL(ABS(density_values - (rho - 0.4_dp))), 'global density cache selection')
+         CALL check(MAXVAL(ABS(kinetic_values - 2.0_dp*(rho - 0.4_dp))), 'global kinetic cache selection')
+         kinetic_adjoint = [0.15_dp, -0.25_dp, 0.35_dp]
+         combined = fields
+         combined%calculate_forces = .FALSE.
+         CALL qs_uspp_global_atom_grid_integrate(uspp, combined, cell, points, w, &
+                                                 rho**2, grad, kinetic_adjoint)
+         CALL qs_uspp_atom_grid_apply(uspp, combined, hmats)
+         CALL gather(hmats(1)%matrix, dense)
+         local_energy = SUM(w*(rho**2*density_values + SUM(grad*density_gradient, DIM=1) + &
+                               kinetic_adjoint*kinetic_values))
+         CALL comm%sum(local_energy)
+         CALL check(ABS(SUM(p*dense) - local_energy), 'joint original density/tau AO adjoint')
+         CALL dbcsr_set(hmats(1)%matrix, 0.0_dp)
+         DEALLOCATE (uspp%xc_density, uspp%xc_kinetic)
+         uspp%global_xc_ready = .FALSE.
+      END BLOCK
       shifted = points + SPREAD(MATMUL(cell%hmat, [2.0_dp, -1.0_dp, 1.0_dp]), 2, 3)
       rho_ref = 0.4_dp
       grad_ref = 0.07_dp
@@ -1192,6 +1295,10 @@ CONTAINS
       vrho = rho**2
       vgrad = grad
       point_grad = 0.0_dp
+      ALLOCATE (probe, SOURCE=fields)
+      probe_point_grad = 0.0_dp
+      CALL qs_uspp_atom_grid_integrate(uspp, probe, cell, points, w, vrho, vgrad, &
+                                       probe_point_grad, radial_fields)
       ! Rank-local point batches are unequal and empty when rank >= three.
       DO sample = rank + 1, 3, nranks
          CALL qs_uspp_atom_grid_integrate(uspp, fields, cell, points(:, sample:sample), w(sample:sample), &
@@ -1200,6 +1307,12 @@ CONTAINS
       CALL qs_uspp_atom_grid_collocate(uspp, fields, cell, points(:, :0), rho_ref(:0), grad_ref(:, :0))
       CALL qs_uspp_atom_grid_integrate(uspp, fields, cell, points(:, :0), w(:0), vrho(:0), vgrad(:, :0), &
                                        point_grad(:, :0))
+      CALL check(MAXVAL(ABS(probe%potential - 2.0_dp*fields%potential)), 'independent transition matrix adjoint')
+      CALL check(MAXVAL(ABS(probe%center_gradient - 2.0_dp*fields%center_gradient)), &
+                 'independent transition center adjoint')
+      CALL check(MAXVAL(ABS(probe%center_strain - 2.0_dp*fields%center_strain)), &
+                 'independent transition source-image strain adjoint')
+      CALL check(MAXVAL(ABS(probe_point_grad - 2.0_dp*point_grad)), 'independent transition point adjoint')
       atom_grad = 0.0_dp
       cell_grad = 0.0_dp
       CALL qs_uspp_atom_grid_apply(uspp, fields, hmats, dmats, sap, atom_grad, cell_grad)

@@ -226,8 +226,9 @@ CONTAINS
          native_gapw_atom_composite_reference, native_gapw_atom_composite_requested, &
          native_gapw_composite_direct_ao, native_gapw_composite_reference, &
          native_gapw_periodic_atom_composite, native_grid_diagnostics, native_grid_use_cuda, &
-         native_skala_evaluator, native_skala_restore_exc
-      LOGICAL :: paw_composite_representation, rigpw, separate_xc, use_gauxc_matrix, use_virial
+         native_original_upf_xc, native_skala_evaluator
+      LOGICAL :: native_skala_restore_exc, paw_composite_representation, rigpw, separate_xc, &
+         use_gauxc_matrix, use_virial
       LOGICAL, SAVE :: native_grid_cpu_kpoints_warned = .FALSE.
       REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, mulliken_order_p, &
          native_skala_composite_contraction, native_skala_composite_rho_contraction, &
@@ -305,6 +306,7 @@ CONTAINS
       native_gapw_atom_composite_requested = .FALSE.
       native_gapw_all_electron_atom_composite = .FALSE.
       native_direct_valence_atom_composite = .FALSE.
+      native_original_upf_xc = .FALSE.
       gapw_all_all_electron = .FALSE.
       gapw_all_pseudopotentials = .FALSE.
       gapw_mixed_core_representations = .FALSE.
@@ -395,7 +397,7 @@ CONTAINS
       gapw = dft_control%qs_control%gapw
       gapw_xc = dft_control%qs_control%gapw_xc
       CALL get_ks_env(ks_env, uspp=uspp)
-      separate_xc = gapw_xc .OR. (gapw .AND. ASSOCIATED(uspp))
+      separate_xc = gapw_xc .OR. (ASSOCIATED(uspp) .AND. (gapw .OR. dft_control%use_gauxc))
       IF (gapw_xc .AND. gapw) THEN
          CPABORT(" GAPW and GAPW_XC are not compatible")
       END IF
@@ -695,6 +697,13 @@ CONTAINS
 
          ! Everything else, either via GauXC or manual XC computation
          native_skala_evaluator = xc_section_uses_native_skala_grid(xc_section)
+         IF (dft_control%use_gauxc .AND. ASSOCIATED(uspp)) THEN
+            IF (.NOT. native_skala_evaluator .OR. .NOT. native_skala_uses_atom_composite_grid(xc_section)) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "Original USPP global XC requires native Skala with NATIVE_GRID_LAYOUT ATOM_COMPOSITE")
+            END IF
+            native_original_upf_xc = .TRUE.
+         END IF
          paw_composite_representation = .FALSE.
          IF (dft_control%use_gauxc .AND. (gapw .OR. gapw_xc)) THEN
             paw_composite_representation = xc_section_uses_gauxc_model(xc_section) .AND. &
@@ -758,6 +767,13 @@ CONTAINS
                      native_gapw_atom_composite_reference = .TRUE.
                   END IF
                END IF
+               IF (native_original_upf_xc) THEN
+                  ! Preserve the selected Gaussian density decomposition and combine its
+                  ! fields with original UPF primitives before one global model evaluation.
+                  native_direct_valence_atom_composite = .NOT. (gapw .OR. gapw_xc)
+                  native_gapw_atom_composite_reference = gapw .OR. gapw_xc
+                  native_gapw_composite_reference = .FALSE.
+               END IF
                IF (native_gapw_composite_reference .AND. native_gapw_atom_composite_reference) THEN
                   CALL cp_abort(__LOCATION__, &
                                 "Select only one native-grid GAPW composite reference route.")
@@ -812,6 +828,7 @@ CONTAINS
                                         vxc_rho=v_rspace_new, vxc_tau=v_tau_rspace, exc=energy%exc, &
                                         edisp=edisp, dispersion_env=qs_env%dispersion_env, &
                                         just_energy=just_energy_xc, qs_env_external=qs_env, &
+                                        exclude_nlcc=native_original_upf_xc, &
                                         native_gapw_composite_override=native_gapw_composite_reference, &
                                         native_skala_defer_to_atom_composite=.TRUE.)
                   ELSE
@@ -821,6 +838,7 @@ CONTAINS
                                         just_energy=just_energy_xc, &
                                         native_skala_atom_force=native_skala_atom_force, &
                                         qs_env_external=qs_env, &
+                                        exclude_nlcc=native_original_upf_xc, &
                                         native_gapw_composite_override=native_gapw_composite_reference)
                   END IF
                   IF (native_gapw_composite_reference .AND. .NOT. native_gapw_composite_direct_ao .AND. &
@@ -898,6 +916,7 @@ CONTAINS
                                      vxc_rho=v_rspace_new, vxc_tau=v_tau_rspace, exc=energy%exc, &
                                      edisp=edisp, dispersion_env=qs_env%dispersion_env, &
                                      just_energy=just_energy_xc, qs_env_external=qs_env, &
+                                     exclude_nlcc=native_original_upf_xc, &
                                      native_gapw_composite_override=native_gapw_composite_reference, &
                                      native_skala_defer_to_atom_composite= &
                                      (native_gapw_atom_composite_reference .OR. &
@@ -926,7 +945,17 @@ CONTAINS
                   END IF
                END IF
                IF (native_skala_restore_exc) energy%exc = native_skala_exc_scf
-               IF (native_direct_valence_atom_composite) THEN
+               IF (native_original_upf_xc) THEN
+                  CPASSERT(ASSOCIATED(v_rspace_new) .AND. ASSOCIATED(v_tau_rspace))
+                  ALLOCATE (uspp_xc_fields(nspins))
+                  CALL calculate_vxc_atom( &
+                     qs_env, just_energy_xc, energy%exc1, xc_section_external=xc_section, &
+                     calculate_forces=calculate_forces, composite_vxc_rho=v_rspace_new, &
+                     composite_vxc_tau=v_tau_rspace, &
+                     direct_valence_atom_grid=native_direct_valence_atom_composite, &
+                     atom_composite_grid=.TRUE., uspp_fields=uspp_xc_fields)
+                  energy%exc = 0.0_dp
+               ELSE IF (native_direct_valence_atom_composite) THEN
                   CPASSERT(ASSOCIATED(v_rspace_new))
                   CPASSERT(ASSOCIATED(v_tau_rspace))
                   CALL calculate_vxc_atom( &
@@ -983,12 +1012,13 @@ CONTAINS
             ALLOCATE (uspp_xc_fields(nspins))
             CALL calculate_vxc_atom(qs_env, just_energy_xc, energy%exc1, &
                                     xc_section_external=xc_section, calculate_forces=calculate_forces, &
-                                    composite_vxc_rho=v_rspace_new, uspp_fields=uspp_xc_fields)
+                                    composite_vxc_rho=v_rspace_new, composite_vxc_tau=v_tau_rspace, &
+                                    uspp_fields=uspp_xc_fields)
          ELSE
             CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
                                vxc_rho=v_rspace_new, vxc_tau=v_tau_rspace, exc=energy%exc, &
                                edisp=edisp, dispersion_env=qs_env%dispersion_env, &
-                               just_energy=just_energy_xc)
+                               just_energy=just_energy_xc, core_tau_forces=calculate_forces)
             IF (edisp /= 0.0_dp) energy%dispersion = edisp
             IF (qs_env%requires_matrix_vxc .AND. ASSOCIATED(v_rspace_new)) THEN
                CALL compute_matrix_vxc(qs_env=qs_env, v_rspace=v_rspace_new, matrix_vxc=matrix_vxc)
