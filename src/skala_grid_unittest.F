@@ -41,7 +41,7 @@ PROGRAM skala_grid_unittest
    CHARACTER(len=32) :: model_mode
    INTEGER :: ns, partition, i, s, first_z, last_z, nr, component, step, mode
    REAL(dp) :: hmat(3, 3), energy, reference, ep, em, derivative, h, error, maximum_error, &
-               step_size, routing_tolerance, derivative_tolerance
+               step_size, response_step_size, routing_tolerance, derivative_tolerance
    REAL(dp), ALLOCATABLE :: rho(:, :), grad(:, :, :), tau(:, :), drho(:, :), dgrad(:, :, :), dtau(:, :), &
                             vrho(:, :), vgrad(:, :, :), vtau(:, :), ref_vrho(:, :), ref_vgrad(:, :, :), ref_vtau(:, :)
 
@@ -51,6 +51,7 @@ PROGRAM skala_grid_unittest
       ERROR STOP "Use MODEL SKALA and set GAUXC_SKALA_MODEL for a long model path"
    CALL get_command_argument(2, model_mode)
    step_size = 1.0e-3_dp
+   response_step_size = step_size
    routing_tolerance = 1.0e-11_dp
    derivative_tolerance = 1.0e-8_dp
    SELECT CASE (TRIM(model_mode))
@@ -58,6 +59,8 @@ PROGRAM skala_grid_unittest
       CONTINUE
    CASE ("skala-float32")
       step_size = 1.0e-2_dp
+      ! Differencing Float32 gradients needs a longer stencil than energy differences.
+      response_step_size = 4.0e-2_dp
       routing_tolerance = 1.0e-5_dp
       derivative_tolerance = 1.0e-4_dp
    CASE DEFAULT
@@ -373,7 +376,7 @@ CONTAINS
                                   r, g, t, xc, e, hr, hg, ht, &
                                   response_density=dr, response_gradient=dg, response_kinetic=dt)
             DO ih = 1, 2
-               step_h = step_size/REAL(ih, dp)
+               step_h = response_step_size/REAL(ih, dp)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                      r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, plus_r, plus_g, plus_t)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
@@ -386,6 +389,14 @@ CONTAINS
                IF (err > derivative_tolerance) THEN
                   WRITE (*, '(A,3I3,ES18.8)') "Point Hessian failure (spin,distribution,step,error): ", &
                      nspin, distribution, ih, err
+                  IF (nr_local > 0) THEN
+                     WRITE (*, '(A,3ES18.8)') "Density/gradient/kinetic Hessian errors: ", &
+                        MAXVAL(ABS(hr - (plus_r - pr)/(2.0_dp*step_h))), &
+                        MAXVAL(ABS(hg - (plus_g - pg)/(2.0_dp*step_h))), &
+                        MAXVAL(ABS(ht - (plus_t - pt)/(2.0_dp*step_h)))
+                     WRITE (*, '(A,3ES18.8)') "Density/gradient/kinetic Hessian magnitudes: ", &
+                        MAXVAL(ABS(hr)), MAXVAL(ABS(hg)), MAXVAL(ABS(ht))
+                  END IF
                   ERROR STOP "Arbitrary-point Hessian-vector product fails finite differences"
                END IF
             END DO
@@ -393,7 +404,7 @@ CONTAINS
                                   r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
                                   dr, dg, dt, dx, dc, de, dd)
             DO ih = 1, 2
-               step_h = step_size/REAL(ih, dp)
+               step_h = response_step_size/REAL(ih, dp)
                CALL skala_point_eval(comm, points + step_h*dx, energy_weights + step_h*de, &
                                      descriptor_weights + step_h*dd, sizes, centres + step_h*dc, &
                                      r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, &
