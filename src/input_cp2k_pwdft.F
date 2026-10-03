@@ -120,6 +120,7 @@ CONTAINS
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="EPS_RESPONSE", default_r_val=1.0e-6_dp, &
                           description="Relative residual tolerance of the coupled FP-LAPW field response. "// &
+                          "Also bounds relative band differences at the response reference. "// &
                           "The default accommodates Skala's internal Float32 Hessian evaluation. "// &
                           "Independent of the ground-state SCF thresholds.")
       CALL section_add_keyword(subsection, keyword)
