@@ -42,7 +42,7 @@ MODULE upf_projector_integrals
       REAL(KIND=dp), ALLOCATABLE :: r(:), weighted_beta(:, :), d(:, :), gaunt(:, :, :)
    END TYPE upf_projector_type
 
-   PUBLIC :: upf_projector_type, upf_projector_init, upf_projector_overlap
+   PUBLIC :: upf_projector_type, upf_projector_init, upf_projector_overlap, upf_projector_product_gaunt
 
    INTERFACE
       FUNCTION scaled_bessel(n, x) RESULT(value) BIND(C, name="libgrpp_modified_bessel_scaled")
@@ -160,6 +160,33 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE upf_projector_init
+
+! **************************************************************************************************
+!> \brief Angular product coefficients for two native real-harmonic projectors.
+!> \param projectors Prepared projectors with Cartesian degree at least their largest l.
+!> \param gaunt Integral of Y_p Y_q Y_LM, in magnetic-projector order.
+! **************************************************************************************************
+   SUBROUTINE upf_projector_product_gaunt(projectors, gaunt)
+      TYPE(upf_projector_type), INTENT(IN)               :: projectors
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: gaunt(:, :, :)
+
+      INTEGER                                            :: l, m, nlm, p, q, s
+
+      CPASSERT(projectors%degree >= projectors%lmax)
+      nlm = (2*projectors%lmax + 1)**2
+      ALLOCATE (gaunt(projectors%nproj, projectors%nproj, nlm))
+      gaunt = 0.0_dp
+      DO q = 1, projectors%nproj
+         l = projectors%lbeta(projectors%radial_index(q))
+         m = projectors%angular_index(q) - l*l
+         DO p = 1, projectors%nproj
+            DO s = 1, nco(l)
+               gaunt(p, q, :) = gaunt(p, q, :) + orbtramat(l)%slm(m, s)* &
+                                projectors%gaunt(ncoset(l - 1) + s, projectors%angular_index(p), :nlm)
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE upf_projector_product_gaunt
 
 ! **************************************************************************************************
 !> \brief Evaluate <Cartesian Gaussian|beta_i Y_lm> and AO-center derivatives.

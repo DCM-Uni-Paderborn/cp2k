@@ -79,6 +79,8 @@ MODULE atom_types
    TYPE atom_uspp_type
       INTEGER, ALLOCATABLE :: lbeta(:)
       REAL(dp), ALLOCATABLE :: beta(:, :), radial(:, :, :)
+      REAL(dp), ALLOCATABLE :: kinetic(:, :), core_kinetic(:)
+      CHARACTER(LEN=256) :: kinetic_failure_reason = ''
    END TYPE atom_uspp_type
 
    TYPE atom_basis_type

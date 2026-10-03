@@ -1866,16 +1866,22 @@ CONTAINS
 !> \param cpot         potential on the atomic radial grid
 !> \param basis        atomic basis set
 !> \param derivatives  order of derivatives
+!> \param charge_augmentation Include USPP charge augmentation; false for kinetic operators.
 !> \par History
 !>    * 08.2008 created [Juerg Hutter]
 ! **************************************************************************************************
-   SUBROUTINE numpot_matrix(imat, cpot, basis, derivatives)
+   SUBROUTINE numpot_matrix(imat, cpot, basis, derivatives, charge_augmentation)
       REAL(KIND=dp), DIMENSION(:, :, 0:), INTENT(INOUT)  :: imat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: cpot
       TYPE(atom_basis_type), INTENT(INOUT)               :: basis
       INTEGER, INTENT(IN)                                :: derivatives
+      LOGICAL, INTENT(IN), OPTIONAL                      :: charge_augmentation
 
       INTEGER                                            :: i, j, l, n
+      LOGICAL                                            :: augment
+
+      augment = .TRUE.
+      IF (PRESENT(charge_augmentation)) augment = charge_augmentation
 
       SELECT CASE (derivatives)
       CASE (0)
@@ -1917,7 +1923,7 @@ CONTAINS
          CPABORT("Only 0, 1, 2 are supported as the value of derivatives")
       END SELECT
 
-      CALL atom_uspp_integrate(imat, cpot, basis, derivatives)
+      IF (augment) CALL atom_uspp_integrate(imat, cpot, basis, derivatives)
 
    END SUBROUTINE numpot_matrix
 

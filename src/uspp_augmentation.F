@@ -12,9 +12,11 @@
 ! **************************************************************************************************
 MODULE uspp_augmentation
    USE atom_upf,                        ONLY: atom_upfpot_type,&
+                                              upf_partial_waves_type,&
                                               upf_radial_weights
    USE bessel_lib,                      ONLY: bessel0
    USE cp_array_sort,                   ONLY: cp_1d_r_sort
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE mathconstants,                   ONLY: fourpi
@@ -26,7 +28,8 @@ MODULE uspp_augmentation
                                               orbtramat
    USE spherical_harmonics,             ONLY: y_lm
    USE splines,                         ONLY: spline3ders
-   USE upf_projector_integrals,         ONLY: upf_projector_type
+   USE upf_projector_integrals,         ONLY: upf_projector_product_gaunt,&
+                                              upf_projector_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -40,18 +43,61 @@ MODULE uspp_augmentation
       ! weighted_q can omit an exact zero suffix; r retains the full mesh for real-space splines.
       REAL(KIND=dp), ALLOCATABLE :: r(:), weighted_q(:, :, :), gaunt(:, :, :), q(:, :)
       REAL(KIND=dp), ALLOCATABLE :: radial_x(:), radial_value(:, :, :), radial_slope(:, :, :)
+      REAL(dp), ALLOCATABLE :: origin_log(:, :, :)
       INTEGER(int_8) :: fourier_budget = -1_int_8
       INTEGER, ALLOCATABLE :: fourier_map(:)
       REAL(dp), ALLOCATABLE :: fourier_norm(:), fourier_radial(:, :, :), fourier_next(:, :, :)
    END TYPE uspp_augmentation_type
 
    PUBLIC :: uspp_augmentation_type, uspp_augmentation_init, uspp_augmentation_fourier, &
+             upf_kinetic_reconstruction_init, upf_radial_scalar_init, &
              uspp_augmentation_collocate, uspp_augmentation_integrate, &
              uspp_augmentation_prepare_realspace, uspp_augmentation_realspace, &
              uspp_augmentation_prepare_fourier, &
              uspp_augmentation_collocate_atom, uspp_augmentation_integrate_atom
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Scalar field on an original UPF mesh, using the common radial/grid transport cache.
+!>        Its one-dimensional amplitude is fixed at one. It has no AO or overlap correction.
+!>        Retain every supplied sample and the original radial quadrature, without fitted tails.
+!> \param pot Original radial mesh and weights.
+!> \param values Scalar density or kinetic-density samples in Cartesian volume units.
+!> \param field Independent radial cache with its value and Cartesian derivatives.
+!> \param logarithmic_origin Preserve the endpoint sign with a C2 continuation below a positive mesh start.
+! **************************************************************************************************
+   SUBROUTINE upf_radial_scalar_init(pot, values, field, logarithmic_origin)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      REAL(dp), INTENT(IN)                               :: values(:)
+      TYPE(uspp_augmentation_type), INTENT(OUT)          :: field
+      LOGICAL, INTENT(IN), OPTIONAL                      :: logarithmic_origin
+
+      INTEGER                                            :: nr
+      TYPE(atom_upfpot_type)                             :: radial
+
+      nr = SIZE(pot%r)
+      CPASSERT(SIZE(values) == nr .AND. ALL(ieee_is_finite(values)))
+      field%nproj = 1
+      field%lmax = 0
+      CALL init_orbital_pointers(0)
+      CALL init_spherical_harmonics(0, -1)
+      ALLOCATE (field%r, SOURCE=pot%r)
+      ALLOCATE (field%lbeta(1), SOURCE=0)
+      ALLOCATE (field%radial_index(1), field%angular_index(1), SOURCE=1)
+      ALLOCATE (field%gaunt(1, 1, 1), SOURCE=1.0_dp/SQRT(fourpi))
+      ALLOCATE (field%weighted_q(nr, 1, 0:0), field%q(1, 1))
+      ! Y_00 squared is 1/(4*pi); this normalization gives the supplied scalar field.
+      radial%number_of_proj = 1
+      ALLOCATE (radial%r, SOURCE=pot%r)
+      ALLOCATE (radial%rab, SOURCE=pot%rab)
+      ALLOCATE (radial%lbeta(1), SOURCE=0)
+      ALLOCATE (radial%qijl(nr, 1, 0:0))
+      radial%qijl(:, 1, 0) = fourpi*pot%r**2*values
+      field%weighted_q(:, 1, 0) = upf_radial_weights(pot)*radial%qijl(:, 1, 0)
+      field%q(1, 1) = SUM(field%weighted_q(:, 1, 0))
+      CALL uspp_augmentation_prepare_realspace(radial, field, logarithmic_origin)
+   END SUBROUTINE upf_radial_scalar_init
 
 ! **************************************************************************************************
 !> \brief Prepare radial quadrature and Gaunt coefficients in the native beta convention.
@@ -64,7 +110,7 @@ CONTAINS
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       TYPE(uspp_augmentation_type), INTENT(OUT)          :: augmentation
 
-      INTEGER                                            :: i, j, l, m, n, nc, p, pair, q, s
+      INTEGER                                            :: i, j, l, n, nc, p, pair, q
       REAL(KIND=dp), ALLOCATABLE                         :: weights(:)
 
       CPASSERT(.NOT. pot%has_so .AND. .NOT. pot%is_paw)
@@ -104,21 +150,13 @@ CONTAINS
       augmentation%radial_index(:) = projectors%radial_index
       augmentation%angular_index(:) = projectors%angular_index
       augmentation%lbeta(:) = pot%lbeta
-      ALLOCATE (augmentation%gaunt(n, n, (augmentation%lmax + 1)**2), augmentation%q(n, n))
-      augmentation%gaunt = 0.0_dp
+      CALL upf_projector_product_gaunt(projectors, augmentation%gaunt)
+      ALLOCATE (augmentation%q(n, n))
       augmentation%q = 0.0_dp
       DO q = 1, n
          j = projectors%radial_index(q)
-         l = pot%lbeta(j)
-         m = projectors%angular_index(q) - l*l
          DO p = 1, n
             i = projectors%radial_index(p)
-            ! Contract the existing analytic monomial/Y/Y integrals with Y_j's polynomial.
-            DO s = 1, nco(l)
-               augmentation%gaunt(p, q, :) = augmentation%gaunt(p, q, :) + &
-                                             orbtramat(l)%slm(m, s)*projectors%gaunt(ncoset(l - 1) + s, &
-                                                                           projectors%angular_index(p), :(augmentation%lmax + 1)**2)
-            END DO
             pair = MAX(i, j)*(MAX(i, j) - 1)/2 + MIN(i, j)
             IF (projectors%angular_index(p) == projectors%angular_index(q)) THEN
                augmentation%q(p, q) = SUM(augmentation%weighted_q(:, pair, 0))
@@ -128,18 +166,110 @@ CONTAINS
    END SUBROUTINE uspp_augmentation_init
 
 ! **************************************************************************************************
+!> \brief AE-minus-PS valence kinetic density from original projector partial waves.
+!>        The angular gradient product uses the density Gaunt tensor with its Laplacian factor.
+!>        Keep this cache separate from charge augmentation and the generalized overlap.
+!>        No kinetic moments are inferred from PP_Q, PP_KDIFF or occupied reference waves.
+!> \param pot Scalar USPP dataset with complete per-beta AE/PS partial waves.
+!> \param projectors Original radial and magnetic projector mapping.
+!> \param reconstruction Kinetic transition cache, including Cartesian value/derivative splines.
+!> \param available Whether the supplied data determine the kinetic transition field.
+!> \param reason Diagnostic for unavailable data; empty on success.
+! **************************************************************************************************
+   SUBROUTINE upf_kinetic_reconstruction_init(pot, projectors, reconstruction, available, reason)
+      TYPE(atom_upfpot_type), INTENT(IN), TARGET         :: pot
+      TYPE(upf_projector_type), INTENT(IN)               :: projectors
+      TYPE(uspp_augmentation_type), INTENT(OUT)          :: reconstruction
+      LOGICAL, INTENT(OUT)                               :: available
+      CHARACTER(LEN=*), INTENT(OUT)                      :: reason
+
+      CLASS(upf_partial_waves_type), POINTER             :: partial
+      INTEGER                                            :: first, i, j, l, nb, nr, ns, nval, pair, side
+      REAL(dp)                                           :: angular_factor, sign
+      REAL(dp), ALLOCATABLE                              :: derivatives(:, :), values(:), waves(:, :)
+      TYPE(atom_upfpot_type)                             :: transition
+
+      available = .FALSE.
+      reason = 'Kinetic augmentation requires complete per-beta AE/PS partial waves'
+      NULLIFY (partial)
+      IF (pot%is_ultrasoft .AND. .NOT. pot%is_paw) THEN
+         IF (.NOT. ALLOCATED(pot%partial_waves)) RETURN
+         partial => pot%partial_waves
+      ELSE
+         RETURN
+      END IF
+      IF (.NOT. ALLOCATED(partial%ae_wfc) .OR. .NOT. ALLOCATED(partial%ps_wfc)) RETURN
+      CPASSERT(.NOT. pot%has_so)
+      nb = pot%number_of_proj
+      nr = SIZE(pot%r)
+      CPASSERT(ALL(SHAPE(partial%ae_wfc) == [nr, nb]))
+      CPASSERT(ALL(SHAPE(partial%ps_wfc) == [nr, nb]))
+      IF (ALLOCATED(partial%angular_momenta)) THEN
+         CPASSERT(ALL(partial%angular_momenta == pot%lbeta))
+      END IF
+      first = 1
+      IF (pot%r(1) == 0.0_dp) first = 2
+      nval = nr
+      CPASSERT(nval >= 4 .AND. nval <= nr)
+      ! Differentiate the complete original radial partial waves.
+      ns = MIN(nr, nval + 3)
+      CPASSERT(ns - first + 1 >= 4)
+      transition%number_of_proj = nb
+      ALLOCATE (transition%r, SOURCE=pot%r)
+      ALLOCATE (transition%rab, SOURCE=pot%rab)
+      ALLOCATE (transition%lbeta, SOURCE=pot%lbeta)
+      ALLOCATE (transition%qijl(nr, nb*(nb + 1)/2, 0:2*MAXVAL(pot%lbeta)), SOURCE=0.0_dp)
+      ALLOCATE (values(ns - first + 1), waves(nval, nb), derivatives(nval, nb))
+      DO side = 1, 2
+         sign = MERGE(1.0_dp, -1.0_dp, side == 1)
+         DO i = 1, nb
+            IF (side == 1) THEN
+               values(:) = partial%ae_wfc(first:ns, i)/pot%r(first:ns)
+            ELSE
+               values(:) = partial%ps_wfc(first:ns, i)/pot%r(first:ns)
+            END IF
+            CALL spline3ders(pot%r(first:ns), values, pot%r(:nval), ynew=waves(:, i), dynew=derivatives(:, i))
+         END DO
+         DO j = 1, nb
+            DO i = 1, j
+               pair = j*(j - 1)/2 + i
+               DO l = ABS(pot%lbeta(i) - pot%lbeta(j)), pot%lbeta(i) + pot%lbeta(j), 2
+                  angular_factor = 0.5_dp*REAL(pot%lbeta(i)*(pot%lbeta(i) + 1) + &
+                                               pot%lbeta(j)*(pot%lbeta(j) + 1) - l*(l + 1), dp)
+                  ! Store r^2 T_ij^L, with T = 1/2 grad(phi_i).grad(phi_j).
+                  transition%qijl(:nval, pair, l) = transition%qijl(:nval, pair, l) + 0.5_dp*sign*( &
+                                                    pot%r(:nval)**2*derivatives(:, i)*derivatives(:, j) + &
+                                                    angular_factor*waves(:, i)*waves(:, j))
+               END DO
+            END DO
+         END DO
+      END DO
+      CALL uspp_augmentation_init(transition, projectors, reconstruction)
+      CALL uspp_augmentation_prepare_realspace(transition, reconstruction, logarithmic_origin=.TRUE.)
+      available = .TRUE.
+      reason = ''
+   END SUBROUTINE upf_kinetic_reconstruction_init
+
+! **************************************************************************************************
 !> \brief Prepare regular radial splines for atom-grid augmentation quadrature.
 !>        UPF stores r**2 Q_ij^L(r). Interpolate Q_ij^L(r)/r**L in r**2 and multiply
 !>        by solid harmonics, so values and Cartesian derivatives remain regular at the origin.
+!>        Original AE fields can optionally use a finite sign-preserving continuation below
+!>        a positive first mesh radius, with the same value and first two endpoint derivatives.
 !>        The existing reciprocal-space quadrature and its overlap correction are unchanged.
 !> \param pot Original scalar USPP used to initialize augmentation.
 !> \param augmentation Prepared angular data; owns the optional real-space cache on return.
+!> \param logarithmic_origin Use a sign-preserving C2 continuation below a positive first radius.
 ! **************************************************************************************************
-   SUBROUTINE uspp_augmentation_prepare_realspace(pot, augmentation)
+   SUBROUTINE uspp_augmentation_prepare_realspace(pot, augmentation, logarithmic_origin)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(uspp_augmentation_type), INTENT(INOUT)        :: augmentation
+      LOGICAL, INTENT(IN), OPTIONAL                      :: logarithmic_origin
 
       INTEGER                                            :: first, l, last, n, nc, pair
+      LOGICAL                                            :: continue_log
+      REAL(dp)                                           :: a, b, endpoint, exponent_max, &
+                                                            exponent_min, h, second, stationary
       REAL(KIND=dp), ALLOCATABLE                         :: values(:), x(:)
 
       CPASSERT(ALLOCATED(pot%qijl) .AND. ALLOCATED(augmentation%r))
@@ -163,6 +293,9 @@ CONTAINS
       augmentation%radial_slope = 0.0_dp
       augmentation%radial_end = 1
       augmentation%realspace_radius = 0.0_dp
+      continue_log = .FALSE.
+      IF (PRESENT(logarithmic_origin)) continue_log = logarithmic_origin .AND. pot%r(1) > 0.0_dp
+      IF (continue_log) ALLOCATE (augmentation%origin_log(2, nc, 0:augmentation%lmax), SOURCE=0.0_dp)
       DO l = 0, augmentation%lmax
          DO pair = 1, nc
             IF (ALL(pot%qijl(:, pair, l) == 0.0_dp)) CYCLE
@@ -180,6 +313,34 @@ CONTAINS
             CALL spline3ders(x, values, augmentation%radial_x, &
                              ynew=augmentation%radial_value(:, pair, l), &
                              dynew=augmentation%radial_slope(:, pair, l))
+            IF (.NOT. continue_log) CYCLE
+            endpoint = augmentation%radial_value(2, pair, l)
+            IF (endpoint == 0.0_dp) CYCLE
+            ! Supplied AE fields can be singular near r=0. Cubic extrapolation below
+            ! their positive first radius can reverse the sign of a positive core tau.
+            ! Define f=f0*exp(a*u+b*u**2/2), u=(r**2-x0)/x0, only below x0.
+            ! Its value and first two x derivatives match the unchanged source spline.
+            h = x(2) - x(1)
+            second = 6.0_dp*(augmentation%radial_value(3, pair, l) - endpoint)/h**2 - &
+                     (4.0_dp*augmentation%radial_slope(2, pair, l) + &
+                      2.0_dp*augmentation%radial_slope(3, pair, l))/h
+            a = x(1)*augmentation%radial_slope(2, pair, l)/endpoint
+            b = x(1)**2*second/endpoint - a**2
+            CPASSERT(ieee_is_finite(a) .AND. ieee_is_finite(b))
+            exponent_min = MIN(0.0_dp, -a + 0.5_dp*b)
+            exponent_max = MAX(0.0_dp, -a + 0.5_dp*b)
+            IF (b /= 0.0_dp) THEN
+               stationary = -a/b
+               IF (stationary > -1.0_dp .AND. stationary < 0.0_dp) THEN
+                  exponent_min = MIN(exponent_min, a*stationary + 0.5_dp*b*stationary**2)
+                  exponent_max = MAX(exponent_max, a*stationary + 0.5_dp*b*stationary**2)
+               END IF
+            END IF
+            IF (exponent_max >= LOG(HUGE(endpoint)) - LOG(ABS(endpoint)) .OR. &
+                exponent_min <= LOG(TINY(endpoint)) - LOG(ABS(endpoint))) THEN
+               CALL cp_abort(__LOCATION__, "Original UPF origin continuation exceeds the floating-point range")
+            END IF
+            augmentation%origin_log(:, pair, l) = [a, b]
          END DO
       END DO
    END SUBROUTINE uspp_augmentation_prepare_realspace
@@ -187,7 +348,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Evaluate the augmentation matrix and derivatives at a Cartesian displacement.
 !>        Uses cubic splines with a C2 quintic closure into an exact tabulated zero suffix.
-!>        Values, gradients and Hessians share the same polynomial. No angular division
+!>        Values, gradients and Hessians share the same radial continuation. No angular division
 !>        by radius is needed, including at the center and on coordinate axes.
 !> \param augmentation Data with an initialized real-space cache.
 !> \param displacement Evaluation point minus augmentation center, in bohr.
@@ -233,9 +394,10 @@ CONTAINS
 
       INTEGER                                            :: a, axis, axis2, hi, i, j, l, lm, lo, m, &
                                                             mid, p, pair, powers(3), q, reduced(3)
+      LOGICAL                                            :: continue_log
       REAL(KIND=dp) :: angular, angular_gradient(3), angular_hessian(3, 3), c0, c1, c2, c3, c4, &
-         c5, factor, h, radial, radial_d, radial_dd, s, t, term, value, value_gradient(3), &
-         value_hessian(3, 3)
+         c5, factor, h, log_slope, radial, radial_d, radial_dd, s, t, term, u, value, &
+         value_gradient(3), value_hessian(3, 3)
 
       CPASSERT(ALLOCATED(augmentation%radial_x))
       CPASSERT(ALL(SHAPE(qr) == augmentation%nproj))
@@ -297,24 +459,40 @@ CONTAINS
             DO l = ABS(augmentation%lbeta(i) - augmentation%lbeta(j)), &
                augmentation%lbeta(i) + augmentation%lbeta(j), 2
                IF (lo >= augmentation%radial_end(pair, l)) CYCLE
-               c0 = augmentation%radial_value(lo, pair, l)
-               c1 = h*augmentation%radial_slope(lo, pair, l)
-               c2 = 3.0_dp*(augmentation%radial_value(hi, pair, l) - c0) - &
-                    2.0_dp*c1 - h*augmentation%radial_slope(hi, pair, l)
-               c3 = 2.0_dp*(c0 - augmentation%radial_value(hi, pair, l)) + &
-                    c1 + h*augmentation%radial_slope(hi, pair, l)
-               c4 = 0.0_dp
-               c5 = 0.0_dp
-               IF (hi == augmentation%radial_end(pair, l)) THEN
-                  ! Match value and first/second x derivatives at the last nonzero node;
-                  ! all three vanish at the first node of the exact zero suffix.
-                  c3 = -10.0_dp*c0 - 6.0_dp*c1 - 3.0_dp*c2
-                  c4 = 15.0_dp*c0 + 8.0_dp*c1 + 3.0_dp*c2
-                  c5 = -6.0_dp*c0 - 3.0_dp*c1 - c2
+               continue_log = .FALSE.
+               IF (ALLOCATED(augmentation%origin_log) .AND. lo == 1) THEN
+                  continue_log = augmentation%radial_value(2, pair, l) /= 0.0_dp
                END IF
-               radial = c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*c5))))
-               radial_d = (c1 + t*(2.0_dp*c2 + t*(3.0_dp*c3 + t*(4.0_dp*c4 + t*5.0_dp*c5))))/h
-               radial_dd = (2.0_dp*c2 + t*(6.0_dp*c3 + t*(12.0_dp*c4 + t*20.0_dp*c5)))/h**2
+               IF (continue_log) THEN
+                  u = (s - augmentation%radial_x(2))/augmentation%radial_x(2)
+                  radial = SIGN(EXP(LOG(ABS(augmentation%radial_value(2, pair, l))) + &
+                                    augmentation%origin_log(1, pair, l)*u + &
+                                    0.5_dp*augmentation%origin_log(2, pair, l)*u**2), &
+                                augmentation%radial_value(2, pair, l))
+                  log_slope = (augmentation%origin_log(1, pair, l) + &
+                               augmentation%origin_log(2, pair, l)*u)/augmentation%radial_x(2)
+                  radial_d = radial*log_slope
+                  radial_dd = radial*(log_slope**2 + augmentation%origin_log(2, pair, l)/augmentation%radial_x(2)**2)
+               ELSE
+                  c0 = augmentation%radial_value(lo, pair, l)
+                  c1 = h*augmentation%radial_slope(lo, pair, l)
+                  c2 = 3.0_dp*(augmentation%radial_value(hi, pair, l) - c0) - &
+                       2.0_dp*c1 - h*augmentation%radial_slope(hi, pair, l)
+                  c3 = 2.0_dp*(c0 - augmentation%radial_value(hi, pair, l)) + &
+                       c1 + h*augmentation%radial_slope(hi, pair, l)
+                  c4 = 0.0_dp
+                  c5 = 0.0_dp
+                  IF (hi == augmentation%radial_end(pair, l)) THEN
+                     ! Match value and first/second x derivatives at the last nonzero node;
+                     ! all three vanish at the first node of the exact zero suffix.
+                     c3 = -10.0_dp*c0 - 6.0_dp*c1 - 3.0_dp*c2
+                     c4 = 15.0_dp*c0 + 8.0_dp*c1 + 3.0_dp*c2
+                     c5 = -6.0_dp*c0 - 3.0_dp*c1 - c2
+                  END IF
+                  radial = c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*c5))))
+                  radial_d = (c1 + t*(2.0_dp*c2 + t*(3.0_dp*c3 + t*(4.0_dp*c4 + t*5.0_dp*c5))))/h
+                  radial_dd = (2.0_dp*c2 + t*(6.0_dp*c3 + t*(12.0_dp*c4 + t*20.0_dp*c5)))/h**2
+               END IF
                angular = 0.0_dp
                angular_gradient = 0.0_dp
                angular_hessian = 0.0_dp

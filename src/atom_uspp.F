@@ -12,11 +12,17 @@ MODULE atom_uspp
    USE atom_types,                      ONLY: atom_basis_gridrep,&
                                               atom_basis_type,&
                                               release_atom_basis
-   USE atom_upf,                        ONLY: atom_upfpot_type
+   USE atom_upf,                        ONLY: atom_upfpot_type,&
+                                              upf_nlcc_kinetic
    USE kinds,                           ONLY: dp
+   USE mathconstants,                   ONLY: fourpi
    USE splines,                         ONLY: spline3ders
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
+   USE uspp_augmentation,               ONLY: upf_kinetic_reconstruction_init,&
+                                              upf_radial_scalar_init,&
+                                              uspp_augmentation_realspace,&
+                                              uspp_augmentation_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -38,10 +44,14 @@ CONTAINS
       TYPE(atom_basis_type), INTENT(INOUT)               :: basis
       REAL(dp), INTENT(INOUT)                            :: core(:, :, 0:), metric(:, :, 0:)
 
-      INTEGER                                            :: first, i, j, k, l, m, n, nr, pair
-      REAL(dp), ALLOCATABLE                              :: deriv(:), potential(:), qr(:), values(:)
+      INTEGER                                            :: first, i, j, k, l, m, n, nr, p, pair, q
+      LOGICAL                                            :: available
+      REAL(dp)                                           :: model(1, 1)
+      REAL(dp), ALLOCATABLE                              :: deriv(:), kinetic(:, :), potential(:), &
+                                                            qr(:), tau_core(:), values(:)
       TYPE(atom_basis_type)                              :: source_basis
       TYPE(upf_projector_type)                           :: projectors
+      TYPE(uspp_augmentation_type)                       :: core_field, reconstruction
 
       CPASSERT(pot%is_ultrasoft .AND. .NOT. pot%is_paw .AND. .NOT. pot%has_so)
       CPASSERT(ALLOCATED(pot%qijl))
@@ -57,7 +67,7 @@ CONTAINS
       basis%uspp%lbeta(:) = pot%lbeta
       basis%uspp%beta = 0.0_dp
       basis%uspp%radial = 0.0_dp
-      CALL upf_projector_init(pot, 0, projectors)
+      CALL upf_projector_init(pot, MAXVAL(pot%lbeta), projectors)
       CALL atom_basis_gridrep(basis, source_basis, pot%r, pot%rab)
       DO i = 1, m
          l = pot%lbeta(i)
@@ -97,6 +107,36 @@ CONTAINS
       values = 1.0_dp
       ! The atomic metric uses the same interpolant/quadrature as its density.
       CALL atom_uspp_integrate(metric, values, basis, 0)
+      CALL upf_kinetic_reconstruction_init(pot, projectors, reconstruction, available, &
+                                           basis%uspp%kinetic_failure_reason)
+      IF (available) CALL upf_nlcc_kinetic(pot, tau_core, available, basis%uspp%kinetic_failure_reason)
+      IF (available) THEN
+         ALLOCATE (basis%uspp%core_kinetic(nr), SOURCE=0.0_dp)
+         IF (ANY(tau_core /= 0.0_dp)) THEN
+            CALL upf_radial_scalar_init(pot, tau_core, core_field, logarithmic_origin=.TRUE.)
+            DO k = 1, nr
+               CALL uspp_augmentation_realspace(core_field, [0.0_dp, 0.0_dp, basis%grid%rad(k)], model)
+               basis%uspp%core_kinetic(k) = model(1, 1)
+            END DO
+         END IF
+         ALLOCATE (basis%uspp%kinetic(nr, m*(m + 1)/2), SOURCE=0.0_dp)
+         ALLOCATE (kinetic(projectors%nproj, projectors%nproj))
+         DO k = 1, nr
+            CALL uspp_augmentation_realspace(reconstruction, [0.0_dp, 0.0_dp, basis%grid%rad(k)], kinetic)
+            ! Atomic occupations sum magnetic states; average the Cartesian transition over m.
+            DO q = 1, projectors%nproj
+               j = projectors%radial_index(q)
+               DO p = 1, q
+                  i = projectors%radial_index(p)
+                  IF (i > j .OR. projectors%angular_index(p) /= projectors%angular_index(q)) CYCLE
+                  IF (pot%lbeta(i) /= pot%lbeta(j)) CYCLE
+                  pair = j*(j - 1)/2 + i
+                  basis%uspp%kinetic(k, pair) = basis%uspp%kinetic(k, pair) + &
+                                                fourpi*kinetic(p, q)/REAL(2*pot%lbeta(j) + 1, dp)
+               END DO
+            END DO
+         END DO
+      END IF
    END SUBROUTINE atom_uspp_setup
 
 ! **************************************************************************************************
@@ -137,7 +177,7 @@ CONTAINS
 !> \param pmat Atomic density matrices, with occupations summed over magnetic states.
 !> \param basis Atomic basis and prepared augmentation.
 !> \param maxl Largest occupied angular momentum.
-!> \param typ RHO or DER.
+!> \param typ RHO, DER or KIN.
 ! **************************************************************************************************
    SUBROUTINE atom_uspp_density(density, pmat, basis, maxl, typ)
       REAL(dp), INTENT(INOUT)                            :: density(:)
@@ -155,6 +195,11 @@ CONTAINS
          order = 0
       CASE ('DER')
          order = 1
+      CASE ('KIN')
+         IF (.NOT. ALLOCATED(basis%uspp%kinetic)) THEN
+            CALL cp_abort(__LOCATION__, TRIM(basis%uspp%kinetic_failure_reason))
+         END IF
+         order = 2
       CASE DEFAULT
          CPABORT("Atomic USPP kinetic/Laplacian augmentation is not implemented")
       END SELECT
@@ -168,7 +213,11 @@ CONTAINS
             coefficient = DOT_PRODUCT(basis%uspp%beta(:n, i), &
                                       MATMUL(pmat(:n, :n, l), basis%uspp%beta(:n, j)))
             IF (i /= j) coefficient = 2.0_dp*coefficient
-            density(:) = density + coefficient*basis%uspp%radial(:, pair, order)
+            IF (order == 2) THEN
+               density(:) = density + coefficient*basis%uspp%kinetic(:, pair)
+            ELSE
+               density(:) = density + coefficient*basis%uspp%radial(:, pair, order)
+            END IF
          END DO
       END DO
    END SUBROUTINE atom_uspp_density
@@ -178,7 +227,7 @@ CONTAINS
 !> \param matrix Atomic matrix, incremented in place.
 !> \param potential Potential on the same radial grid as the augmentation.
 !> \param basis Atomic basis and prepared augmentation.
-!> \param order Zero for density, one for its radial derivative.
+!> \param order Zero for density, one for its radial derivative, two for kinetic density.
 ! **************************************************************************************************
    SUBROUTINE atom_uspp_integrate(matrix, potential, basis, order)
       REAL(dp), INTENT(INOUT)                            :: matrix(:, :, 0:)
@@ -190,14 +239,23 @@ CONTAINS
       REAL(dp)                                           :: coefficient
 
       IF (.NOT. ALLOCATED(basis%uspp)) RETURN
-      CPASSERT(order == 0 .OR. order == 1)
+      CPASSERT(order >= 0 .AND. order <= 2)
+      IF (order == 2) THEN
+         IF (.NOT. ALLOCATED(basis%uspp%kinetic)) THEN
+            CALL cp_abort(__LOCATION__, TRIM(basis%uspp%kinetic_failure_reason))
+         END IF
+      END IF
       DO j = 1, SIZE(basis%uspp%lbeta)
          l = basis%uspp%lbeta(j)
          n = basis%nbas(l)
          DO i = 1, SIZE(basis%uspp%lbeta)
             IF (basis%uspp%lbeta(i) /= l) CYCLE
             pair = MAX(i, j)*(MAX(i, j) - 1)/2 + MIN(i, j)
-            coefficient = SUM(potential*basis%grid%wr*basis%uspp%radial(:, pair, order))
+            IF (order == 2) THEN
+               coefficient = SUM(potential*basis%grid%wr*basis%uspp%kinetic(:, pair))
+            ELSE
+               coefficient = SUM(potential*basis%grid%wr*basis%uspp%radial(:, pair, order))
+            END IF
             DO k = 1, n
                matrix(:n, k, l) = matrix(:n, k, l) + &
                                   coefficient*basis%uspp%beta(:n, i)*basis%uspp%beta(k, j)
