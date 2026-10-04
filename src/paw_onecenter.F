@@ -743,7 +743,7 @@ CONTAINS
             DO j = 1, SIZE(nodes)
                radius = left + (right - left)*nodes(j)
                t = (radius - r(i))/h
-               value = c(0, :, i) + t*(c(1, :, i) + t*(c(2, :, i) + t*c(3, :, i)))
+               value(:) = c(0, :, i) + t*(c(1, :, i) + t*(c(2, :, i) + t*c(3, :, i)))
                inner = 0.0_dp
                ! erfc(x) is below the smallest IEEE double at x>=28.
                lower = MAX(r(1), radius - 28.0_dp/omega)
@@ -758,10 +758,10 @@ CONTAINS
                      DO k = 1, SIZE(nodes)
                         source_r = source_left + source_h*(REAL(chunk - 1, dp) + nodes(k))/REAL(chunks, dp)
                         t = (source_r - r(source_panel))/(r(source_panel + 1) - r(source_panel))
-                        sample = c(0, :, source_panel) + t*(c(1, :, source_panel) + &
+                        sample(:) = c(0, :, source_panel) + t*(c(1, :, source_panel) + &
                                                             t*(c(2, :, source_panel) + t*c(3, :, source_panel)))
                         kernel = paw_short_multipole(radius, source_r, l, omega, angular_nodes, angular_weights)
-                        inner = inner + source_h/REAL(chunks, dp)*weights(k)*kernel*sample
+                        inner(:) = inner + source_h/REAL(chunks, dp)*weights(k)*kernel*sample
                      END DO
                   END DO
                END DO
