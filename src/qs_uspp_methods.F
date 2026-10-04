@@ -15,11 +15,12 @@ MODULE qs_uspp_methods
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_add, dbcsr_copy, dbcsr_get_block_p, dbcsr_get_info, dbcsr_p_type, dbcsr_release, &
-        dbcsr_scale, dbcsr_set, dbcsr_type
+        dbcsr_add, dbcsr_copy, dbcsr_desymmetrize, dbcsr_get_block_p, dbcsr_get_info, &
+        dbcsr_p_type, dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_type
    USE input_constants,                 ONLY: do_ppl_analytic
    USE kinds,                           ONLY: dp
-   USE kpoint_types,                    ONLY: kpoint_type
+   USE kpoint_types,                    ONLY: get_kpoint_info,&
+                                              kpoint_type
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_comm_unequal
    USE particle_types,                  ONLY: particle_type
@@ -39,12 +40,14 @@ MODULE qs_uspp_methods
                                               set_ks_env
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
-                                              qs_uspp_projector_images
+                                              qs_uspp_projector_images,&
+                                              qs_uspp_projector_mixed_images
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
                                               qs_uspp_type,&
                                               qs_uspp_update,&
                                               qs_uspp_update_images
    USE sap_kind_types,                  ONLY: build_sap_ints,&
+                                              build_sap_ints_basis,&
                                               release_sap_int,&
                                               sap_int_type,&
                                               sap_sort
@@ -62,6 +65,7 @@ MODULE qs_uspp_methods
    USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
                                               uspp_projector_create_onsite,&
                                               uspp_projector_density,&
+                                              uspp_projector_mixed_pullback,&
                                               uspp_projector_pullback
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -70,6 +74,8 @@ MODULE qs_uspp_methods
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_methods'
    PUBLIC :: qs_uspp_prepare, qs_uspp_init_ao_matrix, qs_uspp_collocate, qs_uspp_integrate
+   PUBLIC :: qs_uspp_collocate_state, qs_uspp_integrate_state, qs_uspp_init_matrix_state
+   PUBLIC :: qs_uspp_overlap_adjoint, qs_uspp_atom_grid_apply_state
    PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces
    PUBLIC :: qs_upf_core_tau_present, qs_upf_core_tau_field, qs_upf_core_tau_forces
    PUBLIC :: qs_upf_core_tau_atom_collocate, qs_upf_core_tau_atom_integrate
@@ -97,6 +103,9 @@ MODULE qs_uspp_methods
    END INTERFACE
    INTERFACE qs_uspp_integrate
       MODULE PROCEDURE qs_uspp_integrate_single, qs_uspp_integrate_images
+   END INTERFACE
+   INTERFACE qs_uspp_overlap_adjoint
+      MODULE PROCEDURE qs_uspp_overlap_single, qs_uspp_overlap_images
    END INTERFACE
    INTERFACE qs_uspp_core_matrix
       MODULE PROCEDURE qs_uspp_core_matrix_single, qs_uspp_core_matrix_images
@@ -833,12 +842,38 @@ CONTAINS
       TYPE(dbcsr_p_type), INTENT(INOUT)                  :: hamiltonian(:, :)
       TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:, :)
 
-      INTEGER                                            :: natom, spin
-      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), cell_gradient(:, :)
       TYPE(qs_uspp_type), POINTER                        :: uspp
-      TYPE(sap_int_type), POINTER                        :: sap_int(:)
 
       CALL get_ks_env(ks_env, uspp=uspp)
+      CALL qs_uspp_atom_grid_apply_state(ks_env, uspp, fields, hamiltonian, density)
+   END SUBROUTINE qs_uspp_atom_grid_apply_ks
+
+! **************************************************************************************************
+!> \brief Apply original atom-grid XC terms for an explicit ORB or AUX state.
+!> \param ks_env ...
+!> \param uspp ...
+!> \param fields ...
+!> \param hamiltonian ...
+!> \param density ...
+!> \param basis_type ...
+!> \param projector_neighbors ...
+!> \param force_factors Per-spin ADMM geometry scaling; AO Hamiltonians are unscaled.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_atom_grid_apply_state(ks_env, uspp, fields, hamiltonian, density, &
+                                            basis_type, projector_neighbors, force_factors)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
+      TYPE(qs_uspp_atom_grid_type), INTENT(IN)           :: fields(:)
+      TYPE(dbcsr_p_type), INTENT(INOUT)                  :: hamiltonian(:, :)
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:, :)
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
+      TYPE(neighbor_list_set_p_type), OPTIONAL, POINTER  :: projector_neighbors(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: force_factors(:)
+
+      INTEGER                                            :: natom, spin
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), cell_gradient(:, :)
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+
       CPASSERT(SIZE(fields) == SIZE(hamiltonian, 1))
       NULLIFY (sap_int)
       DO spin = 1, SIZE(fields)
@@ -849,19 +884,31 @@ CONTAINS
                ALLOCATE (atom_gradient(3, natom))
                atom_gradient = 0.0_dp
                CALL allocate_cell_gradient(ks_env, cell_gradient)
-               CALL build_derivatives(ks_env, sap_int)
+               CPASSERT(PRESENT(basis_type) .EQV. PRESENT(projector_neighbors))
+               IF (PRESENT(basis_type)) THEN
+                  CALL build_derivatives_basis(ks_env, sap_int, basis_type, projector_neighbors)
+               ELSE
+                  CALL build_derivatives(ks_env, sap_int)
+               END IF
             END IF
+            atom_gradient = 0.0_dp
+            IF (ALLOCATED(cell_gradient)) cell_gradient = 0.0_dp
             CALL qs_uspp_atom_grid_apply(uspp, fields(spin), hamiltonian(spin, :), &
                                          density(spin, :), sap_int, atom_gradient, cell_gradient)
+            IF (PRESENT(force_factors)) THEN
+               CPASSERT(SIZE(force_factors) == SIZE(fields))
+               atom_gradient = force_factors(spin)*atom_gradient
+               IF (ALLOCATED(cell_gradient)) cell_gradient = force_factors(spin)*cell_gradient
+            END IF
+            CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
          ELSE
             CALL qs_uspp_atom_grid_apply(uspp, fields(spin), hamiltonian(spin, :))
          END IF
       END DO
       IF (ASSOCIATED(sap_int)) THEN
-         CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
          CALL release_sap_int(sap_int)
       END IF
-   END SUBROUTINE qs_uspp_atom_grid_apply_ks
+   END SUBROUTINE qs_uspp_atom_grid_apply_state
 
 ! **************************************************************************************************
 !> \brief Conservative image bounds for a radial support on an arbitrary triclinic cell.
@@ -973,10 +1020,22 @@ CONTAINS
 
       CALL get_ks_env(ks_env, uspp=uspp)
       IF (.NOT. ASSOCIATED(uspp)) RETURN
+      CALL qs_uspp_init_matrix_state(uspp, matrix)
+   END SUBROUTINE qs_uspp_init_ao_matrix
+
+! **************************************************************************************************
+!> \brief Include projector connectivity for an explicit ORB or AUX state.
+!> \param uspp ...
+!> \param matrix ...
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_init_matrix_state(uspp, matrix)
+      TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix
+
       CPASSERT(ASSOCIATED(uspp%ao_pattern))
       CALL dbcsr_add(matrix, uspp%ao_pattern, 1.0_dp, 1.0_dp)
       CALL dbcsr_set(matrix, 0.0_dp)
-   END SUBROUTINE qs_uspp_init_ao_matrix
+   END SUBROUTINE qs_uspp_init_matrix_state
 
 ! **************************************************************************************************
 !> \brief Add USPP augmentation (or its spatial derivative) to a Quickstep density grid.
@@ -994,6 +1053,32 @@ CONTAINS
       TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:)
       TYPE(pw_c1d_gs_type), INTENT(INOUT)                :: rho_g
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: rho_r
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: total_rho
+      INTEGER, INTENT(IN), OPTIONAL                      :: derivative(3)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: kinetic
+
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+
+      CALL get_ks_env(ks_env, uspp=uspp)
+      IF (.NOT. ASSOCIATED(uspp)) RETURN
+      CALL qs_uspp_collocate_state(uspp, density, rho_g, rho_r, total_rho, derivative, kinetic)
+   END SUBROUTINE qs_uspp_collocate_images
+
+! **************************************************************************************************
+!> \brief Collocate an explicitly selected ORB or AUX projector state.
+!> \param uspp ...
+!> \param density ...
+!> \param rho_g ...
+!> \param rho_r ...
+!> \param total_rho ...
+!> \param derivative ...
+!> \param kinetic ...
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_collocate_state(uspp, density, rho_g, rho_r, total_rho, derivative, kinetic)
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:)
+      TYPE(pw_c1d_gs_type), INTENT(INOUT)                :: rho_g
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: rho_r
       REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: total_rho
       INTEGER, INTENT(IN), OPTIONAL                      :: derivative(3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: kinetic
@@ -1003,10 +1088,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: charge
       TYPE(pw_c1d_gs_type)                               :: augmentation_g
       TYPE(pw_r3d_rs_type)                               :: augmentation_r
-      TYPE(qs_uspp_type), POINTER                        :: uspp
 
-      CALL get_ks_env(ks_env, uspp=uspp)
-      IF (.NOT. ASSOCIATED(uspp)) RETURN
       kinetic_field = .FALSE.
       IF (PRESENT(kinetic)) kinetic_field = kinetic
       IF (kinetic_field) THEN
@@ -1041,7 +1123,7 @@ CONTAINS
       CALL pw_transfer(rho_g, rho_r)
       CALL augmentation_g%release()
       CALL timestop(handle)
-   END SUBROUTINE qs_uspp_collocate_images
+   END SUBROUTINE qs_uspp_collocate_state
 
 ! **************************************************************************************************
 !> \brief Integrate a Quickstep real local potential against USPP augmentation.
@@ -1061,14 +1143,44 @@ CONTAINS
       TYPE(dbcsr_p_type), INTENT(IN), OPTIONAL           :: density(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: kinetic
 
-      INTEGER                                            :: natom
-      LOGICAL                                            :: kinetic_field
-      REAL(KIND=dp), ALLOCATABLE                         :: atom_gradient(:, :), cell_gradient(:, :)
       TYPE(qs_uspp_type), POINTER                        :: uspp
-      TYPE(sap_int_type), POINTER                        :: sap_int(:)
 
       CALL get_ks_env(ks_env, uspp=uspp)
       IF (.NOT. ASSOCIATED(uspp)) RETURN
+      CALL qs_uspp_integrate_state(ks_env, uspp, potential, hamiltonian, weighted, density, kinetic)
+   END SUBROUTINE qs_uspp_integrate_images
+
+! **************************************************************************************************
+!> \brief Grid adjoint for an explicit projector state, including its own basis derivatives.
+!> \param ks_env ...
+!> \param uspp ...
+!> \param potential ...
+!> \param hamiltonian ...
+!> \param weighted ...
+!> \param density ...
+!> \param kinetic ...
+!> \param basis_type ...
+!> \param projector_neighbors ...
+!> \param force_factor Optional ADMM scaling of geometry adjoints; the Hamiltonian is unscaled.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_integrate_state(ks_env, uspp, potential, hamiltonian, weighted, density, kinetic, &
+                                      basis_type, projector_neighbors, force_factor)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      TYPE(dbcsr_p_type), INTENT(INOUT)                  :: hamiltonian(:)
+      LOGICAL, INTENT(IN)                                :: weighted
+      TYPE(dbcsr_p_type), INTENT(IN), OPTIONAL           :: density(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: kinetic
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
+      TYPE(neighbor_list_set_p_type), OPTIONAL, POINTER  :: projector_neighbors(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: force_factor
+
+      INTEGER                                            :: natom
+      LOGICAL                                            :: kinetic_field
+      REAL(KIND=dp), ALLOCATABLE                         :: atom_gradient(:, :), cell_gradient(:, :)
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+
       kinetic_field = .FALSE.
       IF (PRESENT(kinetic)) kinetic_field = kinetic
       IF (kinetic_field) THEN
@@ -1079,12 +1191,21 @@ CONTAINS
          ALLOCATE (atom_gradient(3, natom))
          atom_gradient = 0.0_dp
          CALL allocate_cell_gradient(ks_env, cell_gradient)
-         CALL build_derivatives(ks_env, sap_int)
+         CPASSERT(PRESENT(basis_type) .EQV. PRESENT(projector_neighbors))
+         IF (PRESENT(basis_type)) THEN
+            CALL build_derivatives_basis(ks_env, sap_int, basis_type, projector_neighbors)
+         ELSE
+            CALL build_derivatives(ks_env, sap_int)
+         END IF
          IF (kinetic_field) THEN
             CALL integrate_grid(uspp, potential, hamiltonian, weighted, density, sap_int, atom_gradient, cell_gradient, &
                                 radial_fields=uspp%kinetic_augmentation)
          ELSE
             CALL integrate_grid(uspp, potential, hamiltonian, weighted, density, sap_int, atom_gradient, cell_gradient)
+         END IF
+         IF (PRESENT(force_factor)) THEN
+            atom_gradient = force_factor*atom_gradient
+            IF (ALLOCATED(cell_gradient)) cell_gradient = force_factor*cell_gradient
          END IF
          CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
          CALL release_sap_int(sap_int)
@@ -1095,7 +1216,7 @@ CONTAINS
             CALL integrate_grid(uspp, potential, hamiltonian, weighted)
          END IF
       END IF
-   END SUBROUTINE qs_uspp_integrate_images
+   END SUBROUTINE qs_uspp_integrate_state
 
 ! **************************************************************************************************
 !> \brief Real-grid adjoint shared by the ionic and density-dependent local potentials.
@@ -1393,6 +1514,146 @@ CONTAINS
       CALL build_sap_ints(sap_int, sap_ppnl, qs_kind_set, nder=1)
       CALL sap_sort(sap_int)
    END SUBROUTINE build_derivatives
+
+! **************************************************************************************************
+!> \brief Original projector derivatives for an explicitly selected independent Gaussian basis.
+!> \param ks_env ...
+!> \param sap_int ...
+!> \param basis_type ...
+!> \param projector_neighbors ...
+! **************************************************************************************************
+   SUBROUTINE build_derivatives_basis(ks_env, sap_int, basis_type, projector_neighbors)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+      CHARACTER(LEN=*), INTENT(IN)                       :: basis_type
+      TYPE(neighbor_list_set_p_type), POINTER            :: projector_neighbors(:)
+
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      CPASSERT(ASSOCIATED(projector_neighbors))
+      CALL get_ks_env(ks_env, qs_kind_set=kinds)
+      ALLOCATE (sap_int(SIZE(kinds)**2))
+      CALL build_sap_ints_basis(sap_int, projector_neighbors, kinds, basis_type, nder=1)
+      CALL sap_sort(sap_int)
+   END SUBROUTINE build_derivatives_basis
+
+! **************************************************************************************************
+!> \brief Native geometry derivative of an independent-basis overlap energy adjoint.
+!>        A general rectangular weight has no implicit AO symmetry factor. For ADMM's
+!>        conventional overlap-force matrices, weight_factor=-1 converts to dE/dS.
+!> \param ks_env ...
+!> \param left ...
+!> \param right ...
+!> \param left_basis ...
+!> \param right_basis ...
+!> \param left_neighbors ...
+!> \param right_neighbors ...
+!> \param weight ...
+!> \param weight_factor ...
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_overlap_images(ks_env, left, right, left_basis, right_basis, &
+                                     left_neighbors, right_neighbors, weight, weight_factor)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_uspp_type), INTENT(IN)                     :: left, right
+      CHARACTER(LEN=*), INTENT(IN)                       :: left_basis, right_basis
+      TYPE(neighbor_list_set_p_type), POINTER            :: left_neighbors(:), right_neighbors(:)
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: weight(:)
+      REAL(dp), INTENT(IN)                               :: weight_factor
+
+      CHARACTER                                          :: matrix_type
+      INTEGER                                            :: atom, center, image, natom
+      INTEGER, ALLOCATABLE                               :: atom_kinds(:)
+      INTEGER, POINTER                                   :: cells(:, :)
+      LOGICAL                                            :: do_kpoints, found
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), cell_gradient(:, :)
+      REAL(dp), POINTER                                  :: block(:, :)
+      TYPE(dbcsr_p_type)                                 :: energy_weight(SIZE(weight))
+      TYPE(dbcsr_type)                                   :: left_gradient, onsite, right_gradient
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(particle_type), POINTER                       :: particles(:)
+      TYPE(sap_int_type), POINTER                        :: left_sap(:), right_sap(:)
+
+      CPASSERT(ALL(left%center_atoms == right%center_atoms))
+      CPASSERT(ALL(left%center_kinds == right%center_kinds))
+      CALL get_ks_env(ks_env, natom=natom, do_kpoints=do_kpoints, particle_set=particles)
+      ALLOCATE (atom_gradient(3, natom))
+      atom_gradient = 0.0_dp
+      CALL allocate_cell_gradient(ks_env, cell_gradient)
+      CALL build_derivatives_basis(ks_env, left_sap, left_basis, left_neighbors)
+      CALL build_derivatives_basis(ks_env, right_sap, right_basis, right_neighbors)
+      CALL uspp_projector_create_onsite(left%overlaps, onsite)
+      DO center = 1, SIZE(left%center_atoms)
+         CALL dbcsr_get_block_p(onsite, center, center, block, found)
+         IF (found) block(:, :) = left%augmentation(left%center_kinds(center))%q
+      END DO
+      DO image = 1, SIZE(weight)
+         ALLOCATE (energy_weight(image)%matrix)
+         CALL dbcsr_get_info(weight(image)%matrix, matrix_type=matrix_type)
+         IF (matrix_type == 'S' .OR. matrix_type == 'A') THEN
+            CALL dbcsr_desymmetrize(weight(image)%matrix, energy_weight(image)%matrix)
+         ELSE
+            CALL dbcsr_copy(energy_weight(image)%matrix, weight(image)%matrix)
+         END IF
+         CALL dbcsr_scale(energy_weight(image)%matrix, weight_factor)
+      END DO
+      IF (do_kpoints) THEN
+         CALL get_ks_env(ks_env, kpoints=kpoints)
+         CALL get_kpoint_info(kpoints, index_to_cell=cells)
+         ALLOCATE (atom_kinds(natom))
+         DO atom = 1, natom
+            atom_kinds(atom) = particles(atom)%atomic_kind%kind_number
+         END DO
+         CPASSERT(SIZE(weight) <= SIZE(cells, 2))
+         CALL qs_uspp_projector_mixed_images(left%overlaps, left_sap, right_sap, atom_kinds, &
+                                             SIZE(left%augmentation), left%center_atoms, left%center_kinds, &
+                                             cells(:, :SIZE(weight)), onsite, weight=energy_weight, &
+                                             atom_gradient=atom_gradient, cell_gradient=cell_gradient)
+      ELSE
+         CPASSERT(SIZE(weight) == 1)
+         CALL uspp_projector_mixed_pullback(left%overlaps, right%overlaps, onsite, &
+                                            energy_weight(1)%matrix, left_gradient, right_gradient)
+         CALL qs_uspp_projector_gradient(left_gradient, left_sap, left%center_atoms, atom_gradient, cell_gradient)
+         CALL qs_uspp_projector_gradient(right_gradient, right_sap, right%center_atoms, atom_gradient, cell_gradient)
+         CALL dbcsr_release(left_gradient)
+         CALL dbcsr_release(right_gradient)
+      END IF
+      CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
+      CALL release_sap_int(left_sap)
+      CALL release_sap_int(right_sap)
+      CALL dbcsr_release(onsite)
+      DO image = 1, SIZE(weight)
+         CALL dbcsr_release(energy_weight(image)%matrix)
+         DEALLOCATE (energy_weight(image)%matrix)
+      END DO
+   END SUBROUTINE qs_uspp_overlap_images
+
+! **************************************************************************************************
+!> \brief Gamma wrapper for an independent-basis overlap energy adjoint.
+!> \param ks_env ...
+!> \param left ...
+!> \param right ...
+!> \param left_basis ...
+!> \param right_basis ...
+!> \param left_neighbors ...
+!> \param right_neighbors ...
+!> \param weight ...
+!> \param weight_factor ...
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_overlap_single(ks_env, left, right, left_basis, right_basis, &
+                                     left_neighbors, right_neighbors, weight, weight_factor)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_uspp_type), INTENT(IN)                     :: left, right
+      CHARACTER(LEN=*), INTENT(IN)                       :: left_basis, right_basis
+      TYPE(neighbor_list_set_p_type), POINTER            :: left_neighbors(:), right_neighbors(:)
+      TYPE(dbcsr_type), INTENT(IN), TARGET               :: weight
+      REAL(dp), INTENT(IN)                               :: weight_factor
+
+      TYPE(dbcsr_p_type)                                 :: weights(1)
+
+      weights(1)%matrix => weight
+      CALL qs_uspp_overlap_images(ks_env, left, right, left_basis, right_basis, left_neighbors, &
+                                  right_neighbors, weights, weight_factor)
+   END SUBROUTINE qs_uspp_overlap_single
 
 ! **************************************************************************************************
 !> \brief Add unreduced USPP energy gradients to the normal Quickstep force accumulator.

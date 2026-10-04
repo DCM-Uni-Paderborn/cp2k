@@ -11,6 +11,7 @@
 !>        Complete AO pairs are retained: the global RI contraction includes intercenter QQ.
 ! **************************************************************************************************
 MODULE qs_uspp_hfx
+   USE admm_types,                      ONLY: admm_type
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_p_type,&
                                               gto_basis_set_type
@@ -55,7 +56,7 @@ MODULE qs_uspp_hfx
                                               qs_uspp_projector_gradient,&
                                               qs_uspp_projector_matrix
    USE qs_uspp_types,                   ONLY: qs_uspp_type
-   USE sap_kind_types,                  ONLY: build_sap_ints,&
+   USE sap_kind_types,                  ONLY: build_sap_ints_basis,&
                                               release_sap_int,&
                                               sap_int_type,&
                                               sap_sort
@@ -279,10 +280,10 @@ CONTAINS
                                      cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0))
       CALL qs_uspp_hfx_transition_adjoint(uspp%overlaps, auxiliary, tensor_adjoint, pref, &
                                           overlap_gradient, auxiliary_gradient)
-      CALL get_ks_env(ks_env, sap_ppnl=sap_ppnl)
+      CALL projector_state(qs_env, ks_env, ri_data%orb_basis_type, uspp, sap_ppnl)
       CPASSERT(ASSOCIATED(sap_ppnl))
       ALLOCATE (sap(SIZE(kinds)**2))
-      CALL build_sap_ints(sap, sap_ppnl, kinds, nder=1)
+      CALL build_sap_ints_basis(sap, sap_ppnl, kinds, ri_data%orb_basis_type, nder=1)
       CALL sap_sort(sap)
       CALL qs_uspp_projector_gradient(overlap_gradient, sap, uspp%center_atoms, atom_gradient, cell_gradient)
       CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
@@ -381,6 +382,7 @@ CONTAINS
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(neighbor_list_set_p_type), POINTER            :: sap_ppnl(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_uspp_type), POINTER                        :: uspp
 
       CALL get_qs_env(qs_env, cell=cell, kpoints=kpoints, qs_kind_set=kinds)
       CPASSERT(ASSOCIATED(kpoints))
@@ -391,10 +393,10 @@ CONTAINS
       ALLOCATE (ri_cells(3, ri_data%ncell_RI), ao_cells(3, ri_data%nimg))
       ri_cells(:, :) = index_to_cell(:, ri_data%RI_cell_to_img)
       ao_cells(:, :) = index_to_cell(:, 1:ri_data%nimg)
-      CALL get_ks_env(ks_env, sap_ppnl=sap_ppnl)
+      CALL projector_state(qs_env, ks_env, ri_data%orb_basis_type, uspp, sap_ppnl)
       CPASSERT(ASSOCIATED(sap_ppnl))
       ALLOCATE (sap(nkind*nkind))
-      CALL build_sap_ints(sap, sap_ppnl, kinds, nder=nder)
+      CALL build_sap_ints_basis(sap, sap_ppnl, kinds, ri_data%orb_basis_type, nder=nder)
       CALL sap_sort(sap)
    END SUBROUTINE prepare_lattice
 
@@ -1115,15 +1117,16 @@ CONTAINS
       INTEGER                                            :: ikind
       LOGICAL                                            :: do_kpoints, image_resolved, supported
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(neighbor_list_set_p_type), POINTER            :: sap_ppnl(:)
 
       CALL get_qs_env(qs_env, ks_env=ks_env)
-      CALL get_ks_env(ks_env, uspp=uspp)
+      CALL projector_state(qs_env, ks_env, ri_data%orb_basis_type, uspp, sap_ppnl)
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       CALL get_qs_env(qs_env, qs_kind_set=kinds, particle_set=particles, cell=cell)
       CALL get_ks_env(ks_env, do_kpoints=do_kpoints)
       image_resolved = .FALSE.
       IF (PRESENT(with_images)) image_resolved = with_images
-      supported = ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == 'ORB' .AND. &
+      supported = ri_data%flavor == ri_pmat .AND. &
                   (ri_data%ri_metric%potential_type == do_potential_coulomb .OR. &
                    ri_data%ri_metric%potential_type == do_potential_id)
       IF (image_resolved) THEN
@@ -1154,6 +1157,34 @@ CONTAINS
          nang(ikind) = kinds(ikind)%ngrid_ang
       END DO
    END SUBROUTINE setup
+
+! **************************************************************************************************
+!> \brief Select the owned projector state of the actual RI orbital basis.
+!> \param qs_env ...
+!> \param ks_env ...
+!> \param basis_type ...
+!> \param uspp ...
+!> \param neighbors ...
+! **************************************************************************************************
+   SUBROUTINE projector_state(qs_env, ks_env, basis_type, uspp, neighbors)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      CHARACTER(LEN=*), INTENT(IN)                       :: basis_type
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(neighbor_list_set_p_type), POINTER            :: neighbors(:)
+
+      TYPE(admm_type), POINTER                           :: admm_env
+
+      CALL get_ks_env(ks_env, uspp=uspp, sap_ppnl=neighbors)
+      IF (.NOT. ASSOCIATED(uspp)) RETURN
+      IF (basis_type == 'ORB') RETURN
+      CALL get_qs_env(qs_env, admm_env=admm_env)
+      CPASSERT(ASSOCIATED(admm_env))
+      CPASSERT(basis_type == admm_env%uspp_basis_type)
+      CPASSERT(ASSOCIATED(admm_env%uspp_aux))
+      uspp => admm_env%uspp_aux
+      neighbors => admm_env%sap_aux_ppnl
+   END SUBROUTINE projector_state
 
 ! **************************************************************************************************
 !> \brief Prepare matrix-derived B and unpartitioned intermediates for exact DBT contractions.

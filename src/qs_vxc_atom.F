@@ -243,12 +243,14 @@ CONTAINS
 !> \param direct_valence_atom_grid evaluate the smooth valence fields on atom-centered grids
 !> \param atom_composite_grid evaluate GAPW primitive fields on atom-centered composite grids
 !> \param uspp_fields ...
+!> \param uspp_external Explicit projector state for an independent AUX basis.
+!> \param rho_external Corresponding AO and grid densities.
 ! **************************************************************************************************
    SUBROUTINE calculate_vxc_atom(qs_env, energy_only, exc1, &
                                  adiabatic_rescale_factor, kind_set_external, &
                                  rho_atom_set_external, xc_section_external, calculate_forces, &
                                  composite_vxc_rho, composite_vxc_tau, composite_reference_active, &
-                                 direct_valence_atom_grid, atom_composite_grid, uspp_fields)
+                                 direct_valence_atom_grid, atom_composite_grid, uspp_fields, uspp_external, rho_external)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL, INTENT(IN)                                :: energy_only
@@ -267,6 +269,8 @@ CONTAINS
                                                             atom_composite_grid
       TYPE(qs_uspp_atom_grid_type), INTENT(INOUT), &
          OPTIONAL                                        :: uspp_fields(:)
+      TYPE(qs_uspp_type), OPTIONAL, POINTER              :: uspp_external
+      TYPE(qs_rho_type), OPTIONAL, POINTER               :: rho_external
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_vxc_atom'
 
@@ -479,6 +483,7 @@ CONTAINS
          CALL get_qs_env(qs_env=qs_env, rho=rho_struct)
       END IF
 
+      IF (PRESENT(rho_external)) rho_struct => rho_external
       IF (PRESENT(kind_set_external)) my_kind_set => kind_set_external
       IF (PRESENT(rho_atom_set_external)) my_rho_atom_set => rho_atom_set_external
 
@@ -497,6 +502,7 @@ CONTAINS
       IF (original_global_xc) THEN
          CPASSERT(xc_section_uses_native_skala_evaluator(my_xc_section))
          CALL get_ks_env(ks_env, uspp=uspp)
+         IF (PRESENT(uspp_external)) uspp => uspp_external
          CPASSERT(ASSOCIATED(uspp))
          CALL qs_uspp_prepare_global_xc(uspp, my_kind_set)
       END IF
@@ -1444,6 +1450,7 @@ CONTAINS
 
             IF (PRESENT(uspp_fields)) THEN
                CALL get_ks_env(ks_env, uspp=uspp)
+               IF (PRESENT(uspp_external)) uspp => uspp_external
                CPASSERT(ASSOCIATED(uspp))
                CPASSERT(SIZE(uspp_fields) == nspins)
                CALL qs_rho_get(rho_struct, rho_ao_kp=uspp_density)

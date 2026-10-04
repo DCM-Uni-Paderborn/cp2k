@@ -62,7 +62,8 @@ MODULE qs_rho_methods
                                               qs_rho_set,&
                                               qs_rho_type
    USE qs_uspp_methods,                 ONLY: qs_uspp_collocate,&
-                                              qs_uspp_init_ao_matrix
+                                              qs_uspp_init_ao_matrix,&
+                                              qs_uspp_init_matrix_state
    USE ri_environment_methods,          ONLY: calculate_ri_densities
    USE task_list_types,                 ONLY: task_list_type
 #include "./base/base_uses.f90"
@@ -209,7 +210,13 @@ CONTAINS
                CALL dbcsr_create(matrix=tmatrix, template=refmatrix, name=TRIM(headline), &
                                  matrix_type=dbcsr_type_symmetric)
                CALL cp_dbcsr_alloc_block_from_nbl(tmatrix, sab_orb)
-               IF (.NOT. my_admm) CALL qs_uspp_init_ao_matrix(qs_env%ks_env, tmatrix)
+               IF (my_admm) THEN
+                  IF (ASSOCIATED(qs_env%admm_env%uspp_aux)) THEN
+                     CALL qs_uspp_init_matrix_state(qs_env%admm_env%uspp_aux, tmatrix)
+                  END IF
+               ELSE
+                  CALL qs_uspp_init_ao_matrix(qs_env%ks_env, tmatrix)
+               END IF
                CALL dbcsr_set(tmatrix, 0.0_dp)
             END DO
          END DO

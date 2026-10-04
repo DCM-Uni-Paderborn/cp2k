@@ -118,7 +118,8 @@ MODULE qs_ks_utils
                                               mo_set_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_uspp_methods,                 ONLY: qs_uspp_integrate
+   USE qs_uspp_methods,                 ONLY: qs_uspp_integrate,&
+                                              qs_uspp_integrate_state
    USE skala_gpw_functional,            ONLY: native_skala_gapw_composite_direct_ao,&
                                               native_skala_gapw_composite_reference
    USE task_list_types,                 ONLY: task_list_type
@@ -1879,6 +1880,17 @@ CONTAINS
                                           gapw=.FALSE., & !even if actual GAPW calculation, want to use AUX_FIT_SOFT
                                           basis_type=basis_type, &
                                           task_list_external=task_list)
+                  IF (ASSOCIATED(admm_env%uspp_aux) .AND. .NOT. admm_env%do_gapw) THEN
+                     IF (calculate_forces) THEN
+                        CALL qs_uspp_integrate_state(ks_env, admm_env%uspp_aux, v_rspace_new_aux_fit(ispin), &
+                                                     ksmat, weighted=.TRUE., density=rho_ao, &
+                                                     basis_type=admm_env%uspp_basis_type, &
+                                                     projector_neighbors=admm_env%sap_aux_ppnl, force_factor=fadm)
+                     ELSE
+                        CALL qs_uspp_integrate_state(ks_env, admm_env%uspp_aux, v_rspace_new_aux_fit(ispin), &
+                                                     ksmat, weighted=.TRUE.)
+                     END IF
+                  END IF
                END IF
 
                ! matrix_ks_aux_fit_dft(x_DFT)=matrix_ks_aux_fit_dft(old,k_HF)-matrix_ks_aux_fit(k_HF-x_DFT)

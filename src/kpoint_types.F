@@ -18,6 +18,7 @@ MODULE kpoint_types
                                               cp_blacs_env_type
    USE cp_cfm_types,                    ONLY: cp_cfm_release,&
                                               cp_cfm_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE cp_fm_types,                     ONLY: cp_fm_release,&
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -102,6 +103,8 @@ MODULE kpoint_types
       TYPE(cp_fm_type), DIMENSION(:, :), POINTER        :: wmat => NULL()
       TYPE(cp_fm_type)                                  :: smat, amat
       TYPE(cp_cfm_type)                                 :: csmat, camat
+      ! Owned ADMM projection A(k)^dagger K_aux(k) A(k), independent of real-space images.
+      TYPE(cp_fm_type), DIMENSION(:, :), POINTER        :: admm_hmat => NULL()
       TYPE(cp_fm_type), DIMENSION(:, :), POINTER        :: ot_hmat => NULL()
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: ot_smat => NULL()
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: ot_tmat => NULL()
@@ -215,6 +218,8 @@ MODULE kpoint_types
       REAL(KIND=dp), DIMENSION(:), POINTER    :: wkp => Null()
       REAL(KIND=dp), DIMENSION(:, :), POINTER :: xkp_input => Null()
       REAL(KIND=dp), DIMENSION(:), POINTER    :: wkp_input => Null()
+      ! Borrowed identity of the primary operator to which admm_hmat belongs.
+      TYPE(dbcsr_p_type), POINTER :: admm_hmat_source(:, :) => NULL()
       ! parallel environment
       TYPE(mp_para_env_type), POINTER         :: para_env => Null()
       TYPE(cp_blacs_env_type), POINTER        :: blacs_env_all => Null()
@@ -524,6 +529,7 @@ CONTAINS
          NULLIFY (kpoint%scf_diis_buffer)
       END IF
 
+      NULLIFY (kpoint%admm_hmat_source)
       NULLIFY (kpoint%sab_nl)
       NULLIFY (kpoint%sab_nl_nosym)
 
@@ -1112,6 +1118,7 @@ CONTAINS
       NULLIFY (kp_env%mos)
       NULLIFY (kp_env%pmat)
       NULLIFY (kp_env%wmat)
+      NULLIFY (kp_env%admm_hmat)
       NULLIFY (kp_env%ot_hmat)
       NULLIFY (kp_env%ot_smat)
       NULLIFY (kp_env%ot_tmat)
@@ -1143,6 +1150,7 @@ CONTAINS
          CALL cp_fm_release(kp_env%amat)
          CALL cp_cfm_release(kp_env%csmat)
          CALL cp_cfm_release(kp_env%camat)
+         CALL cp_fm_release(kp_env%admm_hmat)
          CALL cp_fm_release(kp_env%ot_hmat)
          CALL cp_fm_release(kp_env%ot_smat)
          CALL cp_fm_release(kp_env%ot_tmat)

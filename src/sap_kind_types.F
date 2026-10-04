@@ -75,7 +75,7 @@ MODULE sap_kind_types
 
    PUBLIC :: sap_int_type, clist_type, alist_type, &
              release_sap_int, get_alist, alist_pre_align_blk, &
-             alist_post_align_blk, sap_sort, build_sap_ints
+             alist_post_align_blk, sap_sort, build_sap_ints, build_sap_ints_basis
 
 CONTAINS
 
@@ -290,13 +290,48 @@ CONTAINS
          POINTER                                         :: qs_kind_set
       INTEGER, INTENT(IN)                                :: nder
       LOGICAL, INTENT(IN), OPTIONAL                      :: moment_mode
+      REAL(dp), INTENT(IN), OPTIONAL                     :: refpoint(3)
+      TYPE(particle_type), INTENT(IN), OPTIONAL, POINTER :: particle_set(:)
+      TYPE(cell_type), INTENT(IN), OPTIONAL, POINTER     :: cell
+      INTEGER, OPTIONAL                                  :: pseudoatom
+
+      CALL build_sap_ints_basis(sap_int, sap_ppnl, qs_kind_set, 'ORB', nder, moment_mode, &
+                                refpoint, particle_set, cell, pseudoatom)
+   END SUBROUTINE build_sap_ints
+
+! **************************************************************************************************
+!> \brief Build the same native projector overlaps and derivatives for an explicit Gaussian basis.
+!>        AUX_FIT keeps its own primitives and contractions; original projector normalization,
+!>        magnetic ordering, image labels and neighbor ownership are shared with ORB.
+!> \param sap_int ...
+!> \param sap_ppnl ...
+!> \param qs_kind_set ...
+!> \param basis_type Gaussian basis role, e.g. ORB or AUX_FIT.
+!> \param nder ...
+!> \param moment_mode ...
+!> \param refpoint ...
+!> \param particle_set ...
+!> \param cell ...
+!> \param pseudoatom ...
+! **************************************************************************************************
+   SUBROUTINE build_sap_ints_basis(sap_int, sap_ppnl, qs_kind_set, basis_type, nder, moment_mode, refpoint, &
+                                   particle_set, cell, pseudoatom)
+      TYPE(sap_int_type), DIMENSION(:), INTENT(INOUT), &
+         POINTER                                         :: sap_int
+      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
+         INTENT(IN), POINTER                             :: sap_ppnl
+      TYPE(qs_kind_type), DIMENSION(:), INTENT(IN), &
+         POINTER                                         :: qs_kind_set
+      CHARACTER(LEN=*), INTENT(IN)                       :: basis_type
+      INTEGER, INTENT(IN)                                :: nder
+      LOGICAL, INTENT(IN), OPTIONAL                      :: moment_mode
       REAL(KIND=dp), DIMENSION(3), INTENT(IN), OPTIONAL  :: refpoint
       TYPE(particle_type), DIMENSION(:), INTENT(IN), &
          OPTIONAL, POINTER                               :: particle_set
       TYPE(cell_type), INTENT(IN), OPTIONAL, POINTER     :: cell
       INTEGER, OPTIONAL                                  :: pseudoatom
 
-      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'build_sap_ints'
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'build_sap_ints_basis'
 
       INTEGER :: first_col, handle, i, iac, iatom, ikind, ilist, iset, j, jneighbor, katom, kkind, &
          l, lc_max, lc_min, ldai, ldai_nl, ldsab, lppnl, maxco, maxder, maxl, maxlgto, maxlppnl, &
@@ -348,6 +383,7 @@ CONTAINS
       END IF
 
       CALL get_qs_kind_set(qs_kind_set, &
+                           basis_type=basis_type, &
                            maxco=maxco, &
                            maxlgto=maxlgto, &
                            maxsgf=maxsgf, &
@@ -369,7 +405,7 @@ CONTAINS
       NULLIFY (gpotential, spotential)
       ALLOCATE (basis_set(nkind), gpotential(nkind), spotential(nkind))
       DO ikind = 1, nkind
-         CALL get_qs_kind(qs_kind_set(ikind), basis_set=orb_basis_set)
+         CALL get_qs_kind(qs_kind_set(ikind), basis_set=orb_basis_set, basis_type=basis_type)
          IF (ASSOCIATED(orb_basis_set)) THEN
             basis_set(ikind)%gto_basis_set => orb_basis_set
          ELSE
@@ -690,6 +726,6 @@ CONTAINS
 
       CALL timestop(handle)
 
-   END SUBROUTINE build_sap_ints
+   END SUBROUTINE build_sap_ints_basis
 
 END MODULE sap_kind_types

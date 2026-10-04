@@ -33,14 +33,9 @@ MODULE hfx_admm_utils
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_control_types,                ONLY: admm_control_type,&
                                               dft_control_type
-   USE cp_dbcsr_api,                    ONLY: dbcsr_add,&
-                                              dbcsr_copy,&
-                                              dbcsr_create,&
-                                              dbcsr_init_p,&
-                                              dbcsr_p_type,&
-                                              dbcsr_set,&
-                                              dbcsr_type,&
-                                              dbcsr_type_no_symmetry
+   USE cp_dbcsr_api,                    ONLY: &
+        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_get_block_p, dbcsr_init_p, dbcsr_p_type, &
+        dbcsr_release, dbcsr_set, dbcsr_type, dbcsr_type_no_symmetry
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: cp_dbcsr_m_by_n_from_row_template,&
                                               dbcsr_allocate_matrix_set
@@ -57,7 +52,8 @@ MODULE hfx_admm_utils
                                               cp_to_string
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE distribution_2d_types,           ONLY: distribution_2d_type
-   USE external_potential_types,        ONLY: copy_potential
+   USE external_potential_types,        ONLY: copy_potential,&
+                                              get_potential
    USE hfx_derivatives,                 ONLY: derivatives_four_center
    USE hfx_energy_potential,            ONLY: integrate_four_center
    USE hfx_pw_methods,                  ONLY: pw_hfx
@@ -85,7 +81,8 @@ MODULE hfx_admm_utils
                                               section_vals_val_set
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_initialize_mos
-   USE kpoint_transitional,             ONLY: kpoint_transitional_release,&
+   USE kpoint_transitional,             ONLY: get_2d_pointer,&
+                                              kpoint_transitional_release,&
                                               set_2d_pointer
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_type
@@ -111,7 +108,8 @@ MODULE hfx_admm_utils
                                               init_gapw_basis_set,&
                                               init_gapw_nlcc,&
                                               qs_kind_type
-   USE qs_ks_types,                     ONLY: qs_ks_env_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_local_rho_types,              ONLY: local_rho_set_create
    USE qs_matrix_pools,                 ONLY: mpools_get
    USE qs_mo_types,                     ONLY: allocate_mo_set,&
@@ -135,10 +133,22 @@ MODULE hfx_admm_utils
    USE qs_rho_types,                    ONLY: qs_rho_create,&
                                               qs_rho_get,&
                                               qs_rho_type
+   USE qs_uspp_methods,                 ONLY: qs_uspp_init_matrix_state
+   USE qs_uspp_projectors,              ONLY: qs_uspp_projector_mixed_images
+   USE qs_uspp_types,                   ONLY: qs_uspp_init,&
+                                              qs_uspp_type,&
+                                              qs_uspp_update,&
+                                              qs_uspp_update_images
    USE rt_propagation_types,            ONLY: rt_prop_type
+   USE sap_kind_types,                  ONLY: build_sap_ints_basis,&
+                                              release_sap_int,&
+                                              sap_int_type
    USE task_list_methods,               ONLY: generate_qs_task_list
    USE task_list_types,                 ONLY: allocate_task_list,&
                                               deallocate_task_list
+   USE uspp_projector_operators,        ONLY: uspp_projector_create_onsite,&
+                                              uspp_projector_mixed_metric,&
+                                              uspp_projector_mixed_pattern
    USE virial_types,                    ONLY: virial_type
    USE xc_adiabatic_utils,              ONLY: rescale_xc_potential
 #include "./base/base_uses.f90"
@@ -181,6 +191,7 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s_aux_fit_kp
       TYPE(dbcsr_type), POINTER                          :: mo_coeff_b
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos, mos_aux_fit
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -204,7 +215,10 @@ CONTAINS
                       dft_control=dft_control, &
                       input=input, &
                       virial=virial, &
-                      do_kpoints=do_kpoints)
+                      do_kpoints=do_kpoints, &
+                      kpoints=kpoints)
+
+      IF (ASSOCIATED(kpoints)) NULLIFY (kpoints%admm_hmat_source)
 
       calc_forces = .FALSE.
       IF (PRESENT(calculate_forces)) calc_forces = .TRUE.
@@ -594,12 +608,13 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'admm_init_hamiltonians'
 
-      INTEGER                                            :: handle, hfx_pot, ikind, nkind
+      INTEGER                                            :: handle, hfx_pot, ikind, jkind, nkind
       LOGICAL                                            :: do_kpoints, mic, molecule_only
-      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: aux_fit_present, orb_present
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: aux_fit_present, orb_present, &
+                                                            ppnl_present
       REAL(dp)                                           :: eps_schwarz, omega, pdist, roperator, &
-                                                            subcells
-      REAL(dp), ALLOCATABLE, DIMENSION(:)                :: aux_fit_radius, orb_radius
+                                                            subcells, uspp_radius
+      REAL(dp), ALLOCATABLE, DIMENSION(:)                :: aux_fit_radius, orb_radius, ppnl_radius
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: pair_radius
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
@@ -616,6 +631,7 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(section_vals_type), POINTER                   :: hfx_sections, neighbor_list_section
 
       NULLIFY (particle_set, cell, kpoints, distribution_1d, distribution_2d, molecule_set, &
@@ -628,6 +644,8 @@ CONTAINS
                       local_particles=distribution_1d, distribution_2d=distribution_2d, &
                       molecule_set=molecule_set, atomic_kind_set=atomic_kind_set, do_kpoints=do_kpoints, &
                       dft_control=dft_control, para_env=para_env, qs_kind_set=qs_kind_set)
+      CALL get_qs_env(qs_env, ks_env=ks_env)
+      CALL get_ks_env(ks_env, uspp=uspp)
       ALLOCATE (orb_present(nkind), aux_fit_present(nkind))
       ALLOCATE (orb_radius(nkind), aux_fit_radius(nkind), pair_radius(nkind, nkind))
       aux_fit_radius(:) = 0.0_dp
@@ -668,6 +686,23 @@ CONTAINS
          END IF
       END DO
 
+      uspp_radius = 0.0_dp
+      IF (ASSOCIATED(uspp)) THEN
+         ALLOCATE (ppnl_radius(nkind), ppnl_present(nkind))
+         ppnl_radius = 0.0_dp
+         ppnl_present = .FALSE.
+         DO ikind = 1, nkind
+            IF (uspp%augmentation(ikind)%nproj == 0) CYCLE
+            CALL get_potential(qs_kind_set(ikind)%sgp_potential, ppnl_present=ppnl_present(ikind), &
+                               ppnl_radius=ppnl_radius(ikind))
+         END DO
+         uspp_radius = MAXVAL(ppnl_radius)
+         CALL pair_radius_setup(aux_fit_present, ppnl_present, aux_fit_radius, ppnl_radius, pair_radius)
+         CALL build_neighbor_lists(admm_env%sap_aux_ppnl, particle_set, atom2d, cell, pair_radius, &
+                                   mic=.FALSE., subcells=subcells, operator_type='ABBA', &
+                                   nlname='sap_aux_ppnl', stable_images=kpoints%symmetry)
+      END IF
+
       IF (pdist < 0.0_dp) THEN
          pdist = MAX(plane_distance(1, 0, 0, cell), &
                      plane_distance(0, 1, 0, cell), &
@@ -699,6 +734,16 @@ CONTAINS
 
       CALL pair_radius_setup(aux_fit_present, aux_fit_present, aux_fit_radius, aux_fit_radius, pair_radius, pdist)
       pair_radius = pair_radius + cutoff_screen_factor*roperator
+      IF (ASSOCIATED(uspp)) THEN
+         DO jkind = 1, nkind
+            IF (.NOT. aux_fit_present(jkind)) CYCLE
+            DO ikind = 1, nkind
+               IF (.NOT. aux_fit_present(ikind)) CYCLE
+               pair_radius(ikind, jkind) = MAX(pair_radius(ikind, jkind), &
+                                               aux_fit_radius(ikind) + aux_fit_radius(jkind) + 2.0_dp*uspp_radius)
+            END DO
+         END DO
+      END IF
       CALL build_neighbor_lists(admm_env%sab_aux_fit, particle_set, atom2d, cell, pair_radius, &
                                 mic=mic, molecular=molecule_only, subcells=subcells, nlname="sab_aux_fit", &
                                 stable_images=kpoints%symmetry)
@@ -706,6 +751,15 @@ CONTAINS
                                 mic=mic, symmetric=.FALSE., molecular=molecule_only, subcells=subcells, &
                                 nlname="sab_aux_fit_asymm", stable_images=kpoints%symmetry)
       CALL pair_radius_setup(aux_fit_present, orb_present, aux_fit_radius, orb_radius, pair_radius)
+      IF (ASSOCIATED(uspp)) THEN
+         DO jkind = 1, nkind
+            DO ikind = 1, nkind
+               IF (.NOT. aux_fit_present(ikind) .OR. .NOT. orb_present(jkind)) CYCLE
+               pair_radius(ikind, jkind) = MAX(pair_radius(ikind, jkind), &
+                                               aux_fit_radius(ikind) + orb_radius(jkind) + 2.0_dp*uspp_radius)
+            END DO
+         END DO
+      END IF
       CALL build_neighbor_lists(admm_env%sab_aux_fit_vs_orb, particle_set, atom2d, cell, pair_radius, &
                                 mic=mic, symmetric=.FALSE., molecular=molecule_only, subcells=subcells, &
                                 nlname="sab_aux_fit_vs_orb", stable_images=kpoints%symmetry)
@@ -734,10 +788,107 @@ CONTAINS
                                 basis_type_b="ORB", &
                                 sab_nl=admm_env%sab_aux_fit_vs_orb)
       CALL set_2d_pointer(admm_env%matrix_s_aux_fit_vs_orb, matrix_s_aux_fit_vs_orb_kp)
+      IF (ASSOCIATED(uspp)) THEN
+         CALL admm_build_uspp_metrics(admm_env, ks_env, qs_kind_set, particle_set, kpoints, do_kpoints, &
+                                      aux_basis_type, matrix_s_aux_fit_kp, matrix_s_aux_fit_vs_orb_kp)
+      END IF
 
       CALL timestop(handle)
 
    END SUBROUTINE admm_init_hamiltonians
+
+! **************************************************************************************************
+!> \brief Generalized ADMM overlaps in the actual independent AUX basis.
+!>        Gaussian overlap ownership is unchanged; each USPP state owns its projector matrices.
+!> \param admm_env ...
+!> \param ks_env ...
+!> \param kinds ...
+!> \param particles ...
+!> \param kpoints ...
+!> \param do_kpoints ...
+!> \param basis_type ...
+!> \param aux_overlap ...
+!> \param cross_overlap ...
+! **************************************************************************************************
+   SUBROUTINE admm_build_uspp_metrics(admm_env, ks_env, kinds, particles, kpoints, do_kpoints, &
+                                      basis_type, aux_overlap, cross_overlap)
+      TYPE(admm_type), INTENT(INOUT)                     :: admm_env
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(particle_type), POINTER                       :: particles(:)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      LOGICAL, INTENT(IN)                                :: do_kpoints
+      CHARACTER(LEN=*), INTENT(IN)                       :: basis_type
+      TYPE(dbcsr_p_type), INTENT(INOUT)                  :: aux_overlap(:, :), cross_overlap(:, :)
+
+      INTEGER                                            :: atom, center, image
+      INTEGER, ALLOCATABLE                               :: atom_kinds(:)
+      INTEGER, POINTER                                   :: cells(:, :)
+      LOGICAL                                            :: found
+      REAL(dp), POINTER                                  :: block(:, :)
+      TYPE(dbcsr_p_type), POINTER                        :: metric(:, :)
+      TYPE(dbcsr_type)                                   :: cross_metric, onsite, pattern
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(sap_int_type), POINTER                        :: sap(:)
+
+      CALL get_ks_env(ks_env, uspp=uspp)
+      CPASSERT(ASSOCIATED(uspp))
+      CALL qs_uspp_init(admm_env%uspp_aux, kinds, particles)
+      admm_env%uspp_basis_type = basis_type
+      IF (ALLOCATED(uspp%kinetic_augmentation)) THEN
+         ALLOCATE (admm_env%uspp_aux%kinetic_augmentation, SOURCE=uspp%kinetic_augmentation)
+      END IF
+      IF (ALLOCATED(uspp%model_core_kinetic)) THEN
+         ALLOCATE (admm_env%uspp_aux%model_core_kinetic, SOURCE=uspp%model_core_kinetic)
+      END IF
+      ALLOCATE (sap(SIZE(kinds)**2))
+      CALL build_sap_ints_basis(sap, admm_env%sap_aux_ppnl, kinds, basis_type, nder=0)
+      IF (do_kpoints) THEN
+         CALL qs_uspp_update_images(admm_env%uspp_aux, aux_overlap(1, :), sap, particles, &
+                                    admm_env%sab_aux_fit, kpoints%cell_to_index)
+      ELSE
+         CALL qs_uspp_update(admm_env%uspp_aux, aux_overlap(1, 1)%matrix, sap, particles)
+         CALL release_sap_int(sap)
+      END IF
+      metric => get_2d_pointer(admm_env%uspp_aux%metric)
+      CPASSERT(ALL(SHAPE(metric) == SHAPE(aux_overlap)))
+      DO image = 1, SIZE(aux_overlap, 2)
+         CALL dbcsr_copy(aux_overlap(1, image)%matrix, metric(1, image)%matrix)
+      END DO
+      IF (.NOT. do_kpoints) THEN
+         CALL uspp_projector_mixed_metric(admm_env%uspp_aux%overlaps, uspp%overlaps, uspp%augmentation, &
+                                          uspp%center_kinds, cross_overlap(1, 1)%matrix, cross_metric)
+         CALL dbcsr_copy(cross_overlap(1, 1)%matrix, cross_metric)
+         CALL dbcsr_release(cross_metric)
+         RETURN
+      END IF
+      CALL uspp_projector_mixed_pattern(admm_env%uspp_aux%overlaps, uspp%overlaps, &
+                                        cross_overlap(1, 1)%matrix, pattern)
+      DO image = 1, SIZE(cross_overlap, 2)
+         CALL dbcsr_copy(cross_metric, pattern)
+         CALL dbcsr_set(cross_metric, 0.0_dp)
+         CALL dbcsr_add(cross_metric, cross_overlap(1, image)%matrix, 1.0_dp, 1.0_dp)
+         CALL dbcsr_copy(cross_overlap(1, image)%matrix, cross_metric)
+         CALL dbcsr_release(cross_metric)
+      END DO
+      CALL dbcsr_release(pattern)
+      CALL uspp_projector_create_onsite(admm_env%uspp_aux%overlaps, onsite)
+      DO center = 1, SIZE(uspp%center_atoms)
+         CALL dbcsr_get_block_p(onsite, center, center, block, found)
+         IF (found) block(:, :) = uspp%augmentation(uspp%center_kinds(center))%q
+      END DO
+      ALLOCATE (atom_kinds(SIZE(particles)))
+      DO atom = 1, SIZE(particles)
+         atom_kinds(atom) = particles(atom)%atomic_kind%kind_number
+      END DO
+      CALL get_kpoint_info(kpoints, index_to_cell=cells)
+      CPASSERT(SIZE(cross_overlap, 2) <= SIZE(cells, 2))
+      CALL qs_uspp_projector_mixed_images(admm_env%uspp_aux%overlaps, admm_env%uspp_aux%image_integrals, &
+                                          uspp%image_integrals, atom_kinds, SIZE(kinds), uspp%center_atoms, &
+                                          uspp%center_kinds, cells(:, :SIZE(cross_overlap, 2)), onsite, &
+                                          ao_operator=cross_overlap(1, :))
+      CALL dbcsr_release(onsite)
+   END SUBROUTINE admm_build_uspp_metrics
 
 ! **************************************************************************************************
 !> \brief Updates the ADMM task_list and density based on the model of qs_env_update_s_mstruct()
@@ -929,18 +1080,27 @@ CONTAINS
             CALL dbcsr_create(matrix_ks_aux_fit_kp(ispin, ic)%matrix, template=matrix_s_aux_fit_kp(1, ic)%matrix, &
                               name="KOHN-SHAM_MATRIX for ADMM")
             CALL cp_dbcsr_alloc_block_from_nbl(matrix_ks_aux_fit_kp(ispin, ic)%matrix, admm_env%sab_aux_fit)
+            IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+               CALL qs_uspp_init_matrix_state(admm_env%uspp_aux, matrix_ks_aux_fit_kp(ispin, ic)%matrix)
+            END IF
             CALL dbcsr_set(matrix_ks_aux_fit_kp(ispin, ic)%matrix, 0.0_dp)
 
             ALLOCATE (matrix_ks_aux_fit_dft_kp(ispin, ic)%matrix)
             CALL dbcsr_create(matrix_ks_aux_fit_dft_kp(ispin, ic)%matrix, template=matrix_s_aux_fit_kp(1, 1)%matrix, &
                               name="KOHN-SHAM_MATRIX for ADMM")
             CALL cp_dbcsr_alloc_block_from_nbl(matrix_ks_aux_fit_dft_kp(ispin, ic)%matrix, admm_env%sab_aux_fit)
+            IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+               CALL qs_uspp_init_matrix_state(admm_env%uspp_aux, matrix_ks_aux_fit_dft_kp(ispin, ic)%matrix)
+            END IF
             CALL dbcsr_set(matrix_ks_aux_fit_dft_kp(ispin, ic)%matrix, 0.0_dp)
 
             ALLOCATE (matrix_ks_aux_fit_hfx_kp(ispin, ic)%matrix)
             CALL dbcsr_create(matrix_ks_aux_fit_hfx_kp(ispin, ic)%matrix, template=matrix_s_aux_fit_kp(1, 1)%matrix, &
                               name="KOHN-SHAM_MATRIX for ADMM")
             CALL cp_dbcsr_alloc_block_from_nbl(matrix_ks_aux_fit_hfx_kp(ispin, ic)%matrix, admm_env%sab_aux_fit)
+            IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+               CALL qs_uspp_init_matrix_state(admm_env%uspp_aux, matrix_ks_aux_fit_hfx_kp(ispin, ic)%matrix)
+            END IF
             CALL dbcsr_set(matrix_ks_aux_fit_hfx_kp(ispin, ic)%matrix, 0.0_dp)
          END DO
       END DO

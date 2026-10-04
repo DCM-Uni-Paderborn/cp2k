@@ -147,6 +147,7 @@ MODULE qs_ks_methods
    USE qs_sccs,                         ONLY: sccs
    USE qs_uspp_gapw,                    ONLY: qs_uspp_gapw_coulomb
    USE qs_uspp_methods,                 ONLY: qs_uspp_atom_grid_apply_ks,&
+                                              qs_uspp_atom_grid_apply_state,&
                                               qs_uspp_atom_grid_type
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE qs_vxc,                          ONLY: qs_vxc_create
@@ -237,6 +238,7 @@ CONTAINS
       LOGICAL :: native_skala_restore_exc, paw_composite_representation, rigpw, separate_xc, &
          use_gauxc_matrix, use_virial
       LOGICAL, SAVE :: native_grid_cpu_kpoints_warned = .FALSE.
+      REAL(dp), ALLOCATABLE                              :: uspp_aux_force_factors(:)
       REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, hfx_fraction, mulliken_order_p, &
          native_skala_composite_contraction, native_skala_composite_rho_contraction, &
          native_skala_composite_tau_contraction, native_skala_exc_scf, native_skala_total_scf, &
@@ -256,6 +258,7 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ks_matrix, ks_matrix_im, matrix_h, &
                                                             matrix_h_im, matrix_s, matrix_vxc_kp, &
                                                             my_rho, rho_ao
+      TYPE(dbcsr_p_type), POINTER                        :: uspp_aux_density(:, :), uspp_aux_ks(:, :)
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(ecoul_1center_type), DIMENSION(:), POINTER    :: ecoul_1c
       TYPE(harris_type), POINTER                         :: harris_env
@@ -285,7 +288,7 @@ CONTAINS
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho, rho1, rho_struct, rho_xc
-      TYPE(qs_uspp_atom_grid_type), ALLOCATABLE          :: uspp_xc_fields(:)
+      TYPE(qs_uspp_atom_grid_type), ALLOCATABLE          :: uspp_aux_xc_fields(:), uspp_xc_fields(:)
       TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(section_vals_type), POINTER                   :: ace_section, &
                                                             adiabatic_rescaling_section, &
@@ -650,17 +653,35 @@ CONTAINS
          CALL get_admm_env(admm_env, rho_aux_fit=rho_struct)
 
          ! here we ignore a possible vdW section in admm_env%xc_section_aux
-         CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
-                            vxc_rho=v_rspace_new_aux_fit, vxc_tau=v_tau_rspace_aux_fit, exc=energy%exc_aux_fit, &
-                            just_energy=just_energy_xc)
+         IF (ASSOCIATED(admm_env%uspp_aux) .AND. admm_env%do_gapw) THEN
+            ! The atomic AUX correction adds Q to the smooth background, as in the primary basis.
+            CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
+                               vxc_rho=v_rspace_new_aux_fit, vxc_tau=v_tau_rspace_aux_fit, exc=energy%exc_aux_fit, &
+                               just_energy=.FALSE., exclude_nlcc=.TRUE., smooth_reference=.TRUE.)
+         ELSE
+            CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
+                               vxc_rho=v_rspace_new_aux_fit, vxc_tau=v_tau_rspace_aux_fit, exc=energy%exc_aux_fit, &
+                               just_energy=just_energy_xc)
+         END IF
 
          IF (admm_env%do_gapw) THEN
             !compute the potential due to atomic densities
-            CALL calculate_vxc_atom(qs_env, energy_only=just_energy_xc, exc1=energy%exc1_aux_fit, &
-                                    kind_set_external=admm_env%admm_gapw_env%admm_kind_set, &
-                                    xc_section_external=xc_section, &
-                                    rho_atom_set_external=admm_env%admm_gapw_env%local_rho_set%rho_atom_set, &
-                                    calculate_forces=calculate_forces)
+            IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+               ALLOCATE (uspp_aux_xc_fields(nspins))
+               CALL calculate_vxc_atom(qs_env, energy_only=just_energy_xc, exc1=energy%exc1_aux_fit, &
+                                       kind_set_external=admm_env%admm_gapw_env%admm_kind_set, &
+                                       xc_section_external=xc_section, &
+                                       rho_atom_set_external=admm_env%admm_gapw_env%local_rho_set%rho_atom_set, &
+                                       calculate_forces=calculate_forces, uspp_fields=uspp_aux_xc_fields, &
+                                       composite_vxc_rho=v_rspace_new_aux_fit, composite_vxc_tau=v_tau_rspace_aux_fit, &
+                                       uspp_external=admm_env%uspp_aux, rho_external=rho_struct)
+            ELSE
+               CALL calculate_vxc_atom(qs_env, energy_only=just_energy_xc, exc1=energy%exc1_aux_fit, &
+                                       kind_set_external=admm_env%admm_gapw_env%admm_kind_set, &
+                                       xc_section_external=xc_section, &
+                                       rho_atom_set_external=admm_env%admm_gapw_env%local_rho_set%rho_atom_set, &
+                                       calculate_forces=calculate_forces)
+            END IF
 
          END IF
 
@@ -1143,7 +1164,7 @@ CONTAINS
       END IF
 
       IF (do_hfx .AND. ASSOCIATED(uspp)) THEN
-         IF (dft_control%do_admm .OR. do_adiabatic_rescaling .OR. &
+         IF (do_adiabatic_rescaling .OR. &
              qs_env%run_rtp .OR. dft_control%roks) THEN
             CPABORT("USPP exchange acceleration and response extensions are not implemented")
          END IF
@@ -1158,7 +1179,8 @@ CONTAINS
                IF (ri%input_flavor /= ri_pmat .OR. ri%flavor /= ri_pmat) THEN
                   CPABORT("USPP exact exchange currently requires RI_FLAVOR RHO")
                END IF
-               IF (ri%orb_basis_type /= 'ORB') THEN
+               IF (ri%orb_basis_type /= 'ORB' .AND. &
+                   (.NOT. dft_control%do_admm .OR. ri%orb_basis_type /= 'AUX_FIT')) THEN
                   CPABORT("USPP RI-HFX requires the ORB basis")
                END IF
                IF (dokp) THEN
@@ -1485,6 +1507,24 @@ CONTAINS
             !Single atom contribution to the AUX matrices
             !Note: also update ks_aux_fit matrix in case of rtp
             CALL admm_update_ks_atom(qs_env, calculate_forces)
+            IF (ALLOCATED(uspp_aux_xc_fields)) THEN
+               CALL get_admm_env(admm_env, matrix_ks_aux_fit_kp=uspp_aux_ks, rho_aux_fit=rho_struct)
+               CALL qs_rho_get(rho_struct, rho_ao_kp=uspp_aux_density)
+               ALLOCATE (uspp_aux_force_factors(nspins))
+               uspp_aux_force_factors = 1.0_dp
+               DO ispin = 1, nspins
+                  IF (admm_env%do_admmp) THEN
+                     uspp_aux_force_factors(ispin) = admm_env%gsi(ispin)**2
+                  ELSE IF (admm_env%do_admms) THEN
+                     uspp_aux_force_factors(ispin) = admm_env%gsi(ispin)**(2.0_dp/3.0_dp)
+                  END IF
+               END DO
+               CALL qs_uspp_atom_grid_apply_state(ks_env, admm_env%uspp_aux, uspp_aux_xc_fields, &
+                                                  uspp_aux_ks, uspp_aux_density, &
+                                                  basis_type=admm_env%uspp_basis_type, &
+                                                  projector_neighbors=admm_env%sap_aux_ppnl, &
+                                                  force_factors=uspp_aux_force_factors)
+            END IF
          END IF
       END IF
 
