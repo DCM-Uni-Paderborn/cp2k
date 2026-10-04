@@ -60,10 +60,16 @@ MODULE qs_ks_methods
    USE hfx_admm_utils,                  ONLY: hfx_admm_init,&
                                               hfx_ks_matrix,&
                                               hfx_ks_matrix_kp
-   USE input_constants,                 ONLY: do_ppl_grid,&
+   USE hfx_types,                       ONLY: hfx_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              do_potential_short,&
+                                              do_potential_truncated,&
+                                              do_ppl_grid,&
                                               outer_scf_becke_constraint,&
                                               outer_scf_hirshfeld_constraint,&
                                               smeagol_runtype_emtransport
+   USE input_cp2k_hfx,                  ONLY: ri_pmat
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -217,7 +223,7 @@ CONTAINS
 
       CHARACTER(len=default_string_length)               :: gauxc_model_name, name
       INTEGER :: ace_rebuild_frequency, atom_a, gapw_representation, handle, iatom, ikind, img, &
-         ispin, natom, nimages, nspins, output_unit
+         irep_hfx, ispin, natom, nimages, nspins, output_unit
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, kind_of
       LOGICAL :: ace_active, do_adiabatic_rescaling, do_ddapc, do_hfx, do_kpoints, do_ppl, dokp, &
          gapw, gapw_all_all_electron, gapw_all_pseudopotentials, gapw_mixed_core_representations, &
@@ -230,7 +236,7 @@ CONTAINS
       LOGICAL :: native_skala_restore_exc, paw_composite_representation, rigpw, separate_xc, &
          use_gauxc_matrix, use_virial
       LOGICAL, SAVE :: native_grid_cpu_kpoints_warned = .FALSE.
-      REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, mulliken_order_p, &
+      REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, hfx_fraction, mulliken_order_p, &
          native_skala_composite_contraction, native_skala_composite_rho_contraction, &
          native_skala_composite_tau_contraction, native_skala_exc_scf, native_skala_total_scf, &
          vscale
@@ -252,6 +258,7 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(ecoul_1center_type), DIMENSION(:), POINTER    :: ecoul_1c
       TYPE(harris_type), POINTER                         :: harris_env
+      TYPE(hfx_type), POINTER                            :: hfx_data(:, :)
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(local_rho_type), POINTER                      :: local_rho_set
       TYPE(lri_density_type), POINTER                    :: lri_density
@@ -1122,10 +1129,6 @@ CONTAINS
       ! *** Add Hartree-Fock contribution if required ***
       hfx_sections => section_vals_get_subs_vals(xc_section, "HF")
       CALL section_vals_get(hfx_sections, explicit=do_hfx)
-      IF (do_hfx) THEN
-         CALL get_ks_env(ks_env, uspp=uspp)
-         IF (ASSOCIATED(uspp)) CPABORT("Exact exchange with USPP augmentation is not implemented")
-      END IF
 
       ace_active = .FALSE.
       ace_rebuild_frequency = 1
@@ -1136,6 +1139,45 @@ CONTAINS
             CALL section_vals_val_get(ace_section, "ACTIVE", l_val=ace_active)
             CALL section_vals_val_get(ace_section, "REBUILD_FREQUENCY", i_val=ace_rebuild_frequency)
          END IF
+      END IF
+
+      IF (do_hfx .AND. ASSOCIATED(uspp)) THEN
+         IF (.NOT. dokp .AND. ANY(cell%perd /= 0)) THEN
+            CPABORT("Periodic USPP exact exchange requires explicit KPOINTS")
+         END IF
+         IF (dft_control%do_admm .OR. ace_active .OR. do_adiabatic_rescaling .OR. &
+             qs_env%run_rtp .OR. dft_control%roks) THEN
+            CPABORT("USPP exchange acceleration and response extensions are not implemented")
+         END IF
+         CALL get_qs_env(qs_env, x_data=hfx_data)
+         CPASSERT(ASSOCIATED(hfx_data))
+         DO irep_hfx = 1, SIZE(hfx_data, 1)
+            IF (.NOT. hfx_data(irep_hfx, 1)%do_hfx_ri) THEN
+               CPABORT("USPP exact exchange currently requires RI with RI_FLAVOR RHO")
+            END IF
+            CPASSERT(ASSOCIATED(hfx_data(irep_hfx, 1)%ri_data))
+            ASSOCIATE (ri => hfx_data(irep_hfx, 1)%ri_data)
+               IF (ri%input_flavor /= ri_pmat .OR. ri%flavor /= ri_pmat) THEN
+                  CPABORT("USPP exact exchange currently requires RI_FLAVOR RHO")
+               END IF
+               IF (ri%orb_basis_type /= 'ORB' .OR. ri%ri_metric%potential_type /= do_potential_coulomb) THEN
+                  CPABORT("USPP RI-HFX requires the ORB basis and Coulomb RI metric")
+               END IF
+               IF (dokp) THEN
+                  IF (ri%hfx_pot%potential_type /= do_potential_truncated .AND. &
+                      ri%hfx_pot%potential_type /= do_potential_short) THEN
+                     CPABORT("USPP k-point RI-HFX requires truncated or short-range exchange")
+                  END IF
+               ELSE IF (ri%hfx_pot%potential_type /= do_potential_coulomb .AND. &
+                        ri%hfx_pot%potential_type /= do_potential_short) THEN
+                  CPABORT("Isolated USPP RI-HFX requires Coulomb or short-range exchange")
+               END IF
+            END ASSOCIATE
+            hfx_fraction = hfx_data(irep_hfx, 1)%general_parameter%fraction
+            IF (.NOT. ieee_is_finite(hfx_fraction) .OR. hfx_fraction < 0.0_dp) THEN
+               CPABORT("USPP RI-HFX requires finite nonnegative exchange fractions")
+            END IF
+         END DO
       END IF
 
       IF (do_hfx) THEN

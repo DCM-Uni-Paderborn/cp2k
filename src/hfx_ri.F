@@ -95,7 +95,8 @@ MODULE hfx_ri
    USE qs_integral_utils,               ONLY: basis_set_list_setup
    USE qs_interactions,                 ONLY: init_interaction_radii_orb_basis
    USE qs_kind_types,                   ONLY: qs_kind_type
-   USE qs_ks_types,                     ONLY: qs_ks_env_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type,&
@@ -113,6 +114,10 @@ MODULE hfx_ri
                                               distribution_3d_type,&
                                               neighbor_list_3c_type,&
                                               split_block_sizes
+   USE qs_uspp_hfx,                     ONLY: qs_uspp_hfx_add_kp_tensor,&
+                                              qs_uspp_hfx_add_tensor,&
+                                              qs_uspp_hfx_gradient
+   USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE string_utilities,                ONLY: uppercase
    USE util,                            ONLY: sort
    USE virial_types,                    ONLY: virial_type
@@ -552,7 +557,7 @@ CONTAINS
                                name="O (RI AO | AO)")
 
          CALL build_3c_neighbor_lists(nl_3c, basis_set_RI, basis_set_AO, basis_set_AO, dist_3d, ri_data%ri_metric, &
-                                      "HFX_3c_nl", qs_env, op_pos=1, sym_jk=.TRUE., own_dist=.TRUE.)
+                                      "HFX_3c_nl", qs_env, op_pos=1, sym_jk=.TRUE., own_dist=.TRUE., do_kpoints=do_kpoints_prv)
 
          DO i_mem = 1, n_mem
             CALL build_3c_integrals(t_3c_int_batched, ri_data%filter_eps/2, qs_env, nl_3c, &
@@ -574,6 +579,9 @@ CONTAINS
             ! desymmetrize
             CALL dbt_copy(t_3c_int(1, 1), t_3c_tmp)
             CALL dbt_copy(t_3c_tmp, t_3c_int(1, 1), order=[1, 3, 2], summation=.TRUE., move_data=.TRUE.)
+
+            ! The native transition charge is already full in both AO indices.
+            CALL qs_uspp_hfx_add_tensor(qs_env, ri_data, t_3c_int(1, 1))
 
             ! For RI-RHO filter_eps_storage is reserved for screening tensor contracted with RI-metric
             ! with RI metric but not to bare integral tensor
@@ -629,7 +637,7 @@ CONTAINS
 
          ! create 3c tensor for storage of ints
          CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, ri_data%ri_metric, &
-                                      "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., own_dist=.TRUE.)
+                                      "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., own_dist=.TRUE., do_kpoints=do_kpoints_prv)
 
          CALL create_3c_tensor(t_3c_int(1, 1), dist_RI, dist_AO_1, dist_AO_2, ri_data%pgrid, &
                                sizes_RI_ext_split, ri_data%bsizes_AO_split, ri_data%bsizes_AO_split, &
@@ -660,6 +668,9 @@ CONTAINS
             END DO
          END DO
 
+         ! Preserve native image pairs before reordering and local RI metric contraction.
+         CALL qs_uspp_hfx_add_kp_tensor(qs_env, ri_data, t_3c_int(1, :))
+
          DO i_img = 1, nimg
             CALL dbt_destroy(t_3c_int_batched(i_img, 1))
          END DO
@@ -671,7 +682,7 @@ CONTAINS
 
       CALL build_2c_neighbor_lists(nl_2c_pot, basis_set_RI, basis_set_RI, ri_data%hfx_pot, &
                                    "HFX_2c_nl_pot", qs_env, sym_ij=.NOT. do_kpoints_prv, &
-                                   dist_2d=dist_2d)
+                                   dist_2d=dist_2d, do_kpoints=do_kpoints_prv)
 
       CALL cp_dbcsr_dist2d_to_dist(dist_2d, dbcsr_dist)
       ALLOCATE (row_bsize(SIZE(sizes_RI)))
@@ -705,7 +716,7 @@ CONTAINS
       IF (.NOT. ri_data%same_op) THEN
          CALL build_2c_neighbor_lists(nl_2c_RI, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
                                       "HFX_2c_nl_RI", qs_env, sym_ij=.NOT. do_kpoints_prv, &
-                                      dist_2d=dist_2d)
+                                      dist_2d=dist_2d, do_kpoints=do_kpoints_prv)
 
          CALL build_2c_integrals(t_2c_int_RI, ri_data%filter_eps_2c, qs_env, nl_2c_RI, basis_set_RI, basis_set_RI, &
                                  ri_data%ri_metric, do_kpoints=do_kpoints_prv, do_hfx_kpoints=do_kpoints_prv)
@@ -2491,10 +2502,8 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_forces_Pmat'
 
-      INTEGER                                            :: dummy_int, handle, i_mem, i_spin, i_xyz, &
-                                                            ibasis, j_mem, j_xyz, k_mem, k_xyz, &
-                                                            n_mem, n_mem_RI, natom, nkind, &
-                                                            unit_nr_dbcsr
+      INTEGER :: atom, dummy_int, handle, i_mem, i_spin, i_xyz, ibasis, j_mem, j_xyz, k_mem, &
+         k_xyz, n_mem, n_mem_RI, natom, nkind, unit_nr_dbcsr
       INTEGER(int_8)                                     :: nflop
       INTEGER, ALLOCATABLE, DIMENSION(:) :: atom_of_kind, batch_end, batch_end_RI, batch_ranges, &
          batch_ranges_RI, batch_start, batch_start_RI, dist1, dist2, dist3, idx_to_at_AO, &
@@ -2504,7 +2513,9 @@ CONTAINS
       INTEGER, DIMENSION(2, 3)                           :: bounds_cpy
       INTEGER, DIMENSION(:), POINTER                     :: col_bsize, row_bsize
       LOGICAL                                            :: do_resp, resp_only_prv, use_virial_prv
-      REAL(dp)                                           :: pref, spin_fac, t1, t2
+      REAL(dp)                                           :: augmentation_strain(3, 3), pref, &
+                                                            spin_fac, t1, t2
+      REAL(dp), ALLOCATABLE                              :: augmentation_gradient(:, :)
       REAL(dp), DIMENSION(3, 3)                          :: work_virial
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(block_ind_type), ALLOCATABLE, DIMENSION(:, :) :: t_3c_der_AO_ind, t_3c_der_RI_ind
@@ -2529,6 +2540,8 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(virial_type), POINTER                         :: virial
 
       !The idea is the following: we need to compute the gradients
@@ -2544,7 +2557,7 @@ CONTAINS
       !    Metric:    [S^-1*R*S^-1*(Q|R)*S^-1]_UV d/dx S_UV
 
       NULLIFY (particle_set, virial, cell, force, atomic_kind_set, nl_2c_pot, nl_2c_met)
-      NULLIFY (orb_basis, ri_basis, qs_kind_set, particle_set, dft_control, dbcsr_dist)
+      NULLIFY (orb_basis, ri_basis, qs_kind_set, particle_set, dft_control, dbcsr_dist, ks_env, uspp)
 
       use_virial_prv = .FALSE.
       IF (PRESENT(use_virial)) use_virial_prv = use_virial
@@ -2562,7 +2575,15 @@ CONTAINS
       CALL get_qs_env(qs_env, natom=natom, particle_set=particle_set, nkind=nkind, &
                       atomic_kind_set=atomic_kind_set, virial=virial, &
                       cell=cell, force=force, para_env=para_env, dft_control=dft_control, &
-                      qs_kind_set=qs_kind_set, dbcsr_dist=dbcsr_dist)
+                      qs_kind_set=qs_kind_set, dbcsr_dist=dbcsr_dist, ks_env=ks_env)
+      CALL get_ks_env(ks_env, uspp=uspp)
+      IF (ASSOCIATED(uspp)) THEN
+         IF (do_resp .OR. resp_only_prv) THEN
+            CPABORT("USPP RI-HFX response derivatives are not implemented")
+         END IF
+         ALLOCATE (augmentation_gradient(3, natom), SOURCE=0.0_dp)
+         augmentation_strain = 0.0_dp
+      END IF
 
       CALL create_3c_tensor(t_3c_ao_ri_ao, dist1, dist2, dist3, ri_data%pgrid_1, &
                             ri_data%bsizes_AO_split, ri_data%bsizes_RI_split, ri_data%bsizes_AO_split, &
@@ -2801,15 +2822,28 @@ CONTAINS
                   bounds_cpy(:, 1) = [batch_start_RI(k_mem), batch_end_RI(k_mem)]
                   bounds_cpy(:, 2) = [batch_start(i_mem), batch_end(i_mem)]
                   bounds_cpy(:, 3) = [batch_start(j_mem), batch_end(j_mem)]
-                  CALL dbt_copy(t_3c_sparse, t_3c_4, bounds=bounds_cpy)
+                  ijbounds(:, 1) = ibounds(:, 1)
+                  ijbounds(:, 2) = jbounds(:, 1)
 
-                  !Contract with the 2-center product S^-1 * V * S^-1 while keeping sparsity of derivatives
+                  ! Native projector/Q derivatives have support beyond Gaussian 3c derivatives.
+                  ! The output RI and AO bounds prevent counting a full tensor in every batch.
                   CALL dbt_batched_contract_init(t_SVS)
-                  CALL dbt_contract(1.0_dp, t_SVS, t_3c_3, 0.0_dp, t_3c_4, &
-                                    contract_1=[2], notcontract_1=[1], &
-                                    contract_2=[1], notcontract_2=[2, 3], &
-                                    map_1=[1], map_2=[2, 3], filter_eps=ri_data%filter_eps, &
-                                    retain_sparsity=.TRUE., unit_nr=unit_nr_dbcsr, flop=nflop)
+                  IF (ASSOCIATED(uspp)) THEN
+                     CALL dbt_clear(t_3c_4)
+                     CALL dbt_contract(1.0_dp, t_SVS, t_3c_3, 0.0_dp, t_3c_4, &
+                                       contract_1=[2], notcontract_1=[1], &
+                                       contract_2=[1], notcontract_2=[2, 3], &
+                                       map_1=[1], map_2=[2, 3], filter_eps=ri_data%filter_eps, &
+                                       bounds_2=kbounds, bounds_3=ijbounds, &
+                                       unit_nr=unit_nr_dbcsr, flop=nflop)
+                  ELSE
+                     CALL dbt_copy(t_3c_sparse, t_3c_4, bounds=bounds_cpy)
+                     CALL dbt_contract(1.0_dp, t_SVS, t_3c_3, 0.0_dp, t_3c_4, &
+                                       contract_1=[2], notcontract_1=[1], &
+                                       contract_2=[1], notcontract_2=[2, 3], &
+                                       map_1=[1], map_2=[2, 3], filter_eps=ri_data%filter_eps, &
+                                       retain_sparsity=.TRUE., unit_nr=unit_nr_dbcsr, flop=nflop)
+                  END IF
                   ri_data%dbcsr_nflop = ri_data%dbcsr_nflop + nflop
                   CALL dbt_batched_contract_finalize(t_SVS)
 
@@ -2836,6 +2870,14 @@ CONTAINS
 
             !The force from the 3c derivatives
             pref = -0.5_dp*2.0_dp*hf_fraction*spin_fac
+            IF (ASSOCIATED(uspp)) THEN
+               IF (use_virial_prv) THEN
+                  CALL qs_uspp_hfx_gradient(qs_env, ri_data, t_3c_help_1, pref, &
+                                            augmentation_gradient, augmentation_strain)
+               ELSE
+                  CALL qs_uspp_hfx_gradient(qs_env, ri_data, t_3c_help_1, pref, augmentation_gradient)
+               END IF
+            END IF
 
             DO k_mem = 1, SIZE(t_3c_der_RI_comp, 1)
                DO i_xyz = 1, 3
@@ -2958,6 +3000,15 @@ CONTAINS
             END DO
          END IF
       END DO !i_spin
+
+      IF (ASSOCIATED(uspp)) THEN
+         DO atom = 1, natom
+            force(kind_of(atom))%fock_4c(:, atom_of_kind(atom)) = &
+               force(kind_of(atom))%fock_4c(:, atom_of_kind(atom)) + augmentation_gradient(:, atom)
+         END DO
+         IF (use_virial_prv) virial%pv_fock_4c = virial%pv_fock_4c + augmentation_strain
+         DEALLOCATE (augmentation_gradient)
+      END IF
 
       CALL dbt_batched_contract_finalize(t_3c_int)
       CALL dbt_batched_contract_finalize(t_3c_int_2)
@@ -3637,7 +3688,7 @@ CONTAINS
       INTEGER, DIMENSION(3)                              :: periodic
       INTEGER, DIMENSION(:), POINTER                     :: npgf, nshell
       INTEGER, DIMENSION(:, :), POINTER                  :: lshell
-      LOGICAL                                            :: mult_by_S, print_density, &
+      LOGICAL                                            :: do_kpoints, mult_by_S, print_density, &
                                                             print_ri_metric, skip_ri_metric
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: density_coeffs, density_coeffs_2
       REAL(dp), DIMENSION(3, 3)                          :: hmat
@@ -3657,11 +3708,12 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(section_vals_type), POINTER                   :: input, print_section
 
       NULLIFY (rho_ao, input, print_section, logger, rho, particle_set, qs_kind_set, ri_basis, &
-               para_env, blacs_env, fm_struct, orb_basis, dft_control)
+               para_env, blacs_env, fm_struct, orb_basis, dft_control, ks_env)
 
       CALL get_qs_env(qs_env, input=input, dft_control=dft_control)
       logger => cp_get_default_logger()
@@ -3674,6 +3726,15 @@ CONTAINS
                 cp_p_file)) print_density = .TRUE.
       IF (BTEST(cp_print_key_should_output(logger%iter_info, print_section, "RI_METRIC_2C_INTS"), &
                 cp_p_file)) print_ri_metric = .TRUE.
+
+      IF (.NOT. (print_density .OR. print_ri_metric)) RETURN
+      CALL get_qs_env(qs_env, ks_env=ks_env)
+      CALL get_ks_env(ks_env, do_kpoints=do_kpoints)
+      IF (do_kpoints) THEN
+         ! These diagnostics contract Gamma tensors, not the image-resolved k-point RI tensors.
+         CPWARN("RI density coefficients and RI metric matrix printing is unavailable with KPOINTS; skipping")
+         RETURN
+      END IF
 
       !common stuff
       IF (print_density .OR. print_ri_metric) THEN
