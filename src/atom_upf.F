@@ -1210,93 +1210,6 @@ CONTAINS
    END SUBROUTINE upf_augmentation_section
 
 ! **************************************************************************************************
-!> \brief Read a complete real UPF array and check its dimensions and closing tag.
-!> \param parser Token stream after the opening tag name.
-!> \param tag Opening tag, with or without its final greater-than sign.
-!> \param values Array in the original file convention.
-!> \param index_value Optional projector index attribute, or -1 if absent.
-!> \param angular_momentum Optional angular momentum attribute, or -1 if absent.
-!> \param principal_quantum_number Optional principal quantum number attribute, or -1 if absent.
-! **************************************************************************************************
-   SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum, principal_quantum_number)
-      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
-      CHARACTER(LEN=*), INTENT(IN)                       :: tag
-      REAL(dp), INTENT(OUT)                              :: values(:)
-      INTEGER, INTENT(OUT), OPTIONAL                     :: index_value, angular_momentum, &
-                                                            principal_quantum_number
-
-      CHARACTER(LEN=default_string_length)               :: name, string, value
-      INTEGER                                            :: i, last, n
-      LOGICAL                                            :: at_end
-      REAL(dp)                                           :: quantum_number
-
-      n = SIZE(values)
-      last = LEN_TRIM(tag)
-      IF (PRESENT(index_value)) index_value = -1
-      IF (PRESENT(angular_momentum)) angular_momentum = -1
-      IF (PRESENT(principal_quantum_number)) principal_quantum_number = -1
-      IF (tag(last:last) == ">") THEN
-         name = tag(2:last - 1)
-      ELSE
-         name = tag(2:last)
-         DO
-            IF (parser_test_next_token(parser) == "EOL") THEN
-               CALL upf_next_line(parser, at_end)
-               CPASSERT(.NOT. at_end)
-            END IF
-            CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
-            IF (string == ">") EXIT
-            SELECT CASE (string)
-            CASE ("TYPE")
-               CALL parser_get_object(parser, value, lower_to_upper=.TRUE.)
-               CPASSERT(value == "REAL")
-            CASE ("SIZE")
-               CALL parser_get_object(parser, n)
-               CPASSERT(n == SIZE(values))
-            CASE ("COLUMNS")
-               CALL parser_get_object(parser, value)
-            CASE ("INDEX")
-               CPASSERT(PRESENT(index_value))
-               CALL parser_get_object(parser, index_value)
-            CASE ("L")
-               CPASSERT(PRESENT(angular_momentum))
-               ! QE also writes these integer-valued attributes as REAL literals.
-               CALL parser_get_object(parser, quantum_number)
-               CPASSERT(ieee_is_finite(quantum_number))
-               CPASSERT(quantum_number >= 0.0_dp .AND. quantum_number < REAL(HUGE(0), dp))
-               CPASSERT(quantum_number == REAL(NINT(quantum_number), dp))
-               angular_momentum = NINT(quantum_number)
-            CASE ("N")
-               CPASSERT(PRESENT(principal_quantum_number))
-               CALL parser_get_object(parser, quantum_number)
-               CPASSERT(ieee_is_finite(quantum_number))
-               CPASSERT(quantum_number >= 1.0_dp .AND. quantum_number < REAL(HUGE(0), dp))
-               CPASSERT(quantum_number == REAL(NINT(quantum_number), dp))
-               principal_quantum_number = NINT(quantum_number)
-            CASE ("LABEL")
-               CALL parser_get_object(parser, value, allow_empty=.TRUE.)
-            CASE DEFAULT
-               CPABORT("Unknown UPF "//TRIM(name)//" option <"//TRIM(string)//"> found")
-            END SELECT
-         END DO
-      END IF
-      DO i = 1, n
-         DO WHILE (parser_test_next_token(parser) == "EOL")
-            CALL upf_next_line(parser, at_end)
-            CPASSERT(.NOT. at_end)
-         END DO
-         CALL parser_get_object(parser, values(i))
-      END DO
-      CPASSERT(ALL(ieee_is_finite(values)))
-      CALL upf_next_line(parser, at_end)
-      CPASSERT(.NOT. at_end)
-      CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
-      CPASSERT(string == "</"//TRIM(name)//">")
-   END SUBROUTINE upf_real_array
-
-
-
-! **************************************************************************************************
 !> \brief Read PAW format-2 occupations, AE core density and local potential.
 !> \param parser Token stream after the PP_PAW tag name.
 !> \param pot UPF data; energies and potentials are converted from Ry to Hartree.
@@ -1555,7 +1468,7 @@ CONTAINS
 !> \param index_value Optional projector index attribute, or -1 if absent.
 !> \param angular_momentum Optional angular momentum attribute, or -1 if absent.
 !> \param principal_quantum_number Optional principal quantum number attribute, or -1 if absent.
-!> \param convention ...
+!> \param convention Original kinetic-density convention attribute, or empty if absent.
 ! **************************************************************************************************
    SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum, principal_quantum_number, convention)
       TYPE(cp_parser_type), INTENT(INOUT)                :: parser
