@@ -90,7 +90,8 @@ Energy, covectors and Hessian actions use the same spin rule.
 
 The `skala_sirius_unittest.psmp` arguments are
 `MODEL SETUP SIDE STEP MODE PRESET ORBITALS INFERENCE FIELD_STEP BANDS`.
-`SETUP` is empty for PW, `LAPW` for the all-valence fixture, or a PAW/LAPW JSON file.
+`SETUP` is `LAPW` for the built-in all-valence FP-LAPW fixture, a PAW JSON file
+for a supplied setup, or empty for the synthetic PW/PAW fixtures.
 `ORBITALS` and `INFERENCE` independently select `gpu`; omitted values select CPU.
 The legacy `skala-float32` preset selects actual-model steps and solver thresholds,
 not point-evaluation precision. Both presets retain the same derivative-error bounds.
@@ -99,7 +100,7 @@ not point-evaluation precision. Both presets retain the same derivative-error bo
 ```sh
 skala_sirius_unittest.psmp SKALA C-paw-core.json 4 0.00001 atom-grid-orbitals skala-float32 gpu gpu 0.00001 8
 skala_sirius_unittest.psmp SKALA LAPW 18 "" atom-grid-forces skala-float32
-skala_sirius_unittest.psmp SKALA LAPW 4 0.0005 spinor-lapw-soc-orbitals skala-float32 gpu gpu
+skala_sirius_unittest.psmp SKALA LAPW 4 0.00001 spinor-lapw-soc-orbitals skala-float32 gpu gpu
 ```
 
 `atom-grid-orbitals` checks scalar/collinear orbital derivatives. Spinor modes are
@@ -107,6 +108,7 @@ skala_sirius_unittest.psmp SKALA LAPW 4 0.0005 spinor-lapw-soc-orbitals skala-fl
 `spinor-paw-soc-orbitals`, `spinor-atom-grid-orbitals` and `spinor-lapw-soc-orbitals`.
 These hold occupations, radial functions and core states fixed and do not require
 SCF convergence. PAW rotations need not preserve its overlap norm.
+For the synthetic PAW SOC mode, use `STEP=0.000002`.
 `atom-grid-forces` and `atom-grid-stress` check total derivatives with geometry
 updates and coupled LAPW response. `spinor-stress` checks fixed-orbital XC stress.
 Each enabled derivative check uses two step sizes without density renormalization.
