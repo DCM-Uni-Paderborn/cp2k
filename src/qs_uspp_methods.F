@@ -316,6 +316,23 @@ CONTAINS
    END FUNCTION core_tau_cache
 
 ! **************************************************************************************************
+!> \brief Select the immutable auxiliary PS kinetic field for an active PAW kind.
+!> \param uspp Current kind caches; the pointer is used only within this geometry state.
+!> \param ikind Kind index in the shared USPP/PAW state.
+!> \return Associated PAW cache, or a null pointer for another pseudopotential type.
+! **************************************************************************************************
+   FUNCTION paw_core_tau_cache(uspp, ikind) RESULT(cache)
+      TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
+      INTEGER, INTENT(IN)                                :: ikind
+      TYPE(paw_core_kinetic_type), POINTER               :: cache
+
+      NULLIFY (cache)
+      IF (.NOT. ALLOCATED(uspp%paw)) RETURN
+      CPASSERT(ikind >= 1 .AND. ikind <= SIZE(uspp%paw))
+      IF (uspp%paw(ikind)%active) cache => uspp%paw(ikind)%xcgrid%core_kinetic
+   END FUNCTION paw_core_tau_cache
+
+! **************************************************************************************************
 !> \brief Whether a nonzero verified UPF model-core kinetic field is present.
 !> \param ks_env Current USPP caches.
 !> \return True for at least one nonzero auxiliary PS core field.
@@ -2120,7 +2137,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Whether a nonzero verified UPF model-core kinetic field is present.
-!> \param ks_env Current USPP and PAW caches.
+!> \param ks_env Current PAW caches.
 !> \return True for at least one nonzero auxiliary PS core field.
 ! **************************************************************************************************
    FUNCTION qs_paw_core_tau_present(ks_env) RESULT(present_core)
@@ -2135,7 +2152,7 @@ CONTAINS
       CALL get_ks_env(ks_env, uspp=uspp)
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       DO ikind = 1, SIZE(uspp%paw)
-         cache => core_tau_cache(uspp, ikind)
+         cache => paw_core_tau_cache(uspp, ikind)
          IF (.NOT. ASSOCIATED(cache)) CYCLE
          IF (.NOT. cache%available) CYCLE
          IF (ANY(cache%weighted /= 0.0_dp)) present_core = .TRUE.
@@ -2165,7 +2182,7 @@ CONTAINS
       core_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
       DO center = 1, SIZE(uspp%center_atoms)
          ikind = uspp%center_kinds(center)
-         cache => core_tau_cache(uspp, ikind)
+         cache => paw_core_tau_cache(uspp, ikind)
          IF (.NOT. ASSOCIATED(cache)) CYCLE
          IF (.NOT. cache%available) CYCLE
          IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
@@ -2209,7 +2226,7 @@ CONTAINS
       CALL pw_transfer(potential, potential_g)
       DO center = 1, SIZE(uspp%center_atoms)
          ikind = uspp%center_kinds(center)
-         cache => core_tau_cache(uspp, ikind)
+         cache => paw_core_tau_cache(uspp, ikind)
          IF (.NOT. ASSOCIATED(cache)) CYCLE
          IF (.NOT. cache%available) CYCLE
          IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
@@ -2260,7 +2277,7 @@ CONTAINS
       ALLOCATE (folded, SOURCE=points - MATMUL(cell%hmat, ANINT(MATMUL(cell%h_inv, points))))
       DO center = 1, SIZE(uspp%center_atoms)
          ikind = uspp%center_kinds(center)
-         cache => core_tau_cache(uspp, ikind)
+         cache => paw_core_tau_cache(uspp, ikind)
          IF (.NOT. ASSOCIATED(cache)) CYCLE
          IF (.NOT. cache%available) CYCLE
          IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
@@ -2312,7 +2329,7 @@ CONTAINS
       ALLOCATE (point_derivative(3, SIZE(potential)))
       DO center = 1, SIZE(uspp%center_atoms)
          ikind = uspp%center_kinds(center)
-         cache => core_tau_cache(uspp, ikind)
+         cache => paw_core_tau_cache(uspp, ikind)
          IF (.NOT. ASSOCIATED(cache)) CYCLE
          IF (.NOT. cache%available) CYCLE
          IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
