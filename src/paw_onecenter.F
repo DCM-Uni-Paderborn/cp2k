@@ -128,8 +128,9 @@ CONTAINS
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       TYPE(paw_onecenter_type), INTENT(INOUT)            :: onecenter
-      REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius, omega
+      REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius
       INTEGER, INTENT(OUT)                               :: cache_index
+      REAL(dp), INTENT(IN), OPTIONAL                     :: omega
 
       INTEGER                                            :: i, n
       TYPE(paw_core_exchange_type), ALLOCATABLE          :: extended(:)
@@ -166,6 +167,7 @@ CONTAINS
 !> \param nproj Number of valence magnetic projectors.
 !> \param core Prepared data or an explicit unavailable-data reason.
 !> \param cutoff_radius Optional truncated interaction; absence selects Coulomb.
+!> \param omega ...
 ! **************************************************************************************************
    SUBROUTINE paw_core_exchange_build(pot, projectors, nproj, core, cutoff_radius, omega)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
@@ -450,13 +452,13 @@ CONTAINS
 !> \param l Angular momentum.
 !> \param integral Symmetric bilinear matrix.
 !> \param cutoff_radius Optional truncated interaction; absence selects Coulomb.
+!> \param omega ...
 ! **************************************************************************************************
    SUBROUTINE paw_core_radial_integral(r, products, l, integral, cutoff_radius, omega)
       REAL(dp), INTENT(IN)                               :: r(:), products(:, :)
       INTEGER, INTENT(IN)                                :: l
       REAL(dp), INTENT(OUT)                              :: integral(:, :)
-      REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius
-      REAL(dp), INTENT(IN), OPTIONAL                     :: omega
+      REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius, omega
 
       CPASSERT(.NOT. (PRESENT(cutoff_radius) .AND. PRESENT(omega)))
       IF (PRESENT(omega)) THEN
@@ -686,14 +688,20 @@ CONTAINS
 !> \param integral Symmetric bilinear matrix including 4*pi/(2*l+1).
 ! **************************************************************************************************
    SUBROUTINE paw_radial_short(r, products, l, omega, integral)
-      REAL(dp), INTENT(IN)                               :: r(:), products(:, :), omega
+      REAL(dp), INTENT(IN)                               :: r(:), products(:, :)
       INTEGER, INTENT(IN)                                :: l
+      REAL(dp), INTENT(IN)                               :: omega
       REAL(dp), INTENT(OUT)                              :: integral(:, :)
 
-      INTEGER :: a, b, chunk, chunks, i, j, k, n, nc, outer, outers, source_panel
-      REAL(dp) :: factor, h, kernel, left, lower, radius, right, source_h, source_left, source_r, source_right, t
-      REAL(dp) :: nodes(8), weights(8)
-      REAL(dp), ALLOCATABLE :: angular_nodes(:), angular_weights(:), c(:, :, :), inner(:), sample(:), slopes(:, :), value(:)
+      INTEGER                                            :: a, b, chunk, chunks, i, j, k, n, nc, &
+                                                            outer, outers, source_panel
+      REAL(dp)                                           :: factor, h, kernel, left, lower, &
+                                                            nodes(8), radius, right, source_h, &
+                                                            source_left, source_r, source_right, &
+                                                            t, weights(8)
+      REAL(dp), ALLOCATABLE                              :: angular_nodes(:), angular_weights(:), &
+                                                            c(:, :, :), inner(:), sample(:), &
+                                                            slopes(:, :), value(:)
 
       n = SIZE(r)
       nc = SIZE(products, 2)
@@ -747,7 +755,7 @@ CONTAINS
                         source_r = source_left + source_h*(REAL(chunk - 1, dp) + nodes(k))/REAL(chunks, dp)
                         t = (source_r - r(source_panel))/(r(source_panel + 1) - r(source_panel))
                         sample = c(0, :, source_panel) + t*(c(1, :, source_panel) + &
-                                                           t*(c(2, :, source_panel) + t*c(3, :, source_panel)))
+                                                            t*(c(2, :, source_panel) + t*c(3, :, source_panel)))
                         kernel = paw_short_multipole(radius, source_r, l, omega, angular_nodes, angular_weights)
                         inner = inner + source_h/REAL(chunks, dp)*weights(k)*kernel*sample
                      END DO
@@ -782,12 +790,13 @@ CONTAINS
 !> \return Coefficient v_l without 4*pi/(2*l+1); retain its sign.
 ! **************************************************************************************************
    FUNCTION paw_short_multipole(r, s, l, omega, nodes, weights) RESULT(value)
-      REAL(dp), INTENT(IN) :: r, s, omega, nodes(:), weights(:)
-      INTEGER, INTENT(IN) :: l
-      REAL(dp) :: value
+      REAL(dp), INTENT(IN)                               :: r, s
+      INTEGER, INTENT(IN)                                :: l
+      REAL(dp), INTENT(IN)                               :: omega, nodes(:), weights(:)
+      REAL(dp)                                           :: value
 
-      INTEGER :: chunk, chunks, i, k
-      REAL(dp) :: current, next, previous, span, u, z
+      INTEGER                                            :: chunk, chunks, i, k
+      REAL(dp)                                           :: current, next, previous, span, u, z
 
       span = MIN(2.0_dp*s, MAX(0.0_dp, 28.0_dp/omega - (r - s)))
       value = 0.0_dp

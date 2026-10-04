@@ -237,7 +237,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       CALL get_qs_env(qs_env, cell=cell)
       CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, ri_data%pgrid, auxiliary, &
-                                     cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0), reconstructed_paw=.TRUE.)
+                                 cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0), reconstructed_paw=.TRUE.)
       CALL qs_uspp_hfx_transition_tensor(uspp%overlaps, auxiliary, tensor)
       CALL dbt_destroy(auxiliary)
    END SUBROUTINE qs_uspp_hfx_add_tensor
@@ -278,7 +278,7 @@ CONTAINS
       IF (pref == 0.0_dp) RETURN
       CALL get_qs_env(qs_env, cell=cell)
       CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, ri_data%pgrid, auxiliary, &
-                                     cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0), reconstructed_paw=.TRUE.)
+                                 cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0), reconstructed_paw=.TRUE.)
       CALL qs_uspp_hfx_transition_adjoint(uspp%overlaps, auxiliary, tensor_adjoint, pref, &
                                           overlap_gradient, auxiliary_gradient)
       CALL projector_state(qs_env, ks_env, ri_data%orb_basis_type, uspp, sap_ppnl)
@@ -417,6 +417,7 @@ CONTAINS
 !> \param tensors Full (RI,AO,AO) image tensors, incremented without a Gaussian support restriction.
 !> \param ri_domain Optional fixed local RI support (stacked RI atom,first AO atom).
 !> \param cell Optional cell folding convention shared with the SAP labels.
+!> \param reconstructed_paw ...
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_lattice_tensor(template, sap, uspp, basis, particles, nang, pgrid, &
                                          cell_matrix, ri_cells, ao_cells, tensors, ri_domain, cell, reconstructed_paw)
@@ -432,7 +433,7 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: tensors(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: ri_domain(:, :)
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
-      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
+      LOGICAL, INTENT(IN), OPTIONAL                      :: reconstructed_paw
 
       CALL lattice_action(template, sap, uspp, basis, particles, nang, pgrid, cell_matrix, &
                           ri_cells, ao_cells, tensors, ri_domain, cell, reconstructed_paw=reconstructed_paw)
@@ -459,6 +460,7 @@ CONTAINS
 !> \param cell_gradient Optional physical affine-strain gradient, incremented without reduction.
 !> \param ri_domain Same optional fixed local RI support.
 !> \param cell Same optional atom folding convention.
+!> \param reconstructed_paw ...
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_lattice_gradient(template, sap, uspp, basis, particles, nang, pgrid, &
                                            cell_matrix, ri_cells, ao_cells, tensor_adjoint, pref, &
@@ -478,10 +480,10 @@ CONTAINS
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: cell_gradient(3, 3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: ri_domain(:, :)
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
-      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
+      LOGICAL, INTENT(IN), OPTIONAL                      :: reconstructed_paw
 
       CALL lattice_action(template, sap, uspp, basis, particles, nang, pgrid, cell_matrix, &
-                          ri_cells, ao_cells, tensor_adjoint, ri_domain, cell, pref, atom_gradient, cell_gradient, reconstructed_paw)
+                         ri_cells, ao_cells, tensor_adjoint, ri_domain, cell, pref, atom_gradient, cell_gradient, reconstructed_paw)
    END SUBROUTINE qs_uspp_hfx_lattice_gradient
 
 ! **************************************************************************************************
@@ -502,6 +504,7 @@ CONTAINS
 !> \param pref ...
 !> \param atom_gradient ...
 !> \param cell_gradient ...
+!> \param reconstructed_paw ...
 ! **************************************************************************************************
    SUBROUTINE lattice_action(template, sap, uspp, basis, particles, nang, pgrid, cell_matrix, &
                              ri_cells, ao_cells, tensors, ri_domain, cell, pref, atom_gradient, cell_gradient, reconstructed_paw)
@@ -519,7 +522,7 @@ CONTAINS
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
       REAL(dp), INTENT(IN), OPTIONAL                     :: pref
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: atom_gradient(:, :), cell_gradient(3, 3)
-      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
+      LOGICAL, INTENT(IN), OPTIONAL                      :: reconstructed_paw
 
       INTEGER                                            :: image, nblks(3), t, u
       INTEGER, ALLOCATABLE                               :: d1(:), d2(:), d3(:), pp_cells(:, :), &
@@ -561,7 +564,8 @@ CONTAINS
       shifts(:, :) = MATMUL(cell_matrix, REAL(ri_cells, dp))
       DO t = 1, SIZE(pp_cells, 2)
          qshift = MATMUL(cell_matrix, REAL(pp_cells(:, t), dp))
-         CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, shifts, qshift, cell, reconstructed_paw=reconstructed_paw)
+         CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, shifts, qshift, cell, &
+                                        reconstructed_paw=reconstructed_paw)
          CALL dbt_get_info(auxiliary, nblks_total=nblks)
          ALLOCATE (sizes_ri(nblks(1)))
          CALL dbt_get_info(auxiliary, blk_size_1=sizes_ri)
@@ -804,9 +808,10 @@ CONTAINS
 !> \param cell Optional cell; fold atom coordinates to the same origin as the SAP image labels.
 !> \param ri_metric RI operator, Coulomb by default.
 !> \param periodic_sum Sum native Q images for the implicit Gamma engine.
+!> \param reconstructed_paw ...
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, &
-                                        ri_displacements, augmentation_displacement, cell, ri_metric, periodic_sum, reconstructed_paw)
+                                      ri_displacements, augmentation_displacement, cell, ri_metric, periodic_sum, reconstructed_paw)
       TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
@@ -817,8 +822,7 @@ CONTAINS
                                                             augmentation_displacement(3)
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
       TYPE(libint_potential_type), INTENT(IN), OPTIONAL  :: ri_metric
-      LOGICAL, INTENT(IN), OPTIONAL                      :: periodic_sum
-      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
+      LOGICAL, INTENT(IN), OPTIONAL                      :: periodic_sum, reconstructed_paw
 
       INTEGER                                            :: atom, center, first, ikind, iset, &
                                                             kind_q, n, nset, owner, ri_cell, row, &
@@ -893,6 +897,7 @@ CONTAINS
 !> \param cell Same optional cell and atom folding as the forward C.
 !> \param ri_metric Same RI operator as the forward tensor.
 !> \param periodic_sum Same implicit Gamma image sum as the forward tensor.
+!> \param reconstructed_paw ...
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
                                           atom_gradient, cell_gradient, ri_displacements, augmentation_displacement, cell, &
@@ -908,8 +913,7 @@ CONTAINS
                                                             augmentation_displacement(3)
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
       TYPE(libint_potential_type), INTENT(IN), OPTIONAL  :: ri_metric
-      LOGICAL, INTENT(IN), OPTIONAL                      :: periodic_sum
-      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
+      LOGICAL, INTENT(IN), OPTIONAL                      :: periodic_sum, reconstructed_paw
 
       INTEGER                                            :: atom, axis, axis2, center, first, ikind, &
                                                             ind(3), iset, kind_q, n, nset, qatom, &

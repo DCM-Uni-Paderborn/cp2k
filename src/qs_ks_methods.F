@@ -241,10 +241,10 @@ CONTAINS
          use_gauxc_matrix, use_virial
       LOGICAL, SAVE :: native_grid_cpu_kpoints_warned = .FALSE.
       REAL(dp), ALLOCATABLE                              :: uspp_aux_force_factors(:)
-      REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, hfx_fraction, paw_exchange, mulliken_order_p, &
+      REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, hfx_fraction, mulliken_order_p, &
          native_skala_composite_contraction, native_skala_composite_rho_contraction, &
          native_skala_composite_tau_contraction, native_skala_exc_scf, native_skala_total_scf, &
-         vscale
+         paw_exchange, vscale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cdft_gapw_values
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: cdft_charge_correction, &
                                                             cdft_electronic_charge, &

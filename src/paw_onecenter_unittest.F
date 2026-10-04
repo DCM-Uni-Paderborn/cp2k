@@ -668,7 +668,7 @@ CONTAINS
                                                             variant, weight
       REAL(dp)                                           :: a, b, c, energy, error, exact, f0, f1, &
                                                             f2, fraction, minus, plus, radius, &
-                                                            scale, x, screening
+                                                            scale, screening, x
       REAL(dp), ALLOCATABLE                              :: potential(:, :, :), reference(:, :), &
                                                             scratch(:, :, :)
       TYPE(paw_onecenter_type)                           :: poisoned
@@ -761,7 +761,7 @@ CONTAINS
             END IF
          END DO
       END DO
-      IF (SIZE(onecenter%interaction_core_exchange) /= SIZE(cutoffs) + SIZE(omegas)) ERROR STOP 'PAW kernel core radii share a cache'
+     IF (SIZE(onecenter%interaction_core_exchange) /= SIZE(cutoffs) + SIZE(omegas)) ERROR STOP 'PAW kernel core radii share a cache'
       IF (MAXVAL(ABS(onecenter%interaction_core_exchange(4)%matrix - onecenter%core_exchange_matrix)) > 1.e-14_dp .OR. &
           ABS(onecenter%interaction_core_exchange(4)%energy - onecenter%core_exchange_energy) > 1.e-14_dp) THEN
          ERROR STOP 'PAW kernel core preparation replaced the separate Coulomb cache'
@@ -796,9 +796,10 @@ CONTAINS
 !> \return Ratio of finite-kernel to Coulomb Gaussian integrals.
 ! **************************************************************************************************
    FUNCTION gaussian_kernel_factor(x, l, omega) RESULT(value)
-      REAL(dp), INTENT(IN) :: x, omega
-      INTEGER, INTENT(IN) :: l
-      REAL(dp) :: value
+      REAL(dp), INTENT(IN)                               :: x
+      INTEGER, INTENT(IN)                                :: l
+      REAL(dp), INTENT(IN)                               :: omega
+      REAL(dp)                                           :: value
 
       IF (omega >= 0.0_dp) THEN
          value = 1.0_dp - (omega**2/(x + omega**2))**(REAL(l, dp) + 0.5_dp)
@@ -818,11 +819,13 @@ CONTAINS
 !> \brief Higher-angular-momentum short-range bilinear against an independent Fourier Gaussian integral.
 ! **************************************************************************************************
    SUBROUTINE screened_radial_integrals()
-      INTEGER, PARAMETER :: n = 193, l = 8
+      INTEGER, PARAMETER                                 :: l = 8, n = 193
       REAL(dp), PARAMETER :: exponents(2) = [0.7_dp, 1.1_dp], omega = 0.11_dp
 
-      INTEGER :: a, b, i
-      REAL(dp) :: error, exact, integral(2, 2), products(n, 2), r(n), reference(2, 2), scale
+      INTEGER                                            :: a, b, i
+      REAL(dp)                                           :: error, exact, integral(2, 2), &
+                                                            products(n, 2), r(n), reference(2, 2), &
+                                                            scale
 
       DO i = 1, n
          r(i) = 9.0_dp*REAL(i - 1, dp)/REAL(n - 1, dp)
@@ -836,7 +839,7 @@ CONTAINS
          DO a = 1, 2
             scale = gaussian_coulomb(exponents(a), exponents(b), l)
             exact = scale*(1.0_dp - (omega**2/(exponents(a)*exponents(b)/(exponents(a) + exponents(b)) + &
-                                             omega**2))**(REAL(l, dp) + 0.5_dp))
+                                               omega**2))**(REAL(l, dp) + 0.5_dp))
             error = MAX(error, ABS(integral(a, b) - exact)/MAX(1.0_dp, ABS(scale)))
          END DO
       END DO

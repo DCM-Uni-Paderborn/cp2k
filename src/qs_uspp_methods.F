@@ -27,9 +27,9 @@ MODULE qs_uspp_methods
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_comm_unequal
    USE particle_types,                  ONLY: particle_type
-   USE paw_core_kinetic,                ONLY: paw_core_kinetic_cartesian,&
-                                              paw_core_kinetic_fourier,&
-                                              paw_core_kinetic_build_ae
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_build_ae,&
+                                              paw_core_kinetic_cartesian,&
+                                              paw_core_kinetic_fourier
    USE paw_onecenter,                   ONLY: paw_onecenter_core_exchange,&
                                               paw_onecenter_core_exchange_init,&
                                               paw_onecenter_core_exchange_prepare,&
@@ -136,7 +136,7 @@ CONTAINS
 !> \param uspp Current centers and immutable kind caches; charge and overlap are unchanged.
 !> \param qs_kind_set Original scalar UPF datasets and their native projector ordering.
 ! **************************************************************************************************
-SUBROUTINE qs_uspp_prepare_global_xc(uspp, qs_kind_set)
+   SUBROUTINE qs_uspp_prepare_global_xc(uspp, qs_kind_set)
       TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
       TYPE(qs_kind_type), INTENT(IN)                     :: qs_kind_set(:)
 
@@ -1555,6 +1555,7 @@ SUBROUTINE qs_uspp_prepare_global_xc(uspp, qs_kind_set)
 !> \param core Frozen-core energy constant, reset and returned replicated.
 !> \param calculate_forces Whether to differentiate projectors at fixed AO density.
 !> \param hamiltonian Optional spin and image AO matrices; absent for energy-only evaluation.
+!> \param semilocal_xc ...
 ! **************************************************************************************************
    SUBROUTINE qs_paw_correction(ks_env, xc_section, density, hartree, exc, core, calculate_forces, hamiltonian, semilocal_xc)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
@@ -1563,7 +1564,7 @@ SUBROUTINE qs_uspp_prepare_global_xc(uspp, qs_kind_set)
       REAL(dp), INTENT(OUT)                              :: hartree, exc, core
       LOGICAL, INTENT(IN)                                :: calculate_forces
       TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: hamiltonian(:, :)
-      LOGICAL, INTENT(IN), OPTIONAL :: semilocal_xc
+      LOGICAL, INTENT(IN), OPTIONAL                      :: semilocal_xc
 
       INTEGER                                            :: center, handle, ikind, n, natom, ns, spin
       LOGICAL                                            :: found
@@ -2350,7 +2351,8 @@ SUBROUTINE qs_uspp_prepare_global_xc(uspp, qs_kind_set)
 !> \param omega Optional inverse erfc screening length; mutually exclusive with cutoff_radius.
 !> \param reconstructed_valence Add only closed-core exchange when RI already reconstructs the valence density.
 ! **************************************************************************************************
-   SUBROUTINE qs_paw_exchange(ks_env, density, fraction, exchange, calculate_forces, hamiltonian, cutoff_radius, omega, reconstructed_valence)
+   SUBROUTINE qs_paw_exchange(ks_env, density, fraction, exchange, calculate_forces, hamiltonian, cutoff_radius, omega, &
+                              reconstructed_valence)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:, :)
       REAL(dp), INTENT(IN)                               :: fraction
@@ -2358,12 +2360,13 @@ SUBROUTINE qs_uspp_prepare_global_xc(uspp, qs_kind_set)
       LOGICAL, INTENT(IN)                                :: calculate_forces
       TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: hamiltonian(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius, omega
-      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_valence
+      LOGICAL, INTENT(IN), OPTIONAL                      :: reconstructed_valence
 
       INTEGER                                            :: center, handle, ikind, n, natom, ns, &
                                                             nuclear_charge, spin
       INTEGER, ALLOCATABLE                               :: core_cache(:)
-      LOGICAL                                            :: found, frozen_core, valid_shape, core_only
+      LOGICAL                                            :: core_only, found, frozen_core, &
+                                                            valid_shape
       REAL(dp)                                           :: center_exchange
       REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), &
                                                             cell_gradient(:, :), dm(:, :, :), &
