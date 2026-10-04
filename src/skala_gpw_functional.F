@@ -99,7 +99,7 @@ MODULE skala_gpw_functional
              native_skala_gapw_composite_direct_ao, native_skala_gapw_composite_reference, &
              native_skala_gapw_density_partition, skala_gpw_eval, skala_gpw_weight_derivative, &
              skala_gapw_representation, xc_section_uses_native_skala_evaluator, &
-             skala_gpw_exc_density, skala_grid_eval, skala_point_eval, &
+             skala_grid_eval, skala_point_eval, &
              xc_section_uses_native_skala_grid, xc_section_uses_gauxc_model
 
    TYPE(skala_torch_model_type), SAVE                  :: cached_model
