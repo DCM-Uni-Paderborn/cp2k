@@ -21,7 +21,8 @@ PROGRAM paw_onecenter_unittest
    USE paw_onecenter,                   ONLY: &
         paw_onecenter_core_exchange, paw_onecenter_core_exchange_init, &
         paw_onecenter_core_exchange_prepare, paw_onecenter_exchange, paw_onecenter_hartree, &
-        paw_onecenter_init, paw_onecenter_type, paw_radial_coulomb, paw_radial_truncated
+        paw_onecenter_init, paw_onecenter_type, paw_radial_coulomb, paw_radial_short, &
+        paw_radial_truncated
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
 
