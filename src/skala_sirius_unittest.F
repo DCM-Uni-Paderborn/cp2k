@@ -32,8 +32,8 @@ PROGRAM skala_sirius_unittest
       sirius_add_atom_type_aw_descriptor, sirius_add_atom_type_lo_descriptor, &
       sirius_context_handler, sirius_create_context, sirius_create_ground_state, &
       sirius_create_kset, sirius_find_ground_state, sirius_free_handler, &
-      sirius_generate_effective_potential, sirius_get_energy, sirius_ground_state_handler, &
-      sirius_get_forces, sirius_get_stress_tensor, &
+      sirius_generate_density, sirius_generate_effective_potential, sirius_get_energy, sirius_ground_state_handler, &
+      sirius_get_forces, sirius_get_stress_tensor, sirius_get_total_magnetization, &
       sirius_get_max_num_gkvec, sirius_set_atom_position, sirius_update_ground_state, &
       sirius_import_parameters, sirius_initialize_context, sirius_kpoint_set_handler, &
       sirius_set_atom_type_dion, sirius_set_atom_type_paw, sirius_set_atom_type_radial_grid, &
@@ -69,16 +69,17 @@ PROGRAM skala_sirius_unittest
    TYPE(sirius_kpoint_set_handler) :: ks
    TYPE(sirius_ground_state_handler) :: gs
    CHARACTER(len=default_path_length) :: model, paw_setup
-   CHARACTER(len=32) :: side_arg, step_arg, grid_arg, model_mode
-   INTEGER :: i, l, mode, mag, nr, nb, x, y, z, ierr, side, first_mode, last_mode, geometry, natoms
-   INTEGER :: updated_basis, fresh_basis, max_scf_iterations
+   CHARACTER(len=32) :: side_arg, step_arg, grid_arg, model_mode, device_arg, model_device_arg, response_arg, bands_arg
+   CHARACTER(len=3) :: processing_unit = "CPU"
+   INTEGER :: i, j, l, mode, mag, nr, nb, x, y, z, ierr, side, first_mode, last_mode, geometry, natoms
+   INTEGER :: updated_basis, fresh_basis, max_scf_iterations, num_bands
    REAL(dp) :: lattice(3, 3), r(nrad), v(nrad), rho(nrad), orbital(nrad), dion(1, 1), &
-               energy, exc, repeat_exc, kpoint(3, 1), reference(3, 2), fd_step, &
-               rmt(nmt), rfree(nfree), rhofree(nfree)
+               energy, exc, repeat_exc, kpoint(3, 1), reference(3, 2), fd_step, response_step, &
+               rmt(nmt), rfree(nfree), rhofree(nfree), soc_dion(2, 2)
    REAL(dp) :: force_steps(5) = [0.0_dp, 2.0e-4_dp, -2.0e-4_dp, 1.0e-4_dp, -1.0e-4_dp]
    REAL(dp), PARAMETER :: direction(3) = [0.7_dp, -0.4_dp, 0.2_dp]
    REAL(dp) :: force_energy(5), force_derivative, force_fd, entropy, descf, density_tol, energy_tol
-   REAL(dp) :: stress(3, 3), strain(3, 3)
+   REAL(dp) :: stress(3, 3), strain(3, 3), magnetization(3)
    REAL(dp) :: updated_energy, updated_exc
    REAL(dp), ALLOCATABLE :: forces(:, :)
 #if defined(__SIRIUS_XC_DERIVATIVE)
@@ -93,7 +94,8 @@ PROGRAM skala_sirius_unittest
 #endif
    REAL(dp), ALLOCATABLE :: points(:, :), weights(:), descriptor_weights(:), centres(:, :)
    INTEGER, ALLOCATABLE :: sizes(:)
-   LOGICAL :: converged, atom_grid, force_test, stress_test, derivative_test, update_test
+   LOGICAL :: converged, atom_grid, force_test, stress_test, derivative_test, update_test, spinor_test, orbital_only
+   LOGICAL :: spinor_stress, soc_test, paw_soc_test, lapw_soc_test
 
    CALL get_command_argument(1, model)
    CALL get_command_argument(2, paw_setup)
@@ -101,16 +103,47 @@ PROGRAM skala_sirius_unittest
    CALL get_command_argument(4, step_arg)
    CALL get_command_argument(5, grid_arg)
    CALL get_command_argument(6, model_mode)
+   CALL get_command_argument(7, device_arg)
+   CALL get_command_argument(8, model_device_arg)
+   CALL get_command_argument(9, response_arg)
+   CALL get_command_argument(10, bands_arg)
+   num_bands = 4
+   IF (LEN_TRIM(bands_arg) > 0) THEN
+      READ (bands_arg, *, IOSTAT=ierr) num_bands
+      IF (ierr /= 0) ERROR STOP "Invalid band count"
+      IF (num_bands < 1) ERROR STOP "Band count must be positive"
+   END IF
+   IF (TRIM(device_arg) == "gpu") THEN
+      processing_unit = "GPU"
+   ELSE IF (LEN_TRIM(device_arg) > 0 .AND. TRIM(device_arg) /= "cpu") THEN
+      ERROR STOP "Processing unit must be cpu or gpu"
+   END IF
+   IF (LEN_TRIM(model_device_arg) > 0 .AND. &
+       TRIM(model_device_arg) /= "cpu" .AND. TRIM(model_device_arg) /= "gpu") &
+      ERROR STOP "Neural model device must be cpu or gpu"
    IF (LEN_TRIM(model_mode) > 0 .AND. TRIM(model_mode) /= "skala-float32") &
       ERROR STOP "Unknown model mode (expected skala-float32 or no mode for the analytic fixture)"
-   force_test = TRIM(grid_arg) == "atom-grid-forces"
-   stress_test = TRIM(grid_arg) == "atom-grid-stress"
+   force_test = TRIM(grid_arg) == "atom-grid-forces" .OR. TRIM(grid_arg) == "spinor-lapw-soc-forces"
+   stress_test = TRIM(grid_arg) == "atom-grid-stress" .OR. TRIM(grid_arg) == "spinor-lapw-soc-stress"
    derivative_test = force_test .OR. stress_test
    update_test = TRIM(grid_arg) == "atom-grid-update"
-   atom_grid = TRIM(grid_arg) == "atom-grid" .OR. derivative_test .OR. update_test
-   IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. atom_grid) ERROR STOP "Unknown atom-grid test mode"
+   paw_soc_test = TRIM(grid_arg) == "spinor-paw-soc-orbitals"
+   lapw_soc_test = TRIM(grid_arg) == "spinor-lapw-soc-orbitals" .OR. &
+                   TRIM(grid_arg) == "spinor-lapw-soc-forces" .OR. TRIM(grid_arg) == "spinor-lapw-soc-stress"
+   soc_test = TRIM(grid_arg) == "spinor-soc-orbitals" .OR. paw_soc_test
+   orbital_only = TRIM(grid_arg) == "atom-grid-orbitals" .OR. &
+                  TRIM(grid_arg) == "spinor-orbitals" .OR. TRIM(grid_arg) == "spinor-paw-orbitals" .OR. &
+                  TRIM(grid_arg) == "spinor-atom-grid-orbitals" .OR. soc_test .OR. (lapw_soc_test .AND. .NOT. derivative_test)
+   spinor_stress = TRIM(grid_arg) == "spinor-stress"
+   spinor_test = TRIM(grid_arg) == "spinor" .OR. TRIM(grid_arg) == "spinor-atom-grid" .OR. &
+                 (orbital_only .AND. TRIM(grid_arg) /= "atom-grid-orbitals") .OR. spinor_stress .OR. lapw_soc_test
+   atom_grid = TRIM(grid_arg) == "atom-grid" .OR. TRIM(grid_arg) == "atom-grid-orbitals" .OR. &
+               derivative_test .OR. update_test .OR. &
+               TRIM(grid_arg) == "spinor-atom-grid" .OR. TRIM(grid_arg) == "spinor-atom-grid-orbitals" .OR. &
+               spinor_stress .OR. paw_soc_test .OR. lapw_soc_test
+   IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. (atom_grid .OR. spinor_test)) ERROR STOP "Unknown atom-grid test mode"
 #if !defined(__SIRIUS_XC_POINT_UPDATE)
-   IF (update_test .OR. derivative_test) ERROR STOP "SIRIUS lacks the point-quadrature update API"
+   IF (update_test .OR. derivative_test .OR. spinor_stress) ERROR STOP "SIRIUS lacks the point-quadrature update API"
 #endif
 #if !defined(__SIRIUS_XC_POINT_GEOMETRY)
    IF (atom_grid) ERROR STOP "SIRIUS lacks the point geometry callbacks"
@@ -118,11 +151,18 @@ PROGRAM skala_sirius_unittest
    fd_step = 0.0_dp
    IF (LEN_TRIM(step_arg) > 0) THEN
       READ (step_arg, *, IOSTAT=ierr) fd_step
-      IF (ierr /= 0) ERROR STOP "Invalid orbital derivative step"
-      IF (.NOT. ieee_is_finite(fd_step) .OR. fd_step <= 0.0_dp) ERROR STOP "Orbital derivative step must be positive"
+      IF (ierr /= 0) ERROR STOP "Invalid finite-difference step"
+      IF (.NOT. ieee_is_finite(fd_step) .OR. fd_step <= 0.0_dp) ERROR STOP "Finite-difference step must be positive"
 #if !defined(__SIRIUS_XC_DERIVATIVE)
       ERROR STOP "SIRIUS lacks the external XC orbital derivative diagnostic"
 #endif
+   END IF
+   response_step = fd_step
+   IF (LEN_TRIM(response_arg) > 0) THEN
+      READ (response_arg, *, IOSTAT=ierr) response_step
+      IF (ierr /= 0) ERROR STOP "Invalid field-response step"
+      IF (.NOT. ieee_is_finite(response_step) .OR. response_step <= 0.0_dp) &
+         ERROR STOP "Field-response step must be positive"
    END IF
    side = 6
    IF (LEN_TRIM(side_arg) > 0) THEN
@@ -130,12 +170,23 @@ PROGRAM skala_sirius_unittest
       IF (ierr /= 0) ERROR STOP "Invalid quadrature dimension"
    END IF
    IF (side < 4 .OR. side > 64) ERROR STOP "Quadrature dimension must be between 4 and 64"
+   IF (orbital_only .AND. fd_step <= 0.0_dp) ERROR STOP "The orbital-only mode requires a finite-difference step"
+   IF (spinor_stress .AND. fd_step <= 0.0_dp) ERROR STOP "The spinor stress mode requires a finite-difference step"
    first_mode = 0
    last_mode = 1
    IF (LEN_TRIM(paw_setup) > 0) first_mode = 1
    IF (TRIM(paw_setup) == "LAPW") THEN
       first_mode = 2
       last_mode = 2
+   END IF
+   IF (spinor_test) THEN
+      IF (lapw_soc_test .AND. first_mode /= 2) ERROR STOP "LAPW SOC fixture requires LAPW as the second argument"
+      IF (TRIM(grid_arg) == "spinor-paw-orbitals" .OR. paw_soc_test) first_mode = 1
+      IF (soc_test .AND. first_mode /= 0 .AND. .NOT. paw_soc_test) &
+         ERROR STOP "SOC fixture requires norm-conserving pseudopotentials or the synthetic PAW setup"
+      IF (paw_soc_test .AND. LEN_TRIM(paw_setup) > 0) ERROR STOP "PAW SOC fixture requires the synthetic setup"
+      IF (spinor_stress .AND. first_mode /= 0) ERROR STOP "Isolated XC stress fixture requires norm-conserving PW orbitals"
+      last_mode = first_mode
    END IF
    reference = 0.0_dp
    IF (LEN_TRIM(model) == 0 .OR. LEN_TRIM(model) > default_string_length) &
@@ -155,14 +206,17 @@ PROGRAM skala_sirius_unittest
    energy_tol = MERGE(1.0e-11_dp, 2.0e-7_dp, derivative_test .OR. update_test)
    max_scf_iterations = 150
    IF (model_mode == "skala-float32") THEN
-      ! The serialized Skala network explicitly casts its neural features to Float32.
+      ! Actual-model preset. SIRIUS point callbacks promote the checkpoint to Float64.
       ! Keep the analytic double-precision checks and all comparison bounds unchanged.
       density_tol = 1.0e-8_dp
       energy_tol = 1.0e-9_dp
       max_scf_iterations = 300
-      ! Resolve the checkpoint's Float32 energy noise without relaxing the derivative error bound.
+      ! Use the actual-model stencil without relaxing the derivative error bound.
       IF (derivative_test) force_steps = 10.0_dp*force_steps
    END IF
+   IF (orbital_only .OR. spinor_stress) max_scf_iterations = 1
+   ! LAPW already has occupied auxiliary-Hamiltonian orbitals for the operator check.
+   IF (orbital_only .AND. first_mode == 2) max_scf_iterations = 0
    IF (comm%mepos == 0) THEN
       WRITE (*, '(A,2ES12.3)') "SCF density and energy thresholds: ", density_tol, energy_tol
       WRITE (*, '(A,I0)') "Maximum SCF iterations: ", max_scf_iterations
@@ -171,13 +225,21 @@ PROGRAM skala_sirius_unittest
    CALL section_vals_create(xc, definition)
    CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%MODEL", c_val=TRIM(model))
    CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID", l_val=.TRUE.)
+   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=TRIM(model_device_arg) == "gpu")
    IF (atom_grid) THEN
       CALL create_pwdft_section(pwdft_definition)
       CALL section_vals_create(pwdft, pwdft_definition)
       CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=MERGE(30, 100, derivative_test .AND. first_mode == 2))
       CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=MERGE(50, 110, derivative_test .AND. first_mode == 2))
+      IF (spinor_stress .OR. orbital_only) THEN
+         ! These modes test the fixed-orbital chain rule, not grid convergence.
+         CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=12)
+         CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=26)
+      END IF
       CALL section_vals_val_set(pwdft, "SKALA_GRID%EPS_RESPONSE", &
                                 r_val=MERGE(1.0e-6_dp, 1.0e-8_dp, model_mode == "skala-float32"))
+      IF (spinor_test .AND. model_mode /= "skala-float32") &
+         CALL section_vals_val_set(pwdft, "SKALA_GRID%N_SPIN_ANGULAR", i_val=26)
       grid => section_vals_get_subs_vals(pwdft, "SKALA_GRID")
    END IF
    lattice = 0.0_dp
@@ -221,7 +283,8 @@ PROGRAM skala_sirius_unittest
    kpoint(:, 1) = [0.07_dp, 0.03_dp, 0.02_dp]
 
    DO mode = first_mode, last_mode
-      DO mag = MERGE(MIN(mode, 1), 0, derivative_test .OR. update_test), MERGE(MIN(mode, 1), 1, derivative_test .OR. update_test)
+      DO mag = MERGE(3, MERGE(MIN(mode, 1), 0, derivative_test .OR. update_test), spinor_test), &
+         MERGE(3, MERGE(MIN(mode, 1), 1, derivative_test .OR. update_test), spinor_test)
          DO geometry = 1, MERGE(5, MERGE(2, 1, update_test), derivative_test)
             atoms(1)%r = [1.6_dp, 2.7_dp, 4.0_dp] + force_steps(geometry)*direction
             IF (update_test) CALL set_update_geometry(geometry == 2)
@@ -244,26 +307,33 @@ PROGRAM skala_sirius_unittest
                                                 '"xc_functionals":[],"smearing_width":0.01,"auto_rmt":0,'// &
                                                 '"core_relativity":"none","valence_relativity":"none",'// &
                                                 '"lmax_apw":3,"lmax_rho":6,"lmax_pot":6},'// &
-                                                '"control":{"mpi_grid_dims":[1,1],"processing_unit":"CPU","verbosity":1},'// &
+                                                '"control":{"mpi_grid_dims":[1,1],"processing_unit":"'// &
+                                                processing_unit//'","verbosity":1},'// &
                                                 '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
                                                 '"iterative_solver":{"type":"exact","min_tolerance":1e-11}}')
                   IF (derivative_test) THEN
-                     CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":false}}')
+                     IF (.NOT. spinor_test) CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":false}}')
                      CALL sirius_set_parameters(ctx, pw_cutoff=9.0_dp)
                   END IF
+                  IF (spinor_test) CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":true}}')
                ELSE
                   CALL sirius_import_parameters(ctx, &
                                                 '{"parameters":{"electronic_structure_method":"pseudopotential",'// &
                                                 '"use_symmetry":false,"pw_cutoff":8.0,"gk_cutoff":2.6,"num_bands":4,'// &
                                                 '"xc_functionals":[],"smearing_width":0.01},'// &
-                                                '"control":{"mpi_grid_dims":[1,1],"processing_unit":"CPU","verbosity":1},'// &
+                                                '"control":{"mpi_grid_dims":[1,1],"processing_unit":"'// &
+                                                processing_unit//'","verbosity":1},'// &
                                                 '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
                                                 '"iterative_solver":{"type":"exact","min_tolerance":1e-11,"num_steps":80}}')
                END IF
-               CALL sirius_set_parameters(ctx, num_mag_dims=mag)
+               CALL sirius_set_parameters(ctx, num_mag_dims=mag, num_bands=num_bands)
+               IF (orbital_only .AND. mag == 1) &
+                  CALL sirius_import_parameters(ctx, '{"parameters":{"fixed_mag":0.5}}')
+               IF (lapw_soc_test) CALL sirius_import_parameters(ctx, '{"parameters":{"so_correction":true}}')
+               IF (spinor_test .AND. mode /= 2) CALL sirius_import_parameters(ctx, '{"iterative_solver":{"type":"davidson"}}')
                CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
                IF (mode == 2) THEN
-                  CALL sirius_add_atom_type(ctx, "He", zn=2)
+                  CALL sirius_add_atom_type(ctx, "He", zn=MERGE(1, 2, spinor_test))
                   DO i = 1, nmt
                      rmt(i) = 1.0e-6_dp + (1.8_dp - 1.0e-6_dp)*(REAL(i - 1, dp)/REAL(nmt - 1, dp))**2
                   END DO
@@ -271,6 +341,7 @@ PROGRAM skala_sirius_unittest
                      rfree(i) = 1.0e-7_dp + (20.0_dp - 1.0e-7_dp)*(REAL(i - 1, dp)/REAL(nfree - 1, dp))**3
                   END DO
                   rhofree = 16.0_dp/ACOS(-1.0_dp)*EXP(-4*rfree)
+                  IF (spinor_test) rhofree = EXP(-2*rfree)/ACOS(-1.0_dp)
                   CALL sirius_set_atom_type_radial_grid(ctx, "He", nmt, rmt)
                   CALL sirius_set_atom_type_radial_grid_inf(ctx, "He", nfree, rfree)
                   CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_rho", rhofree, nfree)
@@ -283,7 +354,8 @@ PROGRAM skala_sirius_unittest
                ELSE IF (mode == 1 .AND. LEN_TRIM(paw_setup) > 0) THEN
                   CALL sirius_add_atom_type(ctx, "He", fname=TRIM(paw_setup))
                ELSE
-                  CALL sirius_add_atom_type(ctx, "He", zn=2)
+                  ! An odd electron count exercises spinor occupations without a closed-shell restriction.
+                  CALL sirius_add_atom_type(ctx, "He", zn=MERGE(1, 2, spinor_test), spin_orbit=soc_test)
                   DO i = 1, nrad
                      r(i) = 20.0_dp*(REAL(i - 1, dp)/REAL(nrad - 1, dp))**2
                      IF (mode == 1) r(i) = 0.001_dp + 2.999_dp*(REAL(i - 1, dp)/REAL(nrad - 1, dp))**2
@@ -298,22 +370,62 @@ PROGRAM skala_sirius_unittest
                   dion = 0.0_dp
                   IF (mode == 1) THEN
                      ! Deliberately synthetic setup: tests the coupled implementation, not PAW accuracy.
-                     CALL sirius_add_atom_type_radial_function(ctx, "He", "beta", 0.2_dp*r*EXP(-2*r**2), nrad, l=0)
-                     CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_wf", r*EXP(-r**2), nrad)
-                     CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_paw_wf", r*EXP(-0.8_dp*r**2), nrad)
-                     CALL sirius_add_atom_type_radial_function(ctx, "He", "q_aug", 0.05_dp*r**2*EXP(-2*r**2), nrad, &
-                                                               l=0, idxrf1=1, idxrf2=1)
+                     IF (soc_test) THEN
+                        DO i = 1, 2
+                           l = MERGE(-1, 1, i == 1)
+                           CALL sirius_add_atom_type_radial_function(ctx, "He", "beta", 0.2_dp*r**2*EXP(-2*r**2), nrad, l=l)
+                           CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_wf", r**2*EXP(-r**2), nrad)
+                           CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_paw_wf", r**2*EXP(-0.8_dp*r**2), nrad)
+                        END DO
+                        DO j = 1, 2
+                           DO i = 1, j
+                              DO l = 0, 2, 2
+                                 CALL sirius_add_atom_type_radial_function(ctx, "He", "q_aug", &
+                                                                           0.05_dp*r**2*EXP(-2*r**2)* &
+                                                                           (1.0_dp + 0.4_dp*(i - 1) + 0.2_dp*(j - 1))/ &
+                                                                           REAL(l + 1, dp), nrad, l=l, idxrf1=i, idxrf2=j)
+                              END DO
+                           END DO
+                        END DO
+                     ELSE
+                        CALL sirius_add_atom_type_radial_function(ctx, "He", "beta", 0.2_dp*r*EXP(-2*r**2), nrad, l=0)
+                        CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_wf", r*EXP(-r**2), nrad)
+                        CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_paw_wf", r*EXP(-0.8_dp*r**2), nrad)
+                        CALL sirius_add_atom_type_radial_function(ctx, "He", "q_aug", 0.05_dp*r**2*EXP(-2*r**2), nrad, &
+                                                                  l=0, idxrf1=1, idxrf2=1)
+                     END IF
                      CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_core", 0.02_dp*EXP(-3*r**2), nrad)
                      CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_core_tau", 0.03_dp*EXP(-3*r**2), nrad)
                      CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_rho_core", 0.01_dp*EXP(-2*r**2), nrad)
-                     CALL sirius_set_atom_type_dion(ctx, "He", 1, dion)
-                     CALL sirius_set_atom_type_paw(ctx, "He", 0.0_dp, [2.0_dp], 1)
+                     IF (soc_test) THEN
+                        soc_dion = 0.0_dp
+                        soc_dion(1, 1) = 0.7_dp
+                        soc_dion(2, 2) = -0.4_dp
+                        CALL sirius_set_atom_type_dion(ctx, "He", 2, soc_dion)
+                        CALL sirius_set_atom_type_paw(ctx, "He", 0.0_dp, [1.0_dp, 1.0_dp], 2)
+                     ELSE
+                        CALL sirius_set_atom_type_dion(ctx, "He", 1, dion)
+                        CALL sirius_set_atom_type_paw(ctx, "He", 0.0_dp, [2.0_dp], 1)
+                     END IF
+                  ELSE IF (soc_test) THEN
+                     CALL sirius_add_atom_type_radial_function(ctx, "He", "beta", r**2*EXP(-r**2), nrad, l=-1)
+                     CALL sirius_add_atom_type_radial_function(ctx, "He", "beta", r**2*EXP(-r**2), nrad, l=1)
+                     soc_dion = 0.0_dp
+                     soc_dion(1, 1) = 0.7_dp
+                     soc_dion(2, 2) = -0.4_dp
+                     CALL sirius_set_atom_type_dion(ctx, "He", 2, soc_dion)
                   ELSE
                      CALL sirius_set_atom_type_dion(ctx, "He", 0, dion(:0, :0))
                   END IF
                END IF
                DO i = 1, natoms
-                  CALL sirius_add_atom(ctx, "He", MATMUL(cell%h_inv, atoms(i)%r))
+                  IF (spinor_test) THEN
+                     CALL sirius_add_atom(ctx, "He", MATMUL(cell%h_inv, atoms(i)%r), vector_field=[0.3_dp, -0.2_dp, 0.1_dp])
+                  ELSE IF (orbital_only .AND. mag == 1) THEN
+                     CALL sirius_add_atom(ctx, "He", MATMUL(cell%h_inv, atoms(i)%r), vector_field=[0.0_dp, 0.0_dp, 0.3_dp])
+                  ELSE
+                     CALL sirius_add_atom(ctx, "He", MATMUL(cell%h_inv, atoms(i)%r))
+                  END IF
                END DO
                IF (atom_grid) THEN
                   CALL skala_sirius_register_atom_grid(ctx, xc, atoms, cell, comm, grid, state)
@@ -346,16 +458,36 @@ PROGRAM skala_sirius_unittest
                                           initial_guess=(.NOT. derivative_test .OR. geometry == 1), &
                                           max_niter=max_scf_iterations, save_state=.FALSE., converged=converged, error_code=ierr)
             IF (ierr /= 0) ERROR STOP "SIRIUS Skala SCF failed"
+            IF (orbital_only .AND. mode == 2) THEN
+               ! Keep density and tau tied to the current test orbitals.
+               CALL sirius_generate_density(gs, add_core=.TRUE., transform_to_rg=.TRUE., efermi=.FALSE., error_code=ierr)
+               IF (ierr /= 0) ERROR STOP "SIRIUS spinor density generation failed"
+               CALL sirius_generate_effective_potential(gs, error_code=ierr)
+               IF (ierr /= 0) ERROR STOP "SIRIUS spinor potential generation failed"
+            END IF
             CALL sirius_get_energy(gs, "total", energy)
             CALL sirius_get_energy(gs, "descf", descf)
             energy = energy + descf
             CALL sirius_get_energy(gs, "exc", exc)
             IF (comm%mepos == 0) WRITE (*, '(A,2I3,L3,2ES22.12)') "Point SCF (method 0=PW 1=PAW 2=LAPW,mag,converged,E,Exc): ", &
                mode, mag, converged, energy, exc
-            IF (.NOT. converged .OR. .NOT. ieee_is_finite(energy) .OR. .NOT. ieee_is_finite(exc)) &
+            IF ((.NOT. converged .AND. .NOT. (orbital_only .OR. spinor_stress)) .OR. &
+                .NOT. ieee_is_finite(energy) .OR. .NOT. ieee_is_finite(exc)) &
                ERROR STOP "SIRIUS Skala point SCF did not converge with finite energies"
             IF (ABS(exc) < 1.0e-6_dp) ERROR STOP "The model must produce a nontrivial XC energy"
-            IF (geometry == 1) reference(mode + 1, mag + 1) = energy
+            IF (spinor_test) THEN
+               CALL sirius_get_total_magnetization(gs, magnetization(1), error_code=ierr)
+               IF (ierr /= 0 .OR. .NOT. ALL(ieee_is_finite(magnetization))) ERROR STOP "Invalid spinor magnetization"
+               IF (comm%mepos == 0) WRITE (*, '(A,3ES19.10)') "Spinor magnetization (x,y,z): ", magnetization
+            END IF
+            IF (orbital_only .AND. mag == 1) THEN
+               CALL sirius_get_total_magnetization(gs, magnetization(1), error_code=ierr)
+               IF (ierr /= 0 .OR. .NOT. ALL(ieee_is_finite(magnetization))) ERROR STOP "Invalid collinear magnetization"
+               ! The collinear API returns its single z component in the first slot.
+               IF (ABS(magnetization(1)) < 1.0e-4_dp) ERROR STOP "Vacuous collinear orbital derivative check"
+               IF (comm%mepos == 0) WRITE (*, '(A,ES19.10)') "Collinear magnetization: ", magnetization(1)
+            END IF
+            IF (geometry == 1 .AND. .NOT. spinor_test) reference(mode + 1, mag + 1) = energy
             IF (derivative_test) THEN
                CALL sirius_get_energy(gs, "demet", entropy)
                ! At fractional occupations forces differentiate the free energy E-TS.
@@ -377,7 +509,8 @@ PROGRAM skala_sirius_unittest
             CALL sirius_get_energy(gs, "exc", repeat_exc)
             IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Unchanged density changed the point XC energy"
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
-            IF (atom_grid .AND. .NOT. derivative_test .AND. .NOT. update_test) THEN
+            IF (atom_grid .AND. .NOT. derivative_test .AND. .NOT. update_test .AND. &
+                .NOT. spinor_stress .AND. .NOT. orbital_only) THEN
                CALL sirius_get_xc_geometry_derivatives(gs, natoms, atom_derivative, cell_derivative, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "SIRIUS Skala geometry callback failed"
                IF (.NOT. ALL(ieee_is_finite(atom_derivative)) .OR. .NOT. ALL(ieee_is_finite(cell_derivative))) &
@@ -458,7 +591,8 @@ PROGRAM skala_sirius_unittest
                END IF
             END IF
 #if defined(__SIRIUS_XC_DERIVATIVE)
-            IF (fd_step > 0.0_dp) THEN
+            IF (spinor_stress) CALL check_spinor_stress()
+            IF (fd_step > 0.0_dp .AND. .NOT. spinor_stress) THEN
                CALL sirius_check_external_xc_derivative(gs, fd_step, derivatives, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "SIRIUS Skala orbital derivative check failed"
                DO i = 1, 2
@@ -467,7 +601,6 @@ PROGRAM skala_sirius_unittest
                      i, fd_step, derivatives(:, i), errors(:, i)
                END DO
                IF (.NOT. ALL(ieee_is_finite(derivatives))) ERROR STOP "Nonfinite XC orbital derivatives"
-               ! Float32 model energy roundoff is amplified by division by the finite-difference step.
                IF (MAXVAL(errors) > 2.0e-5_dp) ERROR STOP "XC orbital derivative mismatch"
                IF (MAXVAL(ABS(derivatives(1, :))) < 1.0e-5_dp) ERROR STOP "Vacuous orbital derivative check"
                CALL sirius_get_energy(gs, "exc", repeat_exc)
@@ -478,8 +611,8 @@ PROGRAM skala_sirius_unittest
             END IF
 #endif
 #if defined(__SIRIUS_XC_POINT_RESPONSE)
-            IF (mode == 2 .AND. fd_step > 0.0_dp) THEN
-               CALL sirius_check_external_xc_response(gs, fd_step, response_errors, error_code=ierr)
+            IF (mode == 2 .AND. response_step > 0.0_dp) THEN
+               CALL sirius_check_external_xc_response(gs, response_step, response_errors, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "SIRIUS Skala field response check failed"
                IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "XC field/point response relative errors: ", response_errors
                IF (.NOT. ALL(ieee_is_finite(response_errors))) ERROR STOP "Nonfinite XC field response errors"
@@ -509,7 +642,8 @@ PROGRAM skala_sirius_unittest
          END IF
       END DO
    END DO
-   IF (.NOT. derivative_test .AND. .NOT. update_test .AND. ANY(ABS(reference(:, 1) - reference(:, 2)) > 2.0e-5_dp)) &
+   IF (.NOT. derivative_test .AND. .NOT. update_test .AND. .NOT. orbital_only .AND. &
+       ANY(ABS(reference(:, 1) - reference(:, 2)) > 2.0e-5_dp)) &
       ERROR STOP "Scalar and unpolarized collinear SCF energies differ"
    DEALLOCATE (points, weights, descriptor_weights, centres, sizes, atoms, forces)
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
@@ -525,6 +659,59 @@ PROGRAM skala_sirius_unittest
    END IF
    CALL cp2k_finalize()
 CONTAINS
+   SUBROUTINE check_spinor_stress()
+      INTEGER                                            :: j
+      REAL(dp)                                           :: analytic, base(3, 3), energies(7), &
+                                                            finite_difference(3), fourth_order, &
+                                                            restored, steps(7), strain_error(2)
+
+      base = lattice
+      steps = fd_step*[0.0_dp, 1.0_dp, -1.0_dp, 0.5_dp, -0.5_dp, 0.25_dp, -0.25_dp]
+      CALL frozen_spinor_energy(base, 0.0_dp, energies(1))
+      CALL sirius_get_stress_tensor(gs, "xc", stress, error_code=ierr)
+      IF (ierr /= 0 .OR. .NOT. ALL(ieee_is_finite(stress))) ERROR STOP "Spinor XC stress failed"
+      analytic = cell%deth*SUM(stress*strain)
+      IF (ABS(analytic) < 1.0e-6_dp) ERROR STOP "Vacuous spinor XC stress check"
+      DO j = 2, 7
+         CALL frozen_spinor_energy(base, steps(j), energies(j))
+      END DO
+      DO j = 1, 3
+         finite_difference(j) = (energies(2*j) - energies(2*j + 1))/(2*steps(2*j))
+         IF (comm%mepos == 0) WRITE (*, '(A,4ES19.10)') "Frozen spinor XC strain (h,analytic,FD,error): ", &
+            steps(2*j), analytic, finite_difference(j), ABS(finite_difference(j) - analytic)
+      END DO
+      DO j = 1, 2
+         fourth_order = (4*finite_difference(j + 1) - finite_difference(j))/3
+         IF (comm%mepos == 0) WRITE (*, '(A,4ES19.10)') "Frozen spinor XC four-point strain (h,analytic,FD,error): ", &
+            steps(2*j + 2), analytic, fourth_order, ABS(fourth_order - analytic)
+         strain_error(j) = ABS(fourth_order - analytic)
+      END DO
+      IF (.NOT. ALL(ieee_is_finite(strain_error)) .OR. MAXVAL(strain_error) > 2.0e-5_dp) &
+         ERROR STOP "Spinor XC stress disagrees with the fixed-orbital energy derivative"
+      CALL frozen_spinor_energy(base, 0.0_dp, restored)
+      IF (ABS(restored - energies(1)) > 1.0e-7_dp) ERROR STOP "Spinor stress check did not restore the XC energy"
+   END SUBROUTINE
+
+   SUBROUTINE frozen_spinor_energy(base, step, value)
+      REAL(dp), INTENT(IN)                               :: base(3, 3), step
+      REAL(dp), INTENT(OUT)                              :: value
+
+      lattice = base + step*MATMUL(strain, base)
+      CALL init_cell(cell, hmat=lattice)
+      atoms(1)%r = MATMUL(lattice, [0.2_dp, 0.3_dp, 0.4_dp])
+      CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
+      CALL sirius_set_atom_position(ctx, 1, [0.2_dp, 0.3_dp, 0.4_dp])
+      CALL skala_sirius_update(ctx, state, atoms, cell, comm)
+      CALL sirius_update_ground_state(gs)
+      ! Do not solve the Hamiltonian or refit occupations along the strain stencil.
+      CALL sirius_generate_density(gs, add_core=.TRUE., transform_to_rg=.TRUE., efermi=.FALSE., error_code=ierr)
+      IF (ierr /= 0) ERROR STOP "Fixed-orbital spinor density failed"
+      CALL sirius_generate_effective_potential(gs, error_code=ierr)
+      IF (ierr /= 0) ERROR STOP "Fixed-orbital spinor potential failed"
+      CALL sirius_get_energy(gs, "exc", value)
+      IF (.NOT. ieee_is_finite(value)) ERROR STOP "Nonfinite fixed-orbital spinor XC energy"
+   END SUBROUTINE
+
    SUBROUTINE set_update_geometry(moved)
       LOGICAL, INTENT(IN)                                :: moved
 

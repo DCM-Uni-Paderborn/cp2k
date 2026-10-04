@@ -14,6 +14,7 @@ MODULE skala_sirius
    USE ieee_arithmetic, ONLY: ieee_is_finite
    USE input_section_types, ONLY: section_vals_type, section_vals_val_get
    USE kinds, ONLY: dp
+   USE lebedev, ONLY: get_number_of_lebedev_grid, lebedev_grid
    USE message_passing, ONLY: mp_comm_type
    USE particle_types, ONLY: particle_type
    USE skala_atom_grid, ONLY: skala_atom_grid_build, skala_atom_grid_pullback, skala_atom_grid_direction
@@ -25,7 +26,10 @@ MODULE skala_sirius
    USE sirius, ONLY: sirius_set_xc_callback
 #endif
 #if defined(__SIRIUS_XC_POINT_CALLBACK) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_set_xc_point_callback
+   USE sirius, ONLY: sirius_get_parameters, sirius_set_xc_point_callback
+#endif
+#if defined(__SIRIUS_XC_SPINOR) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_spinor_mode
 #endif
 #if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_set_xc_point_geometry_callbacks
@@ -66,6 +70,7 @@ MODULE skala_sirius
       TYPE(particle_type), POINTER :: particles(:) => NULL()
       TYPE(section_vals_type), POINTER :: xc_section => NULL()
       INTEGER :: nradial = 0, nangular = 0, shell = 0
+      INTEGER :: nspin_angular = 194
       REAL(dp) :: scale = 0.0_dp
       REAL(dp) :: grid_lattice(3, 3) = 0.0_dp
       REAL(dp), ALLOCATABLE :: grid_centres(:, :)
@@ -91,9 +96,9 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: grid_section
       TYPE(skala_sirius_state_type), POINTER             :: state
 
-      INTEGER                                            :: a, error, na, nr, shell
+      INTEGER                                            :: a, error, na, nr, nspin, shell, spin_grid
       INTEGER, ALLOCATABLE                               :: sizes(:)
-      REAL(dp)                                           :: scale, response_tolerance
+      REAL(dp)                                           :: response_tolerance, scale
       REAL(dp), ALLOCATABLE                              :: block_centres(:, :), centres(:, :), &
                                                             descriptor(:), energy(:), points(:, :)
 
@@ -102,11 +107,23 @@ CONTAINS
       END IF
       CALL section_vals_val_get(grid_section, "N_RADIAL", i_val=nr)
       CALL section_vals_val_get(grid_section, "N_ANGULAR", i_val=na)
+      CALL section_vals_val_get(grid_section, "N_SPIN_ANGULAR", i_val=nspin)
       CALL section_vals_val_get(grid_section, "IMAGE_SHELL", i_val=shell)
       CALL section_vals_val_get(grid_section, "RADIAL_SCALE", r_val=scale)
       CALL section_vals_val_get(grid_section, "EPS_RESPONSE", r_val=response_tolerance)
       IF (.NOT. ieee_is_finite(response_tolerance) .OR. response_tolerance <= 0.0_dp .OR. &
           response_tolerance >= 1.0_dp) CPABORT("SIRIUS Skala EPS_RESPONSE must be between zero and one")
+      error = 0
+      IF (nspin < 6 .OR. nspin > 974) THEN
+         error = 1
+      ELSE
+         spin_grid = get_number_of_lebedev_grid(n=nspin)
+         IF (lebedev_grid(spin_grid)%n /= nspin .OR. ANY(lebedev_grid(spin_grid)%w < 0.0_dp)) error = 1
+      END IF
+      CALL group%max(error)
+      IF (error /= 0) THEN
+         CPABORT("N_SPIN_ANGULAR requires an available positive Lebedev rule up to 974")
+      END IF
       ALLOCATE (centres(3, SIZE(particles)))
       DO a = 1, SIZE(particles)
          centres(:, a) = particles(a)%r
@@ -121,6 +138,7 @@ CONTAINS
 #endif
       state%nradial = nr
       state%nangular = na
+      state%nspin_angular = nspin
       state%shell = shell
       state%scale = scale
       state%grid_lattice = cell%hmat
@@ -192,7 +210,7 @@ CONTAINS
       INTEGER, INTENT(IN) :: atom_sizes(:)
       TYPE(skala_sirius_state_type), POINTER :: state
 #if defined(__SIRIUS_XC_POINT_CALLBACK) && defined(__LIBTORCH)
-      INTEGER :: nr, nb, error
+      INTEGER :: nr, nb, error, mag
 
       nr = SIZE(energy_weights)
       nb = SIZE(atom_sizes)
@@ -203,6 +221,16 @@ CONTAINS
       CALL sirius_set_xc_point_callback(context, C_FUNLOC(evaluate_skala_points), C_LOC(state%token), nr, nb, &
                                         points, energy_weights, descriptor_weights, atom_sizes, atom_coords, error)
       IF (error /= 0) CPABORT("Could not register the SIRIUS Skala point callback")
+      CALL sirius_get_parameters(context, num_mag_dims=mag, error_code=error)
+      IF (error /= 0) CPABORT("Could not query the SIRIUS spin convention")
+      IF (mag == 3) THEN
+#if defined(__SIRIUS_XC_SPINOR)
+         CALL sirius_set_xc_spinor_mode(context, .TRUE., error)
+         IF (error /= 0) CPABORT("Could not register the SIRIUS Skala spinor convention")
+#else
+         CPABORT("Noncollinear Skala requires the SIRIUS four-component point XC API")
+#endif
+      END IF
 #if defined(__SIRIUS_XC_POINT_HESSIAN)
       CALL sirius_set_xc_point_hessian_callback(context, C_FUNLOC(evaluate_skala_point_hessian), &
                                                 C_LOC(state%token), error)
@@ -460,14 +488,15 @@ CONTAINS
       END IF
       invalid = 0
       IF (.NOT. ASSOCIATED(state)) invalid = 1
-      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2])) invalid = 1
+      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2, 4])) invalid = 1
       IF (ASSOCIATED(state)) THEN
          IF (.NOT. grid_geometry_current(state)) invalid = 1
       END IF
       CALL comm%max(invalid)
       IF (invalid /= 0) RETURN
       CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
-                            rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau)
+                            rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
+                            spin_angular_points=state%nspin_angular, model_fp64=.TRUE.)
       status = 0
    END SUBROUTINE
 #endif
@@ -523,7 +552,7 @@ CONTAINS
       dtau = 0.0_dp
       status = 1
       invalid = 0
-      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2]) .OR. .NOT. ASSOCIATED(state)) invalid = 1
+      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2, 4]) .OR. .NOT. ASSOCIATED(state)) invalid = 1
       IF (ASSOCIATED(state)) THEN
          IF (.NOT. grid_geometry_current(state)) invalid = 1
       END IF
@@ -531,7 +560,8 @@ CONTAINS
       IF (invalid /= 0) RETURN
       CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
                             rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
-                            response_density=delta_rho, response_gradient=delta_gradient, response_kinetic=delta_tau)
+                            response_density=delta_rho, response_gradient=delta_gradient, response_kinetic=delta_tau, &
+                            spin_angular_points=state%nspin_angular, model_fp64=.TRUE.)
       status = 0
    END SUBROUTINE
 #endif
@@ -573,7 +603,7 @@ CONTAINS
       ddescriptor = 0.0_dp
       dcentres = 0.0_dp
       invalid = 0
-      IF (.NOT. ASSOCIATED(state) .OR. nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2])) invalid = 1
+      IF (.NOT. ASSOCIATED(state) .OR. nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2, 4])) invalid = 1
       IF (ASSOCIATED(state)) THEN
          IF (.NOT. grid_geometry_current(state)) invalid = 1
       END IF
@@ -582,7 +612,8 @@ CONTAINS
       CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
                             rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
                             dpoints, dcentres, denergy, ddescriptor, delta_rho, delta_gradient, delta_tau, &
-                            delta_points, delta_centres, delta_energy, delta_descriptor)
+                            delta_points, delta_centres, delta_energy, delta_descriptor, &
+                            spin_angular_points=state%nspin_angular, model_fp64=.TRUE.)
       status = 0
    END SUBROUTINE
 #endif
@@ -616,12 +647,13 @@ CONTAINS
       state => callback_state(user_data)
       invalid = 0
       IF (.NOT. ASSOCIATED(state)) invalid = 1
-      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2])) invalid = 1
+      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2, 4])) invalid = 1
       CALL comm%max(invalid)
       IF (invalid /= 0) RETURN
       CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
                             rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
-                            dpoints, dcentres, denergy, ddescriptor)
+                            dpoints, dcentres, denergy, ddescriptor, &
+                            spin_angular_points=state%nspin_angular, model_fp64=.TRUE.)
       status = 0
    END SUBROUTINE
 

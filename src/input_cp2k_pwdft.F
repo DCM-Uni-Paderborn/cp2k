@@ -105,10 +105,12 @@ CONTAINS
                           "Required for joint PAW or FP-LAPW field reconstruction. Uses Gauss-Legendre radial and Lebedev "// &
                           "angular integration, periodic Becke energy partitions and independent self-image "// &
                           "descriptor windows. Geometry changes require SIRIUS with the point-quadrature update API. "// &
-                          "Only CPU scalar or collinear calculations are supported. "// &
+                          "CPU and GPU scalar, collinear and noncollinear calculations use host-staged fields. "// &
+                          "Skala CUDA inference is selected independently in XC_FUNCTIONAL/GAUXC. "// &
                           "PW and PAW forces and stress require the point geometry callbacks. "// &
                           "Nonrelativistic FP-LAPW forces and total stress require the joint Hessian and "// &
-                          "quadrature-direction callbacks, with full variation for collinear states. "// &
+                          "quadrature-direction callbacks, with full variation for collinear states and "// &
+                          "second variation for spinor states. "// &
                           "Converge the quadrature and image shell for the system studied.")
       CALL keyword_create(keyword, __LOCATION__, name="N_RADIAL", default_i_val=100, &
                           description="Number of radial nodes with r = RADIAL_SCALE*t/(1-t).")
@@ -118,10 +120,15 @@ CONTAINS
                           description="Exact number of points of an available positive Lebedev rule (up to 974).")
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="N_SPIN_ANGULAR", default_i_val=194, &
+                          description="Number of directions in the noncollinear multicollinear spin projection. "// &
+                          "Use an available positive Lebedev rule (up to 974). Independent of N_ANGULAR, "// &
+                          "which integrates real-space fields. Ignored for scalar and collinear states.")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="EPS_RESPONSE", default_r_val=1.0e-6_dp, &
                           description="Relative residual tolerance of the coupled FP-LAPW field response. "// &
                           "Also bounds relative band differences at the response reference. "// &
-                          "The default accommodates Skala's internal Float32 Hessian evaluation. "// &
                           "Independent of the ground-state SCF thresholds.")
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)

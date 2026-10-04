@@ -1178,6 +1178,14 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="SIRIUS_MAGNETIZATION_VECTOR", &
+                          description="Cartesian (x,y,z) magnetization of the SIRIUS atomic initial guess. "// &
+                          "Requires METHOD SIRIUS and PW_DFT/PARAMETERS/NUM_MAG_DIMS 3. "// &
+                          "Overrides MAGNETIZATION for this initial guess. If absent, MAGNETIZATION is along z.", &
+                          usage="SIRIUS_MAGNETIZATION_VECTOR 0.3 -0.2 0.1", type_of_var=real_t, n_var=3)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="ELEMENT", &
                           variants=["ELEMENT_SYMBOL"], &
                           description="The element of the actual kind "// &

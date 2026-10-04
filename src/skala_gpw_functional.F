@@ -22,6 +22,8 @@ MODULE skala_gpw_functional
    USE kinds,                           ONLY: default_path_length,&
                                               dp,&
                                               int_8
+   USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
+                                              lebedev_grid
    USE message_passing,                 ONLY: mp_comm_type
    USE offload_api,                     ONLY: offload_set_chosen_device
    USE particle_types,                  ONLY: particle_type
@@ -42,6 +44,7 @@ MODULE skala_gpw_functional
                                               skala_torch_model_get_exc_density,&
                                               skala_torch_model_load,&
                                               skala_torch_model_release,&
+                                              skala_torch_model_spin_projected_eval,&
                                               skala_torch_model_type
    USE string_utilities,                ONLY: uppercase
    USE torch_api,                       ONLY: &
@@ -82,6 +85,7 @@ MODULE skala_gpw_functional
    CHARACTER(len=default_path_length), SAVE            :: cached_model_path = ""
    LOGICAL, SAVE                                       :: cached_model_loaded = .FALSE.
    INTEGER, SAVE                                       :: cached_model_cuda_device = -3
+   LOGICAL, SAVE                                       :: cached_model_higher_derivatives = .FALSE.
    INTEGER, SAVE                                       :: logged_cuda_device = -3, &
                                                           logged_cuda_device_count = -1, &
                                                           logged_cuda_nproc = -1, &
@@ -117,18 +121,23 @@ CONTAINS
 !> \param response_atom_coords Atom-block-centre direction.
 !> \param response_energy_weights Energy-weight direction.
 !> \param response_descriptor_weights Descriptor-weight direction.
+!> \param spin_angular_points Optional Lebedev size for four scalar/z/x/y components, default 194.
+!> \param model_fp64 Evaluate the unchanged model parameters with FP64 arithmetic.
 !> \note Fields must be reconstructed before this call. No AE-minus-pseudo energy
 !>       decomposition, density clipping, weight multiplication of physical fields,
 !>       or removal of zero-energy-weight descriptor rows is performed here.
 !>       The host sums covectors when point rows represent the same physical source.
 !>       Geometry covectors are partial derivatives, not atomic forces. The host must
 !>       also differentiate field reconstruction, point placement and quadrature.
+!>       One/two channels are total/up-down fields. Four components are total,z,x,y;
+!>       the full nonlocal energy uses a common global spin projection for rho, grad and tau.
 ! **************************************************************************************************
    SUBROUTINE skala_point_eval(group, points, energy_weights, descriptor_weights, atom_sizes, &
                                atom_coords, density, gradient, kinetic, xc_section, exc, drho, &
                                dgradient, dtau, dpoints, datom_coords, denergy_weights, ddescriptor_weights, &
                                response_density, response_gradient, response_kinetic, response_points, &
-                               response_atom_coords, response_energy_weights, response_descriptor_weights)
+                               response_atom_coords, response_energy_weights, response_descriptor_weights, &
+                               spin_angular_points, model_fp64)
       CLASS(mp_comm_type), INTENT(IN)                    :: group
       REAL(KIND=dp), INTENT(IN)                          :: points(:, :), energy_weights(:), &
                                                             descriptor_weights(:), atom_coords(:, :), &
@@ -142,11 +151,15 @@ CONTAINS
                                                             response_kinetic(:, :), response_points(:, :), &
                                                             response_atom_coords(:, :), response_energy_weights(:), &
                                                             response_descriptor_weights(:)
+      INTEGER, OPTIONAL, INTENT(IN)                       :: spin_angular_points
+      LOGICAL, OPTIONAL, INTENT(IN)                       :: model_fp64
 
       CHARACTER(len=default_path_length)                 :: model_path
       INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin, i_response, &
-                                                            n_response
-      LOGICAL                                            :: geometry_grad, use_cuda, response, geometry_response
+                                                            n_response, requested_device, selected_device, angular_size, &
+                                                            angular_grid, min_angular, max_angular, kernel_status, &
+                                                            min_precision, max_precision
+      LOGICAL                                            :: geometry_grad, use_cuda, response, geometry_response, fp64_model
       REAL(KIND=dp), ALLOCATABLE                         :: direction_rho(:, :), direction_grad(:, :, :), &
                                                             direction_tau(:, :), direction_points(:, :), &
                                                             direction_centres(:, :), direction_energy(:), &
@@ -158,11 +171,20 @@ CONTAINS
       TYPE(torch_tensor_type)                            :: exc_tensor, density_grad_t, grad_grad_t, kin_grad_t
       TYPE(torch_tensor_type)                            :: geometry_grad_t
       TYPE(torch_tensor_type)                            :: hessian_inputs(7), directions(7), responses(7)
+      TYPE(torch_tensor_type)                            :: spin_axes_t, spin_weights_t
+      REAL(KIND=dp), ALLOCATABLE                         :: spin_axes(:, :), spin_weights(:)
 
       CALL timeset("skala_point_eval", handle)
       npoint = SIZE(density, 1)
       nspin = SIZE(density, 2)
+      fp64_model = nspin == 4
+      IF (PRESENT(model_fp64)) fp64_model = fp64_model .OR. model_fp64
+      min_precision = MERGE(1, 0, fp64_model)
+      max_precision = min_precision
+      CALL group%min(min_precision)
+      CALL group%max(max_precision)
       invalid = 0
+      IF (min_precision /= max_precision) invalid = 1
       geometry_response = PRESENT(response_points) .OR. PRESENT(response_atom_coords) .OR. &
                           PRESENT(response_energy_weights) .OR. PRESENT(response_descriptor_weights)
       response = geometry_response .OR. PRESENT(response_density) .OR. PRESENT(response_gradient) .OR. &
@@ -195,7 +217,23 @@ CONTAINS
                 .NOT. ALL(ieee_is_finite(response_descriptor_weights))) invalid = 1
          END IF
       END IF
-      IF (ALL(nspin /= [1, 2])) invalid = 1
+      IF (ALL(nspin /= [1, 2, 4])) invalid = 1
+      angular_size = 194
+      IF (PRESENT(spin_angular_points)) angular_size = spin_angular_points
+      IF (nspin == 4) THEN
+         IF (angular_size < 6 .OR. angular_size > 974) THEN
+            invalid = 1
+         ELSE
+            angular_grid = get_number_of_lebedev_grid(n=angular_size)
+            IF (lebedev_grid(angular_grid)%n /= angular_size) invalid = 1
+            IF (ANY(lebedev_grid(angular_grid)%w < 0.0_dp)) invalid = 1
+         END IF
+      END IF
+      min_angular = angular_size
+      max_angular = angular_size
+      CALL group%min(min_angular)
+      CALL group%max(max_angular)
+      IF (nspin == 4 .AND. min_angular /= max_angular) invalid = 1
       IF (ANY(SHAPE(points) /= [3, npoint])) invalid = 1
       IF (SIZE(energy_weights) /= npoint .OR. SIZE(descriptor_weights) /= npoint) invalid = 1
       IF (ANY(SHAPE(atom_coords) /= [3, SIZE(atom_sizes)])) invalid = 1
@@ -234,9 +272,11 @@ CONTAINS
       CALL get_skala_model_path(xc_section, model_path)
       gauxc_section => get_gauxc_section(xc_section)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_USE_CUDA", l_val=use_cuda)
-      IF (use_cuda) CPABORT("The arbitrary-point Skala evaluator currently requires CPU tensors")
-      CALL torch_use_cuda(.FALSE.)
+      CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_CUDA_DEVICE", i_val=requested_device)
+      CALL torch_use_cuda(use_cuda)
+      selected_device = configure_native_grid_cuda(use_cuda, requested_device, group)
       exc = 0.0_dp
+      kernel_status = 0
       drho = 0.0_dp
       dgradient = 0.0_dp
       dtau = 0.0_dp
@@ -247,12 +287,28 @@ CONTAINS
       geometry_grad = geometry_response .OR. PRESENT(dpoints) .OR. PRESENT(datom_coords) .OR. &
                       PRESENT(denergy_weights) .OR. PRESENT(ddescriptor_weights)
       IF (npoint > 0) THEN
-         CALL ensure_model_loaded(model_path, -1)
+         CALL ensure_model_loaded(model_path, selected_device, fp64_model)
          CALL skala_point_feature_build(features, points, energy_weights, descriptor_weights, &
                                         atom_sizes, atom_coords, density, gradient, kinetic, geometry_grad)
-         CALL skala_torch_model_get_exc(cached_model, features%inputs, features%grid_weights_t, exc_tensor, exc)
+         hessian_inputs(1:3) = [features%density_t, features%grad_t, features%kin_t]
+         n_response = 3
+         IF (geometry_grad) THEN
+            n_response = 7
+            hessian_inputs(4:7) = [features%grid_coords_t, features%coarse_0_atomic_coords_t, &
+                                   features%grid_weights_t, features%atomic_grid_weights_t]
+         END IF
+         IF (nspin == 4) THEN
+            spin_axes = lebedev_grid(angular_grid)%r([3, 1, 2], :)
+            spin_weights = lebedev_grid(angular_grid)%w
+            CALL torch_tensor_from_array(spin_axes_t, spin_axes)
+            CALL torch_tensor_from_array(spin_weights_t, spin_weights)
+         ELSE
+            CALL skala_torch_model_get_exc(cached_model, features%inputs, features%grid_weights_t, exc_tensor, exc)
+         END IF
+         point_evaluation: BLOCK
          IF (response) THEN
-            ALLOCATE (direction_rho(npoint, 2), direction_grad(npoint, 3, 2), direction_tau(npoint, 2))
+            ALLOCATE (direction_rho(npoint, MAX(2, nspin)), direction_grad(npoint, 3, MAX(2, nspin)), &
+                      direction_tau(npoint, MAX(2, nspin)))
             IF (nspin == 1) THEN
                direction_rho(:, 1) = 0.5_dp*response_density(:, 1)
                direction_grad(:, :, 1) = 0.5_dp*response_gradient(:, :, 1)
@@ -268,12 +324,7 @@ CONTAINS
             CALL torch_tensor_from_array(directions(1), direction_rho)
             CALL torch_tensor_from_array(directions(2), direction_grad)
             CALL torch_tensor_from_array(directions(3), direction_tau)
-            hessian_inputs(1:3) = [features%density_t, features%grad_t, features%kin_t]
-            n_response = 3
             IF (geometry_grad) THEN
-               n_response = 7
-               hessian_inputs(4:7) = [features%grid_coords_t, features%coarse_0_atomic_coords_t, &
-                                      features%grid_weights_t, features%atomic_grid_weights_t]
                ALLOCATE (direction_points(3, npoint), direction_centres(3, SIZE(atom_sizes)), &
                          direction_energy(npoint), direction_descriptor(npoint))
                direction_points = 0.0_dp
@@ -291,8 +342,21 @@ CONTAINS
                CALL torch_tensor_from_array(directions(6), direction_energy)
                CALL torch_tensor_from_array(directions(7), direction_descriptor)
             END IF
-            CALL torch_tensor_hessian_vector(exc_tensor, hessian_inputs(:n_response), &
-                                             directions(:n_response), responses(:n_response))
+            DO i_response = 1, n_response
+               CALL torch_tensor_to_device_leaf(directions(i_response), .FALSE.)
+            END DO
+            IF (nspin == 4) THEN
+               CALL skala_torch_model_spin_projected_eval(cached_model, features%inputs, spin_axes_t, spin_weights_t, &
+                                                          hessian_inputs(:n_response), responses(:n_response), exc, &
+                                                          kernel_status, directions(:n_response))
+            ELSE
+               CALL torch_tensor_hessian_vector(exc_tensor, hessian_inputs(:n_response), &
+                                                directions(:n_response), responses(:n_response))
+            END IF
+            DO i_response = 1, n_response
+               CALL torch_tensor_release(directions(i_response))
+            END DO
+            IF (kernel_status /= 0) EXIT point_evaluation
             density_grad_t = responses(1)
             grad_grad_t = responses(2)
             kin_grad_t = responses(3)
@@ -300,9 +364,17 @@ CONTAINS
             CALL torch_tensor_data_ptr(density_grad_t, density_grad)
             CALL torch_tensor_data_ptr(grad_grad_t, grad_grad)
             CALL torch_tensor_data_ptr(kin_grad_t, kin_grad)
-            DO i_response = 1, n_response
-               CALL torch_tensor_release(directions(i_response))
-            END DO
+         ELSE IF (nspin == 4) THEN
+            CALL skala_torch_model_spin_projected_eval(cached_model, features%inputs, spin_axes_t, spin_weights_t, &
+                                                       hessian_inputs(:n_response), responses(:n_response), exc, kernel_status)
+            IF (kernel_status /= 0) EXIT point_evaluation
+            density_grad_t = responses(1)
+            grad_grad_t = responses(2)
+            kin_grad_t = responses(3)
+            NULLIFY (density_grad, grad_grad, kin_grad)
+            CALL torch_tensor_data_ptr(density_grad_t, density_grad)
+            CALL torch_tensor_data_ptr(grad_grad_t, grad_grad)
+            CALL torch_tensor_data_ptr(kin_grad_t, kin_grad)
          ELSE
             CALL torch_tensor_backward_scalar(exc_tensor)
             CALL get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
@@ -321,7 +393,7 @@ CONTAINS
          CALL torch_tensor_release(grad_grad_t)
          CALL torch_tensor_release(kin_grad_t)
          IF (PRESENT(dpoints)) THEN
-            IF (response) THEN
+            IF (response .OR. nspin == 4) THEN
                geometry_grad_t = responses(4)
             ELSE
                CALL torch_tensor_grad(features%grid_coords_t, geometry_grad_t, allow_unused=.TRUE.)
@@ -329,10 +401,10 @@ CONTAINS
             NULLIFY (coord_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, coord_grad)
             dpoints = coord_grad
-            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response .AND. nspin /= 4) CALL torch_tensor_release(geometry_grad_t)
          END IF
          IF (PRESENT(datom_coords)) THEN
-            IF (response) THEN
+            IF (response .OR. nspin == 4) THEN
                geometry_grad_t = responses(5)
             ELSE
                CALL torch_tensor_grad(features%coarse_0_atomic_coords_t, geometry_grad_t, allow_unused=.TRUE.)
@@ -340,10 +412,10 @@ CONTAINS
             NULLIFY (coord_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, coord_grad)
             datom_coords = coord_grad
-            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response .AND. nspin /= 4) CALL torch_tensor_release(geometry_grad_t)
          END IF
          IF (PRESENT(denergy_weights)) THEN
-            IF (response) THEN
+            IF (response .OR. nspin == 4) THEN
                geometry_grad_t = responses(6)
             ELSE
                CALL torch_tensor_grad(features%grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
@@ -351,10 +423,10 @@ CONTAINS
             NULLIFY (weight_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, weight_grad)
             denergy_weights = weight_grad
-            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response .AND. nspin /= 4) CALL torch_tensor_release(geometry_grad_t)
          END IF
          IF (PRESENT(ddescriptor_weights)) THEN
-            IF (response) THEN
+            IF (response .OR. nspin == 4) THEN
                geometry_grad_t = responses(7)
             ELSE
                CALL torch_tensor_grad(features%atomic_grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
@@ -362,15 +434,25 @@ CONTAINS
             NULLIFY (weight_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, weight_grad)
             ddescriptor_weights = weight_grad
-            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response .AND. nspin /= 4) CALL torch_tensor_release(geometry_grad_t)
          END IF
-         IF (response .AND. geometry_grad) THEN
+         IF ((response .OR. nspin == 4) .AND. geometry_grad) THEN
             DO i_response = 4, 7
                CALL torch_tensor_release(responses(i_response))
             END DO
          END IF
-         CALL torch_tensor_release(exc_tensor)
+         END BLOCK point_evaluation
+         IF (nspin == 4) THEN
+            CALL torch_tensor_release(spin_axes_t)
+            CALL torch_tensor_release(spin_weights_t)
+         ELSE
+            CALL torch_tensor_release(exc_tensor)
+         END IF
          CALL skala_gpw_feature_release(features)
+      END IF
+      IF (nspin == 4) THEN
+         CALL group%max(kernel_status)
+         IF (kernel_status /= 0) CPABORT("Spin-projected Skala evaluation failed")
       END IF
       CALL group%sum(exc)
       invalid = 0
@@ -2521,21 +2603,30 @@ CONTAINS
 !> \brief Load and cache the TorchScript SKALA model.
 !> \param model_path ...
 !> \param cuda_device ...
+!> \param higher_derivatives ...
 ! **************************************************************************************************
-   SUBROUTINE ensure_model_loaded(model_path, cuda_device)
+   SUBROUTINE ensure_model_loaded(model_path, cuda_device, higher_derivatives)
       CHARACTER(len=*), INTENT(IN)                       :: model_path
       INTEGER, INTENT(IN)                                :: cuda_device
+      LOGICAL, INTENT(IN), OPTIONAL                      :: higher_derivatives
+
+      LOGICAL                                            :: prepare_derivatives
+
+      prepare_derivatives = .FALSE.
+      IF (PRESENT(higher_derivatives)) prepare_derivatives = higher_derivatives
 
       IF (cached_model_loaded) THEN
          IF (TRIM(cached_model_path) == TRIM(model_path) .AND. &
-             cached_model_cuda_device == cuda_device) RETURN
+             cached_model_cuda_device == cuda_device .AND. &
+             (cached_model_higher_derivatives .EQV. prepare_derivatives)) RETURN
          CALL skala_torch_model_release(cached_model)
          cached_model_loaded = .FALSE.
       END IF
 
-      CALL skala_torch_model_load(cached_model, TRIM(model_path))
+      CALL skala_torch_model_load(cached_model, TRIM(model_path), prepare_derivatives)
       cached_model_path = model_path
       cached_model_cuda_device = cuda_device
+      cached_model_higher_derivatives = prepare_derivatives
       cached_model_loaded = .TRUE.
 
    END SUBROUTINE ensure_model_loaded

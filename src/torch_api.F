@@ -12,6 +12,7 @@ MODULE torch_api
                             C_DOUBLE, &
                             C_F_POINTER, &
                             C_INT, &
+                            C_LOC, &
                             C_NULL_CHAR, &
                             C_NULL_PTR, &
                             C_PTR, &
@@ -88,6 +89,8 @@ MODULE torch_api
              torch_model_forward, torch_model_release
    PUBLIC :: torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
              torch_model_remap_device_constants
+   PUBLIC :: torch_model_spin_projected_energy
+   PUBLIC :: torch_model_prepare_higher_derivatives
    PUBLIC :: torch_model_get_attr, torch_model_read_metadata
    PUBLIC :: torch_cuda_device_count, torch_cuda_is_available
    PUBLIC :: torch_allow_tf32, torch_model_freeze, torch_use_cuda
@@ -870,6 +873,29 @@ CONTAINS
    END SUBROUTINE torch_model_disable_parameter_gradients
 
 ! **************************************************************************************************
+!> \brief Prepare a loaded, unexecuted model for higher input derivatives.
+! **************************************************************************************************
+   SUBROUTINE torch_model_prepare_higher_derivatives(model)
+      TYPE(torch_model_type), INTENT(INOUT)              :: model
+
+#if defined(__LIBTORCH)
+      INTERFACE
+         SUBROUTINE torch_c_model_prepare_higher_derivatives(model) &
+            BIND(C, name="torch_c_model_prepare_higher_derivatives")
+            IMPORT :: C_PTR
+            TYPE(C_PTR), VALUE                           :: model
+         END SUBROUTINE torch_c_model_prepare_higher_derivatives
+      END INTERFACE
+
+      CPASSERT(C_ASSOCIATED(model%c_ptr))
+      CALL torch_c_model_prepare_higher_derivatives(model=model%c_ptr)
+#else
+      CPABORT("CP2K was compiled without Torch library.")
+      MARK_USED(model)
+#endif
+   END SUBROUTINE torch_model_prepare_higher_derivatives
+
+! **************************************************************************************************
 !> \brief Evaluates the given Torch model.
 !> \author Ole Schuett
 ! **************************************************************************************************
@@ -947,6 +973,87 @@ CONTAINS
       MARK_USED(output)
 #endif
    END SUBROUTINE torch_model_forward_mol_tensor
+
+! **************************************************************************************************
+!> \brief Evaluate the multicollinear molecular protocol and its joint covectors or Hessian action.
+!> \param model Collinear model exposing get_exc_density.
+!> \param inputs Molecular dictionary with scalar/z/x/y density, gradient and tau fields.
+!> \param axes Unit spin-projection directions in z/x/y order.
+!> \param weights Angular weights summing to one.
+!> \param variables Independent field and optional geometry tensors.
+!> \param outputs Raw covectors or their directional derivatives.
+!> \param energy Base-state energy.
+!> \param status Zero on success. Failed evaluations return no output tensors.
+!> \param directions Optional joint input direction.
+! **************************************************************************************************
+   SUBROUTINE torch_model_spin_projected_energy(model, inputs, axes, weights, variables, outputs, energy, status, directions)
+      TYPE(torch_model_type), INTENT(INOUT)              :: model
+      TYPE(torch_dict_type), INTENT(IN)                  :: inputs
+      TYPE(torch_tensor_type), INTENT(IN)                :: axes, weights, variables(:)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: outputs(:)
+      REAL(KIND=dp), INTENT(OUT)                         :: energy
+      INTEGER, INTENT(OUT)                               :: status
+      TYPE(torch_tensor_type), OPTIONAL, INTENT(IN)      :: directions(:)
+#if defined(__LIBTORCH)
+      TYPE(C_PTR)                                        :: variable_ptrs(SIZE(variables)), output_ptrs(SIZE(variables))
+      TYPE(C_PTR), TARGET                                :: direction_ptrs(SIZE(variables))
+      TYPE(C_PTR)                                        :: direction_data
+      INTEGER                                            :: i
+      INTEGER(C_INT)                                     :: c_status
+      INTERFACE
+         SUBROUTINE torch_c_model_spin_projected_energy(model, inputs, axes, weights, count, &
+                                                        variables, directions, outputs, energy, status) &
+            BIND(C, name="torch_c_model_spin_projected_energy")
+            IMPORT :: C_DOUBLE, C_INT, C_PTR
+            TYPE(C_PTR), VALUE                           :: model, inputs, axes, weights, directions
+            INTEGER(C_INT), VALUE                        :: count
+            TYPE(C_PTR), INTENT(IN)                      :: variables(*)
+            TYPE(C_PTR), INTENT(INOUT)                   :: outputs(*)
+            REAL(C_DOUBLE), INTENT(OUT)                  :: energy
+            INTEGER(C_INT), INTENT(OUT)                  :: status
+         END SUBROUTINE
+      END INTERFACE
+      CPASSERT(C_ASSOCIATED(model%c_ptr) .AND. C_ASSOCIATED(inputs%c_ptr))
+      CPASSERT(C_ASSOCIATED(axes%c_ptr) .AND. C_ASSOCIATED(weights%c_ptr))
+      CPASSERT(SIZE(variables) > 0 .AND. SIZE(outputs) == SIZE(variables))
+      direction_data = C_NULL_PTR
+      IF (PRESENT(directions)) THEN
+         CPASSERT(SIZE(directions) == SIZE(variables))
+         DO i = 1, SIZE(variables)
+            CPASSERT(C_ASSOCIATED(directions(i)%c_ptr))
+            direction_ptrs(i) = directions(i)%c_ptr
+         END DO
+         direction_data = C_LOC(direction_ptrs)
+      END IF
+      DO i = 1, SIZE(variables)
+         CPASSERT(C_ASSOCIATED(variables(i)%c_ptr))
+         CPASSERT(.NOT. C_ASSOCIATED(outputs(i)%c_ptr))
+         variable_ptrs(i) = variables(i)%c_ptr
+         output_ptrs(i) = C_NULL_PTR
+      END DO
+      CALL torch_c_model_spin_projected_energy(model%c_ptr, inputs%c_ptr, axes%c_ptr, weights%c_ptr, &
+                                               INT(SIZE(variables), C_INT), variable_ptrs, direction_data, &
+                                               output_ptrs, energy, c_status)
+      status = c_status
+      DO i = 1, SIZE(variables)
+         outputs(i)%c_ptr = output_ptrs(i)
+         IF (status == 0) THEN
+            CPASSERT(C_ASSOCIATED(outputs(i)%c_ptr))
+         END IF
+      END DO
+#else
+      MARK_USED(model)
+      MARK_USED(inputs)
+      MARK_USED(axes)
+      MARK_USED(weights)
+      MARK_USED(variables)
+      MARK_USED(outputs)
+      MARK_USED(energy)
+      MARK_USED(status)
+      MARK_USED(directions)
+      CPABORT("CP2K was compiled without LibTorch support.")
+#endif
+   END SUBROUTINE torch_model_spin_projected_energy
 
 ! **************************************************************************************************
 !> \brief Releases a Torch model and all its ressources.

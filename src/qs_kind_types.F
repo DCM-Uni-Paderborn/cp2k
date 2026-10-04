@@ -57,6 +57,7 @@ MODULE qs_kind_types
         gth_potential_type, init_potential, local_potential_type, read_potential, &
         set_default_all_potential, set_potential, sgp_potential_type, write_potential
    USE gapw_1c_basis_set,               ONLY: create_1c_basis
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: &
         do_method_am1, do_method_dftb, do_method_mndo, do_method_mndod, do_method_pdg, &
         do_method_pm3, do_method_pm6, do_method_pm6fm, do_method_pnnl, do_method_pw, &
@@ -217,6 +218,7 @@ MODULE qs_kind_types
       INTEGER                                :: lmax_dftb = -1
       REAL(KIND=dp)                          :: dudq_dftb3 = 0.0_dp
       REAL(KIND=dp)                          :: magnetization = 0.0_dp
+      REAL(KIND=dp)                          :: sirius_magnetization_vector(3) = 0.0_dp
       INTEGER, DIMENSION(:, :), POINTER      :: addel => Null()
       INTEGER, DIMENSION(:, :), POINTER      :: laddel => Null()
       INTEGER, DIMENSION(:, :), POINTER      :: naddel => Null()
@@ -466,6 +468,7 @@ CONTAINS
 !> \param pao_descriptors ...
 !> \param nelec ...
 !> \param sirius_atom_file Full-potential SIRIUS atom data file.
+!> \param sirius_magnetization_vector Cartesian initial magnetization for SIRIUS.
 ! **************************************************************************************************
    SUBROUTINE get_qs_kind(qs_kind, &
                           basis_set, basis_type, ncgf, nsgf, &
@@ -484,7 +487,8 @@ CONTAINS
                           max_scf, eps_scf, smear, u_ramping, u_minus_j_target, eps_u_ramping, proj_shell_charge, &
                           lr_atom, do_mtlr, u_j_loop, ao_coef, &
                           init_u_ramping_each_scf, reltmat, ghost, monovalent, floating, name, element_symbol, &
-                          pao_basis_size, pao_model_file, pao_potentials, pao_descriptors, nelec, sirius_atom_file)
+                          pao_basis_size, pao_model_file, pao_potentials, pao_descriptors, nelec, sirius_atom_file, &
+                          sirius_magnetization_vector)
 
       TYPE(qs_kind_type)                                 :: qs_kind
       TYPE(gto_basis_set_type), OPTIONAL, POINTER        :: basis_set
@@ -551,6 +555,7 @@ CONTAINS
          OPTIONAL, POINTER                               :: pao_descriptors
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: nelec
       CHARACTER(len=*), INTENT(OUT), OPTIONAL            :: sirius_atom_file
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: sirius_magnetization_vector(3)
 
       CHARACTER(LEN=default_string_length)               :: my_basis_type
       INTEGER                                            :: l
@@ -905,6 +910,7 @@ CONTAINS
       IF (PRESENT(naddel)) naddel => qs_kind%naddel
 
       IF (PRESENT(magnetization)) magnetization = qs_kind%magnetization
+      IF (PRESENT(sirius_magnetization_vector)) sirius_magnetization_vector = qs_kind%sirius_magnetization_vector
 
       IF (PRESENT(no_optimize)) no_optimize = qs_kind%no_optimize
 
@@ -1742,6 +1748,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(6)                        :: error
       REAL(KIND=dp), DIMENSION(:), POINTER               :: a_nl, aloc, anlcc, cloc, cnlcc, nelec, &
                                                             proj_shell_charge, &
+                                                            sirius_magnetization, &
                                                             tmp_perturbation_strength
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: h_nl
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: c_nl
@@ -2047,6 +2054,24 @@ CONTAINS
          ! Magnetization
          CALL section_vals_val_get(kind_section, i_rep_section=k_rep, &
                                    keyword_name="MAGNETIZATION", r_val=qs_kind%magnetization)
+         qs_kind%sirius_magnetization_vector = [0.0_dp, 0.0_dp, qs_kind%magnetization]
+         CALL section_vals_val_get(kind_section, i_rep_section=k_rep, &
+                                   keyword_name="SIRIUS_MAGNETIZATION_VECTOR", explicit=explicit)
+         IF (explicit) THEN
+            CALL section_vals_val_get(kind_section, i_rep_section=k_rep, &
+                                      keyword_name="SIRIUS_MAGNETIZATION_VECTOR", r_vals=sirius_magnetization)
+            IF (method_id /= do_method_pw) THEN
+               CPABORT("SIRIUS_MAGNETIZATION_VECTOR requires METHOD SIRIUS")
+            END IF
+            CALL section_vals_val_get(force_env_section, "PW_DFT%PARAMETERS%NUM_MAG_DIMS", i_val=nspin)
+            IF (nspin /= 3) THEN
+               CPABORT("SIRIUS_MAGNETIZATION_VECTOR requires NUM_MAG_DIMS 3")
+            END IF
+            IF (.NOT. ALL(ieee_is_finite(sirius_magnetization))) THEN
+               CPABORT("Nonfinite SIRIUS magnetization vector")
+            END IF
+            qs_kind%sirius_magnetization_vector = sirius_magnetization
+         END IF
          ! DFTB3 param
          CALL section_vals_val_get(kind_section, i_rep_section=k_rep, &
                                    keyword_name="DFTB3_PARAM", r_val=qs_kind%dudq_dftb3)

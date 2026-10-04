@@ -38,7 +38,8 @@ PROGRAM skala_grid_unittest
    TYPE(section_type), POINTER :: definition => NULL()
    TYPE(section_vals_type), POINTER :: xc => NULL()
    CHARACTER(len=default_path_length) :: model
-   CHARACTER(len=32) :: model_mode
+   CHARACTER(len=32) :: model_mode, device_arg
+   LOGICAL :: cuda_points, spinor_test, spinor_precision_test
    INTEGER :: ns, partition, i, s, first_z, last_z, nr, component, step, mode
    REAL(dp) :: hmat(3, 3), energy, reference, ep, em, derivative, h, error, maximum_error, &
                step_size, response_step_size, routing_tolerance, derivative_tolerance
@@ -50,6 +51,13 @@ PROGRAM skala_grid_unittest
    IF (LEN_TRIM(model) > default_string_length) &
       ERROR STOP "Use MODEL SKALA and set GAUXC_SKALA_MODEL for a long model path"
    CALL get_command_argument(2, model_mode)
+   spinor_precision_test = model_mode == "spinor-precision"
+   spinor_test = model_mode == "spinor" .OR. model_mode == "spinor-float32" .OR. spinor_precision_test
+   IF (model_mode == "spinor") model_mode = "geometry"
+   IF (model_mode == "spinor-float32" .OR. spinor_precision_test) model_mode = "skala-float32"
+   CALL get_command_argument(3, device_arg)
+   cuda_points = TRIM(device_arg) == "gpu"
+   IF (LEN_TRIM(device_arg) > 0 .AND. .NOT. cuda_points) ERROR STOP "Expected gpu or no device argument"
    step_size = 1.0e-3_dp
    response_step_size = step_size
    routing_tolerance = 1.0e-11_dp
@@ -95,6 +103,7 @@ PROGRAM skala_grid_unittest
    END DO
    maximum_error = 0.0_dp
    DO ns = 1, 2
+      IF (cuda_points .OR. spinor_test) EXIT
       ALLOCATE (rho(nr, ns), grad(nr, 3, ns), tau(nr, ns), drho(nr, ns), dgrad(nr, 3, ns), dtau(nr, ns), &
                 vrho(nr, ns), vgrad(nr, 3, ns), vtau(nr, ns), &
                 ref_vrho(nr, ns), ref_vgrad(nr, 3, ns), ref_vtau(nr, ns))
@@ -165,7 +174,12 @@ PROGRAM skala_grid_unittest
       END DO
       DEALLOCATE (rho, grad, tau, drho, dgrad, dtau, vrho, vgrad, vtau, ref_vrho, ref_vgrad, ref_vtau)
    END DO
-   CALL arbitrary_points()
+   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=cuda_points)
+   IF (spinor_test) THEN
+      CALL noncollinear_points()
+   ELSE
+      CALL arbitrary_points()
+   END IF
    CALL comm%max(maximum_error)
    IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum field/geometry derivative error: ", maximum_error
    DEALLOCATE (atoms)
@@ -174,6 +188,283 @@ PROGRAM skala_grid_unittest
    CALL section_release(definition)
    CALL cp2k_finalize()
 CONTAINS
+   SUBROUTINE noncollinear_points()
+      INTEGER, PARAMETER                                 :: block_size = 16
+
+      INTEGER                                            :: a, angular, axis, b, first, ih, j, na, &
+                                                            nrow, row, source
+      INTEGER, ALLOCATABLE                               :: sizes(:)
+      REAL(dp) :: ad, angle, charge, displacement(3), e, err, expected, local_energy, mean(4), &
+         mean_point(3), moment(4), normal(3), other, phi, pi, radius, rotation(3, 3), step_h, tol, &
+         total_descriptor, total_weight, z
+      REAL(dp), ALLOCATABLE :: centres(:, :), col_g(:, :, :), col_r(:, :), col_t(:, :), &
+         col_vg(:, :, :), col_vr(:, :), col_vt(:, :), dc(:, :), fc(:, :), fd(:, :), &
+         field_grad(:, :, :), hc(:, :), hv(:, :), minus_c(:, :), minus_v(:, :), plus_c(:, :), &
+         plus_v(:, :), reference_c(:, :), reference_v(:, :), rotated(:, :), tangent(:, :), &
+         v(:, :), vc(:, :), y(:, :)
+
+      na = 0
+      DO a = 1, 2
+         IF (MOD(a - 1, comm%num_pe) == comm%mepos) na = na + 1
+      END DO
+      nrow = block_size*na
+      ! Packed columns are rho(4), grad(3,4), tau(4), coordinates(3), energy/descriptor weights.
+      ALLOCATE (sizes(na), y(nrow, 25), tangent(nrow, 25), centres(3, na), dc(3, na), &
+                v(nrow, 25), vc(3, na), hv(nrow, 25), hc(3, na), &
+                plus_v(nrow, 25), plus_c(3, na), minus_v(nrow, 25), minus_c(3, na), &
+                fd(nrow, 25), fc(3, na), rotated(nrow, 25), reference_v(nrow, 25), reference_c(3, na))
+      sizes = block_size
+      pi = ACOS(-1.0_dp)
+      y = 0.0_dp
+      b = 0
+      row = 0
+      DO a = 1, 2
+         IF (MOD(a - 1, comm%num_pe) /= comm%mepos) CYCLE
+         b = b + 1
+         centres(:, b) = atoms(a)%r
+         dc(:, b) = 0.02_dp*COS(REAL(a + [1, 2, 3], dp))
+         DO j = 1, block_size
+            radius = 0.4_dp + 0.5_dp*REAL((j - 1)/8, dp)
+            z = 1.0_dp - 2.0_dp*(REAL(MOD(j - 1, 8), dp) + 0.5_dp)/8.0_dp
+            phi = REAL(j, dp)*pi*(3.0_dp - SQRT(5.0_dp))
+            row = row + 1
+            y(row, 21:23) = centres(:, b) + radius*[SQRT(1.0_dp - z*z)*COS(phi), &
+                                                    SQRT(1.0_dp - z*z)*SIN(phi), z]
+            y(row, 25) = 4.0_dp*pi*radius**2*0.5_dp/8.0_dp
+            y(row, 24) = y(row, 25)*(0.6_dp + 0.1_dp*COS(phi))
+            IF (j == 1) y(row, 24) = 0.0_dp
+            DO source = 1, 2
+               displacement = y(row, 21:23) - atoms(source)%r
+               charge = EXP(-2.0_dp*SQRT(SUM(displacement**2)))/pi
+               moment = [1.0_dp, 0.24_dp, 0.08_dp, 0.0_dp]
+               IF (source == 2) moment = [1.0_dp, -0.12_dp, 0.0_dp, 0.20_dp]
+               y(row, 1:4) = y(row, 1:4) + charge*moment
+               y(row, 17:20) = y(row, 17:20) + 0.5_dp*charge*moment
+               DO axis = 1, 3
+                  y(row, axis + [4, 7, 10, 13]) = y(row, axis + [4, 7, 10, 13]) - &
+                                                  2.0_dp*charge*moment*displacement(axis)/SQRT(SUM(displacement**2))
+               END DO
+            END DO
+            tangent(row, 1:4) = 0.02_dp*y(row, 1)*COS(REAL(j + [1, 2, 3, 4], dp))
+            tangent(row, 5:16) = 0.02_dp*y(row, 1)*SIN(REAL(j + [(axis, axis=1, 12)], dp))
+            tangent(row, 17:20) = 0.02_dp*y(row, 17)*SIN(REAL(j + [1, 2, 3, 4], dp))
+            tangent(row, 21:23) = 0.01_dp*COS(REAL(j + [1, 2, 3], dp))
+            tangent(row, 24:25) = 0.02_dp*y(row, 25)*[SIN(REAL(j, dp)), COS(REAL(j, dp))]
+         END DO
+      END DO
+      angular = 26
+      tol = 1.0e-8_dp
+      IF (model_mode == "skala-float32") THEN
+         angular = 194
+         tol = 5.0e-5_dp
+      END IF
+      CALL spinor_evaluate(y, centres, sizes, angular, e, v, vc)
+      IF (model_mode /= "skala-float32" .OR. spinor_precision_test) THEN
+         ! Independent Cartesian polynomial, including a nonlocal spin-vector descriptor.
+         expected = 0.0_dp
+         reference_v = 0.0_dp
+         reference_c = 0.0_dp
+         first = 1
+         DO b = 1, na
+            total_weight = SUM(y(first:first + block_size - 1, 24))
+            total_descriptor = SUM(y(first:first + block_size - 1, 25))
+            mean = 0.0_dp
+            mean_point = 0.0_dp
+            DO row = first, first + block_size - 1
+               mean = mean + y(row, 25)*y(row, 1:4)/total_descriptor
+               mean_point = mean_point + y(row, 25)*(y(row, 21:23) - centres(:, b))/total_descriptor
+            END DO
+            DO row = first, first + block_size - 1
+               displacement = y(row, 21:23) - centres(:, b)
+               local_energy = 0.5_dp*(0.7_dp*SUM(y(row, 1:4)**2) + 0.3_dp*SUM(y(row, 17:20)**2) + &
+                                      0.2_dp*SUM(y(row, 1:4)*y(row, 17:20))) + 0.05_dp*SUM(y(row, 5:16)**2) + &
+                              0.05_dp*mean(1)**2 + 0.02_dp*SUM(mean(2:4)**2) + &
+                              0.04_dp*SUM(displacement**2) + (0.03_dp + 0.02_dp*mean(1))*SUM(mean_point**2)
+               expected = expected + y(row, 24)*local_energy
+               reference_v(row, 1:4) = y(row, 24)*(0.7_dp*y(row, 1:4) + 0.1_dp*y(row, 17:20)) + &
+                                       total_weight*y(row, 25)/total_descriptor* &
+                                       [0.1_dp*mean(1) + 0.02_dp*SUM(mean_point**2), 0.04_dp*mean(2:4)]
+               reference_v(row, 5:16) = 0.1_dp*y(row, 24)*y(row, 5:16)
+               reference_v(row, 17:20) = y(row, 24)*(0.3_dp*y(row, 17:20) + 0.1_dp*y(row, 1:4))
+               reference_v(row, 21:23) = 0.08_dp*y(row, 24)*displacement + &
+                                         (0.06_dp + 0.04_dp*mean(1))*total_weight*y(row, 25)*mean_point/total_descriptor
+               reference_c(:, b) = reference_c(:, b) - reference_v(row, 21:23)
+               reference_v(row, 24) = local_energy
+               reference_v(row, 25) = total_weight/total_descriptor*( &
+                                      (0.1_dp*mean(1) + 0.02_dp*SUM(mean_point**2))*(y(row, 1) - mean(1)) + &
+                                      0.04_dp*SUM(mean(2:4)*(y(row, 2:4) - mean(2:4))) + &
+                                      (0.06_dp + 0.04_dp*mean(1))*SUM(mean_point*(displacement - mean_point)))
+            END DO
+            first = first + block_size
+         END DO
+         CALL comm%sum(expected)
+         err = MAX(ABS(e - expected), MAXVAL(ABS(v - reference_v)), MAXVAL(ABS(vc - reference_c)))
+         CALL comm%max(err)
+         IF (err > 1.0e-11_dp) ERROR STOP "Spin-projected analytic energy or covectors are incorrect"
+         ALLOCATE (field_grad(nrow, 3, 4))
+         CALL skala_point_eval(comm, TRANSPOSE(y(:, 21:23)), y(:, 24), y(:, 25), sizes, centres, &
+                               y(:, 1:4), RESHAPE(y(:, 5:16), SHAPE(field_grad)), y(:, 17:20), xc, &
+                               other, plus_v(:, 1:4), field_grad, plus_v(:, 17:20), spin_angular_points=angular)
+         plus_v(:, 5:16) = RESHAPE(field_grad, [nrow, 12])
+         err = MAX(ABS(e - other), MAXVAL(ABS(plus_v(:, 1:20) - v(:, 1:20))))
+         CALL comm%max(err)
+         IF (err > 1.0e-11_dp) ERROR STOP "Omitting geometry outputs changes spin-projected fields"
+      END IF
+      normal = [1.0_dp, 2.0_dp, 3.0_dp]/SQRT(14.0_dp)
+      angle = 0.73_dp
+      DO axis = 1, 3
+         rotation(:, axis) = (1.0_dp - COS(angle))*normal*normal(axis)
+         rotation(axis, axis) = rotation(axis, axis) + COS(angle)
+      END DO
+      rotation = rotation + SIN(angle)*RESHAPE([0.0_dp, normal(3), -normal(2), &
+                                                -normal(3), 0.0_dp, normal(1), normal(2), -normal(1), 0.0_dp], [3, 3])
+      rotated = y
+      reference_v = v
+      rotated(:, 2:4) = MATMUL(y(:, 2:4), TRANSPOSE(rotation))
+      reference_v(:, 2:4) = MATMUL(v(:, 2:4), TRANSPOSE(rotation))
+      rotated(:, 18:20) = MATMUL(y(:, 18:20), TRANSPOSE(rotation))
+      reference_v(:, 18:20) = MATMUL(v(:, 18:20), TRANSPOSE(rotation))
+      DO axis = 1, 3
+         rotated(:, axis + [7, 10, 13]) = MATMUL(y(:, axis + [7, 10, 13]), TRANSPOSE(rotation))
+         reference_v(:, axis + [7, 10, 13]) = MATMUL(v(:, axis + [7, 10, 13]), TRANSPOSE(rotation))
+      END DO
+      CALL spinor_evaluate(rotated, centres, sizes, angular, other, plus_v, plus_c)
+      err = MAX(ABS(e - other), MAXVAL(ABS(plus_v - reference_v)), MAXVAL(ABS(plus_c - vc)))
+      CALL comm%max(err)
+      IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Spin-rotation energy/covector error: ", err
+      IF (err > tol) ERROR STOP "Spin-projected energy or covectors violate rotation invariance"
+      ad = SUM(v*tangent) + SUM(vc*dc)
+      CALL comm%sum(ad)
+      CALL spinor_evaluate(y, centres, sizes, angular, other, hv, hc, tangent, dc)
+      fd = 0.0_dp
+      fc = 0.0_dp
+      DO ih = 1, 2
+         step_h = response_step_size/REAL(ih, dp)
+         CALL spinor_evaluate(y + step_h*tangent, centres + step_h*dc, sizes, angular, &
+                              ep, plus_v, plus_c)
+         CALL spinor_evaluate(y - step_h*tangent, centres - step_h*dc, sizes, angular, &
+                              em, minus_v, minus_c)
+         IF (ih == 1) THEN
+            fd = -(plus_v - minus_v)/(6.0_dp*step_h)
+            fc = -(plus_c - minus_c)/(6.0_dp*step_h)
+         ELSE
+            fd = fd + 2.0_dp*(plus_v - minus_v)/(3.0_dp*step_h)
+            fc = fc + 2.0_dp*(plus_c - minus_c)/(3.0_dp*step_h)
+            err = ABS((ep - em)/(2.0_dp*step_h) - ad)
+            IF (err > tol) ERROR STOP "Spin-projected joint covectors fail energy finite differences"
+         END IF
+      END DO
+      err = MAX(MAXVAL(ABS(fd - hv)), MAXVAL(ABS(fc - hc)))
+      CALL comm%max(err)
+      maximum_error = MAX(maximum_error, err)
+      IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Spin-projected joint Hessian error: ", err
+      IF (err > tol) ERROR STOP "Spin-projected joint Hessian fails Richardson finite differences"
+      IF (cuda_points) THEN
+         CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.FALSE.)
+         CALL spinor_evaluate(y, centres, sizes, angular, other, plus_v, plus_c)
+         err = MAX(ABS(e - other), MAXVAL(ABS(v - plus_v)), MAXVAL(ABS(vc - plus_c)))
+         CALL spinor_evaluate(y, centres, sizes, angular, other, plus_v, plus_c, tangent, dc)
+         err = MAX(err, MAXVAL(ABS(hv - plus_v)), MAXVAL(ABS(hc - plus_c)))
+         CALL comm%max(err)
+         CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.TRUE.)
+         IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "CPU/GPU spin-projected covector/Hessian difference: ", err
+         IF (err > tol) ERROR STOP "CPU/GPU spin-projected derivatives disagree"
+      END IF
+      ! A common collinear axis must recover the existing two-spin functional.
+      ALLOCATE (col_r(nrow, 2), col_g(nrow, 3, 2), col_t(nrow, 2), &
+                col_vr(nrow, 2), col_vg(nrow, 3, 2), col_vt(nrow, 2))
+      DO ih = 1, 2
+         rotated = y
+         rotated(:, 3:4) = 0.0_dp
+         rotated(:, 11:16) = 0.0_dp
+         rotated(:, 19:20) = 0.0_dp
+         IF (ih == 2) THEN
+            rotated(:, 2) = 0.0_dp
+            rotated(:, 8:10) = 0.0_dp
+            rotated(:, 18) = 0.0_dp
+         END IF
+         DO j = 1, 2
+            col_r(:, j) = 0.5_dp*(rotated(:, 1) + (3 - 2*j)*rotated(:, 2))
+            col_g(:, :, j) = 0.5_dp*(rotated(:, 5:7) + (3 - 2*j)*rotated(:, 8:10))
+            col_t(:, j) = 0.5_dp*(rotated(:, 17) + (3 - 2*j)*rotated(:, 18))
+         END DO
+         CALL skala_point_eval(comm, TRANSPOSE(y(:, 21:23)), y(:, 24), y(:, 25), sizes, centres, &
+                               col_r, col_g, col_t, xc, expected, col_vr, col_vg, col_vt, &
+                               model_fp64=spinor_precision_test)
+         CALL spinor_evaluate(rotated, centres, sizes, angular, other, plus_v, plus_c)
+         reference_v = 0.0_dp
+         reference_v(:, 1) = 0.5_dp*SUM(col_vr, DIM=2)
+         reference_v(:, 2) = 0.5_dp*(col_vr(:, 1) - col_vr(:, 2))
+         reference_v(:, 5:7) = 0.5_dp*SUM(col_vg, DIM=3)
+         reference_v(:, 8:10) = 0.5_dp*(col_vg(:, :, 1) - col_vg(:, :, 2))
+         reference_v(:, 17) = 0.5_dp*SUM(col_vt, DIM=2)
+         reference_v(:, 18) = 0.5_dp*(col_vt(:, 1) - col_vt(:, 2))
+         err = MAX(ABS(other - expected), MAXVAL(ABS(plus_v(:, 1:20) - reference_v(:, 1:20))))
+         CALL comm%max(err)
+         IF (err > MERGE(1.0e-11_dp, tol, spinor_precision_test)) &
+            ERROR STOP "Spin projection fails the collinear or unpolarized limit"
+      END DO
+      IF (model_mode == "skala-float32") THEN
+         ! Saturated neural activations must retain finite second/third derivatives.
+         BLOCK
+            INTEGER, ALLOCATABLE :: saturation_sizes(:)
+            REAL(dp), ALLOCATABLE :: fields(:, :), field_direction(:, :), covectors(:, :), centre_covectors(:, :)
+
+            ALLOCATE (saturation_sizes(na), fields(64*na, 25), field_direction(64*na, 25), &
+                      covectors(64*na, 25), centre_covectors(3, na))
+            saturation_sizes = 64
+            fields = 0.0_dp
+            moment = [1.0_dp, 0.24_dp, 0.08_dp, 0.20_dp]
+            DO b = 1, na
+               DO j = 1, 64
+                  row = (b - 1)*64 + j
+                  fields(row, 1:4) = 0.001_dp*moment
+                  fields(row, 17:20) = 0.01_dp*moment
+                  fields(row, 21:23) = centres(:, b) + [-1.304_dp + 2.0_dp*MOD(j - 1, 4), &
+                                                        -2.439_dp + 2.25_dp*MOD((j - 1)/4, 4), &
+                                                        -3.59_dp + 2.5_dp*((j - 1)/16)]
+                  fields(row, 24:25) = 11.25_dp
+               END DO
+            END DO
+            field_direction = 0.0_dp
+            field_direction(:, 1:20) = 0.01_dp*fields(:, 1:20)
+            CALL spinor_evaluate(fields, centres, saturation_sizes, 6, other, covectors, centre_covectors)
+            CALL spinor_evaluate(fields, centres, saturation_sizes, 6, other, covectors, centre_covectors, &
+                                 field_direction, 0.0_dp*centres)
+         END BLOCK
+      END IF
+      IF (comm%mepos == 0) WRITE (*, '(A)') "Noncollinear point energy, covector and response checks passed."
+   END SUBROUTINE noncollinear_points
+
+   SUBROUTINE spinor_evaluate(values, centres, sizes, angular, e, covectors, centre_covectors, direction, centre_direction)
+      REAL(dp), INTENT(IN)                               :: values(:, :), centres(:, :)
+      INTEGER, INTENT(IN)                                :: sizes(:), angular
+      REAL(dp), INTENT(OUT)                              :: e, covectors(:, :), &
+                                                            centre_covectors(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: direction(:, :), centre_direction(:, :)
+
+      REAL(dp), ALLOCATABLE                              :: grad_out(:, :, :), point_out(:, :)
+
+      ALLOCATE (grad_out(SIZE(values, 1), 3, 4), point_out(3, SIZE(values, 1)))
+      IF (PRESENT(direction)) THEN
+         CALL skala_point_eval(comm, TRANSPOSE(values(:, 21:23)), values(:, 24), values(:, 25), sizes, centres, &
+                               values(:, 1:4), RESHAPE(values(:, 5:16), SHAPE(grad_out)), values(:, 17:20), xc, &
+                               e, covectors(:, 1:4), grad_out, covectors(:, 17:20), point_out, centre_covectors, &
+                               covectors(:, 24), covectors(:, 25), direction(:, 1:4), &
+                               RESHAPE(direction(:, 5:16), SHAPE(grad_out)), direction(:, 17:20), &
+                               TRANSPOSE(direction(:, 21:23)), centre_direction, direction(:, 24), direction(:, 25), angular)
+      ELSE
+         CALL skala_point_eval(comm, TRANSPOSE(values(:, 21:23)), values(:, 24), values(:, 25), sizes, centres, &
+                               values(:, 1:4), RESHAPE(values(:, 5:16), SHAPE(grad_out)), values(:, 17:20), xc, &
+                               e, covectors(:, 1:4), grad_out, covectors(:, 17:20), point_out, centre_covectors, &
+                               covectors(:, 24), covectors(:, 25), spin_angular_points=angular)
+      END IF
+      covectors(:, 5:16) = RESHAPE(grad_out, SHAPE(covectors(:, 5:16)))
+      covectors(:, 21:23) = TRANSPOSE(point_out)
+      IF (.NOT. ieee_is_finite(e) .OR. .NOT. ALL(ieee_is_finite(covectors)) .OR. &
+          .NOT. ALL(ieee_is_finite(centre_covectors))) ERROR STOP "Nonfinite spin-projected energy or derivatives"
+   END SUBROUTINE spinor_evaluate
+
    SUBROUTINE arbitrary_points()
       INTEGER, PARAMETER                                 :: block_sizes(2) = [160, 192], nang = 16, &
                                                             total_rows = SUM(block_sizes)
@@ -275,8 +566,23 @@ CONTAINS
                   END DO
                END DO
             END DO
+            IF (cuda_points) THEN
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.FALSE.)
+               CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                     r, g, t, xc, plus, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d)
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.TRUE.)
+            END IF
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, pr, pg, pt, px, pc, pe, pd)
+            IF (cuda_points) THEN
+               err = ABS(e - plus)
+               IF (nr_local > 0) err = MAX(err, MAXVAL(ABS(pr - plus_r)), MAXVAL(ABS(pg - plus_g)), &
+                                           MAXVAL(ABS(pt - plus_t)), MAXVAL(ABS(px - plus_x)), &
+                                           MAXVAL(ABS(pc - plus_c)), MAXVAL(ABS(pe - plus_e)), MAXVAL(ABS(pd - plus_d)))
+               CALL comm%max(err)
+               IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "CPU/GPU point energy/covector difference: ", err
+               IF (err > routing_tolerance) ERROR STOP "CPU/GPU point energy or covectors disagree"
+            END IF
             IF (model_mode == "skala-float32" .AND. e >= -1.0e-6_dp) &
                ERROR STOP "The arbitrary-point fixture must have a nontrivial Skala energy"
             IF (model_mode /= "skala-float32") THEN
@@ -415,9 +721,25 @@ CONTAINS
                                         MAXVAL(ABS(hx)), MAXVAL(ABS(hc)), MAXVAL(ABS(he)), MAXVAL(ABS(hd)))
             CALL comm%max(err)
             IF (err /= 0.0_dp) ERROR STOP "A zero direction must give zero field and geometry Hessian responses"
+            IF (cuda_points) THEN
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.FALSE.)
+               CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                     r, g, t, xc, plus, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, &
+                                     dr, dg, dt, dx, dc, de, dd)
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.TRUE.)
+            END IF
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
                                   dr, dg, dt, dx, dc, de, dd)
+            IF (cuda_points) THEN
+               err = 0.0_dp
+               IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - plus_r)), MAXVAL(ABS(hg - plus_g)), &
+                                           MAXVAL(ABS(ht - plus_t)), MAXVAL(ABS(hx - plus_x)), &
+                                           MAXVAL(ABS(hc - plus_c)), MAXVAL(ABS(he - plus_e)), MAXVAL(ABS(hd - plus_d)))
+               CALL comm%max(err)
+               IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "CPU/GPU joint point Hessian difference: ", err
+               IF (err > routing_tolerance) ERROR STOP "CPU/GPU joint point Hessians disagree"
+            END IF
             DO ih = 1, 2
                step_h = response_step_size/REAL(ih, dp)
                CALL skala_point_eval(comm, points + step_h*dx, energy_weights + step_h*de, &

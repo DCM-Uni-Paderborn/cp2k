@@ -53,6 +53,23 @@ def main():
         ),
         ("wrong-element", source, "does not match the requested element"),
         (
+            "invalid-spin-angular",
+            source.replace("      N_ANGULAR 110", "      N_ANGULAR 110\n      N_SPIN_ANGULAR 8"),
+            "N_SPIN_ANGULAR requires an available positive Lebedev rule",
+        ),
+        (
+            "vector-without-spinors",
+            source.replace("      POTENTIAL ALL", "      POTENTIAL ALL\n      SIRIUS_MAGNETIZATION_VECTOR 0.3 -0.2 0.1"),
+            "SIRIUS_MAGNETIZATION_VECTOR requires NUM_MAG_DIMS 3",
+        ),
+        (
+            "vector-without-sirius",
+            (root / "tests/SIRIUS/regtest-skala/H2.inp").read_text()
+            .replace("METHOD SIRIUS", "METHOD Quickstep")
+            .replace("      POTENTIAL GTH-PBE-q1", "      POTENTIAL GTH-PBE-q1\n      SIRIUS_MAGNETIZATION_VECTOR 0.3 -0.2 0.1"),
+            "SIRIUS_MAGNETIZATION_VECTOR requires METHOD SIRIUS",
+        ),
+        (
             "missing-force-grid",
             (root / "tests/SIRIUS/regtest-skala/H2.inp").read_text().replace(
                 "RUN_TYPE ENERGY", "RUN_TYPE ENERGY_FORCE"

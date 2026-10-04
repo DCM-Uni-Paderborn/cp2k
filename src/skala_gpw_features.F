@@ -196,7 +196,7 @@ CONTAINS
 !> \param descriptor_weights Weights defining each atom's nonlocal descriptor domain.
 !> \param atom_sizes Number of consecutive rows in each complete atom block.
 !> \param atom_coords Cartesian centres of the atom blocks.
-!> \param density Total density or two spin-resolved densities.
+!> \param density Total density, two spin channels, or four scalar/z/x/y components.
 !> \param gradient Cartesian gradients, shaped (number of points,3,spin channels).
 !> \param kinetic Positive kinetic-energy density in the same spin convention.
 !> \param requires_geometry_grad Differentiate coordinates and both independent weight sets.
@@ -216,7 +216,7 @@ CONTAINS
       CALL skala_gpw_feature_release(features)
       npoint = SIZE(density, 1)
       nspin = SIZE(density, 2)
-      CPASSERT(nspin == 1 .OR. nspin == 2)
+      CPASSERT(nspin == 1 .OR. nspin == 2 .OR. nspin == 4)
       CPASSERT(ALL(SHAPE(points) == [3, npoint]))
       CPASSERT(SIZE(energy_weights) == npoint .AND. SIZE(descriptor_weights) == npoint)
       CPASSERT(ALL(SHAPE(atom_coords) == [3, SIZE(atom_sizes)]))
@@ -235,9 +235,9 @@ CONTAINS
       features%atomic_grid_sizes = INT(atom_sizes, int_8)
       features%coarse_0_atomic_coords = atom_coords
       ALLOCATE (features%atomic_grid_size_bound_shape(0, MAXVAL(atom_sizes)))
-      ALLOCATE (features%chunk_density(npoint, 2), features%chunk_grad(npoint, 3, 2), &
-                features%chunk_kin(npoint, 2))
-      DO s = 1, 2
+      ALLOCATE (features%chunk_density(npoint, MAX(2, nspin)), features%chunk_grad(npoint, 3, MAX(2, nspin)), &
+                features%chunk_kin(npoint, MAX(2, nspin)))
+      DO s = 1, MAX(2, nspin)
          IF (nspin == 1) THEN
             features%chunk_density(:, s) = 0.5_dp*density(:, 1)
             features%chunk_grad(:, :, s) = 0.5_dp*gradient(:, :, 1)
@@ -251,6 +251,10 @@ CONTAINS
       features%grid_weight_sum = SUM(energy_weights)
       features%electron_count = SUM(SUM(features%chunk_density, DIM=2)*energy_weights)
       features%spin_moment = SUM((features%chunk_density(:, 1) - features%chunk_density(:, 2))*energy_weights)
+      IF (nspin == 4) THEN
+         features%electron_count = SUM(features%chunk_density(:, 1)*energy_weights)
+         features%spin_moment = SUM(features%chunk_density(:, 2)*energy_weights)
+      END IF
       CALL add_owned_feature_tensors(features, .TRUE., requires_geometry_grad)
       features%active = .TRUE.
    END SUBROUTINE skala_point_feature_build

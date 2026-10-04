@@ -20,7 +20,9 @@ MODULE skala_torch_api
    USE torch_api, ONLY: &
       torch_dict_type, torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
       torch_model_load_with_metadata, torch_model_release, torch_model_remap_device_constants, &
+      torch_model_prepare_higher_derivatives, &
       torch_model_type, &
+      torch_model_spin_projected_energy, &
       torch_tensor_item_double, torch_tensor_release, torch_tensor_type, &
       torch_tensor_weighted_sum
 #include "./base/base_uses.f90"
@@ -33,6 +35,7 @@ MODULE skala_torch_api
 
    PUBLIC :: skala_torch_model_type, skala_torch_model_load, skala_torch_model_release
    PUBLIC :: skala_torch_model_get_exc, skala_torch_model_get_exc_density
+   PUBLIC :: skala_torch_model_spin_projected_eval
    PUBLIC :: skala_torch_model_needs_feature, skala_torch_model_protocol_version
 
    TYPE skala_torch_model_type
@@ -49,10 +52,12 @@ CONTAINS
 !> \brief Load a SKALA TorchScript model and its feature metadata.
 !> \param model ...
 !> \param filename ...
+!> \param higher_derivatives Use FP64 model arithmetic and stable higher input derivatives.
 ! **************************************************************************************************
-   SUBROUTINE skala_torch_model_load(model, filename)
+   SUBROUTINE skala_torch_model_load(model, filename, higher_derivatives)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       CHARACTER(len=*), INTENT(IN)                       :: filename
+      LOGICAL, INTENT(IN), OPTIONAL                      :: higher_derivatives
 
       CHARACTER(:), ALLOCATABLE                          :: features_json, protocol_string
       INTEGER                                            :: ios
@@ -62,6 +67,9 @@ CONTAINS
                                           "features", features_json)
       CALL torch_model_remap_device_constants(model%torch_model)
       CALL torch_model_disable_parameter_gradients(model%torch_model)
+      IF (PRESENT(higher_derivatives)) THEN
+         IF (higher_derivatives) CALL torch_model_prepare_higher_derivatives(model%torch_model)
+      END IF
       READ (protocol_string, *, IOSTAT=ios) model%protocol_version
       IF (ios /= 0) CPABORT("Could not parse SKALA TorchScript protocol_version metadata")
       IF (model%protocol_version /= 2) THEN
@@ -185,6 +193,30 @@ CONTAINS
 #endif
 
    END SUBROUTINE skala_torch_model_get_exc
+
+! **************************************************************************************************
+!> \brief Streaming multicollinear extension of the unchanged collinear Skala model.
+!> \param model Loaded Skala model.
+!> \param inputs Molecular features with scalar/z/x/y primitive fields.
+!> \param axes Unit angular directions in z/x/y order.
+!> \param weights Angular weights summing to one.
+!> \param variables Independent primitive and optional geometry tensors.
+!> \param outputs Complete-energy covectors or their Hessian action.
+!> \param exc Base-state energy.
+!> \param status Zero on success. The caller must check failures collectively.
+!> \param directions Optional joint input direction.
+! **************************************************************************************************
+   SUBROUTINE skala_torch_model_spin_projected_eval(model, inputs, axes, weights, variables, outputs, exc, status, directions)
+      TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
+      TYPE(torch_dict_type), INTENT(IN)                  :: inputs
+      TYPE(torch_tensor_type), INTENT(IN)                :: axes, weights, variables(:)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: outputs(:)
+      REAL(KIND=dp), INTENT(OUT)                         :: exc
+      INTEGER, INTENT(OUT)                               :: status
+      TYPE(torch_tensor_type), INTENT(IN), OPTIONAL      :: directions(:)
+
+      CALL torch_model_spin_projected_energy(model%torch_model, inputs, axes, weights, variables, outputs, exc, status, directions)
+   END SUBROUTINE skala_torch_model_spin_projected_eval
 
 ! **************************************************************************************************
 !> \brief Parse a TorchScript extra_files JSON list of feature names.

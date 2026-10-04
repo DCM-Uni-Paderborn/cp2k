@@ -163,7 +163,7 @@ CONTAINS
       REAL(KIND=C_DOUBLE), ALLOCATABLE, DIMENSION(:)     :: fun
       REAL(KIND=C_DOUBLE), ALLOCATABLE, DIMENSION(:, :)  :: dion
       REAL(KIND=C_DOUBLE), DIMENSION(3)                  :: a1, a2, a3, v1, v2
-      REAL(KIND=dp)                                      :: al, angle1, angle2, cval, focc, &
+      REAL(KIND=dp)                                      :: al, cval, focc, &
                                                             magnetization, mass, pf, rl, zeff, alpha_u, beta_u, &
                                                             J0_u, J_u, U_u, occ_u, u_minus_J, vnlp, vnlm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: beta, corden, ef, fe, locpot, rc, rp
@@ -574,17 +574,8 @@ CONTAINS
          atomic_kind => particle_set(iatom)%atomic_kind
          ikind = atomic_kind%kind_number
          CALL get_atomic_kind(atomic_kind, name=label)
-         CALL get_qs_kind(qs_kind_set(ikind), zeff=zeff, magnetization=magnetization)
-! angle of magnetization might come from input Atom x y z mx my mz
-! or as an angle?
-! Answer : SIRIUS only accept the magnetization as mx, my, mz
-         IF (num_mag_dims == 3) THEN
-            angle1 = 0.0_dp
-            angle2 = 0.0_dp
-            v1(1) = magnetization*SIN(angle1)*COS(angle2)
-            v1(2) = magnetization*SIN(angle1)*SIN(angle2)
-            v1(3) = magnetization*COS(angle1)
-         ELSE
+         CALL get_qs_kind(qs_kind_set(ikind), zeff=zeff, magnetization=magnetization, sirius_magnetization_vector=v1)
+         IF (num_mag_dims /= 3) THEN
             v1 = 0._dp
             v1(3) = magnetization
          END IF
