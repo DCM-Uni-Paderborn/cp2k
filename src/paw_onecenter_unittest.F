@@ -34,6 +34,7 @@ PROGRAM paw_onecenter_unittest
    CALL screened_radial_integrals()
    CALL projector_energy()
    CALL core_exchange_checks()
+   CALL interaction_core_checks()
    CALL original_datasets()
    CALL cp2k_finalize()
 
@@ -128,41 +129,51 @@ CONTAINS
    END FUNCTION gaussian_truncated
 
 ! **************************************************************************************************
-!> \brief Finite-range multipoles against closed Fourier references on linear and logarithmic meshes.
+!> \brief Fourier Gaussian multipoles and a compact exact sphere on a logarithmic mesh.
 !>        The l=1 reference exceeds its Coulomb value for a selected radius, so clipping is detectable.
 ! **************************************************************************************************
    SUBROUTINE truncated_radial_integrals()
       INTEGER, PARAMETER                                 :: angular(4) = [0, 1, 2, 8]
-      REAL(dp), PARAMETER :: cutoffs(2) = [0.7_dp, 2.3_dp], exponents(2) = [0.7_dp, 1.1_dp]
+      REAL(dp), PARAMETER :: amplitudes(2) = [1.0_dp, 0.73_dp], cutoffs(2) = [0.7_dp, 2.3_dp], &
+         exponents(2) = [0.7_dp, 1.1_dp]
 
       INTEGER                                            :: a, b, channel, i, l, mesh, n, variant
       REAL(dp)                                           :: error, exact, integral(2, 2), &
-                                                            reference(2, 2)
+                                                            reference(2, 2), scale
       REAL(dp), ALLOCATABLE                              :: products(:, :), r(:)
 
       DO mesh = 1, 2
-         n = MERGE(513, 2001, mesh == 1)
+         n = MERGE(513, 17, mesh == 1)
          ALLOCATE (r(n), products(n, 2))
          DO i = 1, n
             IF (mesh == 1) THEN
                r(i) = 10.0_dp*REAL(i - 1, dp)/REAL(n - 1, dp)
             ELSE
-               r(i) = 1.e-7_dp*EXP(LOG(1.e8_dp)*REAL(i - 1, dp)/REAL(n - 1, dp))
+               r(i) = 1.e-7_dp*EXP(LOG(1.e7_dp)*REAL(i - 1, dp)/REAL(n - 1, dp))
             END IF
          END DO
          error = 0.0_dp
-         DO channel = 1, SIZE(angular)
+         DO channel = 1, MERGE(SIZE(angular), 1, mesh == 1)
             l = angular(channel)
             DO a = 1, 2
-               products(:, a) = r**(l + 2)*EXP(-exponents(a)*r**2)
+               IF (mesh == 1) THEN
+                  products(:, a) = r**(l + 2)*EXP(-exponents(a)*r**2)
+               ELSE
+                  products(:, a) = amplitudes(a)*3.0_dp*r**2/SQRT(fourpi)
+               END IF
             END DO
             DO variant = 1, SIZE(cutoffs)
                CALL paw_radial_truncated(r, products, l, cutoffs(variant), integral)
                DO b = 1, 2
                   DO a = 1, 2
-                     exact = gaussian_truncated(exponents(a), exponents(b), l, cutoffs(variant))
-                     error = MAX(error, ABS(integral(a, b) - exact)/MAX(1.0_dp, ABS(gaussian_coulomb(exponents(a), &
-                                                                                                     exponents(b), l))))
+                     IF (mesh == 1) THEN
+                        exact = gaussian_truncated(exponents(a), exponents(b), l, cutoffs(variant))
+                        scale = MAX(1.0_dp, ABS(gaussian_coulomb(exponents(a), exponents(b), l)))
+                     ELSE
+                        exact = amplitudes(a)*amplitudes(b)*sphere_kernel(cutoffs(variant), -1.0_dp)
+                        scale = 1.0_dp
+                     END IF
+                     error = MAX(error, ABS(integral(a, b) - exact)/scale)
                   END DO
                END DO
                IF (integral(1, 2) /= integral(2, 1)) ERROR STOP 'Asymmetric truncated PAW radial matrix'
@@ -179,13 +190,17 @@ CONTAINS
             IF (ANY(integral /= reference)) ERROR STOP 'Saturated truncated radial kernel differs from Coulomb'
             DO b = 1, 2
                DO a = 1, 2
-                  exact = gaussian_coulomb(exponents(a), exponents(b), l)
+                  IF (mesh == 1) THEN
+                     exact = gaussian_coulomb(exponents(a), exponents(b), l)
+                  ELSE
+                     exact = amplitudes(a)*amplitudes(b)*sphere_kernel(2.0_dp, -1.0_dp)
+                  END IF
                   error = MAX(error, ABS(reference(a, b) - exact)/MAX(1.0_dp, ABS(exact)))
                END DO
             END DO
          END DO
-         WRITE (*, '(A,I3,ES15.6)') 'PAW truncated Gaussian multipole mesh/error:', mesh, error
-         IF (error > 3.e-8_dp) ERROR STOP 'Truncated radial PAW multipoles differ from Fourier/Hermite references'
+         WRITE (*, '(A,I3,ES15.6)') 'PAW truncated radial mesh/error:', mesh, error
+         IF (error > 3.e-8_dp) ERROR STOP 'Truncated radial PAW kernels differ from analytic references'
          DEALLOCATE (r, products)
       END DO
    END SUBROUTINE truncated_radial_integrals
@@ -610,7 +625,6 @@ CONTAINS
          CALL paw_onecenter_exchange(onecenter, 0.0_dp*density, fraction, plus, scratch)
          IF (ABS(plus - fraction*exact) > 3.e-8_dp) ERROR STOP 'PAW core-core exchange constant is omitted or repeated'
       END DO
-      CALL interaction_core_checks(pot, projectors, onecenter, amplitudes, core_exponents, valence_exponents, density, direction)
       pot%paw%gipaw_core_orbitals%wfc(:, 2) = -pot%paw%gipaw_core_orbitals%wfc(:, 2)
       phase_changed = onecenter
       CALL paw_onecenter_core_exchange_init(pot, projectors, phase_changed)
@@ -644,38 +658,63 @@ CONTAINS
    END SUBROUTINE core_exchange_checks
 
 ! **************************************************************************************************
-!> \brief Original-data finite core operator, distinct radius caches, spin and density derivatives.
-!> \param pot Original s/p Gaussian core fixture with a deliberately smaller augmentation sphere.
-!> \param projectors Original valence magnetic ordering.
-!> \param onecenter Coulomb cache to retain while preparing distinct truncated interactions.
-!> \param amplitudes Original valence amplitudes.
-!> \param core_exponents Independent core Gaussian exponents.
-!> \param valence_exponents Independent valence Gaussian exponents.
-!> \param density Physical spin densities.
-!> \param direction Symmetric density variation.
+!> \brief Compact uniform-sphere core: analytic kernels, radius caches, spin and density derivatives.
+!>        Constant s orbitals have quadratic radial products, so nine nodes suffice without
+!>        interpolation error. The complete domain extends beyond the augmentation sphere.
 ! **************************************************************************************************
-   SUBROUTINE interaction_core_checks(pot, projectors, onecenter, amplitudes, core_exponents, valence_exponents, density, direction)
-      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
-      TYPE(upf_projector_type), INTENT(IN)               :: projectors
-      TYPE(paw_onecenter_type), INTENT(INOUT)            :: onecenter
-      REAL(dp), INTENT(IN)                               :: amplitudes(:), core_exponents(:), &
-                                                            valence_exponents(:), &
-                                                            density(:, :, :), direction(:, :, :)
+   SUBROUTINE interaction_core_checks()
+      INTEGER, PARAMETER                                 :: n = 9, np = 2
+      REAL(dp), PARAMETER :: amplitudes(np) = [1.0_dp, 0.73_dp], &
+         cutoffs(4) = [0.0_dp, 0.7_dp, 2.3_dp, 20.0_dp], fractions(3) = [0.0_dp, 0.37_dp, 1.0_dp], &
+         omegas(2) = [0.17_dp, 0.61_dp], step = 1.e-5_dp
 
-      REAL(dp), PARAMETER :: cutoffs(4) = [0.0_dp, 0.7_dp, 2.3_dp, 20.0_dp], &
-         fractions(3) = [0.0_dp, 0.37_dp, 1.0_dp], omegas(2) = [0.17_dp, 0.61_dp], step = 1.e-5_dp
-
-      INTEGER                                            :: cache_index, i, j, np, reused, spin, &
+      INTEGER                                            :: cache_index, i, j, reused, spin, &
                                                             variant, weight
-      REAL(dp)                                           :: a, b, c, energy, error, exact, f0, f1, &
-                                                            f2, fraction, minus, plus, radius, &
-                                                            scale, screening, x
-      REAL(dp), ALLOCATABLE                              :: potential(:, :, :), reference(:, :), &
-                                                            scratch(:, :, :)
-      TYPE(paw_onecenter_type)                           :: poisoned
+      REAL(dp) :: density(np, np, 2), direction(np, np, 2), energy, error, exact, fraction, minus, &
+         plus, potential(np, np, 2), radius, reference(np, np), scratch(np, np, 2), screening
+      TYPE(atom_upfpot_type)                             :: pot
+      TYPE(paw_onecenter_type)                           :: onecenter, poisoned
+      TYPE(upf_projector_type)                           :: projectors
 
-      np = onecenter%nproj
-      ALLOCATE (potential(np, np, 2), reference(np, np), scratch(np, np, 2))
+      pot%is_paw = .TRUE.
+      pot%symbol = 'Ne'
+      pot%zion = 8.0_dp
+      pot%number_of_proj = np
+      ALLOCATE (pot%paw, pot%r(n), pot%rab(n), pot%lbeta(np), pot%beta(n, np), &
+                pot%dion(np, np), pot%qijl(n, np*(np + 1)/2, 0:0))
+      ALLOCATE (pot%paw%ae_wfc(n, np), pot%paw%ps_wfc(n, np), pot%paw%rho_core(n))
+      ALLOCATE (pot%paw%gipaw_core_orbitals)
+      ASSOCIATE (core => pot%paw%gipaw_core_orbitals)
+         ALLOCATE (core%wfc(n, 1), core%indices(1), core%principal_quantum_numbers(1), core%angular_momenta(1))
+         core%indices = 1
+         core%principal_quantum_numbers = 1
+         core%angular_momenta = 0
+         core%wfc(:, 1) = [(SQRT(3.0_dp)*REAL(i - 1, dp)/REAL(n - 1, dp), i=1, n)]
+      END ASSOCIATE
+      pot%paw%cutoff_index = 5
+      pot%rab = 1.0_dp/REAL(n - 1, dp)
+      pot%r(:) = [(REAL(i - 1, dp)*pot%rab(i), i=1, n)]
+      pot%lbeta = 0
+      pot%dion = 0.0_dp
+      pot%qijl = 0.0_dp
+      pot%paw%rho_core = 6.0_dp/fourpi
+      DO i = 1, np
+         pot%paw%ae_wfc(:, i) = amplitudes(i)*pot%paw%gipaw_core_orbitals%wfc(:, 1)
+         pot%beta(:, i) = EXP(-pot%r**2)
+      END DO
+      pot%paw%ps_wfc(:, :) = pot%paw%ae_wfc
+      CALL upf_projector_init(pot, 0, projectors)
+      CALL paw_onecenter_init(pot, projectors, onecenter)
+      CALL paw_onecenter_core_exchange_init(pot, projectors, onecenter)
+      IF (.NOT. onecenter%core_exchange_available) ERROR STOP 'Complete uniform-sphere core exchange is unavailable'
+      DO spin = 1, 2
+         DO j = 1, np
+            DO i = 1, np
+               density(i, j, spin) = SIN((0.19_dp + 0.11_dp*spin)*i)*SIN((0.19_dp + 0.11_dp*spin)*j)
+               direction(i, j, spin) = COS((0.23_dp + 0.13_dp*spin)*(i + j))
+            END DO
+         END DO
+      END DO
       error = 0.0_dp
       DO variant = 1, SIZE(cutoffs) + SIZE(omegas)
          IF (variant <= SIZE(cutoffs)) THEN
@@ -690,52 +729,18 @@ CONTAINS
             CALL paw_onecenter_core_exchange_prepare(pot, projectors, onecenter, cache_index=reused, omega=screening)
          END IF
          IF (.NOT. onecenter%interaction_core_exchange(cache_index)%available) THEN
-            ERROR STOP 'Complete original Gaussian core is unavailable for the selected exchange kernel'
+            ERROR STOP 'Complete uniform-sphere core is unavailable for the selected exchange kernel'
          END IF
          IF (reused /= cache_index .OR. SIZE(onecenter%interaction_core_exchange) /= variant) THEN
             ERROR STOP 'PAW core exchange kernel or parameter cache is inconsistent'
          END IF
          reference = 0.0_dp
-         DO j = 1, 2
-            DO i = 1, 2
-               b = valence_exponents(i)
-               c = valence_exponents(j)
-               a = core_exponents(1)
-               x = (a + b)*(a + c)*radius**2/(2.0_dp*a + b + c)
-               f0 = gaussian_kernel_factor(x, 0, screening)
-               reference(i, j) = gaussian_cross(a, b, c)*f0
-               a = core_exponents(2)
-               x = (a + b)*(a + c)*radius**2/(2.0_dp*a + b + c)
-               f1 = gaussian_kernel_factor(x, 1, screening)
-               reference(i, j) = -amplitudes(i)*amplitudes(j)*(reference(i, j) + &
-                                                               2.0_dp*a/(2.0_dp*a + b + c)*gaussian_cross(a, b, c)*f1)
+         exact = -sphere_kernel(radius, screening)
+         DO j = 1, np
+            DO i = 1, np
+               reference(i, j) = amplitudes(i)*amplitudes(j)*exact
             END DO
          END DO
-         b = valence_exponents(3)
-         a = core_exponents(1)
-         x = 0.5_dp*(a + b)*radius**2
-         f1 = gaussian_kernel_factor(x, 1, screening)
-         scale = b/(3.0_dp*(a + b))*gaussian_cross(a, b, b)*f1
-         a = core_exponents(2)
-         x = 0.5_dp*(a + b)*radius**2
-         f0 = gaussian_kernel_factor(x, 0, screening)
-         f1 = gaussian_kernel_factor(x, 1, screening)
-         f2 = gaussian_kernel_factor(x, 2, screening)
-         scale = scale + a*b/(a + b)**2*gaussian_cross(a, b, b)*(4.0_dp*f0 - 4.0_dp*f1/3.0_dp + f2)
-         DO i = 3, np
-            reference(i, i) = -scale
-         END DO
-         a = core_exponents(1)
-         b = core_exponents(2)
-         x = 0.5_dp*(a + b)*radius**2
-         f1 = gaussian_kernel_factor(x, 1, screening)
-         exact = -(2.0_dp*SQRT(a/pi)*gaussian_kernel_factor(a*radius**2, 0, screening) + &
-                   2.0_dp*b/(a + b)*gaussian_cross(a, b, b)*f1)
-         x = b*radius**2
-         f0 = gaussian_kernel_factor(x, 0, screening)
-         f1 = gaussian_kernel_factor(x, 1, screening)
-         f2 = gaussian_kernel_factor(x, 2, screening)
-         exact = exact - (3.0_dp*f0 - f1 + 0.75_dp*f2)*2.0_dp*SQRT(b/pi)
          ASSOCIATE (core => onecenter%interaction_core_exchange(cache_index))
             error = MAX(error, MAXVAL(ABS(core%matrix - reference)), ABS(core%energy - exact))
          END ASSOCIATE
@@ -767,8 +772,9 @@ CONTAINS
           ABS(onecenter%interaction_core_exchange(4)%energy - onecenter%core_exchange_energy) > 1.e-14_dp) THEN
          ERROR STOP 'PAW kernel core preparation replaced the separate Coulomb cache'
       END IF
-      WRITE (*, '(A,ES15.6)') 'PAW kernel original-core Cartesian-Gaussian exchange error:', error
-      IF (error > 3.e-8_dp) ERROR STOP 'PAW kernel core exchange differs from Cartesian Fourier references'
+      WRITE (*, '(A,ES15.6)') 'PAW kernel uniform-sphere exchange error:', error
+      IF (error > 3.e-8_dp) ERROR STOP 'PAW kernel core exchange differs from sphere-overlap references'
+      CALL atom_release_upf(pot)
    END SUBROUTINE interaction_core_checks
 
 ! **************************************************************************************************
@@ -790,31 +796,40 @@ CONTAINS
    END FUNCTION gaussian_cross
 
 ! **************************************************************************************************
-!> \brief Fourier Gaussian references for finite core multipoles.
-!> \param x Gaussian convolution exponent times radius squared for truncation, or the exponent for screening.
-!> \param l Multipole order, here zero through two.
+!> \brief Independent overlap-volume integral for two normalized uniform unit spheres.
+!>        Their overlap at distance d is pi*(4/3-d+d**3/12), for 0<=d<=2.
+!> \param radius Truncation radius, capped at the sphere diameter.
 !> \param omega Inverse screening length; a negative value selects the truncated reference.
-!> \return Ratio of finite-kernel to Coulomb Gaussian integrals.
+!> \return Bilinear integral of the normalized densities, without a spin or energy factor.
 ! **************************************************************************************************
-   FUNCTION gaussian_kernel_factor(x, l, omega) RESULT(value)
-      REAL(dp), INTENT(IN)                               :: x
-      INTEGER, INTENT(IN)                                :: l
-      REAL(dp), INTENT(IN)                               :: omega
+   FUNCTION sphere_kernel(radius, omega) RESULT(value)
+      REAL(dp), INTENT(IN)                               :: radius, omega
       REAL(dp)                                           :: value
 
-      IF (omega >= 0.0_dp) THEN
-         value = 1.0_dp - (omega**2/(x + omega**2))**(REAL(l, dp) + 0.5_dp)
+      INTEGER, PARAMETER                                 :: powers(3) = [1, 2, 4]
+
+      INTEGER                                            :: i, m
+      REAL(dp)                                           :: a, gaussian(0:5), moment(3), x
+
+      IF (omega < 0.0_dp) THEN
+         a = MIN(radius, 2.0_dp)
+         value = 1.5_dp*a**2 - 0.75_dp*a**3 + 3.0_dp*a**5/80.0_dp
+      ELSE IF (omega == 0.0_dp) THEN
+         value = 1.2_dp
       ELSE
-         SELECT CASE (l)
-         CASE (0)
-            value = 1.0_dp - EXP(-x)
-         CASE (1)
-            value = 1.0_dp + (2.0_dp*x - 1.0_dp)*EXP(-x)
-         CASE (2)
-            value = 1.0_dp - (4.0_dp*x*x/3.0_dp - 4.0_dp*x + 1.0_dp)*EXP(-x)
-         END SELECT
+         x = 2.0_dp*omega
+         gaussian(0) = 0.5_dp*SQRT(pi)*ERF(x)
+         gaussian(1) = 0.5_dp*(1.0_dp - EXP(-x*x))
+         DO m = 2, 5
+            gaussian(m) = 0.5_dp*(REAL(m - 1, dp)*gaussian(m - 2) - x**(m - 1)*EXP(-x*x))
+         END DO
+         DO i = 1, SIZE(powers)
+            m = powers(i) + 1
+            moment(i) = (2.0_dp**m*ERFC(x) + 2.0_dp*gaussian(m)/(SQRT(pi)*omega**m))/REAL(m, dp)
+         END DO
+         value = 2.25_dp*(4.0_dp*moment(1)/3.0_dp - moment(2) + moment(3)/12.0_dp)
       END IF
-   END FUNCTION gaussian_kernel_factor
+   END FUNCTION sphere_kernel
 
 ! **************************************************************************************************
 !> \brief Higher-angular-momentum short-range bilinear against an independent Fourier Gaussian integral.
