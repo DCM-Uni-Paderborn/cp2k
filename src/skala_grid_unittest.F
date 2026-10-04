@@ -255,7 +255,7 @@ CONTAINS
       angular = 26
       tol = 1.0e-8_dp
       IF (model_mode == "skala-float32") THEN
-         angular = 194
+         angular = MERGE(26, 194, spinor_precision_test)
          tol = 5.0e-5_dp
       END IF
       CALL spinor_evaluate(y, centres, sizes, angular, e, v, vc)
