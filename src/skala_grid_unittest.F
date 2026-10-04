@@ -390,7 +390,7 @@ CONTAINS
          END DO
          CALL skala_point_eval(comm, TRANSPOSE(y(:, 21:23)), y(:, 24), y(:, 25), sizes, centres, &
                                col_r, col_g, col_t, xc, expected, col_vr, col_vg, col_vt, &
-                               model_fp64=spinor_precision_test)
+                               model_fp64=.TRUE.)
          CALL spinor_evaluate(rotated, centres, sizes, angular, other, plus_v, plus_c)
          reference_v = 0.0_dp
          reference_v(:, 1) = 0.5_dp*SUM(col_vr, DIM=2)
