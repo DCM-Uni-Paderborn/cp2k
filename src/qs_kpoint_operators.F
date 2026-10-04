@@ -27,11 +27,12 @@ MODULE qs_kpoint_operators
    USE cp_cfm_basic_linalg,             ONLY: cp_cfm_scale_and_add_fm
    USE cp_cfm_types,                    ONLY: cp_cfm_type
    USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, dbcsr_get_readonly_block_p, &
-        dbcsr_init_p, dbcsr_p_type, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, &
-        dbcsr_type_symmetric
+        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
+        dbcsr_get_readonly_block_p, dbcsr_init_p, dbcsr_p_type, dbcsr_release, dbcsr_set, &
+        dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_symmetric
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
+                                              copy_fm_to_dbcsr,&
                                               copy_fm_to_dbcsr_bc,&
                                               dbcsr_fm_copy_plan_type
    USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
@@ -122,6 +123,11 @@ MODULE qs_kpoint_operators
 
    ! Immutable values, not per-k matrices. Metadata belong to the shared route;
    ! source identifies starts belonging to the explicitly prepared batch only.
+   TYPE kpoint_operator_source_type
+      TYPE(dbcsr_p_type), POINTER :: matrix(:, :) => NULL()
+      INTEGER :: row = 0
+   END TYPE kpoint_operator_source_type
+
    TYPE kpoint_operator_block_type
       REAL(KIND=dp), POINTER :: data(:, :) => NULL()
    END TYPE kpoint_operator_block_type
@@ -186,6 +192,7 @@ MODULE qs_kpoint_operators
       ! because start and finish treat all groups of one instance
       ! atomically. Allocated on first start.
       TYPE(copy_info_type), ALLOCATABLE, DIMENSION(:, :, :, :) :: info
+      TYPE(kpoint_operator_source_type), ALLOCATABLE :: sources(:, :)
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)            :: status
    END TYPE kpoint_operator_context_type
 
@@ -459,6 +466,7 @@ CONTAINS
       END IF
       IF (ALLOCATED(ctx%info)) DEALLOCATE (ctx%info)
       IF (ALLOCATED(ctx%status)) DEALLOCATE (ctx%status)
+      IF (ALLOCATED(ctx%sources)) DEALLOCATE (ctx%sources)
       NULLIFY (ctx%kpoints, ctx%ao_ao_fmstruct, ctx%group_fm_pools)
 
       CALL timestop(handle)
@@ -1137,6 +1145,8 @@ CONTAINS
          IF (PRESENT(TARGET)) target%local_data(:, :) = CMPLX(REAL(target%local_data, dp), 0.0_dp, dp)
          IF (PRESENT(fm_im)) fm_im%local_data(:, :) = 0.0_dp
       END IF
+      CALL kpoint_operator_add_admm(ctx%kpoints, ctx%rs(irs, slot)%source, ik, &
+                                    ctx%rs(irs, slot)%matrix_row, cmat=TARGET, fm_re=fm_re, fm_im=fm_im)
       CALL timestop(handle)
 
    END SUBROUTINE kpoint_operator_rs_build
@@ -1375,6 +1385,8 @@ CONTAINS
          IF (PRESENT(TARGET)) target%local_data(:, :) = CMPLX(REAL(target%local_data, dp), 0.0_dp, dp)
          IF (PRESENT(fm_im)) fm_im%local_data(:, :) = 0.0_dp
       END IF
+      CALL kpoint_operator_add_admm(ctx%kpoints, ctx%rs(row, slot)%source, ik, &
+                                    ctx%rs(row, slot)%matrix_row, cmat=TARGET, fm_re=fm_re, fm_im=fm_im)
    END SUBROUTINE kpoint_operator_evaluate
 
 ! **************************************************************************************************
@@ -1446,6 +1458,9 @@ CONTAINS
          END IF
       END IF
       CALL kpoint_operator_ensure(ctx, rsmat)
+      IF (.NOT. ALLOCATED(ctx%sources)) ALLOCATE (ctx%sources(ctx%nspin, kpoint_num_slots))
+      ctx%sources(ispin, slot)%matrix => rsmat
+      ctx%sources(ispin, slot)%row = matrix_row
 
       ! Only the transfer backend needs copy descriptors. A prepared-only
       ! or get-only context never carries them. Size by the declared spin
@@ -1541,6 +1556,9 @@ CONTAINS
          CALL kpoint_operator_receive(ctx%kpoints, ctx%fmlocal, ik, ctx%info(ik, ispin, slot, :), &
                                       cmat=cmat, fm_re=fm_re)
       END DO
+      ik = kp_range(1) + ikp - 1
+      CALL kpoint_operator_add_admm(ctx%kpoints, ctx%sources(ispin, slot)%matrix, ik, &
+                                    ctx%sources(ispin, slot)%row, cmat=cmat, fm_re=fm_re)
       ctx%status(ikp, ispin, slot) = kpoint_slot_idle
 
       CALL timestop(handle)
@@ -1664,6 +1682,10 @@ CONTAINS
                                       mat_re=mat_re, mat_im=mat_im)
       END DO
 
+      ik = ctx%kpoints%kp_range(1) + ikp - 1
+      CALL kpoint_operator_add_admm(ctx%kpoints, rsmat, ik, matrix_row, &
+                                    cmat=cmat, fm_re=fm_re, fm_im=fm_im, mat_re=mat_re, mat_im=mat_im)
+
       CALL timestop(handle)
 
    END SUBROUTINE kpoint_operator_get
@@ -1722,6 +1744,7 @@ CONTAINS
          CALL dbcsr_set(matrix_im, 0.0_dp)
          CALL rskp_transform(rmatrix=matrix_re, cmatrix=matrix_im, rsmat=matrix_rs, ispin=ispin, &
                              xkp=xkp(1:3, kp%nkpoint), cell_to_index=cell_to_index, sab_nl=sab_nl)
+         CALL kpoint_operator_add_admm(kpoints, matrix_rs, kp%nkpoint, ispin, mat_re=matrix_re, mat_im=matrix_im)
       ELSE
          CALL copy_fm_to_dbcsr_bc(cache_re, matrix_re)
          CALL copy_fm_to_dbcsr_bc(cache_im, matrix_im)
@@ -1991,5 +2014,62 @@ CONTAINS
          END IF
       END SUBROUTINE store_round
    END SUBROUTINE kpoint_operator_store
+
+! **************************************************************************************************
+!> \brief Add the owned ADMM projection once to its primary k-point operator.
+!> \param kpoints Owner of the current local projections.
+!> \param source Borrowed identity of the transformed real-space operator.
+!> \param ik Global k-point index.
+!> \param spin Operator spin row.
+!> \param cmat Optional complex output.
+!> \param fm_re Optional real output.
+!> \param fm_im Optional imaginary output.
+!> \param mat_re Optional real sparse output.
+!> \param mat_im Optional imaginary sparse output.
+! **************************************************************************************************
+   SUBROUTINE kpoint_operator_add_admm(kpoints, source, ik, spin, cmat, fm_re, fm_im, mat_re, mat_im)
+      TYPE(kpoint_type), POINTER :: kpoints
+      TYPE(dbcsr_p_type), POINTER :: source(:, :)
+      INTEGER, INTENT(IN) :: ik, spin
+      TYPE(cp_cfm_type), OPTIONAL, INTENT(INOUT) :: cmat
+      TYPE(cp_fm_type), OPTIONAL, INTENT(INOUT) :: fm_re, fm_im
+      TYPE(dbcsr_type), OPTIONAL, INTENT(INOUT) :: mat_re, mat_im
+
+      INTEGER :: k
+      LOGICAL :: compatible
+      TYPE(cp_fm_type), POINTER :: projection(:, :)
+      TYPE(dbcsr_type) :: work
+
+      IF (.NOT. ASSOCIATED(kpoints%admm_hmat_source, source)) RETURN
+      k = ik - kpoints%kp_range(1) + 1
+      IF (k < 1 .OR. k > SIZE(kpoints%kp_env)) RETURN
+      projection => kpoints%kp_env(k)%kpoint_env%admm_hmat
+      CPASSERT(ASSOCIATED(projection))
+      CPASSERT(spin >= 1 .AND. spin <= SIZE(projection, 2))
+      IF (PRESENT(cmat)) THEN
+         compatible = cp_fm_struct_equivalent(cmat%matrix_struct, projection(1, spin)%matrix_struct)
+         CPASSERT(compatible)
+         cmat%local_data = cmat%local_data + CMPLX(projection(1, spin)%local_data, 0.0_dp, dp)
+         IF (SIZE(projection, 1) == 2) cmat%local_data = cmat%local_data + gaussi*projection(2, spin)%local_data
+      ELSE IF (PRESENT(fm_re)) THEN
+         compatible = cp_fm_struct_equivalent(fm_re%matrix_struct, projection(1, spin)%matrix_struct)
+         CPASSERT(compatible)
+         fm_re%local_data = fm_re%local_data + projection(1, spin)%local_data
+         IF (PRESENT(fm_im) .AND. SIZE(projection, 1) == 2) fm_im%local_data = fm_im%local_data + projection(2, spin)%local_data
+      ELSE IF (PRESENT(mat_re)) THEN
+         CALL dbcsr_copy(work, mat_re)
+         CALL dbcsr_set(work, 0.0_dp)
+         CALL copy_fm_to_dbcsr(projection(1, spin), work)
+         CALL dbcsr_add(mat_re, work, 1.0_dp, 1.0_dp)
+         CALL dbcsr_release(work)
+         IF (PRESENT(mat_im) .AND. SIZE(projection, 1) == 2) THEN
+            CALL dbcsr_copy(work, mat_im)
+            CALL dbcsr_set(work, 0.0_dp)
+            CALL copy_fm_to_dbcsr(projection(2, spin), work)
+            CALL dbcsr_add(mat_im, work, 1.0_dp, 1.0_dp)
+            CALL dbcsr_release(work)
+         END IF
+      END IF
+   END SUBROUTINE kpoint_operator_add_admm
 
 END MODULE qs_kpoint_operators

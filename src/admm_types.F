@@ -57,6 +57,8 @@ MODULE admm_types
                                               oce_matrix_type
    USE qs_rho_types,                    ONLY: qs_rho_release,&
                                               qs_rho_type
+   USE qs_uspp_types,                   ONLY: qs_uspp_release,&
+                                              qs_uspp_type
    USE task_list_types,                 ONLY: deallocate_task_list,&
                                               task_list_type
 #include "./base/base_uses.f90"
@@ -194,6 +196,9 @@ MODULE admm_types
                                                   matrix_s_aux_fit, &
                                                   matrix_s_aux_fit_vs_orb
       TYPE(qs_rho_type), POINTER               :: rho_aux_fit => NULL(), rho_aux_fit_buffer => NULL()
+      TYPE(qs_uspp_type), POINTER              :: uspp_aux => NULL()
+      TYPE(neighbor_list_set_p_type), POINTER  :: sap_aux_ppnl(:) => NULL()
+      CHARACTER(LEN=32)                        :: uspp_basis_type = 'AUX_FIT'
       TYPE(task_list_type), POINTER            :: task_list_aux_fit => NULL()
       TYPE(cp_fm_type), DIMENSION(:), &
          POINTER                               :: mo_derivs_aux_fit => NULL()
@@ -515,6 +520,8 @@ CONTAINS
       IF (ASSOCIATED(admm_env%sab_aux_fit)) CALL release_neighbor_list_sets(admm_env%sab_aux_fit)
       IF (ASSOCIATED(admm_env%sab_aux_fit_vs_orb)) CALL release_neighbor_list_sets(admm_env%sab_aux_fit_vs_orb)
       IF (ASSOCIATED(admm_env%sab_aux_fit_asymm)) CALL release_neighbor_list_sets(admm_env%sab_aux_fit_asymm)
+      IF (ASSOCIATED(admm_env%sap_aux_ppnl)) CALL release_neighbor_list_sets(admm_env%sap_aux_ppnl)
+      CALL qs_uspp_release(admm_env%uspp_aux)
 
       CALL kpoint_transitional_release(admm_env%matrix_ks_aux_fit)
       CALL kpoint_transitional_release(admm_env%matrix_ks_aux_fit_dft)
@@ -737,4 +744,3 @@ CONTAINS
    END SUBROUTINE set_admm_env
 
 END MODULE admm_types
-

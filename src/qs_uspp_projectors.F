@@ -12,8 +12,9 @@ MODULE qs_uspp_projectors
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_create, dbcsr_distribution_get, dbcsr_distribution_new, dbcsr_distribution_release, &
         dbcsr_distribution_type, dbcsr_finalize, dbcsr_get_block_p, dbcsr_get_info, &
-        dbcsr_get_readonly_block_p, dbcsr_get_stored_coordinates, dbcsr_p_type, &
-        dbcsr_reserve_blocks, dbcsr_set, dbcsr_type
+        dbcsr_get_readonly_block_p, dbcsr_get_stored_coordinates, dbcsr_iterator_blocks_left, &
+        dbcsr_iterator_next_block, dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, &
+        dbcsr_p_type, dbcsr_reserve_blocks, dbcsr_set, dbcsr_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_comm_type
    USE sap_kind_types,                  ONLY: alist_type,&
@@ -27,6 +28,7 @@ MODULE qs_uspp_projectors
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_uspp_projectors'
    PUBLIC :: qs_uspp_projector_matrix, qs_uspp_projector_gradient
    PUBLIC :: qs_uspp_projector_pair, qs_uspp_projector_images, qs_uspp_projector_cells
+   PUBLIC :: qs_uspp_projector_mixed_images
 
 CONTAINS
 
@@ -263,6 +265,103 @@ CONTAINS
          IF (PRESENT(onsite)) DEALLOCATE (matrix)
       END DO
    END SUBROUTINE qs_uspp_projector_images
+
+! **************************************************************************************************
+!> \brief Image-resolved rectangular overlap and geometry adjoint for independent AO bases.
+!>        S_LR(R)=sum_T B_L(T) q B_R(T-R)^T. Matrices have general, full atom-block
+!>        storage; the weight is the positive energy adjoint with no triangular multiplicity.
+!>        Each block is evaluated on its matrix owner. The caller supplies the union of
+!>        Gaussian and projector connectivity, including blocks with zero integrated q.
+!> \param template Projector-center distribution and communicator.
+!> \param left_sap Original left-basis projector images, with derivatives on the force path.
+!> \param right_sap Original right-basis projector images in the same center convention.
+!> \param atom_kinds Kind numbers of matrix row/column atoms.
+!> \param nkind Number of kinds indexing both SAP arrays.
+!> \param center_atoms Physical augmentation atoms in projector-column order.
+!> \param center_kinds Kind of each augmentation center.
+!> \param cells Integer matrix-image translations R.
+!> \param onsite Original distributed q operator.
+!> \param ao_operator Optional general image matrices, incremented in place.
+!> \param weight Optional complete rectangular energy adjoint in the same image order.
+!> \param atom_gradient Optional local positive energy gradient, without MPI reduction.
+!> \param cell_gradient Optional local affine-strain gradient, without MPI reduction.
+! **************************************************************************************************
+   SUBROUTINE qs_uspp_projector_mixed_images(template, left_sap, right_sap, atom_kinds, nkind, &
+                                             center_atoms, center_kinds, cells, onsite, ao_operator, weight, &
+                                             atom_gradient, cell_gradient)
+      TYPE(dbcsr_type), INTENT(IN)                       :: template
+      TYPE(sap_int_type), INTENT(IN)                     :: left_sap(:), right_sap(:)
+      INTEGER, INTENT(IN)                                :: atom_kinds(:), nkind, center_atoms(:), &
+                                                            center_kinds(:), cells(:, :)
+      TYPE(dbcsr_type), INTENT(IN)                       :: onsite
+      TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: ao_operator(:)
+      TYPE(dbcsr_p_type), INTENT(IN), OPTIONAL           :: weight(:)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: atom_gradient(:, :), cell_gradient(3, 3)
+
+      INTEGER                                            :: center, col, iac, ibc, image, n, row
+      INTEGER, POINTER                                   :: sizes(:)
+      LOGICAL                                            :: derivatives, found
+      REAL(dp), ALLOCATABLE                              :: matrix(:, :), ph(:, :), w(:, :)
+      REAL(dp), POINTER                                  :: block(:, :), wb(:, :)
+      TYPE(alist_type), POINTER                          :: alist_a, alist_b
+      TYPE(dbcsr_iterator_type)                          :: iterator
+      TYPE(mp_comm_type)                                 :: group
+
+      derivatives = PRESENT(atom_gradient) .OR. PRESENT(cell_gradient)
+      CPASSERT(PRESENT(ao_operator) .OR. PRESENT(weight))
+      CPASSERT(.NOT. derivatives .OR. PRESENT(weight))
+      CPASSERT(SIZE(cells, 1) == 3)
+      CPASSERT(SIZE(left_sap) == nkind*nkind .AND. SIZE(right_sap) == nkind*nkind)
+      IF (PRESENT(ao_operator)) THEN
+         CPASSERT(SIZE(ao_operator) == SIZE(cells, 2))
+      END IF
+      IF (PRESENT(weight)) THEN
+         CPASSERT(SIZE(weight) == SIZE(cells, 2))
+      END IF
+      CALL dbcsr_get_info(template, group=group, col_blk_size=sizes)
+      CPASSERT(SIZE(center_atoms) == SIZE(sizes) .AND. SIZE(center_kinds) == SIZE(sizes))
+      DO center = 1, SIZE(center_atoms)
+         n = sizes(center)
+         ALLOCATE (matrix(n, n))
+         matrix = 0.0_dp
+         CALL dbcsr_get_readonly_block_p(onsite, center, center, block, found)
+         IF (found) matrix(:, :) = block
+         CALL group%sum(matrix)
+         DO image = 1, SIZE(cells, 2)
+            IF (PRESENT(ao_operator)) THEN
+               CALL dbcsr_iterator_start(iterator, ao_operator(image)%matrix)
+            ELSE
+               CALL dbcsr_iterator_start(iterator, weight(image)%matrix)
+            END IF
+            DO WHILE (dbcsr_iterator_blocks_left(iterator))
+               CALL dbcsr_iterator_next_block(iterator, row, col, block)
+               CPASSERT(MAX(row, col) <= SIZE(atom_kinds))
+               iac = atom_kinds(row) + nkind*(center_kinds(center) - 1)
+               ibc = atom_kinds(col) + nkind*(center_kinds(center) - 1)
+               IF (.NOT. ASSOCIATED(left_sap(iac)%alist) .OR. .NOT. ASSOCIATED(right_sap(ibc)%alist)) CYCLE
+               CALL get_alist(left_sap(iac), alist_a, row)
+               CALL get_alist(right_sap(ibc), alist_b, col)
+               IF (.NOT. ASSOCIATED(alist_a) .OR. .NOT. ASSOCIATED(alist_b)) CYCLE
+               ALLOCATE (ph(SIZE(block, 1), SIZE(block, 2)))
+               ph = 0.0_dp
+               IF (derivatives) THEN
+                  ALLOCATE (w(SIZE(block, 1), SIZE(block, 2)))
+                  w = 0.0_dp
+                  CALL dbcsr_get_readonly_block_p(weight(image)%matrix, row, col, wb, found)
+                  IF (found) w(:, :) = wb
+               END IF
+               CALL qs_uspp_projector_pair(alist_a, alist_b, center_atoms(center), cells(:, image), &
+                                           onsite=matrix, ao_operator=ph, density=w, &
+                                           atom_gradient=atom_gradient, cell_gradient=cell_gradient)
+               IF (PRESENT(ao_operator)) block = block + ph
+               IF (ALLOCATED(w)) DEALLOCATE (w)
+               DEALLOCATE (ph)
+            END DO
+            CALL dbcsr_iterator_stop(iterator)
+         END DO
+         DEALLOCATE (matrix)
+      END DO
+   END SUBROUTINE qs_uspp_projector_mixed_images
 
 ! **************************************************************************************************
 !> \brief Global distinct projector cells in deterministic lexicographic order.

@@ -15,5 +15,5 @@
   {matcher="M031", tol=1e-7, ref=-62878.9532327},
   {matcher="Atomic_force_1_z", tol=1e-6, ref=0.0180282777},
 ]
-# Screened RI exchange with complex k points and a bond crossing the cell boundary.
+# Complex-k screened exchange and ADMM; identical AUX/ORB recovers the full exchange energy.
 "H2_HSE_kpoints.inp" = [{matcher="M011", tol=1e-9, ref=-1.223997548569419}]

@@ -42,7 +42,6 @@ MODULE admm_methods
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr,&
                                               cp_dbcsr_plus_fm_fm_t,&
-                                              dbcsr_allocate_matrix_set,&
                                               dbcsr_deallocate_matrix_set
    USE cp_dbcsr_output,                 ONLY: cp_dbcsr_write_sparse_matrix
    USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale,&
@@ -56,6 +55,7 @@ MODULE admm_methods
                                               cp_fm_cholesky_restore
    USE cp_fm_diag,                      ONLY: cp_fm_syevd
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
+                                              cp_fm_struct_equivalent,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: &
@@ -63,8 +63,7 @@ MODULE admm_methods
         cp_fm_get_info, cp_fm_release, cp_fm_set_all, cp_fm_set_element, cp_fm_start_copy_general, &
         cp_fm_to_fm, cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
-                                              cp_logger_type,&
-                                              cp_to_string
+                                              cp_logger_type
    USE cp_output_handling,              ONLY: cp_p_file,&
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
@@ -89,6 +88,9 @@ MODULE admm_methods
                                               z_zero
    USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
+   USE pw_env_types,                    ONLY: pw_env_get,&
+                                              pw_env_type
+   USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_collocate_density,            ONLY: calculate_rho_elec
@@ -99,7 +101,8 @@ MODULE admm_methods
                                               qs_force_type
    USE qs_gapw_densities,               ONLY: prepare_gapw_den
    USE qs_ks_atom,                      ONLY: update_ks_atom
-   USE qs_ks_types,                     ONLY: qs_ks_env_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_local_rho_types,              ONLY: local_rho_set_create,&
                                               local_rho_set_release,&
                                               local_rho_type
@@ -113,6 +116,10 @@ MODULE admm_methods
                                               qs_rho_set,&
                                               qs_rho_type
    USE qs_scf_types,                    ONLY: qs_scf_env_type
+   USE qs_uspp_methods,                 ONLY: qs_uspp_atom_grid_type,&
+                                              qs_uspp_collocate_state,&
+                                              qs_uspp_overlap_adjoint
+   USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE qs_vxc,                          ONLY: qs_vxc_create
    USE qs_vxc_atom,                     ONLY: calculate_vxc_atom
    USE task_list_types,                 ONLY: task_list_type
@@ -161,7 +168,9 @@ CONTAINS
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos, mos_aux_fit
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g_aux
+      TYPE(pw_c1d_gs_type), POINTER                      :: tau_g_aux(:)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r_aux
+      TYPE(pw_r3d_rs_type), POINTER                      :: tau_r_aux(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho, rho_aux_fit
       TYPE(task_list_type), POINTER                      :: task_list
@@ -181,6 +190,7 @@ CONTAINS
                       para_env=para_env, &
                       s_mstruct_changed=s_mstruct_changed, &
                       rho=rho)
+      CALL get_ks_env(qs_env%ks_env, matrix_metric=matrix_s)
       CALL get_admm_env(admm_env, mos_aux_fit=mos_aux_fit, matrix_s_aux_fit=matrix_s_aux_fit, &
                         matrix_s_aux_fit_vs_orb=matrix_s_aux_fit_vs_orb, rho_aux_fit=rho_aux_fit)
 
@@ -189,7 +199,7 @@ CONTAINS
                       rho_ao=rho_ao_aux, &
                       rho_g=rho_g_aux, &
                       rho_r=rho_r_aux, &
-                      tot_rho_r=tot_rho_r_aux)
+                      tot_rho_r=tot_rho_r_aux, tau_g=tau_g_aux, tau_r=tau_r_aux)
 
       gapw = admm_env%do_gapw
 
@@ -250,6 +260,22 @@ CONTAINS
                                  soft_valid=.FALSE., &
                                  basis_type=basis_type, &
                                  task_list_external=task_list)
+         IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+            IF (.NOT. gapw) THEN
+               CALL qs_uspp_collocate_state(admm_env%uspp_aux, rho_ao_aux(ispin:ispin), &
+                                            rho_g_aux(ispin), rho_r_aux(ispin), tot_rho_r_aux(ispin))
+            END IF
+
+            IF (dft_control%use_kinetic_energy_density) THEN
+               CALL calculate_rho_elec(ks_env=ks_env, matrix_p=rho_ao_aux(ispin)%matrix, &
+                                       rho=tau_r_aux(ispin), rho_gspace=tau_g_aux(ispin), &
+                                       basis_type=basis_type, task_list_external=task_list, compute_tau=.TRUE.)
+               IF (.NOT. gapw) THEN
+                  CALL qs_uspp_collocate_state(admm_env%uspp_aux, rho_ao_aux(ispin:ispin), &
+                                               tau_g_aux(ispin), tau_r_aux(ispin), kinetic=.TRUE.)
+               END IF
+            END IF
+         END IF
 
       END DO
 
@@ -271,6 +297,9 @@ CONTAINS
          admm_env%gsi(3) = (admm_env%gsi(1) + admm_env%gsi(2))/2.0_dp
       END IF
 
+      IF (ASSOCIATED(admm_env%uspp_aux) .AND. dft_control%use_kinetic_energy_density) THEN
+         CALL qs_rho_set(rho_aux_fit, tau_r_valid=.TRUE., tau_g_valid=.TRUE.)
+      END IF
       CALL qs_rho_set(rho_aux_fit, rho_r_valid=.TRUE., rho_g_valid=.TRUE.)
 
       CALL timestop(handle)
@@ -321,7 +350,9 @@ CONTAINS
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_aux_fit, sab_kp
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g_aux
+      TYPE(pw_c1d_gs_type), POINTER                      :: tau_g_aux(:)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r_aux
+      TYPE(pw_r3d_rs_type), POINTER                      :: tau_r_aux(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_aux_fit, rho_orb
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
@@ -344,6 +375,7 @@ CONTAINS
                       scf_env=scf_env, &
                       matrix_s_kp=matrix_s, &
                       rho=rho_orb)
+      CALL get_ks_env(qs_env%ks_env, matrix_metric_kp=matrix_s)
       CALL get_admm_env(admm_env, &
                         rho_aux_fit=rho_aux_fit, &
                         matrix_s_aux_fit_kp=matrix_s_aux_fit, &
@@ -354,7 +386,7 @@ CONTAINS
                       rho_ao_kp=rho_ao_aux, &
                       rho_g=rho_g_aux, &
                       rho_r=rho_r_aux, &
-                      tot_rho_r=tot_rho_r_aux)
+                      tot_rho_r=tot_rho_r_aux, tau_g=tau_g_aux, tau_r=tau_r_aux)
 
       CALL qs_rho_get(rho_orb, rho_ao_kp=rho_ao_orb)
       CALL get_kpoint_info(kpoints, nkp=nkp, xkp=xkp, use_real_wfn=use_real_wfn, kp_range=kp_range, &
@@ -635,6 +667,22 @@ CONTAINS
                                  soft_valid=.FALSE., &
                                  basis_type=basis_type, &
                                  task_list_external=task_list)
+         IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+            IF (.NOT. gapw) THEN
+               CALL qs_uspp_collocate_state(admm_env%uspp_aux, rho_ao, &
+                                            rho_g_aux(ispin), rho_r_aux(ispin), tot_rho_r_aux(ispin))
+            END IF
+
+            IF (dft_control%use_kinetic_energy_density) THEN
+               CALL calculate_rho_elec(ks_env=ks_env, matrix_p_kp=rho_ao, &
+                                       rho=tau_r_aux(ispin), rho_gspace=tau_g_aux(ispin), &
+                                       basis_type=basis_type, task_list_external=task_list, compute_tau=.TRUE.)
+               IF (.NOT. gapw) THEN
+                  CALL qs_uspp_collocate_state(admm_env%uspp_aux, rho_ao, &
+                                               tau_g_aux(ispin), tau_r_aux(ispin), kinetic=.TRUE.)
+               END IF
+            END IF
+         END IF
       END DO
 
       IF (gapw) THEN
@@ -648,6 +696,9 @@ CONTAINS
                                do_rho0=.FALSE., kind_set_external=admm_env%admm_gapw_env%admm_kind_set)
       END IF
 
+      IF (ASSOCIATED(admm_env%uspp_aux) .AND. dft_control%use_kinetic_energy_density) THEN
+         CALL qs_rho_set(rho_aux_fit, tau_r_valid=.TRUE., tau_g_valid=.TRUE.)
+      END IF
       CALL qs_rho_set(rho_aux_fit, rho_r_valid=.TRUE., rho_g_valid=.TRUE.)
 
       CALL timestop(handle)
@@ -1681,6 +1732,7 @@ CONTAINS
                       matrix_s=matrix_s, &
                       energy=energy, &
                       para_env=para_env)
+      CALL get_ks_env(qs_env%ks_env, matrix_metric=matrix_s)
       CALL get_admm_env(admm_env, matrix_ks_aux_fit=matrix_ks_aux_fit, matrix_ks_aux_fit_dft=matrix_ks_aux_fit_dft, &
                         matrix_ks_aux_fit_hfx=matrix_ks_aux_fit_hfx, rho_aux_fit=rho_aux_fit, &
                         matrix_s_aux_fit=matrix_s_aux_fit)
@@ -1895,11 +1947,12 @@ CONTAINS
       COMPLEX(dp)                                        :: fac, fac2
       INTEGER                                            :: handle, i, igroup, ik, ikp, img, indx, &
                                                             ispin, kplocal, kpmax, nao_aux_fit, &
-                                                            nao_orb, natom, nkp, nkp_groups, nspins
+                                                            nao_orb, natom, ncomp, nkp, &
+                                                            nkp_groups, nspins
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: my_kpgrp, use_real_wfn
+      LOGICAL                                            :: my_kpgrp, reuse_projection, use_real_wfn
       REAL(dp)                                           :: ener_k(2), ener_x(2), ener_x1(2), tmp, &
                                                             trace_tmp, trace_tmp_two
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
@@ -1910,11 +1963,9 @@ CONTAINS
                                                             struct_orb_orb
       TYPE(cp_fm_type)                                   :: fmdummy, work_aux_aux, work_aux_aux2, &
                                                             work_aux_orb
-      TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: fmwork
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:, :, :)  :: fm_ks
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER :: matrix_k_tilde, matrix_ks_aux_fit, &
-         matrix_ks_aux_fit_dft, matrix_ks_aux_fit_hfx, matrix_ks_kp, matrix_s, matrix_s_aux_fit, &
-         rho_ao_aux
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER :: matrix_ks_aux_fit, matrix_ks_aux_fit_dft, &
+         matrix_ks_aux_fit_hfx, matrix_ks_kp, matrix_s, matrix_s_aux_fit, rho_ao_aux
       TYPE(dbcsr_type)                                   :: tmpmatrix_ks
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: ksmatrix
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -1931,7 +1982,7 @@ CONTAINS
       NULLIFY (admm_env, rho_ao_aux, rho_aux_fit, &
                matrix_s_aux_fit, energy, &
                para_env, kpoints, sab_aux_fit, &
-               matrix_k_tilde, matrix_ks_kp, matrix_ks_aux_fit, scf_env, &
+               matrix_ks_kp, matrix_ks_aux_fit, scf_env, &
                struct_orb_orb, struct_aux_orb, struct_aux_aux, kp, &
                matrix_ks_aux_fit_hfx, matrix_ks_aux_fit_dft)
 
@@ -1945,6 +1996,7 @@ CONTAINS
                       natom=natom, &
                       kpoints=kpoints, &
                       energy=energy)
+      CALL get_ks_env(qs_env%ks_env, matrix_metric_kp=matrix_s)
 
       CALL get_admm_env(admm_env, &
                         matrix_ks_aux_fit_kp=matrix_ks_aux_fit, &
@@ -2216,32 +2268,35 @@ CONTAINS
          CALL cp_cfm_release(cwork_orb_orb)
       END IF
 
-      NULLIFY (matrix_k_tilde)
-
-      CALL dbcsr_allocate_matrix_set(matrix_k_tilde, dft_control%nspins, dft_control%nimages)
-
-      DO ispin = 1, nspins
-         DO img = 1, dft_control%nimages
-            ALLOCATE (matrix_k_tilde(ispin, img)%matrix)
-            CALL dbcsr_create(matrix=matrix_k_tilde(ispin, img)%matrix, template=matrix_ks_kp(1, 1)%matrix, &
-                              name='MATRIX K_tilde '//TRIM(ADJUSTL(cp_to_string(ispin)))//'_'//TRIM(ADJUSTL(cp_to_string(img))), &
-                              matrix_type=dbcsr_type_symmetric)
-            CALL cp_dbcsr_alloc_block_from_nbl(matrix_k_tilde(ispin, img)%matrix, sab_kp)
-            CALL dbcsr_set(matrix_k_tilde(ispin, img)%matrix, 0.0_dp)
+      ! A(k)^dagger K_aux(k) A(k) is a reciprocal-space operator. A density
+      ! inverse transform repeats it over equivalent images and does not invert
+      ! the sparse forward transform when there are more images than k points.
+      ncomp = MERGE(1, 2, use_real_wfn)
+      DO ikp = 1, kplocal
+         kp => kpoints%kp_env(ikp)%kpoint_env
+         reuse_projection = .FALSE.
+         IF (ASSOCIATED(kp%admm_hmat)) THEN
+            IF (ALL(SHAPE(kp%admm_hmat) == [ncomp, nspins])) THEN
+               reuse_projection = cp_fm_struct_equivalent(kp%admm_hmat(1, 1)%matrix_struct, &
+                                                          fm_ks(ikp, 1, 1)%matrix_struct)
+            END IF
+         END IF
+         IF (.NOT. reuse_projection) THEN
+            CALL cp_fm_release(kp%admm_hmat)
+            ALLOCATE (kp%admm_hmat(ncomp, nspins))
+            DO ispin = 1, nspins
+               DO i = 1, ncomp
+                  CALL cp_fm_create(kp%admm_hmat(i, ispin), fm_ks(ikp, i, ispin)%matrix_struct)
+               END DO
+            END DO
+         END IF
+         DO ispin = 1, nspins
+            DO i = 1, ncomp
+               CALL cp_fm_to_fm(fm_ks(ikp, i, ispin), kp%admm_hmat(i, ispin))
+            END DO
          END DO
       END DO
-
-      CALL cp_fm_get_info(admm_env%work_orb_orb, matrix_struct=struct_orb_orb)
-      ALLOCATE (fmwork(2))
-      CALL cp_fm_create(fmwork(1), struct_orb_orb)
-      CALL cp_fm_create(fmwork(2), struct_orb_orb)
-
-      ! reuse the density transform to FT the KS matrix
-      CALL kpoint_density_transform(kpoints, matrix_k_tilde, .FALSE., &
-                                    matrix_k_tilde(1, 1)%matrix, sab_kp, &
-                                    fmwork, for_aux_fit=.FALSE., pmat_ext=fm_ks)
-      CALL cp_fm_release(fmwork(1))
-      CALL cp_fm_release(fmwork(2))
+      kpoints%admm_hmat_source => matrix_ks_kp
 
       DO ispin = 1, nspins
          DO i = 1, 2
@@ -2253,7 +2308,6 @@ CONTAINS
 
       DO ispin = 1, nspins
          DO img = 1, dft_control%nimages
-            CALL dbcsr_add(matrix_ks_kp(ispin, img)%matrix, matrix_k_tilde(ispin, img)%matrix, 1.0_dp, 1.0_dp)
             IF (admm_env%do_admmq .OR. admm_env%do_admmp .OR. admm_env%do_admms) THEN
                !In ADMMQ and ADMMP, need to add lambda*S_orb (Merlot eq 27)
                CALL dbcsr_add(matrix_ks_kp(ispin, img)%matrix, matrix_s(1, img)%matrix, &
@@ -2297,8 +2351,6 @@ CONTAINS
          CALL dbcsr_deallocate_matrix_set(matrix_ks_aux_fit)
       END IF
 
-      CALL dbcsr_deallocate_matrix_set(matrix_k_tilde)
-
       CALL timestop(handle)
 
    END SUBROUTINE merge_ks_matrix_none_kp
@@ -2335,9 +2387,14 @@ CONTAINS
       TYPE(local_rho_type), POINTER                      :: local_rho_buffer
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g
+      TYPE(pw_c1d_gs_type), POINTER                      :: tau_g_aux(:)
+      TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r, v_rspace_dummy, v_tau_rspace_dummy
+      TYPE(pw_r3d_rs_type), POINTER                      :: tau_r_aux(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_aux_fit, rho_aux_fit_buffer
+      TYPE(qs_uspp_atom_grid_type), ALLOCATABLE          :: uspp_fields(:)
       TYPE(section_vals_type), POINTER                   :: xc_section_aux
       TYPE(task_list_type), POINTER                      :: task_list
 
@@ -2361,7 +2418,7 @@ CONTAINS
                       rho_ao_kp=rho_ao_aux_buffer, &
                       rho_g=rho_g, &
                       rho_r=rho_r, &
-                      tot_rho_r=tot_rho_r)
+                      tot_rho_r=tot_rho_r, tau_g=tau_g_aux, tau_r=tau_r_aux)
 
       gapw = admm_env%do_gapw
       nimg = dft_control%nimages
@@ -2392,21 +2449,46 @@ CONTAINS
                                  rho_gspace=rho_g(myspin), &
                                  total_rho=tot_rho_r(myspin), &
                                  soft_valid=.FALSE., &
-                                 basis_type="AUX_FIT", &
+                                 basis_type=basis_type, &
                                  task_list_external=task_list)
+         IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+            IF (.NOT. gapw) THEN
+               CALL qs_uspp_collocate_state(admm_env%uspp_aux, rho_ao, &
+                                            rho_g(myspin), rho_r(myspin), tot_rho_r(myspin))
+            END IF
+
+            IF (dft_control%use_kinetic_energy_density) THEN
+               CALL calculate_rho_elec(ks_env=ks_env, matrix_p_kp=rho_ao, &
+                                       rho=tau_r_aux(myspin), rho_gspace=tau_g_aux(myspin), &
+                                       basis_type=basis_type, task_list_external=task_list, compute_tau=.TRUE.)
+               IF (.NOT. gapw) THEN
+                  CALL qs_uspp_collocate_state(admm_env%uspp_aux, rho_ao, &
+                                               tau_g_aux(myspin), tau_r_aux(myspin), kinetic=.TRUE.)
+               END IF
+            END IF
+         END IF
 
       END DO
 
       ! Write changes in buffer density matrix
+      IF (ASSOCIATED(admm_env%uspp_aux) .AND. dft_control%use_kinetic_energy_density) THEN
+         CALL qs_rho_set(rho_aux_fit_buffer, tau_r_valid=.TRUE., tau_g_valid=.TRUE.)
+      END IF
       CALL qs_rho_set(rho_aux_fit_buffer, rho_r_valid=.TRUE., rho_g_valid=.TRUE.)
 
       xc_section_aux => admm_env%xc_section_aux
 
       ener_x_ispin = 0.0_dp
 
-      CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_aux_fit_buffer, xc_section=xc_section_aux, &
-                         vxc_rho=v_rspace_dummy, vxc_tau=v_tau_rspace_dummy, exc=ener_x_ispin, &
-                         just_energy=.TRUE.)
+      IF (ASSOCIATED(admm_env%uspp_aux) .AND. gapw) THEN
+         CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_aux_fit_buffer, xc_section=xc_section_aux, &
+                            vxc_rho=v_rspace_dummy, vxc_tau=v_tau_rspace_dummy, exc=ener_x_ispin, &
+                            just_energy=.FALSE., exclude_nlcc=.TRUE., smooth_reference=.TRUE.)
+      ELSE
+         CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_aux_fit_buffer, xc_section=xc_section_aux, &
+                            vxc_rho=v_rspace_dummy, vxc_tau=v_tau_rspace_dummy, exc=ener_x_ispin, &
+                            just_energy=.TRUE.)
+      END IF
 
       !atomic contributions: use the atomic density as stored in admm_env%gapw_env
       ener_x1_ispin = 0.0_dp
@@ -2430,10 +2512,35 @@ CONTAINS
          CALL prepare_gapw_den(qs_env, local_rho_set=local_rho_buffer, do_rho0=.FALSE., &
                                kind_set_external=admm_gapw_env%admm_kind_set)
 
-         CALL calculate_vxc_atom(qs_env, energy_only=.TRUE., exc1=ener_x1_ispin, &
-                                 kind_set_external=admm_env%admm_gapw_env%admm_kind_set, &
-                                 xc_section_external=xc_section_aux, &
-                                 rho_atom_set_external=local_rho_buffer%rho_atom_set)
+         IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+            ALLOCATE (uspp_fields(dft_control%nspins))
+            CALL calculate_vxc_atom(qs_env, energy_only=.TRUE., exc1=ener_x1_ispin, &
+                                    kind_set_external=admm_env%admm_gapw_env%admm_kind_set, &
+                                    xc_section_external=xc_section_aux, &
+                                    rho_atom_set_external=local_rho_buffer%rho_atom_set, &
+                                    uspp_fields=uspp_fields, composite_vxc_rho=v_rspace_dummy, &
+                                    composite_vxc_tau=v_tau_rspace_dummy, &
+                                    uspp_external=admm_env%uspp_aux, rho_external=rho_aux_fit_buffer)
+            CALL get_qs_env(qs_env, pw_env=pw_env)
+            CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool)
+            IF (ASSOCIATED(v_rspace_dummy)) THEN
+               DO myspin = 1, SIZE(v_rspace_dummy)
+                  CALL auxbas_pw_pool%give_back_pw(v_rspace_dummy(myspin))
+               END DO
+               DEALLOCATE (v_rspace_dummy)
+            END IF
+            IF (ASSOCIATED(v_tau_rspace_dummy)) THEN
+               DO myspin = 1, SIZE(v_tau_rspace_dummy)
+                  CALL auxbas_pw_pool%give_back_pw(v_tau_rspace_dummy(myspin))
+               END DO
+               DEALLOCATE (v_tau_rspace_dummy)
+            END IF
+         ELSE
+            CALL calculate_vxc_atom(qs_env, energy_only=.TRUE., exc1=ener_x1_ispin, &
+                                    kind_set_external=admm_env%admm_gapw_env%admm_kind_set, &
+                                    xc_section_external=xc_section_aux, &
+                                    rho_atom_set_external=local_rho_buffer%rho_atom_set)
+         END IF
 
          CALL local_rho_set_release(local_rho_buffer)
       END IF
@@ -2765,9 +2872,11 @@ CONTAINS
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_aux_fit, sab_aux_fit_asymm, &
                                                             sab_aux_fit_vs_orb, sab_kp
+      TYPE(neighbor_list_set_p_type), POINTER            :: sap_ppnl(:)
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_uspp_type), POINTER                        :: uspp
 
       CALL timeset(routineN, handle)
 
@@ -2793,6 +2902,7 @@ CONTAINS
                       force=force, &
                       rho=rho)
       nimg = dft_control%nimages
+      CALL get_ks_env(ks_env, uspp=uspp, sap_ppnl=sap_ppnl)
       CALL get_admm_env(admm_env, &
                         matrix_s_aux_fit_kp=matrix_s_aux_fit, &
                         matrix_s_aux_fit_vs_orb_kp=matrix_s_aux_fit_vs_orb, &
@@ -3113,6 +3223,10 @@ CONTAINS
          !In ADMMQ, ADMMS and ADMMP, there is an extra contribution from lambda*P_orb*S^(x)
          CALL build_overlap_force(qs_env%ks_env, admm_force, basis_type_a="ORB", basis_type_b="ORB", &
                                   sab_nl=sab_kp, matrixkp_p=rho_ao_orb(1, :))
+         IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+            CALL qs_uspp_overlap_adjoint(qs_env%ks_env, uspp, uspp, 'ORB', 'ORB', &
+                                         sap_ppnl, sap_ppnl, rho_ao_orb(1, :), -1.0_dp)
+         END IF
          DO img = 1, nimg
             IF (nspins == 2) CALL dbcsr_add(rho_ao_orb(1, img)%matrix, rho_ao_orb(2, img)%matrix, 1.0_dp, -1.0_dp)
             DO ispin = 1, nspins
@@ -3125,6 +3239,14 @@ CONTAINS
                                sab_nl=sab_aux_fit_vs_orb, matrixkp_p=matrix_skap(1, :))
       CALL build_overlap_force(qs_env%ks_env, admm_force, basis_type_a="AUX_FIT", basis_type_b="AUX_FIT", &
                                sab_nl=sab_aux_fit_asymm, matrixkp_p=matrix_skapa(1, :))
+      IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+         CALL qs_uspp_overlap_adjoint(qs_env%ks_env, admm_env%uspp_aux, admm_env%uspp_aux, &
+                                      admm_env%uspp_basis_type, admm_env%uspp_basis_type, &
+                                      admm_env%sap_aux_ppnl, admm_env%sap_aux_ppnl, matrix_skapa(1, :), -1.0_dp)
+         CALL qs_uspp_overlap_adjoint(qs_env%ks_env, admm_env%uspp_aux, uspp, &
+                                      admm_env%uspp_basis_type, 'ORB', &
+                                      admm_env%sap_aux_ppnl, sap_ppnl, matrix_skap(1, :), -1.0_dp)
+      END IF
 
       CALL add_qs_force(admm_force, force, "overlap_admm", atomic_kind_set)
       DEALLOCATE (admm_force)
@@ -3171,14 +3293,17 @@ CONTAINS
       TYPE(dbcsr_type), POINTER                          :: matrix_w_q, matrix_w_s
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_aux_fit_asymm, sab_aux_fit_vs_orb
+      TYPE(neighbor_list_set_p_type), POINTER            :: sap_ppnl(:)
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_uspp_type), POINTER                        :: uspp
 
       CALL timeset(routineN, handle)
 
       CPASSERT(ASSOCIATED(qs_env))
 
       CALL get_qs_env(qs_env, ks_env=ks_env, admm_env=admm_env)
+      CALL get_ks_env(ks_env, uspp=uspp, sap_ppnl=sap_ppnl)
       CALL get_admm_env(admm_env, matrix_s_aux_fit=matrix_s_aux_fit, sab_aux_fit_asymm=sab_aux_fit_asymm, &
                         matrix_s_aux_fit_vs_orb=matrix_s_aux_fit_vs_orb, sab_aux_fit_vs_orb=sab_aux_fit_vs_orb)
 
@@ -3234,6 +3359,14 @@ CONTAINS
       CALL build_overlap_force(ks_env, admm_force, &
                                basis_type_a="AUX_FIT", basis_type_b="ORB", &
                                sab_nl=sab_aux_fit_vs_orb, matrix_p=matrix_w_q)
+      IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+         CALL qs_uspp_overlap_adjoint(ks_env, admm_env%uspp_aux, admm_env%uspp_aux, &
+                                      admm_env%uspp_basis_type, admm_env%uspp_basis_type, &
+                                      admm_env%sap_aux_ppnl, admm_env%sap_aux_ppnl, matrix_w_s, -1.0_dp)
+         CALL qs_uspp_overlap_adjoint(ks_env, admm_env%uspp_aux, uspp, &
+                                      admm_env%uspp_basis_type, 'ORB', &
+                                      admm_env%sap_aux_ppnl, sap_ppnl, matrix_w_q, -1.0_dp)
+      END IF
 
       ! add forces
       CALL add_qs_force(admm_force, force, "overlap_admm", atomic_kind_set)
@@ -3297,10 +3430,12 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_orb
+      TYPE(neighbor_list_set_p_type), POINTER            :: sap_ppnl(:)
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho, rho_aux_fit
+      TYPE(qs_uspp_type), POINTER                        :: uspp
 
       CALL timeset(routineN, handle)
 
@@ -3318,6 +3453,8 @@ CONTAINS
                       sab_orb=sab_orb, &
                       mos=mos, &
                       para_env=para_env)
+      CALL get_ks_env(qs_env%ks_env, matrix_metric=matrix_s)
+      CALL get_ks_env(ks_env, uspp=uspp, sap_ppnl=sap_ppnl)
       CALL get_admm_env(admm_env, matrix_s_aux_fit=matrix_s_aux_fit, rho_aux_fit=rho_aux_fit, &
                         matrix_s_aux_fit_vs_orb=matrix_s_aux_fit_vs_orb)
 
@@ -3512,6 +3649,14 @@ CONTAINS
          CALL build_overlap_force(ks_env, admm_force, &
                                   basis_type_a="AUX_FIT", basis_type_b="ORB", &
                                   sab_nl=admm_env%sab_aux_fit_vs_orb, matrix_p=matrix_w_q)
+         IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+            CALL qs_uspp_overlap_adjoint(ks_env, admm_env%uspp_aux, admm_env%uspp_aux, &
+                                         admm_env%uspp_basis_type, admm_env%uspp_basis_type, &
+                                         admm_env%sap_aux_ppnl, admm_env%sap_aux_ppnl, matrix_w_s, -1.0_dp)
+            CALL qs_uspp_overlap_adjoint(ks_env, admm_env%uspp_aux, uspp, &
+                                         admm_env%uspp_basis_type, 'ORB', &
+                                         admm_env%sap_aux_ppnl, sap_ppnl, matrix_w_q, -1.0_dp)
+         END IF
 
          ! Add contribution of original basis set for ADMMQ, P, S
          IF (admm_env%do_admmq .OR. admm_env%do_admmp .OR. admm_env%do_admms) THEN
@@ -3519,6 +3664,10 @@ CONTAINS
             CALL build_overlap_force(ks_env, admm_force, &
                                      basis_type_a="ORB", basis_type_b="ORB", &
                                      sab_nl=sab_orb, matrix_p=rho_ao(ispin)%matrix)
+            IF (ASSOCIATED(admm_env%uspp_aux)) THEN
+               CALL qs_uspp_overlap_adjoint(ks_env, uspp, uspp, 'ORB', 'ORB', &
+                                            sap_ppnl, sap_ppnl, rho_ao(ispin)%matrix, -1.0_dp)
+            END IF
             CALL dbcsr_scale(rho_ao(ispin)%matrix, -1.0_dp/admm_env%lambda_merlot(ispin))
          END IF
 

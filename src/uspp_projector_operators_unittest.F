@@ -66,6 +66,7 @@ PROGRAM uspp_projector_operators_unittest
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_gradient,&
                                               qs_uspp_projector_images,&
                                               qs_uspp_projector_matrix,&
+                                              qs_uspp_projector_mixed_images,&
                                               qs_uspp_projector_pair
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
                                               qs_uspp_type,&
@@ -81,12 +82,10 @@ PROGRAM uspp_projector_operators_unittest
    USE uspp_augmentation,               ONLY: upf_radial_scalar_init,&
                                               uspp_augmentation_init,&
                                               uspp_augmentation_type
-   USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
-                                              uspp_projector_collocate,&
-                                              uspp_projector_density,&
-                                              uspp_projector_integrate,&
-                                              uspp_projector_metric,&
-                                              uspp_projector_pullback
+   USE uspp_projector_operators,        ONLY: &
+        uspp_projector_add_operator, uspp_projector_collocate, uspp_projector_density, &
+        uspp_projector_integrate, uspp_projector_metric, uspp_projector_mixed_metric, &
+        uspp_projector_mixed_pattern, uspp_projector_mixed_pullback, uspp_projector_pullback
 
    IMPLICIT NONE
 
@@ -189,6 +188,7 @@ PROGRAM uspp_projector_operators_unittest
       CALL make_matrix(sm, 'Gaussian S', dist_ao, rs, cs, sg, 'S')
       CALL check_sap_assembly()
       CALL check_image_convolution()
+      CALL check_mixed_metric()
       CALL uspp_projector_metric(bm, aug, kind, sm, gm)
       CALL gather(gm, metric)
       work = sg + MATMUL(b, MATMUL(q, TRANSPOSE(b)))
@@ -328,6 +328,76 @@ PROGRAM uspp_projector_operators_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Unequal AUX/ORB dimensions and both independent cross-metric geometry adjoints.
+! **************************************************************************************************
+   SUBROUTINE check_mixed_metric()
+      INTEGER                                            :: a, c
+      INTEGER, POINTER                                   :: col_dist(:), cols(:), row_dist(:), &
+                                                            rows(:)
+      INTEGER, TARGET                                    :: auxiliary_sizes(3)
+      REAL(dp) :: actual(4, nao), aux(4, nproj), delta_aux(4, nproj), energy_minus, energy_plus, &
+         gaussian(4, nao), left_g(4, nproj), right_g(nao, nproj), slope, weight(4, nao)
+      TYPE(dbcsr_distribution_type)                      :: dist_aux, dist_cross
+      TYPE(dbcsr_type)                                   :: cross, left_b, left_gradient, mixed, &
+                                                            onsite, right_gradient, wm
+
+      auxiliary_sizes = [1, 2, 1]
+      DO c = 1, nproj
+         DO a = 1, 4
+            aux(a, c) = 0.07_dp*COS(REAL(3*a + c, dp))
+            delta_aux(a, c) = 0.09_dp*SIN(REAL(a - 2*c, dp))
+         END DO
+      END DO
+      DO c = 1, nao
+         DO a = 1, 4
+            weight(a, c) = 0.12_dp*SIN(REAL(2*a - c, dp))
+         END DO
+      END DO
+      gaussian = 0.0_dp
+      row_dist => ao_rows
+      col_dist => pp_cols
+      CALL dbcsr_distribution_new(dist_aux, group=comm%get_handle(), pgrid=pgrid, row_dist=row_dist, col_dist=col_dist)
+      col_dist => ao_cols
+      CALL dbcsr_distribution_new(dist_cross, group=comm%get_handle(), pgrid=pgrid, row_dist=row_dist, col_dist=col_dist)
+      rows => auxiliary_sizes
+      cols => pp_sizes
+      CALL make_matrix(left_b, 'Auxiliary B', dist_aux, rows, cols, aux, 'N')
+      rows => auxiliary_sizes
+      cols => ao_sizes
+      CALL make_matrix(cross, 'Gaussian cross overlap', dist_cross, rows, cols, gaussian, 'N')
+      CALL make_matrix(wm, 'Cross-metric energy adjoint', dist_cross, rows, cols, weight, 'N')
+      rows => pp_sizes
+      cols => pp_sizes
+      CALL make_matrix(onsite, 'Original q', dist_pp, rows, cols, q, 'N')
+      CALL uspp_projector_mixed_metric(left_b, bm, aug, kind, cross, mixed)
+      CALL gather(mixed, actual)
+      CALL check(MAXVAL(ABS(actual - MATMUL(aux, MATMUL(q, TRANSPOSE(b))))), 'rectangular native metric fill-in')
+      CALL uspp_projector_mixed_pullback(left_b, bm, onsite, wm, left_gradient, right_gradient)
+      CALL gather(left_gradient, left_g)
+      CALL gather(right_gradient, right_g)
+      CALL check(MAXVAL(ABS(left_g - MATMUL(weight, MATMUL(b, TRANSPOSE(q))))), 'cross metric left adjoint')
+      CALL check(MAXVAL(ABS(right_g - MATMUL(TRANSPOSE(weight), MATMUL(aux, q)))), 'cross metric right adjoint')
+      slope = SUM(left_g*delta_aux) + SUM(right_g*db)
+      energy_plus = SUM(weight*MATMUL(aux + step*delta_aux, MATMUL(q, TRANSPOSE(b + step*db))))
+      energy_minus = SUM(weight*MATMUL(aux - step*delta_aux, MATMUL(q, TRANSPOSE(b - step*db))))
+      CALL check(ABS(slope - (energy_plus - energy_minus)/(2.0_dp*step)), 'independent cross-metric directional derivative')
+      CALL gather(cross, actual)
+      CALL check(MAXVAL(ABS(actual)), 'Gaussian cross overlap preserved')
+      CALL uspp_projector_mixed_pattern(left_b, bm, cross, mixed)
+      CALL gather(mixed, actual)
+      CALL check(MAXVAL(ABS(actual - 1.0_dp)), 'rectangular projector connectivity independent of q')
+      CALL dbcsr_release(left_b)
+      CALL dbcsr_release(cross)
+      CALL dbcsr_release(wm)
+      CALL dbcsr_release(onsite)
+      CALL dbcsr_release(mixed)
+      CALL dbcsr_release(left_gradient)
+      CALL dbcsr_release(right_gradient)
+      CALL dbcsr_distribution_release(dist_aux)
+      CALL dbcsr_distribution_release(dist_cross)
+   END SUBROUTINE check_mixed_metric
 
 ! **************************************************************************************************
 !> \brief Include local potentials on both augmentation centers and a third ordinary ion.
@@ -1036,9 +1106,67 @@ CONTAINS
          DEALLOCATE (h_images(image)%matrix, p_images(image)%matrix)
       END DO
       CALL check(MAXVAL(ABS(hk - scale*href)), 'distributed image operator versus Bloch product')
+      CALL check_mixed_image_driver(sap, OPERATOR, cells, pkmat, kvec, href, atom_ref, cell_ref)
       CALL dbcsr_release(OPERATOR)
       CALL dbcsr_release(density)
    END SUBROUTINE check_image_driver
+
+! **************************************************************************************************
+!> \brief Full rectangular image storage uses each block once, without a hidden symmetry factor.
+!> \param sap ...
+!> \param onsite ...
+!> \param cells ...
+!> \param pkmat ...
+!> \param kvec ...
+!> \param href ...
+!> \param atom_ref ...
+!> \param cell_ref ...
+! **************************************************************************************************
+   SUBROUTINE check_mixed_image_driver(sap, onsite, cells, pkmat, kvec, href, atom_ref, cell_ref)
+      TYPE(sap_int_type), INTENT(IN)                     :: sap(:)
+      TYPE(dbcsr_type), INTENT(IN)                       :: onsite
+      INTEGER, INTENT(IN)                                :: cells(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: pkmat(nao, nao)
+      REAL(dp), INTENT(IN)                               :: kvec(3)
+      COMPLEX(dp), INTENT(IN)                            :: href(nao, nao)
+      REAL(dp), INTENT(IN)                               :: atom_ref(3, 3), cell_ref(3, 3)
+
+      COMPLEX(dp)                                        :: hk(nao, nao), phase
+      INTEGER                                            :: image
+      REAL(dp)                                           :: atom_grad(3, 3), cell_grad(3, 3), &
+                                                            dense(nao, nao)
+      TYPE(dbcsr_p_type)                                 :: h_images(SIZE(cells, 2)), &
+                                                            w_images(SIZE(cells, 2))
+
+      rs => ao_sizes; cs => ao_sizes
+      DO image = 1, SIZE(cells, 2)
+         ALLOCATE (h_images(image)%matrix, w_images(image)%matrix)
+         dense = 1.0_dp
+         CALL make_matrix(h_images(image)%matrix, 'general image operator', dist_ao, rs, cs, dense, 'N')
+         CALL dbcsr_set(h_images(image)%matrix, 0.0_dp)
+         phase = EXP(CMPLX(0.0_dp, 2.0_dp*pi*DOT_PRODUCT(kvec, REAL(cells(:, image), dp)), dp))
+         dense = REAL(pkmat*CONJG(phase), dp)
+         CALL make_matrix(w_images(image)%matrix, 'general image adjoint', dist_ao, rs, cs, dense, 'N')
+      END DO
+      atom_grad = 0.0_dp
+      cell_grad = 0.0_dp
+      CALL qs_uspp_projector_mixed_images(bm, sap, sap, [1, 1, 1], 1, [1, 2], [1, 1], cells, onsite, &
+                                          h_images, w_images, atom_grad, cell_grad)
+      CALL comm%sum(atom_grad)
+      CALL comm%sum(cell_grad)
+      CALL check(MAXVAL(ABS(atom_grad - atom_ref)), 'general image overlap atomic gradients')
+      CALL check(MAXVAL(ABS(cell_grad - cell_ref)), 'general image overlap strain gradients')
+      hk = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO image = 1, SIZE(cells, 2)
+         CALL gather(h_images(image)%matrix, dense)
+         phase = EXP(CMPLX(0.0_dp, 2.0_dp*pi*DOT_PRODUCT(kvec, REAL(cells(:, image), dp)), dp))
+         hk = hk + phase*dense
+         CALL dbcsr_release(h_images(image)%matrix)
+         CALL dbcsr_release(w_images(image)%matrix)
+         DEALLOCATE (h_images(image)%matrix, w_images(image)%matrix)
+      END DO
+      CALL check(MAXVAL(ABS(hk - href)), 'general image cross overlap versus Bloch product')
+   END SUBROUTINE check_mixed_image_driver
 
 ! **************************************************************************************************
 !> \brief Exercise the atom-grid adapter with complex Bloch densities and image Hamiltonians.

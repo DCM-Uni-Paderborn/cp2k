@@ -30,6 +30,7 @@ MODULE uspp_projector_operators
    PUBLIC :: uspp_projector_density, uspp_projector_add_operator, uspp_projector_metric, &
              uspp_projector_collocate, uspp_projector_integrate, uspp_projector_pullback, uspp_projector_ao_pattern
    PUBLIC :: uspp_projector_create_onsite
+   PUBLIC :: uspp_projector_mixed_metric, uspp_projector_mixed_pullback, uspp_projector_mixed_pattern
 
 CONTAINS
 
@@ -156,6 +157,130 @@ CONTAINS
       CALL uspp_projector_add_operator(overlaps, onsite, metric)
       CALL dbcsr_release(onsite)
    END SUBROUTINE uspp_projector_metric
+
+! **************************************************************************************************
+!> \brief Generalized cross overlap S_LR=S_G,LR+B_L q B_R^T for two Gaussian bases.
+!>        The two bases can have different dimensions and atomwise contractions. Projector
+!>        columns retain the same original magnetic ordering; native fill-in is not screened
+!>        by the Gaussian cross-overlap pattern.
+!> \param left_overlaps Unweighted B_L, with left AO rows.
+!> \param right_overlaps Unweighted B_R, with right AO rows.
+!> \param augmentation Original augmentation per kind.
+!> \param kind Kind of each common projector center.
+!> \param gaussian_overlap Rectangular Gaussian cross overlap, unchanged.
+!> \param metric New rectangular generalized cross overlap.
+! **************************************************************************************************
+   SUBROUTINE uspp_projector_mixed_metric(left_overlaps, right_overlaps, augmentation, kind, gaussian_overlap, metric)
+      TYPE(dbcsr_type), INTENT(IN)                       :: left_overlaps, right_overlaps
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation(:)
+      INTEGER, INTENT(IN)                                :: kind(:)
+      TYPE(dbcsr_type), INTENT(IN)                       :: gaussian_overlap
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: metric
+
+      INTEGER                                            :: i
+      LOGICAL                                            :: found
+      REAL(dp), POINTER                                  :: block(:, :)
+      TYPE(dbcsr_type)                                   :: onsite, work
+
+      CALL check_centers(left_overlaps, augmentation, kind)
+      CALL check_centers(right_overlaps, augmentation, kind)
+      CALL check_mixed_dimensions(left_overlaps, right_overlaps, gaussian_overlap)
+      CALL uspp_projector_create_onsite(left_overlaps, onsite)
+      DO i = 1, SIZE(kind)
+         CALL dbcsr_get_block_p(onsite, i, i, block, found)
+         IF (found) block(:, :) = augmentation(KIND(i))%q
+      END DO
+      CALL dbcsr_create(work, template=left_overlaps)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, left_overlaps, onsite, 0.0_dp, work)
+      CALL dbcsr_copy(metric, gaussian_overlap)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, work, right_overlaps, 1.0_dp, metric)
+      CALL dbcsr_release(work)
+      CALL dbcsr_release(onsite)
+   END SUBROUTINE uspp_projector_mixed_metric
+
+! **************************************************************************************************
+!> \brief Rectangular AO connectivity of two independent projector bases.
+!>        Connectivity is independent of q values and of cancellations between periodic images.
+!> \param left_overlaps Left AO/projector connectivity.
+!> \param right_overlaps Right AO/projector connectivity in the same center ordering.
+!> \param gaussian_overlap Ordinary cross-overlap pattern.
+!> \param pattern New union, with unit entries on every stored block.
+! **************************************************************************************************
+   SUBROUTINE uspp_projector_mixed_pattern(left_overlaps, right_overlaps, gaussian_overlap, pattern)
+      TYPE(dbcsr_type), INTENT(IN)                       :: left_overlaps, right_overlaps, &
+                                                            gaussian_overlap
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: pattern
+
+      TYPE(dbcsr_type)                                   :: left, right
+
+      CALL check_mixed_dimensions(left_overlaps, right_overlaps, gaussian_overlap)
+      CALL dbcsr_copy(left, left_overlaps)
+      CALL dbcsr_copy(right, right_overlaps)
+      CALL dbcsr_set(left, 1.0_dp)
+      CALL dbcsr_set(right, 1.0_dp)
+      CALL dbcsr_copy(pattern, gaussian_overlap)
+      CALL dbcsr_set(pattern, 1.0_dp)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, left, right, 1.0_dp, pattern)
+      CALL dbcsr_set(pattern, 1.0_dp)
+      CALL dbcsr_release(left)
+      CALL dbcsr_release(right)
+   END SUBROUTINE uspp_projector_mixed_pattern
+
+! **************************************************************************************************
+!> \brief Both independent projector legs of E=sum_ij W_ij S_LR,ij.
+!>        dE/dB_L=W B_R q^T and dE/dB_R=W^T B_L q. W is the full positive energy
+!>        adjoint: no transpose-symmetry assumption, factor of two or force sign is hidden.
+!> \param left_overlaps Same B_L as the forward cross overlap.
+!> \param right_overlaps Same B_R as the forward cross overlap.
+!> \param onsite Same original block-diagonal q.
+!> \param weight Complete rectangular dE/dS_LR, including native fill-in.
+!> \param left_gradient New dE/dB_L.
+!> \param right_gradient New dE/dB_R.
+! **************************************************************************************************
+   SUBROUTINE uspp_projector_mixed_pullback(left_overlaps, right_overlaps, onsite, weight, &
+                                            left_gradient, right_gradient)
+      TYPE(dbcsr_type), INTENT(IN)                       :: left_overlaps, right_overlaps, onsite, &
+                                                            weight
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: left_gradient, right_gradient
+
+      TYPE(dbcsr_type)                                   :: work
+
+      CALL check_mixed_dimensions(left_overlaps, right_overlaps, weight)
+      CALL dbcsr_create(work, template=left_overlaps)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, weight, right_overlaps, 0.0_dp, work)
+      CALL dbcsr_create(left_gradient, template=left_overlaps)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, work, onsite, 0.0_dp, left_gradient)
+      CALL dbcsr_release(work)
+      CALL dbcsr_create(work, template=right_overlaps)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, weight, left_overlaps, 0.0_dp, work)
+      CALL dbcsr_create(right_gradient, template=right_overlaps)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, work, onsite, 0.0_dp, right_gradient)
+      CALL dbcsr_release(work)
+   END SUBROUTINE uspp_projector_mixed_pullback
+
+! **************************************************************************************************
+!> \brief Check atomwise dimensions of two projector bases and their rectangular cross matrix.
+!> \param left ...
+!> \param right ...
+!> \param cross ...
+! **************************************************************************************************
+   SUBROUTINE check_mixed_dimensions(left, right, cross)
+      TYPE(dbcsr_type), INTENT(IN)                       :: left, right, cross
+
+      INTEGER, POINTER                                   :: cross_cols(:), cross_rows(:), &
+                                                            left_cols(:), left_rows(:), &
+                                                            right_cols(:), right_rows(:)
+      LOGICAL                                            :: valid
+
+      CALL dbcsr_get_info(left, row_blk_size=left_rows, col_blk_size=left_cols)
+      CALL dbcsr_get_info(right, row_blk_size=right_rows, col_blk_size=right_cols)
+      CALL dbcsr_get_info(cross, row_blk_size=cross_rows, col_blk_size=cross_cols)
+      valid = SIZE(left_cols) == SIZE(right_cols) .AND. SIZE(left_rows) == SIZE(cross_rows) .AND. &
+              SIZE(right_rows) == SIZE(cross_cols)
+      CPASSERT(valid)
+      valid = ALL(left_cols == right_cols) .AND. ALL(left_rows == cross_rows) .AND. ALL(right_rows == cross_cols)
+      CPASSERT(valid)
+   END SUBROUTINE check_mixed_dimensions
 
 ! **************************************************************************************************
 !> \brief Collocate the distributed AO density's augmentation on a local reciprocal list.
