@@ -88,6 +88,8 @@ MODULE hfx_ri_kp
    USE qs_integral_utils,               ONLY: basis_set_list_setup
    USE qs_interactions,                 ONLY: init_interaction_radii_orb_basis
    USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_neighbor_list_types,          ONLY: get_iterator_info,&
                                               neighbor_list_iterate,&
                                               neighbor_list_iterator_create,&
@@ -109,6 +111,10 @@ MODULE hfx_ri_kp
                                               distribution_3d_type,&
                                               neighbor_list_3c_iterator_type,&
                                               neighbor_list_3c_type
+   USE qs_uspp_hfx,                     ONLY: qs_uspp_hfx_collect_adjoint,&
+                                              qs_uspp_hfx_kp_gradient,&
+                                              qs_uspp_hfx_unstack_adjoint
+   USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE util,                            ONLY: get_limit
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -872,6 +878,8 @@ CONTAINS
       INTEGER :: b_img, batch_size, group_size, handle, handle2, i_batch, i_img, i_loop, i_spin, &
          i_xyz, iatom, iblk, igroup, j_xyz, jatom, k_xyz, n_batch, natom, ngroups, nimg, nimg_nze
       INTEGER(int_8)                                     :: nflop, nze
+      INTEGER, ALLOCATABLE                               :: native_d1(:), native_d2(:), &
+                                                            native_d3(:), native_ri_sizes(:)
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, batch_ranges_at, &
                                                             batch_ranges_nze, dist1, dist2, &
                                                             i_images, idx_to_at_AO, idx_to_at_RI, &
@@ -880,7 +888,9 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)           :: force_pattern, sparsity_pattern
       INTEGER, DIMENSION(2, 1)                           :: bounds_iat, bounds_jat
       LOGICAL                                            :: use_virial_prv
-      REAL(dp)                                           :: fac, occ, pref, t1, t2
+      REAL(dp)                                           :: fac, native_strain(3, 3), occ, pref, t1, &
+                                                            t2
+      REAL(dp), ALLOCATABLE                              :: native_gradient(:, :)
       REAL(dp), DIMENSION(3, 3)                          :: work_virial
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
@@ -889,6 +899,7 @@ CONTAINS
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:, :)     :: mat_der_pot, mat_der_pot_sub
       TYPE(dbcsr_type), POINTER                          :: dbcsr_template
       TYPE(dbt_type)                                     :: t_2c_R, t_2c_R_split
+      TYPE(dbt_type), ALLOCATABLE                        :: native_adjoint(:), native_adjoint_sub(:)
       TYPE(dbt_type), ALLOCATABLE, DIMENSION(:)          :: t_2c_bint, t_2c_binv, t_2c_der_pot, &
                                                             t_2c_inv, t_2c_metric, t_2c_work, &
                                                             t_3c_der_stack, t_3c_work_2, &
@@ -899,6 +910,8 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env, para_env_sub
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(section_vals_type), POINTER                   :: hfx_section
       TYPE(virial_type), POINTER                         :: virial
 
@@ -917,7 +930,8 @@ CONTAINS
       END IF
 
       CALL get_qs_env(qs_env, natom=natom, para_env=para_env, force=force, cell=cell, virial=virial, &
-                      atomic_kind_set=atomic_kind_set, particle_set=particle_set)
+                      atomic_kind_set=atomic_kind_set, particle_set=particle_set, ks_env=ks_env)
+      CALL get_ks_env(ks_env, uspp=uspp)
       CALL get_atomic_kind_set(atomic_kind_set, kind_of=kind_of, atom_of_kind=atom_of_kind)
 
       ALLOCATE (idx_to_at_AO(SIZE(ri_data%bsizes_AO_split)))
@@ -992,6 +1006,25 @@ CONTAINS
       CALL get_subgroup_3c_derivs(t_3c_work_2, t_3c_work_3, t_3c_der_AO, t_3c_der_AO_sub, &
                                   t_3c_der_RI, t_3c_der_RI_sub, t_3c_apc, t_3c_apc_sub, t_3c_der_stack, &
                                   group_size, ngroups, para_env, para_env_sub, ri_data)
+
+      IF (ASSOCIATED(uspp)) THEN
+         ALLOCATE (native_adjoint(nimg), native_adjoint_sub(nimg), native_gradient(3, natom))
+         native_gradient = 0.0_dp
+         native_strain = 0.0_dp
+         ALLOCATE (native_ri_sizes(ri_data%ncell_RI*SIZE(ri_data%bsizes_RI_split)))
+         DO i_img = 1, ri_data%ncell_RI
+            native_ri_sizes((i_img - 1)*SIZE(ri_data%bsizes_RI_split) + 1: &
+                            i_img*SIZE(ri_data%bsizes_RI_split)) = ri_data%bsizes_RI_split
+         END DO
+         CALL create_3c_tensor(native_adjoint(1), native_d1, native_d2, native_d3, ri_data%pgrid, &
+                               native_ri_sizes, ri_data%bsizes_AO_split, ri_data%bsizes_AO_split, &
+                               [1], [2, 3], name="Native image adjoint")
+         DEALLOCATE (native_d1, native_d2, native_d3, native_ri_sizes)
+         DO i_img = 1, nimg
+            CALL dbt_create(ri_data%kp_t_3c_int(1), native_adjoint_sub(i_img))
+            IF (i_img > 1) CALL dbt_create(native_adjoint(1), native_adjoint(i_img))
+         END DO
+      END IF
 
       !Set up batched contraction (go atom by atom)
       ALLOCATE (batch_ranges_at(natom + 1))
@@ -1123,6 +1156,12 @@ CONTAINS
 
                         !Contract with the 3c derivatives to get the force/virial
                         CALL dbt_copy(t_3c_work_3(2), t_3c_work_3(4), move_data=.TRUE.)
+                        IF (ASSOCIATED(uspp)) THEN
+                           ! Store the opposite tensor before the Gaussian derivative trace.
+                           ! No world collective is permitted in these subgroup-owned loops.
+                           CALL qs_uspp_hfx_unstack_adjoint(native_adjoint_sub, t_3c_work_3(4), &
+                                                            iapc_pairs(:, 1), batch_ranges_nze(i_batch), 2.0_dp*pref)
+                        END IF
                         IF (use_virial_prv) THEN
                            CALL get_force_from_3c_trace(force, t_3c_work_3(4), t_3c_der_stack(1:3), &
                                                         t_3c_der_stack(4:6), atom_of_kind, kind_of, &
@@ -1386,6 +1425,31 @@ CONTAINS
       CALL dbt_batched_contract_finalize(t_3c_work_3(3))
       CALL dbt_batched_contract_finalize(t_3c_work_2(1))
       CALL dbt_batched_contract_finalize(t_3c_work_2(2))
+
+      IF (ASSOCIATED(uspp)) THEN
+         ! Rejoin the world communicator only after every subgroup finished both loops.
+         ! Restore the original AO image order before the native geometry pullback.
+         DO i_img = 1, nimg
+            CALL dbt_finalize(native_adjoint_sub(i_img))
+            CALL qs_uspp_hfx_collect_adjoint(native_adjoint(ri_data%idx_to_img(i_img)), &
+                                             native_adjoint_sub(i_img), para_env)
+         END DO
+         IF (use_virial_prv) THEN
+            CALL qs_uspp_hfx_kp_gradient(qs_env, ri_data, native_adjoint, native_gradient, native_strain)
+            virial%pv_fock_4c = virial%pv_fock_4c + native_strain
+         ELSE
+            CALL qs_uspp_hfx_kp_gradient(qs_env, ri_data, native_adjoint, native_gradient)
+         END IF
+         DO iatom = 1, natom
+            force(kind_of(iatom))%fock_4c(:, atom_of_kind(iatom)) = &
+               force(kind_of(iatom))%fock_4c(:, atom_of_kind(iatom)) + native_gradient(:, iatom)
+         END DO
+         DO i_img = 1, nimg
+            CALL dbt_destroy(native_adjoint(i_img))
+            CALL dbt_destroy(native_adjoint_sub(i_img))
+         END DO
+         DEALLOCATE (native_adjoint, native_adjoint_sub, native_gradient)
+      END IF
 
       IF (use_virial_prv) THEN
          DO k_xyz = 1, 3
@@ -2166,7 +2230,7 @@ CONTAINS
       CALL basis_set_list_setup(basis_set_RI, ri_data%ri_basis_type, qs_kind_set)
 
       CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
-                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, do_kpoints=.TRUE.)
 
       ALLOCATE (present_atoms_i(natom, nimg), present_atoms_j(natom, nimg))
       present_atoms_i = 0
@@ -2179,6 +2243,7 @@ CONTAINS
 
          dij = NORM2(rij)
 
+         IF (ANY(cell_j < LBOUND(cell_to_index)) .OR. ANY(cell_j > UBOUND(cell_to_index))) CYCLE
          j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
          IF (j_img > nimg .OR. j_img < 1) CYCLE
 
@@ -4301,6 +4366,7 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: dist_AO_1, dist_AO_2, dist_RI, &
                                                             nRI_per_atom, present_img, RI_cells
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      LOGICAL                                            :: native_transition
       REAL(dp)                                           :: bump_fact, dij, dik, image_range, &
                                                             RI_range, rij(3), rik(3)
       TYPE(dbt_type)                                     :: t_dummy
@@ -4320,6 +4386,8 @@ CONTAINS
          POINTER                                         :: nl_2c
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(section_vals_type), POINTER                   :: hfx_section
 
       NULLIFY (qs_kind_set, dist_2d, nl_2c, nl_iterator, dft_control, &
@@ -4327,9 +4395,11 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      CALL get_qs_env(qs_env, nkind=nkind, qs_kind_set=qs_kind_set, distribution_2d=dist_2d, &
+      CALL get_qs_env(qs_env, ks_env=ks_env, nkind=nkind, qs_kind_set=qs_kind_set, distribution_2d=dist_2d, &
                       dft_control=dft_control, particle_set=particle_set, kpoints=kpoints, &
                       para_env=para_env, natom=natom)
+      CALL get_ks_env(ks_env, uspp=uspp)
+      native_transition = ASSOCIATED(uspp)
       nimg = dft_control%nimages
       CALL get_kpoint_info(kpoints, cell_to_index=cell_to_index)
       kp_index_lbounds = LBOUND(cell_to_index)
@@ -4377,19 +4447,30 @@ CONTAINS
       !(mu^0 sigma^a|P^0) (P^0|Q^b) (Q^b|nu^b lambda^a+c), if there is no contact between
       !any P^0 and Q^b, then image b does not contribute
       CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%hfx_pot, &
-                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, do_kpoints=.TRUE.)
 
-      ALLOCATE (present_img(nimg))
+      ALLOCATE (present_img(nimg), RI_cells(nimg), nRI_per_atom(natom))
       present_img = 0
+      RI_cells = 0
+      nRI_per_atom = 0
       ri_data%nimg = 0
       CALL neighbor_list_iterator_create(nl_iterator, nl_2c)
       DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
-         CALL get_iterator_info(nl_iterator, r=rij, cell=cell_j)
+         CALL get_iterator_info(nl_iterator, r=rij, cell=cell_j, iatom=iatom, jatom=jatom)
 
          dij = NORM2(rij)
 
+         IF (ANY(cell_j < kp_index_lbounds) .OR. ANY(cell_j > kp_index_ubounds)) CYCLE
          j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
          IF (j_img > nimg .OR. j_img < 1) CYCLE
+
+         ! Native Q couples to every RI function in the local metric domain, even when no
+         ! Gaussian AO product selected that RI image. Use the same RI-RI neighbors and
+         ! distance control as get_ext_2c_int, then union with the ordinary GG selection.
+         IF (native_transition .AND. dij <= ri_data%kp_RI_range) THEN
+            RI_cells(j_img) = 1
+            nRI_per_atom(iatom) = nRI_per_atom(iatom) + ri_data%bsizes_RI(jatom)
+         END IF
 
          IF (dij > ri_data%kp_image_range) CYCLE
 
@@ -4427,13 +4508,7 @@ CONTAINS
       !between mu^0 and P^i if smaller or equal to the kind radius of mu^0
       CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, &
                                    ri_data%ri_metric, "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., &
-                                   own_dist=.TRUE.)
-
-      ALLOCATE (RI_cells(nimg))
-      RI_cells = 0
-
-      ALLOCATE (nRI_per_atom(natom))
-      nRI_per_atom = 0
+                                   own_dist=.TRUE., do_kpoints=.TRUE.)
 
       CALL neighbor_list_3c_iterator_create(nl_3c_iter, nl_3c)
       DO WHILE (neighbor_list_3c_iterate(nl_3c_iter) == 0)
@@ -4456,7 +4531,9 @@ CONTAINS
          IF (dik > ri_data%kp_RI_range) CYCLE
          RI_cells(kcell) = 1
 
-         IF (jcell == 1 .AND. iatom == jatom) nRI_per_atom(iatom) = nRI_per_atom(iatom) + ri_data%bsizes_RI(katom)
+         IF (.NOT. native_transition .AND. jcell == 1 .AND. iatom == jatom) THEN
+            nRI_per_atom(iatom) = nRI_per_atom(iatom) + ri_data%bsizes_RI(katom)
+         END IF
       END DO
       CALL neighbor_list_3c_iterator_destroy(nl_3c_iter)
       CALL neighbor_list_3c_destroy(nl_3c)
@@ -4923,7 +5000,7 @@ CONTAINS
       CALL dbt_pgrid_destroy(pgrid)
 
       CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, ri_data%ri_metric, &
-                                   "HFX_3c_nl", qs_env, op_pos=2, sym_jk=.FALSE., own_dist=.TRUE.)
+                                   "HFX_3c_nl", qs_env, op_pos=2, sym_jk=.FALSE., own_dist=.TRUE., do_kpoints=.TRUE.)
 
       n_mem = ri_data%n_mem
       CALL create_tensor_batches(ri_data%bsizes_RI, n_mem, dummy_start, dummy_end, &
@@ -5014,14 +5091,14 @@ CONTAINS
 
       !HFX potential derivatives
       CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%hfx_pot, &
-                                   "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+                                   "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, do_kpoints=.TRUE.)
       CALL build_2c_derivatives(mat_der_pot, ri_data%filter_eps_2c, qs_env, nl_2c, &
                                 basis_set_RI, basis_set_RI, ri_data%hfx_pot, do_kpoints=.TRUE.)
       CALL release_neighbor_list_sets(nl_2c)
 
       !RI metric derivatives
       CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
-                                   "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+                                   "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, do_kpoints=.TRUE.)
       CALL build_2c_derivatives(mat_der_metric, ri_data%filter_eps_2c, qs_env, nl_2c, &
                                 basis_set_RI, basis_set_RI, ri_data%ri_metric, do_kpoints=.TRUE.)
       CALL release_neighbor_list_sets(nl_2c)
