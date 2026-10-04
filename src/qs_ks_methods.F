@@ -1145,7 +1145,7 @@ CONTAINS
          IF (.NOT. dokp .AND. ANY(cell%perd /= 0)) THEN
             CPABORT("Periodic USPP exact exchange requires explicit KPOINTS")
          END IF
-         IF (dft_control%do_admm .OR. ace_active .OR. do_adiabatic_rescaling .OR. &
+         IF (dft_control%do_admm .OR. do_adiabatic_rescaling .OR. &
              qs_env%run_rtp .OR. dft_control%roks) THEN
             CPABORT("USPP exchange acceleration and response extensions are not implemented")
          END IF
