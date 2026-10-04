@@ -15,9 +15,13 @@ MODULE casino_utils
    USE atomic_kind_types,               ONLY: get_atomic_kind
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_type
-   USE cell_types,                      ONLY: cell_type
+   USE cell_types,                      ONLY: cell_type,&
+                                              pbc,&
+                                              pbc_stable,&
+                                              real_to_scaled
    USE cp2k_info,                       ONLY: cp2k_version
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_to_fm
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm
@@ -54,7 +58,8 @@ MODULE casino_utils
                                               kpoint_env_p_type,&
                                               kpoint_release,&
                                               kpoint_type
-   USE mathconstants,                   ONLY: pi
+   USE mathconstants,                   ONLY: pi,&
+                                              rootpi
    USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: nso
    USE particle_types,                  ONLY: particle_type
@@ -115,21 +120,21 @@ CONTAINS
                                                             valence_charge
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: coord, kvec, mo_energy, mos_sgf, &
                                                             mos_sgf_im, shell_position
-      REAL(KIND=dp), DIMENSION(3)                        :: scoord
+      REAL(KIND=dp), DIMENSION(3)                        :: r_pbc, scoord, scoord_pbc
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp, zetas
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: gcc
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
-      TYPE(cp_fm_type)                                   :: fm_dummy, fm_mo_coeff, fm_mo_coeff_im
+      TYPE(cp_fm_type)                                   :: fm_dummy, fm_mo_coeff, fm_mo_coeff_im, &
+                                                            kp_coeff_im, kp_coeff_re
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gth_potential_type), POINTER                  :: gth_potential
       TYPE(gto_basis_set_type), POINTER                  :: basis_set
       TYPE(kpoint_env_p_type), DIMENSION(:), POINTER     :: kp_env
       TYPE(kpoint_type), POINTER                         :: casino_kpoints, kpoints
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
-      TYPE(mo_set_type), DIMENSION(:, :), POINTER        :: mos_kp
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos, mos_kp
       TYPE(mp_para_env_type), POINTER                    :: para_env, para_env_inter_kp
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: kind_set
@@ -273,7 +278,7 @@ CONTAINS
          CALL get_kpoint_info(casino_kpoints, kp_env=kp_env, kp_range=kp_range, nkp=nkp)
          CALL get_kpoint_env(kp_env(1)%kpoint_env, mos=mos_kp)
          DO ispin = 1, nspins
-            CALL get_mo_set(mos_kp(1, ispin), nmo=nmo)
+            CALL get_mo_set(mos_kp(ispin), nmo=nmo)
             IF (nmo < ao_num) THEN
                CPABORT("CASINO gwfn.data requires a complete MO set. Increase ADDED_MOS.")
             END IF
@@ -287,6 +292,8 @@ CONTAINS
          IF (.NOT. use_real_wfn) THEN
             CALL cp_fm_create(fm_mo_coeff_im, fm_struct)
             CALL cp_fm_set_all(fm_mo_coeff_im, 0.0_dp)
+            CALL cp_fm_create(kp_coeff_re, mos_kp(1)%cmo_coeff%matrix_struct)
+            CALL cp_fm_create(kp_coeff_im, mos_kp(1)%cmo_coeff%matrix_struct)
          END IF
          CALL cp_fm_struct_release(fm_struct)
 
@@ -297,18 +304,24 @@ CONTAINS
                IF (ikp >= kp_range(1) .AND. ikp <= kp_range(2)) THEN
                   ikp_loc = ikp - kp_range(1) + 1
                   CALL get_kpoint_env(kp_env(ikp_loc)%kpoint_env, mos=mos_kp)
-                  IF (mos_kp(1, ispin)%use_mo_coeff_b) THEN
-                     CALL copy_dbcsr_to_fm(mos_kp(1, ispin)%mo_coeff_b, mos_kp(1, ispin)%mo_coeff)
-                  END IF
-                  CALL cp_fm_to_fm_submat_general(mos_kp(1, ispin)%mo_coeff, fm_mo_coeff, &
-                                                  nsgf, nmo, 1, 1, 1, col_offset + 1, blacs_env)
-                  mo_energy(1:ao_num, ikp + (ispin - 1)*nkp_mo) = &
-                     mos_kp(1, ispin)%eigenvalues(1:ao_num)
-                  IF (.NOT. use_real_wfn) THEN
-                     IF (mos_kp(2, ispin)%use_mo_coeff_b) THEN
-                        CALL copy_dbcsr_to_fm(mos_kp(2, ispin)%mo_coeff_b, mos_kp(2, ispin)%mo_coeff)
+                  IF (use_real_wfn) THEN
+                     IF (mos_kp(ispin)%use_mo_coeff_b) THEN
+                        CALL copy_dbcsr_to_fm(mos_kp(ispin)%mo_coeff_b, mos_kp(ispin)%mo_coeff)
                      END IF
-                     CALL cp_fm_to_fm_submat_general(mos_kp(2, ispin)%mo_coeff, fm_mo_coeff_im, &
+                  ELSE
+                     CALL cp_cfm_to_fm(mos_kp(ispin)%cmo_coeff, kp_coeff_re, kp_coeff_im)
+                  END IF
+                  IF (use_real_wfn) THEN
+                     CALL cp_fm_to_fm_submat_general(mos_kp(ispin)%mo_coeff, fm_mo_coeff, &
+                                                     nsgf, nmo, 1, 1, 1, col_offset + 1, blacs_env)
+                  ELSE
+                     CALL cp_fm_to_fm_submat_general(kp_coeff_re, fm_mo_coeff, &
+                                                     nsgf, nmo, 1, 1, 1, col_offset + 1, blacs_env)
+                  END IF
+                  mo_energy(1:ao_num, ikp + (ispin - 1)*nkp_mo) = &
+                     mos_kp(ispin)%eigenvalues(1:ao_num)
+                  IF (.NOT. use_real_wfn) THEN
+                     CALL cp_fm_to_fm_submat_general(kp_coeff_im, fm_mo_coeff_im, &
                                                      nsgf, nmo, 1, 1, 1, col_offset + 1, blacs_env)
                   END IF
                ELSE
@@ -338,8 +351,14 @@ CONTAINS
       IF (do_kpoints .AND. .NOT. use_real_wfn) THEN
          ALLOCATE (agauge(3*natoms))
          DO iatom = 1, natoms
-            scoord(:) = MATMUL(cell%h_inv, particle_set(iatom)%r(1:3))
-            agauge(3*(iatom - 1) + 1:3*iatom) = -NINT(scoord(:))
+            CALL real_to_scaled(scoord, particle_set(iatom)%r(1:3), cell)
+            IF (kpoints%symmetry) THEN
+               r_pbc = pbc_stable(particle_set(iatom)%r(1:3), cell)
+            ELSE
+               r_pbc = pbc(particle_set(iatom)%r(1:3), cell)
+            END IF
+            CALL real_to_scaled(scoord_pbc, r_pbc, cell)
+            agauge(3*(iatom - 1) + 1:3*iatom) = NINT(scoord_pbc - scoord)
          END DO
       END IF
 
@@ -434,7 +453,11 @@ CONTAINS
       DEALLOCATE (mos_sgf, mos_sgf_im)
       IF (do_kpoints) THEN
          CALL cp_fm_release(fm_mo_coeff)
-         IF (.NOT. use_real_wfn) CALL cp_fm_release(fm_mo_coeff_im)
+         IF (.NOT. use_real_wfn) THEN
+            CALL cp_fm_release(fm_mo_coeff_im)
+            CALL cp_fm_release(kp_coeff_re)
+            CALL cp_fm_release(kp_coeff_im)
+         END IF
       END IF
       IF (casino_kpoints_created) CALL kpoint_release(casino_kpoints)
       IF (ALLOCATED(agauge)) DEALLOCATE (agauge)
@@ -1498,7 +1521,7 @@ CONTAINS
       END IF
 
       cutoff_arg = SQRT(-LOG(1.0E-12_dp))
-      alpha = SQRT(pi)*(REAL(natoms, KIND=dp)/volume)**(1.0_dp/3.0_dp)
+      alpha = rootpi*(REAL(natoms, KIND=dp)/volume)**(1.0_dp/3.0_dp)
       alpha2 = alpha*alpha
       real_cut = cutoff_arg/alpha
       g_cut = 2.0_dp*alpha*cutoff_arg
@@ -1548,7 +1571,7 @@ CONTAINS
       END DO
       recip_energy = 2.0_dp*pi*recip_energy/volume
 
-      self_energy = -alpha*SUM(charge*charge)/SQRT(pi)
+      self_energy = -alpha*SUM(charge*charge)/rootpi
       neut_energy = -pi*SUM(charge)**2/(2.0_dp*alpha2*volume)
       e_nn = real_energy + recip_energy + self_energy + neut_energy
    END SUBROUTINE periodic_nuclear_repulsion_energy

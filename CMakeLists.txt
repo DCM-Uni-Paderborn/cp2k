@@ -131,6 +131,7 @@ option(CP2K_USE_LIBINT2 "Enable Libint2 support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBTORCH "Enable LibTorch support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBXC "Enable LibXC support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_GAUXC "Enable GauXC support" ${CP2K_USE_EVERYTHING})
+option(CP2K_USE_SKALA_FTORCH "Enable Skala/FTorch support" OFF)
 option(CP2K_USE_MPI "Enable MPI support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBXS
        "Enable LIBXS support; required if OpenCL backend enabled"
@@ -206,6 +207,9 @@ cmake_dependent_option(
 cmake_dependent_option(
   CP2K_ENABLE_PW_GPU "Enable the ffts accelerated backend (mostly GPU)." ON
   "CP2K_USE_ACCEL MATCHES \"HIP|CUDA\"" OFF)
+
+cmake_dependent_option(CP2K_ENABLE_LIBXC_GPU "Enable the GPU backend of libxc."
+                       ON "CP2K_USE_ACCEL MATCHES \"CUDA\"" OFF)
 
 cmake_dependent_option(
   CP2K_USE_UNIFIED_MEMORY "Use CPU/GPU unified memory (Mi250x onwards)" OFF
@@ -298,6 +302,7 @@ set(CP2K_SUPPORTED_CUDA_ARCHITECTURES
     V100
     A100
     H100
+    B200
     GB10
     A40)
 set(CP2K_SUPPORTED_HIP_ARCHITECTURES
@@ -313,6 +318,7 @@ set(CP2K_SUPPORTED_HIP_ARCHITECTURES
     V100
     A100
     H100
+    B200
     GB10
     A40)
 
@@ -470,6 +476,7 @@ if((CP2K_USE_ACCEL MATCHES CUDA) OR (CP2K_USE_ACCEL MATCHES HIP))
   set(CP2K_GPU_ARCH_NUMBER_V100 70)
   set(CP2K_GPU_ARCH_NUMBER_A100 80)
   set(CP2K_GPU_ARCH_NUMBER_H100 90)
+  set(CP2K_GPU_ARCH_NUMBER_B200 100)
   set(CP2K_GPU_ARCH_NUMBER_GB10 121)
   set(CP2K_GPU_ARCH_NUMBER_A40 86)
   set(CP2K_GPU_ARCH_NUMBER_Mi50 gfx906)
@@ -529,6 +536,9 @@ if((CP2K_USE_ACCEL MATCHES CUDA) OR (CP2K_USE_ACCEL MATCHES HIP))
       set(CMAKE_HIP_ARCHITECTURES "${CP2K_GPU_ARCH_NUMBER_${CP2K_WITH_GPU}}")
     endif()
   endif()
+
+  set(CP2K_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+  set(CP2K_HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
 endif()
 
 message("\n------------------------------------------------------------")
@@ -683,12 +693,32 @@ if(CP2K_USE_ELPA)
 endif()
 
 if(CP2K_USE_LIBXC)
-  find_package(Libxc 7 REQUIRED)
+  find_package(Libxc 7.1 CONFIG REQUIRED)
+
+  get_target_property(LIBXC_CPU_INCLUDE_DIRS Libxc::xcf03
+                      INTERFACE_INCLUDE_DIRECTORIES)
+  get_target_property(LIBXC_CPU_LIBRARIES Libxc::xcf03 INTERFACE_LINK_LIBRARIES)
+
+  if(CP2K_USE_CUDA)
+    set(CP2K_LIBXC_CUDA_SUPPORT
+        ON
+        CACHE BOOL "libxc CUDA support available")
+    set(LIBXC_CUDA_FOUND TRUE)
+    message(STATUS "Found CUDA Libxc (${Libxc_VERSION})")
+  else()
+    set(LIBXC_CPU_FOUND TRUE)
+    message(STATUS "Found CPU Libxc (${Libxc_VERSION})")
+  endif()
 endif()
 
 if(CP2K_USE_GAUXC)
   find_package(Threads REQUIRED)
   find_package(gauxc REQUIRED CONFIG)
+  # GauXC's unchanged package version does not identify the fix from PR #222.
+  set(CP2K_GAUXC_HAS_ONEDFT_GRADIENT_FIX OFF)
+  if(GAUXC_HAS_ONEDFT AND GAUXC_HAS_ONEDFT_GRADIENT_FIX)
+    set(CP2K_GAUXC_HAS_ONEDFT_GRADIENT_FIX ON)
+  endif()
   if(CP2K_USE_MPI AND NOT GAUXC_HAS_MPI)
     message(
       FATAL_ERROR
@@ -861,28 +891,12 @@ if(CP2K_USE_SPLA)
   endif()
 endif()
 
-# Sets CP2K_USE_DFTD4_V3 / CP2K_USE_DFTD4_V4_2 from dftd4_VERSION, which is
-# populated by dftd4-config-version.cmake either directly via
-# find_package(dftd4) or transitively via find_package(tblite).
-macro(cp2k_detect_dftd4_api)
-  if(dftd4_VERSION VERSION_LESS "4.0.0")
-    message(STATUS "DFTD4: found version ${dftd4_VERSION}, using v3.x API")
-    set(CP2K_USE_DFTD4_V3 ON)
-  else()
-    set(CP2K_USE_DFTD4_V3 OFF)
-  endif()
-  if(dftd4_VERSION VERSION_GREATER_EQUAL "4.2.0")
-    message(STATUS "DFTD4: found version ${dftd4_VERSION}, using v4.2+ API")
-    set(CP2K_USE_DFTD4_V4_2 ON)
-  else()
-    set(CP2K_USE_DFTD4_V4_2 OFF)
-  endif()
-endmacro()
-
 if(CP2K_USE_DFTD4)
   find_package(mctc-lib REQUIRED) # workaround: find mctc-lib first
   find_package(dftd4 REQUIRED)
-  cp2k_detect_dftd4_api()
+  if(dftd4_VERSION VERSION_LESS "4.2.0")
+    message(FATAL_ERROR "dftd4 >= 4.2.0 is required; found ${dftd4_VERSION}")
+  endif()
 endif()
 
 if(CP2K_USE_DEEPMD)
@@ -914,16 +928,27 @@ if(CP2K_USE_TBLITE)
   target_link_libraries(
     cp2k::tblite INTERFACE tblite::tblite mctc-lib::mctc-lib dftd4::dftd4
                            toml-f::toml-f s-dftd3::s-dftd3)
-  cp2k_detect_dftd4_api()
 endif()
 
 # SIRIUS
 if(CP2K_USE_SIRIUS)
   find_package(sirius 7.7.0 REQUIRED)
+  add_library(cp2k::sirius INTERFACE IMPORTED)
+  target_link_libraries(cp2k::sirius INTERFACE sirius::sirius)
+
+  get_target_property(CP2K_SIRIUS_LIBRARY_TYPE sirius::sirius TYPE)
+  if(CP2K_SIRIUS_LIBRARY_TYPE STREQUAL "SHARED_LIBRARY")
+    # Shared SIRIUS does not export the private C++ library's link interface.
+    find_package(sirius_cxx CONFIG REQUIRED)
+    target_link_libraries(cp2k::sirius
+                          INTERFACE "$<LINK_ONLY:sirius::sirius_cxx>")
+  endif()
+  unset(CP2K_SIRIUS_LIBRARY_TYPE)
+
   include(CheckFortranSourceCompiles)
   include(CMakePushCheckState)
   cmake_push_check_state(RESET)
-  set(CMAKE_REQUIRED_LIBRARIES sirius::sirius)
+  set(CMAKE_REQUIRED_LIBRARIES cp2k::sirius)
   check_fortran_source_compiles(
     "program check_xc_callback
      use sirius, only: sirius_set_xc_callback
@@ -977,8 +1002,19 @@ if(CP2K_USE_PLUMED)
   find_package(Plumed REQUIRED)
 endif()
 
+set(CP2K_USE_LIBTORCH_CUDA OFF)
 if(CP2K_USE_LIBTORCH)
   find_package(Torch REQUIRED)
+  # Torch's CMake package disables CMAKE_CUDA_ARCHITECTURES after adding its own
+  # NVCC flags. Restore CP2K's selected target for the targets below.
+  if(CP2K_USE_ACCEL MATCHES CUDA)
+    set(CMAKE_CUDA_ARCHITECTURES "${CP2K_CUDA_ARCHITECTURES}")
+  elseif(CP2K_USE_ACCEL MATCHES HIP)
+    set(CMAKE_HIP_ARCHITECTURES "${CP2K_HIP_ARCHITECTURES}")
+  endif()
+  if(DEFINED TORCH_CUDA_LIBRARIES AND NOT "${TORCH_CUDA_LIBRARIES}" STREQUAL "")
+    set(CP2K_USE_LIBTORCH_CUDA ON)
+  endif()
   get_target_property(CP2K_TORCH_CXX_STANDARD torch CXX_STANDARD)
   if(${CP2K_TORCH_CXX_STANDARD} VERSION_GREATER ${CMAKE_CXX_STANDARD})
     set(CMAKE_CXX_STANDARD ${CP2K_TORCH_CXX_STANDARD})
@@ -1047,7 +1083,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
             FORCE)
   # set the possible values of build type for cmake-gui
   set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release"
-                                               "Coverage")
+                                               "RelWithDebInfo")
 endif()
 
 # compiler configuration could have impacted package discovery (above)
@@ -1113,7 +1149,8 @@ if(CP2K_USE_ACCEL MATCHES "CUDA" OR CP2K_USE_ACCEL MATCHES "HIP")
     "      - ELPA: ${CP2K_ENABLE_ELPA_GPU}\n"
     "      - GRID: ${CP2K_ENABLE_GRID_GPU}\n"
     "      - DBM: ${CP2K_ENABLE_DBM_GPU}\n"
-    "      - PW: ${CP2K_ENABLE_PW_GPU}\n")
+    "      - PW: ${CP2K_ENABLE_PW_GPU}\n"
+    "      - LIBXC: ${CP2K_ENABLE_LIBXC_GPU}\n")
 endif()
 
 if(CP2K_USE_CUSOLVER_MP)
@@ -1134,12 +1171,18 @@ if(CP2K_USE_CUSOLVER_MP)
 endif()
 
 if(CP2K_USE_LIBXC)
-  message("  - LibXC\n" "    - Include directories: ${Libxc_INCLUDE_DIRS}\n"
-          "    - Libraries: ${Libxc_LIBRARIES}\n")
+  message("  - LibXC\n"
+          "    - Include directories: ${LIBXC_CPU_INCLUDE_DIRS}\n"
+          "    - Libraries: ${LIBXC_CPU_LIBRARIES}\n")
 endif()
 
 if(CP2K_USE_GAUXC)
-  message("  - GauXC\n" "    - Package directory: ${gauxc_DIR}\n")
+  message("  - GauXC\n" "    - Package directory: ${gauxc_DIR}\n"
+          "    - OneDFT gradient fix: ${CP2K_GAUXC_HAS_ONEDFT_GRADIENT_FIX}\n")
+endif()
+
+if(CP2K_USE_SKALA_FTORCH)
+  message("  - Skala/FTorch (native skala grid support)")
 endif()
 
 if(CP2K_USE_SPGLIB)
@@ -1389,6 +1432,10 @@ endif()
 
 if(NOT CP2K_USE_GAUXC)
   message("  - GauXC")
+endif()
+
+if(NOT CP2K_USE_SKALA_FTORCH)
+  message("  - Skala/FTorch")
 endif()
 
 if(NOT CP2K_USE_VORI)

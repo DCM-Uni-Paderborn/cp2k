@@ -14,6 +14,7 @@
 MODULE external_potential_types
 
    USE ao_util,                         ONLY: exp_radius
+   USE atom_upf,                        ONLY: atom_upfpot_type
    USE bibliography,                    ONLY: Goedecker1996,&
                                               Hartwigsen1998,&
                                               Krack2000,&
@@ -39,6 +40,7 @@ MODULE external_potential_types
                                               dp
    USE mathconstants,                   ONLY: dfac,&
                                               fac,&
+                                              fourpi,&
                                               pi,&
                                               rootpi
    USE mathlib,                         ONLY: symmetrize_matrix
@@ -54,6 +56,9 @@ MODULE external_potential_types
    USE periodic_table,                  ONLY: ptable
    USE string_utilities,                ONLY: remove_word,&
                                               uppercase
+   USE upf_local_integrals,             ONLY: upf_local_type
+   USE upf_projector_integrals,         ONLY: upf_projector_init,&
+                                              upf_projector_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -215,6 +220,10 @@ MODULE external_potential_types
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER :: c_nonlocal => Null()
       REAL(KIND=dp), DIMENSION(:, :), POINTER    :: cprj_ppnl => NULL()
       REAL(KIND=dp), DIMENSION(:), POINTER       :: vprj_ppnl => NULL()
+      ! Original scalar UPF projectors and their immutable quadrature cache.
+      TYPE(atom_upfpot_type), ALLOCATABLE         :: upf_data
+      TYPE(upf_projector_type)                    :: upf_projectors
+      TYPE(upf_local_type)                        :: upf_local
       ! NLCC
       LOGICAL                                    :: has_nlcc = .FALSE.
       INTEGER                                    :: n_nlcc = 0
@@ -291,8 +300,11 @@ MODULE external_potential_types
 
    INTERFACE read_potential
       MODULE PROCEDURE read_all_potential, &
+         read_all_potential_files, &
          read_local_potential, &
-         read_gth_potential
+         read_local_potential_files, &
+         read_gth_potential, &
+         read_gth_potential_files
    END INTERFACE
 
    INTERFACE set_potential
@@ -317,6 +329,31 @@ MODULE external_potential_types
    END INTERFACE
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Abort after a potential could not be found in any requested library file.
+!> \param element_symbol ...
+!> \param potential_name ...
+!> \param potential_file_names ...
+! **************************************************************************************************
+   SUBROUTINE potential_files_not_found(element_symbol, potential_name, potential_file_names)
+
+      CHARACTER(LEN=*), INTENT(IN)                       :: element_symbol, potential_name
+      CHARACTER(LEN=*), DIMENSION(:), INTENT(IN)         :: potential_file_names
+
+      CHARACTER(LEN=:), ALLOCATABLE                      :: file_list
+      INTEGER                                            :: i
+
+      file_list = ""
+      DO i = 1, SIZE(potential_file_names)
+         file_list = TRIM(file_list)//"<"//TRIM(potential_file_names(i))//"> "
+      END DO
+      CALL cp_abort(__LOCATION__, &
+                    "The requested potential <"//TRIM(potential_name)// &
+                    "> for element <"//TRIM(element_symbol)// &
+                    "> was not found in the potential files "//TRIM(file_list))
+
+   END SUBROUTINE potential_files_not_found
 
 ! **************************************************************************************************
 !> \brief   Allocate an atomic all-electron potential data set.
@@ -1209,6 +1246,16 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: cn
 
       IF (ASSOCIATED(potential)) THEN
+         IF (ALLOCATED(potential%upf_data)) THEN
+            potential%nppnl = 0
+            IF (potential%upf_data%number_of_proj > 0) THEN
+               IF (potential%upf_projectors%degree < 0) THEN
+                  CALL upf_projector_init(potential%upf_data, 0, potential%upf_projectors)
+               END IF
+               potential%nppnl = potential%upf_projectors%nproj
+            END IF
+            RETURN
+         END IF
          IF (potential%nppnl > 0) THEN
             !
             IF (ASSOCIATED(potential%cprj_ppnl)) THEN
@@ -1259,7 +1306,10 @@ CONTAINS
                   IF (la /= lb) CYCLE
                   j2 = ind2(n2, 2)
                   i2 = ind2(n2, 3)
-                  cprj(n1, n2) = orbtramat(la)%c2s(j2, j1)*cn(i1, i2, la)
+                  ! Primitive overlap integrals contain unnormalized Cartesian
+                  ! monomials. SGP radial coefficients include 1/sqrt(4*pi),
+                  ! whereas slm supplies unit-normalized real solid harmonics.
+                  cprj(n1, n2) = SQRT(fourpi)*orbtramat(la)%slm(j2, j1)*cn(i1, i2, la)
                END DO
             END DO
             !
@@ -1291,12 +1341,14 @@ CONTAINS
 !> \param potential_file_name ...
 !> \param potential_section ...
 !> \param update_input ...
+!> \param potential_found ...
 !> \date    14.05.2000
 !> \author  MK
 !> \version 1.0
 ! **************************************************************************************************
    SUBROUTINE read_all_potential(element_symbol, potential_name, potential, zeff_correction, &
-                                 para_env, potential_file_name, potential_section, update_input)
+                                 para_env, potential_file_name, potential_section, update_input, &
+                                 potential_found)
 
       CHARACTER(LEN=*), INTENT(IN)                       :: element_symbol, potential_name
       TYPE(all_potential_type), INTENT(INOUT)            :: potential
@@ -1305,6 +1357,7 @@ CONTAINS
       CHARACTER(len=default_path_length), INTENT(IN)     :: potential_file_name
       TYPE(section_vals_type), INTENT(IN), POINTER       :: potential_section
       LOGICAL, INTENT(IN)                                :: update_input
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: potential_found
 
       CHARACTER(LEN=240)                                 :: line
       CHARACTER(LEN=242)                                 :: line2
@@ -1326,6 +1379,8 @@ CONTAINS
       apname2 = ""
       NULLIFY (parser)
       CALL cite_reference(Krack2000)
+
+      IF (PRESENT(potential_found)) potential_found = .FALSE.
 
       potential%name = potential_name
       read_from_input = .FALSE.
@@ -1440,6 +1495,11 @@ CONTAINS
             END IF
          ELSE
             ! Stop program, if the end of file is reached
+            IF (PRESENT(potential_found)) THEN
+               CALL parser_release(parser)
+               DEALLOCATE (parser)
+               RETURN
+            END IF
             CALL cp_abort(__LOCATION__, &
                           "The requested atomic potential <"// &
                           TRIM(potential_name)// &
@@ -1449,6 +1509,8 @@ CONTAINS
                           TRIM(potential_file_name)//">")
          END IF
       END DO search_loop
+
+      IF (PRESENT(potential_found)) potential_found = .TRUE.
 
       IF (.NOT. read_from_input) THEN
          ! Dump the potential info in the potential section
@@ -1472,6 +1534,41 @@ CONTAINS
    END SUBROUTINE read_all_potential
 
 ! **************************************************************************************************
+!> \brief Read an all-electron potential from an ordered list of library files.
+!> \param element_symbol ...
+!> \param potential_name ...
+!> \param potential ...
+!> \param zeff_correction ...
+!> \param para_env ...
+!> \param potential_file_names ...
+!> \param potential_section ...
+!> \param update_input ...
+! **************************************************************************************************
+   SUBROUTINE read_all_potential_files(element_symbol, potential_name, potential, zeff_correction, &
+                                       para_env, potential_file_names, potential_section, update_input)
+
+      CHARACTER(LEN=*), INTENT(IN)                       :: element_symbol, potential_name
+      TYPE(all_potential_type), INTENT(INOUT)            :: potential
+      REAL(KIND=dp), INTENT(IN)                          :: zeff_correction
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env
+      CHARACTER(LEN=*), DIMENSION(:), INTENT(IN)         :: potential_file_names
+      TYPE(section_vals_type), INTENT(IN), POINTER       :: potential_section
+      LOGICAL, INTENT(IN)                                :: update_input
+
+      INTEGER                                            :: i
+      LOGICAL                                            :: potential_found
+
+      DO i = 1, SIZE(potential_file_names)
+         CALL read_all_potential(element_symbol, potential_name, potential, zeff_correction, &
+                                 para_env, potential_file_names(i), potential_section, update_input, &
+                                 potential_found)
+         IF (potential_found) RETURN
+      END DO
+      CALL potential_files_not_found(element_symbol, potential_name, potential_file_names)
+
+   END SUBROUTINE read_all_potential_files
+
+! **************************************************************************************************
 !> \brief   Read an atomic local potential data set.
 !> \param element_symbol ...
 !> \param potential_name ...
@@ -1480,12 +1577,14 @@ CONTAINS
 !> \param potential_file_name ...
 !> \param potential_section ...
 !> \param update_input ...
+!> \param potential_found ...
 !> \date    24.12.2014
 !> \author  JGH
 !> \version 1.0
 ! **************************************************************************************************
    SUBROUTINE read_local_potential(element_symbol, potential_name, potential, &
-                                   para_env, potential_file_name, potential_section, update_input)
+                                   para_env, potential_file_name, potential_section, update_input, &
+                                   potential_found)
 
       CHARACTER(LEN=*), INTENT(IN)                       :: element_symbol, potential_name
       TYPE(local_potential_type), INTENT(INOUT)          :: potential
@@ -1493,6 +1592,7 @@ CONTAINS
       CHARACTER(len=default_path_length), INTENT(IN)     :: potential_file_name
       TYPE(section_vals_type), INTENT(IN), POINTER       :: potential_section
       LOGICAL, INTENT(IN)                                :: update_input
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: potential_found
 
       REAL(KIND=dp), PARAMETER                           :: eps_tpot = 1.0E-10_dp
 
@@ -1516,6 +1616,8 @@ CONTAINS
       symbol2 = ""
       apname2 = ""
       NULLIFY (parser, alpha, cval)
+
+      IF (PRESENT(potential_found)) potential_found = .FALSE.
 
       potential%name = potential_name
       read_from_input = .FALSE.
@@ -1627,6 +1729,11 @@ CONTAINS
             END IF
          ELSE
             ! Stop program, if the end of file is reached
+            IF (PRESENT(potential_found)) THEN
+               CALL parser_release(parser)
+               DEALLOCATE (parser)
+               RETURN
+            END IF
             CALL cp_abort(__LOCATION__, &
                           "The requested local atomic potential <"// &
                           TRIM(potential_name)// &
@@ -1636,6 +1743,8 @@ CONTAINS
                           TRIM(potential_file_name)//">")
          END IF
       END DO search_loop
+
+      IF (PRESENT(potential_found)) potential_found = .TRUE.
 
       IF (.NOT. read_from_input) THEN
          ! Dump the potential info in the potential section
@@ -1659,6 +1768,38 @@ CONTAINS
    END SUBROUTINE read_local_potential
 
 ! **************************************************************************************************
+!> \brief Read a local potential from an ordered list of library files.
+!> \param element_symbol ...
+!> \param potential_name ...
+!> \param potential ...
+!> \param para_env ...
+!> \param potential_file_names ...
+!> \param potential_section ...
+!> \param update_input ...
+! **************************************************************************************************
+   SUBROUTINE read_local_potential_files(element_symbol, potential_name, potential, &
+                                         para_env, potential_file_names, potential_section, update_input)
+
+      CHARACTER(LEN=*), INTENT(IN)                       :: element_symbol, potential_name
+      TYPE(local_potential_type), INTENT(INOUT)          :: potential
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env
+      CHARACTER(LEN=*), DIMENSION(:), INTENT(IN)         :: potential_file_names
+      TYPE(section_vals_type), INTENT(IN), POINTER       :: potential_section
+      LOGICAL, INTENT(IN)                                :: update_input
+
+      INTEGER                                            :: i
+      LOGICAL                                            :: potential_found
+
+      DO i = 1, SIZE(potential_file_names)
+         CALL read_local_potential(element_symbol, potential_name, potential, para_env, &
+                                   potential_file_names(i), potential_section, update_input, potential_found)
+         IF (potential_found) RETURN
+      END DO
+      CALL potential_files_not_found(element_symbol, potential_name, potential_file_names)
+
+   END SUBROUTINE read_local_potential_files
+
+! **************************************************************************************************
 !> \brief Read an atomic GTH potential data set.
 !> \param element_symbol ...
 !> \param potential_name ...
@@ -1669,6 +1810,7 @@ CONTAINS
 !> \param potential_section ...
 !> \param update_input ...
 !> \param monovalent ...
+!> \param potential_found ...
 !> \date    14.05.2000
 !> \par  Literature
 !>         - S. Goedecker, M. Teter and J. Hutter,
@@ -1682,7 +1824,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE read_gth_potential(element_symbol, potential_name, potential, zeff_correction, &
                                  para_env, potential_file_name, potential_section, update_input, &
-                                 monovalent)
+                                 monovalent, potential_found)
 
       CHARACTER(LEN=*), INTENT(IN)                       :: element_symbol, potential_name
       TYPE(gth_potential_type), INTENT(INOUT)            :: potential
@@ -1692,6 +1834,7 @@ CONTAINS
       TYPE(section_vals_type), INTENT(IN), POINTER       :: potential_section
       LOGICAL, INTENT(IN)                                :: update_input
       LOGICAL, INTENT(IN), OPTIONAL                      :: monovalent
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: potential_found
 
       CHARACTER(LEN=240)                                 :: line
       CHARACTER(LEN=242)                                 :: line2
@@ -1720,6 +1863,8 @@ CONTAINS
       CALL cite_reference(Goedecker1996)
       CALL cite_reference(Hartwigsen1998)
       CALL cite_reference(Krack2005)
+
+      IF (PRESENT(potential_found)) potential_found = .FALSE.
 
       potential%monovalent = .FALSE.
       IF (PRESENT(monovalent)) potential%monovalent = monovalent
@@ -2351,6 +2496,11 @@ CONTAINS
             END IF
          ELSE
             ! Stop program, if the end of file is reached
+            IF (PRESENT(potential_found)) THEN
+               CALL parser_release(parser)
+               DEALLOCATE (parser)
+               RETURN
+            END IF
             CALL cp_abort(__LOCATION__, &
                           "The requested atomic potential <"// &
                           TRIM(potential_name)// &
@@ -2360,6 +2510,8 @@ CONTAINS
                           TRIM(potential_file_name)//">")
          END IF
       END DO search_loop
+
+      IF (PRESENT(potential_found)) potential_found = .TRUE.
 
       IF (.NOT. read_from_input) THEN
          ! Dump the potential info in the potential section
@@ -2383,6 +2535,44 @@ CONTAINS
       IF (ASSOCIATED(tmp_vals)) DEALLOCATE (tmp_vals)
 
    END SUBROUTINE read_gth_potential
+
+! **************************************************************************************************
+!> \brief Read a GTH potential from an ordered list of library files.
+!> \param element_symbol ...
+!> \param potential_name ...
+!> \param potential ...
+!> \param zeff_correction ...
+!> \param para_env ...
+!> \param potential_file_names ...
+!> \param potential_section ...
+!> \param update_input ...
+!> \param monovalent ...
+! **************************************************************************************************
+   SUBROUTINE read_gth_potential_files(element_symbol, potential_name, potential, zeff_correction, &
+                                       para_env, potential_file_names, potential_section, update_input, &
+                                       monovalent)
+
+      CHARACTER(LEN=*), INTENT(IN)                       :: element_symbol, potential_name
+      TYPE(gth_potential_type), INTENT(INOUT)            :: potential
+      REAL(KIND=dp), INTENT(IN)                          :: zeff_correction
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env
+      CHARACTER(LEN=*), DIMENSION(:), INTENT(IN)         :: potential_file_names
+      TYPE(section_vals_type), INTENT(IN), POINTER       :: potential_section
+      LOGICAL, INTENT(IN)                                :: update_input
+      LOGICAL, INTENT(IN), OPTIONAL                      :: monovalent
+
+      INTEGER                                            :: i
+      LOGICAL                                            :: potential_found
+
+      DO i = 1, SIZE(potential_file_names)
+         CALL read_gth_potential(element_symbol, potential_name, potential, zeff_correction, para_env, &
+                                 potential_file_names(i), potential_section, update_input, monovalent, &
+                                 potential_found)
+         IF (potential_found) RETURN
+      END DO
+      CALL potential_files_not_found(element_symbol, potential_name, potential_file_names)
+
+   END SUBROUTINE read_gth_potential_files
 
 ! **************************************************************************************************
 !> \brief ...
@@ -2936,7 +3126,10 @@ CONTAINS
                END DO
             END IF
          ELSE
-            IF (potential%n_local > 0) THEN
+            IF (ALLOCATED(potential%upf_data)) THEN
+               WRITE (UNIT=output_unit, FMT="(/,T8,A)") 'Local UPF potential: original radial table'
+               WRITE (UNIT=output_unit, FMT="(T8,A)") 'Gaussian core electrostatics and direct short-range quadrature'
+            ELSE IF (potential%n_local > 0) THEN
                WRITE (UNIT=output_unit, FMT="(/,T8,'Local pseudopotential')")
                WRITE (UNIT=output_unit, FMT="(T8,A,10(T21,6F10.4,/))") &
                   'Exponents:', potential%a_local(1:potential%n_local)
@@ -2955,7 +3148,11 @@ CONTAINS
             END DO
          END IF
          ! nonlocal PP
-         IF (potential%n_nonlocal > 0) THEN
+         IF (ALLOCATED(potential%upf_data)) THEN
+            WRITE (UNIT=output_unit, FMT="(/,T8,A)") 'Nonlocal UPF potential: original radial projectors'
+            WRITE (UNIT=output_unit, FMT="(T8,A,T71,I10)") 'Total number of projectors:', potential%nppnl
+            WRITE (UNIT=output_unit, FMT="(T8,A)") 'Analytic angular integration and radial mesh quadrature'
+         ELSE IF (potential%n_nonlocal > 0) THEN
             WRITE (UNIT=output_unit, FMT="(/,T8,'Nonlocal pseudopotential')")
             WRITE (UNIT=output_unit, FMT="(T8,A,T71,I10)") 'Total number of projectors:', potential%nppnl
             WRITE (UNIT=output_unit, FMT="(T8,A,10(T21,6F10.4,/))") &
@@ -3177,6 +3374,11 @@ CONTAINS
       pot_out%is_nonlocal = pot_in%is_nonlocal
       pot_out%has_nlcc = pot_in%has_nlcc
       pot_out%n_nlcc = pot_in%n_nlcc
+      IF (ALLOCATED(pot_in%upf_data)) THEN
+         pot_out%upf_data = pot_in%upf_data
+         pot_out%upf_projectors = pot_in%upf_projectors
+         pot_out%upf_local = pot_in%upf_local
+      END IF
 
       IF (ASSOCIATED(pot_in%elec_conf)) THEN
          ALLOCATE (pot_out%elec_conf(LBOUND(pot_in%elec_conf, 1):UBOUND(pot_in%elec_conf, 1)))

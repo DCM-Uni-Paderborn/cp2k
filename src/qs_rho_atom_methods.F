@@ -54,6 +54,7 @@ MODULE qs_rho_atom_methods
                                               rho_atom_type
    USE sap_kind_types,                  ONLY: alist_pre_align_blk,&
                                               alist_type,&
+                                              clist_type,&
                                               get_alist
    USE spherical_harmonics,             ONLY: clebsch_gordon,&
                                               clebsch_gordon_deallocate,&
@@ -83,7 +84,8 @@ MODULE qs_rho_atom_methods
    PUBLIC :: allocate_rho_atom_internals, &
              calculate_rho_atom, &
              calculate_rho_atom_coeff, &
-             init_rho_atom
+             init_rho_atom, &
+             replicate_rho_atom_radial
 
 CONTAINS
 
@@ -433,6 +435,112 @@ CONTAINS
    END SUBROUTINE calculate_rho_atom
 
 ! **************************************************************************************************
+!> \brief Replicate the radial hard/soft density data needed to evaluate one-center tails on
+!>        rank-local target grids. The compact one-center density matrices are already global;
+!>        this routine performs one packed reduction for the derived radial fields of a kind.
+!> \param para_env ...
+!> \param rho_atom_set ...
+!> \param qs_kind ...
+!> \param atom_list ...
+!> \param natom ...
+!> \param nspins ...
+! **************************************************************************************************
+   SUBROUTINE replicate_rho_atom_radial(para_env, rho_atom_set, qs_kind, atom_list, natom, nspins)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho_atom_set
+      TYPE(qs_kind_type), INTENT(IN)                     :: qs_kind
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: atom_list
+      INTEGER, INTENT(IN)                                :: natom, nspins
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'replicate_rho_atom_radial'
+
+      INTEGER                                            :: block_size, bo(2), cursor, handle, iat, &
+                                                            iatom, ispin, j, max_iso_not0, ncoeff, &
+                                                            nr
+      REAL(dp), ALLOCATABLE, DIMENSION(:)                :: buffer
+      TYPE(grid_atom_type), POINTER                      :: grid_atom
+      TYPE(harmonics_atom_type), POINTER                 :: harmonics
+
+      CALL timeset(routineN, handle)
+
+      NULLIFY (grid_atom, harmonics)
+      CALL get_qs_kind(qs_kind, grid_atom=grid_atom, harmonics=harmonics)
+      CPASSERT(ASSOCIATED(grid_atom))
+      CPASSERT(ASSOCIATED(harmonics))
+      nr = grid_atom%nr
+      max_iso_not0 = harmonics%max_iso_not0
+      ncoeff = nr*max_iso_not0
+      block_size = 10*nspins*ncoeff
+      ALLOCATE (buffer(block_size*natom))
+      buffer = 0.0_dp
+
+      bo = get_limit(natom, para_env%num_pe, para_env%mepos)
+      DO iat = bo(1), bo(2)
+         iatom = atom_list(iat)
+         cursor = (iat - 1)*block_size
+         DO ispin = 1, nspins
+            buffer(cursor + 1:cursor + ncoeff) = &
+               RESHAPE(rho_atom_set(iatom)%rho_rad_h(ispin)%r_coef, [ncoeff])
+            cursor = cursor + ncoeff
+            buffer(cursor + 1:cursor + ncoeff) = &
+               RESHAPE(rho_atom_set(iatom)%rho_rad_s(ispin)%r_coef, [ncoeff])
+            cursor = cursor + ncoeff
+            buffer(cursor + 1:cursor + ncoeff) = &
+               RESHAPE(rho_atom_set(iatom)%drho_rad_h(ispin)%r_coef, [ncoeff])
+            cursor = cursor + ncoeff
+            buffer(cursor + 1:cursor + ncoeff) = &
+               RESHAPE(rho_atom_set(iatom)%drho_rad_s(ispin)%r_coef, [ncoeff])
+            cursor = cursor + ncoeff
+            DO j = 1, 3
+               buffer(cursor + 1:cursor + ncoeff) = &
+                  RESHAPE(rho_atom_set(iatom)%rho_rad_h_d(j, ispin)%r_coef, [ncoeff])
+               cursor = cursor + ncoeff
+               buffer(cursor + 1:cursor + ncoeff) = &
+                  RESHAPE(rho_atom_set(iatom)%rho_rad_s_d(j, ispin)%r_coef, [ncoeff])
+               cursor = cursor + ncoeff
+            END DO
+         END DO
+         CPASSERT(cursor == iat*block_size)
+      END DO
+      CALL para_env%sum(buffer)
+
+      DO iat = 1, natom
+         iatom = atom_list(iat)
+         cursor = (iat - 1)*block_size
+         DO ispin = 1, nspins
+            IF (.NOT. ASSOCIATED(rho_atom_set(iatom)%rho_rad_h(ispin)%r_coef)) THEN
+               CALL allocate_rho_atom_rad(rho_atom_set, iatom, ispin, nr, max_iso_not0)
+            END IF
+            rho_atom_set(iatom)%rho_rad_h(ispin)%r_coef = &
+               RESHAPE(buffer(cursor + 1:cursor + ncoeff), [nr, max_iso_not0])
+            cursor = cursor + ncoeff
+            rho_atom_set(iatom)%rho_rad_s(ispin)%r_coef = &
+               RESHAPE(buffer(cursor + 1:cursor + ncoeff), [nr, max_iso_not0])
+            cursor = cursor + ncoeff
+            rho_atom_set(iatom)%drho_rad_h(ispin)%r_coef = &
+               RESHAPE(buffer(cursor + 1:cursor + ncoeff), [nr, max_iso_not0])
+            cursor = cursor + ncoeff
+            rho_atom_set(iatom)%drho_rad_s(ispin)%r_coef = &
+               RESHAPE(buffer(cursor + 1:cursor + ncoeff), [nr, max_iso_not0])
+            cursor = cursor + ncoeff
+            DO j = 1, 3
+               rho_atom_set(iatom)%rho_rad_h_d(j, ispin)%r_coef = &
+                  RESHAPE(buffer(cursor + 1:cursor + ncoeff), [nr, max_iso_not0])
+               cursor = cursor + ncoeff
+               rho_atom_set(iatom)%rho_rad_s_d(j, ispin)%r_coef = &
+                  RESHAPE(buffer(cursor + 1:cursor + ncoeff), [nr, max_iso_not0])
+               cursor = cursor + ncoeff
+            END DO
+         END DO
+         CPASSERT(cursor == iat*block_size)
+      END DO
+      DEALLOCATE (buffer)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE replicate_rho_atom_radial
+
+! **************************************************************************************************
 !> \brief ...
 !> \param qs_env        QuickStep environment
 !>                      (accessed components: atomic_kind_set, dft_control%nimages,
@@ -481,6 +589,7 @@ CONTAINS
                                                             r_coef_s
       TYPE(alist_type), POINTER                          :: alist_ac, alist_bc
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
+      TYPE(clist_type), POINTER                          :: clist_a, clist_b
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_list
       TYPE(gto_basis_set_type), POINTER                  :: basis_1c, basis_set_a, basis_set_b
@@ -595,6 +704,7 @@ CONTAINS
 !$OMP                 , nsoctot, katom                    &
 !$OMP                 , iac , alist_ac, kac, n_cont_a, list_a     &
 !$OMP                 , ibc , alist_bc, kbc, n_cont_b, list_b     &
+!$OMP                 , clist_a, clist_b                         &
 !$OMP                 , C_coeff_hh_a, C_coeff_ss_a, dista         &
 !$OMP                 , C_coeff_hh_b, C_coeff_ss_b, distb         &
 !$OMP                 , distab                                    &
@@ -683,22 +793,25 @@ CONTAINS
 
                      katom = alist_ac%clist(kac)%catom
 
+                     ! Scalar aliases avoid nested component-slice bounds-check temporaries.
+                     clist_a => alist_ac%clist(kac)
+                     clist_b => alist_bc%clist(kbc)
                      IF (iatom == katom .AND. ALL(alist_ac%clist(kac)%cell == 0)) THEN
-                        C_coeff_hh_a => alist_ac%clist(kac)%achint(:, :, 1)
-                        C_coeff_ss_a => alist_ac%clist(kac)%acint(:, :, 1)
+                        C_coeff_hh_a => clist_a%achint(:, :, 1)
+                        C_coeff_ss_a => clist_a%acint(:, :, 1)
                         dista = .FALSE.
                      ELSE
-                        C_coeff_hh_a => alist_ac%clist(kac)%acint(:, :, 1)
-                        C_coeff_ss_a => alist_ac%clist(kac)%acint(:, :, 1)
+                        C_coeff_hh_a => clist_a%acint(:, :, 1)
+                        C_coeff_ss_a => clist_a%acint(:, :, 1)
                         dista = .TRUE.
                      END IF
                      IF (jatom == katom .AND. ALL(alist_bc%clist(kbc)%cell == 0)) THEN
-                        C_coeff_hh_b => alist_bc%clist(kbc)%achint(:, :, 1)
-                        C_coeff_ss_b => alist_bc%clist(kbc)%acint(:, :, 1)
+                        C_coeff_hh_b => clist_b%achint(:, :, 1)
+                        C_coeff_ss_b => clist_b%acint(:, :, 1)
                         distb = .FALSE.
                      ELSE
-                        C_coeff_hh_b => alist_bc%clist(kbc)%acint(:, :, 1)
-                        C_coeff_ss_b => alist_bc%clist(kbc)%acint(:, :, 1)
+                        C_coeff_hh_b => clist_b%acint(:, :, 1)
+                        C_coeff_ss_b => clist_b%acint(:, :, 1)
                         distb = .TRUE.
                      END IF
 
@@ -804,6 +917,7 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'init_rho_atom'
 
+      CHARACTER(LEN=4)                                   :: my_ikind, my_la, my_llmax
       INTEGER :: handle, ikind, il, iso, iso1, iso2, l1, l1l2, l2, la, lc1, lc2, lcleb, ll, llmax, &
          lmax_sphere, lp, m1, m2, max_s_harm, max_s_set, maxl, maxlgto, maxs, mm, mp, na, nat, &
          natom, nr, nspins, quadrature
@@ -916,12 +1030,16 @@ CONTAINS
          grid_atom%nr = nr
 
          IF (llmax > la) THEN
-            WRITE (*, '(/,72("*"))')
-            WRITE (*, '(T2,A,T66,I4)') &
-               "WARNING: the lebedev grid is built for angular momentum l up to ", la, &
-               "         the max l of spherical harmonics is larger, l_max = ", llmax, &
-               "         good integration is guaranteed only for l <= ", la
-            WRITE (*, '(72("*"),/)')
+            IF (para_env%is_source()) THEN
+               WRITE (my_la, "(I4)") la
+               WRITE (my_ikind, "(I4)") ikind
+               WRITE (my_llmax, "(I4)") llmax
+               CALL cp_warn(__LOCATION__, &
+                            "The Lebedev grid has been built for angular momentum l up "// &
+                            "to "//TRIM(my_la)//" for atom kind "//TRIM(my_ikind)//", "// &
+                            "but the max l of spherical harmonics "//TRIM(my_llmax)//" is "// &
+                            "larger and good integration cannot be guaranteed")
+            END IF
          END IF
 
 !     *** calculate the radial grid ***

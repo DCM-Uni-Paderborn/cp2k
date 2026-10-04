@@ -24,6 +24,8 @@ MODULE qs_mo_io
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_p_type,&
                                               gto_basis_set_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_get_submatrix,&
+                                              cp_cfm_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_binary_write,&
                                               dbcsr_create,&
                                               dbcsr_p_type,&
@@ -1007,6 +1009,7 @@ CONTAINS
 !> \param sim_step ...
 !> \param umo_set ...
 !> \param qs_env ...
+!> \param para_env_inter_kp ...
 !> \date    15.05.2001
 !> \par History:
 !>       - Optionally print Cartesian MOs (20.04.2005, MK)
@@ -1019,9 +1022,10 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE write_mo_set_to_output_unit(mo_set, qs_kind_set, particle_set, &
                                           dft_section, before, kpoint, final_mos, spin, &
-                                          solver_method, rtp, cpart, sim_step, umo_set, qs_env)
+                                          solver_method, rtp, cpart, sim_step, umo_set, qs_env, &
+                                          para_env_inter_kp)
 
-      TYPE(mo_set_type), INTENT(IN)                      :: mo_set
+      TYPE(mo_set_type), INTENT(IN), OPTIONAL            :: mo_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(section_vals_type), POINTER                   :: dft_section
@@ -1033,6 +1037,7 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: cpart, sim_step
       TYPE(mo_set_type), INTENT(IN), OPTIONAL            :: umo_set
       TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
 
       CHARACTER(LEN=12)                                  :: symbol
       CHARACTER(LEN=12), DIMENSION(:), POINTER           :: bcgf_symbol
@@ -1048,17 +1053,19 @@ CONTAINS
       CHARACTER(LEN=4)                                   :: reim
       CHARACTER(LEN=40)                                  :: fmtstr3
       CHARACTER(LEN=6), DIMENSION(:), POINTER            :: bsgf_symbol
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: cmo_coeff_buf
       INTEGER :: after, first_mo, from, homo, iatom, icgf, ico, icol, ikind, imo, irow, iset, &
          isgf, ishell, iso, iw, jcol, last_mo, left, lmax, lshell, nao, natom, ncgf, ncol, nkind, &
-         nmo, nset, nsgf, numo, right, scf_step, to, width
+         nmo, nmo_local, nset, nsgf, numo, right, scf_step, to, width
       INTEGER, DIMENSION(:), POINTER                     :: mo_index_range, nshell
       INTEGER, DIMENSION(:, :), POINTER                  :: l
       LOGICAL :: ionode, my_final, my_rtp, omit_headers, print_cartesian, print_cartesian_overlap, &
          print_eigvals, print_eigvecs, print_occup, should_output
-      REAL(KIND=dp)                                      :: gap, maxocc
+      REAL(KIND=dp)                                      :: chemical_potential, gap, maxocc
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mo_eigenvalues, mo_occupation_numbers
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: cmatrix, smatrix
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
+      TYPE(cp_cfm_type), POINTER                         :: cmo_coeff
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, umo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: sro
@@ -1077,6 +1084,7 @@ CONTAINS
       NULLIFY (mo_index_range)
       NULLIFY (nshell)
       NULLIFY (mo_coeff)
+      NULLIFY (cmo_coeff)
 
       logger => cp_get_default_logger()
       ionode = logger%para_env%is_source()
@@ -1141,39 +1149,88 @@ CONTAINS
       END IF
 
       ! Retrieve MO information
-      CALL get_mo_set(mo_set=mo_set, &
-                      mo_coeff=mo_coeff, &
-                      eigenvalues=eigenvalues, &
-                      occupation_numbers=occupation_numbers, &
-                      homo=homo, &
-                      maxocc=maxocc, &
-                      nao=nao, &
-                      nmo=nmo)
-      IF (PRESENT(umo_set)) THEN
-         CALL get_mo_set(mo_set=umo_set, &
-                         mo_coeff=umo_coeff, &
-                         nmo=numo)
-         nmo = nmo + numo
-      ELSE
+      IF (PRESENT(para_env_inter_kp)) THEN
+         CPASSERT(ASSOCIATED(para_env_inter_kp))
+         CPASSERT(.NOT. PRESENT(umo_set))
+         nmo_local = 0
+         homo = 0
+         maxocc = 0.0_dp
+         chemical_potential = 0.0_dp
+         NULLIFY (cmo_coeff, eigenvalues, occupation_numbers, mo_coeff)
+         IF (PRESENT(mo_set)) THEN
+            CALL get_mo_set(mo_set=mo_set, eigenvalues=eigenvalues, &
+                            occupation_numbers=occupation_numbers, mo_coeff=mo_coeff, &
+                            homo=homo, maxocc=maxocc, mu=chemical_potential, nmo=nmo_local, &
+                            cmo_coeff=cmo_coeff)
+         END IF
+         nmo = nmo_local
+         CALL para_env_inter_kp%max(nmo)
+         CALL para_env_inter_kp%sum(homo)
+         CALL para_env_inter_kp%sum(maxocc)
+         CALL para_env_inter_kp%sum(chemical_potential)
+         ALLOCATE (mo_eigenvalues(nmo), mo_occupation_numbers(nmo))
+         mo_eigenvalues = 0.0_dp
+         mo_occupation_numbers = 0.0_dp
+         IF (nmo_local > 0 .AND. PRESENT(mo_set)) THEN
+            mo_eigenvalues(1:nmo_local) = eigenvalues(1:nmo_local)
+            mo_occupation_numbers(1:nmo_local) = occupation_numbers(1:nmo_local)
+         END IF
+         CALL para_env_inter_kp%sum(mo_eigenvalues)
+         CALL para_env_inter_kp%sum(mo_occupation_numbers)
+         IF (print_eigvecs) THEN
+            CALL get_qs_kind_set(qs_kind_set, nsgf=nao)
+            ALLOCATE (smatrix(nao, nmo))
+            smatrix = 0.0_dp
+            IF (nmo_local > 0 .AND. PRESENT(mo_set)) THEN
+               IF (ASSOCIATED(cmo_coeff)) THEN
+                  ALLOCATE (cmo_coeff_buf(nao, nmo_local))
+                  CALL cp_cfm_get_submatrix(cmo_coeff, cmo_coeff_buf)
+                  ! Preserve the legacy text output by printing only the real part.
+                  smatrix(:, 1:nmo_local) = REAL(cmo_coeff_buf, KIND=dp)
+                  DEALLOCATE (cmo_coeff_buf)
+               ELSE
+                  CALL cp_fm_get_submatrix(mo_coeff, smatrix(:, 1:nmo_local))
+               END IF
+            END IF
+            CALL para_env_inter_kp%sum(smatrix)
+         END IF
          numo = 0
-      END IF
-      ALLOCATE (mo_eigenvalues(nmo))
-      mo_eigenvalues(:) = 0.0_dp
-      mo_eigenvalues(1:nmo - numo) = eigenvalues(1:nmo - numo)
-      ALLOCATE (mo_occupation_numbers(nmo))
-      mo_occupation_numbers(:) = 0.0_dp
-      mo_occupation_numbers(1:nmo - numo) = occupation_numbers(1:nmo - numo)
-      IF (numo > 0) THEN
-         CALL get_mo_set(mo_set=umo_set, &
-                         eigenvalues=eigenvalues)
-         mo_eigenvalues(nmo - numo + 1:nmo) = eigenvalues(1:numo)
+      ELSE
+         CPASSERT(PRESENT(mo_set))
+         CALL get_mo_set(mo_set=mo_set, &
+                         mo_coeff=mo_coeff, &
+                         eigenvalues=eigenvalues, &
+                         occupation_numbers=occupation_numbers, &
+                         homo=homo, &
+                         maxocc=maxocc, &
+                         nao=nao, &
+                         nmo=nmo, &
+                         mu=chemical_potential)
+         IF (PRESENT(umo_set)) THEN
+            CALL get_mo_set(mo_set=umo_set, &
+                            mo_coeff=umo_coeff, &
+                            nmo=numo)
+            nmo = nmo + numo
+         ELSE
+            numo = 0
+         END IF
+         ALLOCATE (mo_eigenvalues(nmo), mo_occupation_numbers(nmo))
+         mo_eigenvalues(1:nmo - numo) = eigenvalues(1:nmo - numo)
+         mo_occupation_numbers = 0.0_dp
+         mo_occupation_numbers(1:nmo - numo) = occupation_numbers(1:nmo - numo)
+         IF (numo > 0) THEN
+            CALL get_mo_set(mo_set=umo_set, eigenvalues=eigenvalues)
+            mo_eigenvalues(nmo - numo + 1:nmo) = eigenvalues(1:numo)
+         END IF
       END IF
 
       IF (print_eigvecs) THEN
-         ALLOCATE (smatrix(nao, nmo))
-         CALL cp_fm_get_submatrix(mo_coeff, smatrix(1:nao, 1:nmo - numo))
-         IF (numo > 0) THEN
-            CALL cp_fm_get_submatrix(umo_coeff, smatrix(1:nao, nmo - numo + 1:nmo))
+         IF (.NOT. ALLOCATED(smatrix)) THEN
+            ALLOCATE (smatrix(nao, nmo))
+            CALL cp_fm_get_submatrix(mo_coeff, smatrix(1:nao, 1:nmo - numo))
+            IF (numo > 0) THEN
+               CALL cp_fm_get_submatrix(umo_coeff, smatrix(1:nao, nmo - numo + 1:nmo))
+            END IF
          END IF
          IF (.NOT. ionode) THEN
             DEALLOCATE (smatrix)
@@ -1540,7 +1597,7 @@ CONTAINS
             WRITE (UNIT=fmtstr6(12:13), FMT="(I2)") after
             WRITE (UNIT=fmtstr6(25:26), FMT="(I2)") after
             WRITE (UNIT=iw, FMT=fmtstr6) &
-               " MO| E(Fermi):", mo_set%mu, " a.u.", mo_set%mu*evolt, " eV"
+               " MO| E(Fermi):", chemical_potential, " a.u.", chemical_potential*evolt, " eV"
          END IF
          IF ((homo > 0) .AND. .NOT. my_rtp) THEN
             IF ((mo_occupation_numbers(homo) == maxocc) .AND. (last_mo > homo)) THEN

@@ -18,21 +18,6 @@ cycles (default 50), the value printed under the `Convergence` column does not m
  *******************************************************************************
 ```
 
-Occasionally the symptom of diverging SCF cycles manifests as another error before hitting MAX_SCF.
-
-```text
- *******************************************************************************
- *   ___                                                                       *
- *  /   \                                                                      *
- * [ABORT]                                                                     *
- *  \___/                KS energy is an abnormal value (NaN/Inf).             *
- *    |                                                                        *
- *  O/|                                                                        *
- * /| |                                                                        *
- * / \                                                    qs_ks_methods.F:1166 *
- *******************************************************************************
-```
-
 This page discusses a variety of measures available for addressing these errors and converging to a
 reasonable SCF solution with good precision. It is assumed that the reader has read beforehand
 [](../../getting-started/foreword-and-faq) and the other documentations under [](./index).
@@ -90,6 +75,17 @@ literature or materials database entry often give information about the atomic m
 how the keywords and sections are set up, prior discussions can be found at a
 [google group thread](https://groups.google.com/g/cp2k/c/8fTVlCEjSME) and page 34-36 of
 [a 2015 tutorial](https://www.cp2k.org/_media/events:2015_cecam_tutorial:ling_hybrids.pdf).
+
+For a spin-restricted GPW calculation, a scalar electron density on the real-space grid can instead
+initialize the first Kohn--Sham Hamiltonian directly. Set `SCF_GUESS EXTERNAL_DENSITY` and provide a
+Gaussian cube file with
+[EXTERNAL_DENSITY_FILE_NAME](#CP2K_INPUT.FORCE_EVAL.DFT.SCF.EXTERNAL_DENSITY_FILE_NAME). The cube
+grid must coincide with the finest CP2K grid. CP2K consumes this density only once; after the first
+solver step, the ordinary SCF procedure generates and mixes its own AO density matrices. This avoids
+an ill-posed fit of a scalar density to an AO density matrix. The current implementation supports
+semilocal GPW calculations without kinetic-energy-density functionals, DFT+U, or
+`DRHO_BY_COLLOCATION`; exact exchange still requires an AO density matrix. The guess is independent
+of and cannot be combined with `HARRIS_METHOD` or the ZMP-oriented `DFT%EXTERNAL_DENSITY` section.
 
 Setting SCF_GUESS to `RESTART` and specifying a wavefunction restart file for the keyword
 [WFN_RESTART_FILE_NAME](#CP2K_INPUT.FORCE_EVAL.DFT.WFN_RESTART_FILE_NAME) will instead parse the

@@ -14,12 +14,13 @@ MODULE cp_control_types
                                               cp_fm_type
    USE eeq_input,                       ONLY: eeq_solver_type
    USE input_constants,                 ONLY: &
-        do_full_density, rtp_bse_ham_G0W0, rtp_method_tddft, tblite_cli_born_kernel_auto, &
-        tblite_cli_solution_state_gsolv, tblite_cli_solvation_none, tblite_guess_ceh, &
-        tblite_guess_sad, tblite_mixer_damping_default, tblite_mixer_iterations_default, &
-        tblite_mixer_max_weight_default, tblite_mixer_min_weight_default, &
-        tblite_mixer_omega0_default, tblite_mixer_weight_factor_default, tblite_scc_mixer_auto, &
-        tblite_solver_gvd, use_mom_ref_coac
+        do_full_density, mtlr_initialization_unresolved, rtp_bse_ham_gw, rtp_method_tddft, &
+        tblite_cli_born_kernel_auto, tblite_cli_solution_state_gsolv, tblite_cli_solvation_none, &
+        tblite_guess_ceh, tblite_guess_sad, tblite_mixer_damping_default, &
+        tblite_mixer_iterations_default, tblite_mixer_max_weight_default, &
+        tblite_mixer_min_weight_default, tblite_mixer_omega0_default, &
+        tblite_mixer_weight_factor_default, tblite_scc_mixer_auto, tblite_solver_gvd, &
+        use_mom_ref_coac
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp
@@ -99,7 +100,7 @@ MODULE cp_control_types
       INTEGER                              :: propagator = 0
       LOGICAL                              :: fixed_ions = .FALSE.
       INTEGER                              :: rtp_method = rtp_method_tddft
-      INTEGER                              :: rtbse_ham = rtp_bse_ham_G0W0
+      INTEGER                              :: rtbse_ham = rtp_bse_ham_gw
       INTEGER                              :: initial_wfn = 0
       REAL(dp)                             :: eps_exp = 0.0_dp
       LOGICAL                              :: initial_step = .FALSE.
@@ -262,6 +263,7 @@ MODULE cp_control_types
       !
       INTEGER                              :: sto_ng = 0
       INTEGER                              :: h_sto_ng = 0
+      LOGICAL                              :: sto_flex = .FALSE.
       INTEGER                              :: tblite_method = 0
       INTEGER                              :: tblite_scc_mixer = tblite_scc_mixer_auto
       INTEGER                              :: tblite_mixer_iterations = tblite_mixer_iterations_default
@@ -373,8 +375,9 @@ MODULE cp_control_types
                                               lmax_sphere = 0, &
                                               quadrature = 0
       LOGICAL                              :: accurate_xcint = .FALSE.
+      INTEGER                              :: oweights = 0
       REAL(KIND=dp)                        :: aweights = 0.0_dp
-      REAL(KIND=dp), DIMENSION(:), POINTER  :: aw => NULL()
+      REAL(KIND=dp), DIMENSION(:), POINTER :: aw => NULL()
       LOGICAL                              :: alpha0_hard_from_input = .FALSE., &
                                               force_paw = .FALSE., &
                                               non_paw_atoms = .FALSE., &
@@ -481,6 +484,25 @@ MODULE cp_control_types
       LOGICAL                              :: static = .FALSE.
       REAL(KIND=dp)                        :: scaling_factor = 0.0_dp
    END TYPE expot_control_type
+
+! **************************************************************************************************
+! \brief Parameters for frozen-density embedding (FDE)
+! **************************************************************************************************
+   TYPE fde_control_type
+      LOGICAL                              :: freeze_and_thaw = .FALSE.
+      INTEGER                              :: max_ft_iter = 50
+      REAL(KIND=dp)                        :: eps_ft_density = 1.0e-5_dp
+      REAL(KIND=dp)                        :: eps_ft_energy = 1.0e-6_dp
+      REAL(KIND=dp)                        :: density_mixing = 1.0_dp
+      CHARACTER(LEN=default_path_length)   :: command = "pymolcas"
+      CHARACTER(LEN=default_path_length)   :: project = "sub"
+      CHARACTER(LEN=default_path_length)   :: workdir = ""
+      CHARACTER(LEN=default_path_length)   :: molcas_input_template = ""
+      CHARACTER(LEN=default_path_length)   :: pot_file = "EMBPOT"
+      CHARACTER(LEN=default_path_length)   :: grid_file = "EMBGRID"
+      CHARACTER(LEN=default_path_length)   :: rho_file = "EMBRHOA"
+      CHARACTER(LEN=default_path_length)   :: result_file = "EMBRES"
+   END TYPE fde_control_type
 
 ! **************************************************************************************************
 ! \brief Parameters useful for Maxwell equation evaluation of external potential
@@ -694,6 +716,7 @@ MODULE cp_control_types
       ! Compute exciton descriptors
       LOGICAL                              :: do_exciton_descriptors = .FALSE.
       LOGICAL                              :: do_directional_exciton_descriptors = .FALSE.
+      LOGICAL                              :: do_directional_exciton_crosscorrelation = .FALSE.
       !
       ! DIPOLE_MOMENTS subsection
       !
@@ -768,6 +791,7 @@ MODULE cp_control_types
       TYPE(smeagol_control_type), POINTER  :: smeagol_control => NULL()
       TYPE(paep_control_type), POINTER     :: paep_control => NULL()
       TYPE(pcc_control_type), POINTER      :: pcc_control => NULL()
+      TYPE(fde_control_type), POINTER      :: fde_control => NULL()
       TYPE(efield_p_type), POINTER, &
          DIMENSION(:)                      :: efield_fields => NULL()
       TYPE(hairy_probes_type), POINTER, &
@@ -789,6 +813,7 @@ MODULE cp_control_types
                                               auto_basis_ri_hfx = 1, &
                                               localize_each = 1, &
                                               mtlr_ikind = 1, &
+                                              mtlr_initialization_mode = mtlr_initialization_unresolved, &
                                               max_mtlr_iter = 10
       REAL(KIND=dp)                        :: eps_u_j_loop = 0.01_dp, &
                                               relax_multiplicity = 0.0_dp, &
@@ -808,6 +833,8 @@ MODULE cp_control_types
                                               lsd = .FALSE., &
                                               dft_plus_u = .FALSE., &
                                               mtlr_u_j = .FALSE., &
+                                              mtlr_reference_scf = .FALSE., &
+                                              mtlr_reference_scf_explicit = .FALSE., &
                                               apply_efield = .FALSE., &
                                               apply_efield_field = .FALSE., &
                                               apply_vector_potential = .FALSE., &
@@ -833,6 +860,7 @@ MODULE cp_control_types
                                               hairy_probes = .FALSE., &
                                               do_paep = .FALSE., &
                                               do_pcc = .FALSE., &
+                                              do_fde = .FALSE., &
                                               ! If true, then no other XC functionals are allowed
                                               use_gauxc = .FALSE., &
                                               mtlr_dft_with_perturbation = .FALSE.
@@ -865,7 +893,8 @@ MODULE cp_control_types
              smeared_type, &
              hairy_probes_type, &
              paep_control_type, &
-             pcc_control_type
+             pcc_control_type, &
+             fde_control_type
 
    ! Public subroutines
 
@@ -877,7 +906,9 @@ MODULE cp_control_types
              expot_control_create, &
              ddapc_control_create, &
              rixs_control_create, &
-             rixs_control_release
+             rixs_control_release, &
+             fde_control_create, &
+             fde_control_release
 
 CONTAINS
 
@@ -1006,6 +1037,7 @@ CONTAINS
       NULLIFY (dft_control%probe)
       NULLIFY (dft_control%paep_control)
       NULLIFY (dft_control%pcc_control)
+      NULLIFY (dft_control%fde_control)
       dft_control%do_sccs = .FALSE.
       dft_control%apply_embed_pot = .FALSE.
       dft_control%apply_dmfet_pot = .FALSE.
@@ -1058,6 +1090,7 @@ CONTAINS
       END IF
       IF (ASSOCIATED(dft_control%pcc_control)) DEALLOCATE (dft_control%pcc_control)
       IF (ASSOCIATED(dft_control%paep_control)) DEALLOCATE (dft_control%paep_control)
+      CALL fde_control_release(dft_control%fde_control)
 
    END SUBROUTINE dft_control_release
 
@@ -1455,5 +1488,30 @@ CONTAINS
       END IF
 
    END SUBROUTINE maxwell_control_release
+
+! **************************************************************************************************
+!> \brief ...
+!> \param fde_control ...
+! **************************************************************************************************
+   SUBROUTINE fde_control_create(fde_control)
+      TYPE(fde_control_type), POINTER                    :: fde_control
+
+      CPASSERT(.NOT. ASSOCIATED(fde_control))
+      ALLOCATE (fde_control)
+
+   END SUBROUTINE fde_control_create
+
+! **************************************************************************************************
+!> \brief ...
+!> \param fde_control ...
+! **************************************************************************************************
+   SUBROUTINE fde_control_release(fde_control)
+      TYPE(fde_control_type), POINTER                    :: fde_control
+
+      IF (ASSOCIATED(fde_control)) THEN
+         DEALLOCATE (fde_control)
+      END IF
+
+   END SUBROUTINE fde_control_release
 
 END MODULE cp_control_types

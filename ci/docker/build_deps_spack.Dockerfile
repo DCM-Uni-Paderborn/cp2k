@@ -5,7 +5,7 @@
 #
 # Stage 1: Create a base image providing the dependencies for building a CP2K binary
 
-ARG BASE_IMAGE=${BASE_IMAGE:-ubuntu:26.04}
+ARG BASE_IMAGE=${BASE_IMAGE:-docker.io/ubuntu:26.04}
 
 FROM "${BASE_IMAGE}" AS build_deps
 
@@ -52,8 +52,8 @@ ENV FEATURE_FLAGS=${FEATURE_FLAGS:-}
 
 # Build CP2K dependencies
 WORKDIR /opt/cp2k
-COPY ./tools/spack ./tools/spack
-COPY ./tools/docker ./tools/docker
 COPY ./make_cp2k.sh .
+COPY ./tools/docker ./tools/docker
+COPY ./tools/spack ./tools/spack
 
 RUN ./make_cp2k.sh -bd_only -cray -cv ${CP2K_VERSION} -uc no -ue -j${NUM_PROCS} ${FEATURE_FLAGS}

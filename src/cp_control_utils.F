@@ -20,8 +20,8 @@ MODULE cp_control_utils
    USE cp_control_types,                ONLY: &
         admm_control_create, admm_control_type, ddapc_control_create, ddapc_restraint_type, &
         dft_control_create, dft_control_type, efield_type, expot_control_create, &
-        maxwell_control_create, qs_control_type, rixs_control_type, tddfpt2_control_type, &
-        xtb_control_type, xtb_reference_cli_type
+        fde_control_create, maxwell_control_create, qs_control_type, rixs_control_type, &
+        tddfpt2_control_type, xtb_control_type, xtb_reference_cli_type
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -33,6 +33,7 @@ MODULE cp_control_utils
                                               parser_create,&
                                               parser_release,&
                                               parser_reset
+   USE cp_spline_utils,                 ONLY: pw_interp
    USE cp_units,                        ONLY: cp_unit_from_cp2k,&
                                               cp_unit_to_cp2k
    USE eeq_input,                       ONLY: read_eeq_param
@@ -120,7 +121,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: dft_section
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
 
-      CHARACTER(len=default_path_length)                 :: basis_set_file_name, &
+      CHARACTER(len=default_path_length)                 :: basis_set_file_name, gauxc_model_name, &
                                                             intensities_file_name, &
                                                             potential_file_name
       CHARACTER(LEN=default_string_length), &
@@ -212,7 +213,13 @@ CONTAINS
       IF (dft_control%use_gauxc) THEN
          native_skala_grid = .FALSE.
          CALL section_vals_val_get(xc_gauxc_subsection, "NATIVE_GRID", l_val=native_skala_grid)
-         IF (native_skala_grid) dft_control%use_kinetic_energy_density = .TRUE.
+         CALL section_vals_val_get(xc_gauxc_subsection, "MODEL", c_val=gauxc_model_name)
+         gauxc_model_name = ADJUSTL(gauxc_model_name)
+         CALL uppercase(gauxc_model_name)
+         IF (native_skala_grid .OR. &
+             (TRIM(gauxc_model_name) /= "" .AND. TRIM(gauxc_model_name) /= "NONE")) THEN
+            dft_control%use_kinetic_energy_density = .TRUE.
+         END IF
       END IF
       tmp_section => section_vals_get_subs_vals(dft_section, "KG_METHOD")
       CALL section_vals_get(tmp_section, explicit=explicit)
@@ -228,6 +235,30 @@ CONTAINS
                                                                                        dft_control%lsd)
             END IF
          END IF
+      END IF
+
+      tmp_section => section_vals_get_subs_vals(dft_section, "FDE")
+      CALL section_vals_get(tmp_section, explicit=explicit)
+      IF (explicit) THEN
+         CALL section_vals_val_get(tmp_section, "_SECTION_PARAMETERS_", l_val=dft_control%do_fde)
+      END IF
+      IF (dft_control%do_fde) THEN
+         CALL fde_control_create(dft_control%fde_control)
+         ASSOCIATE (fde => dft_control%fde_control)
+            CALL section_vals_val_get(tmp_section, "FREEZE_AND_THAW", l_val=fde%freeze_and_thaw)
+            CALL section_vals_val_get(tmp_section, "MAX_FT_ITER", i_val=fde%max_ft_iter)
+            CALL section_vals_val_get(tmp_section, "EPS_FT_DENSITY", r_val=fde%eps_ft_density)
+            CALL section_vals_val_get(tmp_section, "EPS_FT_ENERGY", r_val=fde%eps_ft_energy)
+            CALL section_vals_val_get(tmp_section, "DENSITY_MIXING", r_val=fde%density_mixing)
+            CALL section_vals_val_get(tmp_section, "COMMAND", c_val=fde%command)
+            CALL section_vals_val_get(tmp_section, "PROJECT", c_val=fde%project)
+            CALL section_vals_val_get(tmp_section, "WORKDIR", c_val=fde%workdir)
+            CALL section_vals_val_get(tmp_section, "MOLCAS_INPUT_TEMPLATE", c_val=fde%molcas_input_template)
+            CALL section_vals_val_get(tmp_section, "POT_FILE", c_val=fde%pot_file)
+            CALL section_vals_val_get(tmp_section, "GRID_FILE", c_val=fde%grid_file)
+            CALL section_vals_val_get(tmp_section, "RHO_FILE", c_val=fde%rho_file)
+            CALL section_vals_val_get(tmp_section, "RESULT_FILE", c_val=fde%result_file)
+         END ASSOCIATE
       END IF
 
       xc_deriv_method_id = section_get_ival(xc_section, "XC_GRID%XC_DERIV")
@@ -476,6 +507,12 @@ CONTAINS
       ! Minimum tracking linear response U and J
       CALL section_vals_val_get(dft_section, "EPS_U_J_LOOP", r_val=dft_control%eps_u_j_loop)
       CALL section_vals_val_get(dft_section, "MAX_MTLR_LOOP", i_val=dft_control%max_mtlr_iter)
+      CALL section_vals_val_get(dft_section, "MTLR_REFERENCE_SCF", &
+                                explicit=dft_control%mtlr_reference_scf_explicit)
+      IF (dft_control%mtlr_reference_scf_explicit) THEN
+         CALL section_vals_val_get(dft_section, "MTLR_REFERENCE_SCF", &
+                                   l_val=dft_control%mtlr_reference_scf)
+      END IF
 
       ! Smearing in use
       dft_control%smear = .FALSE.
@@ -898,22 +935,26 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'read_mgrid_section'
 
-      INTEGER                                            :: handle, igrid_level, ngrid_level
+      INTEGER                                            :: handle, igrid_level, interp_kind, &
+                                                            ngrid_level
       LOGICAL                                            :: explicit, multigrid_set
       REAL(dp)                                           :: cutoff
       REAL(dp), DIMENSION(:), POINTER                    :: cutofflist
-      TYPE(section_vals_type), POINTER                   :: mgrid_section
+      TYPE(section_vals_type), POINTER                   :: interp_section, mgrid_section
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (mgrid_section, cutofflist)
+      NULLIFY (interp_section, mgrid_section, cutofflist)
       mgrid_section => section_vals_get_subs_vals(dft_section, "MGRID")
+      interp_section => section_vals_get_subs_vals(mgrid_section, "INTERPOLATOR")
 
       CALL section_vals_val_get(mgrid_section, "NGRIDS", i_val=ngrid_level)
       CALL section_vals_val_get(mgrid_section, "MULTIGRID_SET", l_val=multigrid_set)
       CALL section_vals_val_get(mgrid_section, "CUTOFF", r_val=cutoff)
       CALL section_vals_val_get(mgrid_section, "PROGRESSION_FACTOR", r_val=qs_control%progression_factor)
       CALL section_vals_val_get(mgrid_section, "COMMENSURATE", l_val=qs_control%commensurate_mgrids)
+      CALL section_vals_val_get(interp_section, "KIND", i_val=interp_kind)
+      IF (interp_kind /= pw_interp) qs_control%commensurate_mgrids = .TRUE.
       CALL section_vals_val_get(mgrid_section, "REALSPACE", l_val=qs_control%realspace_mgrids)
       CALL section_vals_val_get(mgrid_section, "REL_CUTOFF", r_val=qs_control%relative_cutoff)
       CALL section_vals_val_get(mgrid_section, "SKIP_LOAD_BALANCE_DISTRIBUTED", &
@@ -1139,6 +1180,7 @@ CONTAINS
       ! GAPW accurate integration
       CALL section_vals_val_get(qs_section, "GAPW_ACCURATE_XCINT", l_val=qs_control%gapw_control%accurate_xcint)
       CALL section_vals_val_get(qs_section, "ALPHA_WEIGHTS", r_val=qs_control%gapw_control%aweights)
+      CALL section_vals_val_get(qs_section, "ORDER_WEIGHTS", i_val=qs_control%gapw_control%oweights)
 
       ! Integers grids
       CALL section_vals_val_get(qs_section, "PW_GRID", i_val=itmp)
@@ -1621,6 +1663,13 @@ CONTAINS
          qs_control%xtb_control%sto_ng = ngauss
          CALL section_vals_val_get(xtb_section, "HYDROGEN_STO_NG", i_val=ngauss)
          qs_control%xtb_control%h_sto_ng = ngauss
+         CALL section_vals_val_get(xtb_section, "STO_FLEX", explicit=explicit)
+         IF (explicit) THEN
+            CALL section_vals_val_get(xtb_section, "STO_FLEX", &
+                                      l_val=qs_control%xtb_control%sto_flex)
+         ELSE
+            qs_control%xtb_control%sto_flex = .FALSE.
+         END IF
          CALL section_vals_val_get(xtb_parameter, "PARAM_FILE_PATH", &
                                    c_val=qs_control%xtb_control%parameter_file_path)
          CALL section_vals_val_get(xtb_parameter, "PARAM_FILE_NAME", explicit=explicit)
@@ -1855,10 +1904,10 @@ CONTAINS
             DO j = 1, n_rep
                CALL section_vals_val_get(xtb_parameter, "KAB_PARAM", i_rep_val=j, c_vals=clist)
                qs_control%xtb_control%kab_param(1, j) = clist(1)
-               CALL get_ptable_info(clist(1), &
+               CALL get_ptable_info(clist(1) (1:2), &
                                     ielement=qs_control%xtb_control%kab_types(1, j))
                qs_control%xtb_control%kab_param(2, j) = clist(2)
-               CALL get_ptable_info(clist(2), &
+               CALL get_ptable_info(clist(2) (1:2), &
                                     ielement=qs_control%xtb_control%kab_types(2, j))
                qs_control%xtb_control%kab_param(3, j) = clist(3)
                READ (clist(3), '(F10.0)') qs_control%xtb_control%kab_vals(j)
@@ -2194,6 +2243,13 @@ CONTAINS
       CALL section_vals_val_get(t_section, "ADMM_KERNEL_XC_CORRECTION", l_val=t_control%admm_xc_correction)
       CALL section_vals_val_get(t_section, "EXCITON_DESCRIPTORS", l_val=t_control%do_exciton_descriptors)
       CALL section_vals_val_get(t_section, "DIRECTIONAL_EXCITON_DESCRIPTORS", l_val=t_control%do_directional_exciton_descriptors)
+      CALL section_vals_val_get(t_section, "DIRECTIONAL_EXCITON_CROSSCORRELATION", &
+                                l_val=t_control%do_directional_exciton_crosscorrelation, explicit=explicit)
+      IF (explicit .AND. t_control%do_directional_exciton_crosscorrelation .AND. &
+          .NOT. t_control%do_directional_exciton_descriptors) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "DIRECTIONAL_EXCITON_CROSSCORRELATION has no effect without DIRECTIONAL_EXCITON_DESCRIPTORS.")
+      END IF
 
       ! read automatically generated auxiliary basis for LRI
       CALL section_vals_val_get(t_section, "AUTO_BASIS", n_rep_val=nrep)
@@ -3014,8 +3070,11 @@ CONTAINS
             qs_control%eps_ppnl
          IF (qs_control%gapw) THEN
             IF (qs_control%gapw_control%accurate_xcint) THEN
+               WRITE (UNIT=output_unit, FMT="(T2,A,T79,I2)") &
+                  "QS| GAPW|      XC integration using accurate scheme: Polynomial order (2n) =", &
+                  qs_control%gapw_control%oweights
                WRITE (UNIT=output_unit, FMT="(T2,A,T69,F12.6)") &
-                  "QS| GAPW|      XC integration using accurate scheme: Ref. exponent =", &
+                  "QS| GAPW|                                            Ref. exponent =", &
                   qs_control%gapw_control%aweights
             END IF
             !

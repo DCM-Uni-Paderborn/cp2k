@@ -124,6 +124,8 @@ MODULE qs_environment_types
                                               qs_matrix_pools_type
    USE qs_mo_types,                     ONLY: deallocate_mo_set,&
                                               mo_set_type
+   USE qs_native_grid_cache,            ONLY: native_grid_cache_type,&
+                                              release_native_grid_cache
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_oce_types,                    ONLY: deallocate_oce_set,&
                                               oce_matrix_type
@@ -230,6 +232,8 @@ MODULE qs_environment_types
       LOGICAL :: calc_image_preconditioner = .FALSE.
       LOGICAL :: do_transport = .FALSE.
       LOGICAL :: single_point_run = .FALSE.
+      ! Set only by the standalone single-point driver, not by library callers.
+      LOGICAL :: skip_wf_history = .FALSE.
       LOGICAL :: given_embed_pot = .FALSE.
       LOGICAL :: energy_correction = .FALSE.
       LOGICAL :: harris_method = .FALSE.
@@ -259,6 +263,7 @@ MODULE qs_environment_types
       TYPE(qmmm_env_qm_type), POINTER                       :: qmmm_env_qm => NULL()
       TYPE(qs_wf_history_type), POINTER                     :: wf_history => NULL()
       TYPE(qs_scf_env_type), POINTER                        :: scf_env => NULL()
+      LOGICAL :: scf_convergence_available = .FALSE., scf_converged = .FALSE.
       TYPE(qs_matrix_pools_type), POINTER                   :: mpools => NULL()
       TYPE(oce_matrix_type), POINTER                        :: oce => NULL()
       TYPE(local_rho_type), POINTER                         :: local_rho_set => NULL()
@@ -320,11 +325,17 @@ MODULE qs_environment_types
       ! Resp charges
       REAL(KIND=dp), DIMENSION(:), POINTER                  :: rhs => NULL()
       REAL(KIND=dp)                                         :: total_zeff_corr = -1.0_dp, surface_dipole_moment = -1.0_dp
+      ! Plane-averaged Hartree potential (incl. dipole correction) just below/above the dipole
+      ! correction reference plane, i.e. the vacuum level on either side of the slab
+      REAL(KIND=dp)                                         :: vacuum_level_below = 0.0_dp, vacuum_level_above = 0.0_dp
+      ! Position of the dipole correction reference plane [Angstrom]
+      REAL(KIND=dp)                                         :: surface_dipole_ref_pos = 0.0_dp
       LOGICAL                                               :: surface_dipole_switch_off = .FALSE.
       TYPE(mo_set_type), DIMENSION(:), POINTER              :: mos_last_converged => NULL()
       ! tblite
       TYPE(tblite_type), POINTER                            :: tb_tblite => Null()
       TYPE(cp_gauxc_cache_type), POINTER                    :: gauxc_cache => NULL()
+      TYPE(native_grid_cache_type)                         :: native_grid_cache
    END TYPE qs_environment_type
 
 CONTAINS
@@ -980,6 +991,7 @@ CONTAINS
       qs_env%run_rtp = .FALSE.
       qs_env%linres_run = .FALSE.
       qs_env%single_point_run = .FALSE.
+      qs_env%skip_wf_history = .FALSE.
       qs_env%qmmm = .FALSE.
       qs_env%qmmm_periodic = .FALSE.
       qs_env%mimic = .FALSE.
@@ -1005,6 +1017,9 @@ CONTAINS
 
       qs_env%total_zeff_corr = 0.0_dp
       qs_env%surface_dipole_moment = 0.0_dp
+      qs_env%vacuum_level_below = 0.0_dp
+      qs_env%vacuum_level_above = 0.0_dp
+      qs_env%surface_dipole_ref_pos = 0.0_dp
       qs_env%surface_dipole_switch_off = .FALSE.
 
       ! Zero all variables containing results
@@ -1701,6 +1716,8 @@ CONTAINS
          DEALLOCATE (qs_env%gauxc_cache)
       END IF
 
+      CALL release_native_grid_cache(qs_env%native_grid_cache)
+
    END SUBROUTINE qs_env_release
 
 ! **************************************************************************************************
@@ -1931,6 +1948,8 @@ CONTAINS
          CALL gauxc_cache_release(qs_env%gauxc_cache)
          DEALLOCATE (qs_env%gauxc_cache)
       END IF
+
+      CALL release_native_grid_cache(qs_env%native_grid_cache)
 
    END SUBROUTINE qs_env_part_release
 

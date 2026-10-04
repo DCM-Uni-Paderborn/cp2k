@@ -19,7 +19,8 @@ MODULE skala_torch_api
    USE string_utilities, ONLY: uppercase
    USE torch_api, ONLY: &
       torch_dict_type, torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
-      torch_model_load_with_metadata, torch_model_release, torch_model_remap_device_constants, &
+      torch_model_freeze_preserving_method, torch_model_load_with_metadata, &
+      torch_model_release, torch_model_remap_device_constants, torch_model_promote_float32, &
       torch_model_prepare_higher_derivatives, &
       torch_model_type, &
       torch_model_spin_projected_energy, &
@@ -52,24 +53,23 @@ CONTAINS
 !> \brief Load a SKALA TorchScript model and its feature metadata.
 !> \param model ...
 !> \param filename ...
+!> \param fp64 Promote float32 numerical state and casts; default true for differential consistency.
 !> \param higher_derivatives Use FP64 model arithmetic and stable higher input derivatives.
 ! **************************************************************************************************
-   SUBROUTINE skala_torch_model_load(model, filename, higher_derivatives)
+   SUBROUTINE skala_torch_model_load(model, filename, fp64, higher_derivatives)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       CHARACTER(len=*), INTENT(IN)                       :: filename
-      LOGICAL, INTENT(IN), OPTIONAL                      :: higher_derivatives
+      LOGICAL, INTENT(IN), OPTIONAL                      :: fp64, higher_derivatives
 
       CHARACTER(:), ALLOCATABLE                          :: features_json, protocol_string
       INTEGER                                            :: ios
+      LOGICAL                                            :: prepare_derivatives, use_fp64
 
       CALL torch_model_load_with_metadata(model%torch_model, filename, &
                                           "protocol_version", protocol_string, &
                                           "features", features_json)
       CALL torch_model_remap_device_constants(model%torch_model)
       CALL torch_model_disable_parameter_gradients(model%torch_model)
-      IF (PRESENT(higher_derivatives)) THEN
-         IF (higher_derivatives) CALL torch_model_prepare_higher_derivatives(model%torch_model)
-      END IF
       READ (protocol_string, *, IOSTAT=ios) model%protocol_version
       IF (ios /= 0) CPABORT("Could not parse SKALA TorchScript protocol_version metadata")
       IF (model%protocol_version /= 2) THEN
@@ -77,6 +77,17 @@ CONTAINS
       END IF
 
       CALL parse_feature_list(features_json, model%features)
+      use_fp64 = .TRUE.
+      IF (PRESENT(fp64)) use_fp64 = fp64
+      prepare_derivatives = .FALSE.
+      IF (PRESENT(higher_derivatives)) prepare_derivatives = higher_derivatives
+      IF (prepare_derivatives) THEN
+         CALL torch_model_prepare_higher_derivatives(model%torch_model)
+      ELSE IF (use_fp64) THEN
+         CALL torch_model_promote_float32(model%torch_model)
+      END IF
+      ! Preserve the exported SKALA entry point while folding constant model state.
+      CALL torch_model_freeze_preserving_method(model%torch_model, "get_exc_density")
 
    END SUBROUTINE skala_torch_model_load
 

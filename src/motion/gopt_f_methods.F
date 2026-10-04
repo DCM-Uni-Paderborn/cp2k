@@ -13,75 +13,80 @@
 ! **************************************************************************************************
 MODULE gopt_f_methods
 
-   USE atomic_kind_list_types, ONLY: atomic_kind_list_type
-   USE atomic_kind_types, ONLY: atomic_kind_type, &
-                                get_atomic_kind_set
-   USE cell_methods, ONLY: cell_create, &
-                           init_cell
-   USE cell_types, ONLY: cell_copy, &
-                         cell_release, &
-                         cell_type, &
-                         real_to_scaled, &
-                         scaled_to_real
-   USE cp_log_handling, ONLY: cp_to_string
-   USE cp_subsys_types, ONLY: cp_subsys_get, &
-                              cp_subsys_set, &
-                              cp_subsys_type, &
-                              pack_subsys_particles
-   USE cp_units, ONLY: cp_unit_from_cp2k
-   USE dimer_types, ONLY: dimer_env_type
-   USE dimer_utils, ONLY: update_dimer_vec
-   USE distribution_1d_types, ONLY: distribution_1d_type
-   USE force_env_types, ONLY: force_env_get, &
-                              force_env_get_natom, &
-                              force_env_get_nparticle, &
-                              force_env_type, &
-                              use_qmmm, &
-                              use_qmmmx
-   USE gopt_f_types, ONLY: gopt_f_type
-   USE gopt_param_types, ONLY: gopt_param_type
-   USE input_constants, ONLY: default_cell_method_id, &
-                              default_minimization_method_id, &
-                              default_shellcore_method_id, &
-                              default_ts_method_id, &
-                              fix_none, &
-                              fix_x, &
-                              fix_xy, &
-                              fix_xz, &
-                              fix_y, &
-                              fix_yz, &
-                              fix_z
-   USE input_cp2k_restarts, ONLY: write_restart
-   USE input_section_types, ONLY: section_vals_type, &
-                                  section_vals_val_get
-   USE kinds, ONLY: default_string_length, &
-                    dp, &
-                    int_8
-   USE machine, ONLY: m_flush
-   USE md_energies, ONLY: sample_memory
-   USE message_passing, ONLY: mp_para_env_type
-   USE motion_utils, ONLY: write_simulation_cell, &
-                           write_stress_tensor_to_file, &
-                           write_trajectory
-   USE particle_list_types, ONLY: particle_list_type
-   USE particle_methods, ONLY: write_final_structure, &
-                               write_structure_data
-   USE particle_types, ONLY: particle_type
-   USE qmmm_util, ONLY: apply_qmmm_translate
-   USE qmmmx_util, ONLY: apply_qmmmx_translate
-   USE virial_methods, ONLY: virial_evaluate
-   USE virial_types, ONLY: virial_type
+   USE atomic_kind_list_types,          ONLY: atomic_kind_list_type
+   USE atomic_kind_types,               ONLY: atomic_kind_type,&
+                                              get_atomic_kind_set
+   USE bibliography,                    ONLY: Henkelman1999,&
+                                              cite_reference
+   USE cell_methods,                    ONLY: cell_create,&
+                                              init_cell,&
+                                              write_cell
+   USE cell_opt_utils,                  ONLY: get_dg_dh,&
+                                              rescale_new_cell_volume
+   USE cell_types,                      ONLY: cell_copy,&
+                                              cell_release,&
+                                              cell_type,&
+                                              real_to_scaled,&
+                                              scaled_to_real
+   USE cp_log_handling,                 ONLY: cp_to_string
+   USE cp_subsys_types,                 ONLY: cp_subsys_get,&
+                                              cp_subsys_set,&
+                                              cp_subsys_type,&
+                                              pack_subsys_particles,&
+                                              unpack_subsys_particles
+   USE cp_units,                        ONLY: cp_unit_from_cp2k
+   USE dimer_methods,                   ONLY: cp_eval_at_ts
+   USE dimer_types,                     ONLY: dimer_env_type
+   USE dimer_utils,                     ONLY: update_dimer_vec
+   USE distribution_1d_types,           ONLY: distribution_1d_type
+   USE force_env_methods,               ONLY: force_env_calc_energy_force
+   USE force_env_types,                 ONLY: force_env_get,&
+                                              force_env_get_natom,&
+                                              force_env_get_nparticle,&
+                                              force_env_type,&
+                                              use_qmmm,&
+                                              use_qmmmx
+   USE gopt_f_types,                    ONLY: gopt_f_type
+   USE gopt_param_types,                ONLY: gopt_param_type
+   USE input_constants,                 ONLY: &
+        default_cell_method_id, default_minimization_method_id, default_shellcore_method_id, &
+        default_ts_method_id, fix_none, fix_x, fix_xy, fix_xz, fix_y, fix_yz, fix_z
+   USE input_cp2k_restarts,             ONLY: write_restart
+   USE input_section_types,             ONLY: section_vals_type,&
+                                              section_vals_val_get
+   USE kinds,                           ONLY: default_string_length,&
+                                              dp,&
+                                              int_8
+   USE machine,                         ONLY: m_flush
+   USE md_energies,                     ONLY: sample_memory
+   USE message_passing,                 ONLY: mp_para_env_type
+   USE motion_utils,                    ONLY: write_simulation_cell,&
+                                              write_stress_tensor_to_file,&
+                                              write_trajectory
+   USE particle_list_types,             ONLY: particle_list_type
+   USE particle_methods,                ONLY: write_final_structure,&
+                                              write_structure_data
+   USE particle_types,                  ONLY: particle_type
+   USE qmmm_util,                       ONLY: apply_qmmm_translate
+   USE qmmmx_util,                      ONLY: apply_qmmmx_translate
+   USE space_groups,                    ONLY: spgr_apply_rotations_force,&
+                                              spgr_apply_rotations_stress,&
+                                              spgr_project_cell_metric,&
+                                              spgr_write_stress_tensor
+   USE space_groups_types,              ONLY: spgr_type
+   USE virial_methods,                  ONLY: virial_evaluate,&
+                                              virial_update
+   USE virial_types,                    ONLY: virial_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
 
-   #:include "gopt_f77_methods.fypp"
-
    LOGICAL, PRIVATE, PARAMETER :: debug_this_module = .TRUE.
-   CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = "gopt_f_methods"
+   CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'gopt_f_methods'
 
-   PUBLIC :: gopt_f_create_x0, &
+   PUBLIC :: cp_eval_at, &
+             gopt_f_create_x0, &
              print_geo_opt_header, print_geo_opt_nc, &
              gopt_f_io_init, gopt_f_io, gopt_f_io_finalize, gopt_f_ii, &
              apply_cell_change
@@ -139,7 +144,7 @@ CONTAINS
          DO i = 1, 3
             DO j = 1, i
                idg = idg + 1
-               x0(idg) = cell%hmat(j, i)
+               x0(idg) = gopt_env%cell_env%opt_cell%hmat(j, i)
             END DO
          END DO
       CASE DEFAULT
@@ -147,6 +152,224 @@ CONTAINS
       END SELECT
 
    END SUBROUTINE gopt_f_create_x0
+
+! **************************************************************************************************
+!> \brief evaluete the potential energy and its gradients using an array
+!>      with same dimension as the particle_set
+!> \param gopt_env the geometry optimization environment
+!> \param x the position where the function should be evaluated
+!> \param f the function value
+!> \param gradient the value of its gradient
+!> \param master ...
+!> \param final_evaluation ...
+!> \param para_env ...
+!> \par History
+!>       CELL OPTIMIZATION:  Teodoro Laino [tlaino] - University of Zurich - 03.2008
+!>       07.2020 Pierre Cazade [pcazade] Space Group Symmetry
+!> \author Teodoro Laino [tlaino] - University of Zurich - 01.2008
+! **************************************************************************************************
+   SUBROUTINE cp_eval_at(gopt_env, x, f, gradient, master, &
+                         final_evaluation, para_env)
+
+      TYPE(gopt_f_type), POINTER                         :: gopt_env
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: x
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: f
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: gradient
+      INTEGER, INTENT(IN)                                :: master
+      LOGICAL, INTENT(IN), OPTIONAL                      :: final_evaluation
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+
+      CHARACTER(len=*), PARAMETER                        :: routineN = 'cp_eval_at'
+
+      INTEGER                                            :: handle, idg, idir, ip, nparticle, nsize, &
+                                                            shell_index
+      REAL(KIND=dp)                                      :: f_ts
+      REAL(KIND=dp), DIMENSION(3, 3)                     :: av_ptens, av_ptens_opt
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: cell_gradient, gradient_ts
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(cp_subsys_type), POINTER                      :: subsys
+      TYPE(particle_list_type), POINTER                  :: core_particles, particles, &
+                                                            shell_particles
+      TYPE(spgr_type), POINTER                           :: spgr
+      TYPE(virial_type), POINTER                         :: virial
+
+      MARK_USED(final_evaluation)
+
+      NULLIFY (cell)
+      NULLIFY (core_particles)
+      NULLIFY (gradient_ts)
+      NULLIFY (particles)
+      NULLIFY (shell_particles)
+      NULLIFY (subsys)
+      NULLIFY (virial)
+      NULLIFY (spgr)
+
+      CALL timeset(routineN, handle)
+
+      CALL force_env_get(gopt_env%force_env, subsys=subsys, cell=cell)
+      CALL cp_subsys_get(subsys, &
+                         core_particles=core_particles, &
+                         particles=particles, &
+                         shell_particles=shell_particles, &
+                         virial=virial)
+
+      spgr => gopt_env%spgr
+
+      SELECT CASE (gopt_env%type_id)
+      CASE (default_minimization_method_id, default_ts_method_id)
+         CALL unpack_subsys_particles(subsys=subsys, r=x)
+         CALL write_structure_data(particles%els, cell, gopt_env%motion_section)
+         SELECT CASE (gopt_env%type_id)
+         CASE (default_minimization_method_id)
+            ! Geometry Minimization
+            CALL force_env_calc_energy_force(gopt_env%force_env, &
+                                             calc_force=PRESENT(gradient), &
+                                             require_consistent_energy_force=gopt_env%require_consistent_energy_force)
+            ! Possibly take the potential energy
+            IF (PRESENT(f)) THEN
+               CALL force_env_get(gopt_env%force_env, potential_energy=f)
+            END IF
+            ! Possibly take the gradients
+            IF (PRESENT(gradient)) THEN
+               IF (master == para_env%mepos) THEN ! we are on the master
+                  CALL pack_subsys_particles(subsys=subsys, f=gradient, fscale=-1.0_dp)
+                  IF (spgr%keep_space_group) THEN
+                     CALL spgr_apply_rotations_force(spgr, gradient)
+                     CALL unpack_subsys_particles(subsys=subsys, f=gradient, fscale=-1.0_dp)
+                  END IF
+               END IF
+            END IF
+         CASE (default_ts_method_id)
+            ! Transition State Optimization
+            ALLOCATE (gradient_ts(particles%n_els*3))
+            ! Real calculation of energy and forces for transition state optimization:
+            ! When doing dimer methods forces have to be always computed since the function
+            ! to minimize is not the energy but the effective force
+            CALL cp_eval_at_ts(gopt_env, x, f_ts, gradient_ts, calc_force=.TRUE.)
+            CALL cite_reference(Henkelman1999)
+            ! Possibly take the potential energy
+            IF (PRESENT(f)) f = f_ts
+            ! Possibly take the gradients
+            IF (PRESENT(gradient)) THEN
+               IF (master == para_env%mepos) THEN ! we are on the master
+                  CPASSERT(ASSOCIATED(gradient))
+                  gradient = gradient_ts
+               END IF
+            END IF
+            DEALLOCATE (gradient_ts)
+         END SELECT
+         ! This call is necessary for QM/MM if a Translation is applied
+         ! this makes the geometry optimizer consistent
+         CALL unpack_subsys_particles(subsys=subsys, r=x)
+      CASE (default_cell_method_id)
+         ! Check for VIRIAL
+         IF (.NOT. virial%pv_availability) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "For the CELL_OPT task, the FORCE_EVAL/STRESS_TENSOR "// &
+                          "keyword MUST be defined in the input file for the "// &
+                          "evaluation of the stress tensor, but none is found!")
+         END IF
+         IF (gopt_env%cell_env%keep_volume) THEN
+            nparticle = force_env_get_nparticle(gopt_env%force_env)
+            idg = 3*nparticle
+            CALL rescale_new_cell_volume(cell%deth, x, idg)
+         END IF
+
+         CALL apply_cell_change(gopt_env, cell, x, update_forces=.FALSE.)
+         ! Possibly output the new cell used for the next calculation
+         CALL write_cell(cell, gopt_env%geo_section)
+         ! Compute the pressure tensor
+         BLOCK
+            TYPE(virial_type) :: virial_avg
+            CALL force_env_calc_energy_force(gopt_env%force_env, &
+                                             calc_force=PRESENT(gradient), &
+                                             require_consistent_energy_force=gopt_env%require_consistent_energy_force)
+            ! Possibly take the potential energy
+            virial_avg = virial
+            CALL virial_update(virial_avg, subsys, para_env)
+            IF (PRESENT(f)) THEN
+               CALL force_env_get(gopt_env%force_env, potential_energy=f)
+            END IF
+            ! Possibly take the gradients
+            IF (PRESENT(gradient)) THEN
+               CPASSERT(ANY(virial_avg%pv_total /= 0))
+               ! Convert the average ptens
+               av_ptens(:, :) = virial_avg%pv_total(:, :)/cell%deth
+               IF (master == para_env%mepos) THEN ! we are on the master
+                  CPASSERT(ASSOCIATED(gradient))
+                  nparticle = force_env_get_nparticle(gopt_env%force_env)
+                  nsize = 3*nparticle
+                  CPASSERT((SIZE(gradient) == nsize + 6))
+                  CALL pack_subsys_particles(subsys=subsys, f=gradient(1:nsize), fscale=-1.0_dp)
+                  CALL apply_cell_change(gopt_env, cell, gradient, update_forces=.TRUE.)
+                  IF (spgr%keep_space_group) THEN
+                     CALL spgr_apply_rotations_force(spgr, gradient)
+                     CALL spgr_apply_rotations_stress(spgr, cell, av_ptens)
+                     CALL spgr_write_stress_tensor(av_ptens, spgr)
+                  END IF
+                  cell_gradient => gradient(nsize + 1:nsize + 6)
+                  cell_gradient = 0.0_dp
+                  av_ptens_opt = MATMUL(gopt_env%cell_env%input_to_opt, &
+                                        MATMUL(av_ptens, gopt_env%cell_env%opt_to_input))
+                  CALL get_dg_dh(cell_gradient, av_ptens_opt, gopt_env%cell_env%pres_ext, &
+                                 gopt_env%cell_env%opt_cell, gopt_env%cell_env%mtrx, &
+                                 keep_angles=gopt_env%cell_env%keep_angles, &
+                                 keep_symmetry=gopt_env%cell_env%keep_symmetry, &
+                                 pres_int=gopt_env%cell_env%pres_int, &
+                                 pres_constr=gopt_env%cell_env%pres_constr, &
+                                 constraint_id=gopt_env%cell_env%constraint_id)
+               END IF
+               ! some callers expect pres_int to be available on all ranks. Also, here master is not necessarily a single rank.
+               ! Assume at least master==0
+               CALL para_env%bcast(gopt_env%cell_env%pres_int, 0)
+               IF (gopt_env%cell_env%constraint_id /= fix_none) THEN
+                  CALL para_env%bcast(gopt_env%cell_env%pres_constr, 0)
+               END IF
+            END IF
+         END BLOCK
+      CASE (default_shellcore_method_id)
+         idg = 0
+         DO ip = 1, particles%n_els
+            shell_index = particles%els(ip)%shell_index
+            IF (shell_index /= 0) THEN
+               DO idir = 1, 3
+                  idg = 3*(shell_index - 1) + idir
+                  shell_particles%els(shell_index)%r(idir) = core_particles%els(ip)%r(idir) - x(idg)
+               END DO
+            END IF
+         END DO
+         CALL write_structure_data(particles%els, cell, gopt_env%motion_section)
+
+         ! Shell-core optimization
+         CALL force_env_calc_energy_force(gopt_env%force_env, &
+                                          calc_force=PRESENT(gradient), &
+                                          require_consistent_energy_force=gopt_env%require_consistent_energy_force)
+
+         ! Possibly take the potential energy
+         IF (PRESENT(f)) THEN
+            CALL force_env_get(gopt_env%force_env, potential_energy=f)
+         END IF
+
+         ! Possibly take the gradients
+         IF (PRESENT(gradient)) THEN
+            IF (master == para_env%mepos) THEN ! we are on the master
+               CPASSERT(ASSOCIATED(gradient))
+               idg = 0
+               DO ip = 1, shell_particles%n_els
+                  DO idir = 1, 3
+                     idg = idg + 1
+                     gradient(idg) = -(core_particles%els(ip)%f(idir) - shell_particles%els(ip)%f(idir))
+                  END DO
+               END DO
+            END IF
+         END IF
+      CASE DEFAULT
+         CPABORT("Invalid or not yet implemented type of optimization")
+      END SELECT
+
+      CALL timestop(handle)
+
+   END SUBROUTINE cp_eval_at
 
 ! **************************************************************************************************
 !> \brief Prints iteration step of the optimization procedure on screen
@@ -168,6 +391,41 @@ CONTAINS
    END SUBROUTINE gopt_f_ii
 
 ! **************************************************************************************************
+!> \brief Retrieves the reporting metadata used during an optimization step.
+!> \param gopt_env Optimization environment supplying print configuration and units
+!> \param force_env Force environment used for memory sampling
+!> \param max_memory Sampled memory, or zero if memory reporting is disabled
+!> \param energy_unit Energy reporting unit
+!> \param stress_unit Stress reporting unit
+! **************************************************************************************************
+   SUBROUTINE get_reporting_metadata(gopt_env, force_env, max_memory, energy_unit, stress_unit)
+
+      TYPE(gopt_f_type), POINTER                         :: gopt_env
+      TYPE(force_env_type), POINTER                      :: force_env
+      INTEGER(KIND=int_8), INTENT(OUT)                   :: max_memory
+      CHARACTER(LEN=default_string_length), INTENT(OUT)  :: energy_unit, stress_unit
+
+      LOGICAL                                            :: print_memory
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+
+      NULLIFY (para_env)
+      CALL section_vals_val_get(gopt_env%motion_section, "PRINT%MEMORY_INFO", l_val=print_memory)
+      max_memory = 0
+      IF (print_memory) THEN
+         CALL force_env_get(force_env, para_env=para_env)
+         max_memory = sample_memory(para_env)
+      END IF
+
+      CALL section_vals_val_get(gopt_env%force_env%force_env_section, &
+                                "PRINT%PROGRAM_RUN_INFO%ENERGY_UNIT", &
+                                c_val=energy_unit)
+      CALL section_vals_val_get(gopt_env%force_env%force_env_section, &
+                                "PRINT%STRESS_TENSOR%STRESS_UNIT", &
+                                c_val=stress_unit)
+
+   END SUBROUTINE get_reporting_metadata
+
+! **************************************************************************************************
 !> \brief Handles the Output during an optimization run
 !> \param gopt_env ...
 !> \param output_unit ...
@@ -186,26 +444,11 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: its
       REAL(KIND=dp)                                      :: used_time
 
-      TYPE(mp_para_env_type), POINTER                    :: para_env
       CHARACTER(LEN=default_string_length)               :: energy_unit, stress_unit
-      REAL(KIND=dp)                                      :: pres_int
       INTEGER(KIND=int_8)                                :: max_memory
-      LOGICAL                                            :: print_memory
+      REAL(KIND=dp)                                      :: pres_int
 
-      NULLIFY (para_env)
-      CALL section_vals_val_get(gopt_env%motion_section, "PRINT%MEMORY_INFO", l_val=print_memory)
-      max_memory = 0
-      IF (print_memory) THEN
-         CALL force_env_get(gopt_env%force_env, para_env=para_env)
-         max_memory = sample_memory(para_env)
-      END IF
-
-      CALL section_vals_val_get(gopt_env%force_env%force_env_section, &
-                                "PRINT%PROGRAM_RUN_INFO%ENERGY_UNIT", &
-                                c_val=energy_unit)
-      CALL section_vals_val_get(gopt_env%force_env%force_env_section, &
-                                "PRINT%STRESS_TENSOR%STRESS_UNIT", &
-                                c_val=stress_unit)
+      CALL get_reporting_metadata(gopt_env, gopt_env%force_env, max_memory, energy_unit, stress_unit)
 
       SELECT CASE (gopt_env%type_id)
       CASE (default_ts_method_id, default_minimization_method_id)
@@ -298,25 +541,13 @@ CONTAINS
 
       CHARACTER(LEN=default_string_length)               :: energy_unit, stress_unit
       INTEGER(KIND=int_8)                                :: max_memory
-      LOGICAL                                            :: print_memory
-      REAL(KIND=dp)                                      :: pres_diff, pres_diff_constr, pres_int, &
-                                                            pres_tol
-      TYPE(mp_para_env_type), POINTER                    :: para_env
+      LOGICAL                                            :: conv_dx, conv_g, conv_p, conv_rdx, &
+                                                            conv_rg
+      REAL(KIND=dp)                                      :: max_dr, max_grad, pres_diff, &
+                                                            pres_diff_constr, pres_int, pres_tol, &
+                                                            rms_dr, rms_grad
 
-      NULLIFY (para_env)
-      CALL section_vals_val_get(gopt_env%motion_section, "PRINT%MEMORY_INFO", l_val=print_memory)
-      max_memory = 0
-      IF (print_memory) THEN
-         CALL force_env_get(force_env, para_env=para_env)
-         max_memory = sample_memory(para_env)
-      END IF
-
-      CALL section_vals_val_get(gopt_env%force_env%force_env_section, &
-                                "PRINT%PROGRAM_RUN_INFO%ENERGY_UNIT", &
-                                c_val=energy_unit)
-      CALL section_vals_val_get(gopt_env%force_env%force_env_section, &
-                                "PRINT%STRESS_TENSOR%STRESS_UNIT", &
-                                c_val=stress_unit)
+      CALL get_reporting_metadata(gopt_env, force_env, max_memory, energy_unit, stress_unit)
 
       SELECT CASE (gopt_env%type_id)
       CASE (default_ts_method_id, default_minimization_method_id)
@@ -343,7 +574,11 @@ CONTAINS
                CPASSERT(PRESENT(ndf))
                CPASSERT(PRESENT(dx))
                CPASSERT(PRESENT(xi))
-               CALL check_converg(ndf, dx, xi, output_unit, conv, gopt_param, max_memory, stress_unit)
+               CALL check_converg(ndf, dx, xi, gopt_param, conv, conv_dx, conv_rdx, conv_g, conv_rg, &
+                                  conv_p, max_dr, rms_dr, max_grad, rms_grad)
+               CALL write_convergence_infos(output_unit, gopt_param, conv, conv_dx, conv_rdx, conv_g, &
+                                            conv_rg, conv_p, max_dr, rms_dr, max_grad, rms_grad, &
+                                            max_memory, stress_unit)
             END IF
          ELSE
             CALL update_dimer_vec(gopt_env%dimer_env, gopt_env%motion_section)
@@ -384,12 +619,19 @@ CONTAINS
             CPASSERT(PRESENT(dx))
             CPASSERT(PRESENT(xi))
             IF (gopt_env%cell_env%constraint_id == fix_none) THEN
-               CALL check_converg(ndf, dx, xi, output_unit, conv, gopt_param, max_memory, stress_unit, &
-                                  pres_diff, pres_tol)
+               CALL check_converg(ndf, dx, xi, gopt_param, conv, conv_dx, conv_rdx, conv_g, conv_rg, &
+                                  conv_p, max_dr, rms_dr, max_grad, rms_grad, pres_diff, pres_tol)
+               CALL write_convergence_infos(output_unit, gopt_param, conv, conv_dx, conv_rdx, conv_g, &
+                                            conv_rg, conv_p, max_dr, rms_dr, max_grad, rms_grad, &
+                                            max_memory, stress_unit, pres_diff, pres_tol)
             ELSE
                pres_diff_constr = gopt_env%cell_env%pres_constr - gopt_env%cell_env%pres_ext
-               CALL check_converg(ndf, dx, xi, output_unit, conv, gopt_param, max_memory, stress_unit, &
-                                  pres_diff, pres_tol, pres_diff_constr)
+               CALL check_converg(ndf, dx, xi, gopt_param, conv, conv_dx, conv_rdx, conv_g, conv_rg, &
+                                  conv_p, max_dr, rms_dr, max_grad, rms_grad, pres_diff, pres_tol, &
+                                  pres_diff_constr)
+               CALL write_convergence_infos(output_unit, gopt_param, conv, conv_dx, conv_rdx, conv_g, &
+                                            conv_rg, conv_p, max_dr, rms_dr, max_grad, rms_grad, &
+                                            max_memory, stress_unit, pres_diff, pres_tol, pres_diff_constr)
             END IF
          END IF
       CASE (default_shellcore_method_id)
@@ -412,7 +654,11 @@ CONTAINS
             CPASSERT(PRESENT(ndf))
             CPASSERT(PRESENT(dx))
             CPASSERT(PRESENT(xi))
-            CALL check_converg(ndf, dx, xi, output_unit, conv, gopt_param, max_memory, stress_unit)
+            CALL check_converg(ndf, dx, xi, gopt_param, conv, conv_dx, conv_rdx, conv_g, conv_rg, &
+                               conv_p, max_dr, rms_dr, max_grad, rms_grad)
+            CALL write_convergence_infos(output_unit, gopt_param, conv, conv_dx, conv_rdx, conv_g, &
+                                         conv_rg, conv_p, max_dr, rms_dr, max_grad, rms_grad, &
+                                         max_memory, stress_unit)
          END IF
       END SELECT
 
@@ -468,6 +714,9 @@ CONTAINS
 !> \param pres_int ...
 !> \param wildcard ...
 !> \param used_time ...
+!> \param max_memory ...
+!> \param energy_unit ...
+!> \param stress_unit ...
 ! **************************************************************************************************
    SUBROUTINE write_cycle_infos(output_unit, it, etot, ediff, pred, rat, step, rad, emin, &
                                 pres_int, wildcard, used_time, max_memory, energy_unit, stress_unit)
@@ -553,6 +802,7 @@ CONTAINS
 !> \param dimer_env ...
 !> \param used_time ...
 !> \param wildcard ...
+!> \param max_memory ...
 !> \date  01.2008
 !> \author Luca Bellucci and Teodoro Laino - created [tlaino]
 ! **************************************************************************************************
@@ -607,36 +857,38 @@ CONTAINS
    END SUBROUTINE write_rot_cycle_infos
 
 ! **************************************************************************************************
-!> \brief ...
+!> \brief Evaluate the geometry/cell optimization convergence criteria (pure decision, no I/O)
 !> \param ndf ...
 !> \param dr ...
 !> \param g ...
-!> \param output_unit ...
-!> \param conv ...
 !> \param gopt_param ...
-!> \param max_memory ...
+!> \param conv ...
+!> \param conv_dx ...
+!> \param conv_rdx ...
+!> \param conv_g ...
+!> \param conv_rg ...
+!> \param conv_p ...
+!> \param max_dr ...
+!> \param rms_dr ...
+!> \param max_grad ...
+!> \param rms_grad ...
 !> \param pres_diff ...
 !> \param pres_tol ...
 !> \param pres_diff_constr ...
 ! **************************************************************************************************
-   SUBROUTINE check_converg(ndf, dr, g, output_unit, conv, gopt_param, max_memory, stress_unit, &
-                            pres_diff, pres_tol, pres_diff_constr)
+   SUBROUTINE check_converg(ndf, dr, g, gopt_param, conv, conv_dx, conv_rdx, conv_g, conv_rg, conv_p, &
+                            max_dr, rms_dr, max_grad, rms_grad, pres_diff, pres_tol, pres_diff_constr)
 
       INTEGER, INTENT(IN)                                :: ndf
       REAL(KIND=dp), INTENT(IN)                          :: dr(ndf), g(ndf)
-      INTEGER, INTENT(IN)                                :: output_unit
-      LOGICAL, INTENT(OUT)                               :: conv
       TYPE(gopt_param_type), POINTER                     :: gopt_param
-      INTEGER(KIND=int_8), INTENT(IN)                    :: max_memory
-      CHARACTER(LEN=default_string_length), INTENT(IN)   :: stress_unit
+      LOGICAL, INTENT(OUT)                               :: conv, conv_dx, conv_rdx, conv_g, &
+                                                            conv_rg, conv_p
+      REAL(KIND=dp), INTENT(OUT)                         :: max_dr, rms_dr, max_grad, rms_grad
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: pres_diff, pres_tol, pres_diff_constr
 
-      CHARACTER(LEN=5)                                   :: tag
       INTEGER                                            :: indf
-      LOGICAL                                            :: conv_dx, conv_g, conv_p, conv_rdx, &
-                                                            conv_rg
-      REAL(KIND=dp)                                      :: dumm, dxcon, gcon, maxdum(4), rmsgcon, &
-                                                            rmsxcon
+      REAL(KIND=dp)                                      :: dumm, dxcon, gcon, rmsgcon, rmsxcon
 
       dxcon = gopt_param%max_dr
       gcon = gopt_param%max_force
@@ -652,25 +904,25 @@ CONTAINS
 
       dumm = 0.0_dp
       DO indf = 1, ndf
-         IF (indf == 1) maxdum(1) = ABS(dr(indf))
+         IF (indf == 1) max_dr = ABS(dr(indf))
          dumm = dumm + dr(indf)**2
          IF (ABS(dr(indf)) > dxcon) conv_dx = .FALSE.
-         IF (ABS(dr(indf)) > maxdum(1)) maxdum(1) = ABS(dr(indf))
+         IF (ABS(dr(indf)) > max_dr) max_dr = ABS(dr(indf))
       END DO
       ! SQRT(dumm/ndf) > rmsxcon
       IF (dumm > (rmsxcon*rmsxcon*ndf)) conv_rdx = .FALSE.
-      maxdum(2) = SQRT(dumm/ndf)
+      rms_dr = SQRT(dumm/ndf)
 
       dumm = 0.0_dp
       DO indf = 1, ndf
-         IF (indf == 1) maxdum(3) = ABS(g(indf))
+         IF (indf == 1) max_grad = ABS(g(indf))
          dumm = dumm + g(indf)**2
          IF (ABS(g(indf)) > gcon) conv_g = .FALSE.
-         IF (ABS(g(indf)) > maxdum(3)) maxdum(3) = ABS(g(indf))
+         IF (ABS(g(indf)) > max_grad) max_grad = ABS(g(indf))
       END DO
       ! SQRT(dumm/ndf) > rmsgcon
       IF (dumm > (rmsgcon*rmsgcon*ndf)) conv_rg = .FALSE.
-      maxdum(4) = SQRT(dumm/ndf)
+      rms_grad = SQRT(dumm/ndf)
 
       IF (PRESENT(pres_diff_constr) .AND. PRESENT(pres_tol)) THEN
          conv_p = ABS(pres_diff_constr) < ABS(pres_tol)
@@ -678,13 +930,58 @@ CONTAINS
          conv_p = ABS(pres_diff) < ABS(pres_tol)
       END IF
 
+      IF (conv_dx .AND. conv_rdx .AND. conv_g .AND. conv_rg .AND. conv_p) conv = .TRUE.
+
+   END SUBROUTINE check_converg
+
+! **************************************************************************************************
+!> \brief Print the per-cycle convergence report (body moved verbatim from check_converg)
+!> \param output_unit ...
+!> \param gopt_param ...
+!> \param conv ...
+!> \param conv_dx ...
+!> \param conv_rdx ...
+!> \param conv_g ...
+!> \param conv_rg ...
+!> \param conv_p ...
+!> \param max_dr ...
+!> \param rms_dr ...
+!> \param max_grad ...
+!> \param rms_grad ...
+!> \param max_memory ...
+!> \param stress_unit ...
+!> \param pres_diff ...
+!> \param pres_tol ...
+!> \param pres_diff_constr ...
+! **************************************************************************************************
+   SUBROUTINE write_convergence_infos(output_unit, gopt_param, conv, conv_dx, conv_rdx, conv_g, &
+                                      conv_rg, conv_p, max_dr, rms_dr, max_grad, rms_grad, &
+                                      max_memory, stress_unit, pres_diff, pres_tol, pres_diff_constr)
+
+      INTEGER, INTENT(IN)                                :: output_unit
+      TYPE(gopt_param_type), POINTER                     :: gopt_param
+      LOGICAL, INTENT(IN)                                :: conv, conv_dx, conv_rdx, conv_g, &
+                                                            conv_rg, conv_p
+      REAL(KIND=dp), INTENT(IN)                          :: max_dr, rms_dr, max_grad, rms_grad
+      INTEGER(KIND=int_8), INTENT(IN)                    :: max_memory
+      CHARACTER(LEN=default_string_length), INTENT(IN)   :: stress_unit
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: pres_diff, pres_tol, pres_diff_constr
+
+      CHARACTER(LEN=5)                                   :: tag
+      REAL(KIND=dp)                                      :: dxcon, gcon, rmsgcon, rmsxcon
+
+      dxcon = gopt_param%max_dr
+      gcon = gopt_param%max_force
+      rmsgcon = gopt_param%rms_force
+      rmsxcon = gopt_param%rms_dr
+
       IF (output_unit > 0) THEN
 
          tag = "OPT| "
 
          WRITE (UNIT=output_unit, FMT="(T2,A)") TRIM(tag)
          WRITE (UNIT=output_unit, FMT="(T2,A,T55,1X,F25.10)") &
-            tag//"Maximum step size", maxdum(1), &
+            tag//"Maximum step size", max_dr, &
             tag//"Convergence limit for maximum step size", dxcon
          IF (conv_dx) THEN
             WRITE (UNIT=output_unit, FMT="(T2,A,T77,A4)") &
@@ -696,7 +993,7 @@ CONTAINS
 
          WRITE (UNIT=output_unit, FMT="(T2,A)") TRIM(tag)
          WRITE (UNIT=output_unit, FMT="(T2,A,T55,1X,F25.10)") &
-            tag//"RMS step size", maxdum(2), &
+            tag//"RMS step size", rms_dr, &
             tag//"Convergence limit for RMS step size", rmsxcon
          IF (conv_rdx) THEN
             WRITE (UNIT=output_unit, FMT="(T2,A,T77,A4)") &
@@ -708,7 +1005,7 @@ CONTAINS
 
          WRITE (UNIT=output_unit, FMT="(T2,A)") TRIM(tag)
          WRITE (UNIT=output_unit, FMT="(T2,A,T55,1X,F25.10)") &
-            tag//"Maximum gradient", maxdum(3), &
+            tag//"Maximum gradient", max_grad, &
             tag//"Convergence limit for maximum gradient", gcon
          IF (conv_g) THEN
             WRITE (UNIT=output_unit, FMT="(T2,A,T77,A4)") &
@@ -720,7 +1017,7 @@ CONTAINS
 
          WRITE (UNIT=output_unit, FMT="(T2,A)") TRIM(tag)
          WRITE (UNIT=output_unit, FMT="(T2,A,T55,1X,F25.10)") &
-            tag//"RMS gradient", maxdum(4), &
+            tag//"RMS gradient", rms_grad, &
             tag//"Convergence limit for RMS gradient", rmsgcon
          IF (conv_rg) THEN
             WRITE (UNIT=output_unit, FMT="(T2,A,T77,A4)") &
@@ -768,8 +1065,6 @@ CONTAINS
 
       END IF
 
-      IF (conv_dx .AND. conv_rdx .AND. conv_g .AND. conv_rg .AND. conv_p) conv = .TRUE.
-
       IF ((conv) .AND. (output_unit > 0)) THEN
          WRITE (UNIT=output_unit, FMT="(/,T2,A)") REPEAT("*", 79)
          WRITE (UNIT=output_unit, FMT="(T2,A,T25,A,T78,A)") &
@@ -777,7 +1072,7 @@ CONTAINS
          WRITE (UNIT=output_unit, FMT="(T2,A)") REPEAT("*", 79)
       END IF
 
-   END SUBROUTINE check_converg
+   END SUBROUTINE write_convergence_infos
 
 ! **************************************************************************************************
 !> \brief ...
@@ -851,8 +1146,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: motion_section, root_section
 
       CHARACTER(LEN=4)                                   :: constraint_label
-      LOGICAL                                            :: keep_angles, keep_symmetry, &
-                                                            keep_volume
+      LOGICAL                                            :: keep_angles, keep_symmetry, keep_volume
       REAL(KIND=dp)                                      :: etot
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_subsys_type), POINTER                      :: subsys
@@ -907,6 +1201,7 @@ CONTAINS
          CALL cp_eval_at(gopt_env, x0, f=etot, master=master, final_evaluation=.TRUE., &
                          para_env=para_env)
          CALL write_geo_traj(force_env, root_section, it, etot)
+         CALL write_simulation_cell(cell, motion_section, it, 0.0_dp)
       END IF
 
    END SUBROUTINE write_final_info
@@ -1154,13 +1449,30 @@ CONTAINS
 
       ELSE
 
-         ! Update cell
+         ! Update the six independent components in the canonical optimization frame.
+         gopt_env%cell_env%opt_cell%hmat = 0.0_dp
          DO i = 1, 3
             DO j = 1, i
                idg = idg + 1
-               cell%hmat(j, i) = x(idg)
+               gopt_env%cell_env%opt_cell%hmat(j, i) = x(idg)
             END DO
          END DO
+         CALL init_cell(gopt_env%cell_env%opt_cell)
+         IF (gopt_env%spgr%keep_space_group) THEN
+            CALL spgr_project_cell_metric(gopt_env%spgr, gopt_env%cell_env%opt_cell)
+            ! Keep the optimizer variables synchronized with the projected cell.
+            idg = 3*nparticle
+            DO i = 1, 3
+               DO j = 1, i
+                  idg = idg + 1
+                  x(idg) = gopt_env%cell_env%opt_cell%hmat(j, i)
+               END DO
+            END DO
+         END IF
+
+         ! Reconstruct the physical cell in the fixed orientation of the input cell.
+         cell%hmat = MATMUL(gopt_env%cell_env%opt_to_input, &
+                            gopt_env%cell_env%opt_cell%hmat)
          CALL init_cell(cell)
          CALL cp_subsys_set(subsys, cell=cell)
 

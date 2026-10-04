@@ -3,11 +3,11 @@
 # Usage: ./spack_cache_start.sh; podman build --shm-size=1g -t spack_psmp-p100 -f ./Dockerfile.test_spack_psmp-P100 ../../
 #
 
-ARG BASE_IMAGE="docker.io/nvidia/cuda:12.9.1-devel-ubuntu24.04"
+ARG BASE_IMAGE="nvidia/cuda:12.9.1-devel-ubuntu24.04"
 
 ###### Stage 1: Build CP2K dependencies ######
 
-FROM "${BASE_IMAGE}" AS build_deps
+FROM "docker.io/${BASE_IMAGE}" AS build_deps
 
 RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
     bzip2 \
@@ -61,18 +61,19 @@ RUN ./make_cp2k.sh -bd_only -cv psmp -gpu P100 -gv 13 -mpi mpich -ue
 
 FROM build_deps AS build_cp2k
 
-COPY ./src ./src
-COPY ./data ./data
-COPY ./tools/build_utils ./tools/build_utils
+COPY ./CMakeLists.txt ./CMakePresets.json ./
 COPY ./cmake ./cmake
-COPY ./CMakeLists.txt .
-COPY ./CMakePresets.json .
+COPY ./data ./data
+COPY ./src ./src
+COPY ./tests ./tests
+COPY ./tools/build_utils ./tools/build_utils
+COPY ./tools/conventions ./tools/conventions
 
 RUN ./make_cp2k.sh -cv psmp -gv 13 -gpu P100 -mpi mpich 
 
 ###### Stage 3: Install CP2K ######
 
-FROM "${BASE_IMAGE}" AS install_cp2k
+FROM "docker.io/${BASE_IMAGE}" AS install_cp2k
 
 RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
     g++ g++-13 gcc gcc-13 gfortran gfortran-13 \
@@ -95,7 +96,7 @@ COPY --from=build_cp2k /opt/cp2k/spack/spack/opt/spack ./spack/spack/opt/spack
 COPY --from=build_cp2k /opt/cp2k/install ./install
 
 # Install CP2K regression tests
-COPY ./tests ./tests
+COPY --from=build_cp2k /opt/cp2k/tests ./tests
 COPY --from=build_cp2k /opt/cp2k/src/grid/sample_tasks ./src/grid/sample_tasks
 
 # Install CP2K/Quickstep CI benchmarks
@@ -106,7 +107,7 @@ COPY --from=build_cp2k /etc/ld.so.conf.d/cp2k.conf /etc/ld.so.conf.d/cp2k.conf
 RUN ldconfig
 
 # Run CP2K regression test
-RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests --keepalive || echo "ERROR: Tests failed"
+RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests --keepalive --timeout 400 || echo "ERROR: Regression test run failed"
 
 # Create entrypoint and finalise container build
 WORKDIR /mnt

@@ -13,17 +13,17 @@
 ! **************************************************************************************************
 MODULE cell_opt_types
 
-   USE cell_methods,                    ONLY: cell_create
+   USE cell_methods,                    ONLY: canonicalize_cell_matrix,&
+                                              cell_create
    USE cell_opt_utils,                  ONLY: read_external_press_tensor
-   USE cell_types,                      ONLY: cell_clone,&
-                                              cell_release,&
-                                              cell_type
+   USE cell_types,                      ONLY: &
+        cell_clone, cell_release, cell_sym_cubic, cell_sym_hexagonal_gamma_120, &
+        cell_sym_hexagonal_gamma_60, cell_sym_monoclinic_gamma_ab, cell_sym_rhombohedral, &
+        cell_sym_tetragonal_ab, cell_sym_tetragonal_ac, cell_sym_tetragonal_bc, cell_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_subsys_types,                 ONLY: cp_subsys_get,&
-                                              cp_subsys_type
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE force_env_types,                 ONLY: force_env_get,&
                                               force_env_type
@@ -37,7 +37,6 @@ MODULE cell_opt_types
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
-   USE particle_list_types,             ONLY: particle_list_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -64,8 +63,11 @@ MODULE cell_opt_types
                                                     keep_volume = .FALSE.
       REAL(KIND=dp)                              :: pres_ext = 0.0_dp, pres_int = 0.0_dp, pres_tol = 0.0_dp, pres_constr = 0.0_dp
       REAL(KIND=dp), DIMENSION(3, 3)             :: mtrx = 0.0_dp
-      REAL(KIND=dp), DIMENSION(3, 3)             :: rot_matrix = 0.0_dp
-      TYPE(cell_type), POINTER                   :: ref_cell => NULL()
+      ! Fixed rotations between the user's Cartesian frame and the canonical
+      ! frame used for the six independent cell optimization variables.
+      REAL(KIND=dp), DIMENSION(3, 3)             :: input_to_opt = 0.0_dp, &
+                                                    opt_to_input = 0.0_dp
+      TYPE(cell_type), POINTER                   :: opt_cell => NULL()
    END TYPE cell_opt_env_type
 
 CONTAINS
@@ -85,25 +87,27 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: geo_section
 
       CHARACTER(LEN=4)                                   :: label
-      INTEGER                                            :: ip, output_unit, required_constraint_id
-      LOGICAL                                            :: constraint_explicit, valid_constraint
-      REAL(KIND=dp), DIMENSION(3)                        :: r
+      INTEGER                                            :: output_unit, required_constraint_id
+      LOGICAL                                            :: bad_constraint, constraint_explicit, &
+                                                            valid_constraint
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_subsys_type), POINTER                      :: subsys
-      TYPE(particle_list_type), POINTER                  :: particles
 
-      NULLIFY (cell_env%ref_cell, cell, subsys, particles)
-      CALL force_env_get(force_env, cell=cell, subsys=subsys)
-      CALL cell_create(cell_env%ref_cell)
-      CALL cell_clone(cell, cell_env%ref_cell, tag="REF_CELL_OPT")
+      NULLIFY (cell_env%opt_cell, cell)
+      CALL force_env_get(force_env, cell=cell)
+      CALL cell_create(cell_env%opt_cell)
+      CALL cell_clone(cell, cell_env%opt_cell, tag="CELL_OPT_CANONICAL")
+      CALL canonicalize_cell_matrix(cell_env%opt_cell)
+      ! Keep the physical cell in the input orientation while the optimizer
+      ! works with the canonical cell and its six non-redundant components.
+      cell_env%input_to_opt = MATMUL(cell_env%opt_cell%hmat, cell%h_inv)
+      cell_env%opt_to_input = MATMUL(cell%hmat, cell_env%opt_cell%h_inv)
       CALL section_vals_val_get(geo_section, "KEEP_VOLUME", l_val=cell_env%keep_volume)
       CALL section_vals_val_get(geo_section, "KEEP_ANGLES", l_val=cell_env%keep_angles)
       CALL section_vals_val_get(geo_section, "KEEP_SYMMETRY", l_val=cell_env%keep_symmetry)
       CALL section_vals_val_get(geo_section, "PRESSURE_TOLERANCE", r_val=cell_env%pres_tol)
       CALL section_vals_val_get(geo_section, "CONSTRAINT", &
                                 i_val=cell_env%constraint_id, explicit=constraint_explicit)
-
       IF (COUNT(cell%perd /= 0) == 2) THEN
          required_constraint_id = fix_none
          IF (cell%perd(1) == 0) required_constraint_id = fix_x
@@ -137,19 +141,68 @@ CONTAINS
          END IF
       END IF
 
-      ! Compute the rotation matrix that give the cell vectors in the "canonical" orientation
-      cell_env%rot_matrix = MATMUL(cell_env%ref_cell%hmat, cell%h_inv)
+      ! Reject CONSTRAINT combinations that would silently corrupt the
+      ! KEEP_ANGLES projection or the KEEP_SYMMETRY symmetrization
+      IF (cell_env%keep_angles .AND. .NOT. cell_env%opt_cell%orthorhombic) THEN
+         ! KEEP_ANGLES makes the b and c gradient components parallel to the
+         ! current b and c cell vectors. A CONSTRAINT fixing only part of the
+         ! b or c vector destroys this parallelism, while constraints fixing
+         ! a vector completely (fix_z, fix_yz) leave it intact.
+         IF (cell_env%constraint_id == fix_x .OR. cell_env%constraint_id == fix_y .OR. &
+             cell_env%constraint_id == fix_xy .OR. cell_env%constraint_id == fix_xz) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "CELL_OPT: KEEP_ANGLES with a CONSTRAINT that fixes "// &
+                          "only part of the b or c cell vector would destroy "// &
+                          "the fixed angles.")
+         END IF
+      END IF
+
+      IF (cell_env%keep_symmetry .AND. cell_env%constraint_id /= fix_none) THEN
+         ! A CONSTRAINT is compatible with KEEP_SYMMETRY only if it leaves
+         ! every set of cell components coupled by the symmetry untouched or
+         ! fixes such a set completely; a partial fixation breaks the
+         ! symmetry group after the gradient symmetrization.
+         bad_constraint = .FALSE.
+         SELECT CASE (cell_env%opt_cell%symmetry_id)
+         CASE (cell_sym_cubic, cell_sym_rhombohedral)
+            ! All three (cubic), respectively even all six (rhombohedral),
+            ! cell components are coupled: any partial constraint breaks it
+            bad_constraint = .TRUE.
+         CASE (cell_sym_tetragonal_ab, &
+               cell_sym_hexagonal_gamma_60, &
+               cell_sym_hexagonal_gamma_120, &
+               cell_sym_monoclinic_gamma_ab)
+            ! The in-plane (a,b) components are coupled
+            bad_constraint = cell_env%constraint_id == fix_x .OR. &
+                             cell_env%constraint_id == fix_y .OR. &
+                             cell_env%constraint_id == fix_xz .OR. &
+                             cell_env%constraint_id == fix_yz
+         CASE (cell_sym_tetragonal_ac)
+            ! The (a,c) components are coupled
+            bad_constraint = cell_env%constraint_id == fix_x .OR. &
+                             cell_env%constraint_id == fix_z .OR. &
+                             cell_env%constraint_id == fix_xy .OR. &
+                             cell_env%constraint_id == fix_yz
+         CASE (cell_sym_tetragonal_bc)
+            ! The (b,c) components are coupled
+            bad_constraint = cell_env%constraint_id == fix_y .OR. &
+                             cell_env%constraint_id == fix_z .OR. &
+                             cell_env%constraint_id == fix_xy .OR. &
+                             cell_env%constraint_id == fix_xz
+         CASE DEFAULT
+            ! orthorhombic, monoclinic, triclinic and none have no coupling
+         END SELECT
+         IF (bad_constraint) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "CELL_OPT: CONSTRAINT fixes only part of the cell "// &
+                          "components coupled by KEEP_SYMMETRY and would "// &
+                          "break the cell symmetry.")
+         END IF
+      END IF
 
       ! Get the external pressure
-      CALL read_external_press_tensor(geo_section, cell, cell_env%pres_ext, cell_env%mtrx, &
-                                      cell_env%rot_matrix)
-
-      ! Rotate particles accordingly
-      CALL cp_subsys_get(subsys, particles=particles)
-      DO ip = 1, particles%n_els
-         r = MATMUL(TRANSPOSE(cell_env%rot_matrix), particles%els(ip)%r)
-         particles%els(ip)%r = r
-      END DO
+      CALL read_external_press_tensor(geo_section, cell_env%opt_cell, cell_env%pres_ext, &
+                                      cell_env%mtrx, cell_env%input_to_opt)
 
       ! Print cell optimisation setup
       NULLIFY (logger)
@@ -212,7 +265,7 @@ CONTAINS
    SUBROUTINE cell_opt_env_release(cell_env)
       TYPE(cell_opt_env_type), INTENT(INOUT)             :: cell_env
 
-      CALL cell_release(cell_env%ref_cell)
+      CALL cell_release(cell_env%opt_cell)
 
    END SUBROUTINE cell_opt_env_release
 
