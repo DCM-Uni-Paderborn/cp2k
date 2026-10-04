@@ -29,6 +29,7 @@ MODULE qs_uspp_hfx
    USE hfx_types,                       ONLY: hfx_ri_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              do_potential_id,&
                                               do_potential_short,&
                                               do_potential_truncated
    USE input_cp2k_hfx,                  ONLY: ri_pmat
@@ -38,6 +39,7 @@ MODULE qs_uspp_hfx
                                               kpoint_type
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
                                               lebedev_grid
+   USE libint_2c_3c,                    ONLY: libint_potential_type
    USE mathconstants,                   ONLY: fourpi
    USE message_passing,                 ONLY: mp_comm_type
    USE particle_types,                  ONLY: particle_type
@@ -221,6 +223,7 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: tensor
 
       INTEGER, ALLOCATABLE                               :: nang(:)
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(dbt_type)                                     :: auxiliary
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: basis(:)
       TYPE(particle_type), POINTER                       :: particles(:)
@@ -230,7 +233,9 @@ CONTAINS
 
       CALL setup(qs_env, ri_data, ks_env, uspp, kinds, particles, basis, nang)
       IF (.NOT. ASSOCIATED(uspp)) RETURN
-      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, ri_data%pgrid, auxiliary)
+      CALL get_qs_env(qs_env, cell=cell)
+      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, ri_data%pgrid, auxiliary, &
+                                     cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0))
       CALL qs_uspp_hfx_transition_tensor(uspp%overlaps, auxiliary, tensor)
       CALL dbt_destroy(auxiliary)
    END SUBROUTINE qs_uspp_hfx_add_tensor
@@ -255,6 +260,7 @@ CONTAINS
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: cell_gradient(3, 3)
 
       INTEGER, ALLOCATABLE                               :: nang(:)
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_type)                                   :: overlap_gradient
       TYPE(dbt_type)                                     :: auxiliary, auxiliary_gradient
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: basis(:)
@@ -268,7 +274,9 @@ CONTAINS
       CALL setup(qs_env, ri_data, ks_env, uspp, kinds, particles, basis, nang)
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       IF (pref == 0.0_dp) RETURN
-      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, ri_data%pgrid, auxiliary)
+      CALL get_qs_env(qs_env, cell=cell)
+      CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, ri_data%pgrid, auxiliary, &
+                                     cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0))
       CALL qs_uspp_hfx_transition_adjoint(uspp%overlaps, auxiliary, tensor_adjoint, pref, &
                                           overlap_gradient, auxiliary_gradient)
       CALL get_ks_env(ks_env, sap_ppnl=sap_ppnl)
@@ -278,7 +286,8 @@ CONTAINS
       CALL sap_sort(sap)
       CALL qs_uspp_projector_gradient(overlap_gradient, sap, uspp%center_atoms, atom_gradient, cell_gradient)
       CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
-                                       atom_gradient, cell_gradient)
+                                       atom_gradient, cell_gradient, cell=cell, ri_metric=ri_data%ri_metric, &
+                                       periodic_sum=ANY(cell%perd /= 0))
       CALL release_sap_int(sap)
       CALL dbcsr_release(overlap_gradient)
       CALL dbt_destroy(auxiliary_gradient)
@@ -787,9 +796,11 @@ CONTAINS
 !> \param augmentation_displacement Optional Cartesian projector-cell translation T.
 !>        The integral retains the full displacement (R_Q+T)-(R_RI+S).
 !> \param cell Optional cell; fold atom coordinates to the same origin as the SAP image labels.
+!> \param ri_metric RI operator, Coulomb by default.
+!> \param periodic_sum Sum native Q images for the implicit Gamma engine.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, &
-                                        ri_displacements, augmentation_displacement, cell)
+                                        ri_displacements, augmentation_displacement, cell, ri_metric, periodic_sum)
       TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
@@ -799,6 +810,8 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: ri_displacements(:, :), &
                                                             augmentation_displacement(3)
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+      TYPE(libint_potential_type), INTENT(IN), OPTIONAL  :: ri_metric
+      LOGICAL, INTENT(IN), OPTIONAL                      :: periodic_sum
 
       INTEGER                                            :: atom, center, first, ikind, iset, &
                                                             kind_q, n, nset, owner, ri_cell, row, &
@@ -847,9 +860,9 @@ CONTAINS
             ALLOCATE (block(sizes(row), n, n), SOURCE=0.0_dp)
             first = 1
             DO iset = 1, nset
-               CALL uspp_hfx_auxiliary_integrals(augmentation, ri_basis, iset, ri_position, &
-                                                 q_position, lebedev_grid(rule)%r, &
-                                                 fourpi*lebedev_grid(rule)%w, block(first:first + nsgf_set(iset) - 1, :, :))
+               CALL native_auxiliary_block(augmentation, ri_basis, iset, ri_position, q_position, rule, &
+                                           block(first:first + nsgf_set(iset) - 1, :, :), &
+                                           cell=cell, ri_metric=ri_metric, periodic_sum=periodic_sum)
                first = first + nsgf_set(iset)
             END DO
             CALL dbt_put_block(auxiliary, [row, center, center], SHAPE(block), block)
@@ -871,9 +884,12 @@ CONTAINS
 !> \param ri_displacements Same Cartesian RI-cell translations S and stacking as the forward C.
 !> \param augmentation_displacement Same Cartesian projector-cell translation T.
 !> \param cell Same optional cell and atom folding as the forward C.
+!> \param ri_metric Same RI operator as the forward tensor.
+!> \param periodic_sum Same implicit Gamma image sum as the forward tensor.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
-                                          atom_gradient, cell_gradient, ri_displacements, augmentation_displacement, cell)
+                                          atom_gradient, cell_gradient, ri_displacements, augmentation_displacement, cell, &
+                                          ri_metric, periodic_sum)
       TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
@@ -884,16 +900,19 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: ri_displacements(:, :), &
                                                             augmentation_displacement(3)
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+      TYPE(libint_potential_type), INTENT(IN), OPTIONAL  :: ri_metric
+      LOGICAL, INTENT(IN), OPTIONAL                      :: periodic_sum
 
-      INTEGER                                            :: atom, axis, center, first, ikind, &
+      INTEGER                                            :: atom, axis, axis2, center, first, ikind, &
                                                             ind(3), iset, kind_q, n, nset, qatom, &
                                                             ri_cell, rule
       INTEGER, POINTER                                   :: nsgf_set(:)
       LOGICAL                                            :: found, valid
-      REAL(dp)                                           :: displacement(3), gq(3), q_position(3), &
-                                                            qshift(3), ri_position(3)
+      REAL(dp)                                           :: gq(3), q_position(3), qshift(3), &
+                                                            ri_position(3)
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :), block(:, :, :), &
-                                                            derivative(:, :, :, :), shifts(:, :)
+                                                            derivative(:, :, :, :), shifts(:, :), &
+                                                            strain(:, :, :, :, :)
       TYPE(dbt_iterator_type)                            :: iter
       TYPE(gto_basis_set_type), POINTER                  :: ri_basis
       TYPE(uspp_augmentation_type), POINTER              :: augmentation
@@ -930,27 +949,118 @@ CONTAINS
          first = 1
          DO iset = 1, nset
             ALLOCATE (block(nsgf_set(iset), n, n), derivative(3, nsgf_set(iset), n, n))
-            CALL uspp_hfx_auxiliary_integrals(augmentation, ri_basis, iset, ri_position, &
-                                              q_position, lebedev_grid(rule)%r, &
-                                              fourpi*lebedev_grid(rule)%w, block, augmentation_derivative=derivative)
+            IF (PRESENT(cell_gradient)) ALLOCATE (strain(3, 3, nsgf_set(iset), n, n))
+            CALL native_auxiliary_block(augmentation, ri_basis, iset, ri_position, q_position, rule, block, &
+                                        derivative, strain, cell, ri_metric, periodic_sum)
             DO axis = 1, 3
                gq(axis) = gq(axis) + SUM(adjoint(first:first + nsgf_set(iset) - 1, :, :)*derivative(axis, :, :, :))
+               IF (PRESENT(cell_gradient)) THEN
+                  DO axis2 = 1, 3
+                     cell_gradient(axis, axis2) = cell_gradient(axis, axis2) + &
+                                                  SUM(adjoint(first:first + nsgf_set(iset) - 1, :, :)*strain(axis, axis2, :, :, :))
+                  END DO
+               END IF
             END DO
             first = first + nsgf_set(iset)
             DEALLOCATE (block, derivative)
+            IF (ALLOCATED(strain)) DEALLOCATE (strain)
          END DO
          atom_gradient(:, atom) = atom_gradient(:, atom) - gq
          atom_gradient(:, qatom) = atom_gradient(:, qatom) + gq
-         IF (PRESENT(cell_gradient)) THEN
-            displacement = q_position - ri_position
-            DO axis = 1, 3
-               cell_gradient(axis, :) = cell_gradient(axis, :) + gq(axis)*displacement
-            END DO
-         END IF
          DEALLOCATE (adjoint)
       END DO
       CALL dbt_iterator_stop(iter)
    END SUBROUTINE qs_uspp_hfx_native_gradient
+
+! **************************************************************************************************
+!> \brief Evaluate native RI coupling and the same center/strain adjoints over Q images.
+!>        At Gamma B=sum_T B(T) is invariant under translation of the augmentation center;
+!>        hence C=sum_T (RI^0|metric|Q^T) precedes both unweighted B legs. Image support uses
+!>        the original Q support and RI Gaussian radius, independently of GG product lists.
+!> \param augmentation Original Q radial/angular data.
+!> \param basis Normalized RI basis.
+!> \param iset RI shell set.
+!> \param ri_position Folded RI center.
+!> \param q_position Folded augmentation center.
+!> \param rule Angular quadrature rule.
+!> \param block Integral block.
+!> \param derivative Optional Q-center derivative; the RI-center derivative is its negative.
+!> \param strain Optional affine-strain derivative including each lattice translation.
+!> \param cell Cell for periodic summation.
+!> \param ri_metric RI metric; isolated Coulomb by default.
+!> \param periodic_sum Sum the implicit Gamma lattice; false by default.
+! **************************************************************************************************
+   SUBROUTINE native_auxiliary_block(augmentation, basis, iset, ri_position, q_position, rule, &
+                                     block, derivative, strain, cell, ri_metric, periodic_sum)
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
+      TYPE(gto_basis_set_type), INTENT(IN)               :: basis
+      INTEGER, INTENT(IN)                                :: iset
+      REAL(dp), INTENT(IN)                               :: ri_position(3), q_position(3)
+      INTEGER, INTENT(IN)                                :: rule
+      REAL(dp), INTENT(OUT)                              :: block(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: derivative(:, :, :, :), &
+                                                            strain(:, :, :, :, :)
+      TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+      TYPE(libint_potential_type), INTENT(IN), OPTIONAL  :: ri_metric
+      LOGICAL, INTENT(IN), OPTIONAL                      :: periodic_sum
+
+      INTEGER                                            :: axis, axis2, hi(3), ix, iy, iz, lo(3), &
+                                                            metric
+      LOGICAL                                            :: images
+      REAL(dp)                                           :: delta(3), position(3), radius, width(3)
+      REAL(dp), ALLOCATABLE                              :: gradient(:, :, :, :), values(:, :, :)
+
+      metric = do_potential_coulomb
+      IF (PRESENT(ri_metric)) metric = ri_metric%potential_type
+      images = .FALSE.
+      IF (PRESENT(periodic_sum)) images = periodic_sum
+      lo = 0
+      hi = 0
+      IF (images) THEN
+         CPASSERT(PRESENT(cell))
+         CPASSERT(ASSOCIATED(cell))
+         CPASSERT(metric == do_potential_id)
+         CALL get_gto_basis_set(basis, kind_radius=radius)
+         radius = radius + augmentation%realspace_radius
+         delta = MATMUL(cell%h_inv, q_position - ri_position)
+         width = radius*SQRT(SUM(cell%h_inv**2, DIM=2))
+         WHERE (cell%perd /= 0)
+            lo = CEILING(-delta - width)
+            hi = FLOOR(-delta + width)
+         END WHERE
+      END IF
+      block = 0.0_dp
+      IF (PRESENT(derivative)) derivative = 0.0_dp
+      IF (PRESENT(strain)) strain = 0.0_dp
+      ALLOCATE (values(SIZE(block, 1), SIZE(block, 2), SIZE(block, 3)))
+      IF (PRESENT(derivative) .OR. PRESENT(strain)) THEN
+         ALLOCATE (gradient(3, SIZE(block, 1), SIZE(block, 2), SIZE(block, 3)))
+      END IF
+      DO iz = lo(3), hi(3)
+         DO iy = lo(2), hi(2)
+            DO ix = lo(1), hi(1)
+               position = q_position
+               IF (images) THEN
+                  position = position + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                  IF (NORM2(position - ri_position) > radius) CYCLE
+               END IF
+               CALL uspp_hfx_auxiliary_integrals(augmentation, basis, iset, ri_position, position, &
+                                                 lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, values, &
+                                                 augmentation_derivative=gradient, potential_type=metric)
+               block = block + values
+               IF (PRESENT(derivative)) derivative = derivative + gradient
+               IF (PRESENT(strain)) THEN
+                  DO axis2 = 1, 3
+                     DO axis = 1, 3
+                        strain(axis, axis2, :, :, :) = strain(axis, axis2, :, :, :) + &
+                                                       gradient(axis, :, :, :)*(position(axis2) - ri_position(axis2))
+                     END DO
+                  END DO
+               END IF
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE native_auxiliary_block
 
 ! **************************************************************************************************
 !> \brief Validate and retain Cartesian cell shifts, with an unchanged zero-image default.
@@ -1014,15 +1124,24 @@ CONTAINS
       image_resolved = .FALSE.
       IF (PRESENT(with_images)) image_resolved = with_images
       supported = ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == 'ORB' .AND. &
-                  ri_data%ri_metric%potential_type == do_potential_coulomb
+                  (ri_data%ri_metric%potential_type == do_potential_coulomb .OR. &
+                   ri_data%ri_metric%potential_type == do_potential_id)
       IF (image_resolved) THEN
          supported = supported .AND. do_kpoints .AND. &
+                     ri_data%ri_metric%potential_type == do_potential_coulomb .AND. &
                      (ri_data%hfx_pot%potential_type == do_potential_truncated .OR. &
                       ri_data%hfx_pot%potential_type == do_potential_short)
       ELSE
-         supported = supported .AND. .NOT. do_kpoints .AND. ALL(cell%perd == 0) .AND. &
-                     (ri_data%hfx_pot%potential_type == do_potential_coulomb .OR. &
-                      ri_data%hfx_pot%potential_type == do_potential_short)
+         supported = supported .AND. .NOT. do_kpoints
+         IF (ANY(cell%perd /= 0)) THEN
+            supported = supported .AND. ri_data%ri_metric%potential_type == do_potential_id .AND. &
+                        (ri_data%hfx_pot%potential_type == do_potential_truncated .OR. &
+                         ri_data%hfx_pot%potential_type == do_potential_short)
+         ELSE
+            supported = supported .AND. &
+                        (ri_data%hfx_pot%potential_type == do_potential_coulomb .OR. &
+                         ri_data%hfx_pot%potential_type == do_potential_short)
+         END IF
       END IF
       IF (.NOT. supported) THEN
          CPABORT('Unsupported native Coulomb RI-HFX image setup')
