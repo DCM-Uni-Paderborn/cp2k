@@ -88,6 +88,7 @@ MODULE qs_vxc_atom
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_uspp_methods,                 ONLY: &
+        qs_paw_core_tau_atom_collocate, qs_paw_core_tau_atom_integrate, &
         qs_upf_core_tau_atom_collocate, qs_upf_core_tau_atom_integrate, &
         qs_uspp_atom_grid_collocate, qs_uspp_atom_grid_integrate, qs_uspp_atom_grid_prepare, &
         qs_uspp_atom_grid_type, qs_uspp_fixed_atom_grid_integrate, &
@@ -1481,6 +1482,7 @@ CONTAINS
                ELSE IF (tau_f) THEN
                   augmentation_rho = 0.0_dp
                   CALL qs_upf_core_tau_atom_collocate(uspp, cell, composite_grid_coords, augmentation_rho)
+                  CALL qs_paw_core_tau_atom_collocate(uspp, cell, composite_grid_coords, augmentation_rho)
                   DO ispin = 1, 2
                      composite_kin(:, ispin) = composite_kin(:, ispin) + 0.5_dp*augmentation_rho
                   END DO
@@ -1639,6 +1641,8 @@ CONTAINS
                      augmentation_point_gradient = 0.0_dp
                      augmentation_rho(:) = 0.5_dp*SUM(composite_kin_grad, DIM=2)
                      CALL qs_upf_core_tau_atom_integrate(uspp, uspp_fields(1), cell, composite_grid_coords, &
+                                                         augmentation_rho, augmentation_point_gradient)
+                     CALL qs_paw_core_tau_atom_integrate(uspp, uspp_fields(1), cell, composite_grid_coords, &
                                                          augmentation_rho, augmentation_point_gradient)
                      composite_grid_coord_grad(:, :) = composite_grid_coord_grad + augmentation_point_gradient
                   END IF

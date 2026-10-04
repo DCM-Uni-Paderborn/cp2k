@@ -27,7 +27,14 @@ MODULE qs_uspp_methods
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_comm_unequal
    USE particle_types,                  ONLY: particle_type
-   USE paw_onecenter,                   ONLY: paw_onecenter_hartree,&
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_cartesian,&
+                                              paw_core_kinetic_fourier,&
+                                              paw_core_kinetic_build_ae
+   USE paw_onecenter,                   ONLY: paw_onecenter_core_exchange,&
+                                              paw_onecenter_core_exchange_init,&
+                                              paw_onecenter_core_exchange_prepare,&
+                                              paw_onecenter_exchange,&
+                                              paw_onecenter_hartree,&
                                               paw_onecenter_init
    USE paw_xc,                          ONLY: paw_xc_evaluate,&
                                               paw_xc_init
@@ -83,7 +90,9 @@ MODULE qs_uspp_methods
    PUBLIC :: qs_uspp_prepare, qs_uspp_init_ao_matrix, qs_uspp_collocate, qs_uspp_integrate
    PUBLIC :: qs_uspp_collocate_state, qs_uspp_integrate_state, qs_uspp_init_matrix_state
    PUBLIC :: qs_uspp_overlap_adjoint, qs_uspp_atom_grid_apply_state
-   PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces, qs_paw_correction
+   PUBLIC :: qs_uspp_core_matrix, qs_uspp_core_forces, qs_paw_correction, qs_paw_exchange
+   PUBLIC :: qs_paw_core_tau_present, qs_paw_core_tau_field, qs_paw_core_tau_forces
+   PUBLIC :: qs_paw_core_tau_atom_collocate, qs_paw_core_tau_atom_integrate
    PUBLIC :: qs_upf_core_tau_present, qs_upf_core_tau_field, qs_upf_core_tau_forces
    PUBLIC :: qs_upf_core_tau_atom_collocate, qs_upf_core_tau_atom_integrate
    PUBLIC :: qs_uspp_atom_grid_type, qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_collocate, &
@@ -127,7 +136,7 @@ CONTAINS
 !> \param uspp Current centers and immutable kind caches; charge and overlap are unchanged.
 !> \param qs_kind_set Original scalar UPF datasets and their native projector ordering.
 ! **************************************************************************************************
-   SUBROUTINE qs_uspp_prepare_global_xc(uspp, qs_kind_set)
+SUBROUTINE qs_uspp_prepare_global_xc(uspp, qs_kind_set)
       TYPE(qs_uspp_type), INTENT(INOUT)                  :: uspp
       TYPE(qs_kind_type), INTENT(IN)                     :: qs_kind_set(:)
 
@@ -146,21 +155,37 @@ CONTAINS
             CALL upf_kinetic_reconstruction_init(potential%upf_data, potential%upf_projectors, &
                                                  uspp%xc_kinetic(ikind), available, reason)
             IF (.NOT. available) CALL cp_abort(__LOCATION__, TRIM(reason))
-            CALL uspp_augmentation_init(potential%upf_data, potential%upf_projectors, uspp%xc_density(ikind))
-            CALL uspp_augmentation_prepare_realspace(potential%upf_data, uspp%xc_density(ikind))
-            CALL upf_nlcc_kinetic(potential%upf_data, tau_core, available, reason)
-            IF (.NOT. available) CALL cp_abort(__LOCATION__, TRIM(reason))
-            IF (ALLOCATED(potential%upf_data%rho_nlcc)) THEN
-               IF (ANY(potential%upf_data%rho_nlcc /= 0.0_dp)) THEN
-                  CALL upf_radial_scalar_init(potential%upf_data, potential%upf_data%rho_nlcc, &
+            IF (potential%upf_data%is_paw) THEN
+               CALL paw_reconstruction_init(potential%upf_data, potential%upf_projectors, &
+                                            uspp%xc_density(ikind), realspace=.TRUE., logarithmic_origin=.TRUE.)
+               CALL paw_core_kinetic_build_ae(potential%upf_data, tau_core, available, reason)
+               IF (.NOT. available) CALL cp_abort(__LOCATION__, TRIM(reason))
+               IF (ANY(potential%upf_data%paw%rho_core /= 0.0_dp)) THEN
+                  CALL upf_radial_scalar_init(potential%upf_data, potential%upf_data%paw%rho_core, &
                                               uspp%xc_core_density(ikind), logarithmic_origin=.TRUE.)
                END IF
+               IF (ANY(tau_core /= 0.0_dp)) THEN
+                  CALL upf_radial_scalar_init(potential%upf_data, tau_core, uspp%xc_core_kinetic(ikind), &
+                                              logarithmic_origin=.TRUE.)
+               END IF
+               DEALLOCATE (tau_core)
+            ELSE
+               CALL uspp_augmentation_init(potential%upf_data, potential%upf_projectors, uspp%xc_density(ikind))
+               CALL uspp_augmentation_prepare_realspace(potential%upf_data, uspp%xc_density(ikind))
+               CALL upf_nlcc_kinetic(potential%upf_data, tau_core, available, reason)
+               IF (.NOT. available) CALL cp_abort(__LOCATION__, TRIM(reason))
+               IF (ALLOCATED(potential%upf_data%rho_nlcc)) THEN
+                  IF (ANY(potential%upf_data%rho_nlcc /= 0.0_dp)) THEN
+                     CALL upf_radial_scalar_init(potential%upf_data, potential%upf_data%rho_nlcc, &
+                                                 uspp%xc_core_density(ikind), logarithmic_origin=.TRUE.)
+                  END IF
+               END IF
+               IF (ANY(tau_core /= 0.0_dp)) THEN
+                  CALL upf_radial_scalar_init(potential%upf_data, tau_core, uspp%xc_core_kinetic(ikind), &
+                                              logarithmic_origin=.TRUE.)
+               END IF
+               DEALLOCATE (tau_core)
             END IF
-            IF (ANY(tau_core /= 0.0_dp)) THEN
-               CALL upf_radial_scalar_init(potential%upf_data, tau_core, uspp%xc_core_kinetic(ikind), &
-                                           logarithmic_origin=.TRUE.)
-            END IF
-            DEALLOCATE (tau_core)
          END ASSOCIATE
       END DO
       uspp%global_xc_ready = .TRUE.
@@ -1006,6 +1031,11 @@ CONTAINS
          ASSOCIATE (potential => qs_kind_set(ikind)%sgp_potential, cache => uspp%paw(ikind))
             CALL paw_onecenter_init(potential%upf_data, potential%upf_projectors, cache%onecenter)
             CALL paw_xc_init(potential%upf_data, qs_kind_set(ikind)%ngrid_ang, cache%xcgrid)
+            IF (dft_control%use_kinetic_energy_density .AND. .NOT. dft_control%use_gauxc) THEN
+               IF (.NOT. cache%xcgrid%core_kinetic%available .AND. ANY(cache%xcgrid%core /= 0.0_dp)) THEN
+                  CALL cp_abort(__LOCATION__, TRIM(cache%xcgrid%core_kinetic%failure_reason))
+               END IF
+            END IF
             cache%core_energy = potential%upf_data%paw%core_energy
          END ASSOCIATE
       END DO
@@ -1526,13 +1556,14 @@ CONTAINS
 !> \param calculate_forces Whether to differentiate projectors at fixed AO density.
 !> \param hamiltonian Optional spin and image AO matrices; absent for energy-only evaluation.
 ! **************************************************************************************************
-   SUBROUTINE qs_paw_correction(ks_env, xc_section, density, hartree, exc, core, calculate_forces, hamiltonian)
+   SUBROUTINE qs_paw_correction(ks_env, xc_section, density, hartree, exc, core, calculate_forces, hamiltonian, semilocal_xc)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:, :)
       REAL(dp), INTENT(OUT)                              :: hartree, exc, core
       LOGICAL, INTENT(IN)                                :: calculate_forces
       TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: hamiltonian(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL :: semilocal_xc
 
       INTEGER                                            :: center, handle, ikind, n, natom, ns, spin
       LOGICAL                                            :: found
@@ -1586,7 +1617,13 @@ CONTAINS
          END DO
          ASSOCIATE (cache => uspp%paw(ikind))
             CALL paw_onecenter_hartree(cache%onecenter, SUM(dm, DIM=3), eh, vh)
-            CALL paw_xc_evaluate(cache%xcgrid, cache%onecenter, functional, dm, density_cutoff, gradient_cutoff, ex, vxc)
+            ex = 0.0_dp
+            vxc = 0.0_dp
+            IF (.NOT. PRESENT(semilocal_xc)) THEN
+               CALL paw_xc_evaluate(cache%xcgrid, cache%onecenter, functional, dm, density_cutoff, gradient_cutoff, ex, vxc)
+            ELSE IF (semilocal_xc) THEN
+               CALL paw_xc_evaluate(cache%xcgrid, cache%onecenter, functional, dm, density_cutoff, gradient_cutoff, ex, vxc)
+            END IF
             energies = energies + [eh, ex, cache%core_energy]
          END ASSOCIATE
          DO spin = 1, ns
@@ -2075,5 +2112,392 @@ CONTAINS
          CPASSERT(ALL(MODULO(grid%npts, 2) == 1))
       END IF
    END SUBROUTINE check_grid
+
+! **************************************************************************************************
+!> \brief Whether a nonzero verified UPF model-core kinetic field is present.
+!> \param ks_env Current USPP and PAW caches.
+!> \return True for at least one nonzero auxiliary PS core field.
+! **************************************************************************************************
+   FUNCTION qs_paw_core_tau_present(ks_env) RESULT(present_core)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      LOGICAL                                            :: present_core
+
+      INTEGER                                            :: ikind
+      TYPE(paw_core_kinetic_type), POINTER               :: cache
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+
+      present_core = .FALSE.
+      CALL get_ks_env(ks_env, uspp=uspp)
+      IF (.NOT. ASSOCIATED(uspp)) RETURN
+      DO ikind = 1, SIZE(uspp%paw)
+         cache => core_tau_cache(uspp, ikind)
+         IF (.NOT. ASSOCIATED(cache)) CYCLE
+         IF (.NOT. cache%available) CYCLE
+         IF (ANY(cache%weighted /= 0.0_dp)) present_core = .TRUE.
+      END DO
+   END FUNCTION qs_paw_core_tau_present
+
+! **************************************************************************************************
+!> \brief Spin-summed periodic PS core kinetic field on the requested XC grid.
+!>        The R-to-G adjoint of the real projection is used by the force routine.
+!> \param ks_env Current PAW centers and verified radial caches.
+!> \param field Allocated real PW field, overwritten without changing any valence density.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_core_tau_field(ks_env, field)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: field
+
+      COMPLEX(dp)                                        :: coefficient
+      INTEGER                                            :: center, ig, ikind
+      TYPE(paw_core_kinetic_type), POINTER               :: cache
+      TYPE(pw_c1d_gs_type)                               :: core_g
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+
+      CALL get_ks_env(ks_env, uspp=uspp)
+      CPASSERT(ASSOCIATED(uspp))
+      CALL check_grid(uspp, field%pw_grid)
+      CALL core_g%create(field%pw_grid)
+      core_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         cache => core_tau_cache(uspp, ikind)
+         IF (.NOT. ASSOCIATED(cache)) CYCLE
+         IF (.NOT. cache%available) CYCLE
+         IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
+         DO ig = 1, SIZE(core_g%array)
+            CALL paw_core_kinetic_fourier(cache, field%pw_grid%g(:, ig), uspp%position(:, center), &
+                                          field%pw_grid%vol, coefficient)
+            core_g%array(ig) = core_g%array(ig) + coefficient
+         END DO
+      END DO
+      CALL pw_transfer(core_g, field)
+      CALL core_g%release()
+   END SUBROUTINE qs_paw_core_tau_field
+
+! **************************************************************************************************
+!> \brief Center and affine-strain adjoints of the smooth PW core kinetic field.
+!>        This fixed core field has no AO density-matrix derivative.
+!> \param ks_env Current centers and unreduced force/virial accumulators.
+!> \param potential Unweighted derivative of XC energy density with respect to spin tau.
+!> \param spin_fraction Fraction of the spin-summed closed core in this channel.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_core_tau_forces(ks_env, potential, spin_fraction)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      REAL(dp), INTENT(IN)                               :: spin_fraction
+
+      COMPLEX(dp)                                        :: coefficient, derivative(3), &
+                                                            strain(3, 3), weighted
+      INTEGER                                            :: center, ig, ikind, natom
+      REAL(dp)                                           :: multiplicity
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), cell_gradient(:, :)
+      TYPE(paw_core_kinetic_type), POINTER               :: cache
+      TYPE(pw_c1d_gs_type)                               :: potential_g
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+
+      IF (.NOT. qs_paw_core_tau_present(ks_env)) RETURN
+      CALL get_ks_env(ks_env, uspp=uspp, natom=natom)
+      CALL check_grid(uspp, potential%pw_grid)
+      ALLOCATE (atom_gradient(3, natom), SOURCE=0.0_dp)
+      CALL allocate_cell_gradient(ks_env, cell_gradient)
+      CALL potential_g%create(potential%pw_grid)
+      CALL pw_transfer(potential, potential_g)
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         cache => core_tau_cache(uspp, ikind)
+         IF (.NOT. ASSOCIATED(cache)) CYCLE
+         IF (.NOT. cache%available) CYCLE
+         IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
+         DO ig = 1, SIZE(potential_g%array)
+            multiplicity = 1.0_dp
+            IF (potential%pw_grid%grid_span == HALFSPACE) THEN
+               multiplicity = 2.0_dp
+               IF (potential%pw_grid%have_g0 .AND. ig == 1) multiplicity = 1.0_dp
+            END IF
+            weighted = spin_fraction*potential%pw_grid%vol*multiplicity*potential_g%array(ig)
+            IF (ALLOCATED(cell_gradient)) THEN
+               CALL paw_core_kinetic_fourier(cache, potential%pw_grid%g(:, ig), uspp%position(:, center), &
+                                             potential%pw_grid%vol, coefficient, strain, derivative)
+               cell_gradient(:, :) = cell_gradient + REAL(CONJG(strain)*weighted, dp)
+            ELSE
+               CALL paw_core_kinetic_fourier(cache, potential%pw_grid%g(:, ig), uspp%position(:, center), &
+                                             potential%pw_grid%vol, coefficient, center_derivative=derivative)
+            END IF
+            atom_gradient(:, uspp%center_atoms(center)) = atom_gradient(:, uspp%center_atoms(center)) + &
+                                                          REAL(CONJG(derivative)*weighted, dp)
+         END DO
+      END DO
+      CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
+      CALL potential_g%release()
+   END SUBROUTINE qs_paw_core_tau_forces
+
+! **************************************************************************************************
+!> \brief Add spin-summed PS core tau from all centers and auxiliary-cell images.
+!> \param uspp Current PAW centers and original-data kinetic caches.
+!> \param cell Auxiliary periodic cell, as in augmentation collocation.
+!> \param points Unfolded Cartesian atom-grid points.
+!> \param kinetic Spin-summed core tau values, incremented without quadrature weights.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_core_tau_atom_collocate(uspp, cell, points, kinetic)
+      TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(dp), INTENT(IN)                               :: points(:, :)
+      REAL(dp), INTENT(INOUT)                            :: kinetic(:)
+
+      INTEGER                                            :: center, ikind, ix, iy, iz, lower(3), &
+                                                            point, upper(3)
+      REAL(dp)                                           :: image_position(3), value
+      REAL(dp), ALLOCATABLE                              :: folded(:, :)
+      TYPE(paw_core_kinetic_type), POINTER               :: cache
+
+      CPASSERT(ALL(SHAPE(points) == [3, SIZE(kinetic)]))
+      IF (SIZE(kinetic) == 0) RETURN
+      ALLOCATE (folded, SOURCE=points - MATMUL(cell%hmat, ANINT(MATMUL(cell%h_inv, points))))
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         cache => core_tau_cache(uspp, ikind)
+         IF (.NOT. ASSOCIATED(cache)) CYCLE
+         IF (.NOT. cache%available) CYCLE
+         IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
+         CALL atom_grid_image_bounds(cell, uspp%position(:, center), folded, cache%support_radius, lower, upper)
+         DO iz = lower(3), upper(3)
+            DO iy = lower(2), upper(2)
+               DO ix = lower(1), upper(1)
+                  image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                  DO point = 1, SIZE(kinetic)
+                     CALL paw_core_kinetic_cartesian(cache, folded(:, point) - image_position, value)
+                     kinetic(point) = kinetic(point) + value
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE qs_paw_core_tau_atom_collocate
+
+! **************************************************************************************************
+!> \brief Exact center and point adjoints of periodic atom-grid PS core tau collocation.
+!> \param uspp Same PAW state as the forward map.
+!> \param fields Accumulators for source-center and source-image strain derivatives.
+!> \param cell Auxiliary cell used by the forward map.
+!> \param points Same unfolded quadrature points.
+!> \param potential Weighted derivative with respect to spin-summed core tau, including spin fractions.
+!> \param point_gradient Weighted point energy gradients, incremented; caller handles target-grid motion.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_core_tau_atom_integrate(uspp, fields, cell, points, potential, point_gradient)
+      TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
+      TYPE(qs_uspp_atom_grid_type), INTENT(INOUT)        :: fields
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(dp), INTENT(IN)                               :: points(:, :), potential(:)
+      REAL(dp), INTENT(INOUT)                            :: point_gradient(:, :)
+
+      INTEGER                                            :: center, ikind, ix, iy, iz, jdir, &
+                                                            lower(3), point, upper(3)
+      REAL(dp)                                           :: derivative(3), image_position(3), &
+                                                            spatial(3), value
+      REAL(dp), ALLOCATABLE                              :: folded(:, :), images(:, :), &
+                                                            point_derivative(:, :)
+      TYPE(paw_core_kinetic_type), POINTER               :: cache
+
+      CPASSERT(fields%calculate_forces)
+      CPASSERT(ALL(SHAPE(points) == [3, SIZE(potential)]))
+      CPASSERT(ALL(SHAPE(point_gradient) == SHAPE(points)))
+      IF (SIZE(potential) == 0) RETURN
+      ALLOCATE (images, SOURCE=MATMUL(cell%hmat, ANINT(MATMUL(cell%h_inv, points))))
+      ALLOCATE (folded, SOURCE=points - images)
+      ALLOCATE (point_derivative(3, SIZE(potential)))
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         cache => core_tau_cache(uspp, ikind)
+         IF (.NOT. ASSOCIATED(cache)) CYCLE
+         IF (.NOT. cache%available) CYCLE
+         IF (.NOT. ANY(cache%weighted /= 0.0_dp)) CYCLE
+         CALL atom_grid_image_bounds(cell, uspp%position(:, center), folded, cache%support_radius, lower, upper)
+         DO iz = lower(3), upper(3)
+            DO iy = lower(2), upper(2)
+               DO ix = lower(1), upper(1)
+                  image_position = uspp%position(:, center) + MATMUL(cell%hmat, REAL([ix, iy, iz], dp))
+                  DO point = 1, SIZE(potential)
+                     CALL paw_core_kinetic_cartesian(cache, folded(:, point) - image_position, value, spatial)
+                     point_derivative(:, point) = potential(point)*spatial
+                  END DO
+                  derivative = -SUM(point_derivative, DIM=2)
+                  fields%center_gradient(:, center) = fields%center_gradient(:, center) + derivative
+                  point_gradient = point_gradient + point_derivative
+                  fields%center_strain = fields%center_strain - MATMUL(point_derivative, TRANSPOSE(images))
+                  DO jdir = 1, 3
+                     fields%center_strain(:, jdir) = fields%center_strain(:, jdir) + derivative*image_position(jdir)
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE qs_paw_core_tau_atom_integrate
+
+! **************************************************************************************************
+!> \brief PAW exchange energy, AO operator and projector force/strain derivatives.
+!>        The fixed physical radial interaction has no geometry response. Both projector-overlap legs
+!>        are differentiated through the same projected density as used for the energy.
+!>        Verified original closed-core orbitals supply core-valence exchange and the core-core reference.
+!> \param ks_env Prepared PAW caches, projector overlaps and force accumulators.
+!> \param density Spin and image AO densities, including occupations and k-point weights.
+!>        One Quickstep spin block is a restricted spin sum; two blocks are physical spin densities.
+!> \param fraction Exchange fraction; Coulomb replicas may be summed, finite radii remain separate.
+!> \param exchange PAW exchange correction including the closed-core terms, reset and returned replicated.
+!> \param calculate_forces Whether to differentiate projectors at fixed AO density.
+!>        The generalized-overlap Pulay contribution is accumulated separately.
+!> \param hamiltonian Optional spin and image AO matrices to increment.
+!> \param cutoff_radius Optional truncated interaction radius.
+!> \param omega Optional inverse erfc screening length; mutually exclusive with cutoff_radius.
+!> \param reconstructed_valence Add only closed-core exchange when RI already reconstructs the valence density.
+! **************************************************************************************************
+   SUBROUTINE qs_paw_exchange(ks_env, density, fraction, exchange, calculate_forces, hamiltonian, cutoff_radius, omega, reconstructed_valence)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(dbcsr_p_type), INTENT(IN)                     :: density(:, :)
+      REAL(dp), INTENT(IN)                               :: fraction
+      REAL(dp), INTENT(OUT)                              :: exchange
+      LOGICAL, INTENT(IN)                                :: calculate_forces
+      TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: hamiltonian(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius, omega
+      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_valence
+
+      INTEGER                                            :: center, handle, ikind, n, natom, ns, &
+                                                            nuclear_charge, spin
+      INTEGER, ALLOCATABLE                               :: core_cache(:)
+      LOGICAL                                            :: found, frozen_core, valid_shape, core_only
+      REAL(dp)                                           :: center_exchange
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), &
+                                                            cell_gradient(:, :), dm(:, :, :), &
+                                                            potential(:, :, :)
+      REAL(dp), POINTER                                  :: block(:, :)
+      TYPE(dbcsr_type), ALLOCATABLE                      :: onsite(:), projected(:)
+      TYPE(mp_comm_type)                                 :: group
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
+      TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(sap_int_type), POINTER                        :: sap_int(:)
+
+      core_only = PRESENT(cutoff_radius) .OR. PRESENT(omega)
+      IF (PRESENT(reconstructed_valence)) core_only = core_only .OR. reconstructed_valence
+      CPASSERT(.NOT. (PRESENT(cutoff_radius) .AND. PRESENT(omega)))
+      exchange = 0.0_dp
+      CPASSERT(ieee_is_finite(fraction))
+      IF (fraction == 0.0_dp) RETURN
+      CALL get_ks_env(ks_env, uspp=uspp, qs_kind_set=qs_kind_set)
+      IF (.NOT. ASSOCIATED(uspp)) RETURN
+      IF (.NOT. ALLOCATED(uspp%paw)) RETURN
+      IF (.NOT. ANY(uspp%paw%active)) RETURN
+      ALLOCATE (core_cache(SIZE(uspp%paw)), SOURCE=0)
+      ! Prepare the immutable original-data core contribution once per PAW kind.
+      DO ikind = 1, SIZE(uspp%paw)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         CALL get_qs_kind(qs_kind_set(ikind), zatom=nuclear_charge)
+         ASSOCIATE (pot => qs_kind_set(ikind)%sgp_potential%upf_data)
+            CPASSERT(ALLOCATED(pot%paw))
+            CPASSERT(ieee_is_finite(pot%zion))
+            frozen_core = ABS(REAL(nuclear_charge, dp) - pot%zion) > &
+                          64.0_dp*EPSILON(1.0_dp)*REAL(nuclear_charge, dp)
+            frozen_core = frozen_core .OR. ANY(pot%paw%rho_core /= 0.0_dp)
+            IF (ALLOCATED(pot%rho_nlcc)) THEN
+               frozen_core = frozen_core .OR. ANY(pot%rho_nlcc /= 0.0_dp)
+            END IF
+            IF (PRESENT(cutoff_radius) .OR. PRESENT(omega)) THEN
+               CALL paw_onecenter_core_exchange_prepare(pot, qs_kind_set(ikind)%sgp_potential%upf_projectors, &
+                                                        uspp%paw(ikind)%onecenter, cutoff_radius, core_cache(ikind), omega)
+               ASSOCIATE (core => uspp%paw(ikind)%onecenter%interaction_core_exchange(core_cache(ikind)))
+                  IF (.NOT. core%available) THEN
+                     CALL cp_abort(__LOCATION__, 'PAW frozen-core exact exchange: '//TRIM(core%reason))
+                  END IF
+               END ASSOCIATE
+            ELSE IF (frozen_core .OR. core_only) THEN
+               IF (.NOT. uspp%paw(ikind)%onecenter%core_exchange_initialized) THEN
+                  CALL paw_onecenter_core_exchange_init(pot, qs_kind_set(ikind)%sgp_potential%upf_projectors, &
+                                                        uspp%paw(ikind)%onecenter)
+               END IF
+               IF (.NOT. uspp%paw(ikind)%onecenter%core_exchange_available) THEN
+                  CALL cp_abort(__LOCATION__, &
+                                'PAW frozen-core exact exchange: '//TRIM(uspp%paw(ikind)%onecenter%core_exchange_reason))
+               END IF
+            END IF
+         END ASSOCIATE
+      END DO
+      CALL timeset('qs_paw_exchange', handle)
+      ns = SIZE(density, 1)
+      CPASSERT(ns == 1 .OR. ns == 2)
+      IF (PRESENT(hamiltonian)) THEN
+         valid_shape = ALL(SHAPE(hamiltonian) == SHAPE(density))
+         CPASSERT(valid_shape)
+      END IF
+      CALL dbcsr_get_info(uspp%overlaps, group=group)
+      ALLOCATE (projected(ns), onsite(ns))
+      DO spin = 1, ns
+         CALL project_density(uspp, density(spin, :), projected(spin))
+         CALL uspp_projector_create_onsite(uspp%overlaps, onsite(spin))
+      END DO
+      DO center = 1, SIZE(uspp%center_atoms)
+         ikind = uspp%center_kinds(center)
+         IF (.NOT. uspp%paw(ikind)%active) CYCLE
+         ! All spin blocks have the same owner; count each center exactly once.
+         CALL dbcsr_get_block_p(projected(1), center, center, block, found)
+         IF (.NOT. found) CYCLE
+         n = uspp%projector_sizes(center)
+         ALLOCATE (dm(n, n, 2), potential(n, n, 2))
+         IF (ns == 1) THEN
+            dm(:, :, 1) = 0.5_dp*block
+            dm(:, :, 2) = dm(:, :, 1)
+         ELSE
+            DO spin = 1, ns
+               CALL dbcsr_get_block_p(projected(spin), center, center, block, found)
+               CPASSERT(found)
+               dm(:, :, spin) = block
+            END DO
+         END IF
+         IF (core_only) THEN
+            CALL paw_onecenter_core_exchange(uspp%paw(ikind)%onecenter, dm, fraction, core_cache(ikind), &
+                                             center_exchange, potential)
+         ELSE
+            CALL paw_onecenter_exchange(uspp%paw(ikind)%onecenter, dm, fraction, center_exchange, potential)
+         END IF
+         exchange = exchange + center_exchange
+         DO spin = 1, ns
+            CALL dbcsr_get_block_p(onsite(spin), center, center, block, found)
+            CPASSERT(found)
+            IF (ns == 1) THEN
+               ! dE/dDtotal=(Vup+Vdown)/2 because Dspin=Dtotal/2.
+               block(:, :) = 0.5_dp*(potential(:, :, 1) + potential(:, :, 2))
+            ELSE
+               block(:, :) = potential(:, :, spin)
+            END IF
+         END DO
+         DEALLOCATE (dm, potential)
+      END DO
+      CALL group%sum(exchange)
+      NULLIFY (sap_int)
+      IF (calculate_forces) THEN
+         CALL get_ks_env(ks_env, natom=natom)
+         ALLOCATE (atom_gradient(3, natom))
+         atom_gradient(:, :) = 0.0_dp
+         CALL allocate_cell_gradient(ks_env, cell_gradient)
+         CALL build_derivatives(ks_env, sap_int)
+      END IF
+      DO spin = 1, ns
+         IF (calculate_forces) THEN
+            IF (PRESENT(hamiltonian)) THEN
+               CALL apply_operator(uspp, onsite(spin), hamiltonian(spin, :), density(spin, :), &
+                                   sap_int, atom_gradient, cell_gradient)
+            ELSE
+               CALL apply_operator(uspp, onsite(spin), density=density(spin, :), &
+                                   sap_int=sap_int, atom_gradient=atom_gradient, cell_gradient=cell_gradient)
+            END IF
+         ELSE IF (PRESENT(hamiltonian)) THEN
+            CALL apply_operator(uspp, onsite(spin), hamiltonian(spin, :))
+         END IF
+         CALL dbcsr_release(projected(spin))
+         CALL dbcsr_release(onsite(spin))
+      END DO
+      IF (calculate_forces) THEN
+         CALL accumulate_gradient(ks_env, atom_gradient, cell_gradient)
+         CALL release_sap_int(sap_int)
+      END IF
+      CALL timestop(handle)
+   END SUBROUTINE qs_paw_exchange
 
 END MODULE qs_uspp_methods

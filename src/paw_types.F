@@ -15,10 +15,24 @@ MODULE paw_types
    IMPLICIT NONE
    PRIVATE
 
+   TYPE paw_core_exchange_type
+      LOGICAL :: initialized = .FALSE., available = .FALSE.
+      CHARACTER(LEN=256) :: reason = 'PAW core exchange has not been initialized'
+      REAL(dp) :: cutoff_radius = -1.0_dp, omega = -1.0_dp, energy = 0.0_dp
+      REAL(dp), ALLOCATABLE :: matrix(:, :)
+   END TYPE paw_core_exchange_type
+
    TYPE paw_onecenter_type
       INTEGER :: nproj = 0, npair = 0, lmax = -1
       INTEGER, ALLOCATABLE :: pair_index(:, :)
       REAL(dp), ALLOCATABLE :: gaunt(:, :, :), hartree(:, :, :)
+      ! Lazy original-data frozen-core exchange; matrix is the unit-fraction spin operator.
+      LOGICAL :: core_exchange_initialized = .FALSE., core_exchange_available = .FALSE.
+      CHARACTER(LEN=256) :: core_exchange_reason = 'PAW core exchange has not been initialized'
+      REAL(dp) :: core_exchange_energy = 0.0_dp
+      REAL(dp), ALLOCATABLE :: core_exchange_matrix(:, :)
+      ! Separate original-data caches for each truncated or screened interaction; never replace the Coulomb cache.
+      TYPE(paw_core_exchange_type), ALLOCATABLE :: interaction_core_exchange(:)
    END TYPE paw_onecenter_type
 
    TYPE paw_xc_type
@@ -38,6 +52,6 @@ MODULE paw_types
       TYPE(paw_xc_type) :: xcgrid
    END TYPE paw_kind_type
 
-   PUBLIC :: paw_onecenter_type, paw_xc_type, paw_kind_type
+   PUBLIC :: paw_onecenter_type, paw_xc_type, paw_kind_type, paw_core_exchange_type
 
 END MODULE paw_types

@@ -57,7 +57,10 @@ MODULE qs_vxc
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_uspp_methods,                 ONLY: qs_upf_core_tau_field,&
+   USE qs_uspp_methods,                 ONLY: qs_paw_core_tau_field,&
+                                              qs_paw_core_tau_forces,&
+                                              qs_paw_core_tau_present,&
+                                              qs_upf_core_tau_field,&
                                               qs_upf_core_tau_forces,&
                                               qs_upf_core_tau_present
    USE skala_gpw_functional,            ONLY: get_gauxc_section,&
@@ -634,9 +637,18 @@ CONTAINS
          ! The explicitly normalized UPF model-core tau enters the same full XC field
          ! as NLCC. Atom-grid full-minus-smooth evaluations add it separately.
          IF (tau_r_valid .AND. include_core_tau) THEN
-            IF (qs_upf_core_tau_present(ks_env)) THEN
+            IF (qs_upf_core_tau_present(ks_env) .OR. qs_paw_core_tau_present(ks_env)) THEN
                CALL xc_pw_pool%create_pw(core_tau)
                CALL qs_upf_core_tau_field(ks_env, core_tau)
+               IF (qs_paw_core_tau_present(ks_env)) THEN
+                  BLOCK
+                     TYPE(pw_r3d_rs_type) :: paw_tau
+                     CALL xc_pw_pool%create_pw(paw_tau)
+                     CALL qs_paw_core_tau_field(ks_env, paw_tau)
+                     CALL pw_axpy(paw_tau, core_tau, 1.0_dp)
+                     CALL xc_pw_pool%give_back_pw(paw_tau)
+                  END BLOCK
+               END IF
                DO ispin = 1, mspin
                   CALL pw_axpy(core_tau, tau(ispin), 1.0_dp/REAL(mspin, dp))
                END DO
@@ -845,6 +857,7 @@ CONTAINS
             IF (core_tau_forces .AND. core_tau_added .AND. ASSOCIATED(my_vxc_tau)) THEN
                DO ispin = 1, mspin
                   CALL qs_upf_core_tau_forces(ks_env, my_vxc_tau(ispin), 1.0_dp/REAL(mspin, dp))
+                  CALL qs_paw_core_tau_forces(ks_env, my_vxc_tau(ispin), 1.0_dp/REAL(mspin, dp))
                END DO
             END IF
          END IF
@@ -1420,9 +1433,18 @@ CONTAINS
          END IF
 
          IF (tau_r_valid .AND. dft_control%qs_control%gpw) THEN
-            IF (qs_upf_core_tau_present(ks_env)) THEN
+            IF (qs_upf_core_tau_present(ks_env) .OR. qs_paw_core_tau_present(ks_env)) THEN
                CALL xc_pw_pool%create_pw(core_tau)
                CALL qs_upf_core_tau_field(ks_env, core_tau)
+               IF (qs_paw_core_tau_present(ks_env)) THEN
+                  BLOCK
+                     TYPE(pw_r3d_rs_type) :: paw_tau
+                     CALL xc_pw_pool%create_pw(paw_tau)
+                     CALL qs_paw_core_tau_field(ks_env, paw_tau)
+                     CALL pw_axpy(paw_tau, core_tau, 1.0_dp)
+                     CALL xc_pw_pool%give_back_pw(paw_tau)
+                  END BLOCK
+               END IF
                DO ispin = 1, mspin
                   CALL pw_axpy(core_tau, tau_r(ispin), 1.0_dp/REAL(mspin, dp))
                END DO

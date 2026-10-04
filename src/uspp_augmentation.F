@@ -49,7 +49,7 @@ MODULE uspp_augmentation
       REAL(dp), ALLOCATABLE :: fourier_norm(:), fourier_radial(:, :, :), fourier_next(:, :, :)
    END TYPE uspp_augmentation_type
 
-   PUBLIC :: uspp_augmentation_type, uspp_augmentation_init, uspp_augmentation_fourier, &
+   PUBLIC :: paw_reconstruction_init, uspp_augmentation_type, uspp_augmentation_init, uspp_augmentation_fourier, &
              upf_kinetic_reconstruction_init, upf_radial_scalar_init, &
              uspp_augmentation_collocate, uspp_augmentation_integrate, &
              uspp_augmentation_prepare_realspace, uspp_augmentation_realspace, &
@@ -197,7 +197,10 @@ CONTAINS
       available = .FALSE.
       reason = 'Kinetic augmentation requires complete per-beta AE/PS partial waves'
       NULLIFY (partial)
-      IF (pot%is_ultrasoft .AND. .NOT. pot%is_paw) THEN
+      IF (pot%is_paw) THEN
+         IF (.NOT. ALLOCATED(pot%paw)) RETURN
+         partial => pot%paw
+      ELSE IF (pot%is_ultrasoft) THEN
          IF (.NOT. ALLOCATED(pot%partial_waves)) RETURN
          partial => pot%partial_waves
       ELSE
@@ -215,6 +218,7 @@ CONTAINS
       first = 1
       IF (pot%r(1) == 0.0_dp) first = 2
       nval = nr
+      IF (pot%is_paw) nval = pot%paw%cutoff_index
       CPASSERT(nval >= 4 .AND. nval <= nr)
       ! Differentiate the complete original radial partial waves.
       ns = MIN(nr, nval + 3)
@@ -955,5 +959,53 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE uspp_augmentation_integrate
+
+! **************************************************************************************************
+!> \brief Original AE-minus-PS pair densities for a global reconstructed PAW valence RI map.
+!>        These differ from the compensated UPF Q channels. Retain the original mesh weights
+!>        and native projector ordering; partial waves outside the supplied sphere are excluded.
+!> \param pot Scalar PAW dataset with the original r*phi partial waves.
+!> \param projectors Original radial and magnetic projector mapping.
+!> \param reconstruction Immutable radial and angular transition data, without compensation.
+!> \param realspace Prepare the same pair densities for Cartesian atom-grid evaluation.
+!> \param logarithmic_origin Preserve endpoint signs below a positive mesh start.
+! **************************************************************************************************
+   SUBROUTINE paw_reconstruction_init(pot, projectors, reconstruction, realspace, logarithmic_origin)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(upf_projector_type), INTENT(IN)               :: projectors
+      TYPE(uspp_augmentation_type), INTENT(OUT)          :: reconstruction
+      LOGICAL, INTENT(IN), OPTIONAL                      :: realspace, logarithmic_origin
+
+      INTEGER                                            :: i, j, l, n, nb, nr, pair
+      TYPE(atom_upfpot_type)                             :: transition
+
+      CPASSERT(pot%is_paw .AND. .NOT. pot%has_so)
+      CPASSERT(ALLOCATED(pot%paw))
+      CPASSERT(ALLOCATED(pot%paw%ae_wfc) .AND. ALLOCATED(pot%paw%ps_wfc))
+      nb = pot%number_of_proj
+      nr = SIZE(pot%r)
+      n = pot%paw%cutoff_index
+      CPASSERT(n >= 4 .AND. n <= nr)
+      CPASSERT(ALL(SHAPE(pot%paw%ae_wfc) == [nr, nb]))
+      CPASSERT(ALL(SHAPE(pot%paw%ps_wfc) == [nr, nb]))
+      transition%number_of_proj = nb
+      ALLOCATE (transition%r, SOURCE=pot%r)
+      ALLOCATE (transition%rab, SOURCE=pot%rab)
+      ALLOCATE (transition%lbeta, SOURCE=pot%lbeta)
+      ALLOCATE (transition%qijl(nr, nb*(nb + 1)/2, 0:2*MAXVAL(pot%lbeta)), SOURCE=0.0_dp)
+      DO j = 1, nb
+         DO i = 1, j
+            pair = j*(j - 1)/2 + i
+            DO l = ABS(pot%lbeta(i) - pot%lbeta(j)), pot%lbeta(i) + pot%lbeta(j), 2
+               transition%qijl(:n, pair, l) = pot%paw%ae_wfc(:n, i)*pot%paw%ae_wfc(:n, j) - &
+                                              pot%paw%ps_wfc(:n, i)*pot%paw%ps_wfc(:n, j)
+            END DO
+         END DO
+      END DO
+      CALL uspp_augmentation_init(transition, projectors, reconstruction)
+      IF (PRESENT(realspace)) THEN
+         IF (realspace) CALL uspp_augmentation_prepare_realspace(transition, reconstruction, logarithmic_origin)
+      END IF
+   END SUBROUTINE paw_reconstruction_init
 
 END MODULE uspp_augmentation

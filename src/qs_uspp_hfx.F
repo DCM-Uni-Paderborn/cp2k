@@ -55,7 +55,8 @@ MODULE qs_uspp_hfx
    USE qs_uspp_projectors,              ONLY: qs_uspp_projector_cells,&
                                               qs_uspp_projector_gradient,&
                                               qs_uspp_projector_matrix
-   USE qs_uspp_types,                   ONLY: qs_uspp_type
+   USE qs_uspp_types,                   ONLY: qs_uspp_prepare_paw_reconstruction,&
+                                              qs_uspp_type
    USE sap_kind_types,                  ONLY: build_sap_ints_basis,&
                                               release_sap_int,&
                                               sap_int_type,&
@@ -236,7 +237,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       CALL get_qs_env(qs_env, cell=cell)
       CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, ri_data%pgrid, auxiliary, &
-                                     cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0))
+                                     cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0), reconstructed_paw=.TRUE.)
       CALL qs_uspp_hfx_transition_tensor(uspp%overlaps, auxiliary, tensor)
       CALL dbt_destroy(auxiliary)
    END SUBROUTINE qs_uspp_hfx_add_tensor
@@ -277,7 +278,7 @@ CONTAINS
       IF (pref == 0.0_dp) RETURN
       CALL get_qs_env(qs_env, cell=cell)
       CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, ri_data%pgrid, auxiliary, &
-                                     cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0))
+                                     cell=cell, ri_metric=ri_data%ri_metric, periodic_sum=ANY(cell%perd /= 0), reconstructed_paw=.TRUE.)
       CALL qs_uspp_hfx_transition_adjoint(uspp%overlaps, auxiliary, tensor_adjoint, pref, &
                                           overlap_gradient, auxiliary_gradient)
       CALL projector_state(qs_env, ks_env, ri_data%orb_basis_type, uspp, sap_ppnl)
@@ -288,7 +289,7 @@ CONTAINS
       CALL qs_uspp_projector_gradient(overlap_gradient, sap, uspp%center_atoms, atom_gradient, cell_gradient)
       CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
                                        atom_gradient, cell_gradient, cell=cell, ri_metric=ri_data%ri_metric, &
-                                       periodic_sum=ANY(cell%perd /= 0))
+                                       periodic_sum=ANY(cell%perd /= 0), reconstructed_paw=.TRUE.)
       CALL release_sap_int(sap)
       CALL dbcsr_release(overlap_gradient)
       CALL dbt_destroy(auxiliary_gradient)
@@ -319,7 +320,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(uspp)) RETURN
       CALL prepare_lattice(qs_env, ks_env, ri_data, SIZE(kinds), 0, cell, sap, ri_cells, ao_cells)
       CALL qs_uspp_hfx_lattice_tensor(uspp%overlaps, sap, uspp, basis, particles, nang, ri_data%pgrid, &
-                                      cell%hmat, ri_cells, ao_cells, tensors, cell=cell)
+                                      cell%hmat, ri_cells, ao_cells, tensors, cell=cell, reconstructed_paw=.TRUE.)
       CALL release_sap_int(sap)
    END SUBROUTINE qs_uspp_hfx_add_kp_tensor
 
@@ -353,7 +354,7 @@ CONTAINS
       CALL prepare_lattice(qs_env, ks_env, ri_data, SIZE(kinds), 1, cell, sap, ri_cells, ao_cells)
       CALL qs_uspp_hfx_lattice_gradient(uspp%overlaps, sap, uspp, basis, particles, nang, ri_data%pgrid, &
                                         cell%hmat, ri_cells, ao_cells, tensor_adjoint, 1.0_dp, &
-                                        atom_gradient, cell_gradient, cell=cell)
+                                        atom_gradient, cell_gradient, cell=cell, reconstructed_paw=.TRUE.)
       CALL release_sap_int(sap)
    END SUBROUTINE qs_uspp_hfx_kp_gradient
 
@@ -418,7 +419,7 @@ CONTAINS
 !> \param cell Optional cell folding convention shared with the SAP labels.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_lattice_tensor(template, sap, uspp, basis, particles, nang, pgrid, &
-                                         cell_matrix, ri_cells, ao_cells, tensors, ri_domain, cell)
+                                         cell_matrix, ri_cells, ao_cells, tensors, ri_domain, cell, reconstructed_paw)
       TYPE(dbcsr_type), INTENT(IN)                       :: template
       TYPE(sap_int_type), INTENT(IN)                     :: sap(:)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
@@ -431,9 +432,10 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: tensors(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: ri_domain(:, :)
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
 
       CALL lattice_action(template, sap, uspp, basis, particles, nang, pgrid, cell_matrix, &
-                          ri_cells, ao_cells, tensors, ri_domain, cell)
+                          ri_cells, ao_cells, tensors, ri_domain, cell, reconstructed_paw=reconstructed_paw)
    END SUBROUTINE qs_uspp_hfx_lattice_tensor
 
 ! **************************************************************************************************
@@ -460,7 +462,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_lattice_gradient(template, sap, uspp, basis, particles, nang, pgrid, &
                                            cell_matrix, ri_cells, ao_cells, tensor_adjoint, pref, &
-                                           atom_gradient, cell_gradient, ri_domain, cell)
+                                           atom_gradient, cell_gradient, ri_domain, cell, reconstructed_paw)
       TYPE(dbcsr_type), INTENT(IN)                       :: template
       TYPE(sap_int_type), INTENT(IN)                     :: sap(:)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
@@ -476,9 +478,10 @@ CONTAINS
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: cell_gradient(3, 3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: ri_domain(:, :)
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
 
       CALL lattice_action(template, sap, uspp, basis, particles, nang, pgrid, cell_matrix, &
-                          ri_cells, ao_cells, tensor_adjoint, ri_domain, cell, pref, atom_gradient, cell_gradient)
+                          ri_cells, ao_cells, tensor_adjoint, ri_domain, cell, pref, atom_gradient, cell_gradient, reconstructed_paw)
    END SUBROUTINE qs_uspp_hfx_lattice_gradient
 
 ! **************************************************************************************************
@@ -501,7 +504,7 @@ CONTAINS
 !> \param cell_gradient ...
 ! **************************************************************************************************
    SUBROUTINE lattice_action(template, sap, uspp, basis, particles, nang, pgrid, cell_matrix, &
-                             ri_cells, ao_cells, tensors, ri_domain, cell, pref, atom_gradient, cell_gradient)
+                             ri_cells, ao_cells, tensors, ri_domain, cell, pref, atom_gradient, cell_gradient, reconstructed_paw)
       TYPE(dbcsr_type), INTENT(IN)                       :: template
       TYPE(sap_int_type), INTENT(IN)                     :: sap(:)
       TYPE(qs_uspp_type), INTENT(IN)                     :: uspp
@@ -516,6 +519,7 @@ CONTAINS
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
       REAL(dp), INTENT(IN), OPTIONAL                     :: pref
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: atom_gradient(:, :), cell_gradient(3, 3)
+      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
 
       INTEGER                                            :: image, nblks(3), t, u
       INTEGER, ALLOCATABLE                               :: d1(:), d2(:), d3(:), pp_cells(:, :), &
@@ -557,7 +561,7 @@ CONTAINS
       shifts(:, :) = MATMUL(cell_matrix, REAL(ri_cells, dp))
       DO t = 1, SIZE(pp_cells, 2)
          qshift = MATMUL(cell_matrix, REAL(pp_cells(:, t), dp))
-         CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, shifts, qshift, cell)
+         CALL qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, shifts, qshift, cell, reconstructed_paw=reconstructed_paw)
          CALL dbt_get_info(auxiliary, nblks_total=nblks)
          ALLOCATE (sizes_ri(nblks(1)))
          CALL dbt_get_info(auxiliary, blk_size_1=sizes_ri)
@@ -590,7 +594,7 @@ CONTAINS
          END DO
          IF (PRESENT(atom_gradient)) THEN
             CALL qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_total, atom_gradient, &
-                                             cell_gradient, shifts, qshift, cell)
+                                             cell_gradient, shifts, qshift, cell, reconstructed_paw=reconstructed_paw)
             CALL dbt_destroy(auxiliary_total)
          END IF
          CALL dbt_destroy(full)
@@ -802,7 +806,7 @@ CONTAINS
 !> \param periodic_sum Sum native Q images for the implicit Gamma engine.
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_native_tensor(uspp, basis, particles, nang, pgrid, auxiliary, &
-                                        ri_displacements, augmentation_displacement, cell, ri_metric, periodic_sum)
+                                        ri_displacements, augmentation_displacement, cell, ri_metric, periodic_sum, reconstructed_paw)
       TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
@@ -814,6 +818,7 @@ CONTAINS
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
       TYPE(libint_potential_type), INTENT(IN), OPTIONAL  :: ri_metric
       LOGICAL, INTENT(IN), OPTIONAL                      :: periodic_sum
+      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
 
       INTEGER                                            :: atom, center, first, ikind, iset, &
                                                             kind_q, n, nset, owner, ri_cell, row, &
@@ -842,7 +847,7 @@ CONTAINS
       DEALLOCATE (d1, d2, d3)
       DO center = 1, SIZE(uspp%center_atoms)
          kind_q = uspp%center_kinds(center)
-         augmentation => uspp%augmentation(kind_q)
+         augmentation => native_augmentation(uspp, kind_q, reconstructed_paw)
          n = uspp%projector_sizes(center)
          q_position = uspp%position(:, center)
          IF (PRESENT(cell)) q_position = pbc(q_position, cell)
@@ -891,7 +896,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_uspp_hfx_native_gradient(uspp, basis, particles, nang, auxiliary_gradient, &
                                           atom_gradient, cell_gradient, ri_displacements, augmentation_displacement, cell, &
-                                          ri_metric, periodic_sum)
+                                          ri_metric, periodic_sum, reconstructed_paw)
       TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
@@ -904,6 +909,7 @@ CONTAINS
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell
       TYPE(libint_potential_type), INTENT(IN), OPTIONAL  :: ri_metric
       LOGICAL, INTENT(IN), OPTIONAL                      :: periodic_sum
+      LOGICAL, INTENT(IN), OPTIONAL :: reconstructed_paw
 
       INTEGER                                            :: atom, axis, axis2, center, first, ikind, &
                                                             ind(3), iset, kind_q, n, nset, qatom, &
@@ -939,7 +945,7 @@ CONTAINS
          q_position = q_position + qshift
          qatom = uspp%center_atoms(center)
          kind_q = uspp%center_kinds(center)
-         augmentation => uspp%augmentation(kind_q)
+         augmentation => native_augmentation(uspp, kind_q, reconstructed_paw)
          n = uspp%projector_sizes(center)
          ikind = particles(atom)%atomic_kind%kind_number
          ri_basis => basis(ikind)%gto_basis_set
@@ -1152,6 +1158,7 @@ CONTAINS
       CPASSERT(ASSOCIATED(uspp%overlaps))
       CPASSERT(ASSOCIATED(ri_data%pgrid))
       ALLOCATE (basis(SIZE(kinds)), nang(SIZE(kinds)))
+      CALL qs_uspp_prepare_paw_reconstruction(uspp, kinds)
       CALL basis_set_list_setup(basis, ri_data%ri_basis_type, kinds)
       DO ikind = 1, SIZE(kinds)
          nang(ikind) = kinds(ikind)%ngrid_ang
@@ -1266,5 +1273,31 @@ CONTAINS
       rule = MAX(get_number_of_lebedev_grid(n=nang), &
                  get_number_of_lebedev_grid(l=uspp%augmentation(kind_q)%lmax + MAXVAL(lmax) + 1))
    END FUNCTION angular_rule
+
+! **************************************************************************************************
+!> \brief Select the same immutable pair density for a native RI forward map and its adjoint.
+!> \param uspp Original compensated charge data and optional PAW valence reconstruction cache.
+!> \param kind_q Native augmentation kind.
+!> \param reconstructed_paw Optional explicit request; USPP kinds retain their original Q.
+!> \return Pair density in the unchanged native radial/magnetic ordering.
+! **************************************************************************************************
+   FUNCTION native_augmentation(uspp, kind_q, reconstructed_paw) RESULT(augmentation)
+      TYPE(qs_uspp_type), INTENT(IN), TARGET             :: uspp
+      INTEGER, INTENT(IN)                                :: kind_q
+      LOGICAL, INTENT(IN), OPTIONAL                      :: reconstructed_paw
+      TYPE(uspp_augmentation_type), POINTER              :: augmentation
+
+      augmentation => uspp%augmentation(kind_q)
+      IF (.NOT. PRESENT(reconstructed_paw)) RETURN
+      IF (.NOT. reconstructed_paw) RETURN
+      CPASSERT(ALLOCATED(uspp%paw))
+      IF (.NOT. uspp%paw(kind_q)%active) RETURN
+      CPASSERT(ALLOCATED(uspp%paw_reconstruction))
+      CPASSERT(uspp%paw_reconstruction(kind_q)%nproj == augmentation%nproj)
+      CPASSERT(uspp%paw_reconstruction(kind_q)%lmax == augmentation%lmax)
+      CPASSERT(ALL(uspp%paw_reconstruction(kind_q)%radial_index == augmentation%radial_index))
+      CPASSERT(ALL(uspp%paw_reconstruction(kind_q)%angular_index == augmentation%angular_index))
+      augmentation => uspp%paw_reconstruction(kind_q)
+   END FUNCTION native_augmentation
 
 END MODULE qs_uspp_hfx

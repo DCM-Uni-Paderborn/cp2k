@@ -147,6 +147,7 @@ MODULE qs_ks_methods
    USE qs_sccs,                         ONLY: sccs
    USE qs_uspp_gapw,                    ONLY: qs_uspp_gapw_coulomb
    USE qs_uspp_methods,                 ONLY: qs_paw_correction,&
+                                              qs_paw_exchange,&
                                               qs_uspp_atom_grid_apply_ks,&
                                               qs_uspp_atom_grid_apply_state,&
                                               qs_uspp_atom_grid_type
@@ -240,7 +241,7 @@ CONTAINS
          use_gauxc_matrix, use_virial
       LOGICAL, SAVE :: native_grid_cpu_kpoints_warned = .FALSE.
       REAL(dp), ALLOCATABLE                              :: uspp_aux_force_factors(:)
-      REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, hfx_fraction, mulliken_order_p, &
+      REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, hfx_fraction, paw_exchange, mulliken_order_p, &
          native_skala_composite_contraction, native_skala_composite_rho_contraction, &
          native_skala_composite_tau_contraction, native_skala_exc_scf, native_skala_total_scf, &
          vscale
@@ -1531,10 +1532,48 @@ CONTAINS
 
       IF (just_energy) THEN
          CALL qs_paw_correction(ks_env, xc_section, rho_ao, energy%paw_hartree, energy%paw_xc, energy%paw_core, &
-                                calculate_forces)
+                                calculate_forces, semilocal_xc=.NOT. dft_control%use_gauxc)
       ELSE
          CALL qs_paw_correction(ks_env, xc_section, rho_ao, energy%paw_hartree, energy%paw_xc, energy%paw_core, &
-                                calculate_forces, ks_matrix)
+                                calculate_forces, ks_matrix, semilocal_xc=.NOT. dft_control%use_gauxc)
+      END IF
+
+      IF (do_hfx .AND. ASSOCIATED(uspp)) THEN
+         IF (ANY(uspp%paw%active)) THEN
+            DO irep_hfx = 1, SIZE(hfx_data, 1)
+               hfx_fraction = hfx_data(irep_hfx, 1)%general_parameter%fraction
+               IF (hfx_fraction == 0.0_dp) CYCLE
+               ASSOCIATE (interaction => hfx_data(irep_hfx, 1)%ri_data%hfx_pot)
+                  SELECT CASE (interaction%potential_type)
+                  CASE (do_potential_truncated)
+                     IF (just_energy) THEN
+                        CALL qs_paw_exchange(ks_env, rho_ao, hfx_fraction, paw_exchange, calculate_forces, &
+                                             cutoff_radius=interaction%cutoff_radius, reconstructed_valence=.TRUE.)
+                     ELSE
+                        CALL qs_paw_exchange(ks_env, rho_ao, hfx_fraction, paw_exchange, calculate_forces, ks_matrix, &
+                                             cutoff_radius=interaction%cutoff_radius, reconstructed_valence=.TRUE.)
+                     END IF
+                  CASE (do_potential_short)
+                     IF (just_energy) THEN
+                        CALL qs_paw_exchange(ks_env, rho_ao, hfx_fraction, paw_exchange, calculate_forces, &
+                                             omega=interaction%omega, reconstructed_valence=.TRUE.)
+                     ELSE
+                        CALL qs_paw_exchange(ks_env, rho_ao, hfx_fraction, paw_exchange, calculate_forces, ks_matrix, &
+                                             omega=interaction%omega, reconstructed_valence=.TRUE.)
+                     END IF
+                  CASE (do_potential_coulomb)
+                     IF (just_energy) THEN
+                        CALL qs_paw_exchange(ks_env, rho_ao, hfx_fraction, paw_exchange, calculate_forces, &
+                                             reconstructed_valence=.TRUE.)
+                     ELSE
+                        CALL qs_paw_exchange(ks_env, rho_ao, hfx_fraction, paw_exchange, calculate_forces, ks_matrix, &
+                                             reconstructed_valence=.TRUE.)
+                     END IF
+                  END SELECT
+               END ASSOCIATE
+               energy%ex = energy%ex + paw_exchange
+            END DO
+         END IF
       END IF
 
       !Calculation of Mulliken restraint, if requested
