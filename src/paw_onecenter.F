@@ -136,8 +136,12 @@ CONTAINS
       TYPE(paw_core_exchange_type), ALLOCATABLE          :: extended(:)
 
       CPASSERT(PRESENT(cutoff_radius) .NEQV. PRESENT(omega))
-      IF (PRESENT(cutoff_radius)) CPASSERT(ieee_is_finite(cutoff_radius) .AND. cutoff_radius >= 0.0_dp)
-      IF (PRESENT(omega)) CPASSERT(ieee_is_finite(omega) .AND. omega >= 0.0_dp)
+      IF (PRESENT(cutoff_radius)) THEN
+         CPASSERT(ieee_is_finite(cutoff_radius) .AND. cutoff_radius >= 0.0_dp)
+      END IF
+      IF (PRESENT(omega)) THEN
+         CPASSERT(ieee_is_finite(omega) .AND. omega >= 0.0_dp)
+      END IF
       n = 0
       IF (ALLOCATED(onecenter%interaction_core_exchange)) THEN
          n = SIZE(onecenter%interaction_core_exchange)
