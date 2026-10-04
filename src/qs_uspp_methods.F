@@ -17,6 +17,7 @@ MODULE qs_uspp_methods
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_desymmetrize, dbcsr_get_block_p, dbcsr_get_info, &
         dbcsr_p_type, dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_ppl_analytic
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -29,7 +30,8 @@ MODULE qs_uspp_methods
    USE particle_types,                  ONLY: particle_type
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_build_ae,&
                                               paw_core_kinetic_cartesian,&
-                                              paw_core_kinetic_fourier
+                                              paw_core_kinetic_fourier,&
+                                              paw_core_kinetic_type
    USE paw_onecenter,                   ONLY: paw_onecenter_core_exchange,&
                                               paw_onecenter_core_exchange_init,&
                                               paw_onecenter_core_exchange_prepare,&
@@ -48,7 +50,8 @@ MODULE qs_uspp_methods
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_force_types,                  ONLY: qs_force_type
-   USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type,&
                                               set_ks_env
@@ -72,10 +75,11 @@ MODULE qs_uspp_methods
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
                                               upf_local_init
    USE uspp_augmentation,               ONLY: &
-        upf_kinetic_reconstruction_init, upf_radial_scalar_init, uspp_augmentation_collocate, &
-        uspp_augmentation_collocate_atom, uspp_augmentation_init, uspp_augmentation_integrate, &
-        uspp_augmentation_integrate_atom, uspp_augmentation_prepare_fourier, &
-        uspp_augmentation_prepare_realspace, uspp_augmentation_type
+        paw_reconstruction_init, upf_kinetic_reconstruction_init, upf_radial_scalar_init, &
+        uspp_augmentation_collocate, uspp_augmentation_collocate_atom, uspp_augmentation_init, &
+        uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
+        uspp_augmentation_prepare_fourier, uspp_augmentation_prepare_realspace, &
+        uspp_augmentation_type
    USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
                                               uspp_projector_create_onsite,&
                                               uspp_projector_density,&
