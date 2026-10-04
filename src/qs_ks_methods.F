@@ -63,6 +63,7 @@ MODULE qs_ks_methods
    USE hfx_types,                       ONLY: hfx_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              do_potential_id,&
                                               do_potential_short,&
                                               do_potential_truncated,&
                                               do_ppl_grid,&
@@ -1142,9 +1143,6 @@ CONTAINS
       END IF
 
       IF (do_hfx .AND. ASSOCIATED(uspp)) THEN
-         IF (.NOT. dokp .AND. ANY(cell%perd /= 0)) THEN
-            CPABORT("Periodic USPP exact exchange requires explicit KPOINTS")
-         END IF
          IF (dft_control%do_admm .OR. do_adiabatic_rescaling .OR. &
              qs_env%run_rtp .OR. dft_control%roks) THEN
             CPABORT("USPP exchange acceleration and response extensions are not implemented")
@@ -1160,17 +1158,34 @@ CONTAINS
                IF (ri%input_flavor /= ri_pmat .OR. ri%flavor /= ri_pmat) THEN
                   CPABORT("USPP exact exchange currently requires RI_FLAVOR RHO")
                END IF
-               IF (ri%orb_basis_type /= 'ORB' .OR. ri%ri_metric%potential_type /= do_potential_coulomb) THEN
-                  CPABORT("USPP RI-HFX requires the ORB basis and Coulomb RI metric")
+               IF (ri%orb_basis_type /= 'ORB') THEN
+                  CPABORT("USPP RI-HFX requires the ORB basis")
                END IF
                IF (dokp) THEN
+                  IF (ri%ri_metric%potential_type /= do_potential_coulomb) THEN
+                     CPABORT("USPP k-point RI-HFX requires the Coulomb RI metric")
+                  END IF
                   IF (ri%hfx_pot%potential_type /= do_potential_truncated .AND. &
                       ri%hfx_pot%potential_type /= do_potential_short) THEN
                      CPABORT("USPP k-point RI-HFX requires truncated or short-range exchange")
                   END IF
-               ELSE IF (ri%hfx_pot%potential_type /= do_potential_coulomb .AND. &
-                        ri%hfx_pot%potential_type /= do_potential_short) THEN
-                  CPABORT("Isolated USPP RI-HFX requires Coulomb or short-range exchange")
+               ELSE
+                  IF (ri%ri_metric%potential_type /= do_potential_coulomb .AND. &
+                      ri%ri_metric%potential_type /= do_potential_id) THEN
+                     CPABORT("USPP Gamma RI-HFX requires Coulomb or identity RI metric")
+                  END IF
+                  IF (ANY(cell%perd /= 0)) THEN
+                     IF (ri%ri_metric%potential_type /= do_potential_id) THEN
+                        CPABORT("Periodic USPP Gamma RI-HFX requires the identity RI metric")
+                     END IF
+                     IF (ri%hfx_pot%potential_type /= do_potential_truncated .AND. &
+                         ri%hfx_pot%potential_type /= do_potential_short) THEN
+                        CPABORT("Periodic USPP Gamma RI-HFX requires truncated or short-range exchange")
+                     END IF
+                  ELSE IF (ri%hfx_pot%potential_type /= do_potential_coulomb .AND. &
+                           ri%hfx_pot%potential_type /= do_potential_short) THEN
+                     CPABORT("Isolated USPP RI-HFX requires Coulomb or short-range exchange")
+                  END IF
                END IF
             END ASSOCIATE
             hfx_fraction = hfx_data(irep_hfx, 1)%general_parameter%fraction

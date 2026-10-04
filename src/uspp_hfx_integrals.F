@@ -16,6 +16,8 @@ MODULE uspp_hfx_integrals
    USE gapw_coulomb_integrals,          ONLY: gapw_coulomb_init,&
                                               gaussian_coulomb_radial
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              do_potential_id
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: dfac,&
                                               fourpi
@@ -59,9 +61,10 @@ CONTAINS
 !>        uses unit-normalized real Y_lm and includes no radial Gaussian normalization.
 !> \param gaussian_derivative Optional d(integrals)/d(Gaussian center), Cartesian axis last.
 !> \param augmentation_derivative Optional d(integrals)/d(Q center), Cartesian axis last.
+!> \param potential_type RI metric: Coulomb (default) or identity.
 ! **************************************************************************************************
    SUBROUTINE uspp_hfx_primitive_integrals(augmentation, alpha, power, l, displacement, directions, weights, &
-                                           integrals, gaussian_derivative, augmentation_derivative)
+                                           integrals, gaussian_derivative, augmentation_derivative, potential_type)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(dp), INTENT(IN)                               :: alpha
       INTEGER, INTENT(IN)                                :: power, l
@@ -70,6 +73,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: integrals(:, :, :)
       REAL(dp), INTENT(OUT), OPTIONAL :: gaussian_derivative(:, :, :, :), &
          augmentation_derivative(:, :, :, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: potential_type
 
       INTEGER                                            :: axis, i, ia, ir, j, la, lm, m, n, p, &
                                                             pair, q
@@ -126,7 +130,7 @@ CONTAINS
          IF (derivatives) d_projected = 0.0_dp
          DO ia = 1, SIZE(weights)
             point = displacement + augmentation%r(ir)*directions(:, ia)
-            CALL gaussian_potential(alpha, power, l, point, potential, gradient)
+            CALL gaussian_potential(alpha, power, l, point, potential, gradient, potential_type)
             DO m = 1, 2*l + 1
                projected(:, m) = projected(:, m) + harmonics(ia, :)*potential(m)
                IF (derivatives) THEN
@@ -181,9 +185,11 @@ CONTAINS
 !> \param integrals (RI auxiliary | Coulomb | Q), shape (nsgf_set(iset), nproj, nproj).
 !> \param gaussian_derivative Optional Cartesian center derivatives, axis first.
 !> \param augmentation_derivative Optional Cartesian Q-center derivatives, axis first.
+!> \param potential_type RI metric: Coulomb (default) or identity.
 ! **************************************************************************************************
    SUBROUTINE uspp_hfx_auxiliary_integrals(augmentation, basis, iset, gaussian_center, augmentation_center, &
-                                           directions, weights, integrals, gaussian_derivative, augmentation_derivative)
+                                           directions, weights, integrals, gaussian_derivative, augmentation_derivative, &
+                                           potential_type)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       INTEGER, INTENT(IN)                                :: iset
@@ -193,6 +199,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: integrals(:, :, :)
       REAL(dp), INTENT(OUT), OPTIONAL :: gaussian_derivative(:, :, :, :), &
          augmentation_derivative(:, :, :, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: potential_type
 
       INTEGER                                            :: axis, degree, first, ip, l, last, m, n, &
                                                             naux, nc, nset, row, t
@@ -257,10 +264,11 @@ CONTAINS
                   IF (derivatives) THEN
                      ALLOCATE (primitive_derivative(n, n, 2*l + 1, 3))
                      CALL uspp_hfx_primitive_integrals(augmentation, zet(ip, iset), (degree - l)/2, l, &
-                                                       displacement, directions, weights, primitive, primitive_derivative)
+                                                       displacement, directions, weights, primitive, primitive_derivative, &
+                                                       potential_type=potential_type)
                   ELSE
                      CALL uspp_hfx_primitive_integrals(augmentation, zet(ip, iset), (degree - l)/2, l, &
-                                                       displacement, directions, weights, primitive)
+                                                       displacement, directions, weights, primitive, potential_type=potential_type)
                   END IF
                   DO t = 1, naux
                      DO m = 1, 2*l + 1
@@ -316,17 +324,33 @@ CONTAINS
 !> \param displacement ...
 !> \param potential ...
 !> \param gradient ...
+!> \param potential_type ...
 ! **************************************************************************************************
-   SUBROUTINE gaussian_potential(alpha, power, l, displacement, potential, gradient)
+   SUBROUTINE gaussian_potential(alpha, power, l, displacement, potential, gradient, potential_type)
       REAL(dp), INTENT(IN)                               :: alpha
       INTEGER, INTENT(IN)                                :: power, l
       REAL(dp), INTENT(IN)                               :: displacement(3)
       REAL(dp), INTENT(OUT)                              :: potential(2*l + 1), gradient(3, 2*l + 1)
+      INTEGER, INTENT(IN), OPTIONAL                      :: potential_type
 
-      INTEGER                                            :: a, axis, m, powers(3), reduced(3)
-      REAL(dp)                                           :: angular, dangular(3), ddh, dh, factor, h
+      INTEGER                                            :: a, axis, m, metric, powers(3), reduced(3)
+      REAL(dp)                                           :: angular, dangular(3), ddh, dh, ex, &
+                                                            factor, h, s
 
-      CALL gaussian_coulomb_radial(alpha, power, l, SUM(displacement**2), .FALSE., h, dh, ddh)
+      metric = do_potential_coulomb
+      IF (PRESENT(potential_type)) metric = potential_type
+      s = SUM(displacement**2)
+      SELECT CASE (metric)
+      CASE (do_potential_coulomb)
+         CALL gaussian_coulomb_radial(alpha, power, l, s, .FALSE., h, dh, ddh)
+      CASE (do_potential_id)
+         ex = EXP(-alpha*s)
+         h = s**power*ex
+         dh = -alpha*h
+         IF (power > 0) dh = dh + REAL(power, dp)*s**(power - 1)*ex
+      CASE DEFAULT
+         CPABORT('Unsupported native USPP RI metric')
+      END SELECT
       DO m = 1, 2*l + 1
          angular = 0.0_dp
          dangular = 0.0_dp
