@@ -2,7 +2,7 @@
 
 These manual integration fixtures require LibTorch and the matching SIRIUS
 external-XC APIs. They are not registered in `TEST_FILES.toml`. Run them in a
-separate output directory with `GAUXC_SKALA_MODEL` pointing to the CPU TorchScript
+separate output directory with `SKALA_MODEL` pointing to the CPU TorchScript
 model and `CP2K_DATA_DIR` to CP2K's data directory.
 
 SIRIUS supplies densities, gradients and kinetic-energy densities and applies the

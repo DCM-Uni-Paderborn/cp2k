@@ -190,7 +190,7 @@ PROGRAM skala_sirius_unittest
    END IF
    reference = 0.0_dp
    IF (LEN_TRIM(model) == 0 .OR. LEN_TRIM(model) > default_string_length) &
-      ERROR STOP "Pass the test model path, or SKALA with GAUXC_SKALA_MODEL set"
+      ERROR STOP "Pass the test model path, or SKALA with SKALA_MODEL set"
    CALL cp2k_init()
    CALL cp_sirius_init()
    comm = mp_comm_world

@@ -49,7 +49,7 @@ PROGRAM skala_grid_unittest
    CALL get_command_argument(1, model)
    IF (LEN_TRIM(model) == 0) ERROR STOP "Pass a model exported by create_skala_grid_test_model.py"
    IF (LEN_TRIM(model) > default_string_length) &
-      ERROR STOP "Use MODEL SKALA and set GAUXC_SKALA_MODEL for a long model path"
+      ERROR STOP "Use MODEL SKALA and set SKALA_MODEL for a long model path"
    CALL get_command_argument(2, model_mode)
    spinor_precision_test = model_mode == "spinor-precision"
    spinor_test = model_mode == "spinor" .OR. model_mode == "spinor-float32" .OR. spinor_precision_test
