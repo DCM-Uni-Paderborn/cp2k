@@ -380,3 +380,7 @@ tags
 # CLion directories
 /.idea/
 /cmake-build-*
+
+# Optional SSSP downloads
+/data/SSSP/2.0/pbe/
+/data/SSSP/2.0/pbesol/

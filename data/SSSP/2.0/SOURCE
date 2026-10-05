@@ -1,0 +1,36 @@
+Optional SSSP v2.0 pseudopotential collections
+
+Run from the CP2K repository root to install PBE Efficiency
+python3 tools/pseudopotentials/fetch_sssp.py data/SSSP/2.0 --install --library pbe-eff
+
+Select pbe-eff, pbe-prec, pbesol-eff or pbesol-prec with --library.
+Repeat --library to select several collections. Omit it to install all four.
+Each collection contains 95 original UPF files and its original cutoffs.json.
+Files are installed under {pbe,pbesol}/{efficiency,precision} without changes.
+New archives are removed after installation. Existing files are reused only
+when their contents match. Calculation startup does not download files.
+
+Set DIRECTORY to another writable data location if preferred. For example
+python3 tools/pseudopotentials/fetch_sssp.py "$CP2K_DATA_DIR/SSSP/2.0" --install --library pbe-prec
+
+Source repository
+https://github.com/unkcpz/sssp-verify-scripts
+Source revision
+0fb07d89d13407b0f00a0a3b8c21d7e387fb56f9
+
+The archive URLs and SHA-256 checksums are recorded in
+tools/pseudopotentials/sssp_v2_archives.json at the CP2K repository root.
+tools/pseudopotentials/fetch_sssp.py retrieves the same pinned archives.
+
+The cutoff files contain the upstream plane-wave recommendations. They do
+not prescribe a Gaussian basis or Quickstep multigrid settings.
+Calculation support depends on the pseudopotential type, method and basis.
+
+Original library attribution and license information
+https://github.com/unkcpz/sssp-verify-scripts/blob/0fb07d89d13407b0f00a0a3b8c21d7e387fb56f9/README.md#acknowledgements
+Individual pseudopotential libraries retain their original licenses and
+attribution. The source repository's MIT license does not replace them.
+
+SSSP reference
+G. Prandini et al., npj Computational Materials 4, 72 (2018).
+https://doi.org/10.1038/s41524-018-0127-2
