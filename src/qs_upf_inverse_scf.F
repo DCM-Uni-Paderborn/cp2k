@@ -79,6 +79,7 @@ MODULE qs_upf_inverse_scf
    PUBLIC :: qs_upf_inverse_scf_collocate, qs_upf_inverse_scf_integrate, qs_upf_inverse_scf_core
    PUBLIC :: qs_upf_inverse_scf_traces
    PUBLIC :: qs_upf_inverse_scf_core_response
+   PUBLIC :: qs_upf_inverse_scf_response
 CONTAINS
 
 ! **************************************************************************************************
@@ -418,6 +419,111 @@ CONTAINS
          CALL zeros(axis)%release()
       END DO
    END SUBROUTINE qs_upf_inverse_scf_core_response
+
+! **************************************************************************************************
+!> \brief Contract joint inverse operator and metric responses with native stationary P and W.
+!>        W must have been prepared by the native energy-weighted-density service after SCF.
+!>        Each k-point mesh weight is applied once, after replicated AO contractions.
+!>        Ionic/core, Poisson-kernel and explicit XC measure responses remain separate energy terms.
+!> \param ks_env Converged native inverse SCF state and prepared energy-weighted densities.
+!> \param vdensity Unweighted primitive spin potentials conjugate to density.
+!> \param vgradient Unweighted primitive spin potentials conjugate to Cartesian gradients.
+!> \param vtau Unweighted primitive spin potentials conjugate to smooth kinetic density.
+!> \param atom_response Cartesian response of all native atoms.
+!> \param cell_response Lattice-vector response, with fixed fractional grid rows.
+!> \param reduced_k_response Response of all actual reduced k vectors, or one column at Gamma.
+!> \param response Stationary electronic response, including the metric constraint.
+!> \param metric_response Signed metric contribution, already included in response.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, cell_response, &
+                                          reduced_k_response, response, metric_response)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity(:), vgradient(:, :), vtau(:)
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(:, :)
+      REAL(dp), INTENT(OUT)                              :: response, metric_response
+
+      COMPLEX(dp), ALLOCATABLE :: core(:, :, :), density(:, :, :), energy_weighted(:, :, :), &
+         matrix(:, :), metric(:, :, :), metric_part(:, :)
+      INTEGER                                            :: axis, ik, nk, nspin
+      REAL(dp)                                           :: weight
+      TYPE(dbcsr_p_type), POINTER                        :: density_gamma(:, :), energy_gamma(:)
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type)                               :: zero, zeros(3)
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
+      CPASSERT(ASSOCIATED(state))
+      CALL check_geometry(ks_env, state)
+      nspin = SIZE(vdensity)
+      CPASSERT(ALL(SHAPE(vgradient) == [3, nspin]) .AND. SIZE(vtau) == nspin)
+      grid => vdensity(1)%pw_grid
+      CPASSERT(ASSOCIATED(grid))
+      CALL zero%create(grid)
+      zero%array = 0.0_dp
+      DO axis = 1, 3
+         CALL zeros(axis)%create(grid)
+         zeros(axis)%array = 0.0_dp
+      END DO
+      nk = 1
+      IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
+      CPASSERT(ALL(SHAPE(reduced_k_response) == [3, nk]))
+      DO ik = 1, nk
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_scf_core_response(ks_env, state%bloch%frames(ik), state%bloch%augmentation, grid, &
+                                                  atom_response, cell_response, reduced_k_response(:, ik), matrix, metric_part)
+         ELSE
+            CALL qs_upf_inverse_scf_core_response(ks_env, state%frame, state%augmentation, grid, atom_response, &
+                                                  cell_response, reduced_k_response(:, ik), matrix, metric_part)
+         END IF
+         IF (ik == 1) ALLOCATE (core(SIZE(matrix, 1), SIZE(matrix, 2), nk), metric(SIZE(matrix, 1), SIZE(matrix, 2), nk))
+         core(:, :, ik) = matrix
+         metric(:, :, ik) = metric_part
+      END DO
+      response = 0.0_dp
+      metric_response = 0.0_dp
+      IF (.NOT. ASSOCIATED(state%bloch%kpoints)) THEN
+         CALL qs_rho_get(rho, rho_ao_kp=density_gamma)
+         CALL get_ks_env(ks_env, matrix_w=energy_gamma)
+         CPASSERT(ASSOCIATED(density_gamma) .AND. ASSOCIATED(energy_gamma))
+         CPASSERT(SIZE(density_gamma, 1) == nspin .AND. SIZE(energy_gamma) == nspin)
+         ALLOCATE (density(SIZE(core, 1), SIZE(core, 2), 1), energy_weighted(SIZE(core, 1), SIZE(core, 2), 1))
+      END IF
+      DO axis = 1, nspin
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_kpoints_density(state%bloch, axis, density)
+            CALL qs_upf_inverse_kpoints_density(state%bloch, axis, energy_weighted, energy_weighted=.TRUE.)
+         ELSE
+            CALL qs_upf_inverse_matrix_gather(state%frame%ao, density_gamma(axis, 1)%matrix, matrix)
+            density(:, :, 1) = matrix
+            CALL qs_upf_inverse_matrix_gather(state%frame%ao, energy_gamma(axis)%matrix, matrix)
+            energy_weighted(:, :, 1) = matrix
+         END IF
+         DO ik = 1, nk
+            weight = 1.0_dp
+            IF (ASSOCIATED(state%bloch%kpoints)) THEN
+               weight = state%bloch%weights(ik)
+               CALL qs_upf_inverse_grid_response(state%bloch%frames(ik), state%bloch%augmentation, &
+                                                 state%bloch%frames(ik)%ao%radial_q, &
+                                                 vdensity(axis), vgradient(:, axis), vtau(axis), atom_response, cell_response, &
+                                                 reduced_k_response(:, ik), zero, zeros, zero, matrix, metric_part)
+            ELSE
+               CALL qs_upf_inverse_grid_response(state%frame, state%augmentation, state%frame%ao%radial_q, &
+                                                 vdensity(axis), vgradient(:, axis), vtau(axis), atom_response, cell_response, &
+                                                 reduced_k_response(:, ik), zero, zeros, zero, matrix, metric_part)
+            END IF
+            response = response + weight*REAL(SUM(density(:, :, ik)*TRANSPOSE(core(:, :, ik) + matrix)), dp)
+            metric_response = metric_response - weight*REAL(SUM(energy_weighted(:, :, ik)*TRANSPOSE(metric(:, :, ik))), dp)
+         END DO
+      END DO
+      response = response + metric_response
+      CALL zero%release()
+      DO axis = 1, 3
+         CALL zeros(axis)%release()
+      END DO
+   END SUBROUTINE qs_upf_inverse_scf_response
 
 ! **************************************************************************************************
 !> \brief Original short-range ionic potential and its optional fixed-fractional-row response.

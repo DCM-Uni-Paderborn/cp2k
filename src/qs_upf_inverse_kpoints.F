@@ -114,18 +114,23 @@ CONTAINS
 !> \param frame ...
 !> \param spin Native spin index.
 !> \param density New replicated AO matrices, indexed by global k; no k weights applied.
+!> \param energy_weighted Gather the prepared native W(k), without using the accepted-P cache.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_density(frame, spin, density)
+   SUBROUTINE qs_upf_inverse_kpoints_density(frame, spin, density, energy_weighted)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
       INTEGER, INTENT(IN)                                :: spin
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: density(:, :, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: energy_weighted
 
       INTEGER                                            :: ik, local
+      LOGICAL                                            :: use_energy_weighted
       REAL(dp)                                           :: defect, tolerance
       REAL(dp), ALLOCATABLE                              :: imaginary(:, :), real_part(:, :)
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       CALL check_live(frame)
+      use_energy_weighted = .FALSE.
+      IF (PRESENT(energy_weighted)) use_energy_weighted = energy_weighted
       ALLOCATE (density(frame%nao, frame%nao, SIZE(frame%weights)), &
                 real_part(frame%nao, frame%nao), imaginary(frame%nao, frame%nao))
       density = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -136,7 +141,14 @@ CONTAINS
          CPASSERT(spin >= 1 .AND. spin <= SIZE(kp%pmat, 2))
          CPASSERT(kp%pmat(1, spin)%matrix_struct%nrow_global == frame%nao)
          CPASSERT(kp%pmat(1, spin)%matrix_struct%ncol_global == frame%nao)
-         IF (ALLOCATED(frame%kpoints%native_density)) THEN
+         IF (use_energy_weighted) THEN
+            CPASSERT(ASSOCIATED(kp%wmat))
+            CPASSERT(ALL(SHAPE(kp%wmat) == SHAPE(kp%pmat)))
+            CALL cp_fm_get_submatrix(kp%wmat(1, spin), real_part)
+            imaginary = 0.0_dp
+            IF (.NOT. frame%kpoints%use_real_wfn) CALL cp_fm_get_submatrix(kp%wmat(2, spin), imaginary)
+            IF (frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(real_part, imaginary, dp)
+         ELSE IF (ALLOCATED(frame%kpoints%native_density)) THEN
             CALL cp_cfm_get_submatrix(frame%kpoints%native_density(local, spin), density(:, :, ik))
             IF (.NOT. frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(0.0_dp, 0.0_dp, dp)
          ELSE
