@@ -26,6 +26,8 @@ PROGRAM uspp_projector_operators_unittest
                                               init_potential
    USE fft_tools,                       ONLY: finalize_fft,&
                                               init_fft
+   USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
+                                              ieee_value
    USE kinds,                           ONLY: dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
@@ -71,6 +73,14 @@ PROGRAM uspp_projector_operators_unittest
    USE sap_kind_types,                  ONLY: release_sap_int,&
                                               sap_int_type,&
                                               sap_sort
+   USE upf_inverse,                     ONLY: upf_inverse_basis,&
+                                              upf_inverse_basis_response,&
+                                              upf_inverse_init,&
+                                              upf_inverse_operator,&
+                                              upf_inverse_operator_response,&
+                                              upf_inverse_project,&
+                                              upf_inverse_project_response,&
+                                              upf_inverse_type
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
                                               upf_local_init,&
                                               upf_local_type
@@ -118,6 +128,7 @@ PROGRAM uspp_projector_operators_unittest
    nranks = comm%num_pe
    CALL init_fft("FFTSG", alltoall=.FALSE., pool_limit=4, wisdom_file="", plan_style=1)
    max_error = 0.0_dp
+   CALL check_inverse()
    ALLOCATE (aug(2))
    DO k = 1, 2
       CALL make_augmentation(k)
@@ -325,6 +336,115 @@ PROGRAM uspp_projector_operators_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Full inverse coupling and operator responses against direct field evaluation.
+! **************************************************************************************************
+   SUBROUTINE check_inverse()
+      INTEGER, PARAMETER                                 :: nb = 2, nf = 5, np = 3
+
+      COMPLEX(KIND=dp) :: actual(nb, nb), b(np, nb), bd(np, np), chi(nf, nb), dchi(nf, nb), &
+         dd(np, np), ddd(np, np), ddelta(nf, np), ddg(np, nb), delta(nf, np), dg(np, nb), &
+         dgd(nb, np), dgg(nb, nb), donsite(np, np), dop(nf, nf), dprojector(np, nf), ds(nf, nb), &
+         dw(np, nb), empty_b(0, nb), empty_delta(nf, 0), empty_q(0, 0), empty_w(0, nb), &
+         gd(nb, np), gg(nb, nb), images(nf, nb, 2), onsite(np, np), op(nf, nf), projected(np, nb), &
+         projector(np, nf), reference(nb, nb), response(nb, nb), sampled(nb, nb, 2), &
+         shifted_chi(nf, nb), shifted_delta(nf, np), shifted_op(nf, nf), shifted_p(np, nf)
+      COMPLEX(KIND=dp) :: shifted_q(np, np), soft(nf, nb), w(np, nb)
+      INTEGER                                            :: i, info, j, phase, side
+      REAL(KIND=dp)                                      :: shift
+      TYPE(upf_inverse_type)                             :: inverse
+
+      DO phase = 1, 2
+         DO j = 1, nb
+            DO i = 1, nf
+               chi(i, j) = CMPLX(SIN(REAL(i + 2*j, dp)), (phase - 1)*COS(REAL(i*j, dp)), dp)
+               dchi(i, j) = 0.07_dp*CMPLX(COS(REAL(i + j, dp)), (phase - 1)*SIN(REAL(2*i + j, dp)), dp)
+            END DO
+         END DO
+         DO j = 1, np
+            DO i = 1, nf
+               delta(i, j) = 0.12_dp*CMPLX(COS(REAL(i*j, dp)), (phase - 1)*SIN(REAL(i + j, dp)), dp)
+               ddelta(i, j) = 0.03_dp*CMPLX(SIN(REAL(i + 2*j, dp)), (phase - 1)*COS(REAL(i*j, dp)), dp)
+               projector(j, i) = 0.15_dp*CMPLX(SIN(REAL(i + j, dp)), (phase - 1)*COS(REAL(2*i + j, dp)), dp)
+               dprojector(j, i) = 0.02_dp*CMPLX(COS(REAL(i + j, dp)), (phase - 1)*SIN(REAL(i*j, dp)), dp)
+            END DO
+         END DO
+         ! A non-Hermitian operator exposes an accidental conjugation/symmetrization.
+         DO j = 1, nf
+            DO i = 1, nf
+               op(i, j) = CMPLX(0.1_dp*i - 0.05_dp*j, (phase - 1)*0.03_dp*(i + j), dp)
+               dop(i, j) = CMPLX(0.02_dp*(i + j), (phase - 1)*0.01_dp*(i - j), dp)
+            END DO
+         END DO
+         onsite = op(1:np, 1:np)*0.3_dp
+         donsite = dop(1:np, 1:np)*0.4_dp
+         bd = MATMUL(projector, delta)
+         b = MATMUL(projector, chi)
+         CALL upf_inverse_init(bd, inverse, info)
+         IF (info /= 0 .OR. .NOT. inverse%ready) ERROR STOP 'Inverse factorization failed'
+         CALL upf_inverse_project(inverse, b, w)
+         CALL upf_inverse_basis(chi, delta, w, soft)
+         projected = MATMUL(projector, soft)
+         CALL check(MAXVAL(ABS(projected - w)), 'inverse projector identity')
+         CALL check(MAXVAL(ABS(soft + MATMUL(delta, projected) - chi)), 'full reconstruction round trip')
+         CALL upf_inverse_project_response(inverse, w, MATMUL(dprojector, chi) + MATMUL(projector, dchi), &
+                                           MATMUL(dprojector, delta) + MATMUL(projector, ddelta), dw)
+         CALL upf_inverse_basis_response(dchi, delta, ddelta, w, dw, ds)
+         gg = MATMUL(CONJG(TRANSPOSE(chi)), MATMUL(op, chi))
+         gd = MATMUL(CONJG(TRANSPOSE(chi)), MATMUL(op, delta))
+         dg = MATMUL(CONJG(TRANSPOSE(delta)), MATMUL(op, chi))
+         dd = MATMUL(CONJG(TRANSPOSE(delta)), MATMUL(op, delta))
+         CALL upf_inverse_operator(gg, gd, dg, dd, onsite, w, actual)
+         reference = MATMUL(CONJG(TRANSPOSE(soft)), MATMUL(op, soft)) + &
+                     MATMUL(CONJG(TRANSPOSE(projected)), MATMUL(onsite, projected))
+         CALL check(MAXVAL(ABS(actual - reference)), 'inverse operator versus direct fields')
+         dgg = MATMUL(CONJG(TRANSPOSE(dchi)), MATMUL(op, chi)) + &
+               MATMUL(CONJG(TRANSPOSE(chi)), MATMUL(dop, chi) + MATMUL(op, dchi))
+         dgd = MATMUL(CONJG(TRANSPOSE(dchi)), MATMUL(op, delta)) + &
+               MATMUL(CONJG(TRANSPOSE(chi)), MATMUL(dop, delta) + MATMUL(op, ddelta))
+         ddg = MATMUL(CONJG(TRANSPOSE(ddelta)), MATMUL(op, chi)) + &
+               MATMUL(CONJG(TRANSPOSE(delta)), MATMUL(dop, chi) + MATMUL(op, dchi))
+         ddd = MATMUL(CONJG(TRANSPOSE(ddelta)), MATMUL(op, delta)) + &
+               MATMUL(CONJG(TRANSPOSE(delta)), MATMUL(dop, delta) + MATMUL(op, ddelta))
+         CALL upf_inverse_operator_response(dgg, gd, dg, dd, onsite, w, dgd, ddg, ddd, donsite, dw, response)
+         DO side = 1, 2
+            shift = (2*side - 3)*step
+            shifted_chi = chi + shift*dchi
+            shifted_delta = delta + shift*ddelta
+            shifted_p = projector + shift*dprojector
+            shifted_op = op + shift*dop
+            shifted_q = onsite + shift*donsite
+            CALL upf_inverse_init(MATMUL(shifted_p, shifted_delta), inverse, info)
+            IF (info /= 0) ERROR STOP 'Displaced inverse factorization failed'
+            CALL upf_inverse_project(inverse, MATMUL(shifted_p, shifted_chi), w)
+            CALL upf_inverse_basis(shifted_chi, shifted_delta, w, images(:, :, side))
+            projected = MATMUL(shifted_p, images(:, :, side))
+            sampled(:, :, side) = MATMUL(CONJG(TRANSPOSE(images(:, :, side))), &
+                                         MATMUL(shifted_op, images(:, :, side))) + &
+                                  MATMUL(CONJG(TRANSPOSE(projected)), MATMUL(shifted_q, projected))
+         END DO
+         CALL check(MAXVAL(ABS(ds - (images(:, :, 2) - images(:, :, 1))/(2*step))), 'inverse basis response', 1.e-9_dp)
+         CALL check(MAXVAL(ABS(response - (sampled(:, :, 2) - sampled(:, :, 1))/(2*step))), &
+                    'inverse operator response', 1.e-9_dp)
+      END DO
+
+      CALL upf_inverse_init(empty_q, inverse, info)
+      IF (info /= 0 .OR. .NOT. inverse%ready) ERROR STOP 'Empty inverse failed'
+      CALL upf_inverse_project(inverse, empty_b, empty_w)
+      CALL upf_inverse_basis(chi, empty_delta, empty_w, soft)
+      CALL check(MAXVAL(ABS(soft - chi)), 'identity without reconstruction projectors')
+      bd = CMPLX(0.0_dp, 0.0_dp, dp)
+      bd(2, 2) = -1.0_dp
+      CALL upf_inverse_init(bd, inverse, info)
+      IF (info /= 2 .OR. inverse%ready) ERROR STOP 'Singular inverse accepted'
+      bd(2, 2) = -1.0_dp + 1.e-12_dp
+      CALL upf_inverse_init(bd, inverse, info, minimum_rcond=1.e-10_dp)
+      IF (info /= np + 1 .OR. inverse%ready) ERROR STOP 'Ill-conditioned inverse accepted'
+      bd(1, 1) = CMPLX(ieee_value(0.0_dp, ieee_quiet_nan), 0.0_dp, dp)
+      CALL upf_inverse_init(bd, inverse, info)
+      IF (info /= np + 2 .OR. inverse%ready) ERROR STOP 'Nonfinite inverse accepted'
+   END SUBROUTINE check_inverse
 
 ! **************************************************************************************************
 !> \brief Include local potentials on both augmentation centers and a third ordinary ion.
