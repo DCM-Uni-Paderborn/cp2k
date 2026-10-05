@@ -82,6 +82,11 @@ PROGRAM uspp_projector_operators_unittest
                                               upf_inverse_project,&
                                               upf_inverse_project_response,&
                                               upf_inverse_type
+   USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
+                                              upf_inverse_pair_response,&
+                                              upf_inverse_semilocal_pair,&
+                                              upf_inverse_semilocal_response,&
+                                              upf_inverse_smooth_density
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
                                               upf_local_init,&
                                               upf_local_type
@@ -135,6 +140,7 @@ PROGRAM uspp_projector_operators_unittest
    max_error = 0.0_dp
    CALL check_inverse()
    CALL check_inverse_fields()
+   CALL check_inverse_quadrature()
    ALLOCATE (aug(2))
    DO k = 1, 2
       CALL make_augmentation(k)
@@ -541,6 +547,121 @@ CONTAINS
       CALL upf_radial_fields_periodic(fields, points, center, cell, images, -bloch, conjugate_value)
       CALL check(MAXVAL(ABS(conjugate_value - CONJG(value))), 'radial field k/-k symmetry')
    END SUBROUTINE check_inverse_fields
+
+! **************************************************************************************************
+!> \brief Common distributed measure, rectangular semilocal responses and nonlinear density adjoint.
+! **************************************************************************************************
+   SUBROUTINE check_inverse_quadrature()
+      INTEGER, PARAMETER                                 :: nb = 2, nf = 5, np = 3
+
+      COMPLEX(dp) :: actual(nb, np), dgl(nf, nb, 3), dgr(nf, np, 3), direction(nb, nb), &
+         dl(nf, nb), dr(nf, np), gl(nf, nb, 3), gr(nf, np, 3), left(nf, nb), op(nb, nb), &
+         p(nb, nb), reference(nb, np), response(nb, np), right(nf, np), samples(nb, np, 2)
+      INTEGER                                            :: axis, distribution, i, j, nlocal, owner, &
+                                                            points(nf), side
+      REAL(dp) :: dvg(nf, 3), dvn(nf), dvt(nf), dweights(nf), energies(2), energy, &
+         gradient(nf, 3), predicted, rho(nf), shift, tau(nf), vg(nf, 3), vn(nf), vt(nf), &
+         weights(nf)
+
+      DO i = 1, nf
+         weights(i) = 0.2_dp + 0.1_dp*i
+         dweights(i) = 0.03_dp*SIN(REAL(i, dp))
+         vn(i) = 0.1_dp*i
+         vt(i) = -0.03_dp*i
+         dvn(i) = 0.07_dp
+         dvt(i) = 0.02_dp
+         DO axis = 1, 3
+            vg(i, axis) = 0.08_dp*COS(REAL(i + axis, dp))
+            dvg(i, axis) = 0.03_dp*SIN(REAL(i*axis, dp))
+         END DO
+         DO j = 1, nb
+            left(i, j) = CMPLX(SIN(REAL(i*j, dp)), COS(REAL(i + j, dp)), dp)
+            dl(i, j) = 0.1_dp*CMPLX(COS(REAL(i*j, dp)), SIN(REAL(i + j, dp)), dp)
+            DO axis = 1, 3
+               gl(i, j, axis) = 0.2_dp*CMPLX(COS(REAL(i*j + axis, dp)), SIN(REAL(i + j*axis, dp)), dp)
+               dgl(i, j, axis) = 0.03_dp*CMPLX(SIN(REAL(i*j + axis, dp)), COS(REAL(i + j*axis, dp)), dp)
+            END DO
+         END DO
+         DO j = 1, np
+            right(i, j) = CMPLX(COS(REAL(i*j, dp)), SIN(REAL(2*i + j, dp)), dp)
+            dr(i, j) = 0.07_dp*CMPLX(SIN(REAL(i*j, dp)), COS(REAL(2*i + j, dp)), dp)
+            DO axis = 1, 3
+               gr(i, j, axis) = 0.3_dp*CMPLX(SIN(REAL(i*j + axis, dp)), COS(REAL(2*i + j*axis, dp)), dp)
+               dgr(i, j, axis) = 0.02_dp*CMPLX(COS(REAL(i*j + axis, dp)), SIN(REAL(2*i + j*axis, dp)), dp)
+            END DO
+         END DO
+      END DO
+      ! Independent point/column loops, retaining the two gradient legs and tau's one-half.
+      reference = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO j = 1, np
+         DO i = 1, nb
+            reference(i, j) = SUM(weights*vn*CONJG(left(:, i))*right(:, j))
+            DO axis = 1, 3
+               reference(i, j) = reference(i, j) + SUM(weights*(vg(:, axis)*( &
+                                                           CONJG(gl(:, i, axis))*right(:, j) + CONJG(left(:, i))*gr(:, j, axis)) + &
+                                                                0.5_dp*vt*CONJG(gl(:, i, axis))*gr(:, j, axis)))
+            END DO
+         END DO
+      END DO
+      DO distribution = 1, 2
+         nlocal = 0
+         DO i = 1, nf
+            owner = 0
+            IF (distribution == 2) owner = MODULO(i - 1, nranks)
+            IF (owner == rank) THEN
+               nlocal = nlocal + 1
+               points(nlocal) = i
+            END IF
+         END DO
+         CALL upf_inverse_pair(left(points(:nlocal), :), right(points(:nlocal), :), weights(points(:nlocal)), actual, comm)
+         CALL check(MAXVAL(ABS(actual - MATMUL(CONJG(TRANSPOSE(left)), &
+                                               SPREAD(weights, 2, np)*right))), 'distributed inverse pair')
+         CALL upf_inverse_pair_response(left(points(:nlocal), :), right(points(:nlocal), :), weights(points(:nlocal)), &
+                                        dl(points(:nlocal), :), dr(points(:nlocal), :), dweights(points(:nlocal)), response, comm)
+         DO side = 1, 2
+            shift = (2*side - 3)*step
+            CALL upf_inverse_pair(left + shift*dl, right + shift*dr, weights + shift*dweights, samples(:, :, side))
+         END DO
+         CALL check(MAXVAL(ABS(response - (samples(:, :, 2) - samples(:, :, 1))/(2*step))), &
+                    'distributed inverse pair measure response', 1.e-9_dp)
+         CALL upf_inverse_semilocal_pair(left(points(:nlocal), :), right(points(:nlocal), :), &
+                                         gl(points(:nlocal), :, :), gr(points(:nlocal), :, :), &
+                           weights(points(:nlocal)), vn(points(:nlocal)), vg(points(:nlocal), :), vt(points(:nlocal)), actual, comm)
+         CALL check(MAXVAL(ABS(actual - reference)), 'distributed rectangular semilocal block')
+         CALL upf_inverse_semilocal_response(left(points(:nlocal), :), right(points(:nlocal), :), &
+                                             gl(points(:nlocal), :, :), gr(points(:nlocal), :, :), &
+                                       weights(points(:nlocal)), vn(points(:nlocal)), vg(points(:nlocal), :), vt(points(:nlocal)), &
+                           dl(points(:nlocal), :), dr(points(:nlocal), :), dgl(points(:nlocal), :, :), dgr(points(:nlocal), :, :), &
+                     dweights(points(:nlocal)), dvn(points(:nlocal)), dvg(points(:nlocal), :), dvt(points(:nlocal)), response, comm)
+         DO side = 1, 2
+            shift = (2*side - 3)*step
+            CALL upf_inverse_semilocal_pair(left + shift*dl, right + shift*dr, gl + shift*dgl, gr + shift*dgr, &
+                                            weights + shift*dweights, vn + shift*dvn, vg + shift*dvg, vt + shift*dvt, &
+                                            samples(:, :, side))
+         END DO
+         CALL check(MAXVAL(ABS(response - (samples(:, :, 2) - samples(:, :, 1))/(2*step))), &
+                    'semilocal joint field/potential/measure response', 1.e-9_dp)
+      END DO
+      p = RESHAPE([CMPLX(.6_dp, 0._dp, dp), CMPLX(.07_dp, -.03_dp, dp), &
+                   CMPLX(.07_dp, .03_dp, dp), CMPLX(.3_dp, 0._dp, dp)], [nb, nb])
+      direction = RESHAPE([CMPLX(.04_dp, 0._dp, dp), CMPLX(.02_dp, .05_dp, dp), &
+                           CMPLX(.02_dp, -.05_dp, dp), CMPLX(-.01_dp, 0._dp, dp)], [nb, nb])
+      CALL upf_inverse_smooth_density(left, gl, p, rho, gradient, tau)
+      vn = .2_dp*rho + .01_dp*tau
+      vg = .04_dp*gradient
+      vt = .06_dp*tau + .01_dp*rho
+      CALL upf_inverse_semilocal_pair(left, left, gl, gl, weights, vn, vg, vt, op)
+      energy = SUM(weights*(vn*rho + SUM(vg*gradient, DIM=2) + vt*tau))
+      CALL check(ABS(energy - REAL(SUM(TRANSPOSE(p)*op), dp)), 'density/gradient/tau collocation adjoint')
+      predicted = REAL(SUM(TRANSPOSE(direction)*op), dp)
+      DO side = 1, 2
+         shift = (2*side - 3)*step
+         CALL upf_inverse_smooth_density(left, gl, p + shift*direction, rho, gradient, tau)
+         energies(side) = SUM(weights*(.1_dp*rho**2 + .02_dp*SUM(gradient**2, DIM=2) + &
+                                       .03_dp*tau**2 + .01_dp*rho*tau))
+      END DO
+      CALL check(ABS(predicted - (energies(2) - energies(1))/(2*step)), 'nonlinear semilocal density variation', 1.e-9_dp)
+   END SUBROUTINE check_inverse_quadrature
 
 ! **************************************************************************************************
 !> \brief Include local potentials on both augmentation centers and a third ordinary ion.
