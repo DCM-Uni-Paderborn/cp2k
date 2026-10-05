@@ -28,7 +28,11 @@ MODULE qs_upf_inverse_grid
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_from_ks,&
                                               qs_upf_inverse_release,&
                                               qs_upf_inverse_type
-   USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair,&
+   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_collocate,&
+                                              qs_upf_inverse_augmentation_integrate,&
+                                              qs_upf_inverse_augmentation_type
+   USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
+                                              upf_inverse_semilocal_pair,&
                                               upf_inverse_smooth_density
 #include "./base/base_uses.f90"
 
@@ -43,6 +47,7 @@ MODULE qs_upf_inverse_grid
 
    PUBLIC :: qs_upf_inverse_grid_type, qs_upf_inverse_grid_prepare, qs_upf_inverse_grid_release
    PUBLIC :: qs_upf_inverse_grid_collocate, qs_upf_inverse_grid_integrate
+   PUBLIC :: qs_upf_inverse_grid_metric
    PUBLIC :: qs_upf_inverse_matrix_gather, qs_upf_inverse_matrix_scatter
 
 CONTAINS
@@ -102,24 +107,29 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Collocate one spin/k contribution and its projector density in the same inverse frame.
-!>        The caller supplies occupations/k weights in P and adds original augmentation separately.
+!>        The caller supplies occupations/k weights in P and optional original charge augmentation.
 !>        Outputs are overwritten; this routine neither sums k points nor updates QS validity flags.
 !> \param frame Prepared native-grid inverse frame.
 !> \param density_real Native real AO density component in reconstructed Gaussian variables.
-!> \param density Smooth density on an already allocated matching native PW grid.
+!> \param density Density on an allocated native PW grid; includes charge augmentation if supplied.
 !> \param gradient Its three physical Cartesian gradient components.
 !> \param tau Smooth kinetic density, including the factor one half.
 !> \param density_imag Optional native imaginary AO density component, with its actual sign.
 !> \param projector_density Optional W P W^dagger for remaining original augmentation.
+!> \param augmentation Optional owned original scalar USPP charge/gradient kernels.
+!>        Tau remains smooth; supplying charge augmentation does not supply kinetic augmentation.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_grid_collocate(frame, density_real, density, gradient, tau, density_imag, projector_density)
+   SUBROUTINE qs_upf_inverse_grid_collocate(frame, density_real, density, gradient, tau, density_imag, &
+                                            projector_density, augmentation)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(dbcsr_type), INTENT(IN)                       :: density_real
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density_imag
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: projector_density(:, :)
+      TYPE(qs_upf_inverse_augmentation_type), &
+         INTENT(IN), OPTIONAL                            :: augmentation
 
-      COMPLEX(dp), ALLOCATABLE                           :: p(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: p(:, :), projected(:, :)
       INTEGER                                            :: axis, n, nproj
       REAL(dp), ALLOCATABLE                              :: dn(:, :), rho(:), t(:)
 
@@ -128,16 +138,23 @@ CONTAINS
       n = SIZE(frame%ao%weights)
       ALLOCATE (rho(n), dn(n, 3), t(n))
       CALL upf_inverse_smooth_density(frame%ao%soft, frame%ao%soft_gradient, p, rho, dn, t)
+      IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
+         nproj = frame%ao%inverse%nproj
+         ALLOCATE (projected(nproj, nproj))
+         projected(:, :) = MATMUL(MATMUL(frame%ao%coefficients, p), CONJG(TRANSPOSE(frame%ao%coefficients)))
+         IF (PRESENT(augmentation)) THEN
+            CALL qs_upf_inverse_augmentation_collocate(frame%ao, augmentation, projected, rho, dn)
+         END IF
+         IF (PRESENT(projector_density)) THEN
+            CPASSERT(ALL(SHAPE(projector_density) == [nproj, nproj]))
+            projector_density = projected
+         END IF
+      END IF
       CALL unpack_grid(frame, rho, density)
       CALL unpack_grid(frame, t, tau)
       DO axis = 1, 3
          CALL unpack_grid(frame, dn(:, axis), gradient(axis))
       END DO
-      IF (PRESENT(projector_density)) THEN
-         nproj = frame%ao%inverse%nproj
-         CPASSERT(ALL(SHAPE(projector_density) == [nproj, nproj]))
-         projector_density = MATMUL(MATMUL(frame%ao%coefficients, p), CONJG(TRANSPOSE(frame%ao%coefficients)))
-      END IF
    END SUBROUTINE qs_upf_inverse_grid_collocate
 
 ! **************************************************************************************************
@@ -152,16 +169,19 @@ CONTAINS
 !> \param operator_imag New owned imaginary antisymmetric matrix; release it after use.
 !> \param projector_operator Optional explicitly supplied remaining projector operator.
 !>        Missing charge or kinetic augmentation must not be inferred from the other kernel.
+!> \param augmentation Optional original charge/gradient adjoint on the same native point rows.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_integrate(frame, vdensity, vgradient, vtau, template, &
-                                            operator_real, operator_imag, projector_operator)
+                                            operator_real, operator_imag, projector_operator, augmentation)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       TYPE(dbcsr_type), INTENT(IN)                       :: template
       TYPE(dbcsr_type), INTENT(INOUT)                    :: operator_real, operator_imag
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: projector_operator(:, :)
+      TYPE(qs_upf_inverse_augmentation_type), &
+         INTENT(IN), OPTIONAL                            :: augmentation
 
-      COMPLEX(dp), ALLOCATABLE                           :: h(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: h(:, :), projected(:, :)
       INTEGER                                            :: axis, n, nao, nproj
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
 
@@ -176,6 +196,12 @@ CONTAINS
       END DO
       CALL upf_inverse_semilocal_pair(frame%ao%soft, frame%ao%soft, frame%ao%soft_gradient, frame%ao%soft_gradient, &
                                       frame%ao%weights, dn, dg, dt, h, frame%ao%point_comm)
+      IF (PRESENT(augmentation)) THEN
+         nproj = frame%ao%inverse%nproj
+         ALLOCATE (projected(nproj, nproj))
+         CALL qs_upf_inverse_augmentation_integrate(frame%ao, augmentation, dn, dg, projected)
+         h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, frame%ao%coefficients))
+      END IF
       IF (PRESENT(projector_operator)) THEN
          nproj = frame%ao%inverse%nproj
          CPASSERT(ALL(SHAPE(projector_operator) == [nproj, nproj]))
@@ -183,6 +209,36 @@ CONTAINS
       END IF
       CALL qs_upf_inverse_matrix_scatter(frame%ao, h, template, operator_real, operator_imag)
    END SUBROUTINE qs_upf_inverse_grid_integrate
+
+! **************************************************************************************************
+!> \brief Assemble the original generalized metric in the inverse AO variables.
+!>        The point rule is shared with the density/operator map; no metric residual is removed.
+!> \param frame ...
+!> \param projector_metric Explicit original projector metric (supplied q or reference radial q).
+!>        The caller selects the comparison functional; this routine does not substitute either.
+!> \param template ...
+!> \param metric_real New owned real symmetric metric.
+!> \param metric_imag New owned imaginary antisymmetric metric.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_grid_metric(frame, projector_metric, template, metric_real, metric_imag)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
+      TYPE(dbcsr_type), INTENT(IN)                       :: template
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: metric_real, metric_imag
+
+      COMPLEX(dp), ALLOCATABLE                           :: metric(:, :)
+      INTEGER                                            :: nao, nproj
+
+      CPASSERT(frame%ao%inverse%ready)
+      nao = SIZE(frame%ao%soft, 2)
+      nproj = frame%ao%inverse%nproj
+      CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
+      ALLOCATE (metric(nao, nao))
+      CALL upf_inverse_pair(frame%ao%soft, frame%ao%soft, frame%ao%weights, metric, frame%ao%point_comm)
+      metric(:, :) = metric + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), &
+                                     MATMUL(projector_metric, frame%ao%coefficients))
+      CALL qs_upf_inverse_matrix_scatter(frame%ao, metric, template, metric_real, metric_imag)
+   END SUBROUTINE qs_upf_inverse_grid_metric
 
 ! **************************************************************************************************
 !> \brief Gather native AO components collectively, using native desymmetrization for S/A signs.
