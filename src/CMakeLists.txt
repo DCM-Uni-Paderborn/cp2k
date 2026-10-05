@@ -72,6 +72,7 @@ list(
   qs_upf_inverse_augmentation.F
   qs_upf_inverse_forces.F
   qs_upf_inverse_grid.F
+  qs_upf_inverse_kpoints.F
   qs_upf_inverse_scf.F
   qs_upf_inverse_types.F
   qs_uspp_methods.F
@@ -681,6 +682,7 @@ list(
   qs_kind_types.F
   qs_kinetic.F
   qs_kpoint_operators.F
+  qs_kpoint_density_state.F
   qs_kpoint_state.F
   qs_kpp1_env_methods.F
   qs_kpp1_env_types.F
