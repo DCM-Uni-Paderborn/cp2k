@@ -664,6 +664,7 @@ list(
   qs_gcp_method.F
   qs_gcp_types.F
   qs_gcp_utils.F
+  qs_atom_grid_partition.F
   qs_grid_atom.F
   qs_gspace_mixing.F
   qs_harris_types.F
