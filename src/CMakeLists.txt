@@ -75,6 +75,7 @@ list(
   qs_upf_inverse_grid.F
   qs_upf_inverse_kpoints.F
   qs_upf_inverse_scf.F
+  qs_upf_inverse_scf_xc.F
   qs_upf_inverse_types.F
   qs_upf_inverse_xc.F
   qs_uspp_methods.F

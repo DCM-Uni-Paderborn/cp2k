@@ -52,11 +52,14 @@ MODULE qs_vxc
                                               prepare_nlvdw_density,&
                                               return_nlvdw_potential
    USE qs_dispersion_types,             ONLY: qs_dispersion_type
+   USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: qs_environment_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active
+   USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_evaluate
    USE skala_gpw_functional,            ONLY: get_gauxc_section,&
                                               native_skala_gapw_composite_direct_ao,&
                                               native_skala_gapw_composite_reference,&
@@ -171,6 +174,7 @@ CONTAINS
       TYPE(pw_r3d_rs_type), POINTER                      :: rho_nlcc, rho_nlcc_use, rho_nlcc_xc, &
                                                             tmp_pw, weights, weights_use, &
                                                             weights_xc
+      TYPE(qs_energy_type), POINTER                      :: inverse_energy
       TYPE(section_vals_type), POINTER                   :: gauxc_section
       TYPE(virial_type), POINTER                         :: virial
 
@@ -657,6 +661,18 @@ CONTAINS
                                   weights=weights_use, pw_pool=xc_pw_pool, &
                                   compute_virial=compute_virial, &
                                   virial_xc=virial%pv_xc)
+         END IF
+
+         IF (dft_control%qs_control%gapw_xc .AND. qs_upf_inverse_scf_active(ks_env)) THEN
+            IF (native_skala_grid .OR. do_adiabatic_rescaling .OR. my_scaling /= 1.0_dp) THEN
+               CPABORT("Inverse atom XC functional rescaling is not implemented")
+            END IF
+            CALL get_ks_env(ks_env, energy=inverse_energy)
+            IF (my_just_energy) THEN
+               CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1)
+            ELSE
+               CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1, my_vxc_rho)
+            END IF
          END IF
 
          ! The composite density is assembled through an R-to-G-to-R projection. Apply the

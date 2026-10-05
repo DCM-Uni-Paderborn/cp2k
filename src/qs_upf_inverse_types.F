@@ -19,7 +19,9 @@ MODULE qs_upf_inverse_types
                                               kpoint_native_operator_clear,&
                                               kpoint_type
    USE message_passing,                 ONLY: mp_comm_type
-   USE pw_grid_types,                   ONLY: PW_MODE_LOCAL
+   USE pw_grid_types,                   ONLY: PW_MODE_LOCAL,&
+                                              pw_grid_type
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_type
    USE upf_inverse,                     ONLY: upf_inverse_type
    USE upf_radial_fields,               ONLY: upf_radial_fields_type
    USE uspp_augmentation,               ONLY: uspp_augmentation_type
@@ -62,6 +64,13 @@ MODULE qs_upf_inverse_types
       INTEGER :: nao = 0, kp_range(2) = 0
    END TYPE qs_upf_inverse_kpoints_type
 
+   TYPE qs_upf_inverse_xc_type
+      COMPLEX(dp), ALLOCATABLE :: soft(:, :, :), gradient(:, :, :, :), operators(:, :, :, :)
+      REAL(dp), ALLOCATABLE :: density(:, :), density_gradient(:, :, :), energy_density(:), &
+                               vdensity(:, :), vgradient(:, :, :), background_vdensity(:, :), &
+                               background_vgradient(:, :, :)
+   END TYPE qs_upf_inverse_xc_type
+
    TYPE qs_upf_inverse_scf_type
       LOGICAL :: enabled = .FALSE.
       INTEGER :: density_evaluations = 0, operator_evaluations = 0
@@ -70,10 +79,18 @@ MODULE qs_upf_inverse_types
       TYPE(kpoint_transitional_type) :: metric
       TYPE(qs_upf_inverse_kpoints_type) :: bloch
       COMPLEX(dp), ALLOCATABLE :: metric_k(:, :, :), core_k(:, :, :), kinetic_k(:, :, :), ks_k(:, :, :, :)
+      TYPE(qs_upf_inverse_atom_grid_type) :: atom_grid
+      TYPE(qs_upf_inverse_xc_type) :: xc
+      TYPE(pw_grid_type), POINTER :: xc_grid => NULL()
+      TYPE(upf_radial_fields_type), ALLOCATABLE :: core_cache(:)
+      INTEGER, ALLOCATABLE :: core_images(:, :)
+      REAL(dp), ALLOCATABLE :: xc_fields(:, :, :, :), xc_kweights(:)
+      COMPLEX(dp), ALLOCATABLE :: xc_matrices(:, :, :, :)
    END TYPE qs_upf_inverse_scf_type
 
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_grid_type, qs_upf_inverse_augmentation_type
    PUBLIC :: qs_upf_inverse_kpoints_type, qs_upf_inverse_scf_type, qs_upf_inverse_scf_release
+   PUBLIC :: qs_upf_inverse_xc_type
 
 CONTAINS
 

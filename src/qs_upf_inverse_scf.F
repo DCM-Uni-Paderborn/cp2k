@@ -7,7 +7,7 @@
 
 ! **************************************************************************************************
 !> \brief Explicit inverse-orbital attachment to native Quickstep density and operator consumers.
-!>        Scalar semilocal GPW at Gamma and on full Bloch meshes with original full-wave USPP data.
+!>        Scalar semilocal GPW and mixed XC on full meshes with original full-wave USPP data.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_scf
    USE basis_set_types,                 ONLY: gto_basis_set_type
@@ -61,7 +61,8 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_grid_metric,&
                                               qs_upf_inverse_grid_prepare,&
                                               qs_upf_inverse_grid_response,&
-                                              qs_upf_inverse_matrix_gather
+                                              qs_upf_inverse_matrix_gather,&
+                                              qs_upf_inverse_matrix_scatter
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_collocate,&
                                               qs_upf_inverse_kpoints_density,&
                                               qs_upf_inverse_kpoints_integrate,&
@@ -120,7 +121,7 @@ CONTAINS
                       dft_control=control, do_kpoints=do_kpoints, qs_kind_set=kinds)
       CPASSERT(.NOT. ASSOCIATED(previous))
       CPASSERT(ASSOCIATED(uspp) .AND. ASSOCIATED(grid))
-      IF (.NOT. control%qs_control%gpw .OR. control%qs_control%gapw .OR. control%qs_control%gapw_xc) THEN
+      IF (.NOT. (control%qs_control%gpw .OR. control%qs_control%gapw_xc) .OR. control%qs_control%gapw) THEN
          CPABORT("Inverse SCF GAPW reconstruction is not assembled")
       END IF
       IF (control%use_kinetic_energy_density) THEN
@@ -352,6 +353,9 @@ CONTAINS
          CALL qs_upf_inverse_kpoints_integrate(state%bloch, unweighted, zeros, zero_tau, native, dense)
          CALL qs_upf_inverse_kpoints_release_operators(native)
          state%ks_k(:, :, :, spin) = state%core_k + dense
+         IF (ALLOCATED(state%xc%operators)) THEN
+            state%ks_k(:, :, :, spin) = state%ks_k(:, :, :, spin) + state%xc%operators(:, :, :, spin)
+         END IF
          CALL get_ks_env(ks_env, matrix_ks_kp=source)
          CALL register_bloch_spin(state, source)
       ELSE
@@ -361,6 +365,15 @@ CONTAINS
          CALL dbcsr_add(hamiltonian, real_part, 1.0_dp, 1.0_dp)
          CALL dbcsr_release(real_part)
          CALL dbcsr_release(imaginary)
+         IF (ALLOCATED(state%xc%operators)) THEN
+            CPASSERT(PRESENT(spin))
+            CALL qs_upf_inverse_matrix_scatter(state%frame%ao, state%xc%operators(:, :, 1, spin), &
+                                               hamiltonian, real_part, imaginary)
+            CALL check_real(state, real_part, imaginary)
+            CALL dbcsr_add(hamiltonian, real_part, 1.0_dp, 1.0_dp)
+            CALL dbcsr_release(real_part)
+            CALL dbcsr_release(imaginary)
+         END IF
       END IF
       CALL unweighted%release()
       CALL zero_tau%release()
@@ -837,7 +850,7 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_scf_reset
 
 ! **************************************************************************************************
-!> \brief Activate scalar USPP GPW from the kind potentials before allocating SCF matrices.
+!> \brief Activate the scalar inverse USPP representation before allocating SCF matrices.
 !>        Image bounds cover the native basis radii and original radial support on the current cell.
 !>        A geometry update rebuilds both the charge metric and all density/operator fields.
 !> \param ks_env Ordinary Gaussian core and PW environment at the new geometry.
@@ -881,7 +894,7 @@ CONTAINS
          CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, beta, delta)
          radial_radius(ikind) = MAX(beta%radius, delta%radius)
       END DO
-      IF (ANY(cell%perd == 0)) CPABORT("Inverse USPP GPW currently requires a fully periodic cell")
+      IF (ANY(cell%perd == 0)) CPABORT("Inverse USPP currently requires a fully periodic cell")
       lower_real = 0.0_dp
       upper_real = 0.0_dp
       DO atom = 1, SIZE(atoms)

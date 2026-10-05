@@ -1521,7 +1521,7 @@ CONTAINS
                                        calculate_forces=calculate_forces, &
                                        gapw=gapw .AND. .NOT. gapw_composite_direct_ao)
                CALL pw_copy(v_rspace, v_rspace_new(ispin))
-            ELSE IF (gapw_xc) THEN
+            ELSE IF (gapw_xc .AND. .NOT. inverse_scf) THEN
                ! SIC not implemented (or at least not tested)
                CPASSERT(dft_control%sic_method_id == sic_none)
                !Only the xc potential, because it has to be integrated with the soft basis

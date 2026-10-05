@@ -31,7 +31,8 @@ MODULE qs_upf_inverse_xc
                                               qs_upf_inverse_augmentation_integrate,&
                                               qs_upf_inverse_augmentation_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
-                                              qs_upf_inverse_type
+                                              qs_upf_inverse_type,&
+                                              qs_upf_inverse_xc_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair,&
                                               upf_inverse_semilocal_response,&
                                               upf_inverse_smooth_density
@@ -57,13 +58,6 @@ MODULE qs_upf_inverse_xc
    TYPE qs_upf_inverse_frame_ref_type
       TYPE(qs_upf_inverse_type), POINTER :: frame => NULL()
    END TYPE qs_upf_inverse_frame_ref_type
-
-   TYPE qs_upf_inverse_xc_type
-      COMPLEX(dp), ALLOCATABLE :: soft(:, :, :), gradient(:, :, :, :), operators(:, :, :, :)
-      REAL(dp), ALLOCATABLE :: density(:, :), density_gradient(:, :, :), energy_density(:), &
-                               vdensity(:, :), vgradient(:, :, :), background_vdensity(:, :), &
-                               background_vgradient(:, :, :)
-   END TYPE qs_upf_inverse_xc_type
 
    PUBLIC :: qs_upf_inverse_frame_ref_type, qs_upf_inverse_xc_type
    PUBLIC :: qs_upf_inverse_xc_evaluate, qs_upf_inverse_xc_response

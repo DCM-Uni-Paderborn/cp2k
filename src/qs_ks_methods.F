@@ -389,6 +389,8 @@ CONTAINS
       ! Check for GAPW method : additional terms for local densities
       gapw = dft_control%qs_control%gapw
       gapw_xc = dft_control%qs_control%gapw_xc
+      ! Inverse GAPW_XC has its own density and atom operators, assembled with the native PW XC.
+      IF (qs_upf_inverse_scf_active(ks_env)) gapw_xc = .FALSE.
       IF (gapw_xc .AND. gapw) THEN
          CPABORT(" GAPW and GAPW_XC are not compatible")
       END IF

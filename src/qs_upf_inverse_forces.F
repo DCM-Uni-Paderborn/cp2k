@@ -26,6 +26,7 @@ MODULE qs_upf_inverse_forces
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_response
+   USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -51,7 +52,7 @@ CONTAINS
                                                             other, spin
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
       REAL(dp)                                           :: field_measure, metric_response, &
-                                                            response, strain(3, 3)
+                                                            response, strain(3, 3), xc_response
       REAL(dp), ALLOCATABLE                              :: atom_response(:, :), positions(:, :), &
                                                             reduced_k_response(:, :)
       TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
@@ -98,6 +99,8 @@ CONTAINS
             atom_response(axis, atom) = 1.0_dp
             CALL qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, &
                                              0.0_dp*cell%hmat, reduced_k_response, response, metric_response)
+            CALL qs_upf_inverse_scf_xc_response(ks_env, atom_response, 0.0_dp*cell%hmat, reduced_k_response, xc_response)
+            response = response + xc_response
             IF (para_env%is_source()) THEN
                force(kind)%all_potential(axis, index) = force(kind)%all_potential(axis, index) + response - metric_response
                force(kind)%overlap(axis, index) = force(kind)%overlap(axis, index) + metric_response
@@ -121,6 +124,9 @@ CONTAINS
                atom_response(:, :) = MATMUL(strain, positions)
                CALL qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, &
                                                 MATMUL(strain, cell%hmat), reduced_k_response, response, metric_response)
+               CALL qs_upf_inverse_scf_xc_response(ks_env, atom_response, MATMUL(strain, cell%hmat), &
+                                                   reduced_k_response, xc_response)
+               response = response + xc_response
                IF (axis == other) response = response - field_measure
                IF (para_env%is_source()) THEN
                   virial%pv_virial(axis, other) = virial%pv_virial(axis, other) - response
