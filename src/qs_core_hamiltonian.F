@@ -280,9 +280,6 @@ CONTAINS
       NULLIFY (ks_env)
       CALL get_qs_env(qs_env=qs_env, ks_env=ks_env)
       IF (qs_upf_inverse_scf_active(ks_env)) THEN
-         IF (calculate_forces) THEN
-            CPABORT("Inverse force/stress response is not connected")
-         END IF
          CALL qs_upf_inverse_scf_core(ks_env)
          CALL timestop(handle)
          RETURN
