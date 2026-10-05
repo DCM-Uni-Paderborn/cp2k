@@ -11,11 +11,16 @@
 !>        The background is supplied by the caller with its interpolation adjoint retained.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_xc
+   USE cell_types,                      ONLY: cell_type
    USE input_section_types,             ONLY: section_get_rval,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_comm_type
+   USE pw_grid_types,                   ONLY: pw_grid_type
+   USE qs_native_grid_interpolation,    ONLY: interpolate_native_grid_batch,&
+                                              native_grid_batch_adjoint,&
+                                              native_grid_batch_response
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_evaluate
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_collocate,&
                                               qs_upf_inverse_augmentation_integrate,&
@@ -57,6 +62,7 @@ MODULE qs_upf_inverse_xc
 
    PUBLIC :: qs_upf_inverse_frame_ref_type, qs_upf_inverse_xc_type
    PUBLIC :: qs_upf_inverse_xc_evaluate, qs_upf_inverse_xc_response
+   PUBLIC :: qs_upf_inverse_xc_grid_evaluate, qs_upf_inverse_xc_grid_response
 
 CONTAINS
 
@@ -338,5 +344,148 @@ CONTAINS
       CALL xc_rho_set_release(fields)
       DEALLOCATE (vxc, vxg)
    END SUBROUTINE evaluate_xc_fields
+
+! **************************************************************************************************
+!> \brief Evaluate the inverse XC residual against interpolated native PW descriptors.
+!> \param frames ...
+!> \param augmentation ...
+!> \param matrices ...
+!> \param kweights ...
+!> \param points ...
+!> \param weights ...
+!> \param fields Replicated native XC density and physical Cartesian gradient including frozen core.
+!>               Four descriptors per spin, ordered (density,gx,gy,gz), with no quadrature weights.
+!> \param grid Native source grid.
+!> \param cell Native source periodicity.
+!> \param core_density ...
+!> \param core_gradient ...
+!> \param xc_section ...
+!> \param lsd ...
+!> \param comm Point-batch communicator.
+!> \param state ...
+!> \param energy ...
+!> \param grid_adjoint Globally reduced negative background descriptor transpose including atom weights.
+!>                     Fold gradient covectors with the native spectral transpose and divide by the
+!>                     PW volume element before integrating an unweighted scalar potential.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_xc_grid_evaluate(frames, augmentation, matrices, kweights, points, weights, &
+                                              fields, grid, cell, core_density, core_gradient, xc_section, &
+                                              lsd, comm, state, energy, grid_adjoint)
+      TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
+      TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
+      COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: kweights(:), points(:, :), weights(:), &
+                                                            fields(:, :, :, :)
+      TYPE(pw_grid_type), INTENT(IN), POINTER            :: grid
+      TYPE(cell_type), INTENT(IN), POINTER               :: cell
+      REAL(dp), INTENT(IN)                               :: core_density(:, :), &
+                                                            core_gradient(:, :, :)
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      LOGICAL, INTENT(IN)                                :: lsd
+      TYPE(mp_comm_type), INTENT(IN)                     :: comm
+      TYPE(qs_upf_inverse_xc_type), INTENT(OUT)          :: state
+      REAL(dp), INTENT(OUT)                              :: energy
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: grid_adjoint(:, :, :, :)
+
+      INTEGER                                            :: axis, np, ns, spin
+      REAL(dp), ALLOCATABLE                              :: background(:, :), covectors(:, :), &
+                                                            gradient(:, :, :), values(:, :)
+
+      np = SIZE(points, 2)
+      ns = SIZE(matrices, 4)
+      CPASSERT(SIZE(fields, 4) == 4*ns)
+      ALLOCATE (values(np, 4*ns), covectors(np, 4*ns), background(np, ns), gradient(np, 3, ns))
+      CALL interpolate_native_grid_batch(fields, grid, cell, points, values, wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
+      DO spin = 1, ns
+         background(:, spin) = values(:, 4*spin - 3)
+         DO axis = 1, 3
+            gradient(:, axis, spin) = values(:, 4*spin - 3 + axis)
+         END DO
+      END DO
+      CALL qs_upf_inverse_xc_evaluate(frames, augmentation, matrices, kweights, points, weights, &
+                                      background, gradient, core_density, core_gradient, xc_section, &
+                                      lsd, comm, state, energy)
+      DO spin = 1, ns
+         covectors(:, 4*spin - 3) = weights*state%background_vdensity(:, spin)
+         DO axis = 1, 3
+            covectors(:, 4*spin - 3 + axis) = weights*state%background_vgradient(:, axis, spin)
+         END DO
+      END DO
+      ALLOCATE (grid_adjoint(SIZE(fields, 1), SIZE(fields, 2), SIZE(fields, 3), SIZE(fields, 4)))
+      grid_adjoint = 0.0_dp
+      CALL native_grid_batch_adjoint(covectors, grid, cell, points, grid_adjoint, wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
+      CALL comm%sum(grid_adjoint)
+   END SUBROUTINE qs_upf_inverse_xc_grid_evaluate
+
+! **************************************************************************************************
+!> \brief Joint inverse XC response including native source-field and interpolation geometry.
+!> \param frames ...
+!> \param augmentation ...
+!> \param matrices ...
+!> \param kweights ...
+!> \param points ...
+!> \param weights ...
+!> \param state ...
+!> \param fields ...
+!> \param fields_response Native source descriptors at fixed grid indices, including spectral/core response.
+!> \param grid ...
+!> \param cell ...
+!> \param point_response ...
+!> \param weights_response ...
+!> \param atom_response ...
+!> \param cell_response Response of the common physical and fully periodic PW lattice.
+!> \param reduced_k_response ...
+!> \param coefficients_response ...
+!> \param core_response ...
+!> \param core_gradient_response ...
+!> \param comm ...
+!> \param response ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_xc_grid_response(frames, augmentation, matrices, kweights, points, weights, state, &
+                                              fields, fields_response, grid, cell, point_response, weights_response, &
+                                              atom_response, cell_response, reduced_k_response, coefficients_response, &
+                                              core_response, core_gradient_response, comm, response)
+      TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
+      TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
+      COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: kweights(:), points(:, :), weights(:)
+      TYPE(qs_upf_inverse_xc_type), INTENT(IN)           :: state
+      REAL(dp), INTENT(IN)                               :: fields(:, :, :, :), &
+                                                            fields_response(:, :, :, :)
+      TYPE(pw_grid_type), INTENT(IN), POINTER            :: grid
+      TYPE(cell_type), INTENT(IN), POINTER               :: cell
+      REAL(dp), INTENT(IN) :: point_response(:, :), weights_response(:), atom_response(:, :), &
+         cell_response(3, 3), reduced_k_response(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: coefficients_response(:, :, :)
+      REAL(dp), INTENT(IN) :: core_response(:, :), core_gradient_response(:, :, :)
+      TYPE(mp_comm_type), INTENT(IN)                     :: comm
+      REAL(dp), INTENT(OUT)                              :: response
+
+      INTEGER                                            :: axis, np, ns, spin
+      REAL(dp)                                           :: lattice_error, lattice_tolerance
+      REAL(dp), ALLOCATABLE                              :: background(:, :), gradient(:, :, :), &
+                                                            values(:, :)
+
+      np = SIZE(points, 2)
+      ns = SIZE(matrices, 4)
+      CPASSERT(SIZE(fields, 4) == 4*ns)
+      CPASSERT(ALL(cell%perd == 1))
+      lattice_error = MAXVAL(ABS(grid%dh*SPREAD(REAL(grid%npts, dp), 1, 3) - cell%hmat))
+      lattice_tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(cell%hmat)))
+      CPASSERT(lattice_error < lattice_tolerance)
+      ALLOCATE (values(np, 4*ns), background(np, ns), gradient(np, 3, ns))
+      CALL native_grid_batch_response(fields, fields_response, grid, cell, points, &
+                                      point_response, cell_response, values, wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
+      DO spin = 1, ns
+         background(:, spin) = values(:, 4*spin - 3)
+         DO axis = 1, 3
+            gradient(:, axis, spin) = values(:, 4*spin - 3 + axis)
+         END DO
+      END DO
+      CALL qs_upf_inverse_xc_response(frames, augmentation, matrices, kweights, points, weights, state, &
+                                      point_response, weights_response, atom_response, cell_response, &
+                                      reduced_k_response, coefficients_response, background, gradient, &
+                                      core_response, core_gradient_response, comm, response)
+   END SUBROUTINE qs_upf_inverse_xc_grid_response
 
 END MODULE qs_upf_inverse_xc
