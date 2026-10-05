@@ -18,6 +18,7 @@ MODULE kpoint_types
                                               cp_blacs_env_type
    USE cp_cfm_types,                    ONLY: cp_cfm_release,&
                                               cp_cfm_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE cp_fm_types,                     ONLY: cp_fm_release,&
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -62,6 +63,15 @@ MODULE kpoint_types
    PUBLIC :: kpoint_create, kpoint_release, kpoint_reset_initialization, get_kpoint_info, set_kpoint_info
    PUBLIC :: read_kpoint_section, write_kpoint_info
    PUBLIC :: kpoint_clear_scf_smat
+   PUBLIC :: kpoint_native_operator_type, kpoint_native_operator_clear
+
+   ! Complete group-local operators can have no finite real-space image representation.
+   ! The source identity is borrowed; complex values are owned, indexed (local k, source row).
+   TYPE kpoint_native_operator_type
+      TYPE(dbcsr_p_type), POINTER :: source(:, :) => NULL()
+      TYPE(cp_cfm_type), ALLOCATABLE :: matrices(:, :)
+      INTEGER :: matrix_row = 0
+   END TYPE kpoint_native_operator_type
    PUBLIC :: kpoint_env_type, kpoint_env_p_type
    PUBLIC :: kpoint_env_create, get_kpoint_env
    PUBLIC :: kind_rotmat_type
@@ -247,6 +257,7 @@ MODULE kpoint_types
       TYPE(qs_diis_buffer_type_kp), POINTER   :: scf_diis_buffer => Null()
       ! Unmodified complex overlaps for the current SCF run, indexed by local k-point.
       TYPE(cp_cfm_type), ALLOCATABLE, DIMENSION(:) :: scf_smat
+      TYPE(kpoint_native_operator_type) :: native_operators(3)
       ! Selected AO indices, accepted density/potential, and a separate cached trial density.
       INTEGER, ALLOCATABLE :: lowdin_orbitals(:)
       REAL(dp), ALLOCATABLE :: lowdin_q(:, :), lowdin_v(:, :), lowdin_q_new(:, :)
@@ -322,6 +333,9 @@ CONTAINS
 
       IF (ASSOCIATED(kpoint)) THEN
          CALL kpoint_clear_scf_smat(kpoint)
+         DO i = 1, SIZE(kpoint%native_operators)
+            CALL kpoint_native_operator_clear(kpoint%native_operators(i))
+         END DO
 
          IF (ASSOCIATED(kpoint%xkp)) THEN
             DEALLOCATE (kpoint%xkp)
@@ -417,6 +431,27 @@ CONTAINS
    END SUBROUTINE kpoint_clear_scf_smat
 
 ! **************************************************************************************************
+!> \brief Release owned direct matrices before their borrowed source and group layout disappear.
+!> \param operator ...
+! **************************************************************************************************
+   SUBROUTINE kpoint_native_operator_clear(OPERATOR)
+      TYPE(kpoint_native_operator_type), INTENT(INOUT)   :: operator
+
+      INTEGER                                            :: ik, row
+
+      IF (ALLOCATED(operator%matrices)) THEN
+         DO row = 1, SIZE(operator%matrices, 2)
+            DO ik = 1, SIZE(operator%matrices, 1)
+               CALL cp_cfm_release(operator%matrices(ik, row))
+            END DO
+         END DO
+         DEALLOCATE (operator%matrices)
+      END IF
+      NULLIFY (operator%source)
+      operator%matrix_row = 0
+   END SUBROUTINE kpoint_native_operator_clear
+
+! **************************************************************************************************
 !> \brief Reset all data derived from a concrete k-point initialization.
 !>        Input options such as the scheme, grid, shifts and symmetry settings are kept.
 !> \param kpoint  The kpoint environment
@@ -427,6 +462,9 @@ CONTAINS
       INTEGER                                            :: i, ik, j
 
       CALL kpoint_clear_scf_smat(kpoint)
+      DO i = 1, SIZE(kpoint%native_operators)
+         CALL kpoint_native_operator_clear(kpoint%native_operators(i))
+      END DO
       IF (ALLOCATED(kpoint%lowdin_orbitals)) THEN
          DEALLOCATE (kpoint%lowdin_orbitals, kpoint%lowdin_q, kpoint%lowdin_q_new, kpoint%lowdin_v)
       END IF

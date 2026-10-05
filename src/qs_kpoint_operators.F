@@ -18,6 +18,8 @@
 !>        so it must not outlive that environment.
 !>        An explicitly prepared, immutable operator batch can instead be built
 !>        from bounded context-owned real-space snapshots inside each group.
+!>        Explicitly registered complete complex operators use their native group tiles instead;
+!>        prepared and in-flight copies retain the same ownership and refresh contracts.
 !>        The public round and output-ownership contracts stay the same.
 !>        Start/finish/get/prepare are not thread safe: serialize them, because their collective
 !>        communication tolerates no concurrent service call. A separate
@@ -25,7 +27,9 @@
 ! **************************************************************************************************
 MODULE qs_kpoint_operators
    USE cp_cfm_basic_linalg,             ONLY: cp_cfm_scale_and_add_fm
-   USE cp_cfm_types,                    ONLY: cp_cfm_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_release,&
+                                              cp_cfm_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, dbcsr_get_readonly_block_p, &
         dbcsr_init_p, dbcsr_p_type, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, &
@@ -41,14 +45,10 @@ MODULE qs_kpoint_operators
                                               cp_fm_struct_release,&
                                               cp_fm_struct_retain,&
                                               cp_fm_struct_type
-   USE cp_fm_types,                     ONLY: copy_info_type,&
-                                              cp_fm_cleanup_copy_general,&
-                                              cp_fm_create,&
-                                              cp_fm_finish_copy_general,&
-                                              cp_fm_get_info,&
-                                              cp_fm_release,&
-                                              cp_fm_start_copy_general,&
-                                              cp_fm_type
+   USE cp_fm_types,                     ONLY: &
+        copy_info_type, cp_fm_cleanup_copy_general, cp_fm_copy_general, cp_fm_create, &
+        cp_fm_finish_copy_general, cp_fm_get_info, cp_fm_release, cp_fm_start_copy_general, &
+        cp_fm_type
    USE input_cp2k_kpoints,              ONLY: lattice_fft_auto,&
                                               lattice_fft_on
    USE kinds,                           ONLY: dp,&
@@ -60,7 +60,10 @@ MODULE qs_kpoint_operators
                                               rskp_transform_grid_extract,&
                                               rskp_transform_grid_prepare,&
                                               rskp_transform_grid_release
-   USE kpoint_types,                    ONLY: kpoint_env_type,&
+   USE kpoint_types,                    ONLY: kpoint_clear_scf_smat,&
+                                              kpoint_env_type,&
+                                              kpoint_native_operator_clear,&
+                                              kpoint_native_operator_type,&
                                               kpoint_type
    USE mathconstants,                   ONLY: gaussi,&
                                               twopi,&
@@ -84,6 +87,8 @@ MODULE qs_kpoint_operators
    PUBLIC :: kpoint_operator_get, kpoint_operator_prepare
    PUBLIC :: kpoint_operator_evaluate, kpoint_operator_work_size
    PUBLIC :: kpoint_operator_store, kpoint_operator_get_local, kpoint_operator_get_all
+   PUBLIC :: kpoint_operator_set_native, kpoint_operator_clear_native
+   PUBLIC :: kpoint_operator_has_native
 
    INTEGER, PARAMETER, PUBLIC :: kpoint_slot_ks = 1, &
                                  kpoint_slot_s = 2, &
@@ -105,7 +110,8 @@ MODULE qs_kpoint_operators
    !> State transitions happen only inside the service routines.
    INTEGER, PARAMETER, PRIVATE :: kpoint_slot_idle = 0, &
                                   kpoint_slot_in_flight = 1, &
-                                  kpoint_slot_local = 2
+                                  kpoint_slot_local = 2, &
+                                  kpoint_slot_native = 3
 
    ! Structural route shared by all captured rows. Whole blocks go to one
    ! representative group, then only equivalent tiles are replicated.
@@ -187,9 +193,214 @@ MODULE qs_kpoint_operators
       ! atomically. Allocated on first start.
       TYPE(copy_info_type), ALLOCATABLE, DIMENSION(:, :, :, :) :: info
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)            :: status
+      ! Prepared direct values are immutable deep copies. Starts without prepare
+      ! capture their own round so a subsequent native update cannot change finish.
+      TYPE(kpoint_native_operator_type) :: native(kpoint_num_slots)
+      TYPE(cp_cfm_type), ALLOCATABLE :: native_round(:, :, :)
    END TYPE kpoint_operator_context_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Register complete unweighted complex operators on their owning k-point group.
+!>        Values are copied; rsmat is only the live operator identity used by existing consumers.
+!>        Refresh after each operator update. The host and source must outlive every context.
+!>        Input tiles must use the native AO/AO layout, including its BLACS source coordinates.
+!> \param kpoints ...
+!> \param rsmat borrowed source array identifying KS, metric or kinetic energy
+!> \param slot KS, S or T
+!> \param matrices complete matrices indexed (local k point, source row)
+! **************************************************************************************************
+   SUBROUTINE kpoint_operator_set_native(kpoints, rsmat, slot, matrices)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(dbcsr_p_type), POINTER                        :: rsmat(:, :)
+      INTEGER, INTENT(IN)                                :: slot
+      TYPE(cp_cfm_type), INTENT(IN)                      :: matrices(:, :)
+
+      INTEGER                                            :: ik, row
+      LOGICAL                                            :: compatible
+      REAL(dp)                                           :: imaginary, tolerance
+
+      CPASSERT(ASSOCIATED(kpoints) .AND. ASSOCIATED(rsmat))
+      CPASSERT(slot >= kpoint_slot_ks .AND. slot <= kpoint_slot_t)
+      CPASSERT(SIZE(matrices, 1) == SIZE(kpoints%kp_env))
+      CPASSERT(SIZE(matrices, 2) == SIZE(rsmat, 1))
+      DO row = 1, SIZE(matrices, 2)
+         DO ik = 1, SIZE(matrices, 1)
+            CPASSERT(ASSOCIATED(matrices(ik, row)%matrix_struct))
+            compatible = ASSOCIATED(matrices(ik, row)%matrix_struct%para_env, kpoints%para_env_kp)
+            compatible = compatible .AND. matrices(ik, row)%matrix_struct%nrow_global == &
+               kpoints%kp_env(ik)%kpoint_env%pmat(1, 1)%matrix_struct%nrow_global
+            compatible = compatible .AND. matrices(ik, row)%matrix_struct%ncol_global == &
+               kpoints%kp_env(ik)%kpoint_env%pmat(1, 1)%matrix_struct%ncol_global
+            compatible = compatible .AND. native_layout(matrices(ik, row)%matrix_struct, &
+                                                        kpoints%kp_env(ik)%kpoint_env%pmat(1, 1)%matrix_struct)
+            CPASSERT(compatible)
+            IF (kpoints%use_real_wfn) THEN
+               imaginary = MAXVAL(ABS(AIMAG(matrices(ik, row)%local_data)))
+               tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(matrices(ik, row)%local_data)))
+               CALL kpoints%para_env_kp%max(imaginary)
+               CALL kpoints%para_env_kp%max(tolerance)
+               CPASSERT(imaginary <= tolerance)
+            END IF
+         END DO
+      END DO
+      CALL kpoint_native_operator_clear(kpoints%native_operators(slot))
+      kpoints%native_operators(slot)%source => rsmat
+      ALLOCATE (kpoints%native_operators(slot)%matrices(SIZE(matrices, 1), SIZE(matrices, 2)))
+      DO row = 1, SIZE(matrices, 2)
+         DO ik = 1, SIZE(matrices, 1)
+            CALL native_clone(matrices(ik, row), kpoints%native_operators(slot)%matrices(ik, row))
+         END DO
+      END DO
+      IF (slot == kpoint_slot_s) CALL kpoint_clear_scf_smat(kpoints)
+   END SUBROUTINE kpoint_operator_set_native
+
+! **************************************************************************************************
+!> \brief Remove explicitly registered operators when the representation is detached.
+!> \param kpoints ...
+! **************************************************************************************************
+   SUBROUTINE kpoint_operator_clear_native(kpoints)
+      TYPE(kpoint_type), INTENT(INOUT)                   :: kpoints
+
+      INTEGER                                            :: slot
+
+      DO slot = 1, kpoint_num_slots
+         CALL kpoint_native_operator_clear(kpoints%native_operators(slot))
+      END DO
+      CALL kpoint_clear_scf_smat(kpoints)
+   END SUBROUTINE kpoint_operator_clear_native
+
+! **************************************************************************************************
+!> \brief Find an explicitly registered source identity; never infer a representation from values.
+!> \param kpoints ...
+!> \param source ...
+!> \return matching registered slot, or zero
+! **************************************************************************************************
+   INTEGER FUNCTION kpoint_operator_native_match(kpoints, source) RESULT(slot)
+      TYPE(kpoint_type), INTENT(IN)                      :: kpoints
+      TYPE(dbcsr_p_type), POINTER                        :: source(:, :)
+
+      INTEGER                                            :: i
+
+      slot = 0
+      DO i = 1, kpoint_num_slots
+         IF (ASSOCIATED(kpoints%native_operators(i)%source, source)) THEN
+            CPASSERT(slot == 0)
+            slot = i
+         END IF
+      END DO
+   END FUNCTION kpoint_operator_native_match
+
+! **************************************************************************************************
+!> \brief A registered complete operator bypasses finite-image Fourier and lattice-FFT assembly.
+!> \param kpoints ...
+!> \param source ...
+!> \return ...
+! **************************************************************************************************
+   LOGICAL FUNCTION kpoint_operator_has_native(kpoints, source) RESULT(native)
+      TYPE(kpoint_type), INTENT(IN)                      :: kpoints
+      TYPE(dbcsr_p_type), POINTER                        :: source(:, :)
+
+      native = kpoint_operator_native_match(kpoints, source) > 0
+   END FUNCTION kpoint_operator_has_native
+
+! **************************************************************************************************
+!> \brief Deep-copy a direct operator on the same BLACS layout.
+!> \param source ...
+!> \param TARGET ...
+! **************************************************************************************************
+   SUBROUTINE native_clone(source, TARGET)
+      TYPE(cp_cfm_type), INTENT(IN)                      :: source
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: target
+
+      CPASSERT(.NOT. ASSOCIATED(target%local_data))
+      CALL cp_cfm_create(TARGET, source%matrix_struct)
+      target%local_data(:, :) = source%local_data
+   END SUBROUTINE native_clone
+
+! **************************************************************************************************
+!> \brief Capture immutable direct values for a driver-local prepared slot.
+!> \param source ...
+!> \param TARGET ...
+! **************************************************************************************************
+   SUBROUTINE native_snapshot(source, TARGET)
+      TYPE(kpoint_native_operator_type), INTENT(IN)      :: source
+      TYPE(kpoint_native_operator_type), INTENT(INOUT)   :: target
+
+      INTEGER                                            :: ik, row
+
+      CPASSERT(ALLOCATED(source%matrices))
+      target%source => source%source
+      ALLOCATE (target%matrices(SIZE(source%matrices, 1), SIZE(source%matrices, 2)))
+      DO row = 1, SIZE(source%matrices, 2)
+         DO ik = 1, SIZE(source%matrices, 1)
+            CALL native_clone(source%matrices(ik, row), target%matrices(ik, row))
+         END DO
+      END DO
+   END SUBROUTINE native_snapshot
+
+! **************************************************************************************************
+!> \brief Include BLACS source coordinates in the direct tile compatibility check.
+!> \param left ...
+!> \param right ...
+!> \return ...
+! **************************************************************************************************
+   LOGICAL FUNCTION native_layout(left, right) RESULT(equivalent)
+      TYPE(cp_fm_struct_type), POINTER                   :: left, right
+
+      equivalent = cp_fm_struct_equivalent(left, right)
+      equivalent = equivalent .AND. ALL(left%descriptor == right%descriptor)
+   END FUNCTION native_layout
+
+! **************************************************************************************************
+!> \brief Copy a complete direct tile. Prepared/evaluate copies have no allocation or MPI.
+!>        Synchronous FM outputs may redistribute within the owning group.
+!> \param source ...
+!> \param TARGET ...
+!> \param fm_re ...
+!> \param fm_im ...
+!> \param redistribute allow an alternative FM layout on the same group communicator
+! **************************************************************************************************
+   SUBROUTINE native_copy(source, TARGET, fm_re, fm_im, redistribute)
+      TYPE(cp_cfm_type), INTENT(IN)                      :: source
+      TYPE(cp_cfm_type), OPTIONAL                        :: target
+      TYPE(cp_fm_type), OPTIONAL                         :: fm_re, fm_im
+      LOGICAL, INTENT(IN), OPTIONAL                      :: redistribute
+
+      LOGICAL                                            :: equivalent
+      TYPE(cp_fm_type)                                   :: work
+
+      IF (PRESENT(TARGET)) THEN
+         CPASSERT(native_layout(source%matrix_struct, target%matrix_struct))
+         target%local_data(:, :) = source%local_data
+      ELSE
+         CPASSERT(PRESENT(fm_re))
+         equivalent = native_layout(source%matrix_struct, fm_re%matrix_struct)
+         IF (PRESENT(fm_im)) THEN
+            equivalent = equivalent .AND. native_layout(source%matrix_struct, fm_im%matrix_struct)
+         END IF
+         IF (equivalent) THEN
+            fm_re%local_data(:, :) = REAL(source%local_data, dp)
+            IF (PRESENT(fm_im)) fm_im%local_data(:, :) = AIMAG(source%local_data)
+         ELSE
+            CPASSERT(PRESENT(redistribute))
+            CPASSERT(redistribute)
+            equivalent = ASSOCIATED(source%matrix_struct%para_env, fm_re%matrix_struct%para_env)
+            CPASSERT(equivalent)
+            CALL cp_fm_create(work, source%matrix_struct)
+            work%local_data(:, :) = REAL(source%local_data, dp)
+            CALL cp_fm_copy_general(work, fm_re, source%matrix_struct%para_env)
+            IF (PRESENT(fm_im)) THEN
+               equivalent = ASSOCIATED(source%matrix_struct%para_env, fm_im%matrix_struct%para_env)
+               CPASSERT(equivalent)
+               work%local_data(:, :) = AIMAG(source%local_data)
+               CALL cp_fm_copy_general(work, fm_im, source%matrix_struct%para_env)
+            END IF
+            CALL cp_fm_release(work)
+         END IF
+      END IF
+   END SUBROUTINE native_copy
 
 ! **************************************************************************************************
 !> \brief Transform and densify one operator using the context-owned workspaces and routing plans.
@@ -417,7 +628,7 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_operator_context_release'
 
-      INTEGER                                            :: handle, ispin, iwork, slot
+      INTEGER                                            :: handle, ik, ispin, iwork, slot
 
       CALL timeset(routineN, handle)
 
@@ -425,6 +636,19 @@ CONTAINS
       ! holds MPI requests that nothing would ever wait for.
       IF (ALLOCATED(ctx%status)) THEN
          CPASSERT(ALL(ctx%status == kpoint_slot_idle))
+      END IF
+      DO slot = 1, kpoint_num_slots
+         CALL kpoint_native_operator_clear(ctx%native(slot))
+      END DO
+      IF (ALLOCATED(ctx%native_round)) THEN
+         DO slot = 1, kpoint_num_slots
+            DO ispin = 1, ctx%nspin
+               DO ik = 1, SIZE(ctx%native_round, 1)
+                  CALL cp_cfm_release(ctx%native_round(ik, ispin, slot))
+               END DO
+            END DO
+         END DO
+         DEALLOCATE (ctx%native_round)
       END IF
 
       IF (ASSOCIATED(ctx%rmatrix)) CALL dbcsr_deallocate_matrix(ctx%rmatrix)
@@ -587,6 +811,27 @@ CONTAINS
       END IF
       IF (ALLOCATED(ctx%status)) THEN
          CPASSERT(ALL(ctx%status == kpoint_slot_idle))
+      END IF
+      CALL kpoint_native_operator_clear(ctx%native(slot))
+      row = kpoint_operator_native_match(ctx%kpoints, rsmat)
+      IF (row > 0) THEN
+         IF (PRESENT(matrix_row)) THEN
+            CPASSERT(matrix_row >= 1 .AND. matrix_row <= SIZE(rsmat, 1))
+         ELSE
+            CPASSERT(SIZE(rsmat, 1) == ctx%nspin)
+         END IF
+         IF (PRESENT(TARGET)) THEN
+            IF (.NOT. native_layout(target%matrix_struct, &
+                                    ctx%kpoints%native_operators(row)%matrices(1, 1)%matrix_struct)) THEN
+               CALL timestop(handle)
+               RETURN
+            END IF
+         END IF
+         CALL native_snapshot(ctx%kpoints%native_operators(row), ctx%native(slot))
+         IF (PRESENT(matrix_row)) ctx%native(slot)%matrix_row = matrix_row
+         IF (PRESENT(prepared)) prepared = .TRUE.
+         CALL timestop(handle)
+         RETURN
       END IF
       IF (.NOT. ALLOCATED(ctx%rs)) THEN
          ALLOCATE (ctx%rs(ctx%nspin, kpoint_num_slots), ctx%rs_batch(ctx%nspin, kpoint_num_slots))
@@ -1335,8 +1580,8 @@ CONTAINS
       TYPE(kpoint_operator_context_type), INTENT(IN)     :: ctx
       INTEGER, INTENT(OUT)                               :: nentry
 
-      CPASSERT(ALLOCATED(ctx%rs_route))
-      nentry = SIZE(ctx%rs_route%entry, 2)
+      nentry = 0
+      IF (ALLOCATED(ctx%rs_route)) nentry = SIZE(ctx%rs_route%entry, 2)
    END SUBROUTINE kpoint_operator_work_size
 
 ! **************************************************************************************************
@@ -1364,6 +1609,13 @@ CONTAINS
 
       CPASSERT(ik >= ctx%kpoints%kp_range(1))
       CPASSERT(ik <= ctx%kpoints%kp_range(2))
+      IF (ASSOCIATED(ctx%native(slot)%source)) THEN
+         row = ispin
+         IF (ctx%native(slot)%matrix_row > 0) row = ctx%native(slot)%matrix_row
+         CALL native_copy(ctx%native(slot)%matrices(ik - ctx%kpoints%kp_range(1) + 1, row), &
+                          TARGET, fm_re, fm_im)
+         RETURN
+      END IF
       row = ispin
       IF (.NOT. ASSOCIATED(ctx%rs(row, slot)%source)) row = 1
       CPASSERT(ASSOCIATED(ctx%rs(row, slot)%source))
@@ -1413,7 +1665,8 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_operator_start'
 
-      INTEGER                                            :: handle, igroup, ik, irs, kpmax
+      INTEGER                                            :: handle, igroup, ik, irs, kpmax, &
+                                                            native_slot
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
 
       CALL timeset(routineN, handle)
@@ -1436,6 +1689,24 @@ CONTAINS
          ctx%status(:, :, :) = kpoint_slot_idle
       END IF
       CPASSERT(ctx%status(ikp, ispin, slot) == kpoint_slot_idle)
+      native_slot = kpoint_operator_native_match(ctx%kpoints, rsmat)
+      IF (ASSOCIATED(ctx%native(slot)%source, rsmat) .OR. native_slot > 0) THEN
+         IF (.NOT. ALLOCATED(ctx%native_round)) THEN
+            ALLOCATE (ctx%native_round(kpmax, ctx%nspin, kpoint_num_slots))
+         END IF
+         IF (ikp <= SIZE(ctx%kpoints%kp_env)) THEN
+            IF (ASSOCIATED(ctx%native(slot)%source, rsmat)) THEN
+               CALL native_clone(ctx%native(slot)%matrices(ikp, matrix_row), &
+                                 ctx%native_round(ikp, ispin, slot))
+            ELSE
+               CALL native_clone(ctx%kpoints%native_operators(native_slot)%matrices(ikp, matrix_row), &
+                                 ctx%native_round(ikp, ispin, slot))
+            END IF
+         END IF
+         ctx%status(ikp, ispin, slot) = kpoint_slot_native
+         CALL timestop(handle)
+         RETURN
+      END IF
       IF (.NOT. use_grid) THEN
          irs = kpoint_operator_rs_match(ctx, rsmat, ispin, slot, matrix_row)
          IF (irs > 0) THEN
@@ -1516,6 +1787,15 @@ CONTAINS
       CPASSERT(PRESENT(cmat) .NEQV. PRESENT(fm_re))
       CPASSERT(.NOT. PRESENT(fm_re) .OR. ctx%kpoints%use_real_wfn)
       kp_range = ctx%kpoints%kp_range
+      IF (ctx%status(ikp, ispin, slot) == kpoint_slot_native) THEN
+         IF (ikp <= SIZE(ctx%kpoints%kp_env)) THEN
+            CALL native_copy(ctx%native_round(ikp, ispin, slot), cmat, fm_re)
+            CALL cp_cfm_release(ctx%native_round(ikp, ispin, slot))
+         END IF
+         ctx%status(ikp, ispin, slot) = kpoint_slot_idle
+         CALL timestop(handle)
+         RETURN
+      END IF
       IF (ctx%status(ikp, ispin, slot) == kpoint_slot_local) THEN
          irs = ispin
          IF (.NOT. ASSOCIATED(ctx%rs(irs, slot)%source)) irs = 1
@@ -1599,7 +1879,8 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_operator_get'
 
-      INTEGER                                            :: handle, igroup, ik, irs, kpmax
+      INTEGER                                            :: handle, igroup, ik, irs, kpmax, &
+                                                            native_slot
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
       LOGICAL                                            :: layout_ok
       TYPE(copy_info_type)                               :: info(2)
@@ -1621,6 +1902,38 @@ CONTAINS
       CPASSERT(matrix_row >= 1 .AND. matrix_row <= SIZE(rsmat, 1))
       kpmax = MAXVAL(ctx%kpoints%kp_dist(2, :) - ctx%kpoints%kp_dist(1, :) + 1)
       CPASSERT(ikp >= 1 .AND. ikp <= kpmax)
+      native_slot = kpoint_operator_native_match(ctx%kpoints, rsmat)
+      IF (PRESENT(slot)) THEN
+         CPASSERT(slot >= kpoint_slot_ks .AND. slot <= kpoint_slot_t)
+         IF (ASSOCIATED(ctx%native(slot)%source, rsmat)) native_slot = -slot
+      END IF
+      IF (native_slot /= 0) THEN
+         IF (ikp <= SIZE(ctx%kpoints%kp_env)) THEN
+            BLOCK
+               TYPE(cp_cfm_type) :: direct
+               ! Borrow only the descriptor; the owning live or prepared values remain untouched.
+               IF (native_slot < 0) THEN
+                  direct = ctx%native(-native_slot)%matrices(ikp, matrix_row)
+               ELSE
+                  direct = ctx%kpoints%native_operators(native_slot)%matrices(ikp, matrix_row)
+               END IF
+               IF (PRESENT(mat_re)) THEN
+                  CALL kpoint_operator_ensure_group(ctx)
+                  IF (.NOT. ALLOCATED(ctx%fmimag)) THEN
+                     ALLOCATE (ctx%fmimag)
+                     CALL cp_fm_create(ctx%fmimag, ctx%fmlocal%matrix_struct)
+                  END IF
+                  CALL native_copy(direct, fm_re=ctx%fmlocal, fm_im=ctx%fmimag, redistribute=.TRUE.)
+                  CALL copy_fm_to_dbcsr_bc(ctx%fmlocal, mat_re)
+                  CALL copy_fm_to_dbcsr_bc(ctx%fmimag, mat_im)
+               ELSE
+                  CALL native_copy(direct, cmat, fm_re, fm_im, redistribute=.TRUE.)
+               END IF
+            END BLOCK
+         END IF
+         CALL timestop(handle)
+         RETURN
+      END IF
       IF (PRESENT(slot) .AND. .NOT. PRESENT(grid)) THEN
          CPASSERT(slot >= kpoint_slot_ks .AND. slot <= kpoint_slot_t)
          irs = kpoint_operator_rs_match(ctx, rsmat, ispin, slot, matrix_row)
@@ -1708,7 +2021,7 @@ CONTAINS
       xkp => kpoints%xkp
       cell_to_index => kpoints%cell_to_index
       sab_nl => kpoints%sab_nl
-      IF (nkp_groups == 1) THEN
+      IF (nkp_groups == 1 .AND. kpoint_operator_native_match(kpoints, matrix_rs) == 0) THEN
          CPASSERT(ASSOCIATED(xkp))
          CPASSERT(ASSOCIATED(cell_to_index))
          CPASSERT(ASSOCIATED(sab_nl))
@@ -1753,6 +2066,7 @@ CONTAINS
       INTEGER                                            :: handle, ik, ikp, kplocal, kpmax, nentry, &
                                                             nworkers
       LOGICAL                                            :: layout_ok, prepared
+      TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(kpoint_operator_context_type)                 :: ctx
 
       CALL timeset(routineN, handle)
@@ -1761,8 +2075,13 @@ CONTAINS
       CALL kpoint_operator_context_create(ctx, kpoints, ao_ao_fm, 1)
       CALL kpoint_operator_prepare(ctx, rsmat, slot, prepared, matrix_row=matrix_row)
       IF (prepared .AND. kpoints%para_env_kp%num_pe == 1) THEN
+         IF (ASSOCIATED(ctx%native(slot)%source)) THEN
+            matrix_struct => ctx%native(slot)%matrices(1, matrix_row)%matrix_struct
+         ELSE
+            matrix_struct => ctx%rs_route%matrix_struct
+         END IF
          DO ikp = 1, kplocal
-            layout_ok = cp_fm_struct_equivalent(cmat(ikp)%matrix_struct, ctx%rs_route%matrix_struct)
+            layout_ok = cp_fm_struct_equivalent(cmat(ikp)%matrix_struct, matrix_struct)
             CPASSERT(layout_ok)
          END DO
          CALL kpoint_operator_work_size(ctx, nentry)
@@ -1892,6 +2211,7 @@ CONTAINS
 !$       nworkers = omp_get_max_threads()
          use_grid = kpoints%lattice_fft == lattice_fft_on .OR. &
                     (kpoints%lattice_fft == lattice_fft_auto .AND. SIZE(kpoints%xkp, 2) >= 27)
+         use_grid = use_grid .AND. .NOT. kpoint_operator_has_native(kpoints, rsmat)
          prepared = .FALSE.
          ! Match STANDARD's single-world-rank, single-thread preference for the forward lattice FFT.
          IF (.NOT. use_grid .OR. nworkers > 1 .OR. kpoints%blacs_env_all%para_env%num_pe > 1) THEN
