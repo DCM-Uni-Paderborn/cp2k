@@ -38,6 +38,7 @@ MODULE qs_upf_inverse
 
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_prepare, qs_upf_inverse_from_ks
    PUBLIC :: qs_upf_inverse_response, qs_upf_inverse_release
+   PUBLIC :: qs_upf_inverse_evaluate
 
 CONTAINS
 
@@ -202,6 +203,111 @@ CONTAINS
                                 frame%coefficients, frame%soft_gradient(:, :, axis))
       END DO
    END SUBROUTINE qs_upf_inverse_prepare
+
+! **************************************************************************************************
+!> \brief Evaluate another point batch with the existing inverse transformation.
+!>        Point values and gradients use the original frame's W and fixed image set.
+!>        A geometry response requires dW from that frame's defining quadrature, rather than
+!>        a new inverse fitted to the evaluation points or their integration weights.
+!> \param frame Prepared inverse frame, including borrowed live native bases.
+!> \param points New local Cartesian points, indexed (axis,point), possibly empty.
+!> \param soft Inverse-transformed basis values, overwritten.
+!> \param gradient Their physical spatial gradients, overwritten.
+!> \param soft_response Optional joint response, required with the other response arguments.
+!> \param gradient_response Optional physical-gradient response.
+!> \param point_response Optional Cartesian motion of the evaluation points.
+!> \param atom_response Optional Cartesian motion of all native atoms.
+!> \param cell_response Optional lattice response at fixed reduced Bloch convention.
+!> \param reduced_k_response Optional reduced Bloch-vector response.
+!> \param coefficients_response Optional dW from the original frame's quadrature response.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_evaluate(frame, points, soft, gradient, soft_response, gradient_response, &
+                                      point_response, atom_response, cell_response, reduced_k_response, &
+                                      coefficients_response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      REAL(dp), INTENT(IN)                               :: points(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: soft(:, :), gradient(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: soft_response(:, :), &
+                                                            gradient_response(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
+                                                            atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :), ddelta(:, :), &
+                                                            delta(:, :), dgc(:, :, :), &
+                                                            dgd(:, :, :), gc(:, :, :), gd(:, :, :)
+      INTEGER                                            :: atom, axis, center, first, ikind, last, &
+                                                            nao, npoint, nproj
+      LOGICAL                                            :: calculate_response
+
+      CPASSERT(frame%inverse%ready)
+      CPASSERT(SIZE(points, 1) == 3)
+      npoint = SIZE(points, 2)
+      nao = SIZE(frame%coefficients, 2)
+      nproj = SIZE(frame%coefficients, 1)
+      CPASSERT(ALL(SHAPE(soft) == [npoint, nao]))
+      CPASSERT(ALL(SHAPE(gradient) == [npoint, nao, 3]))
+      calculate_response = PRESENT(soft_response) .OR. PRESENT(gradient_response) .OR. &
+                           PRESENT(point_response) .OR. PRESENT(atom_response) .OR. &
+                           PRESENT(cell_response) .OR. PRESENT(reduced_k_response) .OR. &
+                           PRESENT(coefficients_response)
+      IF (calculate_response) THEN
+         CPASSERT(PRESENT(soft_response) .AND. PRESENT(gradient_response))
+         CPASSERT(PRESENT(point_response) .AND. PRESENT(atom_response))
+         CPASSERT(PRESENT(cell_response) .AND. PRESENT(reduced_k_response))
+         CPASSERT(PRESENT(coefficients_response))
+         CPASSERT(ALL(SHAPE(soft_response) == [npoint, nao]))
+         CPASSERT(ALL(SHAPE(gradient_response) == [npoint, nao, 3]))
+         CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
+         CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
+         CPASSERT(ALL(SHAPE(coefficients_response) == SHAPE(frame%coefficients)))
+      END IF
+      ALLOCATE (chi(npoint, nao), gc(npoint, nao, 3), delta(npoint, nproj), gd(npoint, nproj, 3))
+      IF (calculate_response) THEN
+         ALLOCATE (dchi(npoint, nao), dgc(npoint, nao, 3), ddelta(npoint, nproj), dgd(npoint, nproj, 3))
+      END IF
+      DO atom = 1, SIZE(frame%bases)
+         first = frame%ao_first(atom)
+         last = frame%ao_last(atom)
+         IF (calculate_response) THEN
+            CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
+                                                frame%cell, frame%images, frame%reduced_k, chi(:, first:last), &
+                                                gc(:, first:last, :), dchi(:, first:last), dgc(:, first:last, :), &
+                                                point_response, atom_response(:, atom), cell_response, reduced_k_response)
+         ELSE
+            CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
+                                                frame%cell, frame%images, frame%reduced_k, chi(:, first:last), gc(:, first:last, :))
+         END IF
+      END DO
+      DO center = 1, SIZE(frame%center_atoms)
+         atom = frame%center_atoms(center)
+         ikind = frame%center_kinds(center)
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         IF (calculate_response) THEN
+            CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
+                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), gd(:, first:last, :), &
+                                            ddelta(:, first:last), dgd(:, first:last, :), point_response, atom_response(:, atom), &
+                                            cell_response, reduced_k_response)
+         ELSE
+            CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
+                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), gd(:, first:last, :))
+         END IF
+      END DO
+      CALL upf_inverse_basis(chi, delta, frame%coefficients, soft)
+      IF (calculate_response) THEN
+         CALL upf_inverse_basis_response(dchi, delta, ddelta, frame%coefficients, coefficients_response, soft_response)
+      END IF
+      DO axis = 1, 3
+         CALL upf_inverse_basis(gc(:, :, axis), gd(:, :, axis), frame%coefficients, gradient(:, :, axis))
+         IF (calculate_response) THEN
+            CALL upf_inverse_basis_response(dgc(:, :, axis), gd(:, :, axis), dgd(:, :, axis), frame%coefficients, &
+                                            coefficients_response, gradient_response(:, :, axis))
+         END IF
+      END DO
+   END SUBROUTINE qs_upf_inverse_evaluate
 
 ! **************************************************************************************************
 !> \brief Joint point/atom/cell/Bloch response in the same native AO and projector frame.

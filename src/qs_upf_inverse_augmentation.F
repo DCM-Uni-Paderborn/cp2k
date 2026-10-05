@@ -13,6 +13,7 @@
 MODULE qs_upf_inverse_augmentation
    USE kinds,                           ONLY: dp
    USE mathlib,                         ONLY: invmat
+   USE message_passing,                 ONLY: mp_comm_type
    USE pw_grid_types,                   ONLY: FULLSPACE,&
                                               HALFSPACE,&
                                               PW_MODE_LOCAL,&
@@ -89,12 +90,14 @@ CONTAINS
 !> \param projector_density Full Hermitian W P W^dagger, including occupations and k weights.
 !> \param density Local density, incremented without weights.
 !> \param gradient Local physical Cartesian density gradient, axis last, incremented.
+!> \param points Optional evaluation points, independent of the frame's defining quadrature.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_augmentation_collocate(frame, augmentation, projector_density, density, gradient)
+   SUBROUTINE qs_upf_inverse_augmentation_collocate(frame, augmentation, projector_density, density, gradient, points)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: projector_density(:, :)
       REAL(dp), INTENT(INOUT)                            :: density(:), gradient(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: points(:, :)
 
       INTEGER                                            :: atom, center, first, ikind, image, last, &
                                                             n
@@ -104,7 +107,11 @@ CONTAINS
       CPASSERT(frame%inverse%ready)
       n = frame%inverse%nproj
       CPASSERT(ALL(SHAPE(projector_density) == [n, n]))
-      CPASSERT(SIZE(density) == SIZE(frame%weights))
+      IF (PRESENT(points)) THEN
+         CPASSERT(ALL(SHAPE(points) == [3, SIZE(density)]))
+      ELSE
+         CPASSERT(SIZE(density) == SIZE(frame%weights))
+      END IF
       CPASSERT(ALL(SHAPE(gradient) == [SIZE(density), 3]))
       tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(projector_density)))
       hermiticity = MAXVAL(ABS(projector_density - CONJG(TRANSPOSE(projector_density))))
@@ -118,7 +125,11 @@ CONTAINS
          last = frame%projector_last(center)
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
-            displacements(:, :) = frame%points - SPREAD(position, 2, SIZE(density))
+            IF (PRESENT(points)) THEN
+               displacements(:, :) = points - SPREAD(position, 2, SIZE(density))
+            ELSE
+               displacements(:, :) = frame%points - SPREAD(position, 2, SIZE(density))
+            END IF
             CALL uspp_augmentation_collocate_atom(augmentation%kinds(ikind), displacements, &
                                                   REAL(projector_density(first:last, first:last), dp), density, g)
          END DO
@@ -133,20 +144,32 @@ CONTAINS
 !> \param vdensity Unweighted potential conjugate to the augmented density.
 !> \param vgradient Unweighted potential conjugate to its Cartesian gradient, axis last.
 !> \param projector_operator New full projector operator; original Q contributes only same-center blocks.
+!> \param points Optional evaluation points, required with weights and comm.
+!> \param weights Optional measure of the evaluation quadrature, including any partition weights.
+!> \param comm Optional communicator distributing the evaluation points.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_augmentation_integrate(frame, augmentation, vdensity, vgradient, projector_operator)
+   SUBROUTINE qs_upf_inverse_augmentation_integrate(frame, augmentation, vdensity, vgradient, projector_operator, &
+                                                    points, weights, comm)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       REAL(dp), INTENT(IN)                               :: vdensity(:), vgradient(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: projector_operator(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: points(:, :), weights(:)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
 
       INTEGER                                            :: atom, center, first, ikind, image, last
       REAL(dp)                                           :: position(3)
       REAL(dp), ALLOCATABLE                              :: displacements(:, :), matrix(:, :)
 
-      CALL check_operator(frame, vdensity, vgradient, projector_operator)
+      CALL check_operator(frame, vdensity, vgradient, projector_operator, points)
+      IF (PRESENT(points)) THEN
+         CPASSERT(PRESENT(weights) .AND. PRESENT(comm))
+         CPASSERT(SIZE(weights) == SIZE(vdensity))
+      ELSE
+         CPASSERT(.NOT. PRESENT(weights) .AND. .NOT. PRESENT(comm))
+      END IF
       projector_operator = CMPLX(0.0_dp, 0.0_dp, dp)
-      ALLOCATE (displacements(3, SIZE(frame%weights)))
+      ALLOCATE (displacements(3, SIZE(vdensity)))
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
@@ -155,14 +178,24 @@ CONTAINS
          ALLOCATE (matrix(last - first + 1, last - first + 1))
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
-            displacements(:, :) = frame%points - SPREAD(position, 2, SIZE(frame%weights))
-            CALL uspp_augmentation_integrate_atom(augmentation%kinds(ikind), displacements, frame%weights, &
-                                                  vdensity, TRANSPOSE(vgradient), matrix)
+            IF (PRESENT(points)) THEN
+               displacements(:, :) = points - SPREAD(position, 2, SIZE(vdensity))
+               CALL uspp_augmentation_integrate_atom(augmentation%kinds(ikind), displacements, weights, &
+                                                     vdensity, TRANSPOSE(vgradient), matrix)
+            ELSE
+               displacements(:, :) = frame%points - SPREAD(position, 2, SIZE(vdensity))
+               CALL uspp_augmentation_integrate_atom(augmentation%kinds(ikind), displacements, frame%weights, &
+                                                     vdensity, TRANSPOSE(vgradient), matrix)
+            END IF
             projector_operator(first:last, first:last) = projector_operator(first:last, first:last) + matrix
          END DO
          DEALLOCATE (matrix)
       END DO
-      CALL frame%point_comm%sum(projector_operator)
+      IF (PRESENT(comm)) THEN
+         CALL comm%sum(projector_operator)
+      ELSE
+         CALL frame%point_comm%sum(projector_operator)
+      END IF
    END SUBROUTINE qs_upf_inverse_augmentation_integrate
 
 ! **************************************************************************************************
@@ -451,28 +484,39 @@ CONTAINS
 !> \param vdensity_response Explicit response of the conjugate potential.
 !> \param vgradient_response ...
 !> \param response New full projector-operator response, reduced once over point rows.
+!> \param points Optional evaluation points, required with weights and comm.
+!> \param weights Optional measure of the evaluation quadrature.
+!> \param comm Optional communicator distributing the evaluation points.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_augmentation_response(frame, augmentation, vdensity, vgradient, &
                                                    point_response, atom_response, cell_response, weights_response, &
-                                                   vdensity_response, vgradient_response, response)
+                                                   vdensity_response, vgradient_response, response, points, weights, comm)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       REAL(dp), INTENT(IN) :: vdensity(:), vgradient(:, :), point_response(:, :), &
          atom_response(:, :), cell_response(3, 3), weights_response(:), vdensity_response(:), &
          vgradient_response(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: points(:, :), weights(:)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
 
       INTEGER                                            :: atom, axis, center, first, ikind, image, &
                                                             last, n, point
-      REAL(dp)                                           :: dr(3), position(3), r(3), radius2
+      REAL(dp)                                           :: dr(3), position(3), r(3), radius2, weight
       REAL(dp), ALLOCATABLE                              :: dq(:, :, :), dterm(:, :), &
                                                             hq(:, :, :, :), q(:, :), term(:, :)
 
-      CALL check_operator(frame, vdensity, vgradient, response)
-      CPASSERT(ALL(SHAPE(point_response) == SHAPE(frame%points)))
+      CALL check_operator(frame, vdensity, vgradient, response, points)
+      IF (PRESENT(points)) THEN
+         CPASSERT(PRESENT(weights) .AND. PRESENT(comm))
+         CPASSERT(SIZE(weights) == SIZE(vdensity))
+      ELSE
+         CPASSERT(.NOT. PRESENT(weights) .AND. .NOT. PRESENT(comm))
+      END IF
+      CPASSERT(ALL(SHAPE(point_response) == [3, SIZE(vdensity)]))
       CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
-      CPASSERT(SIZE(weights_response) == SIZE(frame%weights))
-      CPASSERT(SIZE(vdensity_response) == SIZE(frame%weights))
+      CPASSERT(SIZE(weights_response) == SIZE(vdensity))
+      CPASSERT(SIZE(vdensity_response) == SIZE(vdensity))
       CPASSERT(ALL(SHAPE(vgradient_response) == SHAPE(vgradient)))
       response = CMPLX(0.0_dp, 0.0_dp, dp)
       DO center = 1, SIZE(frame%center_atoms)
@@ -485,8 +529,14 @@ CONTAINS
          ALLOCATE (q(n, n), dq(n, n, 3), hq(n, n, 3, 3), term(n, n), dterm(n, n))
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
-            DO point = 1, SIZE(frame%weights)
-               r = frame%points(:, point) - position
+            DO point = 1, SIZE(vdensity)
+               IF (PRESENT(points)) THEN
+                  r = points(:, point) - position
+                  weight = weights(point)
+               ELSE
+                  r = frame%points(:, point) - position
+                  weight = frame%weights(point)
+               END IF
                IF (DOT_PRODUCT(r, r) > radius2) CYCLE
                dr = point_response(:, point) - atom_response(:, atom) - MATMUL(cell_response, REAL(frame%images(:, image), dp))
                CALL uspp_augmentation_realspace(augmentation%kinds(ikind), r, q, dq, hq)
@@ -500,12 +550,16 @@ CONTAINS
                                                                 hq(:, :, axis, 2)*dr(2) + hq(:, :, axis, 3)*dr(3))
                END DO
                response(first:last, first:last) = response(first:last, first:last) + &
-                                                  frame%weights(point)*dterm + weights_response(point)*term
+                                                  weight*dterm + weights_response(point)*term
             END DO
          END DO
          DEALLOCATE (q, dq, hq, term, dterm)
       END DO
-      CALL frame%point_comm%sum(response)
+      IF (PRESENT(comm)) THEN
+         CALL comm%sum(response)
+      ELSE
+         CALL frame%point_comm%sum(response)
+      END IF
    END SUBROUTINE qs_upf_inverse_augmentation_response
 
 ! **************************************************************************************************
@@ -514,15 +568,21 @@ CONTAINS
 !> \param vdensity ...
 !> \param vgradient ...
 !> \param projector_operator ...
+!> \param points Optional evaluation points in a quadrature distinct from frame.
 ! **************************************************************************************************
-   SUBROUTINE check_operator(frame, vdensity, vgradient, projector_operator)
+   SUBROUTINE check_operator(frame, vdensity, vgradient, projector_operator, points)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: vdensity(:), vgradient(:, :)
       COMPLEX(dp), INTENT(IN)                            :: projector_operator(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: points(:, :)
 
       CPASSERT(frame%inverse%ready)
-      CPASSERT(SIZE(vdensity) == SIZE(frame%weights))
-      CPASSERT(ALL(SHAPE(vgradient) == [SIZE(frame%weights), 3]))
+      IF (PRESENT(points)) THEN
+         CPASSERT(ALL(SHAPE(points) == [3, SIZE(vdensity)]))
+      ELSE
+         CPASSERT(SIZE(vdensity) == SIZE(frame%weights))
+      END IF
+      CPASSERT(ALL(SHAPE(vgradient) == [SIZE(vdensity), 3]))
       CPASSERT(ALL(SHAPE(projector_operator) == frame%inverse%nproj))
    END SUBROUTINE check_operator
 
