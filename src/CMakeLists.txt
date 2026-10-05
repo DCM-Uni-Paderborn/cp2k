@@ -66,6 +66,7 @@ list(
   atom_uspp.F
   upf_projector_integrals.F
   upf_inverse.F
+  upf_radial_fields.F
   upf_local_integrals.F
   uspp_augmentation.F
   uspp_projector_operators.F

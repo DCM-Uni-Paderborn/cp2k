@@ -18,6 +18,8 @@ MODULE upf_inverse
    USE kinds,                           ONLY: dp
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
+   USE upf_radial_fields,               ONLY: upf_radial_fields_init,&
+                                              upf_radial_fields_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -34,7 +36,7 @@ MODULE upf_inverse
    PUBLIC :: upf_inverse_type, upf_inverse_init, upf_inverse_project, upf_inverse_project_response
    PUBLIC :: upf_inverse_basis, upf_inverse_basis_response
    PUBLIC :: upf_inverse_operator, upf_inverse_operator_response
-   PUBLIC :: upf_inverse_delta_init
+   PUBLIC :: upf_inverse_delta_init, upf_inverse_fields_init
 
 CONTAINS
 
@@ -51,9 +53,44 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: degree
       TYPE(upf_projector_type), INTENT(OUT)              :: delta
 
-      INTEGER                                            :: i, n, nb
       TYPE(atom_upfpot_type)                             :: radial
 
+      CALL inverse_radial_data(pot, radial)
+      CALL upf_projector_init(radial, degree, delta)
+   END SUBROUTINE upf_inverse_delta_init
+
+! **************************************************************************************************
+!> \brief Prepare original beta and AE-minus-PS fields for common intercenter quadratures.
+!>        Native radial channels and real harmonics agree with the Gaussian overlap cache.
+!> \param pot Original UPF data with complete projector-indexed full waves.
+!> \param beta Original projector fields, without weights.
+!> \param delta Original reconstruction differences, without weights.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_fields_init(pot, beta, delta)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(upf_radial_fields_type), INTENT(OUT)          :: beta, delta
+
+      TYPE(atom_upfpot_type)                             :: radial
+
+      CALL inverse_radial_data(pot, radial)
+      CALL upf_radial_fields_init(pot%r, pot%beta, pot%lbeta, beta)
+      CALL upf_radial_fields_init(radial%r, radial%beta, radial%lbeta, delta)
+   END SUBROUTINE upf_inverse_fields_init
+
+! **************************************************************************************************
+!> \brief Assemble original reconstruction differences for overlap and point-field caches.
+!> \param pot Original UPF data.
+!> \param radial Unweighted original differences in the native radial-channel order.
+! **************************************************************************************************
+   SUBROUTINE inverse_radial_data(pot, radial)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(atom_upfpot_type), INTENT(OUT)                :: radial
+
+      INTEGER                                            :: i, n, nb
+
+      IF (pot%has_so) THEN
+         CPABORT("Spin-orbit UPF inverse fields are not supported")
+      END IF
       IF (.NOT. ALLOCATED(pot%partial_waves)) THEN
          CPABORT("Inverse UPF reconstruction requires original projector-indexed AE/PS full partial waves")
       END IF
@@ -86,8 +123,7 @@ CONTAINS
             radial%beta(:, i) = radial%beta(:, i)/pot%r
          END IF
       END DO
-      CALL upf_projector_init(radial, degree, delta)
-   END SUBROUTINE upf_inverse_delta_init
+   END SUBROUTINE inverse_radial_data
 
 ! **************************************************************************************************
 !> \brief Factor K with original projector normalization and all supplied intercenter blocks.

@@ -73,6 +73,7 @@ PROGRAM uspp_projector_operators_unittest
    USE sap_kind_types,                  ONLY: release_sap_int,&
                                               sap_int_type,&
                                               sap_sort
+   USE spherical_harmonics,             ONLY: y_lm
    USE upf_inverse,                     ONLY: upf_inverse_basis,&
                                               upf_inverse_basis_response,&
                                               upf_inverse_init,&
@@ -86,6 +87,10 @@ PROGRAM uspp_projector_operators_unittest
                                               upf_local_type
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_type
+   USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
+                                              upf_radial_fields_init,&
+                                              upf_radial_fields_periodic,&
+                                              upf_radial_fields_type
    USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
                                               uspp_augmentation_type
    USE uspp_projector_operators,        ONLY: uspp_projector_add_operator,&
@@ -129,6 +134,7 @@ PROGRAM uspp_projector_operators_unittest
    CALL init_fft("FFTSG", alltoall=.FALSE., pool_limit=4, wisdom_file="", plan_style=1)
    max_error = 0.0_dp
    CALL check_inverse()
+   CALL check_inverse_fields()
    ALLOCATE (aug(2))
    DO k = 1, 2
       CALL make_augmentation(k)
@@ -445,6 +451,96 @@ CONTAINS
       CALL upf_inverse_init(bd, inverse, info)
       IF (info /= np + 2 .OR. inverse%ready) ERROR STOP 'Nonfinite inverse accepted'
    END SUBROUTINE check_inverse
+
+! **************************************************************************************************
+!> \brief Original radial nodes/angular convention, regular derivatives, and Bloch responses.
+! **************************************************************************************************
+   SUBROUTINE check_inverse_fields()
+      COMPLEX(dp) :: conjugate_value(2, 9), dg(2, 9, 3), gradient(2, 9, 3), response(2, 9), &
+         sample_gradients(2, 9, 3, 2), samples(2, 9, 2), value(2, 9)
+      INTEGER                                            :: axis, case_id, i, image, images(3, 27), &
+                                                            ix, iy, iz, j, l, m, p, side
+      REAL(dp) :: bloch(3), cell(3, 3), center(3), dc(3, 3), dcenter(3), direction(3), dk(3), &
+         dpnt(3, 2), g(3, 9), gm(3, 9), gp(3, 9), harmonic, hh(3, 3, 9), minus(9), plus(9), &
+         point(3), points(3, 2), r(9), radial(9, 3), shifted(3), v(9)
+      TYPE(upf_radial_fields_type)                       :: fields
+
+      r = [0._dp, .11_dp, .23_dp, .41_dp, .68_dp, .93_dp, 1.19_dp, 1.42_dp, 1.8_dp]
+      DO i = 1, 3
+         radial(:, i) = r**(i - 1)*EXP(-REAL(i, dp)*r**2)
+         radial(8:, i) = 0.0_dp
+      END DO
+      CALL upf_radial_fields_init(r, radial, [0, 1, 2], fields)
+      direction = [0.3_dp, -0.4_dp, SQRT(0.75_dp)]
+      ! Independent spherical-harmonic evaluator checks every magnetic channel at original nodes.
+      DO j = 2, 7
+         CALL upf_radial_fields_evaluate(fields, r(j)*direction, v)
+         DO p = 1, fields%nproj
+            i = fields%radial_index(p)
+            l = fields%lbeta(i)
+            m = fields%angular_index(p) - l*l - l - 1
+            CALL y_lm(direction, harmonic, l, m)
+            CALL check(ABS(v(p) - radial(j, i)*harmonic), 'original radial field node/angular order')
+         END DO
+      END DO
+      DO case_id = 1, 4
+         point = 0.0_dp
+         IF (case_id == 2) point(3) = 0.37_dp
+         IF (case_id == 3) point = 0.83_dp*direction
+         IF (case_id == 4) point = 1.32_dp*direction
+         CALL upf_radial_fields_evaluate(fields, point, v, g, hh)
+         DO axis = 1, 3
+            shifted = point
+            shifted(axis) = shifted(axis) + step
+            CALL upf_radial_fields_evaluate(fields, shifted, plus, gp)
+            shifted(axis) = shifted(axis) - 2*step
+            CALL upf_radial_fields_evaluate(fields, shifted, minus, gm)
+            CALL check(MAXVAL(ABS(g(axis, :) - (plus - minus)/(2*step))), 'radial field gradient', 2.e-7_dp)
+            CALL check(MAXVAL(ABS(hh(:, axis, :) - (gp - gm)/(2*step))), 'radial field Hessian', 2.e-6_dp)
+         END DO
+      END DO
+      CALL upf_radial_fields_evaluate(fields, [fields%radius, 0._dp, 0._dp], v, g, hh)
+      CALL check(MAXVAL(ABS(v)) + MAXVAL(ABS(g)) + MAXVAL(ABS(hh)), 'exact radial zero suffix')
+      CALL upf_radial_fields_evaluate(fields, [fields%radius - 1.e-7_dp, 0._dp, 0._dp], v, g, hh)
+      CALL check(MAXVAL(ABS(v)) + MAXVAL(ABS(g)) + MAXVAL(ABS(hh)), 'C2 radial boundary', 1.e-3_dp)
+
+      image = 0
+      DO iz = -1, 1
+         DO iy = -1, 1
+            DO ix = -1, 1
+               image = image + 1
+               images(:, image) = [ix, iy, iz]
+            END DO
+         END DO
+      END DO
+      cell = 0.0_dp
+      cell(1, 1) = 2.1_dp
+      cell(2, 2) = 2.3_dp
+      cell(3, 3) = 2.2_dp
+      cell(1, 2) = 0.3_dp
+      points(:, 1) = [.17_dp, .31_dp, .2_dp]
+      points(:, 2) = [1.94_dp, 1.3_dp, .72_dp]
+      center = [.51_dp, .44_dp, .26_dp]
+      bloch = [.23_dp, -.17_dp, .11_dp]
+      dc = 0.13_dp*cell
+      dpnt = 0.13_dp*points
+      dcenter = [0.2_dp, -0.1_dp, 0.07_dp]
+      dk = [.12_dp, -.03_dp, .06_dp]
+      CALL upf_radial_fields_periodic(fields, points, center, cell, images, bloch, value, &
+                                      gradient, response, dg, dpnt, dcenter, dc, dk)
+      DO side = 1, 2
+         harmonic = (2*side - 3)*step
+         CALL upf_radial_fields_periodic(fields, points + harmonic*dpnt, center + harmonic*dcenter, &
+                                         cell + harmonic*dc, images, bloch + harmonic*dk, &
+                                         samples(:, :, side), sample_gradients(:, :, :, side))
+      END DO
+      CALL check(MAXVAL(ABS(response - (samples(:, :, 2) - samples(:, :, 1))/(2*step))), &
+                 'Bloch radial field geometry/phase response', 2.e-7_dp)
+      CALL check(MAXVAL(ABS(dg - (sample_gradients(:, :, :, 2) - sample_gradients(:, :, :, 1))/(2*step))), &
+                 'Bloch radial field gradient response', 2.e-6_dp)
+      CALL upf_radial_fields_periodic(fields, points, center, cell, images, -bloch, conjugate_value)
+      CALL check(MAXVAL(ABS(conjugate_value - CONJG(value))), 'radial field k/-k symmetry')
+   END SUBROUTINE check_inverse_fields
 
 ! **************************************************************************************************
 !> \brief Include local potentials on both augmentation centers and a third ordinary ion.
