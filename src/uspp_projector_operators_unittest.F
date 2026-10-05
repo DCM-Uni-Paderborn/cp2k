@@ -65,6 +65,9 @@ PROGRAM uspp_projector_operators_unittest
                                               set_ks_env
    USE qs_subsys_types,                 ONLY: qs_subsys_set,&
                                               qs_subsys_type
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_type
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather,&
+                                              qs_upf_inverse_matrix_scatter
    USE qs_uspp_methods,                 ONLY: &
         qs_uspp_atom_grid_apply, qs_uspp_atom_grid_collocate, qs_uspp_atom_grid_integrate, &
         qs_uspp_atom_grid_prepare, qs_uspp_atom_grid_type, qs_uspp_collocate, qs_uspp_core_matrix, &
@@ -214,6 +217,7 @@ PROGRAM uspp_projector_operators_unittest
       rs => ao_sizes; cs => ao_sizes
       CALL make_matrix(pm, 'USPP P', dist_ao, rs, cs, p, 'S')
       CALL make_matrix(sm, 'Gaussian S', dist_ao, rs, cs, sg, 'S')
+      CALL check_inverse_matrix_bridge()
       CALL check_sap_assembly()
       CALL check_image_convolution()
       CALL uspp_projector_metric(bm, aug, kind, sm, gm)
@@ -355,6 +359,37 @@ PROGRAM uspp_projector_operators_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Native S/A signs and inverse AO fill, on both MPI process-grid orientations.
+! **************************************************************************************************
+   SUBROUTINE check_inverse_matrix_bridge()
+      COMPLEX(dp)                                        :: reference(nao, nao)
+      COMPLEX(dp), ALLOCATABLE                           :: actual(:, :)
+      INTEGER                                            :: a, b
+      TYPE(dbcsr_type)                                   :: imaginary_part, nonsymmetric, real_part
+      TYPE(qs_upf_inverse_type)                          :: frame
+
+      ALLOCATE (frame%ao_first(3), frame%ao_last(3))
+      frame%ao_first(:) = [1, 3, 6]
+      frame%ao_last(:) = [2, 5, 6]
+      CALL qs_upf_inverse_matrix_gather(frame, pm, actual)
+      CALL check(MAXVAL(ABS(actual - p)), 'inverse native symmetric density gather')
+      DO b = 1, nao
+         DO a = 1, nao
+            reference(a, b) = CMPLX(p(a, b), 0.03_dp*(a - b), dp)
+         END DO
+      END DO
+      CALL qs_upf_inverse_matrix_scatter(frame, reference, sm, real_part, imaginary_part)
+      CALL qs_upf_inverse_matrix_gather(frame, real_part, actual, imaginary_part)
+      CALL check(MAXVAL(ABS(actual - reference)), 'inverse native imaginary antisymmetry and AO fill')
+      CALL make_matrix(nonsymmetric, 'Inverse full density', dist_ao, rs, cs, p, 'N')
+      CALL qs_upf_inverse_matrix_gather(frame, nonsymmetric, actual)
+      CALL check(MAXVAL(ABS(actual - p)), 'inverse native full density gather')
+      CALL dbcsr_release(real_part)
+      CALL dbcsr_release(imaginary_part)
+      CALL dbcsr_release(nonsymmetric)
+   END SUBROUTINE check_inverse_matrix_bridge
 
 ! **************************************************************************************************
 !> \brief Full inverse coupling and operator responses against direct field evaluation.
