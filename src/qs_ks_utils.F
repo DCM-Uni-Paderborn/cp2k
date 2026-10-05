@@ -118,6 +118,8 @@ MODULE qs_ks_utils
                                               mo_set_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_integrate
    USE qs_uspp_methods,                 ONLY: qs_uspp_integrate
    USE skala_gpw_functional,            ONLY: native_skala_gapw_composite_direct_ao,&
                                               native_skala_gapw_composite_reference
@@ -1442,7 +1444,7 @@ CONTAINS
                                                             nkind, nspins
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL :: do_ppl, gapw, gapw_composite_direct_ao, gapw_composite_reference, gapw_xc, &
-         lrigpw, rigpw, separate_xc, use_work_v_rspace
+         inverse_scf, lrigpw, rigpw, separate_xc, use_work_v_rspace
       REAL(KIND=dp)                                      :: csign, dvol, fadm
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -1481,6 +1483,10 @@ CONTAINS
                       v_hartree_rspace=v_rspace, &
                       ks_env=ks_env, vee=vee)
 
+      inverse_scf = qs_upf_inverse_scf_active(ks_env)
+      IF (inverse_scf .AND. calculate_forces) THEN
+         CPABORT("Inverse force/stress response is not connected")
+      END IF
       CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
       CALL pw_env_get(pw_env, poisson_env=poisson_env, auxbas_pw_pool=auxbas_pw_pool)
       gapw = dft_control%qs_control%gapw
@@ -1649,6 +1655,8 @@ CONTAINS
                DO ikind = 1, nkind
                   CALL para_env%sum(lri_v_int(ikind)%v_int)
                END DO
+            ELSE IF (inverse_scf) THEN
+               CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, 1)%matrix, weighted=.TRUE.)
             ELSE
                rho_ao => my_rho(ispin, :)
                ksmat => ks_matrix(ispin, :)
@@ -1658,11 +1666,13 @@ CONTAINS
                                        calculate_forces=calculate_forces, &
                                        gapw=gapw .AND. .NOT. gapw_composite_direct_ao)
             END IF
-            IF (calculate_forces) THEN
-               CALL qs_uspp_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, :), weighted=.TRUE., &
-                                      density=my_rho(ispin, :))
-            ELSE
-               CALL qs_uspp_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, :), weighted=.TRUE.)
+            IF (.NOT. inverse_scf) THEN
+               IF (calculate_forces) THEN
+                  CALL qs_uspp_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, :), weighted=.TRUE., &
+                                         density=my_rho(ispin, :))
+               ELSE
+                  CALL qs_uspp_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, :), weighted=.TRUE.)
+               END IF
             END IF
             CALL auxbas_pw_pool%give_back_pw(v_rspace_new(ispin))
          END DO ! ispin
@@ -1759,6 +1769,8 @@ CONTAINS
                DO ikind = 1, nkind
                   CALL para_env%sum(lri_v_int(ikind)%v_int)
                END DO
+            ELSE IF (inverse_scf) THEN
+               CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_used, ks_matrix(ispin, 1)%matrix, weighted=.TRUE.)
             ELSE
                rho_ao => my_rho(ispin, :)
                ksmat => ks_matrix(ispin, :)
@@ -1769,11 +1781,13 @@ CONTAINS
                                        calculate_forces=calculate_forces, &
                                        gapw=gapw)
             END IF
-            IF (calculate_forces) THEN
-               CALL qs_uspp_integrate(ks_env, v_rspace_used, ks_matrix(ispin, :), weighted=.TRUE., &
-                                      density=my_rho(ispin, :))
-            ELSE
-               CALL qs_uspp_integrate(ks_env, v_rspace_used, ks_matrix(ispin, :), weighted=.TRUE.)
+            IF (.NOT. inverse_scf) THEN
+               IF (calculate_forces) THEN
+                  CALL qs_uspp_integrate(ks_env, v_rspace_used, ks_matrix(ispin, :), weighted=.TRUE., &
+                                         density=my_rho(ispin, :))
+               ELSE
+                  CALL qs_uspp_integrate(ks_env, v_rspace_used, ks_matrix(ispin, :), weighted=.TRUE.)
+               END IF
             END IF
             IF (use_work_v_rspace) CALL auxbas_pw_pool%give_back_pw(v_rspace_work)
          END DO

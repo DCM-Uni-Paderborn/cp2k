@@ -131,6 +131,8 @@ MODULE qs_core_hamiltonian
    USE qs_overlap,                      ONLY: build_overlap_matrix
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_core
    USE qs_uspp_methods,                 ONLY: qs_uspp_core_forces,&
                                               qs_uspp_core_matrix,&
                                               qs_uspp_init_ao_matrix,&
@@ -277,6 +279,15 @@ CONTAINS
       !
       NULLIFY (ks_env)
       CALL get_qs_env(qs_env=qs_env, ks_env=ks_env)
+      IF (qs_upf_inverse_scf_active(ks_env)) THEN
+         IF (calculate_forces) THEN
+            CPABORT("Inverse force/stress response is not connected")
+         END IF
+         CALL qs_upf_inverse_scf_core(ks_env)
+         CALL timestop(handle)
+         RETURN
+      END IF
+
       NULLIFY (matrix_s, matrix_t)
       CALL get_qs_env(qs_env=qs_env, kinetic_kp=matrix_t, matrix_s_kp=matrix_s)
       NULLIFY (sab_orb)

@@ -24,19 +24,19 @@ MODULE qs_upf_inverse_augmentation
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_type
-   USE uspp_augmentation,               ONLY: &
-        uspp_augmentation_collocate, uspp_augmentation_collocate_atom, uspp_augmentation_init, &
-        uspp_augmentation_integrate, uspp_augmentation_integrate_atom, &
-        uspp_augmentation_prepare_fourier, uspp_augmentation_prepare_realspace, &
-        uspp_augmentation_realspace, uspp_augmentation_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type
+   USE uspp_augmentation,               ONLY: uspp_augmentation_collocate,&
+                                              uspp_augmentation_collocate_atom,&
+                                              uspp_augmentation_init,&
+                                              uspp_augmentation_integrate,&
+                                              uspp_augmentation_integrate_atom,&
+                                              uspp_augmentation_prepare_fourier,&
+                                              uspp_augmentation_prepare_realspace,&
+                                              uspp_augmentation_realspace
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
-
-   TYPE qs_upf_inverse_augmentation_type
-      TYPE(uspp_augmentation_type), ALLOCATABLE :: kinds(:)
-   END TYPE qs_upf_inverse_augmentation_type
 
    PUBLIC :: qs_upf_inverse_augmentation_type, qs_upf_inverse_augmentation_prepare
    PUBLIC :: qs_upf_inverse_augmentation_collocate, qs_upf_inverse_augmentation_integrate

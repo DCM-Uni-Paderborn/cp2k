@@ -74,6 +74,8 @@ list(
   qs_uspp_projectors.F
   qs_uspp_types.F
   qs_upf_inverse.F
+  qs_upf_inverse_types.F
+  qs_upf_inverse_scf.F
   qs_upf_inverse_augmentation.F
   qs_upf_inverse_grid.F
   qs_uspp_methods.F

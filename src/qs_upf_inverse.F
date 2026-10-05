@@ -10,8 +10,7 @@
 !>        Point rows are distributed; full AO/projector columns are replicated in this adapter.
 ! **************************************************************************************************
 MODULE qs_upf_inverse
-   USE basis_set_types,                 ONLY: gto_basis_set_p_type,&
-                                              gto_basis_set_type
+   USE basis_set_types,                 ONLY: gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
    USE kinds,                           ONLY: dp
@@ -21,38 +20,21 @@ MODULE qs_upf_inverse
                                               qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE upf_inverse,                     ONLY: upf_inverse_basis,&
                                               upf_inverse_basis_response,&
                                               upf_inverse_fields_init,&
                                               upf_inverse_init,&
                                               upf_inverse_project,&
-                                              upf_inverse_project_response,&
-                                              upf_inverse_type
+                                              upf_inverse_project_response
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_pair_response
-   USE upf_radial_fields,               ONLY: upf_radial_fields_periodic,&
-                                              upf_radial_fields_type
+   USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
-
-   TYPE qs_upf_inverse_type
-      TYPE(upf_inverse_type) :: inverse
-      TYPE(mp_comm_type) :: point_comm
-      ! Bases are borrowed from the live Quickstep environment; radial caches and fields are owned.
-      TYPE(gto_basis_set_p_type), ALLOCATABLE :: bases(:)
-      TYPE(upf_radial_fields_type), ALLOCATABLE :: beta_cache(:), delta_cache(:)
-      INTEGER, ALLOCATABLE :: ao_first(:), ao_last(:), projector_first(:), projector_last(:), center_atoms(:), center_kinds(:)
-      INTEGER, ALLOCATABLE :: images(:, :)
-      REAL(dp) :: cell(3, 3) = 0.0_dp, reduced_k(3) = 0.0_dp
-      REAL(dp), ALLOCATABLE :: positions(:, :), points(:, :), weights(:)
-      ! Supplied PP_Q and the reference metric's radial Q integral are separate data.
-      COMPLEX(dp), ALLOCATABLE :: coefficients(:, :), q(:, :), radial_q(:, :), dion(:, :), beta(:, :), delta(:, :), &
-                                  delta_gradient(:, :, :), gaussian(:, :), gaussian_gradient(:, :, :), &
-                                  soft(:, :), soft_gradient(:, :, :)
-   END TYPE qs_upf_inverse_type
 
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_prepare, qs_upf_inverse_from_ks
    PUBLIC :: qs_upf_inverse_response, qs_upf_inverse_release

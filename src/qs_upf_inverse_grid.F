@@ -33,6 +33,7 @@ MODULE qs_upf_inverse_grid
                                               qs_upf_inverse_augmentation_fourier_integrate,&
                                               qs_upf_inverse_augmentation_integrate,&
                                               qs_upf_inverse_augmentation_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_grid_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_semilocal_pair,&
                                               upf_inverse_smooth_density
@@ -40,12 +41,6 @@ MODULE qs_upf_inverse_grid
 
    IMPLICIT NONE
    PRIVATE
-
-   TYPE qs_upf_inverse_grid_type
-      TYPE(qs_upf_inverse_type) :: ao
-      INTEGER :: bounds(2, 3) = 0, bounds_local(2, 3) = 0, npts(3) = 0, mode = PW_MODE_LOCAL
-      REAL(dp) :: dh(3, 3) = 0.0_dp, dvol = 0.0_dp
-   END TYPE qs_upf_inverse_grid_type
 
    PUBLIC :: qs_upf_inverse_grid_type, qs_upf_inverse_grid_prepare, qs_upf_inverse_grid_release
    PUBLIC :: qs_upf_inverse_grid_collocate, qs_upf_inverse_grid_integrate

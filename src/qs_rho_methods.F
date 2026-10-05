@@ -61,6 +61,8 @@ MODULE qs_rho_methods
                                               qs_rho_get,&
                                               qs_rho_set,&
                                               qs_rho_type
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_collocate
    USE qs_uspp_methods,                 ONLY: qs_uspp_collocate,&
                                               qs_uspp_init_ao_matrix
    USE ri_environment_methods,          ONLY: calculate_ri_densities
@@ -522,6 +524,15 @@ CONTAINS
                       ks_env=ks_env, &
                       dft_control=dft_control, &
                       atomic_kind_set=atomic_kind_set, qs_kind_set=qs_kind_set)
+
+      IF (qs_upf_inverse_scf_active(ks_env)) THEN
+         CPASSERT(.NOT. PRESENT(pw_env_external))
+         CPASSERT(.NOT. PRESENT(task_list_external))
+         CPASSERT(.NOT. PRESENT(rho_xc_external))
+         CALL qs_upf_inverse_scf_collocate(ks_env, rho_struct)
+         CALL timestop(handle)
+         RETURN
+      END IF
 
       CALL qs_rho_get(rho_struct, &
                       rho_r=rho_r, &
