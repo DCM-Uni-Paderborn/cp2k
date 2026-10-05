@@ -69,6 +69,7 @@ list(
   pseudopotentials/upf_radial_fields.F
   pseudopotentials/uspp_augmentation.F
   qs_upf_inverse.F
+  qs_upf_inverse_atom_grid.F
   qs_upf_inverse_augmentation.F
   qs_upf_inverse_forces.F
   qs_upf_inverse_grid.F
