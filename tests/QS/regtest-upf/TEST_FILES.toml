@@ -16,3 +16,9 @@
   {matcher="Atomic_force_1_z", tol=1e-6, ref=-0.0124653551},
   {matcher="Atomic_force_2_y", tol=1e-6, ref=0.00415927816},
 ]
+# Original full-wave USPP with the native inverse GPW density, metric and derivatives.
+"H2_inverse_GPW.inp" = [
+  {matcher="M011", tol=1e-10, ref=-1.211086328915627},
+  {matcher="Atomic_force_1_z", tol=1e-7, ref=0.94605072},
+  {matcher="M031", tol=1e-7, ref=1703909.06027},
+]
