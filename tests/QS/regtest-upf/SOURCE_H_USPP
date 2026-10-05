@@ -1,7 +1,8 @@
 H.us.pbe.z_1.ld1.psl.v1.0.0-high-full-waves.upf
 
 Scalar H USPP with one valence electron, PBE and PSLibrary 1.0.0 high settings.
-This fixture supplements the original SSSP v2.0 PBE Precision H potential
+This offline H2 regression fixture supplements the original SSSP v2.0
+PBE Precision H potential
 with original per-projector all-electron and pseudo partial waves.
 It is an explicitly supplemented dataset, not an unchanged SSSP release file.
 
