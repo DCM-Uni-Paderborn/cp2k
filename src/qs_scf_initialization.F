@@ -105,6 +105,7 @@ MODULE qs_scf_initialization
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type,&
                                               set_qs_kind
+   USE qs_kpoint_density_state,         ONLY: kpoint_density_state_restore
    USE qs_ks_types,                     ONLY: qs_ks_did_change
    USE qs_matrix_pools,                 ONLY: mpools_get
    USE qs_mixing_utils,                 ONLY: charge_mixing_init,&
@@ -1383,6 +1384,18 @@ CONTAINS
                       dft_control=dft_control, &
                       do_kpoints=do_kpoints, &
                       para_env=para_env)
+
+      IF (do_kpoints) THEN
+         CALL get_qs_env(qs_env, kpoints=kpoints)
+         IF (ALLOCATED(kpoints%native_density)) THEN
+            CPASSERT(.NOT. qs_env%harris_method)
+            CALL kpoint_density_state_restore(kpoints)
+            CALL qs_rho_update_rho(rho, qs_env=qs_env)
+            CALL qs_ks_did_change(qs_env%ks_env, rho_changed=.TRUE.)
+            CALL timestop(handle)
+            RETURN
+         END IF
+      END IF
 
       do_harris = qs_env%harris_method
       IF (do_harris .AND. scf_control%density_guess == external_density_guess) THEN

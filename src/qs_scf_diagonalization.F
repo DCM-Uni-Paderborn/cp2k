@@ -126,12 +126,13 @@ MODULE qs_scf_diagonalization
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_gspace_mixing,                ONLY: gspace_mixing
+   USE qs_kpoint_density_state,         ONLY: kpoint_density_state_capture
    USE qs_kpoint_operators,             ONLY: &
         kpoint_operator_context_create, kpoint_operator_context_release, &
         kpoint_operator_context_type, kpoint_operator_evaluate, kpoint_operator_finish, &
-        kpoint_operator_get, kpoint_operator_get_local, kpoint_operator_prepare, &
-        kpoint_operator_start, kpoint_operator_store, kpoint_operator_work_size, kpoint_slot_ks, &
-        kpoint_slot_s, kpoint_slot_t, kpoint_spin_free
+        kpoint_operator_get, kpoint_operator_get_local, kpoint_operator_has_native, &
+        kpoint_operator_prepare, kpoint_operator_start, kpoint_operator_store, &
+        kpoint_operator_work_size, kpoint_slot_ks, kpoint_slot_s, kpoint_slot_t, kpoint_spin_free
    USE qs_ks_methods,                   ONLY: qs_ks_update_qs_env
    USE qs_ks_types,                     ONLY: qs_ks_did_change,&
                                               qs_ks_env_type
@@ -848,7 +849,8 @@ CONTAINS
       ! Prepare H/S before starting any round. ADIIS can replace only the idle KS slot.
       prepared_ops = .FALSE.
       ! A single distributed group can also assemble its prepared local tiles.
-      IF (para_env%num_pe > 1 .OR. use_local_kpoints) THEN
+      IF (para_env%num_pe > 1 .OR. use_local_kpoints .OR. &
+          kpoint_operator_has_native(kpoints, effective_ks) .OR. kpoint_operator_has_native(kpoints, matrix_s)) THEN
          CALL kpoint_operator_prepare(op_ctx, effective_ks, kpoint_slot_ks, prepared_ops)
          IF (.NOT. reuse_smat) THEN
             CALL kpoint_operator_prepare(op_ctx, matrix_s, kpoint_slot_s, prepared_part, matrix_row=kpoint_spin_free)
@@ -1067,8 +1069,12 @@ CONTAINS
             ! density matrices
             CALL kpoint_density_matrices(kpoints)
             ! density matrices in real space
-            CALL kpoint_density_transform(kpoints, scf_env%p_mix_new, .FALSE., &
-                                          matrix_s(1, 1)%matrix, sab_nl, fmwork, overlap_rs=matrix_s)
+            IF (ALLOCATED(kpoints%native_density)) THEN
+               CALL kpoint_density_state_capture(kpoints)
+            ELSE
+               CALL kpoint_density_transform(kpoints, scf_env%p_mix_new, .FALSE., &
+                                             matrix_s(1, 1)%matrix, sab_nl, fmwork, overlap_rs=matrix_s)
+            END IF
          END IF
       END IF
 
