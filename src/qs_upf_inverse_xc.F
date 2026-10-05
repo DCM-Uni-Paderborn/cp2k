@@ -17,7 +17,12 @@ MODULE qs_upf_inverse_xc
                                               section_vals_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_comm_type
-   USE pw_grid_types,                   ONLY: pw_grid_type
+   USE pw_grid_types,                   ONLY: PW_MODE_LOCAL,&
+                                              pw_grid_type
+   USE pw_methods,                      ONLY: pw_derive,&
+                                              pw_transfer
+   USE pw_types,                        ONLY: pw_c1d_gs_type,&
+                                              pw_r3d_rs_type
    USE qs_native_grid_interpolation,    ONLY: interpolate_native_grid_batch,&
                                               native_grid_batch_adjoint,&
                                               native_grid_batch_response
@@ -63,6 +68,7 @@ MODULE qs_upf_inverse_xc
    PUBLIC :: qs_upf_inverse_frame_ref_type, qs_upf_inverse_xc_type
    PUBLIC :: qs_upf_inverse_xc_evaluate, qs_upf_inverse_xc_response
    PUBLIC :: qs_upf_inverse_xc_grid_evaluate, qs_upf_inverse_xc_grid_response
+   PUBLIC :: qs_upf_inverse_xc_pw_fields, qs_upf_inverse_xc_pw_adjoint, qs_upf_inverse_xc_pw_response
 
 CONTAINS
 
@@ -487,5 +493,127 @@ CONTAINS
                                       reduced_k_response, coefficients_response, background, gradient, &
                                       core_response, core_gradient_response, comm, response)
    END SUBROUTINE qs_upf_inverse_xc_grid_response
+
+! **************************************************************************************************
+!> \brief Replicate the native density and its plane-wave Cartesian gradient for mixed XC.
+!> \param density Native spin densities, including any prescribed frozen core.
+!> \param fields Replicated descriptors (x,y,z,4*spin), ordered as density,gx,gy,gz.
+!>               The gradient is the native Fourier derivative of the supplied grid density.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_xc_pw_fields(density, fields)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: fields(:, :, :, :)
+
+      INTEGER                                            :: axis, bounds(2, 3), orders(3), spin
+      TYPE(pw_c1d_gs_type)                               :: density_g, derivative_g
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type)                               :: work_r
+
+      CPASSERT(SIZE(density) > 0)
+      grid => density(1)%pw_grid
+      CPASSERT(ASSOCIATED(grid))
+      bounds = grid%bounds_local - SPREAD(grid%bounds(1, :) - 1, 1, 2)
+      ALLOCATE (fields(grid%npts(1), grid%npts(2), grid%npts(3), 4*SIZE(density)))
+      fields = 0.0_dp
+      CALL density_g%create(grid)
+      CALL derivative_g%create(grid)
+      CALL work_r%create(grid)
+      DO spin = 1, SIZE(density)
+         CPASSERT(ASSOCIATED(density(spin)%pw_grid, grid))
+         fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
+                bounds(1, 3):bounds(2, 3), 4*spin - 3) = density(spin)%array
+         CALL pw_transfer(density(spin), density_g)
+         DO axis = 1, 3
+            derivative_g%array(:) = density_g%array
+            orders = 0
+            orders(axis) = 1
+            CALL pw_derive(derivative_g, orders)
+            CALL pw_transfer(derivative_g, work_r)
+            fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
+                   bounds(1, 3):bounds(2, 3), 4*spin - 3 + axis) = work_r%array
+         END DO
+      END DO
+      IF (grid%para%mode /= PW_MODE_LOCAL) CALL grid%para%group%sum(fields)
+      CALL density_g%release()
+      CALL derivative_g%release()
+      CALL work_r%release()
+   END SUBROUTINE qs_upf_inverse_xc_pw_fields
+
+! **************************************************************************************************
+!> \brief Fold weighted density/gradient covectors into the native unweighted scalar potential.
+!> \param fields Globally assembled Euclidean covectors from the atomic interpolation transpose.
+!> \param potential Created native spin potentials, with the same grid as the source density.
+!>                  Contains (lambda_n - div(lambda_g))/dvol on each owned native row.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_xc_pw_adjoint(fields, potential)
+      REAL(dp), INTENT(IN)                               :: fields(:, :, :, :)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: potential(:)
+
+      INTEGER                                            :: axis, bounds(2, 3), orders(3), spin
+      TYPE(pw_c1d_gs_type)                               :: derivative_g
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type)                               :: derivative_r, work_r
+
+      CPASSERT(SIZE(potential) > 0)
+      grid => potential(1)%pw_grid
+      CPASSERT(ASSOCIATED(grid))
+      CPASSERT(ALL(SHAPE(fields) == [grid%npts, 4*SIZE(potential)]))
+      CPASSERT(grid%dvol > 0.0_dp)
+      bounds = grid%bounds_local - SPREAD(grid%bounds(1, :) - 1, 1, 2)
+      CALL derivative_g%create(grid)
+      CALL work_r%create(grid)
+      CALL derivative_r%create(grid)
+      DO spin = 1, SIZE(potential)
+         CPASSERT(ASSOCIATED(potential(spin)%pw_grid, grid))
+         potential(spin)%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
+                                                 bounds(1, 3):bounds(2, 3), 4*spin - 3)
+         DO axis = 1, 3
+            work_r%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
+                                           bounds(1, 3):bounds(2, 3), 4*spin - 3 + axis)
+            CALL pw_transfer(work_r, derivative_g)
+            orders = 0
+            orders(axis) = 1
+            CALL pw_derive(derivative_g, orders)
+            CALL pw_transfer(derivative_g, derivative_r)
+            potential(spin)%array(:, :, :) = potential(spin)%array - derivative_r%array
+         END DO
+         potential(spin)%array(:, :, :) = potential(spin)%array/grid%dvol
+      END DO
+      CALL derivative_g%release()
+      CALL work_r%release()
+      CALL derivative_r%release()
+   END SUBROUTINE qs_upf_inverse_xc_pw_adjoint
+
+! **************************************************************************************************
+!> \brief Response of native source descriptors at fixed grid topology and reciprocal indices.
+!> \param density_response Spin-density response at fixed native real-grid indices, including core.
+!> \param fields Current descriptors from qs_upf_inverse_xc_pw_fields.
+!> \param lattice_response Response of the PW lattice, dh(:,axis)*npts(axis).
+!> \param fields_response Replicated density and gradient response, including delta(G)=-strain^T*G.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_xc_pw_response(density_response, fields, lattice_response, fields_response)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density_response(:)
+      REAL(dp), INTENT(IN)                               :: fields(:, :, :, :), &
+                                                            lattice_response(3, 3)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: fields_response(:, :, :, :)
+
+      INTEGER                                            :: axis, other, spin
+      REAL(dp)                                           :: lattice_inverse(3, 3), strain(3, 3)
+      TYPE(pw_grid_type), POINTER                        :: grid
+
+      CALL qs_upf_inverse_xc_pw_fields(density_response, fields_response)
+      CPASSERT(ALL(SHAPE(fields) == SHAPE(fields_response)))
+      grid => density_response(1)%pw_grid
+      lattice_inverse = grid%dh_inv/SPREAD(REAL(grid%npts, dp), 2, 3)
+      strain = MATMUL(lattice_response, lattice_inverse)
+      DO spin = 1, SIZE(density_response)
+         DO axis = 1, 3
+            DO other = 1, 3
+               fields_response(:, :, :, 4*spin - 3 + axis) = fields_response(:, :, :, 4*spin - 3 + axis) - &
+                                                             strain(other, axis)*fields(:, :, :, 4*spin - 3 + other)
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_xc_pw_response
 
 END MODULE qs_upf_inverse_xc
