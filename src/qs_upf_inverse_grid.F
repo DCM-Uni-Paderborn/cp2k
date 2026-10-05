@@ -29,6 +29,8 @@ MODULE qs_upf_inverse_grid
                                               qs_upf_inverse_release,&
                                               qs_upf_inverse_type
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_collocate,&
+                                              qs_upf_inverse_augmentation_fourier_collocate,&
+                                              qs_upf_inverse_augmentation_fourier_integrate,&
                                               qs_upf_inverse_augmentation_integrate,&
                                               qs_upf_inverse_augmentation_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
@@ -118,22 +120,31 @@ CONTAINS
 !> \param projector_density Optional W P W^dagger for remaining original augmentation.
 !> \param augmentation Optional owned original scalar USPP charge/gradient kernels.
 !>        Tau remains smooth; supplying charge augmentation does not supply kinetic augmentation.
+!> \param fourier_charge Optional native Fourier Q map, instead of point Q; default is false.
+!>        Its zero mode equals the reference radial q; a supplied-q metric retains the explicit defect.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_collocate(frame, density_real, density, gradient, tau, density_imag, &
-                                            projector_density, augmentation)
+                                            projector_density, augmentation, fourier_charge)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(dbcsr_type), INTENT(IN)                       :: density_real
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density_imag
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: projector_density(:, :)
       TYPE(qs_upf_inverse_augmentation_type), &
-         INTENT(IN), OPTIONAL                            :: augmentation
+         INTENT(INOUT), OPTIONAL                         :: augmentation
+      LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
 
       COMPLEX(dp), ALLOCATABLE                           :: p(:, :), projected(:, :)
       INTEGER                                            :: axis, n, nproj
+      LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dn(:, :), rho(:), t(:)
 
       CPASSERT(frame%ao%inverse%ready)
+      use_fourier = .FALSE.
+      IF (PRESENT(fourier_charge)) use_fourier = fourier_charge
+      IF (use_fourier) THEN
+         CPASSERT(PRESENT(augmentation))
+      END IF
       CALL qs_upf_inverse_matrix_gather(frame%ao, density_real, p, density_imag)
       n = SIZE(frame%ao%weights)
       ALLOCATE (rho(n), dn(n, 3), t(n))
@@ -142,7 +153,7 @@ CONTAINS
          nproj = frame%ao%inverse%nproj
          ALLOCATE (projected(nproj, nproj))
          projected(:, :) = MATMUL(MATMUL(frame%ao%coefficients, p), CONJG(TRANSPOSE(frame%ao%coefficients)))
-         IF (PRESENT(augmentation)) THEN
+         IF (PRESENT(augmentation) .AND. .NOT. use_fourier) THEN
             CALL qs_upf_inverse_augmentation_collocate(frame%ao, augmentation, projected, rho, dn)
          END IF
          IF (PRESENT(projector_density)) THEN
@@ -155,6 +166,9 @@ CONTAINS
       DO axis = 1, 3
          CALL unpack_grid(frame, dn(:, axis), gradient(axis))
       END DO
+      IF (use_fourier) THEN
+         CALL qs_upf_inverse_augmentation_fourier_collocate(frame%ao, augmentation, projected, density, gradient)
+      END IF
    END SUBROUTINE qs_upf_inverse_grid_collocate
 
 ! **************************************************************************************************
@@ -170,22 +184,30 @@ CONTAINS
 !> \param projector_operator Optional explicitly supplied remaining projector operator.
 !>        Missing charge or kinetic augmentation must not be inferred from the other kernel.
 !> \param augmentation Optional original charge/gradient adjoint on the same native point rows.
+!> \param fourier_charge Select the native Fourier adjoint of the same density map; default is false.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_integrate(frame, vdensity, vgradient, vtau, template, &
-                                            operator_real, operator_imag, projector_operator, augmentation)
+                                            operator_real, operator_imag, projector_operator, augmentation, fourier_charge)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       TYPE(dbcsr_type), INTENT(IN)                       :: template
       TYPE(dbcsr_type), INTENT(INOUT)                    :: operator_real, operator_imag
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: projector_operator(:, :)
       TYPE(qs_upf_inverse_augmentation_type), &
-         INTENT(IN), OPTIONAL                            :: augmentation
+         INTENT(INOUT), OPTIONAL                         :: augmentation
+      LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
 
       COMPLEX(dp), ALLOCATABLE                           :: h(:, :), projected(:, :)
       INTEGER                                            :: axis, n, nao, nproj
+      LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
 
       CPASSERT(frame%ao%inverse%ready)
+      use_fourier = .FALSE.
+      IF (PRESENT(fourier_charge)) use_fourier = fourier_charge
+      IF (use_fourier) THEN
+         CPASSERT(PRESENT(augmentation))
+      END IF
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%soft, 2)
       ALLOCATE (dn(n), dg(n, 3), dt(n), h(nao, nao))
@@ -199,7 +221,11 @@ CONTAINS
       IF (PRESENT(augmentation)) THEN
          nproj = frame%ao%inverse%nproj
          ALLOCATE (projected(nproj, nproj))
-         CALL qs_upf_inverse_augmentation_integrate(frame%ao, augmentation, dn, dg, projected)
+         IF (use_fourier) THEN
+            CALL qs_upf_inverse_augmentation_fourier_integrate(frame%ao, augmentation, vdensity, vgradient, projected)
+         ELSE
+            CALL qs_upf_inverse_augmentation_integrate(frame%ao, augmentation, dn, dg, projected)
+         END IF
          h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, frame%ao%coefficients))
       END IF
       IF (PRESENT(projector_operator)) THEN
