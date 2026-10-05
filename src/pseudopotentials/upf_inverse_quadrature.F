@@ -105,20 +105,32 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: work(:, :)
       INTEGER                                            :: axis, nright
+      LOGICAL                                            :: gradient_active(3), tau_active
 
       CALL check_semilocal(left, right, left_gradient, right_gradient, weights, &
                            vdensity, vgradient, vtau, SHAPE(integral))
+      integral = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (.NOT. ANY(weights /= 0.0_dp) .OR. &
+          .NOT. (ANY(vdensity /= 0.0_dp) .OR. ANY(vgradient /= 0.0_dp) .OR. ANY(vtau /= 0.0_dp))) THEN
+         IF (PRESENT(comm)) CALL comm%sum(integral)
+         RETURN
+      END IF
+      DO axis = 1, 3
+         gradient_active(axis) = ANY(vgradient(:, axis) /= 0.0_dp)
+      END DO
+      tau_active = ANY(vtau /= 0.0_dp)
       nright = SIZE(right, 2)
       ALLOCATE (work(SIZE(right, 1), nright))
       work(:, :) = SPREAD(vdensity, 2, nright)*right
       DO axis = 1, 3
+         IF (.NOT. gradient_active(axis)) CYCLE
          work(:, :) = work + SPREAD(vgradient(:, axis), 2, nright)*right_gradient(:, :, axis)
       END DO
-      integral = CMPLX(0.0_dp, 0.0_dp, dp)
       CALL add_pair(left, work, weights, integral)
       DO axis = 1, 3
-         work(:, :) = SPREAD(vgradient(:, axis), 2, nright)*right + &
-                      0.5_dp*SPREAD(vtau, 2, nright)*right_gradient(:, :, axis)
+         IF (.NOT. gradient_active(axis) .AND. .NOT. tau_active) CYCLE
+         work(:, :) = SPREAD(vgradient(:, axis), 2, nright)*right
+         IF (tau_active) work(:, :) = work + 0.5_dp*SPREAD(vtau, 2, nright)*right_gradient(:, :, axis)
          CALL add_pair(left_gradient(:, :, axis), work, weights, integral)
       END DO
       IF (PRESENT(comm)) CALL comm%sum(integral)
@@ -248,6 +260,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: work(:, :)
 
       IF (SIZE(weights) == 0 .OR. SIZE(left, 2) == 0 .OR. SIZE(right, 2) == 0) RETURN
+      IF (.NOT. ANY(weights /= 0.0_dp)) RETURN
       ALLOCATE (work(SIZE(right, 1), SIZE(right, 2)))
       work(:, :) = SPREAD(weights, 2, SIZE(right, 2))*right
       integral = integral + MATMUL(CONJG(TRANSPOSE(left)), work)
