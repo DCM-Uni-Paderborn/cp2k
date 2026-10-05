@@ -10,10 +10,12 @@
 !>        No inverse transformation to a finite real-space image set is used for mixing.
 ! **************************************************************************************************
 MODULE qs_kpoint_density_state
-   USE cp_cfm_types,                    ONLY: cp_cfm_create
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_get_submatrix
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
+   USE qs_kpoint_operators,             ONLY: kpoint_slot_s
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -21,6 +23,7 @@ MODULE qs_kpoint_density_state
    PUBLIC :: kpoint_density_state_active
    PUBLIC :: kpoint_density_state_initialize, kpoint_density_state_capture
    PUBLIC :: kpoint_density_state_accept, kpoint_density_state_delta, kpoint_density_state_restore
+   PUBLIC :: kpoint_density_state_mulliken
 CONTAINS
 
 ! **************************************************************************************************
@@ -157,4 +160,36 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE kpoint_density_state_restore
+
+! **************************************************************************************************
+!> \brief Mulliken populations from the accepted complex density and its registered charge metric.
+!>        Each group source contributes its actual k-point weights once. The caller sums world ranks.
+!> \param kpoints ...
+!> \param populations Partial orbital populations, overwritten.
+! **************************************************************************************************
+   SUBROUTINE kpoint_density_state_mulliken(kpoints, populations)
+      TYPE(kpoint_type), INTENT(IN)                      :: kpoints
+      REAL(dp), INTENT(OUT)                              :: populations(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :), metric(:, :)
+      INTEGER                                            :: ik, local, n, spin
+
+      CPASSERT(ALLOCATED(kpoints%native_density))
+      CPASSERT(ALLOCATED(kpoints%native_operators(kpoint_slot_s)%matrices))
+      n = SIZE(populations, 1)
+      CPASSERT(SIZE(populations, 2) == SIZE(kpoints%native_density, 2))
+      ALLOCATE (density(n, n), metric(n, n))
+      populations = 0.0_dp
+      DO local = 1, SIZE(kpoints%native_density, 1)
+         ik = kpoints%kp_range(1) + local - 1
+         CALL cp_cfm_get_submatrix(kpoints%native_operators(kpoint_slot_s)%matrices(local, 1), metric)
+         DO spin = 1, SIZE(populations, 2)
+            CALL cp_cfm_get_submatrix(kpoints%native_density(local, spin), density)
+            IF (kpoints%para_env_kp%is_source()) THEN
+               populations(:, spin) = populations(:, spin) + &
+                                      kpoints%wkp(ik)*SUM(REAL(density*CONJG(metric), dp), DIM=2)
+            END IF
+         END DO
+      END DO
+   END SUBROUTINE kpoint_density_state_mulliken
 END MODULE qs_kpoint_density_state
