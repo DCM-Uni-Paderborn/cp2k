@@ -334,6 +334,7 @@ CONTAINS
          ddelta(:, :), delta(:, :), dgc(:, :, :), dgd(:, :, :), dk(:, :), gc(:, :, :), gd(:, :, :)
       INTEGER                                            :: atom, axis, center, first, ikind, last, &
                                                             nao, npoint, nproj
+      LOGICAL                                            :: shared_response
 
       CPASSERT(frame%inverse%ready)
       CPASSERT(ALL(SHAPE(point_response) == SHAPE(frame%points)))
@@ -348,9 +349,16 @@ CONTAINS
       ALLOCATE (beta(npoint, nproj), delta(npoint, nproj), dbeta(npoint, nproj), ddelta(npoint, nproj), &
                 gd(npoint, nproj, 3), dgd(npoint, nproj, 3), chi(npoint, nao), dchi(npoint, nao), &
                 gc(npoint, nao, 3), dgc(npoint, nao, 3), dk(nproj, nproj), db(nproj, nao))
+      shared_response = ANY(point_response /= 0.0_dp) .OR. ANY(cell_response /= 0.0_dp) .OR. &
+                        ANY(reduced_k_response /= 0.0_dp)
       DO atom = 1, SIZE(frame%bases)
          first = frame%ao_first(atom)
          last = frame%ao_last(atom)
+         IF (.NOT. shared_response .AND. ALL(atom_response(:, atom) == 0.0_dp)) THEN
+            dchi(:, first:last) = CMPLX(0.0_dp, 0.0_dp, dp)
+            dgc(:, first:last, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+            CYCLE
+         END IF
          CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, frame%points, frame%positions(:, atom), &
                                              frame%cell, frame%images, frame%reduced_k, chi(:, first:last), gc(:, first:last, :), &
                                              dchi(:, first:last), dgc(:, first:last, :), point_response, atom_response(:, atom), &
@@ -361,6 +369,12 @@ CONTAINS
          ikind = frame%center_kinds(center)
          first = frame%projector_first(center)
          last = frame%projector_last(center)
+         IF (.NOT. shared_response .AND. ALL(atom_response(:, atom) == 0.0_dp)) THEN
+            dbeta(:, first:last) = CMPLX(0.0_dp, 0.0_dp, dp)
+            ddelta(:, first:last) = CMPLX(0.0_dp, 0.0_dp, dp)
+            dgd(:, first:last, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+            CYCLE
+         END IF
          CALL upf_radial_fields_periodic(frame%beta_cache(ikind), frame%points, frame%positions(:, atom), &
                                     frame%cell, frame%images, frame%reduced_k, beta(:, first:last), response=dbeta(:, first:last), &
                                          points_response=point_response, center_response=atom_response(:, atom), &
@@ -370,6 +384,7 @@ CONTAINS
                                          ddelta(:, first:last), dgd(:, first:last, :), point_response, atom_response(:, atom), &
                                          cell_response, reduced_k_response)
       END DO
+      ! Retain the inverse-coefficient response, which couples all centers through the original fields.
       CALL upf_inverse_pair_response(frame%beta, frame%delta, frame%weights, dbeta, ddelta, &
                                      weights_response, dk, frame%point_comm)
       CALL upf_inverse_pair_response(frame%beta, frame%gaussian, frame%weights, dbeta, dchi, &
