@@ -45,6 +45,7 @@ MODULE qs_upf_inverse_grid
    PUBLIC :: qs_upf_inverse_grid_type, qs_upf_inverse_grid_prepare, qs_upf_inverse_grid_release
    PUBLIC :: qs_upf_inverse_grid_collocate, qs_upf_inverse_grid_integrate
    PUBLIC :: qs_upf_inverse_grid_metric
+   PUBLIC :: qs_upf_inverse_grid_collocate_dense, qs_upf_inverse_grid_integrate_dense, qs_upf_inverse_grid_metric_dense
    PUBLIC :: qs_upf_inverse_matrix_gather, qs_upf_inverse_matrix_scatter
 
 CONTAINS
@@ -129,7 +130,35 @@ CONTAINS
          INTENT(INOUT), OPTIONAL                         :: augmentation
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
 
-      COMPLEX(dp), ALLOCATABLE                           :: p(:, :), projected(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: p(:, :)
+
+      CALL qs_upf_inverse_matrix_gather(frame%ao, density_real, p, density_imag)
+      CALL qs_upf_inverse_grid_collocate_dense(frame, p, density, gradient, tau, projector_density, augmentation, fourier_charge)
+   END SUBROUTINE qs_upf_inverse_grid_collocate
+
+! **************************************************************************************************
+!> \brief The same native density map for a replicated complex AO density matrix.
+!>        The caller supplies occupations and any k weight exactly once.
+!> \param frame ...
+!> \param p Hermitian AO density in the inverse variables.
+!> \param density ...
+!> \param gradient ...
+!> \param tau Smooth kinetic density only.
+!> \param projector_density ...
+!> \param augmentation ...
+!> \param fourier_charge ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_grid_collocate_dense(frame, p, density, gradient, tau, &
+                                                  projector_density, augmentation, fourier_charge)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      COMPLEX(dp), INTENT(IN)                            :: p(:, :)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: projector_density(:, :)
+      TYPE(qs_upf_inverse_augmentation_type), &
+         INTENT(INOUT), OPTIONAL                         :: augmentation
+      LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
+
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
       INTEGER                                            :: axis, n, nproj
       LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dn(:, :), rho(:), t(:)
@@ -140,7 +169,7 @@ CONTAINS
       IF (use_fourier) THEN
          CPASSERT(PRESENT(augmentation))
       END IF
-      CALL qs_upf_inverse_matrix_gather(frame%ao, density_real, p, density_imag)
+      CPASSERT(ALL(SHAPE(p) == SIZE(frame%ao%soft, 2)))
       n = SIZE(frame%ao%weights)
       ALLOCATE (rho(n), dn(n, 3), t(n))
       CALL upf_inverse_smooth_density(frame%ao%soft, frame%ao%soft_gradient, p, rho, dn, t)
@@ -164,7 +193,7 @@ CONTAINS
       IF (use_fourier) THEN
          CALL qs_upf_inverse_augmentation_fourier_collocate(frame%ao, augmentation, projected, density, gradient)
       END IF
-   END SUBROUTINE qs_upf_inverse_grid_collocate
+   END SUBROUTINE qs_upf_inverse_grid_collocate_dense
 
 ! **************************************************************************************************
 !> \brief Integrate the density/gradient/tau adjoint into owned native real S / imaginary A matrices.
@@ -192,7 +221,35 @@ CONTAINS
          INTENT(INOUT), OPTIONAL                         :: augmentation
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
 
-      COMPLEX(dp), ALLOCATABLE                           :: h(:, :), projected(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: h(:, :)
+
+      CALL qs_upf_inverse_grid_integrate_dense(frame, vdensity, vgradient, vtau, h, &
+                                               projector_operator, augmentation, fourier_charge)
+      CALL qs_upf_inverse_matrix_scatter(frame%ao, h, template, operator_real, operator_imag)
+   END SUBROUTINE qs_upf_inverse_grid_integrate
+
+! **************************************************************************************************
+!> \brief Complex AO adjoint, before its native matrix distribution is selected.
+!> \param frame ...
+!> \param vdensity ...
+!> \param vgradient ...
+!> \param vtau ...
+!> \param h New replicated Hermitian operator, without occupation or k weights.
+!> \param projector_operator ...
+!> \param augmentation ...
+!> \param fourier_charge ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_grid_integrate_dense(frame, vdensity, vgradient, vtau, h, &
+                                                  projector_operator, augmentation, fourier_charge)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: h(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: projector_operator(:, :)
+      TYPE(qs_upf_inverse_augmentation_type), &
+         INTENT(INOUT), OPTIONAL                         :: augmentation
+      LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
+
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
       INTEGER                                            :: axis, n, nao, nproj
       LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
@@ -228,8 +285,7 @@ CONTAINS
          CPASSERT(ALL(SHAPE(projector_operator) == [nproj, nproj]))
          h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_operator, frame%ao%coefficients))
       END IF
-      CALL qs_upf_inverse_matrix_scatter(frame%ao, h, template, operator_real, operator_imag)
-   END SUBROUTINE qs_upf_inverse_grid_integrate
+   END SUBROUTINE qs_upf_inverse_grid_integrate_dense
 
 ! **************************************************************************************************
 !> \brief Assemble the original generalized metric in the inverse AO variables.
@@ -248,6 +304,22 @@ CONTAINS
       TYPE(dbcsr_type), INTENT(INOUT)                    :: metric_real, metric_imag
 
       COMPLEX(dp), ALLOCATABLE                           :: metric(:, :)
+
+      CALL qs_upf_inverse_grid_metric_dense(frame, projector_metric, metric)
+      CALL qs_upf_inverse_matrix_scatter(frame%ao, metric, template, metric_real, metric_imag)
+   END SUBROUTINE qs_upf_inverse_grid_metric
+
+! **************************************************************************************************
+!> \brief Replicated complex inverse metric with the caller's explicit projector metric.
+!> \param frame ...
+!> \param projector_metric ...
+!> \param metric New owned dense metric; radial Q and supplied PP_Q remain distinct.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_grid_metric_dense(frame, projector_metric, metric)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: metric(:, :)
+
       INTEGER                                            :: nao, nproj
 
       CPASSERT(frame%ao%inverse%ready)
@@ -258,8 +330,7 @@ CONTAINS
       CALL upf_inverse_pair(frame%ao%soft, frame%ao%soft, frame%ao%weights, metric, frame%ao%point_comm)
       metric(:, :) = metric + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), &
                                      MATMUL(projector_metric, frame%ao%coefficients))
-      CALL qs_upf_inverse_matrix_scatter(frame%ao, metric, template, metric_real, metric_imag)
-   END SUBROUTINE qs_upf_inverse_grid_metric
+   END SUBROUTINE qs_upf_inverse_grid_metric_dense
 
 ! **************************************************************************************************
 !> \brief Gather native AO components collectively, using native desymmetrization for S/A signs.
