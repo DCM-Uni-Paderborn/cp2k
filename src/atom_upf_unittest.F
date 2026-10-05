@@ -20,7 +20,8 @@ PROGRAM atom_upf_unittest
         release_atom_potential, sgp_pseudo, upf_pseudo
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
-                                              atom_upfpot_type
+                                              atom_upfpot_type,&
+                                              upf_radial_weights
    USE atom_utils,                      ONLY: atom_core_density,&
                                               atom_density
    USE cell_types,                      ONLY: cell_type
@@ -65,6 +66,9 @@ PROGRAM atom_upf_unittest
                                               nlcc_atom_grid_init,&
                                               nlcc_atom_grid_type
    USE qs_vxc_atom_utils,               ONLY: evaluate_nlcc_primitive_fields
+   USE upf_inverse,                     ONLY: upf_inverse_delta_init
+   USE upf_projector_integrals,         ONLY: upf_projector_overlap,&
+                                              upf_projector_type
 
    IMPLICIT NONE
    LOGICAL :: source_root_argument
@@ -88,6 +92,7 @@ PROGRAM atom_upf_unittest
    CALL check_contracted_basis_reader()
    CALL check_basis_optimization_export()
    CALL check_uspp_import()
+   CALL check_uspp_partial_waves()
    CALL check_uspp_atomic()
 
    ! The same temporary is reused for successive KIND sections in Quickstep.
@@ -1007,6 +1012,104 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_uspp_import
+
+! **************************************************************************************************
+!> \brief Original projector-indexed waves remain distinct from atomic guesses and optional.
+! **************************************************************************************************
+   SUBROUTINE check_uspp_partial_waves()
+      CHARACTER(LEN=*), PARAMETER :: fixture = 'uspp-partial-waves-test.upf'
+
+      CHARACTER(LEN=5)                                   :: has_wfc
+      INTEGER                                            :: unit, variant
+      REAL(dp)                                           :: expected, values(1, 4, 1)
+      TYPE(atom_upfpot_type)                             :: potential
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(upf_projector_type)                           :: delta
+
+      logger => cp_get_default_logger()
+      DO variant = 1, 2
+         has_wfc = 'false'
+         IF (variant == 1) has_wfc = 'true'
+         IF (logger%para_env%is_source()) THEN
+            OPEN (NEWUNIT=unit, FILE=fixture, STATUS='REPLACE', ACTION='WRITE')
+            WRITE (unit, '(A)') &
+               '<UPF version="2.0.1">', &
+               '<PP_HEADER element="H" pseudo_type="US" is_ultrasoft="true" is_paw="false"', &
+               ' has_wfc="'//TRIM(has_wfc)//'" z_valence="1" mesh_size="3"', &
+               ' number_of_proj="2" number_of_wfc="1" l_max="1"/>', &
+               '<PP_MESH mesh="3">', &
+               '<PP_R>', '0.5 1 1.5', '</PP_R>', &
+               '<PP_RAB>', '0.5 0.5 0.5', '</PP_RAB>', '</PP_MESH>', &
+               '<PP_LOCAL>', '6 4 2', '</PP_LOCAL>', &
+               '<PP_NONLOCAL>', &
+               '<PP_BETA.1 index="1" angular_momentum="0" size="3">', '1 4 9', '</PP_BETA.1>', &
+               '<PP_BETA.2 index="2" angular_momentum="1" size="3">', '2 -1 3', '</PP_BETA.2>', &
+               '<PP_DIJ>', '2 0 0 8', '</PP_DIJ>', &
+               '<PP_AUGMENTATION q_with_l="T" nqf="0" nqlc="3">', &
+               '<PP_Q>', '2 0 0 3', '</PP_Q>', &
+               '<PP_QIJL.1.1.0 first_index="1" second_index="1" composite_index="1" angular_momentum="0">', &
+               '1 2 3', '</PP_QIJL.1.1.0>', &
+               '<PP_QIJL.1.2.1 first_index="1" second_index="2" composite_index="2" angular_momentum="1">', &
+               '4 -5 6', '</PP_QIJL.1.2.1>', &
+               '<PP_QIJL.2.2.0 first_index="2" second_index="2" composite_index="3" angular_momentum="0">', &
+               '-3 4 5', '</PP_QIJL.2.2.0>', &
+               '<PP_QIJL.2.2.2 first_index="2" second_index="2" composite_index="3" angular_momentum="2">', &
+               '0 0 0', '</PP_QIJL.2.2.2>', '</PP_AUGMENTATION>', '</PP_NONLOCAL>', &
+               '<PP_PSWFC>', '<PP_CHI.1 l="0">', '999 999 999', '</PP_CHI.1>', '</PP_PSWFC>'
+            IF (variant == 1) THEN
+               ! Reordered, deliberately unnormalized waves distinguish every index and side.
+               WRITE (unit, '(A)') &
+                  '<PP_FULL_WFC number_of_wfc="2">', &
+                  '<PP_PSWFC.2 type="real" size="3" l="1">', '2 3 -4', '</PP_PSWFC.2>', &
+                  '<PP_AEWFC.1 index="1" l="0">', '-3 5 -7', '</PP_AEWFC.1>', &
+                  '<PP_AEWFC.2 index="2" l="1">', '5 -7 9', '</PP_AEWFC.2>', &
+                  '<PP_PSWFC.1 l="0">', '1 -2 3', '</PP_PSWFC.1>', '</PP_FULL_WFC>'
+            END IF
+            WRITE (unit, '(A)') '</UPF>'
+            CLOSE (unit)
+         END IF
+         CALL logger%para_env%sync()
+         IF (variant == 1) THEN
+            CALL atom_read_upf(potential, fixture, read_header=.TRUE.)
+            IF (ALLOCATED(potential%partial_waves)) ERROR STOP 'USPP full waves imported without augmentation request'
+            CALL atom_release_upf(potential)
+         END IF
+         CALL atom_read_upf(potential, fixture, read_augmentation=.TRUE.)
+         IF (potential%is_paw) ERROR STOP 'USPP full waves were classified as PAW'
+         IF (variant == 1) THEN
+            IF (.NOT. ALLOCATED(potential%partial_waves)) ERROR STOP 'Missing optional USPP full waves'
+            ASSOCIATE (waves => potential%partial_waves)
+               IF (ANY(SHAPE(waves%ae_wfc) /= [3, 2])) ERROR STOP 'USPP full-wave count differs from beta count'
+               IF (ANY(waves%ae_wfc /= RESHAPE([-3._dp, 5._dp, -7._dp, 5._dp, -7._dp, 9._dp], [3, 2]))) THEN
+                  ERROR STOP 'USPP AE full-wave order or original normalization changed'
+               END IF
+               IF (ANY(waves%ps_wfc /= RESHAPE([1._dp, -2._dp, 3._dp, 2._dp, 3._dp, -4._dp], [3, 2]))) THEN
+                  ERROR STOP 'USPP PS full waves changed or were confused with atomic guesses'
+               END IF
+               IF (ANY(waves%angular_momenta /= [0, 1])) ERROR STOP 'Wrong USPP full-wave angular momenta'
+            END ASSOCIATE
+            CALL upf_inverse_delta_init(potential, 0, delta)
+            CALL upf_projector_overlap(delta, 0, [0.7_dp], [0.0_dp, 0.0_dp, 0.0_dp], 0, values)
+            expected = SQRT(fourpi)*SUM(upf_radial_weights(potential)*potential%r* &
+                                        (potential%partial_waves%ae_wfc(:, 1) - &
+                                         potential%partial_waves%ps_wfc(:, 1))*EXP(-0.7_dp*potential%r**2))
+            IF (ABS(values(1, 1, 1) - expected) > 1.e-12_dp) ERROR STOP 'Wrong inverse radial/Gaussian overlap'
+            IF (MAXVAL(ABS(values(1, 2:4, 1))) > 1.e-12_dp) ERROR STOP 'Wrong inverse angular ordering'
+            potential%r(1) = 0.0_dp
+            CALL upf_inverse_delta_init(potential, 0, delta)
+            IF (ANY(delta%weighted_beta(1, :) /= 0.0_dp)) ERROR STOP 'Nonzero inverse origin quadrature weight'
+         ELSE
+            IF (ALLOCATED(potential%partial_waves)) ERROR STOP 'USPP without full waves allocated partial-wave data'
+         END IF
+         CALL atom_release_upf(potential)
+         IF (ALLOCATED(potential%partial_waves)) ERROR STOP 'USPP full-wave data not released'
+         CALL logger%para_env%sync()
+      END DO
+      IF (logger%para_env%is_source()) THEN
+         OPEN (NEWUNIT=unit, FILE=fixture, STATUS='OLD')
+         CLOSE (unit, STATUS='DELETE')
+      END IF
+   END SUBROUTINE check_uspp_partial_waves
 
 ! **************************************************************************************************
 !> \brief Report native augmentation invariants for an optional external original UPF file.

@@ -13,8 +13,11 @@
 !>        This algebra neither supplies missing reference waves nor eliminates operator residuals.
 ! **************************************************************************************************
 MODULE upf_inverse
+   USE atom_upf,                        ONLY: atom_upfpot_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
+   USE upf_projector_integrals,         ONLY: upf_projector_init,&
+                                              upf_projector_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -31,8 +34,60 @@ MODULE upf_inverse
    PUBLIC :: upf_inverse_type, upf_inverse_init, upf_inverse_project, upf_inverse_project_response
    PUBLIC :: upf_inverse_basis, upf_inverse_basis_response
    PUBLIC :: upf_inverse_operator, upf_inverse_operator_response
+   PUBLIC :: upf_inverse_delta_init
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Prepare original AE-minus-PS radial overlaps in the native projector/harmonic order.
+!>        The ordinary radial/Gaussian integrator supplies overlaps and AO-center derivatives.
+!>        This is an overlap cache, not a replacement for the original nonlocal operator.
+!> \param pot Original data with a complete full-wave pair for every beta projector.
+!> \param degree Required Cartesian degree, including derivatives or moments.
+!> \param delta Original radial quadrature and angular maps for (u_AE-u_PS)/r.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_delta_init(pot, degree, delta)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      INTEGER, INTENT(IN)                                :: degree
+      TYPE(upf_projector_type), INTENT(OUT)              :: delta
+
+      INTEGER                                            :: i, n, nb
+      TYPE(atom_upfpot_type)                             :: radial
+
+      IF (.NOT. ALLOCATED(pot%partial_waves)) THEN
+         CPABORT("Inverse UPF reconstruction requires original projector-indexed AE/PS full partial waves")
+      END IF
+      CPASSERT(ALLOCATED(pot%r) .AND. ALLOCATED(pot%rab) .AND. ALLOCATED(pot%lbeta))
+      CPASSERT(ALLOCATED(pot%partial_waves%ae_wfc) .AND. ALLOCATED(pot%partial_waves%ps_wfc))
+      CPASSERT(ALLOCATED(pot%partial_waves%angular_momenta))
+      n = SIZE(pot%r)
+      nb = pot%number_of_proj
+      CPASSERT(n >= 3 .AND. nb > 0 .AND. ALL(pot%r >= 0.0_dp))
+      CPASSERT(SIZE(pot%rab) == n .AND. SIZE(pot%lbeta) == nb)
+      CPASSERT(ALL(SHAPE(pot%partial_waves%ae_wfc) == [n, nb]))
+      CPASSERT(ALL(SHAPE(pot%partial_waves%ps_wfc) == [n, nb]))
+      CPASSERT(ALL(pot%partial_waves%angular_momenta == pot%lbeta))
+      CPASSERT(ALL(ieee_is_finite(pot%partial_waves%ae_wfc)))
+      CPASSERT(ALL(ieee_is_finite(pot%partial_waves%ps_wfc)))
+      radial%number_of_proj = nb
+      radial%has_so = pot%has_so
+      ALLOCATE (radial%r, SOURCE=pot%r)
+      ALLOCATE (radial%rab, SOURCE=pot%rab)
+      ALLOCATE (radial%lbeta, SOURCE=pot%lbeta)
+      ALLOCATE (radial%beta(n, nb), radial%dion(nb, nb))
+      radial%dion(:, :) = 0.0_dp
+      DO i = 1, nb
+         radial%beta(:, i) = pot%partial_waves%ae_wfc(:, i) - pot%partial_waves%ps_wfc(:, i)
+         IF (pot%r(1) == 0.0_dp) THEN
+            radial%beta(2:, i) = radial%beta(2:, i)/pot%r(2:)
+            ! Zero quadrature weight at r=0; this storage does not define a field continuation.
+            radial%beta(1, i) = 0.0_dp
+         ELSE
+            radial%beta(:, i) = radial%beta(:, i)/pot%r
+         END IF
+      END DO
+      CALL upf_projector_init(radial, degree, delta)
+   END SUBROUTINE upf_inverse_delta_init
 
 ! **************************************************************************************************
 !> \brief Factor K with original projector normalization and all supplied intercenter blocks.

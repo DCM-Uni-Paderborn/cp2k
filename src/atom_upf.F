@@ -18,6 +18,7 @@ MODULE atom_upf
    USE cp_parser_types,                 ONLY: cp_parser_type,&
                                               parser_create,&
                                               parser_release
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp
@@ -29,6 +30,12 @@ MODULE atom_upf
 
    ! use same value as in atom_types!
    INTEGER, PARAMETER                                :: lmat = 3
+
+   TYPE upf_partial_waves_type
+      ! Original r*phi(r), one AE/PS pair per beta projector; not the atomic guesses.
+      REAL(dp), ALLOCATABLE :: ae_wfc(:, :), ps_wfc(:, :)
+      INTEGER, ALLOCATABLE :: angular_momenta(:)
+   END TYPE upf_partial_waves_type
 
    TYPE atom_upfpot_type
       CHARACTER(LEN=2)                               :: symbol = ""
@@ -85,12 +92,13 @@ MODULE atom_upf
       ! The pair index is j*(j-1)/2+i for i<=j; the last dimension starts at L=0.
       REAL(dp), DIMENSION(:, :), ALLOCATABLE         :: qij
       REAL(dp), DIMENSION(:, :, :), ALLOCATABLE      :: qijl
+      TYPE(upf_partial_waves_type), ALLOCATABLE :: partial_waves
       ! <SEMILOCAL>
       REAL(dp), DIMENSION(:, :), ALLOCATABLE         :: vsemi
    END TYPE atom_upfpot_type
 
    PRIVATE
-   PUBLIC  :: atom_read_upf, atom_upfpot_type, atom_release_upf, upf_radial_weights
+   PUBLIC  :: atom_read_upf, atom_upfpot_type, atom_release_upf, upf_radial_weights, upf_partial_waves_type
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'atom_upf'
 
@@ -127,7 +135,7 @@ CONTAINS
 !> \param pot ...
 !> \param upf_filename ...
 !> \param read_header ...
-!> \param read_augmentation Import scalar USPP augmentation data explicitly.
+!> \param read_augmentation Import scalar USPP augmentation and optional full partial waves explicitly.
 !>        This reader option does not enable USPP in a calculation method.
 ! **************************************************************************************************
    SUBROUTINE atom_read_upf(pot, upf_filename, read_header, read_augmentation)
@@ -262,6 +270,10 @@ CONTAINS
                IF (.NOT. (nametag(11:11) == ">")) THEN
                   CALL upf_header_option(parser, pot)
                END IF
+               IF (readaug .AND. pot%is_ultrasoft .AND. .NOT. pot%is_paw .AND. pot%has_wfc) THEN
+                  CPASSERT(.NOT. ALLOCATED(pot%partial_waves))
+                  ALLOCATE (pot%partial_waves)
+               END IF
             ELSE IF (nametag(2:8) == "PP_MESH") THEN
                IF (.NOT. (nametag(9:9) == ">")) THEN
                   CALL upf_mesh_option(parser, pot)
@@ -286,6 +298,10 @@ CONTAINS
                CALL upf_semilocal_section(parser, pot)
             ELSE IF (nametag(2:9) == "PP_PSWFC") THEN
                ! skip section for now
+            ELSE IF (nametag(2:12) == "PP_FULL_WFC") THEN
+               IF (ALLOCATED(pot%partial_waves)) THEN
+                  CALL upf_full_wfc_section(parser, pot%partial_waves, nametag, pot%mesh_size, pot%number_of_proj)
+               END IF
             ELSE IF (nametag(2:11) == "PP_RHOATOM") THEN
                ! skip section for now
             ELSE IF (nametag(2:7) == "PP_PAW") THEN
@@ -322,6 +338,11 @@ CONTAINS
       END IF
       IF (readaug .AND. pot%is_ultrasoft .AND. .NOT. pot%is_paw) THEN
          CPASSERT(ALLOCATED(pot%qij) .AND. ALLOCATED(pot%qijl))
+      END IF
+
+      IF (ALLOCATED(pot%partial_waves)) THEN
+         CPASSERT(ALLOCATED(pot%partial_waves%ae_wfc) .AND. ALLOCATED(pot%partial_waves%ps_wfc))
+         CPASSERT(ALL(pot%partial_waves%angular_momenta == pot%lbeta))
       END IF
 
    END SUBROUTINE atom_read_upf_v2
@@ -1073,6 +1094,183 @@ CONTAINS
       pot%vsemi = 0.5_dp*pot%vsemi
 
    END SUBROUTINE upf_semilocal_section
+
+! **************************************************************************************************
+!> \brief Skip complete XML comment lines before original full-wave data.
+!> \param parser ...
+!> \param at_end ...
+! **************************************************************************************************
+   SUBROUTINE upf_next_line(parser, at_end)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+      LOGICAL, INTENT(OUT)                               :: at_end
+
+      CHARACTER(LEN=:), ALLOCATABLE                      :: line
+      LOGICAL                                            :: in_comment
+
+      in_comment = .FALSE.
+      DO
+         CALL parser_get_next_line(parser, 1, at_end)
+         IF (at_end) THEN
+            CPASSERT(.NOT. in_comment)
+            RETURN
+         END IF
+         line = ADJUSTL(parser%buffer%input_lines(parser%buffer%present_line_number))
+         IF (.NOT. in_comment .AND. INDEX(line, '<!--') /= 1) RETURN
+         in_comment = INDEX(line, '-->') == 0
+      END DO
+   END SUBROUTINE upf_next_line
+
+! **************************************************************************************************
+!> \brief Read an original full-wave array without normalization or unit conversion.
+!> \param parser ...
+!> \param tag ...
+!> \param values ...
+!> \param index_value ...
+!> \param angular_momentum ...
+! **************************************************************************************************
+   SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+      CHARACTER(LEN=*), INTENT(IN)                       :: tag
+      REAL(dp), INTENT(OUT)                              :: values(:)
+      INTEGER, INTENT(OUT), OPTIONAL                     :: index_value, angular_momentum
+
+      CHARACTER(LEN=default_string_length)               :: name, string, value
+      INTEGER                                            :: i, last, n
+      LOGICAL                                            :: at_end
+
+      n = SIZE(values)
+      last = LEN_TRIM(tag)
+      IF (PRESENT(index_value)) index_value = -1
+      IF (PRESENT(angular_momentum)) angular_momentum = -1
+      IF (tag(last:last) == ">") THEN
+         name = tag(2:last - 1)
+      ELSE
+         name = tag(2:last)
+         DO
+            IF (parser_test_next_token(parser) == "EOL") THEN
+               CALL upf_next_line(parser, at_end)
+               CPASSERT(.NOT. at_end)
+            END IF
+            CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
+            IF (string == ">") EXIT
+            SELECT CASE (string)
+            CASE ("TYPE")
+               CALL parser_get_object(parser, value, lower_to_upper=.TRUE.)
+               CPASSERT(value == "REAL")
+            CASE ("SIZE")
+               CALL parser_get_object(parser, n)
+               CPASSERT(n == SIZE(values))
+            CASE ("COLUMNS")
+               CALL parser_get_object(parser, value)
+            CASE ("INDEX")
+               CPASSERT(PRESENT(index_value))
+               CALL parser_get_object(parser, index_value)
+            CASE ("L")
+               CPASSERT(PRESENT(angular_momentum))
+               CALL parser_get_object(parser, angular_momentum)
+            CASE ("LABEL")
+               CALL parser_get_object(parser, value, allow_empty=.TRUE.)
+            CASE DEFAULT
+               CPABORT("Unknown UPF "//TRIM(name)//" option <"//TRIM(string)//"> found")
+            END SELECT
+         END DO
+      END IF
+      DO i = 1, n
+         DO WHILE (parser_test_next_token(parser) == "EOL")
+            CALL upf_next_line(parser, at_end)
+            CPASSERT(.NOT. at_end)
+         END DO
+         CALL parser_get_object(parser, values(i))
+      END DO
+      CPASSERT(ALL(ieee_is_finite(values)))
+      CALL upf_next_line(parser, at_end)
+      CPASSERT(.NOT. at_end)
+      CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
+      CPASSERT(string == "</"//TRIM(name)//">")
+   END SUBROUTINE upf_real_array
+
+! **************************************************************************************************
+!> \brief Import projector-indexed AE and PS partial waves, retaining r*phi(r).
+!> \param parser ...
+!> \param waves ...
+!> \param opening_tag ...
+!> \param mesh_size ...
+!> \param number_of_proj ...
+! **************************************************************************************************
+   SUBROUTINE upf_full_wfc_section(parser, waves, opening_tag, mesh_size, number_of_proj)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+
+      CLASS(upf_partial_waves_type), INTENT(INOUT)        :: waves
+      CHARACTER(LEN=*), INTENT(IN)                       :: opening_tag
+      INTEGER, INTENT(IN)                                :: mesh_size, number_of_proj
+
+      CHARACTER(LEN=default_string_length)               :: string, suffix, tag
+      INTEGER                                            :: i, index_value, ios, l, last, m, n, nb, &
+                                                            wave_type
+      LOGICAL                                            :: at_end
+      LOGICAL, ALLOCATABLE                               :: found(:, :)
+      REAL(dp), ALLOCATABLE                              :: values(:)
+
+      nb = number_of_proj
+      m = mesh_size
+      CPASSERT(nb > 0 .AND. m > 0)
+      CPASSERT(.NOT. ALLOCATED(waves%ae_wfc) .AND. .NOT. ALLOCATED(waves%ps_wfc))
+      CPASSERT(.NOT. ALLOCATED(waves%angular_momenta))
+      IF (opening_tag /= "<PP_FULL_WFC>") THEN
+         DO
+            IF (parser_test_next_token(parser) == "EOL") THEN
+               CALL upf_next_line(parser, at_end)
+               CPASSERT(.NOT. at_end)
+            END IF
+            CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
+            IF (string == ">") EXIT
+            CPASSERT(string == "NUMBER_OF_WFC")
+            CALL parser_get_object(parser, n)
+            CPASSERT(n == nb)
+         END DO
+      END IF
+      ALLOCATE (waves%ae_wfc(m, nb), waves%ps_wfc(m, nb), waves%angular_momenta(nb))
+      ALLOCATE (found(nb, 2), values(m))
+      found = .FALSE.
+      waves%angular_momenta = -1
+      DO
+         CALL upf_next_line(parser, at_end)
+         CPASSERT(.NOT. at_end)
+         CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
+         IF (tag == "</PP_FULL_WFC>") EXIT
+         SELECT CASE (tag(1:10))
+         CASE ("<PP_AEWFC.")
+            wave_type = 1
+         CASE ("<PP_PSWFC.")
+            wave_type = 2
+         CASE DEFAULT
+            CPABORT("Unknown UPF full partial-wave tag "//TRIM(tag))
+         END SELECT
+         last = LEN_TRIM(tag)
+         IF (tag(last:last) == ">") last = last - 1
+         suffix = tag(11:last)
+         READ (suffix, *, IOSTAT=ios) i
+         CPASSERT(ios == 0)
+         CPASSERT(i >= 1 .AND. i <= nb)
+         CPASSERT(.NOT. found(i, wave_type))
+         CALL upf_real_array(parser, tag, values, index_value, l)
+         IF (index_value /= -1) THEN
+            CPASSERT(index_value == i)
+         END IF
+         CPASSERT(l >= 0)
+         IF (waves%angular_momenta(i) >= 0) THEN
+            CPASSERT(l == waves%angular_momenta(i))
+         END IF
+         waves%angular_momenta(i) = l
+         IF (wave_type == 1) THEN
+            waves%ae_wfc(:, i) = values
+         ELSE
+            waves%ps_wfc(:, i) = values
+         END IF
+         found(i, wave_type) = .TRUE.
+      END DO
+      CPASSERT(ALL(found))
+   END SUBROUTINE upf_full_wfc_section
 
 ! **************************************************************************************************
 !> \brief ...
