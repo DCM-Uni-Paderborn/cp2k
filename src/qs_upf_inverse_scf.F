@@ -29,6 +29,7 @@ MODULE qs_upf_inverse_scf
    USE kpoint_transitional,             ONLY: set_1d_pointer,&
                                               set_2d_pointer
    USE kpoint_types,                    ONLY: kpoint_native_operator_clear
+   USE mathlib,                         ONLY: invmat
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_methods,                      ONLY: pw_integrate_function,&
@@ -55,6 +56,7 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_grid_metric,&
                                               qs_upf_inverse_grid_prepare,&
+                                              qs_upf_inverse_grid_response,&
                                               qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_collocate,&
                                               qs_upf_inverse_kpoints_density,&
@@ -62,7 +64,9 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_kpoints_metric,&
                                               qs_upf_inverse_kpoints_prepare,&
                                               qs_upf_inverse_kpoints_release_operators
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_release,&
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_grid_type,&
+                                              qs_upf_inverse_scf_release,&
                                               qs_upf_inverse_scf_type
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
@@ -74,6 +78,7 @@ MODULE qs_upf_inverse_scf
    PUBLIC :: qs_upf_inverse_scf_prepare, qs_upf_inverse_scf_active
    PUBLIC :: qs_upf_inverse_scf_collocate, qs_upf_inverse_scf_integrate, qs_upf_inverse_scf_core
    PUBLIC :: qs_upf_inverse_scf_traces
+   PUBLIC :: qs_upf_inverse_scf_core_response
 CONTAINS
 
 ! **************************************************************************************************
@@ -199,16 +204,12 @@ CONTAINS
    SUBROUTINE qs_upf_inverse_scf_core(ks_env)
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
 
-      COMPLEX(dp), ALLOCATABLE                           :: ionic_g(:)
-      INTEGER                                            :: atom, axis, ikind
+      INTEGER                                            :: axis
       TYPE(dbcsr_p_type), POINTER                        :: h(:), kinetic(:), overlap(:)
       TYPE(dbcsr_type)                                   :: imaginary, real_part
-      TYPE(particle_type), POINTER                       :: atoms(:)
-      TYPE(pw_c1d_gs_type)                               :: local_g
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: local_r, unit_tau, zero_density, zeros(3)
       TYPE(pw_r3d_rs_type), POINTER                      :: native_r(:)
-      TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
@@ -218,13 +219,12 @@ CONTAINS
          CALL core_bloch(ks_env, state)
          RETURN
       END IF
-      CALL get_ks_env(ks_env, upf_inverse=state, qs_kind_set=kinds, particle_set=atoms, &
+      CALL get_ks_env(ks_env, upf_inverse=state, &
                       matrix_h=h, kinetic=kinetic, matrix_s=overlap, rho=rho)
       CPASSERT(ASSOCIATED(state))
       CALL check_geometry(ks_env, state)
       CALL qs_rho_get(rho, rho_r=native_r)
       grid => native_r(1)%pw_grid
-      CALL local_g%create(grid)
       CALL local_r%create(grid)
       CALL unit_tau%create(grid)
       CALL zero_density%create(grid)
@@ -240,20 +240,7 @@ CONTAINS
       CALL dbcsr_copy(kinetic(1)%matrix, real_part)
       CALL dbcsr_release(real_part)
       CALL dbcsr_release(imaginary)
-      ALLOCATE (ionic_g(SIZE(local_g%array)))
-      local_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
-      DO atom = 1, SIZE(atoms)
-         ikind = atoms(atom)%atomic_kind%kind_number
-         IF (kinds(ikind)%ghost) CYCLE
-         ASSOCIATE (potential => kinds(ikind)%sgp_potential)
-            IF (potential%upf_local%radial%degree < 0) THEN
-               CALL upf_local_init(potential%upf_data, potential%alpha_core_charge, 0, potential%upf_local)
-            END IF
-            CALL upf_local_fourier(potential%upf_local, grid%g, atoms(atom)%r, grid%vol, ionic_g)
-         END ASSOCIATE
-         local_g%array = local_g%array + ionic_g
-      END DO
-      CALL pw_transfer(local_g, local_r)
+      CALL local_potential(ks_env, grid, state%frame%ao%positions, local_r)
       CALL qs_upf_inverse_grid_integrate(state%frame, local_r, zeros, unit_tau, overlap(1)%matrix, &
                                          real_part, imaginary, projector_operator=state%frame%ao%dion, &
                                          augmentation=state%augmentation, fourier_charge=.TRUE.)
@@ -261,7 +248,6 @@ CONTAINS
       CALL dbcsr_copy(h(1)%matrix, real_part)
       CALL dbcsr_release(real_part)
       CALL dbcsr_release(imaginary)
-      CALL local_g%release()
       CALL local_r%release()
       CALL unit_tau%release()
       CALL zero_density%release()
@@ -373,6 +359,139 @@ CONTAINS
       END DO
       state%operator_evaluations = state%operator_evaluations + 1
    END SUBROUTINE qs_upf_inverse_scf_integrate
+
+! **************************************************************************************************
+!> \brief Joint geometry response of the inverse core Hamiltonian and its charge metric.
+!>        Differentiates soft kinetic energy, original Dion, all short-range ionic potentials and Q.
+!>        Gaussian ionic/core electrostatics remains in the native Poisson and core-energy terms.
+!> \param ks_env Native kinds and their original radial potentials; geometry is not modified.
+!> \param frame Prepared inverse fields at the geometry being differentiated.
+!> \param augmentation Original charge kernels shared with the density map.
+!> \param grid Native physical-cell grid of frame.
+!> \param atom_response Cartesian response of every native atom.
+!> \param cell_response Lattice-vector response, including its reciprocal and volume effects.
+!> \param reduced_k_response Reduced Bloch-vector response, zero for cell stress.
+!> \param core_response New replicated core-Hamiltonian response without occupation/k weights.
+!> \param metric_response New response of the same radial-Q metric used by inverse SCF.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_core_response(ks_env, frame, augmentation, grid, atom_response, cell_response, &
+                                               reduced_k_response, core_response, metric_response)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(qs_upf_inverse_augmentation_type), &
+         INTENT(INOUT)                                   :: augmentation
+      TYPE(pw_grid_type), POINTER                        :: grid
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: core_response(:, :), &
+                                                            metric_response(:, :)
+
+      INTEGER                                            :: axis, info
+      REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3)
+      TYPE(pw_r3d_rs_type)                               :: local_r, local_response, unit_tau, zero, &
+                                                            zeros(3)
+
+      cell_inverse = frame%ao%cell
+      CALL invmat(cell_inverse, info)
+      CPASSERT(info == 0)
+      strain = MATMUL(cell_response, cell_inverse)
+      CALL local_r%create(grid)
+      CALL local_response%create(grid)
+      CALL unit_tau%create(grid)
+      CALL zero%create(grid)
+      unit_tau%array = 1.0_dp
+      zero%array = 0.0_dp
+      DO axis = 1, 3
+         CALL zeros(axis)%create(grid)
+         zeros(axis)%array = 0.0_dp
+      END DO
+      CALL local_potential(ks_env, grid, frame%ao%positions, local_r, local_response, atom_response, strain)
+      CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, local_r, zeros, unit_tau, &
+                                        atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
+                                        core_response, metric_response, frame%ao%dion)
+      CALL local_r%release()
+      CALL local_response%release()
+      CALL unit_tau%release()
+      CALL zero%release()
+      DO axis = 1, 3
+         CALL zeros(axis)%release()
+      END DO
+   END SUBROUTINE qs_upf_inverse_scf_core_response
+
+! **************************************************************************************************
+!> \brief Original short-range ionic potential and its optional fixed-fractional-row response.
+!>        The same Fourier-to-real projection is used for the core operator and its derivative.
+!> \param ks_env Native kind mapping and prepared original UPF radial potentials.
+!> \param grid Native physical-cell grid.
+!> \param positions Cartesian centers at the current inverse geometry.
+!> \param local_r Allocated unweighted scalar potential, overwritten.
+!> \param local_response Optional allocated response, including the inverse-volume derivative.
+!> \param atom_response Required with local_response, Cartesian center displacements.
+!> \param strain Required with local_response, cell_response times inverse cell.
+! **************************************************************************************************
+   SUBROUTINE local_potential(ks_env, grid, positions, local_r, local_response, atom_response, strain)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(pw_grid_type), POINTER                        :: grid
+      REAL(dp), INTENT(IN)                               :: positions(:, :)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: local_r
+      TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: local_response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), strain(3, 3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: center_derivative(:, :), ionic_g(:), &
+                                                            reciprocal_derivative(:, :)
+      INTEGER                                            :: atom, axis, ikind, ng
+      REAL(dp)                                           :: volume_response
+      REAL(dp), ALLOCATABLE                              :: g_response(:, :)
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_c1d_gs_type)                               :: local_g, response_g
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms)
+      CPASSERT(ALL(SHAPE(positions) == [3, SIZE(atoms)]))
+      CPASSERT(ASSOCIATED(local_r%pw_grid, grid))
+      CALL local_g%create(grid)
+      ng = SIZE(local_g%array)
+      ALLOCATE (ionic_g(ng))
+      local_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(local_response)) THEN
+         CPASSERT(PRESENT(atom_response) .AND. PRESENT(strain))
+         CPASSERT(ALL(SHAPE(atom_response) == SHAPE(positions)))
+         CPASSERT(ASSOCIATED(local_response%pw_grid, grid))
+         CALL response_g%create(grid)
+         response_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+         ALLOCATE (center_derivative(3, ng), reciprocal_derivative(3, ng), g_response(3, ng))
+         g_response(:, :) = -MATMUL(TRANSPOSE(strain), grid%g)
+         volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
+      END IF
+      DO atom = 1, SIZE(atoms)
+         ikind = atoms(atom)%atomic_kind%kind_number
+         IF (kinds(ikind)%ghost) CYCLE
+         ASSOCIATE (potential => kinds(ikind)%sgp_potential)
+            IF (potential%upf_local%radial%degree < 0) THEN
+               CALL upf_local_init(potential%upf_data, potential%alpha_core_charge, 0, potential%upf_local)
+            END IF
+            IF (PRESENT(local_response)) THEN
+               CALL upf_local_fourier(potential%upf_local, grid%g, positions(:, atom), grid%vol, ionic_g, &
+                                      center_derivative, reciprocal_derivative)
+               response_g%array = response_g%array - volume_response*ionic_g
+               DO axis = 1, 3
+                  response_g%array = response_g%array + atom_response(axis, atom)*center_derivative(axis, :) + &
+                                     g_response(axis, :)*reciprocal_derivative(axis, :)
+               END DO
+            ELSE
+               CALL upf_local_fourier(potential%upf_local, grid%g, positions(:, atom), grid%vol, ionic_g)
+            END IF
+         END ASSOCIATE
+         local_g%array = local_g%array + ionic_g
+      END DO
+      CALL pw_transfer(local_g, local_r)
+      IF (PRESENT(local_response)) THEN
+         CALL pw_transfer(response_g, local_response)
+         CALL response_g%release()
+      END IF
+      CALL local_g%release()
+   END SUBROUTINE local_potential
 
 ! **************************************************************************************************
 !> \brief Reject a stale inverse geometry instead of mixing it with rebuilt Gaussian operators.
@@ -503,19 +622,16 @@ CONTAINS
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT)       :: state
 
-      COMPLEX(dp), ALLOCATABLE                           :: ionic_g(:), matrix(:, :)
-      INTEGER                                            :: atom, axis, ik, ikind, n, nk, spin
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      INTEGER                                            :: axis, ik, n, nk, spin
       TYPE(dbcsr_p_type), POINTER                        :: kinetic(:, :), source(:, :)
-      TYPE(particle_type), POINTER                       :: atoms(:)
-      TYPE(pw_c1d_gs_type)                               :: local_g
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: local_r, unit_tau, zero, zeros(3)
       TYPE(pw_r3d_rs_type), POINTER                      :: native_r(:)
-      TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_rho_type), POINTER                         :: rho
 
       CALL check_geometry(ks_env, state)
-      CALL get_ks_env(ks_env, rho=rho, particle_set=atoms, qs_kind_set=kinds, kinetic_kp=kinetic, matrix_ks_kp=source)
+      CALL get_ks_env(ks_env, rho=rho, kinetic_kp=kinetic, matrix_ks_kp=source)
       ! KS storage is recreated after the core step when the AO structure changes.
       ! Do not retain an operator provider tied to that released source identity.
       IF (.NOT. ASSOCIATED(source)) THEN
@@ -523,7 +639,6 @@ CONTAINS
       END IF
       CALL qs_rho_get(rho, rho_r=native_r)
       grid => native_r(1)%pw_grid
-      CALL local_g%create(grid)
       CALL local_r%create(grid)
       CALL zero%create(grid)
       CALL unit_tau%create(grid)
@@ -533,20 +648,7 @@ CONTAINS
          CALL zeros(axis)%create(grid)
          zeros(axis)%array = 0.0_dp
       END DO
-      ALLOCATE (ionic_g(SIZE(local_g%array)))
-      local_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
-      DO atom = 1, SIZE(atoms)
-         ikind = atoms(atom)%atomic_kind%kind_number
-         IF (kinds(ikind)%ghost) CYCLE
-         ASSOCIATE (potential => kinds(ikind)%sgp_potential)
-            IF (potential%upf_local%radial%degree < 0) THEN
-               CALL upf_local_init(potential%upf_data, potential%alpha_core_charge, 0, potential%upf_local)
-            END IF
-            CALL upf_local_fourier(potential%upf_local, grid%g, atoms(atom)%r, grid%vol, ionic_g)
-         END ASSOCIATE
-         local_g%array = local_g%array + ionic_g
-      END DO
-      CALL pw_transfer(local_g, local_r)
+      CALL local_potential(ks_env, grid, state%bloch%frames(1)%ao%positions, local_r)
       n = state%bloch%nao
       nk = SIZE(state%bloch%weights)
       IF (.NOT. ALLOCATED(state%core_k)) THEN
@@ -565,7 +667,6 @@ CONTAINS
       END DO
       CALL register_bloch(state, kinetic, kpoint_slot_t, state%kinetic_k)
       IF (ASSOCIATED(source)) CALL register_bloch_spin(state, source)
-      CALL local_g%release()
       CALL local_r%release()
       CALL zero%release()
       CALL unit_tau%release()
