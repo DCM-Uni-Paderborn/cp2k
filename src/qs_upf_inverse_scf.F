@@ -7,11 +7,14 @@
 
 ! **************************************************************************************************
 !> \brief Explicit inverse-orbital attachment to native Quickstep density and operator consumers.
-!>        Scalar semilocal GPW at Gamma, with original full-wave USPP data.
+!>        Scalar semilocal GPW at Gamma and on full Bloch meshes with original full-wave USPP data.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_scf
    USE basis_set_types,                 ONLY: gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_release,&
+                                              cp_cfm_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_add,&
                                               dbcsr_copy,&
@@ -19,13 +22,17 @@ MODULE qs_upf_inverse_scf
                                               dbcsr_release,&
                                               dbcsr_set,&
                                               dbcsr_type
-   USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
+   USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set,&
+                                              dbcsr_deallocate_matrix_set
+   USE cp_fm_struct,                    ONLY: cp_fm_struct_type
    USE input_constants,                 ONLY: sic_none,&
                                               uspp_method_direct,&
                                               uspp_method_inverse,&
                                               uspp_method_inverse_1c
    USE kinds,                           ONLY: dp
-   USE kpoint_transitional,             ONLY: set_1d_pointer
+   USE kpoint_transitional,             ONLY: set_1d_pointer,&
+                                              set_2d_pointer
+   USE kpoint_types,                    ONLY: kpoint_native_operator_clear
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
@@ -41,6 +48,11 @@ MODULE qs_upf_inverse_scf
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
    USE qs_kinetic,                      ONLY: build_kinetic_matrix
+   USE qs_kpoint_density_state,         ONLY: kpoint_density_state_initialize
+   USE qs_kpoint_operators,             ONLY: kpoint_operator_set_native,&
+                                              kpoint_slot_ks,&
+                                              kpoint_slot_s,&
+                                              kpoint_slot_t
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_did_change,&
                                               qs_ks_env_type,&
@@ -53,11 +65,18 @@ MODULE qs_upf_inverse_scf
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate,&
                                               qs_upf_inverse_grid_integrate,&
+                                              qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_grid_metric,&
                                               qs_upf_inverse_grid_prepare,&
                                               qs_upf_inverse_grid_response,&
                                               qs_upf_inverse_matrix_gather,&
                                               qs_upf_inverse_matrix_scatter
+   USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_collocate,&
+                                              qs_upf_inverse_kpoints_density,&
+                                              qs_upf_inverse_kpoints_integrate,&
+                                              qs_upf_inverse_kpoints_metric,&
+                                              qs_upf_inverse_kpoints_prepare,&
+                                              qs_upf_inverse_kpoints_release_operators
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_grid_type,&
                                               qs_upf_inverse_scf_release,&
@@ -76,6 +95,7 @@ MODULE qs_upf_inverse_scf
    PUBLIC :: qs_upf_inverse_scf_prepare, qs_upf_inverse_scf_active
    PUBLIC :: qs_upf_inverse_scf_collocate, qs_upf_inverse_scf_integrate, qs_upf_inverse_scf_core
    PUBLIC :: qs_upf_inverse_scf_initialize, qs_upf_inverse_scf_reset
+   PUBLIC :: qs_upf_inverse_scf_traces
    PUBLIC :: qs_upf_inverse_scf_core_response
    PUBLIC :: qs_upf_inverse_scf_response
 CONTAINS
@@ -97,16 +117,18 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
 
-      INTEGER                                            :: ikind
+      INTEGER                                            :: ikind, img
       LOGICAL                                            :: do_kpoints
-      TYPE(dbcsr_p_type), POINTER                        :: kinetic(:), metric(:), overlap(:)
+      TYPE(cp_cfm_type), ALLOCATABLE                     :: native_metric(:)
+      TYPE(dbcsr_p_type), POINTER                        :: kinetic(:), metric(:), metric_k(:, :), overlap(:), &
+                                                            overlap_k(:, :)
       TYPE(dbcsr_type)                                   :: imaginary
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: previous, state
       TYPE(qs_uspp_type), POINTER                        :: uspp
 
-      CALL get_ks_env(ks_env, upf_inverse=previous, uspp=uspp, &
+      CALL get_ks_env(ks_env, upf_inverse=previous, matrix_s_kp=overlap_k, uspp=uspp, &
                       dft_control=control, do_kpoints=do_kpoints, qs_kind_set=kinds)
       CPASSERT(.NOT. ASSOCIATED(previous))
       CPASSERT(ASSOCIATED(uspp) .AND. ASSOCIATED(grid))
@@ -133,7 +155,29 @@ CONTAINS
       END DO
       ALLOCATE (state)
       IF (do_kpoints) THEN
-         CPABORT("Inverse USPP k-point consumers are not included in this implementation")
+         CALL qs_upf_inverse_kpoints_prepare(ks_env, grid, images, state%bloch, info)
+         IF (info /= 0) THEN
+            CALL qs_upf_inverse_scf_release(state)
+            RETURN
+         END IF
+         CALL qs_upf_inverse_kpoints_metric(state%bloch, native_metric, dense=state%metric_k)
+         CALL qs_upf_inverse_kpoints_release_operators(native_metric)
+         ! The image-indexed matrix set is only the direct metric's source identity.
+         ! Physical matrix values are the complete native Bloch matrices, never these zeros.
+         CALL dbcsr_allocate_matrix_set(metric_k, 1, SIZE(overlap_k, 2))
+         DO img = 1, SIZE(overlap_k, 2)
+            ALLOCATE (metric_k(1, img)%matrix)
+            CALL dbcsr_copy(metric_k(1, img)%matrix, overlap_k(1, img)%matrix)
+            CALL dbcsr_set(metric_k(1, img)%matrix, 0.0_dp)
+         END DO
+         CALL set_2d_pointer(state%metric, metric_k)
+         state%enabled = .TRUE.
+         CALL set_ks_env(ks_env, upf_inverse=state)
+         CALL register_bloch(state, metric_k, kpoint_slot_s, state%metric_k)
+         CALL qs_upf_inverse_scf_core(ks_env)
+         CALL kpoint_density_state_initialize(state%bloch%kpoints)
+         CALL qs_ks_did_change(ks_env, s_mstruct_changed=.TRUE., rho_changed=.TRUE., potential_changed=.TRUE.)
+         RETURN
       END IF
       CPASSERT(control%nimages == 1)
       CALL get_ks_env(ks_env, matrix_s=overlap)
@@ -198,11 +242,14 @@ CONTAINS
 
       CALL get_ks_env(ks_env, upf_inverse=state)
       CPASSERT(ASSOCIATED(state))
+      IF (ASSOCIATED(state%bloch%kpoints)) THEN
+         CALL core_bloch(ks_env, state)
+         RETURN
+      END IF
       CALL get_ks_env(ks_env, upf_inverse=state, &
-                      matrix_h=h, kinetic=kinetic, matrix_s=overlap)
+                      matrix_h=h, kinetic=kinetic, matrix_s=overlap, pw_env=pw_env)
       CPASSERT(ASSOCIATED(state))
       CALL check_geometry(ks_env, state)
-      CALL get_ks_env(ks_env, pw_env=pw_env)
       CALL pw_env_get(pw_env, auxbas_pw_pool=pool)
       grid => pool%pw_grid
       CALL local_r%create(grid)
@@ -265,14 +312,20 @@ CONTAINS
       CPASSERT(ASSOCIATED(state))
       CALL check_geometry(ks_env, state)
       CALL qs_rho_get(rho_struct, rho_ao_kp=density, rho_r=rho_r, rho_g=rho_g, tot_rho_r=total)
-      CPASSERT(SIZE(density, 2) == 1)
+      IF (.NOT. ASSOCIATED(state%bloch%kpoints)) THEN
+         CPASSERT(SIZE(density, 2) == 1)
+      END IF
       CALL tau%create(rho_r(1)%pw_grid)
       DO axis = 1, 3
          CALL gradient(axis)%create(rho_r(1)%pw_grid)
       END DO
       DO spin = 1, SIZE(density, 1)
-         CALL qs_upf_inverse_grid_collocate(state%frame, density(spin, 1)%matrix, rho_r(spin), gradient, tau, &
-                                            augmentation=state%augmentation, fourier_charge=.TRUE.)
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_kpoints_collocate(state%bloch, spin, rho_r(spin), gradient, tau)
+         ELSE
+            CALL qs_upf_inverse_grid_collocate(state%frame, density(spin, 1)%matrix, rho_r(spin), gradient, tau, &
+                                               augmentation=state%augmentation, fourier_charge=.TRUE.)
+         END IF
          CALL pw_transfer(rho_r(spin), rho_g(spin))
          total(spin) = pw_integrate_function(rho_r(spin), isign=-1)
       END DO
@@ -290,14 +343,19 @@ CONTAINS
 !> \param potential Native potential, already including the spectral XC gradient adjoint.
 !> \param hamiltonian Native spin Hamiltonian, incremented.
 !> \param weighted Whether potential already contains the native dvol factor.
+!> \param spin ...
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_scf_integrate(ks_env, potential, hamiltonian, weighted)
+   SUBROUTINE qs_upf_inverse_scf_integrate(ks_env, potential, hamiltonian, weighted, spin)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
       TYPE(dbcsr_type), INTENT(INOUT)                    :: hamiltonian
       LOGICAL, INTENT(IN)                                :: weighted
+      INTEGER, INTENT(IN), OPTIONAL                      :: spin
 
+      COMPLEX(dp), ALLOCATABLE                           :: dense(:, :, :)
       INTEGER                                            :: axis
+      TYPE(cp_cfm_type), ALLOCATABLE                     :: native(:)
+      TYPE(dbcsr_p_type), POINTER                        :: source(:, :)
       TYPE(dbcsr_type)                                   :: imaginary, real_part
       TYPE(pw_r3d_rs_type)                               :: unweighted, zero_tau, zeros(3)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
@@ -314,12 +372,21 @@ CONTAINS
          CALL zeros(axis)%create(potential%pw_grid)
          zeros(axis)%array = 0.0_dp
       END DO
-      CALL qs_upf_inverse_grid_integrate(state%frame, unweighted, zeros, zero_tau, hamiltonian, &
-                                         real_part, imaginary, augmentation=state%augmentation, fourier_charge=.TRUE.)
-      CALL check_real(state, real_part, imaginary)
-      CALL dbcsr_add(hamiltonian, real_part, 1.0_dp, 1.0_dp)
-      CALL dbcsr_release(real_part)
-      CALL dbcsr_release(imaginary)
+      IF (ASSOCIATED(state%bloch%kpoints)) THEN
+         CPASSERT(PRESENT(spin))
+         CALL qs_upf_inverse_kpoints_integrate(state%bloch, unweighted, zeros, zero_tau, native, dense)
+         CALL qs_upf_inverse_kpoints_release_operators(native)
+         state%ks_k(:, :, :, spin) = state%core_k + dense
+         CALL get_ks_env(ks_env, matrix_ks_kp=source)
+         CALL register_bloch_spin(state, source)
+      ELSE
+         CALL qs_upf_inverse_grid_integrate(state%frame, unweighted, zeros, zero_tau, hamiltonian, &
+                                            real_part, imaginary, augmentation=state%augmentation, fourier_charge=.TRUE.)
+         CALL check_real(state, real_part, imaginary)
+         CALL dbcsr_add(hamiltonian, real_part, 1.0_dp, 1.0_dp)
+         CALL dbcsr_release(real_part)
+         CALL dbcsr_release(imaginary)
+      END IF
       CALL unweighted%release()
       CALL zero_tau%release()
       DO axis = 1, 3
@@ -443,36 +510,57 @@ CONTAINS
          zeros(axis)%array = 0.0_dp
       END DO
       nk = 1
+      IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
       CPASSERT(ALL(SHAPE(reduced_k_response) == [3, nk]))
       DO ik = 1, nk
-         CALL qs_upf_inverse_scf_core_response(ks_env, state%frame, state%augmentation, grid, atom_response, &
-                                               cell_response, reduced_k_response(:, ik), matrix, metric_part)
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_scf_core_response(ks_env, state%bloch%frames(ik), state%bloch%augmentation, grid, &
+                                                  atom_response, cell_response, reduced_k_response(:, ik), matrix, metric_part)
+         ELSE
+            CALL qs_upf_inverse_scf_core_response(ks_env, state%frame, state%augmentation, grid, atom_response, &
+                                                  cell_response, reduced_k_response(:, ik), matrix, metric_part)
+         END IF
          IF (ik == 1) ALLOCATE (core(SIZE(matrix, 1), SIZE(matrix, 2), nk), metric(SIZE(matrix, 1), SIZE(matrix, 2), nk))
          core(:, :, ik) = matrix
          metric(:, :, ik) = metric_part
       END DO
       response = 0.0_dp
       metric_response = 0.0_dp
-      CALL qs_rho_get(rho, rho_ao_kp=density_gamma)
-      CALL get_ks_env(ks_env, matrix_w=energy_gamma)
-      CPASSERT(ASSOCIATED(density_gamma) .AND. ASSOCIATED(energy_gamma))
-      CPASSERT(SIZE(density_gamma, 1) == nspin .AND. SIZE(energy_gamma) == nspin)
-      ALLOCATE (density(SIZE(core, 1), SIZE(core, 2), 1), energy_weighted(SIZE(core, 1), SIZE(core, 2), 1))
+      IF (.NOT. ASSOCIATED(state%bloch%kpoints)) THEN
+         CALL qs_rho_get(rho, rho_ao_kp=density_gamma)
+         CALL get_ks_env(ks_env, matrix_w=energy_gamma)
+         CPASSERT(ASSOCIATED(density_gamma) .AND. ASSOCIATED(energy_gamma))
+         CPASSERT(SIZE(density_gamma, 1) == nspin .AND. SIZE(energy_gamma) == nspin)
+         ALLOCATE (density(SIZE(core, 1), SIZE(core, 2), 1), energy_weighted(SIZE(core, 1), SIZE(core, 2), 1))
+      END IF
       DO axis = 1, nspin
-         CALL qs_upf_inverse_matrix_gather(state%frame%ao, density_gamma(axis, 1)%matrix, matrix)
-         density(:, :, 1) = matrix
-         CALL qs_upf_inverse_matrix_gather(state%frame%ao, energy_gamma(axis)%matrix, matrix)
-         energy_weighted(:, :, 1) = matrix
-         IF (state%frame%ao%atom_local) THEN
-            CALL gaussian_kinetic_response(ks_env, density_gamma(axis, 1)%matrix, &
-                                           atom_response, cell_response, weight)
-            response = response + weight
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_kpoints_density(state%bloch, axis, density)
+            CALL qs_upf_inverse_kpoints_density(state%bloch, axis, energy_weighted, energy_weighted=.TRUE.)
+         ELSE
+            CALL qs_upf_inverse_matrix_gather(state%frame%ao, density_gamma(axis, 1)%matrix, matrix)
+            density(:, :, 1) = matrix
+            CALL qs_upf_inverse_matrix_gather(state%frame%ao, energy_gamma(axis)%matrix, matrix)
+            energy_weighted(:, :, 1) = matrix
+            IF (state%frame%ao%atom_local) THEN
+               CALL gaussian_kinetic_response(ks_env, density_gamma(axis, 1)%matrix, &
+                                              atom_response, cell_response, weight)
+               response = response + weight
+            END IF
          END IF
          DO ik = 1, nk
             weight = 1.0_dp
-            CALL qs_upf_inverse_grid_response(state%frame, state%augmentation, state%frame%ao%radial_q, &
-                                              vdensity(axis), vgradient(:, axis), vtau(axis), atom_response, cell_response, &
-                                              reduced_k_response(:, ik), zero, zeros, zero, matrix, metric_part)
+            IF (ASSOCIATED(state%bloch%kpoints)) THEN
+               weight = state%bloch%weights(ik)
+               CALL qs_upf_inverse_grid_response(state%bloch%frames(ik), state%bloch%augmentation, &
+                                                 state%bloch%frames(ik)%ao%radial_q, &
+                                                 vdensity(axis), vgradient(:, axis), vtau(axis), atom_response, cell_response, &
+                                                 reduced_k_response(:, ik), zero, zeros, zero, matrix, metric_part)
+            ELSE
+               CALL qs_upf_inverse_grid_response(state%frame, state%augmentation, state%frame%ao%radial_q, &
+                                                 vdensity(axis), vgradient(:, axis), vtau(axis), atom_response, cell_response, &
+                                                 reduced_k_response(:, ik), zero, zeros, zero, matrix, metric_part)
+            END IF
             response = response + weight*REAL(SUM(density(:, :, ik)*TRANSPOSE(core(:, :, ik) + matrix)), dp)
             metric_response = metric_response - weight*REAL(SUM(energy_weighted(:, :, ik)*TRANSPOSE(metric(:, :, ik))), dp)
          END DO
@@ -621,10 +709,17 @@ CONTAINS
 
       CALL get_ks_env(ks_env, cell=cell, particle_set=atoms)
       CPASSERT(state%enabled)
-      CPASSERT(ALL(cell%hmat == state%frame%ao%cell))
-      DO atom = 1, SIZE(atoms)
-         CPASSERT(ALL(atoms(atom)%r == state%frame%ao%positions(:, atom)))
-      END DO
+      IF (ASSOCIATED(state%bloch%kpoints)) THEN
+         CPASSERT(ALL(cell%hmat == state%bloch%frames(1)%ao%cell))
+         DO atom = 1, SIZE(atoms)
+            CPASSERT(ALL(atoms(atom)%r == state%bloch%frames(1)%ao%positions(:, atom)))
+         END DO
+      ELSE
+         CPASSERT(ALL(cell%hmat == state%frame%ao%cell))
+         DO atom = 1, SIZE(atoms)
+            CPASSERT(ALL(atoms(atom)%r == state%frame%ao%positions(:, atom)))
+         END DO
+      END IF
    END SUBROUTINE check_geometry
 
 ! **************************************************************************************************
@@ -645,6 +740,171 @@ CONTAINS
       tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(dense)))
       CPASSERT(defect <= tolerance)
    END SUBROUTINE check_real
+
+! **************************************************************************************************
+!> \brief Install spin-free complete Bloch operators through the direct native provider.
+!> \param state ...
+!> \param source Image-indexed source identity, not physical matrix values.
+!> \param slot ...
+!> \param dense ...
+! **************************************************************************************************
+   SUBROUTINE register_bloch(state, source, slot, dense)
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: state
+      TYPE(dbcsr_p_type), POINTER                        :: source(:, :)
+      INTEGER, INTENT(IN)                                :: slot
+      COMPLEX(dp), INTENT(IN)                            :: dense(:, :, :)
+
+      INTEGER                                            :: col, ik, local, row
+      TYPE(cp_cfm_type), ALLOCATABLE                     :: native(:, :)
+      TYPE(cp_fm_struct_type), POINTER                   :: layout
+
+      CPASSERT(SIZE(source, 1) == 1)
+      ALLOCATE (native(SIZE(state%bloch%kpoints%kp_env), 1))
+      DO local = 1, SIZE(native, 1)
+         ik = state%bloch%kp_range(1) + local - 1
+         layout => state%bloch%kpoints%kp_env(local)%kpoint_env%pmat(1, 1)%matrix_struct
+         CALL cp_cfm_create(native(local, 1), layout)
+         native(local, 1)%local_data = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO col = 1, SIZE(layout%col_indices)
+            DO row = 1, SIZE(layout%row_indices)
+               native(local, 1)%local_data(row, col) = dense(layout%row_indices(row), layout%col_indices(col), ik)
+            END DO
+         END DO
+      END DO
+      CALL kpoint_operator_set_native(state%bloch%kpoints, source, slot, native)
+      DO local = 1, SIZE(native, 1)
+         CALL cp_cfm_release(native(local, 1))
+      END DO
+   END SUBROUTINE register_bloch
+
+! **************************************************************************************************
+!> \brief Refresh the complete spin-resolved native KS provider after folding Hartree/XC.
+!> \param state ...
+!> \param source ...
+! **************************************************************************************************
+   SUBROUTINE register_bloch_spin(state, source)
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: state
+      TYPE(dbcsr_p_type), POINTER                        :: source(:, :)
+
+      INTEGER                                            :: col, ik, local, row, spin
+      TYPE(cp_cfm_type), ALLOCATABLE                     :: native(:, :)
+      TYPE(cp_fm_struct_type), POINTER                   :: layout
+
+      CPASSERT(SIZE(source, 1) == SIZE(state%ks_k, 4))
+      ALLOCATE (native(SIZE(state%bloch%kpoints%kp_env), SIZE(source, 1)))
+      DO spin = 1, SIZE(source, 1)
+         DO local = 1, SIZE(native, 1)
+            ik = state%bloch%kp_range(1) + local - 1
+            layout => state%bloch%kpoints%kp_env(local)%kpoint_env%pmat(1, spin)%matrix_struct
+            CALL cp_cfm_create(native(local, spin), layout)
+            native(local, spin)%local_data = CMPLX(0.0_dp, 0.0_dp, dp)
+            DO col = 1, SIZE(layout%col_indices)
+               DO row = 1, SIZE(layout%row_indices)
+                  native(local, spin)%local_data(row, col) = &
+                     state%ks_k(layout%row_indices(row), layout%col_indices(col), ik, spin)
+               END DO
+            END DO
+         END DO
+      END DO
+      CALL kpoint_operator_set_native(state%bloch%kpoints, source, kpoint_slot_ks, native)
+      DO spin = 1, SIZE(native, 2)
+         DO local = 1, SIZE(native, 1)
+            CALL cp_cfm_release(native(local, spin))
+         END DO
+      END DO
+   END SUBROUTINE register_bloch_spin
+
+! **************************************************************************************************
+!> \brief Build fixed original core/kinetic Bloch operators on the native physical-cell grid.
+!> \param ks_env ...
+!> \param state ...
+! **************************************************************************************************
+   SUBROUTINE core_bloch(ks_env, state)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT)       :: state
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      INTEGER                                            :: axis, ik, n, nk, spin
+      TYPE(dbcsr_p_type), POINTER                        :: kinetic(:, :), source(:, :)
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_pool_type), POINTER                        :: pool
+      TYPE(pw_r3d_rs_type)                               :: local_r, unit_tau, zero, zeros(3)
+
+      CALL check_geometry(ks_env, state)
+      CALL get_ks_env(ks_env, dft_control=control, pw_env=pw_env, kinetic_kp=kinetic, matrix_ks_kp=source)
+      ! KS storage is recreated after the core step when the AO structure changes.
+      ! Do not retain an operator provider tied to that released source identity.
+      IF (.NOT. ASSOCIATED(source)) THEN
+         CALL kpoint_native_operator_clear(state%bloch%kpoints%native_operators(kpoint_slot_ks))
+      END IF
+      CALL pw_env_get(pw_env, auxbas_pw_pool=pool)
+      grid => pool%pw_grid
+      CALL local_r%create(grid)
+      CALL zero%create(grid)
+      CALL unit_tau%create(grid)
+      zero%array = 0.0_dp
+      unit_tau%array = 1.0_dp
+      DO axis = 1, 3
+         CALL zeros(axis)%create(grid)
+         zeros(axis)%array = 0.0_dp
+      END DO
+      CALL local_potential(ks_env, grid, state%bloch%frames(1)%ao%positions, local_r)
+      n = state%bloch%nao
+      nk = SIZE(state%bloch%weights)
+      IF (.NOT. ALLOCATED(state%core_k)) THEN
+         ALLOCATE (state%core_k(n, n, nk), state%kinetic_k(n, n, nk), state%ks_k(n, n, nk, control%nspins))
+      END IF
+      DO ik = 1, nk
+         CALL qs_upf_inverse_grid_integrate_dense(state%bloch%frames(ik), zero, zeros, unit_tau, matrix)
+         state%kinetic_k(:, :, ik) = matrix
+         CALL qs_upf_inverse_grid_integrate_dense(state%bloch%frames(ik), local_r, zeros, unit_tau, matrix, &
+                                                  projector_operator=state%bloch%frames(ik)%ao%dion, &
+                                                  augmentation=state%bloch%augmentation, fourier_charge=.TRUE.)
+         state%core_k(:, :, ik) = matrix
+      END DO
+      DO spin = 1, SIZE(state%ks_k, 4)
+         state%ks_k(:, :, :, spin) = state%core_k
+      END DO
+      CALL register_bloch(state, kinetic, kpoint_slot_t, state%kinetic_k)
+      IF (ASSOCIATED(source)) CALL register_bloch_spin(state, source)
+      CALL local_r%release()
+      CALL zero%release()
+      CALL unit_tau%release()
+      DO axis = 1, 3
+         CALL zeros(axis)%release()
+      END DO
+   END SUBROUTINE core_bloch
+
+! **************************************************************************************************
+!> \brief Trace fixed core and kinetic operators against the same accepted inverse Bloch density.
+!> \param ks_env ...
+!> \param core ...
+!> \param kinetic ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_traces(ks_env, core, kinetic)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      REAL(dp), INTENT(OUT)                              :: core, kinetic
+
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :)
+      INTEGER                                            :: ik, spin
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      CPASSERT(ASSOCIATED(state))
+      CALL check_geometry(ks_env, state)
+      CPASSERT(ASSOCIATED(state%bloch%kpoints))
+      core = 0.0_dp
+      kinetic = 0.0_dp
+      DO spin = 1, SIZE(state%bloch%kpoints%native_density, 2)
+         CALL qs_upf_inverse_kpoints_density(state%bloch, spin, density)
+         DO ik = 1, SIZE(state%bloch%weights)
+            core = core + state%bloch%weights(ik)*REAL(SUM(density(:, :, ik)*TRANSPOSE(state%core_k(:, :, ik))), dp)
+            kinetic = kinetic + state%bloch%weights(ik)*REAL(SUM(density(:, :, ik)*TRANSPOSE(state%kinetic_k(:, :, ik))), dp)
+         END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_scf_traces
 
 ! **************************************************************************************************
 !> \brief Drop the metric, fields and allocation pattern together before a native geometry rebuild.

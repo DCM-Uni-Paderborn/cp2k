@@ -14,6 +14,10 @@ MODULE qs_upf_inverse_types
    USE kinds,                           ONLY: dp
    USE kpoint_transitional,             ONLY: kpoint_transitional_release,&
                                               kpoint_transitional_type
+   USE kpoint_types,                    ONLY: kpoint_clear_scf_smat,&
+                                              kpoint_native_density_clear,&
+                                              kpoint_native_operator_clear,&
+                                              kpoint_type
    USE message_passing,                 ONLY: mp_comm_type
    USE pw_grid_types,                   ONLY: PW_MODE_LOCAL
    USE upf_inverse,                     ONLY: upf_inverse_atomic_type,&
@@ -52,6 +56,15 @@ MODULE qs_upf_inverse_types
       TYPE(uspp_augmentation_type), ALLOCATABLE :: kinds(:)
    END TYPE qs_upf_inverse_augmentation_type
 
+   TYPE qs_upf_inverse_kpoints_type
+      ! The live initialized group environment is borrowed; all fields below are owned.
+      TYPE(kpoint_type), POINTER :: kpoints => NULL()
+      TYPE(qs_upf_inverse_grid_type), ALLOCATABLE :: frames(:)
+      TYPE(qs_upf_inverse_augmentation_type) :: augmentation
+      REAL(dp), ALLOCATABLE :: reduced_k(:, :), weights(:)
+      INTEGER :: nao = 0, kp_range(2) = 0
+   END TYPE qs_upf_inverse_kpoints_type
+
    TYPE qs_upf_inverse_scf_type
       LOGICAL :: enabled = .FALSE.
       INTEGER :: density_evaluations = 0, operator_evaluations = 0
@@ -59,10 +72,12 @@ MODULE qs_upf_inverse_types
       TYPE(qs_upf_inverse_augmentation_type) :: augmentation
       TYPE(kpoint_transitional_type) :: metric
       COMPLEX(dp), ALLOCATABLE :: gaussian_kinetic(:, :)
+      TYPE(qs_upf_inverse_kpoints_type) :: bloch
+      COMPLEX(dp), ALLOCATABLE :: metric_k(:, :, :), core_k(:, :, :), kinetic_k(:, :, :), ks_k(:, :, :, :)
    END TYPE qs_upf_inverse_scf_type
 
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_grid_type, qs_upf_inverse_augmentation_type
-   PUBLIC :: qs_upf_inverse_scf_type, qs_upf_inverse_scf_release
+   PUBLIC :: qs_upf_inverse_kpoints_type, qs_upf_inverse_scf_type, qs_upf_inverse_scf_release
 
 CONTAINS
 
@@ -73,7 +88,16 @@ CONTAINS
    SUBROUTINE qs_upf_inverse_scf_release(state)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
+      INTEGER                                            :: slot
+
       IF (.NOT. ASSOCIATED(state)) RETURN
+      IF (state%enabled .AND. ASSOCIATED(state%bloch%kpoints)) THEN
+         DO slot = 1, SIZE(state%bloch%kpoints%native_operators)
+            CALL kpoint_native_operator_clear(state%bloch%kpoints%native_operators(slot))
+         END DO
+         CALL kpoint_native_density_clear(state%bloch%kpoints)
+         CALL kpoint_clear_scf_smat(state%bloch%kpoints)
+      END IF
       CALL kpoint_transitional_release(state%metric)
       DEALLOCATE (state)
       NULLIFY (state)
