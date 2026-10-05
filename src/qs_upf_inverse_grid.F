@@ -18,6 +18,7 @@ MODULE qs_upf_inverse_grid
         dbcsr_release, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, &
         dbcsr_type_symmetric
    USE kinds,                           ONLY: dp
+   USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_self,&
                                               mp_comm_type
    USE pw_grid_types,                   ONLY: PW_MODE_DISTRIBUTED,&
@@ -27,15 +28,19 @@ MODULE qs_upf_inverse_grid
    USE qs_ks_types,                     ONLY: qs_ks_env_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_from_ks,&
                                               qs_upf_inverse_release,&
+                                              qs_upf_inverse_response,&
                                               qs_upf_inverse_type
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_collocate,&
                                               qs_upf_inverse_augmentation_fourier_collocate,&
                                               qs_upf_inverse_augmentation_fourier_integrate,&
+                                              qs_upf_inverse_augmentation_fourier_response,&
                                               qs_upf_inverse_augmentation_integrate,&
                                               qs_upf_inverse_augmentation_type
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_grid_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
+                                              upf_inverse_pair_response,&
                                               upf_inverse_semilocal_pair,&
+                                              upf_inverse_semilocal_response,&
                                               upf_inverse_smooth_density
 #include "./base/base_uses.f90"
 
@@ -47,6 +52,7 @@ MODULE qs_upf_inverse_grid
    PUBLIC :: qs_upf_inverse_grid_metric
    PUBLIC :: qs_upf_inverse_grid_collocate_dense, qs_upf_inverse_grid_integrate_dense, qs_upf_inverse_grid_metric_dense
    PUBLIC :: qs_upf_inverse_matrix_gather, qs_upf_inverse_matrix_scatter
+   PUBLIC :: qs_upf_inverse_grid_response
 
 CONTAINS
 
@@ -331,6 +337,103 @@ CONTAINS
       metric(:, :) = metric + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), &
                                      MATMUL(projector_metric, frame%ao%coefficients))
    END SUBROUTINE qs_upf_inverse_grid_metric_dense
+
+! **************************************************************************************************
+!> \brief Joint native-grid geometry response of the inverse metric and original-Q semilocal operator.
+!>        Fixed fractional grid rows, image membership and reciprocal indices define the derivative.
+!>        Both moving inverse legs, their Cartesian gradients and the cell measure are differentiated.
+!> \param frame ...
+!> \param augmentation Original Fourier charge kernels; does not supply kinetic augmentation.
+!> \param projector_metric Explicit original supplied-q or radial-Q metric, unchanged by geometry.
+!> \param vdensity Unweighted conjugate potential.
+!> \param vgradient Potentials conjugate to physical Cartesian grad(n).
+!> \param vtau Potential conjugate to smooth tau, with the factor one half.
+!> \param atom_response Cartesian response of every native atom.
+!> \param cell_response Lattice-vector response.
+!> \param reduced_k_response Response of the reduced Bloch vector, zero for physical cell stress.
+!> \param vdensity_response Potential response at each moving grid row.
+!> \param vgradient_response ...
+!> \param vtau_response ...
+!> \param operator_response New replicated complex operator response, without k/spin weights.
+!> \param metric_response New metric response in the same inverse AO variables.
+!> \param projector_operator Optional original geometry-independent operator, e.g. Dion.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_grid_response(frame, augmentation, projector_metric, vdensity, vgradient, vtau, &
+                                           atom_response, cell_response, reduced_k_response, vdensity_response, &
+                                           vgradient_response, vtau_response, operator_response, metric_response, &
+                                           projector_operator)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(qs_upf_inverse_augmentation_type), &
+         INTENT(INOUT)                                   :: augmentation
+      COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity_response, &
+                                                            vgradient_response(3), vtau_response
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operator_response(:, :), &
+                                                            metric_response(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: projector_operator(:, :)
+
+      COMPLEX(dp), ALLOCATABLE :: coefficients_response(:, :), gradient_response(:, :, :), &
+         projected(:, :), projected_response(:, :), soft_response(:, :)
+      INTEGER                                            :: axis, info, n, nao, nproj
+      REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
+                                                            volume_response
+      REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:), dvg(:, :), &
+                                                            dvn(:), dvt(:), points_response(:, :), &
+                                                            weights_response(:)
+
+      CPASSERT(frame%ao%inverse%ready)
+      n = SIZE(frame%ao%weights)
+      nao = SIZE(frame%ao%soft, 2)
+      nproj = frame%ao%inverse%nproj
+      CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
+      ALLOCATE (dn(n), dg(n, 3), dt(n), dvn(n), dvg(n, 3), dvt(n), points_response(3, n), weights_response(n), &
+                coefficients_response(nproj, nao), soft_response(n, nao), gradient_response(n, nao, 3), &
+                projected(nproj, nproj), projected_response(nproj, nproj), &
+                operator_response(nao, nao), metric_response(nao, nao))
+      cell_inverse = frame%ao%cell
+      CALL invmat(cell_inverse, info)
+      CPASSERT(info == 0)
+      strain = MATMUL(cell_response, cell_inverse)
+      volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
+      points_response(:, :) = MATMUL(strain, frame%ao%points)
+      weights_response(:) = volume_response*frame%ao%weights
+      CALL qs_upf_inverse_response(frame%ao, points_response, atom_response, cell_response, reduced_k_response, &
+                                   weights_response, coefficients_response, soft_response, gradient_response)
+      CALL pack_grid(frame, vdensity, dn)
+      CALL pack_grid(frame, vtau, dt)
+      CALL pack_grid(frame, vdensity_response, dvn)
+      CALL pack_grid(frame, vtau_response, dvt)
+      DO axis = 1, 3
+         CALL pack_grid(frame, vgradient(axis), dg(:, axis))
+         CALL pack_grid(frame, vgradient_response(axis), dvg(:, axis))
+      END DO
+      CALL upf_inverse_semilocal_response(frame%ao%soft, frame%ao%soft, &
+                                          frame%ao%soft_gradient, frame%ao%soft_gradient, frame%ao%weights, dn, dg, dt, &
+                                          soft_response, soft_response, gradient_response, gradient_response, &
+                                          weights_response, dvn, dvg, dvt, operator_response, frame%ao%point_comm)
+      CALL qs_upf_inverse_augmentation_fourier_integrate(frame%ao, augmentation, vdensity, vgradient, projected)
+      CALL qs_upf_inverse_augmentation_fourier_response(frame%ao, augmentation, vdensity, vgradient, atom_response, &
+                                                        cell_response, vdensity_response, vgradient_response, &
+                                                        projected_response)
+      IF (PRESENT(projector_operator)) THEN
+         CPASSERT(ALL(SHAPE(projector_operator) == [nproj, nproj]))
+         projected(:, :) = projected + projector_operator
+      END IF
+      operator_response(:, :) = operator_response + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), &
+                                                           MATMUL(projected_response, frame%ao%coefficients))
+      operator_response(:, :) = operator_response + MATMUL(CONJG(TRANSPOSE(coefficients_response)), &
+                                                           MATMUL(projected, frame%ao%coefficients)) + &
+                                MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, coefficients_response))
+      CALL upf_inverse_pair_response(frame%ao%soft, frame%ao%soft, frame%ao%weights, soft_response, soft_response, &
+                                     weights_response, metric_response, frame%ao%point_comm)
+      metric_response(:, :) = metric_response + MATMUL(CONJG(TRANSPOSE(coefficients_response)), &
+                                                       MATMUL(projector_metric, frame%ao%coefficients)) + &
+                              MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_metric, coefficients_response))
+   END SUBROUTINE qs_upf_inverse_grid_response
 
 ! **************************************************************************************************
 !> \brief Gather native AO components collectively, using native desymmetrization for S/A signs.

@@ -12,6 +12,7 @@
 ! **************************************************************************************************
 MODULE qs_upf_inverse_augmentation
    USE kinds,                           ONLY: dp
+   USE mathlib,                         ONLY: invmat
    USE pw_grid_types,                   ONLY: FULLSPACE,&
                                               HALFSPACE,&
                                               PW_MODE_LOCAL,&
@@ -42,6 +43,7 @@ MODULE qs_upf_inverse_augmentation
    PUBLIC :: qs_upf_inverse_augmentation_collocate, qs_upf_inverse_augmentation_integrate
    PUBLIC :: qs_upf_inverse_augmentation_response, qs_upf_inverse_augmentation_release
    PUBLIC :: qs_upf_inverse_augmentation_fourier_collocate, qs_upf_inverse_augmentation_fourier_integrate
+   PUBLIC :: qs_upf_inverse_augmentation_fourier_response
 
 CONTAINS
 
@@ -239,28 +241,14 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3)
       COMPLEX(dp), INTENT(OUT)                           :: projector_operator(:, :)
 
-      INTEGER                                            :: atom, axis, center, first, ikind, last, &
-                                                            orders(3)
+      INTEGER                                            :: atom, center, first, ikind, last
       REAL(dp), ALLOCATABLE                              :: matrix(:, :), multiplicity(:)
-      TYPE(pw_c1d_gs_type)                               :: derivative_g, potential_g
-      TYPE(pw_r3d_rs_type)                               :: work_r
+      TYPE(pw_c1d_gs_type)                               :: potential_g
 
       CALL check_fourier_grid(frame, vdensity%pw_grid)
       CPASSERT(ALL(SHAPE(projector_operator) == frame%inverse%nproj))
       CALL potential_g%create(vdensity%pw_grid)
-      CALL derivative_g%create(vdensity%pw_grid)
-      CALL work_r%create(vdensity%pw_grid)
-      CALL pw_transfer(vdensity, potential_g)
-      DO axis = 1, 3
-         CPASSERT(ASSOCIATED(vgradient(axis)%pw_grid, vdensity%pw_grid))
-         orders = 0
-         orders(axis) = 1
-         CALL pw_transfer(vgradient(axis), derivative_g)
-         CALL pw_derive(derivative_g, orders)
-         CALL pw_transfer(derivative_g, work_r)
-         CALL pw_transfer(work_r, derivative_g)
-         potential_g%array = potential_g%array - derivative_g%array
-      END DO
+      CALL fourier_potential(vdensity, vgradient, potential_g)
       ALLOCATE (multiplicity(SIZE(potential_g%array)))
       multiplicity = 1.0_dp
       IF (vdensity%pw_grid%grid_span == HALFSPACE) THEN
@@ -282,9 +270,140 @@ CONTAINS
       END DO
       IF (vdensity%pw_grid%para%mode /= PW_MODE_LOCAL) CALL frame%point_comm%sum(projector_operator)
       CALL potential_g%release()
+   END SUBROUTINE qs_upf_inverse_augmentation_fourier_integrate
+
+! **************************************************************************************************
+!> \brief Geometry/potential response of the same native Fourier charge/gradient adjoint.
+!>        Reciprocal indices and real-grid rows are fixed; points follow the cell affinely.
+!>        Includes moving centers, Cartesian reciprocal vectors, volume measure and gradient adjoint.
+!>        W and its response enter the subsequent AO pullback, not this original-Q operator.
+!> \param frame ...
+!> \param augmentation ...
+!> \param vdensity Unweighted conjugate potential on fixed fractional grid rows.
+!> \param vgradient Potentials conjugate to the physical Cartesian density gradient.
+!> \param atom_response Cartesian responses of all native atoms.
+!> \param cell_response Cartesian lattice-vector response.
+!> \param vdensity_response Response of the unweighted potential at each moving grid row.
+!> \param vgradient_response Response of the Cartesian conjugate potentials at each grid row.
+!> \param response Original-Q projector operator response, overwritten and reduced once.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_augmentation_fourier_response(frame, augmentation, vdensity, vgradient, &
+                                                           atom_response, cell_response, vdensity_response, &
+                                                           vgradient_response, response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_upf_inverse_augmentation_type), &
+         INTENT(INOUT)                                   :: augmentation
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3)
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity_response, vgradient_response(3)
+      COMPLEX(dp), INTENT(OUT)                           :: response(:, :)
+
+      INTEGER                                            :: atom, axis, center, first, ikind, info, &
+                                                            last, second
+      REAL(dp)                                           :: cell_inverse(3, 3), displacement(3), &
+                                                            strain(3, 3), volume_response
+      REAL(dp), ALLOCATABLE :: derivative(:, :, :), g_response(:, :), matrix(:, :), &
+         multiplicity(:), potential_matrix(:, :), strain_matrix(:, :, :, :)
+      TYPE(pw_c1d_gs_type)                               :: derivative_g, potential_g, response_g
+      TYPE(pw_r3d_rs_type)                               :: work_r
+
+      CALL check_fourier_grid(frame, vdensity%pw_grid)
+      CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
+      CPASSERT(ALL(SHAPE(response) == frame%inverse%nproj))
+      CPASSERT(ASSOCIATED(vdensity_response%pw_grid, vdensity%pw_grid))
+      cell_inverse = frame%cell
+      CALL invmat(cell_inverse, info)
+      CPASSERT(info == 0)
+      strain = MATMUL(cell_response, cell_inverse)
+      volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
+      ALLOCATE (g_response(3, SIZE(vdensity%pw_grid%g, 2)))
+      g_response(:, :) = -MATMUL(TRANSPOSE(strain), vdensity%pw_grid%g)
+      CALL potential_g%create(vdensity%pw_grid)
+      CALL response_g%create(vdensity%pw_grid)
+      CALL derivative_g%create(vdensity%pw_grid)
+      CALL work_r%create(vdensity%pw_grid)
+      CALL fourier_potential(vdensity, vgradient, potential_g)
+      CALL fourier_potential(vdensity_response, vgradient_response, response_g)
+      ! Differentiate -div(vgradient) itself. Its real-grid projection is the same as in the adjoint.
+      DO axis = 1, 3
+         CALL pw_transfer(vgradient(axis), derivative_g)
+         derivative_g%array = derivative_g%array*CMPLX(0.0_dp, -g_response(axis, :), dp)
+         CALL pw_transfer(derivative_g, work_r)
+         CALL pw_transfer(work_r, derivative_g)
+         response_g%array = response_g%array + derivative_g%array
+      END DO
+      ALLOCATE (multiplicity(SIZE(potential_g%array)))
+      multiplicity = 1.0_dp
+      IF (vdensity%pw_grid%grid_span == HALFSPACE) THEN
+         multiplicity = 2.0_dp
+         IF (vdensity%pw_grid%have_g0) multiplicity(1) = 1.0_dp
+      END IF
+      response = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO center = 1, SIZE(frame%center_atoms)
+         atom = frame%center_atoms(center)
+         ikind = frame%center_kinds(center)
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         ALLOCATE (matrix(last - first + 1, last - first + 1), &
+                   potential_matrix(last - first + 1, last - first + 1), &
+                   derivative(last - first + 1, last - first + 1, 3), &
+                   strain_matrix(last - first + 1, last - first + 1, 3, 3))
+         CALL uspp_augmentation_prepare_fourier(augmentation%kinds(ikind), vdensity%pw_grid%g)
+         CALL uspp_augmentation_integrate(augmentation%kinds(ikind), vdensity%pw_grid%g, &
+                                          frame%positions(:, atom), vdensity%pw_grid%vol, potential_g%array, &
+                                          multiplicity, matrix, derivative, strain_matrix)
+         CALL uspp_augmentation_integrate(augmentation%kinds(ikind), vdensity%pw_grid%g, &
+                                          frame%positions(:, atom), vdensity%pw_grid%vol, response_g%array, &
+                                          multiplicity, potential_matrix)
+         displacement = atom_response(:, atom) - MATMUL(strain, frame%positions(:, atom))
+         matrix(:, :) = volume_response*matrix + potential_matrix
+         DO axis = 1, 3
+            matrix(:, :) = matrix + displacement(axis)*derivative(:, :, axis)
+            DO second = 1, 3
+               matrix(:, :) = matrix + strain(axis, second)*strain_matrix(:, :, axis, second)
+            END DO
+         END DO
+         response(first:last, first:last) = matrix
+         DEALLOCATE (matrix, potential_matrix, derivative, strain_matrix)
+      END DO
+      IF (vdensity%pw_grid%para%mode /= PW_MODE_LOCAL) CALL frame%point_comm%sum(response)
+      CALL potential_g%release()
+      CALL response_g%release()
       CALL derivative_g%release()
       CALL work_r%release()
-   END SUBROUTINE qs_upf_inverse_augmentation_fourier_integrate
+   END SUBROUTINE qs_upf_inverse_augmentation_fourier_response
+
+! **************************************************************************************************
+!> \brief Fold the projected spectral gradient adjoint into an unweighted scalar potential.
+!> \param vdensity ...
+!> \param vgradient ...
+!> \param potential_g Allocated matching Fourier field, overwritten.
+! **************************************************************************************************
+   SUBROUTINE fourier_potential(vdensity, vgradient, potential_g)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3)
+      TYPE(pw_c1d_gs_type), INTENT(INOUT)                :: potential_g
+
+      INTEGER                                            :: axis, orders(3)
+      TYPE(pw_c1d_gs_type)                               :: derivative_g
+      TYPE(pw_r3d_rs_type)                               :: work_r
+
+      CPASSERT(ASSOCIATED(potential_g%pw_grid, vdensity%pw_grid))
+      CALL derivative_g%create(vdensity%pw_grid)
+      CALL work_r%create(vdensity%pw_grid)
+      CALL pw_transfer(vdensity, potential_g)
+      DO axis = 1, 3
+         CPASSERT(ASSOCIATED(vgradient(axis)%pw_grid, vdensity%pw_grid))
+         orders = 0
+         orders(axis) = 1
+         CALL pw_transfer(vgradient(axis), derivative_g)
+         CALL pw_derive(derivative_g, orders)
+         CALL pw_transfer(derivative_g, work_r)
+         CALL pw_transfer(work_r, derivative_g)
+         potential_g%array = potential_g%array - derivative_g%array
+      END DO
+      CALL derivative_g%release()
+      CALL work_r%release()
+   END SUBROUTINE fourier_potential
 
 ! **************************************************************************************************
 !> \brief Require the native real/reciprocal FFT layout of the same physical-cell point frame.
