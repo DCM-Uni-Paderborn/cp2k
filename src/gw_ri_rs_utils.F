@@ -13,9 +13,8 @@ MODULE gw_ri_rs_utils
    USE basis_set_types,                 ONLY: gto_basis_set_type
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
+   USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_evaluate
    USE kinds,                           ONLY: dp
-   USE orbital_pointers,                ONLY: indco,&
-                                              ncoset
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: angstrom
    USE post_scf_bandstructure_types,    ONLY: post_scf_bandstructure_type
@@ -282,77 +281,38 @@ CONTAINS
          OPTIONAL                                        :: dphi
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: cutoff_squared
 
-      INTEGER                                            :: first_sgf, ialpha, ico, iend_co, ipgf, &
-                                                            ipoint, irow, iset, isgf, ishell, &
-                                                            istart_co, l, last_sgf, lx, ly, lz, &
-                                                            n_cart_total
-      REAL(KIND=dp)                                      :: exponent, exponential, polynomial, &
-                                                            polynomial_derivative(3), radius2, &
-                                                            relative(3), weight
+      INTEGER                                            :: axis, ipoint, npoint
+      REAL(dp), ALLOCATABLE                              :: derivative(:, :, :), displacement(:, :), &
+                                                            value(:, :)
 
       CPASSERT(ASSOCIATED(basis))
-      CPASSERT(SIZE(grid_points, 1) == 3)
-      CPASSERT(SIZE(phi, 1) == SIZE(grid_points, 2))
+      npoint = SIZE(grid_points, 2)
+      CPASSERT(SIZE(grid_points, 1) == 3 .AND. SIZE(phi, 1) == npoint)
+      CPASSERT(SIZE(phi, 2) >= basis%nsgf)
       IF (PRESENT(dphi)) THEN
-         CPASSERT(SIZE(dphi, 1) == 3)
-         CPASSERT(SIZE(dphi, 2) == SIZE(phi, 1))
-         CPASSERT(SIZE(dphi, 3) == SIZE(phi, 2))
+         CPASSERT(ALL(SHAPE(dphi) == [3, npoint, SIZE(phi, 2)]))
       END IF
-
-      !$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(STATIC) &
-      !$OMP SHARED(phi, dphi, grid_points, cell, basis, source_position, cutoff_squared, ncoset, indco) &
-      !$OMP PRIVATE(ipoint, relative, radius2, iset, n_cart_total, ishell, l, istart_co, &
-      !$OMP         iend_co, first_sgf, last_sgf, ipgf, exponent, exponential, isgf, ico, &
-      !$OMP         irow, weight, lx, ly, lz, polynomial, polynomial_derivative, ialpha)
-      DO ipoint = 1, SIZE(grid_points, 2)
-         relative = pbc(grid_points(:, ipoint) - source_position, cell)
-         radius2 = DOT_PRODUCT(relative, relative)
-         IF (PRESENT(cutoff_squared)) THEN
-            IF (radius2 > cutoff_squared) CYCLE
-         END IF
-
-         DO iset = 1, basis%nset
-            n_cart_total = ncoset(basis%lmax(iset))
-            DO ishell = 1, basis%nshell(iset)
-               l = basis%l(ishell, iset)
-               istart_co = ncoset(l - 1) + 1
-               iend_co = ncoset(l)
-               first_sgf = basis%first_sgf(ishell, iset)
-               last_sgf = basis%last_sgf(ishell, iset)
-               DO ipgf = 1, basis%npgf(iset)
-                  exponent = basis%zet(ipgf, iset)
-                  exponential = EXP(-exponent*radius2)
-                  DO isgf = first_sgf, last_sgf
-                     DO ico = istart_co, iend_co
-                        irow = (ipgf - 1)*n_cart_total + ico
-                        weight = basis%sphi(irow, isgf)
-                        lx = indco(1, ico)
-                        ly = indco(2, ico)
-                        lz = indco(3, ico)
-                        polynomial = relative(1)**lx*relative(2)**ly*relative(3)**lz
-                        phi(ipoint, isgf) = phi(ipoint, isgf) + weight*polynomial*exponential
-
-                        IF (PRESENT(dphi)) THEN
-                           polynomial_derivative = 0.0_dp
-                           IF (lx > 0) polynomial_derivative(1) = REAL(lx, dp)*relative(1)**(lx - 1)* &
-                                                                  relative(2)**ly*relative(3)**lz
-                           IF (ly > 0) polynomial_derivative(2) = REAL(ly, dp)*relative(1)**lx* &
-                                                                  relative(2)**(ly - 1)*relative(3)**lz
-                           IF (lz > 0) polynomial_derivative(3) = REAL(lz, dp)*relative(1)**lx* &
-                                                                  relative(2)**ly*relative(3)**(lz - 1)
-                           DO ialpha = 1, 3
-                              dphi(ialpha, ipoint, isgf) = dphi(ialpha, ipoint, isgf) + weight*exponential* &
-                                                           (polynomial_derivative(ialpha) - &
-                                                            2.0_dp*exponent*relative(ialpha)*polynomial)
-                           END DO
-                        END IF
-                     END DO
-                  END DO
-               END DO
-            END DO
-         END DO
+      ALLOCATE (displacement(3, npoint), value(npoint, basis%nsgf))
+      DO ipoint = 1, npoint
+         displacement(:, ipoint) = pbc(grid_points(:, ipoint) - source_position, cell)
       END DO
-      !$OMP END PARALLEL DO
+      IF (PRESENT(dphi)) THEN
+         ALLOCATE (derivative(npoint, basis%nsgf, 3))
+         CALL gaussian_basis_fields_evaluate(basis, displacement, value, derivative, cutoff_squared=cutoff_squared)
+      ELSE
+         CALL gaussian_basis_fields_evaluate(basis, displacement, value, cutoff_squared=cutoff_squared)
+      END IF
+      DO ipoint = 1, npoint
+         IF (PRESENT(cutoff_squared)) THEN
+            IF (SUM(displacement(:, ipoint)**2) > cutoff_squared) CYCLE
+         END IF
+         phi(ipoint, :basis%nsgf) = phi(ipoint, :basis%nsgf) + value(ipoint, :)
+         IF (PRESENT(dphi)) THEN
+            DO axis = 1, 3
+               dphi(axis, ipoint, :basis%nsgf) = dphi(axis, ipoint, :basis%nsgf) + derivative(ipoint, :, axis)
+            END DO
+         END IF
+      END DO
    END SUBROUTINE evaluate_ao_basis_on_points
 
 END MODULE gw_ri_rs_utils

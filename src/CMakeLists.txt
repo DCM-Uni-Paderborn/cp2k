@@ -73,6 +73,7 @@ list(
   uspp_projector_operators.F
   qs_uspp_projectors.F
   qs_uspp_types.F
+  qs_upf_inverse.F
   qs_uspp_methods.F
   qs_uspp_gapw.F
   atom_utils.F
@@ -1007,6 +1008,7 @@ list(
   aobasis/aux_basis_set.F
   aobasis/basis_set_container_types.F
   aobasis/basis_set_types.F
+  aobasis/gaussian_basis_fields.F
   aobasis/orbital_pointers.F
   aobasis/orbital_symbols.F
   aobasis/orbital_transformation_matrices.F

@@ -12,6 +12,9 @@ PROGRAM uspp_projector_operators_unittest
    USE atom_upf,                        ONLY: atom_release_upf,&
                                               atom_upfpot_type
    USE atomic_kind_types,               ONLY: atomic_kind_type
+   USE basis_set_types,                 ONLY: allocate_gto_basis_set,&
+                                              deallocate_gto_basis_set,&
+                                              gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_copy, dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, &
@@ -26,6 +29,8 @@ PROGRAM uspp_projector_operators_unittest
                                               init_potential
    USE fft_tools,                       ONLY: finalize_fft,&
                                               init_fft
+   USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_evaluate,&
+                                              gaussian_basis_fields_periodic
    USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
                                               ieee_value
    USE kinds,                           ONLY: dp
@@ -36,6 +41,7 @@ PROGRAM uspp_projector_operators_unittest
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_comm_world
    USE orbital_pointers,                ONLY: indco,&
+                                              init_orbital_pointers,&
                                               nco,&
                                               ncoset
    USE orbital_transformation_matrices, ONLY: orbtramat
@@ -141,6 +147,7 @@ PROGRAM uspp_projector_operators_unittest
    CALL check_inverse()
    CALL check_inverse_fields()
    CALL check_inverse_quadrature()
+   CALL check_gaussian_fields()
    ALLOCATE (aug(2))
    DO k = 1, 2
       CALL make_augmentation(k)
@@ -662,6 +669,103 @@ CONTAINS
       END DO
       CALL check(ABS(predicted - (energies(2) - energies(1))/(2*step)), 'nonlinear semilocal density variation', 1.e-9_dp)
    END SUBROUTINE check_inverse_quadrature
+
+! **************************************************************************************************
+!> \brief Native padded contractions, origin/axis Hessians and joint Bloch geometry responses.
+! **************************************************************************************************
+   SUBROUTINE check_gaussian_fields()
+      INTEGER, PARAMETER                                 :: nb = 11, nf = 5
+
+      COMPLEX(dp)                                        :: dg(nf, nb, 3), dv(nf, nb), g(nf, nb, 3), &
+                                                            gss(nf, nb, 3, 2), other(nf, nb), &
+                                                            v(nf, nb), vs(nf, nb, 2)
+      INTEGER                                            :: axis, ico, image, images(3, 3), row, &
+                                                            side, translated_images(3, 3)
+      REAL(dp) :: bloch(3), cell(3, 3), center(3), dc(3, 3), dcenter(3), dk(3), dpnt(3, nf), &
+         gradient(nf, nb, 3), gs(nf, nb, 3, 2), hh(nf, nb, 3, 3), samples(nf, nb, 2), shift, &
+         value(nf, nb), x(3, nf), xp(3, nf)
+      TYPE(gto_basis_set_type), POINTER                  :: basis
+
+      NULLIFY (basis)
+      CALL init_orbital_pointers(3)
+      CALL allocate_gto_basis_set(basis)
+      basis%nset = 2
+      basis%nsgf = nb
+      ALLOCATE (basis%lmax(2), basis%npgf(2), basis%nshell(2), basis%l(2, 2), &
+                basis%first_sgf(2, 2), basis%last_sgf(2, 2), basis%zet(2, 2), basis%sphi(40, nb))
+      basis%lmax = [3, 1]
+      basis%npgf = [2, 1]
+      basis%nshell = [2, 1]
+      basis%l = 0
+      basis%l(:, 1) = [0, 3]
+      basis%l(1, 2) = 1
+      basis%first_sgf = 0
+      basis%last_sgf = 0
+      basis%first_sgf(:, 1) = [1, 2]
+      basis%last_sgf(:, 1) = [1, 8]
+      basis%first_sgf(1, 2) = 9
+      basis%last_sgf(1, 2) = 11
+      basis%zet = 0.0_dp
+      basis%zet(:, 1) = [.4_dp, .9_dp]
+      basis%zet(1, 2) = .7_dp
+      basis%sphi = 0.0_dp
+      basis%sphi(1, 1) = .6_dp
+      basis%sphi(21, 1) = -.2_dp
+      DO row = 2, 8
+         DO ico = ncoset(2) + 1, ncoset(3)
+            basis%sphi(ico, row) = .03_dp*SIN(REAL(ico*row, dp))
+            basis%sphi(ico + 20, row) = -.02_dp*COS(REAL(ico + row, dp))
+         END DO
+      END DO
+      DO row = 9, nb
+         DO ico = 2, 4
+            basis%sphi(ico, row) = .1_dp*SIN(REAL(ico*row, dp))
+         END DO
+      END DO
+      x(:, 1) = 0.0_dp
+      x(:, 2) = [.3_dp, 0.0_dp, 0.0_dp]
+      x(:, 3) = [0.0_dp, -.7_dp, 0.0_dp]
+      x(:, 4) = [.23_dp, .51_dp, -.4_dp]
+      x(:, 5) = [-.6_dp, .2_dp, .8_dp]
+      CALL gaussian_basis_fields_evaluate(basis, x, value, gradient, hh)
+      CALL check(MAXVAL(ABS(value(:, 1) - (.6_dp*EXP(-.4_dp*SUM(x*x, DIM=1)) &
+                                           - .2_dp*EXP(-.9_dp*SUM(x*x, DIM=1))))), 'native signed s contraction')
+      DO axis = 1, 3
+         DO side = 1, 2
+            xp = x
+            xp(axis, :) = xp(axis, :) + (2*side - 3)*step
+            CALL gaussian_basis_fields_evaluate(basis, xp, samples(:, :, side), gs(:, :, :, side))
+         END DO
+         CALL check(MAXVAL(ABS(gradient(:, :, axis) - (samples(:, :, 2) - samples(:, :, 1))/(2*step))), &
+                    'contracted Gaussian point gradient', 2.e-8_dp)
+         CALL check(MAXVAL(ABS(hh(:, :, :, axis) - (gs(:, :, :, 2) - gs(:, :, :, 1))/(2*step))), &
+                    'contracted Gaussian origin/axis Hessian', 2.e-7_dp)
+      END DO
+      cell = RESHAPE([2.3_dp, .1_dp, .2_dp, .2_dp, 2.7_dp, -.1_dp, .1_dp, .3_dp, 2.1_dp], [3, 3])
+      center = [.1_dp, -.2_dp, .3_dp]
+      images = RESHAPE([0, 0, 0, 1, -1, 0, -1, 0, 1], [3, 3])
+      bloch = [.23_dp, -.17_dp, .11_dp]
+      dc = .03_dp*cell
+      dcenter = [.07_dp, -.02_dp, .01_dp]
+      dpnt = .02_dp*x
+      dk = [.03_dp, .02_dp, -.01_dp]
+      CALL gaussian_basis_fields_periodic(basis, x, center, cell, images, bloch, v, g, dv, dg, dpnt, dcenter, dc, dk)
+      DO side = 1, 2
+         shift = (2*side - 3)*step
+         CALL gaussian_basis_fields_periodic(basis, x + shift*dpnt, center + shift*dcenter, cell + shift*dc, &
+                                             images, bloch + shift*dk, vs(:, :, side), gss(:, :, :, side))
+      END DO
+      CALL check(MAXVAL(ABS(dv - (vs(:, :, 2) - vs(:, :, 1))/(2*step))), 'native Gaussian Bloch joint response', 2.e-8_dp)
+     CALL check(MAXVAL(ABS(dg - (gss(:, :, :, 2) - gss(:, :, :, 1))/(2*step))), 'native Gaussian Bloch gradient response', 2.e-7_dp)
+      CALL gaussian_basis_fields_periodic(basis, x, center, cell, images, -bloch, other)
+      CALL check(MAXVAL(ABS(other - CONJG(v))), 'native Gaussian Bloch time reversal')
+      DO image = 1, 3
+         translated_images(:, image) = images(:, image) - [1, 0, 0]
+      END DO
+      CALL gaussian_basis_fields_periodic(basis, x, center + cell(:, 1), cell, translated_images, bloch, other)
+      CALL check(MAXVAL(ABS(other - EXP(CMPLX(0.0_dp, -2*pi*bloch(1), dp))*v)), 'native Gaussian lattice representative')
+      CALL deallocate_gto_basis_set(basis)
+   END SUBROUTINE check_gaussian_fields
 
 ! **************************************************************************************************
 !> \brief Include local potentials on both augmentation centers and a third ordinary ion.
