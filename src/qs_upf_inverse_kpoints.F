@@ -13,6 +13,7 @@
 ! **************************************************************************************************
 MODULE qs_upf_inverse_kpoints
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_get_submatrix,&
                                               cp_cfm_release,&
                                               cp_cfm_type
    USE cp_fm_struct,                    ONLY: cp_fm_struct_type
@@ -29,21 +30,11 @@ MODULE qs_upf_inverse_kpoints
                                               qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_grid_metric_dense,&
                                               qs_upf_inverse_grid_prepare
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
-                                              qs_upf_inverse_grid_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_kpoints_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
-
-   TYPE qs_upf_inverse_kpoints_type
-      ! The live initialized group environment is borrowed; all fields below are owned.
-      TYPE(kpoint_type), POINTER :: kpoints => NULL()
-      TYPE(qs_upf_inverse_grid_type), ALLOCATABLE :: frames(:)
-      TYPE(qs_upf_inverse_augmentation_type) :: augmentation
-      REAL(dp), ALLOCATABLE :: reduced_k(:, :), weights(:)
-      INTEGER :: nao = 0, kp_range(2) = 0
-   END TYPE qs_upf_inverse_kpoints_type
 
    PUBLIC :: qs_upf_inverse_kpoints_type, qs_upf_inverse_kpoints_prepare, qs_upf_inverse_kpoints_release
    PUBLIC :: qs_upf_inverse_kpoints_density, qs_upf_inverse_kpoints_collocate
@@ -145,10 +136,15 @@ CONTAINS
          CPASSERT(spin >= 1 .AND. spin <= SIZE(kp%pmat, 2))
          CPASSERT(kp%pmat(1, spin)%matrix_struct%nrow_global == frame%nao)
          CPASSERT(kp%pmat(1, spin)%matrix_struct%ncol_global == frame%nao)
-         CALL cp_fm_get_submatrix(kp%pmat(1, spin), real_part)
-         imaginary = 0.0_dp
-         IF (.NOT. frame%kpoints%use_real_wfn) CALL cp_fm_get_submatrix(kp%pmat(2, spin), imaginary)
-         IF (frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(real_part, imaginary, dp)
+         IF (ALLOCATED(frame%kpoints%native_density)) THEN
+            CALL cp_cfm_get_submatrix(frame%kpoints%native_density(local, spin), density(:, :, ik))
+            IF (.NOT. frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(0.0_dp, 0.0_dp, dp)
+         ELSE
+            CALL cp_fm_get_submatrix(kp%pmat(1, spin), real_part)
+            imaginary = 0.0_dp
+            IF (.NOT. frame%kpoints%use_real_wfn) CALL cp_fm_get_submatrix(kp%pmat(2, spin), imaginary)
+            IF (frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(real_part, imaginary, dp)
+         END IF
       END DO
       DO ik = 1, SIZE(frame%weights)
          CALL frame%kpoints%para_env%sum(density(:, :, ik))

@@ -64,6 +64,7 @@ MODULE kpoint_types
    PUBLIC :: read_kpoint_section, write_kpoint_info
    PUBLIC :: kpoint_clear_scf_smat
    PUBLIC :: kpoint_native_operator_type, kpoint_native_operator_clear
+   PUBLIC :: kpoint_native_density_clear
 
    ! Complete group-local operators can have no finite real-space image representation.
    ! The source identity is borrowed; complex values are owned, indexed (local k, source row).
@@ -258,6 +259,9 @@ MODULE kpoint_types
       ! Unmodified complex overlaps for the current SCF run, indexed by local k-point.
       TYPE(cp_cfm_type), ALLOCATABLE, DIMENSION(:) :: scf_smat
       TYPE(kpoint_native_operator_type) :: native_operators(3)
+      ! Complete accepted/trial Bloch densities on native group layouts. Explicitly activated.
+      TYPE(cp_cfm_type), ALLOCATABLE :: native_density(:, :), native_trial(:, :)
+      LOGICAL :: native_trial_valid = .FALSE., native_density_seeded = .FALSE.
       ! Selected AO indices, accepted density/potential, and a separate cached trial density.
       INTEGER, ALLOCATABLE :: lowdin_orbitals(:)
       REAL(dp), ALLOCATABLE :: lowdin_q(:, :), lowdin_v(:, :), lowdin_q_new(:, :)
@@ -333,6 +337,7 @@ CONTAINS
 
       IF (ASSOCIATED(kpoint)) THEN
          CALL kpoint_clear_scf_smat(kpoint)
+         CALL kpoint_native_density_clear(kpoint)
          DO i = 1, SIZE(kpoint%native_operators)
             CALL kpoint_native_operator_clear(kpoint%native_operators(i))
          END DO
@@ -432,7 +437,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Release owned direct matrices before their borrowed source and group layout disappear.
-!> \param operator ...
+!> \param OPERATOR ...
 ! **************************************************************************************************
    SUBROUTINE kpoint_native_operator_clear(OPERATOR)
       TYPE(kpoint_native_operator_type), INTENT(INOUT)   :: operator
@@ -452,6 +457,28 @@ CONTAINS
    END SUBROUTINE kpoint_native_operator_clear
 
 ! **************************************************************************************************
+!> \brief Release accepted/trial Bloch densities before the native group layouts disappear.
+!> \param kpoint ...
+! **************************************************************************************************
+   SUBROUTINE kpoint_native_density_clear(kpoint)
+      TYPE(kpoint_type), INTENT(INOUT)                   :: kpoint
+
+      INTEGER                                            :: ik, spin
+
+      IF (ALLOCATED(kpoint%native_density)) THEN
+         DO spin = 1, SIZE(kpoint%native_density, 2)
+            DO ik = 1, SIZE(kpoint%native_density, 1)
+               CALL cp_cfm_release(kpoint%native_density(ik, spin))
+               CALL cp_cfm_release(kpoint%native_trial(ik, spin))
+            END DO
+         END DO
+         DEALLOCATE (kpoint%native_density, kpoint%native_trial)
+      END IF
+      kpoint%native_trial_valid = .FALSE.
+      kpoint%native_density_seeded = .FALSE.
+   END SUBROUTINE kpoint_native_density_clear
+
+! **************************************************************************************************
 !> \brief Reset all data derived from a concrete k-point initialization.
 !>        Input options such as the scheme, grid, shifts and symmetry settings are kept.
 !> \param kpoint  The kpoint environment
@@ -462,6 +489,7 @@ CONTAINS
       INTEGER                                            :: i, ik, j
 
       CALL kpoint_clear_scf_smat(kpoint)
+      CALL kpoint_native_density_clear(kpoint)
       DO i = 1, SIZE(kpoint%native_operators)
          CALL kpoint_native_operator_clear(kpoint%native_operators(i))
       END DO

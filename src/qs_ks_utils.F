@@ -1656,7 +1656,7 @@ CONTAINS
                   CALL para_env%sum(lri_v_int(ikind)%v_int)
                END DO
             ELSE IF (inverse_scf) THEN
-               CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, 1)%matrix, weighted=.TRUE.)
+             CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, 1)%matrix, weighted=.TRUE., spin=ispin)
             ELSE
                rho_ao => my_rho(ispin, :)
                ksmat => ks_matrix(ispin, :)
@@ -1770,7 +1770,7 @@ CONTAINS
                   CALL para_env%sum(lri_v_int(ikind)%v_int)
                END DO
             ELSE IF (inverse_scf) THEN
-               CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_used, ks_matrix(ispin, 1)%matrix, weighted=.TRUE.)
+               CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_used, ks_matrix(ispin, 1)%matrix, weighted=.TRUE., spin=ispin)
             ELSE
                rho_ao => my_rho(ispin, :)
                ksmat => ks_matrix(ispin, :)

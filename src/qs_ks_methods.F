@@ -138,6 +138,8 @@ MODULE qs_ks_methods
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_sccs,                         ONLY: sccs
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_traces
    USE qs_uspp_gapw,                    ONLY: qs_uspp_gapw_coulomb
    USE qs_uspp_methods,                 ONLY: qs_uspp_atom_grid_apply_ks,&
                                               qs_uspp_atom_grid_type
@@ -1092,6 +1094,9 @@ CONTAINS
       ! *** Add Hartree-Fock contribution if required ***
       hfx_sections => section_vals_get_subs_vals(xc_section, "HF")
       CALL section_vals_get(hfx_sections, explicit=do_hfx)
+      IF (do_hfx .AND. qs_upf_inverse_scf_active(ks_env)) THEN
+         CPABORT("Inverse exact-exchange transition operators are not connected")
+      END IF
       IF (do_hfx) THEN
          CALL get_ks_env(ks_env, uspp=uspp)
          IF (ASSOCIATED(uspp)) CPABORT("Exact exchange with USPP augmentation is not implemented")
@@ -1745,21 +1750,30 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'evaluate_core_matrix_traces'
 
       INTEGER                                            :: handle
+      LOGICAL                                            :: do_kpoints
       REAL(KIND=dp)                                      :: energy_core_im
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrixkp_h, matrixkp_t, rho_ao_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(qs_energy_type), POINTER                      :: energy
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
 
       CALL timeset(routineN, handle)
       NULLIFY (energy, rho, dft_control, rho_ao_kp, matrixkp_t, matrixkp_h)
 
       CALL get_qs_env(qs_env, &
-                      rho=rho, &
+                      rho=rho, ks_env=ks_env, do_kpoints=do_kpoints, &
                       energy=energy, &
                       dft_control=dft_control, &
                       kinetic_kp=matrixkp_t, &
                       matrix_h_kp=matrixkp_h)
+
+      IF (qs_upf_inverse_scf_active(ks_env) .AND. do_kpoints) THEN
+         CPASSERT(.NOT. PRESENT(rho_ao_ext))
+         CALL qs_upf_inverse_scf_traces(ks_env, energy%core, energy%kinetic)
+         CALL timestop(handle)
+         RETURN
+      END IF
 
       IF (PRESENT(rho_ao_ext)) THEN
          rho_ao_kp => rho_ao_ext

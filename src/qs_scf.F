@@ -139,7 +139,9 @@ MODULE qs_scf
    USE qs_charge_mixing,                ONLY: charge_mixing_scc_error
    USE qs_charges_types,                ONLY: qs_charges_type
    USE qs_density_matrices,             ONLY: calculate_density_matrix
-   USE qs_density_mixing_types,         ONLY: gspace_mixing_nr
+   USE qs_density_mixing_types,         ONLY: direct_mixing_nr,&
+                                              gspace_mixing_nr,&
+                                              no_mixing_nr
    USE qs_diis,                         ONLY: qs_diis_b_clear,&
                                               qs_diis_b_clear_kp,&
                                               qs_diis_b_create,&
@@ -152,6 +154,9 @@ MODULE qs_scf
    USE qs_integrate_potential,          ONLY: integrate_v_rspace
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
+   USE qs_kpoint_density_state,         ONLY: kpoint_density_state_accept,&
+                                              kpoint_density_state_active,&
+                                              kpoint_density_state_restore
    USE qs_kpoint_operators,             ONLY: kpoint_operator_get_local,&
                                               kpoint_operator_store
    USE qs_kpoint_state,                 ONLY: qs_kpoint_copy_spin_mos,&
@@ -934,7 +939,7 @@ CONTAINS
             END IF
 
             ! mixing methods have the new density matrix in p_mix_new
-            IF (scf_env%mixing_method > 0) THEN
+            IF (scf_env%mixing_method > 0 .AND. .NOT. kpoint_density_state_active(kpoints)) THEN
                DO ic = 1, SIZE(rho_ao_kp, 2)
                   DO ispin = 1, dft_control%nspins
                      CALL dbcsr_get_info(rho_ao_kp(ispin, ic)%matrix, name=name) ! keep the name
@@ -1325,6 +1330,27 @@ CONTAINS
                       mos=mos, &
                       rho=rho, &
                       qs_kind_set=qs_kind_set)
+
+      IF (do_kpoints) THEN
+         IF (ALLOCATED(kpoints%native_density)) THEN
+            IF (scf_env%method /= general_diag_method_nr .OR. &
+                scf_control%diagonalization%update_method == diag_update_method_adiis .OR. &
+                (scf_env%mixing_method /= direct_mixing_nr .AND. scf_env%mixing_method /= no_mixing_nr)) THEN
+               CPABORT("Inverse Bloch SCF requires STANDARD and direct mixing")
+            END IF
+            IF (.NOT. kpoints%native_density_seeded) THEN
+               CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks_kp, matrix_metric_kp=matrix_s_kp)
+               kp_diis_step = .FALSE.
+               CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, scf_control, .TRUE., kp_diis_step)
+               CALL kpoint_density_state_accept(kpoints, 1.0_dp)
+               kpoints%native_density_seeded = .TRUE.
+               CALL qs_rho_update_rho(rho, qs_env=qs_env)
+               CALL qs_ks_did_change(qs_env%ks_env, rho_changed=.TRUE.)
+            ELSE
+               CALL kpoint_density_state_restore(kpoints)
+            END IF
+         END IF
+      END IF
 
       nkpoint = 1
       kp_range = 0
