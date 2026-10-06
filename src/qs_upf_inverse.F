@@ -38,7 +38,7 @@ MODULE qs_upf_inverse
 
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_prepare, qs_upf_inverse_from_ks
    PUBLIC :: qs_upf_inverse_response, qs_upf_inverse_release
-   PUBLIC :: qs_upf_inverse_evaluate
+   PUBLIC :: qs_upf_inverse_evaluate, qs_upf_inverse_center_fields
 
 CONTAINS
 
@@ -336,6 +336,92 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE qs_upf_inverse_evaluate
+
+! **************************************************************************************************
+!> \brief Center contribution d_a=-Delta_a*W_a to the inverse-minus-Gaussian field.
+!>        W_a is taken from the full coupled solve, never an isolated atomic reconstruction.
+!>        Pair this difference with the complete soft-plus-Gaussian field for center residuals.
+!>        No spatial partition is applied, including when original wave supports overlap.
+!> \param frame Existing inverse and original radial cache.
+!> \param center Index in the original frame's center/projector order.
+!> \param points Local Cartesian points, possibly an empty batch.
+!> \param difference Center difference in the full AO order.
+!> \param gradient Physical Cartesian gradient of that center difference.
+!> \param difference_response Optional joint field response, with all other response arguments.
+!> \param gradient_response Optional physical-gradient response.
+!> \param point_response Optional Cartesian evaluation-point motion.
+!> \param atom_response Optional Cartesian motion of all native atoms.
+!> \param cell_response Optional lattice motion.
+!> \param reduced_k_response Optional reduced Bloch-vector motion.
+!> \param coefficients_response Optional dW from the original defining quadrature.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_center_fields(frame, center, points, difference, gradient, &
+                                           difference_response, gradient_response, point_response, &
+                                           atom_response, cell_response, reduced_k_response, coefficients_response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: center
+      REAL(dp), INTENT(IN)                               :: points(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: difference(:, :), gradient(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: difference_response(:, :), &
+                                                            gradient_response(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
+                                                            atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: ddelta(:, :), delta(:, :), dgd(:, :, :), &
+                                                            gd(:, :, :)
+      INTEGER                                            :: atom, axis, first, ikind, last, nao, np, &
+                                                            nproj
+      LOGICAL                                            :: calculate_response
+
+      CPASSERT(frame%inverse%ready)
+      CPASSERT(center >= 1 .AND. center <= SIZE(frame%center_atoms))
+      CPASSERT(SIZE(points, 1) == 3)
+      atom = frame%center_atoms(center)
+      ikind = frame%center_kinds(center)
+      first = frame%projector_first(center)
+      last = frame%projector_last(center)
+      np = SIZE(points, 2)
+      nao = SIZE(frame%coefficients, 2)
+      nproj = last - first + 1
+      CPASSERT(ALL(SHAPE(difference) == [np, nao]))
+      CPASSERT(ALL(SHAPE(gradient) == [np, nao, 3]))
+      calculate_response = PRESENT(difference_response) .OR. PRESENT(gradient_response) .OR. &
+                           PRESENT(point_response) .OR. PRESENT(atom_response) .OR. &
+                           PRESENT(cell_response) .OR. PRESENT(reduced_k_response) .OR. &
+                           PRESENT(coefficients_response)
+      ALLOCATE (delta(np, nproj), gd(np, nproj, 3))
+      IF (calculate_response) THEN
+         CPASSERT(PRESENT(difference_response) .AND. PRESENT(gradient_response))
+         CPASSERT(PRESENT(point_response) .AND. PRESENT(atom_response))
+         CPASSERT(PRESENT(cell_response) .AND. PRESENT(reduced_k_response))
+         CPASSERT(PRESENT(coefficients_response))
+         CPASSERT(ALL(SHAPE(difference_response) == [np, nao]))
+         CPASSERT(ALL(SHAPE(gradient_response) == [np, nao, 3]))
+         CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
+         CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
+         CPASSERT(ALL(SHAPE(coefficients_response) == SHAPE(frame%coefficients)))
+         ALLOCATE (ddelta(np, nproj), dgd(np, nproj, 3))
+         CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
+                                         frame%cell, frame%images, frame%reduced_k, delta, gd, ddelta, dgd, &
+                                         point_response, atom_response(:, atom), cell_response, reduced_k_response)
+         difference_response = -MATMUL(ddelta, frame%coefficients(first:last, :)) - &
+                               MATMUL(delta, coefficients_response(first:last, :))
+      ELSE
+         CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
+                                         frame%cell, frame%images, frame%reduced_k, delta, gd)
+      END IF
+      difference = -MATMUL(delta, frame%coefficients(first:last, :))
+      DO axis = 1, 3
+         gradient(:, :, axis) = -MATMUL(gd(:, :, axis), frame%coefficients(first:last, :))
+         IF (calculate_response) THEN
+            gradient_response(:, :, axis) = -MATMUL(dgd(:, :, axis), frame%coefficients(first:last, :)) - &
+                                            MATMUL(gd(:, :, axis), coefficients_response(first:last, :))
+         END IF
+      END DO
+   END SUBROUTINE qs_upf_inverse_center_fields
 
 ! **************************************************************************************************
 !> \brief Joint point/atom/cell/Bloch response in the same native AO and projector frame.

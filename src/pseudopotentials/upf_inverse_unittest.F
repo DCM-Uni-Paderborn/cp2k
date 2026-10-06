@@ -25,7 +25,8 @@ PROGRAM upf_inverse_unittest
         upf_inverse_basis, upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
         upf_inverse_operator, upf_inverse_operator_response, upf_inverse_project, &
         upf_inverse_project_response, upf_inverse_type
-   USE upf_inverse_quadrature,          ONLY: upf_inverse_density_residual,&
+   USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
+                                              upf_inverse_density_residual,&
                                               upf_inverse_projector_density,&
                                               upf_inverse_semilocal_pair,&
                                               upf_inverse_semilocal_residual,&
@@ -50,10 +51,11 @@ CONTAINS
    SUBROUTINE check_density_residual()
       INTEGER, PARAMETER                                 :: nb = 2, np = 3
 
-      COMPLEX(dp) :: c(nb, nb), dgr(np, nb, 3), dgs(np, nb, 3), dr(np, nb), ds(np, nb), &
-         gr(np, nb, 3), gs(np, nb, 3), h(nb, nb), hr(nb, nb), hs(nb, nb), p(nb, nb), &
-         reference(np, nb), response(nb, nb), soft(np, nb)
-      INTEGER                                            :: axis, i, j, side
+      COMPLEX(dp) :: c(nb, nb), center_difference(np, nb), center_gradient(np, nb, 3), &
+         dgr(np, nb, 3), dgs(np, nb, 3), dr(np, nb), ds(np, nb), gr(np, nb, 3), gs(np, nb, 3), &
+         h(nb, nb), hr(nb, nb), hs(nb, nb), p(nb, nb), reference(np, nb), response(nb, nb), &
+         soft(np, nb)
+      INTEGER                                            :: axis, center, i, j, side
       REAL(dp) :: dw(np), gradient(np, 3), gradient_r(np, 3), gradient_s(np, 3), rho(np), &
          rho_r(np), rho_s(np), samples(2), shift, tau(np), tau_r(np), tau_s(np), value, vg(np, 3), &
          vn(np), vt(np), weights(np)
@@ -92,6 +94,30 @@ CONTAINS
       CALL check(MAXVAL(ABS(hr + h - hs)), 'Gaussian/residual operator closure')
       value = SUM(weights*(vn*rho + SUM(vg*gradient, DIM=2) + vt*tau))
       CALL check(ABS(value - REAL(SUM(h*CONJG(p)), dp)), 'signed density operator adjoint')
+      ! Overlapping center fields carry opposite off-diagonal terms that must not be discarded.
+      rho_s = 0.0_dp
+      gradient_s = 0.0_dp
+      tau_s = 0.0_dp
+      hs = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO center = 1, 2
+         center_difference = (soft - reference)/2 + (2*center - 3)*0.2_dp*CONJG(reference)
+         center_gradient = (gs - gr)/2 + (2*center - 3)*0.2_dp*CONJG(gr)
+         CALL upf_inverse_cross_density(center_difference, soft + reference, center_gradient, gs + gr, &
+                                        p, rho_r, gradient_r, tau_r)
+         CALL upf_inverse_semilocal_pair(center_difference, soft + reference, center_gradient, gs + gr, &
+                                         weights, vn, vg, vt, hr)
+         hr = 0.5_dp*(hr + CONJG(TRANSPOSE(hr)))
+         value = SUM(weights*(vn*rho_r + SUM(vg*gradient_r, DIM=2) + vt*tau_r))
+         CALL check(ABS(value - REAL(SUM(hr*CONJG(p)), dp)), 'center residual operator adjoint')
+         rho_s = rho_s + rho_r
+         gradient_s = gradient_s + gradient_r
+         tau_s = tau_s + tau_r
+         hs = hs + hr
+      END DO
+      CALL check(MAXVAL(ABS(rho_s - rho)), 'overlapping center charge closure')
+      CALL check(MAXVAL(ABS(gradient_s - gradient)), 'overlapping center gradient closure')
+      CALL check(MAXVAL(ABS(tau_s - tau)), 'overlapping center kinetic closure')
+      CALL check(MAXVAL(ABS(hs - h)), 'overlapping center operator closure')
       CALL upf_inverse_semilocal_response(soft - reference, soft + reference, gs - gr, gs + gr, &
                                           weights, vn, vg, vt, ds - dr, ds + dr, dgs - dgr, dgs + dgr, &
                                           dw, 0.05_dp*vn, 0.07_dp*vg, 0.09_dp*vt, response)

@@ -22,7 +22,7 @@ MODULE upf_inverse_quadrature
    PUBLIC :: upf_inverse_pair, upf_inverse_pair_response
    PUBLIC :: upf_inverse_semilocal_pair, upf_inverse_semilocal_response, upf_inverse_smooth_density
    PUBLIC :: upf_inverse_projector_density
-   PUBLIC :: upf_inverse_density_residual, upf_inverse_semilocal_residual
+   PUBLIC :: upf_inverse_density_residual, upf_inverse_semilocal_residual, upf_inverse_cross_density
 
 CONTAINS
 
@@ -288,30 +288,55 @@ CONTAINS
                                                             ao_density(:, :)
       REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :), tau(:)
 
+      CALL upf_inverse_cross_density(soft - reference, soft + reference, &
+                                     soft_gradient - reference_gradient, soft_gradient + reference_gradient, &
+                                     ao_density, density, gradient, tau)
+   END SUBROUTINE upf_inverse_density_residual
+
+! **************************************************************************************************
+!> \brief Real cross-density descriptors with a Hermitian AO density.
+!>        A center difference paired with the full field sum retains every intercenter product.
+!>        The adjoint for real potentials is the Hermitian part of the semilocal pair operator.
+!> \param left Local difference-wave or Gaussian row block.
+!> \param right Matching full environmental row block, in the same AO order.
+!> \param left_gradient Physical Cartesian Bloch gradients, axis last.
+!> \param right_gradient ...
+!> \param ao_density Hermitian occupation density in the reconstructed variables.
+!> \param density Real signed cross density.
+!> \param gradient Its Cartesian gradient.
+!> \param tau Real kinetic cross density with factor one half.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_cross_density(left, right, left_gradient, right_gradient, &
+                                        ao_density, density, gradient, tau)
+      COMPLEX(dp), INTENT(IN)                            :: left(:, :), right(:, :), &
+                                                            left_gradient(:, :, :), &
+                                                            right_gradient(:, :, :), &
+                                                            ao_density(:, :)
+      REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :), tau(:)
+
       COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), work(:, :)
       INTEGER                                            :: axis, n, npoint
 
-      n = SIZE(soft, 2)
-      npoint = SIZE(soft, 1)
-      CPASSERT(ALL(SHAPE(reference) == SHAPE(soft)))
-      CPASSERT(ALL(SHAPE(soft_gradient) == [npoint, n, 3]))
-      CPASSERT(ALL(SHAPE(reference_gradient) == SHAPE(soft_gradient)))
+      n = SIZE(right, 2)
+      npoint = SIZE(right, 1)
+      CPASSERT(ALL(SHAPE(left) == SHAPE(right)))
+      CPASSERT(ALL(SHAPE(right_gradient) == [npoint, n, 3]))
+      CPASSERT(ALL(SHAPE(left_gradient) == SHAPE(right_gradient)))
       CPASSERT(ALL(SHAPE(ao_density) == [n, n]))
       CPASSERT(SIZE(density) == npoint .AND. SIZE(tau) == npoint)
       CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
       CALL check_density(ao_density)
       ALLOCATE (work(npoint, n), derivative(npoint, n))
-      work(:, :) = MATMUL(soft + reference, ao_density)
-      density = REAL(SUM(CONJG(soft - reference)*work, DIM=2), dp)
+      work(:, :) = MATMUL(right, ao_density)
+      density = REAL(SUM(CONJG(left)*work, DIM=2), dp)
       tau = 0.0_dp
       DO axis = 1, 3
-         derivative(:, :) = MATMUL(soft_gradient(:, :, axis) + reference_gradient(:, :, axis), ao_density)
-         gradient(:, axis) = REAL(SUM(CONJG(soft_gradient(:, :, axis) - reference_gradient(:, :, axis))*work + &
-                                      CONJG(soft - reference)*derivative, DIM=2), dp)
-         tau = tau + 0.5_dp*REAL(SUM(CONJG(soft_gradient(:, :, axis) - &
-                                           reference_gradient(:, :, axis))*derivative, DIM=2), dp)
+         derivative(:, :) = MATMUL(right_gradient(:, :, axis), ao_density)
+         gradient(:, axis) = REAL(SUM(CONJG(left_gradient(:, :, axis))*work + &
+                                      CONJG(left)*derivative, DIM=2), dp)
+         tau = tau + 0.5_dp*REAL(SUM(CONJG(left_gradient(:, :, axis))*derivative, DIM=2), dp)
       END DO
-   END SUBROUTINE upf_inverse_density_residual
+   END SUBROUTINE upf_inverse_cross_density
 
 ! **************************************************************************************************
 !> \brief Semilocal adjoint of the signed inverse-minus-Gaussian density descriptors.
