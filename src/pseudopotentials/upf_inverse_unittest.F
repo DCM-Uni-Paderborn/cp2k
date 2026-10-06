@@ -28,6 +28,7 @@ PROGRAM upf_inverse_unittest
    USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_compensate,&
                                               upf_inverse_coulomb_compensation_adjoint,&
                                               upf_inverse_coulomb_fourier_kernel,&
+                                              upf_inverse_coulomb_pair_kernel,&
                                               upf_inverse_coulomb_radial,&
                                               upf_inverse_coulomb_radial_response
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
@@ -47,11 +48,74 @@ PROGRAM upf_inverse_unittest
    CALL check_projector_density()
    CALL check_density_residual()
    CALL check_radial_coulomb()
+   CALL check_pair_coulomb()
    CALL check_fourier_coulomb()
    CALL check_nc_fields()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Translated shell theorem, overlap, reciprocity and joint geometry response.
+! **************************************************************************************************
+   SUBROUTINE check_pair_coulomb()
+      INTEGER, PARAMETER                                 :: indices(4) = [1, 2, 3, 4], &
+                                                            ls(4) = [0, 1, 1, 1]
+
+      INTEGER                                            :: i, j, side
+      REAL(dp) :: a(2), b(2), d(3), da(2), db(2), dd(3), distance, exact, kernel(2, 4, 2, 4), &
+         response(2, 4, 2, 4), reverse(2, 4, 2, 4), samples(2, 4, 2, 4, 2), shift
+
+      a = [0.7_dp, 1.3_dp]
+      b = [0.5_dp, 1.1_dp]
+      da = [0.013_dp, -0.007_dp]
+      db = [-0.011_dp, 0.017_dp]
+      dd = [0.019_dp, -0.023_dp, 0.009_dp]
+      DO j = 1, 3
+         d = REAL(j, dp)*[0.6_dp, -0.4_dp, 0.3_dp]
+         distance = SQRT(SUM(d**2))
+         CALL upf_inverse_coulomb_pair_kernel(a, ls, indices, b, ls, indices, d, &
+                                              kernel, response, da, db, dd)
+         CALL upf_inverse_coulomb_pair_kernel(b, ls, indices, a, ls, indices, -d, reverse)
+         DO i = 1, 2
+            DO side = 1, 2
+               IF (distance >= a(i) + b(side)) THEN
+                  exact = 4.0_dp*pi/distance
+               ELSE IF (distance <= ABS(a(i) - b(side))) THEN
+                  exact = 4.0_dp*pi/MAX(a(i), b(side))
+               ELSE
+                  exact = pi/(distance*a(i)*b(side))* &
+                          (2.0_dp*distance*(a(i) + b(side)) - distance**2 - (a(i) - b(side))**2)
+               END IF
+               CALL check(ABS(kernel(i, 1, side, 1) - exact), "Translated monopole shells", 3.e-12_dp)
+               CALL check(MAXVAL(ABS(kernel(i, :, side, :) - TRANSPOSE(reverse(side, :, i, :)))), &
+                          "Translated Coulomb reciprocity", 1.e-12_dp)
+            END DO
+         END DO
+         DO side = 1, 2
+            shift = REAL(2*side - 3, dp)*step
+            CALL upf_inverse_coulomb_pair_kernel(a + shift*da, ls, indices, b + shift*db, ls, indices, &
+                                                 d + shift*dd, samples(:, :, :, :, side))
+         END DO
+         CALL check(MAXVAL(ABS((samples(:, :, :, :, 2) - samples(:, :, :, :, 1))/(2.0_dp*step) - response)), &
+                    "Translated Coulomb joint response", 3.e-9_dp)
+      END DO
+      ! A source sphere passing through a target angular node is integrated in separate polar caps.
+      d = [0.7_dp, 0.0_dp, 0.0_dp]
+      CALL upf_inverse_coulomb_pair_kernel(a, ls, indices, b, ls, indices, d, &
+                                           kernel, response, da, db, dd)
+      DO side = 1, 2
+         shift = REAL(2*side - 3, dp)*step
+         CALL upf_inverse_coulomb_pair_kernel(a + shift*da, ls, indices, b + shift*db, ls, indices, &
+                                              d + shift*dd, samples(:, :, :, :, side))
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, :, :, :, 2) - samples(:, :, :, :, 1))/(2.0_dp*step) - response)), &
+                 "Translated shell crossing response", 3.e-9_dp)
+      d = 0.0_dp
+      CALL upf_inverse_coulomb_pair_kernel(a, ls, indices, b, ls, indices, d, kernel)
+      CALL check(ABS(kernel(1, 2, 1, 2) - 4.0_dp*pi/3.0_dp*b(1)/a(1)**2), "Concentric dipole shells")
+      CALL check(ABS(kernel(1, 2, 1, 3)), "Concentric harmonic orthogonality")
+   END SUBROUTINE check_pair_coulomb
+
 ! **************************************************************************************************
 !> \brief Signed shell/PW coupling, reciprocal zero limit and joint geometry response.
 ! **************************************************************************************************

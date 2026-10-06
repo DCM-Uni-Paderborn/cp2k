@@ -11,7 +11,9 @@ MODULE upf_inverse_coulomb
    USE bessel_lib,                      ONLY: bessel0
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
-   USE mathconstants,                   ONLY: fourpi
+   USE mathconstants,                   ONLY: fourpi,&
+                                              pi,&
+                                              twopi
    USE orbital_pointers,                ONLY: indco,&
                                               init_orbital_pointers,&
                                               nco,&
@@ -25,8 +27,323 @@ MODULE upf_inverse_coulomb
    PUBLIC :: upf_inverse_coulomb_radial, upf_inverse_coulomb_radial_response
    PUBLIC :: upf_inverse_coulomb_compensate, upf_inverse_coulomb_compensation_adjoint
    PUBLIC :: upf_inverse_coulomb_fourier_kernel
+   PUBLIC :: upf_inverse_coulomb_pair_kernel
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Reciprocal Coulomb map between two translated harmonic radial-shell distributions.
+!>        The kernel excludes both radial measures. Splitting the angular integral at the source
+!>        shell avoids sampling a discontinuous radial derivative across an unsplit angular rule.
+!>        The joint response differentiates the same finite rule, including its moving boundaries.
+!> \param radii_a Positive target radii.
+!> \param l_a Angular momenta of the target real harmonics.
+!> \param indices_a Native harmonic indices of the target channels.
+!> \param radii_b Positive source radii.
+!> \param l_b Angular momenta of the source real harmonics.
+!> \param indices_b Native harmonic indices of the source channels.
+!> \param displacement Target center minus source center, including any lattice image.
+!> \param kernel Coulomb map in (radius_a,harmonic_a,radius_b,harmonic_b) order.
+!> \param response Optional joint geometry response.
+!> \param dr_a Required with response.
+!> \param dr_b Required with response.
+!> \param ddisplacement Required with response.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_coulomb_pair_kernel(radii_a, l_a, indices_a, radii_b, l_b, indices_b, &
+                                              displacement, kernel, response, dr_a, dr_b, ddisplacement)
+      REAL(dp), INTENT(IN)                               :: radii_a(:)
+      INTEGER, INTENT(IN)                                :: l_a(:), indices_a(:)
+      REAL(dp), INTENT(IN)                               :: radii_b(:)
+      INTEGER, INTENT(IN)                                :: l_b(:), indices_b(:)
+      REAL(dp), INTENT(IN)                               :: displacement(3)
+      REAL(dp), INTENT(OUT)                              :: kernel(:, :, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response(:, :, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: dr_a(:), dr_b(:), ddisplacement(3)
+
+      INTEGER                                            :: a, b, i, j
+      REAL(dp)                                           :: da, db, delta(3), distance, value
+      REAL(dp), ALLOCATABLE                              :: ab(:, :), ba(:, :), dab(:, :), dba(:, :)
+
+      CPASSERT(ALL(radii_a > 0.0_dp) .AND. ALL(ieee_is_finite(radii_a)))
+      CPASSERT(ALL(radii_b > 0.0_dp) .AND. ALL(ieee_is_finite(radii_b)))
+      CPASSERT(ALL(ieee_is_finite(displacement)))
+      CPASSERT(SIZE(l_a) > 0 .AND. SIZE(l_b) > 0)
+      CPASSERT(SIZE(indices_a) == SIZE(l_a))
+      CPASSERT(SIZE(indices_b) == SIZE(l_b))
+      CPASSERT(ALL(l_a >= 0 .AND. l_a <= 20))
+      CPASSERT(ALL(l_b >= 0 .AND. l_b <= 20))
+      CPASSERT(ALL(indices_a > l_a**2 .AND. indices_a <= (l_a + 1)**2))
+      CPASSERT(ALL(indices_b > l_b**2 .AND. indices_b <= (l_b + 1)**2))
+      IF (.NOT. ALL(SHAPE(kernel) == [SIZE(radii_a), SIZE(l_a), SIZE(radii_b), SIZE(l_b)])) THEN
+         CPABORT("Invalid translated shell kernel dimensions")
+      END IF
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(dr_a) .AND. PRESENT(dr_b))
+         CPASSERT(PRESENT(ddisplacement))
+         CPASSERT(SIZE(dr_a) == SIZE(radii_a))
+         CPASSERT(SIZE(dr_b) == SIZE(radii_b))
+         CPASSERT(ALL(SHAPE(response) == SHAPE(kernel)))
+         response = 0.0_dp
+      END IF
+      kernel = 0.0_dp
+      distance = SQRT(SUM(displacement**2))
+      delta = 0.0_dp
+      IF (PRESENT(response)) delta = ddisplacement
+      IF (distance == 0.0_dp) THEN
+         ! Same-center shells share their center motion. Distinct coincident centers need a limit.
+         CPASSERT(ALL(delta == 0.0_dp))
+         DO a = 1, SIZE(l_a)
+            DO b = 1, SIZE(l_b)
+               IF (indices_a(a) /= indices_b(b)) CYCLE
+               DO i = 1, SIZE(radii_a)
+                  DO j = 1, SIZE(radii_b)
+                     value = fourpi/REAL(2*l_a(a) + 1, dp)/MAX(radii_a(i), radii_b(j))* &
+                             (MIN(radii_a(i), radii_b(j))/MAX(radii_a(i), radii_b(j)))**l_a(a)
+                     kernel(i, a, j, b) = value
+                     IF (.NOT. PRESENT(response)) CYCLE
+                     IF (radii_a(i) == radii_b(j)) THEN
+                        CPASSERT(dr_a(i) == dr_b(j))
+                     END IF
+                     IF (radii_a(i) >= radii_b(j)) THEN
+                        response(i, a, j, b) = value*(l_a(a)*dr_b(j)/radii_b(j) - &
+                                                      (l_a(a) + 1)*dr_a(i)/radii_a(i))
+                     ELSE
+                        response(i, a, j, b) = value*(l_a(a)*dr_a(i)/radii_a(i) - &
+                                                      (l_a(a) + 1)*dr_b(j)/radii_b(j))
+                     END IF
+                  END DO
+               END DO
+            END DO
+         END DO
+         RETURN
+      END IF
+      CALL init_orbital_pointers(MAX(MAXVAL(l_a), MAXVAL(l_b)))
+      CALL init_spherical_harmonics(MAX(MAXVAL(l_a), MAXVAL(l_b)), -1)
+      ALLOCATE (ab(SIZE(l_a), SIZE(l_b)), ba(SIZE(l_b), SIZE(l_a)), &
+                dab(SIZE(l_a), SIZE(l_b)), dba(SIZE(l_b), SIZE(l_a)))
+      DO i = 1, SIZE(radii_a)
+         DO j = 1, SIZE(radii_b)
+            da = 0.0_dp
+            db = 0.0_dp
+            IF (PRESENT(response)) THEN
+               da = dr_a(i)
+               db = dr_b(j)
+            END IF
+            CALL translated_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
+                                  displacement, da, db, delta, ab, dab)
+            CALL translated_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
+                                  -displacement, db, da, -delta, ba, dba)
+            kernel(i, :, j, :) = 0.5_dp*(ab + TRANSPOSE(ba))
+            IF (PRESENT(response)) response(i, :, j, :) = 0.5_dp*(dab + TRANSPOSE(dba))
+         END DO
+      END DO
+   END SUBROUTINE upf_inverse_coulomb_pair_kernel
+
+! **************************************************************************************************
+!> \brief Integrate a source shell's regular/irregular solid-harmonic potential on a target shell.
+!>        Azimuthal integration is exact for the represented polynomial degree. Polar subintervals
+!>        also limit the source-distance ratio to two in the irregular branch.
+!> \param a ...
+!> \param b ...
+!> \param la ...
+!> \param ia ...
+!> \param lb ...
+!> \param ib ...
+!> \param d ...
+!> \param da ...
+!> \param db ...
+!> \param dd ...
+!> \param value ...
+!> \param response ...
+! **************************************************************************************************
+   SUBROUTINE translated_shell(a, b, la, ia, lb, ib, d, da, db, dd, value, response)
+      REAL(dp), INTENT(IN)                               :: a, b
+      INTEGER, INTENT(IN)                                :: la(:), ia(:), lb(:), ib(:)
+      REAL(dp), INTENT(IN)                               :: d(3), da, db, dd(3)
+      REAL(dp), INTENT(OUT)                              :: value(:, :), response(:, :)
+
+      INTEGER                                            :: axis, channel, iphi, iq, nphi, nq
+      LOGICAL                                            :: regular
+      REAL(dp) :: azimuth, bound, dbound, dex(3), dey(3), dez(3), dfactor, distance, dleft, &
+         dlength, dmu, dright, dt, du(3), dweight, dx(3), ex(3), ey(3), ez(3), factor, left, &
+         length, mu, norm_x, reference(3), right, scale, sine, t, tmax, u(3), weight, x(3)
+      REAL(dp), ALLOCATABLE                              :: dya(:), dyb(:), ga(:, :), gb(:, :), &
+                                                            nodes(:), weights(:), ya(:), yb(:)
+
+      distance = SQRT(SUM(d**2))
+      dt = DOT_PRODUCT(d, dd)/distance
+      ez = d/distance
+      dez = (dd - ez*dt)/distance
+      reference = 0.0_dp
+      axis = MINLOC(ABS(ez), DIM=1)
+      reference(axis) = 1.0_dp
+      ex = reference - ez(axis)*ez
+      dex = -dez(axis)*ez - ez(axis)*dez
+      length = SQRT(SUM(ex**2))
+      dlength = DOT_PRODUCT(ex, dex)/length
+      dex = (dex - ex*dlength/length)/length
+      ex = ex/length
+      ey = cross(ez, ex)
+      dey = cross(dez, ex) + cross(ez, dex)
+      nq = MAX(32, MAXVAL(la) + MAXVAL(lb) + 2)
+      nphi = MAXVAL(la) + MAXVAL(lb) + 1
+      ALLOCATE (nodes(nq), weights(nq), ya(SIZE(la)), yb(SIZE(lb)), &
+                dya(SIZE(la)), dyb(SIZE(lb)), ga(3, SIZE(la)), gb(3, SIZE(lb)))
+      CALL polar_rule(nodes, weights)
+      value = 0.0_dp
+      response = 0.0_dp
+      tmax = distance + a
+      left = -1.0_dp
+      dleft = 0.0_dp
+      regular = ABS(distance - a) < b
+      DO WHILE (left < 1.0_dp)
+         right = 1.0_dp
+         dright = 0.0_dp
+         t = SQRT(MAX(0.0_dp, (distance - a)**2 + 2.0_dp*distance*a*(left + 1.0_dp)))
+         IF (regular .AND. b < tmax) THEN
+            bound = b
+            dbound = db
+         ELSE IF (.NOT. regular .AND. 2.0_dp*t < tmax) THEN
+            bound = 2.0_dp*t
+            dbound = 2.0_dp*((distance - a)*(dt - da) + &
+                             (dt*a + distance*da)*(left + 1.0_dp) + distance*a*dleft)/t
+         ELSE
+            bound = tmax
+            dbound = dt + da
+         END IF
+         IF (bound < tmax) THEN
+            right = ((bound - a)*(bound + a) - distance**2)/(2.0_dp*distance*a)
+            dright = (bound*dbound - a*da - distance*dt)/(distance*a) - &
+                     right*(dt/distance + da/a)
+         END IF
+         CPASSERT(right > left .AND. right <= 1.0_dp)
+         DO iq = 1, nq
+            mu = 0.5_dp*((1.0_dp - nodes(iq))*left + (1.0_dp + nodes(iq))*right)
+            dmu = 0.5_dp*((1.0_dp - nodes(iq))*dleft + (1.0_dp + nodes(iq))*dright)
+            weight = 0.5_dp*(right - left)*weights(iq)*twopi/REAL(nphi, dp)
+            dweight = 0.5_dp*(dright - dleft)*weights(iq)*twopi/REAL(nphi, dp)
+            sine = SQRT(MAX(0.0_dp, 1.0_dp - mu**2))
+            CPASSERT(sine > 0.0_dp)
+            DO iphi = 1, nphi
+               azimuth = twopi*REAL(iphi - 1, dp)/REAL(nphi, dp)
+               u = mu*ez + sine*(COS(azimuth)*ex + SIN(azimuth)*ey)
+               du = dmu*ez + mu*dez - mu*dmu/sine*(COS(azimuth)*ex + SIN(azimuth)*ey) + &
+                    sine*(COS(azimuth)*dex + SIN(azimuth)*dey)
+               x = d + a*u
+               dx = dd + da*u + a*du
+               norm_x = SQRT(SUM(x**2))
+               CALL solid_fields(u, la, ia, ya, ga)
+               CALL solid_fields(x, lb, ib, yb, gb)
+               dya(:) = MATMUL(du, ga)
+               dyb(:) = MATMUL(dx, gb)
+               DO channel = 1, SIZE(lb)
+                  IF (norm_x < b) THEN
+                     factor = fourpi/REAL(2*lb(channel) + 1, dp)/b**(lb(channel) + 1)
+                     dfactor = -factor*(lb(channel) + 1)*db/b
+                  ELSE
+                     factor = fourpi/REAL(2*lb(channel) + 1, dp)* &
+                              (b/norm_x)**lb(channel)/norm_x**(lb(channel) + 1)
+                     dfactor = factor*(lb(channel)*db/b - &
+                                       (2*lb(channel) + 1)*DOT_PRODUCT(x, dx)/norm_x**2)
+                  END IF
+                  scale = factor*yb(channel)
+                  value(:, channel) = value(:, channel) + weight*ya*scale
+                  response(:, channel) = response(:, channel) + dweight*ya*scale + &
+                                         weight*(dya*scale + ya*(dfactor*yb(channel) + factor*dyb(channel)))
+               END DO
+            END DO
+         END DO
+         left = right
+         dleft = dright
+         regular = .FALSE.
+      END DO
+   END SUBROUTINE translated_shell
+
+! **************************************************************************************************
+!> \brief Native regular solid harmonics and Cartesian gradients, including their origin limits.
+!> \param x ...
+!> \param ls ...
+!> \param indices ...
+!> \param values ...
+!> \param gradients ...
+! **************************************************************************************************
+   SUBROUTINE solid_fields(x, ls, indices, values, gradients)
+      REAL(dp), INTENT(IN)                               :: x(3)
+      INTEGER, INTENT(IN)                                :: ls(:), indices(:)
+      REAL(dp), INTENT(OUT)                              :: values(:), gradients(:, :)
+
+      INTEGER                                            :: axis, channel, i, l, m, powers(3), &
+                                                            reduced(3)
+      REAL(dp)                                           :: factor
+
+      values = 0.0_dp
+      gradients = 0.0_dp
+      DO channel = 1, SIZE(ls)
+         l = ls(channel)
+         m = indices(channel) - l*l
+         DO i = 1, nco(l)
+            powers = indco(:, ncoset(l - 1) + i)
+            factor = orbtramat(l)%slm(m, i)
+            values(channel) = values(channel) + factor*PRODUCT(x**powers)
+            DO axis = 1, 3
+               IF (powers(axis) == 0) CYCLE
+               reduced = powers
+               reduced(axis) = reduced(axis) - 1
+               gradients(axis, channel) = gradients(axis, channel) + &
+                                          factor*powers(axis)*PRODUCT(x**reduced)
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE solid_fields
+
+! **************************************************************************************************
+!> \brief Gauss-Legendre nodes and weights on (-1,1).
+!> \param nodes ...
+!> \param weights ...
+! **************************************************************************************************
+   SUBROUTINE polar_rule(nodes, weights)
+      REAL(dp), INTENT(OUT)                              :: nodes(:), weights(:)
+
+      INTEGER                                            :: i, iteration, j, n
+      REAL(dp)                                           :: derivative, p, previous, saved, shift, x
+
+      n = SIZE(nodes)
+      CPASSERT(SIZE(weights) == n)
+      DO i = 1, (n + 1)/2
+         x = COS(pi*(REAL(i, dp) - 0.25_dp)/(REAL(n, dp) + 0.5_dp))
+         DO iteration = 1, 20
+            p = 1.0_dp
+            previous = 0.0_dp
+            DO j = 1, n
+               saved = p
+               p = ((2*j - 1)*x*p - (j - 1)*previous)/REAL(j, dp)
+               previous = saved
+            END DO
+            derivative = n*(x*p - previous)/(x*x - 1.0_dp)
+            shift = p/derivative
+            x = x - shift
+            IF (ABS(shift) < 2.0_dp*EPSILON(x)) EXIT
+         END DO
+         CPASSERT(iteration <= 20)
+         nodes(i) = -x
+         nodes(n + 1 - i) = x
+         weights(i) = 2.0_dp/((1.0_dp - x*x)*derivative**2)
+         weights(n + 1 - i) = weights(i)
+      END DO
+   END SUBROUTINE polar_rule
+
+! **************************************************************************************************
+!> \brief Cartesian vector product.
+!> \param a ...
+!> \param b ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION cross(a, b) RESULT(c)
+      REAL(dp), INTENT(IN)                               :: a(3), b(3)
+      REAL(dp)                                           :: c(3)
+
+      c = [a(2)*b(3) - a(3)*b(2), a(3)*b(1) - a(1)*b(3), a(1)*b(2) - a(2)*b(1)]
+   END FUNCTION cross
 
 ! **************************************************************************************************
 !> \brief Fourier map of the same radial shells, for coupling to a periodic background.
@@ -80,7 +397,8 @@ CONTAINS
       IF (PRESENT(response)) THEN
          CPASSERT(ALL(SHAPE(response) == SHAPE(kernel)))
          CPASSERT(PRESENT(radii_response) .AND. PRESENT(gvecs_response))
-         CPASSERT(PRESENT(position_response) .AND. PRESENT(volume_response))
+         CPASSERT(PRESENT(position_response))
+         CPASSERT(PRESENT(volume_response))
          CPASSERT(SIZE(radii_response) == SIZE(radii))
          CPASSERT(ALL(SHAPE(gvecs_response) == SHAPE(gvecs)))
       END IF
