@@ -21,6 +21,10 @@ PROGRAM upf_inverse_unittest
    USE mathconstants,                   ONLY: pi
    USE orbital_pointers,                ONLY: init_orbital_pointers,&
                                               ncoset
+   USE qs_grid_atom,                    ONLY: grid_atom_type
+   USE qs_harmonics_atom,               ONLY: harmonics_atom_type
+   USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_density_radial,&
+                                              qs_upf_inverse_density_radial_adjoint
    USE upf_core,                        ONLY: upf_core_fourier
    USE upf_inverse,                     ONLY: &
         upf_inverse_basis, upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
@@ -51,12 +55,65 @@ PROGRAM upf_inverse_unittest
    CALL check_radial_coulomb()
    CALL check_pair_coulomb()
    CALL check_periodic_coulomb()
+   CALL check_center_angular()
    CALL check_fourier_coulomb()
    CALL check_core_fourier()
    CALL check_nc_fields()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Native hard/soft and inverse angular legs with a deliberately nonidentity Gram matrix.
+! **************************************************************************************************
+   SUBROUTINE check_center_angular()
+      INTEGER                                            :: ir, side
+      REAL(dp) :: adjoint(6), dh(2, 2), dpnt(6), ds(2, 2), exact, hard(2, 2), hard_adjoint(2, 2), &
+         potential(2, 2), radial(2, 2), response, samples(2), shift, soft(2, 2), &
+         soft_adjoint(2, 2), values(6), wr(2)
+      TYPE(grid_atom_type)                               :: grid
+      TYPE(harmonics_atom_type)                          :: harmonics
+
+      grid%nr = 2
+      grid%ng_sphere = 3
+      ALLOCATE (grid%wa(3), harmonics%slm(3, 2))
+      grid%wa = [1.1_dp, 0.7_dp, 1.4_dp]
+      harmonics%slm(:, 1) = 1.0_dp/SQRT(4.0_dp*pi)
+      harmonics%slm(:, 2) = [0.3_dp, -0.4_dp, 0.2_dp]
+      values = [0.03_dp, -0.01_dp, 0.02_dp, 0.04_dp, 0.01_dp, -0.02_dp]
+      dpnt = [0.011_dp, -0.003_dp, 0.007_dp, -0.004_dp, 0.009_dp, 0.005_dp]
+      hard(:, 1) = [0.14_dp, 0.09_dp]
+      hard(:, 2) = [-0.03_dp, 0.02_dp]
+      soft = 0.3_dp*hard
+      dh = 0.017_dp*hard
+      ds = -0.023_dp*soft
+      wr = [0.21_dp, 0.37_dp]
+      potential(:, 1) = [0.08_dp, -0.03_dp]
+      potential(:, 2) = [0.04_dp, 0.07_dp]
+      CALL qs_upf_inverse_density_radial(grid, harmonics, values, radial, hard, soft)
+      CALL qs_upf_inverse_density_radial_adjoint(grid, harmonics, potential, adjoint, hard_adjoint, soft_adjoint)
+      exact = 0.0_dp
+      response = 0.0_dp
+      DO ir = 1, 2
+         exact = exact + wr(ir)*SUM(grid%wa*adjoint((ir - 1)*3 + 1:ir*3)*values((ir - 1)*3 + 1:ir*3)) + &
+                 wr(ir)*SUM(hard_adjoint(ir, :)*hard(ir, :) + soft_adjoint(ir, :)*soft(ir, :))
+         response = response + wr(ir)*SUM(grid%wa*adjoint((ir - 1)*3 + 1:ir*3)*dpnt((ir - 1)*3 + 1:ir*3)) + &
+                    wr(ir)*SUM(hard_adjoint(ir, :)*dh(ir, :) + soft_adjoint(ir, :)*ds(ir, :))
+      END DO
+      CALL check(ABS(SUM(SPREAD(wr, 2, 2)*radial*potential) - exact), 'complete finite angular adjoint', 2.e-14_dp)
+      DO side = 1, 2
+         shift = REAL(2*side - 3, dp)*step
+         CALL qs_upf_inverse_density_radial(grid, harmonics, values + shift*dpnt, radial, &
+                                            hard + shift*dh, soft + shift*ds)
+         samples(side) = SUM(SPREAD(wr, 2, 2)*radial*potential)
+      END DO
+      CALL check(ABS((samples(2) - samples(1))/(2.0_dp*step) - response), 'all angular density legs', 2.e-11_dp)
+      CALL qs_upf_inverse_density_radial(grid, harmonics, values, radial)
+      CALL check(ABS(SUM(SPREAD(wr, 2, 2)*radial*potential) - &
+                     SUM(wr*[SUM(grid%wa*adjoint(1:3)*values(1:3)), SUM(grid%wa*adjoint(4:6)*values(4:6))])), &
+                 'inverse-only angular adjoint', 2.e-14_dp)
+      DEALLOCATE (grid%wa, harmonics%slm)
+   END SUBROUTINE check_center_angular
+
 ! **************************************************************************************************
 !> \brief Periodic residual image sum against the shell theorem, both density legs and cell response.
 ! **************************************************************************************************
