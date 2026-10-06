@@ -397,7 +397,7 @@ CONTAINS
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
 
       CALL timeset(routineN, handle)
-      CALL get_qs_env(qs_env, kpoints=kpoints, matrix_s_kp=matrix_s, scf_env=scf_env)
+      CALL get_qs_env(qs_env, kpoints=kpoints, matrix_metric_kp=matrix_s, scf_env=scf_env)
       para_env => kpoints%blacs_env_all%para_env
       kplocal = SIZE(kpoints%kp_env)
       CPASSERT(kplocal > 0)
@@ -1257,7 +1257,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Reorthogonalizes the wavefunctions from the previous step for k-points
-!>        using the current S(k) metric and rebuilds the density matrix.
+!>        using the current physical charge metric and rebuilds the density matrix.
 !> \param qs_env The QS environment
 !> \param io_unit output unit
 !> \param print_level print level
@@ -1303,7 +1303,7 @@ CONTAINS
       NULLIFY (dft_control, scf_control, kpoints, matrix_s_kp, scf_env, kp, &
                mo_coeff, wf_history, t1_state)
 
-      CALL get_qs_env(qs_env, kpoints=kpoints, matrix_s_kp=matrix_s_kp, scf_env=scf_env, &
+      CALL get_qs_env(qs_env, kpoints=kpoints, matrix_metric_kp=matrix_s_kp, scf_env=scf_env, &
                       dft_control=dft_control, scf_control=scf_control)
       CALL get_kpoint_info(kpoints, xkp=xkp, use_real_wfn=use_real_wfn, kp_range=kp_range)
       kplocal = kp_range(2) - kp_range(1) + 1
@@ -1367,7 +1367,7 @@ CONTAINS
                                    csmat_cur, matrix_row=kpoint_spin_free)
 
       ! Phase B: bring the WFN from its saved/internal PBC image convention to
-      ! the current convention, then orthogonalize it with respect to S(k).
+      ! the current convention, then orthogonalize it with respect to the charge metric.
       ALLOCATE (eigenvalues(nmo))
       eval_thresh = 1.0E-12_dp
 
@@ -1418,7 +1418,7 @@ CONTAINS
             CALL cp_cfm_to_cfm(cmos_new, kp%mos(ispin)%cmo_coeff)
          END DO
          ! the MOS now hold extrapolated coefficients that are orthonormal under
-         ! the S(k) of the current geometry: a valid trial subspace for solvers.
+         ! the charge metric of the current geometry, giving a valid trial subspace for solvers.
          ! All WFN-based k-point extrapolation methods converge here (PS/ASPC
          ! and GEXT_PROJ finish through this routine). The flag is set once
          ! at their common write-back.
@@ -1591,7 +1591,7 @@ CONTAINS
       NULLIFY (kpoints, kp, mo_coeff, t0_state, t1_state, nmo_nmo_struct, &
                matrix_s_kp, xkp)
 
-      CALL get_qs_env(qs_env, kpoints=kpoints, matrix_s_kp=matrix_s_kp)
+      CALL get_qs_env(qs_env, kpoints=kpoints, matrix_metric_kp=matrix_s_kp)
       CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn, kp_range=kp_range, xkp=xkp)
       kplocal = kp_range(2) - kp_range(1) + 1
 
@@ -1769,7 +1769,7 @@ CONTAINS
                para_env_inter_kp, scf_env, t0_state, t1_state, wkp, xkp, nmo_nmo_struct, &
                ao_ao_fm_pools_kp)
 
-      CALL get_qs_env(qs_env, kpoints=kpoints, matrix_s_kp=matrix_s_kp, scf_env=scf_env)
+      CALL get_qs_env(qs_env, kpoints=kpoints, matrix_metric_kp=matrix_s_kp, scf_env=scf_env)
       CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn, kp_range=kp_range, &
                            wkp=wkp, xkp=xkp, &
                            mpools=mpools_kp, para_env_inter_kp=para_env_inter_kp)

@@ -105,7 +105,9 @@ MODULE qs_scf_initialization
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type,&
                                               set_qs_kind
-   USE qs_kpoint_density_state,         ONLY: kpoint_density_state_restore
+   USE qs_kpoint_density_state,         ONLY: kpoint_density_state_accept,&
+                                              kpoint_density_state_capture,&
+                                              kpoint_density_state_restore
    USE qs_ks_types,                     ONLY: qs_ks_did_change
    USE qs_matrix_pools,                 ONLY: mpools_get
    USE qs_mixing_utils,                 ONLY: charge_mixing_init,&
@@ -1389,6 +1391,17 @@ CONTAINS
          CALL get_qs_env(qs_env, kpoints=kpoints)
          IF (ALLOCATED(kpoints%native_density)) THEN
             CPASSERT(.NOT. qs_env%harris_method)
+            IF (.NOT. kpoints%native_density_seeded .AND. ASSOCIATED(qs_env%wf_history)) THEN
+               IF (qs_env%wf_history%snapshot_count > 0 .AND. qs_env%wf_history%store_wf_kp) THEN
+                  ! Reorthogonalize saved Bloch orbitals in the newly registered physical metric.
+                  CALL wfi_extrapolate(qs_env%wf_history, qs_env=qs_env, dt=1.0_dp, &
+                                       orthogonal_wf=orthogonal_wf)
+                  CPASSERT(orthogonal_wf)
+                  CALL kpoint_density_state_capture(kpoints)
+                  CALL kpoint_density_state_accept(kpoints, 1.0_dp)
+                  kpoints%native_density_seeded = .TRUE.
+               END IF
+            END IF
             CALL kpoint_density_state_restore(kpoints)
             CALL qs_rho_update_rho(rho, qs_env=qs_env)
             CALL qs_ks_did_change(qs_env%ks_env, rho_changed=.TRUE.)
