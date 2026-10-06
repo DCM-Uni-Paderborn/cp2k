@@ -386,8 +386,9 @@ PROGRAM skala_sirius_unittest
                      r(i) = 20.0_dp*(REAL(i - 1, dp)/REAL(nrad - 1, dp))**2
                      IF (mode == 1) r(i) = 0.001_dp + 2.999_dp*(REAL(i - 1, dp)/REAL(nrad - 1, dp))**2
                   END DO
-                  v = -2.0_dp/SQRT(1.0_dp + r**2)
-                  rho = 4.0_dp*EXP(-r**2)*r
+                  v = -REAL(MERGE(1, 2, spinor_test), dp)/SQRT(1.0_dp + r**2)
+                  rho = 2.0_dp*REAL(MERGE(1, 2, spinor_test), dp)*EXP(-r**2)*r
+                  IF (spinor_test .AND. mode == 1) rho = rho/(EXP(-r(1)**2) - EXP(-r(nrad)**2))
                   orbital = EXP(-r)
                   CALL sirius_set_atom_type_radial_grid(ctx, "He", nrad, r)
                   CALL sirius_add_atom_type_radial_function(ctx, "He", "vloc", v, nrad)
