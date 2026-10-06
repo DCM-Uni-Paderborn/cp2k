@@ -17,7 +17,7 @@ MODULE skala_atom_grid
    USE mathlib,                         ONLY: det_3x3,&
                                               inv_3x3
    USE message_passing,                 ONLY: mp_comm_type
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -102,7 +102,9 @@ CONTAINS
                   weight = compact_window(fractional, partition%shell)
                   IF (weight == 0.0_dp) CYCLE
                   distance = NORM2(MATMUL(partition%lattice, fractional))
-                  IF (distance < 1.0e-10_dp) CPABORT("Coincident atoms in the periodic Skala quadrature")
+                  IF (distance < 1.0e-10_dp) THEN
+                     CPABORT("Coincident atoms in the periodic Skala quadrature")
+                  END IF
                   count = count + 1
                   offsets(:, count) = MATMUL(partition%lattice, fractional)
                   distances(count) = distance
@@ -465,23 +467,39 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: radius(n), weights(n)
 
       INTEGER                                            :: i, info
-      REAL(dp)                                           :: eigenvectors(n, n), &
-                                                            offdiag(MAX(1, n - 1)), t, &
+      INTEGER, SAVE                                      :: cached_n = 0
+      REAL(dp), SAVE                                     :: cached_scale = 0.0_dp
+      REAL(dp), ALLOCATABLE, SAVE                         :: cached_radius(:), cached_weights(:)
+      REAL(dp), ALLOCATABLE                               :: eigenvectors(:, :)
+      REAL(dp)                                           :: offdiag(MAX(1, n - 1)), t, &
                                                             work(MAX(1, 2*n - 2))
 
       CPASSERT(n >= 2 .AND. ieee_is_finite(scale) .AND. scale > 0.0_dp)
-      ! Golub-Welsch with the Legendre Jacobi matrix. LAPACK supplies the nodes and weights.
-      radius = 0.0_dp
-      DO i = 1, n - 1
-         offdiag(i) = REAL(i, dp)/SQRT(4.0_dp*REAL(i, dp)**2 - 1.0_dp)
-      END DO
-      CALL DSTEV('V', n, radius, offdiag, eigenvectors, n, work, info)
-      CPASSERT(info == 0)
-      DO i = 1, n
-         t = 0.5_dp*(1.0_dp + radius(i))
-         radius(i) = scale*t/(1.0_dp - t)
-         weights(i) = eigenvectors(1, i)**2*radius(i)**2*scale/(1.0_dp - t)**2
-      END DO
+      ! Geometry derivatives reuse this fixed rule, not atom partitions or model fields.
+!$OMP CRITICAL(skala_radial_rule)
+      IF (n /= cached_n .OR. scale /= cached_scale) THEN
+         ALLOCATE (eigenvectors(n, n))
+         ! Golub-Welsch with the Legendre Jacobi matrix. LAPACK supplies the nodes and weights.
+         radius = 0.0_dp
+         DO i = 1, n - 1
+            offdiag(i) = REAL(i, dp)/SQRT(4.0_dp*REAL(i, dp)**2 - 1.0_dp)
+         END DO
+         CALL DSTEV('V', n, radius, offdiag, eigenvectors, n, work, info)
+         CPASSERT(info == 0)
+         DO i = 1, n
+            t = 0.5_dp*(1.0_dp + radius(i))
+            radius(i) = scale*t/(1.0_dp - t)
+            weights(i) = eigenvectors(1, i)**2*radius(i)**2*scale/(1.0_dp - t)**2
+         END DO
+         cached_radius = radius
+         cached_weights = weights
+         cached_n = n
+         cached_scale = scale
+      ELSE
+         radius = cached_radius
+         weights = cached_weights
+      END IF
+!$OMP END CRITICAL(skala_radial_rule)
    END SUBROUTINE
 
 ! **************************************************************************************************
@@ -512,7 +530,9 @@ CONTAINS
       CALL skala_partition_init(partition, lattice, centres, shell)
       angular_grid = get_number_of_lebedev_grid(n=nangular)
       na = lebedev_grid(angular_grid)%n
-      IF (na /= nangular) CPABORT("Select an available Lebedev point count for the Skala atom grid")
+      IF (na /= nangular) THEN
+         CPABORT("Select an available Lebedev point count for the Skala atom grid")
+      END IF
       IF (ANY(lebedev_grid(angular_grid)%w < 0.0_dp)) THEN
          CPABORT("Skala descriptor weights require a positive Lebedev rule")
       END IF
@@ -578,7 +598,8 @@ CONTAINS
 
       CPASSERT(nradial >= 2 .AND. nangular >= 6 .AND. nangular <= 974)
       CPASSERT(ALL(SHAPE(atom_direction) == SHAPE(centres)))
-      CPASSERT(ALL(ieee_is_finite(atom_direction)) .AND. ALL(ieee_is_finite(lattice_direction)))
+      CPASSERT(ALL(ieee_is_finite(atom_direction)))
+      CPASSERT(ALL(ieee_is_finite(lattice_direction)))
       CPASSERT(ALL(SHAPE(points) == [3, SUM(block_sizes)]))
       CPASSERT(ALL(SHAPE(block_centres) == [3, SIZE(block_sizes)]))
       CPASSERT(ALL(block_sizes > 0))

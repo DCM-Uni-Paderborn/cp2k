@@ -68,8 +68,9 @@ PROGRAM skala_sirius_unittest
    TYPE(sirius_context_handler) :: ctx
    TYPE(sirius_kpoint_set_handler) :: ks
    TYPE(sirius_ground_state_handler) :: gs
-   CHARACTER(len=default_path_length) :: model, paw_setup
+   CHARACTER(len=default_path_length) :: model, paw_setup, lapw_setup
    CHARACTER(len=32) :: side_arg, step_arg, grid_arg, model_mode, device_arg, model_device_arg, response_arg, bands_arg
+   CHARACTER(len=32) :: relativity_arg, core_relativity_arg
    CHARACTER(len=3) :: processing_unit = "CPU"
    INTEGER :: i, j, l, mode, mag, nr, nb, x, y, z, ierr, side, first_mode, last_mode, geometry, natoms
    INTEGER :: updated_basis, fresh_basis, max_scf_iterations, num_bands
@@ -107,6 +108,19 @@ PROGRAM skala_sirius_unittest
    CALL get_command_argument(8, model_device_arg)
    CALL get_command_argument(9, response_arg)
    CALL get_command_argument(10, bands_arg)
+   CALL get_command_argument(11, relativity_arg)
+   CALL get_command_argument(12, lapw_setup)
+   CALL get_command_argument(13, core_relativity_arg)
+   IF (LEN_TRIM(relativity_arg) == 0) relativity_arg = "none"
+   IF (LEN_TRIM(core_relativity_arg) == 0) core_relativity_arg = "none"
+   SELECT CASE (TRIM(relativity_arg))
+   CASE ("none", "zora", "iora", "koelling_harmon")
+   CASE DEFAULT
+      ERROR STOP "Unknown LAPW valence relativity"
+   END SELECT
+   IF (ALL(core_relativity_arg /= ["none", "zora"])) ERROR STOP "Core response requires NR or ZORA"
+   IF (LEN_TRIM(lapw_setup) == 0 .AND. core_relativity_arg /= "none") &
+      ERROR STOP "Core relativity requires a supplied LAPW atom file"
    num_bands = 4
    IF (LEN_TRIM(bands_arg) > 0) THEN
       READ (bands_arg, *, IOSTAT=ierr) num_bands
@@ -179,6 +193,8 @@ PROGRAM skala_sirius_unittest
       first_mode = 2
       last_mode = 2
    END IF
+   IF (first_mode /= 2 .AND. relativity_arg /= "none") ERROR STOP "Valence relativity requires the LAPW fixture"
+   IF (first_mode /= 2 .AND. LEN_TRIM(lapw_setup) > 0) ERROR STOP "Atom file requires the LAPW fixture"
    IF (spinor_test) THEN
       IF (lapw_soc_test .AND. first_mode /= 2) ERROR STOP "LAPW SOC fixture requires LAPW as the second argument"
       IF (TRIM(grid_arg) == "spinor-paw-orbitals" .OR. paw_soc_test) first_mode = 1
@@ -238,8 +254,7 @@ PROGRAM skala_sirius_unittest
       END IF
       CALL section_vals_val_set(pwdft, "SKALA_GRID%EPS_RESPONSE", &
                                 r_val=MERGE(1.0e-6_dp, 1.0e-8_dp, model_mode == "skala-float32"))
-      IF (spinor_test .AND. model_mode /= "skala-float32") &
-         CALL section_vals_val_set(pwdft, "SKALA_GRID%N_SPIN_ANGULAR", i_val=26)
+      IF (spinor_test) CALL section_vals_val_set(pwdft, "SKALA_GRID%N_SPIN_ANGULAR", i_val=26)
       grid => section_vals_get_subs_vals(pwdft, "SKALA_GRID")
    END IF
    lattice = 0.0_dp
@@ -316,6 +331,8 @@ PROGRAM skala_sirius_unittest
                      CALL sirius_set_parameters(ctx, pw_cutoff=9.0_dp)
                   END IF
                   IF (spinor_test) CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":true}}')
+                  CALL sirius_set_parameters(ctx, valence_rel=TRIM(relativity_arg))
+                  CALL sirius_set_parameters(ctx, core_rel=TRIM(core_relativity_arg))
                ELSE
                   CALL sirius_import_parameters(ctx, &
                                                 '{"parameters":{"electronic_structure_method":"pseudopotential",'// &
@@ -332,7 +349,9 @@ PROGRAM skala_sirius_unittest
                IF (lapw_soc_test) CALL sirius_import_parameters(ctx, '{"parameters":{"so_correction":true}}')
                IF (spinor_test .AND. mode /= 2) CALL sirius_import_parameters(ctx, '{"iterative_solver":{"type":"davidson"}}')
                CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
-               IF (mode == 2) THEN
+               IF (mode == 2 .AND. LEN_TRIM(lapw_setup) > 0) THEN
+                  CALL sirius_add_atom_type(ctx, "He", fname=TRIM(lapw_setup))
+               ELSE IF (mode == 2) THEN
                   CALL sirius_add_atom_type(ctx, "He", zn=MERGE(1, 2, spinor_test))
                   DO i = 1, nmt
                      rmt(i) = 1.0e-6_dp + (1.8_dp - 1.0e-6_dp)*(REAL(i - 1, dp)/REAL(nmt - 1, dp))**2

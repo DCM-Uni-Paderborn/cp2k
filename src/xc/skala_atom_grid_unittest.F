@@ -46,6 +46,7 @@ PROGRAM skala_atom_grid_unittest
       moments(i + 1) = SUM(weight*t**i) - 1.0_dp/REAL(i + 1, dp)
    END DO
    IF (MAXVAL(ABS(moments)) > 2.0e-14_dp) ERROR STOP "Gauss-Legendre moments or radial Jacobian are incorrect"
+   CALL radial_grid_reuse()
 
    lattice = RESHAPE([8.0_dp, 0.0_dp, 0.0_dp, 1.3_dp, 7.0_dp, 0.0_dp, -0.7_dp, 0.8_dp, 9.0_dp], [3, 3])
    inverse = inv_3x3(lattice)
@@ -134,6 +135,36 @@ PROGRAM skala_atom_grid_unittest
    IF (comm%mepos == 0) WRITE (*, '(A)') "Periodic Skala atom-grid checks passed"
    CALL cp2k_finalize()
 CONTAINS
+   SUBROUTINE radial_grid_reuse()
+      INTEGER :: trial
+      REAL(dp) :: reference_radius(12), reference_weight(12), radius(12), weights(12), &
+                  reference_other_radius(13), reference_other_weight(13), other_radius(13), other_weights(13)
+
+      CALL skala_radial_grid(12, 1.7_dp, reference_radius, reference_weight)
+      CALL skala_radial_grid(13, 1.7_dp, reference_other_radius, reference_other_weight)
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP SHARED(reference_radius, reference_weight, reference_other_radius, reference_other_weight) &
+!$OMP PRIVATE(trial, radius, weights, other_radius, other_weights)
+      DO trial = 1, 8
+         IF (MOD(trial, 2) == 0) THEN
+            CALL skala_radial_grid(13, 1.7_dp, other_radius, other_weights)
+            IF (ANY(other_radius /= reference_other_radius) .OR. ANY(other_weights /= reference_other_weight)) &
+               ERROR STOP "Radial-rule point count is not respected"
+         ELSE
+            CALL skala_radial_grid(12, 0.85_dp, radius, weights)
+            IF (MAXVAL(ABS(2.0_dp*radius - reference_radius)) > 16*EPSILON(1.0_dp)*MAXVAL(reference_radius) .OR. &
+                MAXVAL(ABS(8.0_dp*weights - reference_weight)) > 16*EPSILON(1.0_dp)*MAXVAL(reference_weight)) &
+               ERROR STOP "Radial-rule scale is not respected"
+         END IF
+         radius = -1.0_dp
+         weights = -1.0_dp
+         CALL skala_radial_grid(12, 1.7_dp, radius, weights)
+         IF (ANY(radius /= reference_radius) .OR. ANY(weights /= reference_weight)) &
+            ERROR STOP "Radial-rule reuse changes points or weights"
+      END DO
+!$OMP END PARALLEL DO
+   END SUBROUTINE
+
    SUBROUTINE partition_derivatives(positions)
       REAL(dp), INTENT(IN)                               :: positions(:, :)
 

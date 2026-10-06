@@ -870,11 +870,6 @@ list(
   semi_empirical_utils.F
   simpar_types.F
   sirius_interface.F
-  skala_atom_grid.F
-  skala_gpw_functional.F
-  skala_gpw_features.F
-  skala_sirius.F
-  skala_torch_api.F
   smeagol_control_types.F
   smeagol_emtoptions.F
   smeagol_interface.F
@@ -1437,6 +1432,11 @@ list(
   xc_adiabatic_methods.F
   xc_adiabatic_utils.F
   xc/cp_linked_list_xc_deriv.F
+  xc/skala_atom_grid.F
+  xc/skala_gpw_features.F
+  xc/skala_gpw_functional.F
+  xc/skala_sirius.F
+  xc/skala_torch_api.F
   xc_pot_saop.F
   xc_write_output.F
   xc/xc_atom.F
@@ -1636,8 +1636,8 @@ set(CP2K_PROGS_F
     motion/dumpdcd.F
     motion/xyz2dcd.F
     nequip_unittest.F
-    skala_atom_grid_unittest.F
-    skala_grid_unittest.F
+    xc/skala_atom_grid_unittest.F
+    xc/skala_grid_unittest.F
     gx_ac_unittest.F)
 
 if(CP2K_USE_MPI)
@@ -1811,14 +1811,6 @@ foreach(cp2k_prog ${CP2K_PROGS_F})
   set_source_files_properties(
     ${cp2k_prog} PROPERTIES COMPILE_DEFINITIONS __SHORT_FILE__="${cp2k_prog}")
 endforeach()
-
-set_property(
-  SOURCE ${CMAKE_CURRENT_BINARY_DIR}/skala_sirius.F
-  APPEND PROPERTY COMPILE_DEFINITIONS
-                  $<$<BOOL:${CP2K_SIRIUS_XC_SPINOR}>:__SIRIUS_XC_SPINOR>
-                  $<$<BOOL:${CP2K_SIRIUS_XC_POINT_UPDATE}>:__SIRIUS_XC_POINT_UPDATE>
-                  $<$<BOOL:${CP2K_SIRIUS_XC_RESPONSE_TOLERANCE}>:__SIRIUS_XC_RESPONSE_TOLERANCE>
-                  $<$<BOOL:${CP2K_SIRIUS_XC_QUADRATURE_DIRECTION}>:__SIRIUS_XC_QUADRATURE_DIRECTION>)
 
 if(BUILD_SHARED_LIBS)
   add_library(cp2k SHARED
@@ -1999,6 +1991,11 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_SIRIUS_XC_POINT_GEOMETRY}>:__SIRIUS_XC_POINT_GEOMETRY>
     $<$<BOOL:${CP2K_SIRIUS_XC_POINT_RESPONSE}>:__SIRIUS_XC_POINT_RESPONSE>
     $<$<BOOL:${CP2K_SIRIUS_XC_POINT_HESSIAN}>:__SIRIUS_XC_POINT_HESSIAN>
+    $<$<BOOL:${CP2K_SIRIUS_XC_SPINOR}>:__SIRIUS_XC_SPINOR>
+    $<$<BOOL:${CP2K_SIRIUS_XC_POINT_UPDATE}>:__SIRIUS_XC_POINT_UPDATE>
+    $<$<BOOL:${CP2K_SIRIUS_XC_RESPONSE_TOLERANCE}>:__SIRIUS_XC_RESPONSE_TOLERANCE>
+    $<$<BOOL:${CP2K_SIRIUS_XC_QUADRATURE_DIRECTION}>:__SIRIUS_XC_QUADRATURE_DIRECTION>
+    $<$<BOOL:${CP2K_SIRIUS_XC_DERIVATIVE}>:__SIRIUS_XC_DERIVATIVE>
     $<$<BOOL:${CP2K_SIRIUS_FINALIZE_NO_FFTW}>:__SIRIUS_FINALIZE_NO_FFTW>
     $<$<BOOL:${CP2K_USE_LIBTORCH_CUDA}>:__LIBTORCH_CUDA>
     $<$<BOOL:${CP2K_USE_COSMA}>:__COSMA>
@@ -2096,21 +2093,14 @@ list(
   "gx_ac_unittest")
 
 list(APPEND __CP2K_APPS "skala_atom_grid_unittest")
-add_executable(skala_atom_grid_unittest skala_atom_grid_unittest.F)
+add_executable(skala_atom_grid_unittest xc/skala_atom_grid_unittest.F)
 
 if(CP2K_USE_LIBTORCH)
   list(APPEND __CP2K_APPS "skala_grid_unittest")
-  add_executable(skala_grid_unittest skala_grid_unittest.F)
+  add_executable(skala_grid_unittest xc/skala_grid_unittest.F)
   if(CP2K_USE_SIRIUS AND CP2K_SIRIUS_XC_POINT_CALLBACK)
     list(APPEND __CP2K_APPS "skala_sirius_unittest")
-    add_executable(skala_sirius_unittest skala_sirius_unittest.F)
-    target_compile_definitions(
-      skala_sirius_unittest
-      PRIVATE $<$<BOOL:${CP2K_SIRIUS_XC_DERIVATIVE}>:__SIRIUS_XC_DERIVATIVE>
-              $<$<BOOL:${CP2K_SIRIUS_XC_POINT_GEOMETRY}>:__SIRIUS_XC_POINT_GEOMETRY>
-              $<$<BOOL:${CP2K_SIRIUS_XC_POINT_RESPONSE}>:__SIRIUS_XC_POINT_RESPONSE>
-              $<$<BOOL:${CP2K_SIRIUS_XC_POINT_HESSIAN}>:__SIRIUS_XC_POINT_HESSIAN>
-              $<$<BOOL:${CP2K_SIRIUS_XC_POINT_UPDATE}>:__SIRIUS_XC_POINT_UPDATE>)
+    add_executable(skala_sirius_unittest xc/skala_sirius_unittest.F)
   endif()
 endif()
 

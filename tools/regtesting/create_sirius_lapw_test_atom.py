@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Write He or Ne LAPW integration fixtures, not production atom setups."""
+"""Write small LAPW integration fixtures, not production atom setups."""
 
 import argparse
 import json
@@ -35,6 +35,39 @@ def helium_setup():
             "density": [16.0 / math.pi * math.exp(-4.0 * r) for r in radius],
         },
     }
+
+
+def hydrogen_setup():
+    atom = helium_setup()
+    atom.update(name="Hydrogen integration fixture", symbol="H", number=1, mass=1.00794)
+    atom["free_atom"]["density"] = [
+        math.exp(-2.0 * r) / math.pi for r in atom["free_atom"]["radial_grid"]
+    ]
+    return atom
+
+
+def lithium_setup():
+    atom = helium_setup()
+    atom.update(
+        name="Lithium integration fixture with an explicit 1s core",
+        symbol="Li",
+        number=3,
+        mass=6.94,
+        rmt=2.5,
+        nrmt=1601,
+        core="1s",
+    )
+    for channel in atom["valence"]:
+        if "n" in channel:
+            channel["n"] = max(2, channel["n"])
+    for orbital in atom["lo"][0]["basis"]:
+        orbital.update(n=2, enu=-0.2)
+    atom["free_atom"]["density"] = [
+        2 * 2.7**3 / math.pi * math.exp(-5.4 * r)
+        + 0.7**3 / math.pi * math.exp(-1.4 * r)
+        for r in atom["free_atom"]["radial_grid"]
+    ]
+    return atom
 
 
 def neon_setup():
@@ -81,7 +114,8 @@ def neon_setup():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--element", choices=("He", "Ne"), default="He")
+    setups = {"H": hydrogen_setup, "He": helium_setup, "Li": lithium_setup, "Ne": neon_setup}
+    parser.add_argument("--element", choices=tuple(setups), default="He")
     args = parser.parse_args()
-    atom = helium_setup() if args.element == "He" else neon_setup()
+    atom = setups[args.element]()
     args.output.write_text(json.dumps(atom, indent=2) + "\n")

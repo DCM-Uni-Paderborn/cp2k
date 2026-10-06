@@ -50,7 +50,7 @@ MODULE skala_sirius
    USE sirius, ONLY: sirius_update_xc_point_set
 #endif
 #endif
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
    IMPLICIT NONE
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'skala_sirius'
@@ -112,7 +112,9 @@ CONTAINS
       CALL section_vals_val_get(grid_section, "RADIAL_SCALE", r_val=scale)
       CALL section_vals_val_get(grid_section, "EPS_RESPONSE", r_val=response_tolerance)
       IF (.NOT. ieee_is_finite(response_tolerance) .OR. response_tolerance <= 0.0_dp .OR. &
-          response_tolerance >= 1.0_dp) CPABORT("SIRIUS Skala EPS_RESPONSE must be between zero and one")
+          response_tolerance >= 1.0_dp) THEN
+         CPABORT("SIRIUS Skala EPS_RESPONSE must be between zero and one")
+      END IF
       error = 0
       IF (nspin < 6 .OR. nspin > 974) THEN
          error = 1

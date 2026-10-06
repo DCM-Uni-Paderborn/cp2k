@@ -70,7 +70,7 @@ MODULE skala_gpw_functional
                                               xc_rho_set_update
    USE xc_util,                         ONLY: xc_pw_divergence,&
                                               xc_requires_tmp_g
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
 
@@ -181,7 +181,7 @@ CONTAINS
       INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin, i_response, &
                                                             n_response, requested_device, selected_device, angular_size, &
                                                             angular_grid, min_angular, max_angular, kernel_status, &
-                                                            min_precision, max_precision
+                                                            min_precision, max_precision, omp_max_threads_restore
       LOGICAL                                            :: geometry_grad, use_cuda, response, geometry_response, fp64_model
       REAL(KIND=dp), ALLOCATABLE                         :: direction_rho(:, :), direction_grad(:, :, :), &
                                                             direction_tau(:, :), direction_points(:, :), &
@@ -198,6 +198,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE                         :: spin_axes(:, :), spin_weights(:)
 
       CALL timeset("skala_point_eval", handle)
+      omp_max_threads_restore = omp_get_max_threads()
       npoint = SIZE(density, 1)
       nspin = SIZE(density, 2)
       fp64_model = nspin == 4
@@ -498,6 +499,7 @@ CONTAINS
          CPABORT("Nonfinite Skala atom-block energy or derivatives")
       END IF
       CALL torch_use_cuda(.TRUE.)
+      CALL omp_set_num_threads(omp_max_threads_restore)
       CALL timestop(handle)
    END SUBROUTINE skala_point_eval
 
@@ -528,7 +530,7 @@ CONTAINS
 
       CHARACTER(len=default_path_length)                 :: model_path
       INTEGER                                            :: handle, max_rows, nchunks, nspins, &
-                                                            partition
+                                                            omp_max_threads_restore, partition
       LOGICAL                                            :: atom_chunks, has_work, routing, &
                                                             subchunks, use_cuda
       REAL(KIND=dp), ALLOCATABLE                         :: density_grad(:, :), grad_grad(:, :, :), &
@@ -538,6 +540,7 @@ CONTAINS
       TYPE(torch_tensor_type)                            :: exc_tensor
 
       CALL timeset("skala_grid_eval", handle)
+      omp_max_threads_restore = omp_get_max_threads()
       CPASSERT(ALL(SHAPE(vrho) == SHAPE(density)))
       CPASSERT(ALL(SHAPE(vgradient) == SHAPE(gradient)))
       CPASSERT(ALL(SHAPE(vtau) == SHAPE(kinetic)))
@@ -551,7 +554,9 @@ CONTAINS
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_CHUNK_ROUTING", l_val=routing)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_CHUNK_MAX_ROWS", i_val=max_rows)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_PARTITION", i_val=partition)
-      IF (max_rows < -1) CPABORT("NATIVE_GRID_ATOM_CHUNK_MAX_ROWS must be -1, zero, or positive")
+      IF (max_rows < -1) THEN
+         CPABORT("NATIVE_GRID_ATOM_CHUNK_MAX_ROWS must be -1, zero, or positive")
+      END IF
       atom_chunks = atom_chunks .OR. routing
       routing = atom_chunks
       CALL torch_use_cuda(.FALSE.)
@@ -597,6 +602,7 @@ CONTAINS
       IF (.NOT. subchunks .AND. has_work) CALL torch_tensor_release(exc_tensor)
       CALL skala_gpw_feature_release(features)
       CALL torch_use_cuda(.TRUE.)
+      CALL omp_set_num_threads(omp_max_threads_restore)
       CALL timestop(handle)
    END SUBROUTINE skala_grid_eval
 

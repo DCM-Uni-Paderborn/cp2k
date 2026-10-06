@@ -6,6 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 
 PROGRAM skala_grid_unittest
+   USE OMP_LIB,                         ONLY: omp_get_max_threads
    USE cell_methods,                    ONLY: cell_create
    USE cell_types,                      ONLY: cell_release,&
                                               cell_type
@@ -40,7 +41,7 @@ PROGRAM skala_grid_unittest
    CHARACTER(len=default_path_length) :: model
    CHARACTER(len=32) :: model_mode, device_arg
    LOGICAL :: cuda_points, spinor_test, spinor_precision_test
-   INTEGER :: ns, partition, i, s, first_z, last_z, nr, component, step, mode
+   INTEGER :: ns, partition, i, s, first_z, last_z, nr, component, step, mode, caller_threads
    REAL(dp) :: hmat(3, 3), energy, reference, ep, em, derivative, h, error, maximum_error, &
                step_size, response_step_size, routing_tolerance, derivative_tolerance
    REAL(dp), ALLOCATABLE :: rho(:, :), grad(:, :, :), tau(:, :), drho(:, :), dgrad(:, :, :), dtau(:, :), &
@@ -75,6 +76,7 @@ PROGRAM skala_grid_unittest
       ERROR STOP "Unknown model mode (expected geometry, skala-float32 or no mode for the analytic fixture)"
    END SELECT
    CALL cp2k_init()
+   caller_threads = omp_get_max_threads()
    comm = mp_comm_world
    CALL comm%init()
    CALL create_xc_section(definition)
@@ -181,6 +183,7 @@ PROGRAM skala_grid_unittest
       CALL arbitrary_points()
    END IF
    CALL comm%max(maximum_error)
+   IF (omp_get_max_threads() /= caller_threads) ERROR STOP "Skala evaluators changed caller OpenMP thread count"
    IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum field/geometry derivative error: ", maximum_error
    DEALLOCATE (atoms)
    CALL cell_release(cell)

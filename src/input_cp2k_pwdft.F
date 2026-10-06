@@ -108,9 +108,10 @@ CONTAINS
                           "CPU and GPU scalar, collinear and noncollinear calculations use host-staged fields. "// &
                           "Skala CUDA inference is selected independently in XC_FUNCTIONAL/GAUXC. "// &
                           "PW and PAW forces and stress require the point geometry callbacks. "// &
-                          "Nonrelativistic FP-LAPW forces and total stress require the joint Hessian and "// &
-                          "quadrature-direction callbacks, with full variation for collinear states and "// &
-                          "second variation for spinor states. "// &
+                          "FP-LAPW forces and total stress require the joint Hessian and quadrature-direction "// &
+                          "callbacks, with scalar-relativistic full variation for scalar/collinear states and "// &
+                          "NR/ZORA second variation for spinor states, including SOC. "// &
+                          "Tau-dependent explicit core response supports NR/ZORA core states. "// &
                           "Converge the quadrature and image shell for the system studied.")
       CALL keyword_create(keyword, __LOCATION__, name="N_RADIAL", default_i_val=100, &
                           description="Number of radial nodes with r = RADIAL_SCALE*t/(1-t).")

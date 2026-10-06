@@ -52,8 +52,10 @@ checks hold the fields fixed. The force and stress modes below check total deriv
 | `He-lapw-atom-grid.inp` | All-valence FP-LAPW energy, forces and stress | `He-lapw.json` |
 | `Ne-lapw-atom-grid.inp` | FP-LAPW energy, forces and stress with an explicit 1s core | `Ne-lapw.json` |
 
-Generate LAPW data with `create_sirius_lapw_test_atom.py He-lapw.json` or
-`create_sirius_lapw_test_atom.py Ne-lapw.json --element Ne`.
+Generate LAPW data with `create_sirius_lapw_test_atom.py He-lapw.json` or select
+`--element H` for a neutral odd-electron fixture, `--element Li` for one valence
+electron with an explicit 1s core, or `--element Ne` for a closed valence shell
+with an explicit core.
 For PAW hydrogen, start from SIRIUS's
 `examples/pp-pw/C42H58ClNO2Si_420_atoms/H.pz-kjpaw_psl.0.1.UPF.json` and add
 an explicit zero `ae_core_kinetic_density` array inside `pseudo_potential.paw_data`,
@@ -71,10 +73,11 @@ The importer validates the element, valence charge and both core charge profiles
 Run inputs with `OMP_NUM_THREADS=1 cp2k.psmp -i input.inp -o output.out`.
 The fixtures test implementation, not physical cutoff or quadrature convergence.
 
-PW/PAW forces and stress require the point-geometry API. Nonrelativistic FP-LAPW
-additionally requires joint Hessian and quadrature-direction APIs, with full
-variation for scalar/collinear states and second variation for spinors.
-The spinor API includes PW/PAW SOC and nonrelativistic FP-LAPW second-variation SOC.
+PW/PAW forces and stress require the point-geometry API. FP-LAPW additionally
+requires joint Hessian and quadrature-direction APIs. Scalar/collinear states use
+full variation with scalar-relativistic valence; spinors use NR/ZORA second
+variation, including SOC. Tau-dependent explicit core response supports NR/ZORA
+core states.
 Actual-model noncollinear SCF remains experimental. `H2-spinor.inp` exercises the
 iteration path without asserting SCF convergence.
 `KIND/SIRIUS_MAGNETIZATION_VECTOR` sets the initial Cartesian magnetization.
@@ -89,28 +92,35 @@ Energy, covectors and Hessian actions use the same spin rule.
 ## Derivative Modes
 
 The `skala_sirius_unittest.psmp` arguments are
-`MODEL SETUP SIDE STEP MODE PRESET ORBITALS INFERENCE FIELD_STEP BANDS`.
+`MODEL SETUP SIDE STEP MODE PRESET ORBITALS INFERENCE FIELD_STEP BANDS RELATIVITY ATOM_FILE CORE_RELATIVITY`.
 `SETUP` is `LAPW` for the built-in all-valence FP-LAPW fixture, a PAW JSON file
 for a supplied setup, or empty for the synthetic PW/PAW fixtures.
 `ORBITALS` and `INFERENCE` independently select `gpu`; omitted values select CPU.
 The legacy `skala-float32` preset selects actual-model steps and solver thresholds,
 not point-evaluation precision. Both presets retain the same derivative-error bounds.
-`FIELD_STEP` defaults to `STEP`, and `BANDS` to four.
+`FIELD_STEP` defaults to `STEP`, `BANDS` to four and LAPW `RELATIVITY` to `none`.
+With `SETUP=LAPW`, optional `ATOM_FILE` replaces the built-in fixture. This permits
+explicit-core checks using the existing atom-file generator. `CORE_RELATIVITY`
+selects `none` or `zora` and defaults to `none`.
 
 ```sh
 skala_sirius_unittest.psmp SKALA C-paw-core.json 4 0.00001 atom-grid-orbitals skala-float32 gpu gpu 0.00001 8
 skala_sirius_unittest.psmp SKALA LAPW 18 "" atom-grid-forces skala-float32
-skala_sirius_unittest.psmp SKALA LAPW 4 0.00001 spinor-lapw-soc-orbitals skala-float32 gpu gpu
+skala_sirius_unittest.psmp SKALA LAPW 4 0.00001 spinor-lapw-soc-orbitals skala-float32 gpu gpu 0.00001 4 zora
 ```
 
 `atom-grid-orbitals` checks scalar/collinear orbital derivatives. Spinor modes are
 `spinor-orbitals`, `spinor-soc-orbitals`, `spinor-paw-orbitals`,
 `spinor-paw-soc-orbitals`, `spinor-atom-grid-orbitals` and `spinor-lapw-soc-orbitals`.
 These hold occupations, radial functions and core states fixed and do not require
-SCF convergence. PAW rotations need not preserve its overlap norm.
-For the synthetic PAW SOC mode, use `STEP=0.000002`.
-`atom-grid-forces` and `atom-grid-stress` check total derivatives with geometry
-updates and coupled LAPW response. `spinor-stress` checks fixed-orbital XC stress.
+SCF convergence. Atom-grid spinor modes use 26 spin directions, while the production
+default remains 194. Orbital modes additionally use a compact 12/26 real-space grid.
+These choices test the discrete derivatives, not quadrature convergence.
+PAW rotations need not preserve its overlap norm.
+For the synthetic PAW SOC mode, use `STEP=0.0000005`.
+`atom-grid-forces`, `atom-grid-stress`, `spinor-lapw-soc-forces` and
+`spinor-lapw-soc-stress` check total derivatives with geometry updates and coupled
+LAPW response. `spinor-stress` checks fixed-orbital XC stress.
 Each enabled derivative check uses two step sizes without density renormalization.
 
 `skala_grid_unittest.psmp SKALA skala-float32 gpu` checks primitive-field derivatives
