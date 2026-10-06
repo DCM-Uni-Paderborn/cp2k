@@ -111,6 +111,7 @@ CONTAINS
 
       CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(points, 2) == SIZE(weights))
       CPASSERT(SIZE(images, 1) == 3 .AND. SIZE(images, 2) > 0)
+      frame%periodicity = cell%perd
       DO axis = 1, 3
          IF (cell%perd(axis) == 0) THEN
             CPASSERT(ALL(images(axis, :) == 0))
@@ -354,10 +355,11 @@ CONTAINS
 !> \param cell_response Optional lattice motion.
 !> \param reduced_k_response Optional reduced Bloch-vector motion.
 !> \param coefficients_response Optional dW from the original defining quadrature.
+!> \param image_shift Optional single lattice image. Use zero for an unpartitioned home-center density.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_center_fields(frame, center, points, difference, gradient, &
                                            difference_response, gradient_response, point_response, &
-                                           atom_response, cell_response, reduced_k_response, coefficients_response)
+                                           atom_response, cell_response, reduced_k_response, coefficients_response, image_shift)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center
       REAL(dp), INTENT(IN)                               :: points(:, :)
@@ -369,16 +371,26 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: image_shift(3)
 
       COMPLEX(dp), ALLOCATABLE                           :: ddelta(:, :), delta(:, :), dgd(:, :, :), &
                                                             gd(:, :, :)
       INTEGER                                            :: atom, axis, first, ikind, last, nao, np, &
                                                             nproj
+      INTEGER, ALLOCATABLE                               :: images(:, :)
       LOGICAL                                            :: calculate_response
 
       CPASSERT(frame%inverse%ready)
       CPASSERT(center >= 1 .AND. center <= SIZE(frame%center_atoms))
       CPASSERT(SIZE(points, 1) == 3)
+      IF (PRESENT(image_shift)) THEN
+         CPASSERT(ALL(image_shift*frame%periodicity == image_shift))
+         ALLOCATE (images(3, 1))
+         images(:, 1) = image_shift
+      ELSE
+         ALLOCATE (images(3, SIZE(frame%images, 2)))
+         images(:, :) = frame%images
+      END IF
       atom = frame%center_atoms(center)
       ikind = frame%center_kinds(center)
       first = frame%projector_first(center)
@@ -405,13 +417,13 @@ CONTAINS
          CPASSERT(ALL(SHAPE(coefficients_response) == SHAPE(frame%coefficients)))
          ALLOCATE (ddelta(np, nproj), dgd(np, nproj, 3))
          CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
-                                         frame%cell, frame%images, frame%reduced_k, delta, gd, ddelta, dgd, &
+                                         frame%cell, images, frame%reduced_k, delta, gd, ddelta, dgd, &
                                          point_response, atom_response(:, atom), cell_response, reduced_k_response)
          difference_response = -MATMUL(ddelta, frame%coefficients(first:last, :)) - &
                                MATMUL(delta, coefficients_response(first:last, :))
       ELSE
          CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
-                                         frame%cell, frame%images, frame%reduced_k, delta, gd)
+                                         frame%cell, images, frame%reduced_k, delta, gd)
       END IF
       difference = -MATMUL(delta, frame%coefficients(first:last, :))
       DO axis = 1, 3

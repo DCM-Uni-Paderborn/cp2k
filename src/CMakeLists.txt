@@ -65,6 +65,7 @@ list(
   pseudopotentials/upf_types.F
   aobasis/gaussian_basis_fields.F
   pseudopotentials/upf_inverse.F
+  pseudopotentials/upf_inverse_coulomb.F
   pseudopotentials/upf_inverse_quadrature.F
   pseudopotentials/upf_radial_fields.F
   pseudopotentials/uspp_augmentation.F

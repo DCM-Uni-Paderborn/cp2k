@@ -37,6 +37,7 @@ MODULE qs_upf_inverse_types
       TYPE(upf_radial_fields_type), ALLOCATABLE :: beta_cache(:), delta_cache(:)
       INTEGER, ALLOCATABLE :: ao_first(:), ao_last(:), projector_first(:), projector_last(:), center_atoms(:), center_kinds(:)
       INTEGER, ALLOCATABLE :: images(:, :)
+      INTEGER :: periodicity(3) = 0
       REAL(dp) :: cell(3, 3) = 0.0_dp, reduced_k(3) = 0.0_dp
       REAL(dp), ALLOCATABLE :: positions(:, :), points(:, :), weights(:)
       ! Supplied PP_Q and the reference metric's radial Q integral are separate data.

@@ -25,6 +25,10 @@ PROGRAM upf_inverse_unittest
         upf_inverse_basis, upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
         upf_inverse_operator, upf_inverse_operator_response, upf_inverse_project, &
         upf_inverse_project_response, upf_inverse_type
+   USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_compensate,&
+                                              upf_inverse_coulomb_compensation_adjoint,&
+                                              upf_inverse_coulomb_radial,&
+                                              upf_inverse_coulomb_radial_response
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
                                               upf_inverse_density_residual,&
                                               upf_inverse_projector_density,&
@@ -41,10 +45,74 @@ PROGRAM upf_inverse_unittest
    CALL check_inverse()
    CALL check_projector_density()
    CALL check_density_residual()
+   CALL check_radial_coulomb()
    CALL check_nc_fields()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Signed Coulomb reciprocity, shell self term, moment compensation and energy adjoints.
+! **************************************************************************************************
+   SUBROUTINE check_radial_coulomb()
+      INTEGER, PARAMETER                                 :: nh = 3, nr = 3
+
+      INTEGER                                            :: channel, l(nh), side
+      REAL(dp) :: adjoint(nr, nh), compensation(nr, nh), density(nr, nh), dr(nr), dw(nr), energy, &
+         energy_other, moments(nh), one_density(1, 1), one_potential(1, 1), other(nr, nh), &
+         potential(nr, nh), radii(nr), residual(nr, nh), response, samples(2), shapes(nr, nh), &
+         shift, vp(nr, nh), weights(nr)
+
+      ! An orthonormal monopole on one radial shell has E=2*pi*(w*rho)**2/r.
+      one_density = 0.7_dp
+      CALL upf_inverse_coulomb_radial([0.8_dp], [0.3_dp], [0], one_density, one_potential, energy)
+      CALL check(ABS(energy - 2*pi*(0.3_dp*0.7_dp)**2/0.8_dp), 'Coulomb shell self energy')
+      CALL upf_inverse_coulomb_radial([0.8_dp], [0.3_dp], [2], one_density, one_potential, energy)
+      CALL check(ABS(energy - 2*pi*(0.3_dp*0.7_dp)**2/(5*0.8_dp)), 'Coulomb higher multipole shell')
+      ! Unordered radii and signed, repeated-l channels are intentional.
+      radii = [1.7_dp, 0.3_dp, 0.8_dp]
+      weights = [0.4_dp, 0.2_dp, 0.7_dp]
+      l = [0, 2, 2]
+      density = RESHAPE([0.1_dp, -0.3_dp, 0.2_dp, -0.2_dp, 0.7_dp, -0.1_dp, &
+                         0.3_dp, -0.2_dp, 0.4_dp], [nr, nh])
+      other = 0.13_dp + 0.2_dp*density
+      dr = [0.02_dp, -0.01_dp, 0.03_dp]
+      dw = 0.03_dp*weights
+      CALL upf_inverse_coulomb_radial(radii, weights, l, density, potential, energy)
+      CALL upf_inverse_coulomb_radial(radii, weights, l, other, vp, energy_other)
+      CALL check(ABS(SUM(SPREAD(weights, 2, nh)*(density*vp - other*potential))), 'signed Coulomb reciprocity')
+      CALL check(MAX(0.0_dp, -energy), 'signed Coulomb nonnegative self energy', 0.0_dp)
+      CALL upf_inverse_coulomb_radial_response(radii, weights, l, density, dr, dw, other, response)
+      DO side = 1, 2
+         shift = step*(2*side - 3)
+         CALL upf_inverse_coulomb_radial(radii + shift*dr, weights + shift*dw, l, &
+                                         density + shift*other, vp, samples(side))
+      END DO
+      CALL check(ABS((samples(2) - samples(1))/(2*step) - response), 'Coulomb density measure kernel response', 2.e-9_dp)
+      DO channel = 1, nh
+         shapes(:, channel) = radii**l(channel)*EXP(-0.6_dp*radii**2)
+      END DO
+      CALL upf_inverse_coulomb_compensate(radii, weights, l, density, shapes, compensation, residual, moments)
+      CALL check(MAXVAL(ABS(density - compensation - residual)), 'Coulomb compensation density closure')
+      DO channel = 1, nh
+         CALL check(ABS(SUM(weights*radii**l(channel)*residual(:, channel))), 'zero compensated exterior moment')
+         CALL check(ABS(moments(channel) - SUM(weights*radii**l(channel)*compensation(:, channel))), &
+                    'original signed exterior moment retained')
+      END DO
+      CALL upf_inverse_coulomb_radial(radii, weights, l, residual, potential, energy)
+      CALL upf_inverse_coulomb_compensation_adjoint(radii, weights, l, shapes, potential, adjoint)
+      response = SUM(SPREAD(weights, 2, nh)*other*adjoint)
+      DO side = 1, 2
+         shift = step*(2*side - 3)
+         CALL upf_inverse_coulomb_compensate(radii, weights, l, density + shift*other, shapes, &
+                                             compensation, residual, moments)
+         CALL upf_inverse_coulomb_radial(radii, weights, l, residual, vp, samples(side))
+      END DO
+      CALL check(ABS((samples(2) - samples(1))/(2*step) - response), 'occupation-dependent compensation adjoint', 2.e-9_dp)
+      density = 0.0_dp
+      CALL upf_inverse_coulomb_radial(radii, weights, l, density, potential, energy)
+      CALL check(MAXVAL(ABS(potential)) + ABS(energy), 'exact zero NC Coulomb residual', 0.0_dp)
+   END SUBROUTINE check_radial_coulomb
+
 ! **************************************************************************************************
 !> \brief Gaussian/residual closure, adjoint and joint field/measure response on complex rows.
 ! **************************************************************************************************
