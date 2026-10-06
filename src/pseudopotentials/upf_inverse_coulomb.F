@@ -8,17 +8,134 @@
 !>        All maps use the same finite radial measure, including the diagonal shell term.
 !>        Periodic background and interactions between distinct centers are assembled separately.
 MODULE upf_inverse_coulomb
+   USE bessel_lib,                      ONLY: bessel0
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
+   USE orbital_pointers,                ONLY: indco,&
+                                              init_orbital_pointers,&
+                                              nco,&
+                                              ncoset
+   USE orbital_transformation_matrices, ONLY: init_spherical_harmonics,&
+                                              orbtramat
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: upf_inverse_coulomb_radial, upf_inverse_coulomb_radial_response
    PUBLIC :: upf_inverse_coulomb_compensate, upf_inverse_coulomb_compensation_adjoint
+   PUBLIC :: upf_inverse_coulomb_fourier_kernel
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Fourier map of the same radial shells, for coupling to a periodic background.
+!>        rho_G = sum_ir,lm weights(ir)*kernel(G,ir,lm)*density(ir,lm).
+!>        The reciprocal covector must use the caller's actual full/half-grid multiplicities.
+!>        No reciprocal Coulomb cutoff or G=0 electrostatic convention is selected here.
+!> \param radii Positive radial shell nodes.
+!> \param angular_momenta l of each orthonormal real harmonic channel.
+!> \param harmonic_indices Native harmonic indices, between l*l+1 and (l+1)**2.
+!> \param gvecs Cartesian reciprocal vectors, including zero if required by the caller.
+!> \param position Cartesian center of these radial shells.
+!> \param volume Physical cell volume.
+!> \param kernel Complex Fourier coefficients per unit radial measure and density.
+!> \param response Optional joint geometry response of the same Fourier map.
+!> \param radii_response Required with response.
+!> \param gvecs_response Required with response, including reciprocal-vector strain.
+!> \param position_response Required with response.
+!> \param volume_response Required with response.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_coulomb_fourier_kernel(radii, angular_momenta, harmonic_indices, gvecs, position, volume, &
+                                                 kernel, response, radii_response, gvecs_response, &
+                                                 position_response, volume_response)
+      REAL(dp), INTENT(IN)                               :: radii(:)
+      INTEGER, INTENT(IN)                                :: angular_momenta(:), harmonic_indices(:)
+      REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
+      COMPLEX(dp), INTENT(OUT)                           :: kernel(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: radii_response(:), gvecs_response(:, :), &
+                                                            position_response(3), volume_response
+
+      COMPLEX(dp)                                        :: phase, phase_l, phase_response
+      INTEGER                                            :: a, axis, channel, ig, ir, l, m, &
+                                                            powers(3), reduced(3)
+      REAL(dp)                                           :: angular, angular_gradient(3), &
+                                                            direction(3), factor, gradient(3), jl, &
+                                                            jnext, norm_g, radial
+
+      CPASSERT(SIZE(harmonic_indices) == SIZE(angular_momenta))
+      CPASSERT(SIZE(angular_momenta) > 0)
+      CPASSERT(SIZE(gvecs, 1) == 3)
+      IF (.NOT. ALL(SHAPE(kernel) == [SIZE(gvecs, 2), SIZE(radii), SIZE(angular_momenta)])) THEN
+         CPABORT("Invalid radial Fourier kernel dimensions")
+      END IF
+      CPASSERT(ALL(ieee_is_finite(radii)) .AND. ALL(radii > 0.0_dp))
+      CPASSERT(ALL(ieee_is_finite(gvecs)))
+      CPASSERT(ALL(ieee_is_finite(position)))
+      CPASSERT(ieee_is_finite(volume) .AND. volume > 0.0_dp)
+      CPASSERT(ALL(angular_momenta >= 0 .AND. angular_momenta <= 20))
+      CPASSERT(ALL(harmonic_indices > angular_momenta**2))
+      CPASSERT(ALL(harmonic_indices <= (angular_momenta + 1)**2))
+      IF (PRESENT(response)) THEN
+         CPASSERT(ALL(SHAPE(response) == SHAPE(kernel)))
+         CPASSERT(PRESENT(radii_response) .AND. PRESENT(gvecs_response))
+         CPASSERT(PRESENT(position_response) .AND. PRESENT(volume_response))
+         CPASSERT(SIZE(radii_response) == SIZE(radii))
+         CPASSERT(ALL(SHAPE(gvecs_response) == SHAPE(gvecs)))
+      END IF
+      CALL init_orbital_pointers(MAXVAL(angular_momenta))
+      CALL init_spherical_harmonics(MAXVAL(angular_momenta), -1)
+      DO ig = 1, SIZE(gvecs, 2)
+         norm_g = SQRT(SUM(gvecs(:, ig)**2))
+         direction = 0.0_dp
+         IF (norm_g > 0.0_dp) direction = gvecs(:, ig)/norm_g
+         phase = fourpi/volume*EXP(CMPLX(0.0_dp, -DOT_PRODUCT(gvecs(:, ig), position), dp))
+         IF (PRESENT(response)) THEN
+            phase_response = CMPLX(-volume_response/volume, &
+                                   -DOT_PRODUCT(gvecs_response(:, ig), position) - &
+                                   DOT_PRODUCT(gvecs(:, ig), position_response), dp)
+         END IF
+         DO channel = 1, SIZE(angular_momenta)
+            l = angular_momenta(channel)
+            m = harmonic_indices(channel) - l*l
+            phase_l = phase*CMPLX(0.0_dp, -1.0_dp, dp)**l
+            angular = 0.0_dp
+            angular_gradient = 0.0_dp
+            DO a = 1, nco(l)
+               powers = indco(:, ncoset(l - 1) + a)
+               factor = orbtramat(l)%slm(m, a)
+               angular = angular + factor*PRODUCT(direction**powers)
+               IF (.NOT. PRESENT(response)) CYCLE
+               DO axis = 1, 3
+                  IF (powers(axis) == 0) CYCLE
+                  reduced = powers
+                  reduced(axis) = reduced(axis) - 1
+                  angular_gradient(axis) = angular_gradient(axis) + &
+                                           factor*REAL(powers(axis), dp)*PRODUCT(direction**reduced)
+               END DO
+            END DO
+            DO ir = 1, SIZE(radii)
+               jl = bessel0(norm_g*radii(ir), l)
+               kernel(ig, ir, channel) = phase_l*angular*jl
+               IF (.NOT. PRESENT(response)) CYCLE
+               gradient = 0.0_dp
+               radial = 0.0_dp
+               IF (norm_g > 0.0_dp) THEN
+                  jnext = bessel0(norm_g*radii(ir), l + 1)
+                  gradient = jl/norm_g*angular_gradient - radii(ir)*jnext*angular*direction
+                  radial = angular*(l/radii(ir)*jl - norm_g*jnext)
+               ELSE IF (l == 1) THEN
+                  ! The origin limit contains dipole derivatives even though rho_G itself is zero.
+                  gradient = radii(ir)/3.0_dp*angular_gradient
+               END IF
+               response(ig, ir, channel) = kernel(ig, ir, channel)*phase_response + &
+                                           phase_l*(DOT_PRODUCT(gradient, gvecs_response(:, ig)) + &
+                                                    radial*radii_response(ir))
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE upf_inverse_coulomb_fourier_kernel
 
 ! **************************************************************************************************
 !> \brief Apply the symmetric Coulomb kernel to real, orthonormal harmonic coefficients.

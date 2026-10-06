@@ -27,6 +27,7 @@ PROGRAM upf_inverse_unittest
         upf_inverse_project_response, upf_inverse_type
    USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_compensate,&
                                               upf_inverse_coulomb_compensation_adjoint,&
+                                              upf_inverse_coulomb_fourier_kernel,&
                                               upf_inverse_coulomb_radial,&
                                               upf_inverse_coulomb_radial_response
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
@@ -46,10 +47,58 @@ PROGRAM upf_inverse_unittest
    CALL check_projector_density()
    CALL check_density_residual()
    CALL check_radial_coulomb()
+   CALL check_fourier_coulomb()
    CALL check_nc_fields()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Signed shell/PW coupling, reciprocal zero limit and joint geometry response.
+! **************************************************************************************************
+   SUBROUTINE check_fourier_coulomb()
+      INTEGER, PARAMETER                                 :: ng = 4, nh = 3, nr = 2
+
+      COMPLEX(dp)                                        :: derivative(ng, nr, nh), &
+                                                            kernel(ng, nr, nh), other(ng, nr, nh), &
+                                                            samples(ng, nr, nh, 2)
+      INTEGER                                            :: l(nh), lm(nh), side
+      REAL(dp)                                           :: dg(3, ng), dp_center(3), dr(nr), &
+                                                            g(3, ng), position(3), radii(nr), &
+                                                            shift, volume
+
+      radii = [0.3_dp, 1.2_dp]
+      l = [0, 1, 2]
+      lm = [1, 3, 7]
+      g(:, 1) = 0.0_dp
+      g(:, 2) = [0.7_dp, 0.0_dp, 0.0_dp]
+      g(:, 3) = [0.3_dp, -0.2_dp, 0.4_dp]
+      g(:, 4) = -g(:, 3)
+      position = [0.2_dp, -0.7_dp, 0.4_dp]
+      volume = 7.0_dp
+      dr = [0.07_dp, -0.03_dp]
+      dg = 0.13_dp - 0.1_dp*g
+      dp_center = [-0.04_dp, 0.08_dp, 0.02_dp]
+      CALL upf_inverse_coulomb_fourier_kernel(radii, l, lm, g, position, volume, kernel, derivative, &
+                                              dr, dg, dp_center, 0.3_dp)
+      CALL check(MAXVAL(ABS(kernel(1, :, 1) - SQRT(4*pi)/volume)), 'shell monopole Fourier normalization')
+      CALL check(MAXVAL(ABS(kernel(1, :, 2:))), 'zero higher shell multipoles at G=0', 0.0_dp)
+      CALL check(MAXVAL(ABS(kernel(2, :, 1) - SQRT(4*pi)/volume* &
+                            EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g(:, 2), position), dp))* &
+                            SIN(0.7_dp*radii)/(0.7_dp*radii))), 'analytic spherical shell form factor')
+      CALL check(MAXVAL(ABS(kernel(3, :, :) - CONJG(kernel(4, :, :)))), 'real density reciprocal conjugacy')
+      CALL check(MAXVAL(ABS(derivative(1, :, 2) - CMPLX(0.0_dp, &
+                                               -SQRT(12*pi)/volume*radii*dg(3, 1)/3.0_dp, dp))), 'dipole Fourier derivative at G=0')
+      DO side = 1, 2
+         shift = step*(2*side - 3)
+         CALL upf_inverse_coulomb_fourier_kernel(radii + shift*dr, l, lm, g + shift*dg, &
+                                                 position + shift*dp_center, volume + shift*0.3_dp, samples(:, :, :, side))
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, :, :, 2) - samples(:, :, :, 1))/(2*step) - derivative)), &
+                 'shell Fourier radius center reciprocal volume response', 2.e-9_dp)
+      CALL upf_inverse_coulomb_fourier_kernel(radii, l, lm, g, position, volume, other)
+      CALL check(MAXVAL(ABS(kernel - other)), 'optional Fourier response preserves forward map', 0.0_dp)
+   END SUBROUTINE check_fourier_coulomb
+
 ! **************************************************************************************************
 !> \brief Signed Coulomb reciprocity, shell self term, moment compensation and energy adjoints.
 ! **************************************************************************************************
