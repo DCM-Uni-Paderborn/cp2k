@@ -76,6 +76,7 @@ list(
   qs_upf_inverse_density.F
   qs_upf_inverse_gaussian.F
   qs_upf_inverse_gaussian_pairs.F
+  qs_upf_inverse_background.F
   qs_upf_inverse_forces.F
   qs_upf_inverse_grid.F
   qs_upf_inverse_kpoints.F
