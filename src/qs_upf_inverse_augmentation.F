@@ -70,6 +70,7 @@ CONTAINS
       ALLOCATE (augmentation%kinds(SIZE(kinds)))
       DO center = 1, SIZE(frame%center_atoms)
          ikind = frame%center_kinds(center)
+         IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) CYCLE
          IF (augmentation%kinds(ikind)%nproj /= 0) CYCLE
          CALL uspp_augmentation_init(kinds(ikind)%sgp_potential%upf_data, &
                                      kinds(ikind)%sgp_potential%upf_projectors, augmentation%kinds(ikind))
@@ -121,6 +122,7 @@ CONTAINS
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
+         IF (augmentation%kinds(ikind)%nproj == 0) CYCLE
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          DO image = 1, SIZE(frame%images, 2)
@@ -173,6 +175,7 @@ CONTAINS
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
+         IF (augmentation%kinds(ikind)%nproj == 0) CYCLE
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          ALLOCATE (matrix(last - first + 1, last - first + 1))
@@ -232,6 +235,7 @@ CONTAINS
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
+         IF (augmentation%kinds(ikind)%nproj == 0) CYCLE
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          CALL uspp_augmentation_prepare_fourier(augmentation%kinds(ikind), density%pw_grid%g)
@@ -292,6 +296,7 @@ CONTAINS
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
+         IF (augmentation%kinds(ikind)%nproj == 0) CYCLE
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          ALLOCATE (matrix(last - first + 1, last - first + 1))
@@ -375,6 +380,7 @@ CONTAINS
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
+         IF (augmentation%kinds(ikind)%nproj == 0) CYCLE
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          ALLOCATE (matrix(last - first + 1, last - first + 1), &
@@ -522,6 +528,7 @@ CONTAINS
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
+         IF (augmentation%kinds(ikind)%nproj == 0) CYCLE
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          n = last - first + 1

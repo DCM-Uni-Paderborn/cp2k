@@ -138,8 +138,12 @@ CONTAINS
          IF (kinds(ikind)%ghost) CYCLE
          CPASSERT(ASSOCIATED(kinds(ikind)%sgp_potential))
          CPASSERT(ALLOCATED(kinds(ikind)%sgp_potential%upf_data))
-         IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) THEN
-            CPABORT("Missing mixed NC inverse nonlocal operator")
+         IF (kinds(ikind)%sgp_potential%upf_data%is_paw) THEN
+            CPABORT("Inverse PAW operators are not implemented yet")
+         END IF
+         IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft .AND. &
+             TRIM(kinds(ikind)%sgp_potential%upf_data%pseudo_type) /= "NC") THEN
+            CPABORT("Unsupported inverse UPF type")
          END IF
       END DO
       ALLOCATE (state)
@@ -888,9 +892,7 @@ CONTAINS
          IF (.NOT. ALLOCATED(kinds(ikind)%sgp_potential%upf_data)) THEN
             CPABORT("Inverse USPP mixed potentials are not implemented")
          END IF
-         IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) THEN
-            CPABORT("Inverse USPP mixed potentials are not implemented")
-         END IF
+         IF (kinds(ikind)%sgp_potential%upf_data%number_of_proj == 0) CYCLE
          CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, beta, delta)
          radial_radius(ikind) = MAX(beta%radius, delta%radius)
       END DO

@@ -9,6 +9,7 @@
 !> \brief Inverse reconstruction identities, conditioning and analytic field/operator responses.
 ! **************************************************************************************************
 PROGRAM upf_inverse_unittest
+   USE atom_upf,                        ONLY: atom_upfpot_type
    USE basis_set_types,                 ONLY: allocate_gto_basis_set,&
                                               deallocate_gto_basis_set,&
                                               gto_basis_set_type
@@ -20,19 +21,18 @@ PROGRAM upf_inverse_unittest
    USE mathconstants,                   ONLY: pi
    USE orbital_pointers,                ONLY: init_orbital_pointers,&
                                               ncoset
-   USE upf_inverse,                     ONLY: upf_inverse_basis,&
-                                              upf_inverse_basis_response,&
-                                              upf_inverse_init,&
-                                              upf_inverse_operator,&
-                                              upf_inverse_operator_response,&
-                                              upf_inverse_project,&
-                                              upf_inverse_project_response,&
-                                              upf_inverse_type
+   USE upf_inverse,                     ONLY: &
+        upf_inverse_basis, upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
+        upf_inverse_operator, upf_inverse_operator_response, upf_inverse_project, &
+        upf_inverse_project_response, upf_inverse_type
+   USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
+                                              upf_radial_fields_type
 
    IMPLICIT NONE
    REAL(dp), PARAMETER :: step = 1.e-5_dp
    REAL(dp) :: max_error = 0.0_dp
    CALL check_inverse()
+   CALL check_nc_fields()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
@@ -54,7 +54,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: shift
       TYPE(upf_inverse_type)                             :: inverse
 
-      DO phase = 1, 2
+      DO phase = 1, 3
          DO j = 1, nb
             DO i = 1, nf
                chi(i, j) = CMPLX(SIN(REAL(i + 2*j, dp)), (phase - 1)*COS(REAL(i*j, dp)), dp)
@@ -69,6 +69,11 @@ CONTAINS
                dprojector(j, i) = 0.02_dp*CMPLX(COS(REAL(i + j, dp)), (phase - 1)*SIN(REAL(i*j, dp)), dp)
             END DO
          END DO
+         IF (phase == 3) THEN
+            ! A mixed NC/USPP frame retains the NC bra, with no NC reconstruction.
+            delta(:, np) = CMPLX(0.0_dp, 0.0_dp, dp)
+            ddelta(:, np) = CMPLX(0.0_dp, 0.0_dp, dp)
+         END IF
          ! A non-Hermitian operator exposes an accidental conjugation/symmetrization.
          DO j = 1, nf
             DO i = 1, nf
@@ -144,6 +149,28 @@ CONTAINS
       CALL upf_inverse_init(bd, inverse, info)
       IF (info /= np + 2 .OR. inverse%ready) ERROR STOP 'Nonfinite inverse accepted'
    END SUBROUTINE check_inverse
+
+! **************************************************************************************************
+!> \brief NC original projectors need neither reference waves nor augmentation data.
+! **************************************************************************************************
+   SUBROUTINE check_nc_fields()
+      REAL(dp)                                           :: displacement(3), gradient(3, 1), value(1)
+      TYPE(atom_upfpot_type)                             :: pot
+      TYPE(upf_radial_fields_type)                       :: beta, delta
+
+      pot%pseudo_type = "NC"
+      ALLOCATE (pot%r(7), pot%beta(7, 1), pot%lbeta(1))
+      pot%r(:) = [0.0_dp, 0.2_dp, 0.5_dp, 1.0_dp, 1.5_dp, 2.0_dp, 3.0_dp]
+      pot%lbeta = 0
+      pot%beta(:, 1) = EXP(-pot%r**2)
+      pot%beta(6:, 1) = 0.0_dp
+      CALL upf_inverse_fields_init(pot, beta, delta)
+      displacement = [0.5_dp, 0.0_dp, 0.0_dp]
+      CALL upf_radial_fields_evaluate(beta, displacement, value)
+      CALL check(ABS(value(1) - EXP(-0.25_dp)/SQRT(4.0_dp*pi)), 'original NC projector')
+      CALL upf_radial_fields_evaluate(delta, displacement, value, gradient)
+      CALL check(MAXVAL(ABS(value)) + MAXVAL(ABS(gradient)), 'zero NC reconstruction')
+   END SUBROUTINE check_nc_fields
 
 ! **************************************************************************************************
 !> \brief ...

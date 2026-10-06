@@ -60,9 +60,10 @@ CONTAINS
    END SUBROUTINE upf_inverse_delta_init
 
 ! **************************************************************************************************
-!> \brief Prepare original beta and AE-minus-PS fields for common intercenter quadratures.
+!> \brief Prepare original beta and reconstruction fields for common intercenter quadratures.
 !>        Native radial channels and real harmonics agree with the Gaussian overlap cache.
-!> \param pot Original UPF data with complete projector-indexed full waves.
+!>        NC channels have zero reconstruction but retain their original projector bras.
+!> \param pot Original UPF data, with complete full waves for reconstructing channels.
 !> \param beta Original projector fields, without weights.
 !> \param delta Original reconstruction differences, without weights.
 ! **************************************************************************************************
@@ -72,9 +73,16 @@ CONTAINS
 
       TYPE(atom_upfpot_type)                             :: radial
 
-      CALL inverse_radial_data(pot, radial)
       CALL upf_radial_fields_init(pot%r, pot%beta, pot%lbeta, beta)
-      CALL upf_radial_fields_init(radial%r, radial%beta, radial%lbeta, delta)
+      IF (TRIM(pot%pseudo_type) == "NC" .AND. .NOT. pot%is_ultrasoft .AND. .NOT. pot%is_paw) THEN
+         IF (pot%has_so) CPABORT("Spin-orbit UPF inverse fields are not supported")
+         ALLOCATE (radial%beta(SIZE(pot%r), SIZE(pot%lbeta)))
+         radial%beta = 0.0_dp
+         CALL upf_radial_fields_init(pot%r, radial%beta, pot%lbeta, delta)
+      ELSE
+         CALL inverse_radial_data(pot, radial)
+         CALL upf_radial_fields_init(radial%r, radial%beta, radial%lbeta, delta)
+      END IF
    END SUBROUTINE upf_inverse_fields_init
 
 ! **************************************************************************************************
@@ -94,7 +102,8 @@ CONTAINS
       IF (.NOT. ALLOCATED(pot%partial_waves)) THEN
          CPABORT("Inverse UPF requires original AE/PS full waves for every projector")
       END IF
-      CPASSERT(ALLOCATED(pot%r) .AND. ALLOCATED(pot%rab) .AND. ALLOCATED(pot%lbeta))
+      CPASSERT(ALLOCATED(pot%r) .AND. ALLOCATED(pot%rab))
+      CPASSERT(ALLOCATED(pot%lbeta))
       IF (.NOT. (ALLOCATED(pot%partial_waves%ae_wfc) .AND. ALLOCATED(pot%partial_waves%ps_wfc))) THEN
          CPABORT("Incomplete original AE/PS full waves")
       END IF

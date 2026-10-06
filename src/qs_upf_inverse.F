@@ -76,7 +76,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Build the full inverse from native Quickstep basis columns and original radial fields.
-!>        Ghost/NC atoms retain their Gaussian columns; only the selected USPP centers reconstruct.
+!>        Ghost atoms retain their Gaussian columns. NC projectors have zero reconstruction
+!>        and act on the same inverse soft fields, including coupling to USPP centers.
 !>        Missing original full-wave pairs are rejected by the radial importer.
 !> \param kinds Native Quickstep kinds; ORB bases and potential data are not modified.
 !> \param particles Native atom order, also used for AO matrix blocks.
@@ -104,8 +105,9 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: coupling(:, :), overlaps(:, :)
       INTEGER                                            :: atom, axis, center, first, ikind, last, &
-                                                            nao, npoint, nproj, p, q
+                                                            nao, ncenter, npoint, nproj, p, q
       TYPE(gto_basis_set_type), POINTER                  :: basis
+      LOGICAL                                            :: nc_kind(SIZE(kinds))
 
       CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(points, 2) == SIZE(weights))
       CPASSERT(SIZE(images, 1) == 3 .AND. SIZE(images, 2) > 0)
@@ -146,23 +148,47 @@ CONTAINS
          CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                             frame%cell, images, reduced_k, frame%gaussian(:, first:last), frame%gaussian_gradient(:, first:last, :))
       END DO
-      ALLOCATE (frame%center_atoms, SOURCE=uspp%center_atoms)
-      ALLOCATE (frame%center_kinds, SOURCE=uspp%center_kinds)
-      ALLOCATE (frame%projector_first(SIZE(uspp%center_atoms)), frame%projector_last(SIZE(uspp%center_atoms)), &
+      nc_kind = .FALSE.
+      DO ikind = 1, SIZE(kinds)
+         IF (kinds(ikind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(ikind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(ikind)%sgp_potential%upf_data)) CYCLE
+         ASSOCIATE (pot => kinds(ikind)%sgp_potential%upf_data)
+            nc_kind(ikind) = TRIM(pot%pseudo_type) == "NC" .AND. &
+                             .NOT. pot%is_ultrasoft .AND. .NOT. pot%is_paw .AND. pot%number_of_proj > 0
+         END ASSOCIATE
+      END DO
+      ncenter = SIZE(uspp%center_atoms)
+      DO atom = 1, SIZE(particles)
+         IF (nc_kind(particles(atom)%atomic_kind%kind_number)) ncenter = ncenter + 1
+      END DO
+      ALLOCATE (frame%center_atoms(ncenter), frame%center_kinds(ncenter))
+      frame%center_atoms(:SIZE(uspp%center_atoms)) = uspp%center_atoms
+      frame%center_kinds(:SIZE(uspp%center_atoms)) = uspp%center_kinds
+      center = SIZE(uspp%center_atoms)
+      DO atom = 1, SIZE(particles)
+         ikind = particles(atom)%atomic_kind%kind_number
+         IF (.NOT. nc_kind(ikind)) CYCLE
+         center = center + 1
+         frame%center_atoms(center) = atom
+         frame%center_kinds(center) = ikind
+      END DO
+      ALLOCATE (frame%projector_first(ncenter), frame%projector_last(ncenter), &
                 frame%beta_cache(SIZE(kinds)), frame%delta_cache(SIZE(kinds)))
       nproj = 0
-      DO center = 1, SIZE(uspp%center_atoms)
-         ikind = uspp%center_kinds(center)
-         atom = uspp%center_atoms(center)
+      DO center = 1, ncenter
+         ikind = frame%center_kinds(center)
+         atom = frame%center_atoms(center)
          CPASSERT(.NOT. kinds(ikind)%ghost)
          CPASSERT(particles(atom)%atomic_kind%kind_number == ikind)
          IF (frame%beta_cache(ikind)%nproj == 0) THEN
             CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, &
                                          frame%beta_cache(ikind), frame%delta_cache(ikind))
          END IF
-         CPASSERT(frame%beta_cache(ikind)%nproj == uspp%projector_sizes(center))
+         p = kinds(ikind)%sgp_potential%upf_projectors%nproj
+         CPASSERT(frame%beta_cache(ikind)%nproj == p)
          frame%projector_first(center) = nproj + 1
-         nproj = nproj + uspp%projector_sizes(center)
+         nproj = nproj + frame%beta_cache(ikind)%nproj
          frame%projector_last(center) = nproj
       END DO
       ALLOCATE (frame%beta(npoint, nproj), frame%delta(npoint, nproj), frame%delta_gradient(npoint, nproj, 3), &
@@ -171,20 +197,22 @@ CONTAINS
       frame%q(:, :) = CMPLX(0.0_dp, 0.0_dp, dp)
       frame%radial_q(:, :) = CMPLX(0.0_dp, 0.0_dp, dp)
       frame%dion(:, :) = CMPLX(0.0_dp, 0.0_dp, dp)
-      DO center = 1, SIZE(uspp%center_atoms)
-         ikind = uspp%center_kinds(center)
-         atom = uspp%center_atoms(center)
+      DO center = 1, ncenter
+         ikind = frame%center_kinds(center)
+         atom = frame%center_atoms(center)
          first = frame%projector_first(center)
          last = frame%projector_last(center)
-         frame%radial_q(first:last, first:last) = uspp%augmentation(ikind)%q
+         IF (.NOT. nc_kind(ikind)) frame%radial_q(first:last, first:last) = uspp%augmentation(ikind)%q
          ASSOCIATE (projectors => kinds(ikind)%sgp_potential%upf_projectors, &
                     pot => kinds(ikind)%sgp_potential%upf_data)
-            DO q = 1, last - first + 1
-               DO p = 1, last - first + 1
-                  IF (projectors%angular_index(p) /= projectors%angular_index(q)) CYCLE
-                  frame%q(first + p - 1, first + q - 1) = pot%qij(projectors%radial_index(p), projectors%radial_index(q))
+            IF (.NOT. nc_kind(ikind)) THEN
+               DO q = 1, last - first + 1
+                  DO p = 1, last - first + 1
+                     IF (projectors%angular_index(p) /= projectors%angular_index(q)) CYCLE
+                     frame%q(first + p - 1, first + q - 1) = pot%qij(projectors%radial_index(p), projectors%radial_index(q))
+                  END DO
                END DO
-            END DO
+            END IF
          END ASSOCIATE
          frame%dion(first:last, first:last) = kinds(ikind)%sgp_potential%upf_projectors%d
          CALL upf_radial_fields_periodic(frame%beta_cache(ikind), points, frame%positions(:, atom), &
