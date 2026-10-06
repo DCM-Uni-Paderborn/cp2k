@@ -21,6 +21,7 @@ PROGRAM upf_inverse_unittest
    USE mathconstants,                   ONLY: pi
    USE orbital_pointers,                ONLY: init_orbital_pointers,&
                                               ncoset
+   USE upf_core,                        ONLY: upf_core_fourier
    USE upf_inverse,                     ONLY: &
         upf_inverse_basis, upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
         upf_inverse_operator, upf_inverse_operator_response, upf_inverse_project, &
@@ -51,6 +52,7 @@ PROGRAM upf_inverse_unittest
    CALL check_pair_coulomb()
    CALL check_periodic_coulomb()
    CALL check_fourier_coulomb()
+   CALL check_core_fourier()
    CALL check_nc_fields()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
@@ -244,6 +246,43 @@ CONTAINS
       CALL check(ABS(kernel(1, 2, 1, 2) - 4.0_dp*pi/3.0_dp*b(1)/a(1)**2), "Concentric dipole shells")
       CALL check(ABS(kernel(1, 2, 1, 3)), "Concentric harmonic orthogonality")
    END SUBROUTINE check_pair_coulomb
+! **************************************************************************************************
+!> \brief Original core normalization, finite endpoint and joint phase/lattice/volume derivative.
+! **************************************************************************************************
+   SUBROUTINE check_core_fourier()
+      COMPLEX(dp)                                        :: dg(3, 3), dr(3, 3), response(3), rho(3), &
+                                                            samples(3, 2)
+      INTEGER                                            :: side
+      REAL(dp)                                           :: delta_g(3, 3), delta_r(3), g(3, 3), &
+                                                            position(3), shift
+      TYPE(atom_upfpot_type)                             :: pot
+
+      ALLOCATE (pot%r(5), pot%rab(5), pot%rho_nlcc(5))
+      pot%r(:) = [0.0_dp, 0.5_dp, 1.0_dp, 1.5_dp, 2.0_dp]
+      pot%rab = 0.5_dp
+      pot%rho_nlcc(:) = [1.0_dp, 0.8_dp, 0.5_dp, 0.2_dp, 0.1_dp]
+      pot%core_correction = .TRUE.
+      g(:, 1) = 0.0_dp
+      g(:, 2) = [0.3_dp, -0.2_dp, 0.4_dp]
+      g(:, 3) = -g(:, 2)
+      position = [0.2_dp, -0.3_dp, 0.1_dp]
+      delta_r = [0.02_dp, 0.01_dp, -0.03_dp]
+      delta_g = 0.02_dp*g
+      CALL upf_core_fourier(pot, g, position, 3.0_dp, rho, dr, dg)
+      CALL check(ABS(3.0_dp*rho(1) - 4.0_dp*pi/6.0_dp* &
+                     SUM([1.0_dp, 4.0_dp, 2.0_dp, 4.0_dp, 1.0_dp]*pot%r**2*pot%rho_nlcc)), "Original core zero mode", 1.e-12_dp)
+      CALL check(ABS(rho(3) - CONJG(rho(2))), "Original core Fourier reality", 1.e-12_dp)
+      response = SUM(dr*SPREAD(delta_r, 2, 3), DIM=1) + SUM(dg*delta_g, DIM=1) - 0.01_dp*rho
+      DO side = 1, 2
+         shift = REAL(2*side - 3, dp)*step
+         CALL upf_core_fourier(pot, g + shift*delta_g, position + shift*delta_r, &
+                               3.0_dp*(1.0_dp + 0.01_dp*shift), samples(:, side))
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, 2) - samples(:, 1))/(2.0_dp*step) - response)), "Original core joint response", 2.e-9_dp)
+      pot%core_correction = .FALSE.
+      CALL upf_core_fourier(pot, g, position, 3.0_dp, rho, dr, dg)
+      CALL check(MAXVAL(ABS(rho)) + MAXVAL(ABS(dr)) + MAXVAL(ABS(dg)), "Absent partial core", 0.0_dp)
+   END SUBROUTINE check_core_fourier
 
 ! **************************************************************************************************
 !> \brief Signed shell/PW coupling, reciprocal zero limit and joint geometry response.

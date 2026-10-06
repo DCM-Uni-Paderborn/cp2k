@@ -137,6 +137,7 @@ MODULE qs_ks_methods
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_sccs,                         ONLY: sccs
+   USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_force
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
                                               qs_upf_inverse_scf_traces
    USE qs_vxc,                          ONLY: qs_vxc_create
@@ -1123,10 +1124,14 @@ CONTAINS
       IF (ASSOCIATED(rho_nlcc) .AND. calculate_forces .AND. &
           .NOT. native_gapw_atom_composite_reference .AND. &
           .NOT. native_direct_valence_atom_composite) THEN
-         DO ispin = 1, nspins
-            CALL integrate_rho_nlcc(v_rspace_new(ispin), qs_env)
-            IF (dft_control%do_admm) CALL integrate_rho_nlcc(v_rspace_new_aux_fit(ispin), qs_env)
-         END DO
+         IF (qs_upf_inverse_scf_active(ks_env)) THEN
+            CALL qs_upf_inverse_core_force(qs_env, v_rspace_new)
+         ELSE
+            DO ispin = 1, nspins
+               CALL integrate_rho_nlcc(v_rspace_new(ispin), qs_env)
+               IF (dft_control%do_admm) CALL integrate_rho_nlcc(v_rspace_new_aux_fit(ispin), qs_env)
+            END DO
+         END IF
       END IF
 
       ! calculate KG correction
