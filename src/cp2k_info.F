@@ -289,6 +289,9 @@ CONTAINS
 #if defined(__SIRIUS_XC_DERIVATIVE)
       flags = TRIM(flags)//" sirius_xc_derivative"
 #endif
+#if defined(__SIRIUS_FINALIZE_NO_FFTW)
+      flags = TRIM(flags)//" sirius_finalize_no_fftw"
+#endif
 #if defined(__SIRIUS_NLCG)
       flags = TRIM(flags)//" sirius_nlcg"
 #endif

@@ -114,7 +114,12 @@ def neon_setup():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
-    setups = {"H": hydrogen_setup, "He": helium_setup, "Li": lithium_setup, "Ne": neon_setup}
+    setups = {
+        "H": hydrogen_setup,
+        "He": helium_setup,
+        "Li": lithium_setup,
+        "Ne": neon_setup,
+    }
     parser.add_argument("--element", choices=tuple(setups), default="He")
     args = parser.parse_args()
     atom = setups[args.element]()

@@ -2,10 +2,11 @@
 ! H-paw-no-core.json is prepared from the core-free PAW setup as described in README.md.
 ! The radial grid includes points below the first PAW radial sample.
 &GLOBAL
+  PRINT_LEVEL MEDIUM
   PROJECT H-paw-atom-grid
   RUN_TYPE ENERGY
-  PRINT_LEVEL MEDIUM
 &END GLOBAL
+
 &FORCE_EVAL
   METHOD SIRIUS
   &DFT
@@ -20,42 +21,42 @@
     &END XC
   &END DFT
   &PW_DFT
-    &SKALA_GRID
-      N_RADIAL 100
-      N_ANGULAR 110
-      IMAGE_SHELL 1
-      RADIAL_SCALE 1.0
-    &END SKALA_GRID
     &CONTROL
-      PROCESSING_UNIT cpu
       GEN_EVP_SOLVER_NAME lapack
+      PROCESSING_UNIT cpu
       STD_EVP_SOLVER_NAME lapack
       VERBOSITY 1
     &END CONTROL
-    &PARAMETERS
-      ELECTRONIC_STRUCTURE_METHOD pseudopotential
-      GK_CUTOFF 2.6
-      PW_CUTOFF 8.0
-      NGRIDK 1 1 1
-      SHIFTK 1 0 0
-      NUM_BANDS 4
-      USE_SYMMETRY F
-      DENSITY_TOL 2e-6
-      ENERGY_TOL 2e-7
-      NUM_DFT_ITER 150
-      SMEARING_WIDTH 0.01
-    &END PARAMETERS
     &ITERATIVE_SOLVER
-      TYPE exact
-      MIN_TOLERANCE 1e-11
       ENERGY_TOLERANCE 1e-9
+      MIN_TOLERANCE 1e-11
       NUM_STEPS 80
+      TYPE exact
     &END ITERATIVE_SOLVER
     &MIXER
-      TYPE linear
       BETA 0.2
+      TYPE linear
       USE_HARTREE F
     &END MIXER
+    &PARAMETERS
+      DENSITY_TOL 2e-6
+      ELECTRONIC_STRUCTURE_METHOD pseudopotential
+      ENERGY_TOL 2e-7
+      GK_CUTOFF 2.6
+      NGRIDK 1 1 1
+      NUM_BANDS 4
+      NUM_DFT_ITER 150
+      PW_CUTOFF 8.0
+      SHIFTK 1 0 0
+      SMEARING_WIDTH 0.01
+      USE_SYMMETRY F
+    &END PARAMETERS
+    &SKALA_GRID
+      IMAGE_SHELL 1
+      N_ANGULAR 110
+      N_RADIAL 100
+      RADIAL_SCALE 1.0
+    &END SKALA_GRID
   &END PW_DFT
   &SUBSYS
     &CELL

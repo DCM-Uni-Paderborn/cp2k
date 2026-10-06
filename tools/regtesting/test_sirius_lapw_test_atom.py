@@ -10,7 +10,12 @@ import sys
 import tempfile
 import unittest
 
-from create_sirius_lapw_test_atom import helium_setup, hydrogen_setup, lithium_setup, neon_setup
+from create_sirius_lapw_test_atom import (
+    helium_setup,
+    hydrogen_setup,
+    lithium_setup,
+    neon_setup,
+)
 
 
 class LapwTestAtom(unittest.TestCase):
@@ -31,7 +36,10 @@ class LapwTestAtom(unittest.TestCase):
                 self.assertAlmostEqual(electrons, atom["number"], delta=1e-5)
 
     def test_core_and_valence(self):
-        for factory, number, angular in ((lithium_setup, 3, {0}), (neon_setup, 10, {0, 1})):
+        for factory, number, angular in (
+            (lithium_setup, 3, {0}),
+            (neon_setup, 10, {0, 1}),
+        ):
             atom = factory()
             with self.subTest(element=atom["symbol"]):
                 self.assertEqual(atom["core"], "1s")
@@ -60,7 +68,9 @@ class LapwTestAtom(unittest.TestCase):
                 (["--element", "Ne"], neon_setup),
             ):
                 with self.subTest(args=args):
-                    subprocess.run([sys.executable, str(script), str(output), *args], check=True)
+                    subprocess.run(
+                        [sys.executable, str(script), str(output), *args], check=True
+                    )
                     self.assertEqual(json.loads(output.read_text()), factory())
 
 

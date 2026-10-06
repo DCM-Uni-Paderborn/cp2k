@@ -408,7 +408,7 @@ CONTAINS
             INTEGER(C_INT), VALUE                        :: count
             TYPE(C_PTR), INTENT(IN)                      :: inputs(*), directions(*)
             TYPE(C_PTR), INTENT(OUT)                     :: responses(*)
-         END SUBROUTINE
+         END SUBROUTINE torch_c_tensor_hessian_vector
       END INTERFACE
       CPASSERT(C_ASSOCIATED(tensor%c_ptr))
       CPASSERT(SIZE(inputs) > 0)
@@ -1074,7 +1074,7 @@ CONTAINS
             TYPE(C_PTR), INTENT(INOUT)                   :: outputs(*)
             REAL(C_DOUBLE), INTENT(OUT)                  :: energy
             INTEGER(C_INT), INTENT(OUT)                  :: status
-         END SUBROUTINE
+         END SUBROUTINE torch_c_model_spin_projected_energy
       END INTERFACE
       CPASSERT(C_ASSOCIATED(model%c_ptr) .AND. C_ASSOCIATED(inputs%c_ptr))
       CPASSERT(C_ASSOCIATED(axes%c_ptr) .AND. C_ASSOCIATED(weights%c_ptr))

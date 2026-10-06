@@ -49,8 +49,9 @@ PROGRAM skala_grid_unittest
 
    CALL get_command_argument(1, model)
    IF (LEN_TRIM(model) == 0) ERROR STOP "Pass a model exported by create_skala_grid_test_model.py"
-   IF (LEN_TRIM(model) > default_string_length) &
+   IF (LEN_TRIM(model) > default_string_length) THEN
       ERROR STOP "Use MODEL SKALA and set SKALA_MODEL for a long model path"
+   END IF
    CALL get_command_argument(2, model_mode)
    spinor_precision_test = model_mode == "spinor-precision"
    spinor_test = model_mode == "spinor" .OR. model_mode == "spinor-float32" .OR. spinor_precision_test
@@ -126,8 +127,9 @@ PROGRAM skala_grid_unittest
             CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_CHUNKS", l_val=(mode == 1))
             CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_CHUNK_MAX_ROWS", i_val=1)
             CALL evaluate(rho, grad, tau, energy)
-            IF (model_mode == "skala-float32" .AND. energy >= -1.0e-6_dp) &
+            IF (model_mode == "skala-float32" .AND. energy >= -1.0e-6_dp) THEN
                ERROR STOP "The Skala field fixture must have a nontrivial XC energy"
+            END IF
             IF (mode == 0) THEN
                reference = energy
                ref_vrho = vrho
@@ -191,6 +193,9 @@ PROGRAM skala_grid_unittest
    CALL section_release(definition)
    CALL cp2k_finalize()
 CONTAINS
+! **************************************************************************************************
+!> \brief Check spin rotations, collinear limits and joint Hessian actions.
+! **************************************************************************************************
    SUBROUTINE noncollinear_points()
       INTEGER, PARAMETER                                 :: block_size = 16
 
@@ -404,8 +409,9 @@ CONTAINS
          reference_v(:, 18) = 0.5_dp*(col_vt(:, 1) - col_vt(:, 2))
          err = MAX(ABS(other - expected), MAXVAL(ABS(plus_v(:, 1:20) - reference_v(:, 1:20))))
          CALL comm%max(err)
-         IF (err > MERGE(1.0e-11_dp, tol, spinor_precision_test)) &
+         IF (err > MERGE(1.0e-11_dp, tol, spinor_precision_test)) THEN
             ERROR STOP "Spin projection fails the collinear or unpolarized limit"
+         END IF
       END DO
       IF (model_mode == "skala-float32") THEN
          ! Saturated neural activations must retain finite second/third derivatives.
@@ -439,6 +445,18 @@ CONTAINS
       IF (comm%mepos == 0) WRITE (*, '(A)') "Noncollinear point energy, covector and response checks passed."
    END SUBROUTINE noncollinear_points
 
+! **************************************************************************************************
+!> \brief Evaluate spin-projected point energy, covectors and optional Hessian actions.
+!> \param values Primitive spinor fields and quadrature data.
+!> \param centres Cartesian atom centres, in bohr.
+!> \param sizes Point count of each atom block.
+!> \param angular Positive Lebedev spin-direction point count.
+!> \param e XC energy.
+!> \param covectors Primitive-field and quadrature covectors.
+!> \param centre_covectors Atom-block-centre covectors.
+!> \param direction Primitive-field and quadrature direction.
+!> \param centre_direction Atom-block-centre direction.
+! **************************************************************************************************
    SUBROUTINE spinor_evaluate(values, centres, sizes, angular, e, covectors, centre_covectors, direction, centre_direction)
       REAL(dp), INTENT(IN)                               :: values(:, :), centres(:, :)
       INTEGER, INTENT(IN)                                :: sizes(:), angular
@@ -468,6 +486,9 @@ CONTAINS
           .NOT. ALL(ieee_is_finite(centre_covectors))) ERROR STOP "Nonfinite spin-projected energy or derivatives"
    END SUBROUTINE spinor_evaluate
 
+! **************************************************************************************************
+!> \brief Check point fields, quadrature derivatives and CPU/GPU agreement.
+! **************************************************************************************************
    SUBROUTINE arbitrary_points()
       INTEGER, PARAMETER                                 :: block_sizes(2) = [160, 192], nang = 16, &
                                                             total_rows = SUM(block_sizes)
@@ -586,8 +607,9 @@ CONTAINS
                IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "CPU/GPU point energy/covector difference: ", err
                IF (err > routing_tolerance) ERROR STOP "CPU/GPU point energy or covectors disagree"
             END IF
-            IF (model_mode == "skala-float32" .AND. e >= -1.0e-6_dp) &
+            IF (model_mode == "skala-float32" .AND. e >= -1.0e-6_dp) THEN
                ERROR STOP "The arbitrary-point fixture must have a nontrivial Skala energy"
+            END IF
             IF (model_mode /= "skala-float32") THEN
                expected = 0.0_dp
                err = 0.0_dp
@@ -631,8 +653,9 @@ CONTAINS
                      err = MAX(err, ABS(pe(row) - energy_density), ABS(pd(row) - weight_covector), &
                                MAXVAL(ABS(px(:, row) - point_covector)))
                      rho_sum = 0.1_dp*mean*sum_weights*dw/sum_descriptor
-                     IF (model_mode == "geometry") &
+                     IF (model_mode == "geometry") THEN
                         rho_sum = rho_sum + 0.02_dp*SUM(mean_point**2)*sum_weights*dw/sum_descriptor
+                     END IF
                      DO spin = 1, nspin
                         err = MAX(err, ABS(pr(row, spin) - &
                                            (w*spin_scale*(1.4_dp*r(row, spin) + 0.2_dp*t(row, spin)) + rho_sum)))
@@ -648,10 +671,12 @@ CONTAINS
                CALL comm%sum(expected)
                CALL comm%max(err)
                CALL comm%max(descriptor_derivative)
-               IF (MAX(ABS(e - expected), err) > 1.0e-11_dp) &
+               IF (MAX(ABS(e - expected), err) > 1.0e-11_dp) THEN
                   ERROR STOP "Arbitrary-point analytic energy or raw covector is incorrect"
-               IF (descriptor_derivative < 1.0e-10_dp) &
+               END IF
+               IF (descriptor_derivative < 1.0e-10_dp) THEN
                   ERROR STOP "Zero-energy-weight rows lost their descriptor derivative"
+               END IF
             END IF
             gathered = 0.0_dp
             DO row = 1, nr_local
@@ -672,13 +697,15 @@ CONTAINS
                ref_e = e
                reference_grad = gathered
             ELSE
-               IF (MAX(ABS(e - ref_e), MAXVAL(ABS(gathered - reference_grad))) > routing_tolerance) &
+               IF (MAX(ABS(e - ref_e), MAXVAL(ABS(gathered - reference_grad))) > routing_tolerance) THEN
                   ERROR STOP "Redistributing complete atom blocks changed Skala energy or derivatives"
+               END IF
             END IF
             point = SUM(px, DIM=2) + SUM(pc, DIM=2)
             CALL comm%sum(point)
-            IF (MAXVAL(ABS(point)) > derivative_tolerance) &
+            IF (MAXVAL(ABS(point)) > derivative_tolerance) THEN
                ERROR STOP "Point and block-centre derivatives violate translation invariance"
+            END IF
             ad = [SUM(pr*dr), SUM(pg*dg), SUM(pt*dt), SUM(px*dx), SUM(pc*dc), SUM(pe*de), SUM(pd*dd)]
             CALL comm%sum(ad)
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
@@ -762,8 +789,9 @@ CONTAINS
                                            MAXVAL(ABS(he - (plus_e - pe)/(2.0_dp*step_h))), &
                                            MAXVAL(ABS(hd - (plus_d - pd)/(2.0_dp*step_h))))
                CALL comm%max(err)
-               IF (err > derivative_tolerance) &
+               IF (err > derivative_tolerance) THEN
                   ERROR STOP "Joint field/geometry Hessian-vector product fails finite differences"
+               END IF
                maximum_error = MAX(maximum_error, err)
             END DO
             ! Check the two mixed blocks independently, including the scalar-spin chain rule.
@@ -853,6 +881,9 @@ CONTAINS
       IF (comm%mepos == 0) WRITE (*, '(A)') "Arbitrary-point atom-block energy and derivative checks passed."
    END SUBROUTINE arbitrary_points
 
+! **************************************************************************************************
+!> \brief Check direct and reconstructed atom-centred primitive fields.
+! **************************************************************************************************
    SUBROUTINE atomic_fields()
       INTEGER                                            :: a, ix, iy, iz, row, spin, sx, sy, sz
       REAL(dp)                                           :: charge, displacement(3), occupation, &
@@ -898,13 +929,21 @@ CONTAINS
       END DO
    END SUBROUTINE atomic_fields
 
+! **************************************************************************************************
+!> \brief Evaluate regular-grid XC energy and covectors.
+!> \param r Spin densities.
+!> \param g Cartesian spin-density gradients.
+!> \param t Spin kinetic-energy densities.
+!> \param e XC energy.
+! **************************************************************************************************
    SUBROUTINE evaluate(r, g, t, e)
       REAL(dp), INTENT(IN)                               :: r(:, :), g(:, :, :), t(:, :)
       REAL(dp), INTENT(OUT)                              :: e
 
       CALL skala_grid_eval(grid, r, g, t, xc, atoms, cell, e, vrho, vgrad, vtau)
       IF (.NOT. ieee_is_finite(e) .OR. .NOT. ALL(ieee_is_finite(vrho)) .OR. &
-          .NOT. ALL(ieee_is_finite(vgrad)) .OR. .NOT. ALL(ieee_is_finite(vtau))) &
+          .NOT. ALL(ieee_is_finite(vgrad)) .OR. .NOT. ALL(ieee_is_finite(vtau))) THEN
          ERROR STOP "Nonfinite model energy or primitive derivative"
-   END SUBROUTINE
-END PROGRAM
+      END IF
+   END SUBROUTINE evaluate
+END PROGRAM skala_grid_unittest

@@ -43,37 +43,50 @@ def main():
         ),
         (
             "gaussian-basis",
-            source.replace("POTENTIAL ALL", "POTENTIAL ALL\n      BASIS_SET DZVP-MOLOPT-SR-GTH"),
+            source.replace(
+                "POTENTIAL ALL", "POTENTIAL ALL\n      BASIS_SET DZVP-MOLOPT-SR-GTH"
+            ),
             "not BASIS_SET or BASIS",
         ),
         (
             "missing-atom-grid",
-            re.sub(r"    &SKALA_GRID\n.*?    &END SKALA_GRID\n", "", source, flags=re.S),
+            re.sub(
+                r"    &SKALA_GRID\n.*?    &END SKALA_GRID\n", "", source, flags=re.S
+            ),
             "requires PW_DFT/SKALA_GRID",
         ),
         ("wrong-element", source, "does not match the requested element"),
         (
             "invalid-spin-angular",
-            source.replace("      N_ANGULAR 110", "      N_ANGULAR 110\n      N_SPIN_ANGULAR 8"),
+            source.replace(
+                "      N_ANGULAR 110", "      N_ANGULAR 110\n      N_SPIN_ANGULAR 8"
+            ),
             "N_SPIN_ANGULAR requires an available positive Lebedev rule",
         ),
         (
             "vector-without-spinors",
-            source.replace("      POTENTIAL ALL", "      POTENTIAL ALL\n      SIRIUS_MAGNETIZATION_VECTOR 0.3 -0.2 0.1"),
+            source.replace(
+                "      POTENTIAL ALL",
+                "      POTENTIAL ALL\n      SIRIUS_MAGNETIZATION_VECTOR 0.3 -0.2 0.1",
+            ),
             "SIRIUS_MAGNETIZATION_VECTOR requires NUM_MAG_DIMS 3",
         ),
         (
             "vector-without-sirius",
-            (root / "tests/SIRIUS/regtest-skala/H2.inp").read_text()
+            (root / "tests/SIRIUS/regtest-skala/H2.inp")
+            .read_text()
             .replace("METHOD SIRIUS", "METHOD Quickstep")
-            .replace("      POTENTIAL GTH-PBE-q1", "      POTENTIAL GTH-PBE-q1\n      SIRIUS_MAGNETIZATION_VECTOR 0.3 -0.2 0.1"),
+            .replace(
+                "      POTENTIAL GTH-PBE-q1",
+                "      POTENTIAL GTH-PBE-q1\n      SIRIUS_MAGNETIZATION_VECTOR 0.3 -0.2 0.1",
+            ),
             "SIRIUS_MAGNETIZATION_VECTOR requires METHOD SIRIUS",
         ),
         (
             "missing-force-grid",
-            (root / "tests/SIRIUS/regtest-skala/H2.inp").read_text().replace(
-                "RUN_TYPE ENERGY", "RUN_TYPE ENERGY_FORCE"
-            ),
+            (root / "tests/SIRIUS/regtest-skala/H2.inp")
+            .read_text()
+            .replace("RUN_TYPE ENERGY", "RUN_TYPE ENERGY_FORCE"),
             "Native Skala forces and stress with SIRIUS require PW_DFT/SKALA_GRID",
         ),
     ]
@@ -89,21 +102,29 @@ def main():
         command = shlex.split(args.launcher) + [str(executable), "-i", "input.inp"]
         with (directory / "output.log").open("w") as log:
             process = subprocess.Popen(
-                command, cwd=directory, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
+                command,
+                cwd=directory,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
             try:
                 result = process.wait(timeout=90)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
-                raise RuntimeError(f"{name}: input rejection hung; see {directory}") from None
+                raise RuntimeError(
+                    f"{name}: input rejection hung; see {directory}"
+                ) from None
         # CP2K wraps abort messages inside an ASCII-art frame.
         message = " ".join(
             " ".join(line.strip(" *|").split())
             for line in (directory / "output.log").read_text().splitlines()
         )
         if result == 0 or expected not in message:
-            raise RuntimeError(f"{name}: expected rejection was not observed; see {directory}")
+            raise RuntimeError(
+                f"{name}: expected rejection was not observed; see {directory}"
+            )
         if "[find] iteration :" in message:
             raise RuntimeError(f"{name}: rejection must precede SCF; see {directory}")
         print(f"{name}: rejected as expected", flush=True)

@@ -69,8 +69,9 @@ PROGRAM skala_atom_grid_unittest
                DO i = -3, 3
                   offset = x - centres(:, a) - MATMUL(lattice, REAL([i, j, k], dp))
                   CALL skala_partition_weights(partition, a, offset, p, d)
-                  IF (p < 0.0_dp .OR. p > 1.0_dp .OR. d < 0.0_dp .OR. d > 1.0_dp) &
+                  IF (p < 0.0_dp .OR. p > 1.0_dp .OR. d < 0.0_dp .OR. d > 1.0_dp) THEN
                      ERROR STOP "Invalid partition weight"
+                  END IF
                   total = total + p
                END DO
             END DO
@@ -117,8 +118,9 @@ PROGRAM skala_atom_grid_unittest
       error = MAXVAL(ABS(scalar - serial))/ABS(det_3x3(lattice))
       IF (comm%mepos == 0) WRITE (*, '(A,2I6,5ES16.7)') "Atom-grid integration (nr,na,integrals,error): ", nr, na, scalar, error
       IF (level == 1) coarse_error = error
-      IF (level == 2 .AND. (error >= coarse_error .OR. error > 1.0e-6_dp)) &
+      IF (level == 2 .AND. (error >= coarse_error .OR. error > 1.0e-6_dp)) THEN
          ERROR STOP "Periodic volume/Fourier quadrature did not converge"
+      END IF
       IF (level == 1) THEN
          CALL skala_atom_grid_build(single, lattice, centres, nr, na, 1, 1.0_dp, points, ew, dw, bs, bc)
          serial = integrals(points, ew)
@@ -135,10 +137,13 @@ PROGRAM skala_atom_grid_unittest
    IF (comm%mepos == 0) WRITE (*, '(A)') "Periodic Skala atom-grid checks passed"
    CALL cp2k_finalize()
 CONTAINS
+! **************************************************************************************************
+!> \brief Check radial-rule keys, returned-array independence and threaded reuse.
+! **************************************************************************************************
    SUBROUTINE radial_grid_reuse()
-      INTEGER :: trial
-      REAL(dp) :: reference_radius(12), reference_weight(12), radius(12), weights(12), &
-                  reference_other_radius(13), reference_other_weight(13), other_radius(13), other_weights(13)
+      INTEGER                                            :: trial
+      REAL(dp) :: other_radius(13), other_weights(13), radius(12), reference_other_radius(13), &
+         reference_other_weight(13), reference_radius(12), reference_weight(12), weights(12)
 
       CALL skala_radial_grid(12, 1.7_dp, reference_radius, reference_weight)
       CALL skala_radial_grid(13, 1.7_dp, reference_other_radius, reference_other_weight)
@@ -148,23 +153,30 @@ CONTAINS
       DO trial = 1, 8
          IF (MOD(trial, 2) == 0) THEN
             CALL skala_radial_grid(13, 1.7_dp, other_radius, other_weights)
-            IF (ANY(other_radius /= reference_other_radius) .OR. ANY(other_weights /= reference_other_weight)) &
+            IF (ANY(other_radius /= reference_other_radius) .OR. ANY(other_weights /= reference_other_weight)) THEN
                ERROR STOP "Radial-rule point count is not respected"
+            END IF
          ELSE
             CALL skala_radial_grid(12, 0.85_dp, radius, weights)
             IF (MAXVAL(ABS(2.0_dp*radius - reference_radius)) > 16*EPSILON(1.0_dp)*MAXVAL(reference_radius) .OR. &
-                MAXVAL(ABS(8.0_dp*weights - reference_weight)) > 16*EPSILON(1.0_dp)*MAXVAL(reference_weight)) &
+                MAXVAL(ABS(8.0_dp*weights - reference_weight)) > 16*EPSILON(1.0_dp)*MAXVAL(reference_weight)) THEN
                ERROR STOP "Radial-rule scale is not respected"
+            END IF
          END IF
          radius = -1.0_dp
          weights = -1.0_dp
          CALL skala_radial_grid(12, 1.7_dp, radius, weights)
-         IF (ANY(radius /= reference_radius) .OR. ANY(weights /= reference_weight)) &
+         IF (ANY(radius /= reference_radius) .OR. ANY(weights /= reference_weight)) THEN
             ERROR STOP "Radial-rule reuse changes points or weights"
+         END IF
       END DO
 !$OMP END PARALLEL DO
-   END SUBROUTINE
+   END SUBROUTINE radial_grid_reuse
 
+! **************************************************************************************************
+!> \brief Check periodic partition pullbacks against directional finite differences.
+!> \param positions Cartesian positions, in bohr.
+! **************************************************************************************************
    SUBROUTINE partition_derivatives(positions)
       REAL(dp), INTENT(IN)                               :: positions(:, :)
 
@@ -213,10 +225,12 @@ CONTAINS
                adjoint = 0.0_dp
                adjoint(derivative) = 1.0_dp
                CALL skala_partition_pullback(reference_partition, atom, x, adjoint(1), adjoint(2), gx, gr, gh)
-               IF (MAXVAL(ABS(SUM(gr, DIM=2))) > 1.0e-10_dp) &
+               IF (MAXVAL(ABS(SUM(gr, DIM=2))) > 1.0e-10_dp) THEN
                   ERROR STOP "Partition centre derivatives violate translation invariance"
-               IF (derivative == 2 .AND. MAXVAL(ABS(gr)) > 1.0e-10_dp) &
+               END IF
+               IF (derivative == 2 .AND. MAXVAL(ABS(gr)) > 1.0e-10_dp) THEN
                   ERROR STOP "Self-image descriptor depends on independent Cartesian atom centres"
+               END IF
                IF (case_id == 1) THEN
                   rp = positions
                   rp(:, SIZE(positions, 2)) = rp(:, SIZE(positions, 2)) + MATMUL(lattice, [2.0_dp, -1.0_dp, 1.0_dp])
@@ -226,8 +240,9 @@ CONTAINS
                   shifted_gh = shifted_gh + SPREAD(gr(:, SIZE(positions, 2)), 2, 3)* &
                                SPREAD([2.0_dp, -1.0_dp, 1.0_dp], 1, 3)
                   IF (MAX(MAXVAL(ABS(gx - shifted_gx)), MAXVAL(ABS(gr - shifted_gr)), &
-                          MAXVAL(ABS(gh - shifted_gh))) > 1.0e-10_dp) &
+                          MAXVAL(ABS(gh - shifted_gh))) > 1.0e-10_dp) THEN
                      ERROR STOP "Rewrapping an atom changes partition geometry covectors"
+                  END IF
                END IF
                DO component = 1, 3
                   ad = 0.0_dp
@@ -271,8 +286,11 @@ CONTAINS
          END DO
       END DO
       IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum partition derivative error: ", maximum
-   END SUBROUTINE
+   END SUBROUTINE partition_derivatives
 
+! **************************************************************************************************
+!> \brief Check atom-grid coordinate and weight pullbacks.
+! **************************************************************************************************
    SUBROUTINE quadrature_derivatives()
       INTEGER                                            :: component, trial
       REAL(dp)                                           :: ad, dh(3, 3), dr(3, 2), e, em, ep, err, &
@@ -283,8 +301,9 @@ CONTAINS
       dh = RESHAPE([0.13_dp, 0.09_dp, -0.17_dp, 0.22_dp, -0.19_dp, 0.16_dp, 0.11_dp, -0.21_dp, 0.18_dp], [3, 3])
       e = grid_energy(comm, lattice, centres, gr, gh)
       es = grid_energy(single, lattice, centres, sr, sh)
-      IF (MAX(ABS(e - es), MAXVAL(ABS(gr - sr)), MAXVAL(ABS(gh - sh))) > 1.0e-10_dp) &
+      IF (MAX(ABS(e - es), MAXVAL(ABS(gr - sr)), MAXVAL(ABS(gh - sh))) > 1.0e-10_dp) THEN
          ERROR STOP "Distributed quadrature geometry covectors differ"
+      END IF
       maximum = 0.0_dp
       DO component = 1, 2
          DO trial = 1, 2
@@ -308,8 +327,11 @@ CONTAINS
          END DO
       END DO
       IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum quadrature geometry derivative error: ", maximum
-   END SUBROUTINE
+   END SUBROUTINE quadrature_derivatives
 
+! **************************************************************************************************
+!> \brief Check forward geometry tangents and their adjoint identity.
+! **************************************************************************************************
    SUBROUTINE quadrature_direction()
       INTEGER                                            :: component, row, trial
       INTEGER, ALLOCATABLE                               :: minus_sizes(:), plus_sizes(:), sizes(:)
@@ -342,18 +364,21 @@ CONTAINS
          ad = SUM(ax*dx) + SUM(ae*de) + SUM(adesc*dd) + SUM(ab*db)
          CALL comm%sum(ad)
          reverse = SUM(gr*ar) + SUM(gh*ah)
-         IF (ABS(ad - reverse)/MAX(1.0_dp, ABS(ad), ABS(reverse)) > 2.0e-12_dp) &
+         IF (ABS(ad - reverse)/MAX(1.0_dp, ABS(ad), ABS(reverse)) > 2.0e-12_dp) THEN
             ERROR STOP "Atom-grid forward and reverse geometry derivatives differ"
+         END IF
          DO trial = 1, 2
             h = 1.0e-4_dp/REAL(trial, dp)
             CALL skala_atom_grid_build(comm, lattice + h*ah, centres + h*ar, 12, 14, 1, 1.0_dp, &
                                        px, pe, pd, plus_sizes, pb)
             CALL skala_atom_grid_build(comm, lattice - h*ah, centres - h*ar, 12, 14, 1, 1.0_dp, &
                                        mx, me, md, minus_sizes, mb)
-            IF (SIZE(plus_sizes) /= SIZE(sizes) .OR. SIZE(minus_sizes) /= SIZE(sizes)) &
+            IF (SIZE(plus_sizes) /= SIZE(sizes) .OR. SIZE(minus_sizes) /= SIZE(sizes)) THEN
                ERROR STOP "Atom-grid direction changes block ownership"
-            IF (ANY(plus_sizes /= sizes) .OR. ANY(minus_sizes /= sizes)) &
+            END IF
+            IF (ANY(plus_sizes /= sizes) .OR. ANY(minus_sizes /= sizes)) THEN
                ERROR STOP "Atom-grid direction fixture changes row topology"
+            END IF
             error = MAX(0.0_dp, MAXVAL(ABS(dx - (px - mx)/(2*h))), MAXVAL(ABS(db - (pb - mb)/(2*h))))
             DO row = 1, SIZE(e)
                error = MAX(error, ABS(de(row) - (pe(row) - me(row))/(2*h))/MAX(1.0_dp, ABS(de(row))), &
@@ -373,8 +398,11 @@ CONTAINS
       CALL comm%max(error)
       IF (error > 2.0e-12_dp) ERROR STOP "Rigid translation changes atom-grid weights"
       IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Maximum quadrature forward derivative error: ", maximum
-   END SUBROUTINE
+   END SUBROUTINE quadrature_direction
 
+! **************************************************************************************************
+!> \brief Check cell and atom derivatives in a cubic cell.
+! **************************************************************************************************
    SUBROUTINE cubic_quadrature_derivatives()
       INTEGER                                            :: component, trial
       REAL(dp)                                           :: ad, dh(3, 3), dr(3, 1), em, ep, err, &
@@ -411,8 +439,19 @@ CONTAINS
          WRITE (*, '(A,ES12.4)') "Cubic quadrature reference energy: ", reference
          WRITE (*, '(A,ES12.4)') "Maximum cubic quadrature derivative error: ", maximum
       END IF
-   END SUBROUTINE
+   END SUBROUTINE cubic_quadrature_derivatives
 
+! **************************************************************************************************
+!> \brief Evaluate a smooth test integral and its geometry derivatives.
+!> \param group Context communicator.
+!> \param hmat Cell vectors as columns, in bohr.
+!> \param positions Cartesian positions, in bohr.
+!> \param gr Atom-coordinate derivative.
+!> \param gh Cell-vector derivative.
+!> \param nradial Number of radial nodes.
+!> \param nangular Lebedev point count.
+!> \return Test integral over the context communicator.
+! **************************************************************************************************
    FUNCTION grid_energy(group, hmat, positions, gr, gh, nradial, nangular) RESULT(e)
       TYPE(mp_comm_type), INTENT(IN)                     :: group
       REAL(dp), INTENT(IN)                               :: hmat(3, 3), positions(:, :)
@@ -444,8 +483,14 @@ CONTAINS
          CALL skala_atom_grid_pullback(group, hmat, positions, nr, na, 1, 1.0_dp, sizes, &
                                        px, pe, pd, 0.04_dp*blocks, gr, gh)
       END IF
-   END FUNCTION
+   END FUNCTION grid_energy
 
+! **************************************************************************************************
+!> \brief Integrate constant and Fourier test fields.
+!> \param positions Cartesian positions, in bohr.
+!> \param weights Quadrature integration weights.
+!> \return Constant and Fourier integrals.
+! **************************************************************************************************
    FUNCTION integrals(positions, weights) RESULT(values)
       REAL(dp), INTENT(IN)                               :: positions(:, :), weights(:)
       REAL(dp)                                           :: values(4)
@@ -459,5 +504,5 @@ CONTAINS
          f = COS(2*pi*(s(1) - s(2)))
          values = values + weights(row)*[1.0_dp, COS(2*pi*s(1)), SIN(2*pi*s(2)), f*f]
       END DO
-   END FUNCTION
-END PROGRAM
+   END FUNCTION integrals
+END PROGRAM skala_atom_grid_unittest

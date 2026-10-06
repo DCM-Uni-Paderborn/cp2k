@@ -119,8 +119,9 @@ PROGRAM skala_sirius_unittest
       ERROR STOP "Unknown LAPW valence relativity"
    END SELECT
    IF (ALL(core_relativity_arg /= ["none", "zora"])) ERROR STOP "Core response requires NR or ZORA"
-   IF (LEN_TRIM(lapw_setup) == 0 .AND. core_relativity_arg /= "none") &
+   IF (LEN_TRIM(lapw_setup) == 0 .AND. core_relativity_arg /= "none") THEN
       ERROR STOP "Core relativity requires a supplied LAPW atom file"
+   END IF
    num_bands = 4
    IF (LEN_TRIM(bands_arg) > 0) THEN
       READ (bands_arg, *, IOSTAT=ierr) num_bands
@@ -133,10 +134,12 @@ PROGRAM skala_sirius_unittest
       ERROR STOP "Processing unit must be cpu or gpu"
    END IF
    IF (LEN_TRIM(model_device_arg) > 0 .AND. &
-       TRIM(model_device_arg) /= "cpu" .AND. TRIM(model_device_arg) /= "gpu") &
+       TRIM(model_device_arg) /= "cpu" .AND. TRIM(model_device_arg) /= "gpu") THEN
       ERROR STOP "Neural model device must be cpu or gpu"
-   IF (LEN_TRIM(model_mode) > 0 .AND. TRIM(model_mode) /= "skala-float32") &
+   END IF
+   IF (LEN_TRIM(model_mode) > 0 .AND. TRIM(model_mode) /= "skala-float32") THEN
       ERROR STOP "Unknown model mode (expected skala-float32 or no mode for the analytic fixture)"
+   END IF
    force_test = TRIM(grid_arg) == "atom-grid-forces" .OR. TRIM(grid_arg) == "spinor-lapw-soc-forces"
    stress_test = TRIM(grid_arg) == "atom-grid-stress" .OR. TRIM(grid_arg) == "spinor-lapw-soc-stress"
    derivative_test = force_test .OR. stress_test
@@ -175,8 +178,9 @@ PROGRAM skala_sirius_unittest
    IF (LEN_TRIM(response_arg) > 0) THEN
       READ (response_arg, *, IOSTAT=ierr) response_step
       IF (ierr /= 0) ERROR STOP "Invalid field-response step"
-      IF (.NOT. ieee_is_finite(response_step) .OR. response_step <= 0.0_dp) &
+      IF (.NOT. ieee_is_finite(response_step) .OR. response_step <= 0.0_dp) THEN
          ERROR STOP "Field-response step must be positive"
+      END IF
    END IF
    side = 6
    IF (LEN_TRIM(side_arg) > 0) THEN
@@ -198,15 +202,17 @@ PROGRAM skala_sirius_unittest
    IF (spinor_test) THEN
       IF (lapw_soc_test .AND. first_mode /= 2) ERROR STOP "LAPW SOC fixture requires LAPW as the second argument"
       IF (TRIM(grid_arg) == "spinor-paw-orbitals" .OR. paw_soc_test) first_mode = 1
-      IF (soc_test .AND. first_mode /= 0 .AND. .NOT. paw_soc_test) &
+      IF (soc_test .AND. first_mode /= 0 .AND. .NOT. paw_soc_test) THEN
          ERROR STOP "SOC fixture requires norm-conserving pseudopotentials or the synthetic PAW setup"
+      END IF
       IF (paw_soc_test .AND. LEN_TRIM(paw_setup) > 0) ERROR STOP "PAW SOC fixture requires the synthetic setup"
       IF (spinor_stress .AND. first_mode /= 0) ERROR STOP "Isolated XC stress fixture requires norm-conserving PW orbitals"
       last_mode = first_mode
    END IF
    reference = 0.0_dp
-   IF (LEN_TRIM(model) == 0 .OR. LEN_TRIM(model) > default_string_length) &
+   IF (LEN_TRIM(model) == 0 .OR. LEN_TRIM(model) > default_string_length) THEN
       ERROR STOP "Pass the test model path, or SKALA with SKALA_MODEL set"
+   END IF
    CALL cp2k_init()
    CALL cp_sirius_init()
    comm = mp_comm_world
@@ -344,8 +350,9 @@ PROGRAM skala_sirius_unittest
                                                 '"iterative_solver":{"type":"exact","min_tolerance":1e-11,"num_steps":80}}')
                END IF
                CALL sirius_set_parameters(ctx, num_mag_dims=mag, num_bands=num_bands)
-               IF (orbital_only .AND. mag == 1) &
+               IF (orbital_only .AND. mag == 1) THEN
                   CALL sirius_import_parameters(ctx, '{"parameters":{"fixed_mag":0.5}}')
+               END IF
                IF (lapw_soc_test) CALL sirius_import_parameters(ctx, '{"parameters":{"so_correction":true}}')
                IF (spinor_test .AND. mode /= 2) CALL sirius_import_parameters(ctx, '{"iterative_solver":{"type":"davidson"}}')
                CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
@@ -491,8 +498,9 @@ PROGRAM skala_sirius_unittest
             IF (comm%mepos == 0) WRITE (*, '(A,2I3,L3,2ES22.12)') "Point SCF (method 0=PW 1=PAW 2=LAPW,mag,converged,E,Exc): ", &
                mode, mag, converged, energy, exc
             IF ((.NOT. converged .AND. .NOT. (orbital_only .OR. spinor_stress)) .OR. &
-                .NOT. ieee_is_finite(energy) .OR. .NOT. ieee_is_finite(exc)) &
+                .NOT. ieee_is_finite(energy) .OR. .NOT. ieee_is_finite(exc)) THEN
                ERROR STOP "SIRIUS Skala point SCF did not converge with finite energies"
+            END IF
             IF (ABS(exc) < 1.0e-6_dp) ERROR STOP "The model must produce a nontrivial XC energy"
             IF (spinor_test) THEN
                CALL sirius_get_total_magnetization(gs, magnetization(1), error_code=ierr)
@@ -532,8 +540,9 @@ PROGRAM skala_sirius_unittest
                 .NOT. spinor_stress .AND. .NOT. orbital_only) THEN
                CALL sirius_get_xc_geometry_derivatives(gs, natoms, atom_derivative, cell_derivative, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "SIRIUS Skala geometry callback failed"
-               IF (.NOT. ALL(ieee_is_finite(atom_derivative)) .OR. .NOT. ALL(ieee_is_finite(cell_derivative))) &
+               IF (.NOT. ALL(ieee_is_finite(atom_derivative)) .OR. .NOT. ALL(ieee_is_finite(cell_derivative))) THEN
                   ERROR STOP "Nonfinite explicit XC geometry derivatives"
+               END IF
                IF (MAXVAL(ABS(cell_derivative)) < 1.0e-8_dp) ERROR STOP "Vacuous XC cell derivative check"
                IF (comm%mepos == 0) WRITE (*, '(A,*(ES19.10))') "Explicit XC atom/cell derivatives: ", &
                   atom_derivative, cell_derivative
@@ -582,8 +591,9 @@ PROGRAM skala_sirius_unittest
                   CALL sirius_get_energy(gs, "descf", descf)
                   updated_energy = updated_energy + descf
                   CALL sirius_get_energy(gs, "exc", updated_exc)
-                  IF (.NOT. ieee_is_finite(updated_energy) .OR. .NOT. ieee_is_finite(updated_exc)) &
+                  IF (.NOT. ieee_is_finite(updated_energy) .OR. .NOT. ieee_is_finite(updated_exc)) THEN
                      ERROR STOP "Nonfinite energy after geometry update"
+                  END IF
                   IF (ABS(updated_energy - energy) < 1.0e-7_dp) ERROR STOP "Vacuous geometry-update check"
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
                   CALL sirius_get_xc_geometry_derivatives(gs, natoms, atom_derivative, cell_derivative, error_code=ierr)
@@ -594,14 +604,16 @@ PROGRAM skala_sirius_unittest
                   IF (updated_basis /= fresh_basis) ERROR STOP "Geometry-update fixture crosses the orbital cutoff"
                   IF (comm%mepos == 0) WRITE (*, '(A,2I3,2ES19.10)') "Updated/fresh energy differences (method,mag,E,Exc): ", &
                      mode, mag, ABS(updated_energy - energy), ABS(updated_exc - exc)
-                  IF (ABS(updated_energy - energy) > 2.0e-7_dp .OR. ABS(updated_exc - exc) > 2.0e-7_dp) &
+                  IF (ABS(updated_energy - energy) > 2.0e-7_dp .OR. ABS(updated_exc - exc) > 2.0e-7_dp) THEN
                      ERROR STOP "Updated and fresh geometry energies differ"
+                  END IF
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
                   CALL sirius_get_xc_geometry_derivatives(gs, natoms, repeat_atom, repeat_cell, error_code=ierr)
                   IF (ierr /= 0) ERROR STOP "Fresh geometry callback failed"
                   IF (.NOT. ALL(ieee_is_finite(atom_derivative)) .OR. .NOT. ALL(ieee_is_finite(cell_derivative)) .OR. &
-                      .NOT. ALL(ieee_is_finite(repeat_atom)) .OR. .NOT. ALL(ieee_is_finite(repeat_cell))) &
+                      .NOT. ALL(ieee_is_finite(repeat_atom)) .OR. .NOT. ALL(ieee_is_finite(repeat_cell))) THEN
                      ERROR STOP "Nonfinite geometry derivatives in update comparison"
+                  END IF
                   IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "Updated/fresh XC geometry derivative differences: ", &
                      MAXVAL(ABS(repeat_atom - atom_derivative)), MAXVAL(ABS(repeat_cell - cell_derivative))
                   IF (MAXVAL(ABS(repeat_atom - atom_derivative)) > 2.0e-6_dp .OR. &
@@ -635,8 +647,9 @@ PROGRAM skala_sirius_unittest
                IF (ierr /= 0) ERROR STOP "SIRIUS Skala field response check failed"
                IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "XC field/point response relative errors: ", response_errors
                IF (.NOT. ALL(ieee_is_finite(response_errors))) ERROR STOP "Nonfinite XC field response errors"
-               IF (MAXVAL(response_errors) > MERGE(1.0e-4_dp, 1.0e-8_dp, model_mode == "skala-float32")) &
+               IF (MAXVAL(response_errors) > MERGE(1.0e-4_dp, 1.0e-8_dp, model_mode == "skala-float32")) THEN
                   ERROR STOP "XC field response mismatch"
+               END IF
                CALL sirius_get_energy(gs, "exc", repeat_exc)
                IF (exc /= repeat_exc) ERROR STOP "Field response check changed the ground-state XC energy"
             END IF
@@ -655,15 +668,17 @@ PROGRAM skala_sirius_unittest
                IF (comm%mepos == 0) WRITE (*, '(3A,2I3,4ES19.10)') "Total ", MERGE("strain", "force ", stress_test), &
                   " derivative (method,mag,h,analytic,FD,error): ", &
                   mode, mag, force_steps(i), force_derivative, force_fd, ABS(force_fd - force_derivative)
-               IF (.NOT. ieee_is_finite(force_fd) .OR. ABS(force_fd - force_derivative) > 2.0e-5_dp) &
+               IF (.NOT. ieee_is_finite(force_fd) .OR. ABS(force_fd - force_derivative) > 2.0e-5_dp) THEN
                   ERROR STOP "Geometry derivative disagrees with the finite-difference free energy"
+               END IF
             END DO
          END IF
       END DO
    END DO
    IF (.NOT. derivative_test .AND. .NOT. update_test .AND. .NOT. orbital_only .AND. &
-       ANY(ABS(reference(:, 1) - reference(:, 2)) > 2.0e-5_dp)) &
+       ANY(ABS(reference(:, 1) - reference(:, 2)) > 2.0e-5_dp)) THEN
       ERROR STOP "Scalar and unpolarized collinear SCF energies differ"
+   END IF
    DEALLOCATE (points, weights, descriptor_weights, centres, sizes, atoms, forces)
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
    DEALLOCATE (atom_derivative, repeat_atom)
@@ -678,6 +693,9 @@ PROGRAM skala_sirius_unittest
    END IF
    CALL cp2k_finalize()
 CONTAINS
+! **************************************************************************************************
+!> \brief Check fixed-orbital XC strain derivatives against finite differences.
+! **************************************************************************************************
    SUBROUTINE check_spinor_stress()
       INTEGER                                            :: j
       REAL(dp)                                           :: analytic, base(3, 3), energies(7), &
@@ -705,12 +723,19 @@ CONTAINS
             steps(2*j + 2), analytic, fourth_order, ABS(fourth_order - analytic)
          strain_error(j) = ABS(fourth_order - analytic)
       END DO
-      IF (.NOT. ALL(ieee_is_finite(strain_error)) .OR. MAXVAL(strain_error) > 2.0e-5_dp) &
+      IF (.NOT. ALL(ieee_is_finite(strain_error)) .OR. MAXVAL(strain_error) > 2.0e-5_dp) THEN
          ERROR STOP "Spinor XC stress disagrees with the fixed-orbital energy derivative"
+      END IF
       CALL frozen_spinor_energy(base, 0.0_dp, restored)
       IF (ABS(restored - energies(1)) > 1.0e-7_dp) ERROR STOP "Spinor stress check did not restore the XC energy"
-   END SUBROUTINE
+   END SUBROUTINE check_spinor_stress
 
+! **************************************************************************************************
+!> \brief Evaluate XC under strain without updating orbitals or occupations.
+!> \param base Reference cell vectors.
+!> \param step Dimensionless strain amplitude.
+!> \param value XC energy at the strained geometry.
+! **************************************************************************************************
    SUBROUTINE frozen_spinor_energy(base, step, value)
       REAL(dp), INTENT(IN)                               :: base(3, 3), step
       REAL(dp), INTENT(OUT)                              :: value
@@ -729,8 +754,12 @@ CONTAINS
       IF (ierr /= 0) ERROR STOP "Fixed-orbital spinor potential failed"
       CALL sirius_get_energy(gs, "exc", value)
       IF (.NOT. ieee_is_finite(value)) ERROR STOP "Nonfinite fixed-orbital spinor XC energy"
-   END SUBROUTINE
+   END SUBROUTINE frozen_spinor_energy
 
+! **************************************************************************************************
+!> \brief Set the reference geometry or a small coupled cell and atom displacement.
+!> \param moved Select the displaced geometry instead of the reference geometry.
+! **************************************************************************************************
    SUBROUTINE set_update_geometry(moved)
       LOGICAL, INTENT(IN)                                :: moved
 
@@ -746,5 +775,5 @@ CONTAINS
          atoms(1)%r = atoms(1)%r + 0.01_dp*direction
       END IF
       CALL init_cell(cell, lattice)
-   END SUBROUTINE
+   END SUBROUTINE set_update_geometry
 END PROGRAM skala_sirius_unittest

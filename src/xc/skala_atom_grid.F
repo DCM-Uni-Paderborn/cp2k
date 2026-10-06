@@ -26,7 +26,7 @@ MODULE skala_atom_grid
    TYPE seed_environment_type
       REAL(dp), ALLOCATABLE :: displacement(:, :), distance(:), membership(:)
       INTEGER, ALLOCATABLE :: atom(:), image(:, :)
-   END TYPE
+   END TYPE seed_environment_type
 
    TYPE skala_partition_type
       PRIVATE
@@ -35,7 +35,7 @@ MODULE skala_atom_grid
       REAL(dp), ALLOCATABLE :: centres(:, :)
       TYPE(seed_environment_type), ALLOCATABLE :: neighbours(:)
       TYPE(seed_environment_type) :: self_neighbours
-   END TYPE
+   END TYPE skala_partition_type
 
    PUBLIC :: skala_partition_type, skala_partition_init, skala_partition_weights, &
              skala_partition_pullback, skala_atom_grid_build, skala_atom_grid_pullback, &
@@ -45,6 +45,10 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Cache translated Becke seed environments. Lattice vectors are columns, in bohr.
+!> \param partition Cached periodic partition geometry.
+!> \param lattice Cell vectors as columns, in bohr.
+!> \param centres Cartesian atom centres, in bohr.
+!> \param shell Retained lattice-image shell.
 ! **************************************************************************************************
    SUBROUTINE skala_partition_init(partition, lattice, centres, shell)
       TYPE(skala_partition_type), INTENT(OUT)            :: partition
@@ -66,10 +70,14 @@ CONTAINS
          CALL build_environment(partition, a, .FALSE., partition%neighbours(a))
       END DO
       CALL build_environment(partition, 1, .TRUE., partition%self_neighbours)
-   END SUBROUTINE
+   END SUBROUTINE skala_partition_init
 
 ! **************************************************************************************************
 !> \brief Each image has the same translated environment, not a finite-cluster edge environment.
+!> \param partition Cached periodic partition geometry.
+!> \param atom Target atom index.
+!> \param self_only Use only translated images of the target atom.
+!> \param environment Translated seed environment.
 ! **************************************************************************************************
    SUBROUTINE build_environment(partition, atom, self_only, environment)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
@@ -120,7 +128,7 @@ CONTAINS
       environment%membership = weights(:count)
       environment%atom = atoms(:count)
       environment%image = images(:, :count)
-   END SUBROUTINE
+   END SUBROUTINE build_environment
 
 ! **************************************************************************************************
 !> \brief Energy partition of atom at zero image and descriptor turn-on of its self-image partition.
@@ -155,10 +163,17 @@ CONTAINS
          z = (d - 1.0e-12_dp)/9.0e-12_dp
          descriptor = z**3*(10.0_dp - 15.0_dp*z + 6.0_dp*z*z)
       END IF
-   END SUBROUTINE
+   END SUBROUTINE skala_partition_weights
 
 ! **************************************************************************************************
 !> \brief Normalize all nonzero translated seeds using a scaled log sum.
+!> \param partition Cached periodic partition geometry.
+!> \param atom Target atom index.
+!> \param offset Displacement from the target atom, in bohr.
+!> \param self_only Use only translated images of the target atom.
+!> \param log_max Largest log seed used in the normalization.
+!> \param scaled_sum Sum of seeds relative to log_max.
+!> \return Normalized periodic seed weight.
 ! **************************************************************************************************
    FUNCTION normalized_seed(partition, atom, offset, self_only, log_max, scaled_sum) RESULT(weight)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
@@ -208,7 +223,7 @@ CONTAINS
       IF (TARGET /= -HUGE(1.0_dp)) weight = EXP(TARGET - largest)/total
       IF (PRESENT(log_max)) log_max = largest
       IF (PRESENT(scaled_sum)) scaled_sum = total
-   END FUNCTION
+   END FUNCTION normalized_seed
 
 ! **************************************************************************************************
 !> \brief Pull back independent energy and descriptor partition weights at fixed row topology.
@@ -259,10 +274,18 @@ CONTAINS
       CPASSERT(ALL(ieee_is_finite(doffset)))
       CPASSERT(ALL(ieee_is_finite(dcentres)))
       CPASSERT(ALL(ieee_is_finite(dlattice)))
-   END SUBROUTINE
+   END SUBROUTINE skala_partition_pullback
 
 ! **************************************************************************************************
 !> \brief Reverse the normalized image sum without differentiating its log-sum scaling.
+!> \param partition Cached periodic partition geometry.
+!> \param atom Target atom index.
+!> \param offset Displacement from the target atom, in bohr.
+!> \param self_only Use only translated images of the target atom.
+!> \param adjoint Incoming scalar covector.
+!> \param doffset Displacement covector.
+!> \param dcentres Atom-centre covectors.
+!> \param dlattice Cell-vector covectors.
 ! **************************************************************************************************
    SUBROUTINE seed_pullback(partition, atom, offset, self_only, adjoint, doffset, dcentres, dlattice)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
@@ -315,10 +338,19 @@ CONTAINS
             END DO
          END DO
       END DO
-   END SUBROUTINE
+   END SUBROUTINE seed_pullback
 
 ! **************************************************************************************************
 !> \brief Differentiate a nonzero seed, including image distances and neighbour membership.
+!> \param partition Cached periodic partition geometry.
+!> \param environment Translated seed environment.
+!> \param atom Target atom index.
+!> \param self_only Use only translated images of the target atom.
+!> \param x Cartesian displacement, in bohr.
+!> \param adjoint Incoming scalar covector.
+!> \param gx Cartesian displacement covector.
+!> \param dcentres Atom-centre covectors.
+!> \param dlattice Cell-vector covectors.
 ! **************************************************************************************************
    SUBROUTINE log_seed_pullback(partition, environment, atom, self_only, x, adjoint, gx, dcentres, dlattice)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
@@ -371,10 +403,14 @@ CONTAINS
          dlattice = dlattice + SPREAD(gd, 2, 3)*SPREAD(REAL(environment%image(:, n), dp), 1, 3) - &
                     SPREAD(gc, 2, 3)*SPREAD(fractional, 1, 3)
       END DO
-   END SUBROUTINE
+   END SUBROUTINE log_seed_pullback
 
 ! **************************************************************************************************
 !> \brief Compact Becke seed with triple-cubic pair switches and smooth neighbour membership.
+!> \param partition Cached periodic partition geometry.
+!> \param environment Translated seed environment.
+!> \param x Cartesian displacement, in bohr.
+!> \return Log seed, or a finite sentinel for zero weight.
 ! **************************************************************************************************
    FUNCTION log_seed(partition, environment, x) RESULT(value)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
@@ -401,10 +437,13 @@ CONTAINS
          END IF
          value = value + LOG(factor)
       END DO
-   END FUNCTION
+   END FUNCTION log_seed
 
 ! **************************************************************************************************
 !> \brief Triple-cubic Becke switch without the final subtraction of nearly equal numbers.
+!> \param mu Normalized pair-distance difference.
+!> \param weight Becke-switch value.
+!> \param derivative Derivative of the switch with respect to mu.
 ! **************************************************************************************************
    PURE SUBROUTINE becke_switch(mu, weight, derivative)
       REAL(dp), INTENT(IN)                               :: mu
@@ -421,10 +460,14 @@ CONTAINS
          weight = weight*weight*(3.0_dp - 2.0_dp*weight)
       END DO
       IF (PRESENT(derivative)) derivative = slope
-   END SUBROUTINE
+   END SUBROUTINE becke_switch
 
 ! **************************************************************************************************
 !> \brief C2 compact window, evaluated without cancellation at the outer edge.
+!> \param fractional Fractional displacement.
+!> \param shell Retained lattice-image shell.
+!> \param gradient Window derivative with respect to fractional coordinates.
+!> \return Compact-window weight in the interval from zero to one.
 ! **************************************************************************************************
    FUNCTION compact_window(fractional, shell, gradient) RESULT(weight)
       REAL(dp), INTENT(IN)                               :: fractional(3)
@@ -456,10 +499,14 @@ CONTAINS
             gradient(direction) = slope(direction)*PRODUCT(factors(:direction - 1))*PRODUCT(factors(direction + 1:))
          END DO
       END IF
-   END FUNCTION
+   END FUNCTION compact_window
 
 ! **************************************************************************************************
 !> \brief Gauss-Legendre radial rule on [0,infinity), including r^2 dr and a scale in bohr.
+!> \param n Number of radial nodes.
+!> \param scale Radial scale, in bohr.
+!> \param radius Radial nodes, in bohr.
+!> \param weights Radial weights including r squared dr, in cubic bohr.
 ! **************************************************************************************************
    SUBROUTINE skala_radial_grid(n, scale, radius, weights)
       INTEGER, INTENT(IN)                                :: n
@@ -468,11 +515,11 @@ CONTAINS
 
       INTEGER                                            :: i, info
       INTEGER, SAVE                                      :: cached_n = 0
-      REAL(dp), SAVE                                     :: cached_scale = 0.0_dp
-      REAL(dp), ALLOCATABLE, SAVE                         :: cached_radius(:), cached_weights(:)
-      REAL(dp), ALLOCATABLE                               :: eigenvectors(:, :)
       REAL(dp)                                           :: offdiag(MAX(1, n - 1)), t, &
                                                             work(MAX(1, 2*n - 2))
+      REAL(dp), ALLOCATABLE                              :: eigenvectors(:, :)
+      REAL(dp), ALLOCATABLE, SAVE                        :: cached_radius(:), cached_weights(:)
+      REAL(dp), SAVE                                     :: cached_scale = 0.0_dp
 
       CPASSERT(n >= 2 .AND. ieee_is_finite(scale) .AND. scale > 0.0_dp)
       ! Geometry derivatives reuse this fixed rule, not atom partitions or model fields.
@@ -500,10 +547,22 @@ CONTAINS
          weights = cached_weights
       END IF
 !$OMP END CRITICAL(skala_radial_rule)
-   END SUBROUTINE
+   END SUBROUTINE skala_radial_grid
 
 ! **************************************************************************************************
 !> \brief Build Gauss-Legendre/Lebedev blocks, owned once across the communicator.
+!> \param group Context communicator.
+!> \param lattice Cell vectors as columns, in bohr.
+!> \param centres Cartesian atom centres, in bohr.
+!> \param nradial Number of radial nodes.
+!> \param nangular Lebedev point count.
+!> \param shell Retained lattice-image shell.
+!> \param scale Radial scale, in bohr.
+!> \param points Cartesian quadrature points, in bohr.
+!> \param energy_weights Energy-partition weights.
+!> \param descriptor_weights Nonlocal descriptor-domain weights.
+!> \param block_sizes Point count of each local atom block.
+!> \param block_centres Cartesian atom-block centres, in bohr.
 !> \note Never drop a descriptor-only row.
 ! **************************************************************************************************
    SUBROUTINE skala_atom_grid_build(group, lattice, centres, nradial, nangular, shell, scale, &
@@ -569,10 +628,24 @@ CONTAINS
       points = positions(:, :row)
       energy_weights = energy(:row)
       descriptor_weights = descriptor(:row)
-   END SUBROUTINE
+   END SUBROUTINE skala_atom_grid_build
 
 ! **************************************************************************************************
 !> \brief Differentiate the local atom quadrature at fixed radial scale, angular rule and row topology.
+!> \param group Context communicator.
+!> \param lattice Cell vectors as columns, in bohr.
+!> \param centres Cartesian atom centres, in bohr.
+!> \param nradial Number of radial nodes.
+!> \param nangular Lebedev point count.
+!> \param shell Retained lattice-image shell.
+!> \param scale Radial scale, in bohr.
+!> \param block_sizes Point count of each local atom block.
+!> \param atom_direction Cartesian atom displacement directions.
+!> \param lattice_direction Cell-vector directions.
+!> \param points Quadrature-point directions, in bohr.
+!> \param energy_weights Energy-weight directions.
+!> \param descriptor_weights Descriptor-weight directions.
+!> \param block_centres Atom-block-centre directions, in bohr.
 !> \note Cartesian atom and lattice-column directions are independent and replicated.
 !>       Radial offsets do not deform affinely with the cell.
 ! **************************************************************************************************
@@ -643,10 +716,24 @@ CONTAINS
       CPASSERT(ALL(ieee_is_finite(points)) .AND. ALL(ieee_is_finite(block_centres)))
       CPASSERT(ALL(ieee_is_finite(energy_weights)))
       CPASSERT(ALL(ieee_is_finite(descriptor_weights)))
-   END SUBROUTINE
+   END SUBROUTINE skala_atom_grid_direction
 
 ! **************************************************************************************************
 !> \brief Return global geometry covectors for the atom grid at fixed radial scale and angular rule.
+!> \param group Context communicator.
+!> \param lattice Cell vectors as columns, in bohr.
+!> \param centres Cartesian atom centres, in bohr.
+!> \param nradial Number of radial nodes.
+!> \param nangular Lebedev point count.
+!> \param shell Retained lattice-image shell.
+!> \param scale Radial scale, in bohr.
+!> \param block_sizes Point count of each local atom block.
+!> \param dpoints Quadrature-point covectors.
+!> \param denergy_weights Energy-weight covectors.
+!> \param ddescriptor_weights Descriptor-weight covectors.
+!> \param dblock_centres Atom-block-centre covectors.
+!> \param dcentres Atom-centre covectors.
+!> \param dlattice Cell-vector covectors.
 !> \note Inputs are local raw covectors, including both independent quadrature weights.
 !>       Include the point-position dependence of reconstructed fields in dpoints.
 !>       The host adds their explicit atom and cell derivatives separately.
@@ -718,5 +805,5 @@ CONTAINS
       CALL group%sum(dlattice)
       CPASSERT(ALL(ieee_is_finite(dcentres)))
       CPASSERT(ALL(ieee_is_finite(dlattice)))
-   END SUBROUTINE
+   END SUBROUTINE skala_atom_grid_pullback
 END MODULE skala_atom_grid

@@ -805,8 +805,9 @@ CONTAINS
          CALL pwdft_env_get(pwdft_env=pwdft_env, pwdft_input=pwdft_input)
          grid_section => section_vals_get_subs_vals(pwdft_input, "SKALA_GRID")
          CALL section_vals_get(grid_section, explicit=atom_quadrature)
-         IF (.NOT. atom_quadrature) &
+         IF (.NOT. atom_quadrature) THEN
             CPABORT("Native Skala forces and stress with SIRIUS require PW_DFT/SKALA_GRID")
+         END IF
       END IF
       CALL sirius_find_ground_state(gs_handler, converged=gs_converged)
 

@@ -65,9 +65,7 @@ class GridTestFunctional(torch.nn.Module):
                 )
             begin = end
         return (
-            (energy[:, None] @ self.scale @ self.unit)[:, 0]
-            if self.float32
-            else energy
+            (energy[:, None] @ self.scale @ self.unit)[:, 0] if self.float32 else energy
         )
 
 

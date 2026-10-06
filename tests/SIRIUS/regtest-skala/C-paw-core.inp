@@ -1,15 +1,16 @@
 ! Explicit-core PAW integration test with a fixed spin moment.
 &GLOBAL
+  PRINT_LEVEL MEDIUM
   PROJECT C-paw-core
   RUN_TYPE ENERGY_FORCE
-  PRINT_LEVEL MEDIUM
 &END GLOBAL
+
 &FORCE_EVAL
   METHOD SIRIUS
   STRESS_TENSOR ANALYTICAL
   &DFT
-    UKS T
     MULTIPLICITY 3
+    UKS T
     &XC
       &XC_FUNCTIONAL
         &GAUXC
@@ -20,46 +21,52 @@
       &END XC_FUNCTIONAL
     &END XC
   &END DFT
+  &PRINT
+    &FORCES ON
+    &END FORCES
+    &STRESS_TENSOR ON
+    &END STRESS_TENSOR
+  &END PRINT
   &PW_DFT
-    &SKALA_GRID
-      N_RADIAL 100
-      N_ANGULAR 110
-      IMAGE_SHELL 1
-      RADIAL_SCALE 1.0
-    &END SKALA_GRID
     &CONTROL
-      PROCESSING_UNIT cpu
       GEN_EVP_SOLVER_NAME lapack
+      PROCESSING_UNIT cpu
       STD_EVP_SOLVER_NAME lapack
       VERBOSITY 1
     &END CONTROL
-    &PARAMETERS
-      ELECTRONIC_STRUCTURE_METHOD pseudopotential
-      GK_CUTOFF 4.0
-      PW_CUTOFF 12.0
-      NGRIDK 1 1 1
-      SHIFTK 1 0 0
-      NUM_MAG_DIMS 1
-      FIXED_MAG 2.0
-      NUM_BANDS 6
-      USE_SYMMETRY F
-      DENSITY_TOL 2e-6
-      ENERGY_TOL 2e-7
-      NUM_DFT_ITER 100
-      SMEARING_WIDTH 0.01
-    &END PARAMETERS
     &ITERATIVE_SOLVER
-      TYPE exact
-      MIN_TOLERANCE 1e-11
       ENERGY_TOLERANCE 1e-9
+      MIN_TOLERANCE 1e-11
       NUM_STEPS 80
+      TYPE exact
     &END ITERATIVE_SOLVER
     &MIXER
-      TYPE broyden2
       BETA 0.2
       MAX_HISTORY 8
+      TYPE broyden2
       USE_HARTREE F
     &END MIXER
+    &PARAMETERS
+      DENSITY_TOL 2e-6
+      ELECTRONIC_STRUCTURE_METHOD pseudopotential
+      ENERGY_TOL 2e-7
+      FIXED_MAG 2.0
+      GK_CUTOFF 4.0
+      NGRIDK 1 1 1
+      NUM_BANDS 6
+      NUM_DFT_ITER 100
+      NUM_MAG_DIMS 1
+      PW_CUTOFF 12.0
+      SHIFTK 1 0 0
+      SMEARING_WIDTH 0.01
+      USE_SYMMETRY F
+    &END PARAMETERS
+    &SKALA_GRID
+      IMAGE_SHELL 1
+      N_ANGULAR 110
+      N_RADIAL 100
+      RADIAL_SCALE 1.0
+    &END SKALA_GRID
   &END PW_DFT
   &SUBSYS
     &CELL
@@ -70,14 +77,8 @@
       C 0.2 0.3 0.4
     &END COORD
     &KIND C
-      POTENTIAL UPF C-paw-core.json
       MAGNETIZATION 0
+      POTENTIAL UPF C-paw-core.json
     &END KIND
   &END SUBSYS
-  &PRINT
-    &FORCES ON
-    &END FORCES
-    &STRESS_TENSOR ON
-    &END STRESS_TENSOR
-  &END PRINT
 &END FORCE_EVAL
