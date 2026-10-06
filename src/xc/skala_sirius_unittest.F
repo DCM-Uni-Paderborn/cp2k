@@ -163,7 +163,7 @@ PROGRAM skala_sirius_unittest
    IF (update_test .OR. derivative_test .OR. spinor_stress) ERROR STOP "SIRIUS lacks the point-quadrature update API"
 #endif
 #if !defined(__SIRIUS_XC_POINT_GEOMETRY)
-   IF (atom_grid) ERROR STOP "SIRIUS lacks the point geometry callbacks"
+   IF (derivative_test .OR. spinor_stress) ERROR STOP "SIRIUS lacks the point geometry callbacks"
 #endif
    fd_step = 0.0_dp
    IF (LEN_TRIM(step_arg) > 0) THEN
@@ -251,8 +251,8 @@ PROGRAM skala_sirius_unittest
    IF (atom_grid) THEN
       CALL create_pwdft_section(pwdft_definition)
       CALL section_vals_create(pwdft, pwdft_definition)
-      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=MERGE(30, 100, derivative_test .AND. first_mode == 2))
-      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=MERGE(50, 110, derivative_test .AND. first_mode == 2))
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=MERGE(30, 100, derivative_test))
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=MERGE(50, 110, derivative_test))
       IF (spinor_stress .OR. orbital_only) THEN
          ! These modes test the fixed-orbital chain rule, not grid convergence.
          CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=12)

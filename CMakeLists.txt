@@ -942,7 +942,12 @@ if(CP2K_USE_SIRIUS)
   include(CheckFortranSourceCompiles)
   include(CMakePushCheckState)
   cmake_push_check_state(RESET)
-  set(CMAKE_REQUIRED_LIBRARIES cp2k::sirius)
+  get_target_property(CP2K_SIRIUS_INCLUDE_DIRS sirius::sirius
+                      INTERFACE_INCLUDE_DIRECTORIES)
+  set(CMAKE_REQUIRED_INCLUDES ${CP2K_SIRIUS_INCLUDE_DIRS})
+  # Probe Fortran declarations without SIRIUS's private link dependencies.
+  set(_CP2K_TRY_COMPILE_TARGET_TYPE "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+  set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
   CHECK_Fortran_SOURCE_COMPILES(
     "program check_xc_callback
      use sirius, only: sirius_set_xc_callback
@@ -999,6 +1004,13 @@ if(CP2K_USE_SIRIUS)
     SRC_EXT
     F90)
   cmake_pop_check_state()
+  if(_CP2K_TRY_COMPILE_TARGET_TYPE)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_CP2K_TRY_COMPILE_TARGET_TYPE}")
+  else()
+    unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
+  endif()
+  unset(_CP2K_TRY_COMPILE_TARGET_TYPE)
+  unset(CP2K_SIRIUS_INCLUDE_DIRS)
 endif()
 
 if(CP2K_USE_PLUMED)

@@ -408,7 +408,6 @@ CONTAINS
       INTEGER(C_INT), INTENT(OUT)                        :: status
 
       INTEGER                                            :: i, invalid, nz
-      TYPE(callback_token_type), POINTER                 :: token
       TYPE(mp_comm_type), TARGET                         :: context_comm, fft_comm
       TYPE(skala_grid_layout_type)                       :: grid
       TYPE(skala_sirius_state_type), POINTER             :: state
@@ -420,15 +419,7 @@ CONTAINS
       vgradient = 0.0_dp
       vtau = 0.0_dp
       status = 1
-      NULLIFY (state)
-      IF (C_ASSOCIATED(user_data)) THEN
-         CALL C_F_POINTER(user_data, token)
-         state => states
-         DO WHILE (ASSOCIATED(state))
-            IF (state%token%id == token%id) EXIT
-            state => state%next
-         END DO
-      END IF
+      state => callback_state(user_data)
       invalid = 0
       IF (.NOT. ASSOCIATED(state)) invalid = 1
       IF (nr < 0 .OR. ALL(ns /= [1, 2]) .OR. ANY(dims <= 0) .OR. weight <= 0.0_dp) invalid = 1
@@ -517,7 +508,6 @@ CONTAINS
       INTEGER(C_INT), INTENT(OUT)                        :: status
 
       INTEGER                                            :: invalid
-      TYPE(callback_token_type), POINTER                 :: token
       TYPE(mp_comm_type)                                 :: comm
       TYPE(skala_sirius_state_type), POINTER             :: state
 
@@ -527,15 +517,7 @@ CONTAINS
       dgradient = 0.0_dp
       dtau = 0.0_dp
       status = 1
-      NULLIFY (state)
-      IF (C_ASSOCIATED(user_data)) THEN
-         CALL C_F_POINTER(user_data, token)
-         state => states
-         DO WHILE (ASSOCIATED(state))
-            IF (state%token%id == token%id) EXIT
-            state => state%next
-         END DO
-      END IF
+      state => callback_state(user_data)
       invalid = 0
       IF (.NOT. ASSOCIATED(state)) invalid = 1
       IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2, 4])) invalid = 1
@@ -552,7 +534,8 @@ CONTAINS
 #endif
 
 #if defined(__LIBTORCH) && \
-   (defined(__SIRIUS_XC_POINT_GEOMETRY) ||defined(__SIRIUS_XC_POINT_RESPONSE) ||\
+   (defined(__SIRIUS_XC_CALLBACK) ||defined(__SIRIUS_XC_POINT_CALLBACK) ||\
+   defined(__SIRIUS_XC_POINT_GEOMETRY) ||defined(__SIRIUS_XC_POINT_RESPONSE) ||\
    defined(__SIRIUS_XC_POINT_HESSIAN) ||defined(__SIRIUS_XC_QUADRATURE_DIRECTION))
 ! **************************************************************************************************
 !> \brief Return the registry entry without exporting Fortran pointers across the C ABI.
