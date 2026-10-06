@@ -63,7 +63,7 @@ CONTAINS
       REAL(dp)                                           :: metric_difference
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
-      CPASSERT(frame%inverse%ready)
+      CPASSERT((frame%atom_local .OR. frame%inverse%ready))
       CALL get_ks_env(ks_env, qs_kind_set=kinds)
       CPASSERT(ASSOCIATED(kinds))
       ALLOCATE (augmentation%kinds(SIZE(kinds)))
@@ -101,8 +101,8 @@ CONTAINS
       REAL(dp)                                           :: hermiticity, position(3), tolerance
       REAL(dp), ALLOCATABLE                              :: displacements(:, :), g(:, :)
 
-      CPASSERT(frame%inverse%ready)
-      n = frame%inverse%nproj
+      CPASSERT((frame%atom_local .OR. frame%inverse%ready))
+      n = SIZE(frame%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_density) == [n, n]))
       CPASSERT(SIZE(density) == SIZE(frame%weights))
       CPASSERT(ALL(SHAPE(gradient) == [SIZE(density), 3]))
@@ -188,7 +188,7 @@ CONTAINS
       TYPE(pw_r3d_rs_type)                               :: work_r
 
       CALL check_fourier_grid(frame, density%pw_grid)
-      CPASSERT(ALL(SHAPE(projector_density) == frame%inverse%nproj))
+      CPASSERT(ALL(SHAPE(projector_density) == SIZE(frame%coefficients, 1)))
       tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(projector_density)))
       hermiticity = MAXVAL(ABS(projector_density - CONJG(TRANSPOSE(projector_density))))
       CPASSERT(hermiticity <= tolerance)
@@ -246,7 +246,7 @@ CONTAINS
       TYPE(pw_c1d_gs_type)                               :: potential_g
 
       CALL check_fourier_grid(frame, vdensity%pw_grid)
-      CPASSERT(ALL(SHAPE(projector_operator) == frame%inverse%nproj))
+      CPASSERT(ALL(SHAPE(projector_operator) == SIZE(frame%coefficients, 1)))
       CALL potential_g%create(vdensity%pw_grid)
       CALL fourier_potential(vdensity, vgradient, potential_g)
       ALLOCATE (multiplicity(SIZE(potential_g%array)))
@@ -309,7 +309,7 @@ CONTAINS
 
       CALL check_fourier_grid(frame, vdensity%pw_grid)
       CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
-      CPASSERT(ALL(SHAPE(response) == frame%inverse%nproj))
+      CPASSERT(ALL(SHAPE(response) == SIZE(frame%coefficients, 1)))
       CPASSERT(ASSOCIATED(vdensity_response%pw_grid, vdensity%pw_grid))
       cell_inverse = frame%cell
       CALL invmat(cell_inverse, info)
@@ -417,7 +417,7 @@ CONTAINS
       INTEGER                                            :: axis
       REAL(dp)                                           :: difference, tolerance
 
-      CPASSERT(frame%inverse%ready .AND. ASSOCIATED(grid))
+      CPASSERT((frame%atom_local .OR. frame%inverse%ready) .AND. ASSOCIATED(grid))
       CPASSERT(ASSOCIATED(grid%g) .AND. grid%vol > 0.0_dp)
       CPASSERT(SIZE(frame%weights) == grid%ngpts_local)
       CPASSERT(ALL(frame%weights == grid%dvol))
@@ -520,10 +520,10 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: vdensity(:), vgradient(:, :)
       COMPLEX(dp), INTENT(IN)                            :: projector_operator(:, :)
 
-      CPASSERT(frame%inverse%ready)
+      CPASSERT((frame%atom_local .OR. frame%inverse%ready))
       CPASSERT(SIZE(vdensity) == SIZE(frame%weights))
       CPASSERT(ALL(SHAPE(vgradient) == [SIZE(frame%weights), 3]))
-      CPASSERT(ALL(SHAPE(projector_operator) == frame%inverse%nproj))
+      CPASSERT(ALL(SHAPE(projector_operator) == SIZE(frame%coefficients, 1)))
    END SUBROUTINE check_operator
 
 ! **************************************************************************************************

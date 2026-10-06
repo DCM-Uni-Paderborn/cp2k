@@ -28,6 +28,7 @@ MODULE upf_radial_fields
 
    TYPE upf_radial_fields_type
       INTEGER :: nproj = 0, lmax = -1
+      LOGICAL :: finite_table = .FALSE.
       INTEGER, ALLOCATABLE :: radial_index(:), angular_index(:), lbeta(:), radial_end(:)
       REAL(dp) :: radius = 0.0_dp
       REAL(dp), ALLOCATABLE :: x(:), coefficients(:, :, :)
@@ -47,11 +48,13 @@ CONTAINS
 !> \param radial Original f_l(r), including its full exact zero suffix.
 !> \param lbeta Angular momentum of each original radial channel.
 !> \param fields Immutable cache, initialized outside threaded regions.
+!> \param finite_table Retain a noncompact reference table. Queries beyond its last node are invalid.
 ! **************************************************************************************************
-   SUBROUTINE upf_radial_fields_init(r, radial, lbeta, fields)
+   SUBROUTINE upf_radial_fields_init(r, radial, lbeta, fields, finite_table)
       REAL(dp), INTENT(IN)                               :: r(:), radial(:, :)
       INTEGER, INTENT(IN)                                :: lbeta(:)
       TYPE(upf_radial_fields_type), INTENT(OUT)          :: fields
+      LOGICAL, INTENT(IN), OPTIONAL                      :: finite_table
 
       INTEGER                                            :: first, i, j, l, last, m, n, p
       REAL(dp)                                           :: h
@@ -69,6 +72,8 @@ CONTAINS
       CPASSERT(n >= 4)
       fields%lmax = MAXVAL(lbeta)
       fields%nproj = SUM(2*lbeta + 1)
+      IF (PRESENT(finite_table)) fields%finite_table = finite_table
+      IF (fields%finite_table) fields%radius = r(SIZE(r))
       CALL init_orbital_pointers(fields%lmax)
       CALL init_spherical_harmonics(fields%lmax, -1)
       ALLOCATE (fields%lbeta, SOURCE=lbeta)
@@ -81,15 +86,19 @@ CONTAINS
       DO i = 1, SIZE(lbeta)
          IF (ALL(radial(:, i) == 0.0_dp)) CYCLE
          last = SIZE(r)
-         DO WHILE (radial(last, i) == 0.0_dp)
-            last = last - 1
-         END DO
-         IF (last == SIZE(r)) THEN
-            CPABORT("Original radial field requires an exact zero suffix")
+         IF (fields%finite_table) THEN
+            fields%radial_end(i) = SIZE(fields%x)
+         ELSE
+            DO WHILE (radial(last, i) == 0.0_dp)
+               last = last - 1
+            END DO
+            IF (last == SIZE(r)) THEN
+               CPABORT("Original radial field requires an exact zero suffix")
+            END IF
+            fields%radial_end(i) = last - first + 3
+            fields%radius = MAX(fields%radius, r(last + 1))
          END IF
          CPASSERT(last >= first)
-         fields%radial_end(i) = last - first + 3
-         fields%radius = MAX(fields%radius, r(last + 1))
          y(:) = radial(first:, i)/r(first:)**lbeta(i)
          CPASSERT(ALL(ieee_is_finite(y)))
          CALL spline3ders(fields%x(2:), y, fields%x, ynew=value, dynew=slope)
@@ -100,7 +109,7 @@ CONTAINS
                c(2) = h*slope(j)
                c(3) = 3.0_dp*(value(j + 1) - c(1)) - 2.0_dp*c(2) - h*slope(j + 1)
                c(4) = 2.0_dp*(c(1) - value(j + 1)) + c(2) + h*slope(j + 1)
-               IF (j + 1 == fields%radial_end(i)) THEN
+               IF (j + 1 == fields%radial_end(i) .AND. .NOT. fields%finite_table) THEN
                   c(4) = -10.0_dp*c(1) - 6.0_dp*c(2) - 3.0_dp*c(3)
                   c(5) = 15.0_dp*c(1) + 8.0_dp*c(2) + 3.0_dp*c(3)
                   c(6) = -6.0_dp*c(1) - 3.0_dp*c(2) - c(3)
@@ -150,7 +159,11 @@ CONTAINS
          hessian = 0.0_dp
       END IF
       s = SUM(displacement**2)
-      IF (s >= fields%radius**2) RETURN
+      IF (fields%finite_table) THEN
+         CPASSERT(s <= fields%radius**2)
+      ELSE IF (s >= fields%radius**2) THEN
+         RETURN
+      END IF
       lo = 1
       hi = SIZE(fields%x)
       DO WHILE (hi - lo > 1)
@@ -286,7 +299,13 @@ CONTAINS
             dr = -dshift
             IF (PRESENT(points_response)) dr = dr + points_response(:, point)
             IF (SUM(displacement**2) >= fields%radius**2) CYCLE
-            CALL upf_radial_fields_evaluate(fields, displacement, v, g, hh)
+            IF (PRESENT(gradient_response)) THEN
+               CALL upf_radial_fields_evaluate(fields, displacement, v, g, hh)
+            ELSE IF (PRESENT(gradient) .OR. PRESENT(response)) THEN
+               CALL upf_radial_fields_evaluate(fields, displacement, v, g)
+            ELSE
+               CALL upf_radial_fields_evaluate(fields, displacement, v)
+            END IF
             value(point, :) = value(point, :) + phase*v
             IF (PRESENT(response)) response(point, :) = response(point, :) + &
                                                         phase*MATMUL(dr, g) + dphase*v

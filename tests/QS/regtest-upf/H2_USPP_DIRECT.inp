@@ -1,6 +1,6 @@
 &GLOBAL
   PRINT_LEVEL MEDIUM
-  PROJECT H2_inverse_GPW
+  PROJECT H2_USPP_DIRECT
   RUN_TYPE ENERGY_FORCE
 &END GLOBAL
 
@@ -16,6 +16,7 @@
     &QS
       EPS_DEFAULT 1.E-10
       METHOD GPW
+      USPP_METHOD DIRECT
     &END QS
     &SCF
       EPS_SCF 1.E-11
@@ -44,7 +45,7 @@
     &COORD
       UNIT bohr
       H 2.0 3.0 3.0
-      H 3.4 3.0 3.0
+      H 5.0 3.3 3.4
     &END COORD
     &KIND H
       BASIS_SET DZVP-MOLOPT-PBE-GTH-q1

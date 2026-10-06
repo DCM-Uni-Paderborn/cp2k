@@ -19,10 +19,15 @@ MODULE qs_upf_inverse_scf
                                               dbcsr_release,&
                                               dbcsr_set,&
                                               dbcsr_type
-   USE input_constants,                 ONLY: sic_none
+   USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
+   USE input_constants,                 ONLY: sic_none,&
+                                              uspp_method_direct,&
+                                              uspp_method_inverse,&
+                                              uspp_method_inverse_1c
    USE kinds,                           ONLY: dp
    USE kpoint_transitional,             ONLY: set_1d_pointer
    USE mathlib,                         ONLY: invmat
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
@@ -35,20 +40,24 @@ MODULE qs_upf_inverse_scf
                                               pw_r3d_rs_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
+   USE qs_kinetic,                      ONLY: build_kinetic_matrix
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_did_change,&
                                               qs_ks_env_type,&
                                               set_ks_env
+   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_set,&
                                               qs_rho_type
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_operators
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate,&
                                               qs_upf_inverse_grid_integrate,&
                                               qs_upf_inverse_grid_metric,&
                                               qs_upf_inverse_grid_prepare,&
                                               qs_upf_inverse_grid_response,&
-                                              qs_upf_inverse_matrix_gather
+                                              qs_upf_inverse_matrix_gather,&
+                                              qs_upf_inverse_matrix_scatter
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_grid_type,&
                                               qs_upf_inverse_scf_release,&
@@ -78,16 +87,19 @@ CONTAINS
 !> \param grid Native physical-cell PW grid.
 !> \param images Fixed physical-cell images for the Gaussian and radial fields.
 !> \param info Factorization status; nonzero leaves the reference KS environment unchanged.
+!> \param atom_local Optional nonoverlapping one-center inverse with native Gaussian kinetic integrals.
+!> \param direct Use original projectors and soft orbitals without reconstruction.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_scf_prepare(ks_env, grid, images, info)
+   SUBROUTINE qs_upf_inverse_scf_prepare(ks_env, grid, images, info, atom_local, direct)
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
       TYPE(pw_grid_type), POINTER                        :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
       INTEGER, INTENT(OUT)                               :: info
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
 
       INTEGER                                            :: ikind
       LOGICAL                                            :: do_kpoints
-      TYPE(dbcsr_p_type), POINTER                        :: metric(:), overlap(:)
+      TYPE(dbcsr_p_type), POINTER                        :: kinetic(:), metric(:), overlap(:)
       TYPE(dbcsr_type)                                   :: imaginary
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
@@ -125,10 +137,14 @@ CONTAINS
       END IF
       CPASSERT(control%nimages == 1)
       CALL get_ks_env(ks_env, matrix_s=overlap)
-      CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, [0.0_dp, 0.0_dp, 0.0_dp], state%frame, info)
+      CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, [0.0_dp, 0.0_dp, 0.0_dp], state%frame, info, atom_local, direct)
       IF (info /= 0) THEN
          CALL qs_upf_inverse_scf_release(state)
          RETURN
+      END IF
+      IF (state%frame%ao%atom_local) THEN
+         CALL get_ks_env(ks_env, kinetic=kinetic)
+         CALL qs_upf_inverse_matrix_gather(state%frame%ao, kinetic(1)%matrix, state%gaussian_kinetic)
       END IF
       CALL qs_upf_inverse_augmentation_prepare(ks_env, state%frame%ao, state%augmentation)
       ALLOCATE (metric(1))
@@ -170,6 +186,7 @@ CONTAINS
    SUBROUTINE qs_upf_inverse_scf_core(ks_env)
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
 
+      COMPLEX(dp), ALLOCATABLE                           :: atomic_m(:, :), atomic_t(:, :)
       INTEGER                                            :: axis
       TYPE(dbcsr_p_type), POINTER                        :: h(:), kinetic(:), overlap(:)
       TYPE(dbcsr_type)                                   :: imaginary, real_part
@@ -197,8 +214,15 @@ CONTAINS
          CALL zeros(axis)%create(grid)
          zeros(axis)%array = 0.0_dp
       END DO
-      CALL qs_upf_inverse_grid_integrate(state%frame, zero_density, zeros, unit_tau, overlap(1)%matrix, &
-                                         real_part, imaginary)
+      IF (state%frame%ao%atom_local) THEN
+         CALL qs_upf_inverse_atomic_operators(state%frame%ao, state%frame%ao%radial_q, atomic_t, atomic_m)
+         atomic_t(:, :) = atomic_t + state%gaussian_kinetic
+         CALL qs_upf_inverse_matrix_scatter(state%frame%ao, atomic_t, overlap(1)%matrix, real_part, imaginary)
+         unit_tau%array = 0.0_dp
+      ELSE
+         CALL qs_upf_inverse_grid_integrate(state%frame, zero_density, zeros, unit_tau, overlap(1)%matrix, &
+                                            real_part, imaginary)
+      END IF
       CALL check_real(state, real_part, imaginary)
       CALL dbcsr_copy(kinetic(1)%matrix, real_part)
       CALL dbcsr_release(real_part)
@@ -209,6 +233,7 @@ CONTAINS
                                          augmentation=state%augmentation, fourier_charge=.TRUE.)
       CALL check_real(state, real_part, imaginary)
       CALL dbcsr_copy(h(1)%matrix, real_part)
+      IF (state%frame%ao%atom_local) CALL dbcsr_add(h(1)%matrix, kinetic(1)%matrix, 1.0_dp, 1.0_dp)
       CALL dbcsr_release(real_part)
       CALL dbcsr_release(imaginary)
       CALL local_r%release()
@@ -330,6 +355,8 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: core_response(:, :), &
                                                             metric_response(:, :)
 
+      COMPLEX(dp), ALLOCATABLE                           :: atomic_m(:, :), atomic_t(:, :), &
+                                                            dm(:, :), dt(:, :)
       INTEGER                                            :: axis, info
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3)
       TYPE(pw_r3d_rs_type)                               :: local_r, local_response, unit_tau, zero, &
@@ -344,6 +371,7 @@ CONTAINS
       CALL unit_tau%create(grid)
       CALL zero%create(grid)
       unit_tau%array = 1.0_dp
+      IF (frame%ao%atom_local) unit_tau%array = 0.0_dp
       zero%array = 0.0_dp
       DO axis = 1, 3
          CALL zeros(axis)%create(grid)
@@ -353,6 +381,11 @@ CONTAINS
       CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, local_r, zeros, unit_tau, &
                                         atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
                                         core_response, metric_response, frame%ao%dion)
+      IF (frame%ao%atom_local) THEN
+         CALL qs_upf_inverse_atomic_operators(frame%ao, frame%ao%radial_q, atomic_t, atomic_m, dt, dm, &
+                                              atom_response, cell_response, reduced_k_response)
+         core_response(:, :) = core_response + dt
+      END IF
       CALL local_r%release()
       CALL local_response%release()
       CALL unit_tau%release()
@@ -379,7 +412,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, cell_response, &
                                           reduced_k_response, response, metric_response)
-      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_ks_env_type), INTENT(IN), TARGET           :: ks_env
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity(:), vgradient(:, :), vtau(:)
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), &
                                                             cell_response(3, 3), &
@@ -430,6 +463,11 @@ CONTAINS
          density(:, :, 1) = matrix
          CALL qs_upf_inverse_matrix_gather(state%frame%ao, energy_gamma(axis)%matrix, matrix)
          energy_weighted(:, :, 1) = matrix
+         IF (state%frame%ao%atom_local) THEN
+            CALL gaussian_kinetic_response(ks_env, density_gamma(axis, 1)%matrix, &
+                                           atom_response, cell_response, weight)
+            response = response + weight
+         END IF
          DO ik = 1, nk
             weight = 1.0_dp
             CALL qs_upf_inverse_grid_response(state%frame, state%augmentation, state%frame%ao%radial_q, &
@@ -445,6 +483,54 @@ CONTAINS
          CALL zeros(axis)%release()
       END DO
    END SUBROUTINE qs_upf_inverse_scf_response
+
+! **************************************************************************************************
+!> \brief Contract the native Gamma Gaussian kinetic derivative without modifying force owners.
+!> \param ks_env Prepared native bases and neighbor lists.
+!> \param density Accepted native AO occupations for one spin.
+!> \param atom_response Cartesian displacement of every atom.
+!> \param cell_response Lattice-vector response.
+!> \param response Replicated kinetic energy response.
+! **************************************************************************************************
+   SUBROUTINE gaussian_kinetic_response(ks_env, density, atom_response, cell_response, response)
+      TYPE(qs_ks_env_type), INTENT(IN), TARGET           :: ks_env
+      TYPE(dbcsr_type), INTENT(IN), TARGET               :: density
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
+      REAL(dp), INTENT(OUT)                              :: response
+
+      INTEGER                                            :: info
+      REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
+                                                            virial(3, 3)
+      REAL(dp), ALLOCATABLE                              :: gradients(:, :), relative_motion(:, :)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(dbcsr_p_type), POINTER                        :: operators(:)
+      TYPE(dbcsr_type), POINTER                          :: occupations
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(neighbor_list_set_p_type), POINTER            :: sab(:)
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(qs_ks_env_type), POINTER                      :: native_ks
+
+      native_ks => ks_env
+      occupations => density
+      CALL get_ks_env(ks_env, cell=cell, particle_set=atoms, sab_orb=sab, para_env=para_env)
+      CPASSERT(ASSOCIATED(sab))
+      ALLOCATE (gradients(3, SIZE(atoms)), relative_motion(3, SIZE(atoms)))
+      cell_inverse = cell%hmat
+      CALL invmat(cell_inverse, info)
+      CPASSERT(info == 0)
+      strain = MATMUL(cell_response, cell_inverse)
+      DO info = 1, SIZE(atoms)
+         relative_motion(:, info) = atom_response(:, info) - MATMUL(strain, atoms(info)%r)
+      END DO
+      NULLIFY (operators)
+      CALL build_kinetic_matrix(native_ks, matrix_t=operators, basis_type="ORB", sab_nl=sab, &
+                                calculate_forces=.TRUE., matrix_p=occupations, &
+                                force_response=gradients, virial_response=virial)
+      CALL para_env%sum(gradients)
+      CALL para_env%sum(virial)
+      response = SUM(gradients*relative_motion) - SUM(virial*strain)
+      CALL dbcsr_deallocate_matrix_set(operators)
+   END SUBROUTINE gaussian_kinetic_response
 
 ! **************************************************************************************************
 !> \brief Original short-range ionic potential and its optional fixed-fractional-row response.
@@ -592,6 +678,7 @@ CONTAINS
                                                             reach, upper_real(3)
       REAL(dp), ALLOCATABLE                              :: radial_radius(:)
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(dft_control_type), POINTER                    :: control
       TYPE(gto_basis_set_type), POINTER                  :: basis
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_env_type), POINTER                         :: pw_env
@@ -600,7 +687,7 @@ CONTAINS
       TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(upf_radial_fields_type)                       :: beta, delta
 
-      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, cell=cell, pw_env=pw_env)
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, cell=cell, pw_env=pw_env, dft_control=control)
       CALL get_ks_env(ks_env, uspp=uspp)
       CALL qs_uspp_init(uspp, kinds, atoms)
       CALL set_ks_env(ks_env, uspp=uspp)
@@ -618,7 +705,8 @@ CONTAINS
          IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) THEN
             CPABORT("Inverse USPP mixed potentials are not implemented")
          END IF
-         CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, beta, delta)
+         CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, beta, delta, &
+                                      control%qs_control%uspp_method == uspp_method_direct)
          radial_radius(ikind) = MAX(beta%radius, delta%radius)
       END DO
       IF (ANY(cell%perd == 0)) CPABORT("Inverse USPP GPW currently requires a fully periodic cell")
@@ -652,7 +740,17 @@ CONTAINS
          END DO
       END DO
       CALL pw_env_get(pw_env, auxbas_pw_pool=pool)
-      CALL qs_upf_inverse_scf_prepare(ks_env, pool%pw_grid, images, info)
+      SELECT CASE (control%qs_control%uspp_method)
+      CASE (uspp_method_direct, uspp_method_inverse, uspp_method_inverse_1c)
+         CALL qs_upf_inverse_scf_prepare(ks_env, pool%pw_grid, images, info, &
+                                         control%qs_control%uspp_method /= uspp_method_inverse, &
+                                         control%qs_control%uspp_method == uspp_method_direct)
+      CASE DEFAULT
+         CPABORT("Unknown USPP orbital representation")
+      END SELECT
+      IF (info == -2) THEN
+         CPABORT("Overlapping USPP reconstruction regions. Use USPP_METHOD INVERSE")
+      END IF
       IF (info /= 0) CPABORT("Inverse USPP reconstruction is singular or ill-conditioned")
    END SUBROUTINE qs_upf_inverse_scf_initialize
 

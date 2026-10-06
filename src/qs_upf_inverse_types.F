@@ -16,7 +16,8 @@ MODULE qs_upf_inverse_types
                                               kpoint_transitional_type
    USE message_passing,                 ONLY: mp_comm_type
    USE pw_grid_types,                   ONLY: PW_MODE_LOCAL
-   USE upf_inverse,                     ONLY: upf_inverse_type
+   USE upf_inverse,                     ONLY: upf_inverse_atomic_type,&
+                                              upf_inverse_type
    USE upf_radial_fields,               ONLY: upf_radial_fields_type
    USE uspp_augmentation,               ONLY: uspp_augmentation_type
 
@@ -25,6 +26,8 @@ MODULE qs_upf_inverse_types
 
    TYPE qs_upf_inverse_type
       TYPE(upf_inverse_type) :: inverse
+      LOGICAL :: atom_local = .FALSE., direct = .FALSE.
+      TYPE(upf_inverse_atomic_type), ALLOCATABLE :: atomic_cache(:)
       TYPE(mp_comm_type) :: point_comm
       ! Bases are borrowed from the live Quickstep environment; radial caches and fields are owned.
       TYPE(gto_basis_set_p_type), ALLOCATABLE :: bases(:)
@@ -55,6 +58,7 @@ MODULE qs_upf_inverse_types
       TYPE(qs_upf_inverse_grid_type) :: frame
       TYPE(qs_upf_inverse_augmentation_type) :: augmentation
       TYPE(kpoint_transitional_type) :: metric
+      COMPLEX(dp), ALLOCATABLE :: gaussian_kinetic(:, :)
    END TYPE qs_upf_inverse_scf_type
 
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_grid_type, qs_upf_inverse_augmentation_type

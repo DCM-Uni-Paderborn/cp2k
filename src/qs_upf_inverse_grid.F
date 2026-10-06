@@ -66,14 +66,17 @@ CONTAINS
 !> \param reduced_k Reduced Bloch vector of the physical KS cell.
 !> \param frame New owned adapter; neither the grid nor the KS environment is modified.
 !> \param info Inverse-factorization status.
+!> \param atom_local Optional nonoverlapping one-center inverse.
+!> \param direct Use original projectors and soft orbitals without reconstruction.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info)
+   SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info, atom_local, direct)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
       REAL(dp), INTENT(IN)                               :: reduced_k(3)
       TYPE(qs_upf_inverse_grid_type), INTENT(OUT)        :: frame
       INTEGER, INTENT(OUT)                               :: info
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
 
       INTEGER                                            :: ix, iy, iz, n, point
       REAL(dp), ALLOCATABLE                              :: points(:, :), weights(:)
@@ -106,7 +109,7 @@ CONTAINS
             END DO
          END DO
       END DO
-      CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info)
+      CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info, atom_local, direct)
    END SUBROUTINE qs_upf_inverse_grid_prepare
 
 ! **************************************************************************************************
@@ -169,7 +172,7 @@ CONTAINS
       LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dn(:, :), rho(:), t(:)
 
-      CPASSERT(frame%ao%inverse%ready)
+      CPASSERT((frame%ao%atom_local .OR. frame%ao%inverse%ready))
       use_fourier = .FALSE.
       IF (PRESENT(fourier_charge)) use_fourier = fourier_charge
       IF (use_fourier) THEN
@@ -180,7 +183,7 @@ CONTAINS
       ALLOCATE (rho(n), dn(n, 3), t(n))
       CALL upf_inverse_smooth_density(frame%ao%soft, frame%ao%soft_gradient, p, rho, dn, t)
       IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
-         nproj = frame%ao%inverse%nproj
+         nproj = SIZE(frame%ao%coefficients, 1)
          ALLOCATE (projected(nproj, nproj))
          projected(:, :) = MATMUL(MATMUL(frame%ao%coefficients, p), CONJG(TRANSPOSE(frame%ao%coefficients)))
          IF (PRESENT(augmentation) .AND. .NOT. use_fourier) THEN
@@ -260,7 +263,7 @@ CONTAINS
       LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
 
-      CPASSERT(frame%ao%inverse%ready)
+      CPASSERT((frame%ao%atom_local .OR. frame%ao%inverse%ready))
       use_fourier = .FALSE.
       IF (PRESENT(fourier_charge)) use_fourier = fourier_charge
       IF (use_fourier) THEN
@@ -277,7 +280,7 @@ CONTAINS
       CALL upf_inverse_semilocal_pair(frame%ao%soft, frame%ao%soft, frame%ao%soft_gradient, frame%ao%soft_gradient, &
                                       frame%ao%weights, dn, dg, dt, h, frame%ao%point_comm)
       IF (PRESENT(augmentation)) THEN
-         nproj = frame%ao%inverse%nproj
+         nproj = SIZE(frame%ao%coefficients, 1)
          ALLOCATE (projected(nproj, nproj))
          IF (use_fourier) THEN
             CALL qs_upf_inverse_augmentation_fourier_integrate(frame%ao, augmentation, vdensity, vgradient, projected)
@@ -287,7 +290,7 @@ CONTAINS
          h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, frame%ao%coefficients))
       END IF
       IF (PRESENT(projector_operator)) THEN
-         nproj = frame%ao%inverse%nproj
+         nproj = SIZE(frame%ao%coefficients, 1)
          CPASSERT(ALL(SHAPE(projector_operator) == [nproj, nproj]))
          h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_operator, frame%ao%coefficients))
       END IF
@@ -328,9 +331,9 @@ CONTAINS
 
       INTEGER                                            :: nao, nproj
 
-      CPASSERT(frame%ao%inverse%ready)
+      CPASSERT((frame%ao%atom_local .OR. frame%ao%inverse%ready))
       nao = SIZE(frame%ao%soft, 2)
-      nproj = frame%ao%inverse%nproj
+      nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
       ALLOCATE (metric(nao, nao))
       CALL upf_inverse_pair(frame%ao%soft, frame%ao%soft, frame%ao%weights, metric, frame%ao%point_comm)
@@ -385,10 +388,10 @@ CONTAINS
                                                             dvn(:), dvt(:), points_response(:, :), &
                                                             weights_response(:)
 
-      CPASSERT(frame%ao%inverse%ready)
+      CPASSERT((frame%ao%atom_local .OR. frame%ao%inverse%ready))
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%soft, 2)
-      nproj = frame%ao%inverse%nproj
+      nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
       ALLOCATE (dn(n), dg(n, 3), dt(n), dvn(n), dvg(n, 3), dvt(n), points_response(3, n), weights_response(n), &
                 coefficients_response(nproj, nao), soft_response(n, nao), gradient_response(n, nao, 3), &
@@ -401,8 +404,6 @@ CONTAINS
       volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
       points_response(:, :) = MATMUL(strain, frame%ao%points)
       weights_response(:) = volume_response*frame%ao%weights
-      CALL qs_upf_inverse_response(frame%ao, points_response, atom_response, cell_response, reduced_k_response, &
-                                   weights_response, coefficients_response, soft_response, gradient_response)
       CALL pack_grid(frame, vdensity, dn)
       CALL pack_grid(frame, vtau, dt)
       CALL pack_grid(frame, vdensity_response, dvn)
@@ -411,6 +412,15 @@ CONTAINS
          CALL pack_grid(frame, vgradient(axis), dg(:, axis))
          CALL pack_grid(frame, vgradient_response(axis), dvg(:, axis))
       END DO
+      IF (ANY(dg /= 0.0_dp) .OR. ANY(dt /= 0.0_dp) .OR. ANY(dvg /= 0.0_dp) .OR. ANY(dvt /= 0.0_dp)) THEN
+         CALL qs_upf_inverse_response(frame%ao, points_response, atom_response, cell_response, reduced_k_response, &
+                                      weights_response, coefficients_response, soft_response, gradient_response)
+      ELSE
+         ! Scalar potentials and the metric require field responses, but no spatial Hessians.
+         gradient_response(:, :, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+         CALL qs_upf_inverse_response(frame%ao, points_response, atom_response, cell_response, reduced_k_response, &
+                                      weights_response, coefficients_response, soft_response)
+      END IF
       CALL upf_inverse_semilocal_response(frame%ao%soft, frame%ao%soft, &
                                           frame%ao%soft_gradient, frame%ao%soft_gradient, frame%ao%weights, dn, dg, dt, &
                                           soft_response, soft_response, gradient_response, gradient_response, &

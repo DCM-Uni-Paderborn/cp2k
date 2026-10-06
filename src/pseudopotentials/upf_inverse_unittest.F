@@ -20,19 +20,17 @@ PROGRAM upf_inverse_unittest
    USE mathconstants,                   ONLY: pi
    USE orbital_pointers,                ONLY: init_orbital_pointers,&
                                               ncoset
-   USE upf_inverse,                     ONLY: upf_inverse_basis,&
-                                              upf_inverse_basis_response,&
-                                              upf_inverse_init,&
-                                              upf_inverse_operator,&
-                                              upf_inverse_operator_response,&
-                                              upf_inverse_project,&
-                                              upf_inverse_project_response,&
-                                              upf_inverse_type
+   USE upf_inverse,                     ONLY: &
+        upf_inverse_atomic_residual, upf_inverse_atomic_type, upf_inverse_basis, &
+        upf_inverse_basis_response, upf_inverse_init, upf_inverse_operator, &
+        upf_inverse_operator_response, upf_inverse_project, upf_inverse_project_response, &
+        upf_inverse_type
 
    IMPLICIT NONE
    REAL(dp), PARAMETER :: step = 1.e-5_dp
    REAL(dp) :: max_error = 0.0_dp
    CALL check_inverse()
+   CALL check_atomic_residual()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
@@ -144,6 +142,47 @@ CONTAINS
       CALL upf_inverse_init(bd, inverse, info)
       IF (info /= np + 2 .OR. inverse%ready) ERROR STOP 'Nonfinite inverse accepted'
    END SUBROUTINE check_inverse
+
+! **************************************************************************************************
+!> \brief Verify the one-center reduction against an explicit finite transformed operator.
+!>        Nonzero closure residuals and off-diagonal channel couplings must remain present.
+! **************************************************************************************************
+   SUBROUTINE check_atomic_residual()
+      COMPLEX(dp)                                        :: b(2, 2), chi(3, 2), coupling(2, 2), &
+                                                            metric(2, 2), soft(3, 2), w(2, 2)
+      COMPLEX(dp), ALLOCATABLE                           :: rs(:, :), rt(:, :)
+      INTEGER                                            :: info
+      REAL(dp)                                           :: delta(3, 2), hard(3, 2), ps(3, 2), &
+                                                            q(2, 2), t(3, 3)
+      TYPE(upf_inverse_atomic_type)                      :: atomic
+
+      ps = RESHAPE([0.2_dp, 0.5_dp, -0.3_dp, 0.1_dp, -0.4_dp, 0.7_dp], [3, 2])
+      delta = RESHAPE([0.3_dp, -0.1_dp, 0.2_dp, -0.2_dp, 0.4_dp, 0.1_dp], [3, 2])
+      hard = ps + delta
+      t = RESHAPE([1.0_dp, 0.2_dp, 0.1_dp, 0.2_dp, 2.0_dp, -0.3_dp, 0.1_dp, -0.3_dp, 1.5_dp], [3, 3])
+      q = RESHAPE([0.4_dp, 0.1_dp, 0.1_dp, 0.6_dp], [2, 2])
+      chi = CMPLX(ps, delta, dp)
+      coupling = CMPLX(MATMUL(TRANSPOSE(ps), delta), 0.0_dp, dp)
+      CALL upf_inverse_init(coupling, atomic%inverse, info)
+      IF (info /= 0) ERROR STOP 'Atomic inverse failed'
+      b = MATMUL(TRANSPOSE(ps), chi)
+      CALL upf_inverse_project(atomic%inverse, b, w)
+      CALL upf_inverse_basis(chi, CMPLX(delta, 0.0_dp, dp), w, soft)
+      atomic%hard%nproj = 2
+      ALLOCATE (atomic%kinetic, SOURCE=MATMUL(TRANSPOSE(hard), MATMUL(t, hard)) - MATMUL(TRANSPOSE(ps), MATMUL(t, ps)))
+      ALLOCATE (atomic%difference_kinetic, SOURCE=MATMUL(TRANSPOSE(delta), MATMUL(t, delta)))
+      ALLOCATE (atomic%wave_overlap, SOURCE=MATMUL(TRANSPOSE(hard), hard) - MATMUL(TRANSPOSE(ps), ps))
+      ALLOCATE (atomic%difference_overlap, SOURCE=MATMUL(TRANSPOSE(delta), delta))
+      CALL upf_inverse_atomic_residual(atomic, w, MATMUL(TRANSPOSE(delta), chi), MATMUL(TRANSPOSE(delta), MATMUL(t, chi)), rt, rs)
+      CALL check(MAXVAL(ABS(MATMUL(CONJG(TRANSPOSE(chi)), MATMUL(t, chi)) + rt - &
+                            MATMUL(CONJG(TRANSPOSE(w)), MATMUL(atomic%kinetic, w)) - &
+                            MATMUL(CONJG(TRANSPOSE(soft)), MATMUL(t, soft)))), 'atomic kinetic closure residual')
+      metric = MATMUL(CONJG(TRANSPOSE(chi)), chi) + rs + &
+               MATMUL(CONJG(TRANSPOSE(w)), MATMUL(q - atomic%wave_overlap, w))
+      CALL check(MAXVAL(ABS(metric - MATMUL(CONJG(TRANSPOSE(soft)), soft) - &
+                            MATMUL(CONJG(TRANSPOSE(w)), MATMUL(q, w)))), 'atomic metric closure residual')
+      IF (MAXVAL(ABS(rt)) < 1.e-3_dp .OR. MAXVAL(ABS(rs)) < 1.e-3_dp) ERROR STOP 'Trivial closure test'
+   END SUBROUTINE check_atomic_residual
 
 ! **************************************************************************************************
 !> \brief ...

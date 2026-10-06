@@ -141,10 +141,11 @@ CONTAINS
 !> \param center_response Optional Cartesian center response, default zero.
 !> \param cell_response Optional lattice response, default zero.
 !> \param reduced_k_response Optional reduced Bloch-vector response, default zero.
+!> \param cutoff_squared Optional squared spatial radius, fixed during geometry responses.
 ! **************************************************************************************************
    SUBROUTINE gaussian_basis_fields_periodic(basis, points, center, cell, images, reduced_k, value, gradient, &
                                              response, gradient_response, point_response, center_response, &
-                                             cell_response, reduced_k_response)
+                                             cell_response, reduced_k_response, cutoff_squared)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -155,7 +156,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
                                                             center_response(3), &
                                                             cell_response(3, 3), &
-                                                            reduced_k_response(3)
+                                                            reduced_k_response(3), cutoff_squared
 
       COMPLEX(dp)                                        :: phase, phase_response
       INTEGER                                            :: axis, axis2, image, npoint
@@ -202,11 +203,11 @@ CONTAINS
          phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(reduced_k, lattice), dp))
          phase_response = CMPLX(0.0_dp, twopi*DOT_PRODUCT(dk, lattice), dp)*phase
          IF (need_hessian) THEN
-            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g, h)
+            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g, h, cutoff_squared)
          ELSE IF (need_gradient) THEN
-            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g)
+            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g, cutoff_squared=cutoff_squared)
          ELSE
-            CALL gaussian_basis_fields_evaluate(basis, displacement, field)
+            CALL gaussian_basis_fields_evaluate(basis, displacement, field, cutoff_squared=cutoff_squared)
          END IF
          value = value + phase*field
          IF (PRESENT(gradient)) gradient = gradient + phase*g
