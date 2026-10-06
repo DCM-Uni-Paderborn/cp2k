@@ -40,7 +40,7 @@ PROGRAM skala_grid_unittest
    TYPE(section_vals_type), POINTER :: xc => NULL()
    CHARACTER(len=default_path_length) :: model
    CHARACTER(len=32) :: model_mode, device_arg
-   LOGICAL :: cuda_points, spinor_test, spinor_precision_test
+   LOGICAL :: cuda_points, spinor_test, spinor_precision_test, point_fp64
    INTEGER :: ns, partition, i, s, first_z, last_z, nr, component, step, mode, caller_threads
    REAL(dp) :: hmat(3, 3), energy, reference, ep, em, derivative, h, error, maximum_error, &
                step_size, response_step_size, routing_tolerance, derivative_tolerance
@@ -57,6 +57,7 @@ PROGRAM skala_grid_unittest
    spinor_test = model_mode == "spinor" .OR. model_mode == "spinor-float32" .OR. spinor_precision_test
    IF (model_mode == "spinor") model_mode = "geometry"
    IF (model_mode == "spinor-float32" .OR. spinor_precision_test) model_mode = "skala-float32"
+   point_fp64 = TRIM(model_mode) == "skala-float32"
    CALL get_command_argument(3, device_arg)
    cuda_points = TRIM(device_arg) == "gpu"
    IF (LEN_TRIM(device_arg) > 0 .AND. .NOT. cuda_points) ERROR STOP "Expected gpu or no device argument"
@@ -509,6 +510,13 @@ CONTAINS
          plus_r(:, :), plus_t(:, :), plus_x(:, :), points(:, :), pr(:, :), pt(:, :), px(:, :), &
          r(:, :), reference_grad(:, :, :), t(:, :)
 
+      ! Match SIRIUS FP64 point callbacks, including their joint Hessian actions.
+      IF (point_fp64) THEN
+         step_size = 1.0e-3_dp
+         response_step_size = step_size
+         routing_tolerance = 1.0e-11_dp
+         derivative_tolerance = 1.0e-8_dp
+      END IF
       pi = ACOS(-1.0_dp)
       DO nspin = 1, 2
          ALLOCATE (gathered(total_rows, 13, nspin), reference_grad(total_rows, 13, nspin))
@@ -593,11 +601,12 @@ CONTAINS
             IF (cuda_points) THEN
                CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.FALSE.)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                     r, g, t, xc, plus, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d)
+                                     r, g, t, xc, plus, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, &
+                                     model_fp64=point_fp64)
                CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.TRUE.)
             END IF
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                  r, g, t, xc, e, pr, pg, pt, px, pc, pe, pd)
+                                  r, g, t, xc, e, pr, pg, pt, px, pc, pe, pd, model_fp64=point_fp64)
             IF (cuda_points) THEN
                err = ABS(e - plus)
                IF (nr_local > 0) err = MAX(err, MAXVAL(ABS(pr - plus_r)), MAXVAL(ABS(pg - plus_g)), &
@@ -710,15 +719,15 @@ CONTAINS
             CALL comm%sum(ad)
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
-                                  response_density=dr, response_gradient=dg, response_kinetic=dt)
+                                  response_density=dr, response_gradient=dg, response_kinetic=dt, model_fp64=point_fp64)
             DO ih = 1, 2
                step_h = response_step_size/REAL(ih, dp)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                      r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, &
-                                     plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d)
+                                     plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, model_fp64=point_fp64)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                      r - step_h*dr, g - step_h*dg, t - step_h*dt, xc, minus, &
-                                     pr, pg, pt, px, pc, pe, pd)
+                                     pr, pg, pt, px, pc, pe, pd, model_fp64=point_fp64)
                err = 0.0_dp
                IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - (plus_r - pr)/(2.0_dp*step_h))), &
                                            MAXVAL(ABS(hg - (plus_g - pg)/(2.0_dp*step_h))), &
@@ -745,7 +754,8 @@ CONTAINS
             END DO
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
-                                  response_density=0.0_dp*dr, response_gradient=0.0_dp*dg, response_kinetic=0.0_dp*dt)
+                                  response_density=0.0_dp*dr, response_gradient=0.0_dp*dg, response_kinetic=0.0_dp*dt, &
+                                  model_fp64=point_fp64)
             err = 0.0_dp
             IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr)), MAXVAL(ABS(hg)), MAXVAL(ABS(ht)), &
                                         MAXVAL(ABS(hx)), MAXVAL(ABS(hc)), MAXVAL(ABS(he)), MAXVAL(ABS(hd)))
@@ -755,12 +765,12 @@ CONTAINS
                CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.FALSE.)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                      r, g, t, xc, plus, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, &
-                                     dr, dg, dt, dx, dc, de, dd)
+                                     dr, dg, dt, dx, dc, de, dd, model_fp64=point_fp64)
                CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.TRUE.)
             END IF
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
-                                  dr, dg, dt, dx, dc, de, dd)
+                                  dr, dg, dt, dx, dc, de, dd, model_fp64=point_fp64)
             IF (cuda_points) THEN
                err = 0.0_dp
                IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - plus_r)), MAXVAL(ABS(hg - plus_g)), &
@@ -775,11 +785,11 @@ CONTAINS
                CALL skala_point_eval(comm, points + step_h*dx, energy_weights + step_h*de, &
                                      descriptor_weights + step_h*dd, sizes, centres + step_h*dc, &
                                      r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, &
-                                     plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d)
+                                     plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, model_fp64=point_fp64)
                CALL skala_point_eval(comm, points - step_h*dx, energy_weights - step_h*de, &
                                      descriptor_weights - step_h*dd, sizes, centres - step_h*dc, &
                                      r - step_h*dr, g - step_h*dg, t - step_h*dt, xc, minus, &
-                                     pr, pg, pt, px, pc, pe, pd)
+                                     pr, pg, pt, px, pc, pe, pd, model_fp64=point_fp64)
                err = 0.0_dp
                IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - (plus_r - pr)/(2.0_dp*step_h))), &
                                            MAXVAL(ABS(hg - (plus_g - pg)/(2.0_dp*step_h))), &
@@ -797,13 +807,13 @@ CONTAINS
             ! Check the two mixed blocks independently, including the scalar-spin chain rule.
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
-                                  response_density=dr, response_gradient=dg, response_kinetic=dt)
+                                  response_density=dr, response_gradient=dg, response_kinetic=dt, model_fp64=point_fp64)
             expected = SUM(hx*dx) + SUM(hc*dc) + SUM(he*de) + SUM(hd*dd)
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, hr, hg, ht, &
                                   response_density=0.0_dp*dr, response_gradient=0.0_dp*dg, response_kinetic=0.0_dp*dt, &
                                   response_points=dx, response_atom_coords=dc, response_energy_weights=de, &
-                                  response_descriptor_weights=dd)
+                                  response_descriptor_weights=dd, model_fp64=point_fp64)
             err = SUM(hr*dr) + SUM(hg*dg) + SUM(ht*dt) - expected
             CALL comm%sum(err)
             IF (ABS(err) > derivative_tolerance) ERROR STOP "Mixed field/geometry Hessian is not symmetric"
@@ -813,39 +823,39 @@ CONTAINS
                   SELECT CASE (c)
                   CASE (1)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                           r + step_h*dr, g, t, xc, plus, pr, pg, pt)
+                                           r + step_h*dr, g, t, xc, plus, pr, pg, pt, model_fp64=point_fp64)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                           r - step_h*dr, g, t, xc, minus, pr, pg, pt)
+                                           r - step_h*dr, g, t, xc, minus, pr, pg, pt, model_fp64=point_fp64)
                   CASE (2)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                           r, g + step_h*dg, t, xc, plus, pr, pg, pt)
+                                           r, g + step_h*dg, t, xc, plus, pr, pg, pt, model_fp64=point_fp64)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                           r, g - step_h*dg, t, xc, minus, pr, pg, pt)
+                                           r, g - step_h*dg, t, xc, minus, pr, pg, pt, model_fp64=point_fp64)
                   CASE (3)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                           r, g, t + step_h*dt, xc, plus, pr, pg, pt)
+                                           r, g, t + step_h*dt, xc, plus, pr, pg, pt, model_fp64=point_fp64)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                           r, g, t - step_h*dt, xc, minus, pr, pg, pt)
+                                           r, g, t - step_h*dt, xc, minus, pr, pg, pt, model_fp64=point_fp64)
                   CASE (4)
                      CALL skala_point_eval(comm, points + step_h*dx, energy_weights, descriptor_weights, sizes, centres, &
-                                           r, g, t, xc, plus, pr, pg, pt)
+                                           r, g, t, xc, plus, pr, pg, pt, model_fp64=point_fp64)
                      CALL skala_point_eval(comm, points - step_h*dx, energy_weights, descriptor_weights, sizes, centres, &
-                                           r, g, t, xc, minus, pr, pg, pt)
+                                           r, g, t, xc, minus, pr, pg, pt, model_fp64=point_fp64)
                   CASE (5)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres + step_h*dc, &
-                                           r, g, t, xc, plus, pr, pg, pt)
+                                           r, g, t, xc, plus, pr, pg, pt, model_fp64=point_fp64)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres - step_h*dc, &
-                                           r, g, t, xc, minus, pr, pg, pt)
+                                           r, g, t, xc, minus, pr, pg, pt, model_fp64=point_fp64)
                   CASE (6)
                      CALL skala_point_eval(comm, points, energy_weights + step_h*de, descriptor_weights, sizes, centres, &
-                                           r, g, t, xc, plus, pr, pg, pt)
+                                           r, g, t, xc, plus, pr, pg, pt, model_fp64=point_fp64)
                      CALL skala_point_eval(comm, points, energy_weights - step_h*de, descriptor_weights, sizes, centres, &
-                                           r, g, t, xc, minus, pr, pg, pt)
+                                           r, g, t, xc, minus, pr, pg, pt, model_fp64=point_fp64)
                   CASE (7)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights + step_h*dd, sizes, centres, &
-                                           r, g, t, xc, plus, pr, pg, pt)
+                                           r, g, t, xc, plus, pr, pg, pt, model_fp64=point_fp64)
                      CALL skala_point_eval(comm, points, energy_weights, descriptor_weights - step_h*dd, sizes, centres, &
-                                           r, g, t, xc, minus, pr, pg, pt)
+                                           r, g, t, xc, minus, pr, pg, pt, model_fp64=point_fp64)
                   END SELECT
                   err = ABS((plus - minus)/(2.0_dp*step_h) - ad(c))
                   maximum_error = MAX(maximum_error, err)
@@ -858,7 +868,7 @@ CONTAINS
             END DO
             energy_weights = 0.0_dp
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
-                                  r, g, t, xc, e, pr, pg, pt, px, pc, pe, pd)
+                                  r, g, t, xc, e, pr, pg, pt, px, pc, pe, pd, model_fp64=point_fp64)
             err = ABS(e)
             ! The energy-weight derivative itself need not vanish at zero weights.
             IF (nr_local > 0) err = MAX(err, MAXVAL(ABS(pr)), MAXVAL(ABS(pg)), MAXVAL(ABS(pt)), &
@@ -867,7 +877,7 @@ CONTAINS
             IF (err > 1.0e-12_dp) ERROR STOP "Zero energy weights must give zero energy, field and geometry covectors"
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, hr, hg, ht, &
-                                  response_density=dr, response_gradient=dg, response_kinetic=dt)
+                                  response_density=dr, response_gradient=dg, response_kinetic=dt, model_fp64=point_fp64)
             err = 0.0_dp
             IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr)), MAXVAL(ABS(hg)), MAXVAL(ABS(ht)))
             CALL comm%max(err)

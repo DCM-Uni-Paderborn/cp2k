@@ -32,15 +32,15 @@ requires a new output directory. Generated models are analytic test fixtures, no
 
 ## Skala Inputs
 
-| Input                   | Coverage                                                                                 | Required atom data   |
-| ----------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
-| `H2.inp`                | Norm-conserving molecular SCF on the regular grid                                        | CP2K data directory  |
-| `H2-spinor.inp`         | Twelve noncollinear iterations with nonparallel initial spins and GPU orbitals/inference | CP2K data directory  |
-| `H-spin-kpoints.inp`    | Collinear norm-conserving energy, forces and stress with shifted k points                | CP2K data directory  |
-| `H-paw-atom-grid.inp`   | Core-free PAW with atom quadrature                                                       | `H-paw-no-core.json` |
-| `C-paw-core.inp`        | Collinear PAW energy, forces and stress with two core and four valence electrons         | `C-paw-core.json`    |
-| `He-lapw-atom-grid.inp` | All-valence FP-LAPW energy, forces and stress                                            | `He-lapw.json`       |
-| `Ne-lapw-atom-grid.inp` | FP-LAPW energy, forces and stress with an explicit 1s core                               | `Ne-lapw.json`       |
+| Input                   | Coverage                                                                                | Required atom data   |
+| ----------------------- | --------------------------------------------------------------------------------------- | -------------------- |
+| `H2.inp`                | Norm-conserving molecular SCF on the regular grid                                       | CP2K data directory  |
+| `H2-spinor.inp`         | Experimental noncollinear SCF with nonparallel initial spins and GPU orbitals/inference | CP2K data directory  |
+| `H-spin-kpoints.inp`    | Collinear norm-conserving energy, forces and stress with shifted k points               | CP2K data directory  |
+| `H-paw-atom-grid.inp`   | Core-free PAW with atom quadrature                                                      | `H-paw-no-core.json` |
+| `C-paw-core.inp`        | Collinear PAW energy, forces and stress with two core and four valence electrons        | `C-paw-core.json`    |
+| `He-lapw-atom-grid.inp` | All-valence FP-LAPW energy, forces and stress                                           | `He-lapw.json`       |
+| `Ne-lapw-atom-grid.inp` | FP-LAPW energy, forces and stress with an explicit 1s core                              | `Ne-lapw.json`       |
 
 Generate LAPW data with `create_sirius_lapw_test_atom.py He-lapw.json` or select `--element Ne` for
 an explicit 1s core (`H` and `Li` are also supported). For core-free PAW hydrogen, start from
