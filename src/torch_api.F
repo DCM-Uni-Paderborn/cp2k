@@ -437,30 +437,38 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Returns the gradient of a Torch tensor which was computed by autograd.
+!> \param allow_unused Return zeros for an unused differentiable input. Default is false.
 !> \author Ole Schuett
 ! **************************************************************************************************
-   SUBROUTINE torch_tensor_grad(tensor, grad)
+   SUBROUTINE torch_tensor_grad(tensor, grad, allow_unused)
       TYPE(torch_tensor_type), INTENT(IN)                :: tensor
       TYPE(torch_tensor_type), INTENT(INOUT)             :: grad
+      LOGICAL, OPTIONAL, INTENT(IN)                      :: allow_unused
 
 #if defined(__LIBTORCH)
+      LOGICAL                                            :: unused
+
       INTERFACE
-         SUBROUTINE torch_c_tensor_grad(tensor, grad) &
+         SUBROUTINE torch_c_tensor_grad(tensor, grad, allow_unused) &
             BIND(C, name="torch_c_tensor_grad")
-            IMPORT :: C_PTR
+            IMPORT :: C_PTR, C_BOOL
             TYPE(C_PTR), VALUE                           :: tensor
             TYPE(C_PTR)                                  :: grad
+            LOGICAL(kind=C_BOOL), VALUE                  :: allow_unused
          END SUBROUTINE torch_c_tensor_grad
       END INTERFACE
 
       CPASSERT(C_ASSOCIATED(tensor%c_ptr))
       CPASSERT(.NOT. C_ASSOCIATED(grad%c_ptr))
-      CALL torch_c_tensor_grad(tensor=tensor%c_ptr, grad=grad%c_ptr)
+      unused = .FALSE.
+      IF (PRESENT(allow_unused)) unused = allow_unused
+      CALL torch_c_tensor_grad(tensor=tensor%c_ptr, grad=grad%c_ptr, allow_unused=LOGICAL(unused, C_BOOL))
       CPASSERT(C_ASSOCIATED(grad%c_ptr))
 #else
       CPABORT("CP2K compiled without the Torch library.")
       MARK_USED(tensor)
       MARK_USED(grad)
+      MARK_USED(allow_unused)
 #endif
    END SUBROUTINE torch_tensor_grad
 

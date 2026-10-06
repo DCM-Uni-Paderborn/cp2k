@@ -938,6 +938,58 @@ if(CP2K_USE_SIRIUS)
                           INTERFACE "$<LINK_ONLY:sirius::sirius_cxx>")
   endif()
   unset(CP2K_SIRIUS_LIBRARY_TYPE)
+
+  include(CheckFortranSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  get_target_property(CP2K_SIRIUS_INCLUDE_DIRS sirius::sirius
+                      INTERFACE_INCLUDE_DIRECTORIES)
+  set(CMAKE_REQUIRED_INCLUDES ${CP2K_SIRIUS_INCLUDE_DIRS})
+  # Probe Fortran declarations without SIRIUS's private link dependencies.
+  set(_CP2K_TRY_COMPILE_TARGET_TYPE "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+  set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_xc_callback
+     use sirius, only: sirius_set_xc_callback
+     end program" CP2K_SIRIUS_XC_CALLBACK SRC_EXT F90)
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_xc_point_callback
+     use sirius, only: sirius_set_xc_point_callback
+     end program" CP2K_SIRIUS_XC_POINT_CALLBACK SRC_EXT F90)
+
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_xc_point_geometry
+     use sirius, only: sirius_set_xc_point_geometry_callbacks, sirius_get_xc_geometry_derivatives
+     end program"
+    CP2K_SIRIUS_XC_POINT_GEOMETRY
+    SRC_EXT
+    F90)
+
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_xc_point_update
+     use sirius, only: sirius_update_xc_point_set
+     end program" CP2K_SIRIUS_XC_POINT_UPDATE SRC_EXT F90)
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_xc_derivative
+     use sirius, only: sirius_check_external_xc_derivative
+     end program" CP2K_SIRIUS_XC_DERIVATIVE SRC_EXT F90)
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_finalize
+     use sirius, only: sirius_finalize
+     integer :: error
+     call sirius_finalize(.false., .false., error)
+     end program"
+    CP2K_SIRIUS_FINALIZE_NO_FFTW
+    SRC_EXT
+    F90)
+  cmake_pop_check_state()
+  if(_CP2K_TRY_COMPILE_TARGET_TYPE)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_CP2K_TRY_COMPILE_TARGET_TYPE}")
+  else()
+    unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
+  endif()
+  unset(_CP2K_TRY_COMPILE_TARGET_TYPE)
+  unset(CP2K_SIRIUS_INCLUDE_DIRS)
 endif()
 
 if(CP2K_USE_PLUMED)

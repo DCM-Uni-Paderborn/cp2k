@@ -1203,6 +1203,15 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="SIRIUS_ATOM_FILE", &
+                          description="SIRIUS full-potential atom JSON file containing the muffin-tin grid, "// &
+                          "core configuration, augmented-wave and local-orbital basis, and free-atom density. "// &
+                          "Requires METHOD SIRIUS and ELECTRONIC_STRUCTURE_METHOD full_potential_lapwlo. "// &
+                          "No Gaussian BASIS_SET or pseudopotential is used. POTENTIAL ALL may be specified.", &
+                          usage="SIRIUS_ATOM_FILE He.json", default_c_val="", n_var=1)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="POTENTIAL_TYPE", &
                           description="The type of this kinds pseudopotential (ECP, ALL, GTH, UPS).", &
                           deprecation_notice="Use 'POTENTIAL <TYPE> ...' instead.", &
