@@ -14,6 +14,8 @@ MODULE upf_inverse_coulomb
    USE mathconstants,                   ONLY: fourpi,&
                                               pi,&
                                               twopi
+   USE mathlib,                         ONLY: invmat
+   USE message_passing,                 ONLY: mp_comm_type
    USE orbital_pointers,                ONLY: indco,&
                                               init_orbital_pointers,&
                                               nco,&
@@ -24,12 +26,253 @@ MODULE upf_inverse_coulomb
 
    IMPLICIT NONE
    PRIVATE
+   TYPE upf_inverse_coulomb_center_type
+      REAL(dp) :: position(3) = 0.0_dp
+      INTEGER, ALLOCATABLE :: l(:), indices(:)
+      REAL(dp), ALLOCATABLE :: radii(:), weights(:), density(:, :), shapes(:, :)
+   END TYPE upf_inverse_coulomb_center_type
+
+   TYPE upf_inverse_coulomb_potential_type
+      REAL(dp), ALLOCATABLE :: values(:, :)
+   END TYPE upf_inverse_coulomb_potential_type
+
+   TYPE center_work_type
+      REAL(dp), ALLOCATABLE :: compensation(:, :), residual(:, :), q(:, :), dq(:, :), potential(:, :)
+      COMPLEX(dp), ALLOCATABLE :: fourier(:, :, :)
+   END TYPE center_work_type
+
+   PUBLIC :: upf_inverse_coulomb_center_type, upf_inverse_coulomb_potential_type
+   PUBLIC :: upf_inverse_coulomb_periodic
    PUBLIC :: upf_inverse_coulomb_radial, upf_inverse_coulomb_radial_response
    PUBLIC :: upf_inverse_coulomb_compensate, upf_inverse_coulomb_compensation_adjoint
    PUBLIC :: upf_inverse_coulomb_fourier_kernel
    PUBLIC :: upf_inverse_coulomb_pair_kernel
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Complete periodic Coulomb functional for a Fourier background and signed centered fields.
+!>        Moment compensation uses the actual radial measure. Every overlapping residual image is
+!>        retained, including self images. Separated residuals have exactly zero exterior potential.
+!>        Gaussian hard/soft, reconstruction and original Q contributions belong in the supplied
+!>        centered density. Ionic and Gaussian background charges belong in background.
+!> \param centers Replicated harmonic densities, radial measures and compensation shapes.
+!> \param cell Physical periodic cell, with lattice vectors in columns.
+!> \param gvecs Local physical reciprocal vectors, in the same order as background.
+!> \param volume Physical cell volume used in the Fourier coefficients.
+!> \param background Fourier background before adding compensation charges.
+!> \param poisson_weights Native Coulomb kernel times volume and Fourier multiplicity. The caller
+!>        supplies the zero-mode convention. These weights are nonnegative.
+!> \param energy Full Coulomb energy, excluding any separately defined ionic self energies.
+!> \param potentials Radial-measure density adjoints, one for each supplied center.
+!> \param background_adjoint Local Fourier covector, including the residual/background interaction.
+!> \param comm Optional communicator distributing Fourier rows. Centered data are replicated.
+!> \param response Optional joint energy derivative of this same finite representation.
+!> \param center_response Radial, measure, density, shape and center derivatives, required with response.
+!> \param cell_response Lattice derivative, required with response.
+!> \param gvecs_response Physical reciprocal-vector derivative, required with response.
+!> \param volume_response Cell-volume derivative, required with response.
+!> \param background_response Background Fourier derivative, required with response.
+!> \param poisson_weights_response Complete native Coulomb-weight derivative, required with response.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_coulomb_periodic(centers, cell, gvecs, volume, background, poisson_weights, &
+                                           energy, potentials, background_adjoint, comm, response, center_response, &
+                                           cell_response, gvecs_response, volume_response, background_response, &
+                                           poisson_weights_response)
+      TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
+      REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
+      COMPLEX(dp), INTENT(IN)                            :: background(:)
+      REAL(dp), INTENT(IN)                               :: poisson_weights(:)
+      REAL(dp), INTENT(OUT)                              :: energy
+      TYPE(upf_inverse_coulomb_potential_type), &
+         ALLOCATABLE, INTENT(OUT)                        :: potentials(:)
+      COMPLEX(dp), INTENT(OUT)                           :: background_adjoint(:)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response
+      TYPE(upf_inverse_coulomb_center_type), &
+         INTENT(IN), OPTIONAL                            :: center_response(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: cell_response(3, 3), &
+                                                            gvecs_response(:, :), volume_response
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: background_response(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: poisson_weights_response(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), dg(:), dh(:), e(:), &
+                                                            h(:)
+      INTEGER                                            :: a, b, channel, i, image(3), info, j, &
+                                                            limits(2, 3), na, nb, ng, nh, nr
+      LOGICAL                                            :: derive
+      REAL(dp) :: bound(3), ddisplacement(3), displacement(3), dmoment, dnorm, dpair, dpw, epair, &
+         fractional(3), inverse_cell(3, 3), moment, norm, radius
+      REAL(dp), ALLOCATABLE :: adjoint(:, :), dc(:, :), de(:, :), df(:), dkernel(:, :, :, :), &
+         f(:), kernel(:, :, :, :), moments(:), ve(:, :), vh(:, :)
+      TYPE(center_work_type), ALLOCATABLE                :: work(:)
+
+      ng = SIZE(background)
+      CPASSERT(ALL(SHAPE(gvecs) == [3, ng]))
+      CPASSERT(SIZE(poisson_weights) == ng)
+      CPASSERT(SIZE(background_adjoint) == ng)
+      CPASSERT(ALL(ieee_is_finite(poisson_weights)))
+      CPASSERT(ALL(poisson_weights >= 0.0_dp))
+      inverse_cell = cell
+      CALL invmat(inverse_cell, info)
+      CPASSERT(info == 0)
+      derive = PRESENT(response)
+      IF (derive) THEN
+         CPASSERT(PRESENT(center_response) .AND. PRESENT(cell_response))
+         CPASSERT(PRESENT(gvecs_response) .AND. PRESENT(volume_response))
+         CPASSERT(PRESENT(background_response))
+         CPASSERT(PRESENT(poisson_weights_response))
+         CPASSERT(SIZE(center_response) == SIZE(centers))
+         CPASSERT(ALL(SHAPE(gvecs_response) == SHAPE(gvecs)))
+         CPASSERT(SIZE(background_response) == ng)
+         CPASSERT(SIZE(poisson_weights_response) == ng)
+      END IF
+      ALLOCATE (work(SIZE(centers)), potentials(SIZE(centers)), h(ng), e(ng), dh(ng), dg(ng))
+      h(:) = background
+      e(:) = CMPLX(0.0_dp, 0.0_dp, dp)
+      dh(:) = CMPLX(0.0_dp, 0.0_dp, dp)
+      dg(:) = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (derive) dh(:) = background_response
+      DO a = 1, SIZE(centers)
+         nr = SIZE(centers(a)%radii)
+         nh = SIZE(centers(a)%l)
+         ALLOCATE (work(a)%compensation(nr, nh), work(a)%residual(nr, nh), &
+                   work(a)%q(nr, nh), work(a)%dq(nr, nh), work(a)%potential(nr, nh), &
+                   work(a)%fourier(ng, nr, nh), moments(nh))
+         CALL upf_inverse_coulomb_compensate(centers(a)%radii, centers(a)%weights, centers(a)%l, &
+                                             centers(a)%density, centers(a)%shapes, work(a)%compensation, &
+                                             work(a)%residual, moments)
+         CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                 gvecs, centers(a)%position, volume, work(a)%fourier)
+         work(a)%q(:, :) = SPREAD(centers(a)%weights, 2, nh)*work(a)%residual
+         work(a)%potential(:, :) = 0.0_dp
+         work(a)%dq(:, :) = 0.0_dp
+         IF (derive) THEN
+            CALL check_radial(centers(a)%radii, centers(a)%weights, centers(a)%l, center_response(a)%density)
+            CPASSERT(SIZE(center_response(a)%radii) == nr)
+            CPASSERT(SIZE(center_response(a)%weights) == nr)
+            CPASSERT(ALL(SHAPE(center_response(a)%shapes) == [nr, nh]))
+            ALLOCATE (dc(nr, nh), de(nr, nh), f(nr), df(nr), dfourier(ng, nr, nh))
+            DO channel = 1, nh
+               f(:) = centers(a)%radii**centers(a)%l(channel)
+               df(:) = f*centers(a)%l(channel)*center_response(a)%radii/centers(a)%radii
+               norm = SUM(centers(a)%weights*f*centers(a)%shapes(:, channel))
+               dnorm = SUM((center_response(a)%weights*f + centers(a)%weights*df)*centers(a)%shapes(:, channel) + &
+                           centers(a)%weights*f*center_response(a)%shapes(:, channel))
+               moment = moments(channel)
+               dmoment = SUM((center_response(a)%weights*f + centers(a)%weights*df)*centers(a)%density(:, channel) + &
+                             centers(a)%weights*f*center_response(a)%density(:, channel))
+               dc(:, channel) = centers(a)%shapes(:, channel)*dmoment/norm + moment/norm* &
+                                (center_response(a)%shapes(:, channel) - centers(a)%shapes(:, channel)*dnorm/norm)
+            END DO
+            de(:, :) = center_response(a)%density - dc
+            work(a)%dq(:, :) = SPREAD(center_response(a)%weights, 2, nh)*work(a)%residual + &
+                               SPREAD(centers(a)%weights, 2, nh)*de
+            CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                    gvecs, centers(a)%position, volume, work(a)%fourier, dfourier, &
+                                                    center_response(a)%radii, gvecs_response, &
+                                                    center_response(a)%position, volume_response)
+         END IF
+         DO channel = 1, nh
+            DO i = 1, nr
+               h(:) = h + work(a)%fourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
+               e(:) = e + work(a)%fourier(:, i, channel)*work(a)%q(i, channel)
+               IF (.NOT. derive) CYCLE
+               dh(:) = dh + dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel) + &
+                       work(a)%fourier(:, i, channel)*(center_response(a)%weights(i)*work(a)%compensation(i, channel) + &
+                                                       centers(a)%weights(i)*dc(i, channel))
+               dg(:) = dg + dfourier(:, i, channel)*work(a)%q(i, channel) + &
+                       work(a)%fourier(:, i, channel)*work(a)%dq(i, channel)
+            END DO
+         END DO
+         DEALLOCATE (moments)
+         IF (derive) DEALLOCATE (dc, de, f, df, dfourier)
+      END DO
+      energy = SUM(poisson_weights*(0.5_dp*ABS(h)**2 + REAL(CONJG(h)*e, dp)))
+      dpw = 0.0_dp
+      IF (derive) THEN
+         dpw = SUM(poisson_weights_response*(0.5_dp*ABS(h)**2 + REAL(CONJG(h)*e, dp)) + &
+                   poisson_weights*REAL(CONJG(dh)*(h + e) + CONJG(h)*dg, dp))
+      END IF
+      IF (PRESENT(comm)) THEN
+         CALL comm%sum(energy)
+         IF (derive) CALL comm%sum(dpw)
+      END IF
+      background_adjoint = poisson_weights*(h + e)
+      epair = 0.0_dp
+      dpair = 0.0_dp
+      DO a = 1, SIZE(centers)
+         na = SIZE(centers(a)%radii)
+         DO b = 1, SIZE(centers)
+            nb = SIZE(centers(b)%radii)
+            radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
+            fractional = MATMUL(inverse_cell, centers(a)%position - centers(b)%position)
+            bound = radius*SQRT(SUM(inverse_cell**2, DIM=2))
+            limits(1, :) = CEILING(fractional - bound)
+            limits(2, :) = FLOOR(fractional + bound)
+            ALLOCATE (kernel(na, SIZE(centers(a)%l), nb, SIZE(centers(b)%l)))
+            IF (derive) ALLOCATE (dkernel, MOLD=kernel)
+            DO j = limits(1, 3), limits(2, 3)
+               DO i = limits(1, 2), limits(2, 2)
+                  DO info = limits(1, 1), limits(2, 1)
+                     image = [info, i, j]
+                     displacement = centers(a)%position - centers(b)%position - MATMUL(cell, REAL(image, dp))
+                     IF (SUM(displacement**2) >= radius**2) CYCLE
+                     IF (derive) THEN
+                        ddisplacement = center_response(a)%position - center_response(b)%position - &
+                                        MATMUL(cell_response, REAL(image, dp))
+                        CALL upf_inverse_coulomb_pair_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                             centers(b)%radii, centers(b)%l, centers(b)%indices, &
+                                                             displacement, kernel, dkernel, center_response(a)%radii, &
+                                                             center_response(b)%radii, ddisplacement)
+                     ELSE
+                        CALL upf_inverse_coulomb_pair_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                             centers(b)%radii, centers(b)%l, centers(b)%indices, &
+                                                             displacement, kernel)
+                     END IF
+                     DO channel = 1, SIZE(centers(a)%l)
+                        DO nr = 1, na
+                           norm = SUM(kernel(nr, channel, :, :)*work(b)%q)
+                           work(a)%potential(nr, channel) = work(a)%potential(nr, channel) + norm
+                           epair = epair + 0.5_dp*work(a)%q(nr, channel)*norm
+                           IF (.NOT. derive) CYCLE
+                           dpair = dpair + 0.5_dp*(work(a)%dq(nr, channel)*norm + work(a)%q(nr, channel)* &
+                                                   SUM(kernel(nr, channel, :, :)*work(b)%dq + &
+                                                       dkernel(nr, channel, :, :)*work(b)%q))
+                        END DO
+                     END DO
+                  END DO
+               END DO
+            END DO
+            DEALLOCATE (kernel)
+            IF (derive) DEALLOCATE (dkernel)
+         END DO
+      END DO
+      energy = energy + epair
+      IF (derive) response = dpw + dpair
+      DO a = 1, SIZE(centers)
+         nr = SIZE(centers(a)%radii)
+         nh = SIZE(centers(a)%l)
+         ALLOCATE (potentials(a)%values(nr, nh), vh(nr, nh), ve(nr, nh), adjoint(nr, nh))
+         DO channel = 1, nh
+            DO i = 1, nr
+               vh(i, channel) = REAL(SUM(CONJG(work(a)%fourier(:, i, channel))*poisson_weights*h), dp)
+               ve(i, channel) = REAL(SUM(CONJG(work(a)%fourier(:, i, channel))*background_adjoint), dp)
+            END DO
+         END DO
+         IF (PRESENT(comm)) THEN
+            CALL comm%sum(vh)
+            CALL comm%sum(ve)
+         END IF
+         CALL upf_inverse_coulomb_compensation_adjoint(centers(a)%radii, centers(a)%weights, centers(a)%l, &
+                                                       centers(a)%shapes, vh + work(a)%potential, adjoint)
+         potentials(a)%values(:, :) = adjoint + ve
+         CALL upf_inverse_coulomb_compensation_adjoint(centers(a)%radii, centers(a)%weights, centers(a)%l, &
+                                                       centers(a)%shapes, ve, adjoint)
+         potentials(a)%values(:, :) = potentials(a)%values - adjoint
+         DEALLOCATE (vh, ve, adjoint)
+      END DO
+   END SUBROUTINE upf_inverse_coulomb_periodic
 
 ! **************************************************************************************************
 !> \brief Reciprocal Coulomb map between two translated harmonic radial-shell distributions.
@@ -215,6 +458,17 @@ CONTAINS
             right = ((bound - a)*(bound + a) - distance**2)/(2.0_dp*distance*a)
             dright = (bound*dbound - a*da - distance*dt)/(distance*a) - &
                      right*(dt/distance + da/a)
+         END IF
+         ! At shell tangency, roundoff can leave a cap too narrow to place interior nodes.
+         ! The two potentials agree on the shell, so its moving boundary terms cancel.
+         IF (right - left <= 64.0_dp*EPSILON(1.0_dp)) THEN
+            CPASSERT(regular)
+            regular = .FALSE.
+            CYCLE
+         END IF
+         IF (1.0_dp - right <= 64.0_dp*EPSILON(1.0_dp)) THEN
+            right = 1.0_dp
+            dright = 0.0_dp
          END IF
          CPASSERT(right > left .AND. right <= 1.0_dp)
          DO iq = 1, nq
