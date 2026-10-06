@@ -29,6 +29,8 @@ MODULE qs_harmonics_atom
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_harmonics_atom'
 
+   REAL(dp), PARAMETER, PUBLIC :: gaunt_threshold = 1.e-8_dp
+
    TYPE harmonics_atom_type
       INTEGER                                :: max_s_harm = -1, llmax = -1, &
                                                 max_iso_not0 = -1, &
@@ -484,7 +486,7 @@ CONTAINS
                   DO iso2 = nsoset(l2 - 1) + 1, nsoset(l2)
                      IF (ABS(cgc(1, iso1, iso2, iso)) + &
                          ABS(cgc(2, iso1, iso2, iso)) + &
-                         ABS(cgc(3, iso1, iso2, iso)) > 1.E-8_dp) THEN
+                         ABS(cgc(3, iso1, iso2, iso)) > gaunt_threshold) THEN
                         nlist = nlist + 1
                         IF (PRESENT(n_list) .AND. PRESENT(list)) THEN
                            list(1, nlist, iso) = iso1
@@ -540,7 +542,7 @@ CONTAINS
                DO l2 = lmin2, lmax2
                   IF (l1 + l2 > llmax) CYCLE
                   DO iso2 = nsoset(l2 - 1) + 1, nsoset(l2)
-                     IF (ABS(cgc(iso1, iso2, iso)) > 1.E-8_dp) THEN
+                     IF (ABS(cgc(iso1, iso2, iso)) > gaunt_threshold) THEN
                         nlist = nlist + 1
                         IF (PRESENT(n_list) .AND. PRESENT(list)) THEN
                            list(1, nlist, iso) = iso1

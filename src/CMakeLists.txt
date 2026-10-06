@@ -74,6 +74,7 @@ list(
   qs_upf_inverse_atom_grid.F
   qs_upf_inverse_augmentation.F
   qs_upf_inverse_density.F
+  qs_upf_inverse_gaussian.F
   qs_upf_inverse_forces.F
   qs_upf_inverse_grid.F
   qs_upf_inverse_kpoints.F
