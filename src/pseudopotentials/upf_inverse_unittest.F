@@ -25,7 +25,12 @@ PROGRAM upf_inverse_unittest
         upf_inverse_basis, upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
         upf_inverse_operator, upf_inverse_operator_response, upf_inverse_project, &
         upf_inverse_project_response, upf_inverse_type
-   USE upf_inverse_quadrature,          ONLY: upf_inverse_projector_density
+   USE upf_inverse_quadrature,          ONLY: upf_inverse_density_residual,&
+                                              upf_inverse_projector_density,&
+                                              upf_inverse_semilocal_pair,&
+                                              upf_inverse_semilocal_residual,&
+                                              upf_inverse_semilocal_response,&
+                                              upf_inverse_smooth_density
    USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
                                               upf_radial_fields_type
 
@@ -34,10 +39,79 @@ PROGRAM upf_inverse_unittest
    REAL(dp) :: max_error = 0.0_dp
    CALL check_inverse()
    CALL check_projector_density()
+   CALL check_density_residual()
    CALL check_nc_fields()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Gaussian/residual closure, adjoint and joint field/measure response on complex rows.
+! **************************************************************************************************
+   SUBROUTINE check_density_residual()
+      INTEGER, PARAMETER                                 :: nb = 2, np = 3
+
+      COMPLEX(dp) :: c(nb, nb), dgr(np, nb, 3), dgs(np, nb, 3), dr(np, nb), ds(np, nb), &
+         gr(np, nb, 3), gs(np, nb, 3), h(nb, nb), hr(nb, nb), hs(nb, nb), p(nb, nb), &
+         reference(np, nb), response(nb, nb), soft(np, nb)
+      INTEGER                                            :: axis, i, j, side
+      REAL(dp) :: dw(np), gradient(np, 3), gradient_r(np, 3), gradient_s(np, 3), rho(np), &
+         rho_r(np), rho_s(np), samples(2), shift, tau(np), tau_r(np), tau_s(np), value, vg(np, 3), &
+         vn(np), vt(np), weights(np)
+
+      c(:, 1) = [CMPLX(1.0_dp, 0.2_dp, dp), CMPLX(0.1_dp, -0.3_dp, dp)]
+      c(:, 2) = [CMPLX(-0.4_dp, 0.3_dp, dp), CMPLX(0.2_dp, 0.5_dp, dp)]
+      p = MATMUL(c, CONJG(TRANSPOSE(c)))
+      DO j = 1, nb
+         DO i = 1, np
+            reference(i, j) = CMPLX(SIN(REAL(i + j, dp)), COS(REAL(i*j, dp)), dp)
+            soft(i, j) = reference(i, j) + 0.1_dp*CONJG(reference(i, j))
+            dr(i, j) = 0.07_dp*reference(i, j)
+            ds(i, j) = 0.05_dp*soft(i, j)
+            DO axis = 1, 3
+               gr(i, j, axis) = CMPLX(COS(REAL(i + j + axis, dp)), SIN(REAL(i*j + axis, dp)), dp)
+               gs(i, j, axis) = gr(i, j, axis) + 0.13_dp*CONJG(gr(i, j, axis))
+               dgr(i, j, axis) = 0.03_dp*gr(i, j, axis)
+               dgs(i, j, axis) = 0.09_dp*gs(i, j, axis)
+            END DO
+         END DO
+      END DO
+      weights = [0.3_dp, 0.5_dp, 0.7_dp]
+      dw = 0.04_dp*weights
+      vn = [0.2_dp, 0.7_dp, -0.3_dp]
+      vt = [0.3_dp, 0.1_dp, 0.2_dp]
+      vg = RESHAPE([0.1_dp, -0.2_dp, 0.3_dp, 0.4_dp, 0.5_dp, -0.6_dp, 0.7_dp, -0.8_dp, 0.9_dp], [np, 3])
+      CALL upf_inverse_smooth_density(reference, gr, p, rho_r, gradient_r, tau_r)
+      CALL upf_inverse_smooth_density(soft, gs, p, rho_s, gradient_s, tau_s)
+      CALL upf_inverse_density_residual(reference, gr, soft, gs, p, rho, gradient, tau)
+      CALL check(MAXVAL(ABS(rho_r + rho - rho_s)), 'Gaussian/residual density closure')
+      CALL check(MAXVAL(ABS(gradient_r + gradient - gradient_s)), 'Gaussian/residual gradient closure')
+      CALL check(MAXVAL(ABS(tau_r + tau - tau_s)), 'Gaussian/residual kinetic closure')
+      CALL upf_inverse_semilocal_pair(reference, reference, gr, gr, weights, vn, vg, vt, hr)
+      CALL upf_inverse_semilocal_pair(soft, soft, gs, gs, weights, vn, vg, vt, hs)
+      CALL upf_inverse_semilocal_residual(reference, gr, soft, gs, weights, vn, vg, vt, h)
+      CALL check(MAXVAL(ABS(hr + h - hs)), 'Gaussian/residual operator closure')
+      value = SUM(weights*(vn*rho + SUM(vg*gradient, DIM=2) + vt*tau))
+      CALL check(ABS(value - REAL(SUM(h*CONJG(p)), dp)), 'signed density operator adjoint')
+      CALL upf_inverse_semilocal_response(soft - reference, soft + reference, gs - gr, gs + gr, &
+                                          weights, vn, vg, vt, ds - dr, ds + dr, dgs - dgr, dgs + dgr, &
+                                          dw, 0.05_dp*vn, 0.07_dp*vg, 0.09_dp*vt, response)
+      DO side = 1, 2
+         shift = step*(2*side - 3)
+         CALL upf_inverse_density_residual(reference + shift*dr, gr + shift*dgr, soft + shift*ds, gs + shift*dgs, &
+                                           p, rho, gradient, tau)
+         samples(side) = SUM((weights + shift*dw)*((1.0_dp + 0.05_dp*shift)*vn*rho + &
+                                                   (1.0_dp + 0.07_dp*shift)*SUM(vg*gradient, DIM=2) + &
+                                                   (1.0_dp + 0.09_dp*shift)*vt*tau))
+      END DO
+      CALL check(ABS((samples(2) - samples(1))/(2*step) - REAL(SUM(response*CONJG(p)), dp)), &
+                 'signed density geometry adjoint', 2.e-9_dp)
+      CALL upf_inverse_density_residual(reference, gr, reference, gr, p, rho, gradient, tau)
+      CALL check(MAXVAL(ABS(rho)) + MAXVAL(ABS(gradient)) + MAXVAL(ABS(tau)), 'exact zero NC residual', 0.0_dp)
+      CALL upf_inverse_semilocal_residual(reference(:0, :), gr(:0, :, :), soft(:0, :), gs(:0, :, :), &
+                                          weights(:0), vn(:0), vg(:0, :), vt(:0), h)
+      CALL check(MAXVAL(ABS(h)), 'empty-row residual adjoint', 0.0_dp)
+   END SUBROUTINE check_density_residual
+
 ! **************************************************************************************************
 !> \brief Compare density congruence to independently projected occupied orbitals.
 ! **************************************************************************************************

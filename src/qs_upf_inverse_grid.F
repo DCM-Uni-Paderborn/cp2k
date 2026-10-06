@@ -37,10 +37,12 @@ MODULE qs_upf_inverse_grid
                                               qs_upf_inverse_augmentation_integrate,&
                                               qs_upf_inverse_augmentation_type
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_grid_type
-   USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
+   USE upf_inverse_quadrature,          ONLY: upf_inverse_density_residual,&
+                                              upf_inverse_pair,&
                                               upf_inverse_pair_response,&
                                               upf_inverse_projector_density,&
                                               upf_inverse_semilocal_pair,&
+                                              upf_inverse_semilocal_residual,&
                                               upf_inverse_semilocal_response,&
                                               upf_inverse_smooth_density
 #include "./base/base_uses.f90"
@@ -168,7 +170,8 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
       INTEGER                                            :: axis, n, nproj
       LOGICAL                                            :: use_fourier
-      REAL(dp), ALLOCATABLE                              :: dn(:, :), rho(:), t(:)
+      REAL(dp), ALLOCATABLE                              :: dn(:, :), dn_reference(:, :), rho(:), &
+                                                            rho_reference(:), t(:), t_reference(:)
 
       CPASSERT(frame%ao%inverse%ready)
       use_fourier = .FALSE.
@@ -178,8 +181,11 @@ CONTAINS
       END IF
       CPASSERT(ALL(SHAPE(p) == SIZE(frame%ao%soft, 2)))
       n = SIZE(frame%ao%weights)
-      ALLOCATE (rho(n), dn(n, 3), t(n))
-      CALL upf_inverse_smooth_density(frame%ao%soft, frame%ao%soft_gradient, p, rho, dn, t)
+      ALLOCATE (rho(n), dn(n, 3), t(n), rho_reference(n), dn_reference(n, 3), t_reference(n))
+      CALL upf_inverse_smooth_density(frame%ao%gaussian, frame%ao%gaussian_gradient, p, &
+                                      rho_reference, dn_reference, t_reference)
+      CALL upf_inverse_density_residual(frame%ao%gaussian, frame%ao%gaussian_gradient, &
+                                        frame%ao%soft, frame%ao%soft_gradient, p, rho, dn, t)
       IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
          nproj = frame%ao%inverse%nproj
          ALLOCATE (projected(nproj, nproj))
@@ -192,6 +198,9 @@ CONTAINS
             projector_density = projected
          END IF
       END IF
+      rho(:) = rho + rho_reference
+      dn(:, :) = dn + dn_reference
+      t(:) = t + t_reference
       CALL unpack_grid(frame, rho, density)
       CALL unpack_grid(frame, t, tau)
       DO axis = 1, 3
@@ -256,7 +265,7 @@ CONTAINS
          INTENT(INOUT), OPTIONAL                         :: augmentation
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
 
-      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), residual(:, :)
       INTEGER                                            :: axis, n, nao, nproj
       LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
@@ -269,14 +278,19 @@ CONTAINS
       END IF
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%soft, 2)
-      ALLOCATE (dn(n), dg(n, 3), dt(n), h(nao, nao))
+      ALLOCATE (dn(n), dg(n, 3), dt(n), h(nao, nao), residual(nao, nao))
       CALL pack_grid(frame, vdensity, dn)
       CALL pack_grid(frame, vtau, dt)
       DO axis = 1, 3
          CALL pack_grid(frame, vgradient(axis), dg(:, axis))
       END DO
-      CALL upf_inverse_semilocal_pair(frame%ao%soft, frame%ao%soft, frame%ao%soft_gradient, frame%ao%soft_gradient, &
+      CALL upf_inverse_semilocal_pair(frame%ao%gaussian, frame%ao%gaussian, &
+                                      frame%ao%gaussian_gradient, frame%ao%gaussian_gradient, &
                                       frame%ao%weights, dn, dg, dt, h, frame%ao%point_comm)
+      CALL upf_inverse_semilocal_residual(frame%ao%gaussian, frame%ao%gaussian_gradient, &
+                                          frame%ao%soft, frame%ao%soft_gradient, frame%ao%weights, dn, dg, dt, &
+                                          residual, frame%ao%point_comm)
+      h(:, :) = h + residual
       IF (PRESENT(augmentation)) THEN
          nproj = frame%ao%inverse%nproj
          ALLOCATE (projected(nproj, nproj))

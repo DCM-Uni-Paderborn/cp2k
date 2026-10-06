@@ -22,6 +22,7 @@ MODULE upf_inverse_quadrature
    PUBLIC :: upf_inverse_pair, upf_inverse_pair_response
    PUBLIC :: upf_inverse_semilocal_pair, upf_inverse_semilocal_response, upf_inverse_smooth_density
    PUBLIC :: upf_inverse_projector_density
+   PUBLIC :: upf_inverse_density_residual, upf_inverse_semilocal_residual
 
 CONTAINS
 
@@ -265,6 +266,85 @@ CONTAINS
          tau = tau + 0.5_dp*REAL(SUM(CONJG(soft_gradient(:, :, axis))*derivative, DIM=2), dp)
       END DO
    END SUBROUTINE upf_inverse_smooth_density
+
+! **************************************************************************************************
+!> \brief Inverse density descriptors minus an explicitly supplied Gaussian reference.
+!>        Difference/sum products retain the intercenter cross terms without subtracting
+!>        two large densities. Original charge and kinetic augmentation are added separately.
+!> \param reference Gaussian reference values, in the same AO order as soft.
+!> \param reference_gradient Physical Cartesian gradients of the reference.
+!> \param soft Inverse Gaussian values U*chi.
+!> \param soft_gradient ...
+!> \param ao_density Hermitian occupation matrix in the reconstructed variables.
+!> \param density Signed point density difference.
+!> \param gradient Signed Cartesian density-gradient difference.
+!> \param tau Signed kinetic-density difference, with factor one half.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_density_residual(reference, reference_gradient, soft, soft_gradient, &
+                                           ao_density, density, gradient, tau)
+      COMPLEX(dp), INTENT(IN)                            :: reference(:, :), &
+                                                            reference_gradient(:, :, :), &
+                                                            soft(:, :), soft_gradient(:, :, :), &
+                                                            ao_density(:, :)
+      REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :), tau(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), work(:, :)
+      INTEGER                                            :: axis, n, npoint
+
+      n = SIZE(soft, 2)
+      npoint = SIZE(soft, 1)
+      CPASSERT(ALL(SHAPE(reference) == SHAPE(soft)))
+      CPASSERT(ALL(SHAPE(soft_gradient) == [npoint, n, 3]))
+      CPASSERT(ALL(SHAPE(reference_gradient) == SHAPE(soft_gradient)))
+      CPASSERT(ALL(SHAPE(ao_density) == [n, n]))
+      CPASSERT(SIZE(density) == npoint .AND. SIZE(tau) == npoint)
+      CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
+      CALL check_density(ao_density)
+      ALLOCATE (work(npoint, n), derivative(npoint, n))
+      work(:, :) = MATMUL(soft + reference, ao_density)
+      density = REAL(SUM(CONJG(soft - reference)*work, DIM=2), dp)
+      tau = 0.0_dp
+      DO axis = 1, 3
+         derivative(:, :) = MATMUL(soft_gradient(:, :, axis) + reference_gradient(:, :, axis), ao_density)
+         gradient(:, axis) = REAL(SUM(CONJG(soft_gradient(:, :, axis) - reference_gradient(:, :, axis))*work + &
+                                      CONJG(soft - reference)*derivative, DIM=2), dp)
+         tau = tau + 0.5_dp*REAL(SUM(CONJG(soft_gradient(:, :, axis) - &
+                                           reference_gradient(:, :, axis))*derivative, DIM=2), dp)
+      END DO
+   END SUBROUTINE upf_inverse_density_residual
+
+! **************************************************************************************************
+!> \brief Semilocal adjoint of the signed inverse-minus-Gaussian density descriptors.
+!>        Original augmentation remains separate. This Hermitian operator retains both legs
+!>        of every cross term, including those between distinct Gaussian and UPF centers.
+!> \param reference ...
+!> \param reference_gradient ...
+!> \param soft ...
+!> \param soft_gradient ...
+!> \param weights Original point measure.
+!> \param vdensity ...
+!> \param vgradient ...
+!> \param vtau ...
+!> \param integral New square AO residual operator.
+!> \param comm Optional point-row communicator, including empty ranks.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_semilocal_residual(reference, reference_gradient, soft, soft_gradient, &
+                                             weights, vdensity, vgradient, vtau, integral, comm)
+      COMPLEX(dp), INTENT(IN)                            :: reference(:, :), &
+                                                            reference_gradient(:, :, :), &
+                                                            soft(:, :), soft_gradient(:, :, :)
+      REAL(dp), INTENT(IN)                               :: weights(:), vdensity(:), &
+                                                            vgradient(:, :), vtau(:)
+      COMPLEX(dp), INTENT(OUT)                           :: integral(:, :)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+
+      CPASSERT(ALL(SHAPE(reference) == SHAPE(soft)))
+      CPASSERT(ALL(SHAPE(reference_gradient) == SHAPE(soft_gradient)))
+      CALL upf_inverse_semilocal_pair(soft - reference, soft + reference, &
+                                      soft_gradient - reference_gradient, soft_gradient + reference_gradient, &
+                                      weights, vdensity, vgradient, vtau, integral, comm)
+      integral = 0.5_dp*(integral + CONJG(TRANSPOSE(integral)))
+   END SUBROUTINE upf_inverse_semilocal_residual
 
 ! **************************************************************************************************
 !> \brief Validate Hermitian density input independently of the subsequent field contraction.
