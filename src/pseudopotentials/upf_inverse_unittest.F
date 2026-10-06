@@ -25,6 +25,7 @@ PROGRAM upf_inverse_unittest
         upf_inverse_basis, upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
         upf_inverse_operator, upf_inverse_operator_response, upf_inverse_project, &
         upf_inverse_project_response, upf_inverse_type
+   USE upf_inverse_quadrature,          ONLY: upf_inverse_projector_density
    USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
                                               upf_radial_fields_type
 
@@ -32,10 +33,40 @@ PROGRAM upf_inverse_unittest
    REAL(dp), PARAMETER :: step = 1.e-5_dp
    REAL(dp) :: max_error = 0.0_dp
    CALL check_inverse()
+   CALL check_projector_density()
    CALL check_nc_fields()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Compare density congruence to independently projected occupied orbitals.
+! **************************************************************************************************
+   SUBROUTINE check_projector_density()
+      COMPLEX(dp)                                        :: c(2, 2), density(2, 2), projected(3, 3), &
+                                                            q(3, 3), reference(3, 3), w(3, 2), &
+                                                            wc(3, 2)
+      INTEGER                                            :: i, j
+
+      DO j = 1, 2
+         DO i = 1, 2
+            c(i, j) = CMPLX(SIN(REAL(i + j, dp)), COS(REAL(i*j, dp)), dp)
+         END DO
+         DO i = 1, 3
+            w(i, j) = 60.0_dp*CMPLX(COS(REAL(i + j, dp)), SIN(REAL(i*j, dp)), dp)
+         END DO
+      END DO
+      density = MATMUL(c, CONJG(TRANSPOSE(c)))
+      CALL upf_inverse_projector_density(w, density, projected)
+      wc = MATMUL(w, c)
+      reference = MATMUL(wc, CONJG(TRANSPOSE(wc)))
+      CALL check(MAXVAL(ABS(projected - reference))/MAXVAL(ABS(reference)), 'projected occupied orbitals')
+      CALL check(MAXVAL(ABS(projected - CONJG(TRANSPOSE(projected)))), 'Hermitian projector density', 0.0_dp)
+      q = reference/MAXVAL(ABS(reference))
+      CALL check(ABS(SUM(projected*CONJG(q)) - &
+                     SUM(density*CONJG(MATMUL(CONJG(TRANSPOSE(w)), MATMUL(q, w)))))/MAXVAL(ABS(reference)), &
+                 'projector density operator adjoint')
+   END SUBROUTINE check_projector_density
+
 ! **************************************************************************************************
 !> \brief ...
 ! **************************************************************************************************

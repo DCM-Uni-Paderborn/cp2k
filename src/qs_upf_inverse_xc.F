@@ -33,7 +33,8 @@ MODULE qs_upf_inverse_xc
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_type,&
                                               qs_upf_inverse_xc_type
-   USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair,&
+   USE upf_inverse_quadrature,          ONLY: upf_inverse_projector_density,&
+                                              upf_inverse_semilocal_pair,&
                                               upf_inverse_semilocal_response,&
                                               upf_inverse_smooth_density
    USE xc_atom,                         ONLY: fill_rho_set,&
@@ -140,8 +141,7 @@ CONTAINS
          DO spin = 1, nspin
             CALL upf_inverse_smooth_density(state%soft(:, :, ik), state%gradient(:, :, :, ik), &
                                             matrices(:, :, ik, spin), rho, gradient, tau)
-            projected(:, :) = MATMUL(frame%coefficients, MATMUL(matrices(:, :, ik, spin), &
-                                                                CONJG(TRANSPOSE(frame%coefficients))))
+            CALL upf_inverse_projector_density(frame%coefficients, matrices(:, :, ik, spin), projected)
             CALL qs_upf_inverse_augmentation_collocate(frame, augmentation, projected, rho, gradient, points)
             state%density(:, spin) = state%density(:, spin) + kweights(ik)*rho
             state%density_gradient(:, :, spin) = state%density_gradient(:, :, spin) + kweights(ik)*gradient

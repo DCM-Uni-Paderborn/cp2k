@@ -39,6 +39,7 @@ MODULE qs_upf_inverse_grid
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_grid_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_pair_response,&
+                                              upf_inverse_projector_density,&
                                               upf_inverse_semilocal_pair,&
                                               upf_inverse_semilocal_response,&
                                               upf_inverse_smooth_density
@@ -182,7 +183,7 @@ CONTAINS
       IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
          nproj = frame%ao%inverse%nproj
          ALLOCATE (projected(nproj, nproj))
-         projected(:, :) = MATMUL(MATMUL(frame%ao%coefficients, p), CONJG(TRANSPOSE(frame%ao%coefficients)))
+         CALL upf_inverse_projector_density(frame%ao%coefficients, p, projected)
          IF (PRESENT(augmentation) .AND. .NOT. use_fourier) THEN
             CALL qs_upf_inverse_augmentation_collocate(frame%ao, augmentation, projected, rho, dn)
          END IF

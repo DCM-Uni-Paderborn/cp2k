@@ -21,8 +21,35 @@ MODULE upf_inverse_quadrature
 
    PUBLIC :: upf_inverse_pair, upf_inverse_pair_response
    PUBLIC :: upf_inverse_semilocal_pair, upf_inverse_semilocal_response, upf_inverse_smooth_density
+   PUBLIC :: upf_inverse_projector_density
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Hermitian density congruence, retaining the original projector coordinates.
+!>        Check the AO density before removing roundoff from either Hermitian representation.
+!>        This is the density contraction adjoint to W^dagger Q W for Hermitian Q.
+!> \param coefficients Original projector bras applied to the inverse Gaussian fields.
+!> \param ao_density Hermitian AO density, including the caller's occupation convention.
+!> \param projector_density Hermitian projector density W P W^dagger.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_projector_density(coefficients, ao_density, projector_density)
+      COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :), ao_density(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: projector_density(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :)
+      INTEGER                                            :: n, nproj
+
+      n = SIZE(coefficients, 2)
+      nproj = SIZE(coefficients, 1)
+      CPASSERT(ALL(SHAPE(ao_density) == [n, n]))
+      CPASSERT(ALL(SHAPE(projector_density) == [nproj, nproj]))
+      CALL check_density(ao_density)
+      ALLOCATE (density(n, n))
+      density(:, :) = 0.5_dp*(ao_density + CONJG(TRANSPOSE(ao_density)))
+      projector_density = MATMUL(MATMUL(coefficients, density), CONJG(TRANSPOSE(coefficients)))
+      projector_density = 0.5_dp*(projector_density + CONJG(TRANSPOSE(projector_density)))
+   END SUBROUTINE upf_inverse_projector_density
 
 ! **************************************************************************************************
 !> \brief Integrate left^dagger * weights * right, without discarding intercenter terms.
@@ -220,7 +247,6 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), work(:, :)
       INTEGER                                            :: axis, n, npoint
-      REAL(dp)                                           :: tolerance
 
       n = SIZE(soft, 2)
       npoint = SIZE(soft, 1)
@@ -228,12 +254,7 @@ CONTAINS
       CPASSERT(ALL(SHAPE(soft_gradient) == [npoint, n, 3]))
       CPASSERT(SIZE(density) == npoint .AND. SIZE(tau) == npoint)
       CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
-      IF (n > 0) THEN
-         tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(ao_density)))
-         IF (.NOT. (MAXVAL(ABS(ao_density - CONJG(TRANSPOSE(ao_density)))) <= tolerance)) THEN
-            CPABORT("Inconsistent inverse quadrature dimensions")
-         END IF
-      END IF
+      CALL check_density(ao_density)
       ALLOCATE (work(npoint, n), derivative(npoint, n))
       work(:, :) = MATMUL(soft, ao_density)
       density = REAL(SUM(CONJG(soft)*work, DIM=2), dp)
@@ -244,6 +265,23 @@ CONTAINS
          tau = tau + 0.5_dp*REAL(SUM(CONJG(soft_gradient(:, :, axis))*derivative, DIM=2), dp)
       END DO
    END SUBROUTINE upf_inverse_smooth_density
+
+! **************************************************************************************************
+!> \brief Validate Hermitian density input independently of the subsequent field contraction.
+!> \param density ...
+! **************************************************************************************************
+   SUBROUTINE check_density(density)
+      COMPLEX(dp), INTENT(IN)                            :: density(:, :)
+
+      REAL(dp)                                           :: tolerance
+
+      CPASSERT(SIZE(density, 1) == SIZE(density, 2))
+      IF (SIZE(density, 1) == 0) RETURN
+      tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(density)))
+      IF (.NOT. (MAXVAL(ABS(density - CONJG(TRANSPOSE(density)))) <= tolerance)) THEN
+         CPABORT("Inverse AO density must be Hermitian")
+      END IF
+   END SUBROUTINE check_density
 
 ! **************************************************************************************************
 !> \brief Accumulate a local rectangular contraction, allowing zero local points/columns.
