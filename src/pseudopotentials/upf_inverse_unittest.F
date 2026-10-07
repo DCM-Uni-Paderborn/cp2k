@@ -33,7 +33,7 @@ PROGRAM upf_inverse_unittest
    USE upf_inverse,                     ONLY: &
         upf_inverse_basis, upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
         upf_inverse_operator, upf_inverse_operator_response, upf_inverse_project, &
-        upf_inverse_project_response, upf_inverse_type
+        upf_inverse_project_adjoint, upf_inverse_project_response, upf_inverse_type
    USE upf_inverse_coulomb,             ONLY: &
         upf_inverse_coulomb_center_type, upf_inverse_coulomb_compensate, &
         upf_inverse_coulomb_compensation_adjoint, upf_inverse_coulomb_fourier_kernel, &
@@ -583,16 +583,18 @@ CONTAINS
    SUBROUTINE check_inverse()
       INTEGER, PARAMETER                                 :: nb = 2, nf = 5, np = 3
 
-      COMPLEX(KIND=dp) :: actual(nb, nb), b(np, nb), bd(np, np), chi(nf, nb), dchi(nf, nb), &
-         dd(np, np), ddd(np, np), ddelta(nf, np), ddg(np, nb), delta(nf, np), dg(np, nb), &
-         dgd(nb, np), dgg(nb, nb), donsite(np, np), dop(nf, nf), dprojector(np, nf), ds(nf, nb), &
-         dw(np, nb), empty_b(0, nb), empty_delta(nf, 0), empty_q(0, 0), empty_w(0, nb), &
-         gd(nb, np), gg(nb, nb), images(nf, nb, 2), onsite(np, np), op(nf, nf), projected(np, nb), &
+      COMPLEX(KIND=dp) :: actual(nb, nb), b(np, nb), bd(np, np), chi(nf, nb), db(np, nb), &
+         dchi(nf, nb), dd(np, np), ddd(np, np), ddelta(nf, np), ddg(np, nb), delta(nf, np), &
+         dg(np, nb), dgd(nb, np), dgg(nb, nb), dk(np, np), donsite(np, np), dop(nf, nf), &
+         dprojector(np, nf), ds(nf, nb), dw(np, nb), empty_b(0, nb), empty_delta(nf, 0), &
+         empty_q(0, 0), empty_w(0, nb), gb(np, nb), gd(nb, np), gg(nb, nb), gk(np, np), &
+         gw(np, nb), images(nf, nb, 2), onsite(np, np), op(nf, nf), projected(np, nb), &
          projector(np, nf), reference(nb, nb), response(nb, nb), sampled(nb, nb, 2), &
-         shifted_chi(nf, nb), shifted_delta(nf, np), shifted_op(nf, nf), shifted_p(np, nf)
-      COMPLEX(KIND=dp) :: shifted_q(np, np), soft(nf, nb), w(np, nb)
+         shifted_chi(nf, nb)
+      COMPLEX(KIND=dp) :: shifted_delta(nf, np), shifted_op(nf, nf), shifted_p(np, nf), &
+         shifted_q(np, np), soft(nf, nb), w(np, nb)
       INTEGER                                            :: i, info, j, phase, side
-      REAL(KIND=dp)                                      :: shift
+      REAL(KIND=dp)                                      :: objective(2), pairing, shift
       TYPE(upf_inverse_type)                             :: inverse
 
       DO phase = 1, 3
@@ -633,8 +635,14 @@ CONTAINS
          projected = MATMUL(projector, soft)
          CALL check(MAXVAL(ABS(projected - w)), 'inverse projector identity')
          CALL check(MAXVAL(ABS(soft + MATMUL(delta, projected) - chi)), 'full reconstruction round trip')
-         CALL upf_inverse_project_response(inverse, w, MATMUL(dprojector, chi) + MATMUL(projector, dchi), &
-                                           MATMUL(dprojector, delta) + MATMUL(projector, ddelta), dw)
+         db = MATMUL(dprojector, chi) + MATMUL(projector, dchi)
+         dk = MATMUL(dprojector, delta) + MATMUL(projector, ddelta)
+         CALL upf_inverse_project_response(inverse, w, db, dk, dw)
+         gw = chi(1:np, :) + CMPLX(0.13_dp, -0.09_dp, dp)*b
+         CALL upf_inverse_project_adjoint(inverse, w, gw, gb, gk)
+         pairing = REAL(SUM(CONJG(gb)*db) + SUM(CONJG(gk)*dk), dp)
+         CALL check(ABS(pairing - REAL(SUM(CONJG(gw)*dw), dp)), 'inverse solve forward/adjoint pairing')
+         CALL check(MAXVAL(ABS(gb + MATMUL(CONJG(TRANSPOSE(bd)), gb) - gw)), 'inverse conjugate solve')
          CALL upf_inverse_basis_response(dchi, delta, ddelta, w, dw, ds)
          gg = MATMUL(CONJG(TRANSPOSE(chi)), MATMUL(op, chi))
          gd = MATMUL(CONJG(TRANSPOSE(chi)), MATMUL(op, delta))
@@ -663,6 +671,7 @@ CONTAINS
             CALL upf_inverse_init(MATMUL(shifted_p, shifted_delta), inverse, info)
             IF (info /= 0) ERROR STOP 'Displaced inverse factorization failed'
             CALL upf_inverse_project(inverse, MATMUL(shifted_p, shifted_chi), w)
+            objective(side) = REAL(SUM(CONJG(gw)*w), dp)
             CALL upf_inverse_basis(shifted_chi, shifted_delta, w, images(:, :, side))
             projected = MATMUL(shifted_p, images(:, :, side))
             sampled(:, :, side) = MATMUL(CONJG(TRANSPOSE(images(:, :, side))), &
@@ -672,11 +681,13 @@ CONTAINS
          CALL check(MAXVAL(ABS(ds - (images(:, :, 2) - images(:, :, 1))/(2*step))), 'inverse basis response', 1.e-9_dp)
          CALL check(MAXVAL(ABS(response - (sampled(:, :, 2) - sampled(:, :, 1))/(2*step))), &
                     'inverse operator response', 1.e-9_dp)
+         CALL check(ABS(pairing - (objective(2) - objective(1))/(2*step)), 'inverse solve energy adjoint', 1.e-9_dp)
       END DO
 
       CALL upf_inverse_init(empty_q, inverse, info)
       IF (info /= 0 .OR. .NOT. inverse%ready) ERROR STOP 'Empty inverse failed'
       CALL upf_inverse_project(inverse, empty_b, empty_w)
+      CALL upf_inverse_project_adjoint(inverse, empty_b, empty_b, empty_w, empty_q)
       CALL upf_inverse_basis(chi, empty_delta, empty_w, soft)
       CALL check(MAXVAL(ABS(soft - chi)), 'identity without reconstruction projectors')
       bd = CMPLX(0.0_dp, 0.0_dp, dp)

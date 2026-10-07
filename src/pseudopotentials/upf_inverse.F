@@ -34,6 +34,7 @@ MODULE upf_inverse
    END TYPE upf_inverse_type
 
    PUBLIC :: upf_inverse_type, upf_inverse_init, upf_inverse_project, upf_inverse_project_response
+   PUBLIC :: upf_inverse_project_adjoint
    PUBLIC :: upf_inverse_basis, upf_inverse_basis_response
    PUBLIC :: upf_inverse_operator, upf_inverse_operator_response
    PUBLIC :: upf_inverse_delta_init, upf_inverse_fields_init
@@ -252,6 +253,43 @@ CONTAINS
       rhs(:, :) = beta_gaussian_response - MATMUL(beta_delta_response, coefficients)
       CALL upf_inverse_project(inverse, rhs, response)
    END SUBROUTINE upf_inverse_project_response
+
+! **************************************************************************************************
+!> \brief Propagate a real energy covector through K*W=B using the existing full LU factors.
+!>        The complex pairing is Re sum(conjg(G)*dW). Its reverse solve is K**H*GB=G,
+!>        with GK=-GB*W**H. No symmetry of K, occupation factor or regularization is assumed.
+!> \param inverse Original factored reconstruction matrix K.
+!> \param coefficients Original solution W.
+!> \param coefficients_covector Real energy derivative with respect to the complex W.
+!> \param beta_gaussian_covector Covector with respect to B.
+!> \param beta_delta_covector Covector with respect to K=I+P*Delta.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_project_adjoint(inverse, coefficients, coefficients_covector, &
+                                          beta_gaussian_covector, beta_delta_covector)
+      TYPE(upf_inverse_type), INTENT(IN)                 :: inverse
+      COMPLEX(KIND=dp), INTENT(IN)                       :: coefficients(:, :), &
+                                                            coefficients_covector(:, :)
+      COMPLEX(KIND=dp), INTENT(OUT)                      :: beta_gaussian_covector(:, :), &
+                                                            beta_delta_covector(:, :)
+
+      INTEGER                                            :: info, n, nrhs
+
+      EXTERNAL zgetrs
+
+      CPASSERT(inverse%ready)
+      n = inverse%nproj
+      nrhs = SIZE(coefficients, 2)
+      CPASSERT(SIZE(coefficients, 1) == n)
+      CPASSERT(ALL(SHAPE(coefficients_covector) == SHAPE(coefficients)))
+      CPASSERT(ALL(SHAPE(beta_gaussian_covector) == SHAPE(coefficients)))
+      CPASSERT(ALL(SHAPE(beta_delta_covector) == [n, n]))
+      beta_gaussian_covector = coefficients_covector
+      beta_delta_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (n == 0 .OR. nrhs == 0) RETURN
+      CALL zgetrs('C', n, nrhs, inverse%lu, n, inverse%pivots, beta_gaussian_covector, n, info)
+      CPASSERT(info == 0)
+      beta_delta_covector = -MATMUL(beta_gaussian_covector, CONJG(TRANSPOSE(coefficients)))
+   END SUBROUTINE upf_inverse_project_adjoint
 
 ! **************************************************************************************************
 !> \brief Evaluate inverse images on a field batch: U*chi=chi-Delta*W.
