@@ -229,7 +229,7 @@ CONTAINS
       tau_smooth_r => tau_struct_r
       tau_smooth_g => tau_struct_g
 
-      compute_virial = virial%pv_calculate .AND. (.NOT. virial%pv_numer)
+      compute_virial = virial%pv_calculate .AND. (.NOT. virial%pv_numer) .AND. (.NOT. my_just_energy)
       IF (compute_virial) THEN
          virial%pv_xc = 0.0_dp
       END IF
@@ -643,12 +643,21 @@ CONTAINS
                CALL pw_zero(my_vxc_tau(ispin))
             END DO
          ELSE IF (native_skala_grid) THEN
-            CALL skala_gpw_eval(vxc_rho=my_vxc_rho, vxc_tau=my_vxc_tau, exc=exc, &
-                                rho_r=rho_r, rho_g=rho_g, tau=tau, xc_section=xc_section, &
-                                weights=weights_use, pw_pool=xc_pw_pool, &
-                                particle_set=particle_set, cell=cell, &
-                                compute_virial=compute_virial, virial_xc=virial%pv_xc, &
-                                just_energy=my_just_energy, atom_force=native_skala_atom_force)
+            IF (my_just_energy) THEN
+               ! Energy variations neither request feature gradients nor clear the accepted virial.
+               CALL skala_gpw_eval(vxc_rho=my_vxc_rho, vxc_tau=my_vxc_tau, exc=exc, &
+                                   rho_r=rho_r, rho_g=rho_g, tau=tau, xc_section=xc_section, &
+                                   weights=weights_use, pw_pool=xc_pw_pool, &
+                                   particle_set=particle_set, cell=cell, &
+                                   compute_virial=.FALSE., virial_xc=virial_xc_tmp, just_energy=.TRUE.)
+            ELSE
+               CALL skala_gpw_eval(vxc_rho=my_vxc_rho, vxc_tau=my_vxc_tau, exc=exc, &
+                                   rho_r=rho_r, rho_g=rho_g, tau=tau, xc_section=xc_section, &
+                                   weights=weights_use, pw_pool=xc_pw_pool, &
+                                   particle_set=particle_set, cell=cell, &
+                                   compute_virial=compute_virial, virial_xc=virial%pv_xc, &
+                                   just_energy=.FALSE., atom_force=native_skala_atom_force)
+            END IF
          ELSE IF (my_just_energy) THEN
             exc = xc_exc_calc(rho_r=rho_r, tau=tau, &
                               rho_g=rho_g, xc_section=xc_section, &
