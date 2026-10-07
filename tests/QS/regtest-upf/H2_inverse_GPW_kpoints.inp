@@ -8,7 +8,7 @@
   METHOD QUICKSTEP
   STRESS_TENSOR ANALYTICAL
   &DFT
-    BASIS_SET_FILE_NAME BASIS_MOLOPT_UZH_2026.2
+    BASIS_SET_FILE_NAME BASIS_MOLOPT
     &KPOINTS
       FULL_GRID TRUE
       KPOINT 0.17 0.09 -0.03 0.3
@@ -20,7 +20,7 @@
       WAVEFUNCTIONS COMPLEX
     &END KPOINTS
     &MGRID
-      CUTOFF 20
+      CUTOFF 6
       REL_CUTOFF 10
     &END MGRID
     &QS
@@ -58,11 +58,11 @@
     &COORD
       UNIT bohr
       H 2.0 3.0 3.0
-      H 3.4 3.0 3.0
+      H 5.0 3.3 3.4
     &END COORD
     &KIND H
-      BASIS_SET DZVP-MOLOPT-PBE-GTH-q1
-      POTENTIAL UPF H.us.pbe.z_1.ld1.psl.v1.0.0-high-full-waves.upf
+      BASIS_SET SZV-MOLOPT-SR-GTH-q1
+      POTENTIAL UPF SSSP/2.0/H.us.pbe.z_1.ld1.psl.v1.0.0-high-full-waves.upf
     &END KIND
   &END SUBSYS
 &END FORCE_EVAL

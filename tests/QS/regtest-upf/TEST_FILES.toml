@@ -34,7 +34,7 @@
 ]
 # Complete complex Bloch density with unequal k-point weights.
 "H2_inverse_GPW_kpoints.inp" = [
-  {matcher="M011", tol=1e-10, ref=-1.19361636287530},
-  {matcher="Atomic_force_1_z", tol=1e-7, ref=0.942684424},
-  {matcher="M031", tol=1e-7, ref=1737256.15412},
+  {matcher="M011", tol=1e-10, ref=-0.272653470141326},
+  {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.98566973},
+  {matcher="M031", tol=1e-7, ref=2378155.83109},
 ]
