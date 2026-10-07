@@ -59,6 +59,14 @@ MODULE kpoint_types
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_types'
 
+   TYPE, PUBLIC :: kp_transform_plan_type
+      INTEGER :: nentry = 0, ngroup = 0
+      LOGICAL :: symmetric = .FALSE.
+      INTEGER, ALLOCATABLE, DIMENSION(:) :: col, col_offset, group_start, image, row, row_offset
+      INTEGER, ALLOCATABLE, DIMENSION(:, :) :: cell
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: symmetry_sign
+   END TYPE kp_transform_plan_type
+
    PUBLIC :: kpoint_type
    PUBLIC :: kpoint_create, kpoint_release, kpoint_reset_initialization, get_kpoint_info, set_kpoint_info
    PUBLIC :: read_kpoint_section, write_kpoint_info
