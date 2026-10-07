@@ -50,7 +50,7 @@ CONTAINS
 !> \param tolerance Matrix-sign residual and Hermiticity tolerance
 !> \param metric_tolerance Minimum overlap eigenvalue ratio
 !> \param gap_tolerance Absolute minimum original electronic gap
-!> \param sparse Use MUMPS shifted inertia instead of a dense spectral reference
+!> \param sparse Use sparse shifted inertia instead of a dense spectral reference
 !> \param para_env Communicator
 !> \param flattened Newly initialized shifted Hamiltonian only on success
 !> \param gap Original electronic gap lower and upper bounds, not the flattened localizer gap

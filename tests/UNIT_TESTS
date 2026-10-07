@@ -37,6 +37,6 @@ quadratic_pseudospectrum_unittest
 pw_unittest
 
 quadratic_pseudospectrum_dbcsr_unittest
-spectral_localizer_sparse_unittest                       mumps
+spectral_localizer_sparse_unittest
 
 #EOF

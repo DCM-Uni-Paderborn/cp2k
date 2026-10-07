@@ -6,13 +6,17 @@
 !--------------------------------------------------------------------------------------------------!
 
 ! **************************************************************************************************
-!> \brief Optional distributed sparse LDL inertia with reusable symbolic analysis.
+!> \brief Distributed sparse LDL inertia and reusable metric factors.
 !> \author Thomas D. Kuehne, tkuehne@cp2k.org
 ! **************************************************************************************************
 MODULE localizer_sparse_inertia
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp,&
                                               int_8
+   USE localizer_dbcsr_factor,          ONLY: localizer_factor_release,&
+                                              localizer_factor_solve,&
+                                              localizer_factor_type,&
+                                              localizer_factorize
    USE message_passing,                 ONLY: mp_para_env_type
 #include "./base/base_uses.f90"
 
@@ -29,6 +33,10 @@ MODULE localizer_sparse_inertia
 #if defined(__MUMPS)
       TYPE(DMUMPS_STRUC) :: solver
 #endif
+      TYPE(localizer_factor_type) :: native
+      INTEGER, ALLOCATABLE :: rows(:), cols(:)
+      LOGICAL :: retain = .FALSE.
+      LOGICAL :: native_backend = .TRUE.
       LOGICAL :: initialized = .FALSE.
       LOGICAL :: factor_valid = .FALSE.
       INTEGER :: order = 0, factorizations = 0, error_code = 0, error_detail = 0, workspace_retries = 0
@@ -39,14 +47,22 @@ MODULE localizer_sparse_inertia
 CONTAINS
 
 ! **************************************************************************************************
-!> \brief Whether the optional sparse inertia backend is linked.
+!> \brief Whether sparse inertia is available, including the native DBCSR implementation.
+!> \param use_native Select native DBCSR, otherwise require MUMPS
 !> \return Backend availability
 ! **************************************************************************************************
-   LOGICAL FUNCTION sparse_inertia_available()
-      sparse_inertia_available = .FALSE.
-#if defined(__MUMPS)
+   LOGICAL FUNCTION sparse_inertia_available(use_native)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: use_native
+
       sparse_inertia_available = .TRUE.
+      IF (PRESENT(use_native)) THEN
+         IF (.NOT. use_native) THEN
+            sparse_inertia_available = .FALSE.
+#if defined(__MUMPS)
+            sparse_inertia_available = .TRUE.
 #endif
+         END IF
+      END IF
    END FUNCTION sparse_inertia_available
 
 ! **************************************************************************************************
@@ -57,16 +73,17 @@ CONTAINS
 !> \param cols Local one-based column coordinates
 !> \param para_env Communicator for collective calls
 !> \param status Zero on success; negative for invalid input or unavailable backend
-!> \param positive_definite Use the non-pivoting SPD path, with negative-pivot checks still required
+!> \param positive_definite Retain metric factors, selecting the SPD implementation when available
+!> \param use_native Use DBCSR factors (default), otherwise MUMPS
 ! **************************************************************************************************
-   SUBROUTINE sparse_inertia_start(state, order, rows, cols, para_env, status, positive_definite)
-      TYPE(sparse_inertia_type), INTENT(INOUT) :: state
-      INTEGER, INTENT(IN) :: order, rows(:), cols(:)
-      TYPE(mp_para_env_type), POINTER :: para_env
-      INTEGER, INTENT(OUT) :: status
-      LOGICAL, INTENT(IN), OPTIONAL :: positive_definite
-#if defined(__MUMPS)
-      INTEGER :: invalid
+   SUBROUTINE sparse_inertia_start(state, order, rows, cols, para_env, status, positive_definite, use_native)
+      TYPE(sparse_inertia_type), INTENT(INOUT)           :: state
+      INTEGER, INTENT(IN)                                :: order, rows(:), cols(:)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(OUT)                               :: status
+      LOGICAL, INTENT(IN), OPTIONAL                      :: positive_definite, use_native
+
+      INTEGER                                            :: invalid, maximum(3), minimum(3)
 
       invalid = 0
       IF (state%initialized .OR. order < 1 .OR. SIZE(rows) /= SIZE(cols)) invalid = 1
@@ -77,6 +94,32 @@ CONTAINS
       CALL para_env%max(invalid)
       status = -1
       IF (invalid /= 0) RETURN
+      state%native_backend = .TRUE.
+      IF (PRESENT(use_native)) state%native_backend = use_native
+      state%retain = .FALSE.
+      IF (PRESENT(positive_definite)) state%retain = positive_definite
+      minimum = [order, MERGE(1, 0, state%native_backend), MERGE(1, 0, state%retain)]
+      maximum = minimum
+      CALL para_env%min(minimum)
+      CALL para_env%max(maximum)
+      IF (ANY(minimum /= maximum)) RETURN
+      IF (state%native_backend) THEN
+         state%rows = rows
+         state%cols = cols
+         state%order = order
+         state%initialized = .TRUE.
+         state%factor_valid = .FALSE.
+         state%factorizations = 0
+         state%workspace_retries = 0
+         state%factor_entries = 0
+         state%factor_workspace_entries = 0
+         state%peak_memory_mb = 0.0_dp
+         state%input_entries = INT(SIZE(rows), int_8)
+         CALL para_env%sum(state%input_entries)
+         status = 0
+         RETURN
+      END IF
+#if defined(__MUMPS)
       state%solver%COMM = para_env%get_handle()
       state%solver%PAR = 1
       state%solver%SYM = 2
@@ -123,12 +166,6 @@ CONTAINS
       status = 0
       IF (state%error_code /= 0) status = -4
 #else
-      MARK_USED(state)
-      MARK_USED(order)
-      MARK_USED(rows)
-      MARK_USED(cols)
-      MARK_USED(para_env)
-      MARK_USED(positive_definite)
       status = -5
 #endif
    END SUBROUTINE sparse_inertia_start
@@ -146,21 +183,44 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN) :: values(:)
       TYPE(mp_para_env_type), POINTER :: para_env
       INTEGER, INTENT(OUT) :: negative, status
+      INTEGER :: invalid
 #if defined(__MUMPS)
-      INTEGER :: invalid, entries, attempt, i
+      INTEGER :: entries, attempt, i
       INTEGER, ALLOCATABLE :: row_support(:)
+#endif
 
       negative = 0
       state%factor_valid = .FALSE.
       invalid = 0
       IF (.NOT. state%initialized) invalid = 1
       IF (state%initialized) THEN
-         IF (SIZE(values) /= state%solver%NZ_LOC) invalid = 1
+         IF (state%native_backend) THEN
+            IF (SIZE(values) /= SIZE(state%rows)) invalid = 1
+         ELSE
+#if defined(__MUMPS)
+            IF (SIZE(values) /= state%solver%NZ_LOC) invalid = 1
+#else
+            invalid = 1
+#endif
+         END IF
       END IF
       IF (.NOT. ALL(ieee_is_finite(values))) invalid = 1
       CALL para_env%max(invalid)
       status = -4
       IF (invalid /= 0) RETURN
+      IF (state%native_backend) THEN
+         CALL localizer_factorize(state%order, state%rows, state%cols, values, para_env, &
+                                  state%native, negative, status, state%retain)
+         state%factorizations = state%factorizations + 1
+         state%factor_entries = MAX(state%factor_entries, state%native%entries)
+         state%factor_workspace_entries = MAX(state%factor_workspace_entries, state%native%workspace_entries)
+         state%peak_memory_mb = MAX(state%peak_memory_mb, state%native%peak_memory_mb)
+         state%factor_valid = status == 0
+         state%error_code = MIN(0, status)
+         state%error_detail = 0
+         RETURN
+      END IF
+#if defined(__MUMPS)
       ! At an exact gap endpoint a shifted pencil may contain whole zero rows.
       ! Detect these before delayed pivots consume MUMPS's workspace. Additive
       ! duplicate cancellation may hide other zero rows, but cannot give a false one.
@@ -210,12 +270,6 @@ CONTAINS
       state%peak_memory_mb = MAX(state%peak_memory_mb, REAL(state%solver%INFOG(22), dp))
       state%factor_valid = .TRUE.
       status = 0
-#else
-      MARK_USED(state)
-      MARK_USED(values)
-      MARK_USED(para_env)
-      negative = 0
-      status = -5
 #endif
    END SUBROUTINE sparse_inertia_count
 
@@ -231,14 +285,16 @@ CONTAINS
 !> \param para_env Communicator
 !> \param ratio Conservative lower eigenvalue/row-norm ratio
 !> \param status 0 success, -2 invalid metric, -4 solver failure, -5 unavailable
+!> \param use_native Use DBCSR factors (default), otherwise MUMPS
 ! **************************************************************************************************
-   SUBROUTINE sparse_metric_start(state, order, rows, cols, values, identity, tolerance, para_env, ratio, status)
+   SUBROUTINE sparse_metric_start(state, order, rows, cols, values, identity, tolerance, para_env, ratio, status, use_native)
       TYPE(sparse_inertia_type), INTENT(INOUT)           :: state
       INTEGER, INTENT(IN)                                :: order, rows(:), cols(:)
       REAL(dp), INTENT(IN)                               :: values(:), identity(:), tolerance
       TYPE(mp_para_env_type), POINTER                    :: para_env
       REAL(dp), INTENT(OUT)                              :: ratio
       INTEGER, INTENT(OUT)                               :: status
+      LOGICAL, INTENT(IN), OPTIONAL                      :: use_native
 
       INTEGER                                            :: i, info, invalid, negative
       REAL(dp)                                           :: lower, upper
@@ -253,7 +309,7 @@ CONTAINS
       CALL para_env%max(invalid)
       status = -2
       IF (invalid /= 0) RETURN
-      CALL sparse_inertia_start(state, order, rows, cols, para_env, status, positive_definite=.TRUE.)
+      CALL sparse_inertia_start(state, order, rows, cols, para_env, status, positive_definite=.TRUE., use_native=use_native)
       IF (status /= 0) RETURN
       ALLOCATE (sums(order), shifted(SIZE(values)))
       sums = 0.0_dp
@@ -290,10 +346,10 @@ CONTAINS
    END SUBROUTINE sparse_metric_start
 
 ! **************************************************************************************************
-!> \brief Collective repeated solves using existing MUMPS factors, without refactorization.
+!> \brief Collective repeated solves using retained metric factors, without refactorization.
 !> \param state Successfully factored metric
 !> \param rhs Replicated right hand sides, replaced by replicated solutions
-!> \param para_env Communicator (MUMPS host is communicator rank zero)
+!> \param para_env Communicator
 !> \param status 0 success, -4 failure, -5 unavailable
 ! **************************************************************************************************
    SUBROUTINE sparse_metric_solve(state, rhs, para_env, status)
@@ -301,16 +357,28 @@ CONTAINS
       REAL(dp), CONTIGUOUS, INTENT(INOUT) :: rhs(:, :)
       TYPE(mp_para_env_type), POINTER :: para_env
       INTEGER, INTENT(OUT) :: status
+      INTEGER :: invalid
 #if defined(__MUMPS)
-      INTEGER :: invalid, count
+      INTEGER :: count
+#endif
+
       invalid = 0
       IF (.NOT. state%factor_valid .OR. .NOT. state%initialized) invalid = 1
       IF (SIZE(rhs, 1) /= state%order .OR. SIZE(rhs, 2) < 1) invalid = 1
+#if defined(__MUMPS)
       IF (SIZE(rhs, KIND=int_8) > HUGE(count)) invalid = 1
+#endif
       IF (.NOT. ALL(ieee_is_finite(rhs))) invalid = 1
       CALL para_env%max(invalid)
       status = -4
       IF (invalid /= 0) RETURN
+      IF (state%native_backend) THEN
+         CALL localizer_factor_solve(state%native, rhs, para_env, status)
+         RETURN
+      END IF
+      status = -5
+#if defined(__MUMPS)
+      status = -4
       state%solver%NRHS = SIZE(rhs, 2)
       state%solver%LRHS = state%order
       state%solver%ICNTL(20) = 0
@@ -332,11 +400,6 @@ CONTAINS
       CALL para_env%bcast(rhs, 0)
       IF (.NOT. ALL(ieee_is_finite(rhs))) RETURN
       status = 0
-#else
-      MARK_USED(state)
-      MARK_USED(rhs)
-      MARK_USED(para_env)
-      status = -5
 #endif
    END SUBROUTINE sparse_metric_solve
 
@@ -345,14 +408,20 @@ CONTAINS
 !> \param state Factorization context, including a failed analysis
 ! **************************************************************************************************
    SUBROUTINE sparse_inertia_finish(state)
-      TYPE(sparse_inertia_type), INTENT(INOUT) :: state
-#if defined(__MUMPS)
+      TYPE(sparse_inertia_type), INTENT(INOUT)           :: state
+
       IF (.NOT. state%initialized) RETURN
-      DEALLOCATE (state%solver%IRN_LOC, state%solver%JCN_LOC, state%solver%A_LOC)
-      NULLIFY (state%solver%IRN_LOC, state%solver%JCN_LOC, state%solver%A_LOC)
-      state%solver%JOB = -2
-      CALL dmumps(state%solver)
+      IF (state%native_backend) THEN
+         CALL localizer_factor_release(state%native)
+         IF (ALLOCATED(state%rows)) DEALLOCATE (state%rows, state%cols)
+      ELSE
+#if defined(__MUMPS)
+         DEALLOCATE (state%solver%IRN_LOC, state%solver%JCN_LOC, state%solver%A_LOC)
+         NULLIFY (state%solver%IRN_LOC, state%solver%JCN_LOC, state%solver%A_LOC)
+         state%solver%JOB = -2
+         CALL dmumps(state%solver)
 #endif
+      END IF
       state%initialized = .FALSE.
       state%factor_valid = .FALSE.
    END SUBROUTINE sparse_inertia_finish

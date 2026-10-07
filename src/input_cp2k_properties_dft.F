@@ -3407,11 +3407,12 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="SOLVER", type_of_var=enum_t, &
                           description="DENSE uses LAPACK LDL inertia checked against generalized eigenvalues. "// &
                           "For DIMENSION 3 it uses real LU/QR determinant signs and a generalized chiral gap. "// &
-                          "MUMPS uses distributed sparse inertia and shifted-factorization gap brackets; "// &
+                          "DBCSR uses native pivoted sparse LDL and shifted-factorization gap brackets for CHERN. "// &
+                          "MUMPS provides an optional sparse-direct implementation of these operations; "// &
                           "requires an MPI build linked with MUMPS and supports CHERN. "// &
-                          "TACHO uses sparse skew-LDL Pfaffians for Z2 with MUMPS gap validation; "// &
+                          "TACHO uses sparse skew-LDL Pfaffians for Z2 with native LDL gap validation; "// &
                           "requires CP2K_USE_TACHO. Pfaffian factors reside on the source rank.", &
-                          enum_c_vals=s2a("DENSE", "MUMPS", "TACHO"), enum_i_vals=[0, 1, 2], default_i_val=0)
+                          enum_c_vals=s2a("DENSE", "MUMPS", "TACHO", "DBCSR"), enum_i_vals=[0, 1, 2, 3], default_i_val=0)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="INVARIANT", type_of_var=enum_t, &
@@ -3593,8 +3594,8 @@ CONTAINS
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="SOLVER", type_of_var=enum_t, &
                           description="DENSE is a replicated small-system reference. ITERATIVE applies Q using "// &
-                          "DBCSR products and reusable MUMPS metric factors, without constructing Q or S inverse. "// &
-                          "ITERATIVE requires CP2K_USE_MUMPS and keeps a bounded replicated vector subspace.", &
+                          "DBCSR products and reusable native LDL metric factors, without constructing Q or S inverse. "// &
+                          "ITERATIVE keeps a bounded replicated vector subspace.", &
                           enum_c_vals=s2a("DENSE", "ITERATIVE"), enum_i_vals=[0, 1], default_i_val=0)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -3635,7 +3636,7 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="EPS_METRIC", default_r_val=1.e-10_dp, &
-                          description="Minimum AO metric eigenvalue ratio (conservative lower bound with MUMPS). "// &
+                          description="Minimum AO metric eigenvalue ratio (conservative lower bound with sparse LDL). "// &
                           "Ill-conditioned directions are rejected, not silently discarded.")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)

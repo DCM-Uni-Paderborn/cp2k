@@ -42,9 +42,10 @@ CONTAINS
 !> \param metric_ratio Conservative lower bound on lambda_min(B)/lambda_max(B)
 !> \param statistics Factorization counts, workspace and input size (context is closed on return)
 !> \param status 0 resolved, 1 unresolved, -1 input, -2 metric, -4 solver, -5 unavailable
+!> \param use_native Use native DBCSR LDL (default), otherwise MUMPS
 ! **************************************************************************************************
    SUBROUTINE localizer_sparse_evaluate(order, rows, cols, a, b, identity, para_env, metric_tol, gap_tol, &
-                                        invariant, gap_lower, gap_upper, metric_ratio, statistics, status)
+                                        invariant, gap_lower, gap_upper, metric_ratio, statistics, status, use_native)
       INTEGER, INTENT(IN)                                :: order, rows(:), cols(:)
       REAL(KIND=dp), INTENT(IN)                          :: a(:), b(:), identity(:)
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -53,6 +54,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: gap_lower, gap_upper, metric_ratio
       TYPE(sparse_inertia_type), INTENT(INOUT)           :: statistics
       INTEGER, INTENT(OUT)                               :: status
+      LOGICAL, INTENT(IN), OPTIONAL                      :: use_native
 
       INTEGER                                            :: i, info, invalid, iteration, &
                                                             metric_factorizations, metric_retries, &
@@ -82,7 +84,8 @@ CONTAINS
       CALL para_env%max(invalid)
       status = -1
       IF (invalid /= 0) RETURN
-      CALL sparse_inertia_start(statistics, order, rows, cols, para_env, status, positive_definite=.TRUE.)
+      CALL sparse_inertia_start(statistics, order, rows, cols, para_env, status, &
+                                positive_definite=.TRUE., use_native=use_native)
       IF (status /= 0) THEN
          CALL sparse_inertia_finish(statistics)
          RETURN
@@ -129,7 +132,7 @@ CONTAINS
       metric_memory = statistics%peak_memory_mb
       CALL sparse_inertia_finish(statistics)
       ! The localizer and its energy shifts are indefinite and must retain numerical pivoting.
-      CALL sparse_inertia_start(statistics, order, rows, cols, para_env, status)
+      CALL sparse_inertia_start(statistics, order, rows, cols, para_env, status, use_native=use_native)
       IF (status /= 0) GOTO 900
       status = -1
       IF (.NOT. ieee_is_finite(anorm)) GOTO 900

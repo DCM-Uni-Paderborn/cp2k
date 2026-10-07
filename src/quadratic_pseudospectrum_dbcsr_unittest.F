@@ -143,7 +143,7 @@ PROGRAM quadratic_pseudospectrum_dbcsr_unittest
          IF (.NOT. sparse_inertia_available()) CYCLE
          CALL localizer_dbcsr_pencil(metric, metric, para_env, order, rows, cols, a, b, diagonal)
          CALL sparse_metric_start(factors, order, rows, cols, b, diagonal, 1.e-10_dp, para_env, ratio, status)
-         IF (status /= 0) ERROR STOP 'Distributed quadratic MUMPS metric failed'
+         IF (status /= 0) ERROR STOP 'Distributed quadratic sparse metric failed'
       END IF
       CALL solve(vectors, image, status)
       IF (status /= 0) ERROR STOP 'Distributed metric solve failed'

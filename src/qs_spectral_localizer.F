@@ -209,8 +209,8 @@ CONTAINS
          IF (ndim == 3 .AND. solver /= 0) CPABORT('The 3D determinant path requires SOLVER DENSE.')
          CALL section_vals_val_get(section, 'PFAFFIAN_MEMORY', i_val=pfaffian_memory)
          IF (pfaffian_memory <= 0) CPABORT('PFAFFIAN_MEMORY must be positive.')
-         IF (solver /= 0 .AND. .NOT. sparse_inertia_available()) THEN
-            CPABORT('Sparse SPECTRAL_LOCALIZER requires an MPI build with CP2K_USE_MUMPS.')
+         IF (solver == 1 .AND. .NOT. sparse_inertia_available(use_native=.FALSE.)) THEN
+            CPABORT('MUMPS unavailable. Use SOLVER DBCSR.')
          END IF
          IF (solver == 2 .AND. .NOT. sparse_pfaffian_available()) THEN
             CPABORT('SOLVER TACHO requires CP2K_USE_TACHO and the skew-LDL extension.')
@@ -279,7 +279,7 @@ CONTAINS
       CALL section_vals_val_get(section, 'INVARIANT', i_val=topology)
       aii = topology == 1
       IF (ndim == 3 .AND. .NOT. aii) CPABORT('DIMENSION 3 requires INVARIANT Z2.')
-      IF (aii .AND. solver == 1) THEN
+      IF (aii .AND. ANY(solver == [1, 3])) THEN
          CPABORT('Sparse inertia is not a Z2 Pfaffian solver; use SOLVER DENSE or TACHO.')
       END IF
       IF (.NOT. aii .AND. solver == 2) THEN
@@ -361,10 +361,14 @@ CONTAINS
             ELSE
                WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| LAPACK LDL inertia with eigenvalue validation.'
             END IF
-         ELSE IF (solver == 1) THEN
-            WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| MUMPS sparse inertia and generalized gap brackets.'
+         ELSE IF (ANY(solver == [1, 3])) THEN
+            IF (solver == 3) THEN
+               WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| Native DBCSR LDL inertia and generalized gap brackets.'
+            ELSE
+               WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| MUMPS sparse inertia and generalized gap brackets.'
+            END IF
          ELSE
-            WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| Tacho sparse Pfaffian with independent MUMPS gap brackets.'
+            WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| Tacho sparse Pfaffian with independent native LDL gap brackets.'
             WRITE (output_unit, '(T2,A)') 'SPECTRAL_LOCALIZER| Pfaffian factorization on source rank; sparse COO collection.'
          END IF
          WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Localizer dimension: ', MERGE(4*n, 2*n, ndim == 3)
@@ -496,7 +500,8 @@ CONTAINS
                   CALL localizer_dbcsr_pencil(localizer, metric, para_env, order, rows, cols, &
                                               sparse_a, sparse_b, sparse_identity)
                   CALL localizer_sparse_evaluate(order, rows, cols, sparse_a, sparse_b, sparse_identity, para_env, &
-                                                 eps_metric, eps_gap, invariant, gap, gap_upper, metric_ratio, statistics, status)
+                                                 eps_metric, eps_gap, invariant, gap, gap_upper, metric_ratio, statistics, status, &
+                                                 use_native=solver /= 1)
                   pfaffian_residual = 0.0_dp
                   pfaffian_fill = 0
                   pfaffian_peak = 0
@@ -519,7 +524,7 @@ CONTAINS
                IF (status < 0 .OR. status > 1) THEN
                   IF (solver /= 0 .AND. output_unit > 0) THEN
                      IF (statistics%error_code /= 0 .OR. statistics%error_detail /= 0) THEN
-                        WRITE (output_unit, '(T2,A,2I12)') 'SPECTRAL_LOCALIZER| MUMPS error code/detail: ', &
+                        WRITE (output_unit, '(T2,A,2I12)') 'SPECTRAL_LOCALIZER| Sparse solver error code/detail: ', &
                            statistics%error_code, statistics%error_detail
                      END IF
                   END IF
@@ -556,7 +561,13 @@ CONTAINS
                      WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Factor entries: ', statistics%factor_entries
                      WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Factor real workspace entries: ', &
                         statistics%factor_workspace_entries
-                     WRITE (output_unit, '(T2,A,F14.3)') 'SPECTRAL_LOCALIZER| Solver memory sum [MB]: ', statistics%peak_memory_mb
+                     IF (statistics%native_backend) THEN
+                        WRITE (output_unit, '(T2,A,F14.3)') &
+                           'SPECTRAL_LOCALIZER| LDL real buffers estimate [MiB/rank]: ', statistics%peak_memory_mb
+                     ELSE
+                        WRITE (output_unit, '(T2,A,F14.3)') 'SPECTRAL_LOCALIZER| Solver memory sum [MB]: ', &
+                           statistics%peak_memory_mb
+                     END IF
                      IF (solver == 2) THEN
                         WRITE (output_unit, '(T2,A,ES23.14)') 'SPECTRAL_LOCALIZER| Pfaffian solve residual: ', pfaffian_residual
                         WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Pfaffian scalar panel entries: ', pfaffian_fill

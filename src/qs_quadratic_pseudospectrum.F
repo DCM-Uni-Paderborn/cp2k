@@ -196,7 +196,7 @@ CONTAINS
       ALLOCATE (operators(nobs), shift(nobs), weights(nobs))
       CALL section_vals_val_get(section, 'SOLVER', i_val=solver)
       IF (solver == 1 .AND. .NOT. sparse_inertia_available()) THEN
-         CPABORT('Quadratic ITERATIVE solver requires an MPI build with CP2K_USE_MUMPS.')
+         CPABORT('Quadratic ITERATIVE solver requires sparse metric factorization.')
       END IF
       CALL section_vals_val_get(section, 'SPIN_CHANNEL', i_val=spin)
       IF (spin < 1 .OR. spin > SIZE(matrix_ks)) THEN
@@ -318,7 +318,7 @@ CONTAINS
          IF (solver == 0) THEN
             WRITE (output_unit, '(T2,A)') 'QUADRATIC_PSEUDOSPECTRUM| Dense finite-basis reference'
          ELSE
-            WRITE (output_unit, '(T2,A)') 'QUADRATIC_PSEUDOSPECTRUM| DBCSR operator / MUMPS metric / block Ritz'
+            WRITE (output_unit, '(T2,A)') 'QUADRATIC_PSEUDOSPECTRUM| DBCSR operator / native LDL metric / block Ritz'
             WRITE (output_unit, '(T2,A,ES23.14)') 'QUADRATIC_PSEUDOSPECTRUM| Metric ratio lower bound: ', ratio
          END IF
          WRITE (output_unit, '(T2,A)') 'QUADRATIC_PSEUDOSPECTRUM| Joint approximate states, not a topology index.'

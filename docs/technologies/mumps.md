@@ -7,9 +7,10 @@ under CeCILL-C.
 
 `SPECTRAL_LOCALIZER / SOLVER MUMPS` supplies class-A inertia and generalized gap brackets, including
 complex Hamiltonians through realification. It does not provide a Pfaffian sign.
-`QUADRATIC_PSEUDOSPECTRUM / SOLVER ITERATIVE` reuses metric factors with DBCSR operator products and
-a bounded Ritz space. `MAX_SUBSPACE` and `MAX_ITER` control that iteration.
+`SPECTRAL_LOCALIZER / SOLVER DBCSR` and `QUADRATIC_PSEUDOSPECTRUM / SOLVER ITERATIVE` use native
+pivoted LDL factors and do not require MUMPS.
 
 Assembly and factorizations are distributed. Quadratic-response vectors and metric right-hand sides
 use replicated/centralized storage. Fill-in and root fronts still limit scaling. Unresolved gaps or
-invalid metrics produce no index. Dense reference paths remain available without this dependency.
+invalid metrics produce no index. Dense reference methods also remain available without this
+dependency.

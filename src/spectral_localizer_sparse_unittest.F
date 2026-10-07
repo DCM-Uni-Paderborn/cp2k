@@ -6,16 +6,30 @@
 !--------------------------------------------------------------------------------------------------!
 
 PROGRAM spectral_localizer_sparse_unittest
+   USE cp_dbcsr_api,                    ONLY: dbcsr_finalize_lib,&
+                                              dbcsr_init_lib
+   USE cp_log_handling,                 ONLY: cp_add_default_logger,&
+                                              cp_logger_create,&
+                                              cp_logger_release,&
+                                              cp_logger_type,&
+                                              cp_rm_default_logger
    USE kinds,                           ONLY: dp,&
                                               int_8
+   USE localizer_dbcsr_factor,          ONLY: localizer_factor_release,&
+                                              localizer_factor_solve,&
+                                              localizer_factor_type,&
+                                              localizer_factorize
    USE localizer_sparse_inertia,        ONLY: sparse_inertia_available,&
+                                              sparse_inertia_count,&
                                               sparse_inertia_finish,&
+                                              sparse_inertia_start,&
                                               sparse_inertia_type,&
                                               sparse_metric_solve,&
                                               sparse_metric_start
    USE localizer_sparse_pfaffian,       ONLY: sparse_pfaffian_available,&
                                               sparse_pfaffian_sign,&
                                               sparse_z2_evaluate
+   USE machine,                         ONLY: default_output_unit
    USE message_passing,                 ONLY: mp_para_env_type,&
                                               mp_world_finalize,&
                                               mp_world_init
@@ -26,15 +40,22 @@ PROGRAM spectral_localizer_sparse_unittest
    IMPLICIT NONE
 
    TYPE(mp_para_env_type), POINTER :: para_env
+   TYPE(cp_logger_type), POINTER :: logger
    COMPLEX(KIND=dp), ALLOCATABLE :: matrix(:, :), metric(:, :), h(:, :)
    COMPLEX(KIND=dp) :: tx(2, 2), ty(2, 2), coordinate
-   INTEGER :: length, n, i, j, x, y
+   INTEGER :: length, n, i, j, x, y, io
    REAL(KIND=dp) :: factor
 
    ALLOCATE (para_env)
    CALL mp_world_init(para_env)
+   io = -1
+   IF (para_env%is_source()) io = default_output_unit
+   CALL cp_logger_create(logger, para_env=para_env, default_global_unit_nr=io, close_global_unit_on_dealloc=.FALSE.)
+   CALL cp_add_default_logger(logger)
+   CALL dbcsr_init_lib(para_env%get_handle(), io)
    IF (sparse_pfaffian_available()) CALL pfaffian_tests()
    IF (sparse_inertia_available()) THEN
+      CALL factor_tests()
       CALL metric_tests()
       CALL shifted_gap_tests()
       length = 5
@@ -121,10 +142,90 @@ PROGRAM spectral_localizer_sparse_unittest
       CALL compare(matrix, metric, 0, 'ill-conditioned metric')
       DEALLOCATE (matrix, metric)
    END IF
+   CALL dbcsr_finalize_lib()
+   CALL cp_rm_default_logger()
+   CALL cp_logger_release(logger)
    DEALLOCATE (para_env)
    CALL mp_world_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Distributed duplicates and indefinite 2x2 factors must preserve inertia and solves.
+! **************************************************************************************************
+   SUBROUTINE factor_tests()
+      INTEGER, PARAMETER                                 :: n = 34
+
+      INTEGER                                            :: count, entry_index, i, j, k, negative, &
+                                                            pass, status
+      INTEGER, ALLOCATABLE                               :: cols(:), rows(:)
+      REAL(dp)                                           :: a(n, n), exact(n, 2), rhs(n, 2)
+      REAL(dp), ALLOCATABLE                              :: values(:)
+      TYPE(localizer_factor_type)                        :: factor
+      TYPE(sparse_inertia_type)                          :: state
+
+      a = 0.0_dp
+      DO i = 1, n - 1
+         a(i + 1, i) = 1.0_dp + 0.01_dp*i
+         a(i, i + 1) = a(i + 1, i)
+      END DO
+      DO j = 1, 2
+         DO i = 1, n
+            exact(i, j) = SIN(REAL(i + 7*j, dp))
+         END DO
+      END DO
+      DO pass = 1, 2
+         count = 0
+         entry_index = 0
+         DO i = 1, n - 1
+            DO k = 1, 2
+               entry_index = entry_index + 1
+               IF (MOD(entry_index - 1, para_env%num_pe) /= para_env%mepos) CYCLE
+               count = count + 1
+               IF (pass == 1) CYCLE
+               rows(count) = i + 1
+               cols(count) = i
+               values(count) = 0.5_dp*a(i + 1, i)
+            END DO
+         END DO
+         IF (pass == 1) ALLOCATE (rows(count), cols(count), values(count))
+      END DO
+      CALL localizer_factorize(n, rows, cols, values, para_env, factor, negative, status, .TRUE.)
+      IF (status /= 0 .OR. negative /= n/2) ERROR STOP 'Native indefinite factorization failed'
+      rhs = MATMUL(a, exact)
+      CALL localizer_factor_solve(factor, rhs, para_env, status)
+      IF (status /= 0) ERROR STOP 'Native indefinite solve failed'
+      IF (MAXVAL(ABS(rhs - exact)) > 1.e-12_dp) ERROR STOP 'Native indefinite solution mismatch'
+      IF (MAXVAL(ABS(MATMUL(a, rhs - exact))) > 1.e-12_dp) ERROR STOP 'Native indefinite residual mismatch'
+      CALL localizer_factor_release(factor)
+
+      IF (para_env%is_source()) rows(1) = 0
+      CALL sparse_inertia_start(state, n, rows, cols, para_env, status)
+      IF (status /= -1) ERROR STOP 'Invalid rank-local coordinates accepted'
+      IF (para_env%is_source()) rows(1) = 2
+      CALL sparse_inertia_start(state, n, rows, cols, para_env, status)
+      IF (status /= 0) ERROR STOP 'Distributed inertia initialization failed'
+      IF (para_env%is_source()) state%initialized = .FALSE.
+      CALL sparse_inertia_count(state, values, para_env, negative, status)
+      IF (status /= -4) ERROR STOP 'Invalid rank-local inertia context accepted'
+      IF (para_env%is_source()) state%initialized = .TRUE.
+      CALL sparse_inertia_count(state, values, para_env, negative, status)
+      IF (status /= 0 .OR. negative /= n/2) ERROR STOP 'Duplicate inertia mismatch'
+      CALL sparse_inertia_finish(state)
+      CALL sparse_inertia_start(state, n, rows, cols, para_env, status, use_native=.FALSE.)
+      IF (sparse_inertia_available(use_native=.FALSE.)) THEN
+         IF (status /= 0) ERROR STOP 'Optional MUMPS initialization failed'
+         CALL sparse_inertia_count(state, values, para_env, negative, status)
+         IF (status /= 0 .OR. negative /= n/2) ERROR STOP 'Native/MUMPS inertia mismatch'
+         rhs = MATMUL(a, exact)
+         CALL sparse_metric_solve(state, rhs, para_env, status)
+         IF (status /= 0) ERROR STOP 'Optional MUMPS solve failed'
+         IF (MAXVAL(ABS(rhs - exact)) > 1.e-12_dp) ERROR STOP 'Native/MUMPS solution mismatch'
+         CALL sparse_inertia_finish(state)
+      ELSE
+         IF (status /= -5) ERROR STOP 'Unavailable MUMPS accepted'
+      END IF
+   END SUBROUTINE factor_tests
 
 ! **************************************************************************************************
 !> \brief Shifted LDL brackets must track generalized eigenvalues, not pivot sizes.

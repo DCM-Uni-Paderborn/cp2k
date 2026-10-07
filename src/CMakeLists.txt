@@ -677,6 +677,7 @@ list(
   qs_ks_utils.F
   qs_ks_reference.F
   qs_kubo_transport.F
+  localizer_dbcsr_factor.F
   localizer_sparse_inertia.F
   localizer_sparse_pfaffian.F
   spectral_localizer_sparse.F
