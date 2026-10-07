@@ -27,8 +27,100 @@ MODULE upf_inverse_exchange
    PUBLIC :: upf_inverse_exchange_block, upf_inverse_exchange_response, upf_inverse_exchange_adjoint
    PUBLIC :: upf_inverse_exchange_contract
    PUBLIC :: upf_inverse_exchange_augmentation
+   PUBLIC :: upf_inverse_exchange_kernel, upf_inverse_exchange_kernel_response
+   PUBLIC :: upf_inverse_exchange_kernel_adjoint
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Effective RI interaction from the owner's fitting inverse and exchange interaction.
+!>        The supplied inverse retains the owner's conditioning, local auxiliary selection and
+!>        metric weighting. No independent inverse or regularization is introduced here.
+!> \param fitting_inverse Hermitian fitting inverse A, prepared by the native RI owner.
+!> \param exchange Hermitian exchange interaction V_x in the same auxiliary coordinates.
+!> \param interaction New effective kernel A V_x A.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_exchange_kernel(fitting_inverse, exchange, interaction)
+      COMPLEX(dp), INTENT(IN)                            :: fitting_inverse(:, :), exchange(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: interaction(:, :)
+
+      CALL check_hermitian(fitting_inverse)
+      CALL check_hermitian(exchange)
+      CPASSERT(ALL(SHAPE(exchange) == SHAPE(fitting_inverse)))
+      CPASSERT(ALL(SHAPE(interaction) == SHAPE(fitting_inverse)))
+      interaction(:, :) = MATMUL(MATMUL(fitting_inverse, exchange), fitting_inverse)
+   END SUBROUTINE upf_inverse_exchange_kernel
+
+! **************************************************************************************************
+!> \brief Response of the effective RI kernel, including the owner's fitting inverse response.
+!>        For a fixed auxiliary span dA=-A dV_f A. Local metric weighting, changing auxiliary
+!>        support, or conditioning can supply additional terms in dA; retain the full owner map.
+!> \param fitting_inverse ...
+!> \param exchange ...
+!> \param fitting_inverse_response Full native RI inverse response, including weighting.
+!> \param exchange_response Full native exchange interaction response, including its kernel.
+!> \param response New effective-kernel response.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_exchange_kernel_response(fitting_inverse, exchange, fitting_inverse_response, &
+                                                   exchange_response, response)
+      COMPLEX(dp), INTENT(IN)                            :: fitting_inverse(:, :), exchange(:, :), &
+                                                            fitting_inverse_response(:, :), &
+                                                            exchange_response(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: response(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: work(:, :)
+
+      CALL check_hermitian(fitting_inverse)
+      CALL check_hermitian(exchange)
+      CALL check_hermitian(fitting_inverse_response)
+      CALL check_hermitian(exchange_response)
+      CPASSERT(ALL(SHAPE(exchange) == SHAPE(fitting_inverse)))
+      CPASSERT(ALL(SHAPE(fitting_inverse_response) == SHAPE(fitting_inverse)))
+      CPASSERT(ALL(SHAPE(exchange_response) == SHAPE(fitting_inverse)))
+      CPASSERT(ALL(SHAPE(response) == SHAPE(fitting_inverse)))
+      ALLOCATE (work(SIZE(response, 1), SIZE(response, 2)))
+      work(:, :) = MATMUL(fitting_inverse, exchange)
+      response(:, :) = MATMUL(work, fitting_inverse_response)
+      work(:, :) = MATMUL(fitting_inverse_response, exchange)
+      response = response + MATMUL(work, fitting_inverse)
+      work(:, :) = MATMUL(fitting_inverse, exchange_response)
+      response = response + MATMUL(work, fitting_inverse)
+   END SUBROUTINE upf_inverse_exchange_kernel_response
+
+! **************************************************************************************************
+!> \brief Paired RI inverse and exchange-interaction adjoints for a Hermitian effective kernel.
+!>        Adjoint pairing is Re sum(conjg(barX)*dX). The native RI owner transports the full
+!>        inverse adjoint through its own weighted inverse, rather than assuming a global metric.
+!> \param fitting_inverse ...
+!> \param exchange ...
+!> \param interaction_adjoint Complete Hermitian effective-kernel energy adjoint.
+!> \param fitting_inverse_adjoint New fitting-inverse covector.
+!> \param exchange_adjoint New exchange-interaction covector.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_exchange_kernel_adjoint(fitting_inverse, exchange, interaction_adjoint, &
+                                                  fitting_inverse_adjoint, exchange_adjoint)
+      COMPLEX(dp), INTENT(IN)                            :: fitting_inverse(:, :), exchange(:, :), &
+                                                            interaction_adjoint(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: fitting_inverse_adjoint(:, :), &
+                                                            exchange_adjoint(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: work(:, :)
+
+      CALL check_hermitian(fitting_inverse)
+      CALL check_hermitian(exchange)
+      CALL check_hermitian(interaction_adjoint)
+      CPASSERT(ALL(SHAPE(exchange) == SHAPE(fitting_inverse)))
+      CPASSERT(ALL(SHAPE(interaction_adjoint) == SHAPE(fitting_inverse)))
+      CPASSERT(ALL(SHAPE(fitting_inverse_adjoint) == SHAPE(fitting_inverse)))
+      CPASSERT(ALL(SHAPE(exchange_adjoint) == SHAPE(fitting_inverse)))
+      ALLOCATE (work(SIZE(exchange, 1), SIZE(exchange, 2)))
+      work(:, :) = MATMUL(fitting_inverse, exchange)
+      fitting_inverse_adjoint(:, :) = MATMUL(interaction_adjoint, work)
+      work(:, :) = MATMUL(exchange, fitting_inverse)
+      fitting_inverse_adjoint = fitting_inverse_adjoint + MATMUL(work, interaction_adjoint)
+      work(:, :) = MATMUL(fitting_inverse, interaction_adjoint)
+      exchange_adjoint(:, :) = MATMUL(work, fitting_inverse)
+   END SUBROUTINE upf_inverse_exchange_kernel_adjoint
 
 ! **************************************************************************************************
 !> \brief Contract one ordered, physical-spin RI exchange pair and all its energy adjoints.
