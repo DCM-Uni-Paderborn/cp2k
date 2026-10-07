@@ -43,9 +43,10 @@ CONTAINS
       INTEGER                                            :: axis, axis2, first, ico, ipgf, ipoint, &
                                                             irow, iset, isgf, ishell, l, last, &
                                                             ncart, powers(3), reduced(3)
-      REAL(dp)                                           :: alpha, exponential, pg, ph, polynomial, &
-                                                            polynomial_gradient(3), &
-                                                            polynomial_hessian(3, 3), r(3), weight
+      REAL(dp) :: alpha, exponential, pg, ph, polynomial, polynomial_gradient(3), &
+         polynomial_hessian(3, 3), r(3), weight, cartesian_value(ncoset(MAXVAL(basis%lmax))), &
+         cartesian_hessian(3, 3, ncoset(MAXVAL(basis%lmax))), &
+         cartesian_gradient(3, ncoset(MAXVAL(basis%lmax)))
 
       CPASSERT(basis%nset > 0 .AND. basis%nsgf > 0)
       CPASSERT(ASSOCIATED(basis%sphi) .AND. ASSOCIATED(basis%zet))
@@ -65,12 +66,33 @@ CONTAINS
       !$OMP SHARED(basis, displacements, value, gradient, hessian, cutoff_squared, ncoset, indco) &
       !$OMP PRIVATE(ipoint, r, iset, ncart, ishell, l, first, last, ipgf, alpha, exponential, &
       !$OMP         isgf, ico, irow, weight, powers, reduced, polynomial, polynomial_gradient, &
-      !$OMP         polynomial_hessian, axis, axis2, pg, ph)
+      !$OMP         polynomial_hessian, cartesian_value, cartesian_gradient, cartesian_hessian, axis, axis2, pg, ph)
       DO ipoint = 1, SIZE(displacements, 2)
          r = displacements(:, ipoint)
          IF (PRESENT(cutoff_squared)) THEN
             IF (SUM(r**2) > cutoff_squared) CYCLE
          END IF
+         ! Cartesian monomials and their derivatives do not depend on the primitive or contraction.
+         DO ico = 1, SIZE(cartesian_value)
+            powers = indco(:, ico)
+            cartesian_value(ico) = PRODUCT(r**powers)
+            IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(hessian)) CYCLE
+            cartesian_gradient(:, ico) = 0.0_dp
+            cartesian_hessian(:, :, ico) = 0.0_dp
+            DO axis = 1, 3
+               IF (powers(axis) == 0) CYCLE
+               reduced = powers
+               reduced(axis) = reduced(axis) - 1
+               cartesian_gradient(axis, ico) = REAL(powers(axis), dp)*PRODUCT(r**reduced)
+               IF (.NOT. PRESENT(hessian)) CYCLE
+               DO axis2 = 1, 3
+                  IF (reduced(axis2) == 0) CYCLE
+                  reduced(axis2) = reduced(axis2) - 1
+                  cartesian_hessian(axis, axis2, ico) = REAL(powers(axis)*(reduced(axis2) + 1), dp)*PRODUCT(r**reduced)
+                  reduced(axis2) = reduced(axis2) + 1
+               END DO
+            END DO
+         END DO
          DO iset = 1, basis%nset
             ncart = ncoset(basis%lmax(iset))
             DO ishell = 1, basis%nshell(iset)
@@ -84,25 +106,11 @@ CONTAINS
                      DO ico = ncoset(l - 1) + 1, ncoset(l)
                         irow = (ipgf - 1)*ncart + ico
                         weight = basis%sphi(irow, isgf)*exponential
-                        powers = indco(:, ico)
-                        polynomial = PRODUCT(r**powers)
+                        polynomial = cartesian_value(ico)
                         value(ipoint, isgf) = value(ipoint, isgf) + weight*polynomial
                         IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(hessian)) CYCLE
-                        polynomial_gradient = 0.0_dp
-                        polynomial_hessian = 0.0_dp
-                        DO axis = 1, 3
-                           IF (powers(axis) == 0) CYCLE
-                           reduced = powers
-                           reduced(axis) = reduced(axis) - 1
-                           polynomial_gradient(axis) = REAL(powers(axis), dp)*PRODUCT(r**reduced)
-                           IF (.NOT. PRESENT(hessian)) CYCLE
-                           DO axis2 = 1, 3
-                              IF (reduced(axis2) == 0) CYCLE
-                              reduced(axis2) = reduced(axis2) - 1
-                              polynomial_hessian(axis, axis2) = REAL(powers(axis)*(reduced(axis2) + 1), dp)*PRODUCT(r**reduced)
-                              reduced(axis2) = reduced(axis2) + 1
-                           END DO
-                        END DO
+                        polynomial_gradient = cartesian_gradient(:, ico)
+                        polynomial_hessian = cartesian_hessian(:, :, ico)
                         DO axis = 1, 3
                            pg = polynomial_gradient(axis) - 2.0_dp*alpha*r(axis)*polynomial
                            IF (PRESENT(gradient)) gradient(ipoint, isgf, axis) = gradient(ipoint, isgf, axis) + weight*pg
