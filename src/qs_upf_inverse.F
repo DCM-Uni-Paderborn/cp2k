@@ -28,6 +28,8 @@ MODULE qs_upf_inverse
                                               upf_inverse_init,&
                                               upf_inverse_project,&
                                               upf_inverse_project_response
+   USE upf_inverse_exchange,            ONLY: upf_inverse_exchange_block,&
+                                              upf_inverse_exchange_response
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_pair_response
    USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
@@ -39,6 +41,8 @@ MODULE qs_upf_inverse
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_prepare, qs_upf_inverse_from_ks
    PUBLIC :: qs_upf_inverse_response, qs_upf_inverse_release
    PUBLIC :: qs_upf_inverse_evaluate, qs_upf_inverse_center_fields
+
+   PUBLIC :: qs_upf_inverse_transition, qs_upf_inverse_transition_response
 
 CONTAINS
 
@@ -337,6 +341,103 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE qs_upf_inverse_evaluate
+
+! **************************************************************************************************
+!> \brief Complete complex transition integrals between two prepared inverse Bloch frames.
+!>        The original inverse coefficients are reused on the auxiliary quadrature. Q integrals
+!>        are supplied separately, retaining the original augmentation and its image phases.
+!> \param left_frame Original left inverse frame.
+!> \param right_frame Independent right frame, possibly at a different Bloch vector.
+!> \param points Common local auxiliary integration points.
+!> \param weights Original local integration measure.
+!> \param potential Complex local auxiliary potentials, with the auxiliary conjugation/phase.
+!> \param augmentation Complete replicated original Q integrals in the two projector coordinates.
+!> \param integrals New complete rectangular transition block.
+!> \param comm Optional communicator partitioning the auxiliary point rows.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_transition(left_frame, right_frame, points, weights, potential, &
+                                        augmentation, integrals, comm)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
+      REAL(dp), INTENT(IN)                               :: points(:, :), weights(:)
+      COMPLEX(dp), INTENT(IN)                            :: potential(:, :), augmentation(:, :, :)
+      COMPLEX(dp), INTENT(OUT)                           :: integrals(:, :, :)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+
+      COMPLEX(dp), ALLOCATABLE                           :: left(:, :), lg(:, :, :), rg(:, :, :), &
+                                                            right(:, :)
+      INTEGER                                            :: nl, npoint, nr
+
+      npoint = SIZE(points, 2)
+      nl = SIZE(left_frame%coefficients, 2)
+      nr = SIZE(right_frame%coefficients, 2)
+      ALLOCATE (left(npoint, nl), right(npoint, nr), lg(npoint, nl, 3), rg(npoint, nr, 3))
+      CALL qs_upf_inverse_evaluate(left_frame, points, left, lg)
+      CALL qs_upf_inverse_evaluate(right_frame, points, right, rg)
+      CALL upf_inverse_exchange_block(left, right, weights, potential, left_frame%coefficients, &
+                                      right_frame%coefficients, augmentation, integrals, comm)
+   END SUBROUTINE qs_upf_inverse_transition
+
+! **************************************************************************************************
+!> \brief Joint geometry/Bloch response of complete inverse transition integrals.
+!>        dW must come from each original frame's defining quadrature response, including the
+!>        coupled inverse solve. Re-solving on the auxiliary quadrature changes the inverse map.
+!> \param left_frame ...
+!> \param right_frame ...
+!> \param points ...
+!> \param weights ...
+!> \param potential ...
+!> \param augmentation ...
+!> \param point_response Motion of the common auxiliary quadrature points.
+!> \param weights_response Response of the auxiliary integration measure.
+!> \param potential_response Response of the complex auxiliary potential and its image phases.
+!> \param augmentation_response Complete replicated original Q integral response.
+!> \param atom_response Common nuclear and Gaussian-center motion in native atom order.
+!> \param cell_response Common lattice response.
+!> \param left_k_response Left reduced Bloch-vector response.
+!> \param right_k_response Right reduced Bloch-vector response.
+!> \param left_coefficients_response dW from the original left frame.
+!> \param right_coefficients_response dW from the original right frame.
+!> \param response New complete transition response block.
+!> \param comm ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_transition_response(left_frame, right_frame, points, weights, potential, &
+                                                 augmentation, point_response, weights_response, potential_response, &
+                                                 augmentation_response, atom_response, cell_response, left_k_response, &
+                                                 right_k_response, left_coefficients_response, &
+                                                 right_coefficients_response, response, comm)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
+      REAL(dp), INTENT(IN)                               :: points(:, :), weights(:)
+      COMPLEX(dp), INTENT(IN)                            :: potential(:, :), augmentation(:, :, :)
+      REAL(dp), INTENT(IN)                               :: point_response(:, :), weights_response(:)
+      COMPLEX(dp), INTENT(IN)                            :: potential_response(:, :), &
+                                                            augmentation_response(:, :, :)
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            left_k_response(3), right_k_response(3)
+      COMPLEX(dp), INTENT(IN) :: left_coefficients_response(:, :), &
+         right_coefficients_response(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: response(:, :, :)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+
+      COMPLEX(dp), ALLOCATABLE                           :: dl(:, :), dr(:, :), left(:, :), &
+                                                            lg(:, :, :), rg(:, :, :), right(:, :)
+      INTEGER                                            :: nl, npoint, nr
+
+      npoint = SIZE(points, 2)
+      nl = SIZE(left_frame%coefficients, 2)
+      nr = SIZE(right_frame%coefficients, 2)
+      ALLOCATE (left(npoint, nl), right(npoint, nr), lg(npoint, nl, 3), rg(npoint, nr, 3), dl(npoint, nl), dr(npoint, nr))
+      CALL qs_upf_inverse_evaluate(left_frame, points, left, lg, soft_response=dl, point_response=point_response, &
+                                   atom_response=atom_response, cell_response=cell_response, &
+                                   reduced_k_response=left_k_response, coefficients_response=left_coefficients_response)
+      CALL qs_upf_inverse_evaluate(right_frame, points, right, rg, soft_response=dr, point_response=point_response, &
+                                   atom_response=atom_response, cell_response=cell_response, &
+                                   reduced_k_response=right_k_response, coefficients_response=right_coefficients_response)
+      CALL upf_inverse_exchange_response(left, right, weights, potential, left_frame%coefficients, &
+                                         right_frame%coefficients, augmentation, dl, dr, weights_response, potential_response, &
+                                         left_coefficients_response, right_coefficients_response, augmentation_response, &
+                                         response, comm)
+   END SUBROUTINE qs_upf_inverse_transition_response
 
 ! **************************************************************************************************
 !> \brief Center contribution d_a=-Delta_a*W_a to the inverse-minus-Gaussian field.
