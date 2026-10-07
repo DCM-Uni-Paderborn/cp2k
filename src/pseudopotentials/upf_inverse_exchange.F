@@ -12,16 +12,217 @@
 !>        projection, symmetry packing or occupation factor is applied here.
 ! **************************************************************************************************
 MODULE upf_inverse_exchange
+   USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
+                                              gaussian_coulomb_fields_type
    USE kinds,                           ONLY: dp
+   USE mathconstants,                   ONLY: fourpi
    USE message_passing,                 ONLY: mp_comm_type
+   USE spherical_harmonics,             ONLY: y_lm
+   USE uspp_augmentation,               ONLY: uspp_augmentation_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
 
    PUBLIC :: upf_inverse_exchange_block, upf_inverse_exchange_response, upf_inverse_exchange_adjoint
+   PUBLIC :: upf_inverse_exchange_contract
+   PUBLIC :: upf_inverse_exchange_augmentation
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Contract one ordered, physical-spin RI exchange pair and all its energy adjoints.
+!>        E = prefactor Re sum_AB interaction(A,B) Tr(P_left I_B P_right I_A^dagger).
+!>        The Hermitian interaction is the effective fitted exchange kernel. For Coulomb fitting
+!>        with a different exchange interaction it is V_fit^-1 V_exchange V_fit^-1, rather than
+!>        just the inverse fitting metric. Transitions contain the auxiliary conjugation.
+!>        A complex interaction therefore multiplies I_B, with I_A conjugated; transposing it
+!>        changes the functional even though a real Gamma test would not detect that error.
+!> \param transitions Complete rectangular (left AO, right AO, auxiliary) transitions.
+!> \param interaction Complete Hermitian effective auxiliary interaction.
+!> \param left_density Hermitian physical occupation matrix for one spin at the left k point.
+!> \param right_density Independent right occupation matrix in the same spin.
+!> \param prefactor Includes the exchange fraction, minus one-half, and both k weights once.
+!> \param energy New contribution of this ordered spin/k pair.
+!> \param left_operator New derivative conjugate to P_left, including the supplied prefactor.
+!> \param right_operator New derivative conjugate to P_right, including the supplied prefactor.
+!>        When both densities represent the same variable, add both derivatives. A native
+!>        Hamiltonian also removes the target k weight from the accumulated energy derivative.
+!> \param transition_adjoint Optional new complex transition adjoint for the real energy pairing.
+!> \param interaction_adjoint Optional new effective-kernel adjoint, including metric geometry.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_exchange_contract(transitions, interaction, left_density, right_density, &
+                                            prefactor, energy, left_operator, right_operator, &
+                                            transition_adjoint, interaction_adjoint)
+      COMPLEX(dp), INTENT(IN)                            :: transitions(:, :, :), interaction(:, :), &
+                                                            left_density(:, :), right_density(:, :)
+      REAL(dp), INTENT(IN)                               :: prefactor
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), INTENT(OUT)                           :: left_operator(:, :), right_operator(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: transition_adjoint(:, :, :), &
+                                                            interaction_adjoint(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: fitted(:, :), left_work(:, :), &
+                                                            right_work(:, :), work(:, :)
+      INTEGER                                            :: a, b, naux, nl, nr
+
+      nl = SIZE(transitions, 1)
+      nr = SIZE(transitions, 2)
+      naux = SIZE(transitions, 3)
+      CPASSERT(ALL(SHAPE(left_density) == [nl, nl]))
+      CPASSERT(ALL(SHAPE(right_density) == [nr, nr]))
+      CPASSERT(ALL(SHAPE(interaction) == [naux, naux]))
+      CPASSERT(ALL(SHAPE(left_operator) == [nl, nl]))
+      CPASSERT(ALL(SHAPE(right_operator) == [nr, nr]))
+      CALL check_hermitian(left_density)
+      CALL check_hermitian(right_density)
+      CALL check_hermitian(interaction)
+      IF (PRESENT(transition_adjoint)) THEN
+         CPASSERT(ALL(SHAPE(transition_adjoint) == SHAPE(transitions)))
+      END IF
+      IF (PRESENT(interaction_adjoint)) THEN
+         CPASSERT(ALL(SHAPE(interaction_adjoint) == SHAPE(interaction)))
+      END IF
+      ALLOCATE (fitted(nl, nr), work(nl, nr), left_work(nl, nl), right_work(nr, nr))
+      energy = 0.0_dp
+      left_operator = CMPLX(0.0_dp, 0.0_dp, dp)
+      right_operator = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO a = 1, naux
+         fitted(:, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO b = 1, naux
+            fitted(:, :) = fitted + interaction(a, b)*transitions(:, :, b)
+         END DO
+         work(:, :) = MATMUL(fitted, right_density)
+         left_work(:, :) = MATMUL(work, CONJG(TRANSPOSE(transitions(:, :, a))))
+         left_operator = left_operator + prefactor*left_work
+         energy = energy + prefactor*REAL(SUM(TRANSPOSE(left_density)*left_work), dp)
+         work(:, :) = MATMUL(left_density, fitted)
+         right_work(:, :) = MATMUL(CONJG(TRANSPOSE(transitions(:, :, a))), work)
+         right_operator = right_operator + prefactor*right_work
+         IF (PRESENT(transition_adjoint)) THEN
+            transition_adjoint(:, :, a) = 2.0_dp*prefactor*MATMUL(work, right_density)
+         END IF
+         IF (PRESENT(interaction_adjoint)) THEN
+            DO b = 1, naux
+               work(:, :) = MATMUL(MATMUL(left_density, transitions(:, :, b)), right_density)
+               interaction_adjoint(a, b) = prefactor*CONJG(SUM(work*CONJG(transitions(:, :, a))))
+            END DO
+         END IF
+      END DO
+      ! These variables are Hermitian. Remove only their contraction roundoff, without
+      ! projecting the generally rectangular, non-Hermitian transitions themselves.
+      left_operator = 0.5_dp*(left_operator + CONJG(TRANSPOSE(left_operator)))
+      right_operator = 0.5_dp*(right_operator + CONJG(TRANSPOSE(right_operator)))
+   END SUBROUTINE upf_inverse_exchange_contract
+
+! **************************************************************************************************
+!> \brief Original Q integrals against a native Gaussian Coulomb-potential cache.
+!>        Original radial weights, angular kernels and complete nonzero tails are retained. The
+!>        integral is in the native magnetic-projector and Gaussian-function coordinates, with
+!>        no partial-wave product replacement or compensation subtraction. Image translations
+!>        and Bloch phases belong to the caller.
+!> \param fields Prepared native Gaussian auxiliary shell-set cache.
+!> \param augmentation Original scalar projector augmentation with its radial quadrature.
+!> \param displacement Augmentation center minus Gaussian center in bohr.
+!> \param directions Original unit vectors of the angular quadrature.
+!> \param weights Original angular weights, summing to 4*pi.
+!> \param integrals New complete (projector, projector, auxiliary) block.
+!> \param gaussian_derivative Optional new Gaussian-center derivative, Cartesian axis last.
+!> \param augmentation_derivative Optional new augmentation-center derivative, Cartesian axis last.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_exchange_augmentation(fields, augmentation, displacement, directions, weights, &
+                                                integrals, gaussian_derivative, augmentation_derivative)
+      TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
+      REAL(dp), INTENT(IN)                               :: displacement(3), directions(:, :), &
+                                                            weights(:)
+      REAL(dp), INTENT(OUT)                              :: integrals(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL :: gaussian_derivative(:, :, :, :), &
+         augmentation_derivative(:, :, :, :)
+
+      INTEGER                                            :: axis, i, ia, ir, j, l, lm, m, n, naux, &
+                                                            p, pair, q
+      LOGICAL                                            :: derivatives
+      REAL(dp)                                           :: point(3), radial
+      REAL(dp), ALLOCATABLE :: d_integrals(:, :, :, :), d_projected(:, :, :), gradient(:, :), &
+         harmonics(:, :), potential(:), projected(:, :), values(:)
+
+      n = augmentation%nproj
+      naux = fields%nfunction
+      CPASSERT(ALL(SHAPE(integrals) == [n, n, naux]))
+      integrals = 0.0_dp
+      derivatives = PRESENT(gaussian_derivative) .OR. PRESENT(augmentation_derivative)
+      IF (PRESENT(gaussian_derivative)) THEN
+         CPASSERT(ALL(SHAPE(gaussian_derivative) == [n, n, naux, 3]))
+         gaussian_derivative = 0.0_dp
+      END IF
+      IF (PRESENT(augmentation_derivative)) THEN
+         CPASSERT(ALL(SHAPE(augmentation_derivative) == [n, n, naux, 3]))
+         augmentation_derivative = 0.0_dp
+      END IF
+      IF (n == 0) RETURN
+      CPASSERT(SIZE(directions, 1) == 3 .AND. SIZE(directions, 2) == SIZE(weights))
+      CPASSERT(SIZE(weights) > 0)
+      CPASSERT(ABS(SUM(weights) - fourpi) <= 1.0e-10_dp)
+      CPASSERT(MAXVAL(ABS(SUM(directions**2, DIM=1) - 1.0_dp)) <= 1.0e-12_dp)
+      ALLOCATE (harmonics(SIZE(weights), (augmentation%lmax + 1)**2), values(SIZE(weights)), &
+                potential(naux), projected((augmentation%lmax + 1)**2, naux))
+      IF (derivatives) THEN
+         ALLOCATE (gradient(3, naux), d_projected((augmentation%lmax + 1)**2, naux, 3), &
+                   d_integrals(n, n, naux, 3), SOURCE=0.0_dp)
+      END IF
+      DO l = 0, augmentation%lmax
+         DO m = -l, l
+            lm = l*l + l + m + 1
+            CALL y_lm(directions, values, l, m)
+            harmonics(:, lm) = weights*values
+         END DO
+      END DO
+      DO ir = 1, SIZE(augmentation%weighted_q, 1)
+         IF (ALL(augmentation%weighted_q(ir, :, :) == 0.0_dp)) CYCLE
+         projected(:, :) = 0.0_dp
+         IF (derivatives) d_projected(:, :, :) = 0.0_dp
+         DO ia = 1, SIZE(weights)
+            point = displacement + augmentation%r(ir)*directions(:, ia)
+            IF (derivatives) THEN
+               CALL gaussian_coulomb_fields_evaluate(fields, point, potential, gradient)
+               DO axis = 1, 3
+                  d_projected(:, :, axis) = d_projected(:, :, axis) + &
+                                            SPREAD(harmonics(ia, :), 2, naux)*SPREAD(gradient(axis, :), 1, SIZE(harmonics, 2))
+               END DO
+            ELSE
+               CALL gaussian_coulomb_fields_evaluate(fields, point, potential)
+            END IF
+            projected(:, :) = projected + SPREAD(harmonics(ia, :), 2, naux)*SPREAD(potential, 1, SIZE(harmonics, 2))
+         END DO
+         DO q = 1, n
+            j = augmentation%radial_index(q)
+            DO p = 1, q
+               i = augmentation%radial_index(p)
+               pair = MAX(i, j)*(MAX(i, j) - 1)/2 + MIN(i, j)
+               DO l = ABS(augmentation%lbeta(i) - augmentation%lbeta(j)), augmentation%lbeta(i) + augmentation%lbeta(j), 2
+                  radial = augmentation%weighted_q(ir, pair, l)
+                  IF (radial == 0.0_dp) CYCLE
+                  DO lm = l*l + 1, (l + 1)**2
+                     integrals(p, q, :) = integrals(p, q, :) + radial*augmentation%gaunt(p, q, lm)*projected(lm, :)
+                     IF (derivatives) THEN
+                        d_integrals(p, q, :, :) = d_integrals(p, q, :, :) + &
+                                                  radial*augmentation%gaunt(p, q, lm)*d_projected(lm, :, :)
+                     END IF
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      DO q = 1, n
+         DO p = 1, q - 1
+            integrals(q, p, :) = integrals(p, q, :)
+            IF (derivatives) d_integrals(q, p, :, :) = d_integrals(p, q, :, :)
+         END DO
+      END DO
+      IF (PRESENT(gaussian_derivative)) gaussian_derivative = -d_integrals
+      IF (PRESENT(augmentation_derivative)) augmentation_derivative = d_integrals
+   END SUBROUTINE upf_inverse_exchange_augmentation
 
 ! **************************************************************************************************
 !> \brief I(A) = left^dagger diag(weights*potential(A)) right + W_left^dagger Q(A) W_right.
@@ -256,5 +457,21 @@ CONTAINS
       CPASSERT(valid)
       CPASSERT(ALL(output_shape == [SIZE(left, 2), SIZE(right, 2), SIZE(potential, 2)]))
    END SUBROUTINE check_shapes
+
+! **************************************************************************************************
+!> \brief Check the Hermitian physical density or effective interaction, including empty blocks.
+!> \param matrix ...
+! **************************************************************************************************
+   SUBROUTINE check_hermitian(matrix)
+      COMPLEX(dp), INTENT(IN)                            :: matrix(:, :)
+
+      REAL(dp)                                           :: error, scale
+
+      CPASSERT(SIZE(matrix, 1) == SIZE(matrix, 2))
+      IF (SIZE(matrix) == 0) RETURN
+      scale = MAX(1.0_dp, MAXVAL(ABS(matrix)))
+      error = MAXVAL(ABS(matrix - CONJG(TRANSPOSE(matrix))))
+      CPASSERT(error <= 1.0e-12_dp*scale)
+   END SUBROUTINE check_hermitian
 
 END MODULE upf_inverse_exchange

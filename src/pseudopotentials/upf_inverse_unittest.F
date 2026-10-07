@@ -15,6 +15,10 @@ PROGRAM upf_inverse_unittest
                                               gto_basis_set_type
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_evaluate,&
                                               gaussian_basis_fields_periodic
+   USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
+                                              gaussian_coulomb_fields_init,&
+                                              gaussian_coulomb_fields_prepare,&
+                                              gaussian_coulomb_fields_type
    USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
                                               ieee_value
    USE kinds,                           ONLY: dp
@@ -718,11 +722,12 @@ CONTAINS
       COMPLEX(dp)                                        :: dg(nf, nb, 3), dv(nf, nb), g(nf, nb, 3), &
                                                             gss(nf, nb, 3, 2), other(nf, nb), &
                                                             v(nf, nb), vs(nf, nb, 2)
-      INTEGER                                            :: axis, ico, image, images(3, 3), row, &
-                                                            side, translated_images(3, 3)
-      REAL(dp) :: bloch(3), cell(3, 3), center(3), dc(3, 3), dcenter(3), dk(3), dpnt(3, nf), &
-         gradient(nf, nb, 3), gs(nf, nb, 3, 2), hh(nf, nb, 3, 3), samples(nf, nb, 2), shift, &
-         value(nf, nb), x(3, nf), xp(3, nf)
+      INTEGER                                            :: axis, ico, image, images(3, 3), point, &
+                                                            row, side, translated_images(3, 3)
+      REAL(dp) :: bloch(3), cell(3, 3), center(3), cg(3, 8), cm(8), cp(8), cv(8), cx(3), dc(3, 3), &
+         dcenter(3), dk(3), dpnt(3, nf), gradient(nf, nb, 3), gs(nf, nb, 3, 2), hh(nf, nb, 3, 3), &
+         radius, samples(nf, nb, 2), shift, value(nf, nb), x(3, nf), xp(3, nf)
+      TYPE(gaussian_coulomb_fields_type)                 :: coulomb
       TYPE(gto_basis_set_type), POINTER                  :: basis
 
       NULLIFY (basis)
@@ -730,10 +735,11 @@ CONTAINS
       CALL allocate_gto_basis_set(basis)
       basis%nset = 2
       basis%nsgf = nb
-      ALLOCATE (basis%lmax(2), basis%npgf(2), basis%nshell(2), basis%l(2, 2), &
+      ALLOCATE (basis%lmax(2), basis%npgf(2), basis%nsgf_set(2), basis%nshell(2), basis%l(2, 2), &
                 basis%first_sgf(2, 2), basis%last_sgf(2, 2), basis%zet(2, 2), basis%sphi(40, nb))
       basis%lmax = [3, 1]
       basis%npgf = [2, 1]
+      basis%nsgf_set = [8, 3]
       basis%nshell = [2, 1]
       basis%l = 0
       basis%l(:, 1) = [0, 3]
@@ -803,7 +809,29 @@ CONTAINS
       END DO
       CALL gaussian_basis_fields_periodic(basis, x, center + cell(:, 1), cell, translated_images, bloch, other)
       CALL check(MAXVAL(ABS(other - EXP(CMPLX(0.0_dp, -2*pi*bloch(1), dp))*v)), 'native Gaussian lattice representative')
+      CALL gaussian_coulomb_fields_init(3)
+      CALL gaussian_coulomb_fields_prepare(basis, 1, coulomb)
       CALL deallocate_gto_basis_set(basis)
+      DO point = 1, 3
+         cx = [SQRT(12.0_dp/.4_dp)*REAL(point - 1, dp), 0.0_dp, 0.0_dp]
+         CALL gaussian_coulomb_fields_evaluate(coulomb, cx, cv, cg)
+         radius = SQRT(SUM(cx**2))
+         IF (radius == 0.0_dp) THEN
+            CALL check(ABS(cv(1) - 2*pi*(.6_dp/.4_dp - .2_dp/.9_dp)), 'Gaussian Coulomb origin')
+         ELSE
+            CALL check(ABS(cv(1) - pi**1.5_dp*(.6_dp*ERF(SQRT(.4_dp)*radius)/.4_dp**1.5_dp &
+                                               - .2_dp*ERF(SQRT(.9_dp)*radius)/.9_dp**1.5_dp)/radius), &
+                       'Signed Gaussian Coulomb tail')
+         END IF
+         DO axis = 1, 3
+            cx(axis) = cx(axis) + step
+            CALL gaussian_coulomb_fields_evaluate(coulomb, cx, cp)
+            cx(axis) = cx(axis) - 2*step
+            CALL gaussian_coulomb_fields_evaluate(coulomb, cx, cm)
+            cx(axis) = cx(axis) + step
+            CALL check(MAXVAL(ABS((cp - cm)/(2*step) - cg(axis, :))), 'Gaussian Coulomb gradient', 2.e-8_dp)
+         END DO
+      END DO
    END SUBROUTINE check_gaussian_fields
 
 ! **************************************************************************************************

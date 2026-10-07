@@ -64,6 +64,7 @@ list(
   atom_types.F
   pseudopotentials/upf_types.F
   aobasis/gaussian_basis_fields.F
+  aobasis/gaussian_coulomb_fields.F
   pseudopotentials/upf_inverse.F
   pseudopotentials/upf_core.F
   pseudopotentials/upf_inverse_coulomb.F
