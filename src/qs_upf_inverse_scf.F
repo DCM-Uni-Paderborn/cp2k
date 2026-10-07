@@ -63,6 +63,8 @@ MODULE qs_upf_inverse_scf
                                               qs_rho_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_operators
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
+   USE qs_upf_inverse_gaussian,         ONLY: qs_upf_inverse_gaussian_kinetic,&
+                                              qs_upf_inverse_gaussian_response
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate,&
                                               qs_upf_inverse_grid_integrate,&
                                               qs_upf_inverse_grid_integrate_dense,&
@@ -120,8 +122,8 @@ CONTAINS
       INTEGER                                            :: ikind, img
       LOGICAL                                            :: do_kpoints
       TYPE(cp_cfm_type), ALLOCATABLE                     :: native_metric(:)
-      TYPE(dbcsr_p_type), POINTER                        :: kinetic(:), metric(:), metric_k(:, :), overlap(:), &
-                                                            overlap_k(:, :)
+      TYPE(dbcsr_p_type), POINTER                        :: kinetic(:), metric(:), metric_k(:, :), &
+                                                            overlap(:), overlap_k(:, :)
       TYPE(dbcsr_type)                                   :: imaginary
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
@@ -155,10 +157,13 @@ CONTAINS
       END DO
       ALLOCATE (state)
       IF (do_kpoints) THEN
-         CALL qs_upf_inverse_kpoints_prepare(ks_env, grid, images, state%bloch, info)
+         CALL qs_upf_inverse_kpoints_prepare(ks_env, grid, images, state%bloch, info, atom_local, direct)
          IF (info /= 0) THEN
             CALL qs_upf_inverse_scf_release(state)
             RETURN
+         END IF
+         IF (state%bloch%frames(1)%ao%atom_local) THEN
+            CALL qs_upf_inverse_gaussian_kinetic(ks_env, state%bloch%gaussian, state%gaussian_kinetic_k)
          END IF
          CALL qs_upf_inverse_kpoints_metric(state%bloch, native_metric, dense=state%metric_k)
          CALL qs_upf_inverse_kpoints_release_operators(native_metric)
@@ -537,6 +542,11 @@ CONTAINS
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
             CALL qs_upf_inverse_kpoints_density(state%bloch, axis, density)
             CALL qs_upf_inverse_kpoints_density(state%bloch, axis, energy_weighted, energy_weighted=.TRUE.)
+            IF (state%bloch%frames(1)%ao%atom_local) THEN
+               CALL qs_upf_inverse_gaussian_response(ks_env, state%bloch%gaussian, density, atom_response, &
+                                                     cell_response, reduced_k_response, weight)
+               response = response + weight
+            END IF
          ELSE
             CALL qs_upf_inverse_matrix_gather(state%frame%ao, density_gamma(axis, 1)%matrix, matrix)
             density(:, :, 1) = matrix
@@ -823,7 +833,7 @@ CONTAINS
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT)       :: state
 
-      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: atomic_m(:, :), matrix(:, :)
       INTEGER                                            :: axis, ik, n, nk, spin
       TYPE(dbcsr_p_type), POINTER                        :: kinetic(:, :), source(:, :)
       TYPE(dft_control_type), POINTER                    :: control
@@ -857,12 +867,22 @@ CONTAINS
          ALLOCATE (state%core_k(n, n, nk), state%kinetic_k(n, n, nk), state%ks_k(n, n, nk, control%nspins))
       END IF
       DO ik = 1, nk
-         CALL qs_upf_inverse_grid_integrate_dense(state%bloch%frames(ik), zero, zeros, unit_tau, matrix)
+         IF (state%bloch%frames(ik)%ao%atom_local) THEN
+            CALL qs_upf_inverse_atomic_operators(state%bloch%frames(ik)%ao, state%bloch%frames(ik)%ao%radial_q, &
+                                                 matrix, atomic_m)
+            matrix(:, :) = matrix + state%gaussian_kinetic_k(:, :, ik)
+            unit_tau%array = 0.0_dp
+         ELSE
+            CALL qs_upf_inverse_grid_integrate_dense(state%bloch%frames(ik), zero, zeros, unit_tau, matrix)
+         END IF
          state%kinetic_k(:, :, ik) = matrix
          CALL qs_upf_inverse_grid_integrate_dense(state%bloch%frames(ik), local_r, zeros, unit_tau, matrix, &
                                                   projector_operator=state%bloch%frames(ik)%ao%dion, &
                                                   augmentation=state%bloch%augmentation, fourier_charge=.TRUE.)
          state%core_k(:, :, ik) = matrix
+         IF (state%bloch%frames(ik)%ao%atom_local) THEN
+            state%core_k(:, :, ik) = state%core_k(:, :, ik) + state%kinetic_k(:, :, ik)
+         END IF
       END DO
       DO spin = 1, SIZE(state%ks_k, 4)
          state%ks_k(:, :, :, spin) = state%core_k

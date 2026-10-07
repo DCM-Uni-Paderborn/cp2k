@@ -11,10 +11,13 @@
 ! **************************************************************************************************
 MODULE qs_upf_inverse_types
    USE basis_set_types,                 ONLY: gto_basis_set_p_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_p_type,&
+                                              dbcsr_release
    USE kinds,                           ONLY: dp
    USE kpoint_transitional,             ONLY: kpoint_transitional_release,&
                                               kpoint_transitional_type
-   USE kpoint_types,                    ONLY: kpoint_clear_scf_smat,&
+   USE kpoint_types,                    ONLY: kp_transform_plan_type,&
+                                              kpoint_clear_scf_smat,&
                                               kpoint_native_density_clear,&
                                               kpoint_native_operator_clear,&
                                               kpoint_type
@@ -56,11 +59,20 @@ MODULE qs_upf_inverse_types
       TYPE(uspp_augmentation_type), ALLOCATABLE :: kinds(:)
    END TYPE qs_upf_inverse_augmentation_type
 
+   TYPE qs_upf_inverse_gaussian_type
+      TYPE(kp_transform_plan_type) :: plan
+      TYPE(mp_comm_type) :: comm
+      TYPE(dbcsr_p_type), POINTER :: density(:) => NULL()
+      REAL(dp), ALLOCATABLE :: reduced_k(:, :), weights(:)
+      INTEGER :: nao = 0
+   END TYPE qs_upf_inverse_gaussian_type
+
    TYPE qs_upf_inverse_kpoints_type
       ! The live initialized group environment is borrowed; all fields below are owned.
       TYPE(kpoint_type), POINTER :: kpoints => NULL()
       TYPE(qs_upf_inverse_grid_type), ALLOCATABLE :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type) :: augmentation
+      TYPE(qs_upf_inverse_gaussian_type) :: gaussian
       REAL(dp), ALLOCATABLE :: reduced_k(:, :), weights(:)
       INTEGER :: nao = 0, kp_range(2) = 0
    END TYPE qs_upf_inverse_kpoints_type
@@ -74,10 +86,12 @@ MODULE qs_upf_inverse_types
       COMPLEX(dp), ALLOCATABLE :: gaussian_kinetic(:, :)
       TYPE(qs_upf_inverse_kpoints_type) :: bloch
       COMPLEX(dp), ALLOCATABLE :: metric_k(:, :, :), core_k(:, :, :), kinetic_k(:, :, :), ks_k(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE :: gaussian_kinetic_k(:, :, :)
    END TYPE qs_upf_inverse_scf_type
 
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_grid_type, qs_upf_inverse_augmentation_type
    PUBLIC :: qs_upf_inverse_kpoints_type, qs_upf_inverse_scf_type, qs_upf_inverse_scf_release
+   PUBLIC :: qs_upf_inverse_gaussian_type, qs_upf_inverse_gaussian_release
 
 CONTAINS
 
@@ -99,8 +113,28 @@ CONTAINS
          CALL kpoint_clear_scf_smat(state%bloch%kpoints)
       END IF
       CALL kpoint_transitional_release(state%metric)
+      CALL qs_upf_inverse_gaussian_release(state%bloch%gaussian)
       DEALLOCATE (state)
       NULLIFY (state)
    END SUBROUTINE qs_upf_inverse_scf_release
+
+! **************************************************************************************************
+!> \brief Release the owned native image matrices and phase map.
+!> \param map ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_gaussian_release(map)
+      TYPE(qs_upf_inverse_gaussian_type), INTENT(INOUT)  :: map
+
+      INTEGER                                            :: image
+
+      IF (ASSOCIATED(map%density)) THEN
+         DO image = 1, SIZE(map%density)
+            CALL dbcsr_release(map%density(image)%matrix)
+            DEALLOCATE (map%density(image)%matrix)
+         END DO
+         DEALLOCATE (map%density)
+      END IF
+      map = qs_upf_inverse_gaussian_type()
+   END SUBROUTINE qs_upf_inverse_gaussian_release
 
 END MODULE qs_upf_inverse_types

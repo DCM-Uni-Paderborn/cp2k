@@ -7,7 +7,7 @@
 
 ! **************************************************************************************************
 !> \brief Inverse Bloch density and operator maps on native Quickstep k-point groups.
-!>        This development bridge keeps AO contractions replicated. Point integrals use the
+!>        AO contractions are replicated. Point integrals use the
 !>        native PW communicator; group density matrices contribute from one group rank only.
 !>        It does not select a representation or replace the SCF operator provider.
 ! **************************************************************************************************
@@ -26,11 +26,13 @@ MODULE qs_upf_inverse_kpoints
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
+   USE qs_upf_inverse_gaussian,         ONLY: qs_upf_inverse_gaussian_prepare
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate_dense,&
                                               qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_grid_metric_dense,&
                                               qs_upf_inverse_grid_prepare
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_kpoints_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_gaussian_release,&
+                                              qs_upf_inverse_kpoints_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -50,15 +52,18 @@ CONTAINS
 !> \param ks_env Live native KS environment with initialized k-point groups and bases.
 !> \param grid Native physical-cell grid.
 !> \param images Fixed physical-cell images of the Gaussian and original radial fields.
-!> \param frame New bridge; the native environment is unchanged.
-!> \param info Factorization status; nonzero releases the partially prepared bridge.
+!> \param frame New owned Bloch fields; the native environment is unchanged.
+!> \param info Factorization status; nonzero releases the partially prepared fields.
+!> \param atom_local Optional nonoverlapping one-center inverse.
+!> \param direct Use original projectors and soft orbitals without reconstruction.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_prepare(ks_env, grid, images, frame, info)
+   SUBROUTINE qs_upf_inverse_kpoints_prepare(ks_env, grid, images, frame, info, atom_local, direct)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(OUT)     :: frame
       INTEGER, INTENT(OUT)                               :: info
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
 
       INTEGER                                            :: ik
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -67,7 +72,7 @@ CONTAINS
       CPASSERT(ASSOCIATED(kpoints))
       CPASSERT(kpoints%nkp > 0)
       IF (kpoints%symmetry .OR. .NOT. kpoints%full_grid) THEN
-         CPABORT("Inverse Bloch bridge requires a full unreduced mesh")
+         CPABORT("USPP Bloch calculations require a full unreduced mesh")
       END IF
       CPASSERT(ASSOCIATED(kpoints%kp_env))
       CPASSERT(ASSOCIATED(kpoints%para_env_kp))
@@ -80,7 +85,8 @@ CONTAINS
       frame%weights(:) = kpoints%wkp
       ALLOCATE (frame%frames(kpoints%nkp))
       DO ik = 1, kpoints%nkp
-         CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, frame%reduced_k(:, ik), frame%frames(ik), info)
+         CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, frame%reduced_k(:, ik), frame%frames(ik), info, &
+                                          atom_local, direct)
          IF (info /= 0) THEN
             CALL qs_upf_inverse_kpoints_release(frame)
             RETURN
@@ -88,6 +94,7 @@ CONTAINS
       END DO
       frame%nao = SIZE(frame%frames(1)%ao%soft, 2)
       CALL qs_upf_inverse_augmentation_prepare(ks_env, frame%frames(1)%ao, frame%augmentation)
+      IF (frame%frames(1)%ao%atom_local) CALL qs_upf_inverse_gaussian_prepare(ks_env, frame%gaussian)
       info = 0
    END SUBROUTINE qs_upf_inverse_kpoints_prepare
 
@@ -102,6 +109,7 @@ CONTAINS
       IF (ALLOCATED(frame%augmentation%kinds)) DEALLOCATE (frame%augmentation%kinds)
       IF (ALLOCATED(frame%reduced_k)) DEALLOCATE (frame%reduced_k)
       IF (ALLOCATED(frame%weights)) DEALLOCATE (frame%weights)
+      CALL qs_upf_inverse_gaussian_release(frame%gaussian)
       NULLIFY (frame%kpoints)
       frame%nao = 0
       frame%kp_range = 0
