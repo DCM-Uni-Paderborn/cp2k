@@ -3407,7 +3407,8 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="SOLVER", type_of_var=enum_t, &
                           description="DENSE uses LAPACK LDL inertia checked against generalized eigenvalues. "// &
                           "For DIMENSION 3 it uses real LU/QR determinant signs and a generalized chiral gap. "// &
-                          "DBCSR uses native pivoted sparse LDL and shifted-factorization gap brackets for CHERN. "// &
+                          "DBCSR uses distributed native pivoted LDL and shifted-factorization gap brackets for CHERN, "// &
+                          "and oriented skew LDL Pfaffians for 2D Z2, without an external sparse-solver library. "// &
                           "MUMPS provides an optional sparse-direct implementation of these operations; "// &
                           "requires an MPI build linked with MUMPS and supports CHERN. "// &
                           "TACHO uses sparse skew-LDL Pfaffians for Z2 with native LDL gap validation; "// &
@@ -3529,7 +3530,8 @@ CONTAINS
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="PFAFFIAN_MEMORY", &
                           description="Limit in MiB for numerical Pfaffian factor, frontal, update and solve buffers "// &
-                          "with SOLVER TACHO. Excludes sparse input, matching, symbolic ordering and MUMPS memory. "// &
+                          "with SOLVER TACHO or DBCSR. The DBCSR limit applies per rank. "// &
+                          "Excludes COO input/routing, matrix metadata, symbolic ordering and separate inertia factors. "// &
                           "Exceeding this limit aborts without reporting an index.", default_i_val=4096)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)

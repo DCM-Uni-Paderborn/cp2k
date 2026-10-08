@@ -279,8 +279,8 @@ CONTAINS
       CALL section_vals_val_get(section, 'INVARIANT', i_val=topology)
       aii = topology == 1
       IF (ndim == 3 .AND. .NOT. aii) CPABORT('DIMENSION 3 requires INVARIANT Z2.')
-      IF (aii .AND. ANY(solver == [1, 3])) THEN
-         CPABORT('Sparse inertia is not a Z2 Pfaffian solver; use SOLVER DENSE or TACHO.')
+      IF (aii .AND. solver == 1) THEN
+         CPABORT('MUMPS inertia is not a Z2 Pfaffian solver; use SOLVER DENSE or DBCSR.')
       END IF
       IF (.NOT. aii .AND. solver == 2) THEN
          CPABORT('SOLVER TACHO requires INVARIANT Z2.')
@@ -513,7 +513,7 @@ CONTAINS
                                                 matrix_tolerance, metric_ratio, gap, invariant, &
                                                 pfaffian_residual, pfaffian_fill, status, &
                                                 max_memory_bytes=INT(pfaffian_memory, int_8)*1024_int_8**2, &
-                                                peak_memory_bytes=pfaffian_peak)
+                                                peak_memory_bytes=pfaffian_peak, use_native=solver == 3)
                      END IF
                   END IF
                   DEALLOCATE (rows, cols, sparse_a, sparse_b, sparse_identity)
@@ -568,7 +568,7 @@ CONTAINS
                         WRITE (output_unit, '(T2,A,F14.3)') 'SPECTRAL_LOCALIZER| Solver memory sum [MB]: ', &
                            statistics%peak_memory_mb
                      END IF
-                     IF (solver == 2) THEN
+                     IF (aii) THEN
                         WRITE (output_unit, '(T2,A,ES23.14)') 'SPECTRAL_LOCALIZER| Pfaffian solve residual: ', pfaffian_residual
                         WRITE (output_unit, '(T2,A,I0)') 'SPECTRAL_LOCALIZER| Pfaffian scalar panel entries: ', pfaffian_fill
                         WRITE (output_unit, '(T2,A,F14.3)') 'SPECTRAL_LOCALIZER| Pfaffian numerical buffers [MiB]: ', &

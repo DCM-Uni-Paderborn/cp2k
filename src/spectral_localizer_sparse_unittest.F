@@ -45,6 +45,7 @@ PROGRAM spectral_localizer_sparse_unittest
    COMPLEX(KIND=dp) :: tx(2, 2), ty(2, 2), coordinate
    INTEGER :: length, n, i, j, x, y, io
    REAL(KIND=dp) :: factor
+   LOGICAL :: pf_native = .FALSE.
 
    ALLOCATE (para_env)
    CALL mp_world_init(para_env)
@@ -53,7 +54,9 @@ PROGRAM spectral_localizer_sparse_unittest
    CALL cp_logger_create(logger, para_env=para_env, default_global_unit_nr=io, close_global_unit_on_dealloc=.FALSE.)
    CALL cp_add_default_logger(logger)
    CALL dbcsr_init_lib(para_env%get_handle(), io)
-   IF (sparse_pfaffian_available()) CALL pfaffian_tests()
+   CALL native_skew_tests()
+   CALL pfaffian_tests(.TRUE.)
+   IF (sparse_pfaffian_available()) CALL pfaffian_tests(.FALSE.)
    IF (sparse_inertia_available()) THEN
       CALL factor_tests()
       CALL metric_tests()
@@ -93,7 +96,7 @@ PROGRAM spectral_localizer_sparse_unittest
       matrix(n + 1:, n + 1:) = -h
       matrix(n + 1:, :n) = CONJG(TRANSPOSE(matrix(:n, n + 1:)))
       CALL compare(matrix, metric, -1, 'QWZ')
-      IF (sparse_pfaffian_available()) CALL aii_tests(h, matrix, metric)
+      CALL aii_tests(h, matrix, metric)
       DO i = 1, n
          factor = 0.7_dp + 0.1_dp*MOD(i, 5)
          matrix(i, :) = factor*matrix(i, :)
@@ -149,6 +152,100 @@ PROGRAM spectral_localizer_sparse_unittest
    CALL mp_world_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Distributed skew pivots preserve permutation parity, scale and repeated solves.
+! **************************************************************************************************
+   SUBROUTINE native_skew_tests()
+      INTEGER                                            :: case_number, count, dense_sign, &
+                                                            dense_status, entry_index, i, j, k, n, &
+                                                            negative, pass, sign, status, swap
+      INTEGER, ALLOCATABLE                               :: cols(:), rows(:)
+      REAL(dp)                                           :: scale
+      REAL(dp), ALLOCATABLE                              :: a(:, :), exact(:, :), rhs(:, :), &
+                                                            values(:), work(:)
+      TYPE(localizer_factor_type)                        :: factor
+
+      DO n = 2, 34, 8
+         ALLOCATE (a(n, n), exact(n, 2), rhs(n, 2), work(n))
+         DO i = 1, n
+            exact(i, :) = [SIN(REAL(i, dp)), COS(REAL(i, dp))]
+         END DO
+         DO case_number = 1, 4
+            a = 0.0_dp
+            DO j = 2, n
+               DO i = 1, j - 1
+                  IF (MOD(7*i + 11*j + case_number, 3) /= 0) CYCLE
+                  a(i, j) = SIN(REAL(17*i + 13*j + case_number, dp))
+               END DO
+            END DO
+            DO i = 1, n - 1, 2
+               a(i, i + 1) = a(i, i + 1) + 2.0_dp
+            END DO
+            a = a - TRANSPOSE(a)
+            CALL localizer_pfaffian_sign(a, dense_sign, dense_status)
+            IF (dense_status /= 0) ERROR STOP 'Invalid dense skew fixture'
+            DO swap = 1, 2
+               DO k = -1, 1
+                  scale = 10.0_dp**(120*k)
+                  DO pass = 1, 2
+                     count = 0
+                     entry_index = 0
+                     DO j = 1, n
+                        DO i = j + 1, n
+                           IF (a(i, j) == 0.0_dp) CYCLE
+                           entry_index = entry_index + 1
+                           IF (MOD(entry_index - 1, para_env%num_pe) /= para_env%mepos) CYCLE
+                           count = count + 1
+                           IF (pass == 1) CYCLE
+                           rows(count) = i
+                           cols(count) = j
+                           values(count) = scale*a(i, j)
+                        END DO
+                     END DO
+                     IF (pass == 1) ALLOCATE (rows(count), cols(count), values(count))
+                  END DO
+                  CALL localizer_factorize(n, rows, cols, values, para_env, factor, negative, status, .TRUE., &
+                                           skew=.TRUE., tolerance=1.e-10_dp, pf_sign=sign)
+                  IF (status /= 0 .OR. sign /= dense_sign) ERROR STOP 'Native skew sign mismatch'
+                  rhs = scale*MATMUL(a, exact)
+                  CALL localizer_factor_solve(factor, rhs, para_env, status)
+                  IF (status /= 0) ERROR STOP 'Native skew solve failed'
+                  IF (MAXVAL(ABS(rhs - exact)) > 1.e-10_dp) ERROR STOP 'Native skew solution mismatch'
+                  IF (MAXVAL(ABS(MATMUL(a, rhs - exact))) > 1.e-10_dp) ERROR STOP 'Native skew residual mismatch'
+                  CALL localizer_factor_release(factor)
+                  DEALLOCATE (rows, cols, values)
+               END DO
+               work = a(1, :)
+               a(1, :) = a(2, :)
+               a(2, :) = work
+               work = a(:, 1)
+               a(:, 1) = a(:, 2)
+               a(:, 2) = work
+               dense_sign = -dense_sign
+            END DO
+         END DO
+         a(1, :) = 0.0_dp
+         a(:, 1) = 0.0_dp
+         count = n*(n - 1)/2
+         ALLOCATE (rows(count), cols(count), values(count))
+         count = 0
+         DO j = 1, n
+            DO i = j + 1, n
+               count = count + 1
+               rows(count) = i
+               cols(count) = j
+               values(count) = a(i, j)/REAL(para_env%num_pe, dp)
+            END DO
+         END DO
+         CALL localizer_factorize(n, rows, cols, values, para_env, factor, negative, status, .TRUE., &
+                                  skew=.TRUE., tolerance=1.e-10_dp, pf_sign=sign)
+         IF (status /= 1 .OR. sign /= 0 .OR. factor%valid) ERROR STOP 'Singular native skew factor accepted'
+         CALL localizer_factor_release(factor)
+         DEALLOCATE (a, exact, rhs, work, rows, cols, values)
+      END DO
+      IF (para_env%is_source()) WRITE (*, '(A)') 'Native DBCSR skew signs, scales, permutations and solves passed'
+   END SUBROUTINE native_skew_tests
 
 ! **************************************************************************************************
 !> \brief Distributed duplicates and indefinite 2x2 factors must preserve inertia and solves.
@@ -516,14 +613,20 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Exercise size parity, disconnected components, non-bipartite graphs and pivoting.
+!> \param native Test native distributed factors instead of optional Tacho
 ! **************************************************************************************************
-   SUBROUTINE pfaffian_tests()
-      INTEGER                                            :: case_number, i, j, n, sign, status
-      INTEGER(int_8)                                     :: fill
-      REAL(dp)                                           :: residual
-      REAL(dp), ALLOCATABLE                              :: a(:, :), blocks(:, :), lower(:, :)
+   SUBROUTINE pfaffian_tests(native)
+      LOGICAL, INTENT(IN)                                :: native
 
-      IF (.NOT. para_env%is_source()) RETURN
+      INTEGER                                            :: case_number, i, j, k, n, sign, status
+      INTEGER(int_8)                                     :: fill, peak
+      INTEGER, ALLOCATABLE                               :: cols(:), rows(:)
+      REAL(dp)                                           :: residual
+      REAL(dp), ALLOCATABLE                              :: a(:, :), blocks(:, :), lower(:, :), &
+                                                            values(:)
+
+      pf_native = native
+      IF (.NOT. native .AND. .NOT. para_env%is_source()) RETURN
       DO n = 2, 24, 2
          ALLOCATE (a(n, n))
          DO case_number = 1, 4
@@ -633,27 +736,50 @@ CONTAINS
       a(3, 4) = 1.0_dp
       a(:, :) = a - TRANSPOSE(a)
       CALL check_pfaffian(a)
-      CALL sparse_pfaffian_sign(2, [1, 2], [2, 1], [1.0_dp, 1.0_dp], 1.e-10_dp, &
-                                sign, residual, fill, status)
+      CALL evaluate_pfaffian(2, [1, 2], [2, 1], [1.0_dp, 1.0_dp], 1.e-10_dp, &
+                             sign, residual, fill, status)
       IF (status /= -1 .OR. sign /= 0) ERROR STOP 'Non-skew Pfaffian input accepted'
-      CALL sparse_pfaffian_sign(2, [1, 3], [2, 1], [1.0_dp, -1.0_dp], 1.e-10_dp, &
-                                sign, residual, fill, status)
+      CALL evaluate_pfaffian(2, [1, 3], [2, 1], [1.0_dp, -1.0_dp], 1.e-10_dp, &
+                             sign, residual, fill, status)
       IF (status /= -1 .OR. sign /= 0) ERROR STOP 'Invalid Pfaffian coordinates accepted'
-      CALL sparse_pfaffian_sign(2, [1, 1, 2, 2], [2, 2, 1, 1], [2.0_dp, -1.0_dp, -2.0_dp, 1.0_dp], &
-                                1.e-10_dp, sign, residual, fill, status)
+      CALL evaluate_pfaffian(2, [1, 1, 2, 2], [2, 2, 1, 1], [2.0_dp, -1.0_dp, -2.0_dp, 1.0_dp], &
+                             1.e-10_dp, sign, residual, fill, status)
       IF (status /= 0 .OR. sign /= 1) ERROR STOP 'Additive Pfaffian coordinates failed'
-      CALL sparse_pfaffian_sign(4, [1, 2, 3, 4], [2, 1, 4, 3], [1.0_dp, -1.0_dp, 1.e-12_dp, -1.e-12_dp], &
-                                1.e-10_dp, sign, residual, fill, status)
+      CALL evaluate_pfaffian(4, [1, 2, 3, 4], [2, 1, 4, 3], [1.0_dp, -1.0_dp, 1.e-12_dp, -1.e-12_dp], &
+                             1.e-10_dp, sign, residual, fill, status)
       IF (status /= 1 .OR. sign /= 0) ERROR STOP 'Unresolved Pfaffian pivot accepted'
-      CALL sparse_pfaffian_sign(6, [1, 2, 3, 4, 5, 6, 3, 5, 3], [2, 1, 4, 3, 6, 5, 5, 3, 1], &
-                                [1.0_dp, -1.0_dp, 2.0_dp, -2.0_dp, 3.0_dp, -3.0_dp, 0.5_dp, -0.5_dp, 1.e-12_dp], &
-                                1.e-10_dp, sign, residual, fill, status)
+      CALL evaluate_pfaffian(6, [1, 2, 3, 4, 5, 6, 3, 5, 3], [2, 1, 4, 3, 6, 5, 5, 3, 1], &
+                             [1.0_dp, -1.0_dp, 2.0_dp, -2.0_dp, 3.0_dp, -3.0_dp, 0.5_dp, -0.5_dp, 1.e-12_dp], &
+                             1.e-10_dp, sign, residual, fill, status)
       IF (status /= 0 .OR. sign /= 1) ERROR STOP 'One-sided roundoff between components failed'
-      CALL sparse_pfaffian_sign(6, [1, 2, 3, 4, 5, 6, 3, 5, 3], [2, 1, 4, 3, 6, 5, 5, 3, 1], &
-                                [1.0_dp, -1.0_dp, 2.0_dp, -2.0_dp, 3.0_dp, -3.0_dp, 0.5_dp, -0.5_dp, 1.e-6_dp], &
-                                1.e-10_dp, sign, residual, fill, status)
+      CALL evaluate_pfaffian(6, [1, 2, 3, 4, 5, 6, 3, 5, 3], [2, 1, 4, 3, 6, 5, 5, 3, 1], &
+                             [1.0_dp, -1.0_dp, 2.0_dp, -2.0_dp, 3.0_dp, -3.0_dp, 0.5_dp, -0.5_dp, 1.e-6_dp], &
+                             1.e-10_dp, sign, residual, fill, status)
       IF (status /= -1 .OR. sign /= 0) ERROR STOP 'Non-skew coupling between components accepted'
-      WRITE (*, '(A)') 'Sparse Pfaffian polynomial/permutation/scale/component tests passed'
+      IF (native) THEN
+         ! The even nearest-neighbor chain has Pf(A)=1 by recursive expansion.
+         ! Its dense matrix alone would need 8 MiB, exceeding this 2 MiB budget.
+         n = 1024
+         ALLOCATE (rows(2*(n - 1)), cols(2*(n - 1)), values(2*(n - 1)))
+         DO i = 1, n - 1
+            k = 2*i - 1
+            rows(k:k + 1) = [i, i + 1]
+            cols(k:k + 1) = [i + 1, i]
+            values(k:k + 1) = [1.0_dp, -1.0_dp]
+         END DO
+         CALL evaluate_pfaffian(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status, &
+                                max_memory_bytes=2_int_8*1024**2, peak_memory_bytes=peak)
+         IF (status /= 0 .OR. sign /= 1 .OR. residual > 1.e-10_dp .OR. fill >= INT(n, int_8)**2) THEN
+            ERROR STOP 'Distributed sparse chain Pfaffian failed'
+         END IF
+         IF (peak <= 0 .OR. peak > 2_int_8*1024**2) ERROR STOP 'Sparse chain numerical budget failed'
+         IF (para_env%is_source()) WRITE (*, '(A,I0,ES14.5,2I12)') 'Native chain order/residual/fill/bytes ', &
+            n, residual, fill, peak
+         DEALLOCATE (rows, cols, values)
+      END IF
+      IF (para_env%is_source()) THEN
+         WRITE (*, '(A,L2)') 'Sparse Pfaffian polynomial/permutation/scale/component tests passed, native=', native
+      END IF
    END SUBROUTINE pfaffian_tests
 
 ! **************************************************************************************************
@@ -680,18 +806,18 @@ CONTAINS
             values(k) = a(i, j)
          END DO
       END DO
-      CALL sparse_pfaffian_sign(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status, &
-                                peak_memory_bytes=peak)
+      CALL evaluate_pfaffian(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status, &
+                             peak_memory_bytes=peak)
       IF (status /= 0 .OR. peak <= 0_int_8) ERROR STOP 'Missing Pfaffian memory accounting'
       limit = peak
-      CALL sparse_pfaffian_sign(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status, &
-                                max_memory_bytes=limit, peak_memory_bytes=peak)
+      CALL evaluate_pfaffian(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status, &
+                             max_memory_bytes=limit, peak_memory_bytes=peak)
       IF (status /= 0 .OR. sign /= 1 .OR. peak /= limit) ERROR STOP 'Exact Pfaffian budget failed'
-      CALL sparse_pfaffian_sign(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status, &
-                                max_memory_bytes=limit - 1, peak_memory_bytes=peak)
+      CALL evaluate_pfaffian(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status, &
+                             max_memory_bytes=limit - 1, peak_memory_bytes=peak)
       IF (status /= -6 .OR. sign /= 0 .OR. peak >= limit) ERROR STOP 'Pfaffian memory budget exceeded'
-      CALL sparse_pfaffian_sign(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status, &
-                                max_memory_bytes=0_int_8)
+      CALL evaluate_pfaffian(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status, &
+                             max_memory_bytes=0_int_8)
       IF (status /= -1 .OR. sign /= 0) ERROR STOP 'Invalid Pfaffian memory limit accepted'
    END SUBROUTINE pfaffian_memory_test
 
@@ -739,7 +865,7 @@ CONTAINS
             END DO
             IF (pass == 1) ALLOCATE (rows(k), cols(k), values(k))
          END DO
-         CALL sparse_pfaffian_sign(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status)
+         CALL evaluate_pfaffian(n, rows, cols, values, 1.e-10_dp, sign, residual, fill, status)
          IF ((dense_status == 0) .NEQV. (status == 0)) THEN
             WRITE (*, *) 'Pfaffian status: order, swap, dense, sparse, scale, residual = ', &
                n, swap, dense_status, status, MAXVAL(ABS(a)), residual
@@ -752,5 +878,44 @@ CONTAINS
          dense_sign = -dense_sign
       END DO
    END SUBROUTINE check_pfaffian
+
+! **************************************************************************************************
+!> \brief Partition both triangles independently, including additive duplicates across MPI ranks.
+!> \param order Matrix dimension
+!> \param rows Full reference COO rows
+!> \param cols Full reference COO columns
+!> \param values Full reference COO values
+!> \param tolerance Relative threshold
+!> \param sign Pfaffian sign
+!> \param residual Solve residual
+!> \param fill Factor entries
+!> \param status Solver status
+!> \param max_memory_bytes Optional numerical buffer limit
+!> \param peak_memory_bytes Optional accepted peak bytes
+! **************************************************************************************************
+   SUBROUTINE evaluate_pfaffian(order, rows, cols, values, tolerance, sign, residual, fill, status, &
+                                max_memory_bytes, peak_memory_bytes)
+      INTEGER, INTENT(IN)                                :: order, rows(:), cols(:)
+      REAL(dp), INTENT(IN)                               :: values(:), tolerance
+      INTEGER, INTENT(OUT)                               :: sign
+      REAL(dp), INTENT(OUT)                              :: residual
+      INTEGER(int_8), INTENT(OUT)                        :: fill
+      INTEGER, INTENT(OUT)                               :: status
+      INTEGER(int_8), INTENT(IN), OPTIONAL               :: max_memory_bytes
+      INTEGER(int_8), INTENT(OUT), OPTIONAL              :: peak_memory_bytes
+
+      INTEGER                                            :: i
+      INTEGER, ALLOCATABLE                               :: owned(:)
+
+      IF (pf_native) THEN
+         owned = PACK([(i, i=1, SIZE(values))], &
+                      [(MOD(i - 1, para_env%num_pe) == para_env%mepos, i=1, SIZE(values))])
+         CALL sparse_pfaffian_sign(order, rows(owned), cols(owned), values(owned), tolerance, sign, residual, &
+                                   fill, status, max_memory_bytes, peak_memory_bytes, para_env)
+      ELSE
+         CALL sparse_pfaffian_sign(order, rows, cols, values, tolerance, sign, residual, fill, status, &
+                                   max_memory_bytes, peak_memory_bytes)
+      END IF
+   END SUBROUTINE evaluate_pfaffian
 
 END PROGRAM spectral_localizer_sparse_unittest
