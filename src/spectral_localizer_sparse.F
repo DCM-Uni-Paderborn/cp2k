@@ -56,12 +56,12 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: status
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_native
 
-      INTEGER                                            :: i, info, invalid, iteration, &
+      INTEGER                                            :: i, info, invalid, iteration, classification, probe, &
                                                             metric_factorizations, metric_retries, &
                                                             negative, reference
       INTEGER(KIND=int_8)                                :: metric_entries, metric_workspace
       REAL(KIND=dp)                                      :: anorm, bnorm, metric_memory, metric_min, &
-                                                            mid, resolution, threshold
+                                                            mid, resolution, threshold, trials(2)
       REAL(KIND=dp), ALLOCATABLE                         :: sums(:, :), values(:)
 
       invariant = 0
@@ -146,26 +146,28 @@ CONTAINS
       resolution = MAX(1.e-12_dp, 0.01_dp*gap_tol, 32.0_dp*EPSILON(1.0_dp)*gap_upper)
       DO iteration = 1, 100
          mid = 0.5_dp*(gap_lower + gap_upper)
-         values(:) = a - mid*b
-         CALL sparse_inertia_count(statistics, values, para_env, negative, info)
-         IF (info < 0) THEN
+         CALL classify_shift(mid, classification)
+         IF (classification < 0) THEN
             status = -4
             GOTO 900
          END IF
-         IF (info /= 0 .OR. negative /= reference) THEN
+         IF (classification == 2) THEN
+            ! Singular midpoints have no known inertia. Refine only with resolved nearby shifts.
+            resolution = MAX(resolution, threshold)
+            trials = [0.5_dp*(gap_lower + mid), 0.5_dp*(mid + gap_upper)]
+            DO probe = 1, 2
+               CALL classify_shift(trials(probe), classification)
+               IF (classification < 0) THEN
+                  status = -4
+                  GOTO 900
+               END IF
+               IF (classification == 0) gap_lower = MAX(gap_lower, trials(probe))
+               IF (classification == 1) gap_upper = MIN(gap_upper, trials(probe))
+            END DO
+         ELSE IF (classification == 1) THEN
             gap_upper = mid
          ELSE
-            values(:) = a + mid*b
-            CALL sparse_inertia_count(statistics, values, para_env, negative, info)
-            IF (info < 0) THEN
-               status = -4
-               GOTO 900
-            END IF
-            IF (info /= 0 .OR. negative /= reference) THEN
-               gap_upper = mid
-            ELSE
-               gap_lower = mid
-            END IF
+            gap_lower = mid
          END IF
          IF (gap_upper - gap_lower <= resolution) EXIT
       END DO
@@ -179,6 +181,38 @@ CONTAINS
       statistics%factor_entries = MAX(statistics%factor_entries, metric_entries)
       statistics%factor_workspace_entries = MAX(statistics%factor_workspace_entries, metric_workspace)
       statistics%peak_memory_mb = MAX(statistics%peak_memory_mb, metric_memory)
+
+   CONTAINS
+
+! **************************************************************************************************
+!> \brief A resolved crossing on either side bounds the gap, but a singular shift does not.
+!> \param shift Absolute generalized eigenvalue trial
+!> \param classification 0 inside the gap, 1 beyond a crossing, 2 unresolved, -4 solver error
+! **************************************************************************************************
+      SUBROUTINE classify_shift(shift, classification)
+      REAL(dp), INTENT(IN)                               :: shift
+      INTEGER, INTENT(OUT)                               :: classification
+
+      INTEGER                                            :: code, count, side
+      LOGICAL                                            :: unresolved
+
+         unresolved = .FALSE.
+         classification = 0
+         DO side = -1, 1, 2
+            values(:) = a + REAL(side, dp)*shift*b
+            CALL sparse_inertia_count(statistics, values, para_env, count, code)
+            IF (code < 0) THEN
+               classification = -4
+               RETURN
+            ELSE IF (code /= 0) THEN
+               unresolved = .TRUE.
+            ELSE IF (count /= reference) THEN
+               classification = 1
+               RETURN
+            END IF
+         END DO
+         IF (unresolved) classification = 2
+      END SUBROUTINE classify_shift
    END SUBROUTINE localizer_sparse_evaluate
 
 END MODULE spectral_localizer_sparse

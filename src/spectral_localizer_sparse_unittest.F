@@ -330,22 +330,23 @@ CONTAINS
    SUBROUTINE shifted_gap_tests()
       COMPLEX(dp)                                        :: a(4, 4), change(2, 2), h(2, 2), s(2, 2)
       INTEGER                                            :: i
-      REAL(dp)                                           :: crossing(5)
+      REAL(dp)                                           :: crossing(5), exact_gap
 
       h = RESHAPE([1.0_dp, 20.0_dp, 20.0_dp, 399.0_dp], [2, 2])
+      exact_gap = 1.0_dp/(SQRT(160004.0_dp) + 400.0_dp)
       s = 0.0_dp
       s(1, 1) = 2.0_dp
       s(2, 2) = 2.0_dp
       a = 0.0_dp
       a(:2, :2) = h
       a(3:, 3:) = -h
-      CALL compare(a, s, 0, 'gap not pivot size')
+      CALL compare(a, s, 0, 'gap not pivot size', expected_gap=exact_gap)
       change = RESHAPE([0.5_dp, 0.0_dp, 0.2_dp, 3.0_dp], [2, 2])
       h = MATMUL(TRANSPOSE(change), MATMUL(h, change))
       s = MATMUL(TRANSPOSE(change), MATMUL(s, change))
       a(:2, :2) = h
       a(3:, 3:) = -h
-      CALL compare(a, s, 0, 'gap not pivot size nonorthogonal')
+      CALL compare(a, s, 0, 'gap not pivot size nonorthogonal', expected_gap=exact_gap)
       crossing = [-1.e-6_dp, -1.e-12_dp, 0.0_dp, 1.e-12_dp, 1.e-6_dp]
       s = 0.0_dp
       s(1, 1) = 2.0_dp
@@ -423,12 +424,14 @@ CONTAINS
 !> \param expected Expected resolved index
 !> \param label Benchmark label
 !> \param aii Test the time-reversal Z2 Pfaffian instead of the class A half-signature
+!> \param expected_gap Optional analytic gap that must lie inside the returned bounds
 ! **************************************************************************************************
-   SUBROUTINE compare(matrix, metric, expected, label, aii)
+   SUBROUTINE compare(matrix, metric, expected, label, aii, expected_gap)
       COMPLEX(KIND=dp), INTENT(IN)                       :: matrix(:, :), metric(:, :)
       INTEGER, INTENT(IN)                                :: expected
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       LOGICAL, INTENT(IN), OPTIONAL                      :: aii
+      REAL(dp), INTENT(IN), OPTIONAL                     :: expected_gap
 
       COMPLEX(KIND=dp)                                   :: av, bv
       INTEGER                                            :: c, col, dense_idx, dense_status, dim, &
@@ -531,6 +534,9 @@ CONTAINS
       IF (status == 0) THEN
          IF (idx /= dense_idx .OR. idx /= expected) ERROR STOP 'Sparse/dense index mismatch'
          IF (gap < lower - 1.e-9_dp .OR. gap > upper + 1.e-9_dp) ERROR STOP 'Generalized gap bracket mismatch'
+         IF (PRESENT(expected_gap)) THEN
+            IF (expected_gap < lower .OR. expected_gap > upper) ERROR STOP 'Analytic gap outside shifted inertia bracket'
+         END IF
       END IF
       IF (para_env%is_source()) THEN
          IF (stats%workspace_retries > 0) THEN
