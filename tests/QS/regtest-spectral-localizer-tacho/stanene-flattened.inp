@@ -1,4 +1,0 @@
-@SET STANENE_SOLVER TACHO
-@SET STANENE_FLATTEN T
-@SET STANENE_ETA 1.0
-@INCLUDE ../regtest-spectral-localizer/stanene-common.inc

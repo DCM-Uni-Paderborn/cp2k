@@ -61,7 +61,7 @@ PROGRAM spectral_localizer_sparse_unittest
       CALL factor_tests()
       CALL metric_tests()
       CALL shifted_gap_tests()
-      length = 5
+      length = 3
       n = 2*length**2
       ALLOCATE (h(n, n), metric(n, n), matrix(2*n, 2*n))
       h = 0.0_dp

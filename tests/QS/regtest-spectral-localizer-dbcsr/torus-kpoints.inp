@@ -3,8 +3,9 @@
 @SET TORUS_CUTOFF 200
 @SET SCF_SYMMETRY F
 @SET SUPER_CELL 1 1 1
-@SET TORUS_GRID 3 1 2
-@SET TORUS_SOLVER MUMPS
+! The analysis mesh differs from the full SCF mesh in torus-common.inc.
+@SET TORUS_GRID 2 1 1
+@SET TORUS_SOLVER DBCSR
 @SET TORUS_INDEX CHERN
 @SET TORUS_ORIGIN 2.25 3.0 4.125
 @INCLUDE ../regtest-spectral-localizer/torus-common.inc

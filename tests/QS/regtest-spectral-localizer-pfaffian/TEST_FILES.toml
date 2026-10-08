@@ -1,0 +1,5 @@
+# Native DBCSR Pfaffians against dense finite GPW and periodic GAPW references.
+"bismuth-soc.inp" = [{matcher="LOCALIZER_Z2", tol=0, ref=0},
+                     {matcher="LOCALIZER_GAP", tol=2e-6, ref=6.81101299873304e-2}]
+"periodic-yz-gapw.inp" = [{matcher="LOCALIZER_Z2", tol=0, ref=0},
+                          {matcher="LOCALIZER_GAP", tol=2e-6, ref=6.65284047966709e-2}]

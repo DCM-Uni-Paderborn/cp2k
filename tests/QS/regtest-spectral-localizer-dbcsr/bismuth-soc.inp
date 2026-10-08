@@ -1,3 +1,3 @@
 @SET LOCALIZER_INVARIANT CHERN
-@SET LOCALIZER_SOLVER MUMPS
+@SET LOCALIZER_SOLVER DBCSR
 @INCLUDE '../regtest-spectral-localizer/bismuth-common.inc'

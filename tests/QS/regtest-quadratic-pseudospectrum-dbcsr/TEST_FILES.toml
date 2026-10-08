@@ -1,4 +1,4 @@
-# Iterative metric solves against the corresponding dense reference values.
+# Iterative native DBCSR metric solves against the corresponding dense reference values.
 "h2-all-electron.inp" = [
   {matcher="QUADRATIC_GAP", tol=1e-8, ref=0.345116599675240},
   {matcher="QUADRATIC_ENERGY_RESIDUAL", tol=1e-8, ref=0.303339929772427},

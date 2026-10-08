@@ -515,6 +515,6 @@ QS/regtest-spectral-localizer
 QS/regtest-spectral-localizer-3d
 QS/regtest-quadratic-pseudospectrum
 QS/regtest-gamma-frozen-density
-QS/regtest-spectral-localizer-mumps                         mumps
-QS/regtest-spectral-localizer-tacho                         mumps tacho
-QS/regtest-quadratic-pseudospectrum-mumps                    mumps
+QS/regtest-spectral-localizer-dbcsr
+QS/regtest-spectral-localizer-pfaffian
+QS/regtest-quadratic-pseudospectrum-dbcsr

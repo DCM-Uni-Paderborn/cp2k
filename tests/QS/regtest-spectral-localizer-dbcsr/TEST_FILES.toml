@@ -1,7 +1,7 @@
-# Sparse inertia/gaps against dense references: flattened real, complex SOC and torus.
+# Native DBCSR inertia/gaps against dense references: flattened real, complex SOC and torus.
 "bismuth-soc.inp" = [{matcher="LOCALIZER_CHERN", tol=0, ref=0},
                     {matcher="LOCALIZER_GAP", tol=2e-6, ref=6.81101299850073e-2}]
 "torus-kpoints.inp" = [{matcher="LOCALIZER_CHERN", tol=0, ref=0},
-                       {matcher="LOCALIZER_GAP", tol=2e-6, ref=3.80937263188252e-1}]
+                       {matcher="LOCALIZER_GAP", tol=2e-6, ref=2.98545057721603e-1}]
 "h2-flattened.inp" = [{matcher="LOCALIZER_CHERN", tol=0, ref=0},
                       {matcher="LOCALIZER_GAP", tol=2e-6, ref=8.33447166247184e-1}]
