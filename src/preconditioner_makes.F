@@ -58,6 +58,7 @@ MODULE preconditioner_makes
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_diag,&
                                               cp_fm_get_info,&
+                                              cp_fm_maxabsrownorm,&
                                               cp_fm_release,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
@@ -116,7 +117,7 @@ CONTAINS
          POINTER                                         :: local_data
       INTEGER                                            :: handle, j, k, n, ncol_local, nrow_local
       INTEGER, DIMENSION(:), POINTER                     :: col_indices
-      REAL(KIND=dp)                                      :: error_estimate, lambda
+      REAL(KIND=dp)                                      :: error_estimate, lambda, spectral_bound
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: residual_norm_sq
       TYPE(cp_cfm_type) :: matrix_chc, matrix_diag_work, matrix_hc0, matrix_s_copy, matrix_sc0, &
          matrix_sc_chc, matrix_shifted_sc, matrix_tmp
@@ -191,6 +192,14 @@ CONTAINS
       CALL cp_cfm_gemm('N', 'C', n, n, k, -z_one, matrix_sc0, matrix_hc0, z_one, matrix_tmp)
       CALL cp_cfm_gemm('N', 'N', n, k, k, z_one, matrix_sc0, matrix_chc, z_zero, matrix_sc_chc)
       CALL cp_cfm_gemm('N', 'C', n, n, k, z_one, matrix_sc_chc, matrix_sc0, z_one, matrix_tmp)
+
+      CALL cp_cfm_to_cfm(matrix_tmp, matrix_diag_work)
+      CALL cp_cfm_triangular_multiply(matrix_s_copy, matrix_diag_work, side='L', &
+                                      transa_tr='C', invert_tr=.TRUE., uplo_tr='U')
+      CALL cp_cfm_triangular_multiply(matrix_s_copy, matrix_diag_work, side='R', &
+                                      transa_tr='N', invert_tr=.TRUE., uplo_tr='U')
+      spectral_bound = cp_cfm_norm(matrix_diag_work, 'F')
+      lambda = MAX(lambda, MAXVAL(c0_evals(1:k)) + spectral_bound + lambda_base)
 
       ! Shift the retained reference subspace below the complementary spectrum, diagonalize,
       ! and then restore the original reference columns and their energy labels exactly.
@@ -845,7 +854,7 @@ CONTAINS
                                                             lambda_base = 10.0_dp
 
       INTEGER                                            :: handle, k, n
-      REAL(KIND=dp)                                      :: error_estimate, lambda
+      REAL(KIND=dp)                                      :: error_estimate, lambda, spectral_bound
       REAL(KIND=dp), DIMENSION(:), POINTER               :: diag, norms, shifted_evals
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
       TYPE(cp_fm_type)                                   :: matrix_hc0, matrix_left, matrix_s1, &
@@ -944,17 +953,6 @@ CONTAINS
       CALL parallel_gemm('N', 'N', n, n, k, -1.0_dp, matrix_sc0, matrix_left, 1.0_dp, matrix_tmp)
       CALL cp_fm_release(matrix_left)
 
-      ALLOCATE (shifted_evals(k))
-      lambda = lambda_base + error_estimate
-      IF (PRESENT(common_reference)) THEN
-         shifted_evals = common_reference - lambda
-      ELSE
-         shifted_evals = c0_evals - lambda
-      END IF
-      CALL cp_fm_to_fm(matrix_sc0, matrix_hc0)
-      CALL cp_fm_column_scale(matrix_hc0, shifted_evals)
-      CALL parallel_gemm('N', 'T', n, n, k, 1.0_dp, matrix_hc0, matrix_sc0, 1.0_dp, matrix_tmp)
-
       ! 2) diagonalize this operator
       SELECT CASE (preconditioner_env%cholesky_use)
       CASE (cholesky_inverse)
@@ -965,6 +963,29 @@ CONTAINS
       CASE (cholesky_reduce)
          CALL cp_fm_cholesky_reduce(matrix_tmp, ortho)
       END SELECT
+      ! The restored reference columns must be the lowest eigenvectors. A residual-based
+      ! shift alone does not ensure this when the reference energies are high.
+      CALL cp_fm_uplo_to_full(matrix_tmp, matrix_pre)
+      CALL cp_fm_maxabsrownorm(matrix_tmp, spectral_bound)
+      ALLOCATE (shifted_evals(k))
+      lambda = lambda_base + error_estimate
+      IF (PRESENT(common_reference)) THEN
+         lambda = MAX(lambda, common_reference + spectral_bound + lambda_base)
+         shifted_evals = common_reference - lambda
+      ELSE
+         lambda = MAX(lambda, MAXVAL(c0_evals) + spectral_bound + lambda_base)
+         shifted_evals = c0_evals - lambda
+      END IF
+      CALL cp_fm_create(matrix_shc0, matrix_c0%matrix_struct, name="orthonormal reference")
+      CALL cp_fm_to_fm(matrix_sc0, matrix_shc0)
+      CALL cp_fm_triangular_multiply(ortho, matrix_shc0, side="L", transpose_tr=.TRUE., &
+                                     invert_tr=preconditioner_env%cholesky_use == cholesky_reduce, &
+                                     uplo_tr="U", n_rows=n, n_cols=k, alpha=1.0_dp)
+      CALL cp_fm_to_fm(matrix_shc0, matrix_hc0)
+      CALL cp_fm_column_scale(matrix_hc0, shifted_evals)
+      CALL parallel_gemm('N', 'T', n, n, k, 1.0_dp, matrix_hc0, matrix_shc0, 1.0_dp, matrix_tmp)
+      CALL cp_fm_release(matrix_shc0)
+
       CALL choose_eigv_solver(matrix_tmp, matrix_pre, preconditioner_env%full_evals)
       SELECT CASE (preconditioner_env%cholesky_use)
       CASE (cholesky_inverse)
@@ -1037,7 +1058,7 @@ CONTAINS
                                                             lambda_base = 10.0_dp
 
       INTEGER                                            :: handle, k, n
-      REAL(KIND=dp)                                      :: error_estimate, lambda
+      REAL(KIND=dp)                                      :: error_estimate, lambda, spectral_bound
       REAL(KIND=dp), DIMENSION(:), POINTER               :: diag, norms, shifted_evals
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
       TYPE(cp_fm_type)                                   :: matrix_hc0, matrix_left, matrix_s1, &
@@ -1113,11 +1134,14 @@ CONTAINS
       CALL parallel_gemm('N', 'N', n, n, k, -1.0_dp, matrix_sc0, matrix_left, 1.0_dp, matrix_tmp)
       CALL cp_fm_release(matrix_left)
 
+      CALL cp_fm_maxabsrownorm(matrix_tmp, spectral_bound)
       ALLOCATE (shifted_evals(k))
       lambda = lambda_base + error_estimate
       IF (PRESENT(common_reference)) THEN
+         lambda = MAX(lambda, common_reference + spectral_bound + lambda_base)
          shifted_evals = common_reference - lambda
       ELSE
+         lambda = MAX(lambda, MAXVAL(c0_evals) + spectral_bound + lambda_base)
          shifted_evals = c0_evals - lambda
       END IF
       CALL cp_fm_to_fm(matrix_sc0, matrix_hc0)

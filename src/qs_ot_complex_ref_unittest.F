@@ -24,8 +24,11 @@ PROGRAM qs_ot_complex_ref_unittest
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, &
         dbcsr_finalize, dbcsr_finalize_lib, dbcsr_get_block_p, dbcsr_init_lib, dbcsr_put_block, &
-        dbcsr_release, dbcsr_reserve_blocks, dbcsr_type, dbcsr_type_no_symmetry
+        dbcsr_release, dbcsr_reserve_blocks, dbcsr_type, dbcsr_type_no_symmetry, &
+        dbcsr_type_symmetric
    USE cp_fm_basic_linalg,              ONLY: cp_complex_fm_gemm
+   USE cp_fm_diag,                      ONLY: diag_finalize,&
+                                              diag_init
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
@@ -40,10 +43,11 @@ PROGRAM qs_ot_complex_ref_unittest
                                               cp_logger_type,&
                                               cp_rm_default_logger
    USE input_constants,                 ONLY: &
-        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_all_covariant, &
-        ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
-        ot_precond_none, ot_precond_s_inverse, ot_precond_solver_chebyshev, &
-        ot_precond_solver_default, ot_precond_solver_direct, ot_precond_solver_inv_chol
+        cholesky_inverse, cholesky_reduce, ot_precond_fermi_low_rank, ot_precond_full_all, &
+        ot_precond_full_all_covariant, ot_precond_full_kinetic, ot_precond_full_single, &
+        ot_precond_full_single_inverse, ot_precond_none, ot_precond_s_inverse, &
+        ot_precond_solver_chebyshev, ot_precond_solver_default, ot_precond_solver_direct, &
+        ot_precond_solver_inv_chol
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_ot_energy_weighted_density
    USE machine,                         ONLY: default_output_unit
@@ -61,7 +65,8 @@ PROGRAM qs_ot_complex_ref_unittest
                                               make_complex_full_kinetic,&
                                               make_complex_full_s_inverse,&
                                               make_complex_full_single,&
-                                              make_complex_full_single_inverse
+                                              make_complex_full_single_inverse,&
+                                              make_preconditioner_matrix
    USE preconditioner_types,            ONLY: destroy_preconditioner,&
                                               init_preconditioner,&
                                               preconditioner_type
@@ -132,6 +137,7 @@ PROGRAM qs_ot_complex_ref_unittest
    CALL cp_add_default_logger(logger)
    CALL add_all_references()
    CALL dbcsr_init_lib(mp_comm%get_handle(), io_unit)
+   CALL test_real_full_all_ordering(para_env, nfail)
    CALL test_real_rotation_frechet(para_env, nfail)
    CALL test_complex_rotation_frechet(para_env, nfail)
    CALL test_sparse_frechet_patterns(para_env, nfail)
@@ -261,6 +267,7 @@ PROGRAM qs_ot_complex_ref_unittest
    CALL dbcsr_distribution_release(dist_nk)
    DEALLOCATE (pgrid, row_dist, col_dist, row_n, row_k, col_k)
 
+   CALL diag_finalize()
    CALL dbcsr_finalize_lib()
    CALL remove_all_references()
    CALL cp_rm_default_logger()
@@ -271,6 +278,96 @@ PROGRAM qs_ot_complex_ref_unittest
    IF (nfail > 0) ERROR STOP "qs_ot_complex_ref_unittest failed"
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Retain the complete FULL_ALL basis when a reference lies above its complement.
+!> \param para_env parallel environment
+!> \param nfail accumulated failures
+! **************************************************************************************************
+   SUBROUTINE test_real_full_all_ordering(para_env, nfail)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER                                            :: i, mode, solver
+      INTEGER, POINTER                                   :: cols(:), pgrid(:, :), rows(:), sizes(:)
+      LOGICAL                                            :: fallback
+      REAL(dp)                                           :: c(2, 1), error, evals(1), gram(2, 2), &
+                                                            h(2, 2), metric(2, 2), vectors(2, 2)
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs
+      TYPE(cp_fm_struct_type), POINTER                   :: fmstruct
+      TYPE(cp_fm_type)                                   :: reference
+      TYPE(dbcsr_distribution_type)                      :: dist
+      TYPE(dbcsr_type), POINTER                          :: hmat, smat
+      TYPE(preconditioner_type)                          :: preconditioner
+
+      NULLIFY (blacs, fmstruct, hmat, smat)
+      CALL diag_init('ScaLAPACK', fallback, elpa_kernel=0, elpa_neigvec_min_input=200, &
+                     elpa_qr=.FALSE., elpa_print=.FALSE., elpa_one_stage=.FALSE., &
+                     dlaf_neigvec_min_input=200, eps_check_diag_input=1.0E-9_dp)
+      CALL cp_blacs_env_create(blacs_env=blacs, para_env=para_env)
+      CALL cp_fm_struct_create(fmstruct, nrow_global=2, ncol_global=1, &
+                               context=blacs, para_env=para_env)
+      CALL cp_fm_create(reference, fmstruct, name='FULL_ALL high reference')
+      CALL cp_fm_struct_release(fmstruct)
+      ALLOCATE (hmat, smat, pgrid(0:para_env%num_pe - 1, 0:0), rows(1), cols(1), sizes(1))
+      pgrid(:, 0) = [(i, i=0, para_env%num_pe - 1)]
+      rows = 0
+      cols = 0
+      sizes = 2
+      CALL dbcsr_distribution_new(dist, group=para_env%get_handle(), pgrid=pgrid, row_dist=rows, col_dist=cols)
+      CALL dbcsr_create(hmat, 'FULL_ALL H', dist, dbcsr_type_symmetric, sizes, sizes)
+      CALL dbcsr_create(smat, 'FULL_ALL S', dist, dbcsr_type_symmetric, sizes, sizes)
+      error = 0.0_dp
+      evals = 100.0_dp
+      DO mode = 0, 2
+         metric = 0.0_dp
+         metric(1, 1) = 1.0_dp
+         metric(2, 2) = 1.0_dp
+         IF (mode /= 0) THEN
+            metric(1, 1) = 0.49_dp
+            metric(2, 2) = 1.96_dp
+         END IF
+         c(:, 1) = [1.0_dp/SQRT(metric(1, 1)), 0.0_dp]
+         h = 0.0_dp
+         h(1, 1) = 100.0_dp*metric(1, 1)
+         h(2, 2) = -200.0_dp*metric(2, 2)
+         IF (para_env%is_source()) THEN
+            CALL dbcsr_put_block(hmat, 1, 1, h)
+            CALL dbcsr_put_block(smat, 1, 1, metric)
+         END IF
+         CALL dbcsr_finalize(hmat)
+         CALL dbcsr_finalize(smat)
+         CALL cp_fm_set_submatrix(reference, c)
+         CALL init_preconditioner(preconditioner, para_env, blacs)
+         preconditioner%in_use = ot_precond_full_all
+         preconditioner%cholesky_use = cholesky_reduce
+         IF (mode == 2) preconditioner%cholesky_use = cholesky_inverse
+         solver = ot_precond_solver_default
+         IF (mode == 0) THEN
+            CALL make_preconditioner_matrix(preconditioner, hmat, mo_coeff=reference, energy_homo=100.0_dp, &
+                                            eigenvalues_ot=evals, energy_gap=0.1_dp, my_solver_type=solver)
+         ELSE
+            CALL make_preconditioner_matrix(preconditioner, hmat, smat, mo_coeff=reference, energy_homo=100.0_dp, &
+                                            eigenvalues_ot=evals, energy_gap=0.1_dp, my_solver_type=solver)
+         END IF
+         CALL cp_fm_get_submatrix(preconditioner%fm, vectors)
+         gram = MATMUL(TRANSPOSE(vectors), MATMUL(metric, vectors))
+         gram(1, 1) = gram(1, 1) - 1.0_dp
+         gram(2, 2) = gram(2, 2) - 1.0_dp
+         error = MAX(error, MAXVAL(ABS(gram)), MAXVAL(ABS(vectors(:, 1) - c(:, 1))), &
+                     ABS(preconditioner%full_evals(2) + 200.0_dp))
+         CALL destroy_preconditioner(preconditioner)
+      END DO
+      IF (error > 1.0E-11_dp) nfail = nfail + 1
+      IF (para_env%is_source()) WRITE (io_unit, '(A,ES13.6)') 'real FULL_ALL reference ordering error ', error
+      CALL dbcsr_release(hmat)
+      CALL dbcsr_release(smat)
+      DEALLOCATE (hmat, smat)
+      CALL dbcsr_distribution_release(dist)
+      DEALLOCATE (pgrid, rows, cols, sizes)
+      CALL cp_fm_release(reference)
+      CALL cp_blacs_env_release(blacs)
+   END SUBROUTINE test_real_full_all_ordering
 
 ! **************************************************************************************************
 !> \brief Check split-complex full-matrix multiplication including adjoints.
@@ -2682,6 +2779,11 @@ CONTAINS
       CALL make_complex_full_s_inverse(preconditioner_s, matrix_s)
       CALL make_complex_full_single(preconditioner_single, matrix_h, matrix_s, 0.15_dp, 0.20_dp)
       CALL make_complex_full_kinetic(preconditioner_t, matrix_t, matrix_s, 0.20_dp)
+      ! High reference energies must not displace a complementary eigenvector.
+      CALL cp_cfm_set_element(matrix_h, 1, 1, CMPLX(100.0_dp, 0.0_dp, dp))
+      CALL cp_cfm_set_element(matrix_h, 2, 2, CMPLX(101.0_dp, 0.0_dp, dp))
+      CALL cp_cfm_set_element(matrix_h, 3, 3, CMPLX(-200.0_dp, 0.0_dp, dp))
+      c0_evals = [100.0_dp, 101.0_dp]
       CALL make_complex_full_all(full_all, matrix_c0, matrix_h, matrix_s, c0_evals, 0.08_dp)
       CALL make_complex_full_all(full_all_phase, matrix_c0_phase, matrix_h, matrix_s, &
                                  c0_evals, 0.08_dp)
@@ -2742,6 +2844,11 @@ CONTAINS
                                                          CMPLX(0.0_dp, 0.0_dp, KIND=dp), &
                                                          CMPLX(1.0_dp, 0.0_dp, KIND=dp)], [n, n])))
       full_all_descent = REAL(SUM(CONJG(gradient)*output), KIND=dp)
+
+      DO i = 1, n
+         CALL cp_cfm_set_element(matrix_h, i, i, h(i, i))
+      END DO
+      c0_evals = [REAL(h(1, 1), KIND=dp), REAL(h(2, 2), KIND=dp)]
 
       CALL make_complex_fermi_low_rank(low_rank, matrix_c0, matrix_h, matrix_s, &
                                        0.08_dp, 1, 1.0_dp, 1.0E-8_dp)
