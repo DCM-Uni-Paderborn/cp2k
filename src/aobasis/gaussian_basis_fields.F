@@ -166,9 +166,11 @@ CONTAINS
                                                             reduced_k_response(3)
 
       COMPLEX(dp)                                        :: phase, phase_response
-      INTEGER                                            :: axis, axis2, image, npoint
-      LOGICAL                                            :: need_gradient, need_hessian
-      REAL(dp)                                           :: dc(3, 3), dcenter(3), dk(3), lattice(3)
+      INTEGER                                            :: ao, axis, axis2, image, npoint, point
+      LOGICAL                                            :: need_geometry, need_gradient, &
+                                                            need_hessian
+      REAL(dp)                                           :: dc(3, 3), dcenter(3), dk(3), dshift(3), &
+                                                            lattice(3), shift(3)
       REAL(dp), ALLOCATABLE                              :: ddisplacement(:, :), displacement(:, :), &
                                                             field(:, :), g(:, :, :), h(:, :, :, :)
 
@@ -177,6 +179,7 @@ CONTAINS
       CPASSERT(ALL(SHAPE(value) == [npoint, basis%nsgf]))
       need_gradient = PRESENT(gradient) .OR. PRESENT(response) .OR. PRESENT(gradient_response)
       need_hessian = PRESENT(gradient_response)
+      need_geometry = PRESENT(response) .OR. PRESENT(gradient_response)
       IF (PRESENT(gradient)) THEN
          CPASSERT(ALL(SHAPE(gradient) == [npoint, basis%nsgf, 3]))
          gradient = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -195,17 +198,26 @@ CONTAINS
       IF (PRESENT(cell_response)) dc = cell_response
       IF (PRESENT(center_response)) dcenter = center_response
       IF (PRESENT(reduced_k_response)) dk = reduced_k_response
-      ALLOCATE (displacement(3, npoint), ddisplacement(3, npoint), field(npoint, basis%nsgf))
+      ALLOCATE (displacement(3, npoint), field(npoint, basis%nsgf))
+      IF (need_geometry) ALLOCATE (ddisplacement(3, npoint))
+      IF (PRESENT(point_response)) THEN
+         CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
+      END IF
       IF (need_gradient) ALLOCATE (g(npoint, basis%nsgf, 3))
       IF (need_hessian) ALLOCATE (h(npoint, basis%nsgf, 3, 3))
       value = CMPLX(0.0_dp, 0.0_dp, dp)
       DO image = 1, SIZE(images, 2)
          lattice = REAL(images(:, image), dp)
-         displacement(:, :) = points - SPREAD(center + MATMUL(cell, lattice), 2, npoint)
-         ddisplacement(:, :) = -SPREAD(dcenter + MATMUL(dc, lattice), 2, npoint)
-         IF (PRESENT(point_response)) THEN
-            CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
-            ddisplacement(:, :) = ddisplacement + point_response
+         shift = center + MATMUL(cell, lattice)
+         DO point = 1, npoint
+            displacement(:, point) = points(:, point) - shift
+         END DO
+         IF (need_geometry) THEN
+            dshift = -(dcenter + MATMUL(dc, lattice))
+            DO point = 1, npoint
+               ddisplacement(:, point) = dshift
+            END DO
+            IF (PRESENT(point_response)) ddisplacement(:, :) = ddisplacement + point_response
          END IF
          phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(reduced_k, lattice), dp))
          phase_response = CMPLX(0.0_dp, twopi*DOT_PRODUCT(dk, lattice), dp)*phase
@@ -221,15 +233,19 @@ CONTAINS
          IF (PRESENT(response)) THEN
             response = response + phase_response*field
             DO axis = 1, 3
-               response = response + phase*SPREAD(ddisplacement(axis, :), 2, basis%nsgf)*g(:, :, axis)
+               DO ao = 1, basis%nsgf
+                  response(:, ao) = response(:, ao) + phase*ddisplacement(axis, :)*g(:, ao, axis)
+               END DO
             END DO
          END IF
          IF (PRESENT(gradient_response)) THEN
             gradient_response = gradient_response + phase_response*g
             DO axis = 1, 3
                DO axis2 = 1, 3
-                  gradient_response(:, :, axis) = gradient_response(:, :, axis) + &
-                                                  phase*SPREAD(ddisplacement(axis2, :), 2, basis%nsgf)*h(:, :, axis, axis2)
+                  DO ao = 1, basis%nsgf
+                     gradient_response(:, ao, axis) = gradient_response(:, ao, axis) + &
+                                                      phase*ddisplacement(axis2, :)*h(:, ao, axis, axis2)
+                  END DO
                END DO
             END DO
          END IF
