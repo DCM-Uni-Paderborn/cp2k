@@ -911,11 +911,6 @@ if(CP2K_USE_MUMPS)
   find_package(MUMPS REQUIRED)
 endif()
 if(CP2K_USE_TACHO)
-  if(NOT CP2K_USE_MUMPS)
-    message(
-      FATAL_ERROR
-        "CP2K_USE_TACHO requires CP2K_USE_MUMPS for independent gap validation")
-  endif()
   find_package(ShyLU_NodeTacho CONFIG REQUIRED)
   find_package(Boost CONFIG REQUIRED)
 endif()

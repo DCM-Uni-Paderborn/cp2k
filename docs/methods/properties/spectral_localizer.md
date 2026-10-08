@@ -56,10 +56,14 @@ Finite Cartesian coordinates are not substituted for periodic position operators
 
 `SOLVER DENSE` is the reference implementation. `MAX_AO` bounds the complete scalar AO space
 including torus cells. Spinors double that space, and dense localizers require quadratic storage.
-`EPS_METRIC`, `MATRIX_TOLERANCE` and `EPS_GAP` control metric conditioning, operator checks and gap
-resolution. Unresolved gaps do not yield an index. `SPECTRAL_FLATTENING` optionally replaces the
-shifted Hamiltonian by its metric-covariant matrix sign after checking an electronic gap. Its scale
-and gap are distinct from the final localizer gap.
+`SOLVER DBCSR` uses native distributed pivoted LDL for inertia and gap brackets, and skew LDL for
+two-dimensional Z2 Pfaffians. It requires neither MUMPS nor Tacho. Optional MUMPS and Tacho
+implementations provide independent comparisons. Tacho uses native LDL gap validation and does not
+require MUMPS. Three-dimensional localizers currently use `SOLVER DENSE`. `EPS_METRIC`,
+`MATRIX_TOLERANCE` and `EPS_GAP` control metric conditioning, operator checks and gap resolution.
+Unresolved gaps do not yield an index. `SPECTRAL_FLATTENING` optionally replaces the shifted
+Hamiltonian by its metric-covariant matrix sign after checking an electronic gap. Its scale and gap
+are distinct from the final localizer gap.
 
 `DFT / PRINT / AO_MATRICES / POSITION` exports the finite AO moments in the same ordering as overlap
 and Hamiltonian matrices. `SOC` exports the three real antisymmetric GTH components, whose physical
