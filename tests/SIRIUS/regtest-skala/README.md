@@ -3,9 +3,10 @@
 SIRIUS supplies densities, gradients and kinetic-energy densities and applies the returned
 variational operators. CP2K evaluates the complete Skala energy and its derivatives with LibTorch.
 Atom quadrature reconstructs PAW and FP-LAPW fields jointly, without an AE-minus-pseudo energy
-decomposition. The first bridge supports scalar and collinear states. PW/PAW forces and stress
-require the SIRIUS point-geometry and quadrature-update APIs. Total FP-LAPW geometry derivatives
-require the subsequent coupled-response extension.
+decomposition. Scalar and collinear states are supported. PW/PAW forces and stress require the
+SIRIUS point-geometry and quadrature-update APIs. Nonrelativistic CPU FP-LAPW forces and stress also
+require joint field/quadrature Hessian-vector products and quadrature directions. CP2K evaluates the
+model Hessians; SIRIUS solves the coupled orbital, radial-basis and core responses.
 
 These manual inputs require matching SIRIUS APIs, `SKALA_MODEL` and `CP2K_DATA_DIR`. They are not
 registered in `TEST_FILES.toml`. Run each in a separate output directory. `H2.inp` uses the regular
@@ -15,14 +16,19 @@ hydrogen setup). `He-lapw-atom-grid.inp` is an energy calculation using an atom 
 `create_sirius_lapw_test_atom.py`.
 
 Generate analytic models with `tools/regtesting/create_skala_grid_test_model.py`.
-`skala_grid_unittest.psmp MODEL` checks scalar/collinear field and geometry covectors. Add
-`--geometry` to model generation and pass `geometry` as the test's second argument to check nonlocal
-coordinate dependence. Repeat with MPI to check block redistribution. Atom-quadrature and adjoint
-tests are also registered in CP2K's standard unit tests.
+`skala_grid_unittest.psmp MODEL` checks scalar/collinear field and geometry covectors and
+Hessian-vector products. Add `--geometry` to model generation and pass `geometry` as the test's
+second argument to check nonlocal coordinate dependence. Repeat with MPI to check block
+redistribution. Atom-quadrature and adjoint tests are also registered in CP2K's standard unit tests.
 
 `skala_sirius_unittest.psmp` accepts
-`MODEL SETUP SIDE ORBITAL_STEP GRID_MODE PRESET ORBITALS INFERENCE`. `SETUP` is empty for synthetic
-PW/PAW fixtures, a PAW JSON path, or `LAPW`. `GRID_MODE` is empty, `atom-grid`, `atom-grid-forces`,
-`atom-grid-stress` or `atom-grid-update`. The geometry checks use two finite-difference steps.
-`skala-float32` selects the actual-model preset without relaxing derivative bounds. The default
-execution is CPU. CUDA inference uses the existing native Skala device option.
+`MODEL SETUP SIDE STEP GRID_MODE PRESET ORBITALS INFERENCE RESPONSE_STEP BANDS ATOM_FILE RADIAL_POINTS`.
+`SETUP` is empty for synthetic PW/PAW fixtures, a PAW JSON path, or `LAPW`. `GRID_MODE` is empty,
+`atom-grid`, `atom-grid-forces`, `atom-grid-stress` or `atom-grid-update`. The geometry checks use
+two finite-difference steps. `skala-float32` selects the actual-model preset without relaxing
+derivative bounds. The default execution is CPU. CUDA inference uses the existing native Skala
+device option. `RESPONSE_STEP` enables an independent field/point Hessian check. The optional LAPW
+`ATOM_FILE` may be generated with `create_sirius_lapw_test_atom.py --element Ne` to exercise an
+explicit 1s core. `RADIAL_POINTS` optionally changes the atom-quadrature resolution.
+In force/stress modes, `STEP` sets the geometry stencil and its half step. Choose steps that do not
+change LAPW muffin-tin point membership. Otherwise, it enables the orbital derivative check.

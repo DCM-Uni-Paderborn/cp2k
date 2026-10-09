@@ -956,7 +956,6 @@ if(CP2K_USE_SIRIUS)
     "program check_xc_point_callback
      use sirius, only: sirius_set_xc_point_callback
      end program" CP2K_SIRIUS_XC_POINT_CALLBACK SRC_EXT F90)
-
   CHECK_Fortran_SOURCE_COMPILES(
     "program check_xc_point_geometry
      use sirius, only: sirius_set_xc_point_geometry_callbacks, sirius_get_xc_geometry_derivatives
@@ -964,7 +963,25 @@ if(CP2K_USE_SIRIUS)
     CP2K_SIRIUS_XC_POINT_GEOMETRY
     SRC_EXT
     F90)
-
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_xc_point_response
+     use sirius, only: sirius_set_xc_point_response_callback, sirius_check_external_xc_response
+     end program"
+    CP2K_SIRIUS_XC_POINT_RESPONSE
+    SRC_EXT
+    F90)
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_xc_point_hessian
+     use sirius, only: sirius_set_xc_point_hessian_callback
+     end program" CP2K_SIRIUS_XC_POINT_HESSIAN SRC_EXT F90)
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_xc_response_tolerance
+     use sirius, only: sirius_set_xc_response_tolerance
+     end program" CP2K_SIRIUS_XC_RESPONSE_TOLERANCE SRC_EXT F90)
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_xc_quadrature_direction
+     use sirius, only: sirius_set_xc_quadrature_direction_callback
+     end program" CP2K_SIRIUS_XC_QUADRATURE_DIRECTION SRC_EXT F90)
   CHECK_Fortran_SOURCE_COMPILES(
     "program check_xc_point_update
      use sirius, only: sirius_update_xc_point_set

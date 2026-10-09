@@ -268,8 +268,20 @@ CONTAINS
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
       flags = TRIM(flags)//" sirius_xc_point_geometry"
 #endif
+#if defined(__SIRIUS_XC_POINT_RESPONSE)
+      flags = TRIM(flags)//" sirius_xc_point_response"
+#endif
+#if defined(__SIRIUS_XC_POINT_HESSIAN)
+      flags = TRIM(flags)//" sirius_xc_point_hessian"
+#endif
 #if defined(__SIRIUS_XC_POINT_UPDATE)
       flags = TRIM(flags)//" sirius_xc_point_update"
+#endif
+#if defined(__SIRIUS_XC_RESPONSE_TOLERANCE)
+      flags = TRIM(flags)//" sirius_xc_response_tolerance"
+#endif
+#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION)
+      flags = TRIM(flags)//" sirius_xc_quadrature_direction"
 #endif
 #if defined(__SIRIUS_XC_DERIVATIVE)
       flags = TRIM(flags)//" sirius_xc_derivative"

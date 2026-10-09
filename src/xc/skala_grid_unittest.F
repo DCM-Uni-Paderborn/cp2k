@@ -43,7 +43,7 @@ PROGRAM skala_grid_unittest
    LOGICAL :: cuda_points, point_fp64
    INTEGER :: ns, partition, i, s, first_z, last_z, nr, component, step, mode, caller_threads
    REAL(dp) :: hmat(3, 3), energy, reference, ep, em, derivative, h, error, maximum_error, &
-               step_size, routing_tolerance, derivative_tolerance
+               step_size, response_step_size, routing_tolerance, derivative_tolerance
    REAL(dp), ALLOCATABLE :: rho(:, :), grad(:, :, :), tau(:, :), drho(:, :), dgrad(:, :, :), dtau(:, :), &
                             vrho(:, :), vgrad(:, :, :), vtau(:, :), ref_vrho(:, :), ref_vgrad(:, :, :), ref_vtau(:, :)
 
@@ -58,6 +58,7 @@ PROGRAM skala_grid_unittest
    cuda_points = TRIM(device_arg) == "gpu"
    IF (LEN_TRIM(device_arg) > 0 .AND. .NOT. cuda_points) ERROR STOP "Expected gpu or no device argument"
    step_size = 1.0e-3_dp
+   response_step_size = step_size
    routing_tolerance = 1.0e-11_dp
    derivative_tolerance = 1.0e-8_dp
    SELECT CASE (TRIM(model_mode))
@@ -65,6 +66,7 @@ PROGRAM skala_grid_unittest
       CONTINUE
    CASE ("skala-float32")
       step_size = 1.0e-2_dp
+      response_step_size = 4.0e-2_dp
       routing_tolerance = 1.0e-5_dp
       derivative_tolerance = 1.0e-4_dp
    CASE DEFAULT
@@ -201,13 +203,15 @@ CONTAINS
          spin_scale, step_h, sum_descriptor, sum_weights, w, weight_covector, z
       REAL(dp), ALLOCATABLE :: centres(:, :), dc(:, :), dd(:), de(:), descriptor_weights(:), &
          dg(:, :, :), dr(:, :), dt(:, :), dx(:, :), energy_weights(:), g(:, :, :), &
-         gathered(:, :, :), pc(:, :), pd(:), pe(:), pg(:, :, :), plus_c(:, :), plus_d(:), &
-         plus_e(:), plus_g(:, :, :), plus_r(:, :), plus_t(:, :), plus_x(:, :), points(:, :), &
-         pr(:, :), pt(:, :), px(:, :), r(:, :), reference_grad(:, :, :), t(:, :)
+         gathered(:, :, :), hc(:, :), hd(:), he(:), hg(:, :, :), hr(:, :), ht(:, :), hx(:, :), &
+         pc(:, :), pd(:), pe(:), pg(:, :, :), plus_c(:, :), plus_d(:), plus_e(:), plus_g(:, :, :), &
+         plus_r(:, :), plus_t(:, :), plus_x(:, :), points(:, :), pr(:, :), pt(:, :), px(:, :), &
+         r(:, :), reference_grad(:, :, :), t(:, :)
 
-      ! SIRIUS point callbacks use FP64; the regular-grid checks retain native precision.
+      ! Match SIRIUS FP64 point callbacks, including their joint Hessian actions.
       IF (point_fp64) THEN
          step_size = 1.0e-3_dp
+         response_step_size = step_size
          routing_tolerance = 1.0e-11_dp
          derivative_tolerance = 1.0e-8_dp
       END IF
@@ -229,8 +233,10 @@ CONTAINS
                       dr(nr_local, nspin), dg(nr_local, 3, nspin), dt(nr_local, nspin), &
                       pr(nr_local, nspin), pg(nr_local, 3, nspin), pt(nr_local, nspin), &
                       dx(3, nr_local), dc(3, na_local), de(nr_local), dd(nr_local), &
+                      hx(3, nr_local), hc(3, na_local), he(nr_local), hd(nr_local), &
                       plus_x(3, nr_local), plus_c(3, na_local), plus_e(nr_local), plus_d(nr_local), &
                       px(3, nr_local), pc(3, na_local), pe(nr_local), pd(nr_local), &
+                      hr(nr_local, nspin), hg(nr_local, 3, nspin), ht(nr_local, nspin), &
                       plus_r(nr_local, nspin), plus_g(nr_local, 3, nspin), plus_t(nr_local, nspin))
             b = 0
             row = 0
@@ -409,6 +415,106 @@ CONTAINS
             END IF
             ad = [SUM(pr*dr), SUM(pg*dg), SUM(pt*dt), SUM(px*dx), SUM(pc*dc), SUM(pe*de), SUM(pd*dd)]
             CALL comm%sum(ad)
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
+                                  response_density=dr, response_gradient=dg, response_kinetic=dt, model_fp64=point_fp64)
+            DO ih = 1, 2
+               step_h = response_step_size/REAL(ih, dp)
+               CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                     r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, &
+                                     plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, model_fp64=point_fp64)
+               CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                     r - step_h*dr, g - step_h*dg, t - step_h*dt, xc, minus, &
+                                     pr, pg, pt, px, pc, pe, pd, model_fp64=point_fp64)
+               err = 0.0_dp
+               IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - (plus_r - pr)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hg - (plus_g - pg)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(ht - (plus_t - pt)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hx - (plus_x - px)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hc - (plus_c - pc)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(he - (plus_e - pe)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hd - (plus_d - pd)/(2.0_dp*step_h))))
+               CALL comm%max(err)
+               IF (err > derivative_tolerance) THEN
+                  WRITE (*, '(A,3I3,ES18.8)') "Point Hessian failure (spin,distribution,step,error): ", &
+                     nspin, distribution, ih, err
+                  IF (nr_local > 0) THEN
+                     WRITE (*, '(A,3ES18.8)') "Density/gradient/kinetic Hessian errors: ", &
+                        MAXVAL(ABS(hr - (plus_r - pr)/(2.0_dp*step_h))), &
+                        MAXVAL(ABS(hg - (plus_g - pg)/(2.0_dp*step_h))), &
+                        MAXVAL(ABS(ht - (plus_t - pt)/(2.0_dp*step_h)))
+                     WRITE (*, '(A,3ES18.8)') "Density/gradient/kinetic Hessian magnitudes: ", &
+                        MAXVAL(ABS(hr)), MAXVAL(ABS(hg)), MAXVAL(ABS(ht))
+                  END IF
+                  ERROR STOP "Arbitrary-point Hessian-vector product fails finite differences"
+               END IF
+               maximum_error = MAX(maximum_error, err)
+            END DO
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
+                                  response_density=0.0_dp*dr, response_gradient=0.0_dp*dg, response_kinetic=0.0_dp*dt, &
+                                  model_fp64=point_fp64)
+            err = 0.0_dp
+            IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr)), MAXVAL(ABS(hg)), MAXVAL(ABS(ht)), &
+                                        MAXVAL(ABS(hx)), MAXVAL(ABS(hc)), MAXVAL(ABS(he)), MAXVAL(ABS(hd)))
+            CALL comm%max(err)
+            IF (err /= 0.0_dp) ERROR STOP "A zero direction must give zero field and geometry Hessian responses"
+            IF (cuda_points) THEN
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.FALSE.)
+               CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                     r, g, t, xc, plus, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, &
+                                     dr, dg, dt, dx, dc, de, dd, model_fp64=point_fp64)
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.TRUE.)
+            END IF
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
+                                  dr, dg, dt, dx, dc, de, dd, model_fp64=point_fp64)
+            IF (cuda_points) THEN
+               err = 0.0_dp
+               IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - plus_r)), MAXVAL(ABS(hg - plus_g)), &
+                                           MAXVAL(ABS(ht - plus_t)), MAXVAL(ABS(hx - plus_x)), &
+                                           MAXVAL(ABS(hc - plus_c)), MAXVAL(ABS(he - plus_e)), MAXVAL(ABS(hd - plus_d)))
+               CALL comm%max(err)
+               IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "CPU/GPU joint point Hessian difference: ", err
+               IF (err > routing_tolerance) ERROR STOP "CPU/GPU joint point Hessians disagree"
+            END IF
+            DO ih = 1, 2
+               step_h = response_step_size/REAL(ih, dp)
+               CALL skala_point_eval(comm, points + step_h*dx, energy_weights + step_h*de, &
+                                     descriptor_weights + step_h*dd, sizes, centres + step_h*dc, &
+                                     r + step_h*dr, g + step_h*dg, t + step_h*dt, xc, plus, &
+                                     plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, model_fp64=point_fp64)
+               CALL skala_point_eval(comm, points - step_h*dx, energy_weights - step_h*de, &
+                                     descriptor_weights - step_h*dd, sizes, centres - step_h*dc, &
+                                     r - step_h*dr, g - step_h*dg, t - step_h*dt, xc, minus, &
+                                     pr, pg, pt, px, pc, pe, pd, model_fp64=point_fp64)
+               err = 0.0_dp
+               IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr - (plus_r - pr)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hg - (plus_g - pg)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(ht - (plus_t - pt)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hx - (plus_x - px)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hc - (plus_c - pc)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(he - (plus_e - pe)/(2.0_dp*step_h))), &
+                                           MAXVAL(ABS(hd - (plus_d - pd)/(2.0_dp*step_h))))
+               CALL comm%max(err)
+               IF (err > derivative_tolerance) THEN
+                  ERROR STOP "Joint field/geometry Hessian-vector product fails finite differences"
+               END IF
+               maximum_error = MAX(maximum_error, err)
+            END DO
+            ! Check the two mixed blocks independently, including the scalar-spin chain rule.
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &
+                                  response_density=dr, response_gradient=dg, response_kinetic=dt, model_fp64=point_fp64)
+            expected = SUM(hx*dx) + SUM(hc*dc) + SUM(he*de) + SUM(hd*dd)
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, &
+                                  response_density=0.0_dp*dr, response_gradient=0.0_dp*dg, response_kinetic=0.0_dp*dt, &
+                                  response_points=dx, response_atom_coords=dc, response_energy_weights=de, &
+                                  response_descriptor_weights=dd, model_fp64=point_fp64)
+            err = SUM(hr*dr) + SUM(hg*dg) + SUM(ht*dt) - expected
+            CALL comm%sum(err)
+            IF (ABS(err) > derivative_tolerance) ERROR STOP "Mixed field/geometry Hessian is not symmetric"
             DO c = 1, 7
                DO ih = 1, 2
                   step_h = step_size/REAL(ih, dp)
@@ -467,9 +573,16 @@ CONTAINS
                                         MAXVAL(ABS(px)), MAXVAL(ABS(pc)), MAXVAL(ABS(pd)))
             CALL comm%max(err)
             IF (err > 1.0e-12_dp) ERROR STOP "Zero energy weights must give zero energy, field and geometry covectors"
+            CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
+                                  r, g, t, xc, e, hr, hg, ht, &
+                                  response_density=dr, response_gradient=dg, response_kinetic=dt, model_fp64=point_fp64)
+            err = 0.0_dp
+            IF (nr_local > 0) err = MAX(MAXVAL(ABS(hr)), MAXVAL(ABS(hg)), MAXVAL(ABS(ht)))
+            CALL comm%max(err)
+            IF (err > 1.0e-12_dp) ERROR STOP "Zero energy weights must give zero Hessian-vector product"
             DEALLOCATE (sizes, centres, points, ids, energy_weights, descriptor_weights, &
                         r, g, t, dr, dg, dt, pr, pg, pt, dx, dc, de, dd, px, pc, pe, pd, &
-                        plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d)
+                        hr, hg, ht, hx, hc, he, hd, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d)
          END DO
          DEALLOCATE (gathered, reference_grad)
       END DO

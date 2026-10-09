@@ -45,6 +45,9 @@ PROGRAM skala_sirius_unittest
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
    USE sirius, ONLY: sirius_get_xc_geometry_derivatives
 #endif
+#if defined(__SIRIUS_XC_POINT_RESPONSE)
+   USE sirius, ONLY: sirius_check_external_xc_response
+#endif
    USE sirius_interface, ONLY: cp_sirius_init
    USE skala_sirius, ONLY: skala_sirius_register_atom_grid, &
                            skala_sirius_register_points, &
@@ -65,22 +68,26 @@ PROGRAM skala_sirius_unittest
    TYPE(sirius_context_handler) :: ctx
    TYPE(sirius_kpoint_set_handler) :: ks
    TYPE(sirius_ground_state_handler) :: gs
-   CHARACTER(len=default_path_length) :: model, paw_setup
+   CHARACTER(len=default_path_length) :: model, paw_setup, lapw_setup
    CHARACTER(len=32) :: side_arg, step_arg, grid_arg, model_mode, device_arg, model_device_arg
+   CHARACTER(len=32) :: response_arg, bands_arg, radial_arg
    CHARACTER(len=3) :: processing_unit = "CPU"
    INTEGER :: i, j, l, mode, mag, nr, nb, x, y, z, ierr, side, first_mode, last_mode, geometry, natoms
-   INTEGER :: updated_basis, fresh_basis, max_scf_iterations
+   INTEGER :: updated_basis, fresh_basis, max_scf_iterations, num_bands, radial_points
    REAL(dp) :: lattice(3, 3), r(nrad), v(nrad), rho(nrad), orbital(nrad), dion(1, 1), &
-               energy, exc, repeat_exc, kpoint(3, 1), reference(3, 2), fd_step, &
+               energy, exc, repeat_exc, kpoint(3, 1), reference(3, 2), fd_step, response_step, &
                rmt(nmt), rfree(nfree), rhofree(nfree)
    REAL(dp) :: force_steps(5) = [0.0_dp, 2.0e-4_dp, -2.0e-4_dp, 1.0e-4_dp, -1.0e-4_dp]
    REAL(dp), PARAMETER :: direction(3) = [0.7_dp, -0.4_dp, 0.2_dp]
-   REAL(dp) :: force_energy(5), force_derivative, force_fd, entropy, descf, density_tol, energy_tol
+   REAL(dp) :: force_energy(5), force_derivative, force_fd, force_errors(2), entropy, descf, density_tol, energy_tol
    REAL(dp) :: stress(3, 3), strain(3, 3)
    REAL(dp) :: updated_energy, updated_exc
    REAL(dp), ALLOCATABLE :: forces(:, :)
 #if defined(__SIRIUS_XC_DERIVATIVE)
    REAL(dp) :: derivatives(3, 2), errors(2, 2)
+#endif
+#if defined(__SIRIUS_XC_POINT_RESPONSE)
+   REAL(dp) :: response_errors(2)
 #endif
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
    REAL(dp) :: cell_derivative(3, 3), repeat_cell(3, 3)
@@ -98,6 +105,15 @@ PROGRAM skala_sirius_unittest
    CALL get_command_argument(6, model_mode)
    CALL get_command_argument(7, device_arg)
    CALL get_command_argument(8, model_device_arg)
+   CALL get_command_argument(9, response_arg)
+   CALL get_command_argument(10, bands_arg)
+   CALL get_command_argument(11, lapw_setup)
+   CALL get_command_argument(12, radial_arg)
+   num_bands = 4
+   IF (LEN_TRIM(bands_arg) > 0) THEN
+      READ (bands_arg, *, IOSTAT=ierr) num_bands
+      IF (ierr /= 0 .OR. num_bands < 1) ERROR STOP "Band count must be positive"
+   END IF
    IF (TRIM(device_arg) == "gpu") THEN
       processing_unit = "GPU"
    ELSE IF (LEN_TRIM(device_arg) > 0 .AND. TRIM(device_arg) /= "cpu") THEN
@@ -116,6 +132,12 @@ PROGRAM skala_sirius_unittest
    update_test = TRIM(grid_arg) == "atom-grid-update"
    atom_grid = TRIM(grid_arg) == "atom-grid" .OR. derivative_test .OR. update_test
    IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. atom_grid) ERROR STOP "Unknown atom-grid test mode"
+   radial_points = MERGE(30, 100, derivative_test)
+   IF (LEN_TRIM(radial_arg) > 0) THEN
+      IF (.NOT. atom_grid) ERROR STOP "Radial point count requires an atom grid"
+      READ (radial_arg, *, IOSTAT=ierr) radial_points
+      IF (ierr /= 0 .OR. radial_points < 2) ERROR STOP "Radial point count must be at least two"
+   END IF
 #if !defined(__SIRIUS_XC_POINT_UPDATE)
    IF (update_test .OR. derivative_test) ERROR STOP "SIRIUS lacks the point-quadrature update API"
 #endif
@@ -128,8 +150,16 @@ PROGRAM skala_sirius_unittest
       IF (ierr /= 0) ERROR STOP "Invalid finite-difference step"
       IF (.NOT. ieee_is_finite(fd_step) .OR. fd_step <= 0.0_dp) ERROR STOP "Finite-difference step must be positive"
 #if !defined(__SIRIUS_XC_DERIVATIVE)
-      ERROR STOP "SIRIUS lacks the external XC orbital derivative diagnostic"
+      IF (.NOT. derivative_test) ERROR STOP "SIRIUS lacks the external XC orbital derivative diagnostic"
 #endif
+   END IF
+   response_step = MERGE(0.0_dp, fd_step, derivative_test)
+   IF (LEN_TRIM(response_arg) > 0) THEN
+      READ (response_arg, *, IOSTAT=ierr) response_step
+      IF (ierr /= 0) ERROR STOP "Invalid field-response step"
+      IF (.NOT. ieee_is_finite(response_step) .OR. response_step <= 0.0_dp) THEN
+         ERROR STOP "Field-response step must be positive"
+      END IF
    END IF
    side = 6
    IF (LEN_TRIM(side_arg) > 0) THEN
@@ -144,6 +174,7 @@ PROGRAM skala_sirius_unittest
       first_mode = 2
       last_mode = 2
    END IF
+   IF (first_mode /= 2 .AND. LEN_TRIM(lapw_setup) > 0) ERROR STOP "Atom file requires the LAPW fixture"
    reference = 0.0_dp
    IF (LEN_TRIM(model) == 0 .OR. LEN_TRIM(model) > default_string_length) THEN
       ERROR STOP "Pass the test model path, or SKALA with SKALA_MODEL set"
@@ -171,6 +202,11 @@ PROGRAM skala_sirius_unittest
       ! Use the actual-model stencil without relaxing the derivative error bound.
       IF (derivative_test) force_steps = 10.0_dp*force_steps
    END IF
+   IF (derivative_test .AND. LEN_TRIM(step_arg) > 0) THEN
+      ! Keep both geometry stencils inside the same LAPW point domains.
+      force_steps = fd_step*[0.0_dp, 1.0_dp, -1.0_dp, 0.5_dp, -0.5_dp]
+      fd_step = 0.0_dp
+   END IF
    IF (comm%mepos == 0) THEN
       WRITE (*, '(A,2ES12.3)') "SCF density and energy thresholds: ", density_tol, energy_tol
       WRITE (*, '(A,I0)') "Maximum SCF iterations: ", max_scf_iterations
@@ -183,8 +219,10 @@ PROGRAM skala_sirius_unittest
    IF (atom_grid) THEN
       CALL create_pwdft_section(pwdft_definition)
       CALL section_vals_create(pwdft, pwdft_definition)
-      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=MERGE(30, 100, derivative_test))
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=radial_points)
       CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=MERGE(50, 110, derivative_test))
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%EPS_RESPONSE", &
+                                r_val=MERGE(1.0e-6_dp, 1.0e-8_dp, model_mode == "skala-float32"))
       grid => section_vals_get_subs_vals(pwdft, "SKALA_GRID")
    END IF
    lattice = 0.0_dp
@@ -256,6 +294,10 @@ PROGRAM skala_sirius_unittest
                                                 processing_unit//'","verbosity":1},'// &
                                                 '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
                                                 '"iterative_solver":{"type":"exact","min_tolerance":1e-11}}')
+                  IF (derivative_test) THEN
+                     CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":false}}')
+                     CALL sirius_set_parameters(ctx, pw_cutoff=9.0_dp)
+                  END IF
                ELSE
                   CALL sirius_import_parameters(ctx, &
                                                 '{"parameters":{"electronic_structure_method":"pseudopotential",'// &
@@ -266,9 +308,11 @@ PROGRAM skala_sirius_unittest
                                                 '"mixer":{"type":"linear","beta":0.2,"use_hartree":false},'// &
                                                 '"iterative_solver":{"type":"exact","min_tolerance":1e-11,"num_steps":80}}')
                END IF
-               CALL sirius_set_parameters(ctx, num_mag_dims=mag)
+               CALL sirius_set_parameters(ctx, num_mag_dims=mag, num_bands=num_bands)
                CALL sirius_set_lattice_vectors(ctx, lattice(:, 1), lattice(:, 2), lattice(:, 3))
-               IF (mode == 2) THEN
+               IF (mode == 2 .AND. LEN_TRIM(lapw_setup) > 0) THEN
+                  CALL sirius_add_atom_type(ctx, "He", fname=TRIM(lapw_setup))
+               ELSE IF (mode == 2) THEN
                   CALL sirius_add_atom_type(ctx, "He", zn=2)
                   DO i = 1, nmt
                      rmt(i) = 1.0e-6_dp + (1.8_dp - 1.0e-6_dp)*(REAL(i - 1, dp)/REAL(nmt - 1, dp))**2
@@ -488,6 +532,19 @@ PROGRAM skala_sirius_unittest
                IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Orbital diagnostic did not restore the callback"
             END IF
 #endif
+#if defined(__SIRIUS_XC_POINT_RESPONSE)
+            IF (mode == 2 .AND. geometry == 1 .AND. response_step > 0.0_dp) THEN
+               CALL sirius_check_external_xc_response(gs, response_step, response_errors, error_code=ierr)
+               IF (ierr /= 0) ERROR STOP "SIRIUS Skala field response check failed"
+               IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "XC field/point response relative errors: ", response_errors
+               IF (.NOT. ALL(ieee_is_finite(response_errors))) ERROR STOP "Nonfinite XC field response errors"
+               IF (MAXVAL(response_errors) > MERGE(1.0e-4_dp, 1.0e-8_dp, model_mode == "skala-float32")) THEN
+                  ERROR STOP "XC field response mismatch"
+               END IF
+               CALL sirius_get_energy(gs, "exc", repeat_exc)
+               IF (exc /= repeat_exc) ERROR STOP "Field response check changed the ground-state XC energy"
+            END IF
+#endif
             IF (.NOT. derivative_test .OR. geometry == 5) THEN
                CALL sirius_free_handler(gs)
                CALL sirius_free_handler(ks)
@@ -499,13 +556,14 @@ PROGRAM skala_sirius_unittest
          IF (derivative_test) THEN
             DO i = 2, 4, 2
                force_fd = (force_energy(i) - force_energy(i + 1))/(2*force_steps(i))
+               force_errors(i/2) = ABS(force_fd - force_derivative)
                IF (comm%mepos == 0) WRITE (*, '(3A,2I3,4ES19.10)') "Total ", MERGE("strain", "force ", stress_test), &
                   " derivative (method,mag,h,analytic,FD,error): ", &
                   mode, mag, force_steps(i), force_derivative, force_fd, ABS(force_fd - force_derivative)
-               IF (.NOT. ieee_is_finite(force_fd) .OR. ABS(force_fd - force_derivative) > 2.0e-5_dp) THEN
-                  ERROR STOP "Geometry derivative disagrees with the finite-difference free energy"
-               END IF
             END DO
+            IF (.NOT. ALL(ieee_is_finite(force_errors)) .OR. MAXVAL(force_errors) > 2.0e-5_dp) THEN
+               ERROR STOP "Geometry derivative disagrees with the finite-difference free energy"
+            END IF
          END IF
       END DO
    END DO

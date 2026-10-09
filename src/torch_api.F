@@ -78,7 +78,7 @@ MODULE torch_api
              torch_tensor_narrow, torch_tensor_release
    PUBLIC :: torch_tensor_reset_from_array
    PUBLIC :: torch_tensor_data_ptr, torch_tensor_backward, torch_tensor_backward_scalar
-   PUBLIC :: torch_tensor_grad, torch_tensor_grad_batch3
+   PUBLIC :: torch_tensor_grad, torch_tensor_grad_batch3, torch_tensor_hessian_vector
    PUBLIC :: torch_tensor_to_device_leaf
    PUBLIC :: torch_tensor_item_double, torch_tensor_weighted_sum
    PUBLIC :: torch_dict_type, torch_dict_clone, torch_dict_create, torch_dict_insert
@@ -87,6 +87,7 @@ MODULE torch_api
              torch_model_forward, torch_model_release
    PUBLIC :: torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
              torch_model_remap_device_constants
+   PUBLIC :: torch_model_prepare_higher_derivatives
    PUBLIC :: torch_model_promote_float32
    PUBLIC :: torch_model_get_attr, torch_model_read_metadata
    PUBLIC :: torch_cuda_device_count, torch_cuda_is_available
@@ -386,6 +387,52 @@ CONTAINS
       MARK_USED(tensor)
 #endif
    END SUBROUTINE torch_tensor_backward_scalar
+
+! **************************************************************************************************
+!> \brief Apply the Hessian of a scalar tensor to independent input directions.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_hessian_vector(tensor, inputs, directions, responses)
+      TYPE(torch_tensor_type), INTENT(IN)                :: tensor, inputs(:), directions(:)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: responses(:)
+#if defined(__LIBTORCH)
+      TYPE(C_PTR)                                        :: input_ptrs(SIZE(inputs)), &
+                                                            direction_ptrs(SIZE(inputs)), response_ptrs(SIZE(inputs))
+      INTEGER                                            :: i
+      INTERFACE
+         SUBROUTINE torch_c_tensor_hessian_vector(tensor, count, inputs, directions, responses) &
+            BIND(C, name="torch_c_tensor_hessian_vector")
+            IMPORT :: C_INT, C_PTR
+            TYPE(C_PTR), VALUE                           :: tensor
+            INTEGER(C_INT), VALUE                        :: count
+            TYPE(C_PTR), INTENT(IN)                      :: inputs(*), directions(*)
+            TYPE(C_PTR), INTENT(OUT)                     :: responses(*)
+         END SUBROUTINE torch_c_tensor_hessian_vector
+      END INTERFACE
+      CPASSERT(C_ASSOCIATED(tensor%c_ptr))
+      CPASSERT(SIZE(inputs) > 0)
+      CPASSERT(SIZE(directions) == SIZE(inputs))
+      CPASSERT(SIZE(responses) == SIZE(inputs))
+      DO i = 1, SIZE(inputs)
+         CPASSERT(C_ASSOCIATED(inputs(i)%c_ptr))
+         CPASSERT(C_ASSOCIATED(directions(i)%c_ptr))
+         CPASSERT(.NOT. C_ASSOCIATED(responses(i)%c_ptr))
+         input_ptrs(i) = inputs(i)%c_ptr
+         direction_ptrs(i) = directions(i)%c_ptr
+      END DO
+      CALL torch_c_tensor_hessian_vector(tensor%c_ptr, INT(SIZE(inputs), C_INT), &
+                                         input_ptrs, direction_ptrs, response_ptrs)
+      DO i = 1, SIZE(inputs)
+         responses(i)%c_ptr = response_ptrs(i)
+         CPASSERT(C_ASSOCIATED(responses(i)%c_ptr))
+      END DO
+#else
+      MARK_USED(tensor)
+      MARK_USED(inputs)
+      MARK_USED(directions)
+      MARK_USED(responses)
+      CPABORT("CP2K was compiled without LibTorch support.")
+#endif
+   END SUBROUTINE torch_tensor_hessian_vector
 
 ! **************************************************************************************************
 !> \brief Moves a tensor to the active Torch device and makes it an autograd leaf.
@@ -885,6 +932,29 @@ CONTAINS
       MARK_USED(model)
 #endif
    END SUBROUTINE torch_model_disable_parameter_gradients
+
+! **************************************************************************************************
+!> \brief Prepare a loaded, unexecuted model for higher input derivatives.
+! **************************************************************************************************
+   SUBROUTINE torch_model_prepare_higher_derivatives(model)
+      TYPE(torch_model_type), INTENT(INOUT)              :: model
+
+#if defined(__LIBTORCH)
+      INTERFACE
+         SUBROUTINE torch_c_model_prepare_higher_derivatives(model) &
+            BIND(C, name="torch_c_model_prepare_higher_derivatives")
+            IMPORT :: C_PTR
+            TYPE(C_PTR), VALUE                           :: model
+         END SUBROUTINE torch_c_model_prepare_higher_derivatives
+      END INTERFACE
+
+      CPASSERT(C_ASSOCIATED(model%c_ptr))
+      CALL torch_c_model_prepare_higher_derivatives(model=model%c_ptr)
+#else
+      CPABORT("CP2K was compiled without Torch library.")
+      MARK_USED(model)
+#endif
+   END SUBROUTINE torch_model_prepare_higher_derivatives
 
 ! **************************************************************************************************
 !> \brief Evaluates the given Torch model.

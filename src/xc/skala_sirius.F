@@ -11,11 +11,12 @@
 MODULE skala_sirius
    USE ISO_C_BINDING, ONLY: C_ASSOCIATED, C_DOUBLE, C_F_POINTER, C_FUNLOC, C_INT, C_LOC, C_PTR
    USE cell_types, ONLY: cell_type
+   USE ieee_arithmetic, ONLY: ieee_is_finite
    USE input_section_types, ONLY: section_vals_type, section_vals_val_get
    USE kinds, ONLY: dp
    USE message_passing, ONLY: mp_comm_type
    USE particle_types, ONLY: particle_type
-   USE skala_atom_grid, ONLY: skala_atom_grid_build, skala_atom_grid_pullback
+   USE skala_atom_grid, ONLY: skala_atom_grid_build, skala_atom_grid_pullback, skala_atom_grid_direction
    USE skala_gpw_features, ONLY: skala_grid_layout_type
    USE skala_gpw_functional, ONLY: skala_grid_eval, skala_point_eval
 #if defined(__SIRIUS)
@@ -28,6 +29,18 @@ MODULE skala_sirius
 #endif
 #if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_set_xc_point_geometry_callbacks
+#endif
+#if defined(__SIRIUS_XC_POINT_RESPONSE) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_point_response_callback
+#endif
+#if defined(__SIRIUS_XC_POINT_HESSIAN) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_point_hessian_callback
+#endif
+#if defined(__SIRIUS_XC_RESPONSE_TOLERANCE) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_response_tolerance
+#endif
+#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_set_xc_quadrature_direction_callback
 #endif
 #if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
    USE sirius, ONLY: sirius_update_xc_point_set
@@ -87,7 +100,7 @@ CONTAINS
 
       INTEGER                                            :: a, error, na, nr, shell
       INTEGER, ALLOCATABLE                               :: sizes(:)
-      REAL(dp)                                           :: scale
+      REAL(dp)                                           :: response_tolerance, scale
       REAL(dp), ALLOCATABLE                              :: block_centres(:, :), centres(:, :), &
                                                             descriptor(:), energy(:), points(:, :)
 
@@ -98,6 +111,11 @@ CONTAINS
       CALL section_vals_val_get(grid_section, "N_ANGULAR", i_val=na)
       CALL section_vals_val_get(grid_section, "IMAGE_SHELL", i_val=shell)
       CALL section_vals_val_get(grid_section, "RADIAL_SCALE", r_val=scale)
+      CALL section_vals_val_get(grid_section, "EPS_RESPONSE", r_val=response_tolerance)
+      IF (.NOT. ieee_is_finite(response_tolerance) .OR. response_tolerance <= 0.0_dp .OR. &
+          response_tolerance >= 1.0_dp) THEN
+         CPABORT("SIRIUS Skala EPS_RESPONSE must be between zero and one")
+      END IF
       ALLOCATE (centres(3, SIZE(particles)))
       DO a = 1, SIZE(particles)
          centres(:, a) = particles(a)%r
@@ -106,6 +124,10 @@ CONTAINS
                                  points, energy, descriptor, sizes, block_centres)
       CALL skala_sirius_register_points(context, xc_section, particles, cell, points, energy, descriptor, &
                                         sizes, block_centres, state)
+#if defined(__SIRIUS_XC_RESPONSE_TOLERANCE) && defined(__LIBTORCH)
+      CALL sirius_set_xc_response_tolerance(context, response_tolerance, error)
+      IF (error /= 0) CPABORT("Could not set the SIRIUS Skala response tolerance")
+#endif
       state%nradial = nr
       state%nangular = na
       state%shell = shell
@@ -118,6 +140,11 @@ CONTAINS
       IF (error /= 0) CPABORT("Could not register the SIRIUS Skala geometry callbacks")
 #else
       MARK_USED(error)
+#endif
+#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
+      CALL sirius_set_xc_quadrature_direction_callback(context, C_FUNLOC(differentiate_skala_quadrature), &
+                                                       C_LOC(state%token), error)
+      IF (error /= 0) CPABORT("Could not register the SIRIUS Skala quadrature direction callback")
 #endif
    END SUBROUTINE skala_sirius_register_atom_grid
 
@@ -188,6 +215,15 @@ CONTAINS
       CALL sirius_get_parameters(context, num_mag_dims=mag, error_code=error)
       IF (error /= 0) CPABORT("Could not query the SIRIUS spin convention")
       IF (mag == 3) CPABORT("Noncollinear Skala requires the spinor XC extension")
+#if defined(__SIRIUS_XC_POINT_HESSIAN)
+      CALL sirius_set_xc_point_hessian_callback(context, C_FUNLOC(evaluate_skala_point_hessian), &
+                                                C_LOC(state%token), error)
+      IF (error /= 0) CPABORT("Could not register the SIRIUS Skala joint Hessian callback")
+#elif defined(__SIRIUS_XC_POINT_RESPONSE)
+      CALL sirius_set_xc_point_response_callback(context, C_FUNLOC(evaluate_skala_point_response), &
+                                                 C_LOC(state%token), error)
+      IF (error /= 0) CPABORT("Could not register the SIRIUS Skala response callback")
+#endif
 #else
       MARK_USED(context)
       MARK_USED(xc_section)
@@ -427,9 +463,9 @@ CONTAINS
 !> \param gradient Cartesian density gradients.
 !> \param tau Kinetic-energy density fields.
 !> \param energy Total XC energy over the context communicator.
-!> \param drho Discrete density covectors.
-!> \param dgradient Discrete gradient covectors.
-!> \param dtau Discrete kinetic-density covectors.
+!> \param drho Discrete density covectors or their directional response.
+!> \param dgradient Discrete gradient covectors or their directional response.
+!> \param dtau Discrete kinetic-density covectors or their directional response.
 !> \param status Zero on success, nonzero on callback failure.
 ! **************************************************************************************************
    SUBROUTINE evaluate_skala_points(user_data, nr, ns, nb, fcomm, coordinates, energy_weights, &
@@ -474,7 +510,8 @@ CONTAINS
 
 #if defined(__LIBTORCH) && \
    (defined(__SIRIUS_XC_CALLBACK) ||defined(__SIRIUS_XC_POINT_CALLBACK) ||\
-   defined(__SIRIUS_XC_POINT_GEOMETRY))
+   defined(__SIRIUS_XC_POINT_GEOMETRY) ||defined(__SIRIUS_XC_POINT_RESPONSE) ||\
+   defined(__SIRIUS_XC_POINT_HESSIAN) ||defined(__SIRIUS_XC_QUADRATURE_DIRECTION))
 ! **************************************************************************************************
 !> \brief Return the registry entry without exporting Fortran pointers across the C ABI.
 !> \param user_data Opaque callback token.
@@ -497,6 +534,150 @@ CONTAINS
    END FUNCTION callback_state
 #endif
 
+#if defined(__SIRIUS_XC_POINT_RESPONSE) && defined(__LIBTORCH)
+! **************************************************************************************************
+!> \brief Apply Skala's XC Hessian to reconstructed field directions at fixed quadrature.
+!> \param user_data Opaque callback token.
+!> \param nr Number of local quadrature points.
+!> \param ns Number of primitive-field spin components.
+!> \param nb Number of complete local atom blocks.
+!> \param fcomm Fortran context communicator handle.
+!> \param coordinates Cartesian quadrature points, in bohr.
+!> \param energy_weights Energy-partition quadrature weights.
+!> \param descriptor_weights Nonlocal descriptor-domain weights.
+!> \param atom_sizes Point count of each complete local atom block.
+!> \param atom_coords Cartesian atom-block centres, in bohr.
+!> \param rho Density fields.
+!> \param gradient Cartesian density gradients.
+!> \param tau Kinetic-energy density fields.
+!> \param delta_rho Density direction.
+!> \param delta_gradient Density-gradient direction.
+!> \param delta_tau Kinetic-density direction.
+!> \param drho Discrete density covectors or their directional response.
+!> \param dgradient Discrete gradient covectors or their directional response.
+!> \param dtau Discrete kinetic-density covectors or their directional response.
+!> \param status Zero on success, nonzero on callback failure.
+! **************************************************************************************************
+   SUBROUTINE evaluate_skala_point_response(user_data, nr, ns, nb, fcomm, coordinates, energy_weights, &
+                                            descriptor_weights, atom_sizes, atom_coords, rho, gradient, tau, &
+                                            delta_rho, delta_gradient, delta_tau, drho, dgradient, dtau, status) BIND(C)
+      TYPE(C_PTR), VALUE                                 :: user_data
+      INTEGER(C_INT), VALUE                              :: nr, ns, nb, fcomm
+      REAL(C_DOUBLE), INTENT(IN)                         :: coordinates(3, nr), energy_weights(nr), &
+                                                            descriptor_weights(nr)
+      INTEGER(C_INT), INTENT(IN)                         :: atom_sizes(nb)
+      REAL(C_DOUBLE), INTENT(IN) :: atom_coords(3, nb), rho(nr, ns), gradient(nr, 3, ns), &
+         tau(nr, ns), delta_rho(nr, ns), delta_gradient(nr, 3, ns), delta_tau(nr, ns)
+      REAL(C_DOUBLE), INTENT(OUT)                        :: drho(nr, ns), dgradient(nr, 3, ns), &
+                                                            dtau(nr, ns)
+      INTEGER(C_INT), INTENT(OUT)                        :: status
+
+      INTEGER                                            :: invalid
+      REAL(dp)                                           :: energy
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(skala_sirius_state_type), POINTER             :: state
+
+      CALL comm%set_handle(INT(fcomm))
+      state => callback_state(user_data)
+      drho = 0.0_dp
+      dgradient = 0.0_dp
+      dtau = 0.0_dp
+      status = 1
+      invalid = 0
+      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2]) .OR. .NOT. ASSOCIATED(state)) invalid = 1
+      IF (ASSOCIATED(state)) THEN
+         IF (.NOT. grid_geometry_current(state)) invalid = 1
+      END IF
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
+                            rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
+                            response_density=delta_rho, response_gradient=delta_gradient, response_kinetic=delta_tau, &
+                            model_fp64=.TRUE.)
+      status = 0
+   END SUBROUTINE evaluate_skala_point_response
+#endif
+
+#if defined(__SIRIUS_XC_POINT_HESSIAN) && defined(__LIBTORCH)
+! **************************************************************************************************
+!> \brief Joint Hessian-vector product of all independent Skala point inputs.
+!> \param user_data Opaque callback token.
+!> \param nr Number of local quadrature points.
+!> \param ns Number of primitive-field spin components.
+!> \param nb Number of complete local atom blocks.
+!> \param fcomm Fortran context communicator handle.
+!> \param coordinates Cartesian quadrature points, in bohr.
+!> \param energy_weights Energy-partition quadrature weights.
+!> \param descriptor_weights Nonlocal descriptor-domain weights.
+!> \param atom_sizes Point count of each complete local atom block.
+!> \param atom_coords Cartesian atom-block centres, in bohr.
+!> \param rho Density fields.
+!> \param gradient Cartesian density gradients.
+!> \param tau Kinetic-energy density fields.
+!> \param delta_rho Density direction.
+!> \param delta_gradient Density-gradient direction.
+!> \param delta_tau Kinetic-density direction.
+!> \param delta_points Quadrature-point direction.
+!> \param delta_energy Energy-weight direction.
+!> \param delta_descriptor Descriptor-weight direction.
+!> \param delta_centres Atom-block-centre direction.
+!> \param drho Discrete density covectors or their directional response.
+!> \param dgradient Discrete gradient covectors or their directional response.
+!> \param dtau Discrete kinetic-density covectors or their directional response.
+!> \param dpoints Quadrature-point covectors or their directional response.
+!> \param denergy Energy-weight covectors or their directional response.
+!> \param ddescriptor Descriptor-weight covectors or their directional response.
+!> \param dcentres Atom-block-centre covectors or their directional response.
+!> \param status Zero on success, nonzero on callback failure.
+! **************************************************************************************************
+   SUBROUTINE evaluate_skala_point_hessian(user_data, nr, ns, nb, fcomm, coordinates, energy_weights, &
+                                           descriptor_weights, atom_sizes, atom_coords, rho, gradient, tau, &
+                                           delta_rho, delta_gradient, delta_tau, delta_points, delta_energy, &
+                                           delta_descriptor, delta_centres, drho, dgradient, dtau, &
+                                           dpoints, denergy, ddescriptor, dcentres, status) BIND(C)
+      TYPE(C_PTR), VALUE                                 :: user_data
+      INTEGER(C_INT), VALUE                              :: nr, ns, nb, fcomm
+      REAL(C_DOUBLE), INTENT(IN)                         :: coordinates(3, nr), energy_weights(nr), &
+                                                            descriptor_weights(nr)
+      INTEGER(C_INT), INTENT(IN)                         :: atom_sizes(nb)
+      REAL(C_DOUBLE), INTENT(IN) :: atom_coords(3, nb), rho(nr, ns), gradient(nr, 3, ns), &
+         tau(nr, ns), delta_rho(nr, ns), delta_gradient(nr, 3, ns), delta_tau(nr, ns), &
+         delta_points(3, nr), delta_energy(nr), delta_descriptor(nr), delta_centres(3, nb)
+      REAL(C_DOUBLE), INTENT(OUT) :: drho(nr, ns), dgradient(nr, 3, ns), dtau(nr, ns), &
+         dpoints(3, nr), denergy(nr), ddescriptor(nr), dcentres(3, nb)
+      INTEGER(C_INT), INTENT(OUT)                        :: status
+
+      INTEGER                                            :: invalid
+      REAL(dp)                                           :: energy
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(skala_sirius_state_type), POINTER             :: state
+
+      CALL comm%set_handle(INT(fcomm))
+      state => callback_state(user_data)
+      status = 1
+      drho = 0.0_dp
+      dgradient = 0.0_dp
+      dtau = 0.0_dp
+      dpoints = 0.0_dp
+      denergy = 0.0_dp
+      ddescriptor = 0.0_dp
+      dcentres = 0.0_dp
+      invalid = 0
+      IF (.NOT. ASSOCIATED(state) .OR. nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2])) invalid = 1
+      IF (ASSOCIATED(state)) THEN
+         IF (.NOT. grid_geometry_current(state)) invalid = 1
+      END IF
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
+                            rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
+                            dpoints, dcentres, denergy, ddescriptor, delta_rho, delta_gradient, delta_tau, &
+                            delta_points, delta_centres, delta_energy, delta_descriptor, &
+                            model_fp64=.TRUE.)
+      status = 0
+   END SUBROUTINE evaluate_skala_point_hessian
+#endif
+
 #if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
 
 ! **************************************************************************************************
@@ -515,13 +696,13 @@ CONTAINS
 !> \param gradient Cartesian density gradients.
 !> \param tau Kinetic-energy density fields.
 !> \param energy Total XC energy over the context communicator.
-!> \param drho Discrete density covectors.
-!> \param dgradient Discrete gradient covectors.
-!> \param dtau Discrete kinetic-density covectors.
-!> \param dpoints Quadrature-point covectors.
-!> \param denergy Energy-weight covectors.
-!> \param ddescriptor Descriptor-weight covectors.
-!> \param dcentres Atom-block-centre covectors.
+!> \param drho Discrete density covectors or their directional response.
+!> \param dgradient Discrete gradient covectors or their directional response.
+!> \param dtau Discrete kinetic-density covectors or their directional response.
+!> \param dpoints Quadrature-point covectors or their directional response.
+!> \param denergy Energy-weight covectors or their directional response.
+!> \param ddescriptor Descriptor-weight covectors or their directional response.
+!> \param dcentres Atom-block-centre covectors or their directional response.
 !> \param status Zero on success, nonzero on callback failure.
 ! **************************************************************************************************
    SUBROUTINE evaluate_skala_point_geometry(user_data, nr, ns, nb, fcomm, coordinates, energy_weights, &
@@ -566,10 +747,10 @@ CONTAINS
 !> \param natom Number of atoms in the cell.
 !> \param fcomm Fortran context communicator handle.
 !> \param atom_sizes Point count of each complete local atom block.
-!> \param dpoints Quadrature-point covectors.
-!> \param denergy Energy-weight covectors.
-!> \param ddescriptor Descriptor-weight covectors.
-!> \param dcentres Atom-block-centre covectors.
+!> \param dpoints Quadrature-point covectors or their directional response.
+!> \param denergy Energy-weight covectors or their directional response.
+!> \param ddescriptor Descriptor-weight covectors or their directional response.
+!> \param dcentres Atom-block-centre covectors or their directional response.
 !> \param datoms Cartesian atom covectors.
 !> \param dlattice Cell-vector covectors.
 !> \param status Zero on success, nonzero on callback failure.
@@ -614,4 +795,59 @@ CONTAINS
    END SUBROUTINE pullback_skala_quadrature
 #endif
 
+#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
+! **************************************************************************************************
+!> \brief Forward the host atom/cell direction through the complete local atom quadrature.
+!> \param user_data Opaque callback token.
+!> \param nr Number of local quadrature points.
+!> \param nb Number of complete local atom blocks.
+!> \param natom Number of atoms in the cell.
+!> \param fcomm Fortran context communicator handle.
+!> \param atom_sizes Point count of each complete local atom block.
+!> \param datoms Cartesian atom displacement directions, in bohr.
+!> \param dlattice Cell-vector directions, in bohr.
+!> \param dpoints Cartesian quadrature-point directions, in bohr.
+!> \param denergy Energy-weight directions.
+!> \param ddescriptor Descriptor-weight directions.
+!> \param dcentres Cartesian atom-block-centre directions, in bohr.
+!> \param status Zero on success, nonzero on callback failure.
+! **************************************************************************************************
+   SUBROUTINE differentiate_skala_quadrature(user_data, nr, nb, natom, fcomm, atom_sizes, datoms, dlattice, &
+                                             dpoints, denergy, ddescriptor, dcentres, status) BIND(C)
+      TYPE(C_PTR), VALUE                                 :: user_data
+      INTEGER(C_INT), VALUE                              :: nr, nb, natom, fcomm
+      INTEGER(C_INT), INTENT(IN)                         :: atom_sizes(nb)
+      REAL(C_DOUBLE), INTENT(IN)                         :: datoms(3, natom), dlattice(3, 3)
+      REAL(C_DOUBLE), INTENT(OUT)                        :: dpoints(3, nr), denergy(nr), &
+                                                            ddescriptor(nr), dcentres(3, nb)
+      INTEGER(C_INT), INTENT(OUT)                        :: status
+
+      INTEGER                                            :: a, invalid
+      REAL(dp)                                           :: centres(3, natom)
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(skala_sirius_state_type), POINTER             :: state
+
+      CALL comm%set_handle(INT(fcomm))
+      status = 1
+      dpoints = 0.0_dp
+      denergy = 0.0_dp
+      ddescriptor = 0.0_dp
+      dcentres = 0.0_dp
+      state => callback_state(user_data)
+      invalid = 0
+      IF (.NOT. ASSOCIATED(state) .OR. nr < 0 .OR. nb < 0 .OR. natom < 1) invalid = 1
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      IF (SIZE(state%particles) /= natom .OR. state%nradial < 2) invalid = 1
+      IF (.NOT. grid_geometry_current(state)) invalid = 1
+      CALL comm%max(invalid)
+      IF (invalid /= 0) RETURN
+      DO a = 1, natom
+         centres(:, a) = state%particles(a)%r
+      END DO
+      CALL skala_atom_grid_direction(comm, state%cell%hmat, centres, state%nradial, state%nangular, state%shell, &
+                                     state%scale, atom_sizes, datoms, dlattice, dpoints, denergy, ddescriptor, dcentres)
+      status = 0
+   END SUBROUTINE differentiate_skala_quadrature
+#endif
 END MODULE skala_sirius

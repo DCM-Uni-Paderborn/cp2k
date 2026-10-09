@@ -49,9 +49,10 @@ MODULE skala_gpw_functional
    USE torch_api,                       ONLY: &
         torch_cuda_device_count, torch_cuda_is_available, torch_dict_create, torch_dict_insert, &
         torch_dict_release, torch_dict_type, torch_tensor_backward_scalar, torch_tensor_data_ptr, &
-        torch_tensor_from_array, torch_tensor_grad, torch_tensor_grad_batch3, torch_tensor_narrow, &
-        torch_tensor_release, torch_tensor_reset_from_array, torch_tensor_to_device_leaf, &
-        torch_tensor_type, torch_use_cuda
+        torch_tensor_from_array, torch_tensor_grad, torch_tensor_grad_batch3, &
+        torch_tensor_hessian_vector, torch_tensor_narrow, torch_tensor_release, &
+        torch_tensor_reset_from_array, torch_tensor_to_device_leaf, torch_tensor_type, &
+        torch_use_cuda
    USE xc_input_constants,              ONLY: skala_gapw_atom_composite_grid,&
                                               skala_gapw_common_grid,&
                                               skala_gapw_cp2k_default,&
@@ -104,6 +105,7 @@ MODULE skala_gpw_functional
    LOGICAL, SAVE                                       :: cached_model_loaded = .FALSE.
    LOGICAL, SAVE                                       :: cached_model_fp64 = .FALSE.
    INTEGER, SAVE                                       :: cached_model_cuda_device = -3
+   LOGICAL, SAVE                                       :: cached_model_higher_derivatives = .FALSE.
    INTEGER, SAVE                                       :: logged_cuda_device = -3, &
                                                           logged_cuda_device_count = -1, &
                                                           logged_cuda_nproc = -1, &
@@ -131,15 +133,28 @@ CONTAINS
 !> \param datom_coords Optional block-centre covectors at fixed point coordinates.
 !> \param denergy_weights Optional energy-weight covectors at fixed descriptor weights.
 !> \param ddescriptor_weights Optional descriptor-weight covectors at fixed energy weights.
+!> \param response_density Optional density direction for a Hessian-vector product.
+!> \param response_gradient Gradient direction, supplied with both other response fields.
+!> \param response_kinetic Kinetic-density direction. In response mode the output covectors
+!>        are their directional derivatives and exc remains the base-state energy.
+!> \param response_points Point-coordinate direction, supplied with the other three geometry directions.
+!> \param response_atom_coords Atom-block-centre direction.
+!> \param response_energy_weights Energy-weight direction.
+!> \param response_descriptor_weights Descriptor-weight direction.
 !> \param model_fp64 Evaluate the unchanged model parameters with FP64 arithmetic.
-!> \note Fields must be reconstructed before this call. Physical fields are not
-!>       multiplied by weights, and zero-energy-weight descriptor rows are retained.
-!>       Geometry covectors are partial derivatives, not atomic forces. The host
-!>       also differentiates field reconstruction, point placement and quadrature.
+!> \note Fields must be reconstructed before this call. No AE-minus-pseudo energy
+!>       decomposition, density clipping, weight multiplication of physical fields,
+!>       or removal of zero-energy-weight descriptor rows is performed here.
+!>       The host sums covectors when point rows represent the same physical source.
+!>       Geometry covectors are partial derivatives, not atomic forces. The host must
+!>       also differentiate field reconstruction, point placement and quadrature.
 ! **************************************************************************************************
    SUBROUTINE skala_point_eval(group, points, energy_weights, descriptor_weights, atom_sizes, &
                                atom_coords, density, gradient, kinetic, xc_section, exc, drho, &
-                               dgradient, dtau, dpoints, datom_coords, denergy_weights, ddescriptor_weights, model_fp64)
+                               dgradient, dtau, dpoints, datom_coords, denergy_weights, ddescriptor_weights, &
+                               response_density, response_gradient, response_kinetic, response_points, &
+                               response_atom_coords, response_energy_weights, response_descriptor_weights, &
+                               model_fp64)
       CLASS(mp_comm_type), INTENT(IN)                    :: group
       REAL(KIND=dp), INTENT(IN)                          :: points(:, :), energy_weights(:), &
                                                             descriptor_weights(:), atom_coords(:, :), &
@@ -149,18 +164,28 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: exc, drho(:, :), dgradient(:, :, :), dtau(:, :)
       REAL(KIND=dp), OPTIONAL, INTENT(OUT)               :: dpoints(:, :), datom_coords(:, :), &
                                                             denergy_weights(:), ddescriptor_weights(:)
+      REAL(KIND=dp), OPTIONAL, INTENT(IN)                :: response_density(:, :), response_gradient(:, :, :), &
+                                                            response_kinetic(:, :), response_points(:, :), &
+                                                            response_atom_coords(:, :), response_energy_weights(:), &
+                                                            response_descriptor_weights(:)
       LOGICAL, OPTIONAL, INTENT(IN)                       :: model_fp64
 
       CHARACTER(len=default_path_length)                 :: model_path
-      INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin, &
-                                                            requested_device, selected_device, min_precision, &
-                                                            max_precision, omp_max_threads_restore
-      LOGICAL                                            :: geometry_grad, use_cuda, fp64_model
+      INTEGER                                            :: handle, invalid, npoint, nspin, min_spin, max_spin, i_response, &
+                                                            n_response, requested_device, selected_device, &
+                                                            min_precision, max_precision, omp_max_threads_restore
+      LOGICAL                                            :: geometry_grad, use_cuda, response, geometry_response, fp64_model
+      REAL(KIND=dp), ALLOCATABLE                         :: direction_rho(:, :), direction_grad(:, :, :), &
+                                                            direction_tau(:, :), direction_points(:, :), &
+                                                            direction_centres(:, :), direction_energy(:), &
+                                                            direction_descriptor(:)
       REAL(KIND=dp), POINTER                             :: density_grad(:, :), grad_grad(:, :, :), kin_grad(:, :)
       REAL(KIND=dp), POINTER                             :: coord_grad(:, :), weight_grad(:)
       TYPE(section_vals_type), POINTER                   :: gauxc_section
       TYPE(skala_gpw_feature_type)                       :: features
-      TYPE(torch_tensor_type)                            :: exc_tensor, density_grad_t, grad_grad_t, kin_grad_t, geometry_grad_t
+      TYPE(torch_tensor_type)                            :: exc_tensor, density_grad_t, grad_grad_t, kin_grad_t
+      TYPE(torch_tensor_type)                            :: geometry_grad_t
+      TYPE(torch_tensor_type)                            :: hessian_inputs(7), directions(7), responses(7)
 
       CALL timeset("skala_point_eval", handle)
       omp_max_threads_restore = omp_get_max_threads()
@@ -174,7 +199,39 @@ CONTAINS
       CALL group%max(max_precision)
       invalid = 0
       IF (min_precision /= max_precision) invalid = 1
-      IF (nspin /= 1 .AND. nspin /= 2) invalid = 1
+      geometry_response = PRESENT(response_points) .OR. PRESENT(response_atom_coords) .OR. &
+                          PRESENT(response_energy_weights) .OR. PRESENT(response_descriptor_weights)
+      response = geometry_response .OR. PRESENT(response_density) .OR. PRESENT(response_gradient) .OR. &
+                 PRESENT(response_kinetic)
+      IF (response) THEN
+         IF (.NOT. (PRESENT(response_density) .AND. PRESENT(response_gradient) .AND. &
+                    PRESENT(response_kinetic))) THEN
+            invalid = 1
+         ELSE
+            IF (ANY(SHAPE(response_density) /= SHAPE(density))) invalid = 1
+            IF (ANY(SHAPE(response_gradient) /= SHAPE(gradient))) invalid = 1
+            IF (ANY(SHAPE(response_kinetic) /= SHAPE(kinetic))) invalid = 1
+            IF (.NOT. ALL(ieee_is_finite(response_density)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_gradient)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_kinetic))) invalid = 1
+         END IF
+      END IF
+      IF (geometry_response) THEN
+         IF (.NOT. (PRESENT(response_points) .AND. PRESENT(response_atom_coords) .AND. &
+                    PRESENT(response_energy_weights) .AND. PRESENT(response_descriptor_weights))) THEN
+            invalid = 1
+         ELSE
+            IF (ANY(SHAPE(response_points) /= SHAPE(points))) invalid = 1
+            IF (ANY(SHAPE(response_atom_coords) /= SHAPE(atom_coords))) invalid = 1
+            IF (SIZE(response_energy_weights) /= SIZE(energy_weights)) invalid = 1
+            IF (SIZE(response_descriptor_weights) /= SIZE(descriptor_weights)) invalid = 1
+            IF (.NOT. ALL(ieee_is_finite(response_points)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_atom_coords)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_energy_weights)) .OR. &
+                .NOT. ALL(ieee_is_finite(response_descriptor_weights))) invalid = 1
+         END IF
+      END IF
+      IF (ALL(nspin /= [1, 2])) invalid = 1
       IF (ANY(SHAPE(points) /= [3, npoint])) invalid = 1
       IF (SIZE(energy_weights) /= npoint .OR. SIZE(descriptor_weights) /= npoint) invalid = 1
       IF (ANY(SHAPE(atom_coords) /= [3, SIZE(atom_sizes)])) invalid = 1
@@ -224,16 +281,76 @@ CONTAINS
       IF (PRESENT(datom_coords)) datom_coords = 0.0_dp
       IF (PRESENT(denergy_weights)) denergy_weights = 0.0_dp
       IF (PRESENT(ddescriptor_weights)) ddescriptor_weights = 0.0_dp
-      geometry_grad = PRESENT(dpoints) .OR. PRESENT(datom_coords) .OR. &
+      geometry_grad = geometry_response .OR. PRESENT(dpoints) .OR. PRESENT(datom_coords) .OR. &
                       PRESENT(denergy_weights) .OR. PRESENT(ddescriptor_weights)
       IF (npoint > 0) THEN
-         CALL ensure_model_loaded(model_path, selected_device, model_fp64=fp64_model)
+         CALL ensure_model_loaded(model_path, selected_device, higher_derivatives=fp64_model)
          CALL skala_point_feature_build(features, points, energy_weights, descriptor_weights, &
                                         atom_sizes, atom_coords, density, gradient, kinetic, geometry_grad)
+         hessian_inputs(1:3) = [features%density_t, features%grad_t, features%kin_t]
+         n_response = 3
+         IF (geometry_grad) THEN
+            n_response = 7
+            hessian_inputs(4:7) = [features%grid_coords_t, features%coarse_0_atomic_coords_t, &
+                                   features%grid_weights_t, features%atomic_grid_weights_t]
+         END IF
          CALL skala_torch_model_get_exc(cached_model, features%inputs, features%grid_weights_t, exc_tensor, exc)
-         CALL torch_tensor_backward_scalar(exc_tensor)
-         CALL get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
-                                     density_grad, grad_grad, kin_grad)
+         IF (response) THEN
+            ALLOCATE (direction_rho(npoint, MAX(2, nspin)), direction_grad(npoint, 3, MAX(2, nspin)), &
+                      direction_tau(npoint, MAX(2, nspin)))
+            IF (nspin == 1) THEN
+               direction_rho(:, 1) = 0.5_dp*response_density(:, 1)
+               direction_grad(:, :, 1) = 0.5_dp*response_gradient(:, :, 1)
+               direction_tau(:, 1) = 0.5_dp*response_kinetic(:, 1)
+               direction_rho(:, 2) = direction_rho(:, 1)
+               direction_grad(:, :, 2) = direction_grad(:, :, 1)
+               direction_tau(:, 2) = direction_tau(:, 1)
+            ELSE
+               direction_rho = response_density
+               direction_grad = response_gradient
+               direction_tau = response_kinetic
+            END IF
+            CALL torch_tensor_from_array(directions(1), direction_rho)
+            CALL torch_tensor_from_array(directions(2), direction_grad)
+            CALL torch_tensor_from_array(directions(3), direction_tau)
+            IF (geometry_grad) THEN
+               ALLOCATE (direction_points(3, npoint), direction_centres(3, SIZE(atom_sizes)), &
+                         direction_energy(npoint), direction_descriptor(npoint))
+               direction_points = 0.0_dp
+               direction_centres = 0.0_dp
+               direction_energy = 0.0_dp
+               direction_descriptor = 0.0_dp
+               IF (geometry_response) THEN
+                  direction_points = response_points
+                  direction_centres = response_atom_coords
+                  direction_energy = response_energy_weights
+                  direction_descriptor = response_descriptor_weights
+               END IF
+               CALL torch_tensor_from_array(directions(4), direction_points)
+               CALL torch_tensor_from_array(directions(5), direction_centres)
+               CALL torch_tensor_from_array(directions(6), direction_energy)
+               CALL torch_tensor_from_array(directions(7), direction_descriptor)
+            END IF
+            DO i_response = 1, n_response
+               CALL torch_tensor_to_device_leaf(directions(i_response), .FALSE.)
+            END DO
+            CALL torch_tensor_hessian_vector(exc_tensor, hessian_inputs(:n_response), &
+                                             directions(:n_response), responses(:n_response))
+            DO i_response = 1, n_response
+               CALL torch_tensor_release(directions(i_response))
+            END DO
+            density_grad_t = responses(1)
+            grad_grad_t = responses(2)
+            kin_grad_t = responses(3)
+            NULLIFY (density_grad, grad_grad, kin_grad)
+            CALL torch_tensor_data_ptr(density_grad_t, density_grad)
+            CALL torch_tensor_data_ptr(grad_grad_t, grad_grad)
+            CALL torch_tensor_data_ptr(kin_grad_t, kin_grad)
+         ELSE
+            CALL torch_tensor_backward_scalar(exc_tensor)
+            CALL get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
+                                        density_grad, grad_grad, kin_grad)
+         END IF
          IF (nspin == 1) THEN
             drho(:, 1) = 0.5_dp*SUM(density_grad, DIM=2)
             dgradient(:, :, 1) = 0.5_dp*SUM(grad_grad, DIM=3)
@@ -247,32 +364,53 @@ CONTAINS
          CALL torch_tensor_release(grad_grad_t)
          CALL torch_tensor_release(kin_grad_t)
          IF (PRESENT(dpoints)) THEN
-            CALL torch_tensor_grad(features%grid_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            IF (response) THEN
+               geometry_grad_t = responses(4)
+            ELSE
+               CALL torch_tensor_grad(features%grid_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            END IF
             NULLIFY (coord_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, coord_grad)
             dpoints = coord_grad
-            CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
          END IF
          IF (PRESENT(datom_coords)) THEN
-            CALL torch_tensor_grad(features%coarse_0_atomic_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            IF (response) THEN
+               geometry_grad_t = responses(5)
+            ELSE
+               CALL torch_tensor_grad(features%coarse_0_atomic_coords_t, geometry_grad_t, allow_unused=.TRUE.)
+            END IF
             NULLIFY (coord_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, coord_grad)
             datom_coords = coord_grad
-            CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
          END IF
          IF (PRESENT(denergy_weights)) THEN
-            CALL torch_tensor_grad(features%grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            IF (response) THEN
+               geometry_grad_t = responses(6)
+            ELSE
+               CALL torch_tensor_grad(features%grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            END IF
             NULLIFY (weight_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, weight_grad)
             denergy_weights = weight_grad
-            CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
          END IF
          IF (PRESENT(ddescriptor_weights)) THEN
-            CALL torch_tensor_grad(features%atomic_grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            IF (response) THEN
+               geometry_grad_t = responses(7)
+            ELSE
+               CALL torch_tensor_grad(features%atomic_grid_weights_t, geometry_grad_t, allow_unused=.TRUE.)
+            END IF
             NULLIFY (weight_grad)
             CALL torch_tensor_data_ptr(geometry_grad_t, weight_grad)
             ddescriptor_weights = weight_grad
-            CALL torch_tensor_release(geometry_grad_t)
+            IF (.NOT. response) CALL torch_tensor_release(geometry_grad_t)
+         END IF
+         IF (response .AND. geometry_grad) THEN
+            DO i_response = 4, 7
+               CALL torch_tensor_release(responses(i_response))
+            END DO
          END IF
          CALL torch_tensor_release(exc_tensor)
          CALL skala_gpw_feature_release(features)
@@ -294,7 +432,9 @@ CONTAINS
          IF (.NOT. ALL(ieee_is_finite(ddescriptor_weights))) invalid = 1
       END IF
       CALL group%max(invalid)
-      IF (invalid /= 0) CPABORT("Nonfinite Skala atom-block energy or derivatives")
+      IF (invalid /= 0) THEN
+         CPABORT("Nonfinite Skala atom-block energy or derivatives")
+      END IF
       CALL torch_use_cuda(.TRUE.)
       CALL omp_set_num_threads(omp_max_threads_restore)
       CALL timestop(handle)
@@ -3251,35 +3391,40 @@ CONTAINS
 !> \param model_path ...
 !> \param cuda_device ...
 !> \param xc_section XC settings, including the native model precision.
-!> \param model_fp64 Request FP64 arithmetic independently of the XC input.
+!> \param higher_derivatives ...
 ! **************************************************************************************************
-   SUBROUTINE ensure_model_loaded(model_path, cuda_device, xc_section, model_fp64)
+   SUBROUTINE ensure_model_loaded(model_path, cuda_device, xc_section, higher_derivatives)
       CHARACTER(len=*), INTENT(IN)                       :: model_path
       INTEGER, INTENT(IN)                                :: cuda_device
       TYPE(section_vals_type), OPTIONAL, POINTER         :: xc_section
-      LOGICAL, INTENT(IN), OPTIONAL                      :: model_fp64
+      LOGICAL, INTENT(IN), OPTIONAL                      :: higher_derivatives
 
-      LOGICAL                                            :: fp64
+      LOGICAL                                            :: fp64, prepare_derivatives
       TYPE(section_vals_type), POINTER                   :: gauxc_section
 
-      fp64 = .FALSE.
+      prepare_derivatives = .FALSE.
+      IF (PRESENT(higher_derivatives)) prepare_derivatives = higher_derivatives
+      fp64 = prepare_derivatives
       IF (PRESENT(xc_section)) THEN
          gauxc_section => get_gauxc_section(xc_section)
          CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_MODEL_FP64", l_val=fp64)
       END IF
-      IF (PRESENT(model_fp64)) fp64 = fp64 .OR. model_fp64
+      fp64 = fp64 .OR. prepare_derivatives
 
       IF (cached_model_loaded) THEN
          IF (TRIM(cached_model_path) == TRIM(model_path) .AND. &
              cached_model_cuda_device == cuda_device .AND. &
-             (cached_model_fp64 .EQV. fp64)) RETURN
+             (cached_model_fp64 .EQV. fp64) .AND. &
+             (cached_model_higher_derivatives .EQV. prepare_derivatives)) RETURN
          CALL skala_torch_model_release(cached_model)
          cached_model_loaded = .FALSE.
       END IF
 
-      CALL skala_torch_model_load(cached_model, TRIM(model_path), fp64=fp64)
+      CALL skala_torch_model_load(cached_model, TRIM(model_path), fp64=fp64, &
+                                  higher_derivatives=prepare_derivatives)
       cached_model_path = model_path
       cached_model_cuda_device = cuda_device
+      cached_model_higher_derivatives = prepare_derivatives
       cached_model_fp64 = fp64
       cached_model_loaded = .TRUE.
 
