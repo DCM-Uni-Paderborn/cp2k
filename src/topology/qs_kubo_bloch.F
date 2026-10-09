@@ -39,7 +39,7 @@ MODULE qs_kubo_bloch
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_property_symmetry,            ONLY: property_symmetry_frame,&
                                               property_symmetry_plan
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -249,7 +249,8 @@ CONTAINS
       END IF
       IF (failed /= 0) THEN
          IF (symmetry) THEN
-            CPABORT('Bloch Kubo property symmetry failed target metric/Hamiltonian/current covariance.')
+            CALL cp_abort(__LOCATION__, &
+                          'Bloch Kubo property symmetry failed target metric/Hamiltonian/current covariance.')
          ELSE
             CPABORT('Bloch Kubo failed metric, Hermiticity or AO-connection validation.')
          END IF

@@ -23,7 +23,7 @@ MODULE topology_phason_analysis
                                               read_snapshot,&
                                               snapshot_overlap,&
                                               snapshot_type
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'topology_phason_analysis'

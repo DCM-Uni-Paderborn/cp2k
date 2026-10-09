@@ -16,7 +16,7 @@ MODULE topology_snapshot
    USE kinds,                           ONLY: dp
    USE orbital_pointers,                ONLY: indco,&
                                               init_orbital_pointers
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE

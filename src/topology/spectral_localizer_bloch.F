@@ -23,7 +23,7 @@ MODULE spectral_localizer_bloch
    USE kpoint_lattice_fft, ONLY: k_grid_to_cell_fft
    USE message_passing, ONLY: mp_para_env_type
    USE spectral_localizer_dbcsr, ONLY: localizer_dbcsr_check, localizer_dbcsr_release, localizer_matrix_type
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE

@@ -43,7 +43,7 @@ MODULE qs_property_soc
    USE qs_mo_types,                     ONLY: get_mo_set
    USE qs_property_symmetry,            ONLY: property_symmetry_frame,&
                                               property_symmetry_spin_frame
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -186,7 +186,9 @@ CONTAINS
                work(b, b) = work(b, b) - 1.0_dp
             END DO
             IF (.NOT. ALL(ieee_is_finite(REAL(work, dp))) .OR. &
-                .NOT. ALL(ieee_is_finite(AIMAG(work)))) CPABORT('Nonfinite property SOC normalization.')
+                .NOT. ALL(ieee_is_finite(AIMAG(work)))) THEN
+               CPABORT('Nonfinite property SOC normalization.')
+            END IF
             errors(1) = MAX(errors(1), MAXVAL(ABS(work)))
             work = MATMUL(h, u)
             DO b = 1, 2*nmo
@@ -195,7 +197,8 @@ CONTAINS
             errors(2) = MAX(errors(2), MAXVAL(ABS(work))/MAX(1.0_dp, MAXVAL(ABS(h))))
             IF (.NOT. ALL(ieee_is_finite(REAL(work, dp))) .OR. &
                 .NOT. ALL(ieee_is_finite(AIMAG(work))) .OR. MAXVAL(errors) > tolerance) THEN
-               CPABORT('Property symmetry does not preserve the SOC Hamiltonian or scalar band window.')
+               CALL cp_abort(__LOCATION__, &
+                             'Property symmetry does not preserve the SOC Hamiltonian or scalar band window.')
             END IF
             IF (points%para_env_kp%is_source()) THEN
                values(:, ik) = spectrum

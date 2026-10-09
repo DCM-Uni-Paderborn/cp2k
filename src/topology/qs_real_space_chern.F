@@ -49,7 +49,7 @@ MODULE qs_real_space_chern
                                               localizer_matrix_type
    USE topology_real_space,             ONLY: finite_chern_marker,&
                                               periodic_chern_marker
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -116,7 +116,8 @@ CONTAINS
          CPABORT('REAL_SPACE_CHERN tolerances must be finite.')
       END IF
       IF (eps_dual <= 0 .OR. eps_dual >= 1 .OR. eps_window < 1.e-14_dp .OR. eps_window > 1.e-10_dp) THEN
-         CPABORT('REAL_SPACE_CHERN needs 0 < EPS_DUAL < 1 and 1e-14 <= EPS_WINDOW <= 1e-10.')
+         CALL cp_abort(__LOCATION__, &
+                       'REAL_SPACE_CHERN needs 0 < EPS_DUAL < 1 and 1e-14 <= EPS_WINDOW <= 1e-10.')
       END IF
       IF (ANY(grid < 1)) CPABORT('REAL_SPACE_CHERN MP_GRID must be positive.')
       IF (formulation == 1 .AND. (periodic /= use_perd_none .OR. ANY(cell%perd /= 0) .OR. do_kpoints)) THEN
@@ -151,7 +152,8 @@ CONTAINS
          CPABORT('REAL_SPACE_CHERN window parameters must be finite.')
       END IF
       IF (ANY(width <= SQRT(TINY(1.0_dp))) .OR. ANY(width >= SQRT(HUGE(1.0_dp)/twopi))) THEN
-         CPABORT('REAL_SPACE_CHERN WINDOW_SIGMA must be positive and numerically representable.')
+         CALL cp_abort(__LOCATION__, &
+                       'REAL_SPACE_CHERN WINDOW_SIGMA must be positive and numerically representable.')
       END IF
       alpha = 0.0_dp
       alpha(axes(:, plane)) = (0.5_dp/width)/width
@@ -171,7 +173,9 @@ CONTAINS
       IF (spin < 1 .OR. spin > SIZE(images_h, 1)) THEN
          CPABORT('REAL_SPACE_CHERN SPIN_CHANNEL is unavailable.')
       END IF
-      IF (do_soc .AND. spin /= 1) CPABORT('REAL_SPACE_CHERN SOC requires restricted channel 1.')
+      IF (do_soc .AND. spin /= 1) THEN
+         CPABORT('REAL_SPACE_CHERN SOC requires restricted channel 1.')
+      END IF
       CALL section_vals_val_get(section, 'MAX_AO', i_val=max_ao)
       CALL dbcsr_get_info(images_s(1, 1)%matrix, nfullrows_total=nao)
       IF (max_ao < 1 .OR. nao > max_ao) CPABORT('REAL_SPACE_CHERN exceeds MAX_AO.')

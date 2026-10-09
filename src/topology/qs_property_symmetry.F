@@ -65,7 +65,7 @@ MODULE qs_property_symmetry
    USE scf_control_types,               ONLY: scf_control_type
    USE topology_symmetry,               ONLY: spin_rotation,&
                                               transform_spinor_frame
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -315,7 +315,8 @@ CONTAINS
                CALL points%para_env_inter_kp%sum(window_gap)
                IF (soc .AND. nmo < nao) THEN
                   IF (window_gap <= 1.e-8_dp) THEN
-                     CALL cp_abort(__LOCATION__, 'Property SOC scalar window cuts a degeneracy; '// &
+                     CALL cp_abort(__LOCATION__, &
+                                   'Property SOC scalar window cuts a degeneracy; '// &
                                    'increase WANNIER90 ADDED_MOS.')
                   END IF
                END IF
@@ -329,7 +330,8 @@ CONTAINS
                   IF (.NOT. valid) THEN
                      IF (iw > 0) WRITE (iw, '(T2,A,I0,A,3ES14.5)') &
                         'TOPOLOGY| Invalid property orbit at point ', ik, ' metric/H/projected-H residuals: ', errors
-                     CPABORT('Property symmetry does not preserve the frozen H/S eigensystem.')
+                     CALL cp_abort(__LOCATION__, &
+                                   'Property symmetry does not preserve the frozen H/S eigensystem.')
                   END IF
                   operation(ik) = op
                   worst = MAX(worst, errors)
@@ -569,7 +571,8 @@ CONTAINS
                   shared_occ = occ
                   CALL inter%bcast(shared_status, group - 1)
                   IF (shared_status == 2) THEN
-                     CALL cp_abort(__LOCATION__, 'Property SOC scalar window cuts a degeneracy; '// &
+                     CALL cp_abort(__LOCATION__, &
+                                   'Property SOC scalar window cuts a degeneracy; '// &
                                    'increase WANNIER90 ADDED_MOS.')
                   END IF
                   CALL inter%bcast(shared_errors, group - 1)
@@ -577,7 +580,8 @@ CONTAINS
                      IF (iw > 0) WRITE (iw, '(T2,A,I0,A,3ES14.5)') &
                         'TOPOLOGY| Invalid property orbit at point ', ik, &
                         ' metric/H/projected-H residuals: ', shared_errors
-                     CPABORT('Property symmetry does not preserve the frozen H/S eigensystem.')
+                     CALL cp_abort(__LOCATION__, &
+                                   'Property symmetry does not preserve the frozen H/S eigensystem.')
                   END IF
                   CALL inter%bcast(shared_op, group - 1)
                   CALL inter%bcast(shared_energies, group - 1)

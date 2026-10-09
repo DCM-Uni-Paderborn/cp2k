@@ -20,7 +20,7 @@ PROGRAM topology_phasons
                                               read_snapshot,&
                                               snapshot_overlap,&
                                               snapshot_type
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    CHARACTER(LEN=default_path_length) :: mode, filename, arg, filename_b

@@ -33,7 +33,7 @@ MODULE qs_ao_translations
    USE qs_integral_utils,               ONLY: basis_set_list_setup,&
                                               get_memory_usage
    USE qs_kind_types,                   ONLY: qs_kind_type
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE

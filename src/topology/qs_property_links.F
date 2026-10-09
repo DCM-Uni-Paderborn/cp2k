@@ -42,7 +42,7 @@ MODULE qs_property_links
                                               kpoint_operator_prepare,&
                                               kpoint_operator_work_size,&
                                               kpoint_slot_ks
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE

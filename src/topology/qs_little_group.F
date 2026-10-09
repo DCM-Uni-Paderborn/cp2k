@@ -59,7 +59,7 @@ MODULE qs_little_group
                                               check_sewing_product,&
                                               subspace_sewing,&
                                               transform_spinor_frame
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -94,7 +94,9 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: translations(:, :)
       TYPE(cell_type), POINTER                           :: cell
 
-      IF (path_points < 2 .OR. max_points < 1) CPABORT('Invalid automatic little-group sampling limits.')
+      IF (path_points < 2 .OR. max_points < 1) THEN
+         CPABORT('Invalid automatic little-group sampling limits.')
+      END IF
       CALL get_qs_env(qs_env, cell=cell)
       IF (ANY(cell%perd /= 1)) THEN
          CPABORT('Automatic little-group sampling requires three periodic directions.')
@@ -212,7 +214,9 @@ CONTAINS
                         (REAL(ns, dp) + 6.0_dp)*REAL(nb, dp)**2 + 6.0_dp*REAL(ns, dp)**2 + 4.0_dp*ns)/1024.0_dp**2
       IF (PRESENT(point)) memory = memory + (48.0_dp*REAL(ns, dp)**2 + 64.0_dp*ns)/1024.0_dp**2
       IF (PRESENT(reserved_memory_mb)) memory = memory + reserved_memory_mb
-      IF (memory > max_memory_mb) CPABORT('Little-group matrices exceed LITTLE_GROUP_MAX_MEMORY_MB.')
+      IF (memory > max_memory_mb) THEN
+         CPABORT('Little-group matrices exceed LITTLE_GROUP_MAX_MEMORY_MB.')
+      END IF
       CALL little_group_factor_system(cell%hmat, rotations, translations, anti, k, soc, &
                                       mapping, product, factors, tolerance, status, spin_lifts=spin_lifts)
       IF (status /= 0) CPABORT('Little-group operation/factor algebra is inconsistent.')
@@ -289,7 +293,8 @@ CONTAINS
          CASE (2)
             CPABORT('Little-group spinor transformation is invalid.')
          CASE DEFAULT
-            CPABORT('Little-group operation fails metric covariance or selected-subspace closure.')
+            CALL cp_abort(__LOCATION__, &
+                          'Little-group operation fails metric covariance or selected-subspace closure.')
          END SELECT
       END IF
       CALL para%sum(sewing)
@@ -304,12 +309,16 @@ CONTAINS
          WRITE (iw, '(T2,A,4ES14.5)') 'TQC| Little-group metric/frame/product/energy residuals: ', &
             metric_error, frame_error, product_error, energy_error
       END IF
-      IF (status /= 0) CPABORT('Little-group band sewing matrices fail the projective product law.')
+      IF (status /= 0) THEN
+         CPABORT('Little-group band sewing matrices fail the projective product law.')
+      END IF
       IF (energy_error > energy_tolerance) THEN
          CPABORT('Little-group band symmetry does not commute with the Hamiltonian.')
       END IF
       CALL projective_characters(PRODUCT(:nu, :nu), factors(:nu, :nu), characters, tolerance, character_error, status)
-      IF (status /= 0) CPABORT('Little-group unitary character table could not be resolved completely.')
+      IF (status /= 0) THEN
+         CPABORT('Little-group unitary character table could not be resolved completely.')
+      END IF
       ALLOCATE (band_character(nu), multiplicity(SIZE(characters, 2)), dimensions(SIZE(characters, 2)))
       dimensions(:) = NINT(REAL(characters(1, :), dp))
       band_character(:) = 0.0_dp
@@ -319,15 +328,21 @@ CONTAINS
          END DO
       END DO
       CALL character_multiplicities(band_character, characters, multiplicity, tolerance, status)
-      IF (status /= 0) CPABORT('Little-group band characters have nonintegral irrep multiplicities.')
+      IF (status /= 0) THEN
+         CPABORT('Little-group band characters have nonintegral irrep multiplicities.')
+      END IF
       CPASSERT(SUM(dimensions*multiplicity) == nb)
       IF (ng > nu) THEN
          CALL projective_corepresentations(product, factors, anti(mapping), characters, coreps, &
                                            tolerance, character_error, status)
-         IF (status /= 0) CPABORT('Little-group antiunitary corepresentation classification failed.')
+         IF (status /= 0) THEN
+            CPABORT('Little-group antiunitary corepresentation classification failed.')
+         END IF
          ALLOCATE (corep_counts(SIZE(coreps%indicator)))
          CALL corepresentation_multiplicities(coreps, multiplicity, corep_counts, status)
-         IF (status /= 0) CPABORT('Little-group bands violate antiunitary irrep pairing or doubling.')
+         IF (status /= 0) THEN
+            CPABORT('Little-group bands violate antiunitary irrep pairing or doubling.')
+         END IF
          CPASSERT(SUM(coreps%dimension*corep_counts) == nb)
       END IF
       IF (iw > 0) THEN
@@ -446,7 +461,9 @@ CONTAINS
          kpoints(:, p) = points(p)%k
          retained = retained + little_group_storage(points(p))
       END DO
-      IF (retained >= max_memory_mb) CPABORT('Atomic signatures exceed LITTLE_GROUP_MAX_MEMORY_MB.')
+      IF (retained >= max_memory_mb) THEN
+         CPABORT('Atomic signatures exceed LITTLE_GROUP_MAX_MEMORY_MB.')
+      END IF
       CALL atomic_signature_construct(cell%hmat, rotations, translations, anti, kpoints, points(1)%spinful, &
                                       catalogue, tolerance, status, max_memory_mb - retained)
       IF (status /= 0) THEN
@@ -454,7 +471,8 @@ CONTAINS
       END IF
       CALL atomic_signature_from_bands(catalogue, points, TARGET, tolerance, status)
       IF (status /= 0) THEN
-         CPABORT('Atomic references and Gaussian bands have inconsistent symmetry conventions or ranks.')
+         CALL cp_abort(__LOCATION__, &
+                       'Atomic references and Gaussian bands have inconsistent symmetry conventions or ranks.')
       END IF
       m = SIZE(catalogue%matrix, 1)
       n = SIZE(catalogue%matrix, 2)
@@ -479,7 +497,9 @@ CONTAINS
       END IF
       ! Include integer factorization, certificate/witness work and both signature copies.
       estimate = retained + 32.0_dp*(REAL(m, dp)**2 + REAL(n, dp)**2 + 3.0_dp*m*n)/1024.0_dp**2
-      IF (estimate > max_memory_mb) CPABORT('Atomic integer matrices exceed LITTLE_GROUP_MAX_MEMORY_MB.')
+      IF (estimate > max_memory_mb) THEN
+         CPABORT('Atomic integer matrices exceed LITTLE_GROUP_MAX_MEMORY_MB.')
+      END IF
       matrix = INT(catalogue%matrix, int_8)
       signed_result = -1
       nonnegative_result = -1

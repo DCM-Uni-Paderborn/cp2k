@@ -57,7 +57,7 @@ MODULE qs_quadratic_pseudospectrum
                                               localizer_dbcsr_pencil,&
                                               localizer_dbcsr_release,&
                                               localizer_matrix_type
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -135,7 +135,8 @@ CONTAINS
       IF (torus_analysis) THEN
          CALL section_vals_val_get(input, 'SUBSYS%CELL%PERIODIC', i_val=cell_periodic)
          IF (cell_periodic /= periodic .OR. COUNT(cell%perd /= 0) == 0) THEN
-            CPABORT('Quadratic torus needs matching, nonempty CELL/POISSON PERIODIC.')
+            CALL cp_abort(__LOCATION__, &
+                          'Quadratic torus needs matching, nonempty CELL/POISSON PERIODIC.')
          END IF
          ndim = COUNT(cell%perd /= 0)
          ALLOCATE (directions(ndim))
@@ -150,14 +151,16 @@ CONTAINS
          END IF
       ELSE
          IF (periodic /= use_perd_none .OR. ANY(cell%perd /= 0) .OR. do_kpoints) THEN
-            CPABORT('Finite quadratic analysis requires PERIODIC NONE without KPOINTS.')
+            CALL cp_abort(__LOCATION__, &
+                          'Finite quadratic analysis requires PERIODIC NONE without KPOINTS.')
          END IF
          nobs = 4
       END IF
       IF (translation_analysis) THEN
          CALL section_vals_val_get(section, 'TRANSLATION_VECTOR', n_rep_val=nt)
          IF (nt < 1) THEN
-            CPABORT('Quadratic TRANSLATION requires at least one TRANSLATION_VECTOR.')
+            CALL cp_abort(__LOCATION__, &
+                          'Quadratic TRANSLATION requires at least one TRANSLATION_VECTOR.')
          END IF
          nobs = 1 + nt
          ALLOCATE (translations(3, nt), complex_shift(nobs), unitary(nobs))
@@ -182,7 +185,8 @@ CONTAINS
       ELSE
          CALL section_vals_val_get(section, 'TRANSLATION_VECTOR', explicit=explicit_value)
          IF (explicit_value) THEN
-            CPABORT('TRANSLATION_VECTOR requires quadratic FORMULATION TRANSLATION.')
+            CALL cp_abort(__LOCATION__, &
+                          'TRANSLATION_VECTOR requires quadratic FORMULATION TRANSLATION.')
          END IF
          CALL section_vals_val_get(section, 'WAVE_VECTOR', explicit=explicit_value)
          IF (explicit_value) THEN
@@ -206,9 +210,13 @@ CONTAINS
       IF (do_soc .AND. spin /= 1) CPABORT('Quadratic SOC requires SPIN_CHANNEL 1.')
       CALL dbcsr_get_info(matrix_s(1)%matrix, nfullrows_total=nao)
       CALL section_vals_val_get(section, 'MAX_AO', i_val=max_ao)
-      IF (nao > max_ao .OR. max_ao < 1) CPABORT('QUADRATIC_PSEUDOSPECTRUM exceeds MAX_AO.')
+      IF (nao > max_ao .OR. max_ao < 1) THEN
+         CPABORT('QUADRATIC_PSEUDOSPECTRUM exceeds MAX_AO.')
+      END IF
       DO axis = 1, 3
-         IF (grid(axis) > max_ao/nao) CPABORT('Quadratic full AO torus exceeds MAX_AO.')
+         IF (grid(axis) > max_ao/nao) THEN
+            CPABORT('Quadratic full AO torus exceeds MAX_AO.')
+         END IF
          nao = nao*grid(axis)
       END DO
       n = nao

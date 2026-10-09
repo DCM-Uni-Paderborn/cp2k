@@ -666,42 +666,6 @@ list(
   qs_ks_types.F
   qs_ks_utils.F
   qs_ks_reference.F
-  qs_kubo_transport.F
-  localizer_dbcsr_factor.F
-  localizer_sparse_inertia.F
-  localizer_sparse_pfaffian.F
-  spectral_localizer_sparse.F
-  qs_little_group.F
-  qs_property_links.F
-  qs_property_soc.F
-  qs_property_symmetry.F
-  topology_atomic_signatures.F
-  topology_band_representations.F
-  topology_character_match.F
-  topology_compatibility.F
-  topology_compatibility_lattice.F
-  topology_corepresentations.F
-  topology_integer_lattice.F
-  topology_little_group.F
-  topology_reciprocal.F
-  topology_site_relations.F
-  topology_star_transport.F
-  topology_wyckoff.F
-  qs_real_space_chern.F
-  kubo_bloch.F
-  kubo_hall.F
-  kubo_projected.F
-  qs_kubo_bloch.F
-  qs_spectral_localizer.F
-  qs_localizer_torus.F
-  spectral_localizer.F
-  quadratic_pseudospectrum.F
-  qs_finite_ao.F
-  qs_ao_translations.F
-  qs_quadratic_pseudospectrum.F
-  spectral_localizer_dbcsr.F
-  spectral_localizer_flatten.F
-  spectral_localizer_bloch.F
   qs_linres_atom_current.F
   qs_linres_current.F
   qs_linres_current_utils.F
@@ -931,15 +895,6 @@ list(
   voronoi_interface.F
   wannier90.F
   wannier90_nnkpts.F
-  topology_wilson.F
-  topology_state_io.F
-  topology_symmetry.F
-  topology_inversion.F
-  topology_tqc.F
-  topology_snapshot.F
-  topology_curvature.F
-  topology_real_space.F
-  topology_phason_analysis.F
   wannier_states.F
   wannier_states_types.F
   xas_control.F
@@ -956,6 +911,55 @@ list(
   xas_tp_scf.F
   gapw_gspace_reconstruction.F
   xray_diffraction.F)
+
+list(
+  APPEND
+  CP2K_SRCS_F
+  topology/kubo_bloch.F
+  topology/kubo_hall.F
+  topology/kubo_projected.F
+  topology/localizer_dbcsr_factor.F
+  topology/localizer_sparse_inertia.F
+  topology/localizer_sparse_pfaffian.F
+  topology/qs_ao_translations.F
+  topology/qs_finite_ao.F
+  topology/qs_kubo_bloch.F
+  topology/qs_kubo_transport.F
+  topology/qs_little_group.F
+  topology/qs_localizer_torus.F
+  topology/qs_property_links.F
+  topology/qs_property_soc.F
+  topology/qs_property_symmetry.F
+  topology/qs_quadratic_pseudospectrum.F
+  topology/qs_real_space_chern.F
+  topology/qs_spectral_localizer.F
+  topology/quadratic_pseudospectrum.F
+  topology/spectral_localizer.F
+  topology/spectral_localizer_bloch.F
+  topology/spectral_localizer_dbcsr.F
+  topology/spectral_localizer_flatten.F
+  topology/spectral_localizer_sparse.F
+  topology/topology_atomic_signatures.F
+  topology/topology_band_representations.F
+  topology/topology_character_match.F
+  topology/topology_compatibility.F
+  topology/topology_compatibility_lattice.F
+  topology/topology_corepresentations.F
+  topology/topology_curvature.F
+  topology/topology_integer_lattice.F
+  topology/topology_inversion.F
+  topology/topology_little_group.F
+  topology/topology_phason_analysis.F
+  topology/topology_real_space.F
+  topology/topology_reciprocal.F
+  topology/topology_site_relations.F
+  topology/topology_snapshot.F
+  topology/topology_star_transport.F
+  topology/topology_state_io.F
+  topology/topology_symmetry.F
+  topology/topology_tqc.F
+  topology/topology_wilson.F
+  topology/topology_wyckoff.F)
 
 list(
   APPEND
@@ -1612,9 +1616,9 @@ set(CP2K_FPGA_SRC_C pw/fpga/fft_fpga.c pw/fpga/opencl_utils.c)
 set(CP2K_PW_SRCS_C pw/gpu/pw_gpu_internal.c)
 set(CP2K_SRCS_CPP torch_c_api.cpp ace_c_api.cpp)
 if(CP2K_USE_TACHO)
-  list(APPEND CP2K_SRCS_CPP tacho_c_api.cpp)
+  list(APPEND CP2K_SRCS_CPP topology/tacho_c_api.cpp)
 else()
-  list(APPEND CP2K_EXCLUDED_SRCS_CPP tacho_c_api.cpp)
+  list(APPEND CP2K_EXCLUDED_SRCS_CPP topology/tacho_c_api.cpp)
 endif()
 
 list(APPEND CP2K_SRCS_C "${CP2K_OFFLOAD_SRCS_C}" "${CP2K_MPIWRAP_SRCS_C}")
@@ -1654,24 +1658,24 @@ set(CP2K_PROGS_F
     kpoint_lattice_fft_unittest.F
     kpoint_smearing_unittest.F
     motion/cell_opt_utils_unittest.F
-    topology_wilson_unittest.F
-    quadratic_pseudospectrum_dbcsr_unittest.F
-    spectral_localizer_sparse_unittest.F
-    topology_atomic_unittest.F
-    topology_band_unittest.F
-    topology_character_unittest.F
-    topology_integer_unittest.F
-    topology_reciprocal_unittest.F
-    topology_site_unittest.F
-    topology_wyckoff_unittest.F
-    kubo_unittest.F
-    spectral_localizer_unittest.F
-    quadratic_pseudospectrum_unittest.F
+    topology/topology_wilson_unittest.F
+    topology/quadratic_pseudospectrum_dbcsr_unittest.F
+    topology/spectral_localizer_sparse_unittest.F
+    topology/topology_atomic_unittest.F
+    topology/topology_band_unittest.F
+    topology/topology_character_unittest.F
+    topology/topology_integer_unittest.F
+    topology/topology_reciprocal_unittest.F
+    topology/topology_site_unittest.F
+    topology/topology_wyckoff_unittest.F
+    topology/kubo_unittest.F
+    topology/spectral_localizer_unittest.F
+    topology/quadratic_pseudospectrum_unittest.F
     pw/pw_unittest.F
-    topology_symmetry_unittest.F
-    topology_curvature_unittest.F
-    topology_snapshot_unittest.F
-    topology_phasons.F
+    topology/topology_symmetry_unittest.F
+    topology/topology_curvature_unittest.F
+    topology/topology_snapshot_unittest.F
+    topology/topology_phasons.F
     kpsym_unittest.F
     qs_ot_minimizer_unittest.F
     optbas_frontier_orbitals_utils_unittest.F
@@ -2168,27 +2172,31 @@ add_executable(gapw_background_unittest gapw_background_unittest.F)
 add_executable(gapw_1c_basis_unittest gapw_1c_basis_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
 add_executable(kpoint_smearing_unittest kpoint_smearing_unittest.F)
-add_executable(topology_wilson_unittest topology_wilson_unittest.F)
+add_executable(topology_wilson_unittest topology/topology_wilson_unittest.F)
 add_executable(quadratic_pseudospectrum_dbcsr_unittest
-               quadratic_pseudospectrum_dbcsr_unittest.F)
+               topology/quadratic_pseudospectrum_dbcsr_unittest.F)
 add_executable(spectral_localizer_sparse_unittest
-               spectral_localizer_sparse_unittest.F)
-add_executable(topology_atomic_unittest topology_atomic_unittest.F)
-add_executable(topology_band_unittest topology_band_unittest.F)
-add_executable(topology_character_unittest topology_character_unittest.F)
-add_executable(topology_integer_unittest topology_integer_unittest.F)
-add_executable(topology_reciprocal_unittest topology_reciprocal_unittest.F)
-add_executable(topology_site_unittest topology_site_unittest.F)
-add_executable(topology_wyckoff_unittest topology_wyckoff_unittest.F)
-add_executable(kubo_unittest kubo_unittest.F)
-add_executable(spectral_localizer_unittest spectral_localizer_unittest.F)
+               topology/spectral_localizer_sparse_unittest.F)
+add_executable(topology_atomic_unittest topology/topology_atomic_unittest.F)
+add_executable(topology_band_unittest topology/topology_band_unittest.F)
+add_executable(topology_character_unittest
+               topology/topology_character_unittest.F)
+add_executable(topology_integer_unittest topology/topology_integer_unittest.F)
+add_executable(topology_reciprocal_unittest
+               topology/topology_reciprocal_unittest.F)
+add_executable(topology_site_unittest topology/topology_site_unittest.F)
+add_executable(topology_wyckoff_unittest topology/topology_wyckoff_unittest.F)
+add_executable(kubo_unittest topology/kubo_unittest.F)
+add_executable(spectral_localizer_unittest
+               topology/spectral_localizer_unittest.F)
 add_executable(quadratic_pseudospectrum_unittest
-               quadratic_pseudospectrum_unittest.F)
+               topology/quadratic_pseudospectrum_unittest.F)
 add_executable(pw_unittest pw/pw_unittest.F)
-add_executable(topology_symmetry_unittest topology_symmetry_unittest.F)
-add_executable(topology_curvature_unittest topology_curvature_unittest.F)
-add_executable(topology_snapshot_unittest topology_snapshot_unittest.F)
-add_executable(topology_phasons topology_phasons.F)
+add_executable(topology_symmetry_unittest topology/topology_symmetry_unittest.F)
+add_executable(topology_curvature_unittest
+               topology/topology_curvature_unittest.F)
+add_executable(topology_snapshot_unittest topology/topology_snapshot_unittest.F)
+add_executable(topology_phasons topology/topology_phasons.F)
 add_executable(kpsym_unittest kpsym_unittest.F)
 add_executable(qs_ot_minimizer_unittest qs_ot_minimizer_unittest.F)
 add_executable(optbas_frontier_orbitals_utils_unittest

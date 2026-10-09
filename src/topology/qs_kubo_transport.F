@@ -59,7 +59,7 @@ MODULE qs_kubo_transport
                                               localizer_dbcsr_release,&
                                               localizer_matrix_type
    USE string_utilities,                ONLY: uppercase
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
 
@@ -191,7 +191,8 @@ CONTAINS
       SELECT CASE (TRIM(method))
       CASE ("DIAGONALIZATION")
       CASE ("TD", "CHEBYSHEV")
-         CPABORT("KUBO_TRANSPORT METHOD "//TRIM(method)//" is reserved but not implemented yet.")
+         CALL cp_abort(__LOCATION__, &
+                       "KUBO_TRANSPORT METHOD "//TRIM(method)//" is reserved but not implemented yet.")
       CASE DEFAULT
          CPABORT("Unknown KUBO_TRANSPORT METHOD: "//TRIM(method))
       END SELECT
@@ -277,7 +278,9 @@ CONTAINS
             CPABORT('Invalid Kubo EPS_SYMMETRY_OPERATORS.')
          END IF
          IF (COUNT(cell%perd /= 0) == 0) CPABORT("Kubo BLOCH requires a periodic cell.")
-         IF (ANY(grid < 1) .OR. ANY(grid /= 1 .AND. cell%perd == 0)) CPABORT("Invalid Kubo MP_GRID.")
+         IF (ANY(grid < 1) .OR. ANY(grid /= 1 .AND. cell%perd == 0)) THEN
+            CPABORT("Invalid Kubo MP_GRID.")
+         END IF
          nk = 1
          DO axis = 1, 3
             IF (grid(axis) > 1000000/nk) CPABORT("Kubo MP_GRID exceeds one million points.")
@@ -560,7 +563,9 @@ CONTAINS
          invg22 = DOT_PRODUCT(v2, v2)
          invg12 = DOT_PRODUCT(v1, v2)
          detg = norm2*invg22 - invg12*invg12
-         IF (detg <= 0.0_dp) CPABORT("KUBO_TRANSPORT periodic cell vectors are linearly dependent.")
+         IF (detg <= 0.0_dp) THEN
+            CPABORT("KUBO_TRANSPORT periodic cell vectors are linearly dependent.")
+         END IF
          measure = SQRT(detg)
          invg11 = invg22/detg
          invg22 = norm2/detg
@@ -583,7 +588,9 @@ CONTAINS
          measure_unit = "Angstrom^3"
       END SELECT
 
-      IF (measure <= 0.0_dp) CPABORT("KUBO_TRANSPORT transport normalization measure is not positive.")
+      IF (measure <= 0.0_dp) THEN
+         CPABORT("KUBO_TRANSPORT transport normalization measure is not positive.")
+      END IF
 
    END SUBROUTINE setup_transport_geometry
 

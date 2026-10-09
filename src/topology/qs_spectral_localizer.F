@@ -70,7 +70,7 @@ MODULE qs_spectral_localizer
                                               localizer_matrix_type
    USE spectral_localizer_flatten,      ONLY: localizer_flatten_checked
    USE spectral_localizer_sparse,       ONLY: localizer_sparse_evaluate
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -151,7 +151,9 @@ CONTAINS
          CPABORT('AO position/localizer requires PERIODIC NONE without KPOINTS.')
       END IF
       CALL section_vals_val_get(section, 'DIMENSION', i_val=ndim)
-      IF (ndim /= 2 .AND. ndim /= 3) CPABORT('SPECTRAL_LOCALIZER DIMENSION must be 2 or 3.')
+      IF (ndim /= 2 .AND. ndim /= 3) THEN
+         CPABORT('SPECTRAL_LOCALIZER DIMENSION must be 2 or 3.')
+      END IF
       CALL section_vals_val_get(section, 'PLANE', i_val=plane, explicit=explicit_scale)
       IF (active .AND. ndim == 3 .AND. explicit_scale) THEN
          CPABORT('PLANE is only valid for DIMENSION 2.')
@@ -184,10 +186,12 @@ CONTAINS
             END IF
          ELSE
             IF (COUNT(cell%perd /= 0) /= 2 .OR. ANY(cell%perd(directions(:2)) == 0)) THEN
-               CPABORT('PERIODIC localizer requires two periodic CELL axes matching PLANE.')
+               CALL cp_abort(__LOCATION__, &
+                             'PERIODIC localizer requires two periodic CELL axes matching PLANE.')
             END IF
             IF (poisson_periodic /= plane_periodicity(plane)) THEN
-               CPABORT('PERIODIC localizer requires matching CELL and POISSON periodicity.')
+               CALL cp_abort(__LOCATION__, &
+                             'PERIODIC localizer requires matching CELL and POISSON periodicity.')
             END IF
          END IF
          CALL section_vals_val_get(section, 'KAPPA', explicit=explicit_scale)
@@ -206,7 +210,9 @@ CONTAINS
       END SELECT
       IF (active) THEN
          CALL section_vals_val_get(section, 'SOLVER', i_val=solver)
-         IF (ndim == 3 .AND. solver /= 0) CPABORT('The 3D determinant path requires SOLVER DENSE.')
+         IF (ndim == 3 .AND. solver /= 0) THEN
+            CPABORT('The 3D determinant path requires SOLVER DENSE.')
+         END IF
          CALL section_vals_val_get(section, 'PFAFFIAN_MEMORY', i_val=pfaffian_memory)
          IF (pfaffian_memory <= 0) CPABORT('PFAFFIAN_MEMORY must be positive.')
          IF (solver == 1 .AND. .NOT. sparse_inertia_available(use_native=.FALSE.)) THEN
@@ -491,11 +497,13 @@ CONTAINS
                ELSE
                   CALL localizer_dbcsr_check(localizer, para_env, matrix_tolerance, valid)
                   IF (.NOT. valid) THEN
-                     CPABORT('SPECTRAL_LOCALIZER: nonfinite or non-Hermitian sparse localizer.')
+                     CALL cp_abort(__LOCATION__, &
+                                   'SPECTRAL_LOCALIZER: nonfinite or non-Hermitian sparse localizer.')
                   END IF
                   CALL localizer_dbcsr_check(metric, para_env, matrix_tolerance, valid)
                   IF (.NOT. valid) THEN
-                     CPABORT('SPECTRAL_LOCALIZER: nonfinite or non-Hermitian sparse metric.')
+                     CALL cp_abort(__LOCATION__, &
+                                   'SPECTRAL_LOCALIZER: nonfinite or non-Hermitian sparse metric.')
                   END IF
                   CALL localizer_dbcsr_pencil(localizer, metric, para_env, order, rows, cols, &
                                               sparse_a, sparse_b, sparse_identity)
@@ -530,7 +538,8 @@ CONTAINS
                   END IF
                   SELECT CASE (status)
                   CASE (-2)
-                     CPABORT('SPECTRAL_LOCALIZER: invalid AO metric; check basis/EPS_METRIC.')
+                     CALL cp_abort(__LOCATION__, &
+                                   'SPECTRAL_LOCALIZER: invalid AO metric; check basis/EPS_METRIC.')
                   CASE (-3)
                      CPABORT('SPECTRAL_LOCALIZER: broken physical TR/AII structure.')
                   CASE (-6)

@@ -18,7 +18,7 @@ MODULE localizer_sparse_inertia
                                               localizer_factor_type,&
                                               localizer_factorize
    USE message_passing,                 ONLY: mp_para_env_type
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE

@@ -21,7 +21,7 @@ MODULE spectral_localizer_dbcsr
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_para_env_type
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE

@@ -35,7 +35,7 @@ MODULE qs_finite_ao
    USE qs_moments,                      ONLY: build_local_moment_matrix
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE soc_pseudopotential_methods,     ONLY: V_SOC_xyz_from_pseudopotential
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -108,7 +108,9 @@ CONTAINS
 
       CALL get_qs_env(qs_env, cell=cell, do_kpoints=do_kpoints, matrix_s_kp=matrix_s, &
                       para_env=para_env, particle_set=particles, qs_kind_set=kinds)
-      IF (ANY(cell%perd /= 0) .OR. do_kpoints) CPABORT('Finite AO windows require isolated Gamma systems.')
+      IF (ANY(cell%perd /= 0) .OR. do_kpoints) THEN
+         CPABORT('Finite AO windows require isolated Gamma systems.')
+      END IF
       ALLOCATE (bases(SIZE(kinds)))
       CALL basis_set_list_setup(bases, 'ORB', kinds)
       ld = get_memory_usage(kinds, 'ORB')
@@ -166,12 +168,16 @@ CONTAINS
 
       CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks, qs_kind_set=qs_kind_set, sap_ppnl=sap_ppnl)
       IF (SIZE(matrix_ks, 1) /= 1) CPABORT('AO SOC requires a restricted SCF calculation.')
-      IF (.NOT. ASSOCIATED(sap_ppnl)) CPABORT('Finite AO SOC requires nonlocal GTH SOC projectors.')
+      IF (.NOT. ASSOCIATED(sap_ppnl)) THEN
+         CPABORT('Finite AO SOC requires nonlocal GTH SOC projectors.')
+      END IF
       DO ik = 1, SIZE(qs_kind_set)
          IF (.NOT. ASSOCIATED(qs_kind_set(ik)%gth_potential)) THEN
             CPABORT('Finite AO SOC requires GTH potentials.')
          END IF
-         IF (.NOT. qs_kind_set(ik)%gth_potential%soc) CPABORT('GTH potential lacks SOC parameters.')
+         IF (.NOT. qs_kind_set(ik)%gth_potential%soc) THEN
+            CPABORT('GTH potential lacks SOC parameters.')
+         END IF
       END DO
       CALL V_SOC_xyz_from_pseudopotential(qs_env, soc_matrices)
    END SUBROUTINE finite_ao_soc

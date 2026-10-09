@@ -1082,7 +1082,7 @@ CONTAINS
                                           localizer_matrix_type
       USE spectral_localizer_flatten, ONLY: localizer_flatten_checked, &
                                             localizer_flatten_dbcsr
-#include "./base/base_uses.f90"
+#include "../base/base_uses.f90"
 
       IMPLICIT NONE
       INTEGER, PARAMETER :: n = 12, nb = 6, bs = 2
@@ -1384,7 +1384,9 @@ CONTAINS
             CALL make_operator(-sdense, s)
             CALL localizer_flatten_bloch(h, s, grid, nspin, energy, scale, 1.e-9_dp, 1.e-10_dp, 1.e-8_dp, &
                                          para_env, flat, bloch_gap, metric_ratio, residuals, status)
-            IF (status /= -2) CPABORT('Bloch flattening accepted an indefinite metric')
+            IF (status /= -2) THEN
+               CPABORT('Bloch flattening accepted an indefinite metric')
+            END IF
             CALL localizer_dbcsr_release(h)
             CALL localizer_dbcsr_release(s)
          END DO
