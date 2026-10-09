@@ -769,6 +769,13 @@ void torch_c_tensor_to_device_leaf(torch_c_tensor_t **tensor,
 }
 
 /*******************************************************************************
+ * \brief Check whether a tensor resides on the active Torch device.
+ ******************************************************************************/
+bool torch_c_tensor_on_current_device(const torch_c_tensor_t *tensor) {
+  return tensor->device() == get_device();
+}
+
+/*******************************************************************************
  * \brief Select whether Torch wrappers should use CUDA when available.
  ******************************************************************************/
 void torch_c_use_cuda(const bool use_cuda) { use_cuda_if_available = use_cuda; }

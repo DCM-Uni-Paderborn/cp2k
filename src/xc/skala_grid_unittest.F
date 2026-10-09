@@ -41,7 +41,7 @@ PROGRAM skala_grid_unittest
    CHARACTER(len=default_path_length) :: model
    CHARACTER(len=32) :: model_mode, device_arg
    LOGICAL :: cuda_points, spinor_test, spinor_precision_test, point_fp64
-   INTEGER :: ns, partition, i, s, first_z, last_z, nr, component, step, mode, caller_threads
+   INTEGER :: ns, partition, i, s, first_z, last_z, nr, component, step, mode, device, caller_threads
    REAL(dp) :: hmat(3, 3), energy, reference, ep, em, derivative, h, error, maximum_error, &
                step_size, response_step_size, routing_tolerance, derivative_tolerance
    REAL(dp), ALLOCATABLE :: rho(:, :), grad(:, :, :), tau(:, :), drho(:, :), dgrad(:, :, :), dtau(:, :), &
@@ -107,7 +107,7 @@ PROGRAM skala_grid_unittest
    END DO
    maximum_error = 0.0_dp
    DO ns = 1, 2
-      IF (cuda_points .OR. spinor_test) EXIT
+      IF (spinor_test) EXIT
       ALLOCATE (rho(nr, ns), grad(nr, 3, ns), tau(nr, ns), drho(nr, ns), dgrad(nr, 3, ns), dtau(nr, ns), &
                 vrho(nr, ns), vgrad(nr, 3, ns), vtau(nr, ns), &
                 ref_vrho(nr, ns), ref_vgrad(nr, 3, ns), ref_vtau(nr, ns))
@@ -142,6 +142,17 @@ PROGRAM skala_grid_unittest
                                        MAXVAL(ABS(vgrad - ref_vgrad)), MAXVAL(ABS(vtau - ref_vtau)))
                CALL comm%max(error)
                IF (error > routing_tolerance) ERROR STOP "Atom routing changes the energy or primitive derivatives"
+            END IF
+            IF (cuda_points) THEN
+               DO device = 1, 2
+                  CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=(device == 1))
+                  CALL evaluate(rho, grad, tau, energy)
+                  error = ABS(energy - reference)
+                  IF (nr > 0) error = MAX(error, MAXVAL(ABS(vrho - ref_vrho)), &
+                                          MAXVAL(ABS(vgrad - ref_vgrad)), MAXVAL(ABS(vtau - ref_vtau)))
+                  CALL comm%max(error)
+                  IF (error > routing_tolerance) ERROR STOP "Device switching changes the energy or primitive derivatives"
+               END DO
             END IF
             DO component = 1, 3
                SELECT CASE (component)

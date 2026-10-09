@@ -80,7 +80,7 @@ MODULE torch_api
    PUBLIC :: torch_tensor_reset_from_array
    PUBLIC :: torch_tensor_data_ptr, torch_tensor_backward, torch_tensor_backward_scalar
    PUBLIC :: torch_tensor_grad, torch_tensor_grad_batch3, torch_tensor_hessian_vector
-   PUBLIC :: torch_tensor_to_device_leaf
+   PUBLIC :: torch_tensor_to_device_leaf, torch_tensor_on_current_device
    PUBLIC :: torch_tensor_item_double, torch_tensor_weighted_sum
    PUBLIC :: torch_dict_type, torch_dict_clone, torch_dict_create, torch_dict_insert
    PUBLIC :: torch_dict_get, torch_dict_release
@@ -671,6 +671,31 @@ CONTAINS
       MARK_USED(requires_grad)
 #endif
    END SUBROUTINE torch_tensor_to_device_leaf
+
+! **************************************************************************************************
+!> \brief Check whether a tensor resides on the active Torch device.
+! **************************************************************************************************
+   LOGICAL FUNCTION torch_tensor_on_current_device(tensor) RESULT(matches)
+      TYPE(torch_tensor_type), INTENT(IN)                :: tensor
+
+#if defined(__LIBTORCH)
+      INTERFACE
+         FUNCTION torch_c_tensor_on_current_device(tensor) BIND(C, name="torch_c_tensor_on_current_device") &
+            RESULT(on_device)
+            IMPORT :: C_BOOL, C_PTR
+            TYPE(C_PTR), VALUE                           :: tensor
+            LOGICAL(kind=C_BOOL)                         :: on_device
+         END FUNCTION torch_c_tensor_on_current_device
+      END INTERFACE
+
+      CPASSERT(C_ASSOCIATED(tensor%c_ptr))
+      matches = torch_c_tensor_on_current_device(tensor%c_ptr)
+#else
+      matches = .FALSE.
+      MARK_USED(tensor)
+      CPABORT("CP2K compiled without the Torch library.")
+#endif
+   END FUNCTION torch_tensor_on_current_device
 
 ! **************************************************************************************************
 !> \brief Select whether Torch wrappers should use CUDA when available.

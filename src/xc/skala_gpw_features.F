@@ -20,8 +20,8 @@ MODULE skala_gpw_features
    USE torch_api,                       ONLY: &
         torch_dict_clone, torch_dict_create, torch_dict_insert, torch_dict_release, &
         torch_dict_type, torch_tensor_expand_dim, torch_tensor_from_array, torch_tensor_narrow, &
-        torch_tensor_release, torch_tensor_reset_from_array, torch_tensor_to_device_leaf, &
-        torch_tensor_type
+        torch_tensor_on_current_device, torch_tensor_release, torch_tensor_reset_from_array, &
+        torch_tensor_to_device_leaf, torch_tensor_type
    USE xc_rho_set_types,                ONLY: xc_rho_set_get,&
                                               xc_rho_set_type
 #include "../base/base_uses.f90"
@@ -666,6 +666,12 @@ CONTAINS
       IF (PRESENT(atom_partition)) my_atom_partition = atom_partition
       matches = .FALSE.
       IF (.NOT. cached_layout%active) RETURN
+      IF (cached_layout%static_tensors_active) THEN
+         IF (.NOT. torch_tensor_on_current_device(cached_layout%grid_coords_t)) RETURN
+      END IF
+      IF (cached_layout%chunk_static_tensors_active) THEN
+         IF (.NOT. torch_tensor_on_current_device(cached_layout%chunk_grid_coords_t)) RETURN
+      END IF
       IF (cached_layout%atom_partition /= my_atom_partition) RETURN
       IF (cached_layout%natom /= SIZE(particle_set)) RETURN
       IF (cached_layout%nflat_local /= pw_grid%ngpts_local) RETURN
