@@ -24,6 +24,24 @@ be used for a oneMKL installation.
 
 On the Mac, BLAS and LAPACK can be provided by either OpenBLAS or Apple's Accelerate framework.
 
+## FFTW (required, FFT implementation)
+
+FFTW is required for performing FFT. The current version of CP2K works with FFTW 3.X. It can be
+downloaded from <http://www.fftw.org>.
+
+FFTW is also provided by MKL. If you have MKL but still want to use standalone FFTW3, pass
+`-DCP2K_USE_FFTW3_WITH_MKL=ON` to CMake.
+
+```{warning}
+Note that FFTW must know the Fortran compiler you will use in order to install properly
+(e.g., `export F77=gfortran` before configure if you intend to use gfortran).
+```
+
+Since CP2K is OpenMP parallelized, CP2K enables the FFTW3 OpenMP interface by default
+(`-DCP2K_ENABLE_FFTW3_OPENMP_SUPPORT=ON`); the FFTW installation must therefore provide
+`libfftw3_omp`. The alternative threads interface can be selected with
+`-DCP2K_ENABLE_FFTW3_THREADS_SUPPORT=ON`, which requires `libfftw3_threads`.
+
 ## DBCSR (required, block-sparse matrix operations)
 
 DBCSR is a standalone library for block-sparse matrix operations. It is maintained at the
@@ -37,6 +55,29 @@ The MPI configuration should be consistent between CP2K and DBCSR. For a MPI bui
 of CP2K, DBCSR must also have been built with MPI support using the CMake flag `-DUSE_MPI=ON`, and
 `-DUSE_MPI_F08=ON` if `mpi_f08` is available. Likewise, a serial build (`ssmp`/`sdbg`) of CP2K must
 use a DBCSR configured with `-DUSE_MPI=OFF`.
+
+## libwignernj (required, angular momentum algebra)
+
+[libwignernj](https://github.com/susilehtola/libwignernj) evaluates the Wigner 3j, 6j and 9j
+symbols, the Clebsch-Gordan coefficients and the Gaunt coefficients of the complex and real
+spherical harmonics. All intermediate arithmetic is carried out exactly, in a prime factorization
+representation, and the result is rounded only once at the end, so the returned coefficients are
+correct to the last bit.
+
+CP2K uses the Gaunt coefficients of the real spherical harmonics to expand products of two spherical
+harmonics, which is needed by the GAPW atomic densities and potentials, the LRI and SHG integrals,
+the spin-orbit coupling in TDDFPT, the XAS_TDP module and the CNEO nuclear basis.
+
+CP2K requires an external installation of libwignernj 0.8 or newer, including its upstream CMake
+package. The CP2K toolchain installs it by default (`--with-libwignernj=install`); the Spack
+dependency environments also include it. The toolchain accepts `--with-libwignernj=system` or an
+installation prefix to use an existing copy. There is no bundled fallback or configure-time
+download.
+
+Only the C library is used: CP2K binds to it through `ISO_C_BINDING`, so libwignernj can be built
+with `-DWIGNERNJ_BUILD_FORTRAN=OFF`. Use `-Dwignernj_ROOT=/path/to/install` or add the installation
+prefix to `CMAKE_PREFIX_PATH` when configuring CP2K. An installed CP2K also discovers this
+dependency when a downstream project calls `find_package(cp2k)`.
 
 ## MPI and ScaLAPACK (required for MPI parallel builds)
 
@@ -81,31 +122,6 @@ lower thread-support level is insufficient.
 For more information of ScaLAPACK, see <http://www.netlib.org/scalapack/>. ScaLAPACK can be part of
 AOCL (AMD) or oneMKL (Intel); these libraries are recommended on the corresponding machines if
 available.
-
-## FFTW (improved performance of FFTs)
-
-FFTW can be used to improve FFT speed on a wide range of architectures. It is strongly recommended
-to install and use FFTW3. The current version of CP2K works with FFTW 3.X (pass
-`-DCP2K_USE_FFTW3=ON` to CMake). It can be downloaded from <http://www.fftw.org>.
-
-FFTW is also provided by MKL. If you have MKL but still want to use standalone FFTW3, pass
-`-DCP2K_USE_FFTW3_WITH_MKL=ON` to CMake.
-
-```{warning}
-Note that FFTW must know the Fortran compiler you will use in order to install properly
-(e.g., `export F77=gfortran` before configure if you intend to use gfortran).
-```
-
-Since CP2K is OpenMP parallelized, CP2K enables the FFTW3 OpenMP interface by default
-(`-DCP2K_ENABLE_FFTW3_OPENMP_SUPPORT=ON`); the FFTW installation must therefore provide
-`libfftw3_omp`. The alternative threads interface can be selected with
-`-DCP2K_ENABLE_FFTW3_THREADS_SUPPORT=ON`, which requires `libfftw3_threads`.
-
-```{important}
-Support for FFTW is required for some features, especially systems with very large block sizes/grid
-sizes. A future release of CP2K may make FFTW a hard dependency. Please consider CP2K to be compiled
-with support for FFTW.
-```
 
 ## LIBINT (ERI calculation for HFX)
 

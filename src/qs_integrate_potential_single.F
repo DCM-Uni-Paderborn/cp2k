@@ -535,11 +535,13 @@ CONTAINS
 !> \param force_response Optional local atomic energy gradients instead of native force accumulation.
 !> \param virial_response Optional local grid virial instead of native virial accumulation.
 !> \param only_nopaw Optional kind selection. False includes every native Gaussian ionic charge.
+!> \param calpha Optional Gaussian exponents per kind replacing the core charge exponents.
+!> \param ccore Optional Gaussian coefficients per kind replacing the core charge coefficients.
 ! **************************************************************************************************
-   SUBROUTINE integrate_v_core_rspace(v_rspace, qs_env, atecc, force_response, virial_response, only_nopaw)
+   SUBROUTINE integrate_v_core_rspace(v_rspace, qs_env, atecc, force_response, virial_response, only_nopaw, calpha, ccore)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: v_rspace
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: atecc
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: atecc, calpha, ccore
       REAL(dp), INTENT(OUT), OPTIONAL                    :: force_response(:, :), &
                                                             virial_response(3, 3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: only_nopaw
@@ -569,6 +571,9 @@ CONTAINS
 
       CALL timeset(routineN, handle)
       NULLIFY (virial, force, atprop, dft_control)
+      IF (PRESENT(calpha)) THEN
+         CPASSERT(PRESENT(ccore))
+      END IF
 
       CALL get_qs_env(qs_env=qs_env, dft_control=dft_control)
 
@@ -583,7 +588,7 @@ CONTAINS
 
       !If gapw, check for gpw kinds
       skip_fcore = .FALSE.
-      IF (dft_control%qs_control%gapw) THEN
+      IF (dft_control%qs_control%gapw .AND. (.NOT. PRESENT(calpha))) THEN
          IF (.NOT. dft_control%qs_control%gapw_control%nopaw_as_gpw) skip_fcore = .TRUE.
       END IF
       IF (.NOT. my_only_nopaw) skip_fcore = .FALSE.
@@ -615,7 +620,7 @@ CONTAINS
          IF (PRESENT(force_response)) THEN
             CPASSERT(ALL(SHAPE(force_response) == [3, natom]))
          END IF
-         IF (ASSOCIATED(atprop) .AND. .NOT. isolated) THEN
+         IF (ASSOCIATED(atprop) .AND. .NOT. isolated .AND. (.NOT. PRESENT(calpha))) THEN
             CALL atprop_array_init(atprop%ateb, natom)
          END IF
 
@@ -629,10 +634,16 @@ CONTAINS
             CALL get_atomic_kind(atomic_kind_set(ikind), natom=natom_of_kind, atom_list=atom_list)
             CALL get_qs_kind(qs_kind_set(ikind), paw_atom=paw_atom)
 
-            IF (my_only_nopaw .AND. dft_control%qs_control%gapw .AND. paw_atom) CYCLE
+            IF (my_only_nopaw .AND. dft_control%qs_control%gapw .AND. paw_atom .AND. (.NOT. PRESENT(calpha))) CYCLE
 
-            CALL get_qs_kind(qs_kind_set(ikind), alpha_core_charge=alpha_core_charge, &
-                             ccore_charge=ccore_charge)
+            IF (PRESENT(calpha)) THEN
+               ! User defined Gaussians (e.g. the SCCS core fill) instead of the core charges
+               alpha_core_charge = calpha(ikind)
+               ccore_charge = ccore(ikind)
+            ELSE
+               CALL get_qs_kind(qs_kind_set(ikind), alpha_core_charge=alpha_core_charge, &
+                                ccore_charge=ccore_charge)
+            END IF
 
             pab(1, 1) = -ccore_charge
             IF (alpha_core_charge == 0.0_dp .OR. pab(1, 1) == 0.0_dp) CYCLE
@@ -694,7 +705,7 @@ CONTAINS
                   virial%pv_ehartree = virial%pv_ehartree + my_virial_a
                   virial%pv_virial = virial%pv_virial + my_virial_a
                END IF
-               IF (ASSOCIATED(atprop) .AND. .NOT. isolated) THEN
+               IF (ASSOCIATED(atprop) .AND. .NOT. isolated .AND. (.NOT. PRESENT(calpha))) THEN
                   atprop%ateb(atom_a) = atprop%ateb(atom_a) + 0.5_dp*hab(1, 1)*pab(1, 1)
                END IF
                IF (PRESENT(atecc)) THEN

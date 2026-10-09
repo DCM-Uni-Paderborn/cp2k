@@ -67,6 +67,11 @@ registry["Cell_vector_a_y"] = GenericMatcher(r"CELL| Vector a [angstrom]:", col=
 registry["Cell_angle_alpha"] = GenericMatcher(
     r"CELL| Angle (b,c), alpha [degree]:", col=6
 )
+# The "|a| =  ..." column of the cell-vector lines: the vector length,
+# as printed by write_cell_low (last occurrence = the final cell).
+registry["Cell_length_a"] = GenericMatcher(r"CELL| Vector a [angstrom]:", col=10)
+registry["Cell_length_b"] = GenericMatcher(r"CELL| Vector b [angstrom]:", col=10)
+registry["Cell_length_c"] = GenericMatcher(r"CELL| Vector c [angstrom]:", col=10)
 
 registry["Vib_freq"] = GenericMatcher(r"VIB|Frequency", col=3)  # M008
 registry["Vib_frc_const"] = GenericMatcher(r"VIB|Frc consts", col=4)  # M128
@@ -463,8 +468,12 @@ registry["Dipole_at_kp_1"] = GenericMatcher(r"  1   1   2", col=4, abs_value=Tru
 # Dipole moment calculated at a specific k-point (-0.375,-0.375, 0.00)
 registry["Dipole_for_CrSBr"] = GenericMatcher(r"  1  31  32", col=4, abs_value=True)
 
+# Berry total dipole moment in trajectory format
+registry["Dipole_berry_traj"] = GenericMatcher(r"MOMENTS|", col=6)
+
 # Berry curvature calculated from dipoles near K point in graphene BZ
 registry["BC_near_K_point"] = GenericMatcher(r"   1    4", col=5)
+
 
 # GEXT extrapolation
 registry["gext"] = GenericMatcher(r"GEXT overlap fitting error:", col=5)

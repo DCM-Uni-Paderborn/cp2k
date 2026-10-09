@@ -189,7 +189,6 @@ list(
   ec_diag_solver.F
   ec_orth_solver.F
   ed_analysis.F
-  efield_tb_methods.F
   efield_utils.F
   eip_environment.F
   eip_environment_types.F
@@ -210,7 +209,6 @@ list(
   et_coupling_proj.F
   et_coupling_types.F
   ewald_environment_types.F
-  ewald_methods_tb.F
   ewald_pw_methods.F
   ewald_pw_types.F
   ewalds.F
@@ -359,7 +357,6 @@ list(
   input_cp2k_rsgrid.F
   input_cp2k_subsys.F
   input_cp2k_smeagol.F
-  input_cp2k_tb.F
   input_cp2k_thermostats.F
   input_cp2k_transport.F
   input_cp2k_voronoi.F
@@ -398,7 +395,6 @@ list(
   libgint_wrapper.F
   library_tests.F
   linesearch.F
-  localization_tb.F
   localized_moments.F
   lri_compression.F
   lri_environment_init.F
@@ -569,8 +565,6 @@ list(
   qmmm_pw_grid.F
   qmmm_se_energy.F
   qmmm_se_forces.F
-  qmmm_tb_coulomb.F
-  qmmm_tb_methods.F
   qmmm_topology_util.F
   qmmm_types.F
   qmmm_types_low.F
@@ -620,13 +614,6 @@ list(
   qs_density_fit.F
   qs_density_matrices.F
   qs_density_mixing_types.F
-  qs_dftb3_methods.F
-  qs_dftb_coulomb.F
-  qs_dftb_dispersion.F
-  qs_dftb_matrices.F
-  qs_dftb_parameters.F
-  qs_dftb_types.F
-  qs_dftb_utils.F
   qs_diis.F
   qs_diis_types.F
   qs_scf_subspace_types.F
@@ -805,7 +792,6 @@ list(
   qs_scf_post_gpw.F
   qs_scf_post_scf.F
   qs_scf_post_se.F
-  qs_scf_post_tb.F
   qs_scf_types.F
   qs_scf_wfn_mix.F
   qs_spin_orbit.F
@@ -907,9 +893,6 @@ list(
   semi_empirical_utils.F
   simpar_types.F
   sirius_interface.F
-  skala_gpw_functional.F
-  skala_gpw_features.F
-  skala_torch_api.F
   smeagol_control_types.F
   smeagol_emtoptions.F
   smeagol_interface.F
@@ -929,10 +912,6 @@ list(
   taper_types.F
   task_list_methods.F
   task_list_types.F
-  tblite_interface.F
-  tblite_ks_matrix.F
-  tblite_scc_mixer.F
-  tblite_types.F
   time_frequency_grids.F
   tip_scan_methods.F
   tip_scan_types.F
@@ -986,30 +965,17 @@ list(
   xas_tdp_utils.F
   xas_tp_scf.F
   gapw_gspace_reconstruction.F
-  xray_diffraction.F
-  xtb_qresp.F
-  xtb_coulomb.F
-  xtb_spinpol.F
-  xtb_eeq.F
-  xtb_ehess.F
-  xtb_ehess_force.F
-  xtb_hcore.F
-  xtb_hab_force.F
-  xtb_ks_matrix.F
-  xtb_matrices.F
-  xtb_parameters.F
-  xtb_potentials.F
-  xtb_types.F)
+  xray_diffraction.F)
 
 list(
   APPEND
   CP2K_SRCS_F
   aobasis/ai_angmom.F
+  aobasis/ai_cartesian_operators.F
   aobasis/ai_contraction.F
   aobasis/ai_contraction_sphi.F
   aobasis/ai_coulomb.F
   aobasis/ai_coulomb_test.F
-  aobasis/ai_derivatives.F
   aobasis/ai_elec_field.F
   aobasis/ai_eri_debug.F
   aobasis/ai_fermi_contact.F
@@ -1032,6 +998,7 @@ list(
   aobasis/aux_basis_set.F
   aobasis/basis_set_container_types.F
   aobasis/basis_set_types.F
+  aobasis/gaunt_coefficients.F
   aobasis/orbital_pointers.F
   aobasis/orbital_symbols.F
   aobasis/orbital_transformation_matrices.F
@@ -1115,7 +1082,8 @@ list(
   common/util.F
   common/xmgrace.F
   common/erf_complex.F
-  common/whittaker.F)
+  common/whittaker.F
+  common/wignernj_interface.F)
 
 list(APPEND CP2K_SRCS_F dbm/dbm_api.F dbm/dbm_tests.F)
 
@@ -1443,6 +1411,41 @@ list(
 list(
   APPEND
   CP2K_SRCS_F
+  tb/efield_tb_methods.F
+  tb/ewald_methods_tb.F
+  tb/input_cp2k_tb.F
+  tb/localization_tb.F
+  tb/qmmm_tb_coulomb.F
+  tb/qmmm_tb_methods.F
+  tb/qs_dftb3_methods.F
+  tb/qs_dftb_coulomb.F
+  tb/qs_dftb_dispersion.F
+  tb/qs_dftb_matrices.F
+  tb/qs_dftb_parameters.F
+  tb/qs_dftb_types.F
+  tb/qs_dftb_utils.F
+  tb/qs_scf_post_tb.F
+  tb/tblite_interface.F
+  tb/tblite_ks_matrix.F
+  tb/tblite_scc_mixer.F
+  tb/tblite_types.F
+  tb/xtb_coulomb.F
+  tb/xtb_eeq.F
+  tb/xtb_ehess.F
+  tb/xtb_ehess_force.F
+  tb/xtb_hab_force.F
+  tb/xtb_hcore.F
+  tb/xtb_ks_matrix.F
+  tb/xtb_matrices.F
+  tb/xtb_parameters.F
+  tb/xtb_potentials.F
+  tb/xtb_qresp.F
+  tb/xtb_spinpol.F
+  tb/xtb_types.F)
+
+list(
+  APPEND
+  CP2K_SRCS_F
   tmc/input_cp2k_tmc.F
   tmc/tmc_analysis.F
   tmc/tmc_analysis_types.F
@@ -1472,6 +1475,9 @@ list(
   xc_adiabatic_methods.F
   xc_adiabatic_utils.F
   xc/cp_linked_list_xc_deriv.F
+  xc/skala_gpw_features.F
+  xc/skala_gpw_functional.F
+  xc/skala_torch_api.F
   xc_pot_saop.F
   xc_write_output.F
   xc/xc_atom.F
@@ -1939,6 +1945,7 @@ target_link_libraries(
     $<$<BOOL:${CP2K_USE_TREXIO}>:cp2k::trexio::trexio>
     $<$<BOOL:${CP2K_USE_HDF5}>:HDF5::HDF5
     hdf5::hdf5_fortran>
+    wignernj::wignernj
     DBCSR::dbcsr
     $<$<BOOL:${CP2K_USE_MPI}>:cp2k::SCALAPACK::scalapack>
     cp2k_linalg_libs
