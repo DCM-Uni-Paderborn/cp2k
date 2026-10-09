@@ -1,1 +1,5 @@
 "H2.inp" = [{matcher="M085", tol=5.0e-8, ref=-1.178329157785569}]
+"H-spin-kpoints.inp" = [
+  {matcher="M085", tol=5.0e-8, ref=-0.498153725654412},
+  {matcher="M031", tol=5.0e-8, ref=-1.11720659923e5},
+]
