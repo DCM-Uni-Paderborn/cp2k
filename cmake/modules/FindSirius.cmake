@@ -31,18 +31,33 @@ if(CP2K_USE_LIBTORCH)
     CP2K_SIRIUS_API_SUPPORTED
     SRC_EXT
     F90)
-  # The end-to-end unit test also uses optional SIRIUS derivative checks.
+  # The end-to-end unit test uses separate, optional SIRIUS test support.
+  find_package(sirius_testing CONFIG QUIET HINTS
+               "${sirius_DIR}/../sirius_testing")
   unset(CP2K_SIRIUS_TEST_API_SUPPORTED CACHE)
-  CHECK_Fortran_SOURCE_COMPILES(
-    "program check_sirius_test_api
-   use sirius, only: sirius_check_external_xc_derivative, &
-     sirius_check_external_xc_response, sirius_finalize
+  unset(CP2K_SIRIUS_TEST_API_SUPPORTED)
+  if(TARGET sirius::sirius_testing)
+    get_target_property(_sirius_test_includes sirius::sirius_testing
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    list(APPEND CMAKE_REQUIRED_INCLUDES ${_sirius_test_includes})
+    CHECK_Fortran_SOURCE_COMPILES(
+      "program check_sirius_test_api
+   use sirius, only: sirius_ground_state_handler
+   use sirius_testing, only: sirius_check_external_xc_derivative, &
+     sirius_check_external_xc_response
+   type(sirius_ground_state_handler) :: gs
+   real(8) :: derivatives(3,2), errors(2)
    integer :: error
-   call sirius_finalize(.false., .false., error)
+   call sirius_check_external_xc_derivative(gs, 1d-3, derivatives, error)
+   call sirius_check_external_xc_response(gs, 1d-3, errors, error)
    end program"
-    CP2K_SIRIUS_TEST_API_SUPPORTED
-    SRC_EXT
-    F90)
+      CP2K_SIRIUS_TEST_API_SUPPORTED
+      SRC_EXT
+      F90)
+    unset(_sirius_test_includes)
+  else()
+    set(CP2K_SIRIUS_TEST_API_SUPPORTED FALSE)
+  endif()
   if(_try_compile_target_type)
     set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_try_compile_target_type}")
   else()

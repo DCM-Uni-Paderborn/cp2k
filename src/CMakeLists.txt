@@ -2101,6 +2101,7 @@ if(CP2K_USE_LIBTORCH)
   if(CP2K_USE_SIRIUS AND CP2K_SIRIUS_TEST_API_SUPPORTED)
     list(APPEND __CP2K_APPS "skala_sirius_unittest")
     add_executable(skala_sirius_unittest xc/skala_sirius_unittest.F)
+    target_link_libraries(skala_sirius_unittest PRIVATE sirius::sirius_testing)
   endif()
 endif()
 

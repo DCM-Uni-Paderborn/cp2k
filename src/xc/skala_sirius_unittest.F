@@ -32,8 +32,7 @@ PROGRAM skala_sirius_unittest
    USE sirius,                          ONLY: &
         SIRIUS_NUMBER_TYPE, sirius_add_atom, sirius_add_atom_type, &
         sirius_add_atom_type_aw_descriptor, sirius_add_atom_type_lo_descriptor, &
-        sirius_add_atom_type_radial_function, sirius_check_external_xc_derivative, &
-        sirius_check_external_xc_response, sirius_context_handler, sirius_create_context, &
+        sirius_add_atom_type_radial_function, sirius_context_handler, sirius_create_context, &
         sirius_create_ground_state, sirius_create_kset, sirius_find_ground_state, &
         sirius_free_handler, sirius_generate_density, sirius_generate_effective_potential, &
         sirius_get_energy, sirius_get_forces, sirius_get_max_num_gkvec, sirius_get_stress_tensor, &
@@ -44,6 +43,8 @@ PROGRAM skala_sirius_unittest
         sirius_set_atom_type_radial_grid_inf, sirius_set_lattice_vectors, sirius_set_parameters, &
         sirius_update_ground_state
    USE sirius_interface,                ONLY: cp_sirius_init
+   USE sirius_testing,                  ONLY: sirius_check_external_xc_derivative,&
+                                              sirius_check_external_xc_response
    USE skala_sirius,                    ONLY: skala_sirius_register_atom_grid,&
                                               skala_sirius_register_points,&
                                               skala_sirius_release,&
