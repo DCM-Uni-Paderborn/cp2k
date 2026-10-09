@@ -27,9 +27,9 @@ MODULE qs_kpoint_operators
    USE cp_cfm_basic_linalg,             ONLY: cp_cfm_scale_and_add_fm
    USE cp_cfm_types,                    ONLY: cp_cfm_type
    USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, dbcsr_get_readonly_block_p, &
-        dbcsr_init_p, dbcsr_p_type, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, &
-        dbcsr_type_symmetric
+        dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, dbcsr_get_matrix_type, &
+        dbcsr_get_readonly_block_p, dbcsr_init_p, dbcsr_p_type, dbcsr_scale, dbcsr_set, &
+        dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, dbcsr_type_symmetric
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr_bc,&
@@ -83,6 +83,7 @@ MODULE qs_kpoint_operators
    PUBLIC :: kpoint_operator_start, kpoint_operator_finish
    PUBLIC :: kpoint_operator_get, kpoint_operator_prepare
    PUBLIC :: kpoint_operator_evaluate, kpoint_operator_work_size
+   PUBLIC :: kpoint_operator_evaluate_at
    PUBLIC :: kpoint_operator_store, kpoint_operator_get_local, kpoint_operator_get_all
 
    INTEGER, PARAMETER, PUBLIC :: kpoint_slot_ks = 1, &
@@ -128,6 +129,7 @@ MODULE qs_kpoint_operators
 
    TYPE kpoint_operator_rs_type
       INTEGER :: matrix_row = 0
+      LOGICAL :: imaginary_operator = .FALSE.
       TYPE(dbcsr_p_type), POINTER :: source(:, :) => NULL()
       ! Values are owned only for distributed sources. Blocks always borrow:
       ! either from values below or, on one world rank, directly from DBCSR.
@@ -161,6 +163,7 @@ MODULE qs_kpoint_operators
       ! operator such as S counts derivatives, and the images live in the
       ! second, so callers address operator rows through matrix_row instead.
       INTEGER                                            :: nspin = 0
+      LOGICAL                                            :: imaginary_operator = .FALSE.
       ! Borrowed host/distribution references; the context cannot span an energy evaluation.
       TYPE(kpoint_type), POINTER                          :: kpoints => NULL()
       TYPE(cp_fm_struct_type), POINTER                    :: ao_ao_fmstruct => NULL()
@@ -217,6 +220,7 @@ CONTAINS
 
       ! Avoid nested component array sections in GCC 16 bounds checks.
       xkp => ctx%kpoints%xkp
+      CPASSERT(.NOT. (ctx%imaginary_operator .AND. use_grid))
       IF (ctx%kpoints%use_real_wfn) THEN
          IF (use_grid) THEN
             CPASSERT(PRESENT(grid))
@@ -233,9 +237,16 @@ CONTAINS
       ELSE
          CALL dbcsr_set(ctx%rmatrix, 0.0_dp)
          CALL dbcsr_set(ctx%cmatrix, 0.0_dp)
-         CALL rskp_transform(rmatrix=ctx%rmatrix, cmatrix=ctx%cmatrix, rsmat=rsmat, ispin=matrix_row, &
-                             xkp=xkp(:, ik), cell_to_index=ctx%kpoints%cell_to_index, &
-                             sab_nl=ctx%kpoints%sab_nl)
+         IF (ctx%imaginary_operator) THEN
+            CALL rskp_transform(rmatrix=ctx%cmatrix, cmatrix=ctx%rmatrix, rsmat=rsmat, ispin=matrix_row, &
+                                xkp=xkp(:, ik), cell_to_index=ctx%kpoints%cell_to_index, &
+                                sab_nl=ctx%kpoints%sab_nl)
+            CALL dbcsr_scale(ctx%rmatrix, -1.0_dp)
+         ELSE
+            CALL rskp_transform(rmatrix=ctx%rmatrix, cmatrix=ctx%cmatrix, rsmat=rsmat, ispin=matrix_row, &
+                                xkp=xkp(:, ik), cell_to_index=ctx%kpoints%cell_to_index, &
+                                sab_nl=ctx%kpoints%sab_nl)
+         END IF
       END IF
       CALL copy_dbcsr_to_fm(ctx%rmatrix, ctx%fmwork(kpoint_part_re), ctx%copy_plan(kpoint_part_re))
       IF (.NOT. ctx%kpoints%use_real_wfn) THEN
@@ -373,13 +384,15 @@ CONTAINS
 !> \param nspin instance spin space of the owning driver call: the bound of
 !>        the spin loop its start and finish calls iterate. Fixed for the
 !>        lifetime of the context
+!> \param imaginary_operator Real-space arrays store the imaginary part of a Hermitian operator
 ! **************************************************************************************************
-   SUBROUTINE kpoint_operator_context_create(ctx, kpoints, ao_ao_fm, nspin)
+   SUBROUTINE kpoint_operator_context_create(ctx, kpoints, ao_ao_fm, nspin, imaginary_operator)
 
       TYPE(kpoint_operator_context_type), INTENT(OUT)    :: ctx
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(cp_fm_type), INTENT(IN)                       :: ao_ao_fm
       INTEGER, INTENT(IN)                                :: nspin
+      LOGICAL, INTENT(IN), OPTIONAL                      :: imaginary_operator
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_operator_context_create'
 
@@ -390,6 +403,8 @@ CONTAINS
       CPASSERT(nspin >= 1)
       ctx%nspin = nspin
       CPASSERT(ASSOCIATED(kpoints))
+      IF (PRESENT(imaginary_operator)) ctx%imaginary_operator = imaginary_operator
+      CPASSERT(.NOT. (ctx%imaginary_operator .AND. kpoints%use_real_wfn))
       ctx%kpoints => kpoints
       CALL cp_fm_get_info(ao_ao_fm, matrix_struct=ctx%ao_ao_fmstruct)
       CPASSERT(ASSOCIATED(ctx%ao_ao_fmstruct))
@@ -604,9 +619,12 @@ CONTAINS
          CPASSERT(SIZE(rsmat, 1) == ctx%nspin)
       END IF
       para_env => ctx%kpoints%blacs_env_all%para_env
-      CALL kpoint_operator_ensure_group(ctx)
-      fms => ctx%fmlocal%matrix_struct
-      IF (PRESENT(TARGET)) fms => target%matrix_struct
+      IF (PRESENT(TARGET)) THEN
+         fms => target%matrix_struct
+      ELSE
+         CALL kpoint_operator_ensure_group(ctx)
+         fms => ctx%fmlocal%matrix_struct
+      END IF
       CPASSERT(ASSOCIATED(fms))
       ! Routing uses the host group-rank numbering. Different BLACS layouts
       ! on that communicator are supported, foreign communicators are not.
@@ -654,6 +672,7 @@ CONTAINS
             row = ispin
             IF (PRESENT(matrix_row)) row = matrix_row
             CALL kpoint_operator_rs_capture(rsmat, row, ctx%rs_route, ctx%kpoints, ctx%rs(ispin, slot))
+            ctx%rs(ispin, slot)%imaginary_operator = ctx%imaginary_operator
          END DO
       END IF
       IF (PRESENT(prepared)) prepared = ready
@@ -673,6 +692,7 @@ CONTAINS
       IF (ASSOCIATED(snapshot%values)) DEALLOCATE (snapshot%values)
       NULLIFY (snapshot%source)
       snapshot%matrix_row = 0
+      snapshot%imaginary_operator = .FALSE.
 
    END SUBROUTINE kpoint_operator_rs_clear
 
@@ -742,7 +762,9 @@ CONTAINS
       CALL dbcsr_get_info(source(1, 1)%matrix, row_blk_size=row_size, col_blk_size=col_size)
       CALL kp_transform_plan_create(route%traversal, kpoints%sab_nl, kpoints%cell_to_index, &
                                     SIZE(source, 2), block_template=source(1, 1)%matrix)
-      compatible = MERGE(1, 0, route%traversal%symmetric)
+      compatible = 1
+      IF (.NOT. route%traversal%symmetric .AND. &
+          dbcsr_get_matrix_type(source(1, 1)%matrix) /= dbcsr_type_no_symmetry) compatible = 0
       IF (SUM(row_size) /= matrix_struct%nrow_global .OR. &
           SUM(col_size) /= matrix_struct%ncol_global) compatible = 0
       IF (SIZE(row_size) == SIZE(col_size)) THEN
@@ -835,7 +857,8 @@ CONTAINS
             route%send_first(iblock) = pos
             send_metadata(1:4, iblock) = [route%traversal%row_offset(i), route%traversal%col_offset(i), nrow, ncol]
             send_metadata(5:7, iblock) = NINT(route%traversal%symmetry_sign(i))*route%traversal%cell(:, i)
-            send_metadata(8, iblock) = MERGE(1, 0, route%traversal%row(i) /= route%traversal%col(i))
+            send_metadata(8, iblock) = MERGE(1, 0, route%traversal%symmetric .AND. &
+                                             route%traversal%row(i) /= route%traversal%col(i))
             position(:, dest) = position(:, dest) + [1, nrow*ncol]
          END DO
       END DO
@@ -931,7 +954,8 @@ CONTAINS
          rows(2, fms%g2p_row(j)) = .TRUE.
          cols(1, fms%g2p_col(j)) = .TRUE.
       END DO
-      IF (route%traversal%row(i) == route%traversal%col(i)) rows(2, :) = .FALSE.
+      IF (.NOT. route%traversal%symmetric .OR. &
+          route%traversal%row(i) == route%traversal%col(i)) rows(2, :) = .FALSE.
       needed(:) = .FALSE.
       DO pc = 0, fms%context%num_pe(2) - 1
          DO pr = 0, fms%context%num_pe(1) - 1
@@ -963,6 +987,8 @@ CONTAINS
       IF (SIZE(source, 2) /= route%nimage) RETURN
       IF (matrix_row < 1 .OR. matrix_row > SIZE(source, 1)) RETURN
       DO image = 1, SIZE(source, 2)
+         IF (.NOT. route%traversal%symmetric .AND. &
+             dbcsr_get_matrix_type(source(matrix_row, image)%matrix) /= dbcsr_type_no_symmetry) RETURN
          CALL dbcsr_get_info(source(matrix_row, image)%matrix, row_blk_size=row_size, col_blk_size=col_size)
          IF (SIZE(row_size) /= SIZE(route%row_size) .OR. SIZE(col_size) /= SIZE(route%col_size)) RETURN
          IF (ANY(row_size /= route%row_size) .OR. ANY(col_size /= route%col_size)) RETURN
@@ -1209,6 +1235,7 @@ CONTAINS
          DO k = 1, nbatch
             arg = twopi*DOT_PRODUCT(REAL(route%entry(5:7, iblock), dp), xkp(:, k))
             phase(k, iblock) = CMPLX(COS(arg), SIN(arg), KIND=dp)
+            IF (snapshot%imaginary_operator) phase(k, iblock) = gaussi*phase(k, iblock)
          END DO
       END DO
       ncol = route%ncol
@@ -1360,22 +1387,48 @@ CONTAINS
       TYPE(cp_fm_type), INTENT(INOUT), OPTIONAL          :: fm_re, fm_im
 
       REAL(KIND=dp), POINTER                             :: xkp(:, :)
-      INTEGER                                            :: row
 
       CPASSERT(ik >= ctx%kpoints%kp_range(1))
       CPASSERT(ik <= ctx%kpoints%kp_range(2))
+      xkp => ctx%kpoints%xkp
+      CALL kpoint_operator_evaluate_at(ctx, ispin, slot, xkp(:, ik), phase, TARGET, fm_re, fm_im)
+   END SUBROUTINE kpoint_operator_evaluate
+
+! **************************************************************************************************
+!> \brief Evaluate a prepared group-local tile at a point outside the representative list.
+!>        No world communication; callers may process different complete orbits in each group.
+!> \param ctx prepared read-only context
+!> \param ispin instance spin
+!> \param slot operator slot
+!> \param xkp fractional reciprocal coordinates
+!> \param phase private phase scratch, sized with work_size
+!> \param TARGET optional private complex output
+!> \param fm_re optional private real output instead of TARGET
+!> \param fm_im optional private imaginary output accompanying fm_re
+! **************************************************************************************************
+   SUBROUTINE kpoint_operator_evaluate_at(ctx, ispin, slot, xkp, phase, TARGET, fm_re, fm_im)
+      TYPE(kpoint_operator_context_type), INTENT(IN)     :: ctx
+      INTEGER, INTENT(IN)                                :: ispin, slot
+      REAL(KIND=dp), INTENT(IN)                          :: xkp(3)
+      TYPE(cp_cfm_type), INTENT(INOUT), OPTIONAL         :: target
+      COMPLEX(KIND=dp), INTENT(INOUT), TARGET            :: phase(:, :)
+      TYPE(cp_fm_type), INTENT(INOUT), OPTIONAL          :: fm_re, fm_im
+
+      INTEGER                                            :: row
+
+      CPASSERT(ispin >= 1 .AND. ispin <= ctx%nspin)
+      CPASSERT(slot >= kpoint_slot_ks .AND. slot <= kpoint_slot_t)
       row = ispin
       IF (.NOT. ASSOCIATED(ctx%rs(row, slot)%source)) row = 1
       CPASSERT(ASSOCIATED(ctx%rs(row, slot)%source))
-      xkp => ctx%kpoints%xkp
-      CALL kpoint_operator_rs_build_batch(ctx%rs(row, slot), ctx%rs_route, xkp(:, ik:ik), &
+      CALL kpoint_operator_rs_build_batch(ctx%rs(row, slot), ctx%rs_route, RESHAPE(xkp, [3, 1]), &
                                           TARGET=TARGET, fm_re=fm_re, fm_im=fm_im, &
                                           phase_work=phase, parallel_columns=.FALSE.)
       IF (ctx%kpoints%use_real_wfn) THEN
          IF (PRESENT(TARGET)) target%local_data(:, :) = CMPLX(REAL(target%local_data, dp), 0.0_dp, dp)
          IF (PRESENT(fm_im)) fm_im%local_data(:, :) = 0.0_dp
       END IF
-   END SUBROUTINE kpoint_operator_evaluate
+   END SUBROUTINE kpoint_operator_evaluate_at
 
 ! **************************************************************************************************
 !> \brief Start one operator for one global round and spin. The service walks

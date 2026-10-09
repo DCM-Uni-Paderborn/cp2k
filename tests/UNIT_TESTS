@@ -39,4 +39,12 @@ pw_unittest
 quadratic_pseudospectrum_dbcsr_unittest
 spectral_localizer_sparse_unittest
 
+topology_atomic_unittest
+topology_band_unittest
+topology_character_unittest
+topology_integer_unittest
+topology_reciprocal_unittest
+topology_site_unittest
+topology_wyckoff_unittest
+
 #EOF

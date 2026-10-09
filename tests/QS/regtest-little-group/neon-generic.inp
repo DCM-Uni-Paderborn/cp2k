@@ -1,0 +1,6 @@
+@SET PROJECT neon-generic
+@SET NNKP neon-generic.nnkp
+@SET SOC T
+@SET EXTRA_MOS 8
+@SET EXCLUDED 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26
+@INCLUDE neon-common.inc

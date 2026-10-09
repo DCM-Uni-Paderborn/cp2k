@@ -38,7 +38,7 @@ MODULE qs_basis_rotation_methods
 
    ! Public subroutines
 
-   PUBLIC :: qs_basis_rotation
+   PUBLIC :: qs_basis_rotation, set_rotmat_basis
 
 CONTAINS
 

@@ -518,3 +518,5 @@ QS/regtest-gamma-frozen-density
 QS/regtest-spectral-localizer-dbcsr
 QS/regtest-spectral-localizer-pfaffian
 QS/regtest-quadratic-pseudospectrum-dbcsr
+QS/regtest-property-wilson                                  spglib
+QS/regtest-little-group                                     spglib

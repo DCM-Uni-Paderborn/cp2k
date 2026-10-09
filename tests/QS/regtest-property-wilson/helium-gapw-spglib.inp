@@ -1,0 +1,7 @@
+@SET PROPERTY_SYMMETRY T
+@SET PROPERTY_BACKEND SPGLIB
+@SET PROPERTY_GROUP_SIZE -1
+@SET CASE helium-gapw-spglib
+@SET PROPERTY_NNKP ../regtest-topology/helium.nnkp
+@SET PROPERTY_WILSON T
+@INCLUDE helium-gapw-common.inc

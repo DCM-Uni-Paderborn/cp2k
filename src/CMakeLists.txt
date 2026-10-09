@@ -681,6 +681,22 @@ list(
   localizer_sparse_inertia.F
   localizer_sparse_pfaffian.F
   spectral_localizer_sparse.F
+  qs_little_group.F
+  qs_property_links.F
+  qs_property_soc.F
+  qs_property_symmetry.F
+  topology_atomic_signatures.F
+  topology_band_representations.F
+  topology_character_match.F
+  topology_compatibility.F
+  topology_compatibility_lattice.F
+  topology_corepresentations.F
+  topology_integer_lattice.F
+  topology_little_group.F
+  topology_reciprocal.F
+  topology_site_relations.F
+  topology_star_transport.F
+  topology_wyckoff.F
   qs_spectral_localizer.F
   qs_localizer_torus.F
   spectral_localizer.F
@@ -1622,6 +1638,13 @@ set(CP2K_PROGS_F
     topology_wilson_unittest.F
     quadratic_pseudospectrum_dbcsr_unittest.F
     spectral_localizer_sparse_unittest.F
+    topology_atomic_unittest.F
+    topology_band_unittest.F
+    topology_character_unittest.F
+    topology_integer_unittest.F
+    topology_reciprocal_unittest.F
+    topology_site_unittest.F
+    topology_wyckoff_unittest.F
     spectral_localizer_unittest.F
     quadratic_pseudospectrum_unittest.F
     pw/pw_unittest.F
@@ -2066,6 +2089,13 @@ list(
   "topology_wilson_unittest"
   "quadratic_pseudospectrum_dbcsr_unittest"
   "spectral_localizer_sparse_unittest"
+  "topology_atomic_unittest"
+  "topology_band_unittest"
+  "topology_character_unittest"
+  "topology_integer_unittest"
+  "topology_reciprocal_unittest"
+  "topology_site_unittest"
+  "topology_wyckoff_unittest"
   "spectral_localizer_unittest"
   "quadratic_pseudospectrum_unittest"
   "pw_unittest"
@@ -2116,6 +2146,13 @@ add_executable(quadratic_pseudospectrum_dbcsr_unittest
                quadratic_pseudospectrum_dbcsr_unittest.F)
 add_executable(spectral_localizer_sparse_unittest
                spectral_localizer_sparse_unittest.F)
+add_executable(topology_atomic_unittest topology_atomic_unittest.F)
+add_executable(topology_band_unittest topology_band_unittest.F)
+add_executable(topology_character_unittest topology_character_unittest.F)
+add_executable(topology_integer_unittest topology_integer_unittest.F)
+add_executable(topology_reciprocal_unittest topology_reciprocal_unittest.F)
+add_executable(topology_site_unittest topology_site_unittest.F)
+add_executable(topology_wyckoff_unittest topology_wyckoff_unittest.F)
 add_executable(spectral_localizer_unittest spectral_localizer_unittest.F)
 add_executable(quadratic_pseudospectrum_unittest
                quadratic_pseudospectrum_unittest.F)
