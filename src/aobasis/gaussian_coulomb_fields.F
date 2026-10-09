@@ -44,6 +44,7 @@ MODULE gaussian_coulomb_fields
 
    PUBLIC :: gaussian_coulomb_fields_type, gaussian_coulomb_fields_init
    PUBLIC :: gaussian_coulomb_fields_prepare, gaussian_coulomb_fields_evaluate
+   PUBLIC :: gaussian_coulomb_fields_screen
 
 CONTAINS
 
@@ -123,6 +124,76 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE gaussian_coulomb_fields_prepare
+
+! **************************************************************************************************
+!> \brief Apply erf(omega*r)/r or erfc(omega*r)/r to an owned native Gaussian cache.
+!>        The long-range field is the Coulomb field of the exact Gaussian convolution.
+!>        Its solid-harmonic moments retain every radial power of the native contraction.
+!>        The short-range field subtracts this convolution from the original Coulomb field.
+!> \param fields Prepared shell-set cache, replaced by the selected interaction.
+!> \param omega Nonnegative inverse screening length in bohr^-1.
+!> \param short_range Select erfc instead of erf.
+! **************************************************************************************************
+   SUBROUTINE gaussian_coulomb_fields_screen(fields, omega, short_range)
+      TYPE(gaussian_coulomb_fields_type), INTENT(INOUT)  :: fields
+      REAL(dp), INTENT(IN)                               :: omega
+      LOGICAL, INTENT(IN)                                :: short_range
+
+      INTEGER                                            :: block, count, j, k, l, power
+      REAL(dp)                                           :: c, factor, inverse_width, ratio, sign
+      TYPE(gaussian_coulomb_primitive_type), ALLOCATABLE :: screened(:)
+
+      CPASSERT(ALLOCATED(fields%primitives))
+      CPASSERT(ieee_is_finite(omega) .AND. omega >= 0.0_dp)
+      IF (omega == 0.0_dp) THEN
+         IF (.NOT. short_range) THEN
+            DO block = 1, SIZE(fields%primitives)
+               fields%primitives(block)%coefficients(:, :) = 0.0_dp
+            END DO
+         END IF
+         RETURN
+      END IF
+      count = SUM(fields%primitives%power + 1)
+      IF (short_range) count = count + SIZE(fields%primitives)
+      ALLOCATE (screened(count))
+      count = 0
+      IF (short_range) THEN
+         count = SIZE(fields%primitives)
+         screened(:count) = fields%primitives
+      END IF
+      sign = 1.0_dp
+      IF (short_range) sign = -1.0_dp
+      DO block = 1, SIZE(fields%primitives)
+         ASSOCIATE (primitive => fields%primitives(block))
+            l = primitive%l
+            power = primitive%power
+            ! Avoid squaring a very large screening parameter.
+            IF (omega >= SQRT(primitive%alpha)) THEN
+               ratio = SQRT(primitive%alpha)/omega
+               c = 1.0_dp/(1.0_dp + ratio**2)
+               inverse_width = ratio**2*c/primitive%alpha
+            ELSE
+               ratio = omega/SQRT(primitive%alpha)
+               c = ratio**2/(1.0_dp + ratio**2)
+               inverse_width = 1.0_dp/(primitive%alpha*(1.0_dp + ratio**2))
+            END IF
+            DO j = power, 0, -1
+               factor = c**(REAL(l, dp) + 1.5_dp + 2.0_dp*REAL(j, dp))
+               DO k = j + 1, power
+                  factor = factor*REAL(k, dp)*REAL(2*l + 2*k + 1, dp)*inverse_width/ &
+                           (2.0_dp*REAL(k - j, dp))
+               END DO
+               count = count + 1
+               screened(count)%alpha = primitive%alpha*c
+               screened(count)%l = l
+               screened(count)%power = j
+               ALLOCATE (screened(count)%coefficients, MOLD=primitive%coefficients)
+               screened(count)%coefficients(:, :) = sign*factor*primitive%coefficients
+            END DO
+         END ASSOCIATE
+      END DO
+      CALL MOVE_ALLOC(screened, fields%primitives)
+   END SUBROUTINE gaussian_coulomb_fields_screen
 
 ! **************************************************************************************************
 !> \brief Evaluate full native Gaussian Coulomb potentials and their evaluation-point gradients.
