@@ -62,6 +62,8 @@ MODULE qs_ks_methods
                                               hfx_ks_matrix_kp
    USE hfx_types,                       ONLY: hfx_type
    USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              do_potential_long,&
+                                              do_potential_short,&
                                               do_ppl_grid,&
                                               outer_scf_becke_constraint,&
                                               outer_scf_hirshfeld_constraint,&
@@ -2010,7 +2012,7 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL, INTENT(IN)                                :: ace_active
 
-      INTEGER                                            :: contribution
+      INTEGER                                            :: contribution, point
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(hfx_type), POINTER                            :: exchange(:, :)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -2022,8 +2024,15 @@ CONTAINS
       IF (control%do_admm .OR. ace_active) THEN
          CPABORT("Inverse UPF ADMM and ACE exchange are not implemented yet")
       END IF
-      IF (ASSOCIATED(inverse%bloch%kpoints) .OR. ANY(inverse%frame%ao%periodicity /= 0)) THEN
-         CPABORT("Periodic inverse UPF exchange is not implemented yet")
+      IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
+         CPASSERT(SIZE(inverse%bloch%frames) > 0)
+         DO point = 1, SIZE(inverse%bloch%frames)
+            IF (.NOT. inverse%bloch%frames(point)%ao%atom_local) THEN
+               CPABORT("General inverse UPF lattice exchange is not implemented yet")
+            END IF
+         END DO
+      ELSE IF (ANY(inverse%frame%ao%periodicity /= 0)) THEN
+         CPABORT("Periodic inverse UPF exchange requires an explicit KPOINTS section")
       END IF
       CPASSERT(ASSOCIATED(exchange))
       DO contribution = 1, SIZE(exchange, 1)
@@ -2035,11 +2044,13 @@ CONTAINS
             IF (ri%input_flavor /= ri_pmat .OR. TRIM(ri%orb_basis_type) /= "ORB") THEN
                CPABORT("Inverse UPF exchange requires RI-RHO with the primary orbital basis")
             END IF
-            ! Coulomb fitting retains the complete original transition charge. The native
-            ! inverse-metric/exchange/inverse-metric product supplies the selected exchange kernel.
-            IF (ri%ri_metric%potential_type /= do_potential_coulomb) THEN
-               CPABORT("Inverse UPF RI transition integrals require a Coulomb fitting metric")
-            END IF
+            ! Augmented transition integrals use the same fitting interaction as the
+            ! native Gaussian integrals. The native contraction selects the exchange kernel.
+            SELECT CASE (ri%ri_metric%potential_type)
+            CASE (do_potential_coulomb, do_potential_long, do_potential_short)
+            CASE DEFAULT
+               CPABORT("Inverse UPF fitting interaction is not implemented yet")
+            END SELECT
          END ASSOCIATE
       END DO
    END SUBROUTINE check_inverse_exchange

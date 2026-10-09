@@ -1591,21 +1591,25 @@ CONTAINS
          IF (use_virial) THEN
             CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%bloch%augmentation%kinds, bases, &
                                                      cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                     frame%images, covectors, atom_gradient, strain_gradient)
+                                                     frame%images, covectors, atom_gradient, strain_gradient, &
+                                                     metric=ri_data%ri_metric)
          ELSE
             CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%bloch%augmentation%kinds, bases, &
                                                      cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                     frame%images, covectors, atom_gradient)
+                                                     frame%images, covectors, atom_gradient, &
+                                                     metric=ri_data%ri_metric)
          END IF
       ELSE
          IF (use_virial) THEN
             CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%augmentation%kinds, bases, &
                                                      cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                     frame%images, covectors, atom_gradient, strain_gradient)
+                                                     frame%images, covectors, atom_gradient, strain_gradient, &
+                                                     metric=ri_data%ri_metric)
          ELSE
             CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%augmentation%kinds, bases, &
                                                      cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                     frame%images, covectors, atom_gradient)
+                                                     frame%images, covectors, atom_gradient, &
+                                                     metric=ri_data%ri_metric)
          END IF
       END IF
       IF (subgroup%mepos == 0) THEN

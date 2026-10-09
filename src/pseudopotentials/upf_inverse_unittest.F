@@ -18,6 +18,7 @@ PROGRAM upf_inverse_unittest
    USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
                                               gaussian_coulomb_fields_init,&
                                               gaussian_coulomb_fields_prepare,&
+                                              gaussian_coulomb_fields_screen,&
                                               gaussian_coulomb_fields_type
    USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
                                               ieee_value
@@ -1368,9 +1369,10 @@ CONTAINS
       INTEGER                                            :: axis, ico, image, images(3, 3), point, &
                                                             row, side, translated_images(3, 3)
       REAL(dp) :: bloch(3), cell(3, 3), center(3), cg(3, 8), cm(8), cp(8), cv(8), cx(3), dc(3, 3), &
-         dcenter(3), dk(3), dpnt(3, nf), gradient(nf, nb, 3), gs(nf, nb, 3, 2), hh(nf, nb, 3, 3), &
-         radius, samples(nf, nb, 2), shift, value(nf, nb), x(3, nf), xp(3, nf)
-      TYPE(gaussian_coulomb_fields_type)                 :: coulomb
+         dcenter(3), dk(3), dpnt(3, nf), expected, gradient(nf, nb, 3), gs(nf, nb, 3, 2), &
+         hh(nf, nb, 3, 3), lg(3, 8), lv(8), omega, radius, samples(nf, nb, 2), sg(3, 8), shift, &
+         sv(8), value(nf, nb), width(2), x(3, nf), xp(3, nf)
+      TYPE(gaussian_coulomb_fields_type)                 :: coulomb, long_range, short_range
       TYPE(gto_basis_set_type), POINTER                  :: basis
 
       NULLIFY (basis)
@@ -1455,17 +1457,31 @@ CONTAINS
       CALL gaussian_coulomb_fields_init(3)
       CALL gaussian_coulomb_fields_prepare(basis, 1, coulomb)
       CALL deallocate_gto_basis_set(basis)
+      omega = .31_dp
+      width = SQRT([.4_dp, .9_dp]*omega**2/([.4_dp, .9_dp] + omega**2))
+      long_range = coulomb
+      short_range = coulomb
+      CALL gaussian_coulomb_fields_screen(long_range, omega, .FALSE.)
+      CALL gaussian_coulomb_fields_screen(short_range, omega, .TRUE.)
       DO point = 1, 3
          cx = [SQRT(12.0_dp/.4_dp)*REAL(point - 1, dp), 0.0_dp, 0.0_dp]
          CALL gaussian_coulomb_fields_evaluate(coulomb, cx, cv, cg)
+         CALL gaussian_coulomb_fields_evaluate(long_range, cx, lv, lg)
+         CALL gaussian_coulomb_fields_evaluate(short_range, cx, sv, sg)
+         CALL check(MAXVAL(ABS(lv + sv - cv)), 'Gaussian screened potential partition')
+         CALL check(MAXVAL(ABS(lg + sg - cg)), 'Gaussian screened gradient partition')
          radius = SQRT(SUM(cx**2))
          IF (radius == 0.0_dp) THEN
             CALL check(ABS(cv(1) - 2*pi*(.6_dp/.4_dp - .2_dp/.9_dp)), 'Gaussian Coulomb origin')
+            expected = 2*pi*(.6_dp*width(1)/.4_dp**1.5_dp - .2_dp*width(2)/.9_dp**1.5_dp)
          ELSE
             CALL check(ABS(cv(1) - pi**1.5_dp*(.6_dp*ERF(SQRT(.4_dp)*radius)/.4_dp**1.5_dp &
                                                - .2_dp*ERF(SQRT(.9_dp)*radius)/.9_dp**1.5_dp)/radius), &
                        'Signed Gaussian Coulomb tail')
+            expected = pi**1.5_dp*(.6_dp*ERF(width(1)*radius)/.4_dp**1.5_dp &
+                                   - .2_dp*ERF(width(2)*radius)/.9_dp**1.5_dp)/radius
          END IF
+         CALL check(ABS(lv(1) - expected), 'Signed Gaussian erf potential')
          DO axis = 1, 3
             cx(axis) = cx(axis) + step
             CALL gaussian_coulomb_fields_evaluate(coulomb, cx, cp)
@@ -1473,8 +1489,28 @@ CONTAINS
             CALL gaussian_coulomb_fields_evaluate(coulomb, cx, cm)
             cx(axis) = cx(axis) + step
             CALL check(MAXVAL(ABS((cp - cm)/(2*step) - cg(axis, :))), 'Gaussian Coulomb gradient', 2.e-8_dp)
+            cx(axis) = cx(axis) + step
+            CALL gaussian_coulomb_fields_evaluate(long_range, cx, cp)
+            cx(axis) = cx(axis) - 2*step
+            CALL gaussian_coulomb_fields_evaluate(long_range, cx, cm)
+            cx(axis) = cx(axis) + step
+            CALL check(MAXVAL(ABS((cp - cm)/(2*step) - lg(axis, :))), 'Gaussian erf gradient', 2.e-8_dp)
+            cx(axis) = cx(axis) + step
+            CALL gaussian_coulomb_fields_evaluate(short_range, cx, cp)
+            cx(axis) = cx(axis) - 2*step
+            CALL gaussian_coulomb_fields_evaluate(short_range, cx, cm)
+            cx(axis) = cx(axis) + step
+            CALL check(MAXVAL(ABS((cp - cm)/(2*step) - sg(axis, :))), 'Gaussian erfc gradient', 2.e-8_dp)
          END DO
       END DO
+      long_range = coulomb
+      short_range = coulomb
+      CALL gaussian_coulomb_fields_screen(long_range, 0.0_dp, .FALSE.)
+      CALL gaussian_coulomb_fields_screen(short_range, 0.0_dp, .TRUE.)
+      CALL gaussian_coulomb_fields_evaluate(long_range, cx, lv, lg)
+      CALL gaussian_coulomb_fields_evaluate(short_range, cx, sv, sg)
+      CALL check(MAXVAL(ABS(lv)) + MAXVAL(ABS(lg)), 'Zero-screening erf field')
+      CALL check(MAXVAL(ABS(sv - cv)) + MAXVAL(ABS(sg - cg)), 'Zero-screening erfc field')
    END SUBROUTINE check_gaussian_fields
 
 ! **************************************************************************************************

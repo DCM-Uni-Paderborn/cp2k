@@ -69,8 +69,7 @@ MODULE hfx_ri
                                               hfx_ri_init,&
                                               hfx_ri_release,&
                                               hfx_ri_type
-   USE input_constants,                 ONLY: do_potential_coulomb,&
-                                              hfx_ri_do_2c_cholesky,&
+   USE input_constants,                 ONLY: hfx_ri_do_2c_cholesky,&
                                               hfx_ri_do_2c_diag,&
                                               hfx_ri_do_2c_iter
    USE input_cp2k_hfx,                  ONLY: ri_mo,&
@@ -820,9 +819,6 @@ CONTAINS
       IF (ASSOCIATED(inverse%bloch%kpoints) .OR. ANY(inverse%frame%ao%periodicity /= 0)) THEN
          CPABORT("Periodic inverse UPF RI exchange is not implemented yet")
       END IF
-      IF (ri_data%ri_metric%potential_type /= do_potential_coulomb) THEN
-         CPABORT("Inverse UPF RI requires a Coulomb fitting metric")
-      END IF
       CPASSERT(ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == "ORB")
       CPASSERT(ALL(inverse%frame%ao%images == 0))
       ALLOCATE (bases(SIZE(atoms)), positions(3, SIZE(atoms)), factors(SIZE(atoms)))
@@ -833,7 +829,8 @@ CONTAINS
       END DO
       factors = CMPLX(1.0_dp, 0.0_dp, dp)
       CALL qs_upf_inverse_hfx_tensor(inverse%frame%ao, inverse%frame%ao, kinds, inverse%augmentation%kinds, &
-                                     bases, positions, factors, RESHAPE([0, 0, 0], [3, 1]), integrals)
+                                     bases, positions, factors, RESHAPE([0, 0, 0], [3, 1]), integrals, &
+                                     metric=ri_data%ri_metric)
    END SUBROUTINE inverse_3c_integrals
 
 ! **************************************************************************************************
@@ -875,9 +872,6 @@ CONTAINS
          frame => inverse%frame%ao
       END IF
       IF (.NOT. frame%atom_local) CPABORT("General inverse UPF lattice exchange is not implemented yet")
-      IF (ri_data%ri_metric%potential_type /= do_potential_coulomb) THEN
-         CPABORT("Inverse UPF RI requires a Coulomb fitting metric")
-      END IF
       CPASSERT(ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == "ORB")
       CALL get_kpoint_info(kpoints, index_to_cell=cells)
       CPASSERT(ri_data%nimg == SIZE(integrals) .AND. ri_data%nimg <= SIZE(cells, 2))
@@ -891,11 +885,13 @@ CONTAINS
       IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, inverse%bloch%augmentation%kinds, bases, &
                                                 cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                frame%images, integrals)
+                                                frame%images, integrals, &
+                                                metric=ri_data%ri_metric)
       ELSE
          CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, inverse%augmentation%kinds, bases, &
                                                 cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                frame%images, integrals)
+                                                frame%images, integrals, &
+                                                metric=ri_data%ri_metric)
       END IF
    END SUBROUTINE inverse_3c_lattice_integrals
 
@@ -912,8 +908,9 @@ CONTAINS
 !> \param covector Complete native energy derivative in (RI,AO,AO) order.
 !> \param use_virial Include affine cell response with the defining inverse measure retained.
 ! **************************************************************************************************
-   SUBROUTINE inverse_3c_forces(qs_env, basis_set_RI, atoms, kinds, covector, use_virial)
+   SUBROUTINE inverse_3c_forces(qs_env, ri_data, basis_set_RI, atoms, kinds, covector, use_virial)
       TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis_set_RI(:)
       TYPE(particle_type), INTENT(IN)                    :: atoms(:)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
@@ -964,7 +961,8 @@ CONTAINS
       weights_response = 0.0_dp
       inverse_virial = 0.0_dp
       CALL qs_upf_inverse_hfx_tensor_adjoint(inverse%frame%ao, inverse%frame%ao, kinds, inverse%augmentation%kinds, &
-                                             bases, positions, factors, RESHAPE([0, 0, 0], [3, 1]), covector, left, right)
+                                             bases, positions, factors, RESHAPE([0, 0, 0], [3, 1]), covector, left, right, &
+                                             metric=ri_data%ri_metric)
       left(:, :) = left + right
       CALL qs_upf_inverse_projection_adjoint(inverse%frame%ao, left, beta_gaussian, beta_delta)
       DO atom = 1, SIZE(atoms)
@@ -980,7 +978,8 @@ CONTAINS
                                                    left_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
                                                    right_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
                                                    auxiliary_positions_response=atom_response, &
-                                                   auxiliary_factors_response=zero_factors)
+                                                   auxiliary_factors_response=zero_factors, &
+                                                   metric=ri_data%ri_metric)
             CALL qs_upf_inverse_projection_contract(inverse%frame%ao, beta_gaussian, beta_delta, point_response, &
                                                     atom_response, SPREAD([0.0_dp, 0.0_dp, 0.0_dp], 2, 3), &
                                                     [0.0_dp, 0.0_dp, 0.0_dp], weights_response, projection_response)
@@ -3246,7 +3245,8 @@ CONTAINS
 
       IF (inverse_exchange) THEN
          CALL dbt_batched_contract_finalize(t_3c_inverse_covector)
-         CALL inverse_3c_forces(qs_env, basis_set_RI, particle_set, qs_kind_set, t_3c_inverse_covector, use_virial_prv)
+         CALL inverse_3c_forces(qs_env, ri_data, basis_set_RI, particle_set, qs_kind_set, t_3c_inverse_covector, &
+                                use_virial_prv)
          CALL dbt_destroy(t_3c_inverse_covector)
       END IF
       CALL dbt_batched_contract_finalize(t_3c_int)

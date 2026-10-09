@@ -13,7 +13,8 @@
 !>        conditioning, occupations and exchange interaction are not changed here.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_hfx
-   USE basis_set_types,                 ONLY: gto_basis_set_p_type
+   USE basis_set_types,                 ONLY: gto_basis_set_p_type,&
+                                              gto_basis_set_type
    USE dbt_api,                         ONLY: &
         dbt_clear, dbt_create, dbt_destroy, dbt_finalize, dbt_get_block, dbt_get_info, &
         dbt_get_stored_coordinates, dbt_put_block, dbt_type
@@ -21,7 +22,12 @@ MODULE qs_upf_inverse_hfx
    USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
                                               gaussian_coulomb_fields_init,&
                                               gaussian_coulomb_fields_prepare,&
+                                              gaussian_coulomb_fields_screen,&
                                               gaussian_coulomb_fields_type
+   USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              do_potential_long,&
+                                              do_potential_short
+   USE integral_library_types,          ONLY: coulomb_operator_type
    USE kinds,                           ONLY: dp
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
                                               init_lebedev_grids,&
@@ -78,9 +84,10 @@ CONTAINS
 !> \param responses Optional matching integral response tensors.
 !> \param atom_response Motion of the unshifted physical atoms and their RI centers.
 !> \param cell_response Lattice-vector response at fixed integer cells and reduced k points.
+!> \param metric Optional native RI interaction, Coulomb by default.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_lattice_tensor(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
-                                                ao_images, center_images, tensors, responses, atom_response, cell_response)
+                                                ao_images, center_images, tensors, responses, atom_response, cell_response, metric)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -90,6 +97,7 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: tensors(:)
       TYPE(dbt_type), INTENT(INOUT), OPTIONAL            :: responses(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+      TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
 
       COMPLEX(dp), ALLOCATABLE                           :: factor_response(:), factors(:)
       INTEGER                                            :: atom, image, natom, nsite, site
@@ -137,10 +145,10 @@ CONTAINS
                                            tensors(image), response_real=responses(image), &
                                            atom_response=atom_response, cell_response=cell_response, &
                                            auxiliary_positions_response=position_response, &
-                                           auxiliary_factors_response=factor_response, ao_image=ao_images(:, image))
+                                           auxiliary_factors_response=factor_response, ao_image=ao_images(:, image), metric=metric)
          ELSE
             CALL qs_upf_inverse_hfx_tensor(frame, frame, kinds, augmentation, bases, positions, factors, center_images, &
-                                           tensors(image), ao_image=ao_images(:, image))
+                                           tensors(image), ao_image=ao_images(:, image), metric=metric)
          END IF
       END DO
    END SUBROUTINE qs_upf_inverse_hfx_lattice_tensor
@@ -163,9 +171,10 @@ CONTAINS
 !> \param covectors Complete native energy derivatives in (RI,AO0,AOR) order.
 !> \param atom_gradient Replicated positive Cartesian energy gradients.
 !> \param strain_gradient Optional replicated affine-strain gradient, with atoms moving with the cell.
+!> \param metric Optional native RI interaction, Coulomb by default.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_lattice_gradient(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
-                                                  ao_images, center_images, covectors, atom_gradient, strain_gradient)
+                                                  ao_images, center_images, covectors, atom_gradient, strain_gradient, metric)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -175,6 +184,7 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: covectors(:)
       REAL(dp), INTENT(OUT)                              :: atom_gradient(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: strain_gradient(3, 3)
+      TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
 
       INTEGER                                            :: atom, axis, column
       INTEGER, ALLOCATABLE                               :: active(:)
@@ -194,7 +204,7 @@ CONTAINS
             atom_response(axis, atom) = 1.0_dp
             CALL lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                             ao_images, center_images, covectors, active, atom_response, cell_response, &
-                                            atom_gradient(axis, atom))
+                                            atom_gradient(axis, atom), metric)
          END DO
       END DO
       IF (PRESENT(strain_gradient)) THEN
@@ -206,7 +216,7 @@ CONTAINS
                atom_response(axis, :) = frame%positions(column, :)
                CALL lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                                ao_images, center_images, covectors, active, atom_response, cell_response, &
-                                               strain_gradient(axis, column))
+                                               strain_gradient(axis, column), metric)
             END DO
          END DO
       END IF
@@ -264,9 +274,11 @@ CONTAINS
 !> \param atom_response ...
 !> \param cell_response ...
 !> \param derivative ...
+!> \param metric ...
 ! **************************************************************************************************
    SUBROUTINE lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
-                                         ao_images, center_images, covectors, active, atom_response, cell_response, derivative)
+                                         ao_images, center_images, covectors, active, atom_response, cell_response, derivative, &
+                                         metric)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -277,6 +289,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: active(:)
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: derivative
+      TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
 
       INTEGER                                            :: image
       REAL(dp)                                           :: contribution
@@ -293,7 +306,7 @@ CONTAINS
          CALL dbt_clear(responses(1))
          CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                                 ao_images(:, image:image), center_images, integrals, responses, &
-                                                atom_response, cell_response)
+                                                atom_response, cell_response, metric)
          CALL qs_upf_inverse_hfx_contract(covectors(image), responses(1), contribution)
          derivative = derivative + contribution
       END DO
@@ -399,13 +412,14 @@ CONTAINS
 !> \param auxiliary_positions_response Cartesian RI site/image motion.
 !> \param auxiliary_factors_response Response of the owner's complex RI factors.
 !> \param ao_image Optional integer right AO cell R for individual lattice integrals.
+!> \param metric Optional native RI interaction, Coulomb by default.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_tensor(left_frame, right_frame, kinds, augmentation, auxiliary_bases, &
                                         auxiliary_positions, auxiliary_factors, center_images, tensor_real, &
                                         tensor_imaginary, response_real, response_imaginary, atom_response, cell_response, &
                                         left_k_response, right_k_response, left_coefficients_response, &
                                         right_coefficients_response, auxiliary_positions_response, auxiliary_factors_response, &
-                                        ao_image)
+                                        ao_image, metric)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -424,6 +438,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL :: auxiliary_positions_response(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: auxiliary_factors_response(:)
       INTEGER, INTENT(IN), OPTIONAL                      :: ao_image(3)
+      TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
 
       COMPLEX(dp), ALLOCATABLE                           :: correction(:, :, :), dc(:, :, :), &
                                                             dn(:, :, :), native(:, :, :)
@@ -511,7 +526,7 @@ CONTAINS
                   start = MAX(first, start_i(block_i))
                   STOP = MIN(last, start_i(block_i + 1) - 1)
                   IF (start <= STOP) THEN
-                     CALL gaussian_coulomb_fields_prepare(auxiliary_bases(site)%gto_basis_set, iset, fields)
+                     CALL prepare_auxiliary_fields(auxiliary_bases(site)%gto_basis_set, iset, fields, metric)
                      ALLOCATE (correction(nl, nr, fields%nfunction))
                      IF (derivatives) ALLOCATE (dc(nl, nr, fields%nfunction))
                      DO center = 1, SIZE(left_frame%center_atoms)
@@ -652,7 +667,7 @@ CONTAINS
                                                 auxiliary_positions, auxiliary_factors, center_images, covector_real, &
                                                 left_coefficients_covector, right_coefficients_covector, covector_imaginary, &
                                                 geometry_response, atom_response, cell_response, left_k_response, &
-                                                right_k_response, auxiliary_positions_response, auxiliary_factors_response)
+                                                right_k_response, auxiliary_positions_response, auxiliary_factors_response, metric)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -668,6 +683,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL :: atom_response(:, :), cell_response(3, 3), &
          left_k_response(3), right_k_response(3), auxiliary_positions_response(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: auxiliary_factors_response(:)
+      TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
 
       COMPLEX(dp), ALLOCATABLE :: correction(:, :, :), dc(:, :, :), factor_covector(:, :, :), &
          g(:, :, :), gl(:, :), gr(:, :), local(:, :, :), zero_left(:, :), zero_right(:, :)
@@ -751,7 +767,7 @@ CONTAINS
                start = MAX(first, start_i(block_i))
                finish = MIN(last, start_i(block_i + 1) - 1)
                IF (start <= finish) THEN
-                  CALL gaussian_coulomb_fields_prepare(auxiliary_bases(site)%gto_basis_set, iset, fields)
+                  CALL prepare_auxiliary_fields(auxiliary_bases(site)%gto_basis_set, iset, fields, metric)
                   ALLOCATE (local(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
                   local(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors(site))* &
                                                       RESHAPE(g(start - start_i(block_i) + 1:finish - start_i(block_i) + 1, :, :), &
@@ -823,6 +839,30 @@ CONTAINS
       IF (PRESENT(right_coefficients_covector)) CALL covector_real%pgrid%mp_comm_2d%sum(right_coefficients_covector)
       IF (derivatives) CALL covector_real%pgrid%mp_comm_2d%sum(geometry_response)
    END SUBROUTINE qs_upf_inverse_hfx_tensor_adjoint
+
+! **************************************************************************************************
+!> \brief Prepare the same auxiliary interaction as the native RI integral owner.
+!> \param basis ...
+!> \param iset ...
+!> \param fields ...
+!> \param metric Optional native fitting interaction.
+! **************************************************************************************************
+   SUBROUTINE prepare_auxiliary_fields(basis, iset, fields, metric)
+      TYPE(gto_basis_set_type), INTENT(IN)               :: basis
+      INTEGER, INTENT(IN)                                :: iset
+      TYPE(gaussian_coulomb_fields_type), INTENT(OUT)    :: fields
+      TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+
+      CALL gaussian_coulomb_fields_prepare(basis, iset, fields)
+      IF (.NOT. PRESENT(metric)) RETURN
+      SELECT CASE (metric%potential_type)
+      CASE (do_potential_coulomb)
+      CASE (do_potential_long, do_potential_short)
+         CALL gaussian_coulomb_fields_screen(fields, metric%omega, metric%potential_type == do_potential_short)
+      CASE DEFAULT
+         CPABORT("Inverse UPF fitting interaction is not implemented yet")
+      END SELECT
+   END SUBROUTINE prepare_auxiliary_fields
 
 ! **************************************************************************************************
 !> \brief Prepare PAW valence transition kernels without changing original compensation data.
