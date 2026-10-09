@@ -525,7 +525,8 @@ CONTAINS
 
       CHARACTER(len=default_path_length)                 :: model_path
       INTEGER                                            :: handle, max_rows, nchunks, nspins, &
-                                                            omp_max_threads_restore, partition
+                                                            omp_max_threads_restore, partition, requested_device, &
+                                                            selected_device
       LOGICAL                                            :: atom_chunks, has_work, routing, &
                                                             subchunks, use_cuda
       REAL(KIND=dp), ALLOCATABLE                         :: density_grad(:, :), grad_grad(:, :, :), &
@@ -544,7 +545,7 @@ CONTAINS
       CALL get_skala_model_path(xc_section, model_path)
       gauxc_section => get_gauxc_section(xc_section)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_USE_CUDA", l_val=use_cuda)
-      IF (use_cuda) CPABORT("The array-level Skala evaluator currently requires CPU tensors")
+      CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_CUDA_DEVICE", i_val=requested_device)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_CHUNKS", l_val=atom_chunks)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_CHUNK_ROUTING", l_val=routing)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_CHUNK_MAX_ROWS", i_val=max_rows)
@@ -554,8 +555,9 @@ CONTAINS
       END IF
       atom_chunks = atom_chunks .OR. routing
       routing = atom_chunks
-      CALL torch_use_cuda(.FALSE.)
-      CALL ensure_model_loaded(model_path, -1, xc_section)
+      CALL torch_use_cuda(use_cuda)
+      selected_device = configure_native_grid_cuda(use_cuda, requested_device, grid%group)
+      CALL ensure_model_loaded(model_path, selected_device, xc_section)
       CALL skala_grid_feature_build(features, grid, density, gradient, kinetic, particle_set, cell, &
                                     requires_grad=.TRUE., use_atom_chunks=atom_chunks, &
                                     route_atom_chunks=routing, atom_partition=partition)
