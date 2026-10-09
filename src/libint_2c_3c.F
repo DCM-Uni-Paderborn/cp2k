@@ -361,9 +361,9 @@ CONTAINS
             S1234 = EXP(-zeti*zetj*params%EtaInv*SUM((rj - ri)**2))
             prefac = 2._dp*pi/params%Rho*SQRT((pi*params%ZetapEtaInv)**3)*S1234
 
-            IF (potential_parameter%potential_type == do_potential_short) then
-              CALL fgamma(params%m_max, T, params%Fm)
-            end if
+            IF (potential_parameter%potential_type == do_potential_short) THEN
+               CALL fgamma(params%m_max, T, params%Fm)
+            END IF
 
             omega2 = potential_parameter%omega**2
             omega_corr2 = omega2/(omega2 + params%Rho)
@@ -764,9 +764,9 @@ CONTAINS
             S1234 = EXP(-zeti*zetj*params%EtaInv*SUM((rj - ri)**2))
             prefac = 2._dp*pi/params%Rho*SQRT((pi*params%ZetapEtaInv)**3)*S1234
 
-            IF (potential_parameter%potential_type == do_potential_short) then
-              CALL fgamma(params%m_max, T, params%Fm)
-            end if
+            IF (potential_parameter%potential_type == do_potential_short) THEN
+               CALL fgamma(params%m_max, T, params%Fm)
+            END IF
 
             omega2 = potential_parameter%omega**2
             omega_corr2 = omega2/(omega2 + params%Rho)
@@ -992,9 +992,9 @@ CONTAINS
          T = params%Rho*SUM((rj - rk)**2)
          prefac = 2._dp*pi/params%Rho*SQRT((pi*params%ZetapEtaInv)**3)
 
-         IF (potential_parameter%potential_type == do_potential_short) then
-           CALL fgamma(params%m_max, T, params%Fm)
-         end if
+         IF (potential_parameter%potential_type == do_potential_short) THEN
+            CALL fgamma(params%m_max, T, params%Fm)
+         END IF
 
          omega2 = potential_parameter%omega**2
          omega_corr2 = omega2/(omega2 + params%Rho)
@@ -1249,9 +1249,9 @@ CONTAINS
          T = params%Rho*SUM((rj - rk)**2)
          prefac = 2._dp*pi/params%Rho*SQRT((pi*params%ZetapEtaInv)**3)
 
-         IF (potential_parameter%potential_type == do_potential_short) then
-           CALL fgamma(params%m_max, T, params%Fm)
-         end if
+         IF (potential_parameter%potential_type == do_potential_short) THEN
+            CALL fgamma(params%m_max, T, params%Fm)
+         END IF
 
          omega2 = potential_parameter%omega**2
          omega_corr2 = omega2/(omega2 + params%Rho)
