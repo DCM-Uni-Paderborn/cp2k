@@ -88,7 +88,8 @@ MODULE torch_api
              torch_model_forward, torch_model_release
    PUBLIC :: torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
              torch_model_remap_device_constants
-   PUBLIC :: torch_model_spin_projected_energy
+   PUBLIC :: torch_tensor_autograd, torch_tensor_linear_combination, torch_tensor_multiply
+   PUBLIC :: torch_tensor_cat, torch_tensor_accumulate, torch_tensor_to_host
    PUBLIC :: torch_model_prepare_higher_derivatives
    PUBLIC :: torch_model_promote_float32
    PUBLIC :: torch_model_get_attr, torch_model_read_metadata
@@ -393,21 +394,27 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Apply the Hessian of a scalar tensor to independent input directions.
 ! **************************************************************************************************
-   SUBROUTINE torch_tensor_hessian_vector(tensor, inputs, directions, responses)
+   SUBROUTINE torch_tensor_hessian_vector(tensor, inputs, directions, responses, status, to_host)
       TYPE(torch_tensor_type), INTENT(IN)                :: tensor, inputs(:), directions(:)
       TYPE(torch_tensor_type), INTENT(INOUT)             :: responses(:)
+      INTEGER, OPTIONAL, INTENT(OUT)                     :: status
+      LOGICAL, OPTIONAL, INTENT(IN)                      :: to_host
 #if defined(__LIBTORCH)
       TYPE(C_PTR)                                        :: input_ptrs(SIZE(inputs)), &
                                                             direction_ptrs(SIZE(inputs)), response_ptrs(SIZE(inputs))
       INTEGER                                            :: i
+      INTEGER(C_INT)                                     :: c_status
+      LOGICAL                                            :: host
       INTERFACE
-         SUBROUTINE torch_c_tensor_hessian_vector(tensor, count, inputs, directions, responses) &
+         SUBROUTINE torch_c_tensor_hessian_vector(tensor, count, inputs, directions, responses, to_host, status) &
             BIND(C, name="torch_c_tensor_hessian_vector")
-            IMPORT :: C_INT, C_PTR
+            IMPORT :: C_INT, C_PTR, C_BOOL
             TYPE(C_PTR), VALUE                           :: tensor
             INTEGER(C_INT), VALUE                        :: count
             TYPE(C_PTR), INTENT(IN)                      :: inputs(*), directions(*)
             TYPE(C_PTR), INTENT(OUT)                     :: responses(*)
+            LOGICAL(C_BOOL), VALUE                       :: to_host
+            INTEGER(C_INT), INTENT(OUT)                  :: status
          END SUBROUTINE torch_c_tensor_hessian_vector
       END INTERFACE
       CPASSERT(C_ASSOCIATED(tensor%c_ptr))
@@ -421,20 +428,221 @@ CONTAINS
          input_ptrs(i) = inputs(i)%c_ptr
          direction_ptrs(i) = directions(i)%c_ptr
       END DO
+      response_ptrs = C_NULL_PTR
+      host = .TRUE.
+      IF (PRESENT(to_host)) host = to_host
       CALL torch_c_tensor_hessian_vector(tensor%c_ptr, INT(SIZE(inputs), C_INT), &
-                                         input_ptrs, direction_ptrs, response_ptrs)
+                                         input_ptrs, direction_ptrs, response_ptrs, LOGICAL(host, C_BOOL), c_status)
+      IF (PRESENT(status)) THEN
+         status = c_status
+      ELSE
+         CPASSERT(c_status == 0)
+      END IF
       DO i = 1, SIZE(inputs)
          responses(i)%c_ptr = response_ptrs(i)
-         CPASSERT(C_ASSOCIATED(responses(i)%c_ptr))
+         IF (c_status == 0) THEN
+            CPASSERT(C_ASSOCIATED(responses(i)%c_ptr))
+         END IF
       END DO
 #else
       MARK_USED(tensor)
       MARK_USED(inputs)
       MARK_USED(directions)
       MARK_USED(responses)
+      MARK_USED(status)
+      MARK_USED(to_host)
       CPABORT("CP2K was compiled without LibTorch support.")
 #endif
    END SUBROUTINE torch_tensor_hessian_vector
+
+! **************************************************************************************************
+!> \brief Differentiate a scalar while optionally retaining its derivative graph.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_autograd(tensor, inputs, outputs, create_graph, status)
+      TYPE(torch_tensor_type), INTENT(IN)                :: tensor, inputs(:)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: outputs(:)
+      LOGICAL, INTENT(IN)                                :: create_graph
+      INTEGER, INTENT(OUT)                               :: status
+#if defined(__LIBTORCH)
+      TYPE(C_PTR)                                        :: input_ptrs(SIZE(inputs)), output_ptrs(SIZE(inputs))
+      INTEGER                                            :: i
+      INTEGER(C_INT)                                     :: c_status
+      INTERFACE
+         SUBROUTINE torch_c_tensor_autograd(tensor, count, inputs, outputs, create_graph, status) &
+            BIND(C, name="torch_c_tensor_autograd")
+            IMPORT :: C_BOOL, C_INT, C_PTR
+            TYPE(C_PTR), VALUE                           :: tensor
+            INTEGER(C_INT), VALUE                        :: count
+            TYPE(C_PTR), INTENT(IN)                      :: inputs(*)
+            TYPE(C_PTR), INTENT(INOUT)                   :: outputs(*)
+            LOGICAL(C_BOOL), VALUE                       :: create_graph
+            INTEGER(C_INT), INTENT(OUT)                  :: status
+         END SUBROUTINE torch_c_tensor_autograd
+      END INTERFACE
+      CPASSERT(C_ASSOCIATED(tensor%c_ptr))
+      CPASSERT(SIZE(inputs) > 0 .AND. SIZE(outputs) == SIZE(inputs))
+      DO i = 1, SIZE(inputs)
+         CPASSERT(C_ASSOCIATED(inputs(i)%c_ptr))
+         CPASSERT(.NOT. C_ASSOCIATED(outputs(i)%c_ptr))
+         input_ptrs(i) = inputs(i)%c_ptr
+      END DO
+      output_ptrs = C_NULL_PTR
+      CALL torch_c_tensor_autograd(tensor%c_ptr, INT(SIZE(inputs), C_INT), input_ptrs, output_ptrs, &
+                                   LOGICAL(create_graph, C_BOOL), c_status)
+      status = c_status
+      DO i = 1, SIZE(inputs)
+         outputs(i)%c_ptr = output_ptrs(i)
+      END DO
+#else
+      MARK_USED(tensor)
+      MARK_USED(inputs)
+      MARK_USED(outputs)
+      MARK_USED(create_graph)
+      MARK_USED(status)
+      CPABORT("CP2K was compiled without LibTorch support.")
+#endif
+   END SUBROUTINE torch_tensor_autograd
+
+! **************************************************************************************************
+!> \brief Form a linear combination using tensor broadcasting.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_linear_combination(inputs, coefficients, result)
+      TYPE(torch_tensor_type), INTENT(IN)                :: inputs(:)
+      REAL(KIND=dp), INTENT(IN)                          :: coefficients(:)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: result
+#if defined(__LIBTORCH)
+      TYPE(C_PTR)                                        :: input_ptrs(SIZE(inputs))
+      INTEGER                                            :: i
+      INTERFACE
+         SUBROUTINE torch_c_tensor_linear_combination(count, inputs, coefficients, result) &
+            BIND(C, name="torch_c_tensor_linear_combination")
+            IMPORT :: C_DOUBLE, C_INT, C_PTR
+            INTEGER(C_INT), VALUE                        :: count
+            TYPE(C_PTR), INTENT(IN)                      :: inputs(*)
+            REAL(C_DOUBLE), INTENT(IN)                   :: coefficients(*)
+            TYPE(C_PTR), INTENT(OUT)                     :: result
+         END SUBROUTINE torch_c_tensor_linear_combination
+      END INTERFACE
+      CPASSERT(SIZE(inputs) > 0 .AND. SIZE(coefficients) == SIZE(inputs))
+      CPASSERT(.NOT. C_ASSOCIATED(result%c_ptr))
+      DO i = 1, SIZE(inputs)
+         CPASSERT(C_ASSOCIATED(inputs(i)%c_ptr))
+         input_ptrs(i) = inputs(i)%c_ptr
+      END DO
+      CALL torch_c_tensor_linear_combination(INT(SIZE(inputs), C_INT), input_ptrs, coefficients, result%c_ptr)
+#else
+      MARK_USED(inputs)
+      MARK_USED(coefficients)
+      MARK_USED(result)
+      CPABORT("CP2K was compiled without LibTorch support.")
+#endif
+   END SUBROUTINE torch_tensor_linear_combination
+
+! **************************************************************************************************
+!> \brief Multiply tensors with broadcasting.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_multiply(first, second, result)
+      TYPE(torch_tensor_type), INTENT(IN)                :: first, second
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: result
+#if defined(__LIBTORCH)
+      INTERFACE
+         SUBROUTINE torch_c_tensor_multiply(first, second, result) BIND(C, name="torch_c_tensor_multiply")
+            IMPORT :: C_PTR
+            TYPE(C_PTR), VALUE                           :: first, second
+            TYPE(C_PTR), INTENT(OUT)                     :: result
+         END SUBROUTINE torch_c_tensor_multiply
+      END INTERFACE
+      CPASSERT(C_ASSOCIATED(first%c_ptr) .AND. C_ASSOCIATED(second%c_ptr))
+      CPASSERT(.NOT. C_ASSOCIATED(result%c_ptr))
+      CALL torch_c_tensor_multiply(first%c_ptr, second%c_ptr, result%c_ptr)
+#else
+      MARK_USED(first)
+      MARK_USED(second)
+      MARK_USED(result)
+      CPABORT("CP2K was compiled without LibTorch support.")
+#endif
+   END SUBROUTINE torch_tensor_multiply
+
+! **************************************************************************************************
+!> \brief Concatenate tensors along the leading dimension.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_cat(inputs, result)
+      TYPE(torch_tensor_type), INTENT(IN)                :: inputs(:)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: result
+#if defined(__LIBTORCH)
+      TYPE(C_PTR)                                        :: input_ptrs(SIZE(inputs))
+      INTEGER                                            :: i
+      INTERFACE
+         SUBROUTINE torch_c_tensor_cat(count, inputs, result) BIND(C, name="torch_c_tensor_cat")
+            IMPORT :: C_INT, C_PTR
+            INTEGER(C_INT), VALUE                        :: count
+            TYPE(C_PTR), INTENT(IN)                      :: inputs(*)
+            TYPE(C_PTR), INTENT(OUT)                     :: result
+         END SUBROUTINE torch_c_tensor_cat
+      END INTERFACE
+      CPASSERT(SIZE(inputs) > 0 .AND. .NOT. C_ASSOCIATED(result%c_ptr))
+      DO i = 1, SIZE(inputs)
+         CPASSERT(C_ASSOCIATED(inputs(i)%c_ptr))
+         input_ptrs(i) = inputs(i)%c_ptr
+      END DO
+      CALL torch_c_tensor_cat(INT(SIZE(inputs), C_INT), input_ptrs, result%c_ptr)
+#else
+      MARK_USED(inputs)
+      MARK_USED(result)
+      CPABORT("CP2K was compiled without LibTorch support.")
+#endif
+   END SUBROUTINE torch_tensor_cat
+
+! **************************************************************************************************
+!> \brief Accumulate a detached, weighted tensor on its current device.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_accumulate(sum, term, weight)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: sum
+      TYPE(torch_tensor_type), INTENT(IN)                :: term
+      REAL(KIND=dp), INTENT(IN)                          :: weight
+#if defined(__LIBTORCH)
+      INTERFACE
+         SUBROUTINE torch_c_tensor_accumulate(sum, term, weight) BIND(C, name="torch_c_tensor_accumulate")
+            IMPORT :: C_DOUBLE, C_PTR
+            TYPE(C_PTR), INTENT(INOUT)                   :: sum
+            TYPE(C_PTR), VALUE                           :: term
+            REAL(C_DOUBLE), VALUE                        :: weight
+         END SUBROUTINE torch_c_tensor_accumulate
+      END INTERFACE
+      CPASSERT(C_ASSOCIATED(term%c_ptr))
+      CALL torch_c_tensor_accumulate(sum%c_ptr, term%c_ptr, weight)
+#else
+      MARK_USED(sum)
+      MARK_USED(term)
+      MARK_USED(weight)
+      CPABORT("CP2K was compiled without LibTorch support.")
+#endif
+   END SUBROUTINE torch_tensor_accumulate
+
+! **************************************************************************************************
+!> \brief Check a tensor and copy it to contiguous host memory.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_to_host(tensor, status)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: tensor
+      INTEGER, INTENT(OUT)                               :: status
+#if defined(__LIBTORCH)
+      INTEGER(C_INT)                                     :: c_status
+      INTERFACE
+         SUBROUTINE torch_c_tensor_to_host(tensor, status) BIND(C, name="torch_c_tensor_to_host")
+            IMPORT :: C_INT, C_PTR
+            TYPE(C_PTR), INTENT(INOUT)                   :: tensor
+            INTEGER(C_INT), INTENT(OUT)                  :: status
+         END SUBROUTINE torch_c_tensor_to_host
+      END INTERFACE
+      CPASSERT(C_ASSOCIATED(tensor%c_ptr))
+      CALL torch_c_tensor_to_host(tensor%c_ptr, c_status)
+      status = c_status
+#else
+      MARK_USED(tensor)
+      MARK_USED(status)
+      CPABORT("CP2K was compiled without LibTorch support.")
+#endif
+   END SUBROUTINE torch_tensor_to_host
 
 ! **************************************************************************************************
 !> \brief Moves a tensor to the active Torch device and makes it an autograd leaf.
@@ -633,7 +841,6 @@ CONTAINS
          END SUBROUTINE torch_c_tensor_release
       END INTERFACE
 
-      CPASSERT(C_ASSOCIATED(tensor%c_ptr))
       CALL torch_c_tensor_release(tensor=tensor%c_ptr)
       tensor%c_ptr = C_NULL_PTR
 #else
@@ -729,26 +936,31 @@ CONTAINS
 !> \brief Retrieves a Torch tensor from a Torch dictionary.
 !> \author Ole Schuett
 ! **************************************************************************************************
-   SUBROUTINE torch_dict_get(dict, key, tensor)
+   SUBROUTINE torch_dict_get(dict, key, tensor, to_host)
       TYPE(torch_dict_type), INTENT(IN)                  :: dict
       CHARACTER(len=*), INTENT(IN)                       :: key
       TYPE(torch_tensor_type), INTENT(INOUT)             :: tensor
+      LOGICAL, OPTIONAL, INTENT(IN)                      :: to_host
 
 #if defined(__LIBTORCH)
+      LOGICAL                                            :: host
 
       INTERFACE
-         SUBROUTINE torch_c_dict_get(dict, key, tensor) &
+         SUBROUTINE torch_c_dict_get(dict, key, tensor, to_host) &
             BIND(C, name="torch_c_dict_get")
-            IMPORT :: C_CHAR, C_PTR
+            IMPORT :: C_CHAR, C_PTR, C_BOOL
             TYPE(C_PTR), VALUE                           :: dict
             CHARACTER(kind=C_CHAR), DIMENSION(*)         :: key
             TYPE(C_PTR)                                  :: tensor
+            LOGICAL(C_BOOL), VALUE                       :: to_host
          END SUBROUTINE torch_c_dict_get
       END INTERFACE
 
       CPASSERT(C_ASSOCIATED(dict%c_ptr))
       CPASSERT(.NOT. C_ASSOCIATED(tensor%c_ptr))
-      CALL torch_c_dict_get(dict=dict%c_ptr, key=TRIM(key)//C_NULL_CHAR, tensor=tensor%c_ptr)
+      host = .TRUE.
+      IF (PRESENT(to_host)) host = to_host
+      CALL torch_c_dict_get(dict=dict%c_ptr, key=TRIM(key)//C_NULL_CHAR, tensor=tensor%c_ptr, to_host=LOGICAL(host, C_BOOL))
       CPASSERT(C_ASSOCIATED(tensor%c_ptr))
 
 #else
@@ -756,6 +968,7 @@ CONTAINS
       MARK_USED(dict)
       MARK_USED(key)
       MARK_USED(tensor)
+      MARK_USED(to_host)
 #endif
    END SUBROUTINE torch_dict_get
 
@@ -774,7 +987,6 @@ CONTAINS
          END SUBROUTINE torch_c_dict_release
       END INTERFACE
 
-      CPASSERT(C_ASSOCIATED(dict%c_ptr))
       CALL torch_c_dict_release(dict=dict%c_ptr)
       dict%c_ptr = C_NULL_PTR
 #else
@@ -997,24 +1209,27 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Evaluates a TorchScript model method expecting keyword argument "mol".
 ! **************************************************************************************************
-   SUBROUTINE torch_model_forward_mol_tensor(model, method_name, inputs, output)
+   SUBROUTINE torch_model_forward_mol_tensor(model, method_name, inputs, output, status)
       TYPE(torch_model_type), INTENT(INOUT)              :: model
       CHARACTER(len=*), INTENT(IN)                       :: method_name
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
       TYPE(torch_tensor_type), INTENT(INOUT)             :: output
+      INTEGER, OPTIONAL, INTENT(OUT)                     :: status
 
 #if defined(__LIBTORCH)
       CHARACTER(len=*), PARAMETER                        :: routineN = 'torch_model_forward_mol_tensor'
       INTEGER                                            :: handle
+      INTEGER(C_INT)                                     :: c_status
 
       INTERFACE
-         SUBROUTINE torch_c_model_forward_mol_tensor(model, method_name, inputs, output) &
+         SUBROUTINE torch_c_model_forward_mol_tensor(model, method_name, inputs, output, status) &
             BIND(C, name="torch_c_model_forward_mol_tensor")
-            IMPORT :: C_CHAR, C_PTR
+            IMPORT :: C_CHAR, C_PTR, C_INT
             TYPE(C_PTR), VALUE                           :: model
             CHARACTER(kind=C_CHAR), DIMENSION(*)         :: method_name
             TYPE(C_PTR), VALUE                           :: inputs
             TYPE(C_PTR)                                  :: output
+            INTEGER(C_INT), INTENT(OUT)                  :: status
          END SUBROUTINE torch_c_model_forward_mol_tensor
       END INTERFACE
 
@@ -1025,8 +1240,15 @@ CONTAINS
       CALL torch_c_model_forward_mol_tensor(model=model%c_ptr, &
                                             method_name=TRIM(method_name)//C_NULL_CHAR, &
                                             inputs=inputs%c_ptr, &
-                                            output=output%c_ptr)
-      CPASSERT(C_ASSOCIATED(output%c_ptr))
+                                            output=output%c_ptr, status=c_status)
+      IF (PRESENT(status)) THEN
+         status = c_status
+      ELSE
+         CPASSERT(c_status == 0)
+      END IF
+      IF (c_status == 0) THEN
+         CPASSERT(C_ASSOCIATED(output%c_ptr))
+      END IF
       CALL timestop(handle)
 #else
       CPABORT("CP2K was compiled without Torch library.")
@@ -1034,89 +1256,9 @@ CONTAINS
       MARK_USED(method_name)
       MARK_USED(inputs)
       MARK_USED(output)
+      MARK_USED(status)
 #endif
    END SUBROUTINE torch_model_forward_mol_tensor
-
-! **************************************************************************************************
-!> \brief Evaluate the multicollinear molecular protocol and its joint covectors or Hessian action.
-!> \param model Collinear model exposing get_exc_density.
-!> \param inputs Molecular dictionary with scalar/z/x/y density, gradient and tau fields.
-!> \param axes Unit spin-projection directions in z/x/y order.
-!> \param weights Angular weights summing to one.
-!> \param variables Independent field and optional geometry tensors.
-!> \param outputs Raw covectors or their directional derivatives.
-!> \param energy Base-state energy.
-!> \param status Zero on success. Failed evaluations return no output tensors.
-!> \param directions Optional joint input direction.
-! **************************************************************************************************
-   SUBROUTINE torch_model_spin_projected_energy(model, inputs, axes, weights, variables, outputs, energy, status, directions)
-      TYPE(torch_model_type), INTENT(INOUT)              :: model
-      TYPE(torch_dict_type), INTENT(IN)                  :: inputs
-      TYPE(torch_tensor_type), INTENT(IN)                :: axes, weights, variables(:)
-      TYPE(torch_tensor_type), INTENT(INOUT)             :: outputs(:)
-      REAL(KIND=dp), INTENT(OUT)                         :: energy
-      INTEGER, INTENT(OUT)                               :: status
-      TYPE(torch_tensor_type), OPTIONAL, INTENT(IN)      :: directions(:)
-#if defined(__LIBTORCH)
-      TYPE(C_PTR)                                        :: variable_ptrs(SIZE(variables)), output_ptrs(SIZE(variables))
-      TYPE(C_PTR), TARGET                                :: direction_ptrs(SIZE(variables))
-      TYPE(C_PTR)                                        :: direction_data
-      INTEGER                                            :: i
-      INTEGER(C_INT)                                     :: c_status
-      INTERFACE
-         SUBROUTINE torch_c_model_spin_projected_energy(model, inputs, axes, weights, count, &
-                                                        variables, directions, outputs, energy, status) &
-            BIND(C, name="torch_c_model_spin_projected_energy")
-            IMPORT :: C_DOUBLE, C_INT, C_PTR
-            TYPE(C_PTR), VALUE                           :: model, inputs, axes, weights, directions
-            INTEGER(C_INT), VALUE                        :: count
-            TYPE(C_PTR), INTENT(IN)                      :: variables(*)
-            TYPE(C_PTR), INTENT(INOUT)                   :: outputs(*)
-            REAL(C_DOUBLE), INTENT(OUT)                  :: energy
-            INTEGER(C_INT), INTENT(OUT)                  :: status
-         END SUBROUTINE torch_c_model_spin_projected_energy
-      END INTERFACE
-      CPASSERT(C_ASSOCIATED(model%c_ptr) .AND. C_ASSOCIATED(inputs%c_ptr))
-      CPASSERT(C_ASSOCIATED(axes%c_ptr) .AND. C_ASSOCIATED(weights%c_ptr))
-      CPASSERT(SIZE(variables) > 0 .AND. SIZE(outputs) == SIZE(variables))
-      direction_data = C_NULL_PTR
-      IF (PRESENT(directions)) THEN
-         CPASSERT(SIZE(directions) == SIZE(variables))
-         DO i = 1, SIZE(variables)
-            CPASSERT(C_ASSOCIATED(directions(i)%c_ptr))
-            direction_ptrs(i) = directions(i)%c_ptr
-         END DO
-         direction_data = C_LOC(direction_ptrs)
-      END IF
-      DO i = 1, SIZE(variables)
-         CPASSERT(C_ASSOCIATED(variables(i)%c_ptr))
-         CPASSERT(.NOT. C_ASSOCIATED(outputs(i)%c_ptr))
-         variable_ptrs(i) = variables(i)%c_ptr
-         output_ptrs(i) = C_NULL_PTR
-      END DO
-      CALL torch_c_model_spin_projected_energy(model%c_ptr, inputs%c_ptr, axes%c_ptr, weights%c_ptr, &
-                                               INT(SIZE(variables), C_INT), variable_ptrs, direction_data, &
-                                               output_ptrs, energy, c_status)
-      status = c_status
-      DO i = 1, SIZE(variables)
-         outputs(i)%c_ptr = output_ptrs(i)
-         IF (status == 0) THEN
-            CPASSERT(C_ASSOCIATED(outputs(i)%c_ptr))
-         END IF
-      END DO
-#else
-      MARK_USED(model)
-      MARK_USED(inputs)
-      MARK_USED(axes)
-      MARK_USED(weights)
-      MARK_USED(variables)
-      MARK_USED(outputs)
-      MARK_USED(energy)
-      MARK_USED(status)
-      MARK_USED(directions)
-      CPABORT("CP2K was compiled without LibTorch support.")
-#endif
-   END SUBROUTINE torch_model_spin_projected_energy
 
 ! **************************************************************************************************
 !> \brief Releases a Torch model and all its ressources.

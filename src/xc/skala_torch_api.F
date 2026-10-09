@@ -9,6 +9,7 @@
 !> \brief Small CP2K wrapper around the SKALA TorchScript functional protocol.
 ! **************************************************************************************************
 MODULE skala_torch_api
+   USE ieee_arithmetic, ONLY: ieee_is_finite
 #if defined (__HAS_IEEE_EXCEPTIONS)
    USE ieee_exceptions, ONLY: ieee_all, &
                               ieee_get_halting_mode, &
@@ -23,7 +24,10 @@ MODULE skala_torch_api
       torch_model_release, torch_model_remap_device_constants, torch_model_promote_float32, &
       torch_model_prepare_higher_derivatives, &
       torch_model_type, &
-      torch_model_spin_projected_energy, &
+      torch_dict_clone, torch_dict_get, torch_dict_insert, torch_dict_release, &
+      torch_tensor_accumulate, torch_tensor_autograd, torch_tensor_cat, torch_tensor_from_array, &
+      torch_tensor_hessian_vector, torch_tensor_linear_combination, torch_tensor_multiply, torch_tensor_narrow, &
+      torch_tensor_to_device_leaf, torch_tensor_to_host, &
       torch_tensor_item_double, torch_tensor_release, torch_tensor_type, &
       torch_tensor_weighted_sum
 #include "../base/base_uses.f90"
@@ -220,13 +224,120 @@ CONTAINS
    SUBROUTINE skala_torch_model_spin_projected_eval(model, inputs, axes, weights, variables, outputs, exc, status, directions)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
-      TYPE(torch_tensor_type), INTENT(IN)                :: axes, weights, variables(:)
+      REAL(KIND=dp), INTENT(IN)                          :: axes(:, :), weights(:)
+      TYPE(torch_tensor_type), INTENT(IN)                :: variables(:)
       TYPE(torch_tensor_type), INTENT(INOUT)             :: outputs(:)
       REAL(KIND=dp), INTENT(OUT)                         :: exc
       INTEGER, INTENT(OUT)                               :: status
       TYPE(torch_tensor_type), INTENT(IN), OPTIONAL      :: directions(:)
 
-      CALL torch_model_spin_projected_energy(model%torch_model, inputs, axes, weights, variables, outputs, exc, status, directions)
+      CHARACTER(len=7), PARAMETER :: keys(3) = [CHARACTER(len=7) :: "density", "grad", "kin"]
+
+      INTEGER                                            :: f, i, j
+      REAL(KIND=dp), ALLOCATABLE                         :: lambda_value(:)
+      TYPE(torch_dict_type)                              :: projected
+      TYPE(torch_tensor_type) :: channels(2), collinear, components(4), connected, effective, &
+         energy, fields(3), grid_weights, lambda, scaled, scaling(1), spin, total, values, &
+         derivatives(SIZE(variables))
+
+      CPASSERT(SIZE(axes, 1) == 3)
+      CPASSERT(SIZE(axes, 2) == SIZE(weights) .AND. SIZE(weights) > 0)
+      CPASSERT(ALL(ieee_is_finite(axes)) .AND. ALL(ieee_is_finite(weights)))
+      CPASSERT(ALL(weights >= 0.0_dp) .AND. ABS(SUM(weights) - 1.0_dp) < 1.0e-12_dp)
+      CPASSERT(ALL(ABS(SUM(axes**2, DIM=1) - 1.0_dp) < 1.0e-12_dp))
+      CPASSERT(SIZE(variables) > 0 .AND. SIZE(outputs) == SIZE(variables))
+      IF (PRESENT(directions)) THEN
+         CPASSERT(SIZE(directions) == SIZE(variables))
+      END IF
+      status = 0
+      exc = 0.0_dp
+      DO f = 1, SIZE(keys)
+         CALL torch_dict_get(inputs, TRIM(keys(f)), fields(f), to_host=.FALSE.)
+      END DO
+      CALL torch_dict_get(inputs, "grid_weights", grid_weights, to_host=.FALSE.)
+      ALLOCATE (lambda_value(1))
+      lambda_value = 1.0_dp
+      CALL torch_tensor_from_array(lambda, lambda_value)
+      CALL torch_tensor_to_device_leaf(lambda, .TRUE.)
+
+      ! Multicollinear extension averages E_col + dE_col/dlambda over spin directions.
+      ! The common lambda scales all three spin fields (Phys. Rev. Research 5, 013036).
+      DO i = 1, SIZE(weights)
+         CALL torch_dict_clone(inputs, projected)
+         DO f = 1, SIZE(keys)
+            DO j = 1, 4
+               CALL torch_tensor_narrow(fields(f), 0, j - 1, 1, components(j))
+            END DO
+            CALL torch_tensor_linear_combination(components(2:4), axes(:, i), spin)
+            CALL torch_tensor_multiply(lambda, spin, scaled)
+            CALL torch_tensor_linear_combination([components(1), scaled], [0.5_dp, 0.5_dp], channels(1))
+            CALL torch_tensor_linear_combination([components(1), scaled], [0.5_dp, -0.5_dp], channels(2))
+            CALL torch_tensor_cat(channels, collinear)
+            CALL torch_dict_insert(projected, TRIM(keys(f)), collinear)
+            DO j = 1, 4
+               CALL torch_tensor_release(components(j))
+            END DO
+            DO j = 1, 2
+               CALL torch_tensor_release(channels(j))
+            END DO
+            CALL torch_tensor_release(spin)
+            CALL torch_tensor_release(scaled)
+            CALL torch_tensor_release(collinear)
+         END DO
+         CALL torch_model_forward_mol_tensor(model%torch_model, "get_exc_density", projected, values, status)
+         IF (status /= 0) EXIT
+         CALL torch_tensor_weighted_sum(values, grid_weights, energy)
+         CALL torch_tensor_linear_combination([energy, lambda], [1.0_dp, 0.0_dp], connected)
+         CALL torch_tensor_autograd(connected, [lambda], scaling, .TRUE., status)
+         IF (status /= 0) EXIT
+         CALL torch_tensor_linear_combination([connected, scaling(1)], [1.0_dp, 1.0_dp], effective)
+         CALL torch_tensor_accumulate(total, effective, weights(i))
+         IF (PRESENT(directions)) THEN
+            CALL torch_tensor_hessian_vector(effective, variables, directions, derivatives, status, to_host=.FALSE.)
+         ELSE
+            CALL torch_tensor_autograd(effective, variables, derivatives, .FALSE., status)
+         END IF
+         IF (status /= 0) EXIT
+         DO j = 1, SIZE(variables)
+            CALL torch_tensor_accumulate(outputs(j), derivatives(j), weights(i))
+            CALL torch_tensor_release(derivatives(j))
+         END DO
+         CALL torch_tensor_release(values)
+         CALL torch_tensor_release(energy)
+         CALL torch_tensor_release(connected)
+         CALL torch_tensor_release(scaling(1))
+         CALL torch_tensor_release(effective)
+         CALL torch_dict_release(projected)
+      END DO
+      IF (status == 0) THEN
+         CALL torch_tensor_to_host(total, status)
+         IF (status == 0) exc = torch_tensor_item_double(total)
+         DO j = 1, SIZE(outputs)
+            IF (status /= 0) EXIT
+            CALL torch_tensor_to_host(outputs(j), status)
+         END DO
+      END IF
+      IF (status /= 0) THEN
+         exc = 0.0_dp
+         DO j = 1, SIZE(outputs)
+            CALL torch_tensor_release(outputs(j))
+         END DO
+      END IF
+      DO j = 1, SIZE(derivatives)
+         CALL torch_tensor_release(derivatives(j))
+      END DO
+      DO f = 1, SIZE(fields)
+         CALL torch_tensor_release(fields(f))
+      END DO
+      CALL torch_tensor_release(values)
+      CALL torch_tensor_release(energy)
+      CALL torch_tensor_release(connected)
+      CALL torch_tensor_release(scaling(1))
+      CALL torch_tensor_release(effective)
+      CALL torch_tensor_release(total)
+      CALL torch_tensor_release(lambda)
+      CALL torch_tensor_release(grid_weights)
+      CALL torch_dict_release(projected)
    END SUBROUTINE skala_torch_model_spin_projected_eval
 
 ! **************************************************************************************************

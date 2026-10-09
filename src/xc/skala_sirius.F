@@ -22,32 +22,11 @@ MODULE skala_sirius
    USE skala_gpw_functional, ONLY: skala_grid_eval, skala_point_eval
 #if defined(__SIRIUS)
    USE sirius, ONLY: sirius_context_handler
-#if defined(__SIRIUS_XC_CALLBACK) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_set_xc_callback
-#endif
-#if defined(__SIRIUS_XC_POINT_CALLBACK) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_get_parameters, sirius_set_xc_point_callback
-#endif
-#if defined(__SIRIUS_XC_SPINOR) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_set_xc_spinor_mode
-#endif
-#if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_set_xc_point_geometry_callbacks
-#endif
-#if defined(__SIRIUS_XC_POINT_RESPONSE) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_set_xc_point_response_callback
-#endif
-#if defined(__SIRIUS_XC_POINT_HESSIAN) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_set_xc_point_hessian_callback
-#endif
-#if defined(__SIRIUS_XC_RESPONSE_TOLERANCE) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_set_xc_response_tolerance
-#endif
-#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_set_xc_quadrature_direction_callback
-#endif
-#if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
-   USE sirius, ONLY: sirius_update_xc_point_set
+#if defined(__LIBTORCH)
+   USE sirius, ONLY: sirius_get_parameters, sirius_set_xc_callback, sirius_set_xc_point_callback, &
+                     sirius_set_xc_spinor_mode, sirius_set_xc_point_geometry_callbacks, &
+                     sirius_set_xc_point_hessian_callback, sirius_set_xc_response_tolerance, &
+                     sirius_set_xc_quadrature_direction_callback, sirius_update_xc_point_set
 #endif
 #endif
 #include "../base/base_uses.f90"
@@ -141,7 +120,7 @@ CONTAINS
                                  points, energy, descriptor, sizes, block_centres)
       CALL skala_sirius_register_points(context, xc_section, particles, cell, points, energy, descriptor, &
                                         sizes, block_centres, state)
-#if defined(__SIRIUS_XC_RESPONSE_TOLERANCE) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
       CALL sirius_set_xc_response_tolerance(context, response_tolerance, error)
       IF (error /= 0) CPABORT("Could not set the SIRIUS Skala response tolerance")
 #endif
@@ -152,14 +131,14 @@ CONTAINS
       state%scale = scale
       state%grid_lattice = cell%hmat
       CALL MOVE_ALLOC(centres, state%grid_centres)
-#if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
       CALL sirius_set_xc_point_geometry_callbacks(context, C_FUNLOC(evaluate_skala_point_geometry), &
                                                   C_FUNLOC(pullback_skala_quadrature), C_LOC(state%token), error)
       IF (error /= 0) CPABORT("Could not register the SIRIUS Skala geometry callbacks")
 #else
       MARK_USED(error)
 #endif
-#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
       CALL sirius_set_xc_quadrature_direction_callback(context, C_FUNLOC(differentiate_skala_quadrature), &
                                                        C_LOC(state%token), error)
       IF (error /= 0) CPABORT("Could not register the SIRIUS Skala quadrature direction callback")
@@ -180,7 +159,7 @@ CONTAINS
       TYPE(particle_type), POINTER :: particles(:)
       TYPE(cell_type), POINTER :: cell
       TYPE(skala_sirius_state_type), POINTER :: state
-#if defined(__SIRIUS_XC_CALLBACK) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
       INTEGER :: error
 
       CALL create_state(xc_section, particles, cell, state)
@@ -218,7 +197,7 @@ CONTAINS
       REAL(dp), INTENT(IN) :: points(:, :), energy_weights(:), descriptor_weights(:), atom_coords(:, :)
       INTEGER, INTENT(IN) :: atom_sizes(:)
       TYPE(skala_sirius_state_type), POINTER :: state
-#if defined(__SIRIUS_XC_POINT_CALLBACK) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
       INTEGER :: nr, nb, error, mag
 
       nr = SIZE(energy_weights)
@@ -233,22 +212,12 @@ CONTAINS
       CALL sirius_get_parameters(context, num_mag_dims=mag, error_code=error)
       IF (error /= 0) CPABORT("Could not query the SIRIUS spin convention")
       IF (mag == 3) THEN
-#if defined(__SIRIUS_XC_SPINOR)
          CALL sirius_set_xc_spinor_mode(context, .TRUE., error)
          IF (error /= 0) CPABORT("Could not register the SIRIUS Skala spinor convention")
-#else
-         CPABORT("Noncollinear Skala requires the SIRIUS four-component point XC API")
-#endif
       END IF
-#if defined(__SIRIUS_XC_POINT_HESSIAN)
       CALL sirius_set_xc_point_hessian_callback(context, C_FUNLOC(evaluate_skala_point_hessian), &
                                                 C_LOC(state%token), error)
       IF (error /= 0) CPABORT("Could not register the SIRIUS Skala joint Hessian callback")
-#elif defined(__SIRIUS_XC_POINT_RESPONSE)
-      CALL sirius_set_xc_point_response_callback(context, C_FUNLOC(evaluate_skala_point_response), &
-                                                 C_LOC(state%token), error)
-      IF (error /= 0) CPABORT("Could not register the SIRIUS Skala response callback")
-#endif
 #else
       MARK_USED(context)
       MARK_USED(xc_section)
@@ -309,7 +278,7 @@ CONTAINS
       TYPE(mp_comm_type), INTENT(IN)                     :: group
 
       INTEGER                                            :: changed
-#if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
       INTEGER                                            :: a, error
       INTEGER, ALLOCATABLE                               :: sizes(:)
       REAL(dp), ALLOCATABLE                              :: block_centres(:, :), centres(:, :), &
@@ -324,7 +293,7 @@ CONTAINS
       changed = MERGE(0, 1, grid_geometry_current(state))
       CALL group%max(changed)
       IF (changed == 0) RETURN
-#if defined(__SIRIUS_XC_POINT_UPDATE) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
       CPASSERT(ALL(cell%perd == 1))
       CPASSERT(SIZE(particles) == SIZE(state%grid_centres, 2))
       ALLOCATE (centres(3, SIZE(particles)))
@@ -372,7 +341,7 @@ CONTAINS
       NULLIFY (state)
    END SUBROUTINE skala_sirius_release
 
-#if defined(__SIRIUS_XC_CALLBACK) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief SIRIUS C callback. One FFT communicator partitions a complete regular grid.
 !> \param user_data Opaque callback token.
@@ -471,7 +440,7 @@ CONTAINS
       current = .TRUE.
    END FUNCTION grid_geometry_current
 
-#if defined(__SIRIUS_XC_POINT_CALLBACK) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief Return raw discrete covectors for joint fields, without dividing by quadrature weights.
 !> \param user_data Opaque callback token.
@@ -533,10 +502,7 @@ CONTAINS
    END SUBROUTINE evaluate_skala_points
 #endif
 
-#if defined(__LIBTORCH) && \
-   (defined(__SIRIUS_XC_CALLBACK) ||defined(__SIRIUS_XC_POINT_CALLBACK) ||\
-   defined(__SIRIUS_XC_POINT_GEOMETRY) ||defined(__SIRIUS_XC_POINT_RESPONSE) ||\
-   defined(__SIRIUS_XC_POINT_HESSIAN) ||defined(__SIRIUS_XC_QUADRATURE_DIRECTION))
+#if defined(__SIRIUS) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief Return the registry entry without exporting Fortran pointers across the C ABI.
 !> \param user_data Opaque callback token.
@@ -559,71 +525,7 @@ CONTAINS
    END FUNCTION callback_state
 #endif
 
-#if defined(__SIRIUS_XC_POINT_RESPONSE) && defined(__LIBTORCH)
-! **************************************************************************************************
-!> \brief Apply Skala's XC Hessian to reconstructed field directions at fixed quadrature.
-!> \param user_data Opaque callback token.
-!> \param nr Number of local quadrature points.
-!> \param ns Number of primitive-field spin components.
-!> \param nb Number of complete local atom blocks.
-!> \param fcomm Fortran context communicator handle.
-!> \param coordinates Cartesian quadrature points, in bohr.
-!> \param energy_weights Energy-partition quadrature weights.
-!> \param descriptor_weights Nonlocal descriptor-domain weights.
-!> \param atom_sizes Point count of each complete local atom block.
-!> \param atom_coords Cartesian atom-block centres, in bohr.
-!> \param rho Density fields.
-!> \param gradient Cartesian density gradients.
-!> \param tau Kinetic-energy density fields.
-!> \param delta_rho Density direction.
-!> \param delta_gradient Density-gradient direction.
-!> \param delta_tau Kinetic-density direction.
-!> \param drho Discrete density covectors or their directional response.
-!> \param dgradient Discrete gradient covectors or their directional response.
-!> \param dtau Discrete kinetic-density covectors or their directional response.
-!> \param status Zero on success, nonzero on callback failure.
-! **************************************************************************************************
-   SUBROUTINE evaluate_skala_point_response(user_data, nr, ns, nb, fcomm, coordinates, energy_weights, &
-                                            descriptor_weights, atom_sizes, atom_coords, rho, gradient, tau, &
-                                            delta_rho, delta_gradient, delta_tau, drho, dgradient, dtau, status) BIND(C)
-      TYPE(C_PTR), VALUE                                 :: user_data
-      INTEGER(C_INT), VALUE                              :: nr, ns, nb, fcomm
-      REAL(C_DOUBLE), INTENT(IN)                         :: coordinates(3, nr), energy_weights(nr), &
-                                                            descriptor_weights(nr)
-      INTEGER(C_INT), INTENT(IN)                         :: atom_sizes(nb)
-      REAL(C_DOUBLE), INTENT(IN) :: atom_coords(3, nb), rho(nr, ns), gradient(nr, 3, ns), &
-         tau(nr, ns), delta_rho(nr, ns), delta_gradient(nr, 3, ns), delta_tau(nr, ns)
-      REAL(C_DOUBLE), INTENT(OUT)                        :: drho(nr, ns), dgradient(nr, 3, ns), &
-                                                            dtau(nr, ns)
-      INTEGER(C_INT), INTENT(OUT)                        :: status
-
-      INTEGER                                            :: invalid
-      REAL(dp)                                           :: energy
-      TYPE(mp_comm_type)                                 :: comm
-      TYPE(skala_sirius_state_type), POINTER             :: state
-
-      CALL comm%set_handle(INT(fcomm))
-      state => callback_state(user_data)
-      drho = 0.0_dp
-      dgradient = 0.0_dp
-      dtau = 0.0_dp
-      status = 1
-      invalid = 0
-      IF (nr < 0 .OR. nb < 0 .OR. ALL(ns /= [1, 2, 4]) .OR. .NOT. ASSOCIATED(state)) invalid = 1
-      IF (ASSOCIATED(state)) THEN
-         IF (.NOT. grid_geometry_current(state)) invalid = 1
-      END IF
-      CALL comm%max(invalid)
-      IF (invalid /= 0) RETURN
-      CALL skala_point_eval(comm, coordinates, energy_weights, descriptor_weights, atom_sizes, atom_coords, &
-                            rho, gradient, tau, state%xc_section, energy, drho, dgradient, dtau, &
-                            response_density=delta_rho, response_gradient=delta_gradient, response_kinetic=delta_tau, &
-                            spin_angular_points=state%nspin_angular, model_fp64=.TRUE.)
-      status = 0
-   END SUBROUTINE evaluate_skala_point_response
-#endif
-
-#if defined(__SIRIUS_XC_POINT_HESSIAN) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief Joint Hessian-vector product of all independent Skala point inputs.
 !> \param user_data Opaque callback token.
@@ -703,7 +605,7 @@ CONTAINS
    END SUBROUTINE evaluate_skala_point_hessian
 #endif
 
-#if defined(__SIRIUS_XC_POINT_GEOMETRY) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
 
 ! **************************************************************************************************
 !> \brief Differentiate the model's independent fields, coordinates and quadrature weights.
@@ -820,7 +722,7 @@ CONTAINS
    END SUBROUTINE pullback_skala_quadrature
 #endif
 
-#if defined(__SIRIUS_XC_QUADRATURE_DIRECTION) && defined(__LIBTORCH)
+#if defined(__SIRIUS) && defined(__LIBTORCH)
 ! **************************************************************************************************
 !> \brief Forward the host atom/cell direction through the complete local atom quadrature.
 !> \param user_data Opaque callback token.
