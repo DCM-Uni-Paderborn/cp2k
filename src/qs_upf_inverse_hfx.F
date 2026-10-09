@@ -345,9 +345,9 @@ CONTAINS
 !> \param right_k_response ...
 !> \param left_coefficients_response Full response from the defining left frame.
 !> \param right_coefficients_response Full response from the defining right frame.
-!> \param ao_image Optional integer right AO cell R for individual lattice integrals.
 !> \param auxiliary_positions_response Cartesian RI site/image motion.
 !> \param auxiliary_factors_response Response of the owner's complex RI factors.
+!> \param ao_image Optional integer right AO cell R for individual lattice integrals.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_tensor(left_frame, right_frame, kinds, augmentation, auxiliary_bases, &
                                         auxiliary_positions, auxiliary_factors, center_images, tensor_real, &
@@ -857,7 +857,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Check identical native block shapes and ownership for paired real tensors.
 !> \param reference ...
-!> \param target ...
+!> \param TARGET ...
 ! **************************************************************************************************
    SUBROUTINE matching_tensor(reference, TARGET)
       TYPE(dbt_type), INTENT(IN)                         :: reference, TARGET

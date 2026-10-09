@@ -150,7 +150,7 @@ CONTAINS
       TYPE(pw_c1d_gs_type), INTENT(INOUT)                :: rho_gspace
       REAL(dp), INTENT(OUT), OPTIONAL                    :: total_rho
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: kinetic
-      TYPE(pw_c1d_gs_type), INTENT(INOUT), OPTIONAL       :: kinetic_gspace
+      TYPE(pw_c1d_gs_type), INTENT(INOUT), OPTIONAL      :: kinetic_gspace
 
       CPASSERT(PRESENT(kinetic) .EQV. PRESENT(kinetic_gspace))
       CALL background_images(map, matrix)

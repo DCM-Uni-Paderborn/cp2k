@@ -4672,8 +4672,9 @@ CONTAINS
          IF (dik > ri_data%kp_RI_range) CYCLE
          RI_cells(kcell) = 1
 
-         IF (.NOT. inverse_transition .AND. jcell == 1 .AND. iatom == jatom) &
-            nRI_per_atom(iatom) = nRI_per_atom(iatom) + ri_data%bsizes_RI(katom)
+         IF (.NOT. inverse_transition .AND. jcell == 1 .AND. iatom == jatom) then
+           nRI_per_atom(iatom) = nRI_per_atom(iatom) + ri_data%bsizes_RI(katom)
+         end if
       END DO
       CALL neighbor_list_3c_iterator_destroy(nl_3c_iter)
       CALL neighbor_list_3c_destroy(nl_3c)
