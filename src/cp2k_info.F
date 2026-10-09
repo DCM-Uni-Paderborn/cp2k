@@ -259,6 +259,18 @@ CONTAINS
 #if defined(__SIRIUS)
       flags = TRIM(flags)//" sirius"
 #endif
+#if defined(__SIRIUS_NLCG)
+      flags = TRIM(flags)//" sirius_nlcg"
+#endif
+#if defined(__SIRIUS_DFTD3)
+      flags = TRIM(flags)//" sirius_dftd3"
+#endif
+#if defined(__SIRIUS_DFTD4)
+      flags = TRIM(flags)//" sirius_dftd4"
+#endif
+#if defined(__SIRIUS_VCSQNM)
+      flags = TRIM(flags)//" sirius_vcsqnm"
+#endif
 #if defined(__CHECK_DIAG)
       flags = TRIM(flags)//" check_diag"
 #endif
