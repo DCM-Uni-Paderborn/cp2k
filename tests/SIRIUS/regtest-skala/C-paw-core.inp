@@ -1,4 +1,6 @@
 ! Explicit-core PAW integration test with a fixed spin moment.
+! C-paw-core.json requires matching four-valence-electron UPF and ATOMPAW XML data.
+! Convert with SIRIUS's upf_to_json C.UPF --paw-core-xml C.xml -o C-paw-core.json.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT C-paw-core

@@ -1,5 +1,6 @@
 ! Fixed-geometry integration check, not a converged physical benchmark.
-! H-paw-no-core.json is prepared from the core-free PAW setup as described in README.md.
+! H-paw-no-core.json uses SIRIUS's core-free H PAW setup with an explicit zero
+! paw_data.ae_core_kinetic_density array matching ae_core_charge_density in length.
 ! The radial grid includes points below the first PAW radial sample.
 &GLOBAL
   PRINT_LEVEL MEDIUM

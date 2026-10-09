@@ -1640,6 +1640,7 @@ set(CP2K_PROGS_F
     nequip_unittest.F
     xc/skala_atom_grid_unittest.F
     xc/skala_grid_unittest.F
+    xc/skala_sirius_unittest.F
     gx_ac_unittest.F)
 
 if(CP2K_USE_MPI)

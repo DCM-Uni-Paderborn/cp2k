@@ -19,6 +19,7 @@ PROGRAM skala_sirius_unittest
                                   section_vals_release, &
                                   section_vals_type, &
                                   section_vals_val_set
+   USE iso_c_binding, ONLY: C_LOC
    USE kinds, ONLY: default_path_length, &
                     default_string_length, &
                     dp
@@ -28,6 +29,7 @@ PROGRAM skala_sirius_unittest
                               mp_comm_world
    USE particle_types, ONLY: particle_type
    USE sirius, ONLY: &
+      SIRIUS_NUMBER_TYPE, &
       sirius_add_atom, sirius_add_atom_type, sirius_add_atom_type_radial_function, &
       sirius_add_atom_type_aw_descriptor, sirius_add_atom_type_lo_descriptor, &
       sirius_context_handler, sirius_create_context, sirius_create_ground_state, &
@@ -36,6 +38,7 @@ PROGRAM skala_sirius_unittest
       sirius_get_forces, sirius_get_stress_tensor, sirius_get_total_magnetization, &
       sirius_get_max_num_gkvec, sirius_set_atom_position, sirius_update_ground_state, &
       sirius_import_parameters, sirius_initialize_context, sirius_kpoint_set_handler, &
+      sirius_option_set, &
       sirius_set_atom_type_dion, sirius_set_atom_type_paw, sirius_set_atom_type_radial_grid, &
       sirius_set_atom_type_radial_grid_inf, &
       sirius_set_lattice_vectors, sirius_set_parameters
@@ -70,17 +73,18 @@ PROGRAM skala_sirius_unittest
    TYPE(sirius_ground_state_handler) :: gs
    CHARACTER(len=default_path_length) :: model, paw_setup, lapw_setup
    CHARACTER(len=32) :: side_arg, step_arg, grid_arg, model_mode, device_arg, model_device_arg, response_arg, bands_arg
-   CHARACTER(len=32) :: relativity_arg, core_relativity_arg
+   CHARACTER(len=32) :: relativity_arg, core_relativity_arg, radial_arg, charge_arg
    CHARACTER(len=3) :: processing_unit = "CPU"
    INTEGER :: i, j, l, mode, mag, nr, nb, x, y, z, ierr, side, first_mode, last_mode, geometry, natoms
-   INTEGER :: updated_basis, fresh_basis, max_scf_iterations, num_bands
+   INTEGER :: updated_basis, fresh_basis, max_scf_iterations, num_bands, radial_points
    REAL(dp) :: lattice(3, 3), r(nrad), v(nrad), rho(nrad), orbital(nrad), dion(1, 1), &
                energy, exc, repeat_exc, kpoint(3, 1), reference(3, 2), fd_step, response_step, &
                rmt(nmt), rfree(nfree), rhofree(nfree), soc_dion(2, 2)
    REAL(dp) :: force_steps(5) = [0.0_dp, 2.0e-4_dp, -2.0e-4_dp, 1.0e-4_dp, -1.0e-4_dp]
    REAL(dp), PARAMETER :: direction(3) = [0.7_dp, -0.4_dp, 0.2_dp]
-   REAL(dp) :: force_energy(5), force_derivative, force_fd, entropy, descf, density_tol, energy_tol
+   REAL(dp) :: force_energy(5), force_derivative, force_fd, force_errors(2), entropy, descf, density_tol, energy_tol
    REAL(dp) :: stress(3, 3), strain(3, 3), magnetization(3)
+   REAL(dp), TARGET :: extra_charge
    REAL(dp) :: updated_energy, updated_exc
    REAL(dp), ALLOCATABLE :: forces(:, :)
 #if defined(__SIRIUS_XC_DERIVATIVE)
@@ -111,14 +115,26 @@ PROGRAM skala_sirius_unittest
    CALL get_command_argument(11, relativity_arg)
    CALL get_command_argument(12, lapw_setup)
    CALL get_command_argument(13, core_relativity_arg)
+   CALL get_command_argument(14, radial_arg)
+   CALL get_command_argument(15, charge_arg)
+   extra_charge = 0.0_dp
+   IF (LEN_TRIM(charge_arg) > 0) THEN
+      READ (charge_arg, *, IOSTAT=ierr) extra_charge
+      IF (ierr /= 0) ERROR STOP "Invalid extra charge"
+      IF (.NOT. ieee_is_finite(extra_charge)) ERROR STOP "Extra charge must be finite"
+   END IF
    IF (LEN_TRIM(relativity_arg) == 0) relativity_arg = "none"
    IF (LEN_TRIM(core_relativity_arg) == 0) core_relativity_arg = "none"
    SELECT CASE (TRIM(relativity_arg))
-   CASE ("none", "zora", "iora", "koelling_harmon")
+   CASE ("none", "zora", "iora", "koelling_harmon", "dirac")
    CASE DEFAULT
       ERROR STOP "Unknown LAPW valence relativity"
    END SELECT
-   IF (ALL(core_relativity_arg /= ["none", "zora"])) ERROR STOP "Core response requires NR or ZORA"
+   SELECT CASE (TRIM(core_relativity_arg))
+   CASE ("none", "zora", "dirac")
+   CASE DEFAULT
+      ERROR STOP "Core response requires NR, ZORA or Dirac"
+   END SELECT
    IF (LEN_TRIM(lapw_setup) == 0 .AND. core_relativity_arg /= "none") THEN
       ERROR STOP "Core relativity requires a supplied LAPW atom file"
    END IF
@@ -140,8 +156,10 @@ PROGRAM skala_sirius_unittest
    IF (LEN_TRIM(model_mode) > 0 .AND. TRIM(model_mode) /= "skala-float32") THEN
       ERROR STOP "Unknown model mode (expected skala-float32 or no mode for the analytic fixture)"
    END IF
-   force_test = TRIM(grid_arg) == "atom-grid-forces" .OR. TRIM(grid_arg) == "spinor-lapw-soc-forces"
-   stress_test = TRIM(grid_arg) == "atom-grid-stress" .OR. TRIM(grid_arg) == "spinor-lapw-soc-stress"
+   force_test = TRIM(grid_arg) == "atom-grid-forces" .OR. TRIM(grid_arg) == "spinor-atom-grid-forces" .OR. &
+                TRIM(grid_arg) == "spinor-lapw-soc-forces"
+   stress_test = TRIM(grid_arg) == "atom-grid-stress" .OR. TRIM(grid_arg) == "spinor-atom-grid-stress" .OR. &
+                 TRIM(grid_arg) == "spinor-lapw-soc-stress"
    derivative_test = force_test .OR. stress_test
    update_test = TRIM(grid_arg) == "atom-grid-update"
    paw_soc_test = TRIM(grid_arg) == "spinor-paw-soc-orbitals"
@@ -153,12 +171,20 @@ PROGRAM skala_sirius_unittest
                   TRIM(grid_arg) == "spinor-atom-grid-orbitals" .OR. soc_test .OR. (lapw_soc_test .AND. .NOT. derivative_test)
    spinor_stress = TRIM(grid_arg) == "spinor-stress"
    spinor_test = TRIM(grid_arg) == "spinor" .OR. TRIM(grid_arg) == "spinor-atom-grid" .OR. &
+                 TRIM(grid_arg) == "spinor-atom-grid-forces" .OR. TRIM(grid_arg) == "spinor-atom-grid-stress" .OR. &
                  (orbital_only .AND. TRIM(grid_arg) /= "atom-grid-orbitals") .OR. spinor_stress .OR. lapw_soc_test
    atom_grid = TRIM(grid_arg) == "atom-grid" .OR. TRIM(grid_arg) == "atom-grid-orbitals" .OR. &
                derivative_test .OR. update_test .OR. &
                TRIM(grid_arg) == "spinor-atom-grid" .OR. TRIM(grid_arg) == "spinor-atom-grid-orbitals" .OR. &
                spinor_stress .OR. paw_soc_test .OR. lapw_soc_test
    IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. (atom_grid .OR. spinor_test)) ERROR STOP "Unknown atom-grid test mode"
+   radial_points = MERGE(30, 100, derivative_test)
+   IF (spinor_stress .OR. orbital_only) radial_points = 12
+   IF (LEN_TRIM(radial_arg) > 0) THEN
+      IF (.NOT. atom_grid) ERROR STOP "Radial point count requires an atom grid"
+      READ (radial_arg, *, IOSTAT=ierr) radial_points
+      IF (ierr /= 0 .OR. radial_points < 2) ERROR STOP "Radial point count must be at least two"
+   END IF
 #if !defined(__SIRIUS_XC_POINT_UPDATE)
    IF (update_test .OR. derivative_test .OR. spinor_stress) ERROR STOP "SIRIUS lacks the point-quadrature update API"
 #endif
@@ -171,10 +197,10 @@ PROGRAM skala_sirius_unittest
       IF (ierr /= 0) ERROR STOP "Invalid finite-difference step"
       IF (.NOT. ieee_is_finite(fd_step) .OR. fd_step <= 0.0_dp) ERROR STOP "Finite-difference step must be positive"
 #if !defined(__SIRIUS_XC_DERIVATIVE)
-      ERROR STOP "SIRIUS lacks the external XC orbital derivative diagnostic"
+      IF (.NOT. derivative_test) ERROR STOP "SIRIUS lacks the external XC orbital derivative diagnostic"
 #endif
    END IF
-   response_step = fd_step
+   response_step = MERGE(0.0_dp, fd_step, derivative_test)
    IF (LEN_TRIM(response_arg) > 0) THEN
       READ (response_arg, *, IOSTAT=ierr) response_step
       IF (ierr /= 0) ERROR STOP "Invalid field-response step"
@@ -198,6 +224,7 @@ PROGRAM skala_sirius_unittest
       last_mode = 2
    END IF
    IF (first_mode /= 2 .AND. relativity_arg /= "none") ERROR STOP "Valence relativity requires the LAPW fixture"
+   IF (relativity_arg == "dirac" .AND. lapw_soc_test) ERROR STOP "Dirac includes SOC without a separate correction"
    IF (first_mode /= 2 .AND. LEN_TRIM(lapw_setup) > 0) ERROR STOP "Atom file requires the LAPW fixture"
    IF (spinor_test) THEN
       IF (lapw_soc_test .AND. first_mode /= 2) ERROR STOP "LAPW SOC fixture requires LAPW as the second argument"
@@ -236,6 +263,11 @@ PROGRAM skala_sirius_unittest
       ! Use the actual-model stencil without relaxing the derivative error bound.
       IF (derivative_test) force_steps = 10.0_dp*force_steps
    END IF
+   IF (derivative_test .AND. LEN_TRIM(step_arg) > 0) THEN
+      ! Keep both geometry stencils inside the same LAPW point domains.
+      force_steps = fd_step*[0.0_dp, 1.0_dp, -1.0_dp, 0.5_dp, -0.5_dp]
+      fd_step = 0.0_dp
+   END IF
    IF (orbital_only .OR. spinor_stress) max_scf_iterations = 1
    ! LAPW already has occupied auxiliary-Hamiltonian orbitals for the operator check.
    IF (orbital_only .AND. first_mode == 2) max_scf_iterations = 0
@@ -251,16 +283,18 @@ PROGRAM skala_sirius_unittest
    IF (atom_grid) THEN
       CALL create_pwdft_section(pwdft_definition)
       CALL section_vals_create(pwdft, pwdft_definition)
-      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=MERGE(30, 100, derivative_test))
+      CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=radial_points)
       CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=MERGE(50, 110, derivative_test))
       IF (spinor_stress .OR. orbital_only) THEN
          ! These modes test the fixed-orbital chain rule, not grid convergence.
-         CALL section_vals_val_set(pwdft, "SKALA_GRID%N_RADIAL", i_val=12)
          CALL section_vals_val_set(pwdft, "SKALA_GRID%N_ANGULAR", i_val=26)
       END IF
       CALL section_vals_val_set(pwdft, "SKALA_GRID%EPS_RESPONSE", &
                                 r_val=MERGE(1.0e-6_dp, 1.0e-8_dp, model_mode == "skala-float32"))
-      IF (spinor_test) CALL section_vals_val_set(pwdft, "SKALA_GRID%N_SPIN_ANGULAR", i_val=26)
+      IF (spinor_test) THEN
+         CALL section_vals_val_set(pwdft, "SKALA_GRID%N_SPIN_ANGULAR", &
+                                   i_val=MERGE(194, 26, extra_charge /= 0.0_dp .AND. model_mode == "skala-float32"))
+      END IF
       grid => section_vals_get_subs_vals(pwdft, "SKALA_GRID")
    END IF
    lattice = 0.0_dp
@@ -299,7 +333,7 @@ PROGRAM skala_sirius_unittest
       centres(:, 1) = atoms(1)%r
    END IF
    weights = cell%deth/REAL(side**3, dp)
-   descriptor_weights = weights
+   descriptor_weights(:) = weights
    IF (nr > 0) weights(1) = 0.0_dp
    kpoint(:, 1) = [0.07_dp, 0.03_dp, 0.02_dp]
 
@@ -337,6 +371,7 @@ PROGRAM skala_sirius_unittest
                      CALL sirius_set_parameters(ctx, pw_cutoff=9.0_dp)
                   END IF
                   IF (spinor_test) CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":true}}')
+                  IF (relativity_arg == "dirac") CALL sirius_import_parameters(ctx, '{"control":{"use_second_variation":false}}')
                   CALL sirius_set_parameters(ctx, valence_rel=TRIM(relativity_arg))
                   CALL sirius_set_parameters(ctx, core_rel=TRIM(core_relativity_arg))
                ELSE
@@ -350,7 +385,12 @@ PROGRAM skala_sirius_unittest
                                                 '"iterative_solver":{"type":"exact","min_tolerance":1e-11,"num_steps":80}}')
                END IF
                CALL sirius_set_parameters(ctx, num_mag_dims=mag, num_bands=num_bands)
-               IF (orbital_only .AND. mag == 1) THEN
+               CALL sirius_option_set(ctx, "parameters", "extra_charge", SIRIUS_NUMBER_TYPE, C_LOC(extra_charge), error_code=ierr)
+               IF (ierr /= 0) ERROR STOP "SIRIUS could not set the extra charge"
+               IF (spinor_test .AND. extra_charge /= 0.0_dp .AND. model_mode == "skala-float32") THEN
+                  CALL sirius_import_parameters(ctx, '{"mixer":{"type":"broyden2","beta":0.05,"max_history":8}}')
+               END IF
+               IF (orbital_only .AND. mag == 1 .AND. relativity_arg /= "dirac") THEN
                   CALL sirius_import_parameters(ctx, '{"parameters":{"fixed_mag":0.5}}')
                END IF
                IF (lapw_soc_test) CALL sirius_import_parameters(ctx, '{"parameters":{"so_correction":true}}')
@@ -506,9 +546,12 @@ PROGRAM skala_sirius_unittest
             IF (spinor_test) THEN
                CALL sirius_get_total_magnetization(gs, magnetization(1), error_code=ierr)
                IF (ierr /= 0 .OR. .NOT. ALL(ieee_is_finite(magnetization))) ERROR STOP "Invalid spinor magnetization"
+               IF (extra_charge /= 0.0_dp .AND. SQRT(SUM(magnetization**2)) < 1.0e-4_dp) THEN
+                  ERROR STOP "Vacuous open-shell spinor derivative check"
+               END IF
                IF (comm%mepos == 0) WRITE (*, '(A,3ES19.10)') "Spinor magnetization (x,y,z): ", magnetization
             END IF
-            IF (orbital_only .AND. mag == 1) THEN
+            IF (orbital_only .AND. mag == 1 .AND. relativity_arg /= "dirac") THEN
                CALL sirius_get_total_magnetization(gs, magnetization(1), error_code=ierr)
                IF (ierr /= 0 .OR. .NOT. ALL(ieee_is_finite(magnetization))) ERROR STOP "Invalid collinear magnetization"
                ! The collinear API returns its single z component in the first slot.
@@ -536,6 +579,7 @@ PROGRAM skala_sirius_unittest
             CALL sirius_generate_effective_potential(gs)
             CALL sirius_get_energy(gs, "exc", repeat_exc)
             IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Unchanged density changed the point XC energy"
+            exc = repeat_exc
 #if defined(__SIRIUS_XC_POINT_GEOMETRY)
             IF (atom_grid .AND. .NOT. derivative_test .AND. .NOT. update_test .AND. &
                 .NOT. spinor_stress .AND. .NOT. orbital_only) THEN
@@ -552,7 +596,7 @@ PROGRAM skala_sirius_unittest
                IF (comm%mepos == 0) WRITE (*, '(A,2ES19.10)') "XC geometry warmup differences: ", &
                   MAXVAL(ABS(repeat_atom - atom_derivative)), MAXVAL(ABS(repeat_cell - cell_derivative))
                ! TorchScript can specialize its graph on the first geometry-gradient evaluation.
-               atom_derivative = repeat_atom
+               atom_derivative(:, :) = repeat_atom
                cell_derivative = repeat_cell
                CALL sirius_get_xc_geometry_derivatives(gs, natoms, repeat_atom, repeat_cell, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "Third geometry callback failed"
@@ -666,13 +710,14 @@ PROGRAM skala_sirius_unittest
          IF (derivative_test) THEN
             DO i = 2, 4, 2
                force_fd = (force_energy(i) - force_energy(i + 1))/(2*force_steps(i))
+               force_errors(i/2) = ABS(force_fd - force_derivative)
                IF (comm%mepos == 0) WRITE (*, '(3A,2I3,4ES19.10)') "Total ", MERGE("strain", "force ", stress_test), &
                   " derivative (method,mag,h,analytic,FD,error): ", &
                   mode, mag, force_steps(i), force_derivative, force_fd, ABS(force_fd - force_derivative)
-               IF (.NOT. ieee_is_finite(force_fd) .OR. ABS(force_fd - force_derivative) > 2.0e-5_dp) THEN
-                  ERROR STOP "Geometry derivative disagrees with the finite-difference free energy"
-               END IF
             END DO
+            IF (.NOT. ALL(ieee_is_finite(force_errors)) .OR. MAXVAL(force_errors) > 2.0e-5_dp) THEN
+               ERROR STOP "Geometry derivative disagrees with the finite-difference free energy"
+            END IF
          END IF
       END DO
    END DO

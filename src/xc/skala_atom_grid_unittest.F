@@ -26,7 +26,7 @@ PROGRAM skala_atom_grid_unittest
 
    IMPLICIT NONE
    TYPE(mp_comm_type) :: comm, single
-   TYPE(skala_partition_type) :: partition, translated, displaced
+   TYPE(skala_partition_type), ALLOCATABLE :: partition, translated, displaced
    REAL(dp) :: lattice(3, 3), inverse(3, 3), centres(3, 2), shifted(3, 2), x(3), offset(3), &
                p, d, p2, d2, total, scalar(4), serial(4), coarse_error, error, &
                radius(12), radial_weight(12), t(12), weight(12), moments(24)
@@ -52,6 +52,7 @@ PROGRAM skala_atom_grid_unittest
    inverse = inv_3x3(lattice)
    centres(:, 1) = MATMUL(lattice, [0.13_dp, 0.31_dp, 0.21_dp])
    centres(:, 2) = MATMUL(lattice, [0.68_dp, 0.73_dp, 0.49_dp])
+   ALLOCATE (partition, translated, displaced)
    CALL skala_partition_init(partition, lattice, centres, 1)
    shifted = centres
    shifted(:, 2) = centres(:, 2) + MATMUL(lattice, [2.0_dp, -1.0_dp, 1.0_dp])
@@ -101,7 +102,8 @@ PROGRAM skala_atom_grid_unittest
          nr = 160
          na = 974
       END IF
-      CALL skala_atom_grid_build(comm, lattice, centres, nr, na, 1, 1.0_dp, points, ew, dw, bs, bc)
+      ! Larger image shells are covered by the partition and derivative tests above.
+      CALL skala_atom_grid_build(comm, lattice, centres, nr, na, 0, 1.0_dp, points, ew, dw, bs, bc)
       IF (SUM(bs) /= SIZE(ew) .OR. SIZE(dw) /= SIZE(ew)) ERROR STOP "Incomplete atom blocks"
       blocks = SIZE(bs)
       empty = 0
@@ -122,7 +124,7 @@ PROGRAM skala_atom_grid_unittest
          ERROR STOP "Periodic volume/Fourier quadrature did not converge"
       END IF
       IF (level == 1) THEN
-         CALL skala_atom_grid_build(single, lattice, centres, nr, na, 1, 1.0_dp, points, ew, dw, bs, bc)
+         CALL skala_atom_grid_build(single, lattice, centres, nr, na, 0, 1.0_dp, points, ew, dw, bs, bc)
          serial = integrals(points, ew)
          IF (MAXVAL(ABS(scalar - serial)) > 1.0e-10_dp) ERROR STOP "Distributed atom-grid integrals differ"
       END IF
@@ -135,6 +137,7 @@ PROGRAM skala_atom_grid_unittest
    CALL comm%sum(descriptor_only)
    IF (descriptor_only == 0) ERROR STOP "Descriptor-only quadrature rows have been discarded"
    IF (comm%mepos == 0) WRITE (*, '(A)') "Periodic Skala atom-grid checks passed"
+   DEALLOCATE (points, ew, dw, bs, bc, partition, translated, displaced)
    CALL cp2k_finalize()
 CONTAINS
 ! **************************************************************************************************
@@ -181,19 +184,21 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: positions(:, :)
 
       INTEGER                                            :: atom, case_id, component, derivative, &
-                                                            iteration, trial
+                                                            iteration, last_atom, trial
       REAL(dp) :: ad, adjoint(2), dh(3, 3), dmw, dpw, dx(3), err, fd, gh(3, 3), gx(3), h, hi, &
          hm(3, 3), hp(3, 3), lo, maximum, mid, pm, pp, shifted_gh(3, 3), shifted_gx(3), xm(3), &
          xp(3), shifted_gr(3, SIZE(positions, 2)), rp(3, SIZE(positions, 2)), &
          rm(3, SIZE(positions, 2)), gr(3, SIZE(positions, 2)), dr(3, SIZE(positions, 2))
-      TYPE(skala_partition_type)                         :: minus_partition, plus_partition, &
+      TYPE(skala_partition_type), ALLOCATABLE            :: minus_partition, plus_partition, &
                                                             reference_partition
 
+      last_atom = SIZE(positions, 2)
       dx = [0.13_dp, -0.17_dp, 0.11_dp]
       DO atom = 1, SIZE(positions, 2)
          dr(:, atom) = 0.2_dp*SIN(REAL(atom + [1, 2, 3], dp))
       END DO
       dh = RESHAPE([0.13_dp, 0.09_dp, -0.17_dp, 0.22_dp, -0.19_dp, 0.16_dp, 0.11_dp, -0.21_dp, 0.18_dp], [3, 3])
+      ALLOCATE (reference_partition, plus_partition, minus_partition)
       CALL skala_partition_init(reference_partition, lattice, positions, 1)
       maximum = 0.0_dp
       DO atom = 1, SIZE(positions, 2)
@@ -233,11 +238,11 @@ CONTAINS
                END IF
                IF (case_id == 1) THEN
                   rp = positions
-                  rp(:, SIZE(positions, 2)) = rp(:, SIZE(positions, 2)) + MATMUL(lattice, [2.0_dp, -1.0_dp, 1.0_dp])
+                  rp(:, last_atom) = rp(:, last_atom) + MATMUL(lattice, [2.0_dp, -1.0_dp, 1.0_dp])
                   CALL skala_partition_init(plus_partition, lattice, rp, 1)
                   CALL skala_partition_pullback(plus_partition, atom, x, adjoint(1), adjoint(2), &
                                                 shifted_gx, shifted_gr, shifted_gh)
-                  shifted_gh = shifted_gh + SPREAD(gr(:, SIZE(positions, 2)), 2, 3)* &
+                  shifted_gh = shifted_gh + SPREAD(gr(:, last_atom), 2, 3)* &
                                SPREAD([2.0_dp, -1.0_dp, 1.0_dp], 1, 3)
                   IF (MAX(MAXVAL(ABS(gx - shifted_gx)), MAXVAL(ABS(gr - shifted_gr)), &
                           MAXVAL(ABS(gh - shifted_gh))) > 1.0e-10_dp) THEN
@@ -345,10 +350,10 @@ CONTAINS
       CALL skala_atom_grid_build(comm, lattice, centres, 12, 14, 1, 1.0_dp, xyz, e, d, sizes, blocks)
       ALLOCATE (dx(3, SIZE(e)), de(SIZE(e)), dd(SIZE(e)), db(3, SIZE(sizes)))
       ALLOCATE (ax(3, SIZE(e)), ae(SIZE(e)), adesc(SIZE(e)), ab(3, SIZE(sizes)))
-      ax = SIN(xyz)
-      ae = COS(SUM(xyz, DIM=1))
-      adesc = SIN(SUM(xyz, DIM=1))
-      ab = COS(blocks)
+      ax(:, :) = SIN(xyz)
+      ae(:) = COS(SUM(xyz, DIM=1))
+      adesc(:) = SIN(SUM(xyz, DIM=1))
+      ab(:, :) = COS(blocks)
       CALL skala_atom_grid_pullback(comm, lattice, centres, 12, 14, 1, 1.0_dp, sizes, &
                                     ax, ae, adesc, ab, gr, gh)
       dr = RESHAPE([0.21_dp, -0.11_dp, 0.09_dp, -0.17_dp, 0.23_dp, 0.14_dp], [3, 2])
@@ -416,19 +421,19 @@ CONTAINS
       positions(:, 1) = MATMUL(hmat, [0.3_dp, 0.4_dp, 0.3_dp])
       dr(:, 1) = [0.21_dp, -0.11_dp, 0.09_dp]
       dh = RESHAPE([0.13_dp, 0.09_dp, -0.17_dp, 0.22_dp, -0.19_dp, 0.16_dp, 0.11_dp, -0.21_dp, 0.18_dp], [3, 3])
-      reference = grid_energy(comm, hmat, positions, gr, gh, 100, 110)
+      reference = grid_energy(comm, hmat, positions, gr, gh)
       maximum = 0.0_dp
       DO component = 1, 2
          DO trial = 1, 2
             h = 1.0e-4_dp/REAL(trial, dp)
             IF (component == 1) THEN
                ad = SUM(gr*dr)
-               ep = grid_energy(comm, hmat, positions + h*dr, nradial=100, nangular=110)
-               em = grid_energy(comm, hmat, positions - h*dr, nradial=100, nangular=110)
+               ep = grid_energy(comm, hmat, positions + h*dr)
+               em = grid_energy(comm, hmat, positions - h*dr)
             ELSE
                ad = SUM(gh*dh)
-               ep = grid_energy(comm, hmat + h*dh, positions, nradial=100, nangular=110)
-               em = grid_energy(comm, hmat - h*dh, positions, nradial=100, nangular=110)
+               ep = grid_energy(comm, hmat + h*dh, positions)
+               em = grid_energy(comm, hmat - h*dh, positions)
             END IF
             err = ABS(ad - (ep - em)/(2*h))/MAX(1.0_dp, ABS(ad))
             maximum = MAX(maximum, err)
@@ -448,27 +453,22 @@ CONTAINS
 !> \param positions Cartesian positions, in bohr.
 !> \param gr Atom-coordinate derivative.
 !> \param gh Cell-vector derivative.
-!> \param nradial Number of radial nodes.
-!> \param nangular Lebedev point count.
 !> \return Test integral over the context communicator.
 ! **************************************************************************************************
-   FUNCTION grid_energy(group, hmat, positions, gr, gh, nradial, nangular) RESULT(e)
+   FUNCTION grid_energy(group, hmat, positions, gr, gh) RESULT(e)
       TYPE(mp_comm_type), INTENT(IN)                     :: group
       REAL(dp), INTENT(IN)                               :: hmat(3, 3), positions(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gr(:, :), gh(:, :)
-      INTEGER, INTENT(IN), OPTIONAL                      :: nradial, nangular
       REAL(dp)                                           :: e
 
-      INTEGER                                            :: na, nr, row
+      INTEGER, PARAMETER                                 :: na = 14, nr = 12
+
+      INTEGER                                            :: row
       INTEGER, ALLOCATABLE                               :: sizes(:)
       REAL(dp), ALLOCATABLE                              :: blocks(:, :), descriptor_weights(:), &
                                                             energy_weights(:), pd(:), pe(:), &
                                                             px(:, :), xyz(:, :)
 
-      nr = 12
-      na = 14
-      IF (PRESENT(nradial)) nr = nradial
-      IF (PRESENT(nangular)) na = nangular
       CALL skala_atom_grid_build(group, hmat, positions, nr, na, 1, 1.0_dp, &
                                  xyz, energy_weights, descriptor_weights, sizes, blocks)
       ALLOCATE (pe(SIZE(energy_weights)), pd(SIZE(energy_weights)), px(3, SIZE(energy_weights)))

@@ -110,8 +110,9 @@ CONTAINS
                           "PW and PAW forces and stress require the point geometry callbacks. "// &
                           "FP-LAPW forces and total stress require the joint Hessian and quadrature-direction "// &
                           "callbacks, with scalar-relativistic full variation for scalar/collinear states and "// &
-                          "NR/ZORA second variation for spinor states, including SOC. "// &
-                          "Tau-dependent explicit core response supports NR/ZORA core states. "// &
+                          "NR/ZORA second variation for spinor states, including SOC, or native Dirac full "// &
+                          "variation without a separate SOC operator. Tau-dependent explicit core response "// &
+                          "supports NR, ZORA and Dirac cores. Native Dirac valence requires Dirac cores. "// &
                           "Converge the quadrature and image shell for the system studied.")
       CALL keyword_create(keyword, __LOCATION__, name="N_RADIAL", default_i_val=100, &
                           description="Number of radial nodes with r = RADIAL_SCALE*t/(1-t).")
