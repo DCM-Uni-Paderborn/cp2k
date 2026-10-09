@@ -187,7 +187,7 @@ CONTAINS
       INTEGER                                            :: ikind, nkind, pot_to_rad_prv
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: i_present, j_present
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: pair_radius
-      REAL(kind=dp)                                      :: subcells
+      REAL(kind=dp)                                      :: search_distance, subcells
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: i_radius, j_radius
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
@@ -280,7 +280,10 @@ CONTAINS
       CALL pair_radius_setup(i_present, j_present, i_radius, j_radius, pair_radius)
       IF (PRESENT(max_distance)) THEN
          CPASSERT(max_distance >= 0.0_dp)
-         pair_radius = MIN(pair_radius, max_distance)
+         ! The builder uses a strict radius test. Round the search bound upward
+         ! to retain pairs on the caller's inclusive fitting-domain boundary.
+         search_distance = max_distance + EPSILON(1.0_dp)*MAX(1.0_dp, max_distance)
+         pair_radius = MIN(pair_radius, search_distance)
       END IF
 
       ALLOCATE (atom2d(nkind))
