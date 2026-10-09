@@ -733,10 +733,10 @@ CONTAINS
 !> \param atom_sizes Point count of each complete local atom block.
 !> \param datoms Cartesian atom displacement directions, in bohr.
 !> \param dlattice Cell-vector directions, in bohr.
-!> \param dpoints Quadrature-point covectors or their directional response.
-!> \param denergy Energy-weight covectors or their directional response.
-!> \param ddescriptor Descriptor-weight covectors or their directional response.
-!> \param dcentres Atom-block-centre covectors or their directional response.
+!> \param dpoints Cartesian quadrature-point directions, in bohr.
+!> \param denergy Energy-weight directions.
+!> \param ddescriptor Descriptor-weight directions.
+!> \param dcentres Cartesian atom-block-centre directions, in bohr.
 !> \param status Zero on success, nonzero on callback failure.
 ! **************************************************************************************************
    SUBROUTINE differentiate_skala_quadrature(user_data, nr, nb, natom, fcomm, atom_sizes, datoms, dlattice, &
