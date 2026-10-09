@@ -3,6 +3,8 @@
 # Directories have been reordered according the execution time needed for a gfortran pdbg run using 2 MPI tasks
 # in case a new directory is added just add it at the top of the list..
 # the order will be regularly checked and modified...
+QS/regtest-sccs-4
+QS/regtest-cohsex                                           libint !ifx
 QS/regtest-tddfpt-force-libxc                               libxc !ifx
 QMMM/QS/regtest-mpi                                         parallel mpiranks>2
 QS/regtest-libgint                                          libGint libint offload_cuda !ifx
@@ -42,6 +44,15 @@ xTB/regtest-gfn0-m2                                         libdftd4
 QS/regtest-debug-6                                          libint !ifx
 Fist/regtest-7-2
 QS/regtest-nlcc-1                                           libint libxc !ifx
+QS/regtest-nlcc-2                                           libint libxc !ifx
+QS/regtest-skala-native-gpw-mol                              skala
+QS/regtest-skala-native-gpw-mech                             skala
+QS/regtest-skala-native-gpw-coords                           skala
+QS/regtest-skala-native-gapw-base                            skala
+QS/regtest-skala-native-gapw-gth                             skala
+QS/regtest-skala-native-gapw-ecp                             skala
+QS/regtest-skala-native-gapw-ae-kp                            skala
+QS/regtest-skala-cuda                                         skala offload_cuda
 QS/regtest-ot-2
 QS/regtest-ot
 QS/regtest-gpw-1                                            libint libvori !ifx
@@ -65,6 +76,7 @@ QS/regtest-tddfpt-force                                     libint !ifx
 QS/regtest-embed                                            libint !ifx
 QS/regtest-acc-4                                            libint libxc !ifx
 QS/regtest-plus_u
+QS/regtest-plus_u-kp
 SE/regtest
 Fist/regtest-4
 Fist/regtest-opt
@@ -106,6 +118,7 @@ QS/regtest-dcdft-stress                                     libint libxc !ifx
 QS/regtest-hfx-ri-2                                         libint libxc !ifx
 QS/regtest-LnPP2
 QS/regtest-ot-3-1
+QS/regtest-rVV10                                             libxc
 QMMM/SE/regtest
 QS/regtest-harris-kp
 QS/regtest-rtbse-linearized-rirs                            libint !ifx
@@ -131,7 +144,7 @@ xTB/regtest-1
 QS/regtest-stda-force                                       libint !ifx
 QS/regtest-acc-5-1
 QS/regtest-acc-1-5
-QS/regtest-gauxc-gapw-gth                                   gauxc
+
 QS/regtest-almo-2
 QS/regtest-xc
 QS/regtest-dft-vdw-corr-2                                   libxc libint !ifx
@@ -176,7 +189,6 @@ QS/regtest-hfx-periodic                                     libint !ifx
 QS/regtest-mp2-grad-1                                       libint libvori !ifx
 QS/regtest-pao-4
 QS/regtest-rtbse                                            libint !ifx
-QS/regtest-gauxc-gpw-coords                                 gauxc
 QS/regtest-rpa-cubic-scaling                                libint !ifx
 QS/regtest-acc-1-3                                          libint !ifx
 QS/regtest-gauxc-cdft                                       gauxc
@@ -186,7 +198,7 @@ xTB/regtest-3
 xTB/regtest-tblite-gfn2-2                                   tblite spglib
 Pimd/regtest-1
 QS/regtest-admm-4                                           libint !ifx
-QS/regtest-gauxc-gpw-mech                                   gauxc
+
 xTB/regtest-2
 QS/regtest-hole-funct
 Pimd/regtest-2
@@ -194,6 +206,7 @@ QS/regtest-ps-implicit-1-3                                  fftw3
 QS/regtest-stda-force-3                                     libint !ifx
 QS/regtest-grid
 QS/regtest-gauxc-gapw-ecp                                   gauxc
+QS/regtest-gauxc-gapw-gth                                   gauxc
 QS/regtest-kp-hfx-ri-admm                                   libint !ifx
 QS/regtest-ot-refine-2
 Fist/regtest-1-1
@@ -226,8 +239,8 @@ QS/regtest-ps-implicit-2-2
 Fist/regtest-5-vib                                          mpiranks==1||mpiranks%2==0
 Fist/regtest-14
 QS/regtest-kind
+QS/regtest-upf
 QS/regtest-ri-laplace-mp2-cubic-2                           libint libxc !ifx
-QS/regtest-gauxc-gpw-mol                                    gauxc
 QS/regtest-lsroks                                           libint !ifx
 QMMM/QS/regtest-cdft                                        parallel mpiranks%2==0
 SE/regtest-4
@@ -288,7 +301,7 @@ QS/regtest-mom-2                                            libint !ifx
 QS/regtest-nonortho
 Fist/regtest-13
 xTB/regtest-debug
-QS/regtest-gpw-7                                            mpiranks<4
+QS/regtest-gpw-7
 QS/regtest-mtlr
 QS/regtest-polar
 QS/regtest-ecp-2
@@ -366,7 +379,7 @@ QMMM/QS/regtest-4
 QS/regtest-elpa-qr                                          elpa mpiranks==1||mpiranks%2==0
 QS/regtest-gapw-ext
 LIBTEST/libvori                                             libvori
-QS/regtest-gauxc-gapw-ae-kp                                 gauxc
+
 QS/regtest-ri-rpa-rse                                       libint !ifx
 QS/regtest-chi-1
 NEB/regtest-4
@@ -413,12 +426,12 @@ QS/regtest-hfx-2                                            libint !ifx
 QS/regtest-mp2-4                                            libint !ifx
 QS/regtest-double-hybrid-grad-numer                         !ifx
 QS/regtest-corr_dipm
-QS/regtest-gauxc-gapw-gth-kp                                gauxc
+
 xTB/regtest-stda                                            tblite
 LIBTEST/dbm
 QS/regtest-rs-dhft                                          libint libxc !ifx
 QS/regtest-gauxc-api-debug                                  gauxc
-QS/regtest-gauxc-gpw-kp                                     gauxc
+QS/regtest-gauxc-gradients                                  gauxc_onedft_gradients
 QS/regtest-double-hybrid-grad
 QS/regtest-pao-3
 QS/regtest-mp2-3                                            libint !ifx
@@ -504,3 +517,10 @@ QS/regtest-fftw                                             fftw3
 QS/regtest-wfn-restart
 Fist/regtest-plumed2                                        plumed2
 QS/regtest-topology
+QS/regtest-fde
+
+QS/regtest-spectral-localizer
+QS/regtest-spectral-localizer-3d
+QS/regtest-quadratic-pseudospectrum
+QS/regtest-gamma-frozen-density
+QS/regtest-mom-3

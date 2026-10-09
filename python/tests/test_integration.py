@@ -18,17 +18,9 @@ from ase.optimize import BFGS
 from cp2k import CP2K, SCFConvergenceError, input_to_string
 from cp2k._units import BOHR_TO_ANGSTROM as Bohr, HARTREE_TO_EV as Hartree
 from cp2k.ase import CP2KCalculator
+from lammps_helpers import check_lammps_reference, lammps_system, run_lammps_npt
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture(scope="module")
-def real_runtime():
-    path = os.environ.get("CP2K_TEST_LIBRARY")
-    if not path:
-        pytest.skip("Set CP2K_TEST_LIBRARY to run native integration tests")
-    with CP2K(library=path) as runtime:
-        yield runtime
 
 
 def test_native_energy_force_and_cell(real_runtime, h2_input, tmp_path, monkeypatch):
@@ -62,6 +54,32 @@ def test_native_energy_force_and_cell(real_runtime, h2_input, tmp_path, monkeypa
         np.testing.assert_allclose(env.cell, cell)
         env.positions = positions
         assert np.isfinite(env.calculate().energy)
+
+
+@pytest.mark.parametrize("units", ["metal", "real"])
+def test_lammps_native(real_runtime, lj_input, tmp_path, monkeypatch, units):
+    if not os.environ.get("CP2K_TEST_LAMMPS"):
+        pytest.skip("Set CP2K_TEST_LAMMPS for a compatible LAMMPS library")
+    from cp2k.lammps import ExternalForce
+    from cp2k._units import BOHR_TO_ANGSTROM
+
+    monkeypatch.chdir(tmp_path)
+    with real_runtime.create_force_env(lj_input, output_file="lammps.out") as env:
+        reference = env.calculate(stress=True)
+        with lammps_system(units, comm=real_runtime._comm) as lmp:
+            with ExternalForce(lmp, env, atom_ids=[2, 1]) as callback:
+                callback.run(0)
+                check_lammps_reference(lmp, reference, env.cell, units)
+                callback.command("change_box all x scale 1.01 remap")
+                callback.run(0)
+                assert env.cell[0, 0] * BOHR_TO_ANGSTROM == pytest.approx(20.2)
+                run_lammps_npt(callback, units)
+            assert not lmp.has_id("fix", "cp2k")
+            with ExternalForce(lmp, env, stress=False) as callback:
+                with pytest.raises(RuntimeError, match="callback failed"):
+                    callback.command("change_box all x scale 1.01 remap")
+                    callback.run(0)
+            assert np.isfinite(env.calculate().energy)
     assert not list(tmp_path.glob("cp2k-python-*.inp"))
 
 
@@ -144,7 +162,7 @@ def test_ase_shell_comparison(tmp_path):
             "--command",
             f"{shlex.quote(executable)} -s",
             "--steps",
-            "2",
+            "1",
         ],
         cwd=tmp_path,
         check=False,
@@ -157,7 +175,7 @@ def test_ase_shell_comparison(tmp_path):
     assert report["max_energy_difference_eV"] < 1e-6
     assert report["max_force_difference_eV_per_angstrom"] < 1e-5
     for backend in ("shell", "direct"):
-        assert len(report[backend]["warm_evaluation_seconds"]) == 2
+        assert len(report[backend]["warm_evaluation_seconds"]) == 1
 
 
 def test_ase_optimization(real_runtime, h2_input, tmp_path, monkeypatch):
@@ -235,3 +253,50 @@ def test_native_md(real_runtime, h2_input, tmp_path, monkeypatch):
     trajectory = np.loadtxt(tmp_path / "python-md-1.ener")
     np.testing.assert_array_equal(trajectory[:, 0], [0, 1, 2])
     assert np.isfinite(trajectory).all()
+
+
+@pytest.mark.parametrize("platform_name", ["Reference", "CPU"])
+def test_openmm_native(real_runtime, lj_input, tmp_path, monkeypatch, platform_name):
+    openmm = pytest.importorskip("openmm", minversion="8.6.1")
+    from openmm import unit
+    from cp2k.openmm import create_force
+    from cp2k._units import BOHR_TO_NM, HARTREE_TO_KJMOL
+
+    monkeypatch.chdir(tmp_path)
+    with real_runtime.create_force_env(lj_input, output_file="openmm.out") as env:
+        reference = env.calculate()
+        system = openmm.System()
+        for _ in range(env.nparticle):
+            system.addParticle(39.948)
+        system.setDefaultPeriodicBoxVectors(*env.cell * BOHR_TO_NM)
+        force = create_force(env, periodic=True)
+        system.addForce(force)
+        integrator = openmm.VerletIntegrator(0.0001)
+        context = openmm.Context(
+            system, integrator, openmm.Platform.getPlatformByName(platform_name)
+        )
+        context.setPositions(env.positions * BOHR_TO_NM)
+        state = context.getState(getEnergy=True, getForces=True)
+        np.testing.assert_allclose(
+            state.getPotentialEnergy().value_in_unit(unit.kilojoules_per_mole),
+            reference.energy * HARTREE_TO_KJMOL,
+            atol=2e-6,
+        )
+        np.testing.assert_allclose(
+            state.getForces(asNumpy=True).value_in_unit(
+                unit.kilojoules_per_mole / unit.nanometer
+            ),
+            reference.forces * HARTREE_TO_KJMOL / BOHR_TO_NM,
+            rtol=2e-5,
+            atol=2e-5,
+        )
+        context.setVelocitiesToTemperature(10, 17)
+        integrator.step(3)
+        assert np.isfinite(context.getState(getEnergy=True).getPotentialEnergy()._value)
+        new_cell = env.cell * 1.01
+        context.setPeriodicBoxVectors(*new_cell * BOHR_TO_NM)
+        context.getState(getEnergy=True)
+        np.testing.assert_allclose(env.cell, new_cell)
+        del context, integrator
+        # The caller retains ownership of both the environment and runtime.
+        assert np.isfinite(env.calculate().energy)

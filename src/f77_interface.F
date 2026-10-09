@@ -31,8 +31,7 @@ MODULE f77_interface
    USE cp_dlaf_utils_api,               ONLY: cp_dlaf_finalize,&
                                               cp_dlaf_free_all_grids
    USE cp_error_handling,               ONLY: cp_error_handling_setup
-   USE cp_files,                        ONLY: init_preconnection_list,&
-                                              open_file
+   USE cp_files,                        ONLY: open_file
    USE cp_log_handling,                 ONLY: &
         cp_add_default_logger, cp_default_logger_stack_size, cp_failure_level, &
         cp_get_default_logger, cp_logger_create, cp_logger_release, cp_logger_retain, &
@@ -243,9 +242,6 @@ CONTAINS
 
          ! install timming handler hooks
          CALL timings_register_hooks()
-
-         ! Initialise preconnection list
-         CALL init_preconnection_list()
 
          ! get runtime information
          CALL get_runtime_info()
@@ -1227,13 +1223,15 @@ CONTAINS
 !> \param env_id id of the force_env
 !> \param stress_tensor the array where to write the stress tensor
 !> \param ierr will return a number different from 0 if there was an error
+!> \param available whether the potential stress was calculated
 !> \author Ole Schuett
 ! **************************************************************************************************
-   SUBROUTINE get_stress_tensor(env_id, stress_tensor, ierr)
+   SUBROUTINE get_stress_tensor(env_id, stress_tensor, ierr, available)
 
       INTEGER, INTENT(IN)                                :: env_id
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(OUT)        :: stress_tensor
       INTEGER, INTENT(OUT)                               :: ierr
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: available
 
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_subsys_type), POINTER                      :: subsys
@@ -1246,6 +1244,7 @@ CONTAINS
       CALL f_env_add_defaults(env_id, f_env)
       CALL force_env_get(f_env%force_env, subsys=subsys, cell=cell)
       CALL cp_subsys_get(subsys, virial=virial)
+      IF (PRESENT(available)) available = virial%pv_availability
       IF (virial%pv_availability) THEN
          stress_tensor(:, :) = virial%pv_virial(:, :)/cell%deth
       END IF

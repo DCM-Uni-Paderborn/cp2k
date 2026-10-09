@@ -122,7 +122,6 @@ option(CP2K_USE_ACE "Enable ACE support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_DEEPMD "Enable DeePMD support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_DFTD4 "Enable DFTD4 support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_TBLITE "Enable TBLITE support" ${CP2K_USE_EVERYTHING})
-option(CP2K_USE_FFTW3 "Enable FFTW3 support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_GREENX "Enable GreenX support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_HDF5 "Enable HDF5 support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBFCI "Enable LibFCI active-space solver support"
@@ -131,6 +130,7 @@ option(CP2K_USE_LIBINT2 "Enable Libint2 support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBTORCH "Enable LibTorch support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBXC "Enable LibXC support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_GAUXC "Enable GauXC support" ${CP2K_USE_EVERYTHING})
+option(CP2K_USE_SKALA_FTORCH "Enable Skala/FTorch support" OFF)
 option(CP2K_USE_MPI "Enable MPI support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBXS
        "Enable LIBXS support; required if OpenCL backend enabled"
@@ -140,10 +140,14 @@ option(CP2K_USE_TREXIO "Enable TREXIO support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_VORI "Enable Libvori support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_CRAY_PM_ENERGY "Enable Cray PM energy framework" OFF)
 option(BUILD_SHARED_LIBS "Build CP2K shared library" ON)
+
 option(
   CP2K_USE_FFTW3_WITH_MKL
   "MKL has its own compatible implementation of the FFTW3 library. This option, when ON, will use the separate and original FFTW3 library."
   OFF)
+option(CP2K_ENABLE_FFTW3_OPENMP_SUPPORT "Enable FFTW3 OpenMP support" ON)
+option(CP2K_ENABLE_FFTW3_THREADS_SUPPORT "Enable FFTW3 threads support" OFF)
+
 option(CP2K_USE_DBCSR_CONFIG "Return DBCSR cmake configuration parameters" OFF)
 
 # MPI-enabled options
@@ -207,16 +211,15 @@ cmake_dependent_option(
   CP2K_ENABLE_PW_GPU "Enable the ffts accelerated backend (mostly GPU)." ON
   "CP2K_USE_ACCEL MATCHES \"HIP|CUDA\"" OFF)
 
+cmake_dependent_option(CP2K_ENABLE_LIBXC_GPU "Enable the GPU backend of libxc."
+                       ON "CP2K_USE_ACCEL MATCHES \"CUDA\"" OFF)
+
 cmake_dependent_option(
   CP2K_USE_UNIFIED_MEMORY "Use CPU/GPU unified memory (Mi250x onwards)" OFF
   "CP2K_USE_ACCEL MATCHES \"HIP\"" OFF)
 
 cmake_dependent_option(CP2K_ENABLE_ELPA_OPENMP_SUPPORT
                        "Enable ELPA OpenMP support" ON "CP2K_USE_ELPA" OFF)
-cmake_dependent_option(CP2K_ENABLE_FFTW3_OPENMP_SUPPORT
-                       "Enable FFTW3 OpenMP support" ON "CP2K_USE_FFTW3" OFF)
-cmake_dependent_option(CP2K_ENABLE_FFTW3_THREADS_SUPPORT
-                       "Enable FFTW3 threads support" OFF "CP2K_USE_FFTW3" OFF)
 
 cmake_dependent_option(
   CP2K_USE_CUSOLVER_MP "Enable cuSOLVERMp. Only active when CUDA is ON" OFF
@@ -441,6 +444,9 @@ endif()
 
 # BLAS & LAPACK, PkgConfig
 find_package(Lapack REQUIRED) # also calls find_package(BLAS)
+
+# Exact angular momentum algebra (Wigner symbols, Gaunt coefficients).
+find_package(wignernj 0.8 CONFIG REQUIRED)
 
 # in practice it is always for any decent configuration. But I add a flags to
 # turn it off
@@ -689,12 +695,32 @@ if(CP2K_USE_ELPA)
 endif()
 
 if(CP2K_USE_LIBXC)
-  find_package(Libxc 7 REQUIRED)
+  find_package(Libxc 7.1 CONFIG REQUIRED)
+
+  get_target_property(LIBXC_CPU_INCLUDE_DIRS Libxc::xcf03
+                      INTERFACE_INCLUDE_DIRECTORIES)
+  get_target_property(LIBXC_CPU_LIBRARIES Libxc::xcf03 INTERFACE_LINK_LIBRARIES)
+
+  if(CP2K_USE_CUDA)
+    set(CP2K_LIBXC_CUDA_SUPPORT
+        ON
+        CACHE BOOL "libxc CUDA support available")
+    set(LIBXC_CUDA_FOUND TRUE)
+    message(STATUS "Found CUDA Libxc (${Libxc_VERSION})")
+  else()
+    set(LIBXC_CPU_FOUND TRUE)
+    message(STATUS "Found CPU Libxc (${Libxc_VERSION})")
+  endif()
 endif()
 
 if(CP2K_USE_GAUXC)
   find_package(Threads REQUIRED)
   find_package(gauxc REQUIRED CONFIG)
+  # GauXC's unchanged package version does not identify the fix from PR #222.
+  set(CP2K_GAUXC_HAS_ONEDFT_GRADIENT_FIX OFF)
+  if(GAUXC_HAS_ONEDFT AND GAUXC_HAS_ONEDFT_GRADIENT_FIX)
+    set(CP2K_GAUXC_HAS_ONEDFT_GRADIENT_FIX ON)
+  endif()
   if(CP2K_USE_MPI AND NOT GAUXC_HAS_MPI)
     message(
       FATAL_ERROR
@@ -777,43 +803,38 @@ endif()
 
 # FFTW3
 
-# we set this variable to ON when we want FFTW3 support (with or without MKL)
+# CP2K_USE_FFTW3_ for native FFTW3, CP2K_USE_FFTW3_MKL_ for MKL
 set(CP2K_USE_FFTW3_ OFF)
-if(CP2K_USE_FFTW3)
-  if(NOT CP2K_BLAS_VENDOR MATCHES "MKL" OR CP2K_USE_FFTW3_WITH_MKL)
-    find_package(Fftw REQUIRED)
-    if(CP2K_ENABLE_FFTW3_THREADS_SUPPORT AND CP2K_ENABLE_FFTW3_OPENMP_SUPPORT)
-      message(
-        FATAL_ERROR
-          "FFTW3 threads and openmp supports can not be used at the same time")
-    endif()
-
-    if((CP2K_ENABLE_FFTW3_THREADS_SUPPORT) AND (NOT TARGET
-                                                cp2k::FFTW3::fftw3_threads))
-      message(
-        FATAL_ERROR
-          "FFTW3 was compiled without multithreading support (--enable-threads option in the FFTW3 build system)."
-      )
-    endif()
-
-    if((CP2K_ENABLE_FFTW3_OPENMP_SUPPORT) AND (NOT TARGET cp2k::FFTW3::fftw3_omp
-                                              ))
-      message(
-        FATAL_ERROR
-          "FFTW3 was compiled without openmp support (--enable-openmp option in the FFTW3 build system)."
-      )
-    endif()
-    set(CP2K_USE_FFTW3_ ON)
-  else()
-    message("-- Using the MKL implementation of FFTW3.")
-    foreach(DIR ${CP2K_BLAS_INCLUDE_DIRS})
-      if(EXISTS ${DIR}/fftw)
-        list(APPEND CP2K_FFTW3_INCLUDE_DIRS ${DIR}/fftw)
-        include_directories(${DIR}/fftw)
-      endif()
-    endforeach()
-    set(CP2K_USE_FFTW3_MKL_ ON)
+if(NOT CP2K_BLAS_VENDOR MATCHES "MKL" OR CP2K_USE_FFTW3_WITH_MKL)
+  find_package(Fftw REQUIRED)
+  if(CP2K_ENABLE_FFTW3_THREADS_SUPPORT AND CP2K_ENABLE_FFTW3_OPENMP_SUPPORT)
+    message(
+      FATAL_ERROR
+        "FFTW3 threads and openmp supports can not be used at the same time")
   endif()
+  if(CP2K_ENABLE_FFTW3_THREADS_SUPPORT AND NOT TARGET
+                                           cp2k::FFTW3::fftw3_threads)
+    message(
+      FATAL_ERROR
+        "FFTW3 was compiled without multithreading support (--enable-threads option in the FFTW3 build system)."
+    )
+  endif()
+  if(CP2K_ENABLE_FFTW3_OPENMP_SUPPORT AND NOT TARGET cp2k::FFTW3::fftw3_omp)
+    message(
+      FATAL_ERROR
+        "FFTW3 was compiled without openmp support (--enable-openmp option in the FFTW3 build system)."
+    )
+  endif()
+  set(CP2K_USE_FFTW3_ ON)
+else()
+  message("-- Using the MKL implementation of FFTW3.")
+  foreach(DIR ${CP2K_BLAS_INCLUDE_DIRS})
+    if(EXISTS ${DIR}/fftw)
+      list(APPEND CP2K_FFTW3_INCLUDE_DIRS ${DIR}/fftw)
+      include_directories(${DIR}/fftw)
+    endif()
+  endforeach()
+  set(CP2K_USE_FFTW3_MKL_ ON)
 endif()
 
 # Libint
@@ -1039,6 +1060,9 @@ message("  - LAPACK\n"
         "    - Include directories: ${CP2K_LAPACK_INCLUDE_DIRS}\n"
         "    - Libraries: ${CP2K_LAPACK_LINK_LIBRARIES}\n")
 
+message("  - FFTW3\n" "    - Include directories: ${CP2K_FFTW3_INCLUDE_DIRS}\n"
+        "    - Libraries: ${CP2K_FFTW3_LINK_LIBRARIES}\n")
+
 if(CP2K_USE_MPI)
   message("  - MPI\n" "    - Include directories: ${MPI_INCLUDE_DIRS}\n"
           "    - Libraries: ${MPI_LIBRARIES}")
@@ -1073,7 +1097,8 @@ if(CP2K_USE_ACCEL MATCHES "CUDA" OR CP2K_USE_ACCEL MATCHES "HIP")
     "      - ELPA: ${CP2K_ENABLE_ELPA_GPU}\n"
     "      - GRID: ${CP2K_ENABLE_GRID_GPU}\n"
     "      - DBM: ${CP2K_ENABLE_DBM_GPU}\n"
-    "      - PW: ${CP2K_ENABLE_PW_GPU}\n")
+    "      - PW: ${CP2K_ENABLE_PW_GPU}\n"
+    "      - LIBXC: ${CP2K_ENABLE_LIBXC_GPU}\n")
 endif()
 
 if(CP2K_USE_CUSOLVER_MP)
@@ -1094,12 +1119,18 @@ if(CP2K_USE_CUSOLVER_MP)
 endif()
 
 if(CP2K_USE_LIBXC)
-  message("  - LibXC\n" "    - Include directories: ${Libxc_INCLUDE_DIRS}\n"
-          "    - Libraries: ${Libxc_LIBRARIES}\n")
+  message("  - LibXC\n"
+          "    - Include directories: ${LIBXC_CPU_INCLUDE_DIRS}\n"
+          "    - Libraries: ${LIBXC_CPU_LIBRARIES}\n")
 endif()
 
 if(CP2K_USE_GAUXC)
-  message("  - GauXC\n" "    - Package directory: ${gauxc_DIR}\n")
+  message("  - GauXC\n" "    - Package directory: ${gauxc_DIR}\n"
+          "    - OneDFT gradient fix: ${CP2K_GAUXC_HAS_ONEDFT_GRADIENT_FIX}\n")
+endif()
+
+if(CP2K_USE_SKALA_FTORCH)
+  message("  - Skala/FTorch (native skala grid support)")
 endif()
 
 if(CP2K_USE_SPGLIB)
@@ -1120,12 +1151,6 @@ endif()
 
 if(CP2K_USE_OPENPMD)
   message("  - OpenPMD\n" "    - package directory: ${openPMD_DIR}\n")
-endif()
-
-if(CP2K_USE_FFTW3)
-  message("  - FFTW3\n"
-          "    - Include directories: ${CP2K_FFTW3_INCLUDE_DIRS}\n"
-          "    - Libraries: ${CP2K_FFTW3_LINK_LIBRARIES}\n")
 endif()
 
 if(CP2K_USE_PLUMED)
@@ -1224,6 +1249,9 @@ endif()
 if(CP2K_USE_VORI)
   message("  - Libvori\n" "    - Libraries: ${CP2K_LIBVORI_LINK_LIBRARIES}\n")
 endif()
+
+message("  - Libwignernj\n" "    - Version: ${wignernj_VERSION}\n"
+        "    - Libraries: wignernj::wignernj\n")
 
 if(CP2K_USE_ELPA)
   message("  - ELPA\n" "    - Include directories: ${CP2K_ELPA_INCLUDE_DIRS}\n"
@@ -1351,16 +1379,12 @@ if(NOT CP2K_USE_GAUXC)
   message("  - GauXC")
 endif()
 
-if(NOT CP2K_USE_VORI)
-  message("  - Libvori")
+if(NOT CP2K_USE_SKALA_FTORCH)
+  message("  - Skala/FTorch")
 endif()
 
-if(NOT CP2K_USE_FFTW3)
-  message("  - FFTW3")
-  message(
-    WARNING
-      "FFTW3 may become mandatory in future releases of CP2K. Calculations requiring large grid sizes may not work properly without FFTW3. Please consider installing and enabling it."
-  )
+if(NOT CP2K_USE_VORI)
+  message("  - Libvori")
 endif()
 
 if(NOT CP2K_USE_LIBTORCH)

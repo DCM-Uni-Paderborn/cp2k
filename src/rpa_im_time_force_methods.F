@@ -23,7 +23,6 @@ MODULE rpa_im_time_force_methods
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
-   USE cp_cfm_types,                    ONLY: cp_cfm_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_clear, dbcsr_complete_redistribute, dbcsr_copy, dbcsr_create, &
@@ -638,7 +637,7 @@ CONTAINS
 !> \param t_3c_O ...
 !> \param t_3c_O_compressed ...
 !> \param t_3c_O_ind ...
-!> \param cfm_mo_coeff ...
+!> \param fm_mo_coeff real Gamma-point MO coefficients ...
 !> \param homo ...
 !> \param starts_array_mc ...
 !> \param ends_array_mc ...
@@ -659,7 +658,7 @@ CONTAINS
 !> \note In open-shell, we need to take Q from one spin, and everything from the other
 ! **************************************************************************************************
    SUBROUTINE calc_laplace_loop_forces(force_data, mat_P_omega, t_3c_M, t_3c_O, t_3c_O_compressed, &
-                                       t_3c_O_ind, cfm_mo_coeff, homo, starts_array_mc, ends_array_mc, &
+                                       t_3c_O_ind, fm_mo_coeff, homo, starts_array_mc, ends_array_mc, &
                                        starts_array_mc_block, ends_array_mc_block, &
                                        nmo, Eigenval, grid, cut_memory, Pspin, Qspin, &
                                        open_shell, unit_nr, dbcsr_time, dbcsr_nflop, mp2_env, qs_env)
@@ -669,7 +668,7 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: t_3c_M, t_3c_O
       TYPE(hfx_compression_type), DIMENSION(:)           :: t_3c_O_compressed
       TYPE(block_ind_type), DIMENSION(:), INTENT(INOUT)  :: t_3c_O_ind
-      TYPE(cp_cfm_type), DIMENSION(:), INTENT(IN)        :: cfm_mo_coeff
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mo_coeff
       INTEGER, DIMENSION(:), INTENT(IN)                  :: homo, starts_array_mc, ends_array_mc, &
                                                             starts_array_mc_block, &
                                                             ends_array_mc_block
@@ -926,7 +925,7 @@ CONTAINS
          CALL get_tensor_occupancy(t_KQKT, nze_KQK, occ_KQK)
 
          !Calculate the pseudo-density matrix in tensor form. There are a few useless arguments for SOS-MP2
-         CALL compute_mat_dm_global(grid, nmo, cfm_mo_coeff(Pspin), homo(Pspin), propagator, &
+         CALL compute_mat_dm_global(grid, nmo, fm_mo_coeff(Pspin), homo(Pspin), propagator, &
                                     matrix_s, Pspin, Eigenval(:, Pspin), 0.0_dp, eps_filter, &
                                     mp2_env%ri_rpa_im_time%memory_info, unit_nr, &
                                     jquad, .FALSE., .FALSE., qs_env, dummy_int, dummy_ptr, para_env)
@@ -1172,7 +1171,7 @@ CONTAINS
 !> \param t_3c_O ...
 !> \param t_3c_O_compressed ...
 !> \param t_3c_O_ind ...
-!> \param cfm_mo_coeff ...
+!> \param fm_mo_coeff real Gamma-point MO coefficients ...
 !> \param homo ...
 !> \param starts_array_mc ...
 !> \param ends_array_mc ...
@@ -1192,7 +1191,7 @@ CONTAINS
 !> \param qs_env ...
 ! **************************************************************************************************
    SUBROUTINE calc_rpa_loop_forces(force_data, mat_P_omega, t_3c_M, t_3c_O, t_3c_O_compressed, &
-                                   t_3c_O_ind, cfm_mo_coeff, homo, starts_array_mc, ends_array_mc, &
+                                   t_3c_O_ind, fm_mo_coeff, homo, starts_array_mc, ends_array_mc, &
                                    starts_array_mc_block, ends_array_mc_block, &
                                    nmo, Eigenval, e_fermi, grid, cut_memory, ispin, open_shell, unit_nr, dbcsr_time, &
                                    dbcsr_nflop, mp2_env, qs_env)
@@ -1202,7 +1201,7 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: t_3c_M, t_3c_O
       TYPE(hfx_compression_type), DIMENSION(:)           :: t_3c_O_compressed
       TYPE(block_ind_type), DIMENSION(:), INTENT(INOUT)  :: t_3c_O_ind
-      TYPE(cp_cfm_type), DIMENSION(:), INTENT(IN)        :: cfm_mo_coeff
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mo_coeff
       INTEGER, DIMENSION(:), INTENT(IN)                  :: homo, starts_array_mc, ends_array_mc, &
                                                             starts_array_mc_block, &
                                                             ends_array_mc_block
@@ -1231,7 +1230,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :), POINTER                  :: dummy_ptr
       LOGICAL                                            :: memory_info, use_virial
       REAL(dp) :: eps_filter, eps_pgf_orb, eps_pgf_orb_old, fac, occ, occ_ddint, occ_der_AO, &
-         occ_der_RI, occ_KBK, omega, pref, spin_fac, t1, t2, tau, weight
+         occ_der_RI, occ_KBK, pref, spin_fac, t1, t2, tau, weight
       REAL(dp), DIMENSION(3, 3)                          :: work_virial, work_virial_ovlp
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
@@ -1374,7 +1373,6 @@ CONTAINS
 
       !loop over freqeuncies
       DO iquad = 1, num_integ_points
-         omega = grid%frequency(iquad)
 
          !calculate (1 + Q(w))^-1 - 1 for the given freq.
          !Always take spin alpha (get 2*alpha in closed shell, and alpha+beta in open-shell)
@@ -1403,10 +1401,9 @@ CONTAINS
          CALL dbcsr_add_on_diag(dbcsr_work_symm, -1.0_dp)
 
          DO jquad = 1, num_integ_points
-            tau = grid%imaginary_time(jquad)
 
             !the P matrix to time.
-            weight = grid%cosine_frequency_to_time_weights(jquad, iquad)*COS(tau*omega)
+            weight = grid%cosine_frequency_to_time(jquad, iquad)
             IF (open_shell) THEN
                IF (ispin == 1) THEN
                   !mat_P_omega contains the sum of alpha and beta spin => we only want alpha
@@ -1421,8 +1418,8 @@ CONTAINS
                CALL dbcsr_add(mat_P_tau(jquad)%matrix, mat_P_omega(iquad, 1)%matrix, 1.0_dp, weight)
             END IF
 
-            !convert B matrix to time
-            weight = grid%cosine_time_to_frequency_weights(iquad, jquad)*COS(tau*omega)* &
+            ! The energy derivative uses the weighted adjoint of the forward transform.
+            weight = grid%cosine_time_to_frequency(iquad, jquad)* &
                      grid%frequency_weights(iquad)
             CALL dbt_copy_matrix_to_tensor(dbcsr_work_symm, t_2c_tmp)
             CALL dbt_scale(t_2c_tmp, weight)
@@ -1517,7 +1514,7 @@ CONTAINS
          CALL get_tensor_occupancy(t_KBKT, nze_KBK, occ_KBK)
 
          !Calculate the pseudo-density matrix in tensor form. There are a few useless arguments for SOS-MP2
-         CALL compute_mat_dm_global(grid, nmo, cfm_mo_coeff(ispin), homo(ispin), propagator, &
+         CALL compute_mat_dm_global(grid, nmo, fm_mo_coeff(ispin), homo(ispin), propagator, &
                                     matrix_s, ispin, Eigenval(:, ispin), e_fermi, eps_filter, &
                                     mp2_env%ri_rpa_im_time%memory_info, unit_nr, &
                                     jquad, .FALSE., .FALSE., qs_env, dummy_int, dummy_ptr, para_env)
@@ -2488,7 +2485,8 @@ CONTAINS
       END IF
       !
       CALL qs_fxc_create(qs_env, rho, rhoz, rho0_atom_set, xc_section, .FALSE., &
-                         v_xc, v_xc_tau, rho1_atom_set)
+                         v_xc, v_xc_tau, rho1_atom_set, &
+                         dispersion_env=qs_env%dispersion_env)
       !
       DEALLOCATE (rhoz)
 
@@ -3575,6 +3573,7 @@ CONTAINS
          !
          CALL qs_fxc_create(qs_env, rho, rhoz, rho0_atom_set, xc_section, .FALSE., &
                             v_xc, v_xc_tau, rho1_atom_set, &
+                            dispersion_env=qs_env%dispersion_env, &
                             compute_virial=use_virial, virial_xc=virial%pv_xc)
          !
          DEALLOCATE (rhoz)
@@ -3959,19 +3958,19 @@ CONTAINS
             ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%frequency_weights, &
                       SOURCE=grid%frequency_weights)
             IF (do_im_time) THEN
-               ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_time_to_frequency_weights, &
-                         SOURCE=grid%cosine_time_to_frequency_weights)
-               ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_frequency_to_time_weights, &
-                         SOURCE=grid%cosine_frequency_to_time_weights)
+               ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_time_to_frequency, &
+                         SOURCE=grid%cosine_time_to_frequency)
+               ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_frequency_to_time, &
+                         SOURCE=grid%cosine_frequency_to_time)
             END IF
          ELSE
             grid%frequency(:) = qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%frequency(:)
             grid%frequency_weights(:) = qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%frequency_weights(:)
             IF (do_im_time) THEN
-               grid%cosine_time_to_frequency_weights(:, :) = &
-                  qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_time_to_frequency_weights(:, :)
-               grid%cosine_frequency_to_time_weights(:, :) = &
-                  qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_frequency_to_time_weights(:, :)
+               grid%cosine_time_to_frequency(:, :) = &
+                  qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_time_to_frequency(:, :)
+               grid%cosine_frequency_to_time(:, :) = &
+                  qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_frequency_to_time(:, :)
             END IF
          END IF
       END IF
