@@ -532,19 +532,26 @@ CONTAINS
 !> \param v_rspace ...
 !> \param qs_env ...
 !> \param atecc ...
+!> \param force_response Optional local atomic energy gradients instead of native force accumulation.
+!> \param virial_response Optional local grid virial instead of native virial accumulation.
+!> \param only_nopaw Optional kind selection. False includes every native Gaussian ionic charge.
 ! **************************************************************************************************
-   SUBROUTINE integrate_v_core_rspace(v_rspace, qs_env, atecc)
+   SUBROUTINE integrate_v_core_rspace(v_rspace, qs_env, atecc, force_response, virial_response, only_nopaw)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: v_rspace
       TYPE(qs_environment_type), POINTER                 :: qs_env
       REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: atecc
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: force_response(:, :), &
+                                                            virial_response(3, 3)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: only_nopaw
 
       CHARACTER(len=*), PARAMETER :: routineN = 'integrate_v_core_rspace'
 
       INTEGER                                            :: atom_a, handle, iatom, ikind, j, natom, &
                                                             natom_of_kind, npme
       INTEGER, DIMENSION(:), POINTER                     :: atom_list, cores
-      LOGICAL                                            :: paw_atom, skip_fcore, use_virial
-      REAL(KIND=dp)                                      :: alpha_core_charge, ccore_charge, &
+      LOGICAL                                            :: isolated, my_only_nopaw, paw_atom, &
+                                                            skip_fcore, use_virial
+      REAL(KIND=dp)                                      :: alpha_core_charge, ccore_charge, cutoff, &
                                                             eps_rho_rspace, radius
       REAL(KIND=dp), DIMENSION(3)                        :: force_a, force_b, ra
       REAL(KIND=dp), DIMENSION(3, 3)                     :: my_virial_a, my_virial_b
@@ -565,11 +572,21 @@ CONTAINS
 
       CALL get_qs_env(qs_env=qs_env, dft_control=dft_control)
 
+      isolated = PRESENT(force_response) .OR. PRESENT(virial_response)
+      cutoff = 1.0_dp
+      ! Isolated responses differentiate the actual calculate_rho_core collocation radius.
+      IF (isolated) cutoff = 0.0_dp
+      my_only_nopaw = .TRUE.
+      IF (PRESENT(only_nopaw)) my_only_nopaw = only_nopaw
+      IF (PRESENT(force_response)) force_response = 0.0_dp
+      IF (PRESENT(virial_response)) virial_response = 0.0_dp
+
       !If gapw, check for gpw kinds
       skip_fcore = .FALSE.
       IF (dft_control%qs_control%gapw) THEN
          IF (.NOT. dft_control%qs_control%gapw_control%nopaw_as_gpw) skip_fcore = .TRUE.
       END IF
+      IF (.NOT. my_only_nopaw) skip_fcore = .FALSE.
 
       IF (.NOT. skip_fcore) THEN
          NULLIFY (pw_env)
@@ -595,11 +612,15 @@ CONTAINS
 
          ! atomic energy contributions
          natom = SIZE(particle_set)
-         IF (ASSOCIATED(atprop)) THEN
+         IF (PRESENT(force_response)) THEN
+            CPASSERT(ALL(SHAPE(force_response) == [3, natom]))
+         END IF
+         IF (ASSOCIATED(atprop) .AND. .NOT. isolated) THEN
             CALL atprop_array_init(atprop%ateb, natom)
          END IF
 
          use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
+         IF (PRESENT(virial_response)) use_virial = .TRUE.
 
          eps_rho_rspace = dft_control%qs_control%eps_rho_rspace
 
@@ -608,7 +629,7 @@ CONTAINS
             CALL get_atomic_kind(atomic_kind_set(ikind), natom=natom_of_kind, atom_list=atom_list)
             CALL get_qs_kind(qs_kind_set(ikind), paw_atom=paw_atom)
 
-            IF (dft_control%qs_control%gapw .AND. paw_atom) CYCLE
+            IF (my_only_nopaw .AND. dft_control%qs_control%gapw .AND. paw_atom) CYCLE
 
             CALL get_qs_kind(qs_kind_set(ikind), alpha_core_charge=alpha_core_charge, &
                              ccore_charge=ccore_charge)
@@ -652,7 +673,7 @@ CONTAINS
                                                  ra=ra, rb=ra, rp=ra, &
                                                  zetp=alpha_core_charge, eps=eps_rho_rspace, &
                                                  pab=pab, o1=0, o2=0, &  ! without map_consistent
-                                                 prefactor=1.0_dp, cutoff=1.0_dp)
+                                                 prefactor=1.0_dp, cutoff=cutoff)
 
                CALL integrate_pgf_product(0, alpha_core_charge, 0, &
                                           0, 0.0_dp, 0, ra, [0.0_dp, 0.0_dp, 0.0_dp], &
@@ -662,14 +683,18 @@ CONTAINS
                                           force_b=force_b, use_virial=use_virial, my_virial_a=my_virial_a, &
                                           my_virial_b=my_virial_b, use_subpatch=.TRUE., subpatch_pattern=0)
 
-               IF (ASSOCIATED(force)) THEN
+               IF (PRESENT(force_response)) THEN
+                  force_response(:, atom_a) = force_response(:, atom_a) + force_a
+               ELSE IF (ASSOCIATED(force) .AND. .NOT. isolated) THEN
                   force(ikind)%rho_core(:, iatom) = force(ikind)%rho_core(:, iatom) + force_a(:)
                END IF
-               IF (use_virial) THEN
+               IF (PRESENT(virial_response)) THEN
+                  virial_response = virial_response + my_virial_a
+               ELSE IF (use_virial .AND. .NOT. isolated) THEN
                   virial%pv_ehartree = virial%pv_ehartree + my_virial_a
                   virial%pv_virial = virial%pv_virial + my_virial_a
                END IF
-               IF (ASSOCIATED(atprop)) THEN
+               IF (ASSOCIATED(atprop) .AND. .NOT. isolated) THEN
                   atprop%ateb(atom_a) = atprop%ateb(atom_a) + 0.5_dp*hab(1, 1)*pab(1, 1)
                END IF
                IF (PRESENT(atecc)) THEN

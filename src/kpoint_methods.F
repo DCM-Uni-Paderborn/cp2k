@@ -78,8 +78,9 @@ MODULE kpoint_methods
                                               lattice_fft_shape,&
                                               regular_kpoint_grid
    USE kpoint_types,                    ONLY: &
-        find_kpoint_rotation_slot, get_kpoint_info, kind_rotmat_type, kpoint_env_create, &
-        kpoint_env_p_type, kpoint_env_type, kpoint_sym_create, kpoint_sym_type, kpoint_type
+        find_kpoint_rotation_slot, get_kpoint_info, kind_rotmat_type, kp_transform_plan_type, &
+        kpoint_env_create, kpoint_env_p_type, kpoint_env_type, kpoint_sym_create, kpoint_sym_type, &
+        kpoint_type
    USE local_gemm_api,                  ONLY: LOCAL_GEMM_PU_GPU,&
                                               LOCAL_GEMM_PU_HOST,&
                                               local_gemm_ctxt_type
@@ -124,13 +125,7 @@ MODULE kpoint_methods
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_methods'
 
-   TYPE, PUBLIC :: kp_transform_plan_type
-      INTEGER :: nentry = 0, ngroup = 0
-      LOGICAL :: symmetric = .FALSE.
-      INTEGER, ALLOCATABLE, DIMENSION(:) :: col, col_offset, group_start, image, row, row_offset
-      INTEGER, ALLOCATABLE, DIMENSION(:, :) :: cell
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: symmetry_sign
-   END TYPE kp_transform_plan_type
+   PUBLIC :: kp_transform_plan_type
 
    ! Non-owning view of one symmetry contribution; valid while kpoint metadata is unchanged.
    TYPE :: kp_symmetry_op_type

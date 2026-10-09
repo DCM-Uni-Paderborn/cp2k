@@ -58,7 +58,9 @@ MODULE qs_vxc
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active
+   USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_kinetic
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_paw_composite
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_evaluate
    USE skala_gpw_functional,            ONLY: get_gauxc_section,&
                                               native_skala_gapw_composite_direct_ao,&
@@ -550,6 +552,9 @@ CONTAINS
             DO ispin = 1, mspin
                CALL xc_pw_pool%create_pw(rho_r(ispin))
                CALL pw_transfer(rho_g(ispin), rho_r(ispin))
+               ! Different FFT grids can have different reality constraints at Nyquist planes.
+               ! Build XC gradients from the interpolated real density and use its same adjoint.
+               CALL pw_transfer(rho_r(ispin), rho_g(ispin))
             END DO
             IF (tau_r_valid) THEN
                ALLOCATE (tau(mspin))
@@ -593,6 +598,7 @@ CONTAINS
                CALL xc_pw_pool%create_pw(rho_nlcc_xc)
                CALL pw_transfer(rho_nlcc_g, rho_nlcc_g_xc)
                CALL pw_transfer(rho_nlcc_g_xc, rho_nlcc_xc)
+               CALL pw_transfer(rho_nlcc_xc, rho_nlcc_g_xc)
                rho_nlcc_use => rho_nlcc_xc
                rho_nlcc_g_use => rho_nlcc_g_xc
             END IF
@@ -618,7 +624,7 @@ CONTAINS
             END IF
          END IF
 
-         ! NLCC augments rho and grad(rho); tau remains valence-only.
+         ! Core charge and independently supplied core tau enter XC only.
          IF (ASSOCIATED(rho_nlcc_use)) THEN
             factor = 1.0_dp
             DO ispin = 1, mspin
@@ -626,6 +632,7 @@ CONTAINS
                CALL pw_axpy(rho_nlcc_g_use, rho_g(ispin), factor)
             END DO
          END IF
+         IF (ASSOCIATED(tau)) CALL qs_upf_inverse_core_kinetic(ks_env, tau, 1.0_dp)
 
          !
          ! here the rho_r, rho_g, tau is what it should be
@@ -672,15 +679,18 @@ CONTAINS
                                   virial_xc=virial%pv_xc)
          END IF
 
-         IF (dft_control%qs_control%gapw_xc .AND. qs_upf_inverse_scf_active(ks_env)) THEN
-            IF (native_skala_grid .OR. do_adiabatic_rescaling .OR. my_scaling /= 1.0_dp) THEN
+         IF ((dft_control%qs_control%gapw_xc .OR. dft_control%qs_control%gapw .OR. &
+              qs_upf_inverse_scf_paw_composite(ks_env)) .AND. &
+             qs_upf_inverse_scf_active(ks_env)) THEN
+            IF (do_adiabatic_rescaling .OR. my_scaling /= 1.0_dp) THEN
                CPABORT("Inverse atom XC functional rescaling is not implemented")
             END IF
             CALL get_ks_env(ks_env, energy=inverse_energy)
             IF (my_just_energy) THEN
-               CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1)
+               CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1, kinetic=tau)
             ELSE
-               CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1, my_vxc_rho)
+               CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1, my_vxc_rho, &
+                                                   kinetic=tau, kinetic_potential=my_vxc_tau)
             END IF
          END IF
 
@@ -795,6 +805,7 @@ CONTAINS
          END IF
 
          ! remove the nlcc densities (keep stuff in original state)
+         IF (ASSOCIATED(tau)) CALL qs_upf_inverse_core_kinetic(ks_env, tau, -1.0_dp)
          IF (ASSOCIATED(rho_nlcc_use)) THEN
             factor = -1.0_dp
             DO ispin = 1, mspin

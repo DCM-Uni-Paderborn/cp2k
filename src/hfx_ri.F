@@ -69,7 +69,8 @@ MODULE hfx_ri
                                               hfx_ri_init,&
                                               hfx_ri_release,&
                                               hfx_ri_type
-   USE input_constants,                 ONLY: hfx_ri_do_2c_cholesky,&
+   USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              hfx_ri_do_2c_cholesky,&
                                               hfx_ri_do_2c_diag,&
                                               hfx_ri_do_2c_iter
    USE input_cp2k_hfx,                  ONLY: ri_mo,&
@@ -82,6 +83,8 @@ MODULE hfx_ri
    USE kinds,                           ONLY: default_string_length,&
                                               dp,&
                                               int_8
+   USE kpoint_types,                    ONLY: get_kpoint_info,&
+                                              kpoint_type
    USE machine,                         ONLY: m_walltime
    USE message_passing,                 ONLY: mp_cart_type,&
                                               mp_comm_type,&
@@ -95,7 +98,8 @@ MODULE hfx_ri
    USE qs_integral_utils,               ONLY: basis_set_list_setup
    USE qs_interactions,                 ONLY: init_interaction_radii_orb_basis
    USE qs_kind_types,                   ONLY: qs_kind_type
-   USE qs_ks_types,                     ONLY: qs_ks_env_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type,&
@@ -113,6 +117,13 @@ MODULE hfx_ri
                                               distribution_3d_type,&
                                               neighbor_list_3c_type,&
                                               split_block_sizes
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_projection_adjoint,&
+                                              qs_upf_inverse_projection_contract
+   USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_lattice_tensor,&
+                                              qs_upf_inverse_hfx_tensor,&
+                                              qs_upf_inverse_hfx_tensor_adjoint
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type,&
+                                              qs_upf_inverse_type
    USE string_utilities,                ONLY: uppercase
    USE util,                            ONLY: sort
    USE virial_types,                    ONLY: virial_type
@@ -575,6 +586,8 @@ CONTAINS
             CALL dbt_copy(t_3c_int(1, 1), t_3c_tmp)
             CALL dbt_copy(t_3c_tmp, t_3c_int(1, 1), order=[1, 3, 2], summation=.TRUE., move_data=.TRUE.)
 
+            CALL inverse_3c_integrals(ks_env, ri_data, basis_set_RI, particle_set, qs_kind_set, t_3c_int(1, 1))
+
             ! For RI-RHO filter_eps_storage is reserved for screening tensor contracted with RI-metric
             ! with RI metric but not to bare integral tensor
             CALL dbt_filter(t_3c_int(1, 1), ri_data%filter_eps)
@@ -666,6 +679,7 @@ CONTAINS
          DEALLOCATE (t_3c_int_batched)
          CALL neighbor_list_3c_destroy(nl_3c)
          CALL dbt_destroy(t_3c_tmp)
+         CALL inverse_3c_lattice_integrals(qs_env, ri_data, basis_set_RI, particle_set, qs_kind_set, t_3c_int(1, :))
       END IF
       CALL dbt_pgrid_destroy(pgrid)
 
@@ -763,6 +777,242 @@ CONTAINS
 
       CALL timestop(handle)
    END SUBROUTINE hfx_ri_pre_scf_calc_tensors
+
+! **************************************************************************************************
+!> \brief Add original USPP transition corrections to the native isolated Coulomb RI tensor.
+!>        Gaussian AO pairs have already been desymmetrized. Corrections may create additional
+!>        blocks and are included before the native combined tensor is filtered. The native
+!>        auxiliary metric and exchange contraction remain unchanged.
+!> \param ks_env Prepared original inverse fields in the native AO order.
+!> \param ri_data Native RI basis and metric selection.
+!> \param basis_set_RI Auxiliary Gaussian bases indexed by kind.
+!> \param atoms Native atom and auxiliary-center positions.
+!> \param kinds Original UPF data and atomic quadrature selection.
+!> \param integrals Native (RI,AO,AO) tensor, with its original split blocks and distribution.
+! **************************************************************************************************
+   SUBROUTINE inverse_3c_integrals(ks_env, ri_data, basis_set_RI, atoms, kinds, integrals)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis_set_RI(:)
+      TYPE(particle_type), INTENT(IN)                    :: atoms(:)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(dbt_type), INTENT(INOUT)                      :: integrals
+
+      COMPLEX(dp), ALLOCATABLE                           :: factors(:)
+      INTEGER                                            :: atom, kind
+      REAL(dp), ALLOCATABLE                              :: positions(:, :)
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      IF (.NOT. ASSOCIATED(inverse)) RETURN
+      IF (.NOT. inverse%enabled) RETURN
+      IF (ASSOCIATED(inverse%bloch%kpoints) .OR. ANY(inverse%frame%ao%periodicity /= 0)) THEN
+         CPABORT("Periodic inverse UPF RI exchange is not implemented yet")
+      END IF
+      IF (ri_data%ri_metric%potential_type /= do_potential_coulomb) THEN
+         CPABORT("Inverse UPF RI requires a Coulomb fitting metric")
+      END IF
+      CPASSERT(ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == "ORB")
+      CPASSERT(ALL(inverse%frame%ao%images == 0))
+      ALLOCATE (bases(SIZE(atoms)), positions(3, SIZE(atoms)), factors(SIZE(atoms)))
+      DO atom = 1, SIZE(atoms)
+         kind = atoms(atom)%atomic_kind%kind_number
+         bases(atom)%gto_basis_set => basis_set_RI(kind)%gto_basis_set
+         positions(:, atom) = atoms(atom)%r
+      END DO
+      factors = CMPLX(1.0_dp, 0.0_dp, dp)
+      CALL qs_upf_inverse_hfx_tensor(inverse%frame%ao, inverse%frame%ao, kinds, inverse%augmentation%kinds, &
+                                     bases, positions, factors, RESHAPE([0, 0, 0], [3, 1]), integrals)
+   END SUBROUTINE inverse_3c_integrals
+
+! **************************************************************************************************
+!> \brief Add original transition integrals in the native physical AO and RI image ordering.
+!>        This precedes image reordering and the per-atom local RI inverse. The unfiltered
+!>        correction can create blocks absent from ordinary Gaussian three-center integrals.
+!> \param qs_env ...
+!> \param ri_data ...
+!> \param basis_set_RI ...
+!> \param atoms ...
+!> \param kinds ...
+!> \param integrals ...
+! **************************************************************************************************
+   SUBROUTINE inverse_3c_lattice_integrals(qs_env, ri_data, basis_set_RI, atoms, kinds, integrals)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis_set_RI(:)
+      TYPE(particle_type), INTENT(IN)                    :: atoms(:)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(dbt_type), INTENT(INOUT)                      :: integrals(:)
+
+      INTEGER                                            :: atom, kind
+      INTEGER, POINTER                                   :: cells(:, :)
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+
+      CALL get_qs_env(qs_env, ks_env=ks_env, kpoints=kpoints)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      IF (.NOT. ASSOCIATED(inverse)) RETURN
+      IF (.NOT. inverse%enabled) RETURN
+      CPASSERT(ASSOCIATED(kpoints))
+      IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
+         CPASSERT(SIZE(inverse%bloch%frames) > 0)
+         frame => inverse%bloch%frames(1)%ao
+      ELSE
+         frame => inverse%frame%ao
+      END IF
+      IF (.NOT. frame%atom_local) CPABORT("General inverse UPF lattice exchange is not implemented yet")
+      IF (ri_data%ri_metric%potential_type /= do_potential_coulomb) THEN
+         CPABORT("Inverse UPF RI requires a Coulomb fitting metric")
+      END IF
+      CPASSERT(ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == "ORB")
+      CALL get_kpoint_info(kpoints, index_to_cell=cells)
+      CPASSERT(ri_data%nimg == SIZE(integrals) .AND. ri_data%nimg <= SIZE(cells, 2))
+      CPASSERT(SIZE(ri_data%RI_cell_to_img) == ri_data%ncell_RI)
+      CPASSERT(ALL(ri_data%RI_cell_to_img > 0) .AND. ALL(ri_data%RI_cell_to_img <= SIZE(cells, 2)))
+      ALLOCATE (bases(SIZE(atoms)))
+      DO atom = 1, SIZE(atoms)
+         kind = atoms(atom)%atomic_kind%kind_number
+         bases(atom)%gto_basis_set => basis_set_RI(kind)%gto_basis_set
+      END DO
+      IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
+         CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, inverse%bloch%augmentation%kinds, bases, &
+                                                cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
+                                                frame%images, integrals)
+      ELSE
+         CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, inverse%augmentation%kinds, bases, &
+                                                cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
+                                                frame%images, integrals)
+      END IF
+   END SUBROUTINE inverse_3c_lattice_integrals
+
+! **************************************************************************************************
+!> \brief Add original inverse transition-charge derivatives to native RI forces and virial.
+!>        The full RI covector includes the exchange fraction and spin occupations before any
+!>        restriction to Gaussian derivative blocks. Gaussian and fitting-metric derivatives
+!>        remain native. The defining inverse projection and explicit augmentation derivatives
+!>        are contracted together. Replicated gradients enter the final force reduction once.
+!> \param qs_env Native force arrays and the current original inverse frame.
+!> \param basis_set_RI Auxiliary Gaussian bases indexed by kind.
+!> \param atoms Native atoms and auxiliary centers.
+!> \param kinds Original radial data and atomic quadrature controls.
+!> \param covector Complete native energy derivative in (RI,AO,AO) order.
+!> \param use_virial Include affine cell response with the defining inverse measure retained.
+! **************************************************************************************************
+   SUBROUTINE inverse_3c_forces(qs_env, basis_set_RI, atoms, kinds, covector, use_virial)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis_set_RI(:)
+      TYPE(particle_type), INTENT(IN)                    :: atoms(:)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(dbt_type), INTENT(INOUT)                      :: covector
+      LOGICAL, INTENT(IN)                                :: use_virial
+
+      COMPLEX(dp), ALLOCATABLE                           :: beta_delta(:, :), beta_gaussian(:, :), &
+                                                            factors(:), left(:, :), right(:, :), &
+                                                            zero_factors(:)
+      INTEGER                                            :: atom, axis, column, kind
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
+      REAL(dp)                                           :: cell_response(3, 3), explicit_response, &
+                                                            inverse_virial(3, 3), &
+                                                            projection_response
+      REAL(dp), ALLOCATABLE                              :: atom_response(:, :), &
+                                                            point_response(:, :), positions(:, :), &
+                                                            weights_response(:)
+      TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(qs_force_type), POINTER                       :: force(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+      TYPE(virial_type), POINTER                         :: virial
+
+      CALL get_qs_env(qs_env, ks_env=ks_env, force=force, para_env=para_env, atomic_kind_set=atomic_kinds, &
+                      cell=cell, virial=virial)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      CPASSERT(ASSOCIATED(inverse))
+      CPASSERT(inverse%enabled)
+      CPASSERT(.NOT. ASSOCIATED(inverse%bloch%kpoints))
+      CPASSERT(ALL(inverse%frame%ao%periodicity == 0) .AND. ALL(inverse%frame%ao%images == 0))
+      CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
+      ALLOCATE (bases(SIZE(atoms)), positions(3, SIZE(atoms)), factors(SIZE(atoms)), &
+                zero_factors(SIZE(atoms)), atom_response(3, SIZE(atoms)))
+      ALLOCATE (left, MOLD=inverse%frame%ao%coefficients)
+      ALLOCATE (right, MOLD=inverse%frame%ao%coefficients)
+      ALLOCATE (point_response, MOLD=inverse%frame%ao%points)
+      ALLOCATE (weights_response, MOLD=inverse%frame%ao%weights)
+      DO atom = 1, SIZE(atoms)
+         bases(atom)%gto_basis_set => basis_set_RI(kind_of(atom))%gto_basis_set
+         positions(:, atom) = atoms(atom)%r
+      END DO
+      factors = CMPLX(1.0_dp, 0.0_dp, dp)
+      zero_factors = CMPLX(0.0_dp, 0.0_dp, dp)
+      point_response = 0.0_dp
+      weights_response = 0.0_dp
+      inverse_virial = 0.0_dp
+      CALL qs_upf_inverse_hfx_tensor_adjoint(inverse%frame%ao, inverse%frame%ao, kinds, inverse%augmentation%kinds, &
+                                             bases, positions, factors, RESHAPE([0, 0, 0], [3, 1]), covector, left, right)
+      left(:, :) = left + right
+      CALL qs_upf_inverse_projection_adjoint(inverse%frame%ao, left, beta_gaussian, beta_delta)
+      DO atom = 1, SIZE(atoms)
+         kind = kind_of(atom)
+         DO axis = 1, 3
+            atom_response = 0.0_dp
+            atom_response(axis, atom) = 1.0_dp
+            CALL qs_upf_inverse_hfx_tensor_adjoint(inverse%frame%ao, inverse%frame%ao, kinds, &
+                                                   inverse%augmentation%kinds, bases, positions, factors, &
+                                                   RESHAPE([0, 0, 0], [3, 1]), covector, &
+                                                   geometry_response=explicit_response, atom_response=atom_response, &
+                                                   cell_response=SPREAD([0.0_dp, 0.0_dp, 0.0_dp], 2, 3), &
+                                                   left_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
+                                                   right_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
+                                                   auxiliary_positions_response=atom_response, &
+                                                   auxiliary_factors_response=zero_factors)
+            CALL qs_upf_inverse_projection_contract(inverse%frame%ao, beta_gaussian, beta_delta, point_response, &
+                                                    atom_response, SPREAD([0.0_dp, 0.0_dp, 0.0_dp], 2, 3), &
+                                                    [0.0_dp, 0.0_dp, 0.0_dp], weights_response, projection_response)
+            IF (use_virial) THEN
+               ! With zero images, the original Cartesian radial rule has no explicit lattice
+               ! response. Its affine derivative follows from all moving centers. Analytic
+               ! atom-local projection overlaps have the same property.
+               inverse_virial(axis, :) = inverse_virial(axis, :) + explicit_response*positions(:, atom)
+               IF (inverse%frame%ao%atom_local) THEN
+                  inverse_virial(axis, :) = inverse_virial(axis, :) + projection_response*positions(:, atom)
+               END IF
+            END IF
+            IF (para_env%mepos == 0) THEN
+               force(kind)%fock_4c(axis, atom_of_kind(atom)) = force(kind)%fock_4c(axis, atom_of_kind(atom)) &
+                                                               + explicit_response + projection_response
+            END IF
+         END DO
+      END DO
+      IF (use_virial .AND. .NOT. inverse%frame%ao%atom_local) THEN
+         DO column = 1, 3
+            DO axis = 1, 3
+               ! The original radial integration offsets remain Cartesian. The defining grid
+               ! and its measure strain with the cell, as do the atomic and auxiliary centers.
+               cell_response = 0.0_dp
+               cell_response(axis, :) = cell%hmat(column, :)
+               atom_response = 0.0_dp
+               atom_response(axis, :) = positions(column, :)
+               point_response = 0.0_dp
+               point_response(axis, :) = inverse%frame%ao%points(column, :)
+               weights_response = 0.0_dp
+               IF (axis == column) weights_response(:) = inverse%frame%ao%weights
+               CALL qs_upf_inverse_projection_contract(inverse%frame%ao, beta_gaussian, beta_delta, point_response, &
+                                                       atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
+                                                       weights_response, projection_response)
+               inverse_virial(axis, column) = inverse_virial(axis, column) + projection_response
+            END DO
+         END DO
+      END IF
+      ! Native HFX stores dE/dstrain here. hfx_exx subtracts this tensor from the
+      ! pressure-positive virial together with the Gaussian and metric contributions.
+      IF (use_virial .AND. para_env%mepos == 0) virial%pv_fock_4c(:, :) = virial%pv_fock_4c + inverse_virial
+   END SUBROUTINE inverse_3c_forces
 
 ! **************************************************************************************************
 !> \brief Pre-SCF steps in rho flavor of RI HFX
@@ -2503,7 +2753,8 @@ CONTAINS
       INTEGER, DIMENSION(2, 2)                           :: ijbounds
       INTEGER, DIMENSION(2, 3)                           :: bounds_cpy
       INTEGER, DIMENSION(:), POINTER                     :: col_bsize, row_bsize
-      LOGICAL                                            :: do_resp, resp_only_prv, use_virial_prv
+      LOGICAL                                            :: do_resp, inverse_exchange, &
+                                                            resp_only_prv, use_virial_prv
       REAL(dp)                                           :: pref, spin_fac, t1, t2
       REAL(dp), DIMENSION(3, 3)                          :: work_virial
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -2513,7 +2764,7 @@ CONTAINS
       TYPE(dbcsr_type)                                   :: dbcsr_tmp, virial_trace
       TYPE(dbt_type) :: rho_ao_1, rho_ao_2, t_2c_RI, t_2c_RI_tmp, t_2c_tmp, t_2c_virial, t_3c_1, &
          t_3c_2, t_3c_3, t_3c_4, t_3c_5, t_3c_ao_ri_ao, t_3c_help_1, t_3c_help_2, t_3c_int, &
-         t_3c_int_2, t_3c_ri_ao_ao, t_3c_sparse, t_3c_virial, t_R, t_SVS
+         t_3c_int_2, t_3c_inverse_covector, t_3c_ri_ao_ao, t_3c_sparse, t_3c_virial, t_R, t_SVS
       TYPE(dbt_type), ALLOCATABLE, DIMENSION(:)          :: t_2c_der_metric, t_2c_der_RI, &
                                                             t_3c_der_AO, t_3c_der_RI
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -2529,6 +2780,8 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(virial_type), POINTER                         :: virial
 
       !The idea is the following: we need to compute the gradients
@@ -2562,7 +2815,15 @@ CONTAINS
       CALL get_qs_env(qs_env, natom=natom, particle_set=particle_set, nkind=nkind, &
                       atomic_kind_set=atomic_kind_set, virial=virial, &
                       cell=cell, force=force, para_env=para_env, dft_control=dft_control, &
-                      qs_kind_set=qs_kind_set, dbcsr_dist=dbcsr_dist)
+                      qs_kind_set=qs_kind_set, dbcsr_dist=dbcsr_dist, ks_env=ks_env)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      inverse_exchange = .FALSE.
+      IF (ASSOCIATED(inverse)) inverse_exchange = inverse%enabled
+      IF (inverse_exchange) THEN
+         IF (do_resp) THEN
+            CPABORT("Inverse RI exchange response-density forces are not implemented yet")
+         END IF
+      END IF
 
       CALL create_3c_tensor(t_3c_ao_ri_ao, dist1, dist2, dist3, ri_data%pgrid_1, &
                             ri_data%bsizes_AO_split, ri_data%bsizes_RI_split, ri_data%bsizes_AO_split, &
@@ -2681,6 +2942,7 @@ CONTAINS
       CALL dbt_create(t_3c_ri_ao_ao, t_3c_5)
       CALL dbt_create(t_3c_ri_ao_ao, t_3c_help_1)
       CALL dbt_create(t_3c_ri_ao_ao, t_3c_help_2)
+      IF (inverse_exchange) CALL dbt_create(t_3c_ri_ao_ao, t_3c_inverse_covector)
 
       CALL dbt_create(t_3c_ao_ri_ao, t_3c_int)
       CALL dbt_copy(ri_data%t_3c_int_ctr_2(1, 1), t_3c_int)
@@ -2724,6 +2986,10 @@ CONTAINS
                                      batch_range_2=batch_ranges, batch_range_3=batch_ranges)
       CALL dbt_batched_contract_init(t_3c_sparse, batch_range_1=batch_ranges_RI, &
                                      batch_range_2=batch_ranges, batch_range_3=batch_ranges)
+      IF (inverse_exchange) THEN
+         CALL dbt_batched_contract_init(t_3c_inverse_covector, batch_range_1=batch_ranges_RI, &
+                                        batch_range_2=batch_ranges, batch_range_3=batch_ranges)
+      END IF
 
       DO i_spin = 1, nspins
 
@@ -2811,6 +3077,15 @@ CONTAINS
                                     map_1=[1], map_2=[2, 3], filter_eps=ri_data%filter_eps, &
                                     retain_sparsity=.TRUE., unit_nr=unit_nr_dbcsr, flop=nflop)
                   ri_data%dbcsr_nflop = ri_data%dbcsr_nflop + nflop
+                  IF (inverse_exchange) THEN
+                     ! Augmentation derivatives may extend beyond the Gaussian derivative blocks.
+                     CALL dbt_contract(-hf_fraction*spin_fac, t_SVS, t_3c_3, 1.0_dp, t_3c_inverse_covector, &
+                                       contract_1=[2], notcontract_1=[1], &
+                                       contract_2=[1], notcontract_2=[2, 3], &
+                                       map_1=[1], map_2=[2, 3], filter_eps=ri_data%filter_eps, &
+                                       bounds_3=kbounds, unit_nr=unit_nr_dbcsr, flop=nflop)
+                     ri_data%dbcsr_nflop = ri_data%dbcsr_nflop + nflop
+                  END IF
                   CALL dbt_batched_contract_finalize(t_SVS)
 
                   CALL dbt_copy(t_3c_4, t_3c_5, summation=.TRUE., move_data=.TRUE.)
@@ -2959,6 +3234,11 @@ CONTAINS
          END IF
       END DO !i_spin
 
+      IF (inverse_exchange) THEN
+         CALL dbt_batched_contract_finalize(t_3c_inverse_covector)
+         CALL inverse_3c_forces(qs_env, basis_set_RI, particle_set, qs_kind_set, t_3c_inverse_covector, use_virial_prv)
+         CALL dbt_destroy(t_3c_inverse_covector)
+      END IF
       CALL dbt_batched_contract_finalize(t_3c_int)
       CALL dbt_batched_contract_finalize(t_3c_int_2)
       CALL dbt_batched_contract_finalize(t_3c_1)

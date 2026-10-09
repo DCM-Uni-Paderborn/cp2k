@@ -22,23 +22,45 @@ PROGRAM upf_inverse_unittest
    USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
                                               ieee_value
    USE kinds,                           ONLY: dp
-   USE mathconstants,                   ONLY: pi
+   USE mathconstants,                   ONLY: fourpi,&
+                                              pi
    USE orbital_pointers,                ONLY: init_orbital_pointers,&
                                               ncoset
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_ae_cartesian,&
+                                              paw_core_kinetic_type,&
+                                              paw_core_radial_slopes,&
+                                              paw_core_radial_value
+   USE paw_xc,                          ONLY: paw_xc_ae_core_cartesian,&
+                                              paw_xc_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_harmonics_atom,               ONLY: harmonics_atom_type
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_operators,&
+                                              qs_upf_inverse_atomic_overlap
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_density_radial,&
-                                              qs_upf_inverse_density_radial_adjoint
-   USE upf_core,                        ONLY: upf_core_fourier
+                                              qs_upf_inverse_density_radial_adjoint,&
+                                              qs_upf_inverse_kinetic_center,&
+                                              qs_upf_inverse_kinetic_collocate,&
+                                              qs_upf_inverse_kinetic_integrate,&
+                                              qs_upf_inverse_kinetic_operator
+   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_collocate,&
+                                              qs_upf_inverse_paw_operator
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_type
+   USE upf_core,                        ONLY: upf_core_fourier,&
+                                              upf_core_kinetic_fourier
    USE upf_inverse,                     ONLY: &
-        upf_inverse_basis, upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
+        upf_inverse_atomic_init, upf_inverse_atomic_residual, upf_inverse_atomic_type, &
+        upf_inverse_basis, upf_inverse_basis_response, upf_inverse_density_evaluate, &
+        upf_inverse_fields_init, upf_inverse_init, upf_inverse_kinetic_evaluate, &
+        upf_inverse_kinetic_init, upf_inverse_kinetic_matrix, upf_inverse_kinetic_type, &
         upf_inverse_operator, upf_inverse_operator_response, upf_inverse_project, &
         upf_inverse_project_adjoint, upf_inverse_project_response, upf_inverse_type
    USE upf_inverse_coulomb,             ONLY: &
         upf_inverse_coulomb_center_type, upf_inverse_coulomb_compensate, &
         upf_inverse_coulomb_compensation_adjoint, upf_inverse_coulomb_fourier_kernel, &
-        upf_inverse_coulomb_pair_kernel, upf_inverse_coulomb_periodic, &
-        upf_inverse_coulomb_potential_type, upf_inverse_coulomb_radial, &
+        upf_inverse_coulomb_map_type, upf_inverse_coulomb_pair_kernel, &
+        upf_inverse_coulomb_periodic, upf_inverse_coulomb_potential_type, &
+        upf_inverse_coulomb_prepare, upf_inverse_coulomb_radial, &
         upf_inverse_coulomb_radial_response
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
                                               upf_inverse_density_residual,&
@@ -47,8 +69,14 @@ PROGRAM upf_inverse_unittest
                                               upf_inverse_semilocal_residual,&
                                               upf_inverse_semilocal_response,&
                                               upf_inverse_smooth_density
+   USE upf_projector_integrals,         ONLY: upf_projector_init,&
+                                              upf_projector_overlap,&
+                                              upf_projector_type
    USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
                                               upf_radial_fields_type
+   USE upf_types,                       ONLY: upf_radial_weights
+   USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
+                                              uspp_augmentation_prepare_realspace
 
    IMPLICIT NONE
    REAL(dp), PARAMETER :: step = 1.e-5_dp
@@ -62,10 +90,562 @@ PROGRAM upf_inverse_unittest
    CALL check_center_angular()
    CALL check_fourier_coulomb()
    CALL check_core_fourier()
+   CALL check_paw_core_fields()
    CALL check_nc_fields()
+   CALL check_kinetic_fields()
+   CALL check_atomic_projectors()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Cusped radial AE charge and signed-orbital kinetic fields with independent exact derivatives.
+! **************************************************************************************************
+   SUBROUTINE check_paw_core_fields()
+      INTEGER                                            :: axis, order, point, side, support
+      REAL(dp) :: curvature, density, derivative, exact(3), fd(5, 2), gradient(3), hessian(3, 3), &
+         hessian_only(3, 3), motion(3), points(3, 3), radius, raw_slopes(6), samples(5, 2), &
+         second, shift, slope, tau, tau_gradient(3), unit(3), value, x(3)
+      TYPE(paw_core_kinetic_type)                        :: cache, empty
+      TYPE(paw_xc_type)                                  :: grid
+
+      ALLOCATE (grid%r(6), grid%core(6, 2), grid%core_gradient(6, 2))
+      grid%r(:) = [0.01_dp, 0.5_dp, 1.0_dp, 1.5_dp, 2.0_dp, 2.5_dp]
+      grid%core(:, 1) = MAX(2.0_dp - grid%r, 0.0_dp)**3
+      grid%core_gradient(:, 1) = -3.0_dp*MAX(2.0_dp - grid%r, 0.0_dp)**2
+      grid%core(:, 2) = 0.0_dp
+      grid%core_gradient(:, 2) = 0.0_dp
+      grid%has_ae_core = .TRUE.
+      grid%core_support_index = 6
+      ALLOCATE (cache%r, SOURCE=grid%r)
+      ALLOCATE (cache%wave(6, 1), cache%slope(6, 1), cache%angular(1), cache%occupations(1), &
+                cache%endpoint_curvature(1), cache%support_index(1))
+      cache%endpoint_curvature = 0.0_dp
+      cache%support_index = 6
+      cache%wave(:, 1) = grid%core(:, 1)
+      cache%slope(:, 1) = grid%core_gradient(:, 1)
+      cache%angular = 0
+      cache%occupations = 2
+      cache%available = .TRUE.
+      points(:, 1) = [0.0_dp, 0.0_dp, 0.7_dp]
+      points(:, 2) = [0.31_dp, -0.42_dp, 0.53_dp]
+      points(:, 3) = [0.003_dp, -0.004_dp, 0.0_dp]
+      motion = [0.02_dp, -0.01_dp, 0.03_dp]
+      DO point = 1, 3
+         x = points(:, point)
+         radius = SQRT(SUM(x**2))
+         unit = x/radius
+         slope = -3.0_dp*(2.0_dp - radius)**2
+         CALL paw_xc_ae_core_cartesian(grid, x, density, gradient, hessian)
+         CALL check(ABS(density - (2.0_dp - radius)**3), "Cusped AE core density")
+         CALL check(MAXVAL(ABS(gradient - slope*unit)), "Cusped AE core gradient")
+         DO axis = 1, 3
+            exact = (6.0_dp*(2.0_dp - radius) - slope/radius)*unit*unit(axis)
+            exact(axis) = exact(axis) + slope/radius
+            CALL check(MAXVAL(ABS(hessian(:, axis) - exact)), "Cusped AE core Hessian", 3.e-11_dp)
+         END DO
+         CALL paw_xc_ae_core_cartesian(grid, x, density, hessian=hessian_only)
+         CALL check(MAXVAL(ABS(hessian_only - hessian)), "AE core optional Hessian", 0.0_dp)
+         CALL paw_core_kinetic_ae_cartesian(cache, x, tau, tau_gradient)
+         CALL check(ABS(tau - 9.0_dp*(2.0_dp - radius)**4/fourpi), "Original signed AE core kinetic field")
+         exact = -36.0_dp*(2.0_dp - radius)**3*unit/fourpi
+         CALL check(MAXVAL(ABS(tau_gradient - exact)), "AE core kinetic gradient")
+         DO order = 1, 2
+            DO side = 1, 2
+               shift = REAL(2*side - 3, dp)*step/REAL(order, dp)
+               CALL paw_xc_ae_core_cartesian(grid, x + shift*motion, samples(1, side), samples(2:4, side))
+               CALL paw_core_kinetic_ae_cartesian(cache, x + shift*motion, samples(5, side))
+            END DO
+            fd(:, order) = (samples(:, 2) - samples(:, 1))/(2.0_dp*step/REAL(order, dp))
+         END DO
+         exact = (4.0_dp*fd(2:4, 2) - fd(2:4, 1))/3.0_dp
+         CALL check(ABS((4.0_dp*fd(1, 2) - fd(1, 1))/3.0_dp - DOT_PRODUCT(gradient, motion)), &
+                    "Moving AE core density", 3.e-8_dp)
+         CALL check(MAXVAL(ABS(exact - MATMUL(hessian, motion))), &
+                    "Moving AE core gradient", 3.e-8_dp)
+         CALL check(ABS((4.0_dp*fd(5, 2) - fd(5, 1))/3.0_dp - DOT_PRODUCT(tau_gradient, motion)), &
+                    "Moving AE core kinetic field", 3.e-8_dp)
+      END DO
+      CALL paw_xc_ae_core_cartesian(grid, [3.0_dp, 0.0_dp, 0.0_dp], density, gradient, hessian)
+      CALL paw_core_kinetic_ae_cartesian(cache, [3.0_dp, 0.0_dp, 0.0_dp], tau, tau_gradient)
+      CALL check(ABS(density) + MAXVAL(ABS(gradient)) + MAXVAL(ABS(hessian)) + &
+                 ABS(tau) + MAXVAL(ABS(tau_gradient)), "Verified original AE zero suffix", 0.0_dp)
+      CALL paw_core_radial_slopes(grid%r, grid%core(:, 1), raw_slopes, curvature, support)
+      CALL check(ABS(REAL(support - 5, dp)), "Core support starts at original zero suffix", 0.0_dp)
+      CALL paw_core_radial_value(grid%r, grid%core(:, 1), raw_slopes, curvature, support, &
+                                 grid%r(support - 1), value, derivative, second)
+      CALL check(ABS(value - grid%core(support - 1, 1)) + ABS(derivative - raw_slopes(support - 1)) + &
+                 ABS(second - curvature), "Core closure left value slope and curvature", 3.e-12_dp)
+      DO point = 1, 6
+         CALL paw_core_radial_value(grid%r, grid%core(:, 1), raw_slopes, curvature, support, &
+                                    grid%r(point), value, derivative, second)
+         CALL check(ABS(value - grid%core(point, 1)), "Unchanged original core samples", 3.e-12_dp)
+      END DO
+      CALL paw_core_radial_value(grid%r, grid%core(:, 1), raw_slopes, curvature, support, &
+                                 grid%r(6), value, derivative, second)
+      CALL check(ABS(value) + ABS(derivative) + ABS(second), "Core C2 zero endpoint", 0.0_dp)
+      radius = 0.37_dp*grid%r(support - 1) + 0.63_dp*grid%r(support)
+      CALL paw_core_radial_value(grid%r, grid%core(:, 1), raw_slopes, curvature, support, radius, value, derivative, second)
+      DO side = 1, 2
+         shift = REAL(2*side - 3, dp)*step
+         CALL paw_core_radial_value(grid%r, grid%core(:, 1), raw_slopes, curvature, support, radius + shift, &
+                                    samples(1, side), samples(2, side), samples(3, side))
+      END DO
+      CALL check(ABS((samples(1, 2) - samples(1, 1))/(2.0_dp*step) - derivative), "Core quintic first derivative", 3.e-8_dp)
+      CALL check(ABS((samples(2, 2) - samples(2, 1))/(2.0_dp*step) - second), "Core quintic second derivative", 3.e-8_dp)
+      grid%core = 0.0_dp
+      grid%core_gradient = 0.0_dp
+      grid%has_ae_core = .FALSE.
+      empty%available = .TRUE.
+      CALL paw_xc_ae_core_cartesian(grid, [0.0_dp, 0.0_dp, 0.0_dp], density, gradient, hessian)
+      CALL paw_core_kinetic_ae_cartesian(empty, [0.0_dp, 0.0_dp, 0.0_dp], tau, tau_gradient)
+      CALL check(ABS(density) + MAXVAL(ABS(gradient)) + MAXVAL(ABS(hessian)) + &
+                 ABS(tau) + MAXVAL(ABS(tau_gradient)), "Core-free AE origin", 0.0_dp)
+   END SUBROUTINE check_paw_core_fields
+! **************************************************************************************************
+!> \brief Atomic hard-projector orientation, full kinetic matrix and exact NC reduction.
+! **************************************************************************************************
+   SUBROUTINE check_atomic_projectors()
+      INTEGER, PARAMETER                                 :: nb = 3, np = 5, nr = 33
+
+      COMPLEX(dp) :: delta_kinetic(np, 2), delta_overlap(np, 2), exact_operator(2, 2), &
+         identity(nb, nb), kinetic_overlap(np, 2), kinetic_response(np, 2), &
+         kinetic_samples(np, 2, 2), laplacian(np, 2), mixed(2, 2), overlap(np, 2), &
+         response(np, 2), rotation(nb, nb), samples(np, 2, 2), shifted_overlap(np, 2)
+      COMPLEX(dp), ALLOCATABLE                           :: kinetic_residual(:, :), &
+                                                            local_kinetic(:, :), &
+                                                            local_metric(:, :), &
+                                                            metric_residual(:, :)
+      INTEGER                                            :: axis, i, images(3, 3), info, ir, j, side
+      REAL(dp) :: ao_center(3), cell(3, 3), center(3), dao(3), dc(3, 3), dcenter(3), delta, &
+         directions(3, 6), displacement(3), dk(3), expected(np, np), full_kinetic(np, np), &
+         hard_overlap(1, np, 4), kernel(np, np), norm_difference, original_overlap(1, np, 4), r, &
+         reduced_k(3), shape
+      REAL(dp), ALLOCATABLE                              :: radial_kinetic(:, :), weights(:)
+      TYPE(atom_upfpot_type)                             :: pot
+      TYPE(gto_basis_set_type), POINTER                  :: basis
+      TYPE(qs_upf_inverse_type)                          :: frame
+      TYPE(upf_inverse_atomic_type)                      :: atomic
+      TYPE(upf_inverse_kinetic_type)                     :: kinetic
+      TYPE(upf_projector_type)                           :: original
+
+      pot%pseudo_type = "USPP"
+      pot%is_ultrasoft = .TRUE.
+      pot%number_of_proj = nb
+      ALLOCATE (pot%r(nr), pot%rab(nr), pot%lbeta(nb), pot%beta(nr, nb), pot%dion(nb, nb), pot%qij(nb, nb), pot%partial_waves)
+      ALLOCATE (pot%partial_waves%ae_wfc(nr, nb), pot%partial_waves%ps_wfc(nr, nb), &
+                pot%partial_waves%angular_momenta(nb))
+      pot%r(:) = [(REAL(i - 1, dp)/16.0_dp, i=1, nr)]
+      pot%rab = 1.0_dp/16.0_dp
+      pot%lbeta(:) = [0, 0, 1]
+      pot%partial_waves%angular_momenta(:) = pot%lbeta
+      pot%dion = 0.0_dp
+      pot%dion(1:2, 1:2) = RESHAPE([0.8_dp, -0.2_dp, -0.2_dp, 0.5_dp], [2, 2])
+      pot%dion(3, 3) = 0.3_dp
+      DO j = 1, nb
+         DO ir = 1, nr
+            r = pot%r(ir)
+            shape = 0.0_dp
+            IF (r < 1.5_dp) shape = (1.0_dp - (r/1.5_dp)**2)**3
+            pot%beta(ir, j) = 0.3_dp*REAL(j + 1, dp)*r**pot%lbeta(j)*shape*(1.0_dp + 0.07_dp*j*r*r)
+            pot%partial_waves%ps_wfc(ir, j) = r**(pot%lbeta(j) + 1)*(0.7_dp + 0.1_dp*j*r*r)
+            delta = 0.2_dp*r**(pot%lbeta(j) + 1)*shape/REAL(j, dp)
+            pot%partial_waves%ae_wfc(ir, j) = pot%partial_waves%ps_wfc(ir, j) + delta
+         END DO
+      END DO
+      pot%qij = 0.0_dp
+      DO j = 1, nb
+         DO i = 1, nb
+            IF (pot%lbeta(i) /= pot%lbeta(j)) CYCLE
+            pot%qij(i, j) = SUM(upf_radial_weights(pot)*( &
+                                pot%partial_waves%ae_wfc(:, i)*pot%partial_waves%ae_wfc(:, j) - &
+                                pot%partial_waves%ps_wfc(:, i)*pot%partial_waves%ps_wfc(:, j))) + 0.01_dp*i*j
+         END DO
+      END DO
+      CALL upf_inverse_atomic_init(pot, 3, atomic, info)
+      IF (info /= 0 .OR. .NOT. atomic%inverse%ready) ERROR STOP 'Atomic inverse factorization failed'
+      CALL upf_projector_init(pot, 1, original)
+      identity = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO i = 1, nb
+         identity(i, i) = CMPLX(1.0_dp, 0.0_dp, dp)
+      END DO
+      CALL upf_inverse_project(atomic%inverse, identity, rotation)
+      displacement = [0.2_dp, -0.1_dp, 0.3_dp]
+      CALL upf_projector_overlap(original, 0, [0.4_dp], displacement, 1, original_overlap)
+      CALL upf_projector_overlap(atomic%hard, 0, [0.4_dp], displacement, 1, hard_overlap)
+      DO axis = 1, 4
+         CALL check(MAXVAL(ABS(hard_overlap(1, :2, axis) - &
+                               MATMUL(REAL(rotation(:2, :2), dp), original_overlap(1, :2, axis)))), &
+                    'Hard projector bras use K inverse including Gaussian derivatives')
+      END DO
+      CALL upf_inverse_kinetic_init(pot, kinetic)
+      CALL upf_inverse_kinetic_matrix(pot, kinetic, radial_kinetic)
+      directions = 0.0_dp
+      DO axis = 1, 3
+         directions(axis, 2*axis - 1) = 1.0_dp
+         directions(axis, 2*axis) = -1.0_dp
+      END DO
+      ALLOCATE (weights, SOURCE=upf_radial_weights(pot)*pot%r**2)
+      full_kinetic = 0.0_dp
+      DO ir = 1, nr
+         DO side = 1, 6
+            CALL upf_inverse_kinetic_evaluate(kinetic, pot%r(ir)*directions(:, side), kernel)
+            full_kinetic = full_kinetic + fourpi*weights(ir)*kernel/6.0_dp
+         END DO
+      END DO
+      CALL check(MAXVAL(ABS(full_kinetic - atomic%kinetic)), 'Kinetic matrix angular integration and magnetic selection')
+      IF (ABS(radial_kinetic(1, 2)) <= 1.e-6_dp) ERROR STOP 'Missing off-diagonal atomic kinetic correction'
+      expected = original%d - full_kinetic
+      CALL check(MAXVAL(ABS(atomic%hard%d - expected)), 'Reduced hard coupling is original D minus full kinetic matrix')
+      expected = 0.0_dp
+      DO j = 1, np
+         DO i = 1, np
+            IF (original%angular_index(i) /= original%angular_index(j)) CYCLE
+            norm_difference = 0.01_dp*original%radial_index(i)*original%radial_index(j)
+            expected(i, j) = norm_difference
+         END DO
+      END DO
+      CALL check(MAXVAL(ABS(atomic%metric - expected)), 'Original norm residual is retained after hard reconstruction')
+      NULLIFY (basis)
+      CALL allocate_gto_basis_set(basis)
+      basis%nset = 1
+      basis%nsgf = 2
+      ALLOCATE (basis%lmax(1), basis%npgf(1), basis%nshell(1), basis%first_sgf(1, 1), &
+                basis%last_sgf(1, 1), basis%zet(2, 1), basis%sphi(2, 2))
+      basis%lmax = 0
+      basis%npgf = 2
+      basis%nshell = 1
+      basis%first_sgf = 1
+      basis%last_sgf = 2
+      basis%zet(:, 1) = [0.4_dp, 0.9_dp]
+      basis%sphi(:, :) = RESHAPE([0.6_dp, -0.2_dp, 0.3_dp, 0.8_dp], [2, 2])
+      images = 0
+      images(1, :) = [-1, 0, 1]
+      cell = 0.0_dp
+      DO axis = 1, 3
+         cell(axis, axis) = 1.7_dp + 0.2_dp*axis
+      END DO
+      dc = RESHAPE([(0.002_dp*i, i=1, 9)], [3, 3])
+      center = [0.2_dp, -0.1_dp, 0.3_dp]
+      ao_center = [-0.1_dp, 0.3_dp, 0.2_dp]
+      dcenter = [0.01_dp, -0.02_dp, 0.03_dp]
+      dao = [-0.02_dp, 0.03_dp, 0.01_dp]
+      reduced_k = [0.23_dp, -0.17_dp, 0.11_dp]
+      dk = [0.004_dp, -0.002_dp, 0.003_dp]
+      CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, ao_center, cell, images, reduced_k, &
+                                         overlap, response, dcenter, dao, dc, dk, kinetic_overlap, kinetic_response)
+      DO side = 1, 2
+         delta = REAL(2*side - 3, dp)*step
+         CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center + delta*dcenter, ao_center + delta*dao, &
+                                            cell + delta*dc, images, reduced_k + delta*dk, samples(:, :, side), &
+                                            kinetic=kinetic_samples(:, :, side))
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, :, 2) - samples(:, :, 1))/(2.0_dp*step) - response)), &
+                 'Atomic hard projector joint atom cell and complex Bloch response', 3.e-9_dp)
+      CALL check(MAXVAL(ABS((kinetic_samples(:, :, 2) - kinetic_samples(:, :, 1))/(2.0_dp*step) - kinetic_response)), &
+                 'Atomic Gaussian kinetic projector joint geometry and Bloch response', 3.e-9_dp)
+      laplacian = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO axis = 1, 3
+         DO side = 1, 2
+            displacement = ao_center
+            displacement(axis) = displacement(axis) + REAL(2*side - 3, dp)*1.e-3_dp
+            CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, displacement, cell, images, reduced_k, shifted_overlap)
+            laplacian = laplacian + shifted_overlap - overlap
+         END DO
+      END DO
+      CALL check(MAXVAL(ABS(-0.5_dp*laplacian/1.e-6_dp - kinetic_overlap)), &
+                 'Gaussian kinetic overlap from independent AO-center second differences', 2.e-7_dp)
+      CALL qs_upf_inverse_atomic_overlap(basis, atomic%difference, center, ao_center, cell, images, reduced_k, &
+                                         delta_overlap, kinetic=delta_kinetic)
+      CALL upf_inverse_atomic_residual(atomic, overlap, delta_overlap, delta_kinetic, kinetic_residual, metric_residual)
+      mixed = MATMUL(CONJG(TRANSPOSE(delta_kinetic)), overlap)
+      exact_operator = -mixed - CONJG(TRANSPOSE(mixed)) + &
+                       MATMUL(CONJG(TRANSPOSE(overlap)), MATMUL(atomic%difference_kinetic + original%d, overlap))
+      CALL check(MAXVAL(ABS(kinetic_residual + MATMUL(CONJG(TRANSPOSE(overlap)), MATMUL(atomic%hard%d, overlap)) - &
+                            exact_operator)), 'Reduced hard D minus T plus closure residual equals the explicit kinetic pullback')
+      mixed = MATMUL(CONJG(TRANSPOSE(delta_overlap)), overlap)
+      exact_operator = -mixed - CONJG(TRANSPOSE(mixed)) + &
+                       MATMUL(CONJG(TRANSPOSE(overlap)), &
+                              MATMUL(atomic%difference_overlap + atomic%wave_overlap + atomic%metric, overlap))
+      CALL check(MAXVAL(ABS(metric_residual + MATMUL(CONJG(TRANSPOSE(overlap)), MATMUL(atomic%metric, overlap)) - &
+                            exact_operator)), 'Original q metric is preserved with finite local closure residual')
+      IF (MAXVAL(ABS(kinetic_residual)) <= 1.e-6_dp) ERROR STOP 'Finite AO closure residual was removed'
+      frame%atom_local = .TRUE.
+      frame%cell = cell
+      frame%reduced_k = reduced_k
+      ALLOCATE (frame%atomic_cache(1), frame%bases(1), frame%positions(3, 1), &
+                frame%center_atoms(1), frame%center_kinds(1), frame%projector_first(1), frame%projector_last(1), &
+                frame%ao_first(1), frame%ao_last(1))
+      ALLOCATE (frame%coefficients(np, 2), frame%q(np, np))
+      ALLOCATE (frame%images, SOURCE=images)
+      frame%atomic_cache(1) = atomic
+      frame%bases(1)%gto_basis_set => basis
+      frame%positions(:, 1) = center
+      frame%center_atoms = 1
+      frame%center_kinds = 1
+      frame%projector_first = 1
+      frame%projector_last = np
+      frame%ao_first = 1
+      frame%ao_last = 2
+      CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, center, cell, images, reduced_k, frame%coefficients)
+      frame%q(:, :) = CMPLX(atomic%wave_overlap + atomic%metric, 0.0_dp, dp)
+      CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric)
+      CALL qs_upf_inverse_atomic_overlap(basis, atomic%difference, center, center, cell, images, reduced_k, &
+                                         delta_overlap, kinetic=delta_kinetic)
+      mixed = MATMUL(CONJG(TRANSPOSE(delta_kinetic)), frame%coefficients)
+      exact_operator = -mixed - CONJG(TRANSPOSE(mixed)) + &
+                       MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(atomic%difference_kinetic, frame%coefficients))
+      CALL check(MAXVAL(ABS(local_kinetic - exact_operator)), 'Native atomic kinetic correction preserves the finite-map remainder')
+      mixed = MATMUL(CONJG(TRANSPOSE(delta_overlap)), frame%coefficients)
+      exact_operator = -mixed - CONJG(TRANSPOSE(mixed)) + &
+                       MATMUL(CONJG(TRANSPOSE(frame%coefficients)), &
+                              MATMUL(atomic%difference_overlap + frame%q, frame%coefficients))
+      CALL check(MAXVAL(ABS(local_metric - exact_operator)), 'Native atomic metric correction retains the supplied original q')
+      CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, ao_center, cell, images, -reduced_k, samples(:, :, 1))
+      CALL check(MAXVAL(ABS(samples(:, :, 1) - CONJG(overlap))), 'Atomic hard projector time reversal')
+      CALL deallocate_gto_basis_set(basis)
+      pot%pseudo_type = "NC"
+      pot%is_ultrasoft = .FALSE.
+      CALL upf_inverse_atomic_init(pot, 1, atomic, info)
+      IF (info /= 0 .OR. .NOT. atomic%inverse%ready) ERROR STOP 'NC atomic inverse factorization failed'
+      CALL check(MAXVAL(ABS(atomic%hard%weighted_beta - original%weighted_beta)) + &
+                 MAXVAL(ABS(atomic%hard%d - original%d)) + MAXVAL(ABS(atomic%kinetic)) + MAXVAL(ABS(atomic%metric)), &
+                 'Atomic inverse reduces exactly to original NC projectors', 0.0_dp)
+   END SUBROUTINE check_atomic_projectors
+
+! **************************************************************************************************
+!> \brief Independent kinetic augmentation, noncompact PS support and its Cartesian response.
+! **************************************************************************************************
+   SUBROUTINE check_kinetic_fields()
+      INTEGER, PARAMETER                                 :: n = 9, nr = 9
+
+      COMPLEX(dp)                                        :: ao(2, 2), ao_direction(2, 2), &
+                                                            coefficients(n, 2), dc(n, 2), &
+                                                            matrix(2, 2)
+      INTEGER                                            :: axis, i, image, j, l, pair, point, side
+      REAL(dp) :: atoms_response(3, 1), cell(3, 3), cell_response(3, 3), charge_gradient(3, 3), &
+         charge_gradient_response(3, 3), charge_gradient_samples(3, 3, 2), d(3, n), delta, &
+         density(3), energy_samples(2), expected, gradient(n, n, 3), gradient_samples(n, n, 3, 2), &
+         hard_value(n), hessian(n, n, 3, 3), kernel(n, n), p(3, n), points(3, 3), &
+         points_response(3, 3), position(3), potential(3), reference(3), response(3), &
+         samples(n, n, 2), shifted(3), soft_value(n), value(n), vg(3, 3), weights(3)
+      TYPE(atom_upfpot_type)                             :: pot
+      TYPE(qs_upf_inverse_augmentation_type)             :: augmentation
+      TYPE(qs_upf_inverse_type)                          :: frame
+      TYPE(upf_inverse_kinetic_type)                     :: kinetic, kinetics(2)
+      TYPE(upf_projector_type)                           :: projectors
+
+      pot%number_of_proj = 3
+      ALLOCATE (pot%r(nr), pot%rab(nr), pot%lbeta(3), pot%partial_waves)
+      ALLOCATE (pot%partial_waves%ae_wfc(nr, 3), pot%partial_waves%ps_wfc(nr, 3), &
+                pot%partial_waves%angular_momenta(3))
+      pot%lbeta(:) = [0, 1, 2]
+      pot%partial_waves%angular_momenta(:) = pot%lbeta
+      pot%r(:) = [(0.25_dp*REAL(i - 1, dp), i=1, nr)]
+      pot%rab = 0.25_dp
+      DO j = 1, 3
+         DO i = 1, nr
+            pot%partial_waves%ps_wfc(i, j) = pot%r(i)**j*(1.0_dp + 0.1_dp*pot%r(i)**2 - 0.01_dp*pot%r(i)**4)
+            delta = 0.0_dp
+            IF (pot%r(i) < 1.5_dp) delta = 0.2_dp*pot%r(i)**j*(1.0_dp - (pot%r(i)/1.5_dp)**2)**3
+            pot%partial_waves%ae_wfc(i, j) = pot%partial_waves%ps_wfc(i, j) + delta
+         END DO
+      END DO
+      CALL upf_inverse_kinetic_init(pot, kinetic)
+      CALL upf_radial_fields_evaluate(kinetic%pseudo, [2.0_dp, 0.0_dp, 0.0_dp], value)
+      CALL check(ABS(value(1) - 1.24_dp/SQRT(4.0_dp*pi)), 'Noncompact original PS endpoint retained')
+      DO point = 1, 4
+         SELECT CASE (point)
+         CASE (1)
+            position = 0.0_dp
+         CASE (2)
+            position = [0.4_dp, 0.0_dp, 0.0_dp]
+         CASE (3)
+            position = [0.3_dp, -0.2_dp, 0.7_dp]
+         CASE (4)
+            position = [1.45_dp, 0.0_dp, 0.0_dp]
+         END SELECT
+         CALL upf_inverse_kinetic_evaluate(kinetic, position, kernel, gradient)
+         CALL upf_radial_fields_evaluate(kinetic%pseudo, position, value, p)
+         CALL upf_radial_fields_evaluate(kinetic%delta, position, value, d)
+         DO j = 1, n
+            DO i = 1, n
+               delta = 0.5_dp*(DOT_PRODUCT(p(:, i) + d(:, i), p(:, j) + d(:, j)) - DOT_PRODUCT(p(:, i), p(:, j)))
+               CALL check(ABS(kernel(i, j) - delta), 'Original AE minus PS kinetic products')
+            END DO
+         END DO
+         DO axis = 1, 3
+            DO side = 1, 2
+               position(axis) = position(axis) + REAL(2*side - 3, dp)*step
+               CALL upf_inverse_kinetic_evaluate(kinetic, position, samples(:, :, side))
+               position(axis) = position(axis) - REAL(2*side - 3, dp)*step
+            END DO
+            CALL check(MAXVAL(ABS((samples(:, :, 2) - samples(:, :, 1))/(2.0_dp*step) - gradient(:, :, axis))), &
+                       'Independent kinetic augmentation Cartesian derivative', 3.e-8_dp)
+         END DO
+         CALL upf_inverse_density_evaluate(kinetic, position, kernel, gradient, hessian)
+         CALL upf_radial_fields_evaluate(kinetic%pseudo, position, soft_value)
+         CALL upf_radial_fields_evaluate(kinetic%delta, position, hard_value)
+         hard_value = hard_value + soft_value
+         DO j = 1, n
+            DO i = 1, n
+               CALL check(ABS(kernel(i, j) - hard_value(i)*hard_value(j) + soft_value(i)*soft_value(j)), &
+                          'Hard minus soft density product kernel')
+            END DO
+         END DO
+         DO axis = 1, 3
+            DO side = 1, 2
+               shifted = position
+               shifted(axis) = shifted(axis) + REAL(2*side - 3, dp)*step
+               CALL upf_inverse_density_evaluate(kinetic, shifted, samples(:, :, side), gradient_samples(:, :, :, side))
+            END DO
+            CALL check(MAXVAL(ABS((samples(:, :, 2) - samples(:, :, 1))/(2.0_dp*step) - gradient(:, :, axis))), &
+                       'Hard minus soft density kernel Cartesian derivative', 3.e-8_dp)
+            CALL check(MAXVAL(ABS((gradient_samples(:, :, :, 2) - gradient_samples(:, :, :, 1))/(2.0_dp*step) - &
+                                  hessian(:, :, :, axis))), 'Hard minus soft density kernel Cartesian Hessian', 3.e-8_dp)
+         END DO
+         CALL upf_inverse_density_evaluate(kinetic, position, samples(:, :, 1), hessian=hessian)
+         CALL check(MAXVAL(ABS(samples(:, :, 1) - kernel)), 'Density kernel with Hessian only')
+      END DO
+      CALL upf_inverse_density_evaluate(kinetic, [4.0_dp, 0.0_dp, 0.0_dp], kernel, gradient, hessian)
+      CALL check(MAXVAL(ABS(kernel)) + MAXVAL(ABS(gradient)) + MAXVAL(ABS(hessian)), &
+                 'Compact density difference outside PS table', 0.0_dp)
+      CALL upf_inverse_kinetic_evaluate(kinetic, [4.0_dp, 0.0_dp, 0.0_dp], kernel, gradient)
+      CALL check(MAXVAL(ABS(kernel)) + MAXVAL(ABS(gradient)), 'Compact kinetic difference outside PS table', 0.0_dp)
+      ALLOCATE (frame%coefficients(n, 2), frame%positions(3, 1), &
+                frame%center_atoms(1), frame%projector_first(1), frame%projector_last(1))
+      frame%center_atoms = 1
+      frame%projector_first = 1
+      frame%projector_last = n
+      frame%positions = 0.0_dp
+      DO j = 1, 2
+         DO i = 1, n
+            coefficients(i, j) = CMPLX(0.02_dp*REAL(i + j, dp), -0.01_dp*REAL(i - j, dp), dp)
+            dc(i, j) = CMPLX(0.003_dp*REAL(i + 2*j, dp), 0.002_dp*REAL(2*i - j, dp), dp)
+         END DO
+      END DO
+      frame%coefficients(:, :) = coefficients
+      ao = RESHAPE([CMPLX(1.0_dp, 0.0_dp, dp), CMPLX(0.02_dp, -0.03_dp, dp), &
+                    CMPLX(0.02_dp, 0.03_dp, dp), CMPLX(0.7_dp, 0.0_dp, dp)], [2, 2])
+      ao_direction = RESHAPE([CMPLX(0.01_dp, 0.0_dp, dp), CMPLX(-0.02_dp, 0.03_dp, dp), &
+                              CMPLX(-0.02_dp, -0.03_dp, dp), CMPLX(-0.04_dp, 0.0_dp, dp)], [2, 2])
+      points(:, 1) = [0.2_dp, -0.1_dp, 0.3_dp]
+      points(:, 2) = [0.5_dp, 0.2_dp, -0.4_dp]
+      points(:, 3) = [1.3_dp, 0.0_dp, 0.0_dp]
+      weights = [0.3_dp, 0.4_dp, 0.2_dp]
+      potential = [0.7_dp, -0.3_dp, 1.1_dp]
+      CALL qs_upf_inverse_kinetic_center(frame, kinetic, 1, points, ao, density)
+      CALL qs_upf_inverse_kinetic_integrate(frame, kinetic, 1, points, weights, potential, matrix)
+      CALL check(ABS(SUM(weights*potential*density) - REAL(SUM(ao*CONJG(matrix)), dp)), 'Inverse kinetic AO adjoint')
+      expected = REAL(SUM(ao_direction*CONJG(matrix)), dp)
+      DO side = 1, 2
+         delta = REAL(2*side - 3, dp)*step
+         CALL qs_upf_inverse_kinetic_center(frame, kinetic, 1, points, ao + delta*ao_direction, shifted)
+         energy_samples(side) = SUM(weights*potential*shifted)
+      END DO
+      CALL check(ABS((energy_samples(2) - energy_samples(1))/(2.0_dp*step) - expected), 'Inverse kinetic AO variation', 3.e-9_dp)
+      points_response = 0.02_dp - 0.01_dp*points
+      atoms_response(:, 1) = [0.01_dp, -0.02_dp, 0.03_dp]
+      CALL qs_upf_inverse_kinetic_center(frame, kinetic, 1, points, ao, density, response, &
+                                         points_response, atoms_response, dc)
+      DO side = 1, 2
+         delta = REAL(2*side - 3, dp)*step
+         frame%coefficients(:, :) = coefficients + delta*dc
+         frame%positions(:, :) = delta*atoms_response
+         CALL qs_upf_inverse_kinetic_center(frame, kinetic, 1, points + delta*points_response, ao, shifted)
+         energy_samples(side) = SUM(weights*potential*shifted)
+      END DO
+      CALL check(ABS((energy_samples(2) - energy_samples(1))/(2.0_dp*step) - SUM(weights*potential*response)), &
+                 'Inverse kinetic center point and coefficient response', 3.e-8_dp)
+      CALL qs_upf_inverse_kinetic_integrate(frame, kinetic, 1, points(:, :0), weights(:0), potential(:0), matrix)
+      CALL check(MAXVAL(ABS(matrix)), 'Empty kinetic point batch', 0.0_dp)
+      ALLOCATE (frame%center_kinds(1), frame%images(3, 3))
+      frame%center_kinds = 1
+      frame%images = 0
+      frame%images(1, :) = [-1, 0, 1]
+      frame%inverse%ready = .TRUE.
+      cell = 0.0_dp
+      DO axis = 1, 3
+         cell(axis, axis) = 0.9_dp
+      END DO
+      cell_response = RESHAPE([(0.001_dp*REAL(i, dp), i=1, 9)], [3, 3])
+      frame%cell = cell
+      frame%coefficients(:, :) = coefficients
+      frame%positions = 0.0_dp
+      kinetics(1) = kinetic
+      CALL qs_upf_inverse_kinetic_collocate(frame, kinetics, points, ao, density, response, &
+                                            points_response, atoms_response, cell_response, dc)
+      CALL qs_upf_inverse_kinetic_operator(frame, kinetics, points, weights, potential, matrix)
+      CALL check(ABS(SUM(weights*potential*density) - REAL(SUM(ao*CONJG(matrix)), dp)), 'Periodic kinetic AO adjoint')
+      reference = 0.0_dp
+      DO image = 1, 3
+         position = MATMUL(cell, REAL(frame%images(:, image), dp))
+         CALL qs_upf_inverse_kinetic_center(frame, kinetic, 1, points - SPREAD(position, 2, 3), ao, shifted)
+         reference = reference + shifted
+      END DO
+      CALL check(MAXVAL(ABS(density - reference)), 'Periodic kinetic home image sum')
+      DO side = 1, 2
+         delta = REAL(2*side - 3, dp)*step
+         frame%coefficients(:, :) = coefficients + delta*dc
+         frame%positions(:, :) = delta*atoms_response
+         frame%cell = cell + delta*cell_response
+         CALL qs_upf_inverse_kinetic_collocate(frame, kinetics, points + delta*points_response, ao, shifted)
+         energy_samples(side) = SUM(weights*potential*shifted)
+      END DO
+      CALL check(ABS((energy_samples(2) - energy_samples(1))/(2.0_dp*step) - SUM(weights*potential*response)), &
+                 'Periodic kinetic image cell and coefficient response', 3.e-8_dp)
+      frame%center_kinds = 2
+      CALL qs_upf_inverse_kinetic_collocate(frame, kinetics, points, ao, density)
+      CALL qs_upf_inverse_kinetic_operator(frame, kinetics, points, weights, potential, matrix)
+      CALL check(MAXVAL(ABS(density)) + MAXVAL(ABS(matrix)), 'Zero NC kinetic augmentation', 0.0_dp)
+      ! Independent compensation functions deliberately differ from the reference-wave products.
+      ALLOCATE (pot%beta(nr, 3), pot%dion(3, 3), pot%qijl(nr, 6, 0:4), augmentation%kinds(2))
+      pot%beta = 0.0_dp
+      pot%dion = 0.0_dp
+      pot%qijl = 0.0_dp
+      DO i = 1, nr
+         IF (pot%r(i) >= 1.75_dp) CYCLE
+         DO l = 0, 4
+            DO pair = 1, 6
+               pot%qijl(i, pair, l) = 0.01_dp*REAL(pair, dp)*pot%r(i)**(l + 2)*(1 - (pot%r(i)/1.75_dp)**2)**3
+            END DO
+         END DO
+      END DO
+      CALL upf_projector_init(pot, 2, projectors)
+      CALL uspp_augmentation_init(pot, projectors, augmentation%kinds(1))
+      CALL uspp_augmentation_prepare_realspace(pot, augmentation%kinds(1))
+      frame%center_kinds = 1
+      frame%coefficients(:, :) = coefficients
+      frame%positions = 0.0_dp
+      frame%cell = cell
+      vg = RESHAPE([(0.01_dp*REAL(i - 5, dp), i=1, 9)], [3, 3])
+      CALL qs_upf_inverse_paw_collocate(frame, kinetics, augmentation, points, ao, density, charge_gradient, &
+                                        response, charge_gradient_response, points_response, atoms_response, cell_response, dc)
+      CALL qs_upf_inverse_paw_operator(frame, kinetics, augmentation, points, weights, potential, vg, matrix)
+      CALL check(ABS(SUM(weights*(potential*density + SUM(vg*charge_gradient, DIM=2))) - REAL(SUM(ao*CONJG(matrix)), dp)), &
+                 'PAW reconstructed charge and gradient AO adjoint')
+      DO side = 1, 2
+         delta = REAL(2*side - 3, dp)*step
+         frame%coefficients(:, :) = coefficients + delta*dc
+         frame%positions(:, :) = delta*atoms_response
+         frame%cell = cell + delta*cell_response
+         CALL qs_upf_inverse_paw_collocate(frame, kinetics, augmentation, points + delta*points_response, ao, &
+                                           shifted, charge_gradient_samples(:, :, side))
+         energy_samples(side) = SUM(weights*(potential*shifted + SUM(vg*charge_gradient_samples(:, :, side), DIM=2)))
+      END DO
+      CALL check(MAXVAL(ABS((charge_gradient_samples(:, :, 2) - charge_gradient_samples(:, :, 1))/(2*step) - &
+                            charge_gradient_response)), 'PAW reconstructed density gradient geometry response', 3.e-8_dp)
+      CALL check(ABS((energy_samples(2) - energy_samples(1))/(2*step) - &
+                     SUM(weights*(potential*response + SUM(vg*charge_gradient_response, DIM=2)))), &
+                 'PAW reconstructed density periodic image and inverse response', 3.e-8_dp)
+      CALL qs_upf_inverse_paw_operator(frame, kinetics, augmentation, points(:, :0), weights(:0), potential(:0), vg(:0, :), matrix)
+      CALL check(MAXVAL(ABS(matrix)), 'Empty PAW reconstruction adjoint', 0.0_dp)
+      frame%center_kinds = 2
+      CALL qs_upf_inverse_paw_collocate(frame, kinetics, augmentation, points, ao, density, charge_gradient)
+      CALL qs_upf_inverse_paw_operator(frame, kinetics, augmentation, points, weights, potential, vg, matrix)
+      CALL check(MAXVAL(ABS(density)) + MAXVAL(ABS(charge_gradient)) + MAXVAL(ABS(matrix)), &
+                 'Inactive PAW kind has no reconstruction', 0.0_dp)
+   END SUBROUTINE check_kinetic_fields
+
 ! **************************************************************************************************
 !> \brief Native hard/soft and inverse angular legs with a deliberately nonidentity Gram matrix.
 ! **************************************************************************************************
@@ -122,14 +702,16 @@ CONTAINS
 !> \brief Periodic residual image sum against the shell theorem, both density legs and cell response.
 ! **************************************************************************************************
    SUBROUTINE check_periodic_coulomb()
-      COMPLEX(dp)                                        :: adjoint(3), background(3), db(3)
+      COMPLEX(dp)                                        :: adjoint(3), background(3), &
+                                                            cached_adjoint(3), db(3)
       INTEGER                                            :: a, b, i, ix, iy, iz, j, side
-      REAL(dp) :: cell(3, 3), dcell(3, 3), dg(3, 3), displacement(3), distance, dkw(3), dvolume, &
-         energy, exact, g(3, 3), kernel, kw(3), norm, qa(2), qb(2), response, samples(2), shift, &
-         trace, volume
+      REAL(dp) :: cached_energy, cached_response, cell(3, 3), dcell(3, 3), dg(3, 3), &
+         displacement(3), distance, dkw(3), dvolume, energy, exact, g(3, 3), kernel, kw(3), norm, &
+         qa(2), qb(2), response, samples(2), shift, trace, volume
       TYPE(upf_inverse_coulomb_center_type)              :: centers(2), changed(2), derivative(2)
+      TYPE(upf_inverse_coulomb_map_type), ALLOCATABLE    :: map
       TYPE(upf_inverse_coulomb_potential_type), &
-         ALLOCATABLE                                     :: potential(:)
+         ALLOCATABLE                                     :: cached_potential(:), potential(:)
 
       cell(:, 1) = [2.0_dp, 0.0_dp, 0.0_dp]
       cell(:, 2) = [0.25_dp, 1.9_dp, 0.0_dp]
@@ -202,6 +784,21 @@ CONTAINS
                                         response=response, center_response=derivative, cell_response=dcell, &
                                         gvecs_response=dg, volume_response=dvolume, background_response=db, &
                                         poisson_weights_response=dkw)
+      ALLOCATE (map)
+      CALL upf_inverse_coulomb_prepare(centers, cell, g, volume, map)
+      CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
+                                        cached_potential, cached_adjoint, map=map)
+      CALL check(ABS(cached_energy - energy), "Cached periodic Coulomb energy", 3.e-12_dp)
+      CALL check(MAXVAL(ABS(cached_adjoint - adjoint)), "Cached periodic Coulomb background adjoint", 3.e-12_dp)
+      DO a = 1, SIZE(centers)
+         CALL check(MAXVAL(ABS(cached_potential(a)%values - potential(a)%values)), &
+                    "Cached periodic Coulomb center adjoint", 3.e-12_dp)
+      END DO
+      CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
+                                        cached_potential, cached_adjoint, response=cached_response, &
+                                        center_response=derivative, cell_response=dcell, gvecs_response=dg, &
+                                        volume_response=dvolume, background_response=db, poisson_weights_response=dkw, map=map)
+      CALL check(ABS(cached_response - response), "Cached periodic Coulomb joint response", 3.e-12_dp)
       trace = REAL(SUM(CONJG(background)*adjoint), dp)
       DO a = 1, 2
          trace = trace + SUM(SPREAD(centers(a)%weights, 2, 1)*centers(a)%density*potential(a)%values)
@@ -211,6 +808,19 @@ CONTAINS
       DO a = 1, 2
          trace = trace + SUM(SPREAD(centers(a)%weights, 2, 1)*derivative(a)%density*potential(a)%values)
       END DO
+      changed = derivative
+      DO a = 1, SIZE(changed)
+         changed(a)%position = 0.0_dp
+         changed(a)%radii = 0.0_dp
+         changed(a)%weights = 0.0_dp
+         changed(a)%shapes = 0.0_dp
+      END DO
+      CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
+                                        cached_potential, cached_adjoint, response=cached_response, &
+                                        center_response=changed, cell_response=0.0_dp*dcell, gvecs_response=0.0_dp*dg, &
+                                        volume_response=0.0_dp, background_response=db, poisson_weights_response=0.0_dp*dkw, &
+                                        map=map)
+      CALL check(ABS(cached_response - trace), "Cached fixed-shell density response", 3.e-12_dp)
       DO side = 1, 2
          shift = REAL(2*side - 3, dp)*step
          changed = centers
@@ -219,6 +829,9 @@ CONTAINS
          END DO
          CALL upf_inverse_coulomb_periodic(changed, cell, g, volume, background + shift*db, kw, &
                                            samples(side), potential, adjoint)
+         CALL upf_inverse_coulomb_periodic(changed, cell, g, volume, background + shift*db, kw, &
+                                           cached_energy, cached_potential, cached_adjoint, map=map)
+         CALL check(ABS(cached_energy - samples(side)), "Cached periodic Coulomb density update", 3.e-12_dp)
       END DO
       CALL check(ABS((samples(2) - samples(1))/(2.0_dp*step) - trace), "Periodic Coulomb density variation", 3.e-10_dp)
       DO side = 1, 2
@@ -318,11 +931,13 @@ CONTAINS
                                                             position(3), shift
       TYPE(atom_upfpot_type)                             :: pot
 
-      ALLOCATE (pot%r(5), pot%rab(5), pot%rho_nlcc(5))
+      ALLOCATE (pot%r(5), pot%rab(5), pot%rho_nlcc(5), pot%tau_nlcc(5))
       pot%r(:) = [0.0_dp, 0.5_dp, 1.0_dp, 1.5_dp, 2.0_dp]
       pot%rab = 0.5_dp
       pot%rho_nlcc(:) = [1.0_dp, 0.8_dp, 0.5_dp, 0.2_dp, 0.1_dp]
       pot%core_correction = .TRUE.
+      pot%tau_nlcc(:) = [0.2_dp, 0.5_dp, 0.8_dp, 0.3_dp, 0.05_dp]
+      pot%tau_nlcc_convention = 'HARTREE_PER_VOLUME'
       g(:, 1) = 0.0_dp
       g(:, 2) = [0.3_dp, -0.2_dp, 0.4_dp]
       g(:, 3) = -g(:, 2)
@@ -340,6 +955,16 @@ CONTAINS
                                3.0_dp*(1.0_dp + 0.01_dp*shift), samples(:, side))
       END DO
       CALL check(MAXVAL(ABS((samples(:, 2) - samples(:, 1))/(2.0_dp*step) - response)), "Original core joint response", 2.e-9_dp)
+      CALL upf_core_kinetic_fourier(pot, g, position, 3.0_dp, rho, dr, dg)
+      CALL check(ABS(3.0_dp*rho(1) - 4.0_dp*pi/6.0_dp* &
+                     SUM([1.0_dp, 4.0_dp, 2.0_dp, 4.0_dp, 1.0_dp]*pot%r**2*pot%tau_nlcc)), "Core tau zero mode", 1.e-12_dp)
+      response = SUM(dr*SPREAD(delta_r, 2, 3), DIM=1) + SUM(dg*delta_g, DIM=1) - 0.01_dp*rho
+      DO side = 1, 2
+         shift = REAL(2*side - 3, dp)*step
+         CALL upf_core_kinetic_fourier(pot, g + shift*delta_g, position + shift*delta_r, &
+                                       3.0_dp*(1.0_dp + 0.01_dp*shift), samples(:, side))
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, 2) - samples(:, 1))/(2.0_dp*step) - response)), "Core tau joint response", 2.e-9_dp)
       pot%core_correction = .FALSE.
       CALL upf_core_fourier(pot, g, position, 3.0_dp, rho, dr, dg)
       CALL check(MAXVAL(ABS(rho)) + MAXVAL(ABS(dr)) + MAXVAL(ABS(dg)), "Absent partial core", 0.0_dp)

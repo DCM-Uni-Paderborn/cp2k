@@ -10,12 +10,13 @@ MODULE upf_core
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
    USE upf_types,                       ONLY: atom_upfpot_type,&
+                                              upf_nlcc_kinetic,&
                                               upf_radial_weights
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
-   PUBLIC :: upf_core_fourier
+   PUBLIC :: upf_core_fourier, upf_core_kinetic_fourier
 
 CONTAINS
 
@@ -37,6 +38,64 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: density(:)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: dposition(:, :), dg(:, :)
 
+      density = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(dposition)) dposition = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(dg)) dg = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (.NOT. pot%core_correction) RETURN
+      CPASSERT(ALLOCATED(pot%rho_nlcc))
+      CALL core_field_fourier(pot, pot%rho_nlcc, gvecs, position, volume, density, dposition, dg)
+   END SUBROUTINE upf_core_fourier
+
+! **************************************************************************************************
+!> \brief Fourier image and derivatives of the independently supplied canonical core tau.
+!> \param pot Original scalar UPF dataset with an explicit core tau convention.
+!> \param gvecs Native reciprocal vectors in Cartesian inverse bohr.
+!> \param position Physical atom position in bohr.
+!> \param volume Physical cell volume in cubic bohr.
+!> \param kinetic Fourier kinetic-density coefficients, including 1/volume.
+!> \param dposition Optional Cartesian center derivatives, axis first.
+!> \param dg Optional reciprocal-vector derivatives at fixed center and volume, axis first.
+!> \param core_kinetic Optional independently prepared core tau on the original mesh, for PAW PS cores.
+! **************************************************************************************************
+   SUBROUTINE upf_core_kinetic_fourier(pot, gvecs, position, volume, kinetic, dposition, dg, core_kinetic)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
+      COMPLEX(dp), INTENT(OUT)                           :: kinetic(:)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: dposition(:, :), dg(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: core_kinetic(:)
+
+      CHARACTER(LEN=256)                                 :: reason
+      LOGICAL                                            :: available
+      REAL(dp), ALLOCATABLE                              :: field(:)
+
+      IF (PRESENT(core_kinetic)) THEN
+         CPASSERT(SIZE(core_kinetic) == SIZE(pot%r))
+         CALL core_field_fourier(pot, core_kinetic, gvecs, position, volume, kinetic, dposition, dg)
+      ELSE
+         CALL upf_nlcc_kinetic(pot, field, available, reason)
+         IF (.NOT. available) CPABORT(TRIM(reason))
+         CALL core_field_fourier(pot, field, gvecs, position, volume, kinetic, dposition, dg)
+      END IF
+   END SUBROUTINE upf_core_kinetic_fourier
+
+! **************************************************************************************************
+!> \brief Shared radial transform for independently specified spherical core fields.
+!> \param pot Original radial mesh and quadrature.
+!> \param field True spherical field without a radial prefactor.
+!> \param gvecs ...
+!> \param position ...
+!> \param volume ...
+!> \param density ...
+!> \param dposition ...
+!> \param dg ...
+! **************************************************************************************************
+   SUBROUTINE core_field_fourier(pot, field, gvecs, position, volume, density, dposition, dg)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      REAL(dp), INTENT(IN)                               :: field(:), gvecs(:, :), position(3), &
+                                                            volume
+      COMPLEX(dp), INTENT(OUT)                           :: density(:)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: dposition(:, :), dg(:, :)
+
       COMPLEX(dp)                                        :: phase
       INTEGER                                            :: ig, nr
       REAL(dp)                                           :: norm_g, radial, slope
@@ -53,12 +112,10 @@ CONTAINS
       density = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (PRESENT(dposition)) dposition = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (PRESENT(dg)) dg = CMPLX(0.0_dp, 0.0_dp, dp)
-      IF (.NOT. pot%core_correction) RETURN
-      CPASSERT(ALLOCATED(pot%rho_nlcc))
       nr = SIZE(pot%r)
-      CPASSERT(SIZE(pot%rho_nlcc) == nr)
+      CPASSERT(SIZE(field) == nr)
       ALLOCATE (weighted(nr))
-      weighted(:) = fourpi*upf_radial_weights(pot)*pot%r**2*pot%rho_nlcc
+      weighted(:) = fourpi*upf_radial_weights(pot)*pot%r**2*field
       ! Form weights before omitting an exact zero suffix.
       DO WHILE (nr > 0)
          IF (weighted(nr) /= 0.0_dp) EXIT
@@ -79,6 +136,6 @@ CONTAINS
             END IF
          END IF
       END DO
-   END SUBROUTINE upf_core_fourier
+   END SUBROUTINE core_field_fourier
 
 END MODULE upf_core

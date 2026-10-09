@@ -299,20 +299,21 @@ CONTAINS
 !>        The adjoint for real potentials is the Hermitian part of the semilocal pair operator.
 !> \param left Local difference-wave or Gaussian row block.
 !> \param right Matching full environmental row block, in the same AO order.
-!> \param left_gradient Physical Cartesian Bloch gradients, axis last.
-!> \param right_gradient ...
+!> \param left_gradient Optional Cartesian Bloch gradients, required for gradient or tau output.
+!> \param right_gradient Matching optional gradients, axis last.
 !> \param ao_density Hermitian occupation density in the reconstructed variables.
 !> \param density Real signed cross density.
-!> \param gradient Its Cartesian gradient.
-!> \param tau Real kinetic cross density with factor one half.
+!> \param gradient Optional Cartesian density gradient.
+!> \param tau Optional real kinetic cross density with factor one half.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_cross_density(left, right, left_gradient, right_gradient, &
                                         ao_density, density, gradient, tau)
-      COMPLEX(dp), INTENT(IN)                            :: left(:, :), right(:, :), &
-                                                            left_gradient(:, :, :), &
-                                                            right_gradient(:, :, :), &
-                                                            ao_density(:, :)
-      REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :), tau(:)
+      COMPLEX(dp), INTENT(IN)                            :: left(:, :), right(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: left_gradient(:, :, :), &
+                                                            right_gradient(:, :, :)
+      COMPLEX(dp), INTENT(IN)                            :: ao_density(:, :)
+      REAL(dp), INTENT(OUT)                              :: density(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :), tau(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), work(:, :)
       INTEGER                                            :: axis, n, npoint
@@ -320,21 +321,33 @@ CONTAINS
       n = SIZE(right, 2)
       npoint = SIZE(right, 1)
       CPASSERT(ALL(SHAPE(left) == SHAPE(right)))
-      CPASSERT(ALL(SHAPE(right_gradient) == [npoint, n, 3]))
-      CPASSERT(ALL(SHAPE(left_gradient) == SHAPE(right_gradient)))
       CPASSERT(ALL(SHAPE(ao_density) == [n, n]))
-      CPASSERT(SIZE(density) == npoint .AND. SIZE(tau) == npoint)
-      CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
+      CPASSERT(SIZE(density) == npoint)
+      IF (PRESENT(gradient) .OR. PRESENT(tau)) THEN
+         CPASSERT(PRESENT(left_gradient) .AND. PRESENT(right_gradient))
+         CPASSERT(ALL(SHAPE(right_gradient) == [npoint, n, 3]))
+         CPASSERT(ALL(SHAPE(left_gradient) == SHAPE(right_gradient)))
+      END IF
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
+      END IF
+      IF (PRESENT(tau)) THEN
+         CPASSERT(SIZE(tau) == npoint)
+      END IF
       CALL check_density(ao_density)
-      ALLOCATE (work(npoint, n), derivative(npoint, n))
+      ALLOCATE (work(npoint, n))
       work(:, :) = MATMUL(right, ao_density)
       density = REAL(SUM(CONJG(left)*work, DIM=2), dp)
-      tau = 0.0_dp
+      IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(tau)) RETURN
+      ALLOCATE (derivative(npoint, n))
+      IF (PRESENT(tau)) tau = 0.0_dp
       DO axis = 1, 3
          derivative(:, :) = MATMUL(right_gradient(:, :, axis), ao_density)
-         gradient(:, axis) = REAL(SUM(CONJG(left_gradient(:, :, axis))*work + &
-                                      CONJG(left)*derivative, DIM=2), dp)
-         tau = tau + 0.5_dp*REAL(SUM(CONJG(left_gradient(:, :, axis))*derivative, DIM=2), dp)
+         IF (PRESENT(gradient)) THEN
+            gradient(:, axis) = REAL(SUM(CONJG(left_gradient(:, :, axis))*work + &
+                                         CONJG(left)*derivative, DIM=2), dp)
+         END IF
+         IF (PRESENT(tau)) tau = tau + 0.5_dp*REAL(SUM(CONJG(left_gradient(:, :, axis))*derivative, DIM=2), dp)
       END DO
    END SUBROUTINE upf_inverse_cross_density
 

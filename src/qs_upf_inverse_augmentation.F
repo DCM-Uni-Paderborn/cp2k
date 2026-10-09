@@ -64,13 +64,14 @@ CONTAINS
       REAL(dp)                                           :: metric_difference
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
-      CPASSERT(frame%inverse%ready)
+      CPASSERT(frame%atom_local .OR. frame%inverse%ready)
       CALL get_ks_env(ks_env, qs_kind_set=kinds)
       CPASSERT(ASSOCIATED(kinds))
       ALLOCATE (augmentation%kinds(SIZE(kinds)))
       DO center = 1, SIZE(frame%center_atoms)
          ikind = frame%center_kinds(center)
-         IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) CYCLE
+         IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft .AND. &
+             .NOT. kinds(ikind)%sgp_potential%upf_data%is_paw) CYCLE
          IF (augmentation%kinds(ikind)%nproj /= 0) CYCLE
          CALL uspp_augmentation_init(kinds(ikind)%sgp_potential%upf_data, &
                                      kinds(ikind)%sgp_potential%upf_projectors, augmentation%kinds(ikind))
@@ -105,8 +106,8 @@ CONTAINS
       REAL(dp)                                           :: hermiticity, position(3), tolerance
       REAL(dp), ALLOCATABLE                              :: displacements(:, :), g(:, :)
 
-      CPASSERT(frame%inverse%ready)
-      n = frame%inverse%nproj
+      CPASSERT(frame%atom_local .OR. frame%inverse%ready)
+      n = SIZE(frame%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_density) == [n, n]))
       IF (PRESENT(points)) THEN
          CPASSERT(ALL(SHAPE(points) == [3, SIZE(density)]))
@@ -224,7 +225,7 @@ CONTAINS
       TYPE(pw_r3d_rs_type)                               :: work_r
 
       CALL check_fourier_grid(frame, density%pw_grid)
-      CPASSERT(ALL(SHAPE(projector_density) == frame%inverse%nproj))
+      CPASSERT(ALL(SHAPE(projector_density) == SIZE(frame%coefficients, 1)))
       tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(projector_density)))
       hermiticity = MAXVAL(ABS(projector_density - CONJG(TRANSPOSE(projector_density))))
       CPASSERT(hermiticity <= tolerance)
@@ -283,7 +284,7 @@ CONTAINS
       TYPE(pw_c1d_gs_type)                               :: potential_g
 
       CALL check_fourier_grid(frame, vdensity%pw_grid)
-      CPASSERT(ALL(SHAPE(projector_operator) == frame%inverse%nproj))
+      CPASSERT(ALL(SHAPE(projector_operator) == SIZE(frame%coefficients, 1)))
       CALL potential_g%create(vdensity%pw_grid)
       CALL fourier_potential(vdensity, vgradient, potential_g)
       ALLOCATE (multiplicity(SIZE(potential_g%array)))
@@ -347,7 +348,7 @@ CONTAINS
 
       CALL check_fourier_grid(frame, vdensity%pw_grid)
       CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
-      CPASSERT(ALL(SHAPE(response) == frame%inverse%nproj))
+      CPASSERT(ALL(SHAPE(response) == SIZE(frame%coefficients, 1)))
       CPASSERT(ASSOCIATED(vdensity_response%pw_grid, vdensity%pw_grid))
       cell_inverse = frame%cell
       CALL invmat(cell_inverse, info)
@@ -456,7 +457,8 @@ CONTAINS
       INTEGER                                            :: axis
       REAL(dp)                                           :: difference, tolerance
 
-      CPASSERT(frame%inverse%ready .AND. ASSOCIATED(grid))
+      CPASSERT(frame%atom_local .OR. frame%inverse%ready)
+      CPASSERT(ASSOCIATED(grid))
       CPASSERT(ASSOCIATED(grid%g) .AND. grid%vol > 0.0_dp)
       CPASSERT(SIZE(frame%weights) == grid%ngpts_local)
       CPASSERT(ALL(frame%weights == grid%dvol))
@@ -583,14 +585,14 @@ CONTAINS
       COMPLEX(dp), INTENT(IN)                            :: projector_operator(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: points(:, :)
 
-      CPASSERT(frame%inverse%ready)
+      CPASSERT(frame%atom_local .OR. frame%inverse%ready)
       IF (PRESENT(points)) THEN
          CPASSERT(ALL(SHAPE(points) == [3, SIZE(vdensity)]))
       ELSE
          CPASSERT(SIZE(vdensity) == SIZE(frame%weights))
       END IF
       CPASSERT(ALL(SHAPE(vgradient) == [SIZE(vdensity), 3]))
-      CPASSERT(ALL(SHAPE(projector_operator) == frame%inverse%nproj))
+      CPASSERT(ALL(SHAPE(projector_operator) == SIZE(frame%coefficients, 1)))
    END SUBROUTINE check_operator
 
 ! **************************************************************************************************

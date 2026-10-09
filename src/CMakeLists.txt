@@ -63,6 +63,10 @@ list(
   atoms_input.F
   atom_types.F
   pseudopotentials/upf_types.F
+  pseudopotentials/paw_core_kinetic.F
+  pseudopotentials/paw_types.F
+  pseudopotentials/paw_onecenter.F
+  pseudopotentials/paw_xc.F
   aobasis/gaussian_basis_fields.F
   aobasis/gaussian_coulomb_fields.F
   pseudopotentials/upf_inverse.F
@@ -79,10 +83,13 @@ list(
   qs_upf_inverse_gaussian.F
   qs_upf_inverse_gaussian_pairs.F
   qs_upf_inverse_background.F
+  qs_upf_inverse_coulomb.F
   qs_upf_inverse_forces.F
   qs_upf_inverse_grid.F
+  qs_upf_inverse_hfx.F
   qs_upf_inverse_kpoints.F
   qs_upf_inverse_core.F
+  qs_upf_inverse_paw.F
   qs_upf_inverse_scf.F
   qs_upf_inverse_scf_xc.F
   qs_upf_inverse_types.F

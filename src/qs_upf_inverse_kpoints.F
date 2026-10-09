@@ -31,6 +31,7 @@ MODULE qs_upf_inverse_kpoints
                                               qs_upf_inverse_grid_metric_dense,&
                                               qs_upf_inverse_grid_prepare
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_kpoints_type
+   USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -52,13 +53,16 @@ CONTAINS
 !> \param images Fixed physical-cell images of the Gaussian and original radial fields.
 !> \param frame New bridge; the native environment is unchanged.
 !> \param info Factorization status; nonzero releases the partially prepared bridge.
+!> \param atom_local Optional one-center reconstruction for every native Bloch vector.
+!> \param direct Use original projectors and soft orbitals without reconstruction.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_prepare(ks_env, grid, images, frame, info)
+   SUBROUTINE qs_upf_inverse_kpoints_prepare(ks_env, grid, images, frame, info, atom_local, direct)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(OUT)     :: frame
       INTEGER, INTENT(OUT)                               :: info
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
 
       INTEGER                                            :: ik
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -80,7 +84,7 @@ CONTAINS
       frame%weights(:) = kpoints%wkp
       ALLOCATE (frame%frames(kpoints%nkp))
       DO ik = 1, kpoints%nkp
-         CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, frame%reduced_k(:, ik), frame%frames(ik), info)
+         CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, frame%reduced_k(:, ik), frame%frames(ik), info, atom_local, direct)
          IF (info /= 0) THEN
             CALL qs_upf_inverse_kpoints_release(frame)
             RETURN
@@ -169,17 +173,20 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Sum native k-point densities with their mesh weights exactly once.
 !>        Original Fourier Q is shared and periodic; Bloch dependence remains in W(k).
-!>        Tau here is smooth only and does not establish general meta-GGA support.
+!>        Independent original-wave kernels are required to augment the smooth kinetic density.
 !> \param frame ...
 !> \param spin ...
 !> \param density Overwritten native total spin density.
 !> \param gradient Overwritten physical Cartesian gradient.
 !> \param tau Overwritten smooth kinetic density.
+!> \param kinetic Optional independent original-wave valence kinetic kernels, indexed by kind.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_collocate(frame, spin, density, gradient, tau)
+   SUBROUTINE qs_upf_inverse_kpoints_collocate(frame, spin, density, gradient, tau, kinetic)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(INOUT)   :: frame
       INTEGER, INTENT(IN)                                :: spin
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: matrices(:, :, :)
       INTEGER                                            :: axis, ik
@@ -197,7 +204,7 @@ CONTAINS
       DO ik = 1, SIZE(frame%weights)
          matrices(:, :, ik) = frame%weights(ik)*matrices(:, :, ik)
          CALL qs_upf_inverse_grid_collocate_dense(frame%frames(ik), matrices(:, :, ik), part, dpart, tpart, &
-                                                  augmentation=frame%augmentation, fourier_charge=.TRUE.)
+                                                  augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic)
          density%array = density%array + part%array
          tau%array = tau%array + tpart%array
          DO axis = 1, 3
@@ -219,12 +226,15 @@ CONTAINS
 !> \param vtau Potential conjugate to smooth tau only.
 !> \param operators New owned CFM array, indexed by local k; release after use.
 !> \param dense Optional replicated operators indexed by global k, without mesh weights.
+!> \param kinetic Optional independent valence kinetic kernels; omitted for the bare soft kinetic operator.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_integrate(frame, vdensity, vgradient, vtau, operators, dense)
+   SUBROUTINE qs_upf_inverse_kpoints_integrate(frame, vdensity, vgradient, vtau, operators, dense, kinetic)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(INOUT)   :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       TYPE(cp_cfm_type), ALLOCATABLE, INTENT(OUT)        :: operators(:)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: dense(:, :, :)
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: all_k(:, :, :), matrix(:, :)
       INTEGER                                            :: ik
@@ -233,7 +243,7 @@ CONTAINS
       ALLOCATE (all_k(frame%nao, frame%nao, SIZE(frame%weights)))
       DO ik = 1, SIZE(frame%weights)
          CALL qs_upf_inverse_grid_integrate_dense(frame%frames(ik), vdensity, vgradient, vtau, matrix, &
-                                                  augmentation=frame%augmentation, fourier_charge=.TRUE.)
+                                                  augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic)
          all_k(:, :, ik) = matrix
       END DO
       CALL qs_upf_inverse_kpoints_distribute(frame, all_k, operators)

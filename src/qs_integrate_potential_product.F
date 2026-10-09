@@ -562,6 +562,8 @@ CONTAINS
 !> \param basis_type ...
 !> \param pw_env_external ...
 !> \param task_list_external ...
+!> \param force_response Optional local atomic energy gradients, returned instead of updating native rho_elec.
+!> \param virial_response Optional local grid virial, returned instead of updating the native virial owner.
 !> \par History
 !>      IAB (29-Apr-2010): Added OpenMP parallelisation to task loop
 !>                         (c) The Numerical Algorithms Group (NAG) Ltd, 2010 on behalf of the HECToR project
@@ -581,7 +583,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE integrate_v_rspace(v_rspace, hmat, hmat_kp, pmat, pmat_kp, &
                                  qs_env, calculate_forces, force_adm, &
-                                 compute_tau, gapw, basis_type, pw_env_external, task_list_external)
+                                 compute_tau, gapw, basis_type, pw_env_external, task_list_external, &
+                                 force_response, virial_response)
 
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: v_rspace
       TYPE(dbcsr_p_type), INTENT(INOUT), OPTIONAL        :: hmat
@@ -597,6 +600,8 @@ CONTAINS
       CHARACTER(len=*), INTENT(IN), OPTIONAL             :: basis_type
       TYPE(pw_env_type), OPTIONAL, POINTER               :: pw_env_external
       TYPE(task_list_type), OPTIONAL, POINTER            :: task_list_external
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: force_response(:, :), &
+                                                            virial_response(3, 3)
 
       CHARACTER(len=*), PARAMETER :: routineN = 'integrate_v_rspace'
 
@@ -626,6 +631,9 @@ CONTAINS
       TYPE(virial_type), POINTER                         :: virial
 
       CALL timeset(routineN, handle)
+      IF (PRESENT(force_response) .OR. PRESENT(virial_response)) THEN
+         CPASSERT(calculate_forces)
+      END IF
 
       ! we test here if the provided operator matrices are consistent
       CPASSERT(PRESENT(hmat) .OR. PRESENT(hmat_kp))
@@ -706,7 +714,8 @@ CONTAINS
          CPASSERT(do_kp)
       END IF
       nkind = SIZE(qs_kind_set)
-      calculate_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer) .AND. calculate_forces
+      calculate_virial = ((virial%pv_availability .AND. (.NOT. virial%pv_numer)) .OR. &
+                          PRESENT(virial_response)) .AND. calculate_forces
       pab_required = (PRESENT(pmat) .OR. PRESENT(pmat_kp)) .AND. calculate_forces
 
       CALL get_qs_kind_set(qs_kind_set=qs_kind_set, &
@@ -754,7 +763,10 @@ CONTAINS
                                     forces=forces_array, &
                                     virial=virial_matrix)
 
-      IF (calculate_forces) THEN
+      IF (PRESENT(force_response)) THEN
+         CPASSERT(ALL(SHAPE(force_response) == [3, natoms]))
+         force_response(:, :) = admm_scal_fac*forces_array
+      ELSE IF (calculate_forces) THEN
          CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
 !$OMP PARALLEL DO DEFAULT(NONE)  PRIVATE(atom_a, ikind) &
 !$OMP             SHARED(natoms, force, forces_array, atom_of_kind, kind_of, admm_scal_fac)
@@ -767,7 +779,9 @@ CONTAINS
          DEALLOCATE (atom_of_kind, kind_of)
       END IF
 
-      IF (calculate_virial) THEN
+      IF (PRESENT(virial_response)) THEN
+         virial_response(:, :) = admm_scal_fac*virial_matrix
+      ELSE IF (calculate_virial) THEN
          virial%pv_virial = virial%pv_virial + admm_scal_fac*virial_matrix
       END IF
 

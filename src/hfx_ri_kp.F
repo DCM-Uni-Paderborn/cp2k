@@ -88,6 +88,8 @@ MODULE hfx_ri_kp
    USE qs_integral_utils,               ONLY: basis_set_list_setup
    USE qs_interactions,                 ONLY: init_interaction_radii_orb_basis
    USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_neighbor_list_types,          ONLY: get_iterator_info,&
                                               neighbor_list_iterate,&
                                               neighbor_list_iterator_create,&
@@ -109,6 +111,9 @@ MODULE hfx_ri_kp
                                               distribution_3d_type,&
                                               neighbor_list_3c_iterator_type,&
                                               neighbor_list_3c_type
+   USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_lattice_gradient
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type,&
+                                              qs_upf_inverse_type
    USE util,                            ONLY: get_limit
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -879,7 +884,7 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: iapc_pairs
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)           :: force_pattern, sparsity_pattern
       INTEGER, DIMENSION(2, 1)                           :: bounds_iat, bounds_jat
-      LOGICAL                                            :: use_virial_prv
+      LOGICAL                                            :: inverse_transition, use_virial_prv
       REAL(dp)                                           :: fac, occ, pref, t1, t2
       REAL(dp), DIMENSION(3, 3)                          :: work_virial
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -889,6 +894,7 @@ CONTAINS
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:, :)     :: mat_der_pot, mat_der_pot_sub
       TYPE(dbcsr_type), POINTER                          :: dbcsr_template
       TYPE(dbt_type)                                     :: t_2c_R, t_2c_R_split
+      TYPE(dbt_type), ALLOCATABLE                        :: inverse_covectors(:)
       TYPE(dbt_type), ALLOCATABLE, DIMENSION(:)          :: t_2c_bint, t_2c_binv, t_2c_der_pot, &
                                                             t_2c_inv, t_2c_metric, t_2c_work, &
                                                             t_3c_der_stack, t_3c_work_2, &
@@ -899,6 +905,8 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env, para_env_sub
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: hfx_section
       TYPE(virial_type), POINTER                         :: virial
 
@@ -917,7 +925,10 @@ CONTAINS
       END IF
 
       CALL get_qs_env(qs_env, natom=natom, para_env=para_env, force=force, cell=cell, virial=virial, &
-                      atomic_kind_set=atomic_kind_set, particle_set=particle_set)
+                      atomic_kind_set=atomic_kind_set, particle_set=particle_set, ks_env=ks_env)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      inverse_transition = .FALSE.
+      IF (ASSOCIATED(inverse)) inverse_transition = inverse%enabled
       CALL get_atomic_kind_set(atomic_kind_set, kind_of=kind_of, atom_of_kind=atom_of_kind)
 
       ALLOCATE (idx_to_at_AO(SIZE(ri_data%bsizes_AO_split)))
@@ -992,6 +1003,12 @@ CONTAINS
       CALL get_subgroup_3c_derivs(t_3c_work_2, t_3c_work_3, t_3c_der_AO, t_3c_der_AO_sub, &
                                   t_3c_der_RI, t_3c_der_RI_sub, t_3c_apc, t_3c_apc_sub, t_3c_der_stack, &
                                   group_size, ngroups, para_env, para_env_sub, ri_data)
+      IF (inverse_transition) THEN
+         ALLOCATE (inverse_covectors(nimg))
+         DO i_img = 1, nimg
+            CALL dbt_create(t_3c_der_RI_sub(1, 1), inverse_covectors(i_img))
+         END DO
+      END IF
 
       !Set up batched contraction (go atom by atom)
       ALLOCATE (batch_ranges_at(natom + 1))
@@ -1123,6 +1140,13 @@ CONTAINS
 
                         !Contract with the 3c derivatives to get the force/virial
                         CALL dbt_copy(t_3c_work_3(2), t_3c_work_3(4), move_data=.TRUE.)
+                        IF (inverse_transition) THEN
+                           ! Retain the full derivative before the ordinary Gaussian trace
+                           ! selects its stored derivative blocks. Images here are physical,
+                           ! while the stack follows the current RI image permutation.
+                           CALL add_inverse_lattice_covector(inverse_covectors, t_3c_work_3(4), i_images, &
+                                                             batch_ranges_nze(i_batch), 2.0_dp*pref)
+                        END IF
                         IF (use_virial_prv) THEN
                            CALL get_force_from_3c_trace(force, t_3c_work_3(4), t_3c_der_stack(1:3), &
                                                         t_3c_der_stack(4:6), atom_of_kind, kind_of, &
@@ -1387,6 +1411,16 @@ CONTAINS
       CALL dbt_batched_contract_finalize(t_3c_work_2(1))
       CALL dbt_batched_contract_finalize(t_3c_work_2(2))
 
+      IF (inverse_transition) THEN
+         DO i_img = 1, nimg
+            CALL dbt_finalize(inverse_covectors(i_img))
+         END DO
+         CALL inverse_lattice_forces(qs_env, ri_data, inverse_covectors, para_env_sub, use_virial_prv)
+         DO i_img = 1, nimg
+            CALL dbt_destroy(inverse_covectors(i_img))
+         END DO
+      END IF
+
       IF (use_virial_prv) THEN
          DO k_xyz = 1, 3
             DO j_xyz = 1, 3
@@ -1462,6 +1496,126 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE hfx_ri_update_forces_kp
+
+! **************************************************************************************************
+!> \brief Unstack complete energy covectors into physical AO image order without Gaussian filtering.
+!> \param covectors Per-image derivatives on the native subgroup.
+!> \param stacked Current batch derivative in (RI,AO0,stacked AOR) order.
+!> \param images Physical image indices for the current reordered stack.
+!> \param first First stack index in this batch.
+!> \param pref Native energy weight, including spin and exchange fraction.
+! **************************************************************************************************
+   SUBROUTINE add_inverse_lattice_covector(covectors, stacked, images, first, pref)
+      TYPE(dbt_type), INTENT(INOUT)                      :: covectors(:), stacked
+      INTEGER, INTENT(IN)                                :: images(:), first
+      REAL(dp), INTENT(IN)                               :: pref
+
+      INTEGER                                            :: image, ind(3), index, nblks(3)
+      LOGICAL                                            :: found
+      REAL(dp), ALLOCATABLE                              :: block(:, :, :)
+      TYPE(dbt_iterator_type)                            :: iterator
+
+      CALL dbt_get_info(covectors(1), nblks_total=nblks)
+      CALL dbt_iterator_start(iterator, stacked)
+      DO WHILE (dbt_iterator_blocks_left(iterator))
+         CALL dbt_iterator_next_block(iterator, ind)
+         index = first + (ind(3) - 1)/nblks(3)
+         CPASSERT(index >= 1 .AND. index <= SIZE(images))
+         image = images(index)
+         IF (image == 0) CYCLE
+         CPASSERT(image <= SIZE(covectors))
+         CALL dbt_get_block(stacked, ind, block, found)
+         IF (.NOT. found) CYCLE
+         ind(3) = MODULO(ind(3) - 1, nblks(3)) + 1
+         CALL dbt_put_block(covectors(image), ind, SHAPE(block), pref*block, summation=.TRUE.)
+         DEALLOCATE (block)
+      END DO
+      CALL dbt_iterator_stop(iterator)
+   END SUBROUTINE add_inverse_lattice_covector
+
+! **************************************************************************************************
+!> \brief Add original image transition derivatives from one native RI subgroup exactly once.
+!>        Gaussian, fitting-metric and bump derivatives remain in the native contractions.
+!>        Reconstruction, original augmentation and motion of actual RI images are included
+!>        in the same analytic response as the forward tensor. Subgroups own disjoint energy
+!>        contributions. Their replicated gradients enter the global force reduction only
+!>        through the subgroup root. The supplied covectors already contain all native weights.
+!> \param qs_env ...
+!> \param ri_data ...
+!> \param covectors Complete derivatives in physical AO image order.
+!> \param subgroup Communicator used by the covectors.
+!> \param use_virial Include the physical affine-strain response.
+! **************************************************************************************************
+   SUBROUTINE inverse_lattice_forces(qs_env, ri_data, covectors, subgroup, use_virial)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
+      TYPE(dbt_type), INTENT(INOUT)                      :: covectors(:)
+      TYPE(mp_para_env_type), INTENT(IN)                 :: subgroup
+      LOGICAL, INTENT(IN)                                :: use_virial
+
+      INTEGER                                            :: atom, kind
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
+      INTEGER, POINTER                                   :: cells(:, :)
+      REAL(dp)                                           :: strain_gradient(3, 3)
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :)
+      TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:), kind_bases(:)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(qs_force_type), POINTER                       :: force(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      TYPE(virial_type), POINTER                         :: virial
+
+      CALL get_qs_env(qs_env, ks_env=ks_env, kpoints=kpoints, qs_kind_set=kinds, particle_set=atoms, &
+                      atomic_kind_set=atomic_kinds, force=force, virial=virial)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      CPASSERT(ASSOCIATED(inverse))
+      CPASSERT(inverse%enabled .AND. ASSOCIATED(kpoints))
+      IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
+         frame => inverse%bloch%frames(1)%ao
+      ELSE
+         frame => inverse%frame%ao
+      END IF
+      CALL get_kpoint_info(kpoints, index_to_cell=cells)
+      CPASSERT(SIZE(covectors) == ri_data%nimg .AND. ri_data%nimg <= SIZE(cells, 2))
+      CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
+      ALLOCATE (kind_bases(SIZE(kinds)), bases(SIZE(atoms)), atom_gradient(3, SIZE(atoms)))
+      CALL basis_set_list_setup(kind_bases, ri_data%ri_basis_type, kinds)
+      DO atom = 1, SIZE(atoms)
+         bases(atom)%gto_basis_set => kind_bases(kind_of(atom))%gto_basis_set
+      END DO
+      IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
+         IF (use_virial) THEN
+            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%bloch%augmentation%kinds, bases, &
+                                                     cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
+                                                     frame%images, covectors, atom_gradient, strain_gradient)
+         ELSE
+            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%bloch%augmentation%kinds, bases, &
+                                                     cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
+                                                     frame%images, covectors, atom_gradient)
+         END IF
+      ELSE
+         IF (use_virial) THEN
+            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%augmentation%kinds, bases, &
+                                                     cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
+                                                     frame%images, covectors, atom_gradient, strain_gradient)
+         ELSE
+            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%augmentation%kinds, bases, &
+                                                     cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
+                                                     frame%images, covectors, atom_gradient)
+         END IF
+      END IF
+      IF (subgroup%mepos == 0) THEN
+         DO atom = 1, SIZE(atoms)
+            kind = kind_of(atom)
+            force(kind)%fock_4c(:, atom_of_kind(atom)) = force(kind)%fock_4c(:, atom_of_kind(atom)) + atom_gradient(:, atom)
+         END DO
+         IF (use_virial) virial%pv_fock_4c(:, :) = virial%pv_fock_4c + strain_gradient
+      END IF
+   END SUBROUTINE inverse_lattice_forces
 
 ! **************************************************************************************************
 !> \brief A routine the applies the RI bump matrix from the left and/or the right, given an input
@@ -4055,6 +4209,7 @@ CONTAINS
       INTEGER, DIMENSION(3)                              :: cell_j
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      LOGICAL                                            :: inverse_transition
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -4062,10 +4217,15 @@ CONTAINS
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: nl_2c
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
 
       NULLIFY (nl_2c, nl_iterator, kpoints, cell_to_index, dft_control, index_to_cell, para_env)
 
-      CALL get_qs_env(qs_env, kpoints=kpoints, dft_control=dft_control, para_env=para_env, natom=natom)
+      CALL get_qs_env(qs_env, kpoints=kpoints, dft_control=dft_control, para_env=para_env, natom=natom, ks_env=ks_env)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      inverse_transition = .FALSE.
+      IF (ASSOCIATED(inverse)) inverse_transition = inverse%enabled
       CALL get_kpoint_info(kpoints, cell_to_index=cell_to_index, index_to_cell=index_to_cell, sab_nl=nl_2c)
 
       nimg = ri_data%nimg
@@ -4108,6 +4268,26 @@ CONTAINS
       CALL neighbor_list_iterator_release(nl_iterator)
 
       CALL para_env%sum(pattern)
+
+      IF (inverse_transition) THEN
+         ! Original transition corrections can couple AO atoms absent from the
+         ! Gaussian overlap list. Keep the complete physical AO pairs in the
+         ! selected exchange-image domain, with each conjugate pair counted once.
+         pattern = 0
+         DO j_img = 1, nimg
+            IF (ri_data%present_images(j_img) == 0) CYCLE
+            mj_img = get_opp_index(j_img, qs_env)
+            IF (mj_img > 0 .AND. mj_img <= nimg) THEN
+               IF (ri_data%present_images(mj_img) /= 0 .AND. j_img > mj_img) CYCLE
+            END IF
+            DO jatom = 1, natom
+               DO iatom = 1, natom
+                  IF (j_img == mj_img .AND. iatom > jatom) CYCLE
+                  pattern(iatom, jatom, j_img) = 1
+               END DO
+            END DO
+         END DO
+      END IF
 
       !If the opposite image is considered, then there is no need to compute diagonal twice
       DO j_img = 2, nimg
@@ -4301,6 +4481,7 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: dist_AO_1, dist_AO_2, dist_RI, &
                                                             nRI_per_atom, present_img, RI_cells
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      LOGICAL                                            :: inverse_transition
       REAL(dp)                                           :: bump_fact, dij, dik, image_range, &
                                                             RI_range, rij(3), rik(3)
       TYPE(dbt_type)                                     :: t_dummy
@@ -4320,6 +4501,8 @@ CONTAINS
          POINTER                                         :: nl_2c
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: hfx_section
 
       NULLIFY (qs_kind_set, dist_2d, nl_2c, nl_iterator, dft_control, &
@@ -4329,7 +4512,10 @@ CONTAINS
 
       CALL get_qs_env(qs_env, nkind=nkind, qs_kind_set=qs_kind_set, distribution_2d=dist_2d, &
                       dft_control=dft_control, particle_set=particle_set, kpoints=kpoints, &
-                      para_env=para_env, natom=natom)
+                      para_env=para_env, natom=natom, ks_env=ks_env)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      inverse_transition = .FALSE.
+      IF (ASSOCIATED(inverse)) inverse_transition = inverse%enabled
       nimg = dft_control%nimages
       CALL get_kpoint_info(kpoints, cell_to_index=cell_to_index)
       kp_index_lbounds = LBOUND(cell_to_index)
@@ -4388,10 +4574,16 @@ CONTAINS
 
          dij = NORM2(rij)
 
-         j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
-         IF (j_img > nimg .OR. j_img < 1) CYCLE
-
          IF (dij > ri_data%kp_image_range) CYCLE
+         IF (ANY(cell_j < kp_index_lbounds) .OR. ANY(cell_j > kp_index_ubounds)) THEN
+            IF (inverse_transition) CPABORT("Required UPF exchange image is absent from the native cell map")
+            CYCLE
+         END IF
+         j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
+         IF (j_img > nimg .OR. j_img < 1) THEN
+            IF (inverse_transition) CPABORT("Required UPF exchange image is absent from the native cell map")
+            CYCLE
+         END IF
 
          ri_data%nimg = MAX(j_img, ri_data%nimg)
          present_img(j_img) = 1
@@ -4412,6 +4604,32 @@ CONTAINS
          IF (present_img(i_img) > 0) ri_data%present_images(i_img) = 1
       END DO
 
+      ALLOCATE (RI_cells(nimg), nRI_per_atom(natom))
+      RI_cells = 0
+      nRI_per_atom = 0
+      IF (inverse_transition) THEN
+         ! Keep every RI image in the physical first-AO fitting domain. An augmentation
+         ! contribution need not occur in the Gaussian three-center neighbor list.
+         ! Use the fitting metric's neighbors, as get_ext_2c_int does, including when
+         ! the exchange interaction itself is screened.
+         CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
+                                      "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+         CALL neighbor_list_iterator_create(nl_iterator, nl_2c)
+         DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
+            CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom, r=rij, cell=cell_j)
+            IF (NORM2(rij) > ri_data%kp_RI_range) CYCLE
+            IF (ANY(cell_j < kp_index_lbounds) .OR. ANY(cell_j > kp_index_ubounds)) THEN
+               CPABORT("Required UPF fitting image is absent from the native cell map")
+            END IF
+            j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
+            IF (j_img < 1 .OR. j_img > nimg) CPABORT("Required UPF fitting image is absent from the native cell map")
+            RI_cells(j_img) = 1
+            nRI_per_atom(iatom) = nRI_per_atom(iatom) + ri_data%bsizes_RI(jatom)
+         END DO
+         CALL neighbor_list_iterator_release(nl_iterator)
+         CALL release_neighbor_list_sets(nl_2c)
+      END IF
+
       CALL create_3c_tensor(t_dummy, dist_AO_1, dist_AO_2, dist_RI, &
                             ri_data%pgrid, ri_data%bsizes_AO, ri_data%bsizes_AO, ri_data%bsizes_RI, &
                             map1=[1, 2], map2=[3], name="(AO AO | RI)")
@@ -4428,12 +4646,6 @@ CONTAINS
       CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, &
                                    ri_data%ri_metric, "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., &
                                    own_dist=.TRUE.)
-
-      ALLOCATE (RI_cells(nimg))
-      RI_cells = 0
-
-      ALLOCATE (nRI_per_atom(natom))
-      nRI_per_atom = 0
 
       CALL neighbor_list_3c_iterator_create(nl_3c_iter, nl_3c)
       DO WHILE (neighbor_list_3c_iterate(nl_3c_iter) == 0)
@@ -4456,7 +4668,8 @@ CONTAINS
          IF (dik > ri_data%kp_RI_range) CYCLE
          RI_cells(kcell) = 1
 
-         IF (jcell == 1 .AND. iatom == jatom) nRI_per_atom(iatom) = nRI_per_atom(iatom) + ri_data%bsizes_RI(katom)
+         IF (.NOT. inverse_transition .AND. jcell == 1 .AND. iatom == jatom) &
+            nRI_per_atom(iatom) = nRI_per_atom(iatom) + ri_data%bsizes_RI(katom)
       END DO
       CALL neighbor_list_3c_iterator_destroy(nl_3c_iter)
       CALL neighbor_list_3c_destroy(nl_3c)

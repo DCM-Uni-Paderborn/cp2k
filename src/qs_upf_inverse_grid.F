@@ -36,7 +36,10 @@ MODULE qs_upf_inverse_grid
                                               qs_upf_inverse_augmentation_fourier_response,&
                                               qs_upf_inverse_augmentation_integrate,&
                                               qs_upf_inverse_augmentation_type
+   USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_kinetic_collocate,&
+                                              qs_upf_inverse_kinetic_operator
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_grid_type
+   USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_density_residual,&
                                               upf_inverse_pair,&
                                               upf_inverse_pair_response,&
@@ -69,14 +72,17 @@ CONTAINS
 !> \param reduced_k Reduced Bloch vector of the physical KS cell.
 !> \param frame New owned adapter; neither the grid nor the KS environment is modified.
 !> \param info Inverse-factorization status.
+!> \param atom_local Optional one-center reconstruction with native Gaussian projector integrals.
+!> \param direct Use original projectors and soft orbitals without reconstruction.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info)
+   SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info, atom_local, direct)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
       REAL(dp), INTENT(IN)                               :: reduced_k(3)
       TYPE(qs_upf_inverse_grid_type), INTENT(OUT)        :: frame
       INTEGER, INTENT(OUT)                               :: info
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
 
       INTEGER                                            :: ix, iy, iz, n, point
       REAL(dp), ALLOCATABLE                              :: points(:, :), weights(:)
@@ -109,7 +115,7 @@ CONTAINS
             END DO
          END DO
       END DO
-      CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info)
+      CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info, atom_local, direct)
    END SUBROUTINE qs_upf_inverse_grid_prepare
 
 ! **************************************************************************************************
@@ -127,9 +133,10 @@ CONTAINS
 !>        Tau remains smooth; supplying charge augmentation does not supply kinetic augmentation.
 !> \param fourier_charge Optional native Fourier Q map, instead of point Q; default is false.
 !>        Its zero mode equals the reference radial q; a supplied-q metric retains the explicit defect.
+!> \param kinetic Optional independent original-wave valence kinetic kernels, indexed by kind.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_collocate(frame, density_real, density, gradient, tau, density_imag, &
-                                            projector_density, augmentation, fourier_charge)
+                                            projector_density, augmentation, fourier_charge, kinetic)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(dbcsr_type), INTENT(IN)                       :: density_real
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
@@ -138,11 +145,14 @@ CONTAINS
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT), OPTIONAL                         :: augmentation
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: p(:, :)
 
       CALL qs_upf_inverse_matrix_gather(frame%ao, density_real, p, density_imag)
-      CALL qs_upf_inverse_grid_collocate_dense(frame, p, density, gradient, tau, projector_density, augmentation, fourier_charge)
+      CALL qs_upf_inverse_grid_collocate_dense(frame, p, density, gradient, tau, &
+                                               projector_density, augmentation, fourier_charge, kinetic)
    END SUBROUTINE qs_upf_inverse_grid_collocate
 
 ! **************************************************************************************************
@@ -156,9 +166,10 @@ CONTAINS
 !> \param projector_density ...
 !> \param augmentation ...
 !> \param fourier_charge ...
+!> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_collocate_dense(frame, p, density, gradient, tau, &
-                                                  projector_density, augmentation, fourier_charge)
+                                                  projector_density, augmentation, fourier_charge, kinetic)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       COMPLEX(dp), INTENT(IN)                            :: p(:, :)
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
@@ -166,6 +177,8 @@ CONTAINS
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT), OPTIONAL                         :: augmentation
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
       INTEGER                                            :: axis, n, nproj
@@ -173,7 +186,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: dn(:, :), dn_reference(:, :), rho(:), &
                                                             rho_reference(:), t(:), t_reference(:)
 
-      CPASSERT(frame%ao%inverse%ready)
+      CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       use_fourier = .FALSE.
       IF (PRESENT(fourier_charge)) use_fourier = fourier_charge
       IF (use_fourier) THEN
@@ -187,7 +200,7 @@ CONTAINS
       CALL upf_inverse_density_residual(frame%ao%gaussian, frame%ao%gaussian_gradient, &
                                         frame%ao%soft, frame%ao%soft_gradient, p, rho, dn, t)
       IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
-         nproj = frame%ao%inverse%nproj
+         nproj = SIZE(frame%ao%coefficients, 1)
          ALLOCATE (projected(nproj, nproj))
          CALL upf_inverse_projector_density(frame%ao%coefficients, p, projected)
          IF (PRESENT(augmentation) .AND. .NOT. use_fourier) THEN
@@ -201,6 +214,10 @@ CONTAINS
       rho(:) = rho + rho_reference
       dn(:, :) = dn + dn_reference
       t(:) = t + t_reference
+      IF (PRESENT(kinetic)) THEN
+         CALL qs_upf_inverse_kinetic_collocate(frame%ao, kinetic, frame%ao%points, p, t_reference)
+         t(:) = t + t_reference
+      END IF
       CALL unpack_grid(frame, rho, density)
       CALL unpack_grid(frame, t, tau)
       DO axis = 1, 3
@@ -225,9 +242,10 @@ CONTAINS
 !>        Missing charge or kinetic augmentation must not be inferred from the other kernel.
 !> \param augmentation Optional original charge/gradient adjoint on the same native point rows.
 !> \param fourier_charge Select the native Fourier adjoint of the same density map; default is false.
+!> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_integrate(frame, vdensity, vgradient, vtau, template, &
-                                            operator_real, operator_imag, projector_operator, augmentation, fourier_charge)
+                                            operator_real, operator_imag, projector_operator, augmentation, fourier_charge, kinetic)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       TYPE(dbcsr_type), INTENT(IN)                       :: template
@@ -236,11 +254,13 @@ CONTAINS
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT), OPTIONAL                         :: augmentation
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: h(:, :)
 
       CALL qs_upf_inverse_grid_integrate_dense(frame, vdensity, vgradient, vtau, h, &
-                                               projector_operator, augmentation, fourier_charge)
+                                               projector_operator, augmentation, fourier_charge, kinetic)
       CALL qs_upf_inverse_matrix_scatter(frame%ao, h, template, operator_real, operator_imag)
    END SUBROUTINE qs_upf_inverse_grid_integrate
 
@@ -254,9 +274,10 @@ CONTAINS
 !> \param projector_operator ...
 !> \param augmentation ...
 !> \param fourier_charge ...
+!> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_integrate_dense(frame, vdensity, vgradient, vtau, h, &
-                                                  projector_operator, augmentation, fourier_charge)
+                                                  projector_operator, augmentation, fourier_charge, kinetic)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: h(:, :)
@@ -264,13 +285,15 @@ CONTAINS
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT), OPTIONAL                         :: augmentation
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), residual(:, :)
       INTEGER                                            :: axis, n, nao, nproj
       LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
 
-      CPASSERT(frame%ao%inverse%ready)
+      CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       use_fourier = .FALSE.
       IF (PRESENT(fourier_charge)) use_fourier = fourier_charge
       IF (use_fourier) THEN
@@ -291,8 +314,13 @@ CONTAINS
                                           frame%ao%soft, frame%ao%soft_gradient, frame%ao%weights, dn, dg, dt, &
                                           residual, frame%ao%point_comm)
       h(:, :) = h + residual
+      IF (PRESENT(kinetic)) THEN
+         CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt, &
+                                              residual, frame%ao%point_comm)
+         h(:, :) = h + residual
+      END IF
       IF (PRESENT(augmentation)) THEN
-         nproj = frame%ao%inverse%nproj
+         nproj = SIZE(frame%ao%coefficients, 1)
          ALLOCATE (projected(nproj, nproj))
          IF (use_fourier) THEN
             CALL qs_upf_inverse_augmentation_fourier_integrate(frame%ao, augmentation, vdensity, vgradient, projected)
@@ -302,7 +330,7 @@ CONTAINS
          h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, frame%ao%coefficients))
       END IF
       IF (PRESENT(projector_operator)) THEN
-         nproj = frame%ao%inverse%nproj
+         nproj = SIZE(frame%ao%coefficients, 1)
          CPASSERT(ALL(SHAPE(projector_operator) == [nproj, nproj]))
          h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_operator, frame%ao%coefficients))
       END IF
@@ -343,9 +371,9 @@ CONTAINS
 
       INTEGER                                            :: nao, nproj
 
-      CPASSERT(frame%ao%inverse%ready)
+      CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       nao = SIZE(frame%ao%soft, 2)
-      nproj = frame%ao%inverse%nproj
+      nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
       ALLOCATE (metric(nao, nao))
       CALL upf_inverse_pair(frame%ao%soft, frame%ao%soft, frame%ao%weights, metric, frame%ao%point_comm)
@@ -372,11 +400,12 @@ CONTAINS
 !> \param operator_response New replicated complex operator response, without k/spin weights.
 !> \param metric_response New metric response in the same inverse AO variables.
 !> \param projector_operator Optional original geometry-independent operator, e.g. Dion.
+!> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_response(frame, augmentation, projector_metric, vdensity, vgradient, vtau, &
                                            atom_response, cell_response, reduced_k_response, vdensity_response, &
                                            vgradient_response, vtau_response, operator_response, metric_response, &
-                                           projector_operator)
+                                           projector_operator, kinetic)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT)                                   :: augmentation
@@ -390,9 +419,12 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operator_response(:, :), &
                                                             metric_response(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: projector_operator(:, :)
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:)
 
       COMPLEX(dp), ALLOCATABLE :: coefficients_response(:, :), gradient_response(:, :, :), &
-         projected(:, :), projected_response(:, :), soft_response(:, :)
+         kinetic_operator(:, :), kinetic_response(:, :), projected(:, :), &
+         projected_response(:, :), soft_response(:, :)
       INTEGER                                            :: axis, info, n, nao, nproj
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
                                                             volume_response
@@ -400,10 +432,10 @@ CONTAINS
                                                             dvn(:), dvt(:), points_response(:, :), &
                                                             weights_response(:)
 
-      CPASSERT(frame%ao%inverse%ready)
+      CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%soft, 2)
-      nproj = frame%ao%inverse%nproj
+      nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
       ALLOCATE (dn(n), dg(n, 3), dt(n), dvn(n), dvg(n, 3), dvt(n), points_response(3, n), weights_response(n), &
                 coefficients_response(nproj, nao), soft_response(n, nao), gradient_response(n, nao, 3), &
@@ -430,6 +462,14 @@ CONTAINS
                                           frame%ao%soft_gradient, frame%ao%soft_gradient, frame%ao%weights, dn, dg, dt, &
                                           soft_response, soft_response, gradient_response, gradient_response, &
                                           weights_response, dvn, dvg, dvt, operator_response, frame%ao%point_comm)
+      IF (PRESENT(kinetic)) THEN
+         ALLOCATE (kinetic_operator(nao, nao), kinetic_response(nao, nao))
+         CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt, &
+                                              kinetic_operator, frame%ao%point_comm, &
+                                              kinetic_response, points_response, atom_response, cell_response, &
+                                              coefficients_response, weights_response, dvt)
+         operator_response(:, :) = operator_response + kinetic_response
+      END IF
       CALL qs_upf_inverse_augmentation_fourier_integrate(frame%ao, augmentation, vdensity, vgradient, projected)
       CALL qs_upf_inverse_augmentation_fourier_response(frame%ao, augmentation, vdensity, vgradient, atom_response, &
                                                         cell_response, vdensity_response, vgradient_response, &

@@ -1197,9 +1197,11 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="POTENTIAL_FILE_NAME", &
-                          description="The name of the file where to find this kinds pseudopotential."// &
-                          " Default file is specified in DFT section.", &
-                          usage="POTENTIAL_FILE_NAME <PSEUDO-POTENTIAL-FILE-NAME>", default_c_val="-", n_var=1)
+                          description="Name of the pseudopotential file for this kind, optionally including a path. "// &
+                          "For POTENTIAL UPF, this selects the original UPF file. "// &
+                          "Otherwise it selects a library file, overriding the DFT section.", &
+                          usage="POTENTIAL_FILE_NAME <PSEUDO-POTENTIAL-FILE-NAME>", &
+                          type_of_var=lchar_t, default_lc_val="-", n_var=1)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -1213,10 +1215,12 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="POTENTIAL", &
                           variants=["POT"], &
                           description= &
-                          "The type (ECP, ALL, GTH, UPS) and name of the "// &
+                          "The type (ECP, ALL, GTH, UPF) and name of the "// &
                           "pseudopotential for the defined kind. Use GTH potentials "// &
                           "for most GPW calculations, ECP for Gaussian-integral effective core "// &
-                          "potentials, and ALL for all-electron calculations.", &
+                          "potentials, and ALL for all-electron calculations. "// &
+                          "For an original UPF file, use POTENTIAL UPF with KIND%POTENTIAL_FILE_NAME, "// &
+                          "or POTENTIAL UPF <FILENAME> for a short filename.", &
                           usage="POTENTIAL [type] <POTENTIAL-NAME>", type_of_var=char_t, &
                           default_c_vals=[" ", " "], &
                           citations=[Goedecker1996, Hartwigsen1998, Krack2005], n_var=-1)

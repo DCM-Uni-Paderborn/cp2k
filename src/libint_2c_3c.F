@@ -140,7 +140,7 @@ CONTAINS
           .OR. op == do_potential_mix_cl_trunc) THEN
          dr_bc = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ac = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op == do_potential_coulomb) THEN
+      ELSE IF (op == do_potential_coulomb .OR. op == do_potential_long) THEN
          dr_bc = 1000000.0_dp
          dr_ac = 1000000.0_dp
       END IF
@@ -356,12 +356,13 @@ CONTAINS
             CALL t_c_g0_n(params%Fm, use_gamma, R, T, params%m_max)
             IF (use_gamma) CALL fgamma(params%m_max, T, params%Fm)
             params%Fm = prefac*params%Fm
-         CASE (do_potential_short)
+         CASE (do_potential_short, do_potential_long)
             T = params%Rho*SUM((params%Q - rk)**2)
             S1234 = EXP(-zeti*zetj*params%EtaInv*SUM((rj - ri)**2))
             prefac = 2._dp*pi/params%Rho*SQRT((pi*params%ZetapEtaInv)**3)*S1234
 
-            CALL fgamma(params%m_max, T, params%Fm)
+            IF (potential_parameter%potential_type == do_potential_short) &
+               CALL fgamma(params%m_max, T, params%Fm)
 
             omega2 = potential_parameter%omega**2
             omega_corr2 = omega2/(omega2 + params%Rho)
@@ -370,7 +371,8 @@ CONTAINS
             ALLOCATE (Fm(prim_data_f_size))
 
             CALL fgamma(params%m_max, T, Fm)
-            tmp = -omega_corr
+            tmp = omega_corr
+            IF (potential_parameter%potential_type == do_potential_short) tmp = -tmp
             DO l = 1, params%m_max + 1
                params%Fm(l) = params%Fm(l) + Fm(l)*tmp
                tmp = tmp*omega_corr2
@@ -508,7 +510,7 @@ CONTAINS
           .OR. op == do_potential_mix_cl_trunc) THEN
          dr_bc = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ac = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op == do_potential_coulomb) THEN
+      ELSE IF (op == do_potential_coulomb .OR. op == do_potential_long) THEN
          dr_bc = 1000000.0_dp
          dr_ac = 1000000.0_dp
       END IF
@@ -756,12 +758,13 @@ CONTAINS
             CALL t_c_g0_n(params%Fm, use_gamma, R, T, params%m_max)
             IF (use_gamma) CALL fgamma(params%m_max, T, params%Fm)
             params%Fm = prefac*params%Fm
-         CASE (do_potential_short)
+         CASE (do_potential_short, do_potential_long)
             T = params%Rho*SUM((params%Q - rk)**2)
             S1234 = EXP(-zeti*zetj*params%EtaInv*SUM((rj - ri)**2))
             prefac = 2._dp*pi/params%Rho*SQRT((pi*params%ZetapEtaInv)**3)*S1234
 
-            CALL fgamma(params%m_max, T, params%Fm)
+            IF (potential_parameter%potential_type == do_potential_short) &
+               CALL fgamma(params%m_max, T, params%Fm)
 
             omega2 = potential_parameter%omega**2
             omega_corr2 = omega2/(omega2 + params%Rho)
@@ -770,7 +773,8 @@ CONTAINS
             ALLOCATE (Fm(prim_data_f_size))
 
             CALL fgamma(params%m_max, T, Fm)
-            tmp = -omega_corr
+            tmp = omega_corr
+            IF (potential_parameter%potential_type == do_potential_short) tmp = -tmp
             DO l = 1, params%m_max + 1
                params%Fm(l) = params%Fm(l) + Fm(l)*tmp
                tmp = tmp*omega_corr2
@@ -878,7 +882,8 @@ CONTAINS
           potential_parameter%potential_type == do_potential_short .OR. &
           potential_parameter%potential_type == do_potential_mix_cl_trunc) THEN
          dr_ab = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (potential_parameter%potential_type == do_potential_coulomb) THEN
+      ELSE IF (potential_parameter%potential_type == do_potential_coulomb .OR. &
+               potential_parameter%potential_type == do_potential_long) THEN
          dr_ab = 1000000.0_dp
       END IF
 
@@ -981,11 +986,12 @@ CONTAINS
          CALL t_c_g0_n(params%Fm, use_gamma, R, T, params%m_max)
          IF (use_gamma) CALL fgamma(params%m_max, T, params%Fm)
          params%Fm = prefac*params%Fm
-      CASE (do_potential_short)
+      CASE (do_potential_short, do_potential_long)
          T = params%Rho*SUM((rj - rk)**2)
          prefac = 2._dp*pi/params%Rho*SQRT((pi*params%ZetapEtaInv)**3)
 
-         CALL fgamma(params%m_max, T, params%Fm)
+         IF (potential_parameter%potential_type == do_potential_short) &
+            CALL fgamma(params%m_max, T, params%Fm)
 
          omega2 = potential_parameter%omega**2
          omega_corr2 = omega2/(omega2 + params%Rho)
@@ -994,7 +1000,8 @@ CONTAINS
          ALLOCATE (Fm(prim_data_f_size))
 
          CALL fgamma(params%m_max, T, Fm)
-         tmp = -omega_corr
+         tmp = omega_corr
+         IF (potential_parameter%potential_type == do_potential_short) tmp = -tmp
          DO l = 1, params%m_max + 1
             params%Fm(l) = params%Fm(l) + Fm(l)*tmp
             tmp = tmp*omega_corr2
@@ -1128,7 +1135,8 @@ CONTAINS
           potential_parameter%potential_type == do_potential_short .OR. &
           potential_parameter%potential_type == do_potential_mix_cl_trunc) THEN
          dr_ab = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (potential_parameter%potential_type == do_potential_coulomb) THEN
+      ELSE IF (potential_parameter%potential_type == do_potential_coulomb .OR. &
+               potential_parameter%potential_type == do_potential_long) THEN
          dr_ab = 1000000.0_dp
       END IF
 
@@ -1234,11 +1242,12 @@ CONTAINS
          CALL t_c_g0_n(params%Fm, use_gamma, R, T, params%m_max)
          IF (use_gamma) CALL fgamma(params%m_max, T, params%Fm)
          params%Fm = prefac*params%Fm
-      CASE (do_potential_short)
+      CASE (do_potential_short, do_potential_long)
          T = params%Rho*SUM((rj - rk)**2)
          prefac = 2._dp*pi/params%Rho*SQRT((pi*params%ZetapEtaInv)**3)
 
-         CALL fgamma(params%m_max, T, params%Fm)
+         IF (potential_parameter%potential_type == do_potential_short) &
+            CALL fgamma(params%m_max, T, params%Fm)
 
          omega2 = potential_parameter%omega**2
          omega_corr2 = omega2/(omega2 + params%Rho)
@@ -1247,7 +1256,8 @@ CONTAINS
          ALLOCATE (Fm(prim_data_f_size))
 
          CALL fgamma(params%m_max, T, Fm)
-         tmp = -omega_corr
+         tmp = omega_corr
+         IF (potential_parameter%potential_type == do_potential_short) tmp = -tmp
          DO l = 1, params%m_max + 1
             params%Fm(l) = params%Fm(l) + Fm(l)*tmp
             tmp = tmp*omega_corr2

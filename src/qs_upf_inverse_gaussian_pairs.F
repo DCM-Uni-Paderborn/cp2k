@@ -9,6 +9,7 @@ MODULE qs_upf_inverse_gaussian_pairs
    USE basis_set_types,                 ONLY: gto_basis_set_type
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: twopi
+   USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_type
    USE paw_basis_types,                 ONLY: get_paw_basis_info
    USE qs_kind_types,                   ONLY: get_qs_kind,&
@@ -45,8 +46,22 @@ MODULE qs_upf_inverse_gaussian_pairs
 
    PUBLIC :: qs_upf_inverse_gaussian_pairs_type, qs_upf_inverse_gaussian_pairs_prepare
    PUBLIC :: qs_upf_inverse_gaussian_pairs_density, qs_upf_inverse_gaussian_pairs_integrate
+   PUBLIC :: qs_upf_inverse_gaussian_pairs_has_derivatives
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Whether the owned native pair coefficients include all first geometry derivatives.
+!> \param map Prepared pair map at the current geometry.
+!> \return True when every retained pair has the required response coefficients.
+! **************************************************************************************************
+   FUNCTION qs_upf_inverse_gaussian_pairs_has_derivatives(map) RESULT(ready)
+      TYPE(qs_upf_inverse_gaussian_pairs_type), &
+         INTENT(IN)                                      :: map
+      LOGICAL                                            :: ready
+
+      ready = map%derivatives
+   END FUNCTION qs_upf_inverse_gaussian_pairs_has_derivatives
 
 ! **************************************************************************************************
 !> \brief Freeze the actual distributed overlap/OCE pair pattern for one native Gaussian center.
@@ -60,8 +75,11 @@ CONTAINS
 !> \param ao_last Global AO ending index of every original atom.
 !> \param comm Communicator of the native distributed overlap pairs, not a point-row communicator.
 !> \param map New owned pair map. Rebuild together with native OCE and overlap lists after geometry changes.
+!> \param positions Original physical coordinates before native neighbor-list folding.
+!> \param lattice Physical lattice vectors used by the native OCE lists.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_gaussian_pairs_prepare(oce, sab, kinds, center, center_kind, ao_first, ao_last, comm, map)
+   SUBROUTINE qs_upf_inverse_gaussian_pairs_prepare(oce, sab, kinds, center, center_kind, ao_first, ao_last, comm, map, &
+                                                    positions, lattice)
       TYPE(oce_matrix_type), INTENT(IN)                  :: oce
       TYPE(neighbor_list_set_p_type), POINTER            :: sab(:)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
@@ -70,9 +88,11 @@ CONTAINS
 
       CLASS(mp_comm_type), INTENT(IN)                    :: comm
       TYPE(qs_upf_inverse_gaussian_pairs_type), INTENT(OUT) :: map
+      REAL(dp), INTENT(IN)                               :: positions(:, :), lattice(3, 3)
 
       INTEGER                                            :: a, b, ca, cb, cell(3), count, iac, ibc, &
-                                                            ikind, jkind, nkind, pass, ready
+                                                            ikind, info, jkind, nkind, pass, ready
+      REAL(dp)                                           :: image_error, inverse_lattice(3, 3)
       TYPE(alist_type), POINTER                          :: alist_a, alist_b
       TYPE(clist_type), POINTER                          :: left, right
       TYPE(gto_basis_set_type), POINTER                  :: basis
@@ -82,6 +102,10 @@ CONTAINS
       CPASSERT(center_kind >= 1 .AND. center_kind <= nkind)
       CPASSERT(center >= 1 .AND. center <= SIZE(ao_first))
       CPASSERT(SIZE(ao_first) == SIZE(ao_last))
+      CPASSERT(ALL(SHAPE(positions) == [3, SIZE(ao_first)]))
+      inverse_lattice = lattice
+      CALL invmat(inverse_lattice, info)
+      CPASSERT(info == 0)
       CPASSERT(ASSOCIATED(oce%intac))
       CALL get_qs_kind(kinds(center_kind), basis_set=basis, basis_type="GAPW_1C")
       CPASSERT(ASSOCIATED(basis))
@@ -114,9 +138,17 @@ CONTAINS
                      ASSOCIATE (pair => map%pairs(count))
                         pair%left_atom = a
                         pair%right_atom = b
-                        pair%cell = cell
-                        pair%left_image = left%cell
-                        pair%right_image = right%cell
+                        ! Both the AO Bloch phase and geometry images refer to the original
+                        ! physical coordinates used by the inverse Gaussian fields.
+                        pair%left_image = NINT(MATMUL(inverse_lattice, positions(:, a) - positions(:, center) + left%rac))
+                        pair%right_image = NINT(MATMUL(inverse_lattice, positions(:, b) - positions(:, center) + right%rac))
+                        image_error = NORM2(positions(:, a) - positions(:, center) + left%rac - &
+                                            MATMUL(lattice, REAL(pair%left_image, dp)))
+                        CPASSERT(image_error < 1.e-9_dp)
+                        image_error = NORM2(positions(:, b) - positions(:, center) + right%rac - &
+                                            MATMUL(lattice, REAL(pair%right_image, dp)))
+                        CPASSERT(image_error < 1.e-9_dp)
+                        pair%cell = pair%left_image - pair%right_image
                         pair%factor = 1.0_dp
                         IF (a == b) pair%factor = 0.5_dp
                         ALLOCATE (pair%rows(left%nsgf_cnt), pair%cols(right%nsgf_cnt))

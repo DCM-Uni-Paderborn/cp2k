@@ -117,9 +117,13 @@ MODULE qs_ks_utils
                                               mo_set_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_xc_integrate
    USE qs_upf_inverse_forces,           ONLY: qs_upf_inverse_force
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
-                                              qs_upf_inverse_scf_integrate
+                                              qs_upf_inverse_scf_add_coulomb,&
+                                              qs_upf_inverse_scf_integrate,&
+                                              qs_upf_inverse_scf_integrate_kinetic
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE skala_gpw_functional,            ONLY: native_skala_gapw_composite_direct_ao,&
                                               native_skala_gapw_composite_reference
    USE task_list_types,                 ONLY: task_list_type
@@ -905,6 +909,9 @@ CONTAINS
       CALL check_sum_energy(energy%total, energy%hartree_1c, "Energy from GAPW local Eh = 1 center integrals")
       CALL check_sum_energy(energy%total, energy%exc, "Exchange-correlation energy")
       CALL check_sum_energy(energy%total, energy%exc1, "Exc1 energy")
+      CALL check_sum_energy(energy%total, energy%paw_hartree, "PAW one-center Hartree energy")
+      CALL check_sum_energy(energy%total, energy%paw_xc, "PAW one-center XC energy")
+      CALL check_sum_energy(energy%total, energy%paw_core, "PAW frozen-core energy")
       CALL check_sum_energy(energy%total, energy%ex, "Ex energy")
       CALL check_sum_energy(energy%total, energy%dispersion, "Dispersion energy")
       CALL check_sum_energy(energy%total, energy%gcp, "gCP energy")
@@ -1204,6 +1211,12 @@ CONTAINS
                "Integral of the (density * v_xc):              ", energy%exc
          END IF
 
+         IF (energy%paw_hartree /= 0.0_dp .OR. energy%paw_xc /= 0.0_dp .OR. energy%paw_core /= 0.0_dp) THEN
+            WRITE (UNIT=output_unit, FMT="(/,(T3,A,T61,F20.10))") &
+               "PAW| one-center Hartree correction:           ", energy%paw_hartree, &
+               "PAW| one-center XC correction:                ", energy%paw_xc, &
+               "PAW| frozen-core energy:                      ", energy%paw_core
+         END IF
          IF (energy%e_hartree /= 0.0_dp) THEN
             WRITE (UNIT=output_unit, FMT="(T3,A,T61,F20.10)") &
                "Coulomb (electron-electron) energy:            ", energy%e_hartree
@@ -1443,7 +1456,7 @@ CONTAINS
                                                             nkind, nspins
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL :: do_ppl, gapw, gapw_composite_direct_ao, gapw_composite_reference, gapw_xc, &
-         inverse_scf, lrigpw, rigpw, use_work_v_rspace
+         inverse_coulomb, inverse_scf, lrigpw, rigpw, use_work_v_rspace
       REAL(KIND=dp)                                      :: csign, dvol, fadm
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -1465,6 +1478,7 @@ CONTAINS
       TYPE(pw_r3d_rs_type), TARGET                       :: v_rspace_work
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_aux_fit
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: input, xc_section
       TYPE(task_list_type), POINTER                      :: task_list
 
@@ -1483,6 +1497,9 @@ CONTAINS
                       ks_env=ks_env, vee=vee)
 
       inverse_scf = qs_upf_inverse_scf_active(ks_env)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      inverse_coulomb = .FALSE.
+      IF (ASSOCIATED(inverse)) inverse_coulomb = ASSOCIATED(inverse%coulomb)
       CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
       CALL pw_env_get(pw_env, poisson_env=poisson_env, auxbas_pw_pool=auxbas_pw_pool)
       gapw = dft_control%qs_control%gapw
@@ -1538,6 +1555,9 @@ CONTAINS
 
                ! Now the Hartree potential to be integrated with the full basis
                CALL pw_copy(v_rspace, v_rspace_new(ispin))
+            ELSE IF (inverse_coulomb) THEN
+               ! Integrate XC here. The complete Hartree operator has its own density transpose.
+               CALL pw_scale(v_rspace_new(ispin), v_rspace_new(ispin)%pw_grid%dvol)
             ELSE
                ! Add v_hartree + v_xc = v_rspace_new
                CALL pw_axpy(v_rspace, v_rspace_new(ispin), 1.0_dp, v_rspace_new(ispin)%pw_grid%dvol)
@@ -1655,7 +1675,13 @@ CONTAINS
                   CALL inverse_potential(ispin)%create(v_rspace_new(ispin)%pw_grid)
                   CALL pw_copy(v_rspace_new(ispin), inverse_potential(ispin))
                END IF
-             CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_new(ispin), ks_matrix(ispin, 1)%matrix, weighted=.TRUE., spin=ispin)
+               IF (inverse%gaussian_background) THEN
+                  CALL qs_upf_inverse_coulomb_xc_integrate(qs_env, v_rspace_new(ispin), &
+                                                           ks_matrix(ispin, 1)%matrix, weighted=.TRUE., spin=ispin)
+               ELSE
+                  CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_new(ispin), &
+                                                    ks_matrix(ispin, 1)%matrix, weighted=.TRUE., spin=ispin)
+               END IF
             ELSE
                rho_ao => my_rho(ispin, :)
                ksmat => ks_matrix(ispin, :)
@@ -1765,7 +1791,13 @@ CONTAINS
                   CALL inverse_potential(ispin)%create(v_rspace_used%pw_grid)
                   CALL pw_copy(v_rspace_used, inverse_potential(ispin))
                END IF
-               CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_used, ks_matrix(ispin, 1)%matrix, weighted=.TRUE., spin=ispin)
+               IF (inverse%gaussian_background) THEN
+                  CALL qs_upf_inverse_coulomb_xc_integrate(qs_env, v_rspace_used, &
+                                                           ks_matrix(ispin, 1)%matrix, weighted=.TRUE., spin=ispin)
+               ELSE
+                  CALL qs_upf_inverse_scf_integrate(ks_env, v_rspace_used, &
+                                                    ks_matrix(ispin, 1)%matrix, weighted=.TRUE., spin=ispin)
+               END IF
             ELSE
                rho_ao => my_rho(ispin, :)
                ksmat => ks_matrix(ispin, :)
@@ -1780,8 +1812,14 @@ CONTAINS
          END DO
       END IF ! ASSOCIATED(v_rspace_new)
 
+      IF (inverse_coulomb) CALL qs_upf_inverse_scf_add_coulomb(ks_env)
+
       IF (ALLOCATED(inverse_potential)) THEN
-         CALL qs_upf_inverse_force(qs_env, inverse_potential)
+         IF (ASSOCIATED(v_tau_rspace)) THEN
+            CALL qs_upf_inverse_force(qs_env, inverse_potential, v_tau_rspace)
+         ELSE
+            CALL qs_upf_inverse_force(qs_env, inverse_potential)
+         END IF
          DO ispin = 1, nspins
             CALL inverse_potential(ispin)%release()
          END DO
@@ -1817,16 +1855,23 @@ CONTAINS
             CPABORT("LRIGPW/RIGPW not implemented for meta-GGAs")
          END IF
          DO ispin = 1, nspins
-            CALL pw_scale(v_tau_rspace(ispin), v_tau_rspace(ispin)%pw_grid%dvol)
+            IF (inverse_coulomb) THEN
+               CALL qs_upf_inverse_coulomb_xc_integrate(qs_env, v_tau_rspace(ispin), &
+                                                        ks_matrix(ispin, 1)%matrix, .FALSE., ispin, kinetic=.TRUE.)
+            ELSE IF (inverse_scf) THEN
+               CALL qs_upf_inverse_scf_integrate_kinetic(ks_env, v_tau_rspace(ispin), ks_matrix(ispin, 1)%matrix, ispin)
+            ELSE
+               CALL pw_scale(v_tau_rspace(ispin), v_tau_rspace(ispin)%pw_grid%dvol)
 
-            rho_ao => rho_ao_kp(ispin, :)
-            ksmat => ks_matrix(ispin, :)
-            CALL integrate_v_rspace(v_rspace=v_tau_rspace(ispin), &
-                                    pmat_kp=rho_ao, hmat_kp=ksmat, &
-                                    qs_env=qs_env, &
-                                    calculate_forces=calculate_forces, compute_tau=.TRUE., &
-                                    gapw=(gapw .OR. gapw_xc) .AND. &
-                                    .NOT. gapw_composite_direct_ao)
+               rho_ao => rho_ao_kp(ispin, :)
+               ksmat => ks_matrix(ispin, :)
+               CALL integrate_v_rspace(v_rspace=v_tau_rspace(ispin), &
+                                       pmat_kp=rho_ao, hmat_kp=ksmat, &
+                                       qs_env=qs_env, &
+                                       calculate_forces=calculate_forces, compute_tau=.TRUE., &
+                                       gapw=(gapw .OR. gapw_xc) .AND. &
+                                       .NOT. gapw_composite_direct_ao)
+            END IF
             CALL auxbas_pw_pool%give_back_pw(v_tau_rspace(ispin))
          END DO
          DEALLOCATE (v_tau_rspace)

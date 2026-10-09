@@ -67,7 +67,7 @@ CONTAINS
       INTEGER                                            :: i, j, l, m, n, nc, p, pair, q, s
       REAL(KIND=dp), ALLOCATABLE                         :: weights(:)
 
-      CPASSERT(.NOT. pot%has_so .AND. .NOT. pot%is_paw)
+      CPASSERT(.NOT. pot%has_so)
       CPASSERT(ALLOCATED(pot%qijl))
       CPASSERT(projectors%degree >= MAXVAL(pot%lbeta))
       CPASSERT(ALL(projectors%lbeta == pot%lbeta))

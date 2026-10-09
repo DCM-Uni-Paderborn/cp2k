@@ -60,10 +60,13 @@ MODULE qs_ks_methods
    USE hfx_admm_utils,                  ONLY: hfx_admm_init,&
                                               hfx_ks_matrix,&
                                               hfx_ks_matrix_kp
-   USE input_constants,                 ONLY: do_ppl_grid,&
+   USE hfx_types,                       ONLY: hfx_type
+   USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              do_ppl_grid,&
                                               outer_scf_becke_constraint,&
                                               outer_scf_hirshfeld_constraint,&
                                               smeagol_runtype_emtransport
+   USE input_cp2k_hfx,                  ONLY: ri_pmat
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -123,7 +126,8 @@ MODULE qs_ks_methods
    USE qs_ks_atom,                      ONLY: update_ks_atom
    USE qs_ks_qmmm_methods,              ONLY: qmmm_calculate_energy,&
                                               qmmm_modify_hartree_pot
-   USE qs_ks_types,                     ONLY: qs_ks_env_type,&
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type,&
                                               set_ks_env
    USE qs_ks_utils,                     ONLY: &
         calc_v_sic_rspace, calculate_zmp_potential, check_sum_energies, compute_matrix_vxc, &
@@ -138,8 +142,12 @@ MODULE qs_ks_methods
                                               qs_rho_type
    USE qs_sccs,                         ONLY: sccs
    USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_force
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_update
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_add_paw,&
+                                              qs_upf_inverse_scf_paw_evaluate,&
                                               qs_upf_inverse_scf_traces
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc,                          ONLY: qs_vxc_create
    USE qs_vxc_atom,                     ONLY: calculate_vxc_atom,&
                                               gapw_cdft_one_center
@@ -219,14 +227,16 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, kind_of
       LOGICAL :: ace_active, do_adiabatic_rescaling, do_ddapc, do_hfx, do_kpoints, do_ppl, dokp, &
          gapw, gapw_all_all_electron, gapw_all_pseudopotentials, gapw_mixed_core_representations, &
-         gapw_xc, gauxc_model_none, just_energy_xc, lrigpw, my_print, &
+         gapw_xc, gauxc_model_none, inverse_coulomb, just_energy_xc, lrigpw, my_print, &
          native_direct_valence_atom_composite, native_gapw_all_electron_atom_composite, &
          native_gapw_atom_composite_reference, native_gapw_atom_composite_requested, &
          native_gapw_composite_direct_ao, native_gapw_composite_reference, &
          native_gapw_periodic_atom_composite, native_grid_diagnostics, native_grid_use_cuda, &
-         native_skala_evaluator, native_skala_restore_exc
-      LOGICAL :: paw_composite_representation, rigpw, use_gauxc_matrix, use_virial
+         native_skala_evaluator
+      LOGICAL :: native_skala_restore_exc, paw_composite_representation, rigpw, use_gauxc_matrix, &
+         use_virial
       LOGICAL, SAVE :: native_grid_cpu_kpoints_warned = .FALSE.
+      REAL(dp)                                           :: paw_energies(3)
       REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, mulliken_order_p, &
          native_skala_composite_contraction, native_skala_composite_rho_contraction, &
          native_skala_composite_tau_contraction, native_skala_exc_scf, native_skala_total_scf, &
@@ -249,6 +259,7 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(ecoul_1center_type), DIMENSION(:), POINTER    :: ecoul_1c
       TYPE(harris_type), POINTER                         :: harris_env
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(local_rho_type), POINTER                      :: local_rho_set
       TYPE(lri_density_type), POINTER                    :: lri_density
@@ -274,6 +285,7 @@ CONTAINS
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho, rho1, rho_struct, rho_xc
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: ace_section, &
                                                             adiabatic_rescaling_section, &
                                                             gauxc_section, hfx_sections, input, &
@@ -390,6 +402,17 @@ CONTAINS
       ! Check for GAPW method : additional terms for local densities
       gapw = dft_control%qs_control%gapw
       gapw_xc = dft_control%qs_control%gapw_xc
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      inverse_coulomb = .FALSE.
+      IF (ASSOCIATED(inverse)) inverse_coulomb = ASSOCIATED(inverse%coulomb)
+      IF (inverse_coulomb) THEN
+         IF (do_ddapc .OR. dft_control%do_pcc .OR. dft_control%correct_surf_dip .OR. &
+             dft_control%apply_external_potential .OR. qs_env%qmmm) THEN
+            CPABORT("Complete inverse GAPW external density operators are not implemented yet")
+         END IF
+         ! The owned source and common AO adjoint replace the earlier one-center Hartree terms.
+         gapw = .FALSE.
+      END IF
       ! Inverse GAPW_XC has its own density and atom operators, assembled with the native PW XC.
       IF (qs_upf_inverse_scf_active(ks_env)) gapw_xc = .FALSE.
       IF (gapw_xc .AND. gapw) THEN
@@ -433,6 +456,7 @@ CONTAINS
                                            "PRINT%DETAILED_ENERGY"), &
                 cp_p_file) .AND. &
           (.NOT. gapw) .AND. (.NOT. gapw_xc) .AND. &
+          (.NOT. inverse_coulomb) .AND. &
           (.NOT. (poisson_env%parameters%solver == pw_poisson_implicit))) THEN
          CALL pw_zero(rho_tot_gspace)
          CALL calc_rho_tot_gspace(rho_tot_gspace, qs_env, rho, skip_nuclear_density=.TRUE.)
@@ -443,7 +467,11 @@ CONTAINS
       END IF
 
       ! Get the total density in g-space [ions + electrons]
-      CALL calc_rho_tot_gspace(rho_tot_gspace, qs_env, rho)
+      IF (inverse_coulomb) THEN
+         CALL pw_zero(rho_tot_gspace)
+      ELSE
+         CALL calc_rho_tot_gspace(rho_tot_gspace, qs_env, rho)
+      END IF
 
       IF (qs_env%scf_control%gce%do_gce .AND. .NOT. dft_control%do_pcc) THEN
          CPABORT("GCE requires DFT%PLANAR_COUNTER_CHARGE to define the countercharge plane.")
@@ -458,7 +486,10 @@ CONTAINS
          CALL print_densities(qs_env, rho)
       END IF
 
-      IF (dft_control%do_sccs) THEN
+      IF (inverse_coulomb) THEN
+         CALL qs_upf_inverse_coulomb_update(qs_env, energy%hartree, electronic_energy=energy%e_hartree)
+         CALL pw_copy(inverse%coulomb%potential_g, v_hartree_gspace)
+      ELSE IF (dft_control%do_sccs) THEN
          ! Self-consistent continuum solvation (SCCS) model
          NULLIFY (v_sccs_rspace)
          ALLOCATE (v_sccs_rspace)
@@ -710,6 +741,7 @@ CONTAINS
                native_direct_valence_atom_composite = &
                   xc_section_uses_native_skala_grid(xc_section) .AND. &
                   native_skala_uses_atom_composite_grid(xc_section) .AND. &
+                  .NOT. qs_upf_inverse_scf_active(ks_env) .AND. &
                   ((.NOT. gapw .AND. .NOT. gapw_xc) .OR. &
                    (gapw_representation == skala_gapw_direct_valence .AND. &
                     gapw_all_pseudopotentials))
@@ -988,6 +1020,17 @@ CONTAINS
          END IF
       END IF
 
+      IF (do_hfx) THEN
+         CALL get_qs_env(qs_env, x_data=exchange)
+         CPASSERT(ASSOCIATED(exchange))
+         CALL qs_upf_inverse_scf_paw_evaluate(ks_env, xc_section, paw_energies, exchange=exchange)
+      ELSE
+         CALL qs_upf_inverse_scf_paw_evaluate(ks_env, xc_section, paw_energies)
+      END IF
+      energy%paw_hartree = paw_energies(1)
+      energy%paw_xc = paw_energies(2)
+      energy%paw_core = paw_energies(3)
+
       IF (gapw .AND. dft_control%qs_control%cdft) THEN
          ALLOCATE (cdft_gapw_values(SIZE(cdft_control%group)))
          IF (cdft_control%atomic_charges) THEN
@@ -1077,9 +1120,6 @@ CONTAINS
       ! *** Add Hartree-Fock contribution if required ***
       hfx_sections => section_vals_get_subs_vals(xc_section, "HF")
       CALL section_vals_get(hfx_sections, explicit=do_hfx)
-      IF (do_hfx .AND. qs_upf_inverse_scf_active(ks_env)) THEN
-         CPABORT("Inverse USPP exact exchange is not implemented")
-      END IF
 
       ace_active = .FALSE.
       ace_rebuild_frequency = 1
@@ -1090,6 +1130,10 @@ CONTAINS
             CALL section_vals_val_get(ace_section, "ACTIVE", l_val=ace_active)
             CALL section_vals_val_get(ace_section, "REBUILD_FREQUENCY", i_val=ace_rebuild_frequency)
          END IF
+      END IF
+
+      IF (do_hfx .AND. qs_upf_inverse_scf_active(ks_env)) THEN
+         CALL check_inverse_exchange(qs_env, ace_active)
       END IF
 
       IF (do_hfx) THEN
@@ -1125,7 +1169,11 @@ CONTAINS
           .NOT. native_gapw_atom_composite_reference .AND. &
           .NOT. native_direct_valence_atom_composite) THEN
          IF (qs_upf_inverse_scf_active(ks_env)) THEN
-            CALL qs_upf_inverse_core_force(qs_env, v_rspace_new)
+            IF (ASSOCIATED(v_tau_rspace)) THEN
+               CALL qs_upf_inverse_core_force(qs_env, v_rspace_new, v_tau_rspace)
+            ELSE
+               CALL qs_upf_inverse_core_force(qs_env, v_rspace_new)
+            END IF
          ELSE
             DO ispin = 1, nspins
                CALL integrate_rho_nlcc(v_rspace_new(ispin), qs_env)
@@ -1148,7 +1196,7 @@ CONTAINS
 
       ! ***  Single atom contributions ***
       IF (.NOT. just_energy) THEN
-         IF (calculate_forces) THEN
+         IF (calculate_forces .AND. .NOT. inverse_coulomb) THEN
             ! Getting nuclear force contribution from the core charge density
             IF ((poisson_env%parameters%solver == pw_poisson_implicit) .AND. &
                 (poisson_env%parameters%dielectric_params%dielec_core_correction)) THEN
@@ -1200,6 +1248,7 @@ CONTAINS
                                    v_rspace_new, v_rspace_new_aux_fit, v_tau_rspace, v_tau_rspace_aux_fit, &
                                    v_sic_rspace, v_spin_ddapc_rest_r, v_sccs_rspace, v_rspace_embed, &
                                    cdft_control, calculate_forces)
+         CALL qs_upf_inverse_scf_add_paw(ks_env)
 
          IF (use_gauxc_matrix) THEN
             IF (dokp) THEN
@@ -1930,5 +1979,49 @@ CONTAINS
       END IF
 
    END SUBROUTINE qs_ks_allocate_basics
+
+! **************************************************************************************************
+!> \brief Require the native RI contraction of the complete original inverse transition charges.
+!>        Unsupported exchange variants must not use ordinary Gaussian products alone.
+!> \param qs_env Native inverse fields and exchange contributions.
+!> \param ace_active Whether exchange compression is selected.
+! **************************************************************************************************
+   SUBROUTINE check_inverse_exchange(qs_env, ace_active)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(IN)                                :: ace_active
+
+      INTEGER                                            :: contribution
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+
+      CALL get_qs_env(qs_env, ks_env=ks_env, dft_control=control, x_data=exchange)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      CPASSERT(ASSOCIATED(inverse))
+      IF (control%do_admm .OR. ace_active) THEN
+         CPABORT("Inverse UPF ADMM and ACE exchange are not implemented yet")
+      END IF
+      IF (ASSOCIATED(inverse%bloch%kpoints) .OR. ANY(inverse%frame%ao%periodicity /= 0)) THEN
+         CPABORT("Periodic inverse UPF exchange is not implemented yet")
+      END IF
+      CPASSERT(ASSOCIATED(exchange))
+      DO contribution = 1, SIZE(exchange, 1)
+         IF (.NOT. exchange(contribution, 1)%do_hfx_ri) THEN
+            CPABORT("Inverse UPF exchange requires RI transition integrals")
+         END IF
+         CPASSERT(ASSOCIATED(exchange(contribution, 1)%ri_data))
+         ASSOCIATE (ri => exchange(contribution, 1)%ri_data)
+            IF (ri%input_flavor /= ri_pmat .OR. TRIM(ri%orb_basis_type) /= "ORB") THEN
+               CPABORT("Inverse UPF exchange requires RI-RHO with the primary orbital basis")
+            END IF
+            ! Coulomb fitting retains the complete original transition charge. The native
+            ! inverse-metric/exchange/inverse-metric product supplies the selected exchange kernel.
+            IF (ri%ri_metric%potential_type /= do_potential_coulomb) THEN
+               CPABORT("Inverse UPF RI transition integrals require a Coulomb fitting metric")
+            END IF
+         END ASSOCIATE
+      END DO
+   END SUBROUTINE check_inverse_exchange
 
 END MODULE qs_ks_methods

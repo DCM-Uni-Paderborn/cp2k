@@ -103,6 +103,8 @@ CONTAINS
 !> \param   matrix_p density matrix for force calculation (optional)
 !> \param   matrixkp_p density matrix for force calculation with k_points (optional)
 !> \param ext_kpoints ...
+!> \param force_response Optional local native overlap energy gradients, without updating force owners.
+!> \param virial_response Optional local native overlap virial, without updating virial owners.
 !> \date    11.03.2002
 !> \par     History
 !>          Enlarged functionality of this routine. Now overlap matrices based
@@ -117,7 +119,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE build_overlap_matrix(ks_env, matrix_s, matrixkp_s, matrix_name, &
                                    nderivative, basis_type_a, basis_type_b, sab_nl, calculate_forces, &
-                                   matrix_p, matrixkp_p, ext_kpoints)
+                                   matrix_p, matrixkp_p, ext_kpoints, force_response, virial_response)
 
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, &
@@ -134,6 +136,8 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:, :), OPTIONAL, &
          POINTER                                         :: matrixkp_p
       TYPE(kpoint_type), OPTIONAL, POINTER               :: ext_kpoints
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: force_response(:, :), &
+                                                            virial_response(3, 3)
 
       INTEGER                                            :: natom
 
@@ -143,7 +147,7 @@ CONTAINS
 
       CALL build_overlap_matrix_low(ks_env, matrix_s, matrixkp_s, matrix_name, nderivative, &
                                     basis_type_a, basis_type_b, sab_nl, calculate_forces, &
-                                    matrix_p, matrixkp_p, ext_kpoints, natom)
+                                    matrix_p, matrixkp_p, ext_kpoints, natom, force_response, virial_response)
 
    END SUBROUTINE build_overlap_matrix
 
@@ -163,10 +167,12 @@ CONTAINS
 !> \param matrixkp_p ...
 !> \param ext_kpoints ...
 !> \param natom ...
+!> \param force_response ...
+!> \param virial_response ...
 ! **************************************************************************************************
    SUBROUTINE build_overlap_matrix_low(ks_env, matrix_s, matrixkp_s, matrix_name, nderivative, &
                                        basis_type_a, basis_type_b, sab_nl, calculate_forces, &
-                                       matrix_p, matrixkp_p, ext_kpoints, natom)
+                                       matrix_p, matrixkp_p, ext_kpoints, natom, force_response, virial_response)
 
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, &
@@ -184,6 +190,8 @@ CONTAINS
          POINTER                                         :: matrixkp_p
       TYPE(kpoint_type), OPTIONAL, POINTER               :: ext_kpoints
       INTEGER, INTENT(IN)                                :: natom
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: force_response(:, :), &
+                                                            virial_response(3, 3)
 
       CHARACTER(len=*), PARAMETER :: routineN = 'build_overlap_matrix_low'
 
@@ -263,6 +271,12 @@ CONTAINS
       ELSE
          do_forces = .FALSE.
       END IF
+      IF (PRESENT(force_response) .OR. PRESENT(virial_response)) THEN
+         CPASSERT(do_forces)
+      END IF
+      IF (PRESENT(force_response)) THEN
+         CPASSERT(ALL(SHAPE(force_response) == [3, natom]))
+      END IF
 
       IF (PRESENT(nderivative)) THEN
          nder = nderivative
@@ -297,7 +311,7 @@ CONTAINS
       use_virial = .FALSE.
       IF (do_forces) THEN
          CALL get_ks_env(ks_env=ks_env, force=force, virial=virial)
-         use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
+         use_virial = PRESENT(virial_response) .OR. (virial%pv_availability .AND. (.NOT. virial%pv_numer))
       END IF
 
       force_thread = 0.0_dp
@@ -518,7 +532,9 @@ CONTAINS
 
 !$OMP END PARALLEL
 
-      IF (do_forces) THEN
+      IF (PRESENT(force_response)) THEN
+         force_response(:, :) = force_thread
+      ELSE IF (do_forces) THEN
          CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
 !$OMP DO
          DO iatom = 1, natom
@@ -528,7 +544,9 @@ CONTAINS
          END DO
 !$OMP END DO
       END IF
-      IF (do_forces .AND. use_virial) THEN
+      IF (PRESENT(virial_response)) THEN
+         virial_response(:, :) = pv_thread
+      ELSE IF (do_forces .AND. use_virial) THEN
          virial%pv_overlap = virial%pv_overlap + pv_thread
          virial%pv_virial = virial%pv_virial + pv_thread
       END IF

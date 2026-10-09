@@ -261,10 +261,12 @@ CONTAINS
                          mo_set%mo_coeff, h_block, 0.0_dp, weighted_vectors)
 
       CALL dbcsr_set(w_matrix, 0.0_dp)
+      ! The overlap response couples to the symmetric energy-weighted density even when the
+      ! occupied OT Hamiltonian retains a finite SCF residual.
       CALL cp_dbcsr_plus_fm_fm_t(sparse_matrix=w_matrix, &
                                  matrix_v=mo_set%mo_coeff, &
                                  matrix_g=weighted_vectors, &
-                                 ncol=mo_set%homo)
+                                 ncol=mo_set%homo, symmetry_mode=1)
 
       IF (check_gradient) THEN
          CALL cp_fm_create(gradient, mo_set%mo_coeff%matrix_struct, "gradient")

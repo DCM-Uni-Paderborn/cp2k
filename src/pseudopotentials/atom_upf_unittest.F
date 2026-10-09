@@ -58,7 +58,8 @@ PROGRAM atom_upf_unittest
                                               create_grid_atom,&
                                               deallocate_grid_atom,&
                                               grid_atom_type
-   USE upf_types,                       ONLY: upf_has_complete_partial_waves
+   USE upf_types,                       ONLY: upf_has_complete_partial_waves,&
+                                              upf_nlcc_kinetic
 
    IMPLICIT NONE
    LOGICAL :: source_root_argument
@@ -146,7 +147,10 @@ CONTAINS
    SUBROUTINE check_uspp_import()
       CHARACTER(LEN=*), PARAMETER :: fixture = "uspp-augmentation-test.upf"
 
+      CHARACTER(LEN=256)                                 :: reason
       INTEGER                                            :: unit
+      LOGICAL                                            :: available
+      REAL(dp), ALLOCATABLE                              :: kinetic(:)
       TYPE(atom_upfpot_type)                             :: pot
       TYPE(cp_logger_type), POINTER                      :: logger
 
@@ -156,7 +160,8 @@ CONTAINS
          WRITE (unit, '(A)') &
             '<UPF version="2.0.1">', &
             '<PP_HEADER element="Pt" pseudo_type="USPP" is_ultrasoft="true"', &
-            ' z_valence="16" mesh_size="3" number_of_proj="2" l_max="1" />', &
+            ' z_valence="16" mesh_size="3" number_of_proj="2" l_max="1"', &
+            ' core_correction="true" with_metagga_info="true" />', &
             '<PP_MESH mesh="3">', &
             '<PP_R>', &
             '0.5 1.0 1.5', &
@@ -165,6 +170,10 @@ CONTAINS
             '0.5 0.5 0.5', &
             '</PP_RAB>', &
             '</PP_MESH>', &
+            '<PP_NLCC>', '1 0.5 0.1', '</PP_NLCC>', &
+            '<PP_TAUMOD type="real" size="3" convention="hartree_per_volume">', &
+            '0.2 0.7 0.05', '</PP_TAUMOD>', &
+            '<PP_TAUATOM type="real" size="3">', '3 2 1', '</PP_TAUATOM>', &
             '<PP_LOCAL type="real" size="3">', &
             '6 4 2', &
             '</PP_LOCAL>', &
@@ -212,8 +221,32 @@ CONTAINS
       IF (ANY(pot%qijl(:, :, 2) /= 0._dp)) ERROR STOP 'Null augmentation was not zero initialized'
       IF (MAXVAL(ABS(pot%beta(:, 2) - [4._dp, -1._dp, 2._dp])) > 1.e-14_dp) ERROR STOP 'USPP beta normalization changed'
       IF (ABS(pot%dion(2, 2) - 4._dp) > 1.e-14_dp) ERROR STOP 'USPP D is not in Hartree'
+      IF (.NOT. pot%with_metagga_info) ERROR STOP 'UPF meta-GGA header flag was not retained'
+      IF (ANY(pot%tau_atom /= [3._dp, 2._dp, 1._dp]) .OR. pot%tau_atom_convention /= '') THEN
+         ERROR STOP 'Raw UPF atomic tau was converted or assigned an unknown convention'
+      END IF
+      CALL upf_nlcc_kinetic(pot, kinetic, available, reason)
+      IF (.NOT. available .OR. ANY(kinetic /= [0.2_dp, 0.7_dp, 0.05_dp])) THEN
+         ERROR STOP 'Explicit canonical UPF core tau was not preserved'
+      END IF
+      pot%tau_nlcc_convention = ''
+      CALL upf_nlcc_kinetic(pot, kinetic, available, reason)
+      IF (available) ERROR STOP 'Unlabelled core tau was accepted as canonical'
+      DEALLOCATE (pot%tau_nlcc)
+      CALL upf_nlcc_kinetic(pot, kinetic, available, reason)
+      IF (available) ERROR STOP 'NLCC charge was used to infer missing core tau'
+      pot%rho_nlcc = 0.0_dp
+      CALL upf_nlcc_kinetic(pot, kinetic, available, reason)
+      IF (.NOT. available .OR. ANY(kinetic /= 0.0_dp)) ERROR STOP 'Absent core tau was not exact zero'
+      ALLOCATE (pot%tau_nlcc(3), SOURCE=1.0_dp)
+      CALL upf_nlcc_kinetic(pot, kinetic, available, reason)
+      IF (available) ERROR STOP 'Nonzero core tau without NLCC charge was accepted'
       CALL atom_release_upf(pot)
       IF (ALLOCATED(pot%qij) .OR. ALLOCATED(pot%qijl)) ERROR STOP 'Augmentation arrays were not released'
+      IF (ALLOCATED(pot%tau_nlcc) .OR. ALLOCATED(pot%tau_atom)) ERROR STOP 'UPF kinetic arrays were not released'
+      IF (pot%with_metagga_info .OR. pot%tau_nlcc_convention /= '' .OR. pot%tau_atom_convention /= '') THEN
+         ERROR STOP 'UPF kinetic metadata was not reset'
+      END IF
       CALL logger%para_env%sync()
       IF (logger%para_env%is_source()) THEN
          OPEN (NEWUNIT=unit, FILE=fixture, STATUS='OLD')

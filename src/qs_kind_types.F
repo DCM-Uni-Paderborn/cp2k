@@ -1818,7 +1818,8 @@ CONTAINS
       INTEGER, PARAMETER                                 :: maxbas = 20
 
       CHARACTER(LEN=2)                                   :: element_symbol
-      CHARACTER(len=default_path_length)                 :: kg_potential_fn_kind, potential_fn_kind
+      CHARACTER(len=default_path_length)                 :: kg_potential_fn_kind, potential_fn_kind, &
+                                                            upf_file_name
       CHARACTER(LEN=default_path_length), DIMENSION(:), &
          POINTER                                         :: dft_potential_file_names, &
                                                             potential_file_names
@@ -1876,6 +1877,7 @@ CONTAINS
       kgpot_type = ""
       kg_potential_fn_kind = "-"
       potential_fn_kind = "-"
+      upf_file_name = ""
       z = -1
       zeff_correction = 0.0_dp
       explicit = .FALSE.
@@ -2078,6 +2080,13 @@ CONTAINS
             END IF
          END IF
          CALL uppercase(potential_type)
+         IF (potential_type == "UPF") THEN
+            upf_file_name = potential_name
+            IF (potential_fn_kind /= "-") upf_file_name = potential_fn_kind
+            IF (upf_file_name == "" .OR. upf_file_name == "UPF") THEN
+               CPABORT("POTENTIAL UPF requires a filename in KIND%POTENTIAL_FILE_NAME or POTENTIAL UPF <FILENAME>")
+            END IF
+         END IF
 
          ! Parse KG POTENTIAL
          CALL section_vals_val_get(kind_section, i_rep_section=k_rep, &
@@ -2665,7 +2674,7 @@ CONTAINS
             CASE ("UPF")
                ALLOCATE (qs_kind%upf_potential)
                qs_kind%upf_potential%zion = 0
-               qs_kind%upf_potential%filename = ADJUSTL(TRIM(potential_name))
+               qs_kind%upf_potential%filename = ADJUSTL(TRIM(upf_file_name))
                CALL get_qs_kind(qs_kind, elec_conf=elec_conf)
                IF (.NOT. ASSOCIATED(elec_conf)) THEN
                   CALL set_qs_kind(qs_kind, elec_conf=qs_kind%upf_potential%econf)
@@ -2872,9 +2881,9 @@ CONTAINS
                CASE ("UPF")
                   CALL allocate_potential(qs_kind%sgp_potential)
                   CALL get_potential(qs_kind%sgp_potential, description=description)
-                  description(4) = "UPF "//TRIM(potential_name)
-                  CALL atom_read_upf(upfpot, potential_name, read_augmentation=.TRUE.)
-                  IF (TRIM(upfpot%pseudo_type) == "NC" .OR. upfpot%is_ultrasoft) THEN
+                  description(4) = "UPF "//TRIM(upf_file_name)
+                  CALL atom_read_upf(upfpot, upf_file_name, read_augmentation=.TRUE., read_paw=.TRUE.)
+                  IF (TRIM(upfpot%pseudo_type) == "NC" .OR. upfpot%is_ultrasoft .OR. upfpot%is_paw) THEN
                      ALLOCATE (qs_kind%sgp_potential%upf_data, SOURCE=upfpot)
                   END IF
                   CALL set_potential(qs_kind%sgp_potential, name=upfpot%pname, description=description, &
@@ -4283,9 +4292,9 @@ CONTAINS
    END SUBROUTINE set_pseudo_state
 
 ! **************************************************************************************************
-!> \brief Whether a non-ghost kind carries ultrasoft augmentation.
+!> \brief Whether a non-ghost kind carries USPP or PAW augmentation.
 !> \param qs_kind_set Current Gaussian kinds.
-!> \return True for at least one scalar USPP kind.
+!> \return True for at least one scalar USPP or PAW kind.
 ! **************************************************************************************************
    FUNCTION has_uspp(qs_kind_set) RESULT(ultrasoft)
       TYPE(qs_kind_type), INTENT(IN)                     :: qs_kind_set(:)
@@ -4298,7 +4307,8 @@ CONTAINS
          IF (qs_kind_set(ikind)%ghost) CYCLE
          IF (.NOT. ASSOCIATED(qs_kind_set(ikind)%sgp_potential)) CYCLE
          IF (.NOT. ALLOCATED(qs_kind_set(ikind)%sgp_potential%upf_data)) CYCLE
-         IF (qs_kind_set(ikind)%sgp_potential%upf_data%is_ultrasoft) ultrasoft = .TRUE.
+         IF (qs_kind_set(ikind)%sgp_potential%upf_data%is_ultrasoft .OR. &
+             qs_kind_set(ikind)%sgp_potential%upf_data%is_paw) ultrasoft = .TRUE.
       END DO
    END FUNCTION has_uspp
 

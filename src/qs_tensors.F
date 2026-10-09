@@ -57,6 +57,7 @@ MODULE qs_tensors
                                               hfx_init_container
    USE input_constants,                 ONLY: do_potential_coulomb,&
                                               do_potential_id,&
+                                              do_potential_long,&
                                               do_potential_mix_cl_trunc,&
                                               do_potential_short,&
                                               do_potential_truncated
@@ -206,7 +207,8 @@ CONTAINS
             END IF
          END DO
 
-      ELSE IF (potential_parameter%potential_type == do_potential_coulomb) THEN
+      ELSE IF (potential_parameter%potential_type == do_potential_coulomb .OR. &
+               potential_parameter%potential_type == do_potential_long) THEN
 
          !Coulomb operator, virtually infinite range => set j_radius to arbitrarily large number
          DO ikind = 1, nkind
@@ -713,7 +715,7 @@ CONTAINS
           .OR. op_ij == do_potential_mix_cl_trunc) THEN
          dr_ij = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ik = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op_ij == do_potential_coulomb) THEN
+      ELSE IF (op_ij == do_potential_coulomb .OR. op_ij == do_potential_long) THEN
          dr_ij = 1000000.0_dp
          dr_ik = 1000000.0_dp
       END IF
@@ -722,7 +724,7 @@ CONTAINS
           .OR. op_jk == do_potential_mix_cl_trunc) THEN
          dr_jk = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ik = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op_jk == do_potential_coulomb) THEN
+      ELSE IF (op_jk == do_potential_coulomb .OR. op_jk == do_potential_long) THEN
          dr_jk = 1000000.0_dp
          dr_ik = 1000000.0_dp
       END IF
@@ -1030,7 +1032,7 @@ CONTAINS
           .OR. op_ij == do_potential_mix_cl_trunc) THEN
          dr_ij = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ik = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op_ij == do_potential_coulomb) THEN
+      ELSE IF (op_ij == do_potential_coulomb .OR. op_ij == do_potential_long) THEN
          dr_ij = 1000000.0_dp
          dr_ik = 1000000.0_dp
       END IF
@@ -1039,7 +1041,7 @@ CONTAINS
           .OR. op_jk == do_potential_mix_cl_trunc) THEN
          dr_jk = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ik = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op_jk == do_potential_coulomb) THEN
+      ELSE IF (op_jk == do_potential_coulomb .OR. op_jk == do_potential_long) THEN
          dr_jk = 1000000.0_dp
          dr_ik = 1000000.0_dp
       END IF
@@ -1701,7 +1703,7 @@ CONTAINS
           .OR. op_ij == do_potential_mix_cl_trunc) THEN
          dr_ij = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ik = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op_ij == do_potential_coulomb) THEN
+      ELSE IF (op_ij == do_potential_coulomb .OR. op_ij == do_potential_long) THEN
          dr_ij = 1000000.0_dp
          dr_ik = 1000000.0_dp
       END IF
@@ -1710,7 +1712,7 @@ CONTAINS
           .OR. op_jk == do_potential_mix_cl_trunc) THEN
          dr_jk = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ik = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op_jk == do_potential_coulomb) THEN
+      ELSE IF (op_jk == do_potential_coulomb .OR. op_jk == do_potential_long) THEN
          dr_jk = 1000000.0_dp
          dr_ik = 1000000.0_dp
       END IF
@@ -2238,7 +2240,7 @@ CONTAINS
           .OR. op_ij == do_potential_mix_cl_trunc) THEN
          dr_ij = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ik = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op_ij == do_potential_coulomb) THEN
+      ELSE IF (op_ij == do_potential_coulomb .OR. op_ij == do_potential_long) THEN
          dr_ij = 1000000.0_dp
          dr_ik = 1000000.0_dp
       END IF
@@ -2247,7 +2249,7 @@ CONTAINS
           .OR. op_jk == do_potential_mix_cl_trunc) THEN
          dr_jk = potential_parameter%cutoff_radius*cutoff_screen_factor
          dr_ik = potential_parameter%cutoff_radius*cutoff_screen_factor
-      ELSE IF (op_jk == do_potential_coulomb) THEN
+      ELSE IF (op_jk == do_potential_coulomb .OR. op_jk == do_potential_long) THEN
          dr_jk = 1000000.0_dp
          dr_ik = 1000000.0_dp
       END IF

@@ -65,13 +65,15 @@ MODULE qs_force
                                               replicate_qs_force,&
                                               zero_qs_force
    USE qs_ks_methods,                   ONLY: qs_ks_update_qs_env
-   USE qs_ks_types,                     ONLY: qs_ks_env_type,&
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type,&
                                               set_ks_env
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_scf_post_scf,                 ONLY: qs_scf_compute_properties
    USE qs_subsys_types,                 ONLY: qs_subsys_set,&
                                               qs_subsys_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE ri_environment_methods,          ONLY: build_ri_matrices
    USE rt_propagation_forces,           ONLY: calc_c_mat_force,&
                                               rt_admm_force
@@ -142,7 +144,8 @@ CONTAINS
       LOGICAL                                            :: do_admm, do_exx, do_gw, do_im_time, &
                                                             do_kpoints, has_unit_metric, &
                                                             omit_headers, perform_ec, reuse_hfx
-      REAL(dp)                                           :: dummy_real, dummy_real2(2)
+      REAL(dp)                                           :: dummy_real, dummy_real2(2), &
+                                                            hartree_measure
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -158,6 +161,7 @@ CONTAINS
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_subsys_type), POINTER                      :: subsys
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: hfx_sections, print_section
       TYPE(virial_type), POINTER                         :: virial
 
@@ -448,11 +452,18 @@ CONTAINS
                   energy%exc_aux_fit = ec_env%exc_aux_fit
                END IF
             END IF
+            hartree_measure = 2.0_dp*(energy%hartree + energy%sccs_pol)
+            CALL get_qs_env(qs_env, ks_env=ks_env)
+            CALL get_ks_env(ks_env, upf_inverse=inverse)
+            IF (ASSOCIATED(inverse)) THEN
+               ! The complete inverse Coulomb response already differentiates its Fourier measure.
+               IF (ASSOCIATED(inverse%coulomb)) hartree_measure = 0.0_dp
+            END IF
             DO i = 1, 3
                virial%pv_ehartree(i, i) = virial%pv_ehartree(i, i) &
-                                          - 2.0_dp*(energy%hartree + energy%sccs_pol)
+                                          - hartree_measure
                virial%pv_virial(i, i) = virial%pv_virial(i, i) - energy%exc &
-                                        - 2.0_dp*(energy%hartree + energy%sccs_pol)
+                                        - hartree_measure
                virial%pv_exc(i, i) = virial%pv_exc(i, i) - energy%exc
                IF (dft_control%do_admm) THEN
                   virial%pv_exc(i, i) = virial%pv_exc(i, i) - energy%exc_aux_fit

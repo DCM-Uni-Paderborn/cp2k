@@ -11,7 +11,8 @@
 ! **************************************************************************************************
 MODULE qs_kpoint_density_state
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
-                                              cp_cfm_get_submatrix
+                                              cp_cfm_get_submatrix,&
+                                              cp_cfm_set_submatrix
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
@@ -24,6 +25,7 @@ MODULE qs_kpoint_density_state
    PUBLIC :: kpoint_density_state_initialize, kpoint_density_state_capture
    PUBLIC :: kpoint_density_state_accept, kpoint_density_state_delta, kpoint_density_state_restore
    PUBLIC :: kpoint_density_state_mulliken
+   PUBLIC :: kpoint_density_state_write, kpoint_density_state_read
 CONTAINS
 
 ! **************************************************************************************************
@@ -41,9 +43,11 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Explicitly attach group-local accepted/trial density storage to a native Bloch state.
 !> \param kpoints ...
+!> \param representation Identity of the orbital representation stored in restart files.
 ! **************************************************************************************************
-   SUBROUTINE kpoint_density_state_initialize(kpoints)
+   SUBROUTINE kpoint_density_state_initialize(kpoints, representation)
       TYPE(kpoint_type), INTENT(INOUT)                   :: kpoints
+      INTEGER, INTENT(IN)                                :: representation
 
       INTEGER                                            :: ik, nspin, spin
 
@@ -64,7 +68,153 @@ CONTAINS
       kpoints%native_trial_valid = .FALSE.
       ! A representation-specific generalized solve seeds P(k) in the physical metric.
       kpoints%native_density_seeded = .FALSE.
+      kpoints%native_density_representation = representation
    END SUBROUTINE kpoint_density_state_initialize
+
+! **************************************************************************************************
+!> \brief Write complete complex densities and their physical metrics to a k-point restart.
+!>        Each owning group contributes once. Storage is independent of the MPI grouping and
+!>        does not project the density onto a finite set of real-space images.
+!> \param kpoints ...
+!> \param unit Restart unit on the world source, nonpositive on other ranks.
+! **************************************************************************************************
+   SUBROUTINE kpoint_density_state_write(kpoints, unit)
+      TYPE(kpoint_type), INTENT(IN)                      :: kpoints
+      INTEGER, INTENT(IN)                                :: unit
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      INTEGER                                            :: ik, local, n, nspin, spin
+      LOGICAL                                            :: owns
+
+      CPASSERT(kpoints%native_density_seeded)
+      CPASSERT(ALLOCATED(kpoints%native_density))
+      n = kpoints%native_density(1, 1)%matrix_struct%nrow_global
+      nspin = SIZE(kpoints%native_density, 2)
+      ALLOCATE (matrix(n, n))
+      IF (unit > 0) THEN
+         WRITE (unit) kpoints%nkp, nspin, n, kpoints%native_density_representation
+         WRITE (unit) kpoints%xkp(1:3, :), kpoints%wkp
+      END IF
+      DO ik = 1, kpoints%nkp
+         local = ik - kpoints%kp_range(1) + 1
+         owns = ik >= kpoints%kp_range(1) .AND. ik <= kpoints%kp_range(2)
+         matrix = CMPLX(0.0_dp, 0.0_dp, dp)
+         IF (owns) THEN
+            CALL cp_cfm_get_submatrix(kpoints%native_operators(kpoint_slot_s)%matrices(local, 1), matrix)
+            IF (.NOT. kpoints%para_env_kp%is_source()) matrix = CMPLX(0.0_dp, 0.0_dp, dp)
+         END IF
+         CALL kpoints%para_env%sum(matrix)
+         IF (unit > 0) WRITE (unit) matrix
+         DO spin = 1, nspin
+            matrix = CMPLX(0.0_dp, 0.0_dp, dp)
+            IF (owns) THEN
+               CALL cp_cfm_get_submatrix(kpoints%native_density(local, spin), matrix)
+               IF (.NOT. kpoints%para_env_kp%is_source()) matrix = CMPLX(0.0_dp, 0.0_dp, dp)
+            END IF
+            CALL kpoints%para_env%sum(matrix)
+            IF (unit > 0) WRITE (unit) matrix
+         END DO
+      END DO
+      DEALLOCATE (matrix)
+   END SUBROUTINE kpoint_density_state_write
+
+! **************************************************************************************************
+!> \brief Restore complete Bloch densities, preserving occupations in the current physical metric.
+!>        For M = R^H R, A = R_new^-1 R_old gives P_new = A P_old A^H. This congruence
+!>        preserves positivity, all occupation eigenvalues and charge, including empty spins.
+!> \param kpoints ...
+!> \param unit Restart unit on the world source, nonpositive on other ranks.
+! **************************************************************************************************
+   SUBROUTINE kpoint_density_state_read(kpoints, unit)
+      TYPE(kpoint_type), INTENT(INOUT)                   :: kpoints
+      INTEGER, INTENT(IN)                                :: unit
+
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :), metric(:, :), &
+                                                            previous_metric(:, :), &
+                                                            transform(:, :), upper(:, :)
+      INTEGER                                            :: i, ik, info, ios, local, n, nao, nk, &
+                                                            nspin, representation, spin
+      LOGICAL                                            :: owns
+      REAL(dp)                                           :: charge, tolerance
+      REAL(dp), ALLOCATABLE                              :: coordinates(:, :), weights(:)
+
+      CPASSERT(ALLOCATED(kpoints%native_density))
+      n = kpoints%native_density(1, 1)%matrix_struct%nrow_global
+      IF (unit > 0) THEN
+         READ (unit, IOSTAT=ios) nk, nspin, nao, representation
+         IF (ios /= 0) CPABORT("Incomplete native k-point restart header")
+      END IF
+      CALL kpoints%para_env%bcast(nk)
+      CALL kpoints%para_env%bcast(nspin)
+      CALL kpoints%para_env%bcast(nao)
+      CALL kpoints%para_env%bcast(representation)
+      IF (nk /= kpoints%nkp .OR. nspin /= SIZE(kpoints%native_density, 2) .OR. nao /= n .OR. &
+          representation /= kpoints%native_density_representation) THEN
+         CPABORT("Native k-point restart mesh, spin, basis or representation mismatch")
+      END IF
+      ALLOCATE (coordinates(3, nk), weights(nk))
+      IF (unit > 0) THEN
+         READ (unit, IOSTAT=ios) coordinates, weights
+         IF (ios /= 0) CPABORT("Incomplete native k-point restart mesh")
+      END IF
+      CALL kpoints%para_env%bcast(coordinates)
+      CALL kpoints%para_env%bcast(weights)
+      IF (MAXVAL(ABS(coordinates - kpoints%xkp(1:3, :))) > 1.0E-12_dp .OR. &
+          MAXVAL(ABS(weights - kpoints%wkp)) > 1.0E-12_dp) THEN
+         CPABORT("Native k-point restart has different coordinates or weights")
+      END IF
+      DEALLOCATE (coordinates, weights)
+      ALLOCATE (density(n, n), metric(n, n), previous_metric(n, n), transform(n, n), upper(n, n))
+      DO ik = 1, nk
+         local = ik - kpoints%kp_range(1) + 1
+         owns = ik >= kpoints%kp_range(1) .AND. ik <= kpoints%kp_range(2)
+         IF (unit > 0) THEN
+            READ (unit, IOSTAT=ios) previous_metric
+            IF (ios /= 0) CPABORT("Incomplete native k-point restart metric")
+         END IF
+         CALL kpoints%para_env%bcast(previous_metric)
+         IF (owns) THEN
+            CALL cp_cfm_get_submatrix(kpoints%native_operators(kpoint_slot_s)%matrices(local, 1), metric)
+            tolerance = 1.0E-10_dp*MAX(1.0_dp, MAXVAL(ABS(previous_metric)))
+            IF (MAXVAL(ABS(previous_metric - CONJG(TRANSPOSE(previous_metric)))) > tolerance) THEN
+               CPABORT("Non-Hermitian native k-point restart metric")
+            END IF
+            transform(:, :) = previous_metric
+            upper(:, :) = metric
+            CALL zpotrf('U', n, transform, n, info)
+            IF (info /= 0) CPABORT("Nonpositive native k-point restart metric")
+            CALL zpotrf('U', n, upper, n, info)
+            IF (info /= 0) CPABORT("Nonpositive current native k-point metric")
+            DO i = 1, n
+               transform(i + 1:n, i) = CMPLX(0.0_dp, 0.0_dp, dp)
+            END DO
+            CALL ztrsm('L', 'U', 'N', 'N', n, n, CMPLX(1.0_dp, 0.0_dp, dp), upper, n, transform, n)
+         END IF
+         DO spin = 1, nspin
+            IF (unit > 0) THEN
+               READ (unit, IOSTAT=ios) density
+               IF (ios /= 0) CPABORT("Incomplete native k-point restart density")
+            END IF
+            CALL kpoints%para_env%bcast(density)
+            IF (owns) THEN
+               tolerance = 1.0E-10_dp*MAX(1.0_dp, MAXVAL(ABS(density)))
+               IF (MAXVAL(ABS(density - CONJG(TRANSPOSE(density)))) > tolerance) THEN
+                  CPABORT("Non-Hermitian native k-point restart density")
+               END IF
+               charge = REAL(SUM(density*CONJG(previous_metric)), dp)
+               density(:, :) = MATMUL(transform, MATMUL(density, CONJG(TRANSPOSE(transform))))
+               IF (ABS(SUM(density*CONJG(metric)) - charge) > 1.0E-9_dp*MAX(1.0_dp, ABS(charge))) THEN
+                  CPABORT("Native k-point restart charge normalization failed")
+               END IF
+               CALL cp_cfm_set_submatrix(kpoints%native_density(local, spin), density)
+            END IF
+         END DO
+      END DO
+      DEALLOCATE (density, metric, previous_metric, transform, upper)
+      kpoints%native_density_seeded = .TRUE.
+      kpoints%native_trial_valid = .FALSE.
+      CALL kpoint_density_state_restore(kpoints)
+   END SUBROUTINE kpoint_density_state_read
 
 ! **************************************************************************************************
 !> \brief Capture the newly diagonalized density while retaining the density that built H.

@@ -59,6 +59,14 @@ MODULE kpoint_types
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_types'
 
+   TYPE, PUBLIC :: kp_transform_plan_type
+      INTEGER :: nentry = 0, ngroup = 0
+      LOGICAL :: symmetric = .FALSE.
+      INTEGER, ALLOCATABLE, DIMENSION(:) :: col, col_offset, group_start, image, row, row_offset
+      INTEGER, ALLOCATABLE, DIMENSION(:, :) :: cell
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: symmetry_sign
+   END TYPE kp_transform_plan_type
+
    PUBLIC :: kpoint_type
    PUBLIC :: kpoint_create, kpoint_release, kpoint_reset_initialization, get_kpoint_info, set_kpoint_info
    PUBLIC :: read_kpoint_section, write_kpoint_info
@@ -262,6 +270,7 @@ MODULE kpoint_types
       ! Complete accepted/trial Bloch densities on native group layouts. Explicitly activated.
       TYPE(cp_cfm_type), ALLOCATABLE :: native_density(:, :), native_trial(:, :)
       LOGICAL :: native_trial_valid = .FALSE., native_density_seeded = .FALSE.
+      INTEGER :: native_density_representation = 0
       ! Selected AO indices, accepted density/potential, and a separate cached trial density.
       INTEGER, ALLOCATABLE :: lowdin_orbitals(:)
       REAL(dp), ALLOCATABLE :: lowdin_q(:, :), lowdin_v(:, :), lowdin_q_new(:, :)
@@ -476,6 +485,7 @@ CONTAINS
       END IF
       kpoint%native_trial_valid = .FALSE.
       kpoint%native_density_seeded = .FALSE.
+      kpoint%native_density_representation = 0
    END SUBROUTINE kpoint_native_density_clear
 
 ! **************************************************************************************************

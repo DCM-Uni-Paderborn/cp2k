@@ -60,7 +60,9 @@ MODULE qs_energy_init
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_neighbor_lists,               ONLY: build_qs_neighbor_lists
    USE qs_update_s_mstruct,             ONLY: qs_env_update_s_mstruct
-   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_initialize,&
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_attach
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_initialize,&
                                               qs_upf_inverse_scf_reset
    USE qs_uspp_methods,                 ONLY: qs_uspp_init_ao_matrix
    USE ri_environment_methods,          ONLY: build_ri_matrices
@@ -96,7 +98,8 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: calc_forces
 
       INTEGER                                            :: img, ispin, nimg, nspin
-      LOGICAL                                            :: has_unit_metric, ks_is_complex, &
+      LOGICAL                                            :: has_unit_metric, inverse_atom_local, &
+                                                            inverse_was_enabled, ks_is_complex, &
                                                             molecule_only
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s, matrix_w
       TYPE(dbcsr_type), POINTER                          :: matrix
@@ -112,9 +115,17 @@ CONTAINS
       ELSE
          molecule_only = .FALSE.
       END IF
-      CALL qs_upf_inverse_scf_reset(ks_env)
+      CALL qs_upf_inverse_scf_reset(ks_env, inverse_atom_local, inverse_was_enabled)
       CALL qs_energies_init_hamiltonians(qs_env, calc_forces, molecule_only)
-      CALL qs_upf_inverse_scf_initialize(ks_env)
+      IF (inverse_was_enabled) THEN
+         ! Keep the representation fixed when rebuilding an existing energy/force functional.
+         CALL qs_upf_inverse_scf_initialize(ks_env, inverse_atom_local)
+      ELSE
+         CALL qs_upf_inverse_scf_initialize(ks_env)
+      END IF
+      IF (dft_control%qs_control%gapw .AND. qs_upf_inverse_scf_active(ks_env)) THEN
+         CALL qs_upf_inverse_coulomb_attach(qs_env)
+      END IF
       CALL get_ks_env(ks_env, complex_ks=ks_is_complex)
       CALL qs_ks_allocate_basics(qs_env, is_complex=ks_is_complex)
 

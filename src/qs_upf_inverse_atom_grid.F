@@ -51,8 +51,10 @@ CONTAINS
 !> \param comm Communicator distributing rows in their global radial/angular order.
 !> \param state Owned local quadrature and finite image layouts.
 !> \param image_shell Optional common image shell for a specified finite approximation.
+!> \param atom_blocks Keep complete atom blocks on one rank for nonlocal atomic functionals.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_atom_grid_prepare(atom_coords, cell, atom_kinds, grids, support_radii, comm, state, image_shell)
+   SUBROUTINE qs_upf_inverse_atom_grid_prepare(atom_coords, cell, atom_kinds, grids, support_radii, comm, state, &
+                                               image_shell, atom_blocks)
       REAL(dp), INTENT(IN)                               :: atom_coords(:, :)
       TYPE(cell_type), POINTER                           :: cell
       INTEGER, INTENT(IN)                                :: atom_kinds(:)
@@ -62,9 +64,11 @@ CONTAINS
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(OUT)   :: state
       INTEGER, INTENT(IN), OPTIONAL                      :: image_shell(3)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_blocks
 
       INTEGER                                            :: atom, ia, idir, ir, kind, nlocal, row, &
                                                             shell(3)
+      LOGICAL                                            :: complete_atoms, owned
       REAL(dp)                                           :: radius, taper, u, weight
       TYPE(grid_atom_type), POINTER                      :: grid
 
@@ -74,6 +78,8 @@ CONTAINS
       CPASSERT(SIZE(support_radii) == SIZE(atom_kinds))
       CPASSERT(ALL(support_radii > 0.0_dp))
       CPASSERT(ALL(atom_kinds >= 1 .AND. atom_kinds <= SIZE(grids)))
+      complete_atoms = .FALSE.
+      IF (PRESENT(atom_blocks)) complete_atoms = atom_blocks
       ALLOCATE (state%layouts(SIZE(atom_kinds)))
       nlocal = 0
       row = 0
@@ -94,7 +100,9 @@ CONTAINS
             IF (grid%rad(ir) >= support_radii(atom)) CYCLE
             DO ia = 1, grid%ng_sphere
                row = row + 1
-               IF (MODULO(row - 1, comm%num_pe) == comm%mepos) nlocal = nlocal + 1
+               owned = MODULO(row - 1, comm%num_pe) == comm%mepos
+               IF (complete_atoms) owned = MODULO(atom - 1, comm%num_pe) == comm%mepos
+               IF (owned) nlocal = nlocal + 1
             END DO
          END DO
       END DO
@@ -110,7 +118,9 @@ CONTAINS
             taper = (1.0_dp - u)**3*(1.0_dp + 3.0_dp*u + 6.0_dp*u*u)
             DO ia = 1, grid%ng_sphere
                row = row + 1
-               IF (MODULO(row - 1, comm%num_pe) /= comm%mepos) CYCLE
+               owned = MODULO(row - 1, comm%num_pe) == comm%mepos
+               IF (complete_atoms) owned = MODULO(atom - 1, comm%num_pe) == comm%mepos
+               IF (.NOT. owned) CYCLE
                nlocal = nlocal + 1
                state%atoms(nlocal) = atom
                state%points(:, nlocal) = atom_coords(:, atom) + radius* &

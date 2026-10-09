@@ -67,12 +67,13 @@ MODULE qs_scf_initialization
         diag_block_krylov, diag_filter_matrix, diag_ot, diag_standard, diag_update_method_adiis, &
         direct_p_mix, external_density_guess, gfn2xtb, kerker_mix, modified_broy_mix, &
         multisec_mix, new_pulay_mix, no_mix, ot2cdft, outer_scf_none, plus_u_lowdin, &
-        plus_u_tensorial, pulay_mix, smeagol_runtype_emtransport, wfi_frozen_method_nr, &
-        wfi_ps_method_nr, wfi_use_guess_method_nr
+        plus_u_tensorial, pulay_mix, restart_guess, smeagol_runtype_emtransport, &
+        wfi_frozen_method_nr, wfi_ps_method_nr, wfi_use_guess_method_nr
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
+   USE kpoint_io,                       ONLY: read_kpoints_restart
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_clear_scf_smat,&
                                               kpoint_type
@@ -1362,15 +1363,18 @@ CONTAINS
 
       INTEGER                                            :: extrapolation_method_nr, handle, ispin, &
                                                             nmo, output_unit
-      LOGICAL                                            :: do_harris, do_kpoints, orthogonal_wf
+      LOGICAL                                            :: do_harris, do_kpoints, natom_mismatch, &
+                                                            orthogonal_wf
       REAL(KIND=dp), POINTER                             :: auxiliary(:, :)
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(dbcsr_p_type), POINTER                        :: rho_ao_kp(:, :)
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(harris_type), POINTER                         :: harris_env
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
       TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(particle_type), POINTER                       :: restart_particles(:)
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho_atom
 
@@ -1401,6 +1405,13 @@ CONTAINS
                   CALL kpoint_density_state_accept(kpoints, 1.0_dp)
                   kpoints%native_density_seeded = .TRUE.
                END IF
+            END IF
+            IF (.NOT. kpoints%native_density_seeded .AND. scf_control%density_guess == restart_guess) THEN
+               CALL get_qs_env(qs_env, particle_set=restart_particles)
+               CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
+               CALL read_kpoints_restart(rho_ao_kp, kpoints, scf_env%scf_work1, SIZE(restart_particles), &
+                                         para_env, 0, section_vals_get_subs_vals(qs_env%input, "DFT"), &
+                                         natom_mismatch, allow_missing=.TRUE.)
             END IF
             CALL kpoint_density_state_restore(kpoints)
             CALL qs_rho_update_rho(rho, qs_env=qs_env)
