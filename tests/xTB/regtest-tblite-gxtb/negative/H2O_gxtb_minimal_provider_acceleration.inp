@@ -3,6 +3,7 @@
   PROJECT H2O_gxtb_minimal_provider_acceleration
   RUN_TYPE ENERGY
 &END GLOBAL
+
 &FORCE_EVAL
   METHOD QUICKSTEP
   &DFT
@@ -20,9 +21,9 @@
           ACCURACY 1.0
           METHOD GXTB
           &GXTB_ACCELERATION
-            MODE MANUAL
-            EXCHANGE_STREAM_BACKEND BATCHED
             ACP_PROJECTOR_CACHE DIRECT
+            EXCHANGE_STREAM_BACKEND BATCHED
+            MODE MANUAL
           &END GXTB_ACCELERATION
         &END TBLITE
       &END XTB

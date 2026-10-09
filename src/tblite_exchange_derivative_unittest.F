@@ -1,8 +1,8 @@
 !--------------------------------------------------------------------------------------------------!
-!   CP2K: A general program to perform molecular dynamics simulations                               !
-!   Copyright 2000-2026 CP2K developers group <https://cp2k.org>                                    !
+!   CP2K: A general program to perform molecular dynamics simulations                              !
+!   Copyright 2000-2026 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
-!   SPDX-License-Identifier: GPL-2.0-or-later                                                        !
+!   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
 PROGRAM tblite_exchange_derivative_unittest
 #if defined(__TBLITE_GXTB_ACCELERATION)
@@ -11,19 +11,21 @@ PROGRAM tblite_exchange_derivative_unittest
    USE tblite_container, ONLY: container_cache
    USE tblite_cutoff, ONLY: get_lattice_points
    USE tblite_exchange_stream, ONLY: cp2k_exchange_kmesh, cp2k_exchange_kmesh_gradient, &
-                                    cp2k_exchange_stream_type, cp2k_exchange_stream_begin, &
-                                    cp2k_exchange_stream_batched, cp2k_exchange_stream_end, &
-                                    cp2k_exchange_stream_reverse_push, cp2k_exchange_stream_reverse_transform_advance, &
-                                    cp2k_exchange_stream_reverse_batch_apply, cp2k_exchange_stream_reverse_batch_pull, &
-                                    cp2k_exchange_stream_reverse_batch_advance, cp2k_exchange_stream_reverse_result, &
-                                    cp2k_exchange_transform_dense, cp2k_exchange_transform_separable_dft, &
-                                    cp2k_exchange_transform_mixed_radix_fft
+                                     cp2k_exchange_stream_type, cp2k_exchange_stream_begin, &
+                                     cp2k_exchange_stream_batched, cp2k_exchange_stream_end, &
+                                     cp2k_exchange_stream_reverse_push, cp2k_exchange_stream_reverse_transform_advance, &
+                                     cp2k_exchange_stream_reverse_batch_apply, cp2k_exchange_stream_reverse_batch_pull, &
+                                     cp2k_exchange_stream_reverse_batch_advance, cp2k_exchange_stream_reverse_result, &
+                                     cp2k_exchange_transform_dense, cp2k_exchange_transform_separable_dft, &
+                                     cp2k_exchange_transform_mixed_radix_fft
    USE tblite_stream_plan, ONLY: cp2k_stream_plan_type
    USE tblite_wavefunction_type, ONLY: new_wavefunction, wavefunction_type
    USE tblite_wignerseitz, ONLY: get_wignerseitz_pairs, get_wignerseitz_pair_weights, wignerseitz_threshold
    USE tblite_xtb_calculator, ONLY: xtb_calculator
    USE tblite_xtb_gxtb, ONLY: new_gxtb_calculator
+#endif
    IMPLICIT NONE
+#if defined(__TBLITE_GXTB_ACCELERATION)
    TYPE(structure_type) :: mol, reference
    TYPE(xtb_calculator) :: calc
    TYPE(container_cache) :: cache
@@ -32,7 +34,7 @@ PROGRAM tblite_exchange_derivative_unittest
    TYPE(error_type), ALLOCATABLE :: error
    INTEGER, PARAMETER :: mesh(3) = [3, 1, 1], nk = 3
    INTEGER, PARAMETER :: backends(3) = [cp2k_exchange_transform_dense, &
-                                      cp2k_exchange_transform_separable_dft, cp2k_exchange_transform_mixed_radix_fft]
+                                        cp2k_exchange_transform_separable_dft, cp2k_exchange_transform_mixed_radix_fft]
    REAL(wp), PARAMETER :: steps(2) = [2.0E-5_wp, 1.0E-5_wp]
    REAL(wp) :: lattice(3, 3), xyz(3, 2), kfrac(3, nk), weights(nk), h, plus, minus
    REAL(wp) :: gradient(3, 2), sigma(3, 3), numerical_gradient(3, 2), numerical_sigma(3, 3)
@@ -42,7 +44,7 @@ PROGRAM tblite_exchange_derivative_unittest
    INTEGER :: position, spin, nao, i, j, k, channel, axis, atom, row, col, step, backend
 
    lattice = RESHAPE([4.0_wp, 0.2_wp, 0.1_wp, 0.0_wp, 8.0_wp, 0.3_wp, &
-                     0.0_wp, 0.0_wp, 9.0_wp], [3, 3])
+                      0.0_wp, 0.0_wp, 9.0_wp], [3, 3])
    xyz(:, 1) = 0.0_wp
    ! The perpendicular offset retains the first BvK face bisector in a skew cell.
    xyz(:, 2) = 1.5_wp*lattice(:, 1) + 0.12_wp*[-0.2_wp, 4.0_wp, 0.0_wp]
@@ -129,11 +131,16 @@ PROGRAM tblite_exchange_derivative_unittest
    END DO
    WRITE (*, '(A)') 'CP2K STREAM DERIVATIVES: RKS/UKS, smooth WS faces, batch adjoints and finite differences passed'
 CONTAINS
+! **************************************************************************************************
+!> \brief ...
+! **************************************************************************************************
    SUBROUTINE check_ws_face()
-      REAL(wp) :: supercell(3, 3)
-      REAL(wp), ALLOCATABLE :: translations(:, :), ws_weights(:), coordinate_response(:, :), strain_response(:, :, :)
-      INTEGER, ALLOCATABLE :: indices(:)
-      INTEGER :: nimages, direction
+      INTEGER                                            :: direction, nimages
+      INTEGER, ALLOCATABLE                               :: indices(:)
+      REAL(wp)                                           :: supercell(3, 3)
+      REAL(wp), ALLOCATABLE                              :: coordinate_response(:, :), &
+                                                            strain_response(:, :, :), &
+                                                            translations(:, :), ws_weights(:)
 
       supercell = mol%lattice
       DO direction = 1, 3
@@ -145,38 +152,50 @@ CONTAINS
       CALL get_wignerseitz_pairs(nimages, translations, mol%xyz(:, 1) - mol%xyz(:, 2), indices)
       CALL check(nimages == 2, 'fixture really straddles a two-image WS face')
       CALL get_wignerseitz_pair_weights(translations, indices(:nimages), mol%xyz(:, 1) - mol%xyz(:, 2), &
-                                       ws_weights, coordinate_response, strain_response)
+                                        ws_weights, coordinate_response, strain_response)
       IF (position /= 0) THEN
          CALL check(MAXVAL(ABS(ws_weights(:nimages) - 0.5_wp)) > 1.0E-6_wp, 'unequal smooth image weights')
          CALL check(MAXVAL(ABS(coordinate_response(:, :nimages))) > 1.0E-6_wp, 'nonzero image-weight response')
       END IF
    END SUBROUTINE check_ws_face
 
+! **************************************************************************************************
+!> \brief ...
+!> \param structure ...
+!> \return ...
+! **************************************************************************************************
    FUNCTION energy(structure) RESULT(value)
-      TYPE(structure_type), INTENT(IN) :: structure
-      REAL(wp) :: value
+      TYPE(structure_type), INTENT(IN)                   :: structure
+      REAL(wp)                                           :: value
 
       CALL cp2k_exchange_kmesh(calc, structure, cache, plan, wfn, mesh, kfrac, weights, density, overlap, &
                                fock, vsh, value, error)
       CALL check(.NOT. ALLOCATED(error), 'displaced exchange energy')
    END FUNCTION energy
 
+! **************************************************************************************************
+!> \brief ...
+!> \param transform ...
+!> \param residual ...
+! **************************************************************************************************
    SUBROUTINE compare_batch(transform, residual)
-      INTEGER, INTENT(IN) :: transform
-      REAL(wp), INTENT(OUT) :: residual
-      TYPE(cp2k_exchange_stream_type) :: stream
-      COMPLEX(wp) :: batched_response(nao, nao, nk)
-      REAL(wp) :: batched_gradient(3, 2), batched_sigma(3, 3)
-      INTEGER :: tile, tiles, ik, pairs
-      LOGICAL :: done, tile_done
+      INTEGER, INTENT(IN)                                :: transform
+      REAL(wp), INTENT(OUT)                              :: residual
+
+      COMPLEX(wp)                                        :: batched_response(nao, nao, nk)
+      INTEGER                                            :: ik, pairs, tile, tiles
+      LOGICAL                                            :: done, tile_done
+      REAL(wp)                                           :: batched_gradient(3, 2), &
+                                                            batched_sigma(3, 3)
+      TYPE(cp2k_exchange_stream_type)                    :: stream
 
       pairs = MIN(2, nao*nao)
       tiles = (nao*nao + pairs - 1)/pairs
       IF (transform == cp2k_exchange_transform_dense) tiles = 1
       batched_response = 0.0_wp
       CALL cp2k_exchange_stream_begin(stream, calc, mol, cache, plan, wfn, mesh, kfrac, weights, error, &
-                                       mode=cp2k_exchange_stream_batched, batch_size=1, reverse_only=.TRUE., &
-                                       transform_backend=transform, transform_pair_batch_size=pairs)
+                                      mode=cp2k_exchange_stream_batched, batch_size=1, reverse_only=.TRUE., &
+                                      transform_backend=transform, transform_pair_batch_size=pairs)
       CALL check(.NOT. ALLOCATED(error), 'reverse batch begin')
       done = .FALSE.
       DO WHILE (.NOT. done)
@@ -193,7 +212,7 @@ CONTAINS
          CALL check(.NOT. ALLOCATED(error), 'reverse batch apply')
          DO ik = 1, nk
             CALL cp2k_exchange_stream_reverse_batch_pull(stream, ik, density(:, :, :, ik), overlap(:, :, ik), &
-                                                        batched_response(:, :, ik), error)
+                                                         batched_response(:, :, ik), error)
             CALL check(.NOT. ALLOCATED(error), 'reverse batch pull')
          END DO
          CALL cp2k_exchange_stream_reverse_batch_advance(stream, done, error)
@@ -207,9 +226,14 @@ CONTAINS
       CALL check(.NOT. ALLOCATED(error), 'reverse batch end')
    END SUBROUTINE compare_batch
 
+! **************************************************************************************************
+!> \brief ...
+!> \param condition ...
+!> \param message ...
+! **************************************************************************************************
    SUBROUTINE check(condition, message)
-      LOGICAL, INTENT(IN) :: condition
-      CHARACTER(LEN=*), INTENT(IN) :: message
+      LOGICAL, INTENT(IN)                                :: condition
+      CHARACTER(LEN=*), INTENT(IN)                       :: message
 
       IF (.NOT. condition) THEN
          WRITE (*, '(A)') 'FAIL: '//message

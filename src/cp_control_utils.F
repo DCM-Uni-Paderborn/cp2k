@@ -20,8 +20,8 @@ MODULE cp_control_utils
    USE cp_control_types,                ONLY: &
         admm_control_create, admm_control_type, ddapc_control_create, ddapc_restraint_type, &
         dft_control_create, dft_control_type, efield_type, expot_control_create, &
-        maxwell_control_create, qs_control_type, rixs_control_type, tddfpt2_control_type, &
-        xtb_control_type, xtb_reference_cli_type
+        fde_control_create, maxwell_control_create, qs_control_type, rixs_control_type, &
+        tddfpt2_control_type, xtb_control_type, xtb_reference_cli_type
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -56,21 +56,20 @@ MODULE cp_control_utils
         do_pwgrid_spherical, do_s2_constraint, do_s2_restraint, do_se_is_kdso, do_se_is_kdso_d, &
         do_se_is_slater, do_se_lr_ewald, do_se_lr_ewald_gks, do_se_lr_ewald_r3, do_se_lr_none, &
         gapw_1c_large, gapw_1c_medium, gapw_1c_orb, gapw_1c_small, gapw_1c_very_large, &
-        gaussian_env, gfn1xtb, gfn_tblite, kg_tnadd_embed, kg_tnadd_embed_ri, no_admm_type, &
+        gaussian_env, gfn1xtb, gfn_tblite, gxtb, kg_tnadd_embed, kg_tnadd_embed_ri, no_admm_type, &
         numerical, ramp_env, real_time_propagation, rtp_method_bse, rtp_method_bse_linearized, &
         sccs_andreussi, sccs_derivative_cd3, sccs_derivative_cd5, sccs_derivative_cd7, &
         sccs_derivative_fft, sccs_fattebert_gygi, sccs_saa_andreussi, sic_ad, sic_eo, &
         sic_list_all, sic_list_unpaired, sic_mauri_spz, sic_mauri_us, sic_none, slater, &
         tblite_cli_born_kernel_auto, tblite_cli_solution_state_gsolv, tblite_cli_solvation_alpb, &
         tblite_cli_solvation_cpcm, tblite_cli_solvation_gb, tblite_cli_solvation_gbe, &
-        tblite_cli_solvation_gbsa, tblite_guess_ceh, tblite_mixer_memory_inherit, &
+        tblite_cli_solvation_gbsa, tblite_guess_ceh, tblite_gxtb_acceleration_auto, &
+        tblite_gxtb_acceleration_manual, tblite_gxtb_exchange_complete_array, &
+        tblite_gxtb_exchange_kgroup_partial_images, tblite_gxtb_exchange_symmetry_fused, &
+        tblite_gxtb_gradient_dense, tblite_gxtb_transform_dense, tblite_mixer_memory_inherit, &
         tblite_scc_mixer_auto, tblite_scc_mixer_cp2k, tblite_scc_mixer_none, &
         tblite_scc_mixer_tblite, tblite_solver_gvd, tblite_solver_gvr, tddfpt_dipole_length, &
-        tddfpt_kernel_stda, use_mom_ref_user, xtb_vdw_type_d3, xtb_vdw_type_d4, xtb_vdw_type_none, &
-        gxtb, tblite_gxtb_exchange_complete_array, tblite_gxtb_gradient_dense, &
-        tblite_gxtb_transform_dense, &
-        tblite_gxtb_exchange_symmetry_fused, tblite_gxtb_acceleration_auto, &
-        tblite_gxtb_acceleration_manual, tblite_gxtb_exchange_kgroup_partial_images
+        tddfpt_kernel_stda, use_mom_ref_user, xtb_vdw_type_d3, xtb_vdw_type_d4, xtb_vdw_type_none
    USE input_cp2k_check,                ONLY: xc_functionals_expand
    USE input_cp2k_dft,                  ONLY: create_dft_section
    USE input_enumeration_types,         ONLY: enum_i2c,&
@@ -128,10 +127,12 @@ CONTAINS
       CHARACTER(len=default_path_length)                 :: basis_set_file_name, gauxc_model_name, &
                                                             intensities_file_name, &
                                                             potential_file_name
+      CHARACTER(LEN=default_string_length)               :: line
       CHARACTER(LEN=default_string_length), &
          DIMENSION(:), POINTER                           :: tmpstringlist
-      INTEGER                                            :: admmtype, irep, isize, kg_tnadd_method, &
-                                                            method_id, nrep, xc_deriv_method_id
+      INTEGER                                            :: admmtype, i_rep, ios, irep, isize, &
+                                                            kg_tnadd_method, method_id, n_rep, &
+                                                            nrep, xc_deriv_method_id
       LOGICAL :: at_end, do_hfx, do_ot, do_rpa_admm, do_rtp, exopt1, exopt2, exopt3, explicit, &
          is_present, l_param, local_moment_possible, native_skala_grid, not_SE, was_present
       REAL(KIND=dp)                                      :: density_cut, gradient_cut, tau_cut
@@ -239,6 +240,30 @@ CONTAINS
                                                                                        dft_control%lsd)
             END IF
          END IF
+      END IF
+
+      tmp_section => section_vals_get_subs_vals(dft_section, "FDE")
+      CALL section_vals_get(tmp_section, explicit=explicit)
+      IF (explicit) THEN
+         CALL section_vals_val_get(tmp_section, "_SECTION_PARAMETERS_", l_val=dft_control%do_fde)
+      END IF
+      IF (dft_control%do_fde) THEN
+         CALL fde_control_create(dft_control%fde_control)
+         ASSOCIATE (fde => dft_control%fde_control)
+            CALL section_vals_val_get(tmp_section, "FREEZE_AND_THAW", l_val=fde%freeze_and_thaw)
+            CALL section_vals_val_get(tmp_section, "MAX_FT_ITER", i_val=fde%max_ft_iter)
+            CALL section_vals_val_get(tmp_section, "EPS_FT_DENSITY", r_val=fde%eps_ft_density)
+            CALL section_vals_val_get(tmp_section, "EPS_FT_ENERGY", r_val=fde%eps_ft_energy)
+            CALL section_vals_val_get(tmp_section, "DENSITY_MIXING", r_val=fde%density_mixing)
+            CALL section_vals_val_get(tmp_section, "COMMAND", c_val=fde%command)
+            CALL section_vals_val_get(tmp_section, "PROJECT", c_val=fde%project)
+            CALL section_vals_val_get(tmp_section, "WORKDIR", c_val=fde%workdir)
+            CALL section_vals_val_get(tmp_section, "MOLCAS_INPUT_TEMPLATE", c_val=fde%molcas_input_template)
+            CALL section_vals_val_get(tmp_section, "POT_FILE", c_val=fde%pot_file)
+            CALL section_vals_val_get(tmp_section, "GRID_FILE", c_val=fde%grid_file)
+            CALL section_vals_val_get(tmp_section, "RHO_FILE", c_val=fde%rho_file)
+            CALL section_vals_val_get(tmp_section, "RESULT_FILE", c_val=fde%result_file)
+         END ASSOCIATE
       END IF
 
       xc_deriv_method_id = section_get_ival(xc_section, "XC_GRID%XC_DERIV")
@@ -761,6 +786,25 @@ CONTAINS
                                       i_val=dft_control%sccs_control%max_iter)
             CALL section_vals_val_get(sccs_section, "MIXING", &
                                       r_val=dft_control%sccs_control%mixing)
+            CALL section_vals_val_get(sccs_section, "CORE_FILL", &
+                                      l_val=dft_control%sccs_control%core_fill)
+            CALL section_vals_val_get(sccs_section, "CORE_FILL_SPREAD", &
+                                      r_val=dft_control%sccs_control%core_fill_spread)
+            tmp_section => section_vals_get_subs_vals(sccs_section, "CORE_FILL_KIND")
+            CALL section_vals_val_get(tmp_section, "_DEFAULT_KEYWORD_", n_rep_val=n_rep)
+            ALLOCATE (dft_control%sccs_control%core_fill_kind_label(n_rep))
+            ALLOCATE (dft_control%sccs_control%core_fill_kind_spread(n_rep))
+            DO i_rep = 1, n_rep
+               CALL section_vals_val_get(tmp_section, "_DEFAULT_KEYWORD_", i_rep_val=i_rep, c_val=line)
+               READ (line, *, IOSTAT=ios) dft_control%sccs_control%core_fill_kind_label(i_rep), &
+                  dft_control%sccs_control%core_fill_kind_spread(i_rep)
+               IF (ios /= 0) THEN
+                  CALL cp_abort(__LOCATION__, &
+                                "SCCS| Invalid line in CORE_FILL_KIND (expected <kind label> <spread in bohr>): "// &
+                                TRIM(line))
+               END IF
+               CALL uppercase(dft_control%sccs_control%core_fill_kind_label(i_rep))
+            END DO
             SELECT CASE (dft_control%sccs_control%method_id)
             CASE (sccs_andreussi)
                tmp_section => section_vals_get_subs_vals(sccs_section, "ANDREUSSI")
@@ -1020,11 +1064,10 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: tmplist
       LOGICAL :: dftb_scc_mixer_explicit, dftb_tblite_mixer_explicit, explicit, &
          gxtb_acceleration_explicit, gxtb_acp_cache_explicit, gxtb_acp_mesh_explicit, &
-         gxtb_exchange_explicit, &
-         gxtb_forward_qualification_explicit, gxtb_gradient_explicit, gxtb_image_batch_explicit, &
-         gxtb_mode_explicit, gxtb_star_explicit, gxtb_transform_explicit, tblite_reference_cli, &
-         tblite_reference_cli_section, tblite_section_active, was_present, xtb_scc_mixer_explicit, &
-         xtb_tblite_mixer_explicit
+         gxtb_exchange_explicit, gxtb_forward_qualification_explicit, gxtb_gradient_explicit, &
+         gxtb_image_batch_explicit, gxtb_mode_explicit, gxtb_star_explicit, &
+         gxtb_transform_explicit, tblite_reference_cli, tblite_reference_cli_section, &
+         tblite_section_active, was_present, xtb_scc_mixer_explicit, xtb_tblite_mixer_explicit
       REAL(dp)                                           :: tmp, tmpsqrt, value
       REAL(dp), POINTER                                  :: scal(:)
       TYPE(section_vals_type), POINTER :: cdft_control_section, ddapc_restraint_section, &

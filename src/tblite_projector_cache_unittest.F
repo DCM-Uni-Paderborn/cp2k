@@ -20,7 +20,9 @@ PROGRAM tblite_projector_cache_unittest
    USE tblite_wavefunction_type, ONLY: wavefunction_type
    USE tblite_xtb_calculator, ONLY: xtb_calculator
    USE tblite_xtb_gxtb, ONLY: new_gxtb_calculator
+#endif
    IMPLICIT NONE
+#if defined(__TBLITE_GXTB)
    TYPE(structure_type) :: mol
    TYPE(xtb_calculator) :: calc
    TYPE(error_type), ALLOCATABLE :: error
@@ -147,6 +149,11 @@ PROGRAM tblite_projector_cache_unittest
    WRITE (*, '(A)') 'CP2K ACP PROJECTOR CACHE: all exact-key and independent direct-builder checks passed'
 
 CONTAINS
+! **************************************************************************************************
+!> \brief ...
+!> \param condition ...
+!> \param message ...
+! **************************************************************************************************
    SUBROUTINE check(condition, message)
       LOGICAL, INTENT(IN)                                :: condition
       CHARACTER(LEN=*), INTENT(IN)                       :: message
@@ -157,10 +164,17 @@ CONTAINS
       END IF
    END SUBROUTINE check
 
+! **************************************************************************************************
+!> \brief ...
+! **************************************************************************************************
    SUBROUTINE lookup()
       CALL projector_cache_lookup(cache, mol, calc%bas, basis, calc%acp, auxiliary, translations, images, hit)
    END SUBROUTINE lookup
 
+! **************************************************************************************************
+!> \brief ...
+!> \param message ...
+! **************************************************************************************************
    SUBROUTINE miss(message)
       CHARACTER(LEN=*), INTENT(IN)                       :: message
 
@@ -170,6 +184,9 @@ CONTAINS
       CALL check(.NOT. valid, 'a miss invalidates old payload')
    END SUBROUTINE miss
 
+! **************************************************************************************************
+!> \brief ...
+! **************************************************************************************************
    SUBROUTINE prime()
       CALL projector_cache_bypass(cache)
       CALL lookup()
@@ -183,6 +200,9 @@ CONTAINS
       CALL compare()
    END SUBROUTINE prime
 
+! **************************************************************************************************
+!> \brief ...
+! **************************************************************************************************
    SUBROUTINE compare()
       CALL check(ALL(images%projector_translation == oracle%projector_translation), 'translations')
       CALL check(ALL(images%projector_overlap == oracle%projector_overlap), 'overlaps')
@@ -191,7 +211,6 @@ CONTAINS
       CALL check(.NOT. ALLOCATED(images%hamiltonian), 'compact-only cache')
    END SUBROUTINE compare
 #else
-   IMPLICIT NONE
    WRITE (*, '(A)') 'ACP cache test requires a g-xTB-enabled tblite provider'
 #endif
 END PROGRAM tblite_projector_cache_unittest

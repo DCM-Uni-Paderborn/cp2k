@@ -30,9 +30,11 @@ PROGRAM tblite_bvk_plan_unittest
    USE tblite_exchange_fft, ONLY: cp2k_exchange_transform_type, prepare_exchange_transform, &
                                   release_exchange_transform, exchange_transform_counts
    USE tblite_transform_contract, ONLY: exchange_k_to_r, exchange_r_to_k, &
-                                            exchange_r_to_k_adjoint, exchange_k_to_r_adjoint
+                                        exchange_r_to_k_adjoint, exchange_k_to_r_adjoint
+#endif
 #endif
    IMPLICIT NONE
+#if defined(__TBLITE_GXTB)
    TYPE(structure_type) :: mol, original_mol
    TYPE(xtb_calculator) :: calc
    TYPE(exchange_fock) :: model, original_model
@@ -49,12 +51,16 @@ PROGRAM tblite_bvk_plan_unittest
    COMPLEX(KIND=dp), ALLOCATABLE :: density(:, :, :, :), overlap(:, :, :), &
                                     fock(:, :, :, :), oracle_fock(:, :, :, :), first_fock(:, :, :, :)
 #if defined(__TBLITE_GXTB_TRANSFORM)
-   CHARACTER(LEN=16) :: backend
+   CHARACTER(LEN=16) :: backend, fft_argument
    TYPE(mp_comm_type) :: mp_comm
 
    CALL mp_world_init(mp_comm)
    backend = 'FFTSG'
-   IF (COMMAND_ARGUMENT_COUNT() > 0) CALL GET_COMMAND_ARGUMENT(1, backend)
+   IF (COMMAND_ARGUMENT_COUNT() > 0) THEN
+      CALL GET_COMMAND_ARGUMENT(1, fft_argument)
+      ! The regtest driver passes the source directory as the first argument.
+      IF (fft_argument == 'FFTSG' .OR. fft_argument == 'FFTW3') backend = fft_argument
+   END IF
    CALL init_fft(TRIM(backend), alltoall=.FALSE., pool_limit=4, wisdom_file='', plan_style=1)
    CALL check_transforms()
 #endif
@@ -229,6 +235,11 @@ PROGRAM tblite_bvk_plan_unittest
 #endif
 
 CONTAINS
+! **************************************************************************************************
+!> \brief ...
+!> \param condition ...
+!> \param message ...
+! **************************************************************************************************
    SUBROUTINE check(condition, message)
       LOGICAL, INTENT(IN)                                :: condition
       CHARACTER(LEN=*), INTENT(IN)                       :: message
@@ -240,6 +251,9 @@ CONTAINS
       END IF
    END SUBROUTINE check
 
+! **************************************************************************************************
+!> \brief ...
+! **************************************************************************************************
    SUBROUTINE compare_kernel()
       CALL bvk_kernel_snapshot(plan, kernel, error)
       CALL check(.NOT. ALLOCATED(error), 'snapshot')
@@ -250,14 +264,17 @@ CONTAINS
       CALL check(ALL(kernel%g_bocorr_r == oracle%g_bocorr_r), 'independent bond-order kernel')
    END SUBROUTINE compare_kernel
 
+! **************************************************************************************************
+!> \brief ...
+! **************************************************************************************************
    SUBROUTINE compare_exchange()
-      TYPE(cp2k_stream_plan_type) :: direct_plan
       COMPLEX(KIND=dp), ALLOCATABLE :: overlap_response(:, :, :), reference_response(:, :, :), &
          single_density(:, :, :, :), single_fock(:, :, :, :)
       INTEGER                                            :: channel
       REAL(KIND=dp) :: gradient(3, mol%nat), reference_gradient(3, mol%nat), &
          reference_stress(3, 3), separate_energy, single_energy, stress(3, 3)
       REAL(KIND=dp), ALLOCATABLE                         :: separate_vsh(:)
+      TYPE(cp2k_stream_plan_type)                        :: direct_plan
 
       CALL cp2k_prepare_exchange(calc, mol, live, wfn, error)
       CALL check(.NOT. ALLOCATED(error), 'prepare current charge state')
@@ -283,7 +300,7 @@ CONTAINS
             DO channel = 1, 2
                single_density(:, :, 1, :) = density(:, :, channel, :)
                CALL get_KFock_kmesh(model, mol, cache, direct_plan, kernel, kfrac, weights, single_density, overlap, &
-                                   single_fock, separate_vsh, single_energy)
+                                    single_fock, separate_vsh, single_energy)
                separate_energy = separate_energy + 2.0_dp*single_energy
                WRITE (*, '(A,I0,2ES24.15)') 'SPIN separability FFT/direct Fock differences, channel ', channel, &
                   MAXVAL(ABS(fock(:, :, channel, :) - 2.0_dp*single_fock(:, :, 1, :))), &
@@ -318,6 +335,9 @@ CONTAINS
    END SUBROUTINE compare_exchange
 
 #if defined(__TBLITE_GXTB_TRANSFORM)
+! **************************************************************************************************
+!> \brief ...
+! **************************************************************************************************
    SUBROUTINE check_transforms()
       COMPLEX(KIND=dp)                                   :: factor, lhs, rhs
       COMPLEX(KIND=dp), ALLOCATABLE :: explicit_sum(:, :), fx(:, :), fy(:, :), &
@@ -390,8 +410,9 @@ CONTAINS
             DO r = 1, count
                DO k = 1, count
                   factor = EXP(gaussi*twopi*SUM(points(:, k)*REAL(reps(:, r), dp)))
-                  IF (operation == exchange_k_to_r .OR. operation == exchange_r_to_k_adjoint) &
+                  IF (operation == exchange_k_to_r .OR. operation == exchange_r_to_k_adjoint) THEN
                      factor = CONJG(factor)
+                  END IF
                   IF (operation == exchange_k_to_r .OR. operation == exchange_k_to_r_adjoint) factor = w(k)*factor
                   IF (operation == exchange_k_to_r .OR. operation == exchange_r_to_k_adjoint) THEN
                      explicit_sum(:, r) = explicit_sum(:, r) + factor*x(:, k)
@@ -441,7 +462,6 @@ CONTAINS
    END SUBROUTINE check_transforms
 #endif
 #else
-   IMPLICIT NONE
    WRITE (*, '(A)') 'CP2K BvK plan test skipped: g-xTB support is not enabled'
 #endif
 END PROGRAM tblite_bvk_plan_unittest

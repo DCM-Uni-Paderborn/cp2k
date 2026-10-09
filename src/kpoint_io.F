@@ -380,16 +380,16 @@ CONTAINS
 
       IF (.NOT. header_ok) THEN
          reason = "restart header is unreadable"
-      ELSEIF (version_read == kpoint_restart_v2_version) THEN
+      ELSE IF (version_read == kpoint_restart_v2_version) THEN
          CALL read_kpoint_restart_v2(restart_unit, denmat, kpoints, fmwork, para_env, &
                                      particle_set, qs_kind_set, cell, dft_control, scf_control, &
                                      nelectron_spin, overlap_rs, scf_env, restart_mode, accepted, reason)
-      ELSEIF (version_read == version .AND. restart_mode == kpoint_restart_legacy_compatible) THEN
+      ELSE IF (version_read == version .AND. restart_mode == kpoint_restart_legacy_compatible) THEN
          CALL read_kpoints_restart_low(denmat, kpoints, fmwork(1), para_env, &
                                        SIZE(particle_set), restart_unit, restart_mismatch)
          accepted = .NOT. restart_mismatch
          IF (.NOT. accepted) reason = "legacy restart is incompatible with the current calculation"
-      ELSEIF (version_read == version) THEN
+      ELSE IF (version_read == version) THEN
          reason = "legacy restart is accepted only in COMPATIBLE mode"
       ELSE
          reason = "unsupported k-point restart version"
@@ -402,8 +402,8 @@ CONTAINS
             IF (version_read == version) THEN
                WRITE (logger%default_global_unit_nr, '(A)') &
                   " KPOINT_RESTART| Legacy-compatible restart accepted"
-            ELSEIF (restart_mode == kpoint_restart_exact .OR. &
-                    restart_mode == kpoint_restart_legacy_compatible) THEN
+            ELSE IF (restart_mode == kpoint_restart_exact .OR. &
+                     restart_mode == kpoint_restart_legacy_compatible) THEN
                WRITE (logger%default_global_unit_nr, '(A)') &
                   " KPOINT_RESTART| Strict same-mesh restart accepted"
             ELSE

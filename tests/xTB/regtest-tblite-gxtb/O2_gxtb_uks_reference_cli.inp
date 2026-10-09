@@ -6,8 +6,8 @@
 
 &FORCE_EVAL
   &DFT
-    UKS T
     MULTIPLICITY 3
+    UKS T
     &QS
       EPS_DEFAULT 1.0E-12
       METHOD xTB

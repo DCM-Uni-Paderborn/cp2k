@@ -143,6 +143,18 @@ BSD_PATHS = (
     "src/dbm/",
 )
 MIT_PATHS = ("src/grpp/",)
+LGPL_PATHS = (
+    "src/tb/tblite_bvk_transform.F",
+    "src/tb/tblite_exchange_stream.F",
+    "src/tb/tblite_model_bridge.F",
+    "src/tb/tblite_exchange_contractions.F",
+    "src/tblite_model_bridge_unittest.F",
+    "src/tblite_exchange_integration_unittest.F",
+    "src/tb/tblite_acp_images.F",
+    "src/tb/tblite_acp_response.F",
+    "src/tb/tblite_stream_plan.F",
+    "src/tb/tblite_transform_contract.F",
+)
 
 
 @lru_cache(maxsize=None)
@@ -244,10 +256,13 @@ def check_file(path: pathlib.Path) -> List[str]:
     year = datetime.now(timezone.utc).year
     bsd_licensed = any(str(path).startswith(p) for p in BSD_PATHS)
     mit_licensed = any(str(path).startswith(p) for p in MIT_PATHS)
+    lgpl_licensed = any(abspath == CP2K_DIR / p for p in LGPL_PATHS)
     if bsd_licensed:
         spdx = "BSD-3-Clause    "
     elif mit_licensed:
         spdx = "MIT             "
+    elif lgpl_licensed:
+        spdx = "LGPL-3.0-or-later"
     else:
         spdx = "GPL-2.0-or-later"
 

@@ -22,7 +22,9 @@ PROGRAM tblite_exchange_stream_unittest
    USE tblite_wavefunction_type, ONLY: wavefunction_type, new_wavefunction
    USE tblite_xtb_calculator, ONLY: xtb_calculator
    USE tblite_xtb_gxtb, ONLY: new_gxtb_calculator
+#endif
    IMPLICIT NONE
+#if defined(__TBLITE_GXTB_ACCELERATION)
    TYPE(structure_type) :: mol
    TYPE(xtb_calculator) :: calc
    TYPE(container_cache) :: cache
@@ -131,6 +133,10 @@ PROGRAM tblite_exchange_stream_unittest
    END DO
    WRITE (*, '(A)') 'CP2K STREAM BOUNDS: RKS/UKS, three transforms, forward/reverse, recovery passed'
 CONTAINS
+! **************************************************************************************************
+!> \brief ...
+!> \param index ...
+! **************************************************************************************************
    SUBROUTINE push(index)
       INTEGER, INTENT(IN)                                :: index
 
@@ -141,6 +147,11 @@ CONTAINS
       END IF
    END SUBROUTINE push
 
+! **************************************************************************************************
+!> \brief ...
+!> \param condition ...
+!> \param message ...
+! **************************************************************************************************
    SUBROUTINE check(condition, message)
       LOGICAL, INTENT(IN)                                :: condition
       CHARACTER(LEN=*), INTENT(IN)                       :: message

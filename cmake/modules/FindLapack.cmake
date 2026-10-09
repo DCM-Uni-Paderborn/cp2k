@@ -77,7 +77,7 @@ if(NOT TARGET LAPACK::LAPACK)
   # exported into a try_compile project; a transitive alias is not exported.
   add_library(LAPACK::LAPACK INTERFACE IMPORTED)
   set_property(TARGET LAPACK::LAPACK PROPERTY INTERFACE_LINK_LIBRARIES
-                                            cp2k::LAPACK::lapack)
+                                              cp2k::LAPACK::lapack)
 endif()
 
 set_property(TARGET cp2k::LAPACK::lapack PROPERTY INTERFACE_LINK_LIBRARIES

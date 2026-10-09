@@ -171,7 +171,7 @@ CONTAINS
       lwork = -1
       lrwork = -1
       liwork = -1
-      CALL zheevd('V', 'U', n, eigenvectors, n, eigenvalues, work, lwork, rwork, lrwork, &
+      CALL zheevd("V", "U", n, eigenvectors, n, eigenvalues, work, lwork, rwork, lrwork, &
                   iwork, liwork, info)
       IF (info /= 0 .OR. .NOT. ieee_is_finite(REAL(work(1), dp)) .OR. &
           .NOT. ieee_is_finite(rwork(1)) .OR. iwork(1) < 1) THEN
@@ -186,7 +186,7 @@ CONTAINS
 
       ALLOCATE (work(lwork), rwork(lrwork), iwork(liwork))
       eigenvectors = matrix
-      CALL zheevd('V', 'U', n, eigenvectors, n, eigenvalues, work, lwork, rwork, lrwork, &
+      CALL zheevd("V", "U", n, eigenvectors, n, eigenvalues, work, lwork, rwork, lrwork, &
                   iwork, liwork, info)
       DEALLOCATE (work, rwork, iwork)
       success = info == 0 .AND. ALL(ieee_is_finite(eigenvalues)) .AND. &
@@ -403,7 +403,7 @@ CONTAINS
             IF (ABS(residual) <= feasibility_tol) EXIT
             IF (residual > 0.0_dp .AND. projected(i, ik) < max_occupation) THEN
                correction = MIN(max_occupation - projected(i, ik), residual/weights(ik))
-            ELSEIF (residual < 0.0_dp .AND. projected(i, ik) > 0.0_dp) THEN
+            ELSE IF (residual < 0.0_dp .AND. projected(i, ik) > 0.0_dp) THEN
                correction = MAX(-projected(i, ik), residual/weights(ik))
             ELSE
                CYCLE
@@ -564,8 +564,9 @@ CONTAINS
                            symmetry_reduction_method=symmetry_reduction_method)
       CPASSERT(ALL(nkp_grid > 0))
       CPASSERT(SIZE(index_to_cell, 2) == nimages)
-      IF (TRIM(kp_scheme) /= "MONKHORST-PACK" .AND. TRIM(kp_scheme) /= "MACDONALD") &
+      IF (TRIM(kp_scheme) /= "MONKHORST-PACK" .AND. TRIM(kp_scheme) /= "MACDONALD") THEN
          CPABORT("VALIDATED_BVK_TRANSFER requires a MONKHORST-PACK or MACDONALD regular mesh")
+      END IF
 
       CALL collect_basis_metadata(qs_kind_set, particle_set, "ORB", nao, nset_max, nshell_max, &
                                   nset_info, nshell_info, nso_info)
@@ -677,18 +678,21 @@ CONTAINS
       DEALLOCATE (canonical_count)
 
       IF (.NOT. ALL(ieee_is_finite(canonical_r)) .OR. &
-          .NOT. ALL(ieee_is_finite(canonical_i))) &
+          .NOT. ALL(ieee_is_finite(canonical_i))) THEN
          CPABORT("Refusing to write a non-finite k-point density restart")
+      END IF
       payload_max_abs = MAX(MAXVAL(ABS(canonical_r)), MAXVAL(ABS(canonical_i)))
       checksum_limit = SQRT(HUGE(1.0_dp)/(REAL(SIZE(canonical_r), dp) + &
                                           REAL(SIZE(canonical_i), dp)))
-      IF (payload_max_abs > checksum_limit) &
+      IF (payload_max_abs > checksum_limit) THEN
          CPABORT("Refusing to write a k-point restart whose checksum would overflow")
+      END IF
       checksum_linear = SUM(canonical_r) + SUM(canonical_i)
       checksum_square = SUM(canonical_r*canonical_r) + SUM(canonical_i*canonical_i)
       IF (.NOT. ieee_is_finite(checksum_linear) .OR. &
-          .NOT. ieee_is_finite(checksum_square)) &
+          .NOT. ieee_is_finite(checksum_square)) THEN
          CPABORT("Refusing to write a k-point restart with an overflowing checksum")
+      END IF
 
       ALLOCATE (positions(3, natom), kind_index(natom))
       DO iatom = 1, natom
@@ -789,7 +793,7 @@ CONTAINS
             DO iset = 1, nset
                nshell_max = MAX(nshell_max, nshell(iset))
             END DO
-         ELSEIF (ASSOCIATED(dftb_parameter)) THEN
+         ELSE IF (ASSOCIATED(dftb_parameter)) THEN
             CALL get_dftb_atom_param(dftb_parameter, lmax=lmax)
             nset_max = MAX(nset_max, 1)
             nshell_max = MAX(nshell_max, lmax + 1)
@@ -923,7 +927,7 @@ CONTAINS
             CALL write_integer_2d(ires, last_sgf)
             CALL write_integer_2d(ires, n)
             CALL write_real_3d(ires, gcc)
-         ELSEIF (ASSOCIATED(dftb_parameter)) THEN
+         ELSE IF (ASSOCIATED(dftb_parameter)) THEN
             basis_kind = 2
             WRITE (ires) basis_kind
             CALL get_dftb_atom_param(dftb_parameter, name=dftb_name, typ=dftb_type, &
@@ -1010,7 +1014,7 @@ CONTAINS
          basis_kind = 0
          IF (ASSOCIATED(orb_basis_set)) THEN
             basis_kind = 1
-         ELSEIF (ASSOCIATED(dftb_parameter)) THEN
+         ELSE IF (ASSOCIATED(dftb_parameter)) THEN
             basis_kind = 2
          END IF
          READ (rst_unit, IOSTAT=ios) basis_kind_file
@@ -1090,12 +1094,13 @@ CONTAINS
             di = -1.0_dp
             rcdisp = -1.0_dp
             dudq = -1.0_dp
-            IF (ASSOCIATED(dftb_parameter)) &
+            IF (ASSOCIATED(dftb_parameter)) THEN
                CALL get_dftb_atom_param(dftb_parameter, name=dftb_name, typ=dftb_type, &
                                         defined=defined, z=z_dftb, zeff=zeff_dftb, &
                                         natorb=natorb_dftb, lmax=lmax_dftb, &
                                         skself=skself, occupation=occupation, eta=eta, energy=energy, &
                                         cutoff=cutoff, xi=xi, di=di, rcdisp=rcdisp, dudq=dudq)
+            END IF
             READ (rst_unit, IOSTAT=ios) dftb_name_file, dftb_type_file, defined_file, z_dftb_file, &
                zeff_dftb_file, natorb_dftb_file, lmax_dftb_file, skself_file, occupation_file, &
                eta_file, energy_file, &
@@ -1277,10 +1282,12 @@ CONTAINS
       IF (.NOT. ASSOCIATED(array)) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
-      ELSEIF (SIZE(array, 1) /= n1) THEN
+      ELSE IF (SIZE(array, 1) /= n1) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
       END IF
       ALLOCATE (CHARACTER(LEN=LEN(array)) :: file_array(n1))
@@ -1320,10 +1327,12 @@ CONTAINS
       IF (.NOT. ASSOCIATED(array)) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
-      ELSEIF (SIZE(array, 1) /= n1) THEN
+      ELSE IF (SIZE(array, 1) /= n1) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
       END IF
       ALLOCATE (file_array(n1))
@@ -1363,10 +1372,12 @@ CONTAINS
       IF (.NOT. ASSOCIATED(array)) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
-      ELSEIF (ANY(SHAPE(array) /= dims)) THEN
+      ELSE IF (ANY(SHAPE(array) /= dims)) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
       END IF
       ALLOCATE (file_array(dims(1), dims(2)))
@@ -1406,10 +1417,12 @@ CONTAINS
       IF (.NOT. ASSOCIATED(array)) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
-      ELSEIF (SIZE(array, 1) /= n1) THEN
+      ELSE IF (SIZE(array, 1) /= n1) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
       END IF
       ALLOCATE (file_array(n1))
@@ -1450,10 +1463,12 @@ CONTAINS
       IF (.NOT. ASSOCIATED(array)) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
-      ELSEIF (ANY(SHAPE(array) /= dims)) THEN
+      ELSE IF (ANY(SHAPE(array) /= dims)) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
       END IF
       ALLOCATE (file_array(dims(1), dims(2)))
@@ -1494,10 +1509,12 @@ CONTAINS
       IF (.NOT. ASSOCIATED(array)) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
-      ELSEIF (ANY(SHAPE(array) /= dims)) THEN
+      ELSE IF (ANY(SHAPE(array) /= dims)) THEN
          matches = .FALSE.
          READ (rst_unit, IOSTAT=ios)
+         IF (ios /= 0) RETURN
          RETURN
       END IF
       ALLOCATE (file_array(dims(1), dims(2), dims(3)))
@@ -1646,7 +1663,7 @@ CONTAINS
          io_ok = ios == 0
          IF (.NOT. io_ok) THEN
             reason = "truncated basis/species fingerprint"
-         ELSEIF (.NOT. fingerprint_ok) THEN
+         ELSE IF (.NOT. fingerprint_ok) THEN
             reason = "complete basis/species fingerprint differs"
          END IF
       END IF
@@ -1858,7 +1875,7 @@ CONTAINS
                END IF
                IF (ispin == 1) THEN
                   cells(:, irecord) = cell_file
-               ELSEIF (ANY(cells(:, irecord) /= cell_file)) THEN
+               ELSE IF (ANY(cells(:, irecord) /= cell_file)) THEN
                   ios = -1
                   EXIT
                END IF
@@ -2118,8 +2135,9 @@ CONTAINS
       CALL replicate_rs_matrices(overlap_rs, kpoints, overlap_raw, full_cell_to_index)
       DEALLOCATE (full_cell_to_index)
       failure_code = metric_projection_success
-      IF (.NOT. ALL(ieee_is_finite(overlap_raw))) &
+      IF (.NOT. ALL(ieee_is_finite(overlap_raw))) THEN
          failure_code = metric_projection_overlap_nonfinite
+      END IF
 
       ! First pass: diagonalize S^(1/2) P S^(1/2) and collect each irreducible k point once.
       DO ikp = 1, kplocal
@@ -2138,8 +2156,9 @@ CONTAINS
             CALL analyze_metric_density_dense(density, overlap, natural_occupations, &
                                               local_accepted, projection_code)
             IF (.NOT. local_accepted) failure_code = MAX(failure_code, projection_code)
-            IF (local_accepted .AND. kpoints%para_env_kp%is_source()) &
+            IF (local_accepted .AND. kpoints%para_env_kp%is_source()) THEN
                raw_occupations(:, kp%nkpoint, ispin) = natural_occupations
+            END IF
          END DO
          IF (kpoints%para_env_kp%is_source()) PRESENT(kp%nkpoint) = 1
       END DO
@@ -2170,7 +2189,7 @@ CONTAINS
                                           max_occupation, projected_occupations(:, :, ispin), &
                                           waterfill_accepted, residual)
          IF (.NOT. waterfill_accepted) THEN
-            WRITE (reason, '(A,I0,A,ES12.4)') &
+            WRITE (reason, "(A,I0,A,ES12.4)") &
                "occupation water-filling failed for spin ", ispin, "; residual=", residual
             RETURN
          END IF
@@ -2198,8 +2217,9 @@ CONTAINS
                                               local_accepted, projection_code)
             IF (.NOT. local_accepted) failure_code = MAX(failure_code, projection_code)
             IF (local_accepted .AND. nc == 1 .AND. &
-                MAXVAL(ABS(AIMAG(projected))) > hermiticity_tol*MAX(1.0_dp, MAXVAL(ABS(projected)))) &
+                MAXVAL(ABS(AIMAG(projected))) > hermiticity_tol*MAX(1.0_dp, MAXVAL(ABS(projected)))) THEN
                failure_code = MAX(failure_code, metric_projection_density_nonhermitian)
+            END IF
             IF (local_accepted) THEN
                dense_r(:, :) = REAL(projected, dp)
                CALL cp_fm_set_submatrix(pmat_tmp(ikp, 1, ispin), dense_r)
@@ -2207,8 +2227,9 @@ CONTAINS
                   dense_i(:, :) = AIMAG(projected)
                   CALL cp_fm_set_submatrix(pmat_tmp(ikp, 2, ispin), dense_i)
                END IF
-               IF (kpoints%para_env_kp%is_source()) &
+               IF (kpoints%para_env_kp%is_source()) THEN
                   electron_counts(ispin) = electron_counts(ispin) + kp%wkp*SUM(metric_occupations)
+               END IF
             END IF
          END DO
       END DO
@@ -2226,7 +2247,7 @@ CONTAINS
          END IF
          electron_error = ABS(electron_counts(ispin) - target_electrons)
          IF (.NOT. ieee_is_finite(electron_counts(ispin)) .OR. electron_error > electron_tol) THEN
-            WRITE (reason, '(A,I0,A,ES12.4,A,ES12.4)') &
+            WRITE (reason, "(A,I0,A,ES12.4,A,ES12.4)") &
                "projected metric electron-count gate failed for spin ", ispin, ": count=", &
                electron_counts(ispin), ", error=", electron_error
             RETURN
@@ -2339,7 +2360,7 @@ CONTAINS
          END DO
          phase_snapshot_taken = .TRUE.
          CALL calibrate_symmetry_phases(kpoints, overlap_rs, overlap_rs(1, 1)%matrix, sab_nl, &
-                                        cell_to_index, success=phase_ok, error_message=reason)
+                                        cell_to_index, include_inactive=.TRUE., success=phase_ok, error_message=reason)
          IF (.NOT. phase_ok) GOTO 800
       END IF
 
@@ -2440,11 +2461,11 @@ CONTAINS
          GOTO 800
       END IF
       IF (herm_error_global > hermiticity_tol) THEN
-         WRITE (reason, '(A,ES12.4)') "target P(k) is not Hermitian; relative residual=", herm_error_global
+         WRITE (reason, "(A,ES12.4)") "target P(k) is not Hermitian; relative residual=", herm_error_global
          GOTO 800
       END IF
       IF (imag_error_global > hermiticity_tol) THEN
-         WRITE (reason, '(A,ES12.4)') "real-only target has a nonzero imaginary density; residual=", imag_error_global
+         WRITE (reason, "(A,ES12.4)") "real-only target has a nonzero imaginary density; residual=", imag_error_global
          GOTO 800
       END IF
 
@@ -2485,14 +2506,14 @@ CONTAINS
          electron_error = ABS(spin_trace - expected_electrons)
          IF (cross_mesh) THEN
             IF (.NOT. ieee_is_finite(spin_trace) .OR. electron_error > electron_tol) THEN
-               WRITE (reason, '(A,I0,A,ES12.4,A,ES12.4)') &
+               WRITE (reason, "(A,I0,A,ES12.4,A,ES12.4)") &
                   "projected spin electron-count gate failed for spin ", ispin, ": Tr[PS]=", &
                   spin_trace, ", error=", electron_error
                GOTO 800
             END IF
          ELSE
             IF (.NOT. ieee_is_finite(spin_trace) .OR. electron_error > electron_renormalization_tol) THEN
-               WRITE (reason, '(A,I0,A,ES12.4,A,ES12.4)') &
+               WRITE (reason, "(A,I0,A,ES12.4,A,ES12.4)") &
                   "spin-resolved electron-count gate failed for spin ", ispin, ": Tr[PS]=", &
                   spin_trace, ", error=", electron_error
                GOTO 800
@@ -2531,7 +2552,7 @@ CONTAINS
             END IF
             electron_error = ABS(spin_trace - expected_electrons)
             IF (.NOT. ieee_is_finite(spin_trace) .OR. electron_error > electron_tol) THEN
-               WRITE (reason, '(A,I0,A,ES12.4,A,ES12.4)') &
+               WRITE (reason, "(A,I0,A,ES12.4,A,ES12.4)") &
                   "normalized spin electron-count gate failed for spin ", ispin, ": Tr[PS]=", &
                   spin_trace, ", error=", electron_error
                GOTO 800
@@ -2579,8 +2600,9 @@ CONTAINS
       IF (ASSOCIATED(denmat_tmp)) THEN
          DO ispin = 1, SIZE(denmat_tmp, 1)
             DO ic = 1, SIZE(denmat_tmp, 2)
-               IF (ASSOCIATED(denmat_tmp(ispin, ic)%matrix)) &
+               IF (ASSOCIATED(denmat_tmp(ispin, ic)%matrix)) THEN
                   CALL dbcsr_deallocate_matrix(denmat_tmp(ispin, ic)%matrix)
+               END IF
             END DO
          END DO
          DEALLOCATE (denmat_tmp)

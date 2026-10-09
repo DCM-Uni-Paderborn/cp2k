@@ -24,15 +24,14 @@ MODULE scf_control_types
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: &
-        kpoint_restart_legacy_compatible, &
         atomic_guess, diag_ot, diag_update_method_adiis, diag_update_method_mixing, direct_p_mix, &
-        external_density_guess, general_roks, high_spin_roks, no_guess, no_mix, &
-        ot_algo_taylor_or_diag, outer_scf_basis_center_opt, outer_scf_cdft_constraint, &
-        outer_scf_ddapc_constraint, outer_scf_none, outer_scf_optimizer_bisect, &
-        outer_scf_optimizer_broyden, outer_scf_optimizer_diis, outer_scf_optimizer_newton, &
-        outer_scf_optimizer_newton_ls, outer_scf_optimizer_none, outer_scf_optimizer_sd, &
-        outer_scf_optimizer_secant, outer_scf_s2_constraint, smear_energy_window, &
-        smear_fermi_dirac, smear_gaussian, smear_list, smear_mp, smear_mv
+        external_density_guess, general_roks, high_spin_roks, kpoint_restart_legacy_compatible, &
+        no_guess, no_mix, ot_algo_taylor_or_diag, outer_scf_basis_center_opt, &
+        outer_scf_cdft_constraint, outer_scf_ddapc_constraint, outer_scf_none, &
+        outer_scf_optimizer_bisect, outer_scf_optimizer_broyden, outer_scf_optimizer_diis, &
+        outer_scf_optimizer_newton, outer_scf_optimizer_newton_ls, outer_scf_optimizer_none, &
+        outer_scf_optimizer_sd, outer_scf_optimizer_secant, outer_scf_s2_constraint, &
+        smear_energy_window, smear_fermi_dirac, smear_gaussian, smear_list, smear_mp, smear_mv
    USE input_cp2k_scf,                  ONLY: create_scf_section
    USE input_enumeration_types,         ONLY: enum_i2c,&
                                               enumeration_type

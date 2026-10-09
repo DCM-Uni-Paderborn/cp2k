@@ -1,0 +1,35 @@
+diff --git a/src/tblite/blas/threading.c b/src/tblite/blas/threading.c
+index 1db97a9..f78717a 100644
+--- a/src/tblite/blas/threading.c
++++ b/src/tblite/blas/threading.c
+@@ -50,3 +50,3 @@
+ #if defined(__APPLE__)
+-#  include <Accelerate/Accelerate.h>
++#  include <vecLib/thread_api.h>
+ #endif
+@@ -101,5 +101,5 @@ static mkl_set_local_fortran_fn local_mkl_set_fortran = NULL;
+ #if defined(__APPLE__)
+-typedef int (*accelerate_set_fn)(BLAS_THREADING);
+-typedef BLAS_THREADING (*accelerate_get_fn)(void);
++typedef int (*accelerate_set_fn)(enum BLAS_THREADING);
++typedef enum BLAS_THREADING (*accelerate_get_fn)(void);
+ static accelerate_set_fn local_accel_set = NULL;
+ static accelerate_get_fn local_accel_get = NULL;
+@@ -565,7 +565,7 @@ int tblite_blas_worker_begin(void)
+ #if defined(__APPLE__)
+     case TBLITE_LOCAL_ACCELERATE:
+         if (local_accel_set != NULL && local_accel_get != NULL) {
+-            BLAS_THREADING previous = local_accel_get();
++            enum BLAS_THREADING previous = local_accel_get();
+             if (local_accel_set(BLAS_THREADING_SINGLE_THREADED) == 0) {
+                 /*
+                  * BLAS_THREADING is unsigned. Add one so state=0 remains the
+@@ -611,7 +611,7 @@ void tblite_blas_worker_end(int state)
+ #if defined(__APPLE__)
+     case TBLITE_LOCAL_ACCELERATE:
+         if (state > 0 && local_accel_set != NULL) {
+-            (void)local_accel_set((BLAS_THREADING)(state - 1));
++            (void)local_accel_set((enum BLAS_THREADING)(state - 1));
+         }
+         break;
+ #endif

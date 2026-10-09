@@ -78,12 +78,14 @@ artifact rather than a Git tag for released CP2K versions.
 
 ## Setting up dependencies and building CP2K
 
-At a minimum, CP2K requires a modern suite of C and Fortran compiler compliant with the C99 and the
-F2008 standard respectively. For currently supported compiler versions, see the GitHub Wiki page on
+At a minimum, CP2K requires a modern suite of Fortran and C compiler compliant with the F2008
+(`-std=f2008`) and C2011 (`-std=c11`) standards respectively. For an up-to-date list of supported
+compiler flavors, versions and known limitations, see the GitHub Wiki page on
 [Compiler Support](https://github.com/cp2k/cp2k/wiki/Compiler-Support).
 
-In addition, CP2K requires [DBCSR](https://github.com/cp2k/dbcsr/), BLAS, and LAPACK; on top of
-these, MPI builds require MPI and ScaLAPACK.
+In addition, CP2K requires [DBCSR](https://github.com/cp2k/dbcsr/), BLAS, LAPACK, FFTW, and
+[libwignernj](https://github.com/susilehtola/libwignernj) 0.8 or newer; on top of these, MPI builds
+require MPI and ScaLAPACK.
 
 Detailed descriptions of available dependencies can be found in the technologies section:
 
@@ -197,7 +199,7 @@ For a minimal build from scratch, run:
 Based on which desired features can be added explicitly for building a tailored CP2K binary.
 
 ```shell
-./make_cp2k.sh -bd -df all -ef libint -ef libxc -ef spglib -ef tblite
+./make_cp2k.sh -bd -df all -ef libint2 -ef libxc -ef spglib -ef tblite
 ```
 
 Use `./make_cp2k.sh --help` to display the complete list of options:
@@ -255,7 +257,9 @@ Flags:
  --gcc_version         : Use the specified GCC version (default: automatically decided by spack)
  --gpu_model           : Select GPU model (default: none)
  --install_path        : Define the CP2K installation path (default: ./install)
- -j                    : Maximum number of processes used in parallel
+ -j                    : Maximum number of processes (CPU cores) used in parallel
+                         If the variable OMP_NUM_THREADS is set and the -j flag is not supplied, then
+                         the maximum number of processes is defined by OMP_NUM_THREADS
  --mpi_mode            : Set preferred MPI mode (default: "mpich")
  --num_packages        : Maximum number of packages built by spack in parallel (default: 4)
  -opencl               : Enable the use of the Open Computing Language (OpenCL)
@@ -282,7 +286,7 @@ Hints:
  - The folder ${CP2K_ROOT}/install is updated after each successful run
 
 Packages: all | ace | cosma | deepmd | dftd4 | dlaf | elpa | fftw3 | gauxc | greenx | hdf5 | libfci |
-          libgint | libint | libsmeagol | libtorch | libvdwxc | libxs | mimic | openpmd | pexsi | plumed |
+          libgint | libint2 | libsmeagol | libtorch | libvdwxc | libxs | mimic | openpmd | pexsi | plumed |
           sirius | spfft | spglib | spla | tblite | trexio | vori 
 
 Features: cray_pm_accel_energy | cusolver_mp | dbm_gpu | elpa_gpu | grid_gpu | pw_gpu |
@@ -290,6 +294,11 @@ Features: cray_pm_accel_energy | cusolver_mp | dbm_gpu | elpa_gpu | grid_gpu | p
 ```
 
 </details><br>
+
+```{note}
+If the variable `OMP_NUM_THREADS` is set and the `-j` flag is not supplied, then the maximum number of processes
+is defined by `OMP_NUM_THREADS`
+```
 
 `make_cp2k.sh` creates and reuses a `spack/` directory under the `CP2K_ROOT`. It contains the local
 Spack installation and dependency stack. Remove or rename it to rebuild all dependencies from

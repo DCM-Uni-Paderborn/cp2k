@@ -45,8 +45,9 @@ CONTAINS
       CALL project_restart_occupations(raw, weights, 2.0_dp, 2.0_dp, projected, accepted, residual)
       count = weights(1)*SUM(projected(:, 1)) + weights(2)*SUM(projected(:, 2))
       IF (.NOT. accepted .OR. MINVAL(projected) < 0.0_dp .OR. MAXVAL(projected) > 2.0_dp .OR. &
-          ABS(count - 2.0_dp) > 5.0e-14_dp .OR. ABS(residual) > 5.0e-14_dp) &
+          ABS(count - 2.0_dp) > 5.0e-14_dp .OR. ABS(residual) > 5.0e-14_dp) THEN
          ERROR STOP "test_rks_waterfill failed"
+      END IF
       PRINT *, "test_rks_waterfill: OK"
    END SUBROUTINE test_rks_waterfill
 
@@ -65,8 +66,9 @@ CONTAINS
       CALL project_restart_occupations(raw, weights, 1.0_dp, 1.0_dp, projected, accepted, residual)
       count = weights(1)*SUM(projected(:, 1)) + weights(2)*SUM(projected(:, 2))
       IF (.NOT. accepted .OR. MINVAL(projected) < 0.0_dp .OR. MAXVAL(projected) > 1.0_dp .OR. &
-          ABS(count - 1.0_dp) > 5.0e-14_dp .OR. ABS(residual) > 5.0e-14_dp) &
+          ABS(count - 1.0_dp) > 5.0e-14_dp .OR. ABS(residual) > 5.0e-14_dp) THEN
          ERROR STOP "test_uks_waterfill failed"
+      END IF
       PRINT *, "test_uks_waterfill: OK"
    END SUBROUTINE test_uks_waterfill
 
@@ -122,8 +124,9 @@ CONTAINS
       IF (.NOT. accepted .OR. MINVAL(metric_occupations) < -1.0e-12_dp .OR. &
           MAXVAL(metric_occupations) > 2.0_dp + 1.0e-12_dp .OR. &
           ABS(SUM(metric_occupations) - 2.0_dp) > 1.0e-12_dp .OR. &
-          MAXVAL(ABS(projected - CONJG(TRANSPOSE(projected)))) > 1.0e-12_dp) &
+          MAXVAL(ABS(projected - CONJG(TRANSPOSE(projected)))) > 1.0e-12_dp) THEN
          ERROR STOP "test_metric_projection reconstruction failed"
+      END IF
       PRINT *, "test_metric_projection: OK"
    END SUBROUTINE test_metric_projection
 
@@ -143,8 +146,9 @@ CONTAINS
       overlap(1, 1) = CMPLX(1.0_dp, 0.0_dp, dp)
       overlap(2, 2) = CMPLX(1.0e-14_dp, 0.0_dp, dp)
       CALL analyze_metric_density_dense(density, overlap, occupations, accepted, failure_code)
-      IF (accepted .OR. failure_code /= metric_projection_overlap_ill_conditioned) &
+      IF (accepted .OR. failure_code /= metric_projection_overlap_ill_conditioned) THEN
          ERROR STOP "test_ill_conditioned_overlap failed"
+      END IF
       PRINT *, "test_ill_conditioned_overlap: OK"
    END SUBROUTINE test_ill_conditioned_overlap
 
@@ -167,14 +171,16 @@ CONTAINS
       overlap(2, 2) = CMPLX(1.0_dp, 0.0_dp, dp)
       density(1, 1) = CMPLX(nan_value, 0.0_dp, dp)
       CALL analyze_metric_density_dense(density, overlap, occupations, accepted, failure_code)
-      IF (accepted .OR. failure_code /= metric_projection_density_nonfinite) &
+      IF (accepted .OR. failure_code /= metric_projection_density_nonfinite) THEN
          ERROR STOP "test_nonfinite_inputs density failed"
+      END IF
 
       density(1, 1) = CMPLX(1.0_dp, 0.0_dp, dp)
       overlap(2, 2) = CMPLX(nan_value, 0.0_dp, dp)
       CALL analyze_metric_density_dense(density, overlap, occupations, accepted, failure_code)
-      IF (accepted .OR. failure_code /= metric_projection_overlap_nonfinite) &
+      IF (accepted .OR. failure_code /= metric_projection_overlap_nonfinite) THEN
          ERROR STOP "test_nonfinite_inputs overlap failed"
+      END IF
       PRINT *, "test_nonfinite_inputs: OK"
    END SUBROUTINE test_nonfinite_inputs
 
@@ -195,14 +201,16 @@ CONTAINS
       overlap(2, 2) = CMPLX(1.0_dp, 0.0_dp, dp)
       density(1, 2) = CMPLX(0.2_dp, 0.1_dp, dp)
       CALL analyze_metric_density_dense(density, overlap, occupations, accepted, failure_code)
-      IF (accepted .OR. failure_code /= metric_projection_density_nonhermitian) &
+      IF (accepted .OR. failure_code /= metric_projection_density_nonhermitian) THEN
          ERROR STOP "test_nonhermitian_inputs density failed"
+      END IF
 
       density(1, 2) = CMPLX(0.0_dp, 0.0_dp, dp)
       overlap(1, 2) = CMPLX(0.2_dp, 0.1_dp, dp)
       CALL analyze_metric_density_dense(density, overlap, occupations, accepted, failure_code)
-      IF (accepted .OR. failure_code /= metric_projection_overlap_nonhermitian) &
+      IF (accepted .OR. failure_code /= metric_projection_overlap_nonhermitian) THEN
          ERROR STOP "test_nonhermitian_inputs overlap failed"
+      END IF
       PRINT *, "test_nonhermitian_inputs: OK"
    END SUBROUTINE test_nonhermitian_inputs
 
@@ -218,8 +226,9 @@ CONTAINS
       raw = 0.5_dp
       weights = [0.25_dp, 0.75_dp]
       CALL project_restart_occupations(raw, weights, 2.5_dp, 1.0_dp, projected, accepted, residual)
-      IF (accepted .OR. ANY(projected /= 0.0_dp)) &
+      IF (accepted .OR. ANY(projected /= 0.0_dp)) THEN
          ERROR STOP "test_infeasible_electron_target failed"
+      END IF
       PRINT *, "test_infeasible_electron_target: OK"
    END SUBROUTINE test_infeasible_electron_target
 
@@ -241,14 +250,16 @@ CONTAINS
       target_occupations = [-0.1_dp, 1.0_dp]
       CALL project_metric_density_dense(density, overlap, target_occupations, 2.0_dp, projected, &
                                         metric_occupations, accepted, failure_code)
-      IF (accepted .OR. failure_code /= metric_projection_occupation_bounds) &
+      IF (accepted .OR. failure_code /= metric_projection_occupation_bounds) THEN
          ERROR STOP "test_target_occupation_bounds lower failed"
+      END IF
 
       target_occupations = [0.5_dp, 2.1_dp]
       CALL project_metric_density_dense(density, overlap, target_occupations, 2.0_dp, projected, &
                                         metric_occupations, accepted, failure_code)
-      IF (accepted .OR. failure_code /= metric_projection_occupation_bounds) &
+      IF (accepted .OR. failure_code /= metric_projection_occupation_bounds) THEN
          ERROR STOP "test_target_occupation_bounds upper failed"
+      END IF
       PRINT *, "test_target_occupation_bounds: OK"
    END SUBROUTINE test_target_occupation_bounds
 

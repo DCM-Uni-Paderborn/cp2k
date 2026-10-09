@@ -48,9 +48,9 @@ MODULE qs_neighbor_lists
                                               gth_potential_type,&
                                               sgp_potential_type
    USE input_constants,                 ONLY: &
-        dispersion_uff, do_method_lrigpw, do_method_rigpw, do_potential_id, gxtb, &
+        dispersion_uff, do_method_lrigpw, do_method_rigpw, do_potential_id, &
         do_potential_mix_cl_trunc, do_potential_short, do_potential_truncated, do_se_IS_slater, &
-        vdw_pairpot_dftd4, xc_vdw_fun_pairpot
+        gxtb, vdw_pairpot_dftd4, xc_vdw_fun_pairpot
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -307,8 +307,9 @@ CONTAINS
       LOGICAL, ALLOCATABLE, DIMENSION(:) :: all_present, aux_fit_present, aux_present, &
          cneo_present, core_present, default_present, nonbond1_atom, nonbond2_atom, oce_present, &
          orb_present, ppl_present, ppnl_present, ri_present, xb1_atom, xb2_atom
-      REAL(dp)                                           :: almo_rcov, almo_rvdw, eps_schwarz, gxtb_radius, &
-                                                            omega, pdist, rcut, roperator, subcells
+      REAL(dp)                                           :: almo_rcov, almo_rvdw, eps_schwarz, &
+                                                            gxtb_radius, omega, pdist, rcut, &
+                                                            roperator, subcells
       REAL(dp), ALLOCATABLE, DIMENSION(:) :: all_pot_rad, aux_fit_radius, c_radius, calpha, &
          core_radius, nuc_orb_radius, oce_radius, orb_radius, ppl_radius, ppnl_radius, ri_radius, &
          zeff
@@ -625,9 +626,10 @@ CONTAINS
          END DO
          DO jkind = 1, nkind
             DO ikind = 1, nkind
-               IF (orb_present(ikind) .AND. orb_present(jkind)) &
+               IF (orb_present(ikind) .AND. orb_present(jkind)) THEN
                   pair_radius(ikind, jkind) = MAX(pair_radius(ikind, jkind), &
                                                   c_radius(ikind) + c_radius(jkind), gxtb_radius)
+               END IF
             END DO
          END DO
       END IF
@@ -718,9 +720,10 @@ CONTAINS
             END DO
             DO jkind = 1, nkind
                DO ikind = 1, nkind
-                  IF (orb_present(ikind) .AND. orb_present(jkind)) &
+                  IF (orb_present(ikind) .AND. orb_present(jkind)) THEN
                      pair_radius(ikind, jkind) = MAX(pair_radius(ikind, jkind), &
                                                      c_radius(ikind) + c_radius(jkind))
+                  END IF
                END DO
             END DO
          END IF
@@ -1102,7 +1105,7 @@ CONTAINS
 ! **************************************************************************************************
    FUNCTION gxtb_gamma_density_radius(particle_set, cell) RESULT(radius)
       TYPE(particle_type), DIMENSION(:), INTENT(IN)      :: particle_set
-      TYPE(cell_type), POINTER, INTENT(IN)               :: cell
+      TYPE(cell_type), INTENT(IN), POINTER               :: cell
       REAL(dp)                                           :: radius
 
       INTEGER                                            :: corner, iatom, idim

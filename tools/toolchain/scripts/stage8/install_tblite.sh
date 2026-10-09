@@ -11,12 +11,23 @@ tblite_sha256="3a7cb4602101e828caf41c38ca5e30f82de82d0d26d5db40168acdcad3462b92"
 save_tblite_rev="d9a937f23749f44c3da98dd0ea1387edf6507db9"
 save_tblite_repo="${SAVE_TBLITE_REPOSITORY:-https://github.com/DCM-Uni-Paderborn/save_tblite.git}"
 save_tblite_src_dir="save_tblite-${save_tblite_rev}"
+save_tblite_dftd_rev="92f4c4dc62be78cd25227ef1335dfa11e247a832"
 
 source "${SCRIPT_DIR}"/common_vars.sh
 source "${SCRIPT_DIR}"/tool_kit.sh
 source "${SCRIPT_DIR}"/signal_trap.sh
 source "${INSTALLDIR}"/toolchain.conf
 source "${INSTALLDIR}"/toolchain.env
+
+save_tblite_cmake_args=()
+if [ "${tblite_provider}" = "save" ] && [ "$with_tblite" = "__INSTALL__" ] && [ -n "${SAVE_TBLITE_DFTD_SOURCE:-}" ]; then
+  save_tblite_dftd_source="$(cd "${SAVE_TBLITE_DFTD_SOURCE}" && pwd -P)"
+  if [ "$(git -C "${save_tblite_dftd_source}" rev-parse HEAD)" != "${save_tblite_dftd_rev}" ]; then
+    echo "SAVE_TBLITE_DFTD_SOURCE must contain DFT-D revision ${save_tblite_dftd_rev}." >&2
+    exit 1
+  fi
+  save_tblite_cmake_args+=("-DFETCHCONTENT_SOURCE_DIR_DFTD=${save_tblite_dftd_source}")
+fi
 
 [ -f "${BUILDDIR}/setup_tblite" ] && rm "${BUILDDIR}/setup_tblite"
 
@@ -40,6 +51,7 @@ case "$with_tblite" in
         git clone --no-checkout "${save_tblite_repo}" "${save_tblite_src_dir}"
         git -C "${save_tblite_src_dir}" checkout --detach "${save_tblite_rev}"
         cd "${save_tblite_src_dir}"
+        patch -p1 < "${SCRIPT_DIR}/stage8/save_tblite-macos-blas.patch"
 
         mkdir -p build && cd build
         cmake \
@@ -51,12 +63,14 @@ case "$with_tblite" in
           -DWITH_OpenMP=ON \
           -DTBLITE_WITH_DDX=OFF \
           -Dtblite-dependency-method=fetch \
+          "${save_tblite_cmake_args[@]}" \
           .. \
           > cmake.log 2>&1 || tail_excerpt cmake.log
         make install -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
         echo "${save_tblite_rev}" > save_tblite_revision
         write_checksums "${install_lock_file}" \
           "${SCRIPT_DIR}/stage8/$(basename ${SCRIPT_NAME})" \
+          "${SCRIPT_DIR}/stage8/save_tblite-macos-blas.patch" \
           save_tblite_revision
         cd ../..
       fi

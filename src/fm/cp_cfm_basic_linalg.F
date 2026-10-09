@@ -36,7 +36,8 @@ MODULE cp_cfm_basic_linalg
    LOGICAL, PRIVATE, PARAMETER :: debug_this_module = .TRUE.
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cp_cfm_basic_linalg'
 
-   PUBLIC :: cp_cfm_column_scale, &
+   PUBLIC :: cp_cfm_add_on_diag, &
+             cp_cfm_column_scale, &
              cp_cfm_gemm, &
              cp_cfm_get_diag, &
              cp_cfm_lu_decompose, &
@@ -1437,34 +1438,115 @@ CONTAINS
    END SUBROUTINE cp_cfm_vectorsnorm
 
 ! **************************************************************************************************
+!> \brief Adds a scalar to the diagonal of a distributed complex full matrix.
+!> \param matrix input/output matrix
+!> \param alpha scalar added to each diagonal element
+!> \param n_active optional number of physical rows/columns
+! **************************************************************************************************
+   SUBROUTINE cp_cfm_add_on_diag(matrix, alpha, n_active)
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: matrix
+      COMPLEX(KIND=dp), INTENT(IN)                       :: alpha
+      INTEGER, INTENT(IN), OPTIONAL                      :: n_active
+
+      INTEGER                                            :: i_global, n_diag, ncol_global, nrow_global
+#if defined(__parallel)
+      INTEGER                                            :: icol_local, ipcol, iprow, irow, irow_local, &
+                                                            mypcol, myprow, npcol, nprow, nrow_local
+      INTEGER, DIMENSION(9)                              :: desca
+      INTEGER, DIMENSION(:), POINTER                     :: row_indices
+      TYPE(cp_blacs_env_type), POINTER                   :: context
+#endif
+
+      CALL cp_cfm_get_info(matrix, nrow_global=nrow_global, ncol_global=ncol_global)
+
+      n_diag = MIN(nrow_global, ncol_global)
+      IF (PRESENT(n_active)) n_diag = n_active
+      CPASSERT(n_diag >= 0 .AND. n_diag <= MIN(nrow_global, ncol_global))
+
+#if defined(__parallel)
+      CALL cp_cfm_get_info(matrix, nrow_local=nrow_local, row_indices=row_indices)
+      context => matrix%matrix_struct%context
+      myprow = context%mepos(1)
+      mypcol = context%mepos(2)
+      nprow = context%num_pe(1)
+      npcol = context%num_pe(2)
+      desca(:) = matrix%matrix_struct%descriptor(:)
+
+      DO irow = 1, nrow_local
+         i_global = row_indices(irow)
+         IF (i_global > n_diag) EXIT
+         CALL infog2l(i_global, i_global, desca, nprow, npcol, myprow, mypcol, &
+                      irow_local, icol_local, iprow, ipcol)
+         IF ((iprow == myprow) .AND. (ipcol == mypcol)) THEN
+            matrix%local_data(irow_local, icol_local) = matrix%local_data(irow_local, icol_local) + alpha
+         END IF
+      END DO
+#else
+      DO i_global = 1, n_diag
+         matrix%local_data(i_global, i_global) = matrix%local_data(i_global, i_global) + alpha
+      END DO
+#endif
+
+   END SUBROUTINE cp_cfm_add_on_diag
+
+! **************************************************************************************************
 !> \brief returns the diagonal of a complex full matrix: diag(i)= A_{ii}.
 !>        Each diagonal entry is owned by one process. The sum over the
 !>        process grid collects the entries.
 !> \param matrix ...
 !> \param diag ...
+!> \param n_active optional number of leading diagonal elements to return
 ! **************************************************************************************************
-   SUBROUTINE cp_cfm_get_diag(matrix, diag)
+   SUBROUTINE cp_cfm_get_diag(matrix, diag, n_active)
       TYPE(cp_cfm_type), INTENT(IN)                      :: matrix
       COMPLEX(KIND=dp), DIMENSION(:), INTENT(OUT)        :: diag
+      INTEGER, INTENT(IN), OPTIONAL                      :: n_active
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'cp_cfm_get_diag'
 
-      INTEGER                                            :: handle, i, j, ncol_local, nrow_local
-      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
+      INTEGER                                            :: handle, i_global, n_diag, ncol_global, &
+                                                            nrow_global
+#if defined(__parallel)
+      INTEGER                                            :: icol_local, ipcol, iprow, irow, irow_local, &
+                                                            mypcol, myprow, npcol, nprow, nrow_local
+      INTEGER, DIMENSION(9)                              :: desca
+      INTEGER, DIMENSION(:), POINTER                     :: row_indices
+      TYPE(cp_blacs_env_type), POINTER                   :: context
+#endif
 
       CALL timeset(routineN, handle)
 
-      CALL cp_cfm_get_info(matrix, col_indices=col_indices, row_indices=row_indices, &
-                           nrow_local=nrow_local, ncol_local=ncol_local)
+      CALL cp_cfm_get_info(matrix, nrow_global=nrow_global, ncol_global=ncol_global)
+
+      n_diag = MIN(nrow_global, ncol_global)
+      IF (PRESENT(n_active)) n_diag = n_active
+      CPASSERT(n_diag >= 0 .AND. n_diag <= MIN(nrow_global, ncol_global))
+      CPASSERT(SIZE(diag) >= n_diag)
 
       diag = z_zero
-      DO j = 1, ncol_local
-         DO i = 1, nrow_local
-            IF (row_indices(i) == col_indices(j)) THEN
-               diag(col_indices(j)) = matrix%local_data(i, j)
-            END IF
-         END DO
+#if defined(__parallel)
+      CALL cp_cfm_get_info(matrix, nrow_local=nrow_local, row_indices=row_indices)
+      context => matrix%matrix_struct%context
+      myprow = context%mepos(1)
+      mypcol = context%mepos(2)
+      nprow = context%num_pe(1)
+      npcol = context%num_pe(2)
+      desca(:) = matrix%matrix_struct%descriptor(:)
+
+      DO irow = 1, nrow_local
+         i_global = row_indices(irow)
+         IF (i_global > n_diag) EXIT
+         CALL infog2l(i_global, i_global, desca, nprow, npcol, myprow, mypcol, &
+                      irow_local, icol_local, iprow, ipcol)
+         IF ((iprow == myprow) .AND. (ipcol == mypcol)) THEN
+            diag(i_global) = matrix%local_data(irow_local, icol_local)
+         END IF
       END DO
+#else
+      DO i_global = 1, n_diag
+         diag(i_global) = matrix%local_data(i_global, i_global)
+      END DO
+#endif
       CALL matrix%matrix_struct%para_env%sum(diag)
 
       CALL timestop(handle)

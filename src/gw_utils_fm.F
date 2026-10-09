@@ -6,7 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 
 ! **************************************************************************************************
-!> \brief Common full-matrix operations used by GW modules.
+!> \brief Full-matrix operations not provided by the CP2K FM packages.
 !> \par History
 !>      09.2026 created Jan Wilhelm
 ! **************************************************************************************************
@@ -19,6 +19,7 @@ MODULE gw_utils_fm
    USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_decompose,&
                                               cp_fm_cholesky_invert
    USE cp_fm_diag,                      ONLY: cp_fm_power
+   USE cp_fm_struct,                    ONLY: cp_fm_struct_equivalent
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_info,&
                                               cp_fm_release,&
@@ -27,6 +28,8 @@ MODULE gw_utils_fm
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: z_one,&
                                               z_zero
+   USE mathlib,                         ONLY: diag_complex,&
+                                              gemm_square
    USE parallel_gemm_api,               ONLY: parallel_gemm
 #include "./base/base_uses.f90"
 
@@ -35,7 +38,8 @@ MODULE gw_utils_fm
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'gw_utils_fm'
 
-   PUBLIC :: cfm_contract_ABA, fm_contract_ABA, fm_invert, fm_sqrt
+   PUBLIC :: cfm_contract_ABA, fm_contract_ABA, fm_invert, fm_sqrt, &
+             local_add_on_diag, local_complex_power
 
    INTERFACE fm_contract_ABA
       MODULE PROCEDURE fm_contract_ABA, fm_contract_ABA_set
@@ -48,20 +52,37 @@ CONTAINS
 !> \param matrix_A left and right matrix A; H denotes its Hermitian transpose
 !> \param matrix_B input matrix B; overwritten by A^H B A if matrix_C is absent
 !> \param matrix_C optional output matrix C=A^H B A
+!> \param workspace optional reusable scratch matrix with the same layout as A;
+!>        its contents are overwritten and it must not alias the input or output matrices
 ! **************************************************************************************************
-   SUBROUTINE cfm_contract_ABA(matrix_A, matrix_B, matrix_C)
+   SUBROUTINE cfm_contract_ABA(matrix_A, matrix_B, matrix_C, workspace)
       TYPE(cp_cfm_type), INTENT(IN)                      :: matrix_A
       TYPE(cp_cfm_type), INTENT(INOUT)                   :: matrix_B
-      TYPE(cp_cfm_type), INTENT(INOUT), OPTIONAL         :: matrix_C
+      TYPE(cp_cfm_type), INTENT(INOUT), OPTIONAL         :: matrix_C, workspace
 
       INTEGER                                            :: ncol, nrow
+      LOGICAL                                            :: compatible_workspace
       TYPE(cp_cfm_type)                                  :: work
 
       CPASSERT(ASSOCIATED(matrix_A%matrix_struct))
       CPASSERT(ASSOCIATED(matrix_B%matrix_struct))
       CALL cp_cfm_get_info(matrix_A, nrow_global=nrow, ncol_global=ncol)
       CPASSERT(nrow == ncol)
-      CALL cp_cfm_create(work, matrix_A%matrix_struct)
+      IF (PRESENT(workspace)) THEN
+         compatible_workspace = cp_fm_struct_equivalent(matrix_A%matrix_struct, workspace%matrix_struct)
+         compatible_workspace = compatible_workspace .AND. &
+                                ALL(matrix_A%matrix_struct%descriptor == workspace%matrix_struct%descriptor)
+         CPASSERT(compatible_workspace)
+         CPASSERT(ASSOCIATED(workspace%local_data))
+         CPASSERT(.NOT. ASSOCIATED(workspace%local_data, matrix_A%local_data))
+         CPASSERT(.NOT. ASSOCIATED(workspace%local_data, matrix_B%local_data))
+         IF (PRESENT(matrix_C)) THEN
+            CPASSERT(.NOT. ASSOCIATED(workspace%local_data, matrix_C%local_data))
+         END IF
+         work = workspace
+      ELSE
+         CALL cp_cfm_create(work, matrix_A%matrix_struct)
+      END IF
 
       CALL parallel_gemm("N", "N", nrow, nrow, nrow, z_one, matrix_B, matrix_A, &
                          z_zero, work)
@@ -74,9 +95,84 @@ CONTAINS
                             z_zero, matrix_B)
       END IF
 
-      CALL cp_cfm_release(work)
+      IF (.NOT. PRESENT(workspace)) CALL cp_cfm_release(work)
 
    END SUBROUTINE cfm_contract_ABA
+
+! **************************************************************************************************
+!> \brief Add a scalar to the diagonal of a local complex matrix.
+!> \param matrix input/output matrix
+!> \param alpha scalar added to each diagonal element
+! **************************************************************************************************
+   SUBROUTINE local_add_on_diag(matrix, alpha)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: matrix
+      COMPLEX(KIND=dp), INTENT(IN)                       :: alpha
+
+      INTEGER                                            :: i, n
+
+      n = SIZE(matrix, 1)
+      CPASSERT(n == SIZE(matrix, 2))
+
+      DO i = 1, n
+         matrix(i, i) = matrix(i, i) + alpha
+      END DO
+
+   END SUBROUTINE local_add_on_diag
+
+! **************************************************************************************************
+!> \brief Compute a spectral power of a local complex Hermitian matrix.
+!>        Eigenvalues not larger than eps are discarded.
+!> \param matrix input/output matrix
+!> \param exponent matrix exponent
+!> \param eps eigenvalue threshold
+!> \param cond_nr optional condition number
+!> \param min_ev optional minimum absolute eigenvalue
+!> \param max_ev optional maximum absolute eigenvalue
+! **************************************************************************************************
+   SUBROUTINE local_complex_power(matrix, exponent, eps, cond_nr, min_ev, max_ev)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: matrix
+      REAL(KIND=dp), INTENT(IN)                          :: exponent, eps
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: cond_nr, min_ev, max_ev
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'local_complex_power'
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: eigenvectors
+      INTEGER                                            :: handle, i, n
+      REAL(KIND=dp)                                      :: sqrt_power_eval
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues
+
+      CALL timeset(routineN, handle)
+
+      n = SIZE(matrix, 1)
+      CPASSERT(n == SIZE(matrix, 2))
+      matrix(:, :) = 0.5_dp*(matrix(:, :) + CONJG(TRANSPOSE(matrix(:, :))))
+
+      ALLOCATE (eigenvalues(n), eigenvectors(n, n))
+      CALL diag_complex(matrix, eigenvectors, eigenvalues)
+
+      IF (PRESENT(cond_nr)) cond_nr = MAXVAL(ABS(eigenvalues))/MINVAL(ABS(eigenvalues))
+      IF (PRESENT(min_ev)) min_ev = MINVAL(ABS(eigenvalues))
+      IF (PRESENT(max_ev)) max_ev = MAXVAL(ABS(eigenvalues))
+
+      ! Reconstruct matrix**exponent as X*X^H, where
+      ! X = U*diag(eigenvalues**(exponent/2)).
+      DO i = 1, n
+         IF (eps < eigenvalues(i)) THEN
+            sqrt_power_eval = eigenvalues(i)**(0.5_dp*exponent)
+         ELSE
+            sqrt_power_eval = 0.0_dp
+         END IF
+         eigenvectors(:, i) = eigenvectors(:, i)*sqrt_power_eval
+      END DO
+
+      ! X*X^H = U*diag(eigenvalues**exponent)*U^H.
+      CALL gemm_square(eigenvectors, 'N', eigenvectors, 'C', matrix)
+
+      DEALLOCATE (eigenvalues, eigenvectors)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE local_complex_power
 
 ! **************************************************************************************************
 !> \brief Inverts a symmetric matrix. First, Cholesky decomposition is tried.

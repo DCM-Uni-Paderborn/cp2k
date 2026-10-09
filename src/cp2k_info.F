@@ -115,6 +115,12 @@ CONTAINS
 #if defined(__LIBXC)
       flags = TRIM(flags)//" libxc"
 #endif
+#if defined(__LIBXC) && !defined(__NO_OFFLOAD_LIBXC)
+      flags = TRIM(flags)//" libxc_gpu"
+#endif
+#if defined(__NO_OFFLOAD_LIBXC)
+      flags = TRIM(flags)//" no_offload_libxc"
+#endif
 #if defined(__GAUXC)
       flags = TRIM(flags)//" gauxc"
 #endif
@@ -123,6 +129,9 @@ CONTAINS
 #endif
 #if defined(GAUXC_HAS_ONEDFT)
       flags = TRIM(flags)//" gauxc_onedft"
+#endif
+#if defined(__GAUXC) && defined(__GAUXC_ONEDFT_GRADIENT_FIX)
+      flags = TRIM(flags)//" gauxc_onedft_gradients"
 #endif
 #if defined(GAUXC_HAS_HOST)
       flags = TRIM(flags)//" gauxc_host"
@@ -138,6 +147,9 @@ CONTAINS
 #endif
 #if defined(GAUXC_HAS_HDF5)
       flags = TRIM(flags)//" gauxc_hdf5"
+#endif
+#if defined(__SKALA)
+      flags = TRIM(flags)//" skala"
 #endif
 #if defined(__PEXSI)
       flags = TRIM(flags)//" pexsi"
@@ -247,6 +259,9 @@ CONTAINS
 #if defined(__TBLITE_GXTB_ACCELERATION)
       flags = TRIM(flags)//" tblite_gxtb_acceleration"
 #endif
+#if defined(__TBLITE_GXTB_TRANSFORM)
+      flags = TRIM(flags)//" tblite_gxtb_transform"
+#endif
 #if defined(__TBLITE_DEBUG_DIAGNOSTICS)
       flags = TRIM(flags)//" tblite_debug_diagnostics"
 #endif
@@ -280,6 +295,9 @@ CONTAINS
 #endif
 #if defined(__LIBTORCH_CUDA)
       flags = TRIM(flags)//" libtorch_cuda"
+#endif
+#if defined(__SKALA_FTORCH)
+      flags = TRIM(flags)//" skala_ftorch"
 #endif
 #if defined(__MIMIC)
       flags = TRIM(flags)//" mimic"
@@ -349,6 +367,8 @@ CONTAINS
 #if defined(__LIBGINT)
       flags = TRIM(flags)//" libGint"
 #endif
+
+      flags = TRIM(flags)//" libwignernj"
    END FUNCTION cp2k_flags
 
 ! **************************************************************************************************

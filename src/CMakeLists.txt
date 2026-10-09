@@ -59,10 +59,13 @@ list(
   atom_output.F
   atom_pseudo.F
   atom_set_basis.F
-  atom_sgp.F
+  pseudopotentials/atom_sgp.F
   atoms_input.F
   atom_types.F
-  atom_upf.F
+  pseudopotentials/upf_types.F
+  pseudopotentials/atom_upf.F
+  pseudopotentials/upf_projector_integrals.F
+  pseudopotentials/upf_local_integrals.F
   atom_utils.F
   atom_xc.F
   auto_basis.F
@@ -71,6 +74,7 @@ list(
   soc_pseudopotential_utils.F
   basis_set_output.F
   block_p_types.F
+  bse_bs_env_link.F
   bse_main.F
   bse_full_diag.F
   bse_iterative.F
@@ -79,6 +83,8 @@ list(
   bse_print.F
   bse_properties.F
   bse_util.F
+  bse_types.F
+  bse_input.F
   bsse.F
   casino_utils.F
   cell_methods.F
@@ -150,7 +156,6 @@ list(
   ec_diag_solver.F
   ec_orth_solver.F
   ed_analysis.F
-  efield_tb_methods.F
   efield_utils.F
   eip_environment.F
   eip_environment_types.F
@@ -171,7 +176,6 @@ list(
   et_coupling_proj.F
   et_coupling_types.F
   ewald_environment_types.F
-  ewald_methods_tb.F
   ewald_pw_methods.F
   ewald_pw_types.F
   ewalds.F
@@ -186,6 +190,8 @@ list(
   f77_interface.F
   farming_methods.F
   farming_types.F
+  fde_main.F
+  fde_methods.F
   fist_efield_methods.F
   fist_efield_types.F
   fist_energy_types.F
@@ -233,6 +239,7 @@ list(
   gw_utils_communication.F
   gw.F
   gw_tensor_large_cell_gamma.F
+  gw_tensor_large_cell_gamma_static_cohsex.F
   gw_tensor_small_cell_full_kp.F
   gw_ri_rs_non_periodic.F
   gw_ri_rs_large_cell_gamma.F
@@ -290,6 +297,7 @@ list(
   input_cp2k_embed.F
   input_cp2k_exstate.F
   input_cp2k_external.F
+  input_cp2k_fde.F
   input_cp2k_field.F
   input_cp2k_force_eval.F
   input_cp2k_free_energy.F
@@ -316,7 +324,6 @@ list(
   input_cp2k_rsgrid.F
   input_cp2k_subsys.F
   input_cp2k_smeagol.F
-  input_cp2k_tb.F
   input_cp2k_thermostats.F
   input_cp2k_transport.F
   input_cp2k_voronoi.F
@@ -356,7 +363,6 @@ list(
   libgint_wrapper.F
   library_tests.F
   linesearch.F
-  localization_tb.F
   localized_moments.F
   lri_compression.F
   lri_environment_init.F
@@ -527,8 +533,6 @@ list(
   qmmm_pw_grid.F
   qmmm_se_energy.F
   qmmm_se_forces.F
-  qmmm_tb_coulomb.F
-  qmmm_tb_methods.F
   qmmm_topology_util.F
   qmmm_types.F
   qmmm_types_low.F
@@ -578,13 +582,6 @@ list(
   qs_density_fit.F
   qs_density_matrices.F
   qs_density_mixing_types.F
-  qs_dftb3_methods.F
-  qs_dftb_coulomb.F
-  qs_dftb_dispersion.F
-  qs_dftb_matrices.F
-  qs_dftb_parameters.F
-  qs_dftb_types.F
-  qs_dftb_utils.F
   qs_diis.F
   qs_diis_types.F
   qs_scf_subspace_types.F
@@ -671,6 +668,16 @@ list(
   qs_ks_utils.F
   qs_ks_reference.F
   qs_kubo_transport.F
+  qs_spectral_localizer.F
+  qs_localizer_torus.F
+  spectral_localizer.F
+  quadratic_pseudospectrum.F
+  qs_finite_ao.F
+  qs_ao_translations.F
+  qs_quadratic_pseudospectrum.F
+  spectral_localizer_dbcsr.F
+  spectral_localizer_flatten.F
+  spectral_localizer_bloch.F
   qs_linres_atom_current.F
   qs_linres_current.F
   qs_linres_current_utils.F
@@ -710,6 +717,7 @@ list(
   qs_mo_types.F
   qs_neighbor_lists.F
   qs_neighbor_list_types.F
+  qs_nlcc_methods.F
   qs_nl_hash_table_types.F
   qs_nonscf.F
   qs_nonscf_utils.F
@@ -750,7 +758,6 @@ list(
   qs_scf_post_gpw.F
   qs_scf_post_scf.F
   qs_scf_post_se.F
-  qs_scf_post_tb.F
   qs_scf_types.F
   qs_scf_wfn_mix.F
   qs_spin_orbit.F
@@ -810,6 +817,7 @@ list(
   rpa_gw_im_time_util.F
   rpa_gw_kpoints_util.F
   rpa_gw_sigma_x.F
+  rpa_gw_static_cohsex.F
   rpa_im_time.F
   rpa_main.F
   rpa_sigma_functional.F
@@ -850,9 +858,6 @@ list(
   semi_empirical_utils.F
   simpar_types.F
   sirius_interface.F
-  skala_gpw_functional.F
-  skala_gpw_features.F
-  skala_torch_api.F
   smeagol_control_types.F
   smeagol_emtoptions.F
   smeagol_interface.F
@@ -872,21 +877,6 @@ list(
   taper_types.F
   task_list_methods.F
   task_list_types.F
-  tblite_acp_images.F
-  tblite_acp_response.F
-  tblite_bvk_plan.F
-  tblite_stream_plan.F
-  tblite_exchange_contractions.F
-  tblite_bvk_transform.F
-  tblite_exchange_fft.F
-  tblite_exchange_stream.F
-  tblite_interface.F
-  tblite_ks_matrix.F
-  tblite_model_bridge.F
-  tblite_projector_cache.F
-  tblite_scc_mixer.F
-  tblite_transform_contract.F
-  tblite_types.F
   time_frequency_grids.F
   tip_scan_methods.F
   tip_scan_types.F
@@ -940,30 +930,17 @@ list(
   xas_tdp_utils.F
   xas_tp_scf.F
   gapw_gspace_reconstruction.F
-  xray_diffraction.F
-  xtb_qresp.F
-  xtb_coulomb.F
-  xtb_spinpol.F
-  xtb_eeq.F
-  xtb_ehess.F
-  xtb_ehess_force.F
-  xtb_hcore.F
-  xtb_hab_force.F
-  xtb_ks_matrix.F
-  xtb_matrices.F
-  xtb_parameters.F
-  xtb_potentials.F
-  xtb_types.F)
+  xray_diffraction.F)
 
 list(
   APPEND
   CP2K_SRCS_F
   aobasis/ai_angmom.F
+  aobasis/ai_cartesian_operators.F
   aobasis/ai_contraction.F
   aobasis/ai_contraction_sphi.F
   aobasis/ai_coulomb.F
   aobasis/ai_coulomb_test.F
-  aobasis/ai_derivatives.F
   aobasis/ai_elec_field.F
   aobasis/ai_eri_debug.F
   aobasis/ai_fermi_contact.F
@@ -986,6 +963,7 @@ list(
   aobasis/aux_basis_set.F
   aobasis/basis_set_container_types.F
   aobasis/basis_set_types.F
+  aobasis/gaunt_coefficients.F
   aobasis/orbital_pointers.F
   aobasis/orbital_symbols.F
   aobasis/orbital_transformation_matrices.F
@@ -1069,7 +1047,8 @@ list(
   common/util.F
   common/xmgrace.F
   common/erf_complex.F
-  common/whittaker.F)
+  common/whittaker.F
+  common/wignernj_interface.F)
 
 list(APPEND CP2K_SRCS_F dbm/dbm_api.F dbm/dbm_tests.F)
 
@@ -1397,6 +1376,52 @@ list(
 list(
   APPEND
   CP2K_SRCS_F
+  tb/efield_tb_methods.F
+  tb/ewald_methods_tb.F
+  tb/input_cp2k_tb.F
+  tb/localization_tb.F
+  tb/qmmm_tb_coulomb.F
+  tb/qmmm_tb_methods.F
+  tb/qs_dftb3_methods.F
+  tb/qs_dftb_coulomb.F
+  tb/qs_dftb_dispersion.F
+  tb/qs_dftb_matrices.F
+  tb/qs_dftb_parameters.F
+  tb/qs_dftb_types.F
+  tb/qs_dftb_utils.F
+  tb/qs_scf_post_tb.F
+  tb/tblite_interface.F
+  tb/tblite_acp_images.F
+  tb/tblite_acp_response.F
+  tb/tblite_bvk_plan.F
+  tb/tblite_stream_plan.F
+  tb/tblite_exchange_contractions.F
+  tb/tblite_bvk_transform.F
+  tb/tblite_exchange_fft.F
+  tb/tblite_exchange_stream.F
+  tb/tblite_model_bridge.F
+  tb/tblite_projector_cache.F
+  tb/tblite_transform_contract.F
+  tb/tblite_ks_matrix.F
+  tb/tblite_scc_mixer.F
+  tb/tblite_types.F
+  tb/xtb_coulomb.F
+  tb/xtb_eeq.F
+  tb/xtb_ehess.F
+  tb/xtb_ehess_force.F
+  tb/xtb_hab_force.F
+  tb/xtb_hcore.F
+  tb/xtb_ks_matrix.F
+  tb/xtb_matrices.F
+  tb/xtb_parameters.F
+  tb/xtb_potentials.F
+  tb/xtb_qresp.F
+  tb/xtb_spinpol.F
+  tb/xtb_types.F)
+
+list(
+  APPEND
+  CP2K_SRCS_F
   tmc/input_cp2k_tmc.F
   tmc/tmc_analysis.F
   tmc/tmc_analysis_types.F
@@ -1426,6 +1451,9 @@ list(
   xc_adiabatic_methods.F
   xc_adiabatic_utils.F
   xc/cp_linked_list_xc_deriv.F
+  xc/skala_gpw_features.F
+  xc/skala_gpw_functional.F
+  xc/skala_torch_api.F
   xc_pot_saop.F
   xc_write_output.F
   xc/xc_atom.F
@@ -1442,6 +1470,7 @@ list(
   xc/xc_fxc_kernel.F
   xc/xc_gauxc_cache.F
   xc/xc_gauxc_functional.F
+  xc/xc_gauxc_gradient_policy.F
   xc/xc_gauxc_interface.F
   xc/xc_hcth.F
   xc/xc_input_constants.F
@@ -1595,6 +1624,12 @@ set(CP2K_PROGS_F
     common/gemm_square_unittest.F
     common/memory_utilities_unittest.F
     common/parallel_rng_types_unittest.F
+    pseudopotentials/atom_upf_unittest.F
+    xc/xc_semilocal_unittest.F
+    pseudopotentials/upf_projector_integrals_unittest.F
+    pseudopotentials/upf_local_integrals_unittest.F
+    gapw_background_unittest.F
+    gapw_1c_basis_unittest.F
     kpoint_lattice_fft_unittest.F
     tblite_projector_cache_unittest.F
     tblite_bvk_plan_unittest.F
@@ -1603,7 +1638,11 @@ set(CP2K_PROGS_F
     tblite_model_bridge_unittest.F
     tblite_exchange_integration_unittest.F
     kpoint_smearing_unittest.F
+    motion/cell_opt_utils_unittest.F
     topology_wilson_unittest.F
+    spectral_localizer_unittest.F
+    quadratic_pseudospectrum_unittest.F
+    pw/pw_unittest.F
     topology_symmetry_unittest.F
     topology_curvature_unittest.F
     topology_snapshot_unittest.F
@@ -1618,7 +1657,6 @@ set(CP2K_PROGS_F
     qs_ot_complex_ref_unittest.F
     subsys/cell_types_unittest.F
     kpoint_restart_transfer_unittest.F
-    pw/realspace_grid_cube_unittest.F
     metadyn_tools/graph.F
     motion/dumpdcd.F
     motion/xyz2dcd.F
@@ -1889,6 +1927,7 @@ target_link_libraries(
     $<$<BOOL:${CP2K_USE_TREXIO}>:cp2k::trexio::trexio>
     $<$<BOOL:${CP2K_USE_HDF5}>:HDF5::HDF5
     hdf5::hdf5_fortran>
+    wignernj::wignernj
     DBCSR::dbcsr
     $<$<BOOL:${CP2K_USE_MPI}>:cp2k::SCALAPACK::scalapack>
     cp2k_linalg_libs
@@ -1919,13 +1958,26 @@ endif()
 
 target_link_libraries(cp2k PUBLIC cp2k_link_libs)
 if(CP2K_TBLITE_HAS_GXTB_ACCELERATION)
-  set_property(SOURCE tblite_interface.F cp2k_info.F tblite_projector_cache_unittest.F
-               tblite_acp_response.F tblite_bvk_transform.F tblite_exchange_contractions.F tblite_exchange_stream.F tblite_exchange_stream_unittest.F
-               tblite_exchange_derivative_unittest.F
-               tblite_model_bridge_unittest.F
-               tblite_exchange_integration_unittest.F
-               APPEND PROPERTY COMPILE_DEFINITIONS
-                                                       __TBLITE_GXTB_ACCELERATION)
+  set_property(
+    SOURCE tb/tblite_interface.F
+           cp2k_info.F
+           tblite_projector_cache_unittest.F
+           tb/tblite_acp_response.F
+           tb/tblite_bvk_transform.F
+           tb/tblite_exchange_contractions.F
+           tb/tblite_exchange_stream.F
+           tblite_exchange_stream_unittest.F
+           tblite_exchange_derivative_unittest.F
+           tblite_model_bridge_unittest.F
+           tblite_exchange_integration_unittest.F
+    APPEND
+    PROPERTY COMPILE_DEFINITIONS __TBLITE_GXTB_ACCELERATION)
+endif()
+
+if(CP2K_USE_ACCEL MATCHES "CUDA"
+   AND CP2K_LIBXC_CUDA_SUPPORT
+   AND NOT CP2K_ENABLE_LIBXC_GPU)
+  target_compile_definitions(cp2k PUBLIC __NO_OFFLOAD_LIBXC)
 endif()
 target_compile_definitions(
   cp2k
@@ -1955,12 +2007,15 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_USE_SIRIUS}>:__SIRIUS>
     $<$<BOOL:${CP2K_USE_LIBVDWXC}>:__LIBVDWXC>
     $<$<BOOL:${CP2K_USE_GAUXC}>:__GAUXC>
+    $<$<AND:$<BOOL:${CP2K_USE_GAUXC}>,$<BOOL:${CP2K_GAUXC_HAS_ONEDFT_GRADIENT_FIX}>>:__GAUXC_ONEDFT_GRADIENT_FIX>
     # GauXC's CMake package exports CUTLASS even when its Fortran config does
     # not.
     $<$<AND:$<BOOL:${CP2K_USE_GAUXC}>,$<BOOL:${GAUXC_HAS_CUTLASS}>>:GAUXC_HAS_CUTLASS>
     # GauXC feature flags GAUXC_HAS_MPI, GAUXC_HAS_ONEDFT, GAUXC_HAS_HOST,
     # GAUXC_HAS_DEVICE, GAUXC_HAS_CUDA, and GAUXC_HAS_HDF5 are provided by
     # gauxc/gauxc_config.f in the Fortran sources.
+    $<$<BOOL:${CP2K_USE_SKALA_FTORCH}>:__SKALA_FTORCH>
+    $<$<OR:$<BOOL:${CP2K_USE_GAUXC}>,$<BOOL:${CP2K_USE_SKALA_FTORCH}>>:__SKALA>
     $<$<BOOL:${CP2K_USE_SPLA}>:__SPLA>
     $<$<BOOL:${CP2K_USE_SPLA_GEMM_OFFLOADING}>:__OFFLOAD_GEMM>
     $<$<BOOL:${CP2K_USE_ELPA}>:__ELPA>
@@ -2035,7 +2090,14 @@ list(
   "orbital_transformation_matrices_unittest"
   "gemm_square_unittest"
   "memory_utilities_unittest"
+  "cell_opt_utils_unittest"
   "parallel_rng_types_unittest"
+  "atom_upf_unittest"
+  "xc_semilocal_unittest"
+  "upf_projector_integrals_unittest"
+  "upf_local_integrals_unittest"
+  "gapw_background_unittest"
+  "gapw_1c_basis_unittest"
   "kpoint_lattice_fft_unittest"
   "tblite_projector_cache_unittest"
   "tblite_bvk_plan_unittest"
@@ -2045,6 +2107,9 @@ list(
   "tblite_exchange_integration_unittest"
   "kpoint_smearing_unittest"
   "topology_wilson_unittest"
+  "spectral_localizer_unittest"
+  "quadratic_pseudospectrum_unittest"
+  "pw_unittest"
   "topology_symmetry_unittest"
   "topology_curvature_unittest"
   "topology_snapshot_unittest"
@@ -2059,7 +2124,6 @@ list(
   "qs_ot_complex_ref_unittest"
   "cell_types_unittest"
   "kpoint_restart_transfer_unittest"
-  "realspace_grid_cube_unittest"
   "graph"
   "dumpdcd"
   "xyz2dcd"
@@ -2081,15 +2145,31 @@ add_executable(orbital_transformation_matrices_unittest
 add_executable(gemm_square_unittest common/gemm_square_unittest.F)
 add_executable(memory_utilities_unittest common/memory_utilities_unittest.F)
 add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
+add_executable(atom_upf_unittest pseudopotentials/atom_upf_unittest.F)
+add_executable(xc_semilocal_unittest xc/xc_semilocal_unittest.F)
+add_executable(upf_projector_integrals_unittest
+               pseudopotentials/upf_projector_integrals_unittest.F)
+add_executable(upf_local_integrals_unittest
+               pseudopotentials/upf_local_integrals_unittest.F)
+add_executable(gapw_background_unittest gapw_background_unittest.F)
+add_executable(gapw_1c_basis_unittest gapw_1c_basis_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
-add_executable(tblite_projector_cache_unittest tblite_projector_cache_unittest.F)
+add_executable(tblite_projector_cache_unittest
+               tblite_projector_cache_unittest.F)
 add_executable(tblite_bvk_plan_unittest tblite_bvk_plan_unittest.F)
-add_executable(tblite_exchange_stream_unittest tblite_exchange_stream_unittest.F)
-add_executable(tblite_exchange_derivative_unittest tblite_exchange_derivative_unittest.F)
+add_executable(tblite_exchange_stream_unittest
+               tblite_exchange_stream_unittest.F)
+add_executable(tblite_exchange_derivative_unittest
+               tblite_exchange_derivative_unittest.F)
 add_executable(tblite_model_bridge_unittest tblite_model_bridge_unittest.F)
-add_executable(tblite_exchange_integration_unittest tblite_exchange_integration_unittest.F)
+add_executable(tblite_exchange_integration_unittest
+               tblite_exchange_integration_unittest.F)
 add_executable(kpoint_smearing_unittest kpoint_smearing_unittest.F)
 add_executable(topology_wilson_unittest topology_wilson_unittest.F)
+add_executable(spectral_localizer_unittest spectral_localizer_unittest.F)
+add_executable(quadratic_pseudospectrum_unittest
+               quadratic_pseudospectrum_unittest.F)
+add_executable(pw_unittest pw/pw_unittest.F)
 add_executable(topology_symmetry_unittest topology_symmetry_unittest.F)
 add_executable(topology_curvature_unittest topology_curvature_unittest.F)
 add_executable(topology_snapshot_unittest topology_snapshot_unittest.F)
@@ -2108,7 +2188,7 @@ add_executable(qs_ot_complex_ref_unittest qs_ot_complex_ref_unittest.F)
 add_executable(cell_types_unittest subsys/cell_types_unittest.F)
 add_executable(kpoint_restart_transfer_unittest
                kpoint_restart_transfer_unittest.F)
-add_executable(realspace_grid_cube_unittest pw/realspace_grid_cube_unittest.F)
+add_executable(cell_opt_utils_unittest motion/cell_opt_utils_unittest.F)
 add_executable(graph metadyn_tools/graph.F)
 add_executable(dumpdcd motion/dumpdcd.F)
 add_executable(xyz2dcd motion/xyz2dcd.F)
@@ -2154,6 +2234,12 @@ foreach(_app ${__CP2K_APPS})
   if(CP2K_USE_ACCEL MATCHES HIP)
     set_property(TARGET ${_app} PROPERTY HIP_ARCHITECTURES
                                          "${CMAKE_HIP_ARCHITECTURES}")
+  endif()
+
+  if(CP2K_USE_ACCEL MATCHES "CUDA"
+     AND CP2K_LIBXC_CUDA_SUPPORT
+     AND NOT CP2K_ENABLE_LIBXC_GPU)
+    target_compile_definitions(${_app} PUBLIC __NO_OFFLOAD_LIBXC)
   endif()
 
   target_link_libraries(${_app} PUBLIC cp2k)

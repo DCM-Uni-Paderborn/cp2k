@@ -988,6 +988,10 @@ MODULE input_constants
    INTEGER, PARAMETER, PUBLIC               :: do_dgemm_spla = 1, &
                                                do_dgemm_blas = 2
 
+   ! Libxc library selection (similar to DGEMM)
+   INTEGER, PARAMETER, PUBLIC               :: do_libxc_cpu = 1, &
+                                               do_libxc_gpu = 2
+
    !real time propagation
    INTEGER, PARAMETER, PUBLIC               :: do_taylor = 1, &
                                                do_pade = 2, &
@@ -1177,7 +1181,12 @@ MODULE input_constants
                                                evGW0 = 36, &
                                                evGW = 37, &
                                                ri_rs_non_periodic = 38, &
-                                               ri_rs_large_cell_Gamma = 39
+                                               ri_rs_large_cell_Gamma = 39, &
+                                               tensor_static_cohsex = 40
+
+   INTEGER, PARAMETER, PUBLIC               :: cohsex_off = 0, &
+                                               cohsex_diagonal = 1, &
+                                               cohsex_qp_update = 2
 
    ! periodic RESP parameters
    INTEGER, PARAMETER, PUBLIC               :: do_resp_x_dir = 0, &
@@ -1338,13 +1347,7 @@ MODULE input_constants
                                                eri_default = 3
 
    ! Cell optimisation constraints
-   INTEGER, PARAMETER, PUBLIC               :: fix_none = 0, &
-                                               fix_x = 1, &
-                                               fix_y = 2, &
-                                               fix_z = 3, &
-                                               fix_xy = 4, &
-                                               fix_xz = 5, &
-                                               fix_yz = 6
+   INTEGER, PARAMETER, PUBLIC               :: fix_none = 0
 
    ! Non-equilibrium Green's function method
    INTEGER, PARAMETER, PUBLIC               :: negfint_method_cc = 0, &
@@ -1421,11 +1424,6 @@ MODULE input_constants
    INTEGER, PARAMETER, PUBLIC               :: bse_abba_mk_davidson = 0, &
                                                bse_abba_olsen_stratmann = 1
 
-   ! BSE iterative solver: what the memory check does when the budget is exceeded
-   INTEGER, PARAMETER, PUBLIC               :: bse_memcheck_off = 0, &
-                                               bse_memcheck_warn = 1, &
-                                               bse_memcheck_clamp = 2, &
-                                               bse_memcheck_abort = 3
    ! SIGMA_functional parameters selection
    INTEGER, PARAMETER, PUBLIC               :: sigma_none = 0, &
                                                sigma_PBE_S2 = 1, &

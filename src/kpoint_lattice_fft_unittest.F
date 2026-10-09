@@ -5,30 +5,27 @@
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
 PROGRAM kpoint_lattice_fft_unittest
-   USE, INTRINSIC :: ieee_arithmetic, ONLY: ieee_quiet_nan, ieee_value
-   USE fft_lib, ONLY: fft_supports_arbitrary_lengths
-   USE fft_tools, ONLY: finalize_fft, &
-                        init_fft
-   USE kinds, ONLY: dp
-   USE kpoint_lattice_fft, ONLY: cell_to_k_grid_fft, &
-                                 certify_kpoint_mesh, kpoint_mesh_certificate_type, &
-                                 k_grid_to_cell_execute, &
-                                 k_grid_to_cell_fft, &
-                                 k_grid_to_cell_prepare, &
-                                 k_grid_to_cell_release, &
-                                 k_grid_to_cell_work_type, &
-                                 regular_kpoint_grid
+   USE fft_lib,                         ONLY: fft_supports_arbitrary_lengths
+   USE fft_tools,                       ONLY: finalize_fft,&
+                                              init_fft
+   USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
+                                              ieee_value
+   USE kinds,                           ONLY: dp
+   USE kpoint_lattice_fft,              ONLY: &
+        cell_to_k_grid_fft, certify_kpoint_mesh, k_grid_to_cell_execute, k_grid_to_cell_fft, &
+        k_grid_to_cell_prepare, k_grid_to_cell_release, k_grid_to_cell_work_type, &
+        kpoint_mesh_certificate_type, regular_kpoint_grid
    USE lattice_preconditioner_operator, ONLY: &
-      apply_lattice_inverse_dense, apply_lattice_state_inverse_dense, build_lattice_inverse, &
-      build_lattice_local_correction, lattice_fft_auto_select, lattice_fft_cost_ratio, &
-      lattice_fft_storage_ratio, lattice_grid, lattice_local_cost_ratio, &
-      lattice_local_storage_ratio
-   USE mathconstants, ONLY: gaussi, &
-                            twopi, &
-                            z_zero
-   USE message_passing, ONLY: mp_comm_type, &
-                              mp_world_finalize, &
-                              mp_world_init
+        apply_lattice_inverse_dense, apply_lattice_state_inverse_dense, build_lattice_inverse, &
+        build_lattice_local_correction, lattice_fft_auto_select, lattice_fft_cost_ratio, &
+        lattice_fft_storage_ratio, lattice_grid, lattice_local_cost_ratio, &
+        lattice_local_storage_ratio
+   USE mathconstants,                   ONLY: gaussi,&
+                                              twopi,&
+                                              z_zero
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_world_finalize,&
+                                              mp_world_init
 
    IMPLICIT NONE
 
@@ -51,7 +48,7 @@ PROGRAM kpoint_lattice_fft_unittest
    INTEGER, DIMENSION(3, nround)                       :: round_index
    INTEGER, DIMENSION(nselected)                       :: selected_kpoints
    LOGICAL                                             :: used_fft
-   CHARACTER(LEN=16)                                   :: fft_backend
+   CHARACTER(LEN=16)                                   :: fft_backend, fft_argument
    REAL(KIND=dp), DIMENSION(3, 3)                      :: hmat
    REAL(KIND=dp)                                       :: base_residual_norm, corrected_projection_error, &
                                                           corrected_residual_norm, cost_ratio, &
@@ -78,7 +75,11 @@ PROGRAM kpoint_lattice_fft_unittest
 
    CALL mp_world_init(mp_comm)
    fft_backend = "FFTSG"
-   IF (COMMAND_ARGUMENT_COUNT() > 0) CALL GET_COMMAND_ARGUMENT(1, fft_backend)
+   IF (COMMAND_ARGUMENT_COUNT() > 0) THEN
+      CALL GET_COMMAND_ARGUMENT(1, fft_argument)
+      ! The regtest driver passes the source directory as the first argument.
+      IF (fft_argument == "FFTSG" .OR. fft_argument == "FFTW3") fft_backend = fft_argument
+   END IF
    CALL init_fft(TRIM(fft_backend), alltoall=.FALSE., pool_limit=4, &
                  wisdom_file="", plan_style=1)
    CALL check_mesh_certificate()
@@ -408,12 +409,13 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE check_mesh_certificate()
 
+      INTEGER                                            :: cells(3, 6), changed_cells(3, 6), ik, &
+                                                            ix, iy
+      LOGICAL                                            :: reused, valid
+      REAL(KIND=dp)                                      :: changed_points(3, 6), &
+                                                            changed_weights(6), points(3, 6), &
+                                                            weights(6)
       TYPE(kpoint_mesh_certificate_type)                 :: certificate
-      INTEGER                                            :: ix, iy, ik
-      INTEGER                                            :: cells(3, 6), changed_cells(3, 6)
-      REAL(KIND=dp)                                      :: points(3, 6), changed_points(3, 6)
-      REAL(KIND=dp)                                      :: weights(6), changed_weights(6)
-      LOGICAL                                            :: valid, reused
 
       ik = 0
       DO iy = 0, 2
@@ -500,16 +502,17 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE check_prime_grid()
 
-      INTEGER, PARAMETER                               :: np = 343, ns = 3
-      INTEGER                                           :: k, x, y, z, component
-      INTEGER, DIMENSION(ns)                            :: selected
-      REAL(KIND=dp), DIMENSION(3, np)                   :: points
-      REAL(KIND=dp), DIMENSION(3, ns)                   :: bad_points
-      REAL(KIND=dp), DIMENSION(ns)                      :: weights
-      COMPLEX(KIND=dp), DIMENSION(2, 3, np)             :: exact, RESULT
-      COMPLEX(KIND=dp), DIMENSION(2, 3, ns)             :: reduced
-      COMPLEX(KIND=dp), DIMENSION(2, 3, ncell)          :: inverse, expected_inverse
-      LOGICAL                                           :: fft_used, capable
+      INTEGER, PARAMETER                                 :: np = 343, ns = 3
+
+      COMPLEX(KIND=dp), DIMENSION(2, 3, ncell)           :: expected_inverse, inverse
+      COMPLEX(KIND=dp), DIMENSION(2, 3, np)              :: exact, RESULT
+      COMPLEX(KIND=dp), DIMENSION(2, 3, ns)              :: reduced
+      INTEGER                                            :: component, k, x, y, z
+      INTEGER, DIMENSION(ns)                             :: selected
+      LOGICAL                                            :: capable, fft_used
+      REAL(KIND=dp), DIMENSION(3, np)                    :: points
+      REAL(KIND=dp), DIMENSION(3, ns)                    :: bad_points
+      REAL(KIND=dp), DIMENSION(ns)                       :: weights
 
       k = 0
       DO z = 0, 6

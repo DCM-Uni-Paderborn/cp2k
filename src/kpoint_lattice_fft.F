@@ -14,19 +14,19 @@
 !>        Unsupported grids retain the direct phase-sum fallback.
 ! **************************************************************************************************
 MODULE kpoint_lattice_fft
-   USE, INTRINSIC :: ieee_arithmetic, ONLY: ieee_is_finite
-   USE fft_lib, ONLY: fft_supports_arbitrary_lengths
-   USE fft_tools, ONLY: BWFFT, &
-                        FFT_RADIX_NEXT, &
-                        FWFFT, &
-                        fft3d, &
-                        fft_alloc, &
-                        fft_dealloc, &
-                        fft_radix_operations
-   USE kinds, ONLY: dp
-   USE mathconstants, ONLY: gaussi, &
-                            twopi, &
-                            z_zero
+   USE fft_lib,                         ONLY: fft_supports_arbitrary_lengths
+   USE fft_tools,                       ONLY: BWFFT,&
+                                              FFT_RADIX_NEXT,&
+                                              FWFFT,&
+                                              fft3d,&
+                                              fft_alloc,&
+                                              fft_dealloc,&
+                                              fft_radix_operations
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE kinds,                           ONLY: dp
+   USE mathconstants,                   ONLY: gaussi,&
+                                              twopi,&
+                                              z_zero
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -82,12 +82,12 @@ CONTAINS
       INTEGER, DIMENSION(3), INTENT(IN)                  :: nmesh
       INTEGER, DIMENSION(:, :), INTENT(IN)               :: cells
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: weights
-      LOGICAL, INTENT(OUT)                              :: valid, reused
+      LOGICAL, INTENT(OUT)                               :: valid, reused
 
-      INTEGER                                            :: nk, icell, jcell
       COMPLEX(KIND=dp)                                   :: orthogonality
-      REAL(KIND=dp)                                      :: target
+      INTEGER                                            :: icell, jcell, nk
       LOGICAL                                            :: previously_valid
+      REAL(KIND=dp)                                      :: target
 
       valid = .FALSE.
       reused = .FALSE.

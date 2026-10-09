@@ -1,10 +1,11 @@
 # Distorted cubic salt: a compact regression for full Gamma matrix support.
 # This is not the rock-salt benchmark geometry.
 &GLOBAL
-  PROJECT NaCl_gxtb_kp_611_support
   PRINT_LEVEL MEDIUM
+  PROJECT NaCl_gxtb_kp_611_support
   RUN_TYPE ENERGY_FORCE
 &END GLOBAL
+
 &FORCE_EVAL
   METHOD QUICKSTEP
   STRESS_TENSOR ANALYTICAL
@@ -27,8 +28,8 @@
         GFN_TYPE TBLITE
         SCC_MIXER TBLITE
         &TBLITE
-          METHOD GXTB
           ACCURACY 1.0
+          METHOD GXTB
         &END TBLITE
       &END XTB
     &END QS
@@ -37,8 +38,8 @@
       MAX_SCF 200
       SCF_GUESS MOPAC
       &MIXING
-        METHOD DIRECT_P_MIXING
         ALPHA 0.2
+        METHOD DIRECT_P_MIXING
       &END MIXING
       &PRINT
         &RESTART OFF
