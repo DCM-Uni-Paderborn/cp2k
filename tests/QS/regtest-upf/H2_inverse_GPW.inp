@@ -16,6 +16,7 @@
     &QS
       EPS_DEFAULT 1.E-10
       METHOD GPW
+      USPP_METHOD INVERSE
     &END QS
     &SCF
       EPS_SCF 1.E-11
