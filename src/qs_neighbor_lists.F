@@ -358,7 +358,7 @@ CONTAINS
 
       NULLIFY (atomic_kind_set, qs_kind_set, cell, neighbor_list_section, &
                distribution_1d, distribution_2d, gth_potential, sgp_potential, orb_basis_set, &
-               particle_set, molecule_set, dft_control, ks_env)
+               particle_set, molecule_set, dft_control, ks_env, screening_basis)
 
       NULLIFY (sab_orb)
       NULLIFY (sac_ae)
