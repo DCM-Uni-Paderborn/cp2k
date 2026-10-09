@@ -14,7 +14,6 @@
 MODULE gaussian_coulomb_fields
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_type
-   USE gamma,                           ONLY: fgamma_ref
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: dfac,&
@@ -326,7 +325,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: h, dh
 
       INTEGER                                            :: j, n
-      REAL(dp)                                           :: ex, f(0:l + power + 2), outer, x
+      REAL(dp)                                           :: ex, f, outer, previous, term, x
 
       x = alpha*s
       ex = EXP(-x)
@@ -336,18 +335,28 @@ CONTAINS
       END DO
       n = l + power + 1
       IF (x >= REAL(n + 1, dp)) THEN
-         f(0) = 0.5_dp*SQRT(pi/x)*ERF(SQRT(x))
-         DO j = 1, n + 1
-            f(j) = (REAL(2*j - 1, dp)*f(j - 1) - ex)/(2.0_dp*x)
+         f = 0.5_dp*SQRT(pi/x)*ERF(SQRT(x))
+         DO j = 1, n
+            f = (REAL(2*j - 1, dp)*f - ex)/(2.0_dp*x)
          END DO
       ELSE
-         ! The reference series avoids cancellation in upward recursion at small x.
-         ! Switching to that recursion in its stable range retains the complete
-         ! Coulomb tail without a tabulated/asymptotic approximation boundary.
-         f(:) = fgamma_ref(n + 1, x)
+         ! F_n(x) = exp(-x) sum_j (2*x)^j / product_{k=0}^j (2*n+2*k+1).
+         ! Positive terms avoid cancellation and only the required moment is retained.
+         ! In this range the term ratio is below one, without a pointwise heap array.
+         term = 1.0_dp/REAL(2*n + 1, dp)
+         f = term
+         j = 0
+         DO
+            j = j + 1
+            term = term*(2.0_dp*x)/REAL(2*n + 2*j + 1, dp)
+            previous = f
+            f = f + term
+            IF (f == previous) EXIT
+         END DO
+         f = ex*f
       END IF
-      h = fourpi/REAL(2*l + 1, dp)*(s**(power + 1)*f(n) + outer)
-      dh = -2.0_dp*pi*s**power*f(n)
+      h = fourpi/REAL(2*l + 1, dp)*(s**(power + 1)*f + outer)
+      dh = -2.0_dp*pi*s**power*f
    END SUBROUTINE radial_potential
 
 ! **************************************************************************************************
