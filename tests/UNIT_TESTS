@@ -4,6 +4,7 @@
 dbt_tas_unittest
 dbt_unittest
 cell_types_unittest
+cell_opt_utils_unittest
 grid_unittest
 kpoint_lattice_fft_unittest
 kpoint_smearing_unittest
@@ -24,6 +25,7 @@ nequip_unittest                                          libtorch
 parallel_rng_types_unittest
 qs_charge_mixing_unittest
 atom_upf_unittest
+xc_semilocal_unittest
 upf_projector_integrals_unittest
 upf_local_integrals_unittest
 gapw_background_unittest
@@ -46,5 +48,6 @@ topology_integer_unittest
 topology_reciprocal_unittest
 topology_site_unittest
 topology_wyckoff_unittest
+kubo_unittest
 
 #EOF

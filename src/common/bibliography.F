@@ -33,6 +33,7 @@ MODULE bibliography
    PUBLIC :: add_all_references ! f77_interface only
 
    ! all reference keys
+   INTEGER, PUBLIC, SAVE :: BiancoResta2011, BauMarrazzo2024, EsteveParedes2023
    INTEGER, PUBLIC, SAVE :: Richters2018, VandeVondele2005a, VandeVondele2003, &
                             Laino2005, Laino2006, Goedecker1996, Hartwigsen1998, Krack2005, &
                             Lippert1997, Lippert1999, Krack2000, Krack2002, Iannuzzi2005, &
@@ -93,6 +94,7 @@ MODULE bibliography
                             Sander2015, Schreiber2008, vanSetten2015, Setyawan2010, Ahart2024, Knysh2024, &
                             Schambeck2024, Mewes2018, Sertcan2024, Drautz2019, Lysogorskiy2021, Bochkarev2024, &
                             VazdaCruz2021, Chen2025, Hernandez2025, Marek2025, Hehn2022, Hehn2024, Pasquier2025, &
+                            Hedin1965, Hybertsen1986, Tyagi2024, Tyagi2026, &
                             Hanasaki2025, Graml2026, Tan2025, Broyden1965, Johnson1988, Kerker1981, &
                             FuHo1983, MethfesselPaxton1989, Marzari1999, dosSantos2023, Mermin1965, &
                             KuhneHeskeProdan2020, Schreder2021, Schreder2024_1, Schreder2024_2, &
@@ -2130,6 +2132,33 @@ CONTAINS
                          source="J. Chem. Theory Comput.", volume="21", pages="9814-9822", &
                          year=2025, doi="10.1021/acs.jctc.5c01246")
 
+      CALL add_reference(key=Hedin1965, &
+                         authors=s2a("L. Hedin"), &
+                         title="New method for calculating the one-particle Green's function with application "// &
+                         "to the electron-gas problem", &
+                         source="Phys. Rev.", volume="139", pages="A796-A823", &
+                         year=1965, doi="10.1103/PhysRev.139.A796")
+
+      CALL add_reference(key=Hybertsen1986, &
+                         authors=s2a("M. S. Hybertsen", "S. G. Louie"), &
+                         title="Electron correlation in semiconductors and insulators: Band gaps and "// &
+                         "quasiparticle energies", &
+                         source="Phys. Rev. B", volume="34", pages="5390-5413", &
+                         year=1986, doi="10.1103/PhysRevB.34.5390")
+
+      CALL add_reference(key=Tyagi2024, &
+                         authors=s2a("R. Tyagi", "V. K. Voora"), &
+                         title="Single-Pole Polarization Models: Rapid Evaluation of Electron Affinities of "// &
+                         "Solvated-Electron and Superatomic Molecular Anionic States", &
+                         source="J. Phys. Chem. Lett.", volume="15", pages="1218-1226", &
+                         year=2024, doi="10.1021/acs.jpclett.3c03392")
+
+      CALL add_reference(key=Tyagi2026, &
+                         authors=s2a("R. Tyagi", "J. Wilhelm", "V. Voora"), &
+                         title="Electron affinity of liquid water", &
+                         source="In preparation", &
+                         year=2026)
+
       CALL add_reference(key=Pasquier2025, &
                          authors=s2a("R. Pasquier", "M. Camarasa-Gómez", &
                                      "A. Hehn", "D. Hernangómez-Pérez", "J. Wilhelm"), &
@@ -2341,6 +2370,24 @@ CONTAINS
                          source="Math. Phys. Anal. Geom.", volume="28", pages="13", &
                          year=2025, doi="10.1007/s11040-025-09508-0")
 
+      CALL add_reference(key=EsteveParedes2023, &
+                         authors=s2a("J. J. Esteve-Paredes", "J. J. Palacios"), &
+                         title="A comprehensive study of the velocity, momentum and position matrix elements "// &
+                         "for Bloch states using a local orbital basis", &
+                         source="SciPost Phys. Core", volume="6", pages="002", &
+                         year=2023, doi="10.21468/SciPostPhysCore.6.1.002")
+
+      CALL add_reference(key=BiancoResta2011, &
+                         authors=s2a("R. Bianco", "R. Resta"), &
+                         title="Mapping topological order in coordinate space", &
+                         source="Phys. Rev. B", volume="84", pages="241106(R)", &
+                         year=2011, doi="10.1103/PhysRevB.84.241106")
+
+      CALL add_reference(key=BauMarrazzo2024, &
+                         authors=s2a("N. Bau", "A. Marrazzo"), &
+                         title="Local Chern marker for periodic systems", &
+                         source="Phys. Rev. B", volume="109", pages="014206", &
+                         year=2024, doi="10.1103/PhysRevB.109.014206")
       CALL add_reference(key=Cerjan2023, &
                          authors=s2a("A. Cerjan", "T. A. Loring", "F. Vides"), &
                          title="Quadratic pseudospectrum for identifying localized states", &

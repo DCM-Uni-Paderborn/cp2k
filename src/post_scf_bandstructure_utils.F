@@ -14,9 +14,12 @@ MODULE post_scf_bandstructure_utils
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
                                               get_atomic_kind,&
                                               get_atomic_kind_set
+   USE bse_input,                       ONLY: read_bse_section
+   USE bse_main,                        ONLY: bse_fulldiag_memory_check
+   USE bse_types,                       ONLY: bse_env_type
+   USE bse_util,                        ONLY: bse_window_from_dft
    USE cell_types,                      ONLY: cell_type,&
-                                              get_cell,&
-                                              pbc
+                                              get_cell
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_cfm_basic_linalg,             ONLY: cp_cfm_scale
    USE cp_cfm_cholesky,                 ONLY: cp_cfm_cholesky_decompose
@@ -58,13 +61,10 @@ MODULE post_scf_bandstructure_utils
    USE cp_parser_methods,               ONLY: read_float_object
    USE dft_plus_u,                      ONLY: lowdin_kp_apply,&
                                               lowdin_kp_prepare
-   USE input_constants,                 ONLY: G0W0,&
-                                              evGW0,&
-                                              int_ldos_z,&
-                                              ri_rs_large_cell_Gamma,&
-                                              ri_rs_non_periodic,&
-                                              tensor_large_cell_Gamma,&
-                                              tensor_small_cell_full_kp
+   USE input_constants,                 ONLY: &
+        G0W0, bse_fulldiag, cohsex_off, evGW0, int_ldos_z, ri_rs_large_cell_Gamma, &
+        ri_rs_non_periodic, tensor_large_cell_Gamma, tensor_small_cell_full_kp, &
+        tensor_static_cohsex
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -72,6 +72,7 @@ MODULE post_scf_bandstructure_utils
    USE kinds,                           ONLY: default_string_length,&
                                               dp,&
                                               max_line_length
+   USE kpoint_k_r_trafo_simple,         ONLY: fm_gamma_to_kp
    USE kpoint_methods,                  ONLY: kpoint_init_cell_index,&
                                               rskp_transform
    USE kpoint_types,                    ONLY: get_kpoint_info,&
@@ -84,6 +85,7 @@ MODULE post_scf_bandstructure_utils
                                               z_one,&
                                               z_zero
    USE message_passing,                 ONLY: mp_para_env_type
+   USE mo_window,                       ONLY: mo_window_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: angstrom,&
@@ -185,6 +187,7 @@ CONTAINS
       CASE DEFAULT
          label = "G0W0"
       END SELECT
+      IF (bs_env%do_static_cohsex) label = "static COHSEX"
 
    END FUNCTION gw_flavour_label
 
@@ -216,7 +219,7 @@ CONTAINS
       CALL set_heuristic_parameters(bs_env)
 
       SELECT CASE (bs_env%gw_implementation)
-      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic)
+      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
 
          CALL setup_kpoints_DOS_large_cell_Gamma(qs_env, bs_env, bs_env%kpoints_DOS)
 
@@ -238,9 +241,59 @@ CONTAINS
 
       END SELECT
 
+      CALL read_bse_input(qs_env, bs_env)
+
       CALL timestop(handle)
 
    END SUBROUTINE create_and_init_bs_env
+
+! **************************************************************************************************
+!> \brief What PROPERTIES%BSE needs the GW to keep and, with FULLDIAG, the early memory check of the
+!>        full diagonalization; check_cp2k_input refused the input combinations the BSE cannot run
+!> \param qs_env source of the input
+!> \param bs_env SCF eigenvalues and occupations of the memory check; keep_W_freq_zero and keep_3c_nl are set
+! **************************************************************************************************
+   SUBROUTINE read_bse_input(qs_env, bs_env)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
+
+      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'read_bse_input'
+
+      INTEGER                                            :: handle, n_spin
+      INTEGER, DIMENSION(2)                              :: n_mo
+      LOGICAL                                            :: do_bse_props
+      TYPE(bse_env_type)                                 :: bse_env
+      TYPE(mo_window_type)                               :: window
+      TYPE(section_vals_type), POINTER                   :: bse_sec, input
+
+      CALL timeset(routineN, handle)
+
+      NULLIFY (bse_sec, input)
+      CALL get_qs_env(qs_env, input=input)
+      bse_sec => section_vals_get_subs_vals(input, "PROPERTIES%BSE")
+      CALL section_vals_get(bse_sec, explicit=do_bse_props)
+
+      IF (do_bse_props) THEN
+         ! the full diagonalization's footprint is known here, before any GW work
+         CALL read_bse_section(bse_sec, bse_env)
+         IF (bse_env%bse_diag_method == bse_fulldiag) THEN
+            n_spin = bs_env%n_spin
+            ! the canonical orthogonalisation parks the linearly dependent directions above n_mo_retained
+            n_mo(:) = MIN(bs_env%n_mo_retained, bs_env%n_ao)
+            ! the BSE warns about a combined window when it starts; the estimate stays silent
+            CALL bse_window_from_dft(bs_env%eigenval_scf_Gamma(1:n_mo(1), 1:n_spin), n_mo(1:n_spin), &
+                                     bs_env%n_occ(1:n_spin), bse_env%bse_cutoff_occ, &
+                                     bse_env%bse_cutoff_empty, window, warn=.FALSE.)
+            CALL bse_fulldiag_memory_check(bse_env, window, bs_env%n_occ(1:n_spin), bs_env%para_env, &
+                                           bs_env%unit_nr)
+         END IF
+      END IF
+      bs_env%keep_W_freq_zero = do_bse_props
+      bs_env%keep_3c_nl = do_bse_props
+
+      CALL timestop(handle)
+
+   END SUBROUTINE read_bse_input
 
 ! **************************************************************************************************
 !> \brief ...
@@ -275,6 +328,8 @@ CONTAINS
       NULLIFY (gw_sec)
       gw_sec => section_vals_get_subs_vals(bs_sec, "GW")
       CALL section_vals_get(gw_sec, explicit=bs_env%do_gw)
+      CALL section_vals_val_get(gw_sec, "COHSEX", i_val=bs_env%cohsex_flavor)
+      bs_env%do_static_cohsex = (bs_env%cohsex_flavor /= cohsex_off)
       CALL section_vals_val_get(gw_sec, "RI_RS%_SECTION_PARAMETERS_", l_val=bs_env%do_gw_ri_rs)
 
       NULLIFY (soc_sec)
@@ -1028,12 +1083,16 @@ CONTAINS
             ELSE
                bs_env%gw_implementation = ri_rs_non_periodic
             END IF
+         ELSE IF (bs_env%do_static_cohsex) THEN
+            bs_env%gw_implementation = tensor_static_cohsex
          ELSE
             bs_env%gw_implementation = tensor_large_cell_Gamma
          END IF
       ELSE IF (dft_control%nimages > 1) THEN
          IF (bs_env%do_gw_ri_rs) THEN
             CPABORT("RI-RS Not Implemented for K-point Calculations")
+         ELSE IF (bs_env%do_static_cohsex) THEN
+            CPABORT("COHSEX Not Implemented for K-point Calculations")
          ELSE
             bs_env%gw_implementation = tensor_small_cell_full_kp
          END IF
@@ -1333,7 +1392,7 @@ CONTAINS
          DO ispin = 1, bs_env%n_spin
 
             SELECT CASE (bs_env%gw_implementation)
-            CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic)
+            CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
 
                ! 1. get H^KS_µν(k_i) from H^KS_µν(k=0)
                CALL cfm_ikp_from_fm_Gamma(cfm_ks_ikp, bs_env%fm_ks_Gamma(ispin), &
@@ -1811,7 +1870,7 @@ CONTAINS
 
       ! 1. get V^SOC_µν,σσ'(k_i)
       SELECT CASE (bs_env%gw_implementation)
-      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic)
+      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
 
          ! 1. get V^SOC_µν,σσ'(k_i) from V^SOC_µν,σσ'(k=0)
          CALL cfm_ikp_from_cfm_spinor_Gamma(cfm_SOC_ikp_spinor, &
@@ -2539,7 +2598,7 @@ CONTAINS
    END SUBROUTINE cfm_ikp_from_cfm_spinor_Gamma
 
 ! **************************************************************************************************
-!> \brief ...
+!> \brief Reconstruct a k-point operator from a real Gamma matrix using one MIC phase.
 !> \param cfm_ikp ...
 !> \param fm_Gamma ...
 !> \param ikp ...
@@ -2557,108 +2616,20 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'cfm_ikp_from_fm_Gamma'
 
-      INTEGER :: col_global, handle, i_atom, i_atom_old, i_cell, i_mic_cell, i_row, j_atom, &
-         j_atom_old, j_cell, j_col, n_bf, ncol_local, nrow_local, num_cells, row_global
+      INTEGER                                            :: handle
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_from_bf
-      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
-      INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell
-      LOGICAL :: i_cell_is_the_minimum_image_cell
-      REAL(KIND=dp)                                      :: abs_rab_cell_i, abs_rab_cell_j, arg
-      REAL(KIND=dp), DIMENSION(3)                        :: cell_vector, cell_vector_j, rab_cell_i, &
-                                                            rab_cell_j
-      REAL(KIND=dp), DIMENSION(3, 3)                     :: hmat
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
 
       CALL timeset(routineN, handle)
 
-      IF (.NOT. ASSOCIATED(cfm_ikp%local_data)) THEN
-         CALL cp_cfm_create(cfm_ikp, fm_Gamma%matrix_struct)
-      END IF
-      CALL cp_cfm_set_all(cfm_ikp, z_zero)
-
-      CALL cp_fm_get_info(matrix=fm_Gamma, &
-                          nrow_local=nrow_local, &
-                          ncol_local=ncol_local, &
-                          row_indices=row_indices, &
-                          col_indices=col_indices)
-
-      ! get number of basis functions (bf) for different basis sets
-      IF (basis_type == "ORB") THEN
-         n_bf = qs_env%bs_env%n_ao
-      ELSE IF (basis_type == "RI_AUX") THEN
-         n_bf = qs_env%bs_env%n_RI
-      ELSE
-         CPABORT("Only ORB and RI_AUX basis implemented.")
-      END IF
-
-      ALLOCATE (atom_from_bf(n_bf))
-      CALL get_atom_index_from_basis_function_index(qs_env, atom_from_bf, n_bf, basis_type)
-
+      CPASSERT(basis_type == "ORB" .OR. basis_type == "RI_AUX")
+      ALLOCATE (atom_from_bf(fm_Gamma%matrix_struct%nrow_global))
+      CALL get_atom_index_from_basis_function_index(qs_env, atom_from_bf, SIZE(atom_from_bf), basis_type)
       NULLIFY (cell, particle_set)
       CALL get_qs_env(qs_env, cell=cell, particle_set=particle_set)
-      CALL get_cell(cell=cell, h=hmat)
-
-      index_to_cell => kpoints%index_to_cell
-
-      num_cells = SIZE(index_to_cell, 2)
-      i_atom_old = 0
-      j_atom_old = 0
-
-      DO j_col = 1, ncol_local
-         DO i_row = 1, nrow_local
-
-            row_global = row_indices(i_row)
-            col_global = col_indices(j_col)
-
-            i_atom = atom_from_bf(row_global)
-            j_atom = atom_from_bf(col_global)
-
-            ! we only need to check for new MIC cell for new i_atom-j_atom pair
-            IF (i_atom /= i_atom_old .OR. j_atom /= j_atom_old) THEN
-               DO i_cell = 1, num_cells
-
-                  ! only check nearest neigbors
-                  IF (ANY(ABS(index_to_cell(1:3, i_cell)) > 1)) CYCLE
-
-                  cell_vector(1:3) = MATMUL(hmat, REAL(index_to_cell(1:3, i_cell), dp))
-
-                  rab_cell_i(1:3) = pbc(particle_set(i_atom)%r(1:3), cell) - &
-                                    (pbc(particle_set(j_atom)%r(1:3), cell) + cell_vector(1:3))
-                  abs_rab_cell_i = SQRT(rab_cell_i(1)**2 + rab_cell_i(2)**2 + rab_cell_i(3)**2)
-
-                  ! minimum image convention
-                  i_cell_is_the_minimum_image_cell = .TRUE.
-                  DO j_cell = 1, num_cells
-                     cell_vector_j(1:3) = MATMUL(hmat, REAL(index_to_cell(1:3, j_cell), dp))
-                     rab_cell_j(1:3) = pbc(particle_set(i_atom)%r(1:3), cell) - &
-                                       (pbc(particle_set(j_atom)%r(1:3), cell) + cell_vector_j(1:3))
-                     abs_rab_cell_j = SQRT(rab_cell_j(1)**2 + rab_cell_j(2)**2 + rab_cell_j(3)**2)
-
-                     IF (abs_rab_cell_i > abs_rab_cell_j + 1.0E-6_dp) THEN
-                        i_cell_is_the_minimum_image_cell = .FALSE.
-                     END IF
-                  END DO
-
-                  IF (i_cell_is_the_minimum_image_cell) THEN
-                     i_mic_cell = i_cell
-                  END IF
-
-               END DO ! i_cell
-            END IF
-
-            arg = REAL(index_to_cell(1, i_mic_cell), dp)*kpoints%xkp(1, ikp) + &
-                  REAL(index_to_cell(2, i_mic_cell), dp)*kpoints%xkp(2, ikp) + &
-                  REAL(index_to_cell(3, i_mic_cell), dp)*kpoints%xkp(3, ikp)
-
-            cfm_ikp%local_data(i_row, j_col) = COS(twopi*arg)*fm_Gamma%local_data(i_row, j_col)*z_one + &
-                                               SIN(twopi*arg)*fm_Gamma%local_data(i_row, j_col)*gaussi
-
-            j_atom_old = j_atom
-            i_atom_old = i_atom
-
-         END DO ! j_col
-      END DO ! i_row
+      CALL fm_gamma_to_kp(cfm_ikp, fm_Gamma, cell, particle_set, atom_from_bf, &
+                          kpoints%index_to_cell, kpoints%xkp(:, ikp))
 
       CALL timestop(handle)
 
@@ -2870,7 +2841,7 @@ CONTAINS
       ! Calculate H^SOC_µν,σσ'(k) = sum_α V^SOC_µν^(α)(k)*Pauli-matrix^(α)_σσ'
       ! see Hartwigsen, Goedecker, Hutter, Eq.(18) (doi.org/10.1103/PhysRevB.58.3641)
       SELECT CASE (bs_env%gw_implementation)
-      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic)
+      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
 
          ! H^SOC_µν,σσ' = sum_α V^SOC_µν^(α)*Pauli-matrix^(α)_σσ'
          CALL H_KS_spinor_Gamma(bs_env)

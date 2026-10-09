@@ -246,8 +246,8 @@ MODULE mp2_types
                                                             matrix_vxc
       LOGICAL                                            :: do_static_cohsex = .FALSE.
       INTEGER                                            :: cohsex_flavor = cohsex_off
-      REAL(KIND=dp)                                      :: scale_cohsex_occ = 1.0_dp, &
-                                                            scale_cohsex_virt = 1.0_dp
+      REAL(KIND=dp)                                      :: cohsex_scale_occ = 1.0_dp, &
+                                                            cohsex_scale_virt = 1.0_dp
       REAL(KIND=dp)                                      :: broadening_print_loc_bandgap = 0.0_dp, &
                                                             energy_window_print_loc_bandgap = 0.0_dp, &
                                                             ldos_thresh_print_loc_bandgap = 0.0_dp, &
@@ -321,9 +321,9 @@ MODULE mp2_types
                                                             frequency_weights=NULL(), &
                                                             imaginary_time=NULL(), &
                                                             time_weights_at_zero_frequency=NULL(), &
-                                                            cosine_time_to_frequency_weights=NULL(), &
-                                                            cosine_frequency_to_time_weights=NULL(), &
-                                                            sine_time_to_frequency_weights=NULL()), &
+                                                            cosine_time_to_frequency=NULL(), &
+                                                            cosine_frequency_to_time=NULL(), &
+                                                            sine_time_to_frequency=NULL()), &
                                                             Eigenval_Gamma=NULL(), &
                                                             wkp_V=NULL(), &
                                                             starts_array_mc_RI=NULL(), &

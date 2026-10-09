@@ -59,12 +59,13 @@ list(
   atom_output.F
   atom_pseudo.F
   atom_set_basis.F
-  atom_sgp.F
+  pseudopotentials/atom_sgp.F
   atoms_input.F
   atom_types.F
-  atom_upf.F
-  upf_projector_integrals.F
-  upf_local_integrals.F
+  pseudopotentials/upf_types.F
+  pseudopotentials/atom_upf.F
+  pseudopotentials/upf_projector_integrals.F
+  pseudopotentials/upf_local_integrals.F
   atom_utils.F
   atom_xc.F
   auto_basis.F
@@ -73,6 +74,7 @@ list(
   soc_pseudopotential_utils.F
   basis_set_output.F
   block_p_types.F
+  bse_bs_env_link.F
   bse_main.F
   bse_full_diag.F
   bse_iterative.F
@@ -154,7 +156,6 @@ list(
   ec_diag_solver.F
   ec_orth_solver.F
   ed_analysis.F
-  efield_tb_methods.F
   efield_utils.F
   eip_environment.F
   eip_environment_types.F
@@ -175,7 +176,6 @@ list(
   et_coupling_proj.F
   et_coupling_types.F
   ewald_environment_types.F
-  ewald_methods_tb.F
   ewald_pw_methods.F
   ewald_pw_types.F
   ewalds.F
@@ -239,6 +239,7 @@ list(
   gw_utils_communication.F
   gw.F
   gw_tensor_large_cell_gamma.F
+  gw_tensor_large_cell_gamma_static_cohsex.F
   gw_tensor_small_cell_full_kp.F
   gw_ri_rs_non_periodic.F
   gw_ri_rs_large_cell_gamma.F
@@ -323,7 +324,6 @@ list(
   input_cp2k_rsgrid.F
   input_cp2k_subsys.F
   input_cp2k_smeagol.F
-  input_cp2k_tb.F
   input_cp2k_thermostats.F
   input_cp2k_transport.F
   input_cp2k_voronoi.F
@@ -362,7 +362,6 @@ list(
   libgint_wrapper.F
   library_tests.F
   linesearch.F
-  localization_tb.F
   localized_moments.F
   lri_compression.F
   lri_environment_init.F
@@ -533,8 +532,6 @@ list(
   qmmm_pw_grid.F
   qmmm_se_energy.F
   qmmm_se_forces.F
-  qmmm_tb_coulomb.F
-  qmmm_tb_methods.F
   qmmm_topology_util.F
   qmmm_types.F
   qmmm_types_low.F
@@ -584,13 +581,6 @@ list(
   qs_density_fit.F
   qs_density_matrices.F
   qs_density_mixing_types.F
-  qs_dftb3_methods.F
-  qs_dftb_coulomb.F
-  qs_dftb_dispersion.F
-  qs_dftb_matrices.F
-  qs_dftb_parameters.F
-  qs_dftb_types.F
-  qs_dftb_utils.F
   qs_diis.F
   qs_diis_types.F
   qs_scf_subspace_types.F
@@ -697,6 +687,11 @@ list(
   topology_site_relations.F
   topology_star_transport.F
   topology_wyckoff.F
+  qs_real_space_chern.F
+  kubo_bloch.F
+  kubo_hall.F
+  kubo_projected.F
+  qs_kubo_bloch.F
   qs_spectral_localizer.F
   qs_localizer_torus.F
   spectral_localizer.F
@@ -787,7 +782,6 @@ list(
   qs_scf_post_gpw.F
   qs_scf_post_scf.F
   qs_scf_post_se.F
-  qs_scf_post_tb.F
   qs_scf_types.F
   qs_scf_wfn_mix.F
   qs_spin_orbit.F
@@ -888,9 +882,6 @@ list(
   semi_empirical_utils.F
   simpar_types.F
   sirius_interface.F
-  skala_gpw_functional.F
-  skala_gpw_features.F
-  skala_torch_api.F
   smeagol_control_types.F
   smeagol_emtoptions.F
   smeagol_interface.F
@@ -910,10 +901,6 @@ list(
   taper_types.F
   task_list_methods.F
   task_list_types.F
-  tblite_interface.F
-  tblite_ks_matrix.F
-  tblite_scc_mixer.F
-  tblite_types.F
   time_frequency_grids.F
   tip_scan_methods.F
   tip_scan_types.F
@@ -951,6 +938,7 @@ list(
   topology_tqc.F
   topology_snapshot.F
   topology_curvature.F
+  topology_real_space.F
   topology_phason_analysis.F
   wannier_states.F
   wannier_states_types.F
@@ -967,30 +955,17 @@ list(
   xas_tdp_utils.F
   xas_tp_scf.F
   gapw_gspace_reconstruction.F
-  xray_diffraction.F
-  xtb_qresp.F
-  xtb_coulomb.F
-  xtb_spinpol.F
-  xtb_eeq.F
-  xtb_ehess.F
-  xtb_ehess_force.F
-  xtb_hcore.F
-  xtb_hab_force.F
-  xtb_ks_matrix.F
-  xtb_matrices.F
-  xtb_parameters.F
-  xtb_potentials.F
-  xtb_types.F)
+  xray_diffraction.F)
 
 list(
   APPEND
   CP2K_SRCS_F
   aobasis/ai_angmom.F
+  aobasis/ai_cartesian_operators.F
   aobasis/ai_contraction.F
   aobasis/ai_contraction_sphi.F
   aobasis/ai_coulomb.F
   aobasis/ai_coulomb_test.F
-  aobasis/ai_derivatives.F
   aobasis/ai_elec_field.F
   aobasis/ai_eri_debug.F
   aobasis/ai_fermi_contact.F
@@ -1006,6 +981,7 @@ list(
   aobasis/ai_overlap_aabb.F
   aobasis/ai_overlap_debug.F
   aobasis/ai_overlap.F
+  aobasis/ai_gaussian_window.F
   aobasis/ai_overlap_ppl.F
   aobasis/ai_spin_orbit.F
   aobasis/ai_verfc.F
@@ -1013,6 +989,7 @@ list(
   aobasis/aux_basis_set.F
   aobasis/basis_set_container_types.F
   aobasis/basis_set_types.F
+  aobasis/gaunt_coefficients.F
   aobasis/orbital_pointers.F
   aobasis/orbital_symbols.F
   aobasis/orbital_transformation_matrices.F
@@ -1096,7 +1073,8 @@ list(
   common/util.F
   common/xmgrace.F
   common/erf_complex.F
-  common/whittaker.F)
+  common/whittaker.F
+  common/wignernj_interface.F)
 
 list(APPEND CP2K_SRCS_F dbm/dbm_api.F dbm/dbm_tests.F)
 
@@ -1424,6 +1402,41 @@ list(
 list(
   APPEND
   CP2K_SRCS_F
+  tb/efield_tb_methods.F
+  tb/ewald_methods_tb.F
+  tb/input_cp2k_tb.F
+  tb/localization_tb.F
+  tb/qmmm_tb_coulomb.F
+  tb/qmmm_tb_methods.F
+  tb/qs_dftb3_methods.F
+  tb/qs_dftb_coulomb.F
+  tb/qs_dftb_dispersion.F
+  tb/qs_dftb_matrices.F
+  tb/qs_dftb_parameters.F
+  tb/qs_dftb_types.F
+  tb/qs_dftb_utils.F
+  tb/qs_scf_post_tb.F
+  tb/tblite_interface.F
+  tb/tblite_ks_matrix.F
+  tb/tblite_scc_mixer.F
+  tb/tblite_types.F
+  tb/xtb_coulomb.F
+  tb/xtb_eeq.F
+  tb/xtb_ehess.F
+  tb/xtb_ehess_force.F
+  tb/xtb_hab_force.F
+  tb/xtb_hcore.F
+  tb/xtb_ks_matrix.F
+  tb/xtb_matrices.F
+  tb/xtb_parameters.F
+  tb/xtb_potentials.F
+  tb/xtb_qresp.F
+  tb/xtb_spinpol.F
+  tb/xtb_types.F)
+
+list(
+  APPEND
+  CP2K_SRCS_F
   tmc/input_cp2k_tmc.F
   tmc/tmc_analysis.F
   tmc/tmc_analysis_types.F
@@ -1453,6 +1466,9 @@ list(
   xc_adiabatic_methods.F
   xc_adiabatic_utils.F
   xc/cp_linked_list_xc_deriv.F
+  xc/skala_gpw_features.F
+  xc/skala_gpw_functional.F
+  xc/skala_torch_api.F
   xc_pot_saop.F
   xc_write_output.F
   xc/xc_atom.F
@@ -1628,13 +1644,15 @@ set(CP2K_PROGS_F
     common/gemm_square_unittest.F
     common/memory_utilities_unittest.F
     common/parallel_rng_types_unittest.F
-    atom_upf_unittest.F
-    upf_projector_integrals_unittest.F
-    upf_local_integrals_unittest.F
+    pseudopotentials/atom_upf_unittest.F
+    xc/xc_semilocal_unittest.F
+    pseudopotentials/upf_projector_integrals_unittest.F
+    pseudopotentials/upf_local_integrals_unittest.F
     gapw_background_unittest.F
     gapw_1c_basis_unittest.F
     kpoint_lattice_fft_unittest.F
     kpoint_smearing_unittest.F
+    motion/cell_opt_utils_unittest.F
     topology_wilson_unittest.F
     quadratic_pseudospectrum_dbcsr_unittest.F
     spectral_localizer_sparse_unittest.F
@@ -1645,6 +1663,7 @@ set(CP2K_PROGS_F
     topology_reciprocal_unittest.F
     topology_site_unittest.F
     topology_wyckoff_unittest.F
+    kubo_unittest.F
     spectral_localizer_unittest.F
     quadratic_pseudospectrum_unittest.F
     pw/pw_unittest.F
@@ -1933,6 +1952,7 @@ target_link_libraries(
     $<$<BOOL:${CP2K_USE_TREXIO}>:cp2k::trexio::trexio>
     $<$<BOOL:${CP2K_USE_HDF5}>:HDF5::HDF5
     hdf5::hdf5_fortran>
+    wignernj::wignernj
     DBCSR::dbcsr
     $<$<BOOL:${CP2K_USE_MPI}>:cp2k::SCALAPACK::scalapack>
     cp2k_linalg_libs
@@ -2000,6 +2020,8 @@ target_compile_definitions(
     # GauXC feature flags GAUXC_HAS_MPI, GAUXC_HAS_ONEDFT, GAUXC_HAS_HOST,
     # GAUXC_HAS_DEVICE, GAUXC_HAS_CUDA, and GAUXC_HAS_HDF5 are provided by
     # gauxc/gauxc_config.f in the Fortran sources.
+    $<$<BOOL:${CP2K_USE_SKALA_FTORCH}>:__SKALA_FTORCH>
+    $<$<OR:$<BOOL:${CP2K_USE_GAUXC}>,$<BOOL:${CP2K_USE_SKALA_FTORCH}>>:__SKALA>
     $<$<BOOL:${CP2K_USE_SPLA}>:__SPLA>
     $<$<BOOL:${CP2K_USE_SPLA_GEMM_OFFLOADING}>:__OFFLOAD_GEMM>
     $<$<BOOL:${CP2K_USE_ELPA}>:__ELPA>
@@ -2078,8 +2100,10 @@ list(
   "orbital_transformation_matrices_unittest"
   "gemm_square_unittest"
   "memory_utilities_unittest"
+  "cell_opt_utils_unittest"
   "parallel_rng_types_unittest"
   "atom_upf_unittest"
+  "xc_semilocal_unittest"
   "upf_projector_integrals_unittest"
   "upf_local_integrals_unittest"
   "gapw_background_unittest"
@@ -2096,6 +2120,7 @@ list(
   "topology_reciprocal_unittest"
   "topology_site_unittest"
   "topology_wyckoff_unittest"
+  "kubo_unittest"
   "spectral_localizer_unittest"
   "quadratic_pseudospectrum_unittest"
   "pw_unittest"
@@ -2133,10 +2158,12 @@ add_executable(orbital_transformation_matrices_unittest
 add_executable(gemm_square_unittest common/gemm_square_unittest.F)
 add_executable(memory_utilities_unittest common/memory_utilities_unittest.F)
 add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
-add_executable(atom_upf_unittest atom_upf_unittest.F)
+add_executable(atom_upf_unittest pseudopotentials/atom_upf_unittest.F)
+add_executable(xc_semilocal_unittest xc/xc_semilocal_unittest.F)
 add_executable(upf_projector_integrals_unittest
-               upf_projector_integrals_unittest.F)
-add_executable(upf_local_integrals_unittest upf_local_integrals_unittest.F)
+               pseudopotentials/upf_projector_integrals_unittest.F)
+add_executable(upf_local_integrals_unittest
+               pseudopotentials/upf_local_integrals_unittest.F)
 add_executable(gapw_background_unittest gapw_background_unittest.F)
 add_executable(gapw_1c_basis_unittest gapw_1c_basis_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
@@ -2153,6 +2180,7 @@ add_executable(topology_integer_unittest topology_integer_unittest.F)
 add_executable(topology_reciprocal_unittest topology_reciprocal_unittest.F)
 add_executable(topology_site_unittest topology_site_unittest.F)
 add_executable(topology_wyckoff_unittest topology_wyckoff_unittest.F)
+add_executable(kubo_unittest kubo_unittest.F)
 add_executable(spectral_localizer_unittest spectral_localizer_unittest.F)
 add_executable(quadratic_pseudospectrum_unittest
                quadratic_pseudospectrum_unittest.F)
@@ -2173,6 +2201,7 @@ add_executable(qs_charge_mixing_unittest qs_charge_mixing_unittest.F)
 add_executable(qs_fod_unittest qs_fod_unittest.F)
 add_executable(qs_ot_complex_ref_unittest qs_ot_complex_ref_unittest.F)
 add_executable(cell_types_unittest subsys/cell_types_unittest.F)
+add_executable(cell_opt_utils_unittest motion/cell_opt_utils_unittest.F)
 add_executable(graph metadyn_tools/graph.F)
 add_executable(dumpdcd motion/dumpdcd.F)
 add_executable(xyz2dcd motion/xyz2dcd.F)

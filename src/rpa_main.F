@@ -19,7 +19,7 @@ MODULE rpa_main
         Bates2013, DelBen2013, DelBen2015, Freeman1977, Gruneis2009, Ren2011, Ren2013, &
         Wilhelm2016a, Wilhelm2016b, Wilhelm2017, Wilhelm2018, cite_reference
    USE bse_main,                        ONLY: bse_solve,&
-                                              prepare_bse_env
+                                              prepare_bse_env_from_ri_rpa_gw
    USE bse_types,                       ONLY: bse_env_release
    USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
                                               cp_blacs_env_release,&
@@ -30,11 +30,13 @@ MODULE rpa_main
                                               dbcsr_get_info,&
                                               dbcsr_p_type,&
                                               dbcsr_type
-   USE cp_fm_basic_linalg,              ONLY: cp_fm_scale_and_add
+   USE cp_fm_basic_linalg,              ONLY: cp_fm_add_on_diag,&
+                                              cp_fm_scale_and_add
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_get_diag,&
                                               cp_fm_get_info,&
                                               cp_fm_release,&
                                               cp_fm_set_all,&
@@ -116,8 +118,7 @@ MODULE rpa_main
                                               rpa_sigma_create,&
                                               rpa_sigma_matrix_spectral,&
                                               rpa_sigma_type
-   USE rpa_util,                        ONLY: Q_trace_and_add_unit_matrix,&
-                                              alloc_im_time,&
+   USE rpa_util,                        ONLY: alloc_im_time,&
                                               calc_mat_Q,&
                                               compute_Erpa_by_freq_int,&
                                               contract_P_omega_with_mat_L,&
@@ -1112,7 +1113,9 @@ CONTAINS
                                                             color_rpa_group
       TYPE(cp_fm_type), INTENT(IN)                       :: fm_matrix_PQ
       TYPE(cp_fm_type), DIMENSION(:), INTENT(INOUT)      :: fm_mat_S
-      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_Q_gemm, fm_mat_Q, fm_mat_S_gw
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_Q_gemm
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(INOUT)      :: fm_mat_Q
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_S_gw
       TYPE(cp_fm_type), INTENT(IN)                       :: fm_mat_R_gw
       TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_S_ij_bse, fm_mat_S_ab_bse
       LOGICAL, INTENT(IN)                                :: my_do_gw, do_bse
@@ -1163,7 +1166,7 @@ CONTAINS
       REAL(KIND=dp) :: alpha, dbcsr_time, e_exchange, e_exchange_corr, eps_filter, &
          eps_filter_im_time, ext_scaling, fermi_level_offset, fermi_level_offset_input, &
          my_flop_rate, omega, omega_max_fit, omega_old, tau, tau_old
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: delta_corr, e_fermi, trace_Qomega, &
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: delta_corr, diag_Qomega, e_fermi, &
                                                             vec_omega_fit_gw, wkp_W
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: static_cohsex_eigenval_cn, &
                                                             static_cohsex_eigenval_dg, vec_W_gw
@@ -1233,8 +1236,8 @@ CONTAINS
             IF (do_im_time) CPABORT("COHSEX is only implemented in the O(N^4) GW code.")
             IF (do_periodic) CPABORT("COHSEX with PERIODIC_CORRECTION is not implemented.")
             ! BSE after static COHSEX: W = v + α W^c(0) with one α for both A and B
-            IF (do_bse .AND. mp2_env%ri_g0w0%scale_cohsex_occ /= mp2_env%ri_g0w0%scale_cohsex_virt) THEN
-               CALL cp_abort(__LOCATION__, "BSE after COHSEX requires SCALE_COHSEX_OCC = SCALE_COHSEX_VIRT "// &
+            IF (do_bse .AND. mp2_env%ri_g0w0%cohsex_scale_occ /= mp2_env%ri_g0w0%cohsex_scale_virt) THEN
+               CALL cp_abort(__LOCATION__, "BSE after COHSEX requires COHSEX_SCALE_OCC = COHSEX_SCALE_VIRT "// &
                              "(the scaling of W^c in the BSE).")
             END IF
             IF (do_ri_sos_laplace_mp2) CPABORT("COHSEX with SOS-MP2 is not implemented.")
@@ -1339,7 +1342,7 @@ CONTAINS
 
       ! This array is needed for RPA
       IF (.NOT. do_ri_sos_laplace_mp2) THEN
-         ALLOCATE (trace_Qomega(dimen_RI_red))
+         ALLOCATE (diag_Qomega(dimen_RI_red))
       END IF
 
       IF (do_ri_sos_laplace_mp2 .AND. .NOT. do_im_time) THEN
@@ -1493,24 +1496,29 @@ CONTAINS
                   CALL cp_fm_scale_and_add(1.0_dp, fm_mat_Q_static_bse_gemm, 1.0_dp, fm_mat_Q_gemm(ispin))
                END DO
             END IF
-            CALL Q_trace_and_add_unit_matrix(dimen_RI_red, trace_Qomega, fm_mat_Q(1))
+            CALL cp_fm_add_on_diag(fm_mat_Q(1), 1.0_dp, n_active=dimen_RI_red)
             IF (do_bse) THEN
-               ALLOCATE (static_cohsex_eigenval_dg(nmo, nspins), static_cohsex_eigenval_cn(nmo, nspins), &
-                         static_cohsex_u(nmo, nmo, nspins))
-               CALL static_cohsex_qp_energies(fm_mat_Q(1), fm_mat_S_gw, fm_mat_S_gw_work, dimen_RI_red, nmo, homo, &
-                                              gw_corr_lev_occ, gw_corr_lev_virt, Eigenval(:, 1, :), mo_coeff, &
-                                              unit_nr, qs_env, mp2_env, static_cohsex_eigenval_dg, static_cohsex_eigenval_cn, &
-                                              static_cohsex_u)
-               ! the BSE reads the quasiparticle energies from Eigenval: ϵ^CN (with the canonical
-               ! MOs, see the BSE block) or ϵ^DG (with the KS MOs)
+               ! the BSE reads the quasiparticle energies from Eigenval: ϵ^CN (QP_UPDATE, with the
+               ! canonical MOs, see the BSE block) or ϵ^DG (DIAGONAL, with the KS MOs)
                IF (mp2_env%ri_g0w0%cohsex_flavor == cohsex_qp_update) THEN
+                  ALLOCATE (static_cohsex_eigenval_cn(nmo, nspins), static_cohsex_u(nmo, nmo, nspins))
+                  CALL static_cohsex_qp_energies(fm_mat_Q(1), fm_mat_S_gw, fm_mat_S_gw_work, dimen_RI_red, nmo, &
+                                                 homo, gw_corr_lev_occ, gw_corr_lev_virt, Eigenval(:, 1, :), &
+                                                 mo_coeff, unit_nr, qs_env, mp2_env, &
+                                                 eigenval_cn=static_cohsex_eigenval_cn, u_qp_all=static_cohsex_u)
                   Eigenval(:, 1, :) = static_cohsex_eigenval_cn(:, :)
+                  DEALLOCATE (static_cohsex_eigenval_cn)
                ELSE
+                  ALLOCATE (static_cohsex_eigenval_dg(nmo, nspins))
+                  CALL static_cohsex_qp_energies(fm_mat_Q(1), fm_mat_S_gw, fm_mat_S_gw_work, dimen_RI_red, nmo, &
+                                                 homo, gw_corr_lev_occ, gw_corr_lev_virt, Eigenval(:, 1, :), &
+                                                 mo_coeff, unit_nr, qs_env, mp2_env, &
+                                                 eigenval_dg=static_cohsex_eigenval_dg)
                   Eigenval(:, 1, :) = static_cohsex_eigenval_dg(:, :)
+                  DEALLOCATE (static_cohsex_eigenval_dg)
                END IF
-               DEALLOCATE (static_cohsex_eigenval_dg, static_cohsex_eigenval_cn)
-               ! direct terms of the BSE with W = v + α W^c(0), α = SCALE_COHSEX_OCC (= SCALE_COHSEX_VIRT)
-               mp2_env%bse%wc_scaling = mp2_env%ri_g0w0%scale_cohsex_occ
+               ! direct terms of the BSE with W = v + α W^c(0), α = COHSEX_SCALE_OCC (= COHSEX_SCALE_VIRT)
+               mp2_env%bse%wc_scaling = mp2_env%ri_g0w0%cohsex_scale_occ
             ELSE
                CALL static_cohsex_qp_energies(fm_mat_Q(1), fm_mat_S_gw, fm_mat_S_gw_work, dimen_RI_red, nmo, homo, &
                                               gw_corr_lev_occ, gw_corr_lev_virt, Eigenval(:, 1, :), mo_coeff, &
@@ -1635,7 +1643,9 @@ CONTAINS
             ELSE
                IF (calc_forces .AND. .NOT. do_im_time) CALL rpa_grad_copy_Q(fm_mat_Q(1), rpa_grad)
 
-               CALL Q_trace_and_add_unit_matrix(dimen_RI_red, trace_Qomega, fm_mat_Q(1))
+               ! epsilon = I + Q; retain the diagonal of Q for the RPA energy.
+               CALL cp_fm_get_diag(fm_mat_Q(1), diag_Qomega, n_active=dimen_RI_red)
+               CALL cp_fm_add_on_diag(fm_mat_Q(1), 1.0_dp, n_active=dimen_RI_red)
 
                IF (do_kpoints_cubic_RPA .OR. do_kpoints_from_Gamma) THEN
                   CALL invert_eps_compute_W_and_Erpa_kp(dimen_RI, jquad, nkp, count_ev_sc_GW, para_env, &
@@ -1647,7 +1657,7 @@ CONTAINS
                                                         fm_mat_W, cfm_mat_RI_global_work, mat_MinvVMinv, &
                                                         fm_matrix_Minv, fm_matrix_Minv_Vtrunc_Minv)
                ELSE
-                  CALL compute_Erpa_by_freq_int(dimen_RI_red, trace_Qomega, fm_mat_Q(1), para_env_RPA, Erpa, &
+                  CALL compute_Erpa_by_freq_int(dimen_RI_red, diag_Qomega, fm_mat_Q(1), para_env_RPA, Erpa, &
                                                 time_frequency_grid%frequency_weights(jquad))
                END IF
 
@@ -1894,10 +1904,10 @@ CONTAINS
          IF (ALLOCATED(static_cohsex_u)) DEALLOCATE (static_cohsex_u)
 
          ! the solver keeps [1+Q(0)]^-1 and the window-sized slabs; Q(0) and the full slabs stay the GW's
-         CALL prepare_bse_env(mp2_env%bse, fm_mat_S_ia_bse, fm_mat_S_ij_bse, fm_mat_S_ab_bse, &
-                              fm_mat_Q_static_bse_gemm, Eigenval, Eigenval_scf, &
-                              homo, virtual, dimen_RI, dimen_RI_red, mp2_env%ri_g0w0%corr_mos_occ, &
-                              bse_lev_virt, qs_env, unit_nr)
+         CALL prepare_bse_env_from_ri_rpa_gw(mp2_env%bse, fm_mat_S_ia_bse, fm_mat_S_ij_bse, fm_mat_S_ab_bse, &
+                                             fm_mat_Q_static_bse_gemm, Eigenval, Eigenval_scf, &
+                                             homo, virtual, dimen_RI, dimen_RI_red, mp2_env%ri_g0w0%corr_mos_occ, &
+                                             bse_lev_virt, qs_env, unit_nr)
          CALL cp_fm_release(fm_mat_Q_static_bse_gemm)
          IF (ALLOCATED(mo_coeff_bse)) THEN
             CALL bse_solve(mp2_env%bse, mo_coeff_bse, unit_nr)
@@ -1946,7 +1956,7 @@ CONTAINS
       IF (.NOT. do_im_time .AND. .NOT. do_ri_sos_laplace_mp2) CALL exchange_work%release()
 
       IF (.NOT. do_ri_sos_laplace_mp2) THEN
-         DEALLOCATE (trace_Qomega)
+         DEALLOCATE (diag_Qomega)
       END IF
 
       CALL time_frequency_grid_release(time_frequency_grid)
