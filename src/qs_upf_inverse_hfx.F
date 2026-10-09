@@ -171,12 +171,15 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: strain_gradient(3, 3)
 
       INTEGER                                            :: atom, axis, column
+      INTEGER, ALLOCATABLE                               :: active(:)
       REAL(dp)                                           :: cell_response(3, 3)
       REAL(dp), ALLOCATABLE                              :: atom_response(:, :)
 
       CPASSERT(frame%atom_local)
       CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(frame%positions)))
       CPASSERT(SIZE(covectors) > 0 .AND. SIZE(ao_images, 2) == SIZE(covectors))
+      ALLOCATE (active(SIZE(covectors)))
+      CALL active_lattice_covectors(covectors, active)
       ALLOCATE (atom_response, MOLD=frame%positions)
       cell_response = 0.0_dp
       DO atom = 1, SIZE(frame%positions, 2)
@@ -184,7 +187,7 @@ CONTAINS
             atom_response = 0.0_dp
             atom_response(axis, atom) = 1.0_dp
             CALL lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
-                                            ao_images, center_images, covectors, atom_response, cell_response, &
+                                            ao_images, center_images, covectors, active, atom_response, cell_response, &
                                             atom_gradient(axis, atom))
          END DO
       END DO
@@ -196,12 +199,50 @@ CONTAINS
                atom_response = 0.0_dp
                atom_response(axis, :) = frame%positions(column, :)
                CALL lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
-                                               ao_images, center_images, covectors, atom_response, cell_response, &
+                                               ao_images, center_images, covectors, active, atom_response, cell_response, &
                                                strain_gradient(axis, column))
             END DO
          END DO
       END IF
    END SUBROUTINE qs_upf_inverse_hfx_lattice_gradient
+
+! **************************************************************************************************
+!> \brief Select physical images with a nonzero energy covector on any native tensor owner.
+!>        Exact zeros are omitted without introducing another screening threshold.
+!> \param covectors ...
+!> \param active Replicated selection in the original physical AO image order.
+! **************************************************************************************************
+   SUBROUTINE active_lattice_covectors(covectors, active)
+      TYPE(dbt_type), INTENT(INOUT)                      :: covectors(:)
+      INTEGER, INTENT(OUT)                               :: active(:)
+
+      INTEGER                                            :: i, image, j, k, nblks(3), owner
+      LOGICAL                                            :: found
+      REAL(dp), ALLOCATABLE, TARGET                      :: values(:, :, :)
+
+      CPASSERT(SIZE(active) == SIZE(covectors) .AND. SIZE(active) > 0)
+      active = 0
+      DO image = 1, SIZE(covectors)
+         CALL matching_tensor(covectors(1), covectors(image))
+         CALL dbt_get_info(covectors(image), nblks_total=nblks)
+         DO i = 1, nblks(1)
+         DO j = 1, nblks(2)
+         DO k = 1, nblks(3)
+            IF (active(image) /= 0) CYCLE
+            CALL dbt_get_stored_coordinates(covectors(image), [i, j, k], owner)
+            IF (owner /= covectors(image)%pgrid%mp_comm_2d%mepos) CYCLE
+            CALL dbt_get_block(covectors(image), [i, j, k], values, found)
+            IF (found) THEN
+               IF (ANY(values /= 0.0_dp)) active(image) = 1
+            END IF
+            IF (ALLOCATED(values)) DEALLOCATE (values)
+         END DO
+         END DO
+         END DO
+      END DO
+      ! Every rank must take the same image branches before collective integral evaluation.
+      CALL covectors(1)%pgrid%mp_comm_2d%max(active)
+   END SUBROUTINE active_lattice_covectors
 
 ! **************************************************************************************************
 !> \brief Pair one complete analytic lattice response with the native physical integral covectors.
@@ -213,12 +254,13 @@ CONTAINS
 !> \param ao_images ...
 !> \param center_images ...
 !> \param covectors ...
+!> \param active ...
 !> \param atom_response ...
 !> \param cell_response ...
 !> \param derivative ...
 ! **************************************************************************************************
    SUBROUTINE lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
-                                         ao_images, center_images, covectors, atom_response, cell_response, derivative)
+                                         ao_images, center_images, covectors, active, atom_response, cell_response, derivative)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -226,6 +268,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: auxiliary_images(:, :), ao_images(:, :), &
                                                             center_images(:, :)
       TYPE(dbt_type), INTENT(INOUT)                      :: covectors(:)
+      INTEGER, INTENT(IN)                                :: active(:)
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: derivative
 
@@ -236,7 +279,9 @@ CONTAINS
       CALL dbt_create(covectors(1), integrals(1))
       CALL dbt_create(covectors(1), responses(1))
       derivative = 0.0_dp
+      CPASSERT(SIZE(active) == SIZE(covectors))
       DO image = 1, SIZE(covectors)
+         IF (active(image) == 0) CYCLE
          CALL matching_tensor(covectors(1), covectors(image))
          CALL dbt_clear(integrals(1))
          CALL dbt_clear(responses(1))
@@ -959,8 +1004,10 @@ CONTAINS
       CPASSERT(ALL(left_frame%positions == right_frame%positions))
       CPASSERT(ALL(left_frame%cell == right_frame%cell))
       CPASSERT(ALL(left_frame%periodicity == right_frame%periodicity))
-      CPASSERT(left_range(1) >= 1 .AND. left_range(2) <= SIZE(left_frame%coefficients, 2))
-      CPASSERT(right_range(1) >= 1 .AND. right_range(2) <= SIZE(right_frame%coefficients, 2))
+      CPASSERT(left_range(1) >= 1)
+      CPASSERT(left_range(2) <= SIZE(left_frame%coefficients, 2))
+      CPASSERT(right_range(1) >= 1)
+      CPASSERT(right_range(2) <= SIZE(right_frame%coefficients, 2))
       nl = left_range(2) - left_range(1) + 1
       nr = right_range(2) - right_range(1) + 1
       nang = SIZE(angular_weights)
@@ -991,8 +1038,12 @@ CONTAINS
          END IF
          CPASSERT(PRESENT(auxiliary_response))
          CPASSERT(ALL(SHAPE(atom_response) == SHAPE(left_frame%positions)))
-         CPASSERT(ALL(SHAPE(left_coefficients_response) == SHAPE(left_frame%coefficients)))
-         CPASSERT(ALL(SHAPE(right_coefficients_response) == SHAPE(right_frame%coefficients)))
+         IF (.NOT. ALL(SHAPE(left_coefficients_response) == SHAPE(left_frame%coefficients))) THEN
+            CPABORT("Inconsistent left coefficient response")
+         END IF
+         IF (.NOT. ALL(SHAPE(right_coefficients_response) == SHAPE(right_frame%coefficients))) THEN
+            CPABORT("Inconsistent right coefficient response")
+         END IF
          dposition = atom_response(:, atom) + MATMUL(cell_response, REAL(shift, dp))
          response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
