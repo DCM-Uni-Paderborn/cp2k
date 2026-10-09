@@ -6,56 +6,49 @@
 !--------------------------------------------------------------------------------------------------!
 
 PROGRAM skala_sirius_unittest
-   USE cell_methods, ONLY: cell_create, init_cell
-   USE cell_types, ONLY: cell_release, &
-                         cell_type
-   USE ieee_arithmetic, ONLY: ieee_is_finite
-   USE input_cp2k_pwdft, ONLY: create_pwdft_section
-   USE input_cp2k_xc, ONLY: create_xc_section
-   USE input_section_types, ONLY: section_release, &
-                                  section_type, &
-                                  section_vals_create, &
-                                  section_vals_get_subs_vals, &
-                                  section_vals_release, &
-                                  section_vals_type, &
-                                  section_vals_val_set
-   USE iso_c_binding, ONLY: C_LOC
-   USE kinds, ONLY: default_path_length, &
-                    default_string_length, &
-                    dp
-   USE libcp2k, ONLY: cp2k_finalize, &
-                      cp2k_init
-   USE message_passing, ONLY: mp_comm_type, &
-                              mp_comm_world
-   USE particle_types, ONLY: particle_type
-   USE sirius, ONLY: &
-      SIRIUS_NUMBER_TYPE, &
-      sirius_add_atom, sirius_add_atom_type, sirius_add_atom_type_radial_function, &
-      sirius_add_atom_type_aw_descriptor, sirius_add_atom_type_lo_descriptor, &
-      sirius_context_handler, sirius_create_context, sirius_create_ground_state, &
-      sirius_create_kset, sirius_find_ground_state, sirius_free_handler, &
-      sirius_generate_density, sirius_generate_effective_potential, sirius_get_energy, sirius_ground_state_handler, &
-      sirius_get_forces, sirius_get_stress_tensor, sirius_get_total_magnetization, &
-      sirius_get_max_num_gkvec, sirius_set_atom_position, sirius_update_ground_state, &
-      sirius_import_parameters, sirius_initialize_context, sirius_kpoint_set_handler, &
-      sirius_option_set, &
-      sirius_set_atom_type_dion, sirius_set_atom_type_paw, sirius_set_atom_type_radial_grid, &
-      sirius_set_atom_type_radial_grid_inf, &
-      sirius_set_lattice_vectors, sirius_set_parameters
-#if defined(__SIRIUS_XC_DERIVATIVE)
-   USE sirius, ONLY: sirius_check_external_xc_derivative
-#endif
-#if defined(__SIRIUS_XC_POINT_GEOMETRY)
-   USE sirius, ONLY: sirius_get_xc_geometry_derivatives
-#endif
-#if defined(__SIRIUS_XC_POINT_RESPONSE)
-   USE sirius, ONLY: sirius_check_external_xc_response
-#endif
-   USE sirius_interface, ONLY: cp_sirius_init
-   USE skala_sirius, ONLY: skala_sirius_register_atom_grid, &
-                           skala_sirius_register_points, &
-                           skala_sirius_release, &
-                           skala_sirius_state_type, skala_sirius_update
+   USE cell_methods,                    ONLY: cell_create,&
+                                              init_cell
+   USE cell_types,                      ONLY: cell_release,&
+                                              cell_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE input_cp2k_pwdft,                ONLY: create_pwdft_section
+   USE input_cp2k_xc,                   ONLY: create_xc_section
+   USE input_section_types,             ONLY: section_release,&
+                                              section_type,&
+                                              section_vals_create,&
+                                              section_vals_get_subs_vals,&
+                                              section_vals_release,&
+                                              section_vals_type,&
+                                              section_vals_val_set
+   USE iso_c_binding,                   ONLY: C_LOC
+   USE kinds,                           ONLY: default_path_length,&
+                                              default_string_length,&
+                                              dp
+   USE libcp2k,                         ONLY: cp2k_finalize,&
+                                              cp2k_init
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_comm_world
+   USE particle_types,                  ONLY: particle_type
+   USE sirius,                          ONLY: &
+        SIRIUS_NUMBER_TYPE, sirius_add_atom, sirius_add_atom_type, &
+        sirius_add_atom_type_aw_descriptor, sirius_add_atom_type_lo_descriptor, &
+        sirius_add_atom_type_radial_function, sirius_check_external_xc_derivative, &
+        sirius_check_external_xc_response, sirius_context_handler, sirius_create_context, &
+        sirius_create_ground_state, sirius_create_kset, sirius_find_ground_state, &
+        sirius_free_handler, sirius_generate_density, sirius_generate_effective_potential, &
+        sirius_get_energy, sirius_get_forces, sirius_get_max_num_gkvec, sirius_get_stress_tensor, &
+        sirius_get_total_magnetization, sirius_get_xc_geometry_derivatives, &
+        sirius_ground_state_handler, sirius_import_parameters, sirius_initialize_context, &
+        sirius_kpoint_set_handler, sirius_option_set, sirius_set_atom_position, &
+        sirius_set_atom_type_dion, sirius_set_atom_type_paw, sirius_set_atom_type_radial_grid, &
+        sirius_set_atom_type_radial_grid_inf, sirius_set_lattice_vectors, sirius_set_parameters, &
+        sirius_update_ground_state
+   USE sirius_interface,                ONLY: cp_sirius_init
+   USE skala_sirius,                    ONLY: skala_sirius_register_atom_grid,&
+                                              skala_sirius_register_points,&
+                                              skala_sirius_release,&
+                                              skala_sirius_state_type,&
+                                              skala_sirius_update
 
    IMPLICIT NONE
 
@@ -87,16 +80,10 @@ PROGRAM skala_sirius_unittest
    REAL(dp), TARGET :: extra_charge
    REAL(dp) :: updated_energy, updated_exc
    REAL(dp), ALLOCATABLE :: forces(:, :)
-#if defined(__SIRIUS_XC_DERIVATIVE)
    REAL(dp) :: derivatives(3, 2), errors(2, 2)
-#endif
-#if defined(__SIRIUS_XC_POINT_RESPONSE)
    REAL(dp) :: response_errors(2)
-#endif
-#if defined(__SIRIUS_XC_POINT_GEOMETRY)
    REAL(dp) :: cell_derivative(3, 3), repeat_cell(3, 3)
    REAL(dp), ALLOCATABLE :: atom_derivative(:, :), repeat_atom(:, :)
-#endif
    REAL(dp), ALLOCATABLE :: points(:, :), weights(:), descriptor_weights(:), centres(:, :)
    INTEGER, ALLOCATABLE :: sizes(:)
    LOGICAL :: converged, atom_grid, force_test, stress_test, derivative_test, update_test, spinor_test, orbital_only
@@ -185,20 +172,11 @@ PROGRAM skala_sirius_unittest
       READ (radial_arg, *, IOSTAT=ierr) radial_points
       IF (ierr /= 0 .OR. radial_points < 2) ERROR STOP "Radial point count must be at least two"
    END IF
-#if !defined(__SIRIUS_XC_POINT_UPDATE)
-   IF (update_test .OR. derivative_test .OR. spinor_stress) ERROR STOP "SIRIUS lacks the point-quadrature update API"
-#endif
-#if !defined(__SIRIUS_XC_POINT_GEOMETRY)
-   IF (derivative_test .OR. spinor_stress) ERROR STOP "SIRIUS lacks the point geometry callbacks"
-#endif
    fd_step = 0.0_dp
    IF (LEN_TRIM(step_arg) > 0) THEN
       READ (step_arg, *, IOSTAT=ierr) fd_step
       IF (ierr /= 0) ERROR STOP "Invalid finite-difference step"
       IF (.NOT. ieee_is_finite(fd_step) .OR. fd_step <= 0.0_dp) ERROR STOP "Finite-difference step must be positive"
-#if !defined(__SIRIUS_XC_DERIVATIVE)
-      IF (.NOT. derivative_test) ERROR STOP "SIRIUS lacks the external XC orbital derivative diagnostic"
-#endif
    END IF
    response_step = MERGE(0.0_dp, fd_step, derivative_test)
    IF (LEN_TRIM(response_arg) > 0) THEN
@@ -305,9 +283,7 @@ PROGRAM skala_sirius_unittest
    natoms = MERGE(2, 1, derivative_test .OR. (update_test .AND. first_mode /= 2))
    strain = RESHAPE([0.3_dp, 0.1_dp, -0.07_dp, 0.1_dp, -0.2_dp, 0.06_dp, -0.07_dp, 0.06_dp, 0.15_dp], [3, 3])
    ALLOCATE (atoms(natoms), forces(3, natoms))
-#if defined(__SIRIUS_XC_POINT_GEOMETRY)
    ALLOCATE (atom_derivative(3, natoms), repeat_atom(3, natoms))
-#endif
    atoms(1)%r = [1.6_dp, 2.7_dp, 4.0_dp]
    IF (natoms == 2) atoms(2)%r = [3.84_dp, 4.59_dp, 5.9_dp]
    IF (derivative_test .AND. first_mode == 2) atoms(2)%r = [5.44_dp, 5.29_dp, 6.6_dp]
@@ -580,7 +556,6 @@ PROGRAM skala_sirius_unittest
             CALL sirius_get_energy(gs, "exc", repeat_exc)
             IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Unchanged density changed the point XC energy"
             exc = repeat_exc
-#if defined(__SIRIUS_XC_POINT_GEOMETRY)
             IF (atom_grid .AND. .NOT. derivative_test .AND. .NOT. update_test .AND. &
                 .NOT. spinor_stress .AND. .NOT. orbital_only) THEN
                CALL sirius_get_xc_geometry_derivatives(gs, natoms, atom_derivative, cell_derivative, error_code=ierr)
@@ -615,7 +590,6 @@ PROGRAM skala_sirius_unittest
                CALL sirius_generate_effective_potential(gs, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "Restoring the atom grid did not restore energy evaluation"
             END IF
-#endif
             IF (update_test) THEN
                IF (geometry == 1) THEN
                   CALL sirius_get_max_num_gkvec(ks, updated_basis)
@@ -640,10 +614,8 @@ PROGRAM skala_sirius_unittest
                      ERROR STOP "Nonfinite energy after geometry update"
                   END IF
                   IF (ABS(updated_energy - energy) < 1.0e-7_dp) ERROR STOP "Vacuous geometry-update check"
-#if defined(__SIRIUS_XC_POINT_GEOMETRY)
                   CALL sirius_get_xc_geometry_derivatives(gs, natoms, atom_derivative, cell_derivative, error_code=ierr)
                   IF (ierr /= 0) ERROR STOP "Updated geometry callback failed"
-#endif
                ELSE
                   CALL sirius_get_max_num_gkvec(ks, fresh_basis)
                   IF (updated_basis /= fresh_basis) ERROR STOP "Geometry-update fixture crosses the orbital cutoff"
@@ -652,7 +624,6 @@ PROGRAM skala_sirius_unittest
                   IF (ABS(updated_energy - energy) > 2.0e-7_dp .OR. ABS(updated_exc - exc) > 2.0e-7_dp) THEN
                      ERROR STOP "Updated and fresh geometry energies differ"
                   END IF
-#if defined(__SIRIUS_XC_POINT_GEOMETRY)
                   CALL sirius_get_xc_geometry_derivatives(gs, natoms, repeat_atom, repeat_cell, error_code=ierr)
                   IF (ierr /= 0) ERROR STOP "Fresh geometry callback failed"
                   IF (.NOT. ALL(ieee_is_finite(atom_derivative)) .OR. .NOT. ALL(ieee_is_finite(cell_derivative)) .OR. &
@@ -663,10 +634,8 @@ PROGRAM skala_sirius_unittest
                      MAXVAL(ABS(repeat_atom - atom_derivative)), MAXVAL(ABS(repeat_cell - cell_derivative))
                   IF (MAXVAL(ABS(repeat_atom - atom_derivative)) > 2.0e-6_dp .OR. &
                       MAXVAL(ABS(repeat_cell - cell_derivative)) > 2.0e-6_dp) ERROR STOP "Updated geometry derivatives differ"
-#endif
                END IF
             END IF
-#if defined(__SIRIUS_XC_DERIVATIVE)
             IF (spinor_stress) CALL check_spinor_stress()
             IF (fd_step > 0.0_dp .AND. .NOT. spinor_stress) THEN
                CALL sirius_check_external_xc_derivative(gs, fd_step, derivatives, error_code=ierr)
@@ -685,8 +654,6 @@ PROGRAM skala_sirius_unittest
                CALL sirius_get_energy(gs, "exc", repeat_exc)
                IF (ABS(exc - repeat_exc) > 1.0e-7_dp) ERROR STOP "Orbital diagnostic did not restore the callback"
             END IF
-#endif
-#if defined(__SIRIUS_XC_POINT_RESPONSE)
             IF (mode == 2 .AND. response_step > 0.0_dp) THEN
                CALL sirius_check_external_xc_response(gs, response_step, response_errors, error_code=ierr)
                IF (ierr /= 0) ERROR STOP "SIRIUS Skala field response check failed"
@@ -698,7 +665,6 @@ PROGRAM skala_sirius_unittest
                CALL sirius_get_energy(gs, "exc", repeat_exc)
                IF (exc /= repeat_exc) ERROR STOP "Field response check changed the ground-state XC energy"
             END IF
-#endif
             IF (.NOT. derivative_test .OR. geometry == 5) THEN
                CALL sirius_free_handler(gs)
                CALL sirius_free_handler(ks)
@@ -726,9 +692,7 @@ PROGRAM skala_sirius_unittest
       ERROR STOP "Scalar and unpolarized collinear SCF energies differ"
    END IF
    DEALLOCATE (points, weights, descriptor_weights, centres, sizes, atoms, forces)
-#if defined(__SIRIUS_XC_POINT_GEOMETRY)
    DEALLOCATE (atom_derivative, repeat_atom)
-#endif
    CALL cell_release(cell)
    CALL section_vals_release(xc)
    CALL section_release(definition)

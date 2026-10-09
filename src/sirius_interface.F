@@ -130,11 +130,7 @@ CONTAINS
 !> \author JHU
 ! **************************************************************************************************
    SUBROUTINE cp_sirius_finalize()
-#if defined(__SIRIUS_FINALIZE_NO_FFTW)
       CALL sirius_finalize(.FALSE., .FALSE.)
-#else
-      CALL sirius_finalize(.FALSE., .FALSE., .FALSE.)
-#endif
    END SUBROUTINE cp_sirius_finalize
 
 !***************************************************************************************************

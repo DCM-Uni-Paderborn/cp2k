@@ -194,7 +194,6 @@ CONTAINS
       TYPE(torch_tensor_type)                            :: exc_tensor, density_grad_t, grad_grad_t, kin_grad_t
       TYPE(torch_tensor_type)                            :: geometry_grad_t
       TYPE(torch_tensor_type)                            :: hessian_inputs(7), directions(7), responses(7)
-      TYPE(torch_tensor_type)                            :: spin_axes_t, spin_weights_t
       REAL(KIND=dp), ALLOCATABLE                         :: spin_axes(:, :), spin_weights(:)
 
       CALL timeset("skala_point_eval", handle)
@@ -325,8 +324,6 @@ CONTAINS
             ALLOCATE (spin_axes(3, lebedev_grid(angular_grid)%n), spin_weights(lebedev_grid(angular_grid)%n))
             spin_axes(:, :) = lebedev_grid(angular_grid)%r([3, 1, 2], :)
             spin_weights(:) = lebedev_grid(angular_grid)%w
-            CALL torch_tensor_from_array(spin_axes_t, spin_axes)
-            CALL torch_tensor_from_array(spin_weights_t, spin_weights)
          ELSE
             CALL skala_torch_model_get_exc(cached_model, features%inputs, features%grid_weights_t, exc_tensor, exc)
          END IF
@@ -371,7 +368,7 @@ CONTAINS
                CALL torch_tensor_to_device_leaf(directions(i_response), .FALSE.)
             END DO
             IF (nspin == 4) THEN
-               CALL skala_torch_model_spin_projected_eval(cached_model, features%inputs, spin_axes_t, spin_weights_t, &
+               CALL skala_torch_model_spin_projected_eval(cached_model, features%inputs, spin_axes, spin_weights, &
                                                           hessian_inputs(:n_response), responses(:n_response), exc, &
                                                           kernel_status, directions(:n_response))
             ELSE
@@ -390,7 +387,7 @@ CONTAINS
             CALL torch_tensor_data_ptr(grad_grad_t, grad_grad)
             CALL torch_tensor_data_ptr(kin_grad_t, kin_grad)
          ELSE IF (nspin == 4) THEN
-            CALL skala_torch_model_spin_projected_eval(cached_model, features%inputs, spin_axes_t, spin_weights_t, &
+            CALL skala_torch_model_spin_projected_eval(cached_model, features%inputs, spin_axes, spin_weights, &
                                                        hessian_inputs(:n_response), responses(:n_response), exc, kernel_status)
             IF (kernel_status /= 0) EXIT point_evaluation
             density_grad_t = responses(1)
@@ -467,10 +464,7 @@ CONTAINS
             END DO
          END IF
          END BLOCK point_evaluation
-         IF (nspin == 4) THEN
-            CALL torch_tensor_release(spin_axes_t)
-            CALL torch_tensor_release(spin_weights_t)
-         ELSE
+         IF (nspin /= 4) THEN
             CALL torch_tensor_release(exc_tensor)
          END IF
          CALL skala_gpw_feature_release(features)
