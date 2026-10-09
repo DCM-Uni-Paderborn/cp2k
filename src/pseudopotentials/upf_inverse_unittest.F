@@ -407,7 +407,14 @@ CONTAINS
       pot%is_ultrasoft = .FALSE.
       CALL upf_inverse_atomic_init(pot, 1, atomic, info)
       IF (info /= 0 .OR. .NOT. atomic%inverse%ready) ERROR STOP 'NC atomic inverse factorization failed'
-      CALL check(MAXVAL(ABS(atomic%hard%weighted_beta - original%weighted_beta)) + &
+      ! Compact storage may remove only an exactly zero radial suffix.
+      ir = SIZE(atomic%hard%r)
+      IF (ir > SIZE(original%r)) ERROR STOP 'NC projector gained radial quadrature points'
+      CALL check(MAXVAL(ABS(atomic%hard%r - original%r(:ir))), 'Original NC radial quadrature is retained', 0.0_dp)
+      IF (ir < SIZE(original%r)) THEN
+         CALL check(MAXVAL(ABS(original%weighted_beta(ir + 1:, :))), 'Omitted NC quadrature rows are exactly zero', 0.0_dp)
+      END IF
+      CALL check(MAXVAL(ABS(atomic%hard%weighted_beta - original%weighted_beta(:ir, :))) + &
                  MAXVAL(ABS(atomic%hard%d - original%d)) + MAXVAL(ABS(atomic%kinetic)) + MAXVAL(ABS(atomic%metric)), &
                  'Atomic inverse reduces exactly to original NC projectors', 0.0_dp)
    END SUBROUTINE check_atomic_projectors
