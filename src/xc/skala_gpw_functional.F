@@ -525,8 +525,8 @@ CONTAINS
 
       CHARACTER(len=default_path_length)                 :: model_path
       INTEGER                                            :: handle, max_rows, nchunks, nspins, &
-                                                            omp_max_threads_restore, partition, requested_device, &
-                                                            selected_device
+                                                            omp_max_threads_restore, partition, &
+                                                            requested_device, selected_device
       LOGICAL                                            :: atom_chunks, has_work, routing, &
                                                             subchunks, use_cuda
       REAL(KIND=dp), ALLOCATABLE                         :: density_grad(:, :), grad_grad(:, :, :), &
