@@ -85,6 +85,7 @@ QS/regtest-xastdp                                           libint libxc !ifx
 ATOM/regtest-pseudo
 QS/regtest-ot-1
 SIRIUS/regtest-1                                            sirius
+SIRIUS/regtest-skala                                        sirius skala libtorch
 QS/regtest-kp-hfx-ri-admm-2                                 libint !ifx
 Fist/regtest-6
 SE/regtest-2-2
