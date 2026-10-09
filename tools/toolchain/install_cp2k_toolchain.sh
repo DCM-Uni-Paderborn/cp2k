@@ -32,7 +32,6 @@ export ROOTDIR="${PWD}"
 export SCRIPTDIR="${ROOTDIR}/scripts"
 export BUILDDIR="${ROOTDIR}/build"
 export INSTALLDIR="${ROOTDIR}/install"
-export SETUPFILE="${INSTALLDIR}/setup"
 export TOOLKIT_SCRIPT="${SCRIPTDIR}/tool_kit.sh"
 
 # ------------------------------------------------------------------------
@@ -82,7 +81,6 @@ $(basename "$SCRIPT_NAME") [options]
 OPTIONS:
 
   -h, --help              Show this message and exit.
-  --help-hpc              Show additional hints for HPC users and exit.
   -j <n>                  Number of processors for parallel compiling.
                           If omitted, the script will automatically try to
                           determine the number of available processors and use
@@ -134,14 +132,15 @@ OPTIONS:
                           CFLAGS for compilers. If omitted or set to "native",
                           compiling will be tuned/optimized for the native
                           host system, and some instruction sets will be
-                          detected including AVX, AVX2, AVX512,etc.
+                          detected including AVX, AVX2, AVX512, etc.
                           Alternatively this option can be set depending on
                           actual target CPU microarchitecture, e.g. "haswell",
-                          "skylake", or just "generic".
+                          "skylake", or just "generic"; "generic" is the most
+                          conservative portable option with least optimization.
                           Default = native
   --gpu-ver               Select the target GPU architecture for compiling.
                           Available options are: K20X, K40, K80, P100, V100,
-                          A100, H100, GB10, A40, Mi50, Mi100, Mi250, and no.
+                          A100, H100, B200, GB10, A40, Mi50, Mi100, Mi250, and no.
                           This option determines the value of nvcc -arch flag.
                           Default = no
   --libint-lmax           Maximum supported angular momentum by libint if the
@@ -173,6 +172,10 @@ Specific options of --enable-FEATURE:
                           Default = no
   --enable-cuda           Turn on GPU (CUDA) support.
                           Can be combined with --enable-opencl.
+                          Default = no
+  --enable-gauxc-cutlass  Turn on CUTLASS local work driver support when
+                          installing GauXC. Requires --with-gauxc=install,
+                          --enable-cuda=yes, and CUDA compute capability >= 8.0.
                           Default = no
   --enable-hip            Turn on GPU (HIP) support.
                           Default = no
@@ -231,8 +234,7 @@ Specific options of --with-PKG:
   --with-intelmpi         Use Intel MPI library for parallel versions of
                           newly installed dependencies and CP2K.
                           Default = system
-  --with-openblas         Use OpenBLAS, which provides LAPACK and BLAS library,
-                          and is also used to get arch information.
+  --with-openblas         Use OpenBLAS, which provides LAPACK and BLAS library.
                           --math-mode option (see above) should be consistent.
                           Default = install
   --with-mkl              Use Intel Math Kernel Library (MKL), which provides
@@ -253,8 +255,14 @@ Specific options of --with-PKG:
                           DFT (pure and hybrid functionals) calculations.
                           Default = install
   --with-gauxc            Enable GauXC for external exchange-correlation
-                          integration. Installing GauXC with OneDFT/SKALA
-                          support also enables libtorch and installs Skala-1.1.
+                          integration. Installing GauXC with Skala
+                          support also enables libtorch and installs Skala.
+                          Default = no
+  --with-skala-ftorch     Enable Skala neural network density functional
+                          via ftorch. This also installs Skala and libtorch. 
+                          Use either this option or --with-gauxc, not both.
+                          Default = no 
+  --with-eigen            Enable Eigen3; required by libint and SIRIUS.
                           Default = no
   --with-libint           Enable libint for two-body molecular integrals in
                           Hartree-Fock and hybrid functional calculations.
@@ -268,9 +276,14 @@ Specific options of --with-PKG:
                           will also be installed; if CUDA and/or HIP support is
                           enabled too, respective versions will all be built.
                           Default = install
-  --with-libxsmm          Enable libxsmm as a small matrix multiplication
-                          library. Installing is only supported on arch
-                          x86_64 or arm64.
+  --with-libxsmm          Enable LIBXSMM to provide kernels for LIBXS.
+                          Installing is supported on arch x86_64 or arm64.
+                          Default = install
+  --with-libxs            Enable LIBXS as a small matrix multiplication
+                          library and for other low-level operations.
+                          Default = install
+  --with-libxstream       Enable LIBXSTREAM as an OpenCL-based accelerator
+                          backend (requires LIBXS).
                           Default = install
   --with-scalapack        Enable ScaLAPACK for parallel linear algebra
                           calculations.
@@ -289,6 +302,7 @@ Specific options of --with-PKG:
                           Default = install
   --with-fmt              Enable the formatting C/C++ library.
                           This package is required for SIRIUS.
+                          Default = no
   --with-libtorch         Enable libtorch as a machine learning framework.
                           This package is required for NequIP and Allegro, and
                           also for installing DeePMD-kit.
@@ -299,7 +313,7 @@ Specific options of --with-PKG:
                           Default = no
   --with-hdf5             Enable the hdf5 library for file format support.
                           This package is used by sirius and trexio.
-                          Default = install
+                          Default = no
   --with-libsmeagol       Enable interface to SMEAGOL NEGF library.
                           This package requires MPI.
                           Default = no
@@ -323,11 +337,11 @@ Specific options of --with-PKG:
                           If tblite is used, standalone DFTD4 package specified
                           by --with-dftd4 will not be used.
                           This package requires CMake.
-                          Default = no
-  --with-sirius           Enable interface to the plane wave SIRIUS library.
-                          This package requires GSL, libspg, ELPA, ScaLAPACK,
-                          HDF5, Libxc and pugixml, and libvdwxc is optinal.
                           Default = install
+  --with-sirius           Enable interface to the plane wave SIRIUS library.
+                          This package requires Libxc, ScaLAPACK, ELPA, GSL,
+                          libspg, HDF5, pugixml, and libvdwxc.
+                          Default = no
   --with-pugixml          Enable pugixml library for XML parsing.
                           This library is required by SIRIUS.
                           Default = no
@@ -341,6 +355,9 @@ Specific options of --with-PKG:
                           Default = no
   --with-trexio           Enable the trexio library for TREXIO file format.
                           Default = no
+  --with-libwignernj      Select libwignernj for the angular momentum algebra.
+                          This dependency is required.
+                          Default = install
   --with-libfci           Enable the libfci active-space solver library.
                           Default = no
   --with-mcl              Install MCL library for MiMiC with toolchain.
@@ -349,6 +366,9 @@ Specific options of --with-PKG:
                           Default = install
   --with-cusolvermp       NVIDIA cusolverMp: CUDA library for distributed dense
                           linear algebra.
+                          Default = no
+  --with-libgint          Enable the use of libGint for the calculation of the 
+                          Hartree-Fock exchange on (nvidia) GPUs.
                           Default = no
 
 FURTHER INSTRUCTIONS
@@ -359,12 +379,15 @@ by the system package manager (such as dnf and apt). The install_requirements.sh
 script in the toolchain directory can help collect them.
 
 All packages to be installed locally will be downloaded and built inside
-./build, and then installed into package specific directories inside ./install.
+./build. It is safe to delete afterwards, as it contains only the files and
+directories that are downloaded by this script to install these packages. This
+script will not attempt to download packages that are already present in the
+./build directory, with filenames and sha256sum strings matching the records in
+the corresponding individual scripts; this will be useful for an offline run.
 
-The directory ./build is safe to delete, as it contains only the files and
-directories that are downloaded via this script to install these packages.
-However, once the packages are installed and you compiled CP2K then you must
-keep ./install in exactly the same location as it was first created, as it
+All packages will be installed into package-specific directories inside
+./install after building. Once CP2K is compiled and linked against them, it
+must be kept in exactly the same location as it was first created, because it
 contains tools and libraries your version of CP2K binary will depend on.
 
 It should be safe to terminate running of this script in the middle of a build
@@ -379,81 +402,15 @@ environment variables set for PKG_A are correctly and fully imported (especially
 LIBRARY_PATH and CPATH, which are often overlooked).
 
 For HPC users who wish to install toolchain dependencies and CP2K on public
-supercomputer clusters for oneself, it would be helpful to use "--help-hpc"
-option to show some hints and observations.
+supercomputer clusters for oneself, it would be helpful to check out the section
+"Considerations" on docs/getting-started/installation.md which has some special
+hints. (This piece of information was available from the option "--help-hpc" of
+this script in 2026.2, but has since been migrated for better visibility.)
 
   +----------------------------------------------------------------+
   |  YOU SHOULD ALWAYS SOURCE ./install/setup BEFORE YOU RUN CP2K  |
   |  COMPILED WITH THIS TOOLCHAIN                                  |
   +----------------------------------------------------------------+
-
-EOF
-}
-
-show_help_hpc() {
-  cat << EOF
-
-For HPC users who wish to install toolchain dependencies and CP2K on public
-supercomputer clusters for oneself:
-
-As this is a complicated process, it is strongly advised to contact local
-system administrators or managers for timely, specific assistance. Here are
-some hints and observations that may be useful:
-
-(1) Please don't forget to use "-h" or "--help" option to see detailed usage of
-    the toolchain script!
-
-(2) Generally root or sudo power is not necessary, and a convenient directory
-    with read and write permission as well as sufficient disk space should be
-    okay when installing toolchain and CP2K for a single user.
-
-(3) The server is very likely to have multiple compilers, MPI libraries, math
-    libraries and other packages that are managed by module systems, such as
-    LMod and Environment Modules. Users can load or unload modules to control
-    active environment variables and paths in runtime without conflicts. It is
-    recommended to check for available modules (with "module avail", "module
-    show" or similar commands) beforehand, and activate desired packages when
-    running the toolchain script with "--with-PKG=system" options so as to
-    avoid repeated labour. That said, actual compatibility between modules and
-    CP2K to be built may still take rounds of trial-and-error to confirm, and
-    resorting to "--with-PKG=install" can sometimes resolve problems if modules
-    turn out to be outdated, or compiled inconsistently, or not registering
-    complete variables and paths, or not built with GPU support on GPU machine,
-    etc. Please forward complaints about faulty modules to whoever responsible
-    for the server first before submitting any bug report to program developer.
-
-(4) If no internet connection is available for downloading packages from public
-    resources on the server, an offline installation of toolchain and CP2K may
-    be carried out by downloading all packages elsewhere, transferring them to
-    server and placing them under the ./build directory. The toolchain script
-    will not attempt to download packages if they are already present in the
-    build directory, with filenames and sha256sum strings matching the records.
-
-(5) An important common feature of clusters is the distinction of node types:
-    "login node", where users log in and perform tasks with low workload; and
-    "compute node", where resource-intensive computation jobs are carried out.
-    They may be hosted on separate machines, and their hardware specifications
-    (CPU, RAM, disk space, etc.) may be similar or different. Therefore, care
-    must be taken especially for the latter case. For instance, discrepancies
-    in CPU architectures and supported instruction sets may cause poor program
-    performance or illegal instruction errors if toolchain script is executed
-    on login node with "--target-cpu=native" (which is default too if omitted)
-    but CP2K is executed on compute node(s) afterwards. In this case, an option
-    "--target-cpu=generic" with best portability for compiling programs at the
-    cost of reduced (non-optimized) performance may be necessary.
-
-(6) Again, be careful about the environment if CP2K is to be executed with job
-    submission scripts to the job queue system handling resource allocation.
-    Active environment variables and paths on the login node seen by user (by
-    loading modules, sourcing scripts, editing ~/.bashrc or /etc/profile files,
-    or entering commands interactively in general) may NOT be effective on the
-    compute node where CP2K actually runs, unless all appropriate commands are
-    written explicitly in the batch job submission script. For example, a
-    frequently encountered scenario with corrupted, interleaved output messages
-    stems from incorrect MPI library configuration launching multiple instances
-    of CP2K simultaneously instead of multi-process parallel execution of one
-    single instance; some possible culprits are that the ./install/setup file
-    is not sourced or the wrong module for MPI library is loaded at runtime.
 
 EOF
 }
@@ -465,10 +422,10 @@ EOF
 tool_list="gcc intel amd cmake ninja"
 mpi_list="mpich openmpi intelmpi"
 math_list="mkl acml openblas"
-lib_list="fftw libint libxc gauxc libxsmm cosma scalapack elpa dbcsr
-          cusolvermp plumed spfft spla gsl spglib hdf5 libvdwxc sirius
-          libvori libtorch deepmd ace dftd4 tblite pugixml libsmeagol
-          fmt trexio libfci greenx gmp mcl"
+lib_list="fftw eigen libint libxc gauxc libxsmm libxs libxstream cosma scalapack
+          elpa dbcsr cusolvermp plumed spfft spla gsl spglib hdf5 libvdwxc sirius
+          libvori libtorch deepmd ace dftd4 tblite pugixml libsmeagol fmt trexio
+          libfci greenx gmp mcl libgint skala_ftorch libwignernj"
 package_list="${tool_list} ${mpi_list} ${math_list} ${lib_list}"
 # ------------------------------------------------------------------------
 
@@ -487,12 +444,15 @@ with_gcc="__SYSTEM__"
 # libs to turn on by default:
 with_dbcsr="__INSTALL__"
 with_fftw="__INSTALL__"
+with_eigen="__DONTUSE__"
 with_libint="__INSTALL__"
 with_libxsmm="__INSTALL__"
+with_libxs="__INSTALL__"
+with_libxstream="__DONTUSE__"
 with_libxc="__INSTALL__"
 with_gauxc="__DONTUSE__"
 with_scalapack="__INSTALL__"
-with_sirius="__INSTALL__"
+with_sirius="__DONTUSE__"
 with_gsl="__DONTUSE__"
 with_fmt="__DONTUSE__"
 with_spglib="__INSTALL__"
@@ -506,13 +466,15 @@ with_spfft="__DONTUSE__"
 with_spla="__DONTUSE__"
 with_cosma="__INSTALL__"
 with_libvori="__INSTALL__"
+with_skala_ftorch="__DONTUSE__"
+with_libwignernj="__INSTALL__"
 with_libtorch="__DONTUSE__"
 with_ninja="__DONTUSE__"
 with_dftd4="__DONTUSE__"
-with_tblite="__DONTUSE__"
+with_tblite="__INSTALL__"
 with_libsmeagol="__DONTUSE__"
 with_mcl="__DONTUSE__"
-
+with_libgint="__DONTUSE__"
 # the math and mpi libraries are chosen by their respective modes.
 # default math library settings, MATH_MODE picks the math library
 # to use, and with_* defines the default method of installation if it
@@ -569,6 +531,7 @@ dry_run="__FALSE__"
 enable_tsan="__FALSE__"
 enable_opencl="__FALSE__"
 enable_cuda="__FALSE__"
+enable_gauxc_cutlass="__FALSE__"
 enable_hip="__FALSE__"
 export with_ifx="no"
 export GPUVER="no"
@@ -623,7 +586,6 @@ while [ $# -ge 1 ]; do
           ;;
         *)
           report_error ${LINENO} "Non-integer argument ${2} for -j flag found."
-          exit 1
           ;;
       esac
       ;;
@@ -631,14 +593,8 @@ while [ $# -ge 1 ]; do
       export NPROCS_OVERWRITE="${1#-j}"
       ;;
     --install-dir=*)
-      if [[ "${1#--install-dir=}" != /* ]]; then
-        report_error "The path for --install-dir must be an absolute path."
-        exit 1
-      fi
-      export INSTALLDIR="${1#--install-dir=}"
-      export SETUPFILE="${INSTALLDIR}/setup"
-      cp "${SCRIPTDIR}"/tool_kit.sh "${INSTALLDIR}"/
-      export TOOLKIT_SCRIPT="${INSTALLDIR}/tool_kit.sh"
+      INSTALLDIR="$(real_path "${1#--install-dir=}")"
+      export INSTALLDIR
       ;;
     --no-check-certificate)
       export DOWNLOADER_FLAGS="--no-check-certificate"
@@ -649,6 +605,8 @@ while [ $# -ge 1 ]; do
         if [ "${ii}" != "intel" ] &&
           [ "${ii}" != "intelmpi" ] &&
           [ "${ii}" != "amd" ] &&
+          [ "${ii}" != "mkl" ] &&
+          [ "${ii}" != "acml" ] &&
           [ "${ii}" != "cusolvermp" ]; then
           eval "with_${ii}=__INSTALL__"
         fi
@@ -672,7 +630,7 @@ while [ $# -ge 1 ]; do
           export MPI_MODE="no"
           ;;
         *)
-          report_error ${LINENO} "Invalid value for --mpi-mode found."
+          echo "ERROR: Invalid value for --mpi-mode found."
           echo "Currently only one of the following options is supported:
             openmpi, mpich, intelmpi.
 Otherwise use option no."
@@ -696,7 +654,7 @@ Otherwise use option no."
           export MATH_MODE="openblas"
           ;;
         *)
-          report_error ${LINENO} "Invalid value for --math-mode found."
+          echo "ERROR: Invalid value for --math-mode found."
           echo "Currently only one of the following options is supported:
             mkl, acml, openblas, cray."
           exit 1
@@ -706,13 +664,13 @@ Otherwise use option no."
     --gpu-ver=*)
       user_input="${1#*=}"
       case "${user_input}" in
-        K20X | K40 | K80 | P100 | V100 | A100 | H100 | GB10 | A40 | Mi50 | Mi100 | Mi250 | no)
+        K20X | K40 | K80 | P100 | V100 | A100 | H100 | B200 | GB10 | A40 | Mi50 | Mi100 | Mi250 | no)
           export GPUVER="${user_input}"
           ;;
         *)
-          report_error ${LINENO} "Invalid value for --gpu-ver found."
+          echo "ERROR: Invalid value for --gpu-ver found."
           echo "Currently only one of the following options is supported:
-            K20X, K40, K80, P100, V100, A100, H100, GB10, A40, Mi50, Mi100, Mi250.
+            K20X, K40, K80, P100, V100, A100, H100, B200, GB10, A40, Mi50, Mi100, Mi250.
 Otherwise use option no."
           exit 1
           ;;
@@ -730,7 +688,6 @@ Otherwise use option no."
           ;;
         *)
           report_error ${LINENO} "Non-integer ${user_input} for --log-lines."
-          exit 1
           ;;
       esac
       ;;
@@ -745,35 +702,36 @@ Otherwise use option no."
       enable_tsan=$(read_enable "${1}")
       if [ "${enable_tsan}" = "__INVALID__" ]; then
         report_error "invalid value for --enable-tsan, please use yes or no"
-        exit 1
       fi
       ;;
     --enable-cuda*)
       enable_cuda=$(read_enable "${1}")
       if [ "${enable_cuda}" = "__INVALID__" ]; then
         report_error "invalid value for --enable-cuda, please use yes or no"
-        exit 1
+      fi
+      ;;
+    --enable-gauxc-cutlass*)
+      enable_gauxc_cutlass=$(read_enable "${1}")
+      if [ "${enable_gauxc_cutlass}" = "__INVALID__" ]; then
+        report_error "invalid value for --enable-gauxc-cutlass, please use yes or no"
       fi
       ;;
     --enable-hip*)
       enable_hip=$(read_enable "${1}")
       if [ "${enable_hip}" = "__INVALID__" ]; then
         report_error "invalid value for --enable-hip, please use yes or no"
-        exit 1
       fi
       ;;
     --enable-opencl*)
       enable_opencl=$(read_enable "${1}")
       if [ "${enable_opencl}" = "__INVALID__" ]; then
         report_error "invalid value for --enable-opencl, please use yes or no"
-        exit 1
       fi
       ;;
     --enable-cray*)
       enable_cray=$(read_enable "${1}")
       if [ "${enable_cray}" = "__INVALID__" ]; then
         report_error "invalid value for --enable-cray, please use yes or no"
-        exit 1
       fi
       ;;
     --with-gcc*)
@@ -826,8 +784,14 @@ Otherwise use option no."
     --with-gauxc*)
       with_gauxc=$(read_with "${1}")
       ;;
+    --with-skala-ftorch*)
+      with_skala_ftorch=$(read_with "${1}")
+      ;;
     --with-fftw*)
       with_fftw=$(read_with "${1}")
+      ;;
+    --with-eigen*)
+      with_eigen=$(read_with "${1}")
       ;;
     --with-mkl*)
       with_mkl=$(read_with "${1}" "__SYSTEM__")
@@ -853,6 +817,12 @@ Otherwise use option no."
     --with-libxsmm*)
       with_libxsmm=$(read_with "${1}")
       ;;
+    --with-libxstream*)
+      with_libxstream=$(read_with "${1}")
+      ;;
+    --with-libxs*)
+      with_libxs=$(read_with "${1}")
+      ;;
     --with-elpa*)
       with_elpa=$(read_with "${1}")
       ;;
@@ -876,6 +846,9 @@ Otherwise use option no."
       ;;
     --with-gsl*)
       with_gsl=$(read_with "${1}")
+      ;;
+    --with-libgint*)
+      with_libgint=$(read_with "${1}")
       ;;
     --with-fmt*)
       with_fmt=$(read_with "${1}")
@@ -916,6 +889,9 @@ Otherwise use option no."
     --with-trexio*)
       with_trexio=$(read_with "${1}")
       ;;
+    --with-libwignernj*)
+      with_libwignernj=$(read_with "${1}")
+      ;;
     --with-libfci*)
       with_libfci=$(read_with "${1}")
       ;;
@@ -939,14 +915,9 @@ Otherwise use option no."
       show_help
       exit 0
       ;;
-    --help-hpc)
-      show_help_hpc
-      exit 0
-      ;;
     *)
       report_error ${LINENO} "Unknown flag: ${1}
 See help message of this script produced by --help option for supported ones."
-      exit 1
       ;;
   esac
   shift
@@ -955,6 +926,7 @@ done
 # consolidate settings after user input
 export ENABLE_TSAN="${enable_tsan}"
 export ENABLE_CUDA="${enable_cuda}"
+export ENABLE_GAUXC_CUTLASS="${enable_gauxc_cutlass}"
 export ENABLE_HIP="${enable_hip}"
 export ENABLE_OPENCL="${enable_opencl}"
 export ENABLE_CRAY="${enable_cray}"
@@ -975,7 +947,6 @@ fi
 if [ "${with_amd}" != "__DONTUSE__" ]; then
   if [ "${with_intel}" != "__DONTUSE__" ]; then
     report_error ${LINENO} "The AMD and Intel compilers can't be used together."
-    exit 1
   fi
 fi
 # MPI library conflicts
@@ -1034,7 +1005,6 @@ else
         ;;
       intelmpi)
         report_error ${LINENO} "Incompatible --mpi-mode=intelmpi found."
-        exit 1
         ;;
     esac
   fi
@@ -1061,10 +1031,14 @@ else
         report_error ${LINENO} "While --mpi-mode=intelmpi is set, no Intel MPI
 could be found or linked in the system, and installation by toolchain is not
 supported. Please install manually and check executable path before rerunning."
-        exit 1
       fi
       ;;
   esac
+fi
+
+# FFTW is a hard dependency
+if [ "${with_fftw}" = "__DONTUSE__" ] && [ "${MATH_MODE}" != "mkl" ]; then
+  report_error "FFTW is a hard dependency required by CP2K and cannot be disabled. Please either install FFTW, detect FFTW from system, or use MKL implementation through \"--with-mkl\"."
 fi
 
 # If CUDA or HIP are enabled, make sure the GPU version has been defined.
@@ -1073,16 +1047,68 @@ if [ "${ENABLE_CUDA}" = "__TRUE__" ] || [ "${ENABLE_HIP}" = "__TRUE__" ]; then
     report_error ${LINENO} "Either CUDA or HIP is enabled, but --gpu-ver is not
 set to one of the known architectures. See help message of this script produced
 by --help option for supported ones."
-    exit 1
   fi
 fi
 
-# If OpenCL is enabled, make sure LIBXSMM is enabled as well.
-if [ "${ENABLE_OPENCL}" = "__TRUE__" ]; then
-  if [ "${with_libxsmm}" = "__DONTUSE__" ]; then
-    report_warning ${LINENO} "When enabling OpenCL, libxsmm is needed."
-    with_libxsmm="__INSTALL__"
+if [ "${ENABLE_GAUXC_CUTLASS}" = "__TRUE__" ]; then
+  if [ "${ENABLE_CUDA}" != "__TRUE__" ]; then
+    report_error ${LINENO} "--enable-gauxc-cutlass requires --enable-cuda=yes."
+  elif ! case "${GPUVER}" in A100 | A40 | H100 | B200 | GB10) true ;; *) false ;; esac then
+    report_error ${LINENO} "--enable-gauxc-cutlass requires CUDA compute capability >= 8.0 (found: ${GPUVER})."
   fi
+  if [ "${with_gauxc}" = "__DONTUSE__" ]; then
+    report_warning ${LINENO} "--enable-gauxc-cutlass requires GauXC, enabling --with-gauxc=install."
+    with_gauxc="__INSTALL__"
+  elif [ "${with_gauxc}" != "__INSTALL__" ]; then
+    report_error ${LINENO} "--enable-gauxc-cutlass is only supported with --with-gauxc=install."
+  fi
+fi
+
+if [ "${with_gauxc}" != "__DONTUSE__" ] && [ "${with_skala_ftorch}" != "__DONTUSE__" ]; then
+  report_warning ${LINENO} "Since gauxc is enabled, skala-ftorch will not be installed."
+  with_skala_ftorch="__DONTUSE__"
+fi
+
+# Install shared skala model if either GAUXC or skala_ftorch is enabled
+if [ "${with_gauxc}" != "__DONTUSE__" ] || [ "${with_skala_ftorch}" != "__DONTUSE__" ]; then
+  echo "Info: Installing shared skala model for GauXC or Skala_Ftorch"
+  with_skala="__INSTALL__"
+  export SKALA="__TRUE__"
+else
+  with_skala="__DONTUSE__"
+  export SKALA="__FALSE__"
+fi
+export with_skala
+
+# If OpenCL is enabled, ensure LIBXS and LIBXSTREAM are available.
+if [ "${ENABLE_OPENCL}" = "__TRUE__" ]; then
+  if [ "${with_libxs}" = "__DONTUSE__" ]; then
+    report_warning ${LINENO} "When enabling OpenCL, LIBXS is needed."
+    with_libxs="__INSTALL__"
+  fi
+  if [ "${with_libxstream}" = "__DONTUSE__" ]; then
+    report_warning ${LINENO} "When enabling OpenCL, LIBXSTREAM is needed."
+    with_libxstream="__INSTALL__"
+  fi
+else
+  if [ "${with_libxstream}" != "__DONTUSE__" ]; then
+    report_warning ${LINENO} "LIBXSTREAM is only used by the OpenCL backend; disabling it because OpenCL is not enabled."
+    with_libxstream="__DONTUSE__"
+  fi
+fi
+
+# LIBXSTREAM depends on LIBXS
+if [ "${with_libxstream}" != "__DONTUSE__" ]; then
+  if [ "${with_libxs}" = "__DONTUSE__" ]; then
+    report_warning ${LINENO} "LIBXSTREAM requires LIBXS, enabling LIBXS."
+    with_libxs="__INSTALL__"
+  fi
+fi
+
+# LIBXSMM kernels are delivered through LIBXS
+if [ "${with_libxsmm}" != "__DONTUSE__" ] && [ "${with_libxs}" = "__DONTUSE__" ]; then
+  report_warning ${LINENO} "LIBXSMM requires LIBXS, disabling LIBXSMM."
+  with_libxsmm="__DONTUSE__"
 fi
 
 if [ "${with_gauxc}" != "__DONTUSE__" ] &&
@@ -1091,36 +1117,23 @@ if [ "${with_gauxc}" != "__DONTUSE__" ] &&
   with_libxc="__INSTALL__"
 fi
 
-# Since tblite includes dftd4, a separate dftd4 is not needed.
-if [ "${with_tblite}" != "__DONTUSE__" ]; then
-  if [ "${with_dftd4}" != "__DONTUSE__" ]; then
-    report_warning ${LINENO} "Since tblite includes dft-d4, a standalone dft-d4
-package will not be used separately."
-    with_dftd4="__DONTUSE__"
-  fi
+# tblite includes dftd4, so disable standalone dftd4 when tblite is enabled
+if [ "${with_tblite}" != "__DONTUSE__" ] && [ "${with_dftd4}" != "__DONTUSE__" ]; then
+  report_warning ${LINENO} "tblite includes dft-d4, disabling standalone dftd4"
+  with_dftd4="__DONTUSE__"
 fi
 
-# Several packages require cmake.
-if [ "${with_spglib}" = "__INSTALL__" ] ||
-  [ "${with_libvori}" = "__INSTALL__" ] ||
-  [ "${with_scalapack}" = "__INSTALL__" ] ||
-  [ "${with_sirius}" = "__INSTALL__" ] ||
-  [ "${with_pugixml}" = "__INSTALL__" ] ||
-  [ "${with_cosma}" = "__INSTALL__" ] ||
-  [ "${with_spfft}" = "__INSTALL__" ] ||
-  [ "${with_spla}" = "__INSTALL__" ] ||
-  [ "${with_ninja}" = "__INSTALL__" ] ||
-  [ "${with_gauxc}" = "__INSTALL__" ] ||
-  [ "${with_greenx}" = "__INSTALL__" ] ||
-  [ "${with_libfci}" = "__INSTALL__" ] ||
-  [ "${with_dftd4}" = "__INSTALL__" ] ||
-  [ "${with_mcl}" = "__INSTALL__" ] ||
-  [ "${with_tblite}" = "__INSTALL__" ]; then
-  if [ "${with_cmake}" = "__DONTUSE__" ]; then
-    report_warning ${LINENO} "Installing one of the packages requires CMake but
-CMake is not found in system, so a new copy of CMake will be installed first."
-    with_cmake="__INSTALL__"
-  fi
+# Require cmake as hard dependency.
+if [ "${with_cmake}" = "__DONTUSE__" ]; then
+  report_warning ${LINENO} "Installing dependencies and CP2K requires CMake but
+CMake is not enabled, so a new copy of CMake will be installed first."
+  with_cmake="__INSTALL__"
+fi
+
+#libGint installation requires cuda enabled
+if [ "${with_libgint}" != "__DONTUSE__" ] && [ "${enable_cuda}" != "__TRUE__" ]; then
+  report_warning ${LINENO} "libGint requires the use of cuda. Disabling libGint"
+  with_libgint="__DONTUSE__"
 fi
 
 # SIRIUS dependencies
@@ -1128,9 +1141,11 @@ if [ "${with_sirius}" = "__INSTALL__" ]; then
   [ "${with_spfft}" = "__DONTUSE__" ] && with_spfft="__INSTALL__"
   [ "${with_spla}" = "__DONTUSE__" ] && with_spla="__INSTALL__"
   [ "${with_gsl}" = "__DONTUSE__" ] && with_gsl="__INSTALL__"
+  [ "${with_eigen}" = "__DONTUSE__" ] && with_eigen="__INSTALL__"
   [ "${with_fmt}" = "__DONTUSE__" ] && with_fmt="__INSTALL__"
   [ "${with_libxc}" = "__DONTUSE__" ] && with_libxc="__INSTALL__"
   [ "${with_fftw}" = "__DONTUSE__" ] && with_fftw="__INSTALL__"
+  [ "${with_scalapack}" = "__DONTUSE__" ] && with_scalapack="__INSTALL__"
   [ "${with_spglib}" = "__DONTUSE__" ] && with_spglib="__INSTALL__"
   [ "${with_hdf5}" = "__DONTUSE__" ] && with_hdf5="__INSTALL__"
   [ "${with_libvdwxc}" = "__DONTUSE__" ] && with_libvdwxc="__INSTALL__"
@@ -1142,6 +1157,10 @@ elif [ "${with_sirius}" = "__DONTUSE__" ]; then
   with_libvdwxc="__DONTUSE__"
   with_fmt="__DONTUSE__"
   [ "${GPUVER}" = "no" ] && with_spla="__DONTUSE__"
+fi
+
+if [ "${with_libint}" = "__INSTALL__" ]; then
+  [ "${with_eigen}" = "__DONTUSE__" ] && with_eigen="__INSTALL__"
 fi
 
 if [ "${with_trexio}" = "__INSTALL__" ]; then
@@ -1161,11 +1180,53 @@ if [ "${with_gauxc}" = "__INSTALL__" ]; then
   [ "${with_libtorch}" = "__DONTUSE__" ] && with_libtorch="__INSTALL__"
 fi
 
+if [ "${with_skala_ftorch}" = "__INSTALL__" ]; then
+  [ "${with_libtorch}" = "__DONTUSE__" ] && with_libtorch="__INSTALL__"
+fi
+
+# MKL may provide the FFTW3 interface and ScaLAPACK/BLACS. Resolve these
+# choices here so the package plan, toolchain.conf and summary stay in sync.
+if [ "${MATH_MODE}" = "mkl" ]; then
+  # Use standalone FFTW when FFTW-MPI wrappers are needed. Otherwise, use
+  # MKL's FFTW3 interface and do not install a separate FFTW package.
+  if [ "${with_libvdwxc}" != "__DONTUSE__" ] && [ "${MPI_MODE}" != "no" ]; then
+    report_warning ${LINENO} "libvdwxc with MPI needs FFTW-MPI wrappers; enabling standalone FFTW."
+    if [ "${with_fftw}" = "__DONTUSE__" ]; then
+      with_fftw="__INSTALL__"
+    fi
+    export MKL_FFTW="no"
+  else
+    echo "Using MKL-vendored FFTW"
+    with_fftw="__DONTUSE__"
+    export MKL_FFTW="yes"
+  fi
+  # Use MKL-provided ScaLAPACK/BLACS for MPI builds.
+  if [ "${MPI_MODE}" != "no" ]; then
+    echo "Using MKL-vendored ScaLAPACK"
+    with_scalapack="__DONTUSE__"
+    export MKL_SCALAPACK="yes"
+  fi
+  # Block libtorch installation because of compatibility issue
+  if [ "${with_libtorch}" = "__INSTALL__" ]; then
+    report_error ${LINENO} \
+      "Installing prebuilt libtorch is disabled for oneMKL builds due to known
+conflicts between bundled and externally linked oneMKL libraries. Please provide
+a compatible libtorch installation via --with-libtorch=system or
+--with-libtorch=<path>."
+  fi
+fi
+
 # ------------------------------------------------------------------------
 # Preliminaries
 # ------------------------------------------------------------------------
 
 mkdir -p "${INSTALLDIR}"
+export SETUPFILE="${INSTALLDIR}/setup"
+
+if [ "${INSTALLDIR}" != "${ROOTDIR}/install" ]; then
+  cp "${SCRIPTDIR}"/tool_kit.sh "${INSTALLDIR}"/
+  export TOOLKIT_SCRIPT="${INSTALLDIR}/tool_kit.sh"
+fi
 
 # Select the correct compute number based on the GPU architecture
 case ${GPUVER} in
@@ -1193,35 +1254,32 @@ case ${GPUVER} in
   H100)
     export ARCH_NUM="90"
     ;;
+  B200)
+    export ARCH_NUM="100"
+    ;;
   GB10)
     export ARCH_NUM="121"
     ;;
   Mi50)
-    # TODO: export ARCH_NUM=
+    export ARCH_NUM="gfx906"
     ;;
   Mi100)
-    # TODO: export ARCH_NUM=
+    export ARCH_NUM="gfx908"
     ;;
   Mi250)
-    # TODO: export ARCH_NUM=
+    export ARCH_NUM="gfx90a"
     ;;
   no)
     export ARCH_NUM="no"
     ;;
   *)
-    report_error ${LINENO} "Invalid value for --gpu-ver found."
+    echo "ERROR: Invalid value for --gpu-ver found."
     echo "Currently only one of the following options is supported:
-      K20X, K40, K80, P100, V100, A100, H100, A40, Mi50, Mi100, Mi250.
+      K20X, K40, K80, P100, V100, A100, H100, B200, GB10, A40, Mi50, Mi100, Mi250.
 Otherwise use option no."
     exit 1
     ;;
 esac
-
-# variables used for generating cp2k ARCH file
-export CP_DFLAGS=""
-export CP_LIBS=""
-export CP_CFLAGS=""
-export CP_LDFLAGS="-Wl,--enable-new-dtags"
 
 # ------------------------------------------------------------------------
 # Special settings for CRAY Linux Environment (CLE)
@@ -1248,46 +1306,10 @@ if [ "${ENABLE_CRAY}" = "__TRUE__" ]; then
   export MPIFC="${FC}"
   export MPIFORT="${MPIFC}"
   export MPIF77="${MPIFC}"
-  case $MPI_MODE in
-    mpich)
-      if [ -n "$MPICH_DIR" ]; then
-        cray_mpich_include_path="$MPICH_DIR/include"
-        cray_mpich_lib_path="$MPICH_DIR/lib"
-        export INCLUDE_PATHS="$INCLUDE_PATHS $cray_mpich_include_path"
-        export LIB_PATHS="$LIB_PATHS $cray_mpich_lib_path"
-      fi
-      if [ "$with_mpich" = "__DONTUSE__" ]; then
-        add_include_from_paths MPI_CFLAGS "mpi.h" "$INCLUDE_PATHS"
-        add_include_from_paths MPI_LDFLAGS "libmpi.*" "$LIB_PATHS"
-        export MPI_CFLAGS
-        export MPI_LDFLAGS
-        export MPI_LIBS=" "
-        export CP_DFLAGS="${CP_DFLAGS} IF_MPI(-D__parallel|)"
-      fi
-      ;;
-    openmpi)
-      if [ "$with_openmpi" = "__DONTUSE__" ]; then
-        add_include_from_paths MPI_CFLAGS "mpi.h" "$INCLUDE_PATHS"
-        add_include_from_paths MPI_LDFLAGS "libmpi.*" "$LIB_PATHS"
-        export MPI_CFLAGS
-        export MPI_LDFLAGS
-        export MPI_LIBS="-lmpi -lmpi_cxx"
-        export CP_DFLAGS="${CP_DFLAGS} IF_MPI(-D__parallel|)"
-      fi
-      ;;
-    intelmpi)
-      if [ "$with_intelmpi" = "__DONTUSE__" ]; then
-        with_gcc="__DONTUSE__"
-        with_intel="__SYSTEM__"
-        add_include_from_paths MPI_CFLAGS "mpi.h" "$INCLUDE_PATHS"
-        add_include_from_paths MPI_LDFLAGS "libmpi.*" "$LIB_PATHS"
-        export MPI_CFLAGS
-        export MPI_LDFLAGS
-        export MPI_LIBS="-lmpi -lmpi_cxx"
-        export CP_DFLAGS="${CP_DFLAGS} IF_MPI(-D__parallel|)"
-      fi
-      ;;
-  esac
+  if [ "$with_intelmpi" = "__DONTUSE__" ]; then
+    with_gcc="__DONTUSE__"
+    with_intel="__SYSTEM__"
+  fi
   check_lib -lz
   check_lib -ldl
   export CRAY_EXTRA_LIBS="-lz -ldl"
@@ -1320,10 +1342,16 @@ write_toolchain_env "${INSTALLDIR}"
 # Write toolchain config
 echo "tool_list=\"${tool_list}\"" > "${INSTALLDIR}"/toolchain.conf
 echo "mpi_mode=\"${MPI_MODE}\"" >> "${INSTALLDIR}"/toolchain.conf
+echo "math_mode=\"${MATH_MODE}\"" >> "${INSTALLDIR}"/toolchain.conf
+if [ "${MATH_MODE}" = "mkl" ]; then
+  echo "MKL_FFTW=\"${MKL_FFTW}\"" >> "${INSTALLDIR}"/toolchain.conf
+  echo "MKL_SCALAPACK=\"${MKL_SCALAPACK}\"" >> "${INSTALLDIR}"/toolchain.conf
+fi
 echo "ENABLE_CUDA=\"${ENABLE_CUDA}\"" >> "${INSTALLDIR}"/toolchain.conf
+echo "ENABLE_GAUXC_CUTLASS=\"${ENABLE_GAUXC_CUTLASS}\"" >> "${INSTALLDIR}"/toolchain.conf
 echo "ENABLE_HIP=\"${ENABLE_HIP}\"" >> "${INSTALLDIR}"/toolchain.conf
 echo "ENABLE_OPENCL=\"${ENABLE_OPENCL}\"" >> "${INSTALLDIR}"/toolchain.conf
-if [ "${ENABLE_CUDA}" == "__TRUE__" ] || [ "${ENABLE_HIP}" == "__TRUE__" ]; then
+if [ "${ENABLE_CUDA}" = "__TRUE__" ] || [ "${ENABLE_HIP}" = "__TRUE__" ]; then
   echo "GPU_VER=\"${GPUVER}\"" >> "${INSTALLDIR}"/toolchain.conf
 fi
 for ii in ${package_list}; do
@@ -1332,30 +1360,191 @@ for ii in ${package_list}; do
 done
 
 # ------------------------------------------------------------------------
-# Build packages unless dry-run mode is enabled.
+# Print the resolved toolchain configuration in a user-friendly form. The
+# raw with_* variables are written to toolchain.conf, while this report
+# groups packages by what the toolchain will actually do with them.
 # ------------------------------------------------------------------------
-if [ "${dry_run}" = "__TRUE__" ]; then
-  printf "With --dry-run option, this script concludes with a report.\n"
-  printf "The setup, toolchain env and conf files are written to ./install.\n"
-  printf "System specifications:\n"
+
+get_effective_package_mode() {
+  local pkg="$1"
+  local var_name="with_${pkg}"
+  local mode="${!var_name}"
+
+  # Only the selected math backend is active. Some non-selected math
+  # variables may keep their default value, but they are not used by
+  # stage2/install_mathlibs.sh.
+  case "${pkg}" in
+    mkl | acml | openblas)
+      if [ "${MATH_MODE}" != "${pkg}" ]; then
+        mode="__DONTUSE__"
+      fi
+      ;;
+  esac
+
+  # Likewise, only the selected MPI implementation is active.
+  case "${pkg}" in
+    mpich | openmpi | intelmpi)
+      if [ "${MPI_MODE}" = "no" ] || [ "${MPI_MODE}" != "${pkg}" ]; then
+        mode="__DONTUSE__"
+      fi
+      ;;
+  esac
+
+  printf '%s' "${mode}"
+}
+
+append_report_line() {
+  local var_name="$1"
+  local line="$2"
+  local current="${!var_name}"
+  if [ -z "${current}" ]; then
+    printf -v "${var_name}" '%s' "${line}"
+  else
+    printf -v "${var_name}" '%s\n%s' "${current}" "${line}"
+  fi
+}
+
+print_report_group() {
+  local title="$1"
+  local body="$2"
+  local width="${TOOLCHAIN_REPORT_WIDTH:-80}"
+  local indent="  "
+  local max_cols=5
+  local min_col_width=15
+  local item line padded
+  local n=0 max_len=0 col_width cols rows row col idx
+  local items=()
+
+  printf '%s\n' "${title}"
+  if [ -z "${body}" ]; then
+    printf '  (none)\n'
+    return
+  fi
+
+  while IFS= read -r item; do
+    [ -z "${item}" ] && continue
+    item="${item#  }"
+    items[n]="${item}"
+    [ "${#item}" -gt "${max_len}" ] && max_len="${#item}"
+    n=$((n + 1))
+  done << EOF
+${body}
+EOF
+
+  [ "${n}" -eq 0 ] && printf '  (none)\n' && return
+
+  col_width=$((max_len + 2))
+  [ "${col_width}" -lt "${min_col_width}" ] && col_width="${min_col_width}"
+
+  cols=$(((width - ${#indent}) / col_width))
+  [ "${cols}" -gt "${max_cols}" ] && cols="${max_cols}"
+  [ "${cols}" -lt 1 ] && cols=1
+  [ "${cols}" -gt "${n}" ] && cols="${n}"
+
+  rows=$(((n + cols - 1) / cols))
+  row=0
+  while [ "${row}" -lt "${rows}" ]; do
+    line="${indent}"
+    col=0
+    while [ "${col}" -lt "${cols}" ]; do
+      idx=$((row * cols + col))
+      if [ "${idx}" -lt "${n}" ]; then
+        item="${items[idx]}"
+        if [ "${col}" -lt $((cols - 1)) ]; then
+          printf -v padded '%-*s' "${col_width}" "${item}"
+          line="${line}${padded}"
+        else
+          line="${line}${item}"
+        fi
+      fi
+      col=$((col + 1))
+    done
+    while [ "${line% }" != "${line}" ]; do
+      line="${line% }"
+    done
+    printf '%s\n' "${line}"
+    row=$((row + 1))
+  done
+}
+
+format_bool() {
+  case "$1" in
+    __TRUE__)
+      printf 'yes'
+      ;;
+    __FALSE__)
+      printf 'no'
+      ;;
+    *)
+      printf '%s' "$1"
+      ;;
+  esac
+}
+
+print_toolchain_summary() {
+  local pkg mode
+  local install_packages=""
+  local system_packages=""
+  local path_packages=""
+  local disabled_packages=""
+
+  for pkg in ${package_list}; do
+    mode=$(get_effective_package_mode "${pkg}")
+    case "${mode}" in
+      __INSTALL__)
+        append_report_line install_packages "  - ${pkg}"
+        ;;
+      __SYSTEM__)
+        append_report_line system_packages "  - ${pkg}"
+        ;;
+      __DONTUSE__)
+        append_report_line disabled_packages "  - ${pkg}"
+        ;;
+      *)
+        append_report_line path_packages "  - ${pkg}: ${mode}"
+        ;;
+    esac
+  done
+
+  printf '\nToolchain configuration summary\n'
+  printf '%s\n' '-------------------------------'
+  printf 'System specifications:\n'
   printf '   -%-20s = %s\n' "j" "${NPROCS_OVERWRITE}"
   printf '  --%-20s = %s\n' "target-cpu" "${TARGET_CPU}"
   printf '  --%-20s = %s\n' "gpu-ver" "${GPUVER}"
   printf '  --%-20s = %s\n' "mpi-mode" "${MPI_MODE}"
   printf '  --%-20s = %s\n' "math-mode" "${MATH_MODE}"
-  printf '  --%-20s = %s\n' "enable-tsan" "${enable_tsan}"
-  printf '  --%-20s = %s\n' "enable-cuda" "${enable_cuda}"
-  printf '  --%-20s = %s\n' "enable-hip" "${enable_hip}"
-  printf '  --%-20s = %s\n' "enable-opencl" "${enable_opencl}"
-  printf '  --%-20s = %s\n' "enable-cray" "${enable_cray}"
-  printf "List of effective settings after resolving package conflicts:\n"
-  for ii in ${package_list}; do
-    install_mode=$(eval "echo \${with_${ii}}")
-    printf '  --with-%-15s = %s\n' "${ii}" "${install_mode}"
-  done
+  printf '\nEnabled features:\n'
+  printf '  --%-20s = %s\n' "enable-tsan" "$(format_bool "${enable_tsan}")"
+  printf '  --%-20s = %s\n' "enable-cuda" "$(format_bool "${enable_cuda}")"
+  printf '  --%-20s = %s\n' "enable-gauxc-cutlass" "$(format_bool "${enable_gauxc_cutlass}")"
+  printf '  --%-20s = %s\n' "enable-hip" "$(format_bool "${enable_hip}")"
+  printf '  --%-20s = %s\n' "enable-opencl" "$(format_bool "${enable_opencl}")"
+  printf '  --%-20s = %s\n' "enable-cray" "$(format_bool "${enable_cray}")"
+  printf '\n'
+  print_report_group "Packages to be installed:" "${install_packages}"
+  printf '\n'
+  print_report_group "Packages to be detected from system:" "${system_packages}"
+  if [ -n "${path_packages}" ]; then
+    printf '\n'
+    print_report_group "Packages linked from user paths:" "${path_packages}"
+  fi
+  printf '\n'
+  print_report_group "Packages not used:" "${disabled_packages}"
+  printf '\n'
+}
+
+# ------------------------------------------------------------------------
+# Build packages unless dry-run mode is enabled.
+# ------------------------------------------------------------------------
+if [ "${dry_run}" = "__TRUE__" ]; then
+  print_toolchain_summary
+  printf "With --dry-run option, this script concludes with above report.\n"
+  printf "The setup, toolchain env and conf files are written to %s.\n" "${INSTALLDIR}"
 else
   echo "Options have been parsed successfully."
-  echo "Compiling with ${NPROCS_OVERWRITE} processes for target ${TARGET_CPU}."
+  print_toolchain_summary
+  echo "Compiling with ${NPROCS_OVERWRITE} processes for target ${TARGET_CPU} on ${SYSTEM_ARCH} architecture."
   echo "# Leak suppressions" > "${INSTALLDIR}"/lsan.supp
   "${SCRIPTDIR}"/stage0/install_stage0.sh
   "${SCRIPTDIR}"/stage1/install_stage1.sh
@@ -1368,16 +1557,36 @@ else
   "${SCRIPTDIR}"/stage8/install_stage8.sh
   "${SCRIPTDIR}"/stage9/install_stage9.sh
   echo
+  # Determine native preset if --target-cpu=native is used. The compiler and
+  # system architecture are used to select a corresponding preset for the
+  # build_cp2k.sh script.
+  preset_option=""
+  if [ "${TARGET_CPU}" = "native" ]; then
+    if [ "${with_gcc}" != "__DONTUSE__" ] || [ "${with_amd}" != "__DONTUSE__" ]; then
+      # AMD uses Clang/Clang++/Flang, which is compatible with GCC's native flags
+      if [ "${SYSTEM_ARCH}" = "x86_64" ]; then
+        preset_option="--preset=native-gnu-x86_64"
+      elif [ "${SYSTEM_ARCH}" = "arm64" ]; then
+        preset_option="--preset=native-gnu-arm64"
+      fi
+    elif [ "${with_intel}" != "__DONTUSE__" ]; then
+      preset_option="--preset=native-intel"
+    fi
+  fi
   cat << EOF
 ========================== Epilogue =========================
 Done! To build CP2K with dependencies you installed via toolchain, simply run
 this script:
 
-  ./build_cp2k.sh -j $(get_nprocs)
+  ./build_cp2k.sh -j $(get_nprocs) ${preset_option}
 
 It will source the file "install/setup", generate proper CMake flags based on
-toolchain options, and then build and install CP2K. For available options
-with the script, run "./build_cp2k.sh -h".
+toolchain options, and then build and install CP2K.
+
+For available options with the script, run "./build_cp2k.sh -h". In particular,
+watch out for the --preset option; with --target-cpu=native used here, it's
+strongly recommended to specify a corresponding "native-*" preset based on the
+compiler and architecture should be specified.
 EOF
 fi
 

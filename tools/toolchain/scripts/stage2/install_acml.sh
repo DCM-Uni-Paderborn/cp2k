@@ -20,7 +20,7 @@ cd "${BUILDDIR}"
 case "$with_acml" in
   __INSTALL__)
     echo "==================== Installing ACML ===================="
-    report_error $LINENO "__INSTALL__ is not supported; please manually install ACML"
+    report_error $LINENO "Installation of ACML is not supported; please install manually"
     exit 1
     ;;
   __SYSTEM__)
@@ -35,18 +35,17 @@ case "$with_acml" in
     echo "==================== Linking ACML to user paths ===================="
     pkg_install_dir="$with_acml"
     check_dir "${pkg_install_dir}/lib"
-    ACML_CFLAGS="-I'${pkg_install_dir}/include'"
-    ACML_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
+    ACML_CFLAGS="-I${pkg_install_dir}/include"
+    ACML_LDFLAGS="-L${pkg_install_dir}/lib -Wl,-rpath,${pkg_install_dir}/lib"
     ;;
 esac
 if [ "$with_acml" != "__DONTUSE__" ]; then
   ACML_LIBS="-lacml"
   if [ "$with_acml" != "__SYSTEM__" ]; then
     cat << EOF > "${BUILDDIR}/setup_acml"
-prepend_path LD_LIBRARY_PATH "$pkg_install_dir/lib"
-prepend_path LD_RUN_PATH "$pkg_install_dir/lib"
-prepend_path LIBRARY_PATH "$pkg_install_dir/lib"
-prepend_path CPATH "$pkg_install_dir/include"
+prepend_path LD_LIBRARY_PATH "${pkg_install_dir}/lib"
+prepend_path LD_RUN_PATH "${pkg_install_dir}/lib"
+prepend_path LIBRARY_PATH "${pkg_install_dir}/lib"
 EOF
     filter_setup "${BUILDDIR}/setup_acml" "${SETUPFILE}"
   fi

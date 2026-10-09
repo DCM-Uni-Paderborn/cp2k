@@ -14,12 +14,8 @@ MODULE dbt_tas_util
    USE util, ONLY: sort
 
 #include "../../base/base_uses.f90"
-#if defined(__LIBXSMM)
-#include "libxsmm_version.h"
-#endif
-
-#if CPVERSION_CHECK(1, 11, <=, LIBXSMM_CONFIG_VERSION_MAJOR, LIBXSMM_CONFIG_VERSION_MINOR)
-   USE libxsmm, ONLY: libxsmm_diff
+#if defined(__LIBXS)
+   USE libxs, ONLY: libxs_diff
 #  define PURE_ARRAY_EQ
 #else
 #  define PURE_ARRAY_EQ PURE
@@ -57,7 +53,7 @@ CONTAINS
       tmp = arr(1)
       arr(1) = arr(2)
       arr(2) = tmp
-   END SUBROUTINE
+   END SUBROUTINE swap_i8
 
 ! **************************************************************************************************
 !> \brief ...
@@ -72,7 +68,7 @@ CONTAINS
       tmp = arr(1)
       arr(1) = arr(2)
       arr(2) = tmp
-   END SUBROUTINE
+   END SUBROUTINE swap_i
 
 ! **************************************************************************************************
 !> \brief ...
@@ -85,13 +81,13 @@ CONTAINS
       INTEGER, DIMENSION(:), INTENT(IN)                  :: arr1, arr2
       LOGICAL                                            :: array_eq_i
 
-#if CPVERSION_CHECK(1, 11, <=, LIBXSMM_CONFIG_VERSION_MAJOR, LIBXSMM_CONFIG_VERSION_MINOR)
-      array_eq_i = .NOT. libxsmm_diff(arr1, arr2)
+#if defined(__LIBXS)
+      array_eq_i = .NOT. libxs_diff(arr1, arr2)
 #else
       array_eq_i = .FALSE.
       IF (SIZE(arr1) == SIZE(arr2)) array_eq_i = ALL(arr1 == arr2)
 #endif
-   END FUNCTION
+   END FUNCTION array_eq_i
 
 ! **************************************************************************************************
 !> \brief ...
@@ -104,12 +100,12 @@ CONTAINS
       INTEGER(KIND=int_8), DIMENSION(:), INTENT(IN)      :: arr1, arr2
       LOGICAL                                            :: array_eq_i8
 
-#if CPVERSION_CHECK(1, 11, <=, LIBXSMM_CONFIG_VERSION_MAJOR, LIBXSMM_CONFIG_VERSION_MINOR)
-      array_eq_i8 = .NOT. libxsmm_diff(arr1, arr2)
+#if defined(__LIBXS)
+      array_eq_i8 = .NOT. libxs_diff(arr1, arr2)
 #else
       array_eq_i8 = .FALSE.
       IF (SIZE(arr1) == SIZE(arr2)) array_eq_i8 = ALL(arr1 == arr2)
 #endif
-   END FUNCTION
+   END FUNCTION array_eq_i8
 
 END MODULE

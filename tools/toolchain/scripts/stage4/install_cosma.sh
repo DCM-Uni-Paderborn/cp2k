@@ -24,14 +24,19 @@ source "${INSTALLDIR}"/toolchain.env
 ! [ -d "${BUILDDIR}" ] && mkdir -p "${BUILDDIR}"
 cd "${BUILDDIR}"
 
-case "$with_cosma" in
+# HIP-build of Tiled-MM and COSMA requires rocblas
+if [ "${with_cosma}" != "__DONTUSE__" ] && [ "$ENABLE_HIP" = "__TRUE__" ]; then
+  check_lib -lrocblas "rocm"
+fi
+
+case "${with_cosma}" in
   __INSTALL__)
     require_env OPENBLAS_ROOT
     require_env SCALAPACK_ROOT
 
     echo "==================== Installing COSMA ===================="
     pkg_install_dir="${INSTALLDIR}/COSMA-${cosma_ver}"
-    install_lock_file="$pkg_install_dir/install_successful"
+    install_lock_file="${pkg_install_dir}/install_successful"
 
     if verify_checksums "${install_lock_file}"; then
       echo "COSMA-${cosma_ver} is already installed, skipping it."
@@ -183,7 +188,7 @@ case "$with_cosma" in
       fi
 
       # Build HIP version.
-      if [ "$ENABLE_HIP" = "__TRUE__" ] && $(check_lib -lrocblas "rocm" &> /dev/null); then
+      if [ "$ENABLE_HIP" = "__TRUE__" ]; then
         [ -d build-hip ] && rm -rf "build-hip"
         mkdir build-hip
         cd build-hip
@@ -199,75 +204,49 @@ case "$with_cosma" in
           -DCOSMA_WITH_APPS=NO \
           -DCOSMA_WITH_BENCHMARKS=NO .. \
           > cmake.log 2>&1 || tail_excerpt cmake.log
-        make -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
-        make -j $(get_nprocs) install > install.log 2>&1 || tail_excerpt install.log
+        make -j $(get_nprocs) install > make.log 2>&1 || tail_excerpt make.log
         cd ..
       fi
-
       write_checksums "${install_lock_file}" "${SCRIPT_DIR}/stage4/$(basename ${SCRIPT_NAME})"
     fi
-    COSMA_ROOT="${pkg_install_dir}"
-    COSMA_CFLAGS="-I'${pkg_install_dir}/include'"
-
-    # Check if COSMA is compiled with 64bits and set up COSMA_LIBDIR accordingly.
-    COSMA_LIBDIR="${pkg_install_dir}/lib"
-    COSMA_LDFLAGS="-L'${COSMA_LIBDIR}' -Wl,-rpath,'${COSMA_LIBDIR}'"
-    COSMA_CUDA_LIBDIR="${pkg_install_dir}-cuda/lib"
-    COSMA_CUDA_LDFLAGS="-L'${COSMA_CUDA_LIBDIR}' -Wl,-rpath,'${COSMA_CUDA_LIBDIR}'"
-    COSMA_HIP_LIBDIR="${pkg_install_dir}-hip/lib"
-    COSMA_HIP_LDFLAGS="-L'${COSMA_HIP_LIBDIR}' -Wl,-rpath,'${COSMA_HIP_LIBDIR}'"
     ;;
   __SYSTEM__)
     echo "==================== Finding COSMA from system paths ===================="
-    check_command pkg-config --modversion cosma
-    add_include_from_paths COSMA_CFLAGS "cosma.h" $INCLUDE_PATHS
-    add_lib_from_paths COSMA_LDFLAGS "libcosma.*" $LIB_PATHS
+    check_pkgconfig cosma
+    pkg_install_dir="$(pkg-config --variable=prefix cosma)"
     ;;
   __DONTUSE__) ;;
 
   *)
     echo "==================== Linking COSMA to user paths ===================="
-    pkg_install_dir="$with_cosma"
-
+    pkg_install_dir="${with_cosma}"
     # use the lib64 directory if present (multi-abi distros may link lib/ to lib32/ instead)
     COSMA_LIBDIR="${pkg_install_dir}/lib"
     [ -d "${pkg_install_dir}/lib64" ] && COSMA_LIBDIR="${pkg_install_dir}/lib64"
-
-    check_dir "$pkg_install_dir/lib"
-    check_dir "$pkg_install_dir/include"
-
-    COSMA_CFLAGS="-I'${pkg_install_dir}/include'"
-    COSMA_LDFLAGS="-L'${COSMA_LIBDIR}' -Wl,-rpath,'${COSMA_LIBDIR}'"
+    check_dir "${COSMA_LIBDIR}"
+    check_dir "${pkg_install_dir}/include"
     ;;
 esac
-if [ "$with_cosma" != "__DONTUSE__" ]; then
-  COSMA_LIBS="-lcosma_prefixed_pxgemm -lcosma -lcosta IF_CUDA(-lTiled-MM|)"
-  if [ "$ENABLE_HIP" = "__TRUE__" ] && $(check_lib -lrocblas "rocm" &> /dev/null); then
-    COSMA_LIBS+=" IF_HIP(-lTiled-MM|)"
-  fi
-  if [ "$with_cosma" != "__SYSTEM__" ]; then
+if [ "${with_cosma}" != "__DONTUSE__" ]; then
+  if [ "${with_cosma}" != "__SYSTEM__" ]; then
+    pkg_install_dir1="${pkg_install_dir}"
+    if [ "${with_cosma}" = "__INSTALL__" ]; then
+      if [ "${ENABLE_CUDA}" = "__TRUE__" ]; then
+        pkg_install_dir1="${pkg_install_dir}-cuda"
+      elif [ "${ENABLE_HIP}" = "__TRUE__" ]; then
+        pkg_install_dir1="${pkg_install_dir}-hip"
+      fi
+    fi
     cat << EOF > "${BUILDDIR}/setup_cosma"
-prepend_path LD_LIBRARY_PATH "${COSMA_LIBDIR}"
-prepend_path LD_RUN_PATH "${COSMA_LIBDIR}"
-prepend_path LIBRARY_PATH "${COSMA_LIBDIR}"
-prepend_path CPATH "$pkg_install_dir/include"
-prepend_path PKG_CONFIG_PATH "$pkg_install_dir/lib/pkgconfig"
-prepend_path CMAKE_PREFIX_PATH "$pkg_install_dir"
+prepend_path LD_LIBRARY_PATH "${pkg_install_dir1}/lib"
+prepend_path LD_RUN_PATH "${pkg_install_dir1}/lib"
+prepend_path LIBRARY_PATH "${pkg_install_dir1}/lib"
+prepend_path PKG_CONFIG_PATH "${pkg_install_dir1}/lib/pkgconfig"
+prepend_path CMAKE_PREFIX_PATH "${pkg_install_dir1}"
 EOF
   fi
   cat << EOF >> "${BUILDDIR}/setup_cosma"
 export COSMA_VER="${cosma_ver}"
-export COSMA_CFLAGS="${COSMA_CFLAGS}"
-export COSMA_LDFLAGS="${COSMA_LDFLAGS}"
-export COSMA_CUDA_LDFLAGS="${COSMA_CUDA_LDFLAGS}"
-export COSMA_HIP_LDFLAGS="${COSMA_HIP_LDFLAGS}"
-export CP_DFLAGS="\${CP_DFLAGS} IF_MPI(-D__COSMA|)"
-export CP_CFLAGS="\${CP_CFLAGS} ${COSMA_CFLAGS}"
-export CP_LDFLAGS="\${CP_LDFLAGS} IF_CUDA(${COSMA_CUDA_LDFLAGS}|IF_HIP(${COSMA_HIP_LDFLAGS}|${COSMA_LDFLAGS}))"
-export COSMA_LIBS="${COSMA_LIBS}"
-export COSMA_ROOT="$pkg_install_dir"
-export COSMA_INCLUDE_DIR="$pkg_install_dir/include"
-export CP_LIBS="IF_MPI(${COSMA_LIBS}|) \${CP_LIBS}"
 EOF
   filter_setup "${BUILDDIR}/setup_cosma" "${SETUPFILE}"
 

@@ -25,12 +25,12 @@ MODULE negf_integr_cc
                                               cp_fm_get_info,&
                                               cp_fm_release,&
                                               cp_fm_type
-   USE fft_tools,                       ONLY: fft_alloc,&
-                                              fft_dealloc,&
-                                              fft_fw1d
+   USE fft_tools,                       ONLY: FWFFT,&
+                                              fft_1d_many,&
+                                              fft_alloc,&
+                                              fft_dealloc
    USE kahan_sum,                       ONLY: accurate_sum
-   USE kinds,                           ONLY: dp,&
-                                              int_8
+   USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: z_one,&
                                               z_zero
    USE negf_integr_utils,               ONLY: contour_shape_arc,&
@@ -173,8 +173,9 @@ CONTAINS
          ! rescale all but the end-points, as they are transformed into themselves (-1.0 -> -1.0; 0.0 -> 0.0).
          ! Moreover, by applying this rescaling transformation to the end-points we cannot guarantee the exact
          ! result due to rounding errors in evaluation of COS function.
-         IF (nnodes_half > 2) &
+         IF (nnodes_half > 2) THEN
             CALL rescale_nodes_cos(nnodes_half - 2, cc_env%tnodes(2:))
+         END IF
 
          SELECT CASE (interval_id)
          CASE (cc_interval_full)
@@ -439,9 +440,6 @@ CONTAINS
       REAL(kind=dp), ALLOCATABLE, DIMENSION(:)           :: weights
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
 
-!      TYPE(fft_plan_type)                                :: fft_plan
-!      INTEGER(kind=int_8)                                :: plan
-
       CALL timeset(routineN, handle)
 
       CPASSERT(ALLOCATED(cc_env%zdata_cache))
@@ -506,7 +504,8 @@ CONTAINS
       END DO
 !$OMP END PARALLEL DO
 
-      CALL fft_fw1d(nintervals, nrows_local*ncols_local, .FALSE., ztmp, ztmp_dct, 1.0_dp, stat)
+      CALL fft_1d_many(FWFFT, nintervals, nrows_local*ncols_local, .FALSE., .FALSE., &
+                       nintervals, nintervals, ztmp, ztmp_dct, 1.0_dp, stat)
       IF (stat /= 0) THEN
          CALL cp_abort(__LOCATION__, &
                        "An FFT library is required for Clenshaw-Curtis quadrature. "// &

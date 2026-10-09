@@ -7,7 +7,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 import re
 import sys
-from datetime import datetime
 from collections import defaultdict
 from functools import cache
 
@@ -97,17 +96,19 @@ def build_input_reference(root: ET.Element, output_dir: Path) -> None:
     # Build landing page.
     cp2k_version = get_text(root.find("CP2K_VERSION"))
     compile_revision = get_text(root.find("COMPILE_REVISION"))
-    # cp2k_year = get_text(root.find("CP2K_YEAR"))
-    # compile_date = get_text(root.find("COMPILE_DATE"))
 
     output = []
     output += ["%", "% This file was created by generate_input_reference.py", "%"]
     output += ["(CP2K_INPUT)="]
     output += ["# Input Reference", ""]
 
-    assert compile_revision.startswith("git:")
     github_url = f"https://github.com/cp2k/cp2k/tree/{compile_revision[4:]}"
-    output += [f"Based on {cp2k_version} ([{compile_revision}]({github_url}))", ""]
+    output += [
+        f"Based on {cp2k_version} ([{compile_revision}]({github_url})).",
+        "",
+        "For past stable releases, see [](./versions).",
+        "",
+    ]
 
     output += ["```{toctree}"]
     output += [":maxdepth: 1"]
@@ -160,7 +161,8 @@ def process_section(
         for keyword in keywords:
             keyword_name = get_name(keyword)
             keyword_xref = f"{section_xref}.{sanitize_name(keyword_name)}"
-            em = "**" if lookup_mentions(keyword_xref) else ""  # emphasize if mentioned
+            # emphasize if mentioned
+            em = "**" if lookup_mentions(keyword_xref, is_section=False) else ""
             output += [f"* {em}[{escape_markdown(keyword_name)}](#{keyword_xref}){em}"]
         output += [""]
         # Render keywords
@@ -261,13 +263,16 @@ def render_section_header(
     section_xref = ".".join(section_path)  # used for cross-referencing
     references = [get_name(ref) for ref in section.findall("REFERENCE")]
 
-    # Render header.
-    output = []
-    output += ["%", "% This file was created by generate_input_reference.py", "%"]
     # There are a few collisions between cross references for sections and keywords,
     # for example CP2K_INPUT.FORCE_EVAL.SUBSYS.KIND.POTENTIAL
     collision_resolution_suffix = "_SECTION" if has_name_collision else ""
-    output += [f"({section_xref}{collision_resolution_suffix})="]
+    collision_resolved_section_xref = f"{section_xref}{collision_resolution_suffix}"
+    mentions = lookup_mentions(collision_resolved_section_xref, is_section=True)
+
+    # Render header.
+    output = []
+    output += ["%", "% This file was created by generate_input_reference.py", "%"]
+    output += [f"({collision_resolved_section_xref})="]
     output += [f"# {section_name}", ""]
     if deprecation_notice:
         output += ["```{warning}"]
@@ -279,6 +284,9 @@ def render_section_header(
         citations = ", ".join([f"{{ref}}`{r}`" for r in references])
         output += [f"**References:** {citations}", ""]
     output += [escape_markdown(description), github_link(location), ""]
+    if mentions:
+        mentions_list = ", ".join([f"⭐[](project:{m})" for m in mentions])
+        output += [f"**Mentions:** {mentions_list}", ""]
     return output, section_name, section_xref
 
 
@@ -299,7 +307,7 @@ def render_keyword(
     assert keyword_names
     canonical_name = sanitize_name(keyword_names[0])
     keyword_xref = f"{section_xref}.{canonical_name}" if section_xref else None
-    mentions = lookup_mentions(keyword_xref)
+    mentions = lookup_mentions(keyword_xref, is_section=False)
 
     # Find more keyword fields.
     default_value = get_text(keyword.find("DEFAULT_VALUE"))
@@ -328,32 +336,55 @@ def render_keyword(
 
     output: List[str] = []
 
-    # Include HTML anchors to preserve old links.
+    # Include HTML anchors to preserve existing case-sensitive keyword links.
+    if keyword_xref:
+        output += [f"<a id='{keyword_xref}'></a>"]
     output += [f"<a id='list_{keyword_names[0]}'></a>"]
     output += [f"<a id='desc_{keyword_names[0]}'></a>"]
     output += [f"<a id='{keyword_names[0]}'></a>", ""]
 
-    # Use Sphinx's py:data directive to document keywords.
-    output += [f"```{{py:data}}  {canonical_name}"]
-    n_var_brackets = f"[{n_var}]" if n_var > 1 else "[ ]" if n_var == -1 else ""
-    if section_xref:
-        output += [f":module: {section_xref}"]
-    else:
-        output += [":noindex:"]
-    output += [f":type: '{data_type}{n_var_brackets}'"]
-    if default_value or default_unit:
-        default_unit_bracketed = f"[{default_unit}]" if default_unit else ""
-        output += [f":value: '{default_value} {default_unit_bracketed}'"]
+    # Keep each keyword as one lightweight document block. The named rubric provides
+    # both the visible title and the Sphinx cross-reference target without creating
+    # a domain object.
+    output += ["````{container} cp2k-input-keyword", ""]
+    output += [f"```{{rubric}} {escape_markdown(canonical_name)}"]
+    # HTML headings enable Pagefind sub-results without adding Sphinx TOC entries.
+    output += [":heading-level: 3"]
+    if keyword_xref:
+        output += [f":name: {keyword_xref}"]
+    output += ["```"]
+    if keyword_xref:
+        output += [
+            '<div class="cp2k-input-keyword-permalink">'
+            f'<a class="headerlink" href="#{keyword_xref}" '
+            'title="Permalink to this keyword" aria-label="Permalink to this keyword">🔗</a>'
+            "</div>"
+        ]
     output += [""]
+
+    # Render keyword properties as compact, unbulleted lines.
+    n_var_brackets = f"[{n_var}]" if n_var > 1 else "[ ]" if n_var == -1 else ""
+    metadata = [f"**Type:** {escape_markdown(data_type + n_var_brackets)}"]
+    if default_value or default_unit:
+        default = default_value
+        if default_unit:
+            default += f" [{default_unit}]"
+        metadata += [f"**Default:** {escape_markdown(default.strip())}"]
     if repeats:
-        output += ["**Keyword can be repeated.**", ""]
+        metadata += ["**Repeatable:** yes"]
     if len(keyword_names) > 1:
-        aliases = " ,".join(keyword_names[1:])
-        output += [f"**Aliases:** {escape_markdown(aliases)}", ""]
+        aliases = ", ".join(keyword_names[1:])
+        metadata += [f"**Aliases:** {escape_markdown(aliases)}"]
     if lone_keyword_value:
-        output += [f"**Lone keyword:** `{escape_markdown(lone_keyword_value)}`", ""]
+        metadata += [f"**Lone keyword:** {escape_markdown(lone_keyword_value)}"]
     if usage:
-        output += [f"**Usage:** _{escape_markdown(usage)}_", ""]
+        metadata += [f"**Usage:** _{escape_markdown(usage)}_"]
+    output += ["  \n".join(metadata), ""]
+    if description:
+        output += [f"**Description:** {escape_markdown(description)}"]
+        if github:
+            output += [github_link(location)]
+        output += [""]
     if data_type == "enum":
         output += ["**Valid values:**"]
         for item in keyword.findall("DATA_TYPE/ENUMERATION/ITEM"):
@@ -367,16 +398,14 @@ def render_keyword(
     if mentions:
         mentions_list = ", ".join([f"⭐[](project:{m})" for m in mentions])
         output += [f"**Mentions:** {mentions_list}", ""]
-    output += [escape_markdown(description)]
-    if github:
-        output += [github_link(location)]
-    output += ["", "```", ""]  # Close py:data directive.
+    output += [""]
 
     if deprecation_notice:
         output += ["```{warning}", f"The keyword [{canonical_name}](#{keyword_xref})"]
         output += ["is deprecated and may be removed in a future version.", ""]
         output += [escape_markdown(deprecation_notice), "", "```", ""]
 
+    output += ["````", ""]
     return output
 
 
@@ -387,17 +416,18 @@ def find_all_mentions() -> Dict[str, Set[Path]]:
     mentions = defaultdict(set)
     for subdir in "getting-started", "methods", "technologies":
         for fn in (root_dir / subdir).glob("**/*.md"):
-            for xref in re.findall(r"\(#(CP2K_INPUT\..*)\)", fn.read_text()):
+            # Non-greedy match permits multiple links on the same line
+            for xref in re.findall(r"\(#(CP2K_INPUT\..*?)\)", fn.read_text()):
                 mentions[xref].add(fn.relative_to(root_dir))
     return mentions
 
 
 # ======================================================================================
-def lookup_mentions(xref: Optional[str]) -> List[str]:
+def lookup_mentions(xref: Optional[str], is_section: bool) -> List[str]:
     if not xref:
         return []
     mentions = find_all_mentions()
-    n = xref.count(".") - 1
+    n = xref.count(".") - (0 if is_section else 1)
     return [("../" * n) + str(path) for path in sorted(mentions[xref])]
 
 
@@ -425,9 +455,6 @@ def sanitize_name(name: str) -> str:
 
 # ======================================================================================
 def escape_markdown(text: str) -> str:
-    # Code blocks without a language get mistaken for the end of the py:data directive.
-    text = text.replace("\n\n```\n", "\n\n```none\n")
-
     # Underscores are very common in our docs. Luckily asterisks also work for emphasis.
     text = text.replace(r"__", r"\_\_")
 

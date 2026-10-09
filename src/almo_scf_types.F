@@ -56,6 +56,12 @@ MODULE almo_scf_types
 
    END TYPE penalty_type
 
+   TYPE fragment_type
+
+      INTEGER         :: fragment_parameters = 0, charge = 0, multiplicity = 1
+
+   END TYPE fragment_type
+
    ! almo-based electronic structure analysis
    TYPE almo_analysis_type
 
@@ -159,7 +165,7 @@ MODULE almo_scf_types
       INTEGER, DIMENSION(:), ALLOCATABLE                  :: charge_of_domain
       ! Charge of domains
       INTEGER, DIMENSION(:), ALLOCATABLE                  :: multiplicity_of_domain
-
+      INTEGER, DIMENSION(:), ALLOCATABLE                 :: activate
       ! The matrix contains information about the delocalization of
       ! alpha and beta electrons.
       ! Rows denote basis function, columns denote electrons.
@@ -376,6 +382,9 @@ MODULE almo_scf_types
       TYPE(optimizer_options_type)                   :: opt_xalmo_newton_pcg_solver = optimizer_options_type()
       TYPE(optimizer_options_type)                   :: opt_k_pcg = optimizer_options_type()
 
+      ! Option for fragment section
+      TYPE(fragment_type)                            :: fragment = fragment_type()
+
       ! keywords that control electron delocalization treatment
       ! RZK-warning: many of these varibles should be collected
       !  into an optimizer_options_type variable
@@ -560,8 +569,9 @@ CONTAINS
          DO istore = 1, MIN(almo_scf_env%almo_history%istore, almo_scf_env%almo_history%nstore)
             CALL dbcsr_release(almo_scf_env%almo_history%matrix_p_up_down(ispin, istore))
          END DO
-         IF (almo_scf_env%almo_history%istore > 0) &
+         IF (almo_scf_env%almo_history%istore > 0) THEN
             CALL dbcsr_release(almo_scf_env%almo_history%matrix_t(ispin))
+         END IF
       END DO
       DEALLOCATE (almo_scf_env%almo_history%matrix_p_up_down)
       DEALLOCATE (almo_scf_env%almo_history%matrix_t)
@@ -571,8 +581,9 @@ CONTAINS
             CALL dbcsr_release(almo_scf_env%xalmo_history%matrix_p_up_down(ispin, istore))
             !CALL dbcsr_release(almo_scf_env%xalmo_history%matrix_x(ispin, istore))
          END DO
-         IF (almo_scf_env%xalmo_history%istore > 0) &
+         IF (almo_scf_env%xalmo_history%istore > 0) THEN
             CALL dbcsr_release(almo_scf_env%xalmo_history%matrix_t(ispin))
+         END IF
       END DO
       DEALLOCATE (almo_scf_env%xalmo_history%matrix_p_up_down)
       !DEALLOCATE (almo_scf_env%xalmo_history%matrix_x)

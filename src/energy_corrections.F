@@ -79,7 +79,6 @@ MODULE energy_corrections
                                               energy_correction_type
    USE ec_external,                     ONLY: ec_ext_energy,&
                                               matrix_r_forces
-   USE ec_methods,                      ONLY: create_kernel
    USE external_potential_types,        ONLY: all_potential_type,&
                                               get_potential,&
                                               gth_potential_type,&
@@ -155,8 +154,10 @@ MODULE energy_corrections
                                               qs_force_type,&
                                               total_qs_force,&
                                               zero_qs_force
+   USE qs_fxc,                          ONLY: qs_fxc_create
    USE qs_gapw_densities,               ONLY: prepare_gapw_den
-   USE qs_integrate_potential,          ONLY: integrate_v_core_rspace,&
+   USE qs_integrate_potential,          ONLY: integrate_rho_nlcc,&
+                                              integrate_v_core_rspace,&
                                               integrate_v_rspace
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               get_qs_kind_set,&
@@ -187,7 +188,10 @@ MODULE energy_corrections
    USE qs_rho0_methods,                 ONLY: init_rho0
    USE qs_rho_atom_methods,             ONLY: allocate_rho_atom_internals,&
                                               calculate_rho_atom_coeff
-   USE qs_rho_types,                    ONLY: qs_rho_get,&
+   USE qs_rho_atom_types,               ONLY: rho_atom_type
+   USE qs_rho_types,                    ONLY: qs_rho_create,&
+                                              qs_rho_get,&
+                                              qs_rho_set,&
                                               qs_rho_type
    USE qs_vxc,                          ONLY: qs_vxc_create
    USE qs_vxc_atom,                     ONLY: calculate_vxc_atom
@@ -241,6 +245,7 @@ CONTAINS
 
       INTEGER                                            :: handle, unit_nr
       LOGICAL                                            :: my_calc_forces
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(energy_correction_type), POINTER              :: ec_env
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: ks_force
@@ -248,7 +253,12 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      unit_nr = cp_logger_get_default_unit_nr(local=.FALSE.)
+      logger => cp_get_default_logger()
+      IF (logger%para_env%is_source()) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      END IF
 
       CALL cite_reference(Belleflamme2023)
 
@@ -387,7 +397,7 @@ CONTAINS
                ! MAO basis
                IF (ASSOCIATED(ec_env%mao_coef)) CALL dbcsr_deallocate_matrix_set(ec_env%mao_coef)
                NULLIFY (ec_env%mao_coef)
-               CALL mao_generate_basis(qs_env, ec_env%mao_coef, ref_basis_set="HARRIS", molecular=.TRUE., &
+               CALL mao_generate_basis(qs_env, ec_env%mao_coef, ref_basis_set="HARRIS", &
                                        max_iter=ec_env%mao_max_iter, eps_grad=ec_env%mao_eps_grad, &
                                        eps1_mao=ec_env%mao_eps1, iolevel=ec_env%mao_iolevel, unit_nr=unit_nr)
             END IF
@@ -840,14 +850,16 @@ CONTAINS
       INTEGER                                            :: handle, i, iounit, ispin, natom, nspins
       LOGICAL                                            :: debug_forces, debug_stress, do_ec_hfx, &
                                                             gapw, gapw_xc, use_virial
-      REAL(dp)                                           :: dummy_real, dummy_real2(2), ehartree, &
-                                                            ehartree_1c, eovrl, exc, exc1, fconv
+      REAL(dp)                                           :: dummy_real, dummy_real2(2), edisp, &
+                                                            ehartree, ehartree_1c, eovrl, exc, &
+                                                            exc1, fconv
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: ftot
       REAL(dp), DIMENSION(3)                             :: fodeb, fodeb2
       REAL(KIND=dp), DIMENSION(3, 3)                     :: h_stress, pv_loc, stdeb, sttot
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s, scrm
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -865,6 +877,7 @@ CONTAINS
       TYPE(pw_r3d_rs_type)                               :: v_hartree_rspace
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r, v_rspace, v_rspace_in, &
                                                             v_tau_rspace
+      TYPE(pw_r3d_rs_type), POINTER                      :: rho_nlcc
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -878,10 +891,15 @@ CONTAINS
       debug_forces = ec_env%debug_forces
       debug_stress = ec_env%debug_stress
 
-      iounit = cp_logger_get_default_unit_nr(local=.FALSE.)
+      logger => cp_get_default_logger()
+      IF (logger%para_env%is_source()) THEN
+         iounit = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         iounit = -1
+      END IF
 
       NULLIFY (atomic_kind_set, cell, dft_control, force, ks_env, &
-               matrix_p, matrix_s, para_env, pw_env, rho, sab_orb, virial)
+               matrix_p, matrix_s, para_env, pw_env, rho, rho_nlcc, sab_orb, virial)
       CALL get_qs_env(qs_env=qs_env, &
                       cell=cell, &
                       dft_control=dft_control, &
@@ -892,6 +910,7 @@ CONTAINS
                       pw_env=pw_env, &
                       rho=rho, &
                       rho_xc=rho_xc, &
+                      rho_nlcc=rho_nlcc, &
                       virial=virial)
       CPASSERT(ASSOCIATED(pw_env))
 
@@ -1021,7 +1040,8 @@ CONTAINS
          CALL get_qs_env(qs_env=qs_env, rho=rho_struct)
       END IF
       CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=ec_env%xc_section, &
-                         vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=exc, just_energy=.FALSE.)
+                         vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=exc, just_energy=.FALSE., &
+                         edisp=edisp, dispersion_env=ec_env%dispersion_env)
 
       IF (debug_forces) fodeb(1:3) = force(1)%rho_elec(1:3, 1)
       IF (debug_stress .AND. use_virial) stdeb = virial%pv_virial
@@ -1138,6 +1158,13 @@ CONTAINS
       ! int v_Hxc[n_in]*n_out
       IF (use_virial) THEN
          pv_loc = virial%pv_virial
+      END IF
+
+      IF (ASSOCIATED(rho_nlcc)) THEN
+         DO ispin = 1, nspins
+            CALL integrate_rho_nlcc(v_rspace(ispin), qs_env, &
+                                    debug_forces, debug_stress, "dnlcc*dVxc")
+         END DO
       END IF
 
       basis_type = "HARRIS"
@@ -1408,6 +1435,7 @@ CONTAINS
          IF (qs_env%energy_correction) THEN
             ec_env%ehartree = ehartree
             ec_env%exc = exc
+            IF (edisp /= 0.0_dp) ec_env%edispersion = edisp
          END IF
       END IF
 
@@ -1618,10 +1646,11 @@ CONTAINS
                                                             do_adiabatic_rescaling, do_ec_hfx, &
                                                             gapw, gapw_xc, hfx_treat_lsd_in_core, &
                                                             use_virial
-      REAL(dp)                                           :: dummy_real, dummy_real2(2), eexc, eh1c, &
-                                                            evhxc, exc1, t3
+      REAL(dp)                                           :: dummy_real, dummy_real2(2), edisp, eexc, &
+                                                            eh1c, evhxc, exc1, t3
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks_mat, ps_mat
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: rho_ao_kp
       TYPE(dbcsr_type), POINTER                          :: smat
@@ -1644,7 +1673,12 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      iounit = cp_logger_get_default_unit_nr(local=.FALSE.)
+      logger => cp_get_default_logger()
+      IF (logger%para_env%is_source()) THEN
+         iounit = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         iounit = -1
+      END IF
 
       ! get all information on the electronic density
       NULLIFY (auxbas_pw_pool, dft_control, energy, ks_env, rho, rho_r, tau_r)
@@ -1708,7 +1742,7 @@ CONTAINS
             IF (dft_control%do_admm_mo) THEN
                CPASSERT(.NOT. qs_env%run_rtp)
                CALL admm_mo_calc_rho_aux(qs_env)
-            ELSEIF (dft_control%do_admm_dm) THEN
+            ELSE IF (dft_control%do_admm_dm) THEN
                CALL admm_dm_calc_rho_aux(qs_env)
             END IF
          END IF
@@ -1758,10 +1792,12 @@ CONTAINS
       NULLIFY (v_rspace, v_tau_rspace)
       IF (dft_control%qs_control%gapw_xc) THEN
          CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_xc, xc_section=ec_env%xc_section, &
-                            vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=eexc, just_energy=.FALSE.)
+                            vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=eexc, just_energy=.FALSE., &
+                            edisp=edisp, dispersion_env=ec_env%dispersion_env)
       ELSE
          CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho, xc_section=ec_env%xc_section, &
-                            vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=eexc, just_energy=.FALSE.)
+                            vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=eexc, just_energy=.FALSE., &
+                            edisp=edisp, dispersion_env=ec_env%dispersion_env)
       END IF
 
       IF (.NOT. ASSOCIATED(v_rspace)) THEN
@@ -1881,6 +1917,7 @@ CONTAINS
 
       ! energies
       ec_env%exc = eexc
+      IF (edisp /= 0.0_dp) ec_env%edispersion = edisp
       ec_env%vhxc = evhxc
 
       ! add the core matrix
@@ -1925,6 +1962,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3)                        :: fodeb
       REAL(KIND=dp), DIMENSION(3, 3)                     :: stdeb, sttot
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: scrm
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -1939,7 +1977,12 @@ CONTAINS
       debug_forces = ec_env%debug_forces
       debug_stress = ec_env%debug_stress
 
-      iounit = cp_logger_get_default_unit_nr(local=.FALSE.)
+      logger => cp_get_default_logger()
+      IF (logger%para_env%is_source()) THEN
+         iounit = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         iounit = -1
+      END IF
 
       calculate_forces = .TRUE.
 
@@ -2071,12 +2114,14 @@ CONTAINS
       LOGICAL                                            :: debug_forces, debug_stress, do_ec_hfx, &
                                                             use_virial
       REAL(dp)                                           :: dehartree, dummy_real, dummy_real2(2), &
-                                                            eexc, ehartree, eovrl, exc, fconv
+                                                            edisp, eexc, ehartree, eovrl, exc, &
+                                                            fconv
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: ftot
       REAL(dp), DIMENSION(3)                             :: fodeb
       REAL(KIND=dp), DIMENSION(3, 3)                     :: h_stress, pv_loc, stdeb, sttot
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, rho_ao, scrmat
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p, matrix_s, scrm
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -2094,9 +2139,11 @@ CONTAINS
                                                             vtot_rspace
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r, rhoout_r, tau_r, tauout_r, &
                                                             v_rspace, v_tau_rspace, v_xc, v_xc_tau
+      TYPE(pw_r3d_rs_type), POINTER                      :: rho_nlcc
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
-      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_rho_type), POINTER                         :: rho, rhoout
+      TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho0_atom_set, rho1_atom_set
       TYPE(section_vals_type), POINTER                   :: ec_hfx_sections, xc_section
       TYPE(virial_type), POINTER                         :: virial
 
@@ -2105,12 +2152,17 @@ CONTAINS
       debug_forces = ec_env%debug_forces
       debug_stress = ec_env%debug_stress
 
-      iounit = cp_logger_get_default_unit_nr(local=.FALSE.)
+      logger => cp_get_default_logger()
+      IF (logger%para_env%is_source()) THEN
+         iounit = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         iounit = -1
+      END IF
 
       ! get all information on the electronic density
       NULLIFY (atomic_kind_set, cell, dft_control, force, ks_env, &
                matrix_ks, matrix_p, matrix_s, para_env, rho, rho_core, &
-               rho_g, rho_r, sab_orb, tau_r, virial)
+               rho_g, rho_r, rho_nlcc, sab_orb, tau_r, virial)
       CALL get_qs_env(qs_env=qs_env, &
                       cell=cell, &
                       dft_control=dft_control, &
@@ -2119,6 +2171,7 @@ CONTAINS
                       matrix_ks=matrix_ks, &
                       para_env=para_env, &
                       rho=rho, &
+                      rho_nlcc=rho_nlcc, &
                       sab_orb=sab_orb, &
                       virial=virial)
 
@@ -2249,7 +2302,8 @@ CONTAINS
 
          NULLIFY (v_rspace, v_tau_rspace)
          CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho, xc_section=ec_env%xc_section, &
-                            vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=exc, just_energy=.FALSE.)
+                            vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=exc, just_energy=.FALSE., &
+                            edisp=edisp, dispersion_env=ec_env%dispersion_env)
 
          ! Stress tensor XC-functional GGA contribution
          virial%pv_exc = virial%pv_exc - virial%pv_xc
@@ -2344,16 +2398,25 @@ CONTAINS
 
       IF (use_virial) virial%pv_xc = 0.0_dp
       NULLIFY (v_xc, v_xc_tau)
-      CALL create_kernel(qs_env, &
-                         vxc=v_xc, &
-                         vxc_tau=v_xc_tau, &
-                         rho=rho, &
-                         rho1_r=rhoout_r, &
-                         rho1_g=rhoout_g, &
-                         tau1_r=tauout_r, &
-                         xc_section=xc_section, &
-                         compute_virial=use_virial, &
-                         virial_xc=virial%pv_xc)
+      NULLIFY (rho0_atom_set, rho1_atom_set)
+      ALLOCATE (rhoout)
+      CALL qs_rho_create(rhoout)
+      IF (ASSOCIATED(rhoout_r)) THEN
+         CALL qs_rho_set(rhoout, rho_r=rhoout_r, rho_r_valid=.TRUE.)
+      END IF
+      IF (ASSOCIATED(rhoout_g)) THEN
+         CALL qs_rho_set(rhoout, rho_g=rhoout_g, rho_g_valid=.TRUE.)
+      END IF
+      IF (ASSOCIATED(tauout_r)) THEN
+         CALL qs_rho_set(rhoout, tau_r=tauout_r, tau_r_valid=.TRUE.)
+      END IF
+      !
+      CALL qs_fxc_create(qs_env, rho, rhoout, rho0_atom_set, xc_section, .FALSE., &
+                         v_xc, v_xc_tau, rho1_atom_set, &
+                         dispersion_env=ec_env%dispersion_env, &
+                         compute_virial=use_virial, virial_xc=virial%pv_xc)
+      !
+      DEALLOCATE (rhoout)
 
       IF (use_virial) THEN
          ! Stress-tensor XC-functional 2nd GGA terms
@@ -2365,6 +2428,13 @@ CONTAINS
          CALL para_env%sum(stdeb)
          IF (iounit > 0) WRITE (UNIT=iounit, FMT="(T2,A,T41,2(1X,ES19.11))") &
             'STRESS| GGA 2nd f_Hxc[dP]*Pin   ', one_third_sum_diag(stdeb), det_3x3(stdeb)
+      END IF
+      !
+      IF (ASSOCIATED(rho_nlcc)) THEN
+         DO ispin = 1, nspins
+            CALL integrate_rho_nlcc(v_xc(ispin), qs_env, &
+                                    debug_forces, debug_stress, "dnlcc*dVxc")
+         END DO
       END IF
       !
       CALL get_qs_env(qs_env=qs_env, rho=rho, matrix_s_kp=matrix_s)
@@ -2443,7 +2513,16 @@ CONTAINS
       NULLIFY (v_rspace, v_tau_rspace)
 
       CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho, xc_section=ec_env%xc_section, &
-                         vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=eexc, just_energy=.FALSE.)
+                         vxc_rho=v_rspace, vxc_tau=v_tau_rspace, exc=eexc, just_energy=.FALSE., &
+                         edisp=edisp, dispersion_env=ec_env%dispersion_env)
+      IF (edisp /= 0.0_dp) eexc = eexc + edisp
+
+      IF (ASSOCIATED(rho_nlcc)) THEN
+         DO ispin = 1, nspins
+            CALL integrate_rho_nlcc(v_rspace(ispin), qs_env, &
+                                    debug_forces, debug_stress, "dnlcc*dVxc")
+         END DO
+      END IF
 
       IF (use_virial) THEN
          eexc = 0.0_dp
@@ -2829,7 +2908,7 @@ CONTAINS
          CALL ec_ls_init(qs_env, ksmat, smat)
          CALL ec_ls_solver(qs_env, pmat, wmat, ec_ls_method=ec_env%ks_solver)
       CASE DEFAULT
-         CPASSERT(.FALSE.)
+         CPABORT("Option invalid or unavailable for ec_env%ks_solver")
       END SELECT
 
       IF (ec_env%mao) THEN
@@ -3034,7 +3113,7 @@ CONTAINS
 
       CASE DEFAULT
 
-         CPASSERT(.FALSE.)
+         CPABORT("Option invalid or unavailable for ec_env%energy_functional")
 
       END SELECT
 
@@ -3335,7 +3414,11 @@ CONTAINS
       rlab(3) = "Z"
 
       logger => cp_get_default_logger()
-      iounit = cp_logger_get_default_unit_nr(logger, local=.FALSE.)
+      IF (logger%para_env%is_source()) THEN
+         iounit = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         iounit = -1
+      END IF
 
       NULLIFY (dft_control)
       CALL get_qs_env(qs_env, dft_control=dft_control)

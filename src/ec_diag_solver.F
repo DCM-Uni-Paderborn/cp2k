@@ -220,7 +220,7 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
       TYPE(dbcsr_type), POINTER                          :: tempmat
-      TYPE(mo_set_type), DIMENSION(:, :), POINTER        :: mos
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
       TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
@@ -248,14 +248,14 @@ CONTAINS
       ! density matrices in real space
       tempmat => matrix_s(1, 1)%matrix
       CALL kpoint_density_transform(ec_env%kpoints, matrix_p, .FALSE., tempmat, &
-                                    ec_env%sab_orb, fmwork)
+                                    ec_env%sab_orb, fmwork, overlap_rs=matrix_s)
       CALL kpoint_density_transform(ec_env%kpoints, matrix_w, .TRUE., tempmat, &
-                                    ec_env%sab_orb, fmwork)
+                                    ec_env%sab_orb, fmwork, overlap_rs=matrix_s)
 
       ec_env%ekTS = 0.0_dp
       mos => ec_env%kpoints%kp_env(1)%kpoint_env%mos
-      DO ispin = 1, SIZE(mos, 2)
-         ec_env%ekTS = ec_env%ekTS + mos(1, ispin)%kTS
+      DO ispin = 1, SIZE(mos)
+         ec_env%ekTS = ec_env%ekTS + mos(ispin)%kTS
       END DO
 
       CALL cp_fm_release(fmwork)
@@ -711,4 +711,3 @@ CONTAINS
    END SUBROUTINE ec_ls_solver
 
 END MODULE ec_diag_solver
-

@@ -26,7 +26,7 @@ case "${with_openmpi}" in
   __INSTALL__)
     echo "==================== Installing OpenMPI ===================="
     pkg_install_dir="${INSTALLDIR}/openmpi-${openmpi_ver}"
-    install_lock_file="$pkg_install_dir/install_successful"
+    install_lock_file="${pkg_install_dir}/install_successful"
     if verify_checksums "${install_lock_file}"; then
       echo "openmpi-${openmpi_ver} is already installed, skipping it."
     else
@@ -35,7 +35,15 @@ case "${with_openmpi}" in
       [ -d openmpi-${openmpi_ver} ] && rm -rf openmpi-${openmpi_ver}
       tar -xjf ${openmpi_pkg}
       cd openmpi-${openmpi_ver}
-      if [ "${OPENBLAS_ARCH}" = "x86_64" ]; then
+      # Backport module lifetime fixes requested in open-mpi/ompi#13783.
+      patch -l -p1 < "${SCRIPT_DIR}/stage1/openmpi-${openmpi_ver}-op-module-lifetime.patch" \
+        > openmpi_op_module_lifetime.patch.log 2>&1 ||
+        tail_excerpt openmpi_op_module_lifetime.patch.log
+      # Backport the OB1 progress fix scheduled for OpenMPI 5.0.11.
+      patch -l -p1 < "${SCRIPT_DIR}/stage1/openmpi-${openmpi_ver}-pml-ob1-pending.patch" \
+        > openmpi_pml_ob1_pending.patch.log 2>&1 ||
+        tail_excerpt openmpi_pml_ob1_pending.patch.log
+      if [ "${SYSTEM_ARCH}" = "x86_64" ]; then
         # can have issue with older glibc libraries, in which case
         # we need to add the -fgnu89-inline to CFLAGS. We can check
         # the version of glibc using ldd --version, as ldd is part of
@@ -58,7 +66,10 @@ case "${with_openmpi}" in
       make -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
       make -j $(get_nprocs) install > install.log 2>&1 || tail_excerpt install.log
       cd ..
-      write_checksums "${install_lock_file}" "${SCRIPT_DIR}/stage1/$(basename ${SCRIPT_NAME})"
+      write_checksums "${install_lock_file}" \
+        "${SCRIPT_DIR}/stage1/$(basename ${SCRIPT_NAME})" \
+        "${SCRIPT_DIR}/stage1/openmpi-${openmpi_ver}-op-module-lifetime.patch" \
+        "${SCRIPT_DIR}/stage1/openmpi-${openmpi_ver}-pml-ob1-pending.patch"
     fi
     check_dir "${pkg_install_dir}/bin"
     check_dir "${pkg_install_dir}/lib"
@@ -69,21 +80,15 @@ case "${with_openmpi}" in
     check_install ${pkg_install_dir}/bin/mpifort "openmpi" && MPIFC="${pkg_install_dir}/bin/mpifort" || exit 1
     MPIFORT="${MPIFC}"
     MPIF77="${MPIFC}"
-    OPENMPI_CFLAGS="-I'${pkg_install_dir}/include'"
-    OPENMPI_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
     ;;
   __SYSTEM__)
     echo "==================== Finding OpenMPI from system paths ===================="
-    check_command mpiexec "openmpi" && MPIEXEC="$(command -v mpiexec)"
+    check_command mpiexec "openmpi" && MPIEXEC="$(command -v mpiexec)" || exit 1
     check_command mpicc "openmpi" && MPICC="$(command -v mpicc)" || exit 1
     check_command mpic++ "openmpi" && MPICXX="$(command -v mpic++)" || exit 1
     check_command mpifort "openmpi" && MPIFC="$(command -v mpifort)" || exit 1
     MPIFORT="${MPIFC}"
     MPIF77="${MPIFC}"
-    # Fortran code in CP2K is built via the mpifort wrapper, but we may need additional
-    # libraries and linker flags for C/C++-based MPI codepaths, pull them in at this point.
-    OPENMPI_CFLAGS="$(mpicxx --showme:compile)"
-    OPENMPI_LDFLAGS="$(mpicxx --showme:link)"
     ;;
   __DONTUSE__)
     # Nothing to do
@@ -100,30 +105,9 @@ case "${with_openmpi}" in
     check_command ${pkg_install_dir}/bin/mpifort "openmpi" && MPIFC="${pkg_install_dir}/bin/mpifort" || exit 1
     MPIFORT="${MPIFC}"
     MPIF77="${MPIFC}"
-    OPENMPI_CFLAGS="-I'${pkg_install_dir}/include'"
-    OPENMPI_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
     ;;
 esac
 if [ "${with_openmpi}" != "__DONTUSE__" ]; then
-  if [ "${with_openmpi}" != "__SYSTEM__" ]; then
-    mpi_bin="${pkg_install_dir}/bin/mpiexec"
-    mpicxx_bin="${pkg_install_dir}/bin/mpicxx"
-  else
-    mpi_bin="mpiexec"
-    mpicxx_bin="mpicxx"
-  fi
-  # check openmpi version as reported by mpiexec
-  raw_version=$(${mpi_bin} --version 2>&1 |
-    grep "(Open MPI)" | awk '{print $4}')
-  major_version=$(echo ${raw_version} | cut -d '.' -f 1)
-  minor_version=$(echo ${raw_version} | cut -d '.' -f 2)
-  OPENMPI_LIBS=""
-  # grab additional runtime libs (for C/C++) from the mpicxx wrapper,
-  # and remove them from the LDFLAGS if present
-  for lib in $("${mpicxx_bin}" --showme:libs); do
-    OPENMPI_LIBS+=" -l${lib}"
-    OPENMPI_LDFLAGS="${OPENMPI_LDFLAGS//-l${lib}/}"
-  done
   cat << EOF > "${BUILDDIR}/setup_openmpi"
 export MPI_MODE="${MPI_MODE}"
 export MPIEXEC="${MPIEXEC}"
@@ -132,21 +116,7 @@ export MPICXX="${MPICXX}"
 export MPIFC="${MPIFC}"
 export MPIFORT="${MPIFORT}"
 export MPIF77="${MPIF77}"
-export OPENMPI_CFLAGS="${OPENMPI_CFLAGS}"
-export OPENMPI_LDFLAGS="${OPENMPI_LDFLAGS}"
-export OPENMPI_LIBS="${OPENMPI_LIBS}"
-export MPI_CFLAGS="${OPENMPI_CFLAGS}"
-export MPI_LDFLAGS="${OPENMPI_LDFLAGS}"
-export MPI_LIBS="${OPENMPI_LIBS}"
-export CP_DFLAGS="\${CP_DFLAGS} IF_MPI(-D__parallel|)"
-# For proper mpi_f08 support, we need at least GCC version 9 (asynchronous keyword)
-# Other compilers should work
-  if ! [ "\$(gfortran -dumpversion | cut -d. -f1)" -lt 9 ]; then
-    export CP_DFLAGS="\${CP_DFLAGS} IF_MPI(-D__MPI_F08|)"
-  fi
-export CP_CFLAGS="\${CP_CFLAGS} IF_MPI(${OPENMPI_CFLAGS}|)"
-export CP_LDFLAGS="\${CP_LDFLAGS} IF_MPI(${OPENMPI_LDFLAGS}|)"
-export CP_LIBS="\${CP_LIBS} IF_MPI(${OPENMPI_LIBS}|)"
+export PRTE_MCA_hwloc_default_binding_policy=none
 EOF
   if [ "${with_openmpi}" != "__SYSTEM__" ]; then
     cat << EOF >> "${BUILDDIR}/setup_openmpi"
@@ -154,7 +124,6 @@ prepend_path PATH "${pkg_install_dir}/bin"
 prepend_path LD_LIBRARY_PATH "${pkg_install_dir}/lib"
 prepend_path LD_RUN_PATH "${pkg_install_dir}/lib"
 prepend_path LIBRARY_PATH "${pkg_install_dir}/lib"
-prepend_path CPATH "${pkg_install_dir}/include"
 EOF
   fi
   filter_setup "${BUILDDIR}/setup_openmpi" "${SETUPFILE}"

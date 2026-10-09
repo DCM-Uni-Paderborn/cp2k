@@ -28,7 +28,8 @@ MODULE input_cp2k_subsys
    USE cp_output_handling, ONLY: cp_print_key_section_create, debug_print_level, &
                                  high_print_level, medium_print_level
    USE cp_units, ONLY: cp_unit_to_cp2k
-   USE input_constants, ONLY: do_add, do_bondparm_covalent, do_bondparm_vdw, &
+   USE input_constants, ONLY: canonicalize_cell_auto, canonicalize_cell_false, &
+                              canonicalize_cell_true, do_add, do_bondparm_covalent, do_bondparm_vdw, &
                               do_cell_cif, do_cell_cp2k, do_cell_xsc, &
                               do_cell_extxyz, do_cell_pdb, &
                               do_conn_amb7, do_conn_g87, do_conn_g96, &
@@ -202,12 +203,27 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="CANONICALIZE", &
-                          description="Transform a general input cell to CP2K's internal convention "// &
-                          "that A lies along the X-axis and B is in the XY plane. Cell-dependent "// &
-                          "Cartesian input such as coordinates, restarts, velocities, k-points, band "// &
-                          "paths, electric-field directions, and fixed spatial points is transformed "// &
-                          "consistently. The stress tensor follows the canonical internal cell.", &
-                          usage="CANONICALIZE T", default_l_val=.TRUE., lone_keyword_l_val=.TRUE.)
+                          description="Policy for transforming a general input cell to CP2K's internal "// &
+                          "convention that A lies along the X-axis and B is in the XY plane. AUTO preserves "// &
+                          "an orientation supplied through explicit cell vectors or a cell file. Cells "// &
+                          "specified only through lengths and angles are canonical by construction because "// &
+                          "they do not define an orientation. TRUE explicitly requests canonicalization and "// &
+                          "transforms supported cell-dependent input. FALSE explicitly preserves a supplied "// &
+                          "orientation. During CELL_OPT, this setting controls the physical cell orientation; "// &
+                          "the six independent cell-deformation variables use a separate canonical frame.", &
+                          usage="CANONICALIZE AUTO", &
+                          enum_c_vals=s2a("AUTO", "TRUE", "FALSE", "T", "F", ".TRUE.", ".FALSE."), &
+                          enum_i_vals=[canonicalize_cell_auto, canonicalize_cell_true, &
+                                       canonicalize_cell_false, canonicalize_cell_true, canonicalize_cell_false, &
+                                       canonicalize_cell_true, canonicalize_cell_false], &
+                          enum_desc=s2a("Preserve an explicitly supplied cell orientation", &
+                                        "Explicitly canonicalize the input cell", &
+                                        "Explicitly preserve a supplied cell orientation", &
+                                        "Alias for TRUE", &
+                                        "Alias for FALSE", &
+                                        "Alias for TRUE", &
+                                        "Alias for FALSE"), &
+                          default_i_val=canonicalize_cell_auto, lone_keyword_i_val=canonicalize_cell_true)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -1861,6 +1877,10 @@ CONTAINS
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
+      CALL create_fragments_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
    END SUBROUTINE create_topology_section
 
 ! **************************************************************************************************
@@ -1925,6 +1945,42 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
    END SUBROUTINE create_center_section
+
+! **************************************************************************************************
+!> \brief Specify keywords used to setup several fragments
+!> \param section the section to create
+! **************************************************************************************************
+   SUBROUTINE create_fragments_section(section)
+      TYPE(section_type), POINTER                        :: section
+
+      TYPE(keyword_type), POINTER                        :: keyword
+      TYPE(section_type), POINTER                        :: subsection, subsubsection
+
+      CPASSERT(.NOT. ASSOCIATED(section))
+      NULLIFY (keyword, subsection, subsubsection)
+      CALL section_create(section, __LOCATION__, name="FRAGMENTS", &
+                          description="Specify the fragments of a full system.", &
+                          n_keywords=1, n_subsections=0, repeats=.FALSE.)
+
+      CALL section_create(subsection, __LOCATION__, name="FRAGMENT", &
+                          description="Specify information about the fragments.", &
+                          n_keywords=1, n_subsections=0, repeats=.TRUE.)
+
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="FRAG_RANGE", &
+                          variants=s2a("RANGE"), &
+                          description="Defines fragments. This keyword can be repeated.", &
+                          repeats=.FALSE., &
+                          n_var=-1, &
+                          type_of_var=integer_t, &
+                          usage="FRAG_RANGE 1 5")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+   END SUBROUTINE create_fragments_section
 
 ! **************************************************************************************************
 !> \brief Specify keywords used to setup several molecules with few connectivity files
@@ -2549,6 +2605,110 @@ CONTAINS
                           default_l_val=.FALSE., &
                           lone_keyword_l_val=.TRUE., &
                           usage="SMEAR ON")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      NULLIFY (subsection)
+
+      CALL section_create(subsection, __LOCATION__, &
+                          name="ATOMIC_PROJECTOR_TENSORIAL", &
+                          description="Specifies shell occupations used to generate atomic projector "// &
+                          "functions for tensorial DFT+U.", &
+                          n_keywords=2, &
+                          n_subsections=0, &
+                          repeats=.FALSE.)
+
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="_SECTION_PARAMETERS_", &
+                          description="Controls the activation of the ATOMIC_PROJECTOR_TENSORIAL section", &
+                          usage="&ATOMIC_PROJECTOR_TENSORIAL ON", &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="SHELL_CHARGE", &
+                          description="Specifies shell-resolved charge offsets used to "// &
+                          "define the reference atomic state for constructing the "// &
+                          "tensorial DFT+U+J projector. The four values correspond to "// &
+                          "the s, p, d, and f shells, respectively. A value of 0.0 "// &
+                          "means that the corresponding shell retains its neutral-atom "// &
+                          "occupation. Positive values remove electrons from a shell, "// &
+                          "whereas negative values add electrons. Fractional values are "// &
+                          "allowed.", &
+                          repeats=.FALSE., &
+                          n_var=4, &
+                          type_of_var=real_t, &
+                          default_r_vals=[0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp], &
+                          usage="SHELL_CHARGE 0.0 0.0 1.0 0.0")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      NULLIFY (subsection)
+
+      CALL section_create(subsection, __LOCATION__, &
+                          name="MINIMUM_TRACKING_LINEAR_RESPONSE", &
+                          description="Controls the minimum tracking linear response "// &
+                          "procedure used to compute Hubbard U and Hund's J parameters. "// &
+                          "In this approach, a localized perturbation is applied to a "// &
+                          "selected +U +J subspace located on the specific atom "// &
+                          "and the response of the subspace averaged Hartree+XC interactions "// &
+                          "with respect to the perturbation is calculated as the U and J values.", &
+                          n_keywords=3, &
+                          n_subsections=0, &
+                          repeats=.FALSE.)
+
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="_SECTION_PARAMETERS_", &
+                          description="Enables or disables the MINIMUM_TRACKING_LINEAR_RESPONSE "// &
+                          "section.", &
+                          usage="&MINIMUM_TRACKING_LINEAR_RESPONSE ON", &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="INDEX_PERTURBED_ATOM", &
+                          description="Index of the atom to which the perturbing potential "// &
+                          "is applied in the minimum-tracking linear-response "// &
+                          "calculation. The index is the order of atoms in "// &
+                          "the full structure.", &
+                          repeats=.FALSE., &
+                          n_var=1, &
+                          type_of_var=integer_t, &
+                          default_i_val=-1, &
+                          usage="INDEX_PERTURBED_ATOM 5")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="PERTURBATION_STRENGTH", &
+                          description="Specifies the list of perturbation strengths used "// &
+                          "in the minimum tracking linear response calculation of U and J "// &
+                          "parameters. Each value defines the magnitude of an applied "// &
+                          "constraining potential in a separate perturbation calculation. "// &
+                          "If no unit is given, values are interpreted in hartree "// &
+                          "(atomic units). Explicit units such as [eV] may be provided "// &
+                          "in the input. At least 3 and at most 9 values must be given.", &
+                          repeats=.FALSE., &
+                          n_var=-1, &
+                          type_of_var=real_t, &
+                          unit_str="hartree", &
+                          default_r_vals=[ &
+                          cp_unit_to_cp2k(value=-0.2_dp, unit_str="eV"), &
+                          cp_unit_to_cp2k(value=-0.1_dp, unit_str="eV"), &
+                          cp_unit_to_cp2k(value=0.0_dp, unit_str="eV"), &
+                          cp_unit_to_cp2k(value=0.1_dp, unit_str="eV"), &
+                          cp_unit_to_cp2k(value=0.2_dp, unit_str="eV")], &
+                          usage="PERTURBATION_STRENGTH [eV] -0.20 -0.10 0.00 0.10 0.20")
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
 

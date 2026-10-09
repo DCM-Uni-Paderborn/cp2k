@@ -68,7 +68,8 @@ CONTAINS
                                                             output_unit
       INTEGER, DIMENSION(:), POINTER                     :: atom_list
       LOGICAL                                            :: extern, my_do_rho0, paw_atom
-      REAL(dp)                                           :: rho0_h_tot, tot_rs_int
+      REAL(dp)                                           :: rho0_h_tot, rho1_h_aspin, rho1_h_spin, &
+                                                            rho1_s_aspin, rho1_s_spin, tot_rs_int
       REAL(dp), DIMENSION(:), POINTER                    :: rho1_h_tot, rho1_s_tot
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -140,6 +141,11 @@ CONTAINS
       rho1_h_tot = 0.0_dp
       rho1_s_tot = 0.0_dp
 
+      rho1_h_spin = 0.0_dp
+      rho1_s_spin = 0.0_dp
+      rho1_h_aspin = 0.0_dp
+      rho1_s_aspin = 0.0_dp
+
       DO ikind = 1, SIZE(atomic_kind_set)
          CALL get_atomic_kind(atomic_kind_set(ikind), atom_list=atom_list, natom=natom)
          CALL get_qs_kind(my_kind_set(ikind), paw_atom=paw_atom)
@@ -147,15 +153,16 @@ CONTAINS
          !Calculate rho1_h and rho1_s on the radial grids centered on the atomic position
          IF (paw_atom) THEN
             CALL calculate_rho_atom(para_env, rho_atom_set, my_kind_set(ikind), &
-                                    atom_list, natom, nspins, rho1_h_tot, rho1_s_tot)
+                                    atom_list, natom, nspins, rho1_h_tot, rho1_s_tot, &
+                                    rho1_h_spin, rho1_s_spin, rho1_h_aspin, rho1_s_aspin)
          END IF
 
          !Calculate rho0_h and rho0_s on the radial grids centered on the atomic position
-         IF (my_do_rho0) &
+         IF (my_do_rho0) THEN
             CALL calculate_rho0_atom(gapw_control, rho_atom_set, rhoz_cneo_set, rho0_atom_set, &
                                      rho0_mpole, atom_list, natom, ikind, my_kind_set(ikind), &
                                      rho0_h_tot)
-
+         END IF
       END DO
 
       !Do not mess with charges if using a non-default kind_set
@@ -166,6 +173,15 @@ CONTAINS
             qs_charges%total_rho1_hard(ispin) = -rho1_h_tot(ispin)
             qs_charges%total_rho1_soft(ispin) = -rho1_s_tot(ispin)
          END DO
+         !spin
+         CALL para_env%sum(rho1_h_spin)
+         CALL para_env%sum(rho1_s_spin)
+         CALL para_env%sum(rho1_h_aspin)
+         CALL para_env%sum(rho1_s_aspin)
+         qs_charges%total_rho_hard_spin = rho1_h_spin
+         qs_charges%total_rho_soft_spin = rho1_s_spin
+         qs_charges%total_rho_hard_abs_spin = rho1_h_aspin
+         qs_charges%total_rho_soft_abs_spin = rho1_s_aspin
 
          IF (my_do_rho0) THEN
             rho0_mpole%total_rho0_h = -rho0_h_tot
@@ -187,13 +203,13 @@ CONTAINS
             IF (ABS(rho0_h_tot) >= 1.0E-5_dp) THEN
                IF (ABS(1.0_dp - ABS(tot_rs_int/rho0_h_tot)) > 1.0E-3_dp) THEN
                   IF (output_unit > 0) THEN
-                     WRITE (output_unit, '(/,72("*"))')
-                     WRITE (output_unit, '(T2,A,T66,1E20.8)') &
+                     WRITE (output_unit, '(/,80("*"))')
+                     WRITE (output_unit, '(T2,A,T61,1E20.8)') &
                         "WARNING: rho0 calculated on the local grid is  :", -rho0_h_tot, &
                         "         rho0 calculated on the global grid is :", tot_rs_int
                      WRITE (output_unit, '(T2,A)') &
                         "         bad integration"
-                     WRITE (output_unit, '(72("*"),/)')
+                     WRITE (output_unit, '(80("*"),/)')
                   END IF
                END IF
             END IF
@@ -205,14 +221,14 @@ CONTAINS
                IF (ABS(rho0_mpole%tot_rhoz_cneo_s) >= 1.0E-5_dp) THEN
                   IF (ABS(1.0_dp - ABS(tot_rs_int/rho0_mpole%tot_rhoz_cneo_s)) > 1.0E-3_dp) THEN
                      IF (output_unit > 0) THEN
-                        WRITE (output_unit, '(/,72("*"))')
-                        WRITE (output_unit, '(T2,A,T66,1E20.8)') &
+                        WRITE (output_unit, '(/,80("*"))')
+                        WRITE (output_unit, '(T2,A,T61,1E20.8)') &
                            "WARNING: rhoz_cneo_s calculated on the local grid is  :", &
                            rho0_mpole%tot_rhoz_cneo_s, &
                            "         rhoz_cneo_s calculated on the global grid is :", tot_rs_int
                         WRITE (output_unit, '(T2,A)') &
                            "         bad integration"
-                        WRITE (output_unit, '(72("*"),/)')
+                        WRITE (output_unit, '(80("*"),/)')
                      END IF
                   END IF
                END IF

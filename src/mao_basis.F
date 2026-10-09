@@ -126,7 +126,7 @@ CONTAINS
       ELSE
          iolev = 1
       END IF
-      IF (iolevel == 0) THEN
+      IF (iolev == 0) THEN
          iw = -1
       END IF
 
@@ -261,8 +261,9 @@ CONTAINS
 
       ! check if MAOs have been specified
       DO iab = 1, natom
-         IF (col_blk_sizes(iab) < 0) &
+         IF (col_blk_sizes(iab) < 0) THEN
             CPABORT("Minimum number of MAOs has to be specified in KIND section for all elements")
+         END IF
       END DO
       DO ispin = 1, nspin
          ! coefficients

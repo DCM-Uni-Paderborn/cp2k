@@ -301,8 +301,9 @@ CONTAINS
             ! real space is distributed over x and y coordinate
             ! we have two stages of communication
             !
-            IF (r_dim(1) == 1) &
+            IF (r_dim(1) == 1) THEN
                CPABORT("This processor distribution is not supported.")
+            END IF
 
             CALL get_fft_scratch(fft_scratch, tf_type=300, n=n, fft_sizes=fft_scratch_size)
 
@@ -320,7 +321,7 @@ CONTAINS
 
             ! FFT along y
             ! use the inbuild fft-lib
-            ! CALL fft_1dm(fft_scratch%fft_plan(2), rbuf, pbuf, 1.0_dp, stat)
+            ! CALL fft_1d(fft_scratch%fft_plan(2), rbuf, pbuf, 1.0_dp, stat)
             ! or cufft (works faster, but is only faster if plans are stored)
             CALL pw_gpu_f(rbuf, pbuf, +1, n(2), mx2*mz2)
 
@@ -463,8 +464,9 @@ CONTAINS
             ! real space is distributed over x and y coordinate
             ! we have two stages of communication
             !
-            IF (r_dim(1) == 1) &
+            IF (r_dim(1) == 1) THEN
                CPABORT("This processor distribution is not supported.")
+            END IF
 
             CALL get_fft_scratch(fft_scratch, tf_type=300, n=n, fft_sizes=fft_scratch_size)
 
@@ -484,7 +486,7 @@ CONTAINS
 
             ! FFT along y
             ! use the inbuild fft-lib
-            ! CALL fft_1dm(fft_scratch%fft_plan(5), qbuf, rbuf, 1.0_dp, stat)
+            ! CALL fft_1d(fft_scratch%fft_plan(5), qbuf, rbuf, 1.0_dp, stat)
             ! or cufft (works faster, but is only faster if plans are stored)
             CALL pw_gpu_f(qbuf, rbuf, -1, n(2), mx2*mz2)
 

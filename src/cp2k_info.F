@@ -9,6 +9,8 @@
 #include "gauxc/gauxc_config.f"
 #endif
 
+#include "cp2k_build_info.h"
+
 ! **************************************************************************************************
 !> \brief some minimal info about CP2K, including its version and license
 !> \par History
@@ -19,7 +21,8 @@
 ! **************************************************************************************************
 MODULE cp2k_info
 
-   USE iso_fortran_env,                 ONLY: compiler_options
+   USE iso_fortran_env,                 ONLY: compiler_options,&
+                                              compiler_version
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length
    USE machine,                         ONLY: m_getcwd,&
@@ -34,7 +37,7 @@ MODULE cp2k_info
    PRIVATE
 
    PUBLIC :: cp2k_version, cp2k_year, cp2k_home, cp2k_flags
-   PUBLIC :: compile_arch, compile_date, compile_host, compile_revision
+   PUBLIC :: compile_arch, compile_date, compile_host, compile_revision, compile_with
    PUBLIC :: print_cp2k_license, get_runtime_info, write_restart_header
 
 #if defined(__COMPILE_REVISION)
@@ -44,11 +47,12 @@ MODULE cp2k_info
 #endif
 
    !!! Keep version in sync with CMakeLists.txt !!!
-   CHARACTER(LEN=*), PARAMETER :: cp2k_version = "CP2K version 2026.1 (Development Version)"
+   CHARACTER(LEN=*), PARAMETER :: cp2k_version = "CP2K version 2026.2 (Development Version)"
    CHARACTER(LEN=*), PARAMETER :: cp2k_year = "2026"
    CHARACTER(LEN=*), PARAMETER :: cp2k_home = "https://www.cp2k.org/"
 
    ! compile time information
+   CHARACTER(LEN=*), PARAMETER :: compile_with = compiler_version()
 #if defined(__COMPILE_ARCH)
    CHARACTER(LEN=*), PARAMETER :: compile_arch = __COMPILE_ARCH
 #else
@@ -56,9 +60,9 @@ MODULE cp2k_info
 #endif
 
 #if defined(__COMPILE_DATE)
-   CHARACTER(LEN=*), PARAMETER :: compile_date = __COMPILE_DATE
+   CHARACTER(LEN=default_string_length), SAVE :: compile_date = __COMPILE_DATE
 #else
-   CHARACTER(LEN=*), PARAMETER :: compile_date = "unknown: -D__COMPILE_DATE=?"
+   CHARACTER(LEN=default_string_length), SAVE :: compile_date = "unknown: -D__COMPILE_DATE=?"
 #endif
 
 #if defined(__COMPILE_HOST)
@@ -111,6 +115,12 @@ CONTAINS
 #if defined(__LIBXC)
       flags = TRIM(flags)//" libxc"
 #endif
+#if defined(__LIBXC) && !defined(__NO_OFFLOAD_LIBXC)
+      flags = TRIM(flags)//" libxc_gpu"
+#endif
+#if defined(__NO_OFFLOAD_LIBXC)
+      flags = TRIM(flags)//" no_offload_libxc"
+#endif
 #if defined(__GAUXC)
       flags = TRIM(flags)//" gauxc"
 #endif
@@ -119,6 +129,9 @@ CONTAINS
 #endif
 #if defined(GAUXC_HAS_ONEDFT)
       flags = TRIM(flags)//" gauxc_onedft"
+#endif
+#if defined(__GAUXC) && defined(__GAUXC_ONEDFT_GRADIENT_FIX)
+      flags = TRIM(flags)//" gauxc_onedft_gradients"
 #endif
 #if defined(GAUXC_HAS_HOST)
       flags = TRIM(flags)//" gauxc_host"
@@ -129,8 +142,14 @@ CONTAINS
 #if defined(GAUXC_HAS_CUDA)
       flags = TRIM(flags)//" gauxc_cuda"
 #endif
+#if defined(GAUXC_HAS_CUTLASS)
+      flags = TRIM(flags)//" gauxc_cutlass"
+#endif
 #if defined(GAUXC_HAS_HDF5)
       flags = TRIM(flags)//" gauxc_hdf5"
+#endif
+#if defined(__SKALA)
+      flags = TRIM(flags)//" skala"
 #endif
 #if defined(__PEXSI)
       flags = TRIM(flags)//" pexsi"
@@ -163,8 +182,14 @@ CONTAINS
 #if defined(__PW_FPGA_SP)
       flags = TRIM(flags)//" pw_fpga_sp"
 #endif
+#if defined(__LIBXS)
+      flags = TRIM(flags)//" libxs"
+#endif
 #if defined(__LIBXSMM)
-      flags = TRIM(flags)//" xsmm"
+      flags = TRIM(flags)//" libxsmm"
+#endif
+#if defined(__LIBXSTREAM)
+      flags = TRIM(flags)//" libxstream"
 #endif
 #if defined(__CRAY_PM_ACCEL_ENERGY)
       flags = TRIM(flags)//" cray_pm_accel_energy"
@@ -215,14 +240,14 @@ CONTAINS
 #if defined(__MKL)
       flags = TRIM(flags)//" mkl"
 #endif
+#if defined(__OPENBLAS)
+      flags = TRIM(flags)//" openblas"
+#endif
 #if defined(__DFTD4)
       flags = TRIM(flags)//" libdftd4"
 #endif
-#if defined(__DFTD4_V3)
-      flags = TRIM(flags)//" dftd4_v3"
-#endif
-#if defined(__DFTD4_V4_2)
-      flags = TRIM(flags)//" dftd4_v4_2"
+#if defined(__S_DFTD3)
+      flags = TRIM(flags)//" s_dftd3"
 #endif
 #if defined(__TBLITE)
       flags = TRIM(flags)//" mctc-lib"
@@ -258,6 +283,12 @@ CONTAINS
 #endif
 #if defined(__LIBTORCH)
       flags = TRIM(flags)//" libtorch"
+#endif
+#if defined(__LIBTORCH_CUDA)
+      flags = TRIM(flags)//" libtorch_cuda"
+#endif
+#if defined(__SKALA_FTORCH)
+      flags = TRIM(flags)//" skala_ftorch"
 #endif
 #if defined(__MIMIC)
       flags = TRIM(flags)//" mimic"
@@ -324,6 +355,11 @@ CONTAINS
       flags = TRIM(flags)//" openpmd"
 #endif
 
+#if defined(__LIBGINT)
+      flags = TRIM(flags)//" libGint"
+#endif
+
+      flags = TRIM(flags)//" libwignernj"
    END FUNCTION cp2k_flags
 
 ! **************************************************************************************************

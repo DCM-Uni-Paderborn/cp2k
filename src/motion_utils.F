@@ -180,7 +180,7 @@ CONTAINS
       END DO
       ! Normalize Translations
       DO i = 1, 3
-         norm = SQRT(DOT_PRODUCT(Tr(:, i), Tr(:, i)))
+         norm = NORM2(Tr(:, i))
          Tr(:, i) = Tr(:, i)/norm
       END DO
       dof = 3
@@ -293,6 +293,7 @@ CONTAINS
 
       CHARACTER(LEN=1024)                                :: cell_str, title
       CHARACTER(LEN=4)                                   :: id_dcd
+      CHARACTER(LEN=5)                                   :: pbc_str
       CHARACTER(LEN=80), DIMENSION(2)                    :: remark
       CHARACTER(LEN=default_string_length) :: etot_str, id_extxyz, id_label, id_wpc, my_act, &
          my_ext, my_form, my_middle, my_pk_name, my_pos, section_ref, step_str, time_str, unit_str
@@ -347,7 +348,12 @@ CONTAINS
          id_wpc = "FORCE_MIXING_LABELS"
          id_extxyz = "force_mixing_label" ! non-standard
       CASE DEFAULT
-         CPABORT("")
+         CALL cp_abort(__LOCATION__, &
+                       "<TRAJECTORY>, <VELOCITIES>, <FORCES>, "// &
+                       "<FORCE_MIXING_LABELS> are supported as "// &
+                       "the <my_pk_name> for write_trajectory, "// &
+                       "found unknown option "// &
+                       "<"//TRIM(my_pk_name)//">")
       END SELECT
 
       charge_occup = .FALSE.
@@ -364,6 +370,10 @@ CONTAINS
       END IF
       particle_set => my_particles%els
       nat = my_particles%n_els
+      pbc_str = "F F F"
+      IF (cell%perd(1) == 1) pbc_str(1:1) = "T"
+      IF (cell%perd(2) == 1) pbc_str(3:3) = "T"
+      IF (cell%perd(3) == 1) pbc_str(5:5) = "T"
 
       ! Gather units of measure for output (if available)
       IF (TRIM(my_pk_name) /= "FORCE_MIXING_LABELS") THEN
@@ -420,6 +430,7 @@ CONTAINS
             WRITE (UNIT=title, FMT="(A)") &
                'Lattice="'//TRIM(ADJUSTL(cell_str))//'"'// &
                ' Properties=species:S:1:'//TRIM(id_extxyz)//':R:3'// &
+               ' pbc="'//pbc_str//'"'// &
                ' Step='//TRIM(ADJUSTL(step_str))// &
                ' Time='//TRIM(ADJUSTL(time_str))// &
                ' Energy='//TRIM(ADJUSTL(etot_str))
@@ -434,8 +445,9 @@ CONTAINS
                CALL section_vals_val_get(root_section, "MOTION%PRINT%TRAJECTORY%CHARGE_EXTENDED", &
                                          l_val=charge_extended)
                i = COUNT([charge_occup, charge_beta, charge_extended])
-               IF (i > 1) &
+               IF (i > 1) THEN
                   CPABORT("Either only CHARGE_OCCUP, CHARGE_BETA, or CHARGE_EXTENDED can be selected, ")
+               END IF
             END IF
             IF (new_file) THEN
                CALL m_timestamp(timestamp)
@@ -457,7 +469,7 @@ CONTAINS
                   "Step ", it, ", E = ", etot
             END IF
          CASE DEFAULT
-            CPABORT("")
+            CPABORT("Unknown output format")
          END SELECT
          IF (TRIM(my_pk_name) == "FORCE_MIXING_LABELS") THEN
             ALLOCATE (fml_array(3*SIZE(particle_set)))

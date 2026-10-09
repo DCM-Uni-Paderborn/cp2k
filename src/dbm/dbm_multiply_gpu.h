@@ -25,6 +25,14 @@ typedef struct {
   offloadEvent_t event;
 } dbm_shard_gpu_t;
 
+// Separate from dbm_pack_t because device allocation lifetime differs from the
+// host pack (which is reallocated each tick); tracks device capacity
+// explicitly.
+typedef struct {
+  double *data; // on the device
+  int data_allocated;
+} dbm_pack_gpu_t;
+
 /*******************************************************************************
  * \brief Internal struct for storing the gpu backend's context.
  * \author Ole Schuett
@@ -36,8 +44,8 @@ typedef struct {
   int nshards;
   dbm_shard_gpu_t *shards_c_dev;
 
-  dbm_pack_t pack_a_dev;
-  dbm_pack_t pack_b_dev;
+  dbm_pack_gpu_t pack_a_dev;
+  dbm_pack_gpu_t pack_b_dev;
 
   int max_batch_size;
   dbm_task_t *batches_dev;

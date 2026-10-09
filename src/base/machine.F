@@ -20,31 +20,20 @@ MODULE machine
                             C_PTR, &
                             C_NULL_CHAR, &
                             C_ASSOCIATED
-   USE ISO_FORTRAN_ENV, ONLY: input_unit, &
-                              output_unit
+   USE ISO_FORTRAN_ENV, ONLY: ERROR_UNIT, &
+                              INPUT_UNIT, &
+                              OUTPUT_UNIT
    USE omp_lib, ONLY: omp_get_wtime
    USE kinds, ONLY: default_path_length, &
                     default_string_length, &
                     dp, &
                     int_8
-#if defined(__LIBXSMM)
-#include "libxsmm_version.h"
-#if !defined(__LIBXSMM2) && (1 < __LIBXSMM || (1170000 < \
-   (LIBXSMM_CONFIG_VERSION_MAJOR*1000000\
-   +LIBXSMM_CONFIG_VERSION_MINOR*10000\
-   +LIBXSMM_CONFIG_VERSION_UPDATE*100\
-   +LIBXSMM_CONFIG_VERSION_PATCH)))
-#define __LIBXSMM2
-#endif
-#if defined(__LIBXSMM2)
-   USE libxsmm, ONLY: libxsmm_timer_tick, libxsmm_timer_duration, libxsmm_get_target_archid, &
-                      LIBXSMM_TARGET_ARCH_GENERIC, LIBXSMM_X86_SSE4, LIBXSMM_X86_AVX, LIBXSMM_X86_AVX2, &
-                      LIBXSMM_X86_AVX512_SKX, LIBXSMM_AARCH64_V81, LIBXSMM_AARCH64_SVE128
-#else
-   USE libxsmm, ONLY: libxsmm_timer_tick, libxsmm_timer_duration, libxsmm_get_target_archid, &
-                      LIBXSMM_TARGET_ARCH_GENERIC, LIBXSMM_X86_SSE4, LIBXSMM_X86_AVX, LIBXSMM_X86_AVX2, &
-                      LIBXSMM_X86_AVX512_SKX => LIBXSMM_X86_AVX512_CORE
-#endif
+#if defined(__LIBXS)
+   USE libxs, ONLY: libxs_timer_tick, libxs_timer_duration, libxs_cpuid, &
+                    LIBXS_TARGET_ARCH_GENERIC, LIBXS_X86_SSE42, LIBXS_X86_AVX, LIBXS_X86_AVX2, &
+                    LIBXS_X86_AVX512, LIBXS_AARCH64, LIBXS_AARCH64_SVE128, &
+                    LIBXS_AARCH64_SVE256, LIBXS_AARCH64_SVE512, &
+                    C_NULL_PTR
 #endif
 
    IMPLICIT NONE
@@ -55,8 +44,9 @@ MODULE machine
    ! for example in farming or path integral runs
    ! default_input_unit should never be used
    ! but we need to know what it is, as we should not try to open it for output
-   INTEGER, PUBLIC, PARAMETER                   :: default_output_unit = output_unit, &
-                                                   default_input_unit = input_unit, &
+   INTEGER, PUBLIC, PARAMETER                   :: default_error_unit = ERROR_UNIT, &
+                                                   default_input_unit = INPUT_UNIT, &
+                                                   default_output_unit = OUTPUT_UNIT, &
                                                    timestamp_length = 23
 
 #include "machine_cpuid.h"
@@ -152,8 +142,8 @@ CONTAINS
    FUNCTION m_walltime() RESULT(wt)
       REAL(KIND=dp)                                      :: wt
 
-#if defined(__LIBXSMM)
-      wt = libxsmm_timer_duration(0_int_8, libxsmm_timer_tick())
+#if defined(__LIBXS)
+      wt = libxs_timer_duration(0_int_8, libxs_timer_tick())
 #else
       wt = omp_get_wtime()
 #endif
@@ -198,36 +188,36 @@ CONTAINS
 ! **************************************************************************************************
    PURE FUNCTION m_cpuid()
       INTEGER :: m_cpuid
-#if !defined(__LIBXSMM)
+#if !defined(__LIBXS)
       m_cpuid = m_cpuid_static()
 #else
 
       INTEGER :: archid
       m_cpuid = MACHINE_CPU_UNKNOWN
-      archid = libxsmm_get_target_archid()
-      IF (LIBXSMM_X86_SSE4 <= archid .AND. archid < LIBXSMM_X86_AVX) THEN
+      archid = libxs_cpuid(C_NULL_PTR)
+      IF (LIBXS_X86_SSE42 <= archid .AND. archid < LIBXS_X86_AVX) THEN
          m_cpuid = MACHINE_X86_SSE4
-      ELSE IF (LIBXSMM_X86_AVX <= archid .AND. archid < LIBXSMM_X86_AVX2) THEN
+      ELSE IF (LIBXS_X86_AVX <= archid .AND. archid < LIBXS_X86_AVX2) THEN
          m_cpuid = MACHINE_X86_AVX
-      ELSE IF (LIBXSMM_X86_AVX2 <= archid .AND. archid < LIBXSMM_X86_AVX512_SKX) THEN
+      ELSE IF (LIBXS_X86_AVX2 <= archid .AND. archid < LIBXS_X86_AVX512) THEN
          m_cpuid = MACHINE_X86_AVX2
-      ELSE IF (LIBXSMM_X86_AVX512_SKX <= archid .AND. archid <= 1999) THEN
+      ELSE IF (LIBXS_X86_AVX512 <= archid .AND. archid <= 1999) THEN
          m_cpuid = MACHINE_X86_AVX512
       END IF
 
-#if defined(__LIBXSMM2)
       IF (m_cpuid == MACHINE_CPU_UNKNOWN) THEN
-         IF (LIBXSMM_AARCH64_V81 <= archid .AND. archid < LIBXSMM_AARCH64_SVE128) THEN
+         IF (LIBXS_AARCH64 <= archid .AND. archid < LIBXS_AARCH64_SVE128) THEN
             m_cpuid = MACHINE_ARM_ARCH64
-         ELSE IF (LIBXSMM_AARCH64_SVE128 <= archid .AND. archid < 2401) THEN ! LIBXSMM_AARCH64_SVE512
+         ELSE IF (LIBXS_AARCH64_SVE128 <= archid .AND. archid < LIBXS_AARCH64_SVE256) THEN
+            m_cpuid = MACHINE_ARM_SVE128
+         ELSE IF (LIBXS_AARCH64_SVE256 <= archid .AND. archid < LIBXS_AARCH64_SVE512) THEN
             m_cpuid = MACHINE_ARM_SVE256
-         ELSE IF (2401 <= archid .AND. archid <= 2999) THEN
+         ELSE IF (LIBXS_AARCH64_SVE512 <= archid .AND. archid <= 2999) THEN
             m_cpuid = MACHINE_ARM_SVE512
          END IF
       END IF
-#endif
 
-      IF (m_cpuid == MACHINE_CPU_UNKNOWN .AND. LIBXSMM_TARGET_ARCH_GENERIC <= archid .AND. archid <= 2999) THEN
+      IF (m_cpuid == MACHINE_CPU_UNKNOWN .AND. LIBXS_TARGET_ARCH_GENERIC <= archid .AND. archid <= 2999) THEN
          m_cpuid = MACHINE_CPU_GENERIC
       END IF
 #endif
@@ -345,7 +335,7 @@ CONTAINS
 #elif defined(__CRAY_PM_ACCEL_ENERGY)
       wt = read_energy("/sys/cray/pm_counters/accel_energy")
 #else
-      wt = 0.0 ! fallback default
+      wt = 0.0_dp ! fallback default
 #endif
 
    END FUNCTION m_energy
@@ -753,14 +743,17 @@ CONTAINS
       ! on a posix system LOGNAME should be defined
       CALL get_environment_variable("LOGNAME", value=user, status=istat)
       ! nope, check alternative
-      IF (istat /= 0) &
+      IF (istat /= 0) THEN
          CALL get_environment_variable("USER", value=user, status=istat)
+      END IF
       ! nope, check alternative
-      IF (istat /= 0) &
+      IF (istat /= 0) THEN
          CALL get_environment_variable("USERNAME", value=user, status=istat)
+      END IF
       ! fall back
-      IF (istat /= 0) &
+      IF (istat /= 0) THEN
          user = "<unknown>"
+      END IF
 
    END SUBROUTINE m_getlog
 

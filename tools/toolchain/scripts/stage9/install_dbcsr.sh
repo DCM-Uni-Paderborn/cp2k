@@ -6,8 +6,8 @@
 [ "${BASH_SOURCE[0]}" ] && SCRIPT_NAME="${BASH_SOURCE[0]}" || SCRIPT_NAME=$0
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_NAME}")/.." && pwd -P)"
 
-dbcsr_ver="2.9.1"
-dbcsr_sha256="fa5a4aeba0a07761511af2c26c779bd811b5ea0ef06a5d94535b6dd7b2e0ce59"
+dbcsr_ver="2.10.0"
+dbcsr_sha256="3d897220fbb4498215331efad6905eb7744881b4cf04eb5c5fb4db7c48a56ef9"
 source "${SCRIPT_DIR}"/common_vars.sh
 source "${SCRIPT_DIR}"/tool_kit.sh
 source "${SCRIPT_DIR}"/signal_trap.sh
@@ -32,22 +32,26 @@ case "${with_dbcsr}" in
       [ -d dbcsr-${dbcsr_ver} ] && rm -rf dbcsr-${dbcsr_ver}
       tar -xzf dbcsr-${dbcsr_ver}.tar.gz
       cd dbcsr-${dbcsr_ver}
-      if [ "${ENABLE_CUDA}" == "__TRUE__" ] && [ "${GPUVER}" == "GB10" ]; then
-        # DBCSR 2.9.1 predates GB10. Build native sm_121 code while
-        # reusing the closest available libsmm_acc parameters.
-        sed -i "s/    H100)/    H100\\n    GB10)/" CMakeLists.txt
-        sed -i "/  set(GPU_ARCH_NUMBER_H100 90)/a\\  set(GPU_ARCH_NUMBER_GB10 121)" CMakeLists.txt
-        cp src/acc/libsmm_acc/parameters/parameters_H100.json \
-          src/acc/libsmm_acc/parameters/parameters_GB10.json
+      # DBCSR 2.10 predates GB10 and B200. Build native device code while
+      # reusing the closest available libsmm_acc parameters.
+      if [ "${ENABLE_CUDA}" == "__TRUE__" ] &&
+        { [ "${GPUVER}" == "GB10" ] || [ "${GPUVER}" == "B200" ]; }; then
+        if ! grep -q "${GPUVER}" CMakeLists.txt; then
+          sed -i "s/    H100)/    H100\\n    ${GPUVER})/" CMakeLists.txt
+          sed -i "/  set(GPU_ARCH_NUMBER_H100 90)/a\\  set(GPU_ARCH_NUMBER_${GPUVER} ${ARCH_NUM})" CMakeLists.txt
+          cp src/acc/libsmm_acc/parameters/parameters_H100.json \
+            "src/acc/libsmm_acc/parameters/parameters_${GPUVER}.json"
+        fi
       fi
       mkdir build-cpu
       cd build-cpu
       CMAKE_OPTIONS="-DBUILD_TESTING=NO -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_VERBOSE_MAKEFILE=ON"
       CMAKE_OPTIONS="${CMAKE_OPTIONS} -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DUSE_OPENMP=ON -DWITH_EXAMPLES=NO"
-      if [ "${with_libxsmm}" == "__DONTUSE__" ]; then
-        CMAKE_OPTIONS="${CMAKE_OPTIONS} -DUSE_SMM=blas"
-      else
-        CMAKE_OPTIONS="${CMAKE_OPTIONS} -DUSE_SMM=libxsmm"
+      if [ "${with_libxs}" != "__DONTUSE__" ]; then
+        CMAKE_OPTIONS="${CMAKE_OPTIONS} -DUSE_LIBXS=ON"
+        if [ "${with_libxsmm}" != "__DONTUSE__" ]; then
+          CMAKE_OPTIONS="${CMAKE_OPTIONS} -DUSE_LIBXSMM=ON"
+        fi
       fi
       if [ "${MPI_MODE}" == "no" ]; then
         CMAKE_OPTIONS="${CMAKE_OPTIONS} -DUSE_MPI=OFF"
@@ -58,29 +62,23 @@ case "${with_dbcsr}" in
         -DCMAKE_INSTALL_PREFIX=${pkg_install_dir} \
         ${CMAKE_OPTIONS} .. \
         > cmake.log 2>&1 || tail_excerpt cmake.log
-      make -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
-      make -j $(get_nprocs) install > install.log 2>&1 || tail_excerpt install.log
+      make -j $(get_nprocs) install > make.log 2>&1 || tail_excerpt make.log
       cd ..
       if [ "${ENABLE_CUDA}" == "__TRUE__" ]; then
+        echo "Installing from scratch into ${pkg_install_dir}-cuda"
         mkdir build-cuda
         cd build-cuda
         CMAKE_OPTIONS="${CMAKE_OPTIONS} -DUSE_ACCEL=cuda"
-        # CUDA 13 deprecates APIs still used by DBCSR 2.9.1 under -Werror.
-        CMAKE_OPTIONS="${CMAKE_OPTIONS} -DCMAKE_CXX_FLAGS=-Wno-error=deprecated-declarations"
-        if [ "${GPUVER}" == "GB10" ]; then
-          CMAKE_OPTIONS="${CMAKE_OPTIONS} -DWITH_GPU=GB10 -DWITH_GPU_PARAMS=GB10"
-        else
-          CMAKE_OPTIONS="${CMAKE_OPTIONS} -DWITH_GPU=P100"
-        fi
+        CMAKE_OPTIONS="${CMAKE_OPTIONS} -DWITH_GPU=${GPUVER:-P100}"
         cmake \
           -DCMAKE_INSTALL_PREFIX=${pkg_install_dir}-cuda \
           ${CMAKE_OPTIONS} .. \
           > cmake.log 2>&1 || tail_excerpt cmake.log
-        make -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
-        make -j $(get_nprocs) install > install.log 2>&1 || tail_excerpt install.log
+        make -j $(get_nprocs) install > make.log 2>&1 || tail_excerpt make.log
         cd ..
       fi
       if [ "${ENABLE_HIP}" == "__TRUE__" ]; then
+        echo "Installing from scratch into ${pkg_install_dir}-hip"
         mkdir build-hip
         cd build-hip
         CMAKE_OPTIONS="${CMAKE_OPTIONS} -DUSE_ACCEL=hip -DWITH_GPU=Mi250"
@@ -88,71 +86,50 @@ case "${with_dbcsr}" in
           -DCMAKE_INSTALL_PREFIX=${pkg_install_dir}-hip \
           ${CMAKE_OPTIONS} .. \
           > cmake.log 2>&1 || tail_excerpt cmake.log
-        make -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
-        make -j $(get_nprocs) install > install.log 2>&1 || tail_excerpt install.log
+        make -j $(get_nprocs) install > make.log 2>&1 || tail_excerpt make.log
         cd ..
       fi
       write_checksums "${install_lock_file}" "${SCRIPT_DIR}/stage9/$(basename ${SCRIPT_NAME})"
-      DBCSR_CFLAGS="-I'${pkg_install_dir}/include'"
-      DBCSR_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath='${pkg_install_dir}/lib'"
-      DBCSR_CUDA_CFLAGS="-I'${pkg_install_dir}-cuda/include'"
-      DBCSR_CUDA_LDFLAGS="-L'${pkg_install_dir}-cuda/lib' -Wl,-rpath='${pkg_install_dir}-cuda/lib'"
-      DBCSR_HIP_CFLAGS="-I'${pkg_install_dir}-hip/include'"
-      DBCSR_HIP_LDFLAGS="-L'${pkg_install_dir}-hip/lib' -Wl,-rpath='${pkg_install_dir}-hip/lib'"
     fi
     ;;
   __SYSTEM__)
     echo "==================== Finding DBCSR from system paths ===================="
     check_lib -ldbcsr "dbcsr"
-    add_include_from_paths DBCSR_CFLAGS "dbcsr.h" $INCLUDE_PATHS
-    add_lib_from_paths DBCSR_LDFLAGS "dbcsr.*" $LIB_PATHS
+    pkg_install_dir="$(dirname $(dirname $(find_in_paths "libdbcsr.*" $LIB_PATHS)))"
     ;;
   __DONTUSE__)
-    # Nothing to do
+    report_error "DBCSR is a required dependency of CP2K and cannot be disabled"
     ;;
   *)
     echo "==================== Linking DBCSR to user paths ===================="
     pkg_install_dir="${with_dbcsr}"
     DBCSR_LIBDIR="${pkg_install_dir}/lib"
+    [ -d "${pkg_install_dir}/lib64" ] && DBCSR_LIBDIR="${pkg_install_dir}/lib64"
     check_dir "${DBCSR_LIBDIR}"
     check_dir "${pkg_install_dir}/include"
-    DBCSR_CFLAGS="-I'${pkg_install_dir}/include'"
-    DBCSR_LDFLAGS="-L'${DBCSR_LIBDIR}' -Wl,-rpath,'${DBCSR_LIBDIR}'"
     ;;
 esac
 
 if [ "${with_dbcsr}" != "__DONTUSE__" ]; then
-  DBCSR_LIBS="-ldbcsr"
+  cat << EOF > "${BUILDDIR}/setup_dbcsr"
+export DBCSR_VER="${dbcsr_ver}"
+EOF
   if [ "${with_dbcsr}" != "__SYSTEM__" ]; then
-    if [ "${ENABLE_CUDA}" == "__TRUE__" ]; then
-      pkg_install_dir1="${pkg_install_dir}-cuda"
-    else
-      if [ "${ENABLE_HIP}" == "__TRUE__" ]; then
+    pkg_install_dir1="${pkg_install_dir}"
+    if [ "${with_dbcsr}" = "__INSTALL__" ]; then
+      if [ "${ENABLE_CUDA}" = "__TRUE__" ]; then
+        pkg_install_dir1="${pkg_install_dir}-cuda"
+      elif [ "${ENABLE_HIP}" = "__TRUE__" ]; then
         pkg_install_dir1="${pkg_install_dir}-hip"
-      else
-        pkg_install_dir1="${pkg_install_dir}"
       fi
     fi
-  fi
-  cat << EOF > "${BUILDDIR}/setup_dbcsr"
+    cat << EOF >> "${BUILDDIR}/setup_dbcsr"
 prepend_path LD_LIBRARY_PATH "${pkg_install_dir1}/lib"
 prepend_path LD_RUN_PATH "${pkg_install_dir1}/lib"
 prepend_path LIBRARY_PATH "${pkg_install_dir1}/lib"
-prepend_path CPATH "${pkg_install_dir1}/include"
 prepend_path CMAKE_PREFIX_PATH "${pkg_install_dir1}"
-export DBCSR_ROOT="${pkg_install_dir}"
-export DBCSR_HIP_ROOT="${pkg_install_dir}-hip"
-export DBCSR_CUDA_ROOT="${pkg_install_dir}-cuda"
-export DBCSR_VER="${dbcsr_ver}"
-export DBCSR_DIR="${pkg_install_dir1}/lib/cmake/dbcsr"
-export DBCSR_CFLAGS="${DBCSR_CFLAGS}"
-export DBCSR_LDFLAGS="IF_CUDA(${DBCSR_CUDA_LDFLAGS}|IF_HIP(${DBCSR_HIP_LDFLAGS}|${DBCSR_LDFLAGS}))"
-export DBCSR_LIBS="${DBCSR_LIBS}"
-export CP_DFLAGS="\${CP_DFLAGS} IF_CUDA(-D__DBCSR_ACC -D__DBCSR|IF_HIP(-D__DBCSR_ACC -D__DBCSR|-D__DBCSR))"
-export CP_CFLAGS="\${CP_CFLAGS} ${DBCSR_CFLAGS}"
-export CP_LDFLAGS="\${CP_LDFLAGS} ${DBCSR_LDFLAGS}"
-export CP_LIBS="${DBCSR_LIBS} \${CP_LIBS}"
 EOF
+  fi
 else
   touch "${BUILDDIR}/setup_dbcsr"
 fi

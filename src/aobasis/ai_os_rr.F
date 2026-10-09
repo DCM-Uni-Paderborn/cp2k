@@ -7,9 +7,9 @@
 
 MODULE ai_os_rr
 
-   USE gamma,                           ONLY: fgamma => fgamma_0
-   USE kinds,                           ONLY: dp
-   USE orbital_pointers,                ONLY: coset
+   USE gamma, ONLY: fgamma => fgamma_0
+   USE kinds, ONLY: dp
+   USE orbital_pointers, ONLY: coset
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -20,84 +20,73 @@ MODULE ai_os_rr
 
    PUBLIC :: os_rr_ovlp, os_rr_coul
 
+   INTERFACE os_rr_ovlp
+      MODULE PROCEDURE os_rr_ovlp_real, os_rr_ovlp_complex
+   END INTERFACE os_rr_ovlp
+
 CONTAINS
 
+   #:for suffix, integral_type in [('real', 'REAL'), ('complex', 'COMPLEX')]
 ! **************************************************************************************************
 !> \brief   Calculation of the basic Obara-Saika recurrence relation
-!> \param rap ...
+!>          for real or complex product-center displacements. Each Cartesian
+!>          table is normalized to a unit zeroth-degree integral.
+!> \param rap product-center displacement relative to center A
 !> \param la_max ...
-!> \param rbp ...
+!> \param rbp product-center displacement relative to center B
 !> \param lb_max ...
-!> \param zet ...
+!> \param zet real sum of the Gaussian exponents
 !> \param ldrr ...
 !> \param rr ...
 !> \date    02.03.2009
 !> \author  VW
 !> \version 1.0
 ! **************************************************************************************************
-   SUBROUTINE os_rr_ovlp(rap, la_max, rbp, lb_max, zet, ldrr, rr)
-      REAL(dp), DIMENSION(3), INTENT(IN)                 :: rap
-      INTEGER, INTENT(IN)                                :: la_max
-      REAL(dp), DIMENSION(3), INTENT(IN)                 :: rbp
-      INTEGER, INTENT(IN)                                :: lb_max
-      REAL(dp), INTENT(IN)                               :: zet
-      INTEGER, INTENT(IN)                                :: ldrr
-      REAL(dp), DIMENSION(0:ldrr-1, 0:ldrr-1, 3)         :: rr
+      SUBROUTINE os_rr_ovlp_${suffix}$ (rap, la_max, rbp, lb_max, zet, ldrr, rr)
+         ${integral_type}$ (dp), DIMENSION(3), INTENT(IN)     :: rap
+         INTEGER, INTENT(IN)                                :: la_max
+         ${integral_type}$ (dp), DIMENSION(3), INTENT(IN)     :: rbp
+         INTEGER, INTENT(IN)                                :: lb_max
+         REAL(dp), INTENT(IN)                               :: zet
+         INTEGER, INTENT(IN)                                :: ldrr
+         ${integral_type}$ (dp), DIMENSION(0:ldrr - 1, 0:ldrr - 1, 3) :: rr
 
-      INTEGER                                            :: la, lam1, lap1, lb, lbm1, lbp1
-      REAL(dp)                                           :: g
+         INTEGER                                            :: idir, la, lam1, lap1, lb, lbm1, lbp1
+         REAL(dp)                                           :: g
 
-      g = 0.5_dp/zet
-      rr(0, 0, 1) = 1.0_dp
-      rr(0, 0, 2) = 1.0_dp
-      rr(0, 0, 3) = 1.0_dp
-      !
-      ! recursion along la for lb=0
-      !
-      IF (la_max > 0) THEN
-         rr(1, 0, 1) = rap(1)
-         rr(1, 0, 2) = rap(2)
-         rr(1, 0, 3) = rap(3)
-         !
-         DO la = 1, la_max - 1
-            lap1 = la + 1
-            lam1 = la - 1
-            rr(lap1, 0, 1) = REAL(la, dp)*g*rr(lam1, 0, 1) + rap(1)*rr(la, 0, 1)
-            rr(lap1, 0, 2) = REAL(la, dp)*g*rr(lam1, 0, 2) + rap(2)*rr(la, 0, 2)
-            rr(lap1, 0, 3) = REAL(la, dp)*g*rr(lam1, 0, 3) + rap(3)*rr(la, 0, 3)
+         g = 0.5_dp/zet
+         DO idir = 1, 3
+            rr(0, 0, idir) = 1.0_dp
+            ! recursion along la for lb=0
+            IF (la_max > 0) THEN
+               rr(1, 0, idir) = rap(idir)
+               DO la = 1, la_max - 1
+                  lap1 = la + 1
+                  lam1 = la - 1
+                  rr(lap1, 0, idir) = REAL(la, dp)*g*rr(lam1, 0, idir) + rap(idir)*rr(la, 0, idir)
+               END DO
+            END IF
+            ! recursion along lb for all la
+            IF (lb_max > 0) THEN
+               rr(0, 1, idir) = rbp(idir)
+               DO la = 1, la_max
+                  lam1 = la - 1
+                  rr(la, 1, idir) = REAL(la, dp)*g*rr(lam1, 0, idir) + rbp(idir)*rr(la, 0, idir)
+               END DO
+               DO lb = 1, lb_max - 1
+                  lbp1 = lb + 1
+                  lbm1 = lb - 1
+                  rr(0, lbp1, idir) = REAL(lb, dp)*g*rr(0, lbm1, idir) + rbp(idir)*rr(0, lb, idir)
+                  DO la = 1, la_max
+                     lam1 = la - 1
+                     rr(la, lbp1, idir) = g*(REAL(la, dp)*rr(lam1, lb, idir) + REAL(lb, dp)*rr(la, lbm1, idir)) + &
+                                          rbp(idir)*rr(la, lb, idir)
+                  END DO
+               END DO
+            END IF
          END DO
-      END IF
-      !
-      ! recursion along lb for all la
-      !
-      IF (lb_max > 0) THEN
-         rr(0, 1, 1) = rbp(1)
-         rr(0, 1, 2) = rbp(2)
-         rr(0, 1, 3) = rbp(3)
-         !
-         DO la = 1, la_max
-            lam1 = la - 1
-            rr(la, 1, 1) = REAL(la, dp)*g*rr(lam1, 0, 1) + rbp(1)*rr(la, 0, 1)
-            rr(la, 1, 2) = REAL(la, dp)*g*rr(lam1, 0, 2) + rbp(2)*rr(la, 0, 2)
-            rr(la, 1, 3) = REAL(la, dp)*g*rr(lam1, 0, 3) + rbp(3)*rr(la, 0, 3)
-         END DO
-         !
-         DO lb = 1, lb_max - 1
-            lbp1 = lb + 1
-            lbm1 = lb - 1
-            rr(0, lbp1, 1) = REAL(lb, dp)*g*rr(0, lbm1, 1) + rbp(1)*rr(0, lb, 1)
-            rr(0, lbp1, 2) = REAL(lb, dp)*g*rr(0, lbm1, 2) + rbp(2)*rr(0, lb, 2)
-            rr(0, lbp1, 3) = REAL(lb, dp)*g*rr(0, lbm1, 3) + rbp(3)*rr(0, lb, 3)
-            DO la = 1, la_max
-               lam1 = la - 1
-               rr(la, lbp1, 1) = g*(REAL(la, dp)*rr(lam1, lb, 1) + REAL(lb, dp)*rr(la, lbm1, 1)) + rbp(1)*rr(la, lb, 1)
-               rr(la, lbp1, 2) = g*(REAL(la, dp)*rr(lam1, lb, 2) + REAL(lb, dp)*rr(la, lbm1, 2)) + rbp(2)*rr(la, lb, 2)
-               rr(la, lbp1, 3) = g*(REAL(la, dp)*rr(lam1, lb, 3) + REAL(lb, dp)*rr(la, lbm1, 3)) + rbp(3)*rr(la, lb, 3)
-            END DO
-         END DO
-      END IF
-      !
-   END SUBROUTINE os_rr_ovlp
+      END SUBROUTINE os_rr_ovlp_${suffix}$
+   #:endfor
 
 ! **************************************************************************************************
 !> \brief   Calculation of the Obara-Saika recurrence relation for 1/r_C
@@ -122,7 +111,7 @@ CONTAINS
       REAL(dp), DIMENSION(3), INTENT(IN)                 :: rcp
       REAL(dp), INTENT(IN)                               :: zet
       INTEGER, INTENT(IN)                                :: ldrr1, ldrr2
-      REAL(dp), DIMENSION(0:ldrr1-1, ldrr2, *), &
+      REAL(dp), DIMENSION(0:ldrr1 - 1, ldrr2, *), &
          INTENT(INOUT)                                   :: rr
 
       INTEGER                                            :: ax, ay, az, bx, by, bz, coa, coa1x, &
@@ -162,7 +151,7 @@ CONTAINS
                      rr(m, coa, 1) = rr(m, coa, 1) + g*REAL(az - 1, dp)*(rr(m, coa2z, 1) - rr(m + 1, coa2z, 1))
                   END DO
                END IF
-            ELSEIF (ay > 0) THEN
+            ELSE IF (ay > 0) THEN
                DO m = 0, mmax - la
                   rr(m, coa, 1) = rap(2)*rr(m, coa1y, 1) - rcp(2)*rr(m + 1, coa1y, 1)
                END DO
@@ -171,7 +160,7 @@ CONTAINS
                      rr(m, coa, 1) = rr(m, coa, 1) + g*REAL(ay - 1, dp)*(rr(m, coa2y, 1) - rr(m + 1, coa2y, 1))
                   END DO
                END IF
-            ELSEIF (ax > 0) THEN
+            ELSE IF (ax > 0) THEN
                DO m = 0, mmax - la
                   rr(m, coa, 1) = rap(1)*rr(m, coa1x, 1) - rcp(1)*rr(m + 1, coa1x, 1)
                END DO
@@ -181,7 +170,7 @@ CONTAINS
                   END DO
                END IF
             ELSE
-               CPABORT("")
+               CPABORT("None of ax, ay, az is positive")
             END IF
          END DO
          END DO
@@ -225,7 +214,7 @@ CONTAINS
                            rr(m, coa, cob) = rr(m, coa, cob) + g*REAL(az, dp)*(rr(m, coa1z, cob1z) - rr(m + 1, coa1z, cob1z))
                         END DO
                      END IF
-                  ELSEIF (by > 0) THEN
+                  ELSE IF (by > 0) THEN
                      DO m = 0, mmax - la - lb
                         rr(m, coa, cob) = rbp(2)*rr(m, coa, cob1y) - rcp(2)*rr(m + 1, coa, cob1y)
                      END DO
@@ -239,7 +228,7 @@ CONTAINS
                            rr(m, coa, cob) = rr(m, coa, cob) + g*REAL(ay, dp)*(rr(m, coa1y, cob1y) - rr(m + 1, coa1y, cob1y))
                         END DO
                      END IF
-                  ELSEIF (bx > 0) THEN
+                  ELSE IF (bx > 0) THEN
                      DO m = 0, mmax - la - lb
                         rr(m, coa, cob) = rbp(1)*rr(m, coa, cob1x) - rcp(1)*rr(m + 1, coa, cob1x)
                      END DO
@@ -254,7 +243,7 @@ CONTAINS
                         END DO
                      END IF
                   ELSE
-                     CPABORT("")
+                     CPABORT("None of bx, by, bz is positive")
                   END IF
                END DO
                END DO

@@ -4,6 +4,7 @@
 
 import argparse
 import io
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -37,9 +38,9 @@ def main() -> None:
         f.write(install_deps_toolchain(base_image="fedora:44"))
         f.write(regtest("toolchain", "psmp"))
 
-    with OutputFile(f"Dockerfile.test_rawhide-psmp", args.check) as f:
+    with OutputFile(f"Dockerfile.test_rawhide-pdbg", args.check) as f:
         f.write(install_deps_toolchain(base_image="fedora:rawhide"))
-        f.write(regtest("toolchain", "psmp"))
+        f.write(regtest("toolchain", "pdbg"))
 
     for version in "ssmp", "psmp":
         mpi_mode = "intelmpi" if version.startswith("p") else "no"
@@ -55,7 +56,7 @@ def main() -> None:
 
     with OutputFile(f"Dockerfile.test_minimal", args.check) as f:
         f.write(install_deps_ubuntu())
-        f.write(regtest("minimal", "ssmp"))
+        f.write(regtest("minimal", "sdbg"))
 
     # Spack/CMake based testers
 
@@ -66,7 +67,7 @@ def main() -> None:
             install_cp2k_spack(
                 version="pdbg",
                 mpi_mode="mpich",
-                feature_flags="-ef openpmd",
+                feature_flags="",
                 testopts="",
                 image_tag=f.image_tag,
             )
@@ -77,38 +78,26 @@ def main() -> None:
             f"Dockerfile.test_spack_psmp-gcc{gcc_version}", args.check
         ) as f:
             base_image = "ubuntu:26.04" if gcc_version > 12 else "ubuntu:24.04"
+            feature_flags = "" if gcc_version > 10 else "-df libtorch"
             f.write(
                 install_cp2k_spack(
                     version="psmp",
                     mpi_mode="mpich",
                     gcc_version=gcc_version,
                     base_image=base_image,
-                    feature_flags="-ef openpmd",
+                    feature_flags=feature_flags,
                     testopts=testopts,
                     image_tag=f.image_tag,
                 )
             )
 
-    with OutputFile(f"Dockerfile.test_spack_ssmp-rawhide", args.check) as f:
+    with OutputFile(f"Dockerfile.test_spack_pdbg-rawhide", args.check) as f:
         f.write(
             install_cp2k_spack(
-                version="ssmp",
-                mpi_mode="no",
-                base_image="fedora:rawhide",
-                gcc_version=16,
-                testopts=testopts,
-                image_tag=f.image_tag,
-            )
-        )
-
-    with OutputFile(f"Dockerfile.test_spack_psmp-rawhide", args.check) as f:
-        f.write(
-            install_cp2k_spack(
-                version="psmp",
+                version="pdbg",
                 mpi_mode="mpich",
                 base_image="fedora:rawhide",
-                gcc_version=16,
-                feature_flags="-ef openpmd",
+                feature_flags="",
                 testopts=testopts,
                 image_tag=f.image_tag,
             )
@@ -120,8 +109,7 @@ def main() -> None:
                 version="psmp",
                 mpi_mode="mpich",
                 base_image="fedora:latest",
-                gcc_version=15,
-                feature_flags="-ef openpmd",
+                feature_flags="",
                 testopts=testopts,
                 image_tag=f.image_tag,
             )
@@ -133,8 +121,8 @@ def main() -> None:
                 version="psmp",
                 mpi_mode="mpich",
                 base_image="opensuse/leap:16.0",
-                gcc_version=15,
-                feature_flags="-ef openpmd",
+                gcc_version=13,
+                feature_flags="",
                 testopts=testopts,
                 image_tag=f.image_tag,
             )
@@ -145,9 +133,9 @@ def main() -> None:
             install_cp2k_spack(
                 version="psmp",
                 mpi_mode="mpich",
-                base_image="docker.io/rockylinux/rockylinux:10",
+                base_image="rockylinux/rockylinux:10",
                 gcc_version=14,
-                feature_flags="-df libxsmm -ef openpmd",
+                feature_flags="",
                 testopts=testopts,
                 image_tag=f.image_tag,
             )
@@ -158,7 +146,7 @@ def main() -> None:
             install_cp2k_spack(
                 version="psmp",
                 mpi_mode="mpich",
-                feature_flags="-ef openpmd",
+                feature_flags="",
                 testopts=f"--keepalive --mpiranks=4 --ompthreads=2",
                 image_tag=f.image_tag,
             )
@@ -169,8 +157,8 @@ def main() -> None:
             install_cp2k_spack(
                 version="pdbg",
                 mpi_mode="openmpi",
-                feature_flags="-ef openpmd",
-                testopts="",
+                feature_flags="",
+                testopts="--timeout 400",
                 image_tag=f.image_tag,
             )
         )
@@ -180,7 +168,7 @@ def main() -> None:
             install_cp2k_spack(
                 version="psmp",
                 mpi_mode="openmpi",
-                feature_flags="-ef openpmd",
+                feature_flags="",
                 testopts=testopts,
                 image_tag=f.image_tag,
             )
@@ -192,7 +180,10 @@ def main() -> None:
     with OutputFile(f"Dockerfile.test_spack_ssmp", args.check) as f:
         f.write(
             install_cp2k_spack(
-                version="ssmp", mpi_mode="no", testopts=testopts, image_tag=f.image_tag
+                version="ssmp",
+                mpi_mode="no",
+                testopts=testopts,
+                image_tag=f.image_tag,
             )
         )
 
@@ -201,8 +192,6 @@ def main() -> None:
             install_cp2k_spack(
                 version="ssmp-static",
                 mpi_mode="no",
-                base_image="ubuntu:24.04",
-                gcc_version=14,
                 testopts=testopts,
                 image_tag=f.image_tag,
             )
@@ -213,10 +202,10 @@ def main() -> None:
             install_cp2k_spack(
                 version="ssmp",
                 mpi_mode="no",
-                base_image="docker.io/nvidia/cuda:12.9.1-devel-ubuntu24.04",
+                base_image="nvidia/cuda:12.9.1-devel-ubuntu24.04",
                 gcc_version=13,
                 gpu_model="P100",
-                testopts=testopts,
+                testopts=f"{testopts} --timeout 400",
                 image_tag=f.image_tag,
             )
         )
@@ -226,12 +215,81 @@ def main() -> None:
             install_cp2k_spack(
                 version="psmp",
                 mpi_mode="mpich",
-                base_image="docker.io/nvidia/cuda:12.9.1-devel-ubuntu24.04",
+                base_image="nvidia/cuda:12.9.1-devel-ubuntu24.04",
                 gcc_version=13,
                 gpu_model="P100",
-                feature_flags="-ef openpmd",
+                feature_flags="",
+                testopts=f"{testopts} --timeout 400",
+                image_tag=f.image_tag,
+            )
+        )
+
+    with OutputFile(f"Dockerfile.test_spack_pdbg-P100", args.check) as f:
+        f.write(
+            install_cp2k_spack(
+                version="pdbg",
+                mpi_mode="mpich",
+                base_image="nvidia/cuda:12.9.1-devel-ubuntu24.04",
+                gcc_version=13,
+                gpu_model="P100",
+                feature_flags="",
                 testopts=testopts,
                 image_tag=f.image_tag,
+            )
+        )
+
+    with OutputFile(f"Dockerfile.test_spack_performance-openmp", args.check) as f:
+        f.write(
+            install_cp2k_spack(
+                version="psmp",
+                mpi_mode="mpich",
+                feature_flags="",
+                image_tag=f.image_tag,
+                test_type="performance-openmp",
+            )
+        )
+
+    with OutputFile(f"Dockerfile.test_spack_ase", args.check) as f:
+        f.write(
+            install_cp2k_spack(
+                version="psmp",
+                mpi_mode="mpich",
+                feature_flags="--test_ase",
+                image_tag=f.image_tag,
+                test_type="ase",
+            )
+        )
+
+    with OutputFile(f"Dockerfile.test_spack_conventions", args.check) as f:
+        f.write(
+            install_cp2k_spack(
+                version="psmp",
+                mpi_mode="mpich",
+                feature_flags="--check_conventions",
+                image_tag=f.image_tag,
+                test_type="conventions",
+            )
+        )
+
+    with OutputFile(f"Dockerfile.test_spack_coverage", args.check) as f:
+        f.write(
+            install_cp2k_spack(
+                version="psmp",
+                mpi_mode="mpich",
+                feature_flags="--test_coverage",
+                image_tag=f.image_tag,
+                test_type="coverage",
+            )
+        )
+
+    with OutputFile(f"Dockerfile.test_spack_gromacs", args.check) as f:
+        f.write(
+            install_cp2k_spack(
+                version="psmp",
+                mpi_mode="mpich",
+                feature_flags="--test_gromacs",
+                image_tag=f.image_tag,
+                test_type="gromacs",
             )
         )
 
@@ -239,7 +297,7 @@ def main() -> None:
 
     with OutputFile(f"Dockerfile.test_asan-psmp", args.check) as f:
         f.write(install_deps_toolchain())
-        f.write(regtest("toolchain_asan", "psmp"))
+        f.write(regtest("toolchain_asan", "psmp", "--timeout 400"))
 
     with OutputFile(f"Dockerfile.test_coverage", args.check) as f:
         f.write(install_deps_toolchain())
@@ -252,7 +310,13 @@ def main() -> None:
 
     with OutputFile("Dockerfile.test_arm64-psmp", args.check) as f:
         base_img = "arm64v8/ubuntu:26.04"
-        f.write(install_deps_toolchain(base_img, with_libtorch="no", with_deepmd="no"))
+        libs = dict(
+            with_libtorch="no",
+            with_skala_ftorch="no",
+            with_deepmd="no",
+            with_gauxc="no",
+        )
+        f.write(install_deps_toolchain(base_img, **libs))
         f.write(regtest("toolchain_arm64", "psmp"))
 
     with OutputFile(f"Dockerfile.test_performance", args.check) as f:
@@ -262,7 +326,8 @@ def main() -> None:
     for gpu_ver in "P100", "V100", "A100":
         with OutputFile(f"Dockerfile.test_cuda_{gpu_ver}", args.check) as f:
             f.write(install_deps_toolchain_cuda(gpu_ver=gpu_ver))
-            f.write(regtest(f"toolchain_cuda_{gpu_ver}", "psmp"))
+            gpu_testopts = "--timeout 400" if gpu_ver == "P100" else ""
+            f.write(regtest(f"toolchain_cuda_{gpu_ver}", "psmp", gpu_testopts))
         with OutputFile(f"Dockerfile.test_performance_cuda_{gpu_ver}", args.check) as f:
             f.write(install_deps_toolchain_cuda(gpu_ver=gpu_ver))
             f.write(performance(f"toolchain_cuda_{gpu_ver}"))
@@ -287,6 +352,10 @@ def main() -> None:
         with OutputFile(f"Dockerfile.test_{name}", args.check) as f:
             f.write(install_deps_toolchain(mpi_mode="no"))
             f.write(test_3rd_party(name))
+
+    with OutputFile("Dockerfile.test_python", args.check) as f:
+        f.write(install_deps_toolchain(mpi_mode="no"))
+        f.write(test_python())
 
     for name in "misc", "doxygen":
         with OutputFile(f"Dockerfile.test_{name}", args.check) as f:
@@ -353,7 +422,7 @@ COPY ./tools/conventions/redirect_gfortran_output.py /usr/bin/
         + f"""
 # Run test for conventions.
 COPY ./tools/conventions ./tools/conventions
-RUN /bin/bash -ec "./tools/conventions/test_conventions.sh |& tee report.log"
+RUN /bin/bash -ec "./tools/conventions/test_conventions.sh -j $(nproc) |& tee report.log"
 """
         + print_cached_report()
     )
@@ -374,7 +443,7 @@ RUN ./test_manual.sh "${{ADD_EDIT_LINKS}}" 2>&1 | tee report.log
 # ======================================================================================
 def precommit() -> str:
     return rf"""
-FROM ubuntu:24.04
+FROM docker.io/ubuntu:26.04
 
 # Install dependencies.
 WORKDIR /opt/cp2k-precommit
@@ -402,9 +471,20 @@ RUN ./test_{name}.sh 2>&1 | tee report.log
 
 
 # ======================================================================================
+def test_python() -> str:
+    return install_cp2k(profile="toolchain", version="ssmp") + r"""
+# Run the direct Python package tests independently of upstream integrations.
+COPY ./python ./python
+COPY ./docs/technologies/python.md ./docs/technologies/python.md
+COPY ./tools/docker/scripts/test_python.sh ./
+RUN ./test_python.sh 2>&1 | tee report.log
+""" + print_cached_report()
+
+
+# ======================================================================================
 def test_without_build(name: str) -> str:
     return rf"""
-FROM ubuntu:24.04
+FROM docker.io/ubuntu:26.04
 
 # Install dependencies.
 WORKDIR /opt/cp2k
@@ -457,9 +537,10 @@ COPY ./data ./data
 COPY ./tools/build_utils ./tools/build_utils
 COPY ./cmake ./cmake
 COPY ./CMakeLists.txt .
+COPY ./CMakePresets.json .
 
 # Compile CP2K.
-COPY ./tools/docker/scripts/build_cp2k.sh .
+COPY ./tools/docker/scripts/build_cp2k.sh ./tools/docker/scripts/cmake_cp2k.sh ./
 RUN ./build_cp2k.sh {profile} {version}
 """
     return output
@@ -473,7 +554,7 @@ def install_deps_toolchain(
     with_gcc: str = "system",
     **kwargs: str,
 ) -> str:
-    output = f"\nFROM {base_image}\n\n"
+    output = f"\nFROM docker.io/{base_image}\n\n"
     output += install_toolchain(
         base_image=base_image,
         install_all="",
@@ -489,7 +570,7 @@ def install_deps_toolchain(
 def install_deps_ubuntu(gcc_version: int = 15) -> str:
     assert gcc_version > 8
     base_image = "ubuntu:26.04" if gcc_version > 14 else "ubuntu:24.04"
-    output = f"\nFROM {base_image}\n"
+    output = f"\nFROM docker.io/{base_image}\n"
 
     if gcc_version > 13:
         output += rf"""
@@ -531,17 +612,19 @@ RUN ln -sf /usr/bin/gcc-{gcc_version}      /usr/local/bin/gcc  && \
 """ + install_toolchain(
         base_image=base_image,
         mpi_mode="no",
-        with_dbcsr="",
+        with_dbcsr="install",
         with_gcc="system",
         with_cmake="system",
         with_ninja="system",
         with_openblas="system",
         with_libxc="no",
         with_libint="no",
-        with_fftw="no",
-        with_libxsmm="no",
+        with_fftw="system",
+        with_libxsmm="install",
+        with_libxs="install",
         with_spglib="no",
         with_libvori="no",
+        with_tblite="no",
     )
 
     return output
@@ -550,7 +633,7 @@ RUN ln -sf /usr/bin/gcc-{gcc_version}      /usr/local/bin/gcc  && \
 # ======================================================================================
 def install_deps_toolchain_intel(base_image: str, mpi_mode: str, with_ifx: str) -> str:
     return rf"""
-FROM {base_image}
+FROM docker.io/{base_image}
 
 """ + install_toolchain(
         base_image="ubuntu",
@@ -560,14 +643,16 @@ FROM {base_image}
         with_mkl="",
         with_libsmeagol="",
         with_libtorch="no",
+        with_skala_ftorch="no",
         with_deepmd="no",
+        with_gauxc="no",
     )
 
 
 # ======================================================================================
 def install_deps_toolchain_cuda(gpu_ver: str, **kwargs: str) -> str:
     deps = rf"""
-FROM nvidia/cuda:12.9.1-devel-ubuntu24.04
+FROM docker.io/nvidia/cuda:12.9.1-devel-ubuntu24.04
 
 # Setup CUDA environment.
 ENV CUDA_PATH /usr/local/cuda
@@ -587,6 +672,8 @@ RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
         with_mpich="install",
         mpi_mode="mpich",
         enable_cuda="yes",
+        with_libgint="install",
+        with_sirius="install",
         gpu_ver=gpu_ver,
         **kwargs,
     )
@@ -596,7 +683,7 @@ RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
 # ======================================================================================
 def install_deps_toolchain_hip_rocm(gpu_ver: str) -> str:
     return rf"""
-FROM rocm/dev-ubuntu-24.04:7.2-complete
+FROM docker.io/rocm/dev-ubuntu-24.04:7.2-complete
 
 # Install some Ubuntu packages.
 RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
@@ -622,8 +709,8 @@ RUN hipconfig
         base_image="ubuntu",
         mpi_mode="mpich",
         enable_hip="yes",
+        with_sirius="install",
         gpu_ver=gpu_ver,
-        with_dbcsr="",
     )
 
 
@@ -647,11 +734,9 @@ RUN ./install_requirements.sh {base_image}
 # Install the toolchain.
 RUN mkdir scripts
 COPY ./tools/toolchain/scripts/VERSION \
-     ./tools/toolchain/scripts/parse_if.py \
      ./tools/toolchain/scripts/tool_kit.sh \
      ./tools/toolchain/scripts/common_vars.sh \
      ./tools/toolchain/scripts/signal_trap.sh \
-     ./tools/toolchain/scripts/get_openblas_arch.sh \
      ./scripts/
 COPY ./tools/toolchain/install_cp2k_toolchain.sh .
 RUN ./install_cp2k_toolchain.sh \
@@ -697,13 +782,14 @@ def install_cp2k_spack(
     version: str,
     mpi_mode: str,
     base_image: str = "ubuntu:26.04",
-    gcc_version: int = 14,
+    gcc_version: int | None = None,
     gpu_model: str = "none",
     feature_flags: str = "",
     testopts: str = "",
     image_tag: str = "",
+    test_type: str = "regression",
 ) -> str:
-    if "fedora" in base_image:
+    if gcc_version is None or "fedora" in base_image:
         gcc_compilers = "g++ gcc gfortran"
     elif "opensuse/leap" in base_image:
         gcc_compilers = f"gcc gcc{gcc_version} gcc-c++ gcc{gcc_version}-c++ gcc-fortran gcc{gcc_version}-fortran"
@@ -711,25 +797,19 @@ def install_cp2k_spack(
         gcc_compilers = f"gcc gcc-c++ gcc-fortran"
     else:
         gcc_compilers = f"g++ g++-{gcc_version} gcc gcc-{gcc_version} gfortran gfortran-{gcc_version}"
+    # Use the system GCC when no version is specified.
+    gcc_version_flag = "" if gcc_version is None else f"-gv {gcc_version}"
     # Use external packages if possible
     use_externals = "-ue"
-    # Static CP2K builds use the GCC compiler built with spack
-    if version.endswith("-static"):
-        use_externals = ""
-        # A spack build of the same GCC version as the installed one
-        # of the host system and ignoring all externals at the same
-        # time is not supported
-        if gcc_version == 13:
-            print(
-                f"\nERROR: GCC 13 is the default version of Ubuntu 24.04 and a spack build of the same version is not possible"
-            )
-        gcc_compilers = f"g++ gcc gfortran"
     if mpi_mode == "openmpi":
         use_externals = ""
     # Assemble docker file
     output = (
         install_base_image(
-            base_image=rf"{base_image}", gcc_compilers=gcc_compilers, stage="build"
+            base_image=base_image,
+            gcc_compilers=gcc_compilers,
+            stage="build",
+            test_type=test_type,
         )
         + rf"""
 ARG IMAGE_TAG
@@ -738,24 +818,34 @@ ENV IMAGE_TAG=${{IMAGE_TAG:-{image_tag}}}
 ARG SPACK_CACHE
 ENV SPACK_CACHE="${{SPACK_CACHE:-s3://spack-cache --s3-endpoint-url=http://host.containers.internal:9000}}"
 
-# Copy CP2K repository into container
-WORKDIR /opt
-COPY . cp2k/
-
 # Build CP2K dependencies
 WORKDIR /opt/cp2k
-RUN ./make_cp2k.sh -bd_only -cv {version} -gpu {gpu_model} -gv {gcc_version} -mpi {mpi_mode} {use_externals} {feature_flags}
+COPY ./tools/spack ./tools/spack
+COPY ./tools/docker ./tools/docker
+COPY ./make_cp2k.sh .
+RUN ./make_cp2k.sh -bd_only -cv {version} -gpu {gpu_model} {gcc_version_flag} -mpi {mpi_mode} {use_externals} {feature_flags}
 
 ###### Stage 2: Build CP2K ######
 
 FROM build_deps AS build_cp2k
 
-RUN ./make_cp2k.sh -cv {version} -gv {gcc_version} -gpu {gpu_model} -mpi {mpi_mode} {feature_flags}
+COPY ./CMakeLists.txt ./CMakePresets.json ./
+COPY ./cmake ./cmake
+COPY ./data ./data
+COPY ./src ./src
+COPY ./tests ./tests
+COPY ./tools/build_utils ./tools/build_utils
+COPY ./tools/conventions ./tools/conventions
+
+RUN ./make_cp2k.sh -cv {version} {gcc_version_flag} -gpu {gpu_model} -mpi {mpi_mode} {feature_flags}
 """
     )
     output += (
         install_base_image(
-            base_image=rf"{base_image}", gcc_compilers=gcc_compilers, stage="install"
+            base_image=base_image,
+            gcc_compilers=gcc_compilers,
+            stage="install",
+            test_type=test_type,
         )
         + rf"""
 WORKDIR /opt/cp2k
@@ -771,21 +861,73 @@ COPY --from=build_cp2k /opt/cp2k/tests ./tests
 COPY --from=build_cp2k /opt/cp2k/src/grid/sample_tasks ./src/grid/sample_tasks
 
 # Install CP2K/Quickstep CI benchmarks
-COPY --from=build_cp2k /opt/cp2k/benchmarks/CI ./benchmarks/CI
+COPY ./benchmarks/CI ./benchmarks/CI
 
 # Do not rely only on LD_LIBRARY_PATH because it is fragile
 COPY --from=build_cp2k /etc/ld.so.conf.d/cp2k.conf /etc/ld.so.conf.d/cp2k.conf
 RUN ldconfig
+"""
+    )
+    if test_type.startswith("performance-"):
+        if version == "psmp":
+            benchmark_profile = test_type.removeprefix("performance-")
+            output += rf"""
+# Install benchmark inputs for performance test
+COPY ./benchmarks/QS ./benchmarks/QS
+COPY ./benchmarks/QS_reference ./benchmarks/QS_reference
+COPY ./benchmarks/QS_kp ./benchmarks/QS_kp
+COPY ./benchmarks/QS_single_node ./benchmarks/QS_single_node
+COPY ./benchmarks/QMMM/MQAE ./benchmarks/QMMM/MQAE
+RUN mkdir -p ./tools/docker/scripts
+COPY ./tools/docker/scripts/plot_performance.py ./tools/docker/scripts/
 
+# Run CP2K performance test
+RUN ( /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_benchmarks {benchmark_profile} || printf "\nSummary: Performance test run failed\nStatus: FAILED\n" ) 2>&1 | tee report.log
+"""
+        else:
+            sys.exit(
+                f'\nERROR: Performance test runs are only supported for version "psmp", found version "{version}"\n'
+            )
+    elif test_type == "regression":
+        output += rf"""
 # Run CP2K regression test
-RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests {testopts} || echo "ERROR: Tests failed"
+RUN ( /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests {testopts} || printf "\nSummary: Regression test run failed\nStatus: FAILED\n" ) 2>&1 | tee report.log
+"""
+    elif test_type == "ase":
+        output += rf"""
+# Install packages needed by ASE
+RUN /opt/cp2k/install/bin/launch pip install --ignore-installed --quiet matplotlib numpy packaging six spglib
+"""
+    elif test_type == "conventions":
+        output += rf"""
+# Copy data from convention check
+COPY --from=build_cp2k /opt/cp2k/build /opt/cp2k/build
+COPY --from=build_cp2k /opt/cp2k/tools/conventions /opt/cp2k/tools/conventions
+"""
+    elif test_type == "coverage":
+        output += rf"""
+# Copy data from coverage analysis
+COPY --from=build_cp2k /workspace /workspace
+"""
+    elif test_type == "gromacs":
+        output += rf"""
+# Preserve GROMACS QM/MM test data in the final container image
+COPY --from=build_cp2k /opt/cp2k/build/gromacs/src/gromacs/applied_forces/qmmm/tests /opt/cp2k/build/gromacs/src/gromacs/applied_forces/qmmm/tests
+COPY --from=build_cp2k /opt/cp2k/build/gromacs/src/testutils/simulationdatabase /opt/cp2k/build/gromacs/src/testutils/simulationdatabase
+COPY --from=build_cp2k /opt/cp2k/build/gromacs/share/top /opt/cp2k/build/gromacs/share/top
+RUN mkdir -p /opt/cp2k/build/gromacs/build/src/gromacs/applied_forces/qmmm/tests/Testing/Temporary
 
+# Install GROMACS/CP2K benchmarks
+COPY ./benchmarks/GROMACS ./benchmarks/GROMACS
+"""
+    else:
+        sys.exit(f"\nERROR: Unknown test type {test_type} specified\n")
+    output += rf"""
 # Create entrypoint and finalise container build
 WORKDIR /mnt
 ENTRYPOINT ["/opt/cp2k/install/bin/launch"]
 CMD ["cp2k", "--help", "--version"]
 """
-    )
     return output
 
 
@@ -794,6 +936,7 @@ def install_base_image(
     base_image: str,
     gcc_compilers: str,
     stage: str,
+    test_type: str,
 ) -> str:
     if stage == "build":
         output = rf"""
@@ -801,7 +944,7 @@ ARG BASE_IMAGE="{base_image}"
 
 ###### Stage 1: Build CP2K dependencies ######
 
-FROM "${{BASE_IMAGE}}" AS build_deps
+FROM "docker.io/${{BASE_IMAGE}}" AS build_deps
 """
         if "fedora" in base_image:
             output += rf"""
@@ -809,6 +952,8 @@ RUN dnf -qy install \
     cmake \
     {gcc_compilers} \
     git \
+    libffi-devel \
+    liblsan \
     libtool \
     make \
     patch \
@@ -878,7 +1023,10 @@ RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
     {gcc_compilers} \
     git \
     gnupg \
-    libssh-dev \
+"""
+            if test_type == "coverage":
+                output += f"    lcov \\" + "\n"
+            output += rf"""    libssh-dev \
     libssl-dev \
     libtool \
     libtool-bin \
@@ -900,7 +1048,7 @@ RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 """
         else:
-            print(f"\nERROR: Unknown base image {base_image} specified\n")
+            sys.exit(f"\nERROR: Unknown base image {base_image} specified\n")
         if "nvidia" in base_image:
             output += rf"""
 # Setup CUDA environment
@@ -914,13 +1062,14 @@ ENV CUDA_CACHE_DISABLE 1
         output = rf"""
 ###### Stage 3: Install CP2K ######
 
-FROM "${{BASE_IMAGE}}" AS install_cp2k
+FROM "docker.io/${{BASE_IMAGE}}" AS install_cp2k
 """
         if "fedora" in base_image:
             output += rf"""
 RUN dnf -qy install \
     {gcc_compilers} \
     python3 \
+    liblsan \
     && dnf clean -q all
 """
         elif "opensuse/leap" in base_image:
@@ -930,9 +1079,6 @@ RUN zypper --non-interactive --quiet ref && \
     {gcc_compilers} \
     python313 \
     && zypper --non-interactive --quiet clean --all
-
-RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python3 && \
-    ln -sf /usr/bin/python3.11 /usr/local/bin/python
 """
         elif "rockylinux" in base_image:
             output += rf"""
@@ -944,14 +1090,33 @@ RUN dnf -y install dnf-plugins-core && \
     && dnf clean -q all
 """
         elif "ubuntu" in base_image:
-            output += rf"""
+            if test_type == "ase":
+                # ASE requires ca-certificates
+                output += rf"""
+RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
+    ca-certificates \
+    {gcc_compilers} \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+"""
+            elif test_type == "gromacs":
+                # GROMACS requires the shared C-library version of Python at runtime
+                output += rf"""
+RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
+    {gcc_compilers} \
+    python3 \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+"""
+            else:
+                output += rf"""
 RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
     {gcc_compilers} \
     python3 \
     && rm -rf /var/lib/apt/lists/*
 """
         else:
-            print(f"\nERROR: Unknown base image {base_image} specified\n")
+            sys.exit(f"\nERROR: Unknown base image {base_image} specified\n")
         if "nvidia" in base_image:
             output += rf"""
 # Setup CUDA environment
@@ -962,7 +1127,7 @@ ENV LD_LIBRARY_PATH /usr/local/cuda/lib64
 ENV CUDA_CACHE_DISABLE 1
 """
     else:
-        print(f"\nERROR: Unknown stage {stage} specified\n")
+        sys.exit(f"\nERROR: Unknown stage {stage} specified\n")
     return output
 
 
@@ -976,7 +1141,7 @@ class OutputFile:
         self.content.write(f"# This file was created by generate_dockerfiles.py.\n")
         if "_spack_" in filename:
             self.image_tag = filename.removeprefix("Dockerfile.test_")
-            usage = f"./spack_cache_start.sh; podman build --shm-size=1g -t {self.image_tag} -f ./{filename} ../../"
+            usage = f"./spack_cache_start.sh; podman build --shm-size=1g -t {self.image_tag.lower()} -f ./{filename} ../../"
         else:
             self.image_tag = ""
             usage = f"podman build --shm-size=1g -f ./{filename} ../../"

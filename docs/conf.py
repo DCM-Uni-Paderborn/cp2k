@@ -24,6 +24,7 @@ extensions = [
 ]
 
 myst_heading_anchors = 3
+myst_links_external_new_tab = True
 
 myst_enable_extensions = [
     "attrs_inline",
@@ -32,6 +33,7 @@ myst_enable_extensions = [
     "strikethrough",
 ]
 
+myst_dmath_double_inline = True
 myst_fence_as_directive = ["mermaid"]
 
 templates_path = ["_templates"]
@@ -44,8 +46,11 @@ suppress_warnings = ["ref"]
 
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
+html_css_files = ["input-reference.css", "search.css"]
 html_favicon = "_static/favicon.png"
 html_copy_source = False
+html_last_updated_fmt = "%a, %d %b %Y %H:%M:%S +0000"
+html_last_updated_use_utc = True
 
 add_module_names = False
 
@@ -63,12 +68,16 @@ html_context = {
 
 html_theme_options = {
     "collapse_navigation": False,
+    "prev_next_buttons_location": "both",
+    "style_external_links": True,
 }
 
 redirects = {
     "getting-started/CMake": "build-from-source.html",
     "getting-started/spack": "build-with-spack.html",
     "methods/optimization/geometry": "geometry_and_cell_opt.html",
+    "methods/properties/bandstructure_gw": "../electronic_structure/band/gw.html",
+    "methods/properties/resp_charges": "../electronic_structure/population/resp.html",
 }
 
 # EOF

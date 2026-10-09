@@ -40,8 +40,7 @@ __device__ __inline__ void block_to_cab(const kernel_params &params,
 
   // This is a T matrix product. Since the pab block can be quite large the
   // two products are fused to conserve shared memory.
-  const int tid =
-      threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z);
+  const int tid = thread_global_index();
 
   for (int jco = task.first_cosetb + tid / 16; jco < task.ncosetb; jco += 4) {
     for (int ico = task.first_coseta + (tid % 16); ico < task.ncoseta;
@@ -59,7 +58,6 @@ __device__ __inline__ void block_to_cab(const kernel_params &params,
             block_val =
                 task.pab_block[i * task.nsgfa + j] * task.off_diag_twice;
           }
-          //          const T sphia = task.sphia[j * task.maxcoa + ico];
           tmp_val += block_val * task.sphia[j * task.maxcoa + ico];
         }
         pab_val += tmp_val * sphib;
@@ -81,29 +79,42 @@ __device__ __inline__ void block_to_cab(const kernel_params &params,
 template <typename T, bool IS_FUNC_AB>
 __global__
 __launch_bounds__(64) void calculate_coefficients(const kernel_params dev_) {
-  __shared__ smem_task<T> task;
-  if (dev_.tasks[dev_.first_task + blockIdx.x].skip_task)
+  // Copy task from global to shared memory and precompute some stuff.
+  extern __shared__ T shared_memory[];
+  const int number_of_tasks = dev_.num_tasks_per_block_dev[block_index()];
+
+  if (number_of_tasks == 0)
     return;
 
-  const int tid =
-      threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z);
+  T *smem_alpha = &shared_memory[0];
+  const int tid = thread_global_index();
+  const int offset = dev_.sorted_blocks_offset_dev[block_index()];
+  T *smem_cab = reinterpret_cast<double *>(
+      __builtin_assume_aligned(allocate_workspace<T>(dev_), 32));
 
-  fill_smem_task_coef(dev_, dev_.first_task + blockIdx.x, task);
-  extern __shared__ T shared_memory[];
-  // T *smem_cab = &shared_memory[dev_.smem_cab_offset];
-  T *smem_alpha = &shared_memory[dev_.smem_alpha_offset];
-  T *coef_ =
-      &dev_.ptr_dev[2][dev_.tasks[dev_.first_task + blockIdx.x].coef_offset];
-  T *smem_cab =
-      &dev_.ptr_dev[6][dev_.tasks[dev_.first_task + blockIdx.x].cab_offset];
-  compute_alpha(task, smem_alpha);
-  for (int z = tid; z < task.n1 * task.n2;
-       z += blockDim.x * blockDim.y * blockDim.z)
-    smem_cab[z] = 0.0;
-  __syncthreads();
-  block_to_cab<T, IS_FUNC_AB>(dev_, task, smem_cab);
-  __syncthreads();
-  cab_to_cxyz(task, smem_alpha, smem_cab, coef_);
+  for (int tk = 0; tk < number_of_tasks; tk++) {
+    __shared__ smem_task<T> task;
+    const int task_id = dev_.task_sorted_by_blocks_dev[offset + tk];
+    if (dev_.tasks[task_id].skip_task)
+      continue;
+    fill_smem_task_coef(dev_, task_id, task);
+
+    T *__restrict__ coef_ =
+        &dev_.buffers_dev.coef[dev_.tasks[task_id].coef_offset];
+
+    compute_alpha(task, smem_alpha);
+
+    for (int z = tid; z < task.n1 * task.n2;
+         z += blockDim.x * blockDim.y * blockDim.z)
+      smem_cab[z] = 0.0;
+    __syncthreads();
+
+    block_to_cab<T, IS_FUNC_AB>(dev_, task, smem_cab);
+    __syncthreads();
+
+    cab_to_cxyz(task, smem_alpha, smem_cab, coef_);
+    __syncthreads();
+  }
 }
 
 /*
@@ -134,32 +145,30 @@ __launch_bounds__(64) void calculate_coefficients(const kernel_params dev_) {
   calculate_coefficients. We only keep the non zero elements to same memory.
 */
 
-template <typename T, typename T3, bool distributed__, bool orthorhombic_>
+template <typename T, typename T3, bool distributed__, bool orthogonal_>
 __global__
 __launch_bounds__(64) void collocate_kernel(const kernel_params dev_) {
   // Copy task from global to shared memory and precompute some stuff.
   __shared__ smem_task_reduced<T, T3> task;
 
-  if (dev_.tasks[dev_.first_task + blockIdx.x].skip_task)
+  if (dev_.tasks[dev_.first_task + block_index()].skip_task)
     return;
 
-  fill_smem_task_reduced(dev_, dev_.first_task + blockIdx.x, task);
+  fill_smem_task_reduced(dev_, dev_.first_task + block_index(), task);
 
-  const int tid =
-      threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z);
+  const int tid = thread_global_index();
 
   //  Alloc shared memory.
   extern __shared__ T coefs_[];
 
-  T *coef_ =
-      &dev_.ptr_dev[2][dev_.tasks[dev_.first_task + blockIdx.x].coef_offset];
-  __shared__ T dh_[9], dh_inv_[9];
+  const size_t coef_offset =
+      dev_.tasks[dev_.first_task + block_index()].coef_offset;
+  T *coef_ = &dev_.buffers_dev.coef[coef_offset];
+  __shared__ T dh_[9];
 
   if (tid < 9) {
     // matrix from lattice coordinates to cartesian coordinates
     dh_[tid] = dev_.dh_[tid];
-    // matrix from  cartesian coordinates to lattice coordinates.
-    dh_inv_[tid] = dev_.dh_inv_[tid];
   }
 
   for (int i = tid; i < ncoset(6); i += blockDim.x * blockDim.y * blockDim.z)
@@ -169,26 +178,12 @@ __launch_bounds__(64) void collocate_kernel(const kernel_params dev_) {
     // the cube center is initialy expressed in lattice coordinates but we
     // always do something like this. x = x + lower_corner + cube_center (+
     // roffset) - grid_lower_corner so shift the cube center already
-    task.cube_center.z += task.lb_cube.z - dev_.grid_lower_corner_[0];
-    task.cube_center.y += task.lb_cube.y - dev_.grid_lower_corner_[1];
-    task.cube_center.x += task.lb_cube.x - dev_.grid_lower_corner_[2];
-
-    if (distributed__) {
-      if (task.apply_border_mask) {
-        compute_window_size(
-            dev_.grid_local_size_,
-            dev_.tasks[dev_.first_task + blockIdx.x].border_mask,
-            dev_.grid_border_width_, &task.window_size, &task.window_shift);
-      }
-    }
+    setup_task_cube_center<T, T3, distributed__>(dev_, task);
   }
   __syncthreads();
 
   for (int z = threadIdx.z; z < task.cube_size.z; z += blockDim.z) {
-    int z2 = (z + task.cube_center.z) % dev_.grid_full_size_[0];
-
-    if (z2 < 0)
-      z2 += dev_.grid_full_size_[0];
+    int z2 = wrap_grid_index(z + task.cube_center.z, dev_.grid_full_size_.z);
 
     if (distributed__) {
       // check if the point is within the window
@@ -204,23 +199,15 @@ __launch_bounds__(64) void collocate_kernel(const kernel_params dev_) {
 
     // compute the coordinates of the point in atomic coordinates
     T kremain;
-    short int ymin = 0;
-    short int ymax = task.cube_size.y - 1;
+    int ymin = 0;
+    int ymax = task.cube_size.y - 1;
 
-    if (orthorhombic_ && !task.apply_border_mask) {
-      ymin = (2 * (z + task.lb_cube.z) - 1) / 2;
-      ymin *= ymin;
-      kremain = task.discrete_radius * task.discrete_radius -
-                ((T)ymin) * dh_[8] * dh_[8];
-      ymin = ceil(-1.0e-8 - sqrt(fmax(0.0, kremain)) * dh_inv_[4]);
-      ymax = 1 - ymin - task.lb_cube.y;
-      ymin = ymin - task.lb_cube.y;
+    if (orthogonal_ && !task.apply_border_mask) {
+      kremain = calculate_ymix_ymax_boundaries(task, z, ymin, ymax);
     }
 
     for (int y = ymin + threadIdx.y; y <= ymax; y += blockDim.y) {
-      int y2 = (y + task.cube_center.y) % dev_.grid_full_size_[1];
-      if (y2 < 0)
-        y2 += dev_.grid_full_size_[1];
+      int y2 = wrap_grid_index(y + task.cube_center.y, dev_.grid_full_size_.y);
 
       if (distributed__) {
         if (task.apply_border_mask) {
@@ -231,23 +218,15 @@ __launch_bounds__(64) void collocate_kernel(const kernel_params dev_) {
         }
       }
 
-      short int xmin = 0;
-      short int xmax = task.cube_size.x - 1;
-      if (orthorhombic_ && !task.apply_border_mask) {
-        xmin = (2 * (y + task.lb_cube.y) - 1) / 2;
-        xmin *= xmin;
-        xmin =
-            ceil(-1.0e-8 - sqrt(fmax(0.0, kremain - xmin * dh_[4] * dh_[4])) *
-                               dh_inv_[0]);
-        xmax = 1 - xmin - task.lb_cube.x;
-        xmin = xmin - task.lb_cube.x;
+      int xmin = 0;
+      int xmax = task.cube_size.x - 1;
+      if (orthogonal_ && !task.apply_border_mask) {
+        calculate_xmin_xmax_boundaries<T, T3>(task, y, kremain, xmin, xmax);
       }
 
       for (int x = xmin + threadIdx.x; x <= xmax; x += blockDim.x) {
-        int x2 = (x + task.cube_center.x) % dev_.grid_full_size_[2];
-
-        if (x2 < 0)
-          x2 += dev_.grid_full_size_[2];
+        int x2 =
+            wrap_grid_index(x + task.cube_center.x, dev_.grid_full_size_.x);
 
         if (distributed__) {
           if (task.apply_border_mask) {
@@ -259,19 +238,13 @@ __launch_bounds__(64) void collocate_kernel(const kernel_params dev_) {
           }
         }
 
-        // I make no distinction between orthorhombic and non orthorhombic
+        // I make no distinction between orthogonal and non orthogonal
         // cases
 
         T3 r3;
-        if (orthorhombic_) {
-          r3.x = (x + task.lb_cube.x + task.roffset.x) * dh_[0];
-          r3.y = (y + task.lb_cube.y + task.roffset.y) * dh_[4];
-          r3.z = (z + task.lb_cube.z + task.roffset.z) * dh_[8];
-        } else {
-          r3 = compute_coordinates(dh_, (x + task.lb_cube.x + task.roffset.x),
-                                   (y + task.lb_cube.y + task.roffset.y),
-                                   (z + task.lb_cube.z + task.roffset.z));
-        }
+        r3 = compute_coordinates(dh_, (x + task.lb_cube.x + task.roffset.x),
+                                 (y + task.lb_cube.y + task.roffset.y),
+                                 (z + task.lb_cube.z + task.roffset.z));
 
         const T r3x2 = r3.x * r3.x;
         const T r3y2 = r3.y * r3.y;
@@ -283,11 +256,11 @@ __launch_bounds__(64) void collocate_kernel(const kernel_params dev_) {
           // the region of interest.
 
           if (((task.radius * task.radius) <= (r3x2 + r3y2 + r3z2)) &&
-              (!orthorhombic_ || task.apply_border_mask))
+              (!orthogonal_ || task.apply_border_mask))
             continue;
         } else {
           // we do not need to do this test for the orthorhombic case
-          if ((!orthorhombic_) &&
+          if ((!orthogonal_) &&
               ((task.radius * task.radius) <= (r3x2 + r3y2 + r3z2)))
             continue;
         }
@@ -396,7 +369,6 @@ __launch_bounds__(64) void collocate_kernel(const kernel_params dev_) {
 
           if (task.lp >= 7) {
             for (int ic = ncoset(6); ic < ncoset(task.lp); ic++) {
-              T tmp1 = coef_[ic];
               auto &co = coset_inv[ic];
               T tmp = 1.0;
               for (int po = 0; po < (co.l[2] >> 1); po++)
@@ -411,19 +383,46 @@ __launch_bounds__(64) void collocate_kernel(const kernel_params dev_) {
                 tmp *= r3x2;
               if (co.l[0] & 0x1)
                 tmp *= r3.x;
-              res += tmp * tmp1;
+              res += tmp * coef_[ic];
             }
           }
         }
 
         res *= exp(-(r3x2 + r3y2 + r3z2) * task.zetp);
-        atomicAdd(dev_.ptr_dev[1] +
-                      (z2 * dev_.grid_local_size_[1] + y2) *
-                          dev_.grid_local_size_[2] +
+        atomicAdd(dev_.buffers_dev.grid +
+                      (z2 * dev_.grid_local_size_.y + y2) *
+                          dev_.grid_local_size_.x +
                       x2,
                   res);
       }
     }
+  }
+}
+
+void context_info::calculate_all_coefficients(const enum grid_func func,
+                                              int *lp_diff) {
+  // Compute max angular momentum.
+  const ldiffs_value ldiffs = prepare_get_ldiffs(func);
+  smem_parameters smem_params(ldiffs, lmax());
+
+  *lp_diff = smem_params.lp_diff();
+  init_constant_memory();
+
+  // kernel parameters
+  kernel_params params = set_kernel_parameters(-1, smem_params);
+  params.func = func;
+
+  // Launch !
+  const dim3 threads_per_block(4, 4, 4);
+
+  if (func == GRID_FUNC_AB) {
+    calculate_coefficients<double, true>
+        <<<nblocks, threads_per_block, smem_params.smem_per_block(),
+           main_stream>>>(params);
+  } else {
+    calculate_coefficients<double, false>
+        <<<nblocks, threads_per_block, smem_params.smem_per_block(),
+           main_stream>>>(params);
   }
 }
 /*******************************************************************************
@@ -450,18 +449,8 @@ void context_info::collocate_one_grid_level(const int level,
   // Launch !
   const dim3 threads_per_block(4, 4, 4);
 
-  if (func == GRID_FUNC_AB) {
-    calculate_coefficients<double, true>
-        <<<number_of_tasks_per_level_[level], threads_per_block,
-           smem_params.smem_per_block(), level_streams[level]>>>(params);
-  } else {
-    calculate_coefficients<double, false>
-        <<<number_of_tasks_per_level_[level], threads_per_block,
-           smem_params.smem_per_block(), level_streams[level]>>>(params);
-  }
-
   if (grid_[level].is_distributed()) {
-    if (grid_[level].is_orthorhombic())
+    if (grid_[level].is_orthogonal())
       collocate_kernel<double, double3, true, true>
           <<<number_of_tasks_per_level_[level], threads_per_block,
              ncoset(6) * sizeof(double), level_streams[level]>>>(params);
@@ -470,7 +459,7 @@ void context_info::collocate_one_grid_level(const int level,
           <<<number_of_tasks_per_level_[level], threads_per_block,
              ncoset(6) * sizeof(double), level_streams[level]>>>(params);
   } else {
-    if (grid_[level].is_orthorhombic())
+    if (grid_[level].is_orthogonal())
       collocate_kernel<double, double3, false, true>
           <<<number_of_tasks_per_level_[level], threads_per_block,
              ncoset(6) * sizeof(double), level_streams[level]>>>(params);

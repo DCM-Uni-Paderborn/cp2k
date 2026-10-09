@@ -42,6 +42,7 @@ MODULE almo_scf
    USE bibliography,                    ONLY: Khaliullin2013,&
                                               Kolafa2004,&
                                               Kuhne2007,&
+                                              Rullan2026,&
                                               Scheiber2018,&
                                               Staub2019,&
                                               cite_reference
@@ -230,8 +231,8 @@ CONTAINS
       almo_scf_env%nspins = dft_control%nspins
       almo_scf_env%nmolecules = SIZE(molecule_set)
       CALL dbcsr_get_info(matrix_s(1)%matrix, &
-                          nfullrows_total=almo_scf_env%naos, nblkrows_total=almo_scf_env%natoms)
-
+                          nfullrows_total=naos, nblkrows_total=almo_scf_env%natoms)
+      almo_scf_env%naos = naos
       !! retrieve smearing parameters, and check compatibility of methods requested
       almo_scf_env%smear = dft_control%smear
       IF (almo_scf_env%smear) THEN
@@ -252,10 +253,8 @@ CONTAINS
       END IF
 
       ! convenient local varibales
-      nspins = almo_scf_env%nspins
       nmols = almo_scf_env%nmolecules
       natoms = almo_scf_env%natoms
-      naos = almo_scf_env%naos
 
       ! Define groups: either atomic or molecular
       IF (almo_scf_env%domain_layout_mos == almo_domain_layout_molecular) THEN
@@ -264,8 +263,34 @@ CONTAINS
          almo_scf_env%ndomains = almo_scf_env%natoms
       END IF
 
+      IF (ALLOCATED(almo_scf_env%activate)) THEN
+         IF (almo_scf_env%activate(1) > 1) THEN
+            DEALLOCATE (almo_scf_env%activate)
+         END IF
+      END IF
+
+      IF (.NOT. ALLOCATED(almo_scf_env%activate)) THEN
+         ALLOCATE (almo_scf_env%activate(1))
+         almo_scf_env%activate = 0
+      END IF
+
+      IF (almo_scf_env%activate(1) == 1) THEN
+         CALL cite_reference(Rullan2026)
+         ndomains = SIZE(almo_scf_env%multiplicity_of_domain)
+         nspins = SIZE(almo_scf_env%multiplicity_of_domain)
+      ELSE
+         nspins = almo_scf_env%nspins
+         ndomains = almo_scf_env%ndomains
+      END IF
+
+      IF (almo_scf_env%activate(1) == 0) THEN
+
+         ALLOCATE (almo_scf_env%charge_of_domain(ndomains))
+         ALLOCATE (almo_scf_env%multiplicity_of_domain(ndomains))
+      END IF
+
       ! allocate domain descriptors
-      ndomains = almo_scf_env%ndomains
+
       ALLOCATE (almo_scf_env%domain_index_of_atom(natoms))
       ALLOCATE (almo_scf_env%domain_index_of_ao(naos))
       ALLOCATE (almo_scf_env%first_atom_of_domain(ndomains))
@@ -278,29 +303,42 @@ CONTAINS
       ALLOCATE (almo_scf_env%nvirt_disc_of_domain(ndomains, nspins))
       ALLOCATE (almo_scf_env%mu_of_domain(ndomains, nspins))
       ALLOCATE (almo_scf_env%cpu_of_domain(ndomains))
-      ALLOCATE (almo_scf_env%charge_of_domain(ndomains))
-      ALLOCATE (almo_scf_env%multiplicity_of_domain(ndomains))
 
       ! fill out domain descriptors and group descriptors
       IF (almo_scf_env%domain_layout_mos == almo_domain_layout_molecular) THEN
          ! get domain info from molecule_set
-         CALL get_molecule_set_info(molecule_set, &
-                                    atom_to_mol=almo_scf_env%domain_index_of_atom, &
-                                    mol_to_first_atom=almo_scf_env%first_atom_of_domain, &
-                                    mol_to_last_atom=almo_scf_env%last_atom_of_domain, &
-                                    mol_to_nelectrons=almo_scf_env%nocc_of_domain(1:ndomains, 1), &
-                                    mol_to_nbasis=almo_scf_env%nbasis_of_domain, &
-                                    mol_to_charge=almo_scf_env%charge_of_domain, &
-                                    mol_to_multiplicity=almo_scf_env%multiplicity_of_domain)
+         IF (almo_scf_env%activate(1) == 1) THEN
+            CALL get_molecule_set_info(molecule_set, &
+                                       atom_to_mol=almo_scf_env%domain_index_of_atom, &
+                                       mol_to_first_atom=almo_scf_env%first_atom_of_domain, &
+                                       mol_to_last_atom=almo_scf_env%last_atom_of_domain, &
+                                       mol_to_nelectrons=almo_scf_env%nocc_of_domain(1:ndomains, 1), &
+                                       mol_to_nbasis=almo_scf_env%nbasis_of_domain)
+
+         ELSE
+            CALL get_molecule_set_info(molecule_set, &
+                                       atom_to_mol=almo_scf_env%domain_index_of_atom, &
+                                       mol_to_first_atom=almo_scf_env%first_atom_of_domain, &
+                                       mol_to_last_atom=almo_scf_env%last_atom_of_domain, &
+                                       mol_to_nelectrons=almo_scf_env%nocc_of_domain(1:ndomains, 1), &
+                                       mol_to_nbasis=almo_scf_env%nbasis_of_domain, &
+                                       mol_to_charge=almo_scf_env%charge_of_domain, &
+                                       mol_to_multiplicity=almo_scf_env%multiplicity_of_domain)
+         END IF
          ! calculate number of alpha and beta occupied orbitals from
          ! the number of electrons and multiplicity of each molecule
          ! Na + Nb = Ne
          ! Na - Nb = Mult - 1 (assume Na > Nb as we do not have more info from get_molecule_set_info)
          DO idomain = 1, ndomains
-            nelec = almo_scf_env%nocc_of_domain(idomain, 1)
+            IF (almo_scf_env%activate(1) == 1) THEN
+               nelec = almo_scf_env%nocc_of_domain(idomain, 1) - almo_scf_env%charge_of_domain(idomain)
+            ELSE
+               nelec = almo_scf_env%nocc_of_domain(idomain, 1)
+            END IF
+
             multip = almo_scf_env%multiplicity_of_domain(idomain)
             nelec_a = (nelec + multip - 1)/2
-            nelec_b = nelec - nelec_a
+
             !! Initializing an occupation-rescaling trick if smearing is on
             IF (almo_scf_env%smear) THEN
                CPWARN_IF(multip > 1, "BEWARE: Non singlet state detected, treating it as closed-shell")
@@ -314,15 +352,17 @@ CONTAINS
                                                             - almo_scf_env%first_atom_of_domain(idomain) + 1)
             ELSE
                almo_scf_env%nocc_of_domain(idomain, 1) = nelec_a
+               nelec_b = nelec - nelec_a
+               IF (almo_scf_env%activate(1) == 1) THEN
+                  almo_scf_env%nocc_of_domain(idomain, 2) = nelec_b
+               END IF
+
                IF (nelec_a /= nelec_b) THEN
                   IF (nspins == 1) THEN
-                     WRITE (*, *) "Domain ", idomain, " out of ", ndomains, ". Electrons = ", nelec
+
                      CPABORT("odd e- -- use unrestricted methods")
                   END IF
-                  almo_scf_env%nocc_of_domain(idomain, 2) = nelec_b
-                  ! RZK-warning: open-shell procedures have not been tested yet
-                  ! Stop the program now
-                  CPABORT("Unrestricted ALMO methods are NYI")
+
                END IF
             END IF
          END DO
@@ -422,22 +462,22 @@ CONTAINS
             IF (almo_scf_env%opt_block_diag_pcg%eps_error_early > 0.0_dp) THEN
                almo_scf_env%opt_block_diag_pcg%eps_error = almo_scf_env%opt_block_diag_pcg%eps_error_early
                almo_scf_env%opt_block_diag_pcg%early_stopping_on = .TRUE.
-               IF (unit_nr > 0) WRITE (*, *) "ALMO_OPTIMIZER_PCG: EPS_ERROR_EARLY is on"
+               IF (unit_nr > 0) WRITE (unit_nr, "(/,T2,A)") "ALMO_OPTIMIZER_PCG: EPS_ERROR_EARLY is on"
             END IF
             IF (almo_scf_env%opt_block_diag_diis%eps_error_early > 0.0_dp) THEN
                almo_scf_env%opt_block_diag_diis%eps_error = almo_scf_env%opt_block_diag_diis%eps_error_early
                almo_scf_env%opt_block_diag_diis%early_stopping_on = .TRUE.
-               IF (unit_nr > 0) WRITE (*, *) "ALMO_OPTIMIZER_DIIS: EPS_ERROR_EARLY is on"
+               IF (unit_nr > 0) WRITE (unit_nr, "(/,T2,A)") "ALMO_OPTIMIZER_DIIS: EPS_ERROR_EARLY is on"
             END IF
             IF (almo_scf_env%opt_block_diag_pcg%max_iter_early > 0) THEN
                almo_scf_env%opt_block_diag_pcg%max_iter = almo_scf_env%opt_block_diag_pcg%max_iter_early
                almo_scf_env%opt_block_diag_pcg%early_stopping_on = .TRUE.
-               IF (unit_nr > 0) WRITE (*, *) "ALMO_OPTIMIZER_PCG: MAX_ITER_EARLY is on"
+               IF (unit_nr > 0) WRITE (unit_nr, "(/,T2,A)") "ALMO_OPTIMIZER_PCG: MAX_ITER_EARLY is on"
             END IF
             IF (almo_scf_env%opt_block_diag_diis%max_iter_early > 0) THEN
                almo_scf_env%opt_block_diag_diis%max_iter = almo_scf_env%opt_block_diag_diis%max_iter_early
                almo_scf_env%opt_block_diag_diis%early_stopping_on = .TRUE.
-               IF (unit_nr > 0) WRITE (*, *) "ALMO_OPTIMIZER_DIIS: MAX_ITER_EARLY is on"
+               IF (unit_nr > 0) WRITE (unit_nr, "(/,T2,A)") "ALMO_OPTIMIZER_DIIS: MAX_ITER_EARLY is on"
             END IF
          ELSE
             almo_scf_env%opt_block_diag_diis%early_stopping_on = .FALSE.
@@ -447,12 +487,12 @@ CONTAINS
             IF (almo_scf_env%opt_xalmo_pcg%eps_error_early > 0.0_dp) THEN
                almo_scf_env%opt_xalmo_pcg%eps_error = almo_scf_env%opt_xalmo_pcg%eps_error_early
                almo_scf_env%opt_xalmo_pcg%early_stopping_on = .TRUE.
-               IF (unit_nr > 0) WRITE (*, *) "XALMO_OPTIMIZER_PCG: EPS_ERROR_EARLY is on"
+               IF (unit_nr > 0) WRITE (unit_nr, "(/,T2,A)") "XALMO_OPTIMIZER_PCG: EPS_ERROR_EARLY is on"
             END IF
             IF (almo_scf_env%opt_xalmo_pcg%max_iter_early > 0.0_dp) THEN
                almo_scf_env%opt_xalmo_pcg%max_iter = almo_scf_env%opt_xalmo_pcg%max_iter_early
                almo_scf_env%opt_xalmo_pcg%early_stopping_on = .TRUE.
-               IF (unit_nr > 0) WRITE (*, *) "XALMO_OPTIMIZER_PCG: MAX_ITER_EARLY is on"
+               IF (unit_nr > 0) WRITE (unit_nr, "(/,T2,A)") "XALMO_OPTIMIZER_PCG: MAX_ITER_EARLY is on"
             END IF
          ELSE
             almo_scf_env%opt_xalmo_pcg%early_stopping_on = .FALSE.
@@ -1362,7 +1402,6 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'almo_scf_delocalization'
 
       INTEGER                                            :: handle, ispin, unit_nr
-      LOGICAL                                            :: almo_experimental
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: no_quench
       TYPE(optimizer_options_type)                       :: arbitrary_optimizer
@@ -1423,25 +1462,6 @@ CONTAINS
          !!!! RZK-warning a whole class of delocalization methods
          !!!! are commented out at the moment because some of their
          !!!! routines have not been thoroughly tested.
-
-         !!!! if we have virtuals pre-optimize and truncate them
-         !!!IF (almo_scf_env%need_virtuals) THEN
-         !!!   SELECT CASE (almo_scf_env%deloc_truncate_virt)
-         !!!   CASE (virt_full)
-         !!!      ! simply copy virtual orbitals from matrix_v_full_blk to matrix_v_blk
-         !!!      DO ispin=1,almo_scf_env%nspins
-         !!!         CALL dbcsr_copy(almo_scf_env%matrix_v_blk(ispin),&
-         !!!                 almo_scf_env%matrix_v_full_blk(ispin))
-         !!!      ENDDO
-         !!!   CASE (virt_number,virt_occ_size)
-         !!!      CALL split_v_blk(almo_scf_env)
-         !!!      !CALL truncate_subspace_v_blk(qs_env,almo_scf_env)
-         !!!   CASE DEFAULT
-         !!!      CPErrorMessage(cp_failure_level,routineP,"illegal method for virtual space truncation")
-         !!!      CPPrecondition(.FALSE.,cp_failure_level,routineP,failure)
-         !!!   END SELECT
-         !!!ENDIF
-         !!!CALL harris_foulkes_correction(qs_env,almo_scf_env)
 
          IF (almo_scf_env%xalmo_update_algorithm == almo_scf_pcg) THEN
 
@@ -1546,18 +1566,6 @@ CONTAINS
                                     assume_t0_q0x=(almo_scf_env%xalmo_trial_wf == xalmo_trial_r0_out), &
                                     perturbation_only=.FALSE., &
                                     special_case=xalmo_case_normal)
-
-            ! RZK-warning THIS IS A HACK TO GET ORBITAL ENERGIES
-            almo_experimental = .FALSE.
-            IF (almo_experimental) THEN
-               almo_scf_env%perturbative_delocalization = .TRUE.
-               !DO ispin=1,almo_scf_env%nspins
-               !   CALL dbcsr_copy(almo_scf_env%matrix_t(ispin),&
-               !           almo_scf_env%matrix_t_blk(ispin))
-               !ENDDO
-               CALL almo_scf_xalmo_eigensolver(qs_env, almo_scf_env, &
-                                               arbitrary_optimizer)
-            END IF ! experimental
 
          ELSE IF (almo_scf_env%xalmo_update_algorithm == almo_scf_trustr) THEN
 
@@ -1696,7 +1704,7 @@ CONTAINS
 
       REAL(KIND=dp)                                      :: det_diff, prev_determinant
 
-      almo_scf_env%overlap_determinant = 1.0
+      almo_scf_env%overlap_determinant = 1.0_dp
       ! KEEP: initial_vol_coeff = almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength
       almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength = &
          -1.0_dp*almo_scf_env%opt_nlmo_pcg%opt_penalty%penalty_strength !NEW1
@@ -2099,13 +2107,6 @@ CONTAINS
          CALL dbcsr_copy(matrix_t_processed(ispin), &
                          almo_scf_env%matrix_t(ispin))
 
-         !CALL dbcsr_create(matrix_v_processed(ispin), &
-         !                  template=almo_scf_env%matrix_v(ispin), &
-         !                  matrix_type=dbcsr_type_no_symmetry)
-
-         !CALL dbcsr_copy(matrix_v_processed(ispin), &
-         !                almo_scf_env%matrix_v(ispin))
-
          IF (almo_scf_env%return_orthogonalized_mos) THEN
 
             CALL orthogonalize_mos(ket=matrix_t_processed(ispin), &
@@ -2139,6 +2140,7 @@ CONTAINS
       CALL get_qs_env(qs_env, mos=mos, scf_env=scf_env)
 
       DO ispin = 1, almo_scf_env%nspins
+
          ! Currently only fm version of mo_set is usable.
          ! First transform the matrix_t to fm version
          CALL get_mo_set(mos(ispin), mo_coeff=mo_coeff)
@@ -2151,7 +2153,7 @@ CONTAINS
       DEALLOCATE (matrix_t_processed)
 
       ! calculate post scf properties
-      ! CALL almo_post_scf_compute_properties(qs_env, almo_scf_env)
+
       CALL almo_post_scf_compute_properties(qs_env)
 
       ! compute the W matrix if associated
@@ -2590,8 +2592,9 @@ CONTAINS
       ALLOCATE (almo_scf_env%matrix_p_blk(nspins))
       ALLOCATE (almo_scf_env%matrix_ks(nspins))
       ALLOCATE (almo_scf_env%matrix_ks_blk(nspins))
-      IF (almo_scf_env%need_previous_ks) &
+      IF (almo_scf_env%need_previous_ks) THEN
          ALLOCATE (almo_scf_env%matrix_ks_0deloc(nspins))
+      END IF
       DO ispin = 1, nspins
          ! RZK-warning copy with symmery but remember that this might cause problems
          CALL dbcsr_create(almo_scf_env%matrix_p(ispin), &
@@ -2800,7 +2803,9 @@ CONTAINS
       DEALLOCATE (almo_scf_env%first_atom_of_domain)
       DEALLOCATE (almo_scf_env%last_atom_of_domain)
       DEALLOCATE (almo_scf_env%nbasis_of_domain)
-      DEALLOCATE (almo_scf_env%nocc_of_domain)
+      IF (ALLOCATED(almo_scf_env%nocc_of_domain)) THEN
+         DEALLOCATE (almo_scf_env%nocc_of_domain)
+      END IF
       DEALLOCATE (almo_scf_env%real_ne_of_domain)
       DEALLOCATE (almo_scf_env%nvirt_full_of_domain)
       DEALLOCATE (almo_scf_env%nvirt_of_domain)
@@ -2809,6 +2814,7 @@ CONTAINS
       DEALLOCATE (almo_scf_env%cpu_of_domain)
       DEALLOCATE (almo_scf_env%charge_of_domain)
       DEALLOCATE (almo_scf_env%multiplicity_of_domain)
+      DEALLOCATE (almo_scf_env%activate)
       IF (almo_scf_env%smear) THEN
          DEALLOCATE (almo_scf_env%mo_energies)
          DEALLOCATE (almo_scf_env%kTS)

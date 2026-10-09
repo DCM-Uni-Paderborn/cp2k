@@ -50,9 +50,7 @@ MODULE qs_environment
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type,&
                                               cp_to_string
-   USE cp_output_handling,              ONLY: cp_p_file,&
-                                              cp_print_key_finished_output,&
-                                              cp_print_key_should_output,&
+   USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
    USE cp_subsys_types,                 ONLY: cp_subsys_type
    USE cp_symmetry,                     ONLY: write_symmetry
@@ -90,14 +88,16 @@ MODULE qs_environment
    USE hfx_types,                       ONLY: compare_hfx_sections,&
                                               hfx_create
    USE input_constants,                 ONLY: &
-        debug_run, dispersion_d2, dispersion_d3, dispersion_d3bj, do_et_ddapc, do_method_am1, &
-        do_method_dftb, do_method_gapw, do_method_gapw_xc, do_method_gpw, do_method_lrigpw, &
-        do_method_mndo, do_method_mndod, do_method_ofgpw, do_method_pdg, do_method_pm3, &
-        do_method_pm6, do_method_pm6fm, do_method_pnnl, do_method_rigpw, do_method_rm1, &
-        do_method_xtb, do_qmmm_gauss, do_qmmm_swave, general_roks, gfn1xtb, hden_atomic, &
-        kg_tnadd_embed_ri, linear_response_run, rel_none, rel_trans_atom, smear_fermi_dirac, &
-        tblite_scc_mixer_tblite, tddfpt_kernel_none, vdw_pairpot_dftd2, vdw_pairpot_dftd3, &
-        vdw_pairpot_dftd3bj, vdw_pairpot_dftd4, wfi_linear_ps_method_nr, wfi_linear_wf_method_nr, &
+        atomic_guess, debug_run, diag_ot, dispersion_d2, dispersion_d3, dispersion_d3bj, &
+        do_et_ddapc, do_method_am1, do_method_dftb, do_method_gapw, do_method_gapw_xc, &
+        do_method_gpw, do_method_lrigpw, do_method_mndo, do_method_mndod, do_method_ofgpw, &
+        do_method_pdg, do_method_pm3, do_method_pm6, do_method_pm6fm, do_method_pnnl, &
+        do_method_rigpw, do_method_rm1, do_method_xtb, do_qmmm_gauss, do_qmmm_swave, general_roks, &
+        gfn1xtb, hden_atomic, kg_tnadd_embed_ri, linear_response_run, mtlr_atomic_perturbations, &
+        mtlr_reference_from_atomic, mtlr_reference_from_restart, rel_none, rel_trans_atom, &
+        restart_guess, smear_fermi_dirac, tblite_scc_mixer_tblite, tddfpt_kernel_none, &
+        vdw_pairpot_dftd2, vdw_pairpot_dftd3, vdw_pairpot_dftd3bj, vdw_pairpot_dftd4, &
+        wfi_linear_ps_method_nr, wfi_linear_wf_method_nr, wfi_use_guess_method_nr, &
         wfi_use_prev_wf_method_nr, xc_vdw_fun_none, xc_vdw_fun_nonloc, xc_vdw_fun_pairpot, &
         xtb_vdw_type_d3, xtb_vdw_type_d4, xtb_vdw_type_none
    USE input_section_types,             ONLY: section_get_ival,&
@@ -218,10 +218,14 @@ MODULE qs_environment
    USE transport,                       ONLY: transport_env_create
    USE xtb_parameters,                  ONLY: init_xtb_basis,&
                                               xtb_parameters_init,&
-                                              xtb_parameters_set
+                                              xtb_parameters_set,&
+                                              xtb_spinpol_ext,&
+                                              xtb_spinpol_init
    USE xtb_potentials,                  ONLY: xtb_pp_radius
    USE xtb_types,                       ONLY: allocate_xtb_atom_param,&
-                                              set_xtb_atom_param
+                                              get_xtb_atom_param,&
+                                              set_xtb_atom_param,&
+                                              write_xtb_atom_param
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -251,11 +255,13 @@ CONTAINS
 !> \param subsys_section ...
 !> \param use_motion_section ...
 !> \param silent ...
+!> \param multip ...
+!> \param charge ...
 !> \author Creation (22.05.2000,MK)
 ! **************************************************************************************************
    SUBROUTINE qs_init(qs_env, para_env, root_section, globenv, cp_subsys, kpoint_env, &
                       qmmm, qmmm_env_qm, force_env_section, subsys_section, &
-                      use_motion_section, silent)
+                      use_motion_section, silent, multip, charge)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -268,6 +274,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: force_env_section, subsys_section
       LOGICAL, INTENT(IN)                                :: use_motion_section
       LOGICAL, INTENT(IN), OPTIONAL                      :: silent
+      INTEGER, INTENT(IN), OPTIONAL                      :: multip, charge
 
       CHARACTER(LEN=default_string_length)               :: basis_type
       INTEGER                                            :: ikind, method_id, nelectron_total, &
@@ -277,8 +284,8 @@ CONTAINS
          do_ec_hfx, do_et, do_exx, do_gw, do_hfx, do_kpoints, do_linear_response, do_mp2, &
          do_ri_mp2, do_ri_rpa, do_ri_sos_mp2, do_tddfpt, do_tddfpt_unsupported_kpoints, &
          do_wfc_low_scaling, do_wfc_low_scaling_kpoints, do_xtb_tblite, final_kpoint_reinit, &
-         is_identical, is_semi, kpoint_verbose, mp2_present, my_qmmm, owned_kpoints, qmmm_decoupl, &
-         same_except_frac, use_real_wfn, use_ref_cell
+         is_identical, is_semi, kpoint_explicit, kpoint_verbose, mp2_present, my_qmmm, &
+         ot_energies, owned_kpoints, qmmm_decoupl, same_except_frac, use_real_wfn, use_ref_cell
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: rtmat
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: my_cell, my_cell_ref
@@ -309,6 +316,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(subsys_section)) THEN
          subsys_section => section_vals_get_subs_vals(force_env_section, "SUBSYS")
       END IF
+      CALL section_vals_val_get(force_env_section, "DFT%QS%METHOD", i_val=method_id)
 
       ! QMMM
       my_qmmm = .FALSE.
@@ -318,14 +326,14 @@ CONTAINS
          IF (qmmm_env_qm%qmmm_coupl_type == do_qmmm_gauss .OR. &
              qmmm_env_qm%qmmm_coupl_type == do_qmmm_swave) THEN
             ! For GAUSS/SWAVE methods there could be a DDAPC decoupling requested
-            qmmm_decoupl = my_qmmm .AND. qmmm_env_qm%periodic .AND. qmmm_env_qm%multipole
+            qmmm_decoupl = my_qmmm .AND. qmmm_env_qm%periodic .AND. qmmm_env_qm%multipole .AND. &
+                           method_id /= do_method_dftb .AND. method_id /= do_method_xtb
          END IF
          qs_env%qmmm_env_qm => qmmm_env_qm
       END IF
       CALL set_qs_env(qs_env=qs_env, qmmm=my_qmmm)
 
       ! Possibly initialize arrays for SE
-      CALL section_vals_val_get(force_env_section, "DFT%QS%METHOD", i_val=method_id)
       SELECT CASE (method_id)
       CASE (do_method_rm1, do_method_am1, do_method_mndo, do_method_pdg, &
             do_method_pm3, do_method_pm6, do_method_pm6fm, do_method_mndod, do_method_pnnl)
@@ -386,6 +394,13 @@ CONTAINS
          CALL set_qs_env(qs_env=qs_env, kpoints=kpoints)
          kpoint_section => section_vals_get_subs_vals(qs_env%input, "DFT%KPOINTS")
          CALL read_kpoint_section(kpoints, kpoint_section, my_cell%hmat, my_cell)
+         CALL section_vals_get(kpoint_section, explicit=kpoint_explicit)
+         ot_energies = .FALSE.
+         CALL section_vals_val_get(qs_env%input, "DFT%SCF%OT%ENERGIES", l_val=ot_energies)
+         IF (.NOT. kpoint_explicit .AND. ot_energies) THEN
+            ! Use the production Mermin driver instead of maintaining a second sparse Gamma path.
+            CALL set_kpoint_info(kpoints, kp_scheme="GAMMA")
+         END IF
          CALL get_kpoint_info(kpoints, verbose=kpoint_verbose)
          IF (kpoint_verbose) CALL set_kpoint_info(kpoints, verbose=.FALSE.)
          do_hfx = .FALSE.
@@ -414,14 +429,17 @@ CONTAINS
             do_tddfpt_unsupported_kpoints = tddfpt_kernel /= tddfpt_kernel_none
             IF (.NOT. do_tddfpt_unsupported_kpoints) THEN
                CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
-               IF (use_real_wfn) &
+               IF (use_real_wfn) THEN
                   CALL cp_abort(__LOCATION__, "K-point TDDFPT requires complex wavefunctions.")
+               END IF
             END IF
             CALL section_vals_val_get(tddfpt_section, "DO_BSE", l_val=do_bse)
-            IF (.NOT. do_bse) &
+            IF (.NOT. do_bse) THEN
                CALL section_vals_val_get(tddfpt_section, "DO_BSE_W_ONLY", l_val=do_bse)
-            IF (.NOT. do_bse) &
+            END IF
+            IF (.NOT. do_bse) THEN
                CALL section_vals_val_get(tddfpt_section, "DO_BSE_GW_ONLY", l_val=do_bse)
+            END IF
          END IF
          do_active_space = .FALSE.
          active_space_section => section_vals_get_subs_vals(qs_env%input, "DFT%ACTIVE_SPACE")
@@ -468,10 +486,11 @@ CONTAINS
                                       l_val=do_wfc_low_scaling)
             CALL section_vals_val_get(qs_env%input, "DFT%XC%WF_CORRELATION%LOW_SCALING%DO_KPOINTS", &
                                       l_val=do_wfc_low_scaling_kpoints)
-            IF (.NOT. do_bse) &
+            IF (.NOT. do_bse) THEN
                CALL section_vals_val_get(qs_env%input, &
                                          "DFT%XC%WF_CORRELATION%RI_RPA%GW%BSE%_SECTION_PARAMETERS_", &
                                          l_val=do_bse)
+            END IF
          END IF
          CALL restrict_unsupported_atomic_kpoint_symmetry(kpoints, method_id, do_hfx, do_exx, do_gw, &
                                                           do_tddfpt_unsupported_kpoints, &
@@ -485,7 +504,7 @@ CONTAINS
       END IF
 
       CALL qs_init_subsys(qs_env, para_env, subsys, my_cell, my_cell_ref, use_ref_cell, &
-                          subsys_section, silent=silent)
+                          subsys_section, silent=silent, multip=multip, charge=charge)
 
       CALL get_qs_env(qs_env, dft_control=dft_control)
       IF (owned_kpoints) THEN
@@ -522,7 +541,9 @@ CONTAINS
       END IF
 
       IF (my_qmmm .AND. PRESENT(qmmm_env_qm) .AND. .NOT. dft_control%qs_control%commensurate_mgrids) THEN
-         IF (qmmm_env_qm%qmmm_coupl_type == do_qmmm_gauss .OR. qmmm_env_qm%qmmm_coupl_type == do_qmmm_swave) THEN
+         IF ((qmmm_env_qm%qmmm_coupl_type == do_qmmm_gauss .OR. &
+              qmmm_env_qm%qmmm_coupl_type == do_qmmm_swave) .AND. &
+             method_id /= do_method_dftb .AND. method_id /= do_method_xtb) THEN
             CALL cp_abort(__LOCATION__, "QM/MM with coupling GAUSS or S-WAVE requires "// &
                           "keyword FORCE_EVAL/DFT/MGRID/COMMENSURATE to be enabled.")
          END IF
@@ -531,8 +552,9 @@ CONTAINS
       ! more kpoint stuff
       CALL get_qs_env(qs_env=qs_env, do_kpoints=do_kpoints, blacs_env=blacs_env)
       IF (do_kpoints) THEN
-         IF (dft_control%qs_control%do_ls_scf) &
+         IF (dft_control%qs_control%do_ls_scf) THEN
             CPABORT("DFT%KPOINTS are not implemented with QS/LS_SCF; use a real-space supercell instead.")
+         END IF
          CALL kpoint_env_initialize(kpoints, para_env, blacs_env, with_aux_fit=dft_control%do_admm)
          CALL kpoint_initialize_mos(kpoints, qs_env%mos)
          CALL get_qs_env(qs_env=qs_env, wf_history=wf_history)
@@ -624,9 +646,13 @@ CONTAINS
       CALL get_qs_env(qs_env, harris_env=harris_env)
       IF (qs_env%harris_method) THEN
          ! initialize the Harris input density and potential integrals
-         CALL get_qs_env(qs_env, local_particles=local_particles)
-         CALL harris_rhoin_init(harris_env%rhoin, "RHOIN", qs_kind_set, atomic_kind_set, &
-                                local_particles, dft_control%nspins)
+         IF (harris_env%density_source == hden_atomic) THEN
+            CALL get_qs_env(qs_env, local_particles=local_particles)
+            CALL harris_rhoin_init(harris_env%rhoin, "RHOIN", qs_kind_set, atomic_kind_set, &
+                                   local_particles, dft_control%nspins)
+         ELSE
+            harris_env%rhoin%nspin = dft_control%nspins
+         END IF
          ! Print information of the HARRIS section
          CALL harris_write_input(harris_env)
       END IF
@@ -963,10 +989,12 @@ CONTAINS
 !> \param use_ref_cell ...
 !> \param subsys_section ...
 !> \param silent ...
+!> \param multip ...
+!> \param charge ...
 !> \author Creation (22.05.2000,MK)
 ! **************************************************************************************************
    SUBROUTINE qs_init_subsys(qs_env, para_env, subsys, cell, cell_ref, use_ref_cell, subsys_section, &
-                             silent)
+                             silent, multip, charge)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -975,16 +1003,17 @@ CONTAINS
       LOGICAL, INTENT(in)                                :: use_ref_cell
       TYPE(section_vals_type), POINTER                   :: subsys_section
       LOGICAL, INTENT(in), OPTIONAL                      :: silent
+      INTEGER, INTENT(IN), OPTIONAL                      :: multip, charge
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'qs_init_subsys'
 
       CHARACTER(len=2)                                   :: element_symbol
       INTEGER :: gfn_type, handle, ikind, ispin, iw, lmax_sphere, maxl, maxlgto, maxlgto_lri, &
-         maxlgto_nuc, maxlppl, maxlppnl, method_id, multiplicity, my_ival, n_ao, n_mo_add, natom, &
-         nelectron, ngauss, nkind, nlumo_dos, nlumo_molden, nlumo_pdos, nlumo_required, &
-         output_unit, sort_basis, tnadd_method
+         maxlgto_nuc, maxlppl, maxlppnl, method_id, multiplicity, my_ival, n_ao, n_mo_add, &
+         n_mo_auto, n_mo_target, natom, nelectron, ngauss, nkind, nlumo_dos, nlumo_molden, &
+         nlumo_required, output_unit, sort_basis, tnadd_method
       INTEGER, DIMENSION(2)                              :: n_mo, nelectron_spin
-      INTEGER, DIMENSION(5)                              :: occ
+      INTEGER, DIMENSION(5)                              :: ngaussflex, occ
       INTEGER, DIMENSION(:), POINTER                     :: mo_index_range
       LOGICAL :: all_potential_present, be_silent, cneo_potential_present, do_kpoints, do_ri_hfx, &
          do_ri_mp2, do_ri_rpa, do_ri_sos_mp2, do_rpa_ri_exx, do_wfc_im_time, e1terms, &
@@ -1183,7 +1212,7 @@ CONTAINS
             CALL ewald_pw_create(ewald_pw, ewald_env, cell, cell_ref, print_section=print_section)
             CALL set_qs_env(qs_env, ewald_env=ewald_env, ewald_pw=ewald_pw)
          END IF
-      ELSEIF (dft_control%qs_control%method_id == do_method_xtb) THEN
+      ELSE IF (dft_control%qs_control%method_id == do_method_xtb) THEN
          ! Read xTB parameter file
          xtb_control => dft_control%qs_control%xtb_control
          CALL get_qs_env(qs_env, nkind=nkind)
@@ -1227,6 +1256,12 @@ CONTAINS
                CALL xtb_parameters_init(qs_kind%xtb_parameter, gfn_type, element_symbol, &
                                         xtb_control%parameter_file_path, xtb_control%parameter_file_name, &
                                         para_env)
+               IF (xtb_control%do_spinpol) THEN
+                  CALL xtb_spinpol_init(qs_kind%xtb_parameter, gfn_type, element_symbol, &
+                                        xtb_control%parameter_file_path, xtb_control%spinpol_param_file_name, &
+                                        para_env)
+                  CALL xtb_spinpol_ext(qs_kind%xtb_parameter, gfn_type, xtb_control)
+               END IF
                ! set dependent parameters
                CALL xtb_parameters_set(qs_kind%xtb_parameter)
                ! Generate basis set
@@ -1238,7 +1273,12 @@ CONTAINS
                   ngauss = xtb_control%sto_ng
                END IF
                IF (qs_kind%xtb_parameter%defined) THEN
-                  CALL init_xtb_basis(qs_kind%xtb_parameter, tmp_basis_set, ngauss)
+                  IF (xtb_control%sto_flex) THEN
+                     CALL get_xtb_atom_param(qs_kind%xtb_parameter, ngauss=ngaussflex)
+                     CALL init_xtb_basis(qs_kind%xtb_parameter, tmp_basis_set, ngauss, ngaussflex)
+                  ELSE
+                     CALL init_xtb_basis(qs_kind%xtb_parameter, tmp_basis_set, ngauss)
+                  END IF
                   CALL add_basis_set_to_container(qs_kind%basis_sets, tmp_basis_set, "ORB")
                ELSE
                   CALL set_qs_kind(qs_kind, ghost=.TRUE.)
@@ -1257,6 +1297,7 @@ CONTAINS
                   CALL set_potential(qs_kind%all_potential, ccore_charge=ccore)
                   qs_kind%xtb_parameter%zeff = qs_kind%xtb_parameter%zeff - zeff_correction
                END IF
+               CALL write_xtb_atom_param(qs_kind%xtb_parameter, gfn_type, subsys_section)
             END DO
             !
             ! set repulsive potential range
@@ -1315,6 +1356,9 @@ CONTAINS
 
       ! DFT+U
       CALL get_qs_kind_set(qs_kind_set, dft_plus_u_atom_present=dft_control%dft_plus_u)
+
+      ! Minimum tracking linear response U and J
+      CALL get_qs_kind_set(qs_kind_set, do_mtlr_present=dft_control%mtlr_u_j)
 
       IF (dft_control%do_admm) THEN
          ! Check if ADMM basis is available
@@ -1407,7 +1451,7 @@ CONTAINS
       CALL harris_env_create(qs_env, harris_env, harris_section)
       CALL set_qs_env(qs_env, harris_env=harris_env)
       !
-      IF (qs_env%harris_method) THEN
+      IF (qs_env%harris_method .AND. qs_env%harris_env%density_source == hden_atomic) THEN
          CALL get_qs_env(qs_env, nkind=nkind)
          ! Check if RI_HXC basis is available, auto-generate if needed
          DO ikind = 1, nkind
@@ -1417,12 +1461,8 @@ CONTAINS
             IF (.NOT. (ASSOCIATED(rhoin_basis))) THEN
                ! Generate a default basis
                CALL create_ri_aux_basis_set(tmp_basis_set, qs_kind, dft_control%auto_basis_ri_hxc)
-               IF (qs_env%harris_env%density_source == hden_atomic) THEN
-                  CALL create_primitive_basis_set(tmp_basis_set, rhoin_basis, lmax=0)
-                  CALL deallocate_gto_basis_set(tmp_basis_set)
-               ELSE
-                  rhoin_basis => tmp_basis_set
-               END IF
+               CALL create_primitive_basis_set(tmp_basis_set, rhoin_basis, lmax=0)
+               CALL deallocate_gto_basis_set(tmp_basis_set)
                CALL add_basis_set_to_container(qs_kind%basis_sets, rhoin_basis, "RHOIN")
             END IF
          END DO
@@ -1597,14 +1637,33 @@ CONTAINS
       END IF
       CALL scf_c_create(scf_control)
       CALL scf_c_read_parameters(scf_control, dft_section)
+      IF (scf_control%gce%do_gce) THEN
+         IF (.NOT. ALL(cell%perd == 1)) THEN
+            CPABORT("Grand canonical SCF is only implemented for 3D periodic calculations.")
+         END IF
+         IF (.NOT. scf_control%smear%do_smear) THEN
+            CPABORT("Grand canonical SCF requires smearing.")
+         END IF
+         IF (scf_control%smear%method /= smear_fermi_dirac) THEN
+            CPABORT("Grand canonical SCF is only implemented for Fermi-Dirac way of smearing.")
+         END IF
+         IF (scf_control%use_ot .OR. .NOT. scf_control%use_diag .OR. &
+             scf_control%diagonalization%method == diag_ot) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "Grand canonical SCF requires standard diagonalization. "// &
+                          "It is not implemented with OT.")
+         END IF
+      END IF
       IF (.NOT. dft_control%qs_control%do_ls_scf) THEN
          SELECT CASE (dft_control%qs_control%method_id)
          CASE (do_method_dftb)
-            IF (dft_control%qs_control%dftb_control%tblite_scc_mixer == tblite_scc_mixer_tblite) &
+            IF (dft_control%qs_control%dftb_control%tblite_scc_mixer == tblite_scc_mixer_tblite) THEN
                scf_control%max_scf = dft_control%qs_control%dftb_control%tblite_mixer_iterations
+            END IF
          CASE (do_method_xtb)
-            IF (dft_control%qs_control%xtb_control%tblite_scc_mixer == tblite_scc_mixer_tblite) &
+            IF (dft_control%qs_control%xtb_control%tblite_scc_mixer == tblite_scc_mixer_tblite) THEN
                scf_control%max_scf = dft_control%qs_control%xtb_control%tblite_mixer_iterations
+            END IF
          END SELECT
       END IF
 
@@ -1620,6 +1679,43 @@ CONTAINS
          IF (dft_control%qs_control%dftb_control%orthogonal_basis) has_unit_metric = .TRUE.
       END IF
       CALL set_qs_env(qs_env, has_unit_metric=has_unit_metric)
+
+      ! Select the MTLR SCF initialization after reading SCF_GUESS.
+      IF (dft_control%mtlr_u_j) THEN
+         SELECT CASE (scf_control%density_guess)
+         CASE (atomic_guess)
+            IF (dft_control%mtlr_reference_scf_explicit .AND. &
+                dft_control%mtlr_reference_scf) THEN
+               dft_control%mtlr_initialization_mode = mtlr_reference_from_atomic
+            ELSE
+               dft_control%mtlr_initialization_mode = mtlr_atomic_perturbations
+            END IF
+         CASE (restart_guess)
+            IF (dft_control%mtlr_reference_scf_explicit .AND. &
+                .NOT. dft_control%mtlr_reference_scf) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "MTLR_REFERENCE_SCF OFF is incompatible with SCF_GUESS RESTART. "// &
+                             "Use MTLR_REFERENCE_SCF ON or SCF_GUESS ATOMIC.")
+            END IF
+            dft_control%mtlr_initialization_mode = mtlr_reference_from_restart
+         CASE DEFAULT
+            CPABORT("MTLR requires SCF_GUESS RESTART or SCF_GUESS ATOMIC.")
+         END SELECT
+
+         dft_control%mtlr_reference_scf = &
+            dft_control%mtlr_initialization_mode /= mtlr_atomic_perturbations
+
+         SELECT CASE (dft_control%mtlr_initialization_mode)
+         CASE (mtlr_atomic_perturbations)
+            ! Initialize every perturbation SCF from the atomic guess.
+            dft_control%qs_control%wf_interpolation_method_nr = wfi_use_guess_method_nr
+         CASE (mtlr_reference_from_atomic, mtlr_reference_from_restart)
+            ! Initialize every perturbation SCF from the restored reference MOs.
+            dft_control%qs_control%wf_interpolation_method_nr = wfi_use_prev_wf_method_nr
+         CASE DEFAULT
+            CPABORT("The MTLR SCF initialization mode was not resolved.")
+         END SELECT
+      END IF
 
       !  Activate the interpolation
       CALL wfi_create(wf_history, &
@@ -1713,6 +1809,7 @@ CONTAINS
          CALL init_gapw_nlcc(qs_kind_set)
          ! Accurate XC integration
          IF (gapw_control%accurate_xcint) THEN
+            CPASSERT(gapw_control%oweights >= 0)
             CPASSERT(.NOT. ASSOCIATED(gapw_control%aw))
             CALL get_qs_env(qs_env, nkind=nkind)
             ALLOCATE (gapw_control%aw(nkind))
@@ -1832,7 +1929,7 @@ CONTAINS
          NULLIFY (dispersion_env%c6ab, dispersion_env%maxci, dispersion_env%r0ab, dispersion_env%rcov, &
                   dispersion_env%r2r4, dispersion_env%cn, dispersion_env%cnkind, dispersion_env%cnlist, &
                   dispersion_env%d3_exclude_pair)
-         NULLIFY (dispersion_env%q_mesh, dispersion_env%kernel, dispersion_env%d2phi_dk2, &
+         NULLIFY (dispersion_env%q_mesh, dispersion_env%kernel_table, &
                   dispersion_env%d2y_dx2, dispersion_env%dftd_section)
          NULLIFY (dispersion_env%sab_vdw, dispersion_env%sab_cn)
          IF (dftb_control%dispersion .AND. dftb_control%dispersion_type == dispersion_d3) THEN
@@ -1850,7 +1947,7 @@ CONTAINS
             dispersion_env%nd3_exclude_pair = 0
             dispersion_env%parameter_file_name = dftb_control%dispersion_parameter_file
             CALL qs_dispersion_pairpot_init(atomic_kind_set, qs_kind_set, dispersion_env, para_env=para_env)
-         ELSEIF (dftb_control%dispersion .AND. dftb_control%dispersion_type == dispersion_d3bj) THEN
+         ELSE IF (dftb_control%dispersion .AND. dftb_control%dispersion_type == dispersion_d3bj) THEN
             dispersion_env%type = xc_vdw_fun_pairpot
             dispersion_env%pp_type = vdw_pairpot_dftd3bj
             dispersion_env%eps_cn = dftb_control%epscn
@@ -1866,7 +1963,7 @@ CONTAINS
             dispersion_env%nd3_exclude_pair = 0
             dispersion_env%parameter_file_name = dftb_control%dispersion_parameter_file
             CALL qs_dispersion_pairpot_init(atomic_kind_set, qs_kind_set, dispersion_env, para_env=para_env)
-         ELSEIF (dftb_control%dispersion .AND. dftb_control%dispersion_type == dispersion_d2) THEN
+         ELSE IF (dftb_control%dispersion .AND. dftb_control%dispersion_type == dispersion_d2) THEN
             dispersion_env%type = xc_vdw_fun_pairpot
             dispersion_env%pp_type = vdw_pairpot_dftd2
             dispersion_env%exp_pre = dftb_control%exp_pre
@@ -1892,7 +1989,7 @@ CONTAINS
                      dispersion_env%r2r4, dispersion_env%cn, &
                      dispersion_env%cnkind, dispersion_env%cnlist, &
                      dispersion_env%d3_exclude_pair)
-            NULLIFY (dispersion_env%q_mesh, dispersion_env%kernel, dispersion_env%d2phi_dk2, &
+            NULLIFY (dispersion_env%q_mesh, dispersion_env%kernel_table, &
                      dispersion_env%d2y_dx2, dispersion_env%dftd_section)
             NULLIFY (dispersion_env%sab_vdw, dispersion_env%sab_cn)
             dispersion_env%type = xc_vdw_fun_pairpot
@@ -1918,6 +2015,9 @@ CONTAINS
             CASE (xtb_vdw_type_d4)
                dispersion_env%pp_type = vdw_pairpot_dftd4
                dispersion_env%ref_functional = "none"
+               ! GFN0 supplies its EEQ charges directly to D4. GFN1 does not, so propagate the
+               ! common EEQ solver settings for the D4 charge model used in that case.
+               dispersion_env%eeq_sparam = xtb_control%eeq_sparam
                CALL qs_dispersion_pairpot_init(atomic_kind_set, qs_kind_set, &
                                                dispersion_env, para_env=para_env)
                dispersion_env%cnfun = 2
@@ -1937,7 +2037,7 @@ CONTAINS
          NULLIFY (dispersion_env%c6ab, dispersion_env%maxci, dispersion_env%r0ab, dispersion_env%rcov, &
                   dispersion_env%r2r4, dispersion_env%cn, dispersion_env%cnkind, dispersion_env%cnlist, &
                   dispersion_env%d3_exclude_pair)
-         NULLIFY (dispersion_env%q_mesh, dispersion_env%kernel, dispersion_env%d2phi_dk2, &
+         NULLIFY (dispersion_env%q_mesh, dispersion_env%kernel_table, &
                   dispersion_env%d2y_dx2, dispersion_env%dftd_section)
          NULLIFY (dispersion_env%sab_vdw, dispersion_env%sab_cn)
          IF (se_control%dispersion) THEN
@@ -1980,7 +2080,12 @@ CONTAINS
       CALL get_qs_kind_set(qs_kind_set, nsgf=n_ao, nelectron=nelectron)
 
       ! The total number of electrons
-      nelectron = nelectron - dft_control%charge
+      IF (PRESENT(charge)) THEN
+         dft_control%charge = charge
+         nelectron = nelectron - dft_control%charge
+      ELSE
+         nelectron = nelectron - dft_control%charge
+      END IF
 
       IF (dft_control%multiplicity == 0) THEN
          IF (MODULO(nelectron, 2) == 0) THEN
@@ -1991,6 +2096,10 @@ CONTAINS
       END IF
 
       multiplicity = dft_control%multiplicity
+
+      IF (PRESENT(multip)) THEN
+         multiplicity = multip
+      END IF
 
       IF ((dft_control%nspins < 1) .OR. (dft_control%nspins > 2)) THEN
          CPABORT("nspins should be 1 or 2 for the time being ...")
@@ -2024,9 +2133,6 @@ CONTAINS
             n_mo(1) = 1
             n_mo(2) = 0
          ELSE
-            IF (MODULO(nelectron + multiplicity - 1, 2) /= 0) THEN
-               CPABORT("LSD: try to use a different multiplicity")
-            END IF
             nelectron_spin(1) = (nelectron + multiplicity - 1)/2
             nelectron_spin(2) = (nelectron - multiplicity + 1)/2
             IF (nelectron_spin(1) < 0) THEN
@@ -2082,6 +2188,41 @@ CONTAINS
                          nelectron_total=nelectron, &
                          nelectron_spin=nelectron_spin)
 
+      IF (ANY(scf_control%added_mos_auto) .AND. .NOT. scf_control%smear%do_smear) THEN
+         CPABORT("ADDED_MOS AUTO requires smearing")
+      END IF
+      IF (ANY(scf_control%added_mos_auto) .AND. .NOT. do_kpoints) THEN
+         CPABORT("ADDED_MOS AUTO currently requires a K-point calculation")
+      END IF
+
+      IF (scf_control%smear%do_smear .AND. ANY(scf_control%added_mos_auto)) THEN
+         n_mo_auto = MAX(4, CEILING(0.2_dp*REAL(MAXVAL(n_mo(1:dft_control%nspins)), KIND=dp)))
+         IF (dft_control%nspins == 2 .AND. ALL(scf_control%added_mos_auto(1:2))) THEN
+            n_mo_target = MIN(n_ao, MAXVAL(n_mo(1:2)) + n_mo_auto)
+            DO ispin = 1, 2
+               scf_control%added_mos(ispin) = MAX(0, n_mo_target - n_mo(ispin))
+               scf_control%added_mos_auto(ispin) = .TRUE.
+            END DO
+         ELSE
+            DO ispin = 1, dft_control%nspins
+               IF (scf_control%added_mos_auto(ispin)) THEN
+                  scf_control%added_mos(ispin) = MIN(n_mo_auto, MAX(0, n_ao - n_mo(ispin)))
+                  scf_control%added_mos_auto(ispin) = .TRUE.
+               END IF
+            END DO
+         END IF
+         IF (output_unit > 0) THEN
+            IF (dft_control%nspins == 2) THEN
+               WRITE (UNIT=output_unit, FMT="(T2,A,2I5)") &
+                  "SCF smearing: automatically selected ADDED_MOS:", &
+                  scf_control%added_mos(1:dft_control%nspins)
+            ELSE
+               WRITE (UNIT=output_unit, FMT="(T2,A,I0)") &
+                  "SCF smearing: automatically selected ADDED_MOS: ", scf_control%added_mos(1)
+            END IF
+         END IF
+      END IF
+
       ! Ensure that all orbitals requested for printout are added even
       ! if the keyword ADDED_MOS was not specified or set properly
       mo_index_range => section_get_ivals(dft_section, "PRINT%MO%MO_INDEX_RANGE")
@@ -2119,10 +2260,9 @@ CONTAINS
       END IF
 
       nlumo_dos = section_get_ival(dft_section, "PRINT%DOS%NLUMO")
-      nlumo_pdos = section_get_ival(dft_section, "PRINT%PDOS%NLUMO")
       nlumo_molden = section_get_ival(dft_section, "PRINT%MO_MOLDEN%NLUMO")
-      nlumo_required = MAX(nlumo_dos, nlumo_pdos, nlumo_molden)
-      IF (nlumo_dos == -1 .OR. nlumo_pdos == -1 .OR. nlumo_molden == -1) nlumo_required = -1
+      nlumo_required = MAX(nlumo_dos, nlumo_molden)
+      IF (nlumo_dos == -1 .OR. nlumo_molden == -1) nlumo_required = -1
       IF (.NOT. scf_control%use_ot .AND. nlumo_required /= 0) THEN
          IF (nlumo_required == -1) THEN
             IF (scf_control%added_mos(1) /= -1 .OR. &
@@ -2189,10 +2329,11 @@ CONTAINS
       n_mo(1) = n_mo(1) + scf_control%added_mos(1)
 
       IF (dft_control%nspins == 2) THEN
-         IF (n_mo(2) > n_mo(1)) &
+         IF (n_mo(2) > n_mo(1)) THEN
             CALL cp_warn(__LOCATION__, &
                          "More beta than alpha MOs requested. "// &
                          "The number of beta MOs will be reduced to the number alpha MOs.")
+         END IF
          n_mo(2) = MIN(n_mo(1), n_mo(2))
          CPASSERT(n_mo(1) >= nelectron_spin(1))
          CPASSERT(n_mo(2) >= nelectron_spin(2))
@@ -2202,10 +2343,11 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, do_kpoints=do_kpoints)
       IF (do_kpoints .AND. dft_control%nspins == 2) THEN
          ! we need equal number of calculated states
-         IF (n_mo(2) /= n_mo(1)) &
+         IF (n_mo(2) /= n_mo(1)) THEN
             CALL cp_warn(__LOCATION__, &
                          "Kpoints: Different number of MOs requested. "// &
                          "The number of beta MOs will be set to the number alpha MOs.")
+         END IF
          n_mo(2) = n_mo(1)
          CPASSERT(n_mo(1) >= nelectron_spin(1))
          CPASSERT(n_mo(2) >= nelectron_spin(2))
@@ -2213,19 +2355,13 @@ CONTAINS
 
       ! Compatibility checks for smearing
       IF (scf_control%smear%do_smear) THEN
-         IF (dft_control%qs_control%xtb_control%do_tblite .AND. scf_control%use_ot) THEN
-            CPABORT("CP2K/tblite with OT does not support smearing.")
-         END IF
          IF (scf_control%added_mos(1) == 0) THEN
             CPABORT("Extra MOs (ADDED_MOS) are required for smearing")
          END IF
       END IF
 
       ! Some options require that all MOs are computed ...
-      IF (BTEST(cp_print_key_should_output(logger%iter_info, dft_section, &
-                                           "PRINT%MO/CARTESIAN"), &
-                cp_p_file) .OR. &
-          (scf_control%level_shift /= 0.0_dp) .OR. &
+      IF ((scf_control%level_shift /= 0.0_dp) .OR. &
           (scf_control%diagonalization%eps_jacobi /= 0.0_dp) .OR. &
           (dft_control%roks .AND. (.NOT. scf_control%use_ot))) THEN
          n_mo(:) = n_ao
@@ -2303,6 +2439,9 @@ CONTAINS
 
       IF (.NOT. be_silent) THEN
          ! Print the DFT control parameters
+         IF (PRESENT(multip)) THEN
+            dft_control%multiplicity = multiplicity
+         END IF
          CALL write_dft_control(dft_control, dft_section)
 
          ! Print the vdW control parameters
@@ -2449,7 +2588,7 @@ CONTAINS
                "- Orbital basis functions:                   ", maxlgto, &
                "- Local part of the GTH pseudopotential:     ", maxlppl, &
                "- Non-local part of the GTH pseudopotential: ", maxlppnl
-         ELSEIF (maxlppl > -1) THEN
+         ELSE IF (maxlppl > -1) THEN
             WRITE (UNIT=output_unit, FMT="(/,T3,A,(T30,A,T75,I6))") &
                "Maximum angular momentum of the", &
                "- Orbital basis functions:                   ", maxlgto, &

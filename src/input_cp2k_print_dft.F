@@ -18,13 +18,13 @@ MODULE input_cp2k_print_dft
    USE bibliography, ONLY: &
       Andermatt2016, Andreussi2012, Avezac2005, BaniHashemian2016, Becke1988b, Bengtsson1999, &
       Blochl1995, Brehm2018, Brelaz1979, Dewar1977, Dewar1985, Dudarev1997, Dudarev1998, &
-      Ehrhardt1985, Eriksen2020, Fattebert2002, Golze2017a, Golze2017b, Guidon2010, &
+      Ehrhardt1985, Eriksen2020, Fattebert2002, Golze2017a, Golze2017b, Grimme2015FOD, Guidon2010, &
       Heinzmann1976, Holmberg2017, Holmberg2018, Iannuzzi2005, Iannuzzi2006, Iannuzzi2007, &
       Knizia2013, Kolafa2004, Krack2000, Krack2002, Kuhne2007, Kunert2003, Lippert1997, &
       Lippert1999, Lu2004, Merlot2014, Perdew1981, Repasky2002, Rocha2006, Schenter2008, Schiffmann2015, &
       Shigeta2001, Stewart1982, Stewart1989, Stewart2007, Thiel1992, VanVoorhis2015, &
       VandeVondele2003, VandeVondele2005a, VandeVondele2005b, VandeVondele2006, Weber2008, &
-      Yin2017, Pracht2019, Caldeweyher2019, Caldeweyher2020
+      Yin2017, Pracht2019, Caldeweyher2019, Caldeweyher2020, Gresch2017, Soluyanov2011
    USE cp_output_handling, ONLY: add_last_numeric, &
                                  cp_print_key_section_create, &
                                  debug_print_level, &
@@ -88,9 +88,9 @@ MODULE input_cp2k_print_dft
       outer_scf_optimizer_diis, outer_scf_optimizer_newton, outer_scf_optimizer_newton_ls, &
       outer_scf_optimizer_none, outer_scf_optimizer_sd, outer_scf_optimizer_secant, &
       outer_scf_s2_constraint, plus_u_lowdin, plus_u_mulliken, plus_u_mulliken_charges, &
-      qiskit_solver, radius_covalent, radius_default, radius_single, radius_user, radius_vdw, &
-      random_guess, real_time_propagation, ref_charge_atomic, ref_charge_mulliken, rel_dkh, &
-      rel_none, rel_pot_erfc, rel_pot_full, rel_sczora_mp, rel_trans_atom, rel_trans_full, &
+      plus_u_tensorial, qiskit_solver, radius_covalent, radius_default, radius_single, radius_user, &
+      radius_vdw, random_guess, real_time_propagation, ref_charge_atomic, ref_charge_mulliken, &
+      rel_dkh, rel_none, rel_pot_erfc, rel_pot_full, rel_sczora_mp, rel_trans_atom, rel_trans_full, &
       rel_trans_molecule, rel_zora, rel_zora_full, rel_zora_mp, restart_guess, &
       sccs_andreussi, sccs_derivative_cd3, sccs_derivative_cd5, sccs_derivative_cd7, &
       sccs_derivative_fft, sccs_fattebert_gygi, shape_function_density, shape_function_gaussian, &
@@ -98,11 +98,12 @@ MODULE input_cp2k_print_dft
       slater, smear_energy_window, smear_fermi_dirac, smear_list, sparse_guess, tddfpt_davidson, &
       tddfpt_excitations, tddfpt_lanczos, tddfpt_singlet, tddfpt_spin_cons, tddfpt_spin_flip, &
       tddfpt_triplet, use_mom_ref_coac, use_mom_ref_com, use_mom_ref_user, use_mom_ref_zero, &
+      moments_format_detailed, moments_format_trajectory, &
       use_restart_wfn, use_rt_restart, use_scf_wfn, wannier_projection, weight_type_mass, &
       weight_type_unit, wfi_aspc_nr, wfi_gext_proj_nr, wfi_gext_proj_qtr_nr, wfi_frozen_method_nr, &
       wfi_linear_p_method_nr, wfi_linear_ps_method_nr, wfi_linear_wf_method_nr, wfi_ps_method_nr, &
-      wfi_use_guess_method_nr, wfi_use_prev_p_method_nr, wfi_use_prev_rho_r_method_nr, &
-      wfi_use_prev_wf_method_nr, wfn_mix_orig_external, wfn_mix_orig_occ, wfn_mix_orig_virtual, &
+      wfi_use_guess_method_nr, wfi_use_prev_p_method_nr, wfi_use_prev_wf_method_nr, &
+      wfn_mix_orig_external, wfn_mix_orig_occ, wfn_mix_orig_virtual, &
       xas_1s_type, xas_2p_type, xas_2s_type, xas_3d_type, xas_3p_type, xas_3s_type, xas_4d_type, &
       xas_4f_type, xas_4p_type, xas_4s_type, xas_dip_len, xas_dip_vel, xas_dscf, xas_none, &
       xas_not_excited, xas_tdp_by_index, xas_tdp_by_kind, xas_tp_fh, xas_tp_flex, xas_tp_hh, &
@@ -164,8 +165,7 @@ MODULE input_cp2k_print_dft
    USE qs_density_mixing_types, ONLY: create_mixing_section
    USE qs_fb_input, ONLY: create_filtermatrix_section
    USE qs_mom_types, ONLY: create_mom_section
-   USE string_utilities, ONLY: newline, &
-                               s2a
+   USE string_utilities, ONLY: s2a
 
    USE cp_output_handling_openpmd, ONLY: cp_openpmd_get_default_extension
 
@@ -176,7 +176,7 @@ MODULE input_cp2k_print_dft
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'input_cp2k_print_dft'
 
-   PUBLIC :: create_print_dft_section, create_pdos_section
+   PUBLIC :: add_dos_keywords, create_print_dft_section
 
 CONTAINS
 
@@ -435,6 +435,7 @@ CONTAINS
                           default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="NDIGITS", &
                           description="Specify the number of digits used to print the AO matrices", &
                           default_i_val=6)
@@ -478,8 +479,26 @@ CONTAINS
                           default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="COMMUTATOR_HR", &
                           description="Controls the printing of the [H,r] commutator matrix", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="POSITION", &
+                          description="Print the analytic AO matrices <mu|x,y,z|nu> in Bohr, relative to "// &
+                          "the coordinate origin, in the same AO ordering as OVERLAP and KOHN_SHAM_MATRIX. "// &
+                          "Only isolated GPW/GAPW systems; not a periodic Berry-phase operator. "// &
+                          "Use NDIGITS 16 for numerical postprocessing.", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SOC", &
+                          description="Print the three real antisymmetric AO GTH SOC components Vx, Vy, Vz in hartree. "// &
+                          "The physical orbital operators are i*Vx, i*Vy, i*Vz. "// &
+                          "Requires a restricted, isolated GPW/GAPW calculation with GTH SOC potentials.", &
                           default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
@@ -539,8 +558,9 @@ CONTAINS
          print_key, __LOCATION__, "MO", &
          description="Controls the printing of the molecular orbital (MO) information. The requested MO information "// &
          "is printed for all occupied MOs by default. Use the MO_INDEX_RANGE keyword to restrict the number "// &
-         "of the MOs or to print the MO information for unoccupied MOs. With diagonalization, additional MOs "// &
-         "have to be made available for printout using the ADDED_MOS keyword in the SCF section. With OT, "// &
+         "of the MOs or to print the MO information for unoccupied MOs. With diagonalization, an explicit "// &
+         "positive range or -1 as its last index makes the requested MOs available automatically, up to the "// &
+         "AO basis size. ADDED_MOS can make extra MOs available independently of this print request. With OT, "// &
          "it is sufficient to specify the desired MO_INDEX_RANGE. The OT eigensolver can be controlled with "// &
          "the EPS_LUMO and MAX_ITER_LUMO keywords in the SCF section.", &
          print_level=high_print_level, filename="__STD_OUT__")
@@ -591,8 +611,9 @@ CONTAINS
                           name="MO_INDEX_RANGE", &
                           variants=s2a("MO_RANGE", "RANGE"), &
                           description="Print only the requested subset of MOs. The indices of the first and "// &
-                          "the last MO have to be specified to define the range. -1 as the last MO index "// &
-                          "prints all available orbitals with diagonalisation (ADDED_MOS) and all orbitals with OT.", &
+                          "the last MO have to be specified to define the range. A positive range makes the "// &
+                          "requested MOs available automatically. -1 as the last MO index makes and prints all "// &
+                          "available orbitals with diagonalization and all orbitals with OT.", &
                           repeats=.FALSE., &
                           n_var=2, &
                           type_of_var=integer_t, &
@@ -891,6 +912,28 @@ CONTAINS
       CALL section_add_subsection(section, print_key)
       CALL section_release(print_key)
 
+      CALL cp_print_key_section_create(print_key, __LOCATION__, "FOD", &
+                                       description="Fractional occupation number weighted density (FOD) of Grimme and Hansen "// &
+                                       "[doi:10.1002/anie.201501887]. Prints the orbital sum N_FOD. "// &
+                                       "Requires GPW at Gamma and positive-temperature Fermi-Dirac smearing. "// &
+                                       "FOD is a qualitative static-correlation diagnostic, not a proof of "// &
+                                       "multireference character. Results depend on the functional and electronic "// &
+                                       "temperature; metallic occupations need a different interpretation.", &
+                                       print_level=debug_print_level + 1, filename="", citations=[Grimme2015FOD])
+      CALL keyword_create(keyword, __LOCATION__, name="CUBE", &
+                          description="Also collocate the FOD density, print its grid integral and write a cube "// &
+                          "in electrons/bohr**3. Without this option only the inexpensive orbital sum is computed.", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="STRIDE", &
+                          description="Cube sampling stride. Supply one value for all directions or three values.", &
+                          usage="STRIDE 2 2 2", n_var=-1, default_i_vals=[2, 2, 2], type_of_var=integer_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL section_add_subsection(section, print_key)
+      CALL section_release(print_key)
+
       CALL cp_print_key_section_create(print_key, __LOCATION__, "tot_density_cube", &
                                        description="Controls printing of cube files with "// &
                                        "the total density (electrons+atomic core). Note that "// &
@@ -1177,11 +1220,21 @@ CONTAINS
       CALL section_add_subsection(section, print_key)
       CALL section_release(print_key)
 
-      CALL create_dos_section(print_key)
-      CALL section_add_subsection(section, print_key)
-      CALL section_release(print_key)
+      CALL cp_print_key_section_create(print_key, __LOCATION__, "DOS", &
+                                       description="Print density of states (DOS). "// &
+                                       "Projected DOS output can be enabled with PDOS.", &
+                                       print_level=debug_print_level, common_iter_levels=1, filename="")
 
-      CALL create_pdos_section(print_key)
+      CALL add_dos_keywords(print_key, xas_mode=.FALSE.)
+
+      CALL keyword_create(keyword, __LOCATION__, name="MP_GRID", &
+                          description="Specify a Monkhorst-Pack grid with which to compute the density of states. "// &
+                          "Works only for a k-point calculation", &
+                          usage="MP_GRID {integer} {integer} {integer}", default_i_vals=[-1], &
+                          n_var=3, type_of_var=integer_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
       CALL section_add_subsection(section, print_key)
       CALL section_release(print_key)
 
@@ -1200,6 +1253,21 @@ CONTAINS
          n_var=1, &
          type_of_var=integer_t, &
          default_i_val=1)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create( &
+         keyword, __LOCATION__, &
+         name="FORMAT", &
+         description="Format of the moments output. DETAILED prints the traditional multi-line report. "// &
+         "TRAJECTORY prints one machine-readable electric-dipole record per iteration. For periodic "// &
+         "calculations each record also contains the cell matrix in Debye, which is required to unwrap "// &
+         "Berry-phase jumps in variable cells.", &
+         usage="FORMAT {DETAILED|TRAJECTORY}", &
+         enum_c_vals=s2a("DETAILED", "TRAJECTORY"), &
+         enum_desc=s2a("Traditional multi-line moments report", &
+                       "One electric-dipole record per iteration"), &
+         enum_i_vals=[moments_format_detailed, moments_format_trajectory], &
+         default_i_val=moments_format_detailed)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, &
@@ -1441,6 +1509,12 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="PRINT_BASIS", &
                           description="Print out MAO reference basis.", &
                           usage="PRINT_BASIS {logical}", repeats=.FALSE., n_var=1, &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE., type_of_var=logical_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="PRINT_PAO", &
+                          description="Print out MAO in PAO format to be used for optimization or learning.", &
+                          usage="PRINT_PAO {logical}", repeats=.FALSE., n_var=1, &
                           default_l_val=.FALSE., lone_keyword_l_val=.TRUE., type_of_var=logical_t)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
@@ -1877,8 +1951,21 @@ CONTAINS
                           n_var=-1, type_of_var=integer_t, repeats=.TRUE.)
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
+
       CALL section_add_subsection(sub_print_key, subsection)
       CALL section_release(subsection)
+      CALL section_add_subsection(print_key, sub_print_key)
+      CALL section_release(sub_print_key)
+
+      NULLIFY (sub_print_key)
+      CALL cp_print_key_section_create(sub_print_key, __LOCATION__, name="IAO_OVERLAP", &
+                                       description="Controls the printout required for ROSE.", &
+                                       print_level=debug_print_level, filename="CP2K_ROSE")
+      CALL keyword_create(keyword, __LOCATION__, name="NDIGITS", &
+                          description="Specify the number of digits used to print the MO information.", &
+                          default_i_val=6)
+      CALL section_add_keyword(sub_print_key, keyword)
+      CALL keyword_release(keyword)
       CALL section_add_subsection(print_key, sub_print_key)
       CALL section_release(sub_print_key)
 
@@ -2647,138 +2734,125 @@ CONTAINS
    END SUBROUTINE create_elf_print_section
 
 ! **************************************************************************************************
-!> \brief Add keywords shared by DOS and PDOS print sections.
+!> \brief Add projected-DOS related keywords to a DOS or XAS PDOS print section.
 !> \param print_key print key section to add keywords to
-!> \param label spectrum label used in keyword descriptions
-!> \param width_desc extra description for BROADEN_WIDTH
-!> \param ndigits_desc description for NDIGITS
+!> \param xas_mode if true, add keywords for the XAS-specific standalone PDOS section
 ! **************************************************************************************************
-   SUBROUTINE add_dos_pdos_common_keywords(print_key, label, width_desc, ndigits_desc)
+   SUBROUTINE add_dos_keywords(print_key, xas_mode)
 
       TYPE(section_type), POINTER                        :: print_key
-      CHARACTER(LEN=*), INTENT(IN)                       :: label, width_desc, ndigits_desc
+      LOGICAL, INTENT(IN)                                :: xas_mode
 
       TYPE(keyword_type), POINTER                        :: keyword
+      TYPE(section_type), POINTER                        :: broaden_subsection, pdos_section, subsection
 
+      NULLIFY (broaden_subsection, pdos_section, subsection)
       NULLIFY (keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="APPEND", &
-                          description="Append the "//TRIM(label)//" obtained at different iterations to the "// &
-                          TRIM(label)//" output file. By default the file is overwritten", &
-                          usage="APPEND", default_l_val=.FALSE., &
-                          lone_keyword_l_val=.TRUE.)
+                          description="Append the DOS/PDOS obtained at different iterations to the output file. "// &
+                          "By default the file is overwritten", &
+                          usage="APPEND", default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="NDIGITS", &
+                          description="Specify the number of digits used to print DOS/PDOS values.", &
+                          default_i_val=6)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="DELTA_E", &
-                          description="Energy spacing of the broadened "//TRIM(label)//" output grid.", &
+                          description="Energy spacing of the DOS/PDOS output grid.", &
                           usage="DELTA_E 0.0005", type_of_var=real_t, default_r_val=0.001_dp)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
 
-      CALL keyword_create(keyword, __LOCATION__, name="BROADEN_TYPE", &
-                          description="Type of broadening function used to produce the "//TRIM(label)//" curve.", &
-                          usage="BROADEN_TYPE GAUSSIAN", type_of_var=enum_t, &
+      CALL keyword_create(keyword, __LOCATION__, name="NLUMO", &
+                          description="Number of unoccupied orbitals to include in the DOS/PDOS (-1=all). "// &
+                          "For OT calculations, the requested virtual orbitals are generated after SCF using the "// &
+                          "OT eigensolver. For diagonalization calculations, SCF%ADDED_MOS is increased if needed "// &
+                          "to make the requested unoccupied orbitals available.", &
+                          usage="NLUMO integer", default_i_val=0)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      IF (.NOT. xas_mode) THEN
+         CALL section_create(pdos_section, __LOCATION__, name="PDOS", &
+                             description="Controls the printing of kind-resolved projected DOS.", &
+                             n_keywords=1, n_subsections=0)
+      ELSE
+         pdos_section => print_key
+      END IF
+      CALL keyword_create(keyword, __LOCATION__, name="COMPONENTS", &
+                          description="Print out PDOS distinguishing all angular momentum components.", &
+                          usage="COMPONENTS", default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(pdos_section, keyword)
+      CALL keyword_release(keyword)
+      IF (.NOT. xas_mode) THEN
+         CALL section_add_subsection(print_key, pdos_section)
+         CALL section_release(pdos_section)
+      END IF
+
+      CALL section_create(subsection, __LOCATION__, name="CURVE", &
+                          description="Controls the printing of broadened DOS/PDOS curves.", &
+                          n_keywords=2, n_subsections=1, repeats=.FALSE.)
+      CALL keyword_create(keyword, __LOCATION__, name="ENERGY_UNIT", &
+                          description="Energy unit used for the printed DOS/PDOS energy axis. "// &
+                          "Intensities are converted consistently to the selected energy unit.", &
+                          usage="ENERGY_UNIT HARTREE", type_of_var=enum_t, &
+                          enum_c_vals=s2a("HARTREE", "EV"), &
+                          enum_i_vals=[1, 2], &
+                          enum_desc=s2a("Print energies in Hartree (a.u.).", &
+                                        "Print energies in electronvolt."), &
+                          default_i_val=1)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="ENERGY_ZERO", &
+                          description="Reference energy used for the printed DOS/PDOS energy axis. "// &
+                          "With AUTO, the Fermi energy is used if smearing is enabled or fractional "// &
+                          "occupations are found; otherwise the highest occupied crystal orbital is used.", &
+                          usage="ENERGY_ZERO AUTO", type_of_var=enum_t, &
+                          enum_c_vals=s2a("AUTO", "ABSOLUTE", "FERMI", "HOCO"), &
+                          enum_i_vals=[1, 2, 3, 4], &
+                          enum_desc=s2a("Choose FERMI for smeared or fractionally occupied systems, otherwise HOCO.", &
+                                        "Print absolute orbital energies.", &
+                                        "Shift orbital energies by the Fermi energy.", &
+                                        "Shift orbital energies by the highest occupied crystal orbital."), &
+                          default_i_val=1)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL section_create(broaden_subsection, __LOCATION__, name="BROADEN", &
+                          description="Controls the line shape used for broadened DOS/PDOS curves.", &
+                          n_keywords=3, n_subsections=0, repeats=.FALSE.)
+      CALL keyword_create(keyword, __LOCATION__, name="TYPE", &
+                          description="Type of broadening function used to produce the DOS/PDOS curve.", &
+                          usage="TYPE GAUSSIAN", type_of_var=enum_t, &
                           enum_c_vals=s2a("GAUSSIAN", "LORENTZIAN", "PSEUDO_VOIGT"), &
                           enum_i_vals=[1, 2, 3], &
                           enum_desc=s2a("Use a Gaussian broadening function.", &
                                         "Use a Lorentzian broadening function.", &
                                         "Use a pseudo-Voigt mixture of Lorentzian and Gaussian functions."), &
                           default_i_val=1)
-      CALL section_add_keyword(print_key, keyword)
+      CALL section_add_keyword(broaden_subsection, keyword)
       CALL keyword_release(keyword)
-
-      CALL keyword_create(keyword, __LOCATION__, name="BROADEN_WIDTH", &
-                          description="Full width at half maximum (FWHM) of the "//TRIM(label)// &
-                          " broadening function. "//TRIM(width_desc), &
-                          usage="BROADEN_WIDTH [eV] 0.1", type_of_var=real_t, &
+      CALL keyword_create(keyword, __LOCATION__, name="WIDTH", &
+                          description="Full width at half maximum (FWHM) of the DOS/PDOS broadening function.", &
+                          usage="WIDTH [eV] 0.1", type_of_var=real_t, &
                           default_r_val=cp_unit_to_cp2k(value=0.1_dp, unit_str="eV"), unit_str="eV")
-      CALL section_add_keyword(print_key, keyword)
+      CALL section_add_keyword(broaden_subsection, keyword)
       CALL keyword_release(keyword)
-
       CALL keyword_create(keyword, __LOCATION__, name="VOIGT_MIXING", &
                           description="Lorentzian fraction of the pseudo-Voigt broadening function.", &
                           usage="VOIGT_MIXING 0.5", type_of_var=real_t, default_r_val=0.5_dp)
-      CALL section_add_keyword(print_key, keyword)
+      CALL section_add_keyword(broaden_subsection, keyword)
       CALL keyword_release(keyword)
+      CALL section_add_subsection(subsection, broaden_subsection)
+      CALL section_release(broaden_subsection)
+      CALL section_add_subsection(print_key, subsection)
+      CALL section_release(subsection)
 
-      CALL keyword_create(keyword, __LOCATION__, name="NDIGITS", &
-                          description=ndigits_desc, &
-                          default_i_val=6)
-      CALL section_add_keyword(print_key, keyword)
-      CALL keyword_release(keyword)
-
-      CALL keyword_create(keyword, __LOCATION__, name="NLUMO", &
-                          description="Number of unoccupied orbitals to include in the "//TRIM(label)// &
-                          " (-1=all)."//newline// &
-                          "For OT calculations, the requested virtual orbitals are generated after "// &
-                          "SCF using the OT eigensolver. For diagonalization calculations, "// &
-                          "SCF%ADDED_MOS is increased if needed to make the requested unoccupied "// &
-                          "orbitals available.", &
-                          usage="NLUMO integer", default_i_val=0)
-      CALL section_add_keyword(print_key, keyword)
-      CALL keyword_release(keyword)
-
-   END SUBROUTINE add_dos_pdos_common_keywords
-
-! **************************************************************************************************
-!> \brief ...
-!> \param print_key ...
-! **************************************************************************************************
-   SUBROUTINE create_dos_section(print_key)
-
-      TYPE(section_type), POINTER                        :: print_key
-
-      TYPE(keyword_type), POINTER                        :: keyword
-
-      NULLIFY (keyword)
-
-      CALL cp_print_key_section_create(print_key, __LOCATION__, "DOS", &
-                                       description="Print Density of States (DOS) (only available states from SCF)", &
-                                       print_level=debug_print_level, common_iter_levels=1, filename="")
-
-      CALL add_dos_pdos_common_keywords(print_key, "DOS", &
-                                        "Set to zero to recover the unbroadened histogram output.", &
-                                        "Specify the number of digits used to print density and occupation.")
-
-      CALL keyword_create(keyword, __LOCATION__, name="MP_GRID", &
-                          description="Specify a Monkhorst-Pack grid with which to compute the density of states. "// &
-                          "Works only for a k-point calculation", &
-                          usage="MP_GRID {integer} {integer} {integer}", default_i_vals=[-1], &
-                          n_var=3, type_of_var=integer_t)
-      CALL section_add_keyword(print_key, keyword)
-      CALL keyword_release(keyword)
-
-   END SUBROUTINE create_dos_section
-
-! **************************************************************************************************
-!> \brief ...
-!> \param print_key ...
-! **************************************************************************************************
-   SUBROUTINE create_pdos_section(print_key)
-
-      TYPE(section_type), POINTER                        :: print_key
-
-      TYPE(keyword_type), POINTER                        :: keyword
-      TYPE(section_type), POINTER                        :: subsection
-
-      NULLIFY (subsection)
-      NULLIFY (keyword)
-
-      CALL cp_print_key_section_create(print_key, __LOCATION__, "PDOS", &
-                                       description="Print out the DOS projected per kind and angular momentum  ", &
-                                       print_level=debug_print_level, common_iter_levels=1, filename="")
-      CALL keyword_create(keyword, __LOCATION__, name="COMPONENTS", &
-                          description="Print out PDOS distinguishing all angular momentum components.", &
-                          usage="COMPONENTS", default_l_val=.FALSE., &
-                          lone_keyword_l_val=.TRUE.)
-      CALL section_add_keyword(print_key, keyword)
-      CALL keyword_release(keyword)
-      CALL add_dos_pdos_common_keywords(print_key, "PDOS", &
-                                        "The broadened PDOS curve is written to *.pdos, while the "// &
-                                        "MO-resolved projected weights are written to *.pdos_raw. "// &
-                                        "Set to zero to skip the broadened PDOS curve.", &
-                                        "Specify the number of digits used to print broadened PDOS values.")
       CALL keyword_create(keyword, __LOCATION__, name="OUT_EACH_STATE", &
                           variants=["OUT_EACH_MO"], &
                           description="Output on the status of the calculation every OUT_EACH_MO states. If -1 no output", &
@@ -2792,33 +2866,28 @@ CONTAINS
                           n_keywords=4, n_subsections=0, repeats=.TRUE.)
       CALL keyword_create(keyword, __LOCATION__, name="COMPONENTS", &
                           description="Print out PDOS distinguishing all angular momentum components.", &
-                          usage="COMPONENTS", default_l_val=.FALSE., &
-                          lone_keyword_l_val=.TRUE.)
+                          usage="COMPONENTS", default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
-
       CALL keyword_create(keyword, __LOCATION__, name="LIST", &
-                          description="Specifies a list of indexes of atoms where to project the DOS  ", &
-                          usage="LIST {integer}  {integer} ..  {integer} ", type_of_var=integer_t, &
+                          description="Specifies a list of indexes of atoms where to project the DOS", &
+                          usage="LIST {integer} {integer} .. {integer}", type_of_var=integer_t, &
                           n_var=-1, repeats=.TRUE.)
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
-
       CALL section_add_subsection(print_key, subsection)
       CALL section_release(subsection)
 
       CALL section_create(subsection, __LOCATION__, name="R_LDOS", &
-                          description="Controls the printing of local PDOS, projected on 3D volume in real space,"// &
-                          " the volume is defined in terms of position with respect to atoms in the lists", &
+                          description="Controls the printing of local PDOS, projected on 3D volume in real space, "// &
+                          "the volume is defined in terms of position with respect to atoms in the lists", &
                           n_keywords=4, n_subsections=0, repeats=.TRUE.)
-
       CALL keyword_create(keyword, __LOCATION__, name="LIST", &
-                          description="Specifies a list of indexes of atoms used to define the real space volume  ", &
-                          usage="LIST {integer}  {integer} ..  {integer} ", type_of_var=integer_t, &
+                          description="Specifies a list of indexes of atoms used to define the real space volume", &
+                          usage="LIST {integer} {integer} .. {integer}", type_of_var=integer_t, &
                           n_var=-1, repeats=.TRUE.)
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
-
       CALL keyword_create(keyword, __LOCATION__, name="XRANGE", &
                           description="range of positions in Cartesian direction x: all grid points within "// &
                           "this range from at least one atom of the list are considered", &
@@ -2837,22 +2906,20 @@ CONTAINS
                           usage="ZRANGE -10.0 10.0", unit_str="angstrom", n_var=2, type_of_var=real_t)
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
-
       CALL keyword_create(keyword, __LOCATION__, name="ERANGE", &
                           description="Only project states with the energy values in the given interval. "// &
                           "Default is all states.", &
                           usage="ERANGE -1.0 1.0", unit_str="hartree", n_var=2, type_of_var=real_t)
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
-
       CALL section_add_subsection(print_key, subsection)
       CALL section_release(subsection)
 
-   END SUBROUTINE create_pdos_section
+   END SUBROUTINE add_dos_keywords
 
 ! **************************************************************************************************
-!> \brief ...
-!> \param print_key ...
+!> \brief Create WANNIER90 print section.
+!> \param print_key print key section to create
 ! **************************************************************************************************
    SUBROUTINE create_wannier_section(print_key)
 
@@ -2885,13 +2952,162 @@ CONTAINS
                           "the full k-point mesh from DFT%KPOINTS for Monkhorst-Pack, MacDonald, Gamma, or "// &
                           "explicit GENERAL k-points. If the SCF calculation uses K290 or SPGLIB symmetry "// &
                           "reduction, the corresponding unreduced mesh is used for Wannier90 because "// &
-                          "Wannier90 requires a complete mesh.", &
+                          "Wannier90 requires a complete mesh. NNKP reads explicit k-points and directed "// &
+                          "overlap connections from NNKP_FILE, without a regular-mesh requirement. "// &
+                          "WILSON generates and refines a surface of closed loops at the SCF potential. "// &
+                          "TRIM generates four or eight time-reversal-invariant points for native parity analysis.", &
                           usage="KPOINTS_SOURCE MP_GRID", type_of_var=enum_t, &
-                          enum_c_vals=s2a("MP_GRID", "SCF"), &
-                          enum_i_vals=[0, 1], &
+                          enum_c_vals=s2a("MP_GRID", "SCF", "NNKP", "WILSON", "TRIM"), &
+                          enum_i_vals=[0, 1, 2, 3, 4], &
                           enum_desc=s2a("Build the Wannier90 k-point mesh from WANNIER90%MP_GRID.", &
-                                        "Use the full k-point mesh from DFT%KPOINTS."), &
+                                        "Use the full k-point mesh from DFT%KPOINTS.", &
+                                        "Read explicit k-points and connections from NNKP_FILE.", &
+                                        "Generate a family of closed Wilson loops.", &
+                                        "Generate TRIM and enable native inversion-parity analysis."), &
                           default_i_val=0)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="NNKP_FILE", &
+                          description="Wannier90 nnkp file for KPOINTS_SOURCE NNKP. Required literal block names: "// &
+                          "real_lattice (Angstrom), recip_lattice (2*pi/Angstrom), kpoints (fractional), "// &
+                          "and nnkpts (nearest-neighbour point indices and reciprocal lattice shifts). Nonzero exclusions "// &
+                          "in the file are unsupported; use EXCLUDE_BANDS in CP2K instead.", &
+                          usage="NNKP_FILE loop.nnkp", default_c_val="wannier90.nnkp", &
+                          n_var=1, type_of_var=char_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SPIN_CHANNEL", &
+                          description="Collinear spin channel exported to the Wannier90 files (1 or 2). "// &
+                          "Each scalar export contains one channel. With SOC, use the restricted channel 1.", &
+                          usage="SPIN_CHANNEL 1", default_i_val=1)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="WILSON_LOOP", &
+                          description="Compute native SVD-unitarized Wilson loops for NNKP connections. "// &
+                          "Requires one directed neighbour per point and contiguous, closed loops. "// &
+                          "Automatically enabled by KPOINTS_SOURCE WILSON.", default_l_val=.FALSE., &
+                          citations=[Gresch2017])
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="WILSON_MESH", &
+                          description="Points per closed loop and number of transverse loops. "// &
+                          "Only for KPOINTS_SOURCE WILSON; loops include both transverse endpoints.", &
+                          n_var=2, default_i_vals=[16, 9], type_of_var=integer_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="WILSON_ORIGIN", &
+                          description="Origin of Wilson surface in fractional reciprocal coordinates.", &
+                          n_var=3, default_r_vals=[0.0_dp, 0.0_dp, 0.0_dp], type_of_var=real_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="WILSON_DIRECTION", &
+                          description="Integer reciprocal vector along each closed Wilson loop.", &
+                          n_var=3, default_i_vals=[1, 0, 0], type_of_var=integer_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="WILSON_TRANSVERSE", &
+                          description="Fractional reciprocal vector spanning the transverse surface. "// &
+                          "For Z2 choose a time-reversal half-plane, e.g. 0 0.5 0.", &
+                          n_var=3, default_r_vals=[0.0_dp, 0.5_dp, 0.0_dp], type_of_var=real_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="Z2", &
+                          description="Compute native largest-gap crossing parity on a WILSON half-surface. "// &
+                          "Requires SOC, a nonmagnetic time-reversal-invariant Hamiltonian, an isolated "// &
+                          "occupied subspace, and converged Wilson spectra. TIME_REVERSAL must be set.", &
+                          default_l_val=.FALSE., citations=[Soluyanov2011, Gresch2017])
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="CHERN", &
+                          description="Compute the native first Chern number from determinant Wilson winding. "// &
+                          "Requires KPOINTS_SOURCE WILSON and a closed full surface with integer transverse "// &
+                          "winding, e.g. WILSON_TRANSVERSE 0 1 0. Not compatible with Z2 half-surfaces. "// &
+                          "The selected bands must be isolated; SOC and time reversal are not required.", &
+                          default_l_val=.FALSE., citations=[Gresch2017])
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="PARITY", &
+                          description="Compute native even/odd inversion irreps at explicit TRIM. Uses the Gaussian "// &
+                          "AO metric, orbital parities, atom permutations and Bloch lattice phases. Validates the "// &
+                          "selected representation and its energy commutator. No Z2Pack or Wannier fit is needed.", &
+                          default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="INVERSION_TQC", &
+                          description="Enable PARITY and classify the inversion-subgroup symmetry signature of "// &
+                          "the occupied spinor bands. Requires SOC and TIME_REVERSAL and all four/eight TRIM. "// &
+                          "Reports Fu-Kane indices, 3D Z4, and an exact signed/nonnegative atomic EBR-signature test. "// &
+                          "Not a full-space-group TQC classifier or a certificate of a bulk gap/trivial topology.", &
+                          default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="TQC_DIMENSION", &
+                          description="Dimension of the inversion analysis: 2 uses the four kz=0 TRIM; "// &
+                          "3 uses all eight TRIM of the supplied reciprocal cell. All cell directions must be periodic.", &
+                          default_i_val=3)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="PARITY_ORIGIN", &
+                          description="Inversion center in fractional direct-cell coordinates. The operation is "// &
+                          "r -> 2*center-r. Atomic kinds, basis and the selected Hamiltonian subspace must be invariant.", &
+                          n_var=3, default_r_vals=[0.0_dp, 0.0_dp, 0.0_dp], type_of_var=real_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="PARITY_TOLERANCE", &
+                          description="Tolerance for parity metric, subspace and character checks. Also used "// &
+                          "as the inversion geometry tolerance in Bohr. Tighten with numerical convergence.", &
+                          default_r_val=1.e-6_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="PARITY_ENERGY_TOL", &
+                          description="Maximum projected symmetry/eigenvalue commutator in Hartree.", &
+                          default_r_val=1.e-6_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="REQUIRE_GLOBAL_GAP", &
+                          description="Require a positive sampled indirect gap above the lowest selected bands. "// &
+                          "Unlike the direct subspace gap this tests a common energy interval over all sampled "// &
+                          "points. A finite sampling does not prove a bulk gap. No per-point Fermi shifts are applied.", &
+                          default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="STATE_EXPORT", &
+                          description="Export selected complex AO states, all eigenvalues and full contracted "// &
+                          "Gaussian basis to SEED_NAME.topology for cross-geometry/phason overlaps. "// &
+                          "Requires NNKP, WILSON or TRIM, uses atomic units, and can generate large files. "// &
+                          "Spinor coefficients include second-variational SOC when enabled. "// &
+                          "No Wannier fit or Fermi-energy alignment is performed.", default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="TIME_REVERSAL", &
+                          description="User confirmation that the Hamiltonian is time-reversal invariant. "// &
+                          "Boundary Kramers degeneracy is additionally checked; it is not a proof of TR symmetry.", &
+                          default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="SOC", &
+                          description="Second-variational pseudopotential SOC for explicit-loop exports. "// &
+                          "Requires a restricted SCF and SOC-capable pseudopotentials. ADDED_MOS controls "// &
+                          "the scalar basis; EXCLUDE_BANDS then refers to spinor bands. Converge ADDED_MOS.", &
+                          default_l_val=.FALSE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="WILSON_MAX_REFINEMENT", &
+                          description="Maximum joint doublings of loop and transverse resolution; at least "// &
+                          "one doubling is required for generated WILSON surfaces.", default_i_val=3)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="WILSON_TOL", &
+                          description="Tolerance of Wilson centres between successive meshes (reduced units).", &
+                          default_r_val=1.e-3_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="WILSON_GAP_TOL", &
+                          description="Minimum sampled separation from excluded bands in Hartree.", &
+                          default_r_val=1.e-7_dp)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
 

@@ -260,6 +260,7 @@ CONTAINS
                       calculate_forces, 1)
 
       CALL para_env%sum(cnumbers)
+
       ! for parallel runs we have to update dcnum on all processors
       IF (calculate_forces .OR. debugall) THEN
          CALL dcnum_distribute(dcnum, para_env)
@@ -527,7 +528,7 @@ CONTAINS
                                  IF (exclude_pair) CYCLE
                               END IF
                               ! this is an empirical scaling
-                              IF (r2abc <= 0.01*rc2*rc2*rc2) THEN
+                              IF (r2abc <= 0.01_dp*rc2*rc2*rc2) THEN
                                  kkind = kind_of(katom)
                                  atom_c = atom_of_kind(katom)
                                  zc = atomnumber(kkind)
@@ -886,7 +887,7 @@ CONTAINS
       END IF
       CALL para_env%bcast(pars)
 
-      ! Store C6AB coefficients in an array
+! Store C6AB coefficients in an array
       c6ab = -1._dp
       maxci = 0
       ref_stride = get_ref_stride(pars, nlines)
@@ -983,7 +984,7 @@ CONTAINS
       IF (rab >= ru) THEN
          fcc = 0._dp
          dfcc = 0._dp
-      ELSEIF (rab <= rl) THEN
+      ELSE IF (rab <= rl) THEN
          fcc = 1._dp
          dfcc = 0._dp
       ELSE

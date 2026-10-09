@@ -29,10 +29,11 @@ MODULE input_cp2k_motion
                                  medium_print_level
    USE cp_units, ONLY: cp_unit_to_cp2k
    USE input_constants, ONLY: &
-      debug_lbfgs, default_bfgs_method_id, default_cg_method_id, default_dimer_method_id, &
+      bfgs_direct, bfgs_inverse, debug_lbfgs, default_bfgs_method_id, default_cg_method_id, default_dimer_method_id, &
       default_lbfgs_method_id, default_minimization_method_id, default_ts_method_id, &
-      do_mc_gemc_npt, do_mc_gemc_nvt, do_mc_traditional, do_mc_virial, fix_none, fix_x, fix_xy, &
-      fix_xz, fix_y, fix_yz, fix_z, fmt_id_pdb, fmt_id_xyz, gaussian, helium_cell_shape_cube, &
+      dimer_init_molden, dimer_init_random, &
+      do_mc_gemc_npt, do_mc_gemc_nvt, do_mc_traditional, do_mc_virial, fmt_id_pdb, fmt_id_xyz, &
+      gaussian, helium_cell_shape_cube, &
       helium_cell_shape_octahedron, helium_forces_average, helium_forces_last, &
       helium_mdist_exponential, helium_mdist_gaussian, helium_mdist_linear, &
       helium_mdist_quadratic, helium_mdist_singlev, helium_mdist_uniform, &
@@ -61,6 +62,7 @@ MODULE input_cp2k_motion
                                   section_release, &
                                   section_type
    USE input_val_types, ONLY: integer_t, &
+                              lchar_t, &
                               logical_t, &
                               real_t, &
                               char_t
@@ -872,7 +874,8 @@ CONTAINS
       CALL keyword_create( &
          keyword, __LOCATION__, name="KEEP_SPACE_GROUP", &
          description="Detect space group of the system and preserve it during optimization. "// &
-         "The space group symmetry is applied to coordinates, forces, and the stress tensor. "// &
+         "The space group symmetry is applied to coordinates, forces, the stress tensor, and "// &
+         "the CELL_OPT cell metric. "// &
          "It works for supercell. It does not affect/reduce computational cost. "// &
          "Use EPS_SYMMETRY to adjust the detection threshold.", &
          usage="KEEP_SPACE_GROUP .TRUE.", &
@@ -1080,18 +1083,24 @@ CONTAINS
 
       CALL keyword_create( &
          keyword, __LOCATION__, name="CONSTRAINT", &
-         description="Imposes a constraint on the pressure tensor by fixing the specified cell components.", &
-         usage="CONSTRAINT (none|x|y|z|xy|xz|yz)", &
-         enum_desc=s2a("Fix nothing", &
-                       "Fix only x component", &
-                       "Fix only y component", &
-                       "Fix only z component", &
-                       "Fix x and y component", &
-                       "Fix x and z component", &
-                       "Fix y and z component"), &
-         enum_c_vals=s2a("NONE", "X", "Y", "Z", "XY", "XZ", "YZ"), &
-         enum_i_vals=[fix_none, fix_x, fix_y, fix_z, fix_xy, fix_xz, fix_yz], &
-         default_i_val=fix_none)
+         description="Imposes a constraint on the pressure tensor by fixing the specified cell components. "// &
+         "Cell convention: a lies along x, b lies in the xy plane. The six independent components "// &
+         "are AX, BX, BY, CX, CY, CZ. A, B and C fix a complete cell vector: A = AX, B = BX and BY, "// &
+         "C = CX, CY and CZ. X, Y and Z follow the legacy direction tokens. X fixes every x "// &
+         "component: AX, BX and CX. Y fixes the complete b vector and the y component of c: "// &
+         "BX, BY and CY. Z fixes the complete c vector, because only c has a z component: Z equals C. "// &
+         "Accepted tokens: NONE, A, B, C, X, Y, Z, XY, XZ, YZ, AX, BX, BY, CX, CY, CZ. "// &
+         "Several tokens may be given on one line, the union of the fixed components is used. "// &
+         "Give the value unquoted. "// &
+         "NONE must stand alone, redundant tokens give a warning, and angle constraints "// &
+         "(ALPHA, BETA, GAMMA) are not supported yet. On a non-orthorhombic cell a constraint "// &
+         "that pins a shear component (BX, CX, CY), or a fixed diagonal component together "// &
+         "with KEEP_ANGLES, draws a warning: the pressure criterion is then met only when "// &
+         "the pinned values match the stress-free cell; otherwise it can stay off the "// &
+         "external pressure at the constrained minimum. Check the per-step pressure "// &
+         "convergence report.", &
+         usage="CONSTRAINT {NONE} | ({A|B|C|X|Y|Z|XY|XZ|YZ|AX|BX|BY|CX|CY|CZ} ...)", &
+         type_of_var=lchar_t, default_lc_val="NONE")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -1166,6 +1175,52 @@ CONTAINS
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="INITIALIZATION_METHOD", &
+                          description="Specify the initialization method of the dimer vector, "// &
+                          "which is crucial for converging to the desired transition state. "// &
+                          "If the DIMER_VECTOR section is defined explicitly, it will always "// &
+                          "be parsed directly (e.g. in restart files); INITIALIZATION_METHOD "// &
+                          "is only effective if the DIMER_VECTOR section is not explicit.", &
+                          usage="INITIALIZATION_METHOD (RANDOM|MOLDEN)", &
+                          enum_desc=s2a("Generate the initial dimer vector randomly. This is "// &
+                                        "the default for backwards compatibility; in practice "// &
+                                        "it may distort the structure and slow down convergence.", &
+                                        "Generate the initial dimer vector from one or more "// &
+                                        "vibrational normal modes as read from a MOLDEN file "// &
+                                        "produced by `VIBRATIONAL_ANALYSIS%PRINT%MOLDEN_VIB` "// &
+                                        "in a vibrational analysis task. Requires setting up "// &
+                                        "keywords `VIB_MOLDEN_NAME`, `VIB_INDEX` and `VIB_WEIGHT`."), &
+                          enum_c_vals=s2a("RANDOM", "MOLDEN"), &
+                          enum_i_vals=[dimer_init_random, dimer_init_molden], &
+                          default_i_val=dimer_init_random)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="VIB_MOLDEN_NAME", &
+                          description="The external molden file containing vibrational "// &
+                          "normal modes for `INITIALIZATION_METHOD MOLDEN`.", &
+                          usage="VIB_MOLDEN_NAME <CHARACTER>", type_of_var=lchar_t)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="VIB_INDEX", &
+                          description="The index of one or more vibrational normal modes "// &
+                          "from the file whose linear combination will form the initial "// &
+                          "dimer vector.", &
+                          usage="VIB_INDEX {integer} {integer} .. {integer}", repeats=.TRUE., &
+                          n_var=-1, default_i_vals=[1], type_of_var=integer_t)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="VIB_WEIGHT", &
+                          description="The weight of one or more vibrational normal modes "// &
+                          "from the file whose linear combination will form the initial "// &
+                          "dimer vector.", &
+                          usage="VIB_WEIGHT {real} {real} .. {real}", repeats=.TRUE., &
+                          n_var=-1, default_r_vals=[1.0_dp], type_of_var=real_t)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="INTERPOLATE_GRADIENT", &
                           description="This keyword controls the interpolation of the gradient whenever possible"// &
                           " during the optimization of the Dimer. The use of this keywords saves 1 evaluation"// &
@@ -1235,8 +1290,9 @@ CONTAINS
       CALL section_release(subsection2)
 
       CALL section_create(subsection2, __LOCATION__, name="DIMER_VECTOR", &
-                          description="Specifies the initial dimer vector (used frequently to restart DIMER calculations)."// &
-                          " If not provided the starting orientation of the dimer is chosen randomly.", &
+                          description="Specifies the initial dimer vector. This "// &
+                          "section overrides INITIALIZATION_METHOD, and will be "// &
+                          "updated on each step for producing the restart files.", &
                           n_keywords=0, n_subsections=1, repeats=.FALSE.)
       CALL keyword_create(keyword, __LOCATION__, name="_DEFAULT_KEYWORD_", &
                           description="Specify on each line the components of the dimer vector.", repeats=.TRUE., &
@@ -1271,6 +1327,15 @@ CONTAINS
                           description="Provides parameters to tune the BFGS optimization", &
                           n_keywords=0, n_subsections=1, repeats=.FALSE.)
 
+      CALL keyword_create(keyword, __LOCATION__, name="METHOD", &
+                          description="Matrix updated by full-memory BFGS. DIRECT updates the Hessian; "// &
+                          "INVERSE updates its inverse without a full diagonalization at each step.", &
+                          usage="METHOD INVERSE", &
+                          enum_c_vals=s2a("DIRECT", "INVERSE"), &
+                          enum_i_vals=[bfgs_direct, bfgs_inverse], default_i_val=bfgs_direct)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="TRUST_RADIUS", &
                           description="Trust radius used in BFGS. Previously set to 0.1. "// &
                           "Large values can lead to instabilities", &
@@ -1289,15 +1354,17 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="USE_RAT_FUN_OPT", &
-                          description="Includes a rational function optimization to determine the step."// &
-                          " Previously default but did not improve convergence in many cases", &
+                          description="Includes a rational function optimization to determine the step. "// &
+                          "Previously default but did not improve convergence in many cases. "// &
+                          "Not supported by inverse-Hessian update method.", &
                           usage="USE_RAT_FUN_OPT", &
                           default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="RESTART_HESSIAN", &
-                          description="Controls the reading of the initial Hessian from file.", &
+                          description="Reads the initial BFGS matrix from file. Hessian and inverse-Hessian "// &
+                          "restarts are converted to the selected METHOD when necessary.", &
                           usage="RESTART_HESSIAN", &
                           default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
@@ -1484,7 +1551,8 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="PRINT_LEVEL", &
-                          description="How much output is written out by the LBFGS algorithm. ", &
+                          description="How much output is written out by the LBFGS algorithm. "// &
+                          "Currently this is independent of the &GLOBAL/PRINT_LEVEL setting.", &
                           usage="PRINT_LEVEL MEDIUM", &
                           enum_c_vals=s2a("SILENT", "LOW", "MEDIUM", "HIGH", "DEBUG"), &
                           enum_desc=s2a("Almost no output", &
@@ -1642,7 +1710,7 @@ CONTAINS
       CALL section_create(section, __LOCATION__, name="DRIVER", &
                           description="This section defines the parameters needed to run in i-PI driver mode.", &
                           citations=[Ceriotti2014, Kapil2016], &
-                          n_keywords=3, n_subsections=0, repeats=.FALSE.)
+                          n_keywords=4, n_subsections=0, repeats=.FALSE.)
 
       NULLIFY (keyword)
       CALL keyword_create(keyword, __LOCATION__, name="unix", &
@@ -1663,6 +1731,14 @@ CONTAINS
                           description="Host name for the i-PI server.", &
                           usage="host <HOSTNAME>", &
                           default_c_val="localhost")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="PREFIX", &
+                          description="Prefix used to build the path of the UNIX socket file, "// &
+                          "as /tmp/<PREFIX>_<HOST>. Only relevant if UNIX is set to true.", &
+                          usage="PREFIX ipi", &
+                          default_c_val="ipi")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -2284,7 +2360,7 @@ CONTAINS
       CALL section_create(subsection, __LOCATION__, name="NNP", &
                           description="This section contains all information to run an helium-solute "// &
                           "interaction Neural Network Potential (NNP) calculation.", &
-                          n_keywords=2, n_subsections=3, repeats=.FALSE.)
+                          n_keywords=4, n_subsections=3, repeats=.FALSE.)
 
       CALL keyword_create(keyword, __LOCATION__, name="NNP_INPUT_FILE_NAME", &
                           description="File containing the input information for the setup "// &
@@ -2297,6 +2373,41 @@ CONTAINS
                           description="File containing the scaling information for the symmetry "// &
                           "functions of the NNP. ", &
                           repeats=.FALSE., default_lc_val="scaling.data")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="RAD_SPLINE_N", &
+                          description="Number of knots per radial group in the cubic-Hermite "// &
+                          "spline tables that tabulate the radial symmetry-function product "// &
+                          "y(r) = exp(-eta*(r-rs)^2) * fcut(r). Cubic-Hermite per-evaluation "// &
+                          "error scales as O(1/n^4); the default keeps the spline residual "// &
+                          "inside the NNP regression tolerance for a radial cutoff of "// &
+                          "~12 bohr. Models with larger cutoffs or stricter tolerances may "// &
+                          "need a larger n. Memory cost scales linearly in n per radial group.", &
+                          repeats=.FALSE., &
+                          n_var=1, &
+                          type_of_var=integer_t, &
+                          default_i_val=8192, &
+                          usage="RAD_SPLINE_N 8192")
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="VERLET_SKIN", &
+                          description="Verlet skin distance for the NNP descriptor neighbour "// &
+                          "cell-list. The neighbour-list cutoff is (symmetry-function cutoff "// &
+                          "+ skin); the cell-list chain is rebuilt only when an atom drifts "// &
+                          "more than skin/2 from its rebuild-time position, analogous to the "// &
+                          "LAMMPS 'neighbor <skin> bin' command. Larger skin reduces the "// &
+                          "rebuild rate but enlarges the per-atom neighbour list. A negative "// &
+                          "value (default) selects the automatic heuristic "// &
+                          "MIN(0.5 bohr, 0.1*cutoff). Useful upper bound is half the smallest "// &
+                          "perpendicular cell width.", &
+                          repeats=.FALSE., &
+                          n_var=1, &
+                          type_of_var=real_t, &
+                          default_r_val=-1.0_dp, &
+                          unit_str="bohr", &
+                          usage="VERLET_SKIN [bohr] 0.5")
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
 

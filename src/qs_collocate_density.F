@@ -95,6 +95,7 @@ MODULE qs_collocate_density
    USE qs_ks_types, ONLY: get_ks_env, &
                           qs_ks_env_type
    USE qs_neighbor_list_types, ONLY: neighbor_list_set_p_type
+   USE qs_nlcc_methods, ONLY: get_nlcc_gaussians
    USE realspace_grid_types, ONLY: map_gaussian_here, &
                                    realspace_grid_desc_p_type, &
                                    realspace_grid_type, &
@@ -159,18 +160,18 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'calculate_rho_nlcc'
 
       INTEGER                                            :: atom_a, handle, iatom, iexp_nlcc, ikind, &
-                                                            ithread, j, n, natom, nc, nexp_nlcc, &
-                                                            ni, npme, nthread, subpatch_pattern
-      INTEGER, DIMENSION(:), POINTER                     :: atom_list, cores, nct_nlcc
-      LOGICAL                                            :: nlcc
+                                                            j, n, natom, nc, nexp_nlcc, &
+                                                            ni, npme, subpatch_pattern
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nct_nlcc
+      INTEGER, DIMENSION(:), POINTER                     :: atom_list, cores
       REAL(KIND=dp)                                      :: alpha, eps_rho_rspace, radius
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: alpha_nlcc
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: cval_nlcc
       REAL(KIND=dp), DIMENSION(3)                        :: ra
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: alpha_nlcc
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: cval_nlcc, pab
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: pab
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: dft_control
-      TYPE(gth_potential_type), POINTER                  :: gth_potential
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -198,13 +199,8 @@ CONTAINS
 
       DO ikind = 1, SIZE(atomic_kind_set)
          CALL get_atomic_kind(atomic_kind_set(ikind), natom=natom, atom_list=atom_list)
-         CALL get_qs_kind(qs_kind_set(ikind), gth_potential=gth_potential)
-
-         IF (.NOT. ASSOCIATED(gth_potential)) CYCLE
-         CALL get_potential(potential=gth_potential, nlcc_present=nlcc, nexp_nlcc=nexp_nlcc, &
-                            alpha_nlcc=alpha_nlcc, nct_nlcc=nct_nlcc, cval_nlcc=cval_nlcc)
-
-         IF (.NOT. nlcc) CYCLE
+         CALL get_nlcc_gaussians(qs_kind_set(ikind), alpha_nlcc, nct_nlcc, cval_nlcc)
+         nexp_nlcc = SIZE(alpha_nlcc)
 
          DO iexp_nlcc = 1, nexp_nlcc
 
@@ -214,9 +210,6 @@ CONTAINS
             ni = ncoset(2*nc - 2)
             ALLOCATE (pab(ni, 1))
             pab = 0._dp
-
-            nthread = 1
-            ithread = 0
 
             CALL reallocate(cores, 1, natom)
             npme = 0
@@ -269,7 +262,9 @@ CONTAINS
                   n = coset(2, 2, 2)
                   pab(n, 1) = 6._dp*cval_nlcc(4, iexp_nlcc)/alpha**6
                CASE DEFAULT
-                  CPABORT("")
+                  CALL cp_abort(__LOCATION__, &
+                                "Only 1, 2, 3, 4 are supported as the "// &
+                                "value of j in calculate_rho_nlcc")
                END SELECT
             END DO
             IF (dft_control%nspins == 2) pab = pab*0.5_dp
@@ -441,7 +436,9 @@ CONTAINS
                n = coset(2, 2, 2)
                pab(n, 1) = 6._dp*cexp_ppl(4)
             CASE DEFAULT
-               CPABORT("")
+               CALL cp_abort(__LOCATION__, &
+                             "Only 1, 2, 3, 4 are supported as the "// &
+                             "value of j in calculate_ppl_grid")
             END SELECT
          END DO
 
@@ -1241,9 +1238,10 @@ CONTAINS
 
       CALL transfer_rs2pw(rs_rho, rhoc_r)
 
-      IF (PRESENT(total_rho_metal)) &
+      IF (PRESENT(total_rho_metal)) THEN
          !minus sign: account for the fact that rho_metal has opposite sign
          total_rho_metal = pw_integrate_function(rhoc_r, isign=-1)
+      END IF
 
       CALL pw_transfer(rhoc_r, rho_metal)
       CALL auxbas_pw_pool%give_back_pw(rhoc_r)
@@ -1565,7 +1563,7 @@ CONTAINS
       IF (PRESENT(soft_valid)) my_soft_valid = soft_valid
       IF (PRESENT(task_list_external)) THEN
          task_list => task_list_external
-      ELSEIF (my_soft_valid) THEN
+      ELSE IF (my_soft_valid) THEN
          CALL get_ks_env(ks_env, task_list_soft=task_list)
       ELSE
          CALL get_ks_env(ks_env, task_list=task_list)
@@ -2258,7 +2256,6 @@ CONTAINS
 
             CALL dbcsr_get_block_p(matrix=deltap(img)%matrix, &
                                    row=brow, col=bcol, BLOCK=p_block, found=found)
-            CPASSERT(found)
 
             iatom_old = iatom
             jatom_old = jatom
@@ -2272,6 +2269,9 @@ CONTAINS
             atom_pair_changed = .FALSE.
 
          END IF
+
+         ! A missing sparse matrix block represents an all-zero atom pair.
+         IF (.NOT. found) CYCLE loop_tasks
 
          IF (atom_pair_changed .OR. iset_old /= iset .OR. jset_old /= jset) THEN
 
@@ -2354,44 +2354,48 @@ CONTAINS
          END SELECT
 
          IF (iatom <= jatom) THEN
-            IF (iatom == lambda) &
+            IF (iatom == lambda) THEN
                CALL collocate_pgf_product( &
-               la_max(iset), zeta(ipgf, iset), la_min(iset), &
-               lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
-               ra, rab, scale, pab, na1 - 1, nb1 - 1, &
-               rsgrid=rs_rho(igrid_level), &
-               ga_gb_function=dabqadb_func, radius=radius, &
-               use_subpatch=use_subpatch, &
-               subpatch_pattern=tasks(itask)%subpatch_pattern)
-            IF (jatom == lambda) &
+                  la_max(iset), zeta(ipgf, iset), la_min(iset), &
+                  lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
+                  ra, rab, scale, pab, na1 - 1, nb1 - 1, &
+                  rsgrid=rs_rho(igrid_level), &
+                  ga_gb_function=dabqadb_func, radius=radius, &
+                  use_subpatch=use_subpatch, &
+                  subpatch_pattern=tasks(itask)%subpatch_pattern)
+            END IF
+            IF (jatom == lambda) THEN
                CALL collocate_pgf_product( &
-               la_max(iset), zeta(ipgf, iset), la_min(iset), &
-               lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
-               ra, rab, scale, pab, na1 - 1, nb1 - 1, &
-               rsgrid=rs_rho(igrid_level), &
-               ga_gb_function=dabqadb_func + 3, radius=radius, &
-               use_subpatch=use_subpatch, &
-               subpatch_pattern=tasks(itask)%subpatch_pattern)
+                  la_max(iset), zeta(ipgf, iset), la_min(iset), &
+                  lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
+                  ra, rab, scale, pab, na1 - 1, nb1 - 1, &
+                  rsgrid=rs_rho(igrid_level), &
+                  ga_gb_function=dabqadb_func + 3, radius=radius, &
+                  use_subpatch=use_subpatch, &
+                  subpatch_pattern=tasks(itask)%subpatch_pattern)
+            END IF
          ELSE
             rab_inv = -rab
-            IF (jatom == lambda) &
+            IF (jatom == lambda) THEN
                CALL collocate_pgf_product( &
-               lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
-               la_max(iset), zeta(ipgf, iset), la_min(iset), &
-               rb, rab_inv, scale, pab, nb1 - 1, na1 - 1, &
-               rs_rho(igrid_level), &
-               ga_gb_function=dabqadb_func, radius=radius, &
-               use_subpatch=use_subpatch, &
-               subpatch_pattern=tasks(itask)%subpatch_pattern)
-            IF (iatom == lambda) &
+                  lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
+                  la_max(iset), zeta(ipgf, iset), la_min(iset), &
+                  rb, rab_inv, scale, pab, nb1 - 1, na1 - 1, &
+                  rs_rho(igrid_level), &
+                  ga_gb_function=dabqadb_func, radius=radius, &
+                  use_subpatch=use_subpatch, &
+                  subpatch_pattern=tasks(itask)%subpatch_pattern)
+            END IF
+            IF (iatom == lambda) THEN
                CALL collocate_pgf_product( &
-               lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
-               la_max(iset), zeta(ipgf, iset), la_min(iset), &
-               rb, rab_inv, scale, pab, nb1 - 1, na1 - 1, &
-               rs_rho(igrid_level), &
-               ga_gb_function=dabqadb_func + 3, radius=radius, &
-               use_subpatch=use_subpatch, &
-               subpatch_pattern=tasks(itask)%subpatch_pattern)
+                  lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
+                  la_max(iset), zeta(ipgf, iset), la_min(iset), &
+                  rb, rab_inv, scale, pab, nb1 - 1, na1 - 1, &
+                  rs_rho(igrid_level), &
+                  ga_gb_function=dabqadb_func + 3, radius=radius, &
+                  use_subpatch=use_subpatch, &
+                  subpatch_pattern=tasks(itask)%subpatch_pattern)
+            END IF
          END IF
 
       END DO loop_tasks

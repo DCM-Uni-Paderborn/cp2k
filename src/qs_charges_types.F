@@ -44,6 +44,10 @@ MODULE qs_charges_types
       REAL(KIND=dp) :: total_rho_soft_gspace = -1.0_dp
       REAL(KIND=dp), DIMENSION(:), POINTER  :: total_rho1_hard => NULL(), &
                                                total_rho1_soft => NULL()
+      REAL(KIND=dp) :: total_rho_hard_spin = -1.0_dp
+      REAL(KIND=dp) :: total_rho_soft_spin = -1.0_dp
+      REAL(KIND=dp) :: total_rho_hard_abs_spin = -1.0_dp
+      REAL(KIND=dp) :: total_rho_soft_abs_spin = -1.0_dp
       REAL(KIND=dp) :: total_rho1_hard_nuc = -1.0_dp
       REAL(KIND=dp) :: total_rho1_soft_nuc_rspace = -1.0_dp
       REAL(KIND=dp) :: total_rho1_soft_nuc_lebedev = -1.0_dp
@@ -69,11 +73,13 @@ CONTAINS
       REAL(KIND=dp), INTENT(in), OPTIONAL                :: total_rho_core_rspace, total_rho_gspace
 
       qs_charges%total_rho_core_rspace = 0.0_dp
-      IF (PRESENT(total_rho_core_rspace)) &
+      IF (PRESENT(total_rho_core_rspace)) THEN
          qs_charges%total_rho_core_rspace = total_rho_core_rspace
+      END IF
       qs_charges%total_rho_gspace = 0.0_dp
-      IF (PRESENT(total_rho_gspace)) &
+      IF (PRESENT(total_rho_gspace)) THEN
          qs_charges%total_rho_gspace = total_rho_gspace
+      END IF
       qs_charges%total_rho_soft_gspace = 0.0_dp
       qs_charges%total_rho0_hard_lebedev = 0.0_dp
       qs_charges%total_rho_soft_gspace = 0.0_dp
@@ -85,6 +91,11 @@ CONTAINS
       qs_charges%total_rho1_hard_nuc = 0.0_dp
       qs_charges%total_rho1_soft_nuc_rspace = 0.0_dp
       qs_charges%total_rho1_soft_nuc_lebedev = 0.0_dp
+      !
+      qs_charges%total_rho_hard_spin = 0.0_dp
+      qs_charges%total_rho_soft_spin = 0.0_dp
+      qs_charges%total_rho_hard_abs_spin = 0.0_dp
+      qs_charges%total_rho_soft_abs_spin = 0.0_dp
    END SUBROUTINE qs_charges_create
 
 ! **************************************************************************************************

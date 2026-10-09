@@ -24,7 +24,6 @@ MODULE atom_utils
         lmat, no_pseudo, sgp_pseudo, upf_pseudo
    USE basis_set_types,                 ONLY: srules
    USE cp_files,                        ONLY: close_file,&
-                                              get_unit_number,&
                                               open_file
    USE input_constants,                 ONLY: do_rhf_atom,&
                                               do_rks_atom,&
@@ -358,7 +357,7 @@ CONTAINS
 !>                 DER -- first derivatives of the electron density;
 !>                 KIN -- kinetic energy density;
 !>                 LAP -- second derivatives of the electron density.
-!> \param rr       abscissa on the radial grid (required for typ == 'KIN')
+!> \param rr       squared radial coordinates (required for KIN and LAP)
 !> \par History
 !>    * 08.2008 created [Juerg Hutter]
 ! **************************************************************************************************
@@ -376,7 +375,8 @@ CONTAINS
 
       my_typ = "RHO"
       IF (PRESENT(typ)) my_typ = typ(1:3)
-      IF (my_typ == "KIN") THEN
+      ! Both callers supply squared radii; the radial Laplacian uses 2/r.
+      IF (my_typ == "KIN" .OR. my_typ == "LAP") THEN
          CPASSERT(PRESENT(rr))
       END IF
 
@@ -399,8 +399,9 @@ CONTAINS
                ELSE IF (my_typ == "LAP") THEN
                   density(:) = density(:) + ff*basis%ddbf(:, i, l)*basis%bf(:, j, l) &
                                + ff*basis%bf(:, i, l)*basis%ddbf(:, j, l) &
-                               + 2._dp*ff*basis%dbf(:, i, l)*basis%bf(:, j, l)/rr(:) &
-                               + 2._dp*ff*basis%bf(:, i, l)*basis%dbf(:, j, l)/rr(:)
+                               + 2._dp*ff*basis%dbf(:, i, l)*basis%dbf(:, j, l) &
+                               + 2._dp*ff*basis%dbf(:, i, l)*basis%bf(:, j, l)/SQRT(rr(:)) &
+                               + 2._dp*ff*basis%bf(:, i, l)*basis%dbf(:, j, l)/SQRT(rr(:))
                ELSE
                   CPABORT("Unknown matrix type specified. Check the code!")
                END IF
@@ -424,7 +425,6 @@ CONTAINS
 
       INTEGER                                            :: extunit, i, k, l, n
 
-      extunit = get_unit_number()
       CALL open_file(file_name=atom%zmp_restart_file, file_status="UNKNOWN", &
                      file_form="FORMATTED", file_action="WRITE", &
                      unit_number=extunit)
@@ -465,7 +465,6 @@ CONTAINS
 
       IF (atom%doread) THEN
          WRITE (iw, fmt="(' ZMP       | Restart file found')")
-         extunit = get_unit_number()
          CALL open_file(file_name=atom%zmp_restart_file, file_status="OLD", &
                         file_form="FORMATTED", file_action="READ", &
                         unit_number=extunit)
@@ -526,7 +525,6 @@ CONTAINS
 
       filename = atom%ext_file
       ldm = atom%dm
-      extunit = get_unit_number()
 
       CALL open_file(file_name=filename, file_status="OLD", &
                      file_form="FORMATTED", file_action="READ", &
@@ -539,7 +537,7 @@ CONTAINS
             IF (iw > 0) WRITE (iw, fmt="(' ZMP       | ERROR! External grid dimension ',I4,' differs from internal grid ',I4)") &
                nr, atom%basis%grid%nr
             IF (iw > 0) WRITE (iw, fmt="(' ZMP       | ERROR! Stopping ZMP calculation')")
-            CPABORT("")
+            CPABORT("Unable to continue reading external density file")
          END IF
 
          DO ir = 1, nr
@@ -549,7 +547,7 @@ CONTAINS
                IF (iw > 0) WRITE (iw, fmt='(" ZMP       |",T20,"R_out[bohr]",T36,"R_in[bohr]",T61,"R_diff[bohr]")')
                IF (iw > 0) WRITE (iw, fmt='(" ZMP       |",T14,E24.15,T39,E24.15,T64,E24.15)') &
                   rr, atom%basis%grid%rad(ir), ABS(rr - atom%basis%grid%rad(ir))
-               CPABORT("")
+               CPABORT("Unable to continue reading external density file")
             END IF
          END DO
          CALL close_file(unit_number=extunit)
@@ -557,7 +555,7 @@ CONTAINS
          READ (extunit, *) maxl_occ
          maxnbas = MAXVAL(atom%basis%nbas)
          ALLOCATE (pmatread(maxnbas, maxnbas, 0:maxl_occ))
-         pmatread = 0.0
+         pmatread = 0.0_dp
          DO l = 0, maxl_occ
             nbas = atom%basis%nbas(l)
             READ (extunit, *) ! Read empty line
@@ -573,7 +571,6 @@ CONTAINS
 
          CALL atom_density(density, pmatread, atom%basis, maxl_occ, typ="RHO")
 
-         extunit = get_unit_number()
          CALL open_file(file_name="rho_target.dat", file_status="UNKNOWN", &
                         file_form="FORMATTED", file_action="WRITE", unit_number=extunit)
 
@@ -613,7 +610,6 @@ CONTAINS
       REAL(KIND=dp)                                      :: rr
 
       filename = atom%ext_vxc_file
-      extunit = get_unit_number()
 
       CALL open_file(file_name=filename, file_status="OLD", &
                      file_form="FORMATTED", file_action="READ", &
@@ -626,7 +622,7 @@ CONTAINS
          IF (iw > 0) WRITE (iw, fmt="(' ZMP       | ERROR! External grid dimension ',I4,' differs from internal grid ',I4)") &
             nr, atom%basis%grid%nr
          IF (iw > 0) WRITE (iw, fmt="(' ZMP       | ERROR! Stopping ZMP calculation')")
-         CPABORT("")
+         CPABORT("Unable to continue reading external v_xc file")
       END IF
       DO ir = 1, nr
          READ (extunit, *) rr, vxc(ir)
@@ -635,7 +631,7 @@ CONTAINS
             IF (iw > 0) WRITE (iw, fmt='(" ZMP       |",T20,"R_out[bohr]",T36,"R_in[bohr]",T61,"R_diff[bohr]")')
             IF (iw > 0) WRITE (iw, fmt='(" ZMP       |",T14,E24.15,T39,E24.15,T64,E24.15)') &
                rr, atom%basis%grid%rad(ir), ABS(rr - atom%basis%grid%rad(ir))
-            CPABORT("")
+            CPABORT("Unable to continue reading external v_xc file")
          END IF
       END DO
 
@@ -737,7 +733,9 @@ CONTAINS
                         corden(:) = corden(:) - REAL(2*j - 2, dp)*fe(:)*rc**(2*j - 2)*cval/a2
                      END IF
                   ELSE
-                     CPABORT("")
+                     CALL cp_abort(__LOCATION__, &
+                                   "Only <RHO>, <DER>, <LAP> are supported as <my_typ> "// &
+                                   "in atom_core_density, found <"//TRIM(my_typ)//">")
                   END IF
                END DO
             END DO
@@ -767,7 +765,9 @@ CONTAINS
                CALL spline3ders(potential%upf_pot%r(1:n), potential%upf_pot%rho_nlcc(1:n), rval(1:m), &
                                 d2ynew=rhoc(1:m))
             ELSE
-               CPABORT("")
+               CALL cp_abort(__LOCATION__, &
+                             "Only <RHO>, <DER>, <LAP> are supported as <my_typ> "// &
+                             "in atom_core_density, found <"//TRIM(my_typ)//">")
             END IF
             IF (reverse) THEN
                DO i = 1, m
@@ -781,7 +781,24 @@ CONTAINS
          END IF
       CASE (sgp_pseudo)
          IF (potential%sgp_pot%has_nlcc) THEN
-            CPABORT("not implemented")
+            m = SIZE(corden)
+            ALLOCATE (fe(m))
+            DO i = 1, potential%sgp_pot%n_nlcc
+               a = potential%sgp_pot%a_nlcc(i)
+               cval = potential%sgp_pot%c_nlcc(i)
+               fe(:) = cval*EXP(-a*rr(:)**2)
+               SELECT CASE (my_typ)
+               CASE ("RHO")
+                  corden(:) = corden(:) + fe(:)
+               CASE ("DER")
+                  corden(:) = corden(:) - 2.0_dp*a*rr(:)*fe(:)
+               CASE ("LAP")
+                  corden(:) = corden(:) + (4.0_dp*a*a*rr(:)**2 - 6.0_dp*a)*fe(:)
+               CASE DEFAULT
+                  CPABORT("Only RHO, DER, and LAP are supported in atom_core_density")
+               END SELECT
+            END DO
+            DEALLOCATE (fe)
          END IF
       CASE DEFAULT
          CPABORT("Unknown PP type")
@@ -1131,7 +1148,7 @@ CONTAINS
          IF (MAXVAL(ABS(pmat(:, :, l))) < 1.e-14_dp) CYCLE
          SELECT CASE (basis%basis_type)
          CASE DEFAULT
-            CPABORT("")
+            CPABORT("Unknown basis type for coulomb_potential_analytic")
          CASE (GTO_BASIS)
             DO i = 1, basis%nbas(l)
                DO j = i, basis%nbas(l)
@@ -1155,7 +1172,7 @@ CONTAINS
                   CASE (2)
                      cpot(:) = cpot(:) + 0.9375_dp*erfa(:) - expa(:)*(0.875_dp + 0.25_dp*z(:)**2)
                   CASE (3)
-                     cpot(:) = cpot(:) + 3.28125_dp*erfa(:) - expa(:)*(3.5625_dp + 1.375_dp*z(:)**2 + 0.25*z(:)**4)
+                     cpot(:) = cpot(:) + 3.28125_dp*erfa(:) - expa(:)*(3.5625_dp + 1.375_dp*z(:)**2 + 0.25_dp*z(:)**4)
                   CASE DEFAULT
                      CPABORT("Invalid l number for GTO specified. Check the code!")
                   END SELECT
@@ -1190,7 +1207,7 @@ CONTAINS
                   CASE (2)
                      cpot(:) = cpot(:) + 0.9375_dp*erfa(:) - expa(:)*(0.875_dp + 0.25_dp*z(:)**2)
                   CASE (3)
-                     cpot(:) = cpot(:) + 3.28125_dp*erfa(:) - expa(:)*(3.5625_dp + 1.375_dp*z(:)**2 + 0.25*z(:)**4)
+                     cpot(:) = cpot(:) + 3.28125_dp*erfa(:) - expa(:)*(3.5625_dp + 1.375_dp*z(:)**2 + 0.25_dp*z(:)**4)
                   CASE DEFAULT
                      CPABORT("Invalid l number for CGTO specified. Check the code!")
                   END SELECT
@@ -1528,7 +1545,7 @@ CONTAINS
 
       SELECT CASE (basis%basis_type)
       CASE DEFAULT
-         CPABORT("")
+         CPABORT("Unknown basis type for potential_analytic")
       CASE (GTO_BASIS)
          DO i = 1, basis%nbas(la)
             DO j = 1, basis%nbas(lb)
@@ -1613,7 +1630,8 @@ CONTAINS
       expa(:) = EXP(-z(:)**2)/sab**(ll + 2)/2._dp**((ll + nu)/2 + 2)
       SELECT CASE (ll)
       CASE DEFAULT
-         CPABORT("")
+         CALL cp_abort(__LOCATION__, &
+                       "Only 0, 1, 2, 3, 4, 5, 6 are supported as the value of ll")
       CASE (0)
          CPASSERT(nu == 0)
       CASE (1)
@@ -1622,7 +1640,8 @@ CONTAINS
       CASE (2)
          SELECT CASE (nu)
          CASE DEFAULT
-            CPABORT("")
+            CALL cp_abort(__LOCATION__, &
+                          "Only 0, 2 are supported as the value of nu when ll = 2")
          CASE (0)
             erfa(:) = erfa(:) - 2._dp*expa(:)
          CASE (2)
@@ -1631,7 +1650,8 @@ CONTAINS
       CASE (3)
          SELECT CASE (nu)
          CASE DEFAULT
-            CPABORT("")
+            CALL cp_abort(__LOCATION__, &
+                          "Only 1, 3 are supported as the value of nu when ll = 3")
          CASE (1)
             erfa(:) = erfa(:) - expa(:)*(12._dp*z(:) + 30._dp/z(:))
          CASE (3)
@@ -1640,7 +1660,8 @@ CONTAINS
       CASE (4)
          SELECT CASE (nu)
          CASE DEFAULT
-            CPABORT("")
+            CALL cp_abort(__LOCATION__, &
+                          "Only 0, 2, 4 are supported as the value of nu when ll = 4")
          CASE (0)
             erfa(:) = erfa(:) - expa(:)*(4._dp*z(:)**2 + 14._dp)
          CASE (2)
@@ -1651,7 +1672,8 @@ CONTAINS
       CASE (5)
          SELECT CASE (nu)
          CASE DEFAULT
-            CPABORT("")
+            CALL cp_abort(__LOCATION__, &
+                          "Only 1, 3, 5 are supported as the value of nu when ll = 5")
          CASE (1)
             erfa(:) = erfa(:) - expa(:)*(24._dp*z(:)**3 + 108._dp*z(:) + 210._dp/z(:))
          CASE (3)
@@ -1663,7 +1685,8 @@ CONTAINS
       CASE (6)
          SELECT CASE (nu)
          CASE DEFAULT
-            CPABORT("")
+            CALL cp_abort(__LOCATION__, &
+                          "Only 0, 2, 4, 6 are supported as the value of nu when ll = 6")
          CASE (0)
             erfa(:) = erfa(:) - expa(:)*(8._dp*z(:)**4 + 44._dp*z(:)**2 + 114._dp)
          CASE (2)
@@ -1752,11 +1775,13 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: n
       REAL(KIND=dp)                                      :: res
 
+      REAL(KIND=dp), PARAMETER                           :: z_thre = 1.0E-20_dp
+
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: z_exp
 
       IF (n >= 0) THEN
-         IF (ABS(z) < 1.0E-20) THEN
+         IF (ABS(z) < z_thre) THEN
             res = z**n/(2.0_dp*REAL(n, KIND=dp) + 1.0_dp)
          ELSE IF (n == 0) THEN
             res = rootpi/2.0_dp*ERF(z)/z
@@ -1880,7 +1905,7 @@ CONTAINS
             END DO
          END DO
       CASE DEFAULT
-         CPABORT("")
+         CPABORT("Only 0, 1, 2 are supported as the value of derivatives")
       END SELECT
 
    END SUBROUTINE numpot_matrix
@@ -2231,9 +2256,9 @@ CONTAINS
       CASE (do_uks_atom, do_uhf_atom)
          spinpol = .TRUE.
       CASE (do_rohf_atom)
-         CPABORT("")
+         CPABORT("ROHF not yet implemented for get_rho0")
       CASE DEFAULT
-         CPABORT("")
+         CPABORT("Unknown method for get_rho0")
       END SELECT
 
       nr = atom%basis%grid%nr
@@ -2434,7 +2459,7 @@ CONTAINS
          m = basis%nprim(l)
          SELECT CASE (basis%basis_type)
          CASE DEFAULT
-            CPABORT("")
+            CPABORT("Unknown basis type for atom_completeness")
          CASE (GTO_BASIS)
             CALL sg_overlap(omat(1:n, 1:n, l), l, basis%am(1:n, l), basis%am(1:n, l))
          CASE (CGTO_BASIS)
@@ -2446,7 +2471,7 @@ CONTAINS
             CALL sto_overlap(omat(1:n, 1:n, l), basis%ns(1:n, l), basis%as(1:n, l), &
                              basis%ns(1:n, l), basis%as(1:n, l))
          CASE (NUM_BASIS)
-            CPABORT("")
+            CPABORT("Numerical basis not yet implemented for atom_completeness")
          END SELECT
          CALL invmat_symm(omat(1:n, 1:n, l))
       END DO
@@ -2539,7 +2564,7 @@ CONTAINS
                            ja = ibptr(ia, la)
                            jb = ibptr(ib, lb)
                            smat(ja:ja + nna - 1, jb:jb + nnb - 1) = smat(ja:ja + nna - 1, jb:jb + nnb - 1) + sab(1:nna, 1:nnb)
-                        ELSEIF (basis%basis_type == CGTO_BASIS) THEN
+                        ELSE IF (basis%basis_type == CGTO_BASIS) THEN
                            DO ka = 1, basis%nbas(la)
                               DO kb = 1, basis%nbas(lb)
                                  ja = ibptr(ka, la)
@@ -2562,7 +2587,7 @@ CONTAINS
                                     jb = ibptr(ib, lb)
                                     smat(ja:ja + nna - 1, jb:jb + nnb - 1) = smat(ja:ja + nna - 1, jb:jb + nnb - 1) &
                                                                              + sab(1:nna, 1:nnb)
-                                 ELSEIF (basis%basis_type == CGTO_BASIS) THEN
+                                 ELSE IF (basis%basis_type == CGTO_BASIS) THEN
                                     DO ka = 1, basis%nbas(la)
                                        DO kb = 1, basis%nbas(lb)
                                           ja = ibptr(ka, la)

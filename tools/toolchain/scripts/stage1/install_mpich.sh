@@ -6,8 +6,8 @@
 [ "${BASH_SOURCE[0]}" ] && SCRIPT_NAME="${BASH_SOURCE[0]}" || SCRIPT_NAME=$0
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
-mpich_ver="5.0.1"
-mpich_sha256="8c1832a13ddacf071685069f5fadfd1f2877a29e1a628652892c65211b1f3327"
+mpich_ver="5.0.2"
+mpich_sha256="928c2f18d350a91443fe8024ad01ce2c6009e9c551e0a73e797fc567f119137d"
 mpich_pkg="mpich-${mpich_ver}.tar.gz"
 
 source "${SCRIPT_DIR}"/common_vars.sh
@@ -26,7 +26,7 @@ case "${with_mpich}" in
   __INSTALL__)
     echo "==================== Installing MPICH ===================="
     pkg_install_dir="${INSTALLDIR}/mpich-${mpich_ver}"
-    install_lock_file="$pkg_install_dir/install_successful"
+    install_lock_file="${pkg_install_dir}/install_successful"
     if verify_checksums "${install_lock_file}"; then
       echo "mpich-${mpich_ver} is already installed, skipping it."
     else
@@ -50,7 +50,6 @@ case "${with_mpich}" in
         --prefix="${pkg_install_dir}" \
         --libdir="${pkg_install_dir}/lib" \
         --with-device=${MPICH_DEVICE} \
-        --without-slurm \
         ${FAST_OPTION} \
         FFLAGS="${FCFLAGS}" \
         FCFLAGS="${FCFLAGS}" \
@@ -69,14 +68,12 @@ case "${with_mpich}" in
     check_install ${pkg_install_dir}/bin/mpifort "mpich" && MPIFC="${pkg_install_dir}/bin/mpifort" || exit 1
     MPIFORT="${MPIFC}"
     MPIF77="${MPIFC}"
-    MPICH_CFLAGS="-I'${pkg_install_dir}/include'"
-    MPICH_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
     ;;
   __SYSTEM__)
     echo "==================== Finding MPICH from system paths ===================="
-    check_command mpiexec "mpich" && MPIEXEC="$(command -v mpiexec)"
+    check_command mpiexec "mpich" && MPIEXEC="$(command -v mpiexec)" || exit 1
     check_command mpicc "mpich" && MPICC="$(command -v mpicc)" || exit 1
-    if [ $(command -v mpic++ > /dev/null 2>&1) ]; then
+    if $(command -v mpic++ > /dev/null 2>&1); then
       check_command mpic++ "mpich" && MPICXX="$(command -v mpic++)" || exit 1
     else
       check_command mpicxx "mpich" && MPICXX="$(command -v mpicxx)" || exit 1
@@ -87,8 +84,6 @@ case "${with_mpich}" in
     check_lib -lmpifort "mpich"
     check_lib -lmpicxx "mpich"
     check_lib -lmpi "mpich"
-    add_include_from_paths MPICH_CFLAGS "mpi.h" ${INCLUDE_PATHS}
-    add_lib_from_paths MPICH_LDFLAGS "libmpi.*" ${LIB_PATHS}
     ;;
   __DONTUSE__)
     # Nothing to do
@@ -105,8 +100,6 @@ case "${with_mpich}" in
     check_command ${pkg_install_dir}/bin/mpifort "mpich" && MPIFC="${pkg_install_dir}/bin/mpifort" || exit 1
     MPIFORT="${MPIFC}"
     MPIF77="${MPIFC}"
-    MPICH_CFLAGS="-I'${pkg_install_dir}/include'"
-    MPICH_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
     ;;
 esac
 if [ "${with_mpich}" != "__DONTUSE__" ]; then
@@ -115,7 +108,6 @@ if [ "${with_mpich}" != "__DONTUSE__" ]; then
   else
     mpi_bin="mpiexec"
   fi
-  MPICH_LIBS="-lmpifort -lmpicxx -lmpi"
   cat << EOF > "${BUILDDIR}/setup_mpich"
 export MPI_MODE="${MPI_MODE}"
 export MPIEXEC="${MPIEXEC}"
@@ -124,21 +116,6 @@ export MPICXX="${MPICXX}"
 export MPIFC="${MPIFC}"
 export MPIFORT="${MPIFORT}"
 export MPIF77="${MPIF77}"
-export MPICH_CFLAGS="${MPICH_CFLAGS}"
-export MPICH_LDFLAGS="${MPICH_LDFLAGS}"
-export MPICH_LIBS="${MPICH_LIBS}"
-export MPI_CFLAGS="${MPICH_CFLAGS}"
-export MPI_LDFLAGS="${MPICH_LDFLAGS}"
-export MPI_LIBS="${MPICH_LIBS}"
-export CP_DFLAGS="\${CP_DFLAGS} IF_MPI(-D__parallel|)"
-# For proper mpi_f08 support, we need at least GCC version 9 (asynchronous keyword)
-# Other compilers should work
-  if ! [ "\$(gfortran -dumpversion | cut -d. -f1)" -lt 9 ]; then
-    export CP_DFLAGS="\${CP_DFLAGS} IF_MPI(-D__MPI_F08|)"
-  fi
-export CP_CFLAGS="\${CP_CFLAGS} IF_MPI(${MPICH_CFLAGS}|)"
-export CP_LDFLAGS="\${CP_LDFLAGS} IF_MPI(${MPICH_LDFLAGS}|)"
-export CP_LIBS="\${CP_LIBS} IF_MPI(${MPICH_LIBS}|)"
 EOF
   if [ "${with_mpich}" != "__SYSTEM__" ]; then
     # Using append_path instead of prepend_path for compatibility with Shifter.
@@ -148,7 +125,6 @@ append_path PATH "${pkg_install_dir}/bin"
 append_path LD_LIBRARY_PATH "${pkg_install_dir}/lib"
 append_path LD_RUN_PATH "${pkg_install_dir}/lib"
 append_path LIBRARY_PATH "${pkg_install_dir}/lib"
-append_path CPATH "${pkg_install_dir}/include"
 prepend_path PKG_CONFIG_PATH "${pkg_install_dir}/lib/pkgconfig"
 EOF
   fi

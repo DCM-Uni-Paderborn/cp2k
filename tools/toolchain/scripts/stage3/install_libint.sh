@@ -15,7 +15,7 @@ source "${INSTALLDIR}"/toolchain.env
 libint_ver="2.13.1"
 libint_pkg="libint-v${libint_ver}-cp2k-lmax-${LIBINT_LMAX}.tar.xz"
 
-case "$LIBINT_LMAX" in
+case "${LIBINT_LMAX}" in
   4)
     libint_sha256="8ff388fbf171635420fdfdbafc7dc949e9cf4c0b6a62f23dac3af8b1c942d407"
     ;;
@@ -43,7 +43,7 @@ case "$with_libint" in
   __INSTALL__)
     echo "==================== Installing LIBINT ===================="
     pkg_install_dir="${INSTALLDIR}/libint-v${libint_ver}-cp2k-lmax-${LIBINT_LMAX}"
-    install_lock_file="$pkg_install_dir/install_successful"
+    install_lock_file="${pkg_install_dir}/install_successful"
     if verify_checksums "${install_lock_file}"; then
       echo "libint-${libint_ver} is already installed, skipping it."
     else
@@ -62,63 +62,46 @@ case "$with_libint" in
       cd build
       CXXFLAGS="$LIBINT_CXXFLAGS" \
         FCFLAGS="$LIBINT_FCFLAGS" cmake .. \
-        -DCMAKE_INSTALL_PREFIX=${pkg_install_dir} \
+        -DCMAKE_INSTALL_PREFIX="${pkg_install_dir}" \
         -DCMAKE_CXX_COMPILER="$CXX" \
-        -DLIBINT2_INSTALL_LIBDIR="${pkg_install_dir}/lib" \
+        -DCMAKE_INSTALL_LIBDIR="lib" \
+        -DBUILD_TESTING=OFF \
         -DLIBINT2_ENABLE_FORTRAN=ON \
         -DCMAKE_DISABLE_FIND_PACKAGE_Boost=ON \
-        -DLIBINT2_REQUIRE_CXX_API=OFF \
         > configure.log 2>&1 || tail_excerpt configure.log
-      tar -xzf ../external/boost.tar.gz -C ./include/libint2
       make install -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
 
       cd ..
       write_checksums "${install_lock_file}" "${SCRIPT_DIR}/stage3/$(basename ${SCRIPT_NAME})"
     fi
-
-    LIBINT_CFLAGS="-I${pkg_install_dir}/include"
-    LIBINT_LDFLAGS="-L${pkg_install_dir}/lib"
     ;;
   __SYSTEM__)
     echo "==================== Finding LIBINT from system paths ===================="
     check_lib -lint2 "libint"
-    add_include_from_paths -p LIBINT_CFLAGS "libint" $INCLUDE_PATHS
-    add_lib_from_paths LIBINT_LDFLAGS "libint2.*" $LIB_PATHS
+    pkg_install_dir="$(dirname $(dirname $(find_in_paths "libint2.*" $LIB_PATHS)))"
     ;;
   __DONTUSE__) ;;
 
   *)
     echo "==================== Linking LIBINT to user paths ===================="
-    pkg_install_dir="$with_libint"
+    pkg_install_dir="${with_libint}"
     check_dir "${pkg_install_dir}/lib"
     check_dir "${pkg_install_dir}/include"
-    LIBINT_CFLAGS="-I${pkg_install_dir}/include"
-    LIBINT_LDFLAGS="-L${pkg_install_dir}/lib"
     ;;
 esac
 if [ "$with_libint" != "__DONTUSE__" ]; then
-  LIBINT_LIBS="-lint2"
   cat << EOF > "${BUILDDIR}/setup_libint"
+export LIBINT2_ROOT="${pkg_install_dir}"
 export LIBINT_VER="${libint_ver}"
 EOF
   if [ "$with_libint" != "__SYSTEM__" ]; then
     cat << EOF >> "${BUILDDIR}/setup_libint"
-prepend_path LD_LIBRARY_PATH "$pkg_install_dir/lib"
-prepend_path LD_RUN_PATH "$pkg_install_dir/lib"
-prepend_path LIBRARY_PATH "$pkg_install_dir/lib"
-prepend_path CMAKE_PREFIX_PATH "$pkg_install_dir"
-export LIBINT2_ROOT="${pkg_install_dir}"
+prepend_path LD_LIBRARY_PATH "${pkg_install_dir}/lib"
+prepend_path LD_RUN_PATH "${pkg_install_dir}/lib"
+prepend_path LIBRARY_PATH "${pkg_install_dir}/lib"
+prepend_path CMAKE_PREFIX_PATH "${pkg_install_dir}"
 EOF
   fi
-  cat << EOF >> "${BUILDDIR}/setup_libint"
-export LIBINT_CFLAGS="${LIBINT_CFLAGS}"
-export LIBINT_LDFLAGS="${LIBINT_LDFLAGS}"
-export LIBINT_LIBS="${LIBINT_LIBS}"
-export CP_DFLAGS="\${CP_DFLAGS} -D__LIBINT"
-export CP_CFLAGS="\${CP_CFLAGS} ${LIBINT_CFLAGS}"
-export CP_LDFLAGS="\${CP_LDFLAGS} ${LIBINT_LDFLAGS}"
-export CP_LIBS="${LIBINT_LIBS} \${CP_LIBS}"
-EOF
   filter_setup "${BUILDDIR}/setup_libint" "${SETUPFILE}"
 fi
 

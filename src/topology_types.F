@@ -68,12 +68,13 @@ MODULE topology_types
       REAL(KIND=dp)                                 :: hbonds_k0 = -1.0_dp ! Restraints control
       ! Fixed Atoms
       INTEGER                                       :: nfixed_atoms = -1
-     INTEGER, POINTER                              :: fixed_atoms(:) => NULL(), fixed_type(:) => NULL(), fixed_mol_type(:) => NULL()
-      LOGICAL, POINTER                              :: fixed_restraint(:) => NULL() ! Restraints control
-      REAL(KIND=dp), POINTER                        :: fixed_k0(:) => NULL() ! Restraints control
+      INTEGER, DIMENSION(:), POINTER                :: fixed_atoms => NULL(), fixed_type => NULL(), fixed_mol_type => NULL()
+      LOGICAL, DIMENSION(:), POINTER                :: fixed_restraint => NULL() ! Restraints control
+      REAL(KIND=dp), DIMENSION(:), POINTER          :: fixed_k0 => NULL() ! Restraints control
       ! Freeze QM or MM
       INTEGER                                       :: freeze_qm = -1, freeze_mm = -1, freeze_qm_type = -1, freeze_mm_type = -1
-      LOGICAL                                       :: fixed_mm_restraint = .FALSE., fixed_qm_restraint = .FALSE. ! Restraints control
+      ! Restraints control
+      LOGICAL                                       :: fixed_mm_restraint = .FALSE., fixed_qm_restraint = .FALSE.
       REAL(KIND=dp)                                 :: fixed_mm_k0 = -1.0_dp, fixed_qm_k0 = -1.0_dp ! Restraints control
       ! Freeze with molnames
       LOGICAL, POINTER                              :: fixed_mol_restraint(:) => NULL() ! Restraints control
@@ -145,6 +146,7 @@ MODULE topology_types
       TYPE(connectivity_info_type), POINTER     :: conn_info => NULL()
       TYPE(constraint_info_type), POINTER       :: cons_info => NULL()
       TYPE(cell_type), POINTER                  :: cell => NULL(), cell_ref => NULL(), cell_muc => NULL()
+      TYPE(frag_list_p_type), DIMENSION(:), POINTER:: fragments => NULL()
       INTEGER                                   :: conn_type = -1
       INTEGER                                   :: coord_type = -1
       INTEGER                                   :: exclude_vdw = -1
@@ -180,12 +182,17 @@ MODULE topology_types
    TYPE constr_list_type
       INTEGER, DIMENSION(:), POINTER :: constr => NULL()
    END TYPE constr_list_type
+! **************************************************************************************************
+   TYPE frag_list_p_type
+      INTEGER                                     :: frag_start = -1
+      INTEGER                                     :: frag_end = -1
+   END TYPE frag_list_p_type
 
    PUBLIC :: atom_info_type, &
              connectivity_info_type, &
              constraint_info_type, &
              topology_parameters_type, &
-             constr_list_type
+             constr_list_type, frag_list_p_type
 
    PUBLIC :: init_topology, &
              deallocate_topology, &
@@ -518,8 +525,9 @@ CONTAINS
       !-----------------------------------------------------------------------------
       ! 3. DEALLOCATE things in topology%cons_info
       !-----------------------------------------------------------------------------
-      IF (ASSOCIATED(topology%cons_info)) &
+      IF (ASSOCIATED(topology%cons_info)) THEN
          CALL deallocate_constraint(topology%cons_info)
+      END IF
       !-----------------------------------------------------------------------------
       ! 4. DEALLOCATE things in topology
       !-----------------------------------------------------------------------------
@@ -534,6 +542,12 @@ CONTAINS
       END IF
       IF (ASSOCIATED(topology%cons_info)) THEN
          DEALLOCATE (topology%cons_info)
+      END IF
+      !------------------------------------------------
+      ! 5. DEALLOCATE fragments
+      !-----------------------------------------------
+      IF (ASSOCIATED(topology%fragments)) THEN
+         DEALLOCATE (topology%fragments)
       END IF
 
    END SUBROUTINE deallocate_topology

@@ -22,7 +22,8 @@ MODULE almo_scf_env_methods
         almo_mat_distr_molecular, almo_scf_diag, almo_scf_skip, almo_scf_trustr, cg_hager_zhang, &
         do_bondparm_vdw, molecular_guess, tensor_orthogonal, virt_full, virt_minimal, virt_number, &
         xalmo_trial_r0_out
-   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+   USE input_section_types,             ONLY: section_vals_get,&
+                                              section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
@@ -96,6 +97,7 @@ CONTAINS
 !> \param almo_scf_env ...
 !> \par History
 !>       2011.05 created [Rustam Z Khaliullin]
+!>       2024.02 modified [Raphael Rullan]
 !> \author Rustam Z Khaliullin
 ! **************************************************************************************************
    SUBROUTINE almo_scf_init_read_write_input(input, almo_scf_env)
@@ -104,11 +106,12 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'almo_scf_init_read_write_input'
 
-      INTEGER                                            :: handle
+      INTEGER                                            :: handle, i, ndomain
+      LOGICAL                                            :: explicit
       TYPE(section_vals_type), POINTER :: almo_analysis_section, almo_opt_diis_section, &
-         almo_opt_pcg_section, almo_opt_trustr_section, almo_scf_section, matrix_iterate_section, &
-         nlmo_opt_pcg_section, penalty_section, xalmo_opt_newton_pcg_section, &
-         xalmo_opt_pcg_section, xalmo_opt_trustr_section
+         almo_opt_pcg_section, almo_opt_trustr_section, almo_scf_section, fragment_section, &
+         matrix_iterate_section, nlmo_opt_pcg_section, penalty_section, &
+         xalmo_opt_newton_pcg_section, xalmo_opt_pcg_section, xalmo_opt_trustr_section
 
       CALL timeset(routineN, handle)
 
@@ -334,107 +337,32 @@ CONTAINS
       CALL section_vals_val_get(almo_analysis_section, "FROZEN_MO_ENERGY_TERM", &
                                 i_val=almo_scf_env%almo_analysis%frozen_mo_energy_term)
 
-      !CALL section_vals_val_get(almo_scf_section,"DOMAIN_LAYOUT_AOS",&
-      !                          i_val=almo_scf_env%domain_layout_aos)
-      !CALL section_vals_val_get(almo_scf_section,"DOMAIN_LAYOUT_MOS",&
-      !                          i_val=almo_scf_env%domain_layout_mos)
-      !CALL section_vals_val_get(almo_scf_section,"MATRIX_CLUSTERING_AOS",&
-      !                          i_val=almo_scf_env%mat_distr_aos)
-      !CALL section_vals_val_get(almo_scf_section,"MATRIX_CLUSTERING_MOS",&
-      !                          i_val=almo_scf_env%mat_distr_mos)
-      !CALL section_vals_val_get(almo_scf_section,"CONSTRAINT_TYPE",&
-      !                          i_val=almo_scf_env%constraint_type)
-      !CALL section_vals_val_get(almo_scf_section,"MU",&
-      !                          r_val=almo_scf_env%mu)
-      !CALL section_vals_val_get(almo_scf_section,"FIXED_MU",&
-      !                          l_val=almo_scf_env%fixed_mu)
-      !CALL section_vals_val_get(almo_scf_section,"EPS_USE_PREV_AS_GUESS",&
-      !                          r_val=almo_scf_env%eps_prev_guess)
-      !CALL section_vals_val_get(almo_scf_section,"MIXING_FRACTION",&
-      !                          r_val=almo_scf_env%mixing_fraction)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_CAYLEY_TENSOR_TYPE",&
-      !                          i_val=almo_scf_env%deloc_cayley_tensor_type)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_CAYLEY_CONJUGATOR",&
-      !                          i_val=almo_scf_env%deloc_cayley_conjugator)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_CAYLEY_MAX_ITER",&
-      !                          i_val=almo_scf_env%deloc_cayley_max_iter)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_USE_OCC_ORBS",&
-      !                          l_val=almo_scf_env%deloc_use_occ_orbs)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_CAYLEY_USE_VIRT_ORBS",&
-      !                          l_val=almo_scf_env%deloc_cayley_use_virt_orbs)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_CAYLEY_LINEAR",&
-      !                          l_val=almo_scf_env%deloc_cayley_linear)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_CAYLEY_EPS_CONVERGENCE",&
-      !                          r_val=almo_scf_env%deloc_cayley_eps_convergence)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_CAYLEY_OCC_PRECOND",&
-      !                          l_val=almo_scf_env%deloc_cayley_occ_precond)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_CAYLEY_VIR_PRECOND",&
-      !                          l_val=almo_scf_env%deloc_cayley_vir_precond)
-      !CALL section_vals_val_get(almo_scf_section,"ALMO_UPDATE_ALGORITHM_BD",&
-      !                          i_val=almo_scf_env%almo_update_algorithm)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_TRUNCATE_VIRTUALS",&
-      !                          i_val=almo_scf_env%deloc_truncate_virt)
-      !CALL section_vals_val_get(almo_scf_section,"DELOC_VIRT_PER_DOMAIN",&
-      !                          i_val=almo_scf_env%deloc_virt_per_domain)
-      !
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_EPS_CONVERGENCE",&
-      !                          r_val=almo_scf_env%opt_k_eps_convergence)
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_MAX_ITER",&
-      !                          i_val=almo_scf_env%opt_k_max_iter)
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_OUTER_MAX_ITER",&
-      !                          i_val=almo_scf_env%opt_k_outer_max_iter)
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_TRIAL_STEP_SIZE",&
-      !                          r_val=almo_scf_env%opt_k_trial_step_size)
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_CONJUGATOR",&
-      !                          i_val=almo_scf_env%opt_k_conjugator)
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_TRIAL_STEP_SIZE_MULTIPLIER",&
-      !                          r_val=almo_scf_env%opt_k_trial_step_size_multiplier)
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_CONJ_ITER_START",&
-      !                          i_val=almo_scf_env%opt_k_conj_iter_start)
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_PREC_ITER_START",&
-      !                          i_val=almo_scf_env%opt_k_prec_iter_start)
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_CONJ_ITER_FREQ_RESET",&
-      !                          i_val=almo_scf_env%opt_k_conj_iter_freq)
-      !CALL section_vals_val_get(almo_scf_section,"OPT_K_PREC_ITER_FREQ_UPDATE",&
-      !                          i_val=almo_scf_env%opt_k_prec_iter_freq)
-      !
-      !CALL section_vals_val_get(almo_scf_section,"QUENCHER_RADIUS_TYPE",&
-      !                          i_val=almo_scf_env%quencher_radius_type)
-      !CALL section_vals_val_get(almo_scf_section,"QUENCHER_R0_FACTOR",&
-      !                          r_val=almo_scf_env%quencher_r0_factor)
-      !CALL section_vals_val_get(almo_scf_section,"QUENCHER_R1_FACTOR",&
-      !                          r_val=almo_scf_env%quencher_r1_factor)
-      !!CALL section_vals_val_get(almo_scf_section,"QUENCHER_R0_SHIFT",&
-      !!                          r_val=almo_scf_env%quencher_r0_shift)
-      !!
-      !!CALL section_vals_val_get(almo_scf_section,"QUENCHER_R1_SHIFT",&
-      !!                          r_val=almo_scf_env%quencher_r1_shift)
-      !!
-      !!almo_scf_env%quencher_r0_shift = cp_unit_to_cp2k(&
-      !!   almo_scf_env%quencher_r0_shift,"angstrom")
-      !!almo_scf_env%quencher_r1_shift = cp_unit_to_cp2k(&
-      !!   almo_scf_env%quencher_r1_shift,"angstrom")
-      !
-      !CALL section_vals_val_get(almo_scf_section,"QUENCHER_AO_OVERLAP_0",&
-      !                          r_val=almo_scf_env%quencher_s0)
-      !CALL section_vals_val_get(almo_scf_section,"QUENCHER_AO_OVERLAP_1",&
-      !                          r_val=almo_scf_env%quencher_s1)
+      fragment_section => section_vals_get_subs_vals(almo_scf_section, &
+                                                     "FRAGMENT")
+      CALL section_vals_get(fragment_section, &
+                            explicit=explicit, n_repetition=ndomain)
 
-      !CALL section_vals_val_get(almo_scf_section,"ENVELOPE_AMPLITUDE",&
-      !                          r_val=almo_scf_env%envelope_amplitude)
+      IF (explicit) THEN
+         ALLOCATE (almo_scf_env%charge_of_domain(ndomain))
+         ALLOCATE (almo_scf_env%multiplicity_of_domain(ndomain))
+         ALLOCATE (almo_scf_env%activate(1))
+         almo_scf_env%multiplicity_of_domain = 0
+         almo_scf_env%charge_of_domain = 0
+         almo_scf_env%activate = 1
+         DO i = 1, ndomain
 
-      !! how to read lists
-      !CALL section_vals_val_get(almo_scf_section,"INT_LIST01", &
-      !        n_rep_val=n_rep)
-      !counter_i = 0
-      !DO k = 1,n_rep
-      !  CALL section_vals_val_get(almo_scf_section,"INT_LIST01",&
-      !          i_rep_val=k,i_vals=tmplist)
-      !   DO jj = 1,SIZE(tmplist)
-      !      counter_i=counter_i+1
-      !      almo_scf_env%charge_of_domain(counter_i)=tmplist(jj)
-      !   ENDDO
-      !ENDDO
+            CALL section_vals_val_get(fragment_section, "CHARGE", &
+                                      i_rep_section=i, i_val=almo_scf_env%fragment%charge)
+            almo_scf_env%charge_of_domain(i) = almo_scf_env%fragment%charge
+
+            CALL section_vals_val_get(fragment_section, "MULTIPLICITY", &
+                                      i_rep_section=i, i_val=almo_scf_env%fragment%multiplicity)
+            almo_scf_env%multiplicity_of_domain(i) = almo_scf_env%fragment%multiplicity
+         END DO
+      ELSE
+         ALLOCATE (almo_scf_env%activate(1))
+         almo_scf_env%activate = 0
+      END IF
 
       almo_scf_env%domain_layout_aos = almo_domain_layout_molecular
       almo_scf_env%domain_layout_mos = almo_domain_layout_molecular

@@ -18,34 +18,73 @@
 #endif
 
 /*******************************************************************************
- * \brief Allocates a buffer of given length, ie., number of elements.
- * \author Ole Schuett
+ * \brief Internal routine to deallocate given buffer.
+ * \author Hans Pabst
+ ******************************************************************************/
+static void offload_free_buffer_internal(offload_buffer *buffer) {
+  assert(NULL != buffer);
+#if defined(OFFLOAD_BUFFER_MEMPOOL)
+  if (NULL != buffer->host_buffer &&
+      buffer->host_buffer != buffer->device_buffer) {
+    offload_mempool_host_free(buffer->host_buffer);
+  }
+  if (NULL != buffer->device_buffer) {
+    offload_mempool_device_free(buffer->device_buffer);
+  }
+#elif defined(__OFFLOAD)
+  if (NULL != buffer->host_buffer &&
+      buffer->host_buffer != buffer->device_buffer) {
+    offloadFreeHost(buffer->host_buffer);
+  }
+  if (NULL != buffer->device_buffer) {
+    offloadFree(buffer->device_buffer);
+  }
+#else
+  free(buffer->host_buffer);
+  assert(NULL == buffer->device_buffer);
+#endif
+}
+
+/*******************************************************************************
+ * \brief Allocates a buffer (NULL or valid) with the given number of elements.
+ * \author Ole Schuett and Hans Pabst
  ******************************************************************************/
 void offload_create_buffer(const int length, offload_buffer **buffer) {
   const size_t requested_size = sizeof(double) * length;
 
   if (*buffer != NULL) {
-#if !defined(OFFLOAD_BUFFER_MEMPOOL)
-    if ((*buffer)->size >= requested_size) {
+    if (0 == requested_size) {
+      offload_free_buffer_internal(*buffer);
+      (*buffer)->size = 0;
+      (*buffer)->host_buffer = NULL;
+      (*buffer)->device_buffer = NULL;
+      return;
+    } else if (requested_size <= (*buffer)->size) {
       return; // reuse existing buffer
-    } else
-#endif
-    {
-      offload_free_buffer(*buffer);
+    } else {
+      offload_free_buffer_internal(*buffer);
     }
+  } else {
+    (*buffer) = malloc(sizeof(offload_buffer));
+    assert(NULL != *buffer);
   }
 
-  (*buffer) = malloc(sizeof(offload_buffer));
-  assert(NULL != *buffer);
   (*buffer)->size = requested_size;
   (*buffer)->host_buffer = NULL;
   (*buffer)->device_buffer = NULL;
+  if (0 == requested_size) {
+    return;
+  }
 #if defined(OFFLOAD_BUFFER_MEMPOOL)
+#if !defined(__OFFLOAD_UNIFIED_MEMORY)
   (*buffer)->host_buffer = offload_mempool_host_malloc(requested_size);
+#endif
   (*buffer)->device_buffer = offload_mempool_device_malloc(requested_size);
 #elif defined(__OFFLOAD)
   offload_activate_chosen_device();
+#if !defined(__OFFLOAD_UNIFIED_MEMORY)
   offloadMallocHost((void **)&(*buffer)->host_buffer, requested_size);
+#endif
   offloadMalloc((void **)&(*buffer)->device_buffer, requested_size);
 #else
   (*buffer)->host_buffer = malloc(requested_size);
@@ -61,29 +100,62 @@ void offload_create_buffer(const int length, offload_buffer **buffer) {
  * \author Ole Schuett
  ******************************************************************************/
 void offload_free_buffer(offload_buffer *buffer) {
-  if (NULL == buffer) {
-    return;
+  if (NULL != buffer) {
+    offload_free_buffer_internal(buffer);
+    free(buffer);
   }
-#if defined(OFFLOAD_BUFFER_MEMPOOL)
-  offload_mempool_host_free(buffer->host_buffer);
-  offload_mempool_device_free(buffer->device_buffer);
-#elif defined(__OFFLOAD)
-  offloadFreeHost(buffer->host_buffer);
-  offloadFree(buffer->device_buffer);
-#else
-  free(buffer->host_buffer);
-  assert(NULL == buffer->device_buffer);
-#endif
-  free(buffer);
 }
 
 /*******************************************************************************
- * \brief Returns a pointer to the host buffer.
+ * \brief Returns a pointer to the host buffer (Fortran API).
  * \author Ole Schuett
  ******************************************************************************/
 double *offload_get_buffer_host_pointer(offload_buffer *buffer) {
   assert(NULL != buffer);
   return buffer->host_buffer;
+}
+
+/*******************************************************************************
+ * \brief Returns a pointer to the device buffer (Fortran API).
+ * \author Samal Bibek
+ ******************************************************************************/
+double *offload_get_buffer_device_pointer(offload_buffer *buffer) {
+  assert(NULL != buffer);
+  return buffer->device_buffer;
+}
+
+/*******************************************************************************
+ * \brief Copy data from host to device (Fortran API).
+ * \author Samal Bibek
+ ******************************************************************************/
+void offload_buffer_h2d(offload_buffer *buffer, const int length) {
+  assert(NULL != buffer);
+#if defined(__OFFLOAD)
+  if (buffer->host_buffer != NULL && buffer->device_buffer != NULL) {
+    const size_t bytes = sizeof(double) * length;
+    offloadMemcpyAsyncHtoD(buffer->device_buffer, buffer->host_buffer, bytes,
+                           0);
+  }
+#else
+  (void)length; // no-op on CPU-only builds: host memory is the same store
+#endif
+}
+
+/*******************************************************************************
+ * \brief Copy data from device to host (Fortran API).
+ * \author Samal Bibek
+ ******************************************************************************/
+void offload_buffer_d2h(offload_buffer *buffer, const int length) {
+  assert(NULL != buffer);
+#if defined(__OFFLOAD)
+  if (buffer->host_buffer != NULL && buffer->device_buffer != NULL) {
+    const size_t bytes = sizeof(double) * length;
+    offloadMemcpyAsyncDtoH(buffer->host_buffer, buffer->device_buffer, bytes,
+                           0);
+  }
+#else
+  (void)length; // no-op on CPU-only builds: host memory is the same store
+#endif
 }
 
 // EOF

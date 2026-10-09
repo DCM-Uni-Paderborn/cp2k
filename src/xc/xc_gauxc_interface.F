@@ -13,6 +13,14 @@
 
 MODULE xc_gauxc_interface
 
+   USE iso_fortran_env, ONLY: &
+      error_unit
+#if defined (__HAS_IEEE_EXCEPTIONS)
+   USE ieee_exceptions, ONLY: &
+      ieee_all, &
+      ieee_get_halting_mode, &
+      ieee_set_halting_mode
+#endif
    USE iso_c_binding, ONLY: &
       c_associated, &
       c_bool, &
@@ -68,6 +76,10 @@ MODULE xc_gauxc_interface
       gauxc_runtime_environment_delete, &
       gauxc_runtime_environment_new, &
       gauxc_runtime_environment_type
+#ifdef GAUXC_HAS_DEVICE
+   USE gauxc_runtime_environment, ONLY: &
+      gauxc_device_runtime_environment_new
+#endif
    USE gauxc_molecule, ONLY: &
       gauxc_delete, &
       gauxc_molecule_new_from_atoms, &
@@ -236,23 +248,53 @@ CONTAINS
 
 #ifdef __GAUXC
       CHARACTER(kind=c_char), POINTER                    :: s(:)
-      INTEGER                                            :: i, iw
+      CHARACTER(len=32)                                  :: stderr_env
+      INTEGER                                            :: i, ierr, iw
+      LOGICAL                                            :: print_to_stderr
+      INTEGER, PARAMETER                                 :: status_message_length = 4096
 
       iw = cp_logger_get_default_io_unit()
+      ierr = error_unit
+      CALL GET_ENVIRONMENT_VARIABLE("CP2K_GAUXC_STATUS_STDERR", stderr_env)
+      CALL uppercase(stderr_env)
+      SELECT CASE (TRIM(stderr_env))
+      CASE ("", "0", "FALSE", "F", "OFF", "NO")
+         print_to_stderr = .FALSE.
+      CASE ("1", "TRUE", "T", "ON", "YES")
+         print_to_stderr = .TRUE.
+      CASE DEFAULT
+         print_to_stderr = .TRUE.
+      END SELECT
       IF (iw > 0) THEN
-         WRITE (iw, '(a,1x,i0)') "GauXC returned with status code", status%status%code
+         WRITE (UNIT=iw, FMT='(a,1x,i0)') "GauXC returned with status code", status%status%code
          IF (c_associated(status%status%message)) THEN
-            WRITE (iw, '(a)', ADVANCE='no') "GauXC status message: ["
+            WRITE (UNIT=iw, FMT='(a)', ADVANCE='no') "GauXC status message: ["
 
-            CALL c_f_pointer(status%status%message, s, [default_string_length])
+            CALL c_f_pointer(status%status%message, s, [status_message_length])
             DO i = 1, SIZE(s)
                IF (s(i) == c_null_char) EXIT
-               WRITE (iw, '(A)', advance='no') s(i)
+               WRITE (UNIT=iw, FMT='(A)', ADVANCE='no') s(i)
             END DO
 
-            WRITE (iw, '(a)') "]"
+            WRITE (UNIT=iw, FMT='(a)') "]"
          ELSE
-            WRITE (iw, '(a)') "GauXC status message: [null]"
+            WRITE (UNIT=iw, FMT='(a)') "GauXC status message: [null]"
+         END IF
+      END IF
+      IF (print_to_stderr) THEN
+         WRITE (UNIT=ierr, FMT='(a,1x,i0)') "GauXC returned with status code", status%status%code
+         IF (c_associated(status%status%message)) THEN
+            WRITE (UNIT=ierr, FMT='(a)', ADVANCE='no') "GauXC status message: ["
+
+            CALL c_f_pointer(status%status%message, s, [status_message_length])
+            DO i = 1, SIZE(s)
+               IF (s(i) == c_null_char) EXIT
+               WRITE (UNIT=ierr, FMT='(A)', ADVANCE='no') s(i)
+            END DO
+
+            WRITE (UNIT=ierr, FMT='(a)') "]"
+         ELSE
+            WRITE (UNIT=ierr, FMT='(a)') "GauXC status message: [null]"
          END IF
       END IF
 #else
@@ -461,8 +503,10 @@ CONTAINS
 !> \param pruning_scheme ...
 !> \param lb_exec_space ...
 !> \param batch_size ...
+!> \param device_runtime_fill_fraction ...
 !> \param status ...
 !> \param mpi_comm optional communicator for a grid-local GauXC runtime
+!> \param force_new_runtime force creation of a grid-local GauXC runtime
 !> \return ...
 ! **************************************************************************************************
    FUNCTION gauxc_create_grid( &
@@ -473,43 +517,76 @@ CONTAINS
       pruning_scheme, &
       lb_exec_space, &
       batch_size, &
+      device_runtime_fill_fraction, &
       status, &
-      mpi_comm) RESULT(res)
+      mpi_comm, &
+      force_new_runtime) RESULT(res)
 
       TYPE(cp_gauxc_molecule_type), INTENT(IN)           :: molecule
       TYPE(cp_gauxc_basisset_type), INTENT(in)           :: basis
       CHARACTER(len=*)               :: grid_type, lb_exec_space, &
                                         pruning_scheme, radial_quadrature
       INTEGER                                            :: batch_size
+      REAL(c_double), INTENT(IN)                         :: device_runtime_fill_fraction
       TYPE(cp_gauxc_status_type), INTENT(OUT)            :: status
       INTEGER, INTENT(IN), OPTIONAL                      :: mpi_comm
+      LOGICAL, INTENT(IN), OPTIONAL                      :: force_new_runtime
       TYPE(cp_gauxc_grid_type)                           :: res
 
 #ifdef __GAUXC
       INTEGER(c_int)                                     :: grid_type_local, int_exec_space_local, &
                                                             lb_exec_space_local, &
                                                             pruning_scheme_local, radial_quad_local
+      LOGICAL                                            :: force_new_runtime_local, use_device_runtime
 
       grid_type_local = read_atomic_grid_size(grid_type)
       radial_quad_local = read_radial_quad(radial_quadrature)
       pruning_scheme_local = read_pruning_scheme(pruning_scheme)
       lb_exec_space_local = read_execution_space(lb_exec_space)
       int_exec_space_local = read_execution_space("host")
+      use_device_runtime = (lb_exec_space_local == gauxc_executionspace%device)
+      force_new_runtime_local = .FALSE.
+      IF (PRESENT(force_new_runtime)) force_new_runtime_local = force_new_runtime
       res%owns_rt = .FALSE.
 
+      IF (use_device_runtime) THEN
+#ifdef GAUXC_HAS_DEVICE
 #if defined(GAUXC_HAS_MPI) && defined(__parallel)
-      IF (PRESENT(mpi_comm)) THEN
-         ! Reuse the global runtime when the requested communicator matches
-         ! the communicator used during gauxc_init.
-         IF (.NOT. rt_has_mpi_comm .OR. mpi_comm /= rt_mpi_comm) THEN
-            res%rt = gauxc_runtime_environment_new(status%status, mpi_comm)
-            GAUXC_RETURN_IF_ERROR(status)
-            res%owns_rt = .TRUE.
+         IF (PRESENT(mpi_comm)) THEN
+            res%rt = gauxc_device_runtime_environment_new( &
+                     status%status, mpi_comm, device_runtime_fill_fraction)
+         ELSE
+            res%rt = gauxc_device_runtime_environment_new( &
+                     status%status, device_runtime_fill_fraction)
          END IF
-      END IF
 #else
-      MARK_USED(mpi_comm)
+         MARK_USED(mpi_comm)
+         res%rt = gauxc_device_runtime_environment_new( &
+                  status%status, device_runtime_fill_fraction)
 #endif
+         GAUXC_RETURN_IF_ERROR(status)
+         res%owns_rt = .TRUE.
+#else
+         MARK_USED(device_runtime_fill_fraction)
+         CPABORT("GauXC was built without device runtime support")
+#endif
+      ELSE
+#if defined(GAUXC_HAS_MPI) && defined(__parallel)
+         IF (PRESENT(mpi_comm)) THEN
+            ! Reuse the global runtime when the requested communicator matches
+            ! the communicator used during gauxc_init.
+            IF (force_new_runtime_local .OR. .NOT. rt_has_mpi_comm .OR. &
+                mpi_comm /= rt_mpi_comm) THEN
+               res%rt = gauxc_runtime_environment_new(status%status, mpi_comm)
+               GAUXC_RETURN_IF_ERROR(status)
+               res%owns_rt = .TRUE.
+            END IF
+         END IF
+#else
+         MARK_USED(mpi_comm)
+         MARK_USED(force_new_runtime)
+#endif
+      END IF
 
       res%grid = gauxc_molgrid_new_default( &
                  status%status, &
@@ -563,9 +640,11 @@ CONTAINS
 #else
       MARK_USED(basis)
       MARK_USED(batch_size)
+      MARK_USED(device_runtime_fill_fraction)
       MARK_USED(grid_type)
       MARK_USED(lb_exec_space)
       MARK_USED(mpi_comm)
+      MARK_USED(force_new_runtime)
       MARK_USED(molecule)
       MARK_USED(pruning_scheme)
       MARK_USED(radial_quadrature)
@@ -580,6 +659,7 @@ CONTAINS
 !> \param xc_functional_name ...
 !> \param grid ...
 !> \param int_exec_space ...
+!> \param lwd_kernel ...
 !> \param nspins ...
 !> \param status ...
 !> \return ...
@@ -588,10 +668,12 @@ CONTAINS
       xc_functional_name, &
       grid, &
       int_exec_space, &
+      lwd_kernel, &
       nspins, &
       status) RESULT(res)
 
-      CHARACTER(len=*), INTENT(IN)                       :: xc_functional_name, int_exec_space
+      CHARACTER(len=*), INTENT(IN)                       :: xc_functional_name, int_exec_space, &
+                                                            lwd_kernel
       TYPE(cp_gauxc_grid_type), INTENT(IN)               :: grid
       INTEGER, INTENT(IN)                                :: nspins
       TYPE(cp_gauxc_status_type), INTENT(OUT)            :: status
@@ -613,12 +695,14 @@ CONTAINS
                        status%status, &
                        res%func, &
                        grid%lb, &
-                       int_exec_space_local)
+                       int_exec_space_local, &
+                       local_work_kernel_name=TRIM(lwd_kernel))
       GAUXC_RETURN_IF_ERROR(status)
 
 #else
       MARK_USED(grid)
       MARK_USED(int_exec_space)
+      MARK_USED(lwd_kernel)
       MARK_USED(nspins)
       MARK_USED(res)
       MARK_USED(status)
@@ -646,8 +730,7 @@ CONTAINS
       model) RESULT(res)
 
       TYPE(cp_gauxc_integrator_type), INTENT(IN)         :: integrator
-      ! Must be inout since we need to modify the matrix for some code paths
-      REAL(c_double), DIMENSION(:, :)                    :: density_scalar
+      REAL(c_double), DIMENSION(:, :), INTENT(IN)        :: density_scalar
       REAL(c_double), DIMENSION(:, :), INTENT(IN), &
          OPTIONAL                                        :: density_zeta
       INTEGER, INTENT(IN)                                :: nspins
@@ -657,17 +740,21 @@ CONTAINS
 
 #ifdef __GAUXC
       CHARACTER(len=default_path_length)                 :: model_key
-      LOGICAL                                            :: use_onedft
+      LOGICAL                                            :: use_gauxc_model
+      REAL(c_double), ALLOCATABLE, DIMENSION(:, :)       :: density_scalar_rks
 #ifdef GAUXC_HAS_ONEDFT
       REAL(c_double), ALLOCATABLE, DIMENSION(:, :)       :: density_zeta_zero
+#if defined (__HAS_IEEE_EXCEPTIONS)
+      LOGICAL, DIMENSION(5)                              :: ieee_halt
+#endif
       INTEGER                                            :: omp_max_threads_restore
 #endif
 
-      use_onedft = .FALSE.
+      use_gauxc_model = .FALSE.
       IF (PRESENT(model)) THEN
          model_key = ADJUSTL(model)
          CALL uppercase(model_key)
-         use_onedft = (TRIM(model_key) /= "" .AND. TRIM(model_key) /= "NONE")
+         use_gauxc_model = (TRIM(model_key) /= "" .AND. TRIM(model_key) /= "NONE")
       END IF
 
       IF (.NOT. ALLOCATED(res%vxc_scalar)) THEN
@@ -677,13 +764,17 @@ CONTAINS
       END IF
       res%vxc_scalar = 0._dp
 
-      IF (use_onedft) THEN
+      IF (use_gauxc_model) THEN
 #ifndef GAUXC_HAS_ONEDFT
-         CPABORT("GauXC lacks OneDFT support")
+         CPABORT("GauXC lacks Skala support")
 #else
-         ! OneDFT may change the OpenMP team size for later parallel regions.
+         ! Skala may change the OpenMP team size for later parallel regions.
          ! Restore max threads only; omp_get_num_threads() is 1 here.
          omp_max_threads_restore = omp_get_max_threads()
+#if defined (__HAS_IEEE_EXCEPTIONS)
+         CALL ieee_get_halting_mode(IEEE_ALL, ieee_halt)
+         CALL ieee_set_halting_mode(IEEE_ALL, .FALSE.)
+#endif
          IF (.NOT. ALLOCATED(res%vxc_zeta)) THEN
             ALLOCATE (res%vxc_zeta, mold=density_scalar)
          ELSE
@@ -716,6 +807,9 @@ CONTAINS
                res%vxc_scalar, &
                res%vxc_zeta)
          END IF
+#if defined (__HAS_IEEE_EXCEPTIONS)
+         CALL ieee_set_halting_mode(IEEE_ALL, ieee_halt)
+#endif
          CALL omp_set_num_threads(omp_max_threads_restore)
          GAUXC_RETURN_IF_ERROR(status)
          RETURN
@@ -724,15 +818,17 @@ CONTAINS
 
       IF (nspins == 1) THEN
          ! xmat factor 2 is applied by both CP2K and GauXC
-         ! "unapply" it here to even things back out
-         ! This is NOT necessary in the OneDFT branch
-         density_scalar = 0.5_dp*density_scalar
+         ! "unapply" it here to even things back out.
+         ! This is NOT necessary in the Skala branch.
+         ALLOCATE (density_scalar_rks, mold=density_scalar)
+         density_scalar_rks(:, :) = 0.5_dp*density_scalar
          CALL gauxc_integrator_eval_exc_vxc_rks( &
             status%status, &
             integrator%integrator, &
-            density_scalar, &
+            density_scalar_rks, &
             res%exc, &
             res%vxc_scalar)
+         DEALLOCATE (density_scalar_rks)
       ELSE
          CPASSERT(PRESENT(density_zeta))
 
@@ -796,29 +892,37 @@ CONTAINS
 
 #ifdef __GAUXC
       CHARACTER(len=default_path_length)                 :: model_key
-      LOGICAL                                            :: use_onedft
+      LOGICAL                                            :: use_gauxc_model
+      REAL(c_double), ALLOCATABLE, DIMENSION(:, :)       :: density_scalar_rks
 #ifdef GAUXC_HAS_ONEDFT
       REAL(c_double), ALLOCATABLE, DIMENSION(:, :)       :: density_zeta_zero
+#if defined (__HAS_IEEE_EXCEPTIONS)
+      LOGICAL, DIMENSION(5)                              :: ieee_halt
+#endif
       INTEGER                                            :: omp_max_threads_restore
 #endif
 
       ALLOCATE (res%exc_grad(3*natom))
       res%exc_grad = 0._dp
 
-      use_onedft = .FALSE.
+      use_gauxc_model = .FALSE.
       IF (PRESENT(model)) THEN
          model_key = ADJUSTL(model)
          CALL uppercase(model_key)
-         use_onedft = (TRIM(model_key) /= "" .AND. TRIM(model_key) /= "NONE")
+         use_gauxc_model = (TRIM(model_key) /= "" .AND. TRIM(model_key) /= "NONE")
       END IF
 
-      IF (use_onedft) THEN
+      IF (use_gauxc_model) THEN
 #ifndef GAUXC_HAS_ONEDFT
-         CPABORT("GauXC lacks OneDFT support")
+         CPABORT("GauXC lacks Skala support")
 #else
-         ! OneDFT may change the OpenMP team size for later parallel regions.
+         ! Skala may change the OpenMP team size for later parallel regions.
          ! Restore max threads only; omp_get_num_threads() is 1 here.
          omp_max_threads_restore = omp_get_max_threads()
+#if defined (__HAS_IEEE_EXCEPTIONS)
+         CALL ieee_get_halting_mode(IEEE_ALL, ieee_halt)
+         CALL ieee_set_halting_mode(IEEE_ALL, .FALSE.)
+#endif
          IF (nspins == 1) THEN
             ALLOCATE (density_zeta_zero, mold=density_scalar)
             density_zeta_zero = 0._dp
@@ -840,6 +944,9 @@ CONTAINS
                TRIM(model), &
                res%exc_grad)
          END IF
+#if defined (__HAS_IEEE_EXCEPTIONS)
+         CALL ieee_set_halting_mode(IEEE_ALL, ieee_halt)
+#endif
          CALL omp_set_num_threads(omp_max_threads_restore)
          GAUXC_RETURN_IF_ERROR(status)
          RETURN
@@ -847,11 +954,14 @@ CONTAINS
       END IF
 
       IF (nspins == 1) THEN
+         ALLOCATE (density_scalar_rks, mold=density_scalar)
+         density_scalar_rks(:, :) = 0.5_dp*density_scalar
          CALL gauxc_integrator_eval_exc_grad_rks( &
             status%status, &
             integrator%integrator, &
-            density_scalar, &
+            density_scalar_rks, &
             res%exc_grad)
+         DEALLOCATE (density_scalar_rks)
       ELSE
          CPASSERT(PRESENT(density_zeta))
          CALL gauxc_integrator_eval_exc_grad_uks( &

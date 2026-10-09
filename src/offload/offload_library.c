@@ -17,11 +17,13 @@
 #include <cuda.h>
 #elif defined(__OFFLOAD_HIP)
 #include <hip/hip_runtime_api.h>
+#elif defined(__OFFLOAD_OPENCL)
+#include <libxstream/libxstream.h>
 #endif
 
 #if defined(__OFFLOAD_PROFILING)
 #if defined(__OFFLOAD_CUDA)
-#include <nvToolsExt.h>
+#include <nvtx3/nvToolsExt.h>
 #elif defined(__OFFLOAD_HIP) && defined(__HIP_PLATFORM_AMD__)
 #include <roctracer/roctx.h>
 #endif
@@ -59,7 +61,7 @@ void offload_init(void) {
 #elif defined(__OFFLOAD_HIP)
   OFFLOAD_CHECK(hipInit(0));
 #elif defined(__OFFLOAD_OPENCL)
-  OFFLOAD_CHECK(c_dbcsr_acc_init());
+  OFFLOAD_CHECK(libxstream_init());
 #endif
 }
 
@@ -74,7 +76,7 @@ int offload_get_device_count(void) {
 #elif defined(__OFFLOAD_HIP)
   OFFLOAD_CHECK(hipGetDeviceCount(&count));
 #elif defined(__OFFLOAD_OPENCL)
-  OFFLOAD_CHECK(c_dbcsr_acc_get_ndevices(&count));
+  OFFLOAD_CHECK(libxstream_device_count(&count));
 #endif
   return count;
 }
@@ -101,7 +103,9 @@ void offload_activate_chosen_device(void) {
 #elif defined(__OFFLOAD_HIP)
   OFFLOAD_CHECK(hipSetDevice(chosen_device_id));
 #elif defined(__OFFLOAD_OPENCL)
-  OFFLOAD_CHECK(c_dbcsr_acc_set_active_device(chosen_device_id));
+  if (chosen_device_id >= 0) {
+    OFFLOAD_CHECK(libxstream_device_set_active(chosen_device_id));
+  }
 #endif
 }
 
@@ -159,12 +163,15 @@ void offload_mem_info(size_t *free, size_t *total) {
 #elif defined(__OFFLOAD_HIP)
   OFFLOAD_CHECK(hipMemGetInfo(free, total));
 #elif defined(__OFFLOAD_OPENCL)
-  OFFLOAD_CHECK(c_dbcsr_acc_dev_mem_info(free, total));
+  OFFLOAD_CHECK(libxstream_mem_info(free, total));
 #else
   *free = *total = 0;
 #endif
 }
 
+/*******************************************************************************
+ * \brief Allocate pinned memory (or simple malloc when there is no gpu)
+ ******************************************************************************/
 int offload_host_malloc(void **ptr__, const size_t size__) {
 #if defined(__OFFLOAD)
   offloadMallocHost(ptr__, size__); /* checked */
@@ -175,6 +182,9 @@ int offload_host_malloc(void **ptr__, const size_t size__) {
 #endif
 }
 
+/*******************************************************************************
+ * \brief free pinned memory (or simple free when there is no gpu)
+ ******************************************************************************/
 int offload_host_free(void *ptr__) {
 #if defined(__OFFLOAD)
   offloadFreeHost(ptr__); /* checked */
@@ -182,6 +192,18 @@ int offload_host_free(void *ptr__) {
 #else
   free(ptr__);
   return EXIT_SUCCESS;
+#endif
+}
+
+/*******************************************************************************
+ * \brief Blocks until all outstanding device work has completed.
+ * \author Samal Bibek
+ ******************************************************************************/
+void offload_device_synchronize(void) {
+#if defined(__OFFLOAD_CUDA)
+  OFFLOAD_CHECK(cudaDeviceSynchronize());
+#elif defined(__OFFLOAD_HIP)
+  OFFLOAD_CHECK(hipDeviceSynchronize());
 #endif
 }
 

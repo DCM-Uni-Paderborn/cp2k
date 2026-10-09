@@ -83,7 +83,6 @@ MODULE transport
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
-
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'transport'
@@ -104,7 +103,6 @@ MODULE transport
 ! **************************************************************************************************
       SUBROUTINE c_scf_routine(cp2k_transport_params, s_mat, ks_mat, p_mat, imagp_mat) BIND(C)
          IMPORT :: C_INT, C_PTR, cp2k_csr_interop_type, cp2k_transport_parameters
-         IMPLICIT NONE
          TYPE(cp2k_transport_parameters), VALUE, INTENT(IN) :: cp2k_transport_params
          TYPE(cp2k_csr_interop_type), VALUE, INTENT(IN)     :: s_mat
          TYPE(cp2k_csr_interop_type), VALUE, INTENT(IN)     :: ks_mat
@@ -383,10 +381,11 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       CALL C_F_PROCPOINTER(transport_env%ext_c_method_ptr, c_method)
-      IF (.NOT. C_ASSOCIATED(transport_env%ext_c_method_ptr)) &
+      IF (.NOT. C_ASSOCIATED(transport_env%ext_c_method_ptr)) THEN
          CALL cp_abort(__LOCATION__, &
                        "MISSING C/C++ ROUTINE: The TRANSPORT section is meant to be used together with an external "// &
                        "program, e.g. the quantum transport code OMEN, that provides CP2K with a density matrix.")
+      END IF
 
       transport_env%params%n_occ = nelectron_spin
       transport_env%params%n_atoms = natoms

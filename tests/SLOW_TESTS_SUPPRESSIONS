@@ -38,6 +38,7 @@ QS/regtest-kp-2/cc2.inp
 QS/regtest-kp-3/cc1.inp
 QS/regtest-loc_powf/run.inp
 QS/regtest-ls-rtp/Ar_mixed_aa_planar-rtp-osc-field.inp
+QS/regtest-ls-rtp/H2O2-emd-overlap-second-deriv.inp
 QS/regtest-pao-2/H2O_pao_rotinv.inp
 QS/regtest-pod/furane-pbe-4A.inp
 QS/regtest-ps-implicit-1-3/Ar_mixed_aa_planar.inp
@@ -94,21 +95,13 @@ QS/regtest-tddfpt-force/h2o_tddfpt_newtonx.inp
 QS/regtest-tddfpt-force-gapw/h2o_t08.inp
 QS/regtest-smeagol-1/au-2x2x3-bulk.inp
 QS/regtest-smeagol-2/au-1x1x4-bulk.inp
+QS/regtest-gauxc-gpw-mech/H2_NATIVE_SKALA_GPW_PBC_FORCE_DEBUG.inp
+QS/regtest-gauxc-gpw-mech/H2P_NATIVE_SKALA_GPW_UKS_PBC_FORCE_DEBUG.inp
+QS/regtest-gauxc-gapw-gth/H2_NATIVE_SKALA_GAPW_GTH_STRESS_DEBUG.inp
+QS/regtest-gauxc-gapw-ecp/H2_NATIVE_SKALA_GAPW_ECP_STRESS_DEBUG.inp
 
-# GauXC tests include external GauXC/libtorch setup and selected finite-difference checks.
-QS/regtest-gauxc/1H2_ONEDFT_PBE_REFERENCE.inp
-QS/regtest-gauxc/1H2_ONEDFT_PBE.inp
-QS/regtest-gauxc/H2_SKALA_ENERGY.inp
-QS/regtest-gauxc/H2_GAPW_SKALA_ENERGY.inp
-QS/regtest-gauxc/H2_SKALA_CDFT.inp
-QS/regtest-gauxc/H2_GAPW_SKALA_CDFT.inp
-QS/regtest-gauxc/H2_SKALA_CDFT_CI.inp
-QS/regtest-gauxc/H2_PBE_CDFT_REFERENCE.inp
-QS/regtest-gauxc/H2_ONEDFT_PBE_CDFT.inp
-QS/regtest-gauxc/H2_PBE_CDFT_CI_REFERENCE.inp
-QS/regtest-gauxc/H2_ONEDFT_PBE_CDFT_CI_NGROUPS.inp
-QS/regtest-gauxc/O_ONEDFT_PBE_UKS_TZV2PX.inp
-QS/regtest-gauxc/H2_ONEDFT_PBE_FORCE_DEBUG.inp
-QS/regtest-gauxc/NH3_ONEDFT_PBE_FORCE_DEBUG.inp
+# The restricted TPSS excited-state force test needs CUTOFF 600 for stable SCF.
+# ENERGY_FORCE already avoids a second SCF and force evaluation.
+QS/regtest-tddfpt-force-libxc/h2o_mgga_tau_analytic.inp
 
 #EOF

@@ -28,7 +28,9 @@ MODULE ec_environment
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
-   USE cp_log_handling,                 ONLY: cp_logger_get_default_unit_nr
+   USE cp_log_handling,                 ONLY: cp_get_default_logger,&
+                                              cp_logger_get_default_unit_nr,&
+                                              cp_logger_type
    USE dm_ls_scf_types,                 ONLY: ls_scf_env_type
    USE ec_env_types,                    ONLY: energy_correction_type
    USE input_constants,                 ONLY: &
@@ -141,6 +143,7 @@ CONTAINS
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_type), POINTER                  :: basis_set, harris_basis, &
                                                             harris_soft_basis
@@ -189,7 +192,12 @@ CONTAINS
          CPASSERT(PRESENT(ec_section))
 
          ! get a useful output_unit
-         unit_nr = cp_logger_get_default_unit_nr(local=.FALSE.)
+         logger => cp_get_default_logger()
+         IF (logger%para_env%is_source()) THEN
+            unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+         ELSE
+            unit_nr = -1
+         END IF
 
          CALL section_vals_val_get(ec_section, "ALGORITHM", &
                                    i_val=ec_env%ks_solver)
@@ -431,7 +439,6 @@ CONTAINS
             pp_section => section_vals_get_subs_vals(xc_section, "VDW_POTENTIAL%PAIR_POTENTIAL")
             CALL qs_dispersion_pairpot_init(atomic_kind_set, qs_kind_set, dispersion_env, pp_section, para_env)
          ELSE IF (dispersion_env%type == xc_vdw_fun_nonloc) THEN
-            CPABORT("nl-vdW functionals not available for EC calculations")
             NULLIFY (nl_section)
             nl_section => section_vals_get_subs_vals(xc_section, "VDW_POTENTIAL%NON_LOCAL")
             CALL qs_dispersion_nonloc_init(dispersion_env, para_env)
@@ -583,13 +590,13 @@ CONTAINS
             ls_env%needs_s_inv = .FALSE.
             ls_env%use_s_sqrt = .FALSE.
          CASE DEFAULT
-            CPABORT("")
+            CPABORT("Unknown ls_env%s_inversion_type")
          END SELECT
       CASE (ec_matrix_trs4, ec_matrix_tc2)
          ls_env%needs_s_inv = .FALSE.
          ls_env%use_s_sqrt = .TRUE.
       CASE DEFAULT
-         CPABORT("")
+         CPABORT("Unknown ec_env%ks_solver")
       END SELECT
 
       SELECT CASE (ls_env%s_preconditioner_type)
@@ -625,11 +632,17 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'ec_write_input'
 
       INTEGER                                            :: handle, unit_nr
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(ls_scf_env_type), POINTER                     :: ls_env
 
       CALL timeset(routineN, handle)
 
-      unit_nr = cp_logger_get_default_unit_nr(local=.FALSE.)
+      logger => cp_get_default_logger()
+      IF (logger%para_env%is_source()) THEN
+         unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+      ELSE
+         unit_nr = -1
+      END IF
 
       IF (unit_nr > 0) THEN
 

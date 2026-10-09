@@ -585,6 +585,50 @@
    END SUBROUTINE mp_alltoall_${nametype1}$54
 
 ! **************************************************************************************************
+!> \brief All-to-all data exchange, rank-4 data to rank-3 data
+!> \param sb ...
+!> \param rb ...
+!> \param count ...
+!> \param comm ...
+!> \note see mp_alltoall_${nametype1}$
+!> \note User must ensure size consistency.
+! **************************************************************************************************
+   SUBROUTINE mp_alltoall_${nametype1}$43(sb, rb, count, comm)
+
+      ${type1}$, &
+         DIMENSION(:, :, :, :), CONTIGUOUS, INTENT(IN)   :: sb
+      ${type1}$, DIMENSION(:, :, :), CONTIGUOUS, &
+         INTENT(OUT)                            :: rb
+      INTEGER, INTENT(IN)                      :: count
+      CLASS(mp_comm_type), INTENT(IN) :: comm
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'mp_alltoall_${nametype1}$54'
+
+      INTEGER                                  :: handle
+#if defined(__parallel)
+      INTEGER                                  :: ierr, msglen, np
+#endif
+
+      CALL mp_timeset(routineN, handle)
+
+#if defined(__parallel)
+      CALL mpi_alltoall(sb, count, ${mpi_type1}$, &
+                        rb, count, ${mpi_type1}$, comm%handle, ierr)
+      IF (ierr /= 0) CALL mp_stop(ierr, "mpi_alltoall @ "//routineN)
+      CALL mpi_comm_size(comm%handle, np, ierr)
+      IF (ierr /= 0) CALL mp_stop(ierr, "mpi_comm_size @ "//routineN)
+      msglen = 2*count*np
+      CALL add_perf(perf_id=6, count=1, msg_size=msglen*${bytes1}$)
+#else
+      MARK_USED(count)
+      MARK_USED(comm)
+      rb = RESHAPE(sb, SHAPE(rb))
+#endif
+      CALL mp_timestop(handle)
+
+   END SUBROUTINE mp_alltoall_${nametype1}$43
+
+! **************************************************************************************************
 !> \brief Send one datum to another process
 !> \param[in] msg             Scalar to send
 !> \param[in] dest            Destination process
@@ -1114,9 +1158,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msg) .OR. SIZE(msg) == 0)
-#endif
       msglen = SIZE(msg)
       CALL mpi_ibcast(msg, msglen, ${mpi_type1}$, source, comm%handle, request%handle, ierr)
       IF (ierr /= 0) CALL mp_stop(ierr, "mpi_ibcast @ "//routineN)
@@ -1355,9 +1397,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msg) .OR. SIZE(msg) == 0)
-#endif
       msglen = SIZE(msg)
       IF (msglen > 0 .AND. comm%num_pe > 1) THEN
          CALL mpi_iallreduce(MPI_IN_PLACE, msg, msglen, ${mpi_type1}$, MPI_SUM, comm%handle, request%handle, ierr)
@@ -2045,9 +2085,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msg_scatter) .OR. SIZE(msg_scatter) == 0)
-#endif
       msglen = 1
       CALL mpi_iscatter(msg_scatter, msglen, ${mpi_type1}$, msg, &
                         msglen, ${mpi_type1}$, root, comm%handle, request%handle, ierr)
@@ -2087,9 +2125,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msg_scatter) .OR. SIZE(msg_scatter) == 0)
-#endif
       msglen = SIZE(msg)
       CALL mpi_iscatter(msg_scatter, msglen, ${mpi_type1}$, msg, &
                         msglen, ${mpi_type1}$, root, comm%handle, request%handle, ierr)
@@ -2130,12 +2166,10 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msg_scatter) .OR. SIZE(msg_scatter) == 0)
       CPASSERT(IS_CONTIGUOUS(msg) .OR. SIZE(msg) == 0)
       CPASSERT(IS_CONTIGUOUS(sendcounts) .OR. SIZE(sendcounts) == 0)
       CPASSERT(IS_CONTIGUOUS(displs) .OR. SIZE(displs) == 0)
-#endif
       CALL mpi_iscatterv(msg_scatter, sendcounts, displs, ${mpi_type1}$, msg, &
                          recvcount, ${mpi_type1}$, root, comm%handle, request%handle, ierr)
       IF (ierr /= 0) CALL mp_stop(ierr, "mpi_iscatterv @ "//routineN)
@@ -2610,12 +2644,10 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(sendbuf) .OR. SIZE(sendbuf) == 0)
       CPASSERT(IS_CONTIGUOUS(recvbuf) .OR. SIZE(recvbuf) == 0)
       CPASSERT(IS_CONTIGUOUS(recvcounts) .OR. SIZE(recvcounts) == 0)
       CPASSERT(IS_CONTIGUOUS(displs) .OR. SIZE(displs) == 0)
-#endif
       CALL mpi_igatherv(sendbuf, sendcount, ${mpi_type1}$, &
                         recvbuf, recvcounts, displs, ${mpi_type1}$, &
                         root, comm%handle, request%handle, ierr)
@@ -2739,9 +2771,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
       scount = 1
       rcount = 1
       CALL MPI_IALLGATHER(msgout, scount, ${mpi_type1}$, &
@@ -2930,10 +2960,8 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
       scount = SIZE(msgout(:))
       rcount = scount
       CALL MPI_IALLGATHER(msgout, scount, ${mpi_type1}$, &
@@ -2973,10 +3001,8 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
 
       scount = SIZE(msgout(:))
       rcount = scount
@@ -3017,10 +3043,8 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
 
       scount = SIZE(msgout(:, :))
       rcount = scount
@@ -3061,10 +3085,8 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
 
       scount = SIZE(msgout(:, :))
       rcount = scount
@@ -3105,10 +3127,8 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
 
       scount = SIZE(msgout(:, :, :))
       rcount = scount
@@ -3250,12 +3270,10 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
       CPASSERT(IS_CONTIGUOUS(rcount) .OR. SIZE(rcount) == 0)
       CPASSERT(IS_CONTIGUOUS(rdispl) .OR. SIZE(rdispl) == 0)
-#endif
 
       scount = SIZE(msgout)
       rsize = SIZE(rcount)
@@ -3306,12 +3324,10 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
       CPASSERT(IS_CONTIGUOUS(rcount) .OR. SIZE(rcount) == 0)
       CPASSERT(IS_CONTIGUOUS(rdispl) .OR. SIZE(rdispl) == 0)
-#endif
 
       scount = SIZE(msgout)
       rsize = SIZE(rcount)
@@ -3744,10 +3760,8 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
 
       my_tag = 0
       IF (PRESENT(tag)) my_tag = tag
@@ -3817,9 +3831,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
       my_tag = 0
       IF (PRESENT(tag)) my_tag = tag
 
@@ -3880,9 +3892,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
 
       my_tag = 0
       IF (PRESENT(tag)) my_tag = tag
@@ -3946,9 +3956,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
 
       my_tag = 0
       IF (PRESENT(tag)) my_tag = tag
@@ -4009,9 +4017,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgin) .OR. SIZE(msgin) == 0)
-#endif
 
       my_tag = 0
       IF (PRESENT(tag)) my_tag = tag
@@ -4072,9 +4078,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
-#endif
 
       my_tag = 0
       IF (PRESENT(tag)) my_tag = tag
@@ -4134,9 +4138,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
-#endif
 
       my_tag = 0
       IF (PRESENT(tag)) my_tag = tag
@@ -4197,9 +4199,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
-#endif
 
       my_tag = 0
       IF (PRESENT(tag)) my_tag = tag
@@ -4258,9 +4258,7 @@
       CALL mp_timeset(routineN, handle)
 
 #if defined(__parallel)
-#if !defined(__GNUC__) || __GNUC__ >= 9
       CPASSERT(IS_CONTIGUOUS(msgout) .OR. SIZE(msgout) == 0)
-#endif
 
       my_tag = 0
       IF (PRESENT(tag)) my_tag = tag

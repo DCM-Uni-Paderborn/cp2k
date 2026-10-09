@@ -36,8 +36,10 @@ MODULE cp_cfm_basic_linalg
    LOGICAL, PRIVATE, PARAMETER :: debug_this_module = .TRUE.
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cp_cfm_basic_linalg'
 
-   PUBLIC :: cp_cfm_column_scale, &
+   PUBLIC :: cp_cfm_add_on_diag, &
+             cp_cfm_column_scale, &
              cp_cfm_gemm, &
+             cp_cfm_get_diag, &
              cp_cfm_lu_decompose, &
              cp_cfm_lu_invert, &
              cp_cfm_norm, &
@@ -53,7 +55,8 @@ MODULE cp_cfm_basic_linalg
              cp_cfm_rot_rows, &
              cp_cfm_rot_cols, &
              cp_cfm_det, & ! determinant of a complex matrix with correct sign
-             cp_cfm_uplo_to_full
+             cp_cfm_uplo_to_full, &
+             cp_cfm_vectorsnorm
 
    REAL(kind=dp), EXTERNAL :: zlange, pzlange
 
@@ -326,11 +329,9 @@ CONTAINS
                END DO
             END IF
          ELSE
-#if defined(__parallel)
-            CPABORT("to do (pdscal,pdcopy,pdaxpy)")
-#else
-            CPABORT("")
-#endif
+            CALL cp_abort(__LOCATION__, &
+                          "cp_cfm_scale_and_add is not yet implemented for cases "// &
+                          "where input two matrix structures are not equivalent")
          END IF
       END IF
       CALL timestop(handle)
@@ -433,11 +434,9 @@ CONTAINS
                END DO
             END IF
          ELSE
-#if defined(__parallel)
-            CPABORT("to do (pdscal,pdcopy,pdaxpy)")
-#else
-            CPABORT("")
-#endif
+            CALL cp_abort(__LOCATION__, &
+                          "cp_cfm_scale_and_add_fm is not yet implemented for cases "// &
+                          "where two input matrix structures are not equivalent")
          END IF
       END IF
       CALL timestop(handle)
@@ -560,13 +559,13 @@ CONTAINS
    SUBROUTINE cp_cfm_gemm(transa, transb, m, n, k, alpha, matrix_a, matrix_b, beta, &
                           matrix_c, a_first_col, a_first_row, b_first_col, b_first_row, c_first_col, &
                           c_first_row)
-      CHARACTER(len=1), INTENT(in)                       :: transa, transb
-      INTEGER, INTENT(in)                                :: m, n, k
-      COMPLEX(kind=dp), INTENT(in)                       :: alpha
+      CHARACTER(len=1), INTENT(IN)                       :: transa, transb
+      INTEGER, INTENT(IN)                                :: m, n, k
+      COMPLEX(kind=dp), INTENT(IN)                       :: alpha
       TYPE(cp_cfm_type), INTENT(IN)                      :: matrix_a, matrix_b
-      COMPLEX(kind=dp), INTENT(in)                       :: beta
-      TYPE(cp_cfm_type), INTENT(IN)                      :: matrix_c
-      INTEGER, INTENT(in), OPTIONAL                      :: a_first_col, a_first_row, b_first_col, &
+      COMPLEX(kind=dp), INTENT(IN)                       :: beta
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: matrix_c
+      INTEGER, INTENT(IN), OPTIONAL                      :: a_first_col, a_first_row, b_first_col, &
                                                             b_first_row, c_first_col, c_first_row
 
       CHARACTER(len=*), PARAMETER :: routineN = 'cp_cfm_gemm'
@@ -630,8 +629,8 @@ CONTAINS
 !> \author Joost VandeVondele
 ! **************************************************************************************************
    SUBROUTINE cp_cfm_column_scale(matrix_a, scaling)
-      TYPE(cp_cfm_type), INTENT(IN)                      :: matrix_a
-      COMPLEX(kind=dp), DIMENSION(:), INTENT(in)         :: scaling
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: matrix_a
+      COMPLEX(kind=dp), DIMENSION(:), INTENT(IN)         :: scaling
 
       CHARACTER(len=*), PARAMETER :: routineN = 'cp_cfm_column_scale'
 
@@ -651,14 +650,14 @@ CONTAINS
       ncol_local = MIN(ncol_local, SIZE(scaling))
 
       DO icol_local = 1, ncol_local
-         CALL zscal(nrow_local, scaling(col_indices(icol_local)), a(1, icol_local), 1)
+         a(1:nrow_local, icol_local) = scaling(col_indices(icol_local))*a(1:nrow_local, icol_local)
       END DO
 #else
       nrow_local = SIZE(a, 1)
       ncol_local = MIN(SIZE(a, 2), SIZE(scaling))
 
       DO icol_local = 1, ncol_local
-         CALL zscal(nrow_local, scaling(icol_local), a(1, icol_local), 1)
+         a(1:nrow_local, icol_local) = scaling(icol_local)*a(1:nrow_local, icol_local)
       END DO
 #endif
 
@@ -672,8 +671,8 @@ CONTAINS
 !> \param matrix_a complex matrix to scale
 ! **************************************************************************************************
    SUBROUTINE cp_cfm_dscale(alpha, matrix_a)
-      REAL(kind=dp), INTENT(in)                          :: alpha
-      TYPE(cp_cfm_type), INTENT(IN)                      :: matrix_a
+      REAL(kind=dp), INTENT(IN)                          :: alpha
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: matrix_a
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'cp_cfm_dscale'
 
@@ -701,21 +700,20 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE cp_cfm_zscale(alpha, matrix_a)
       COMPLEX(kind=dp), INTENT(IN)                       :: alpha
-      TYPE(cp_cfm_type), INTENT(IN)                      :: matrix_a
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: matrix_a
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'cp_cfm_zscale'
 
       COMPLEX(kind=dp), DIMENSION(:, :), POINTER         :: a
-      INTEGER                                            :: handle, size_a
+      INTEGER                                            :: handle
 
       CALL timeset(routineN, handle)
 
       NULLIFY (a)
 
       a => matrix_a%local_data
-      size_a = SIZE(a, 1)*SIZE(a, 2)
 
-      CALL zscal(size_a, alpha, a(1, 1), 1)
+      a(:, :) = alpha*a(:, :)
 
       CALL timestop(handle)
    END SUBROUTINE cp_cfm_zscale
@@ -1403,5 +1401,155 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE cp_cfm_uplo_to_full
+
+! **************************************************************************************************
+!> \brief find the norm of each column norm_{j}= sqrt( \sum_{i} A_{ij}*conjg(A_{ij}) )
+!>        Complex-valued mirror of cp_fm_vectorsnorm.
+!> \param matrix ...
+!> \param norm_array ...
+! **************************************************************************************************
+   SUBROUTINE cp_cfm_vectorsnorm(matrix, norm_array)
+      TYPE(cp_cfm_type), INTENT(IN)                      :: matrix
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: norm_array
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'cp_cfm_vectorsnorm'
+
+      INTEGER                                            :: handle, i, j, ncol_local, nrow_local
+      INTEGER, DIMENSION(:), POINTER                     :: col_indices
+
+      CALL timeset(routineN, handle)
+
+      CALL cp_cfm_get_info(matrix, col_indices=col_indices, nrow_local=nrow_local, &
+                           ncol_local=ncol_local)
+
+      ! the efficiency could be improved by making use of the row-col distribution of scalapack
+      norm_array = 0.0_dp
+      DO j = 1, ncol_local
+         DO i = 1, nrow_local
+            norm_array(col_indices(j)) = norm_array(col_indices(j)) + &
+                                         REAL(matrix%local_data(i, j), KIND=dp)**2 + &
+                                         AIMAG(matrix%local_data(i, j))**2
+         END DO
+      END DO
+      CALL matrix%matrix_struct%para_env%sum(norm_array)
+      norm_array = SQRT(norm_array)
+
+      CALL timestop(handle)
+   END SUBROUTINE cp_cfm_vectorsnorm
+
+! **************************************************************************************************
+!> \brief Adds a scalar to the diagonal of a distributed complex full matrix.
+!> \param matrix input/output matrix
+!> \param alpha scalar added to each diagonal element
+!> \param n_active optional number of physical rows/columns
+! **************************************************************************************************
+   SUBROUTINE cp_cfm_add_on_diag(matrix, alpha, n_active)
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: matrix
+      COMPLEX(KIND=dp), INTENT(IN)                       :: alpha
+      INTEGER, INTENT(IN), OPTIONAL                      :: n_active
+
+      INTEGER                                            :: i_global, n_diag, ncol_global, nrow_global
+#if defined(__parallel)
+      INTEGER                                            :: icol_local, ipcol, iprow, irow, irow_local, &
+                                                            mypcol, myprow, npcol, nprow, nrow_local
+      INTEGER, DIMENSION(9)                              :: desca
+      INTEGER, DIMENSION(:), POINTER                     :: row_indices
+      TYPE(cp_blacs_env_type), POINTER                   :: context
+#endif
+
+      CALL cp_cfm_get_info(matrix, nrow_global=nrow_global, ncol_global=ncol_global)
+
+      n_diag = MIN(nrow_global, ncol_global)
+      IF (PRESENT(n_active)) n_diag = n_active
+      CPASSERT(n_diag >= 0 .AND. n_diag <= MIN(nrow_global, ncol_global))
+
+#if defined(__parallel)
+      CALL cp_cfm_get_info(matrix, nrow_local=nrow_local, row_indices=row_indices)
+      context => matrix%matrix_struct%context
+      myprow = context%mepos(1)
+      mypcol = context%mepos(2)
+      nprow = context%num_pe(1)
+      npcol = context%num_pe(2)
+      desca(:) = matrix%matrix_struct%descriptor(:)
+
+      DO irow = 1, nrow_local
+         i_global = row_indices(irow)
+         IF (i_global > n_diag) EXIT
+         CALL infog2l(i_global, i_global, desca, nprow, npcol, myprow, mypcol, &
+                      irow_local, icol_local, iprow, ipcol)
+         IF ((iprow == myprow) .AND. (ipcol == mypcol)) THEN
+            matrix%local_data(irow_local, icol_local) = matrix%local_data(irow_local, icol_local) + alpha
+         END IF
+      END DO
+#else
+      DO i_global = 1, n_diag
+         matrix%local_data(i_global, i_global) = matrix%local_data(i_global, i_global) + alpha
+      END DO
+#endif
+
+   END SUBROUTINE cp_cfm_add_on_diag
+
+! **************************************************************************************************
+!> \brief returns the diagonal of a complex full matrix: diag(i)= A_{ii}.
+!>        Each diagonal entry is owned by one process. The sum over the
+!>        process grid collects the entries.
+!> \param matrix ...
+!> \param diag ...
+!> \param n_active optional number of leading diagonal elements to return
+! **************************************************************************************************
+   SUBROUTINE cp_cfm_get_diag(matrix, diag, n_active)
+      TYPE(cp_cfm_type), INTENT(IN)                      :: matrix
+      COMPLEX(KIND=dp), DIMENSION(:), INTENT(OUT)        :: diag
+      INTEGER, INTENT(IN), OPTIONAL                      :: n_active
+
+      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'cp_cfm_get_diag'
+
+      INTEGER                                            :: handle, i_global, n_diag, ncol_global, &
+                                                            nrow_global
+#if defined(__parallel)
+      INTEGER                                            :: icol_local, ipcol, iprow, irow, irow_local, &
+                                                            mypcol, myprow, npcol, nprow, nrow_local
+      INTEGER, DIMENSION(9)                              :: desca
+      INTEGER, DIMENSION(:), POINTER                     :: row_indices
+      TYPE(cp_blacs_env_type), POINTER                   :: context
+#endif
+
+      CALL timeset(routineN, handle)
+
+      CALL cp_cfm_get_info(matrix, nrow_global=nrow_global, ncol_global=ncol_global)
+
+      n_diag = MIN(nrow_global, ncol_global)
+      IF (PRESENT(n_active)) n_diag = n_active
+      CPASSERT(n_diag >= 0 .AND. n_diag <= MIN(nrow_global, ncol_global))
+      CPASSERT(SIZE(diag) >= n_diag)
+
+      diag = z_zero
+#if defined(__parallel)
+      CALL cp_cfm_get_info(matrix, nrow_local=nrow_local, row_indices=row_indices)
+      context => matrix%matrix_struct%context
+      myprow = context%mepos(1)
+      mypcol = context%mepos(2)
+      nprow = context%num_pe(1)
+      npcol = context%num_pe(2)
+      desca(:) = matrix%matrix_struct%descriptor(:)
+
+      DO irow = 1, nrow_local
+         i_global = row_indices(irow)
+         IF (i_global > n_diag) EXIT
+         CALL infog2l(i_global, i_global, desca, nprow, npcol, myprow, mypcol, &
+                      irow_local, icol_local, iprow, ipcol)
+         IF ((iprow == myprow) .AND. (ipcol == mypcol)) THEN
+            diag(i_global) = matrix%local_data(irow_local, icol_local)
+         END IF
+      END DO
+#else
+      DO i_global = 1, n_diag
+         diag(i_global) = matrix%local_data(i_global, i_global)
+      END DO
+#endif
+      CALL matrix%matrix_struct%para_env%sum(diag)
+
+      CALL timestop(handle)
+   END SUBROUTINE cp_cfm_get_diag
 
 END MODULE cp_cfm_basic_linalg

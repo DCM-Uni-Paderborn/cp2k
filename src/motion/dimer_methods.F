@@ -26,7 +26,6 @@ MODULE dimer_methods
    USE dimer_utils,                     ONLY: get_theta
    USE force_env_methods,               ONLY: force_env_calc_energy_force
    USE force_env_types,                 ONLY: force_env_get
-   USE geo_opt,                         ONLY: cp_rot_opt
    USE gopt_f_types,                    ONLY: gopt_f_type
    USE input_constants,                 ONLY: do_first_rotation_step,&
                                               do_second_rotation_step,&
@@ -161,8 +160,9 @@ CONTAINS
                WRITE (iw, '(A)') "G0 vector:"
                WRITE (iw, '(3F15.9)') dimer_env%rot%g0
             END IF
-            CALL cp_rot_opt(gopt_env%gopt_dimer_env, x, gopt_env%gopt_dimer_param, &
-                            gopt_env%gopt_dimer_env%geo_section)
+            CPASSERT(ASSOCIATED(gopt_env%dimer_rotation_optimizer))
+            CALL gopt_env%dimer_rotation_optimizer(gopt_env%gopt_dimer_env, x, gopt_env%gopt_dimer_param, &
+                                                   gopt_env%gopt_dimer_env%geo_section)
             dimer_env%rot%rotation_step = do_first_rotation_step
          END IF
 
@@ -197,10 +197,10 @@ CONTAINS
          END IF
          IF (debug_this_module .AND. (iw > 0)) THEN
             WRITE (iw, *) "final gradient:", gradient
-            WRITE (iw, '(A,F20.10)') "norm gradient:", SQRT(DOT_PRODUCT(gradient, gradient))
+            WRITE (iw, '(A,F20.10)') "norm gradient:", NORM2(gradient)
          END IF
          IF (.NOT. gopt_env%do_line_search) THEN
-            f = SQRT(DOT_PRODUCT(gradient, gradient))
+            f = NORM2(gradient)
          ELSE
             f = -DOT_PRODUCT(gradient, dimer_env%tsl%tls_vec)
          END IF
@@ -237,7 +237,7 @@ CONTAINS
       CALL cp_subsys_get(subsys, particles=particles)
 
       natoms = particles%n_els
-      norm_gradient_old = SQRT(DOT_PRODUCT(gradient, gradient))
+      norm_gradient_old = NORM2(gradient)
       IF (norm_gradient_old > 0.0_dp) THEN
          IF (natoms > 1) THEN
             CALL rot_ana(particles%els, mat, dof, print_section, keep_rotations=.FALSE., &

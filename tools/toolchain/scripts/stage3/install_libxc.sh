@@ -6,8 +6,8 @@
 [ "${BASH_SOURCE[0]}" ] && SCRIPT_NAME="${BASH_SOURCE[0]}" || SCRIPT_NAME=$0
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
-libxc_ver="7.0.0"
-libxc_sha256="e9ae69f8966d8de6b7585abd9fab588794ada1fab8f689337959a35abbf9527d"
+libxc_ver="7.1.2"
+libxc_sha256="3915fac94416e4c415534223ea492ad2663f928acf27e98662c861b094a6c306"
 source "${SCRIPT_DIR}"/common_vars.sh
 source "${SCRIPT_DIR}"/tool_kit.sh
 source "${SCRIPT_DIR}"/signal_trap.sh
@@ -23,7 +23,7 @@ case "$with_libxc" in
   __INSTALL__)
     echo "==================== Installing LIBXC ===================="
     pkg_install_dir="${INSTALLDIR}/libxc-${libxc_ver}"
-    install_lock_file="$pkg_install_dir/install_successful"
+    install_lock_file="${pkg_install_dir}/install_successful"
     if verify_checksums "${install_lock_file}"; then
       echo "libxc-${libxc_ver} is already installed, skipping it."
     else
@@ -32,92 +32,104 @@ case "$with_libxc" in
       [ -d libxc-${libxc_ver} ] && rm -rf libxc-${libxc_ver}
       tar -xjf libxc-${libxc_ver}.tar.bz2
       cd libxc-${libxc_ver}
-      mkdir build
-      cd build
 
-      # Lower the optimization level of KXC functionals for GCC to reduce time cost
-      # LXC functionals are not used so ignore them
-      if [ "${with_gcc}" != "__DONTUSE__" ]; then
-        if [ "${with_intel}" = "__DONTUSE__" ] && [ "${with_amd}" = "__DONTUSE__" ]; then
-          MAPLE2C_DIR="../src/maple2c"
-          for f in "$MAPLE2C_DIR"/gga_exc/*.c "$MAPLE2C_DIR"/mgga_exc/*.c "$MAPLE2C_DIR"/lda_exc/*.c; do
-            [ -f "$f" ] || continue
-            if grep -q "^func_kxc_" "$f" && ! grep -q "__attribute__((optimize" "$f"; then
-              sed -i 's/^func_kxc_/__attribute__((optimize("O1"))) func_kxc_/' "$f"
-            fi
-          done
-          LIBXC_CFLAGS="${CFLAGS} -fno-var-tracking"
-        else
-          LIBXC_CFLAGS="${CFLAGS}"
-        fi
+      if [ "${with_gcc}" != "__DONTUSE__" ] &&
+        [ "${with_intel}" = "__DONTUSE__" ] && [ "${with_amd}" = "__DONTUSE__" ]; then
+        LIBXC_CFLAGS="${CFLAGS} -fno-var-tracking"
+      else
+        LIBXC_CFLAGS=""
       fi
 
-      # CP2K does not make use of fourth derivatives, so skip their compilation with -DDISABLE_KXC=OFF
-      # Add "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" to keep legacy compatibility for CMake version 4.x
-      CFLAGS="${LIBXC_CFLAGS}" cmake \
-        -DCMAKE_INSTALL_PREFIX="${pkg_install_dir}" \
-        -DCMAKE_INSTALL_LIBDIR=lib \
-        -DCMAKE_VERBOSE_MAKEFILE=ON \
-        -DBUILD_TESTING=OFF \
-        -DENABLE_FORTRAN=ON \
-        -DDISABLE_KXC=OFF \
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-        .. > configure.log 2>&1 || tail_excerpt configure.log
-      make -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
-      make install > install.log 2>&1 || tail_excerpt install.log
+      # Build exactly one variant: CUDA, HIP, or CPU.
+      if [ "${ENABLE_CUDA}" = "__TRUE__" ]; then
+        echo "Installing CUDA-only libxc into ${pkg_install_dir}"
+        mkdir build-cuda
+        cd build-cuda
+        CFLAGS="${LIBXC_CFLAGS}" cmake \
+          -DCMAKE_BUILD_TYPE="Release" \
+          -DCMAKE_INSTALL_PREFIX="${pkg_install_dir}" \
+          -DCMAKE_INSTALL_LIBDIR="lib" \
+          -DCMAKE_VERBOSE_MAKEFILE=ON \
+          -DBUILD_SHARED_LIBS=ON \
+          -DBUILD_TESTING=OFF \
+          -DENABLE_FORTRAN=ON \
+          -DENABLE_CUDA=ON \
+          -DCMAKE_CUDA_ARCHITECTURES="${ARCH_NUM}" \
+          -DMAXORDER=3 \
+          .. > configure.log 2>&1 || tail_excerpt configure.log
+        make -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
+        make install > install.log 2>&1 || tail_excerpt install.log
+        cd ..
+      elif [ "${ENABLE_HIP}" = "__TRUE__" ]; then
+        echo "Installing HIP-only libxc into ${pkg_install_dir}"
+        mkdir build-hip
+        cd build-hip
+        CFLAGS="${LIBXC_CFLAGS}" cmake \
+          -DCMAKE_BUILD_TYPE="Release" \
+          -DCMAKE_INSTALL_PREFIX="${pkg_install_dir}" \
+          -DCMAKE_INSTALL_LIBDIR="lib" \
+          -DCMAKE_VERBOSE_MAKEFILE=ON \
+          -DBUILD_SHARED_LIBS=ON \
+          -DBUILD_TESTING=OFF \
+          -DENABLE_FORTRAN=ON \
+          -DENABLE_HIP=ON \
+          -DCMAKE_HIP_ARCHITECTURES="${ARCH_NUM}" \
+          -DMAXORDER=3 \
+          .. > configure.log 2>&1 || tail_excerpt configure.log
+        make -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
+        make install > install.log 2>&1 || tail_excerpt install.log
+        cd ..
+      else
+        echo "Installing CPU-only libxc into ${pkg_install_dir}"
+        mkdir build
+        cd build
+        CFLAGS="${LIBXC_CFLAGS}" cmake \
+          -DCMAKE_BUILD_TYPE="Release" \
+          -DCMAKE_INSTALL_PREFIX="${pkg_install_dir}" \
+          -DCMAKE_INSTALL_LIBDIR="lib" \
+          -DCMAKE_VERBOSE_MAKEFILE=ON \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DBUILD_TESTING=OFF \
+          -DENABLE_FORTRAN=ON \
+          -DMAXORDER=3 \
+          .. > configure.log 2>&1 || tail_excerpt configure.log
+        make -j $(get_nprocs) > make.log 2>&1 || tail_excerpt make.log
+        make install > install.log 2>&1 || tail_excerpt install.log
+        cd ..
+      fi
+
       write_checksums "${install_lock_file}" "${SCRIPT_DIR}/stage3/$(basename ${SCRIPT_NAME})"
-      cd ..
     fi
-    LIBXC_CFLAGS="-I'${pkg_install_dir}/include'"
-    LIBXC_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
     ;;
   __SYSTEM__)
     echo "==================== Finding LIBXC from system paths ===================="
     check_lib -lxcf03 "libxc"
     check_lib -lxc "libxc"
-    if [ "$(find_in_paths "libxc.*" $LIB_PATHS)" != "__FALSE__" ]; then
-      pkg_install_dir="$(dirname $(dirname $(find_in_paths "libscalapack*" $LIB_PATHS)))"
-      INCLUDE_PATHS=${INCLUDE_PATHS}:"$pkg_install_dir/include"
-    fi
-    add_include_from_paths LIBXC_CFLAGS "xc.h" $INCLUDE_PATHS
-    add_lib_from_paths LIBXC_LDFLAGS "libxc.*" $LIB_PATHS
+    pkg_install_dir="$(dirname $(dirname $(find_in_paths "libxc*" $LIB_PATHS)))"
     ;;
   __DONTUSE__) ;;
 
   *)
     echo "==================== Linking LIBXC to user paths ===================="
-    pkg_install_dir="$with_libxc"
+    pkg_install_dir="${with_libxc}"
     check_dir "${pkg_install_dir}/lib"
     check_dir "${pkg_install_dir}/include"
-    LIBXC_CFLAGS="-I'${pkg_install_dir}/include'"
-    LIBXC_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
     ;;
 esac
 if [ "$with_libxc" != "__DONTUSE__" ]; then
-  LIBXC_LIBS="-lxcf03 -lxc"
   cat << EOF > "${BUILDDIR}/setup_libxc"
+export LIBXC_ROOT="${pkg_install_dir}"
 export LIBXC_VER="${libxc_ver}"
 EOF
   if [ "$with_libxc" != "__SYSTEM__" ]; then
     cat << EOF >> "${BUILDDIR}/setup_libxc"
-prepend_path LD_LIBRARY_PATH "$pkg_install_dir/lib"
-prepend_path LD_RUN_PATH "$pkg_install_dir/lib"
-prepend_path LIBRARY_PATH "$pkg_install_dir/lib"
-prepend_path CPATH "$pkg_install_dir/include"
-prepend_path PKG_CONFIG_PATH "$pkg_install_dir/lib/pkgconfig"
-prepend_path CMAKE_PREFIX_PATH "$pkg_install_dir"
+prepend_path LD_LIBRARY_PATH "${pkg_install_dir}/lib"
+prepend_path LD_RUN_PATH "${pkg_install_dir}/lib"
+prepend_path LIBRARY_PATH "${pkg_install_dir}/lib"
+prepend_path PKG_CONFIG_PATH "${pkg_install_dir}/lib/pkgconfig"
+prepend_path CMAKE_PREFIX_PATH "${pkg_install_dir}"
 EOF
   fi
-  cat << EOF >> "${BUILDDIR}/setup_libxc"
-export LIBXC_CFLAGS="${LIBXC_CFLAGS}"
-export LIBXC_LDFLAGS="${LIBXC_LDFLAGS}"
-export LIBXC_LIBS="${LIBXC_LIBS}"
-export CP_DFLAGS="\${CP_DFLAGS} -D__LIBXC"
-export CP_CFLAGS="\${CP_CFLAGS} ${LIBXC_CFLAGS}"
-export CP_LDFLAGS="\${CP_LDFLAGS} ${LIBXC_LDFLAGS}"
-export CP_LIBS="${LIBXC_LIBS} \${CP_LIBS}"
-export LIBXC_ROOT="${pkg_install_dir}"
-EOF
   filter_setup "${BUILDDIR}/setup_libxc" "${SETUPFILE}"
 fi
 

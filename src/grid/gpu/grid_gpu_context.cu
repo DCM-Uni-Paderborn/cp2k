@@ -34,6 +34,59 @@ extern "C" {
 #error "OpenMP should not be used in .cu files to accommodate HIP."
 #endif
 
+namespace rocm_backend {
+
+constexpr size_t align_up_elems(size_t n_elems, size_t elem_alignment) {
+  return (n_elems + elem_alignment - 1) & ~(elem_alignment - 1);
+}
+
+kernel_params
+context_info::set_kernel_parameters(const int level,
+                                    const smem_parameters &smem_params) {
+  kernel_params params;
+  params.cab_size_ = smem_params.cab_size();
+  params.first_task = 0;
+
+  params.la_min_diff = smem_params.ldiffs().la_min_diff;
+  params.lb_min_diff = smem_params.ldiffs().lb_min_diff;
+
+  params.la_max_diff = smem_params.ldiffs().la_max_diff;
+  params.lb_max_diff = smem_params.ldiffs().lb_max_diff;
+  params.tasks = this->tasks_dev.data();
+  params.task_sorted_by_blocks_dev = task_sorted_by_blocks_dev.data();
+  params.sorted_blocks_offset_dev = sorted_blocks_offset_dev.data();
+  params.num_tasks_per_block_dev = this->num_tasks_per_block_dev_.data();
+  params.block_offsets = this->block_offsets_dev.data();
+  params.la_min_diff = smem_params.ldiffs().la_min_diff;
+  params.lb_min_diff = smem_params.ldiffs().lb_min_diff;
+  params.la_max_diff = smem_params.ldiffs().la_max_diff;
+  params.lb_max_diff = smem_params.ldiffs().lb_max_diff;
+
+  params.buffers_dev.pab_block = pab_block_.data();
+
+  if (level >= 0) {
+    params.buffers_dev.grid = grid_[level].data();
+    memcpy(params.dh_, grid_[level].dh(), 9 * sizeof(double));
+    memcpy(params.dh_inv_, grid_[level].dh_inv(), 9 * sizeof(double));
+    params.first_task = first_task_per_level_[level];
+
+    params.grid_full_size_ = grid_[level].full_size();
+    params.grid_local_size_ = grid_[level].local_size();
+    params.grid_lower_corner_ = grid_[level].lower_corner();
+    params.grid_border_width_ = grid_[level].border_width();
+  }
+
+  params.buffers_dev.coef = this->coef_dev_.data();
+  params.buffers_dev.hab_block = hab_block_.data();
+  params.buffers_dev.forces = forces_.data();
+  params.buffers_dev.virial = virial_.data();
+  params.buffers_dev.cab = this->cab_dev_.data();
+  params.cab_block_offset_dev = this->cab_block_offset_dev.data();
+  params.sphi_dev = this->sphi_dev.data();
+  return params;
+}
+}; // namespace rocm_backend
+
 /*******************************************************************************
  * \brief Allocates a task list for the GPU backend.
  *        See grid_ctx.h for details.
@@ -51,6 +104,13 @@ extern "C" void grid_gpu_create_task_list(
     const double *dh, const double *dh_inv, grid_gpu_task_list **ptr) {
 
   rocm_backend::context_info **ctx_out = (rocm_backend::context_info **)ptr;
+
+  // Yes it makes no sense
+  if ((nblocks == 0) || (ntasks == 0)) {
+    *ptr = nullptr;
+    return;
+  }
+
   // Select GPU device.
   rocm_backend::context_info *ctx = nullptr;
   if (*ctx_out == nullptr) {
@@ -66,9 +126,10 @@ extern "C" void grid_gpu_create_task_list(
   ctx->nlevels = nlevels;
   ctx->natoms = natoms;
   ctx->nblocks = nblocks;
-
+  ctx->nkinds = nkinds;
   ctx->grid_.resize(nlevels);
   ctx->set_device();
+
   std::vector<double> dh_max(ctx->nlevels, 0);
 
   for (int level = 0; level < ctx->nlevels; level++) {
@@ -76,7 +137,7 @@ extern "C" void grid_gpu_create_task_list(
                              shift_local + 3 * level, border_width + 3 * level);
     ctx->grid_[level].is_distributed(false);
     ctx->grid_[level].set_lattice_vectors(&dh[9 * level], &dh_inv[9 * level]);
-    ctx->grid_[level].check_orthorhombicity(ortho);
+    ctx->grid_[level].check_orthogonality(ortho);
     for (int i = 0; i < 9; i++)
       dh_max[level] = std::max(dh_max[level], std::abs(dh[9 * level + i]));
   }
@@ -94,7 +155,8 @@ extern "C" void grid_gpu_create_task_list(
   std::vector<rocm_backend::task_info> tasks_host(ntasks);
 
   size_t coef_size = 0;
-  size_t cab_size_ = 0;
+  int lmax_ = 0;
+
   for (int i = 0; i < ntasks; i++) {
     const int level = level_list[i] - 1;
 
@@ -164,6 +226,9 @@ extern "C" void grid_gpu_create_task_list(
     tasks_host[i].la_min = la_min_basis;
     tasks_host[i].lb_min = lb_min_basis;
 
+    lmax_ = std::max(lmax_, tasks_host[i].la_max);
+    lmax_ = std::max(lmax_, tasks_host[i].lb_max);
+
     // start of decontracted set, ie. pab and hab
     tasks_host[i].first_coseta =
         (la_min_basis > 0) ? rocm_backend::ncoset(la_min_basis - 1) : 0;
@@ -173,6 +238,12 @@ extern "C" void grid_gpu_create_task_list(
     // size of decontracted set, ie. pab and hab
     tasks_host[i].ncoseta = rocm_backend::ncoset(la_max_basis);
     tasks_host[i].ncosetb = rocm_backend::ncoset(lb_max_basis);
+    // it should lmax + 3 because calculating forces+stress+compute_tau requires
+    // l + 3
+    tasks_host[i].max_cab_size =
+        rocm_backend::align_up_elems(rocm_backend::ncoset(la_max_basis + 3) *
+                                         rocm_backend::ncoset(lb_max_basis + 3),
+                                     4);
 
     // size of entire spherical basis
     tasks_host[i].nsgfa = ibasis->nsgf;
@@ -210,27 +281,20 @@ extern "C" void grid_gpu_create_task_list(
     } else {
       tasks_host[i].coef_offset =
           tasks_host[i - 1].coef_offset +
-          rocm_backend::ncoset(tasks_host[i - 1].lp_max);
+          rocm_backend::align_up_elems(
+              rocm_backend::ncoset(tasks_host[i - 1].lp_max), 4);
     }
-    coef_size += rocm_backend::ncoset(tasks_host[i].lp_max);
 
-    if (i == 0)
-      tasks_host[i].cab_offset = 0;
-    else
-      tasks_host[i].cab_offset =
-          tasks_host[i - 1].cab_offset +
-          rocm_backend::ncoset(tasks_host[i - 1].la_max + 3) *
-              rocm_backend::ncoset(tasks_host[i - 1].lb_max + 3);
-
-    cab_size_ += rocm_backend::ncoset(tasks_host[i].la_max + 3) *
-                 rocm_backend::ncoset(tasks_host[i].lb_max + 3);
+    // calculate the size such that the coef table is a multiple of 4.
+    coef_size += rocm_backend::align_up_elems(
+        rocm_backend::ncoset(tasks_host[i].lp_max), 4);
 
     auto &grid = ctx->grid_[tasks_host[i].level];
     // compute the cube properties
 
     tasks_host[i].apply_border_mask = (tasks_host[i].border_mask != 0);
 
-    if (grid.is_orthorhombic() && (tasks_host[i].border_mask == 0)) {
+    if (grid.is_orthogonal() && (tasks_host[i].border_mask == 0)) {
       tasks_host[i].discrete_radius =
           rocm_backend::compute_cube_properties<double, double3, true>(
               tasks_host[i].radius, grid.dh(), grid.dh_inv(),
@@ -254,15 +318,6 @@ extern "C" void grid_gpu_create_task_list(
   }
 
   // we need to sort the task list although I expect it to be sorted already
-  /*
-   * sorting with this lambda does not work
-  std::sort(tasks_host.begin(), tasks_host.end(), [](rocm_backend::task_info a,
-  rocm_backend::task_info b) { if (a.level == b.level) { if (a.block_num <=
-  b.block_num) return true; else return false; } else { return (a.level <
-  b.level);
-      }
-    });
-  */
   // it is a exclusive scan actually
   for (int level = 1; level < (int)ctx->number_of_tasks_per_level_.size();
        level++) {
@@ -311,6 +366,9 @@ extern "C" void grid_gpu_create_task_list(
   ctx->task_sorted_by_blocks_dev.resize(sorted_blocks.size());
   ctx->task_sorted_by_blocks_dev.copy_to_gpu(sorted_blocks);
 
+  std::vector<int> cab_size_offset_tmp(nblocks, 0);
+  std::vector<int> cab_size_tmp(nblocks);
+
   for (int i = 0; i < (int)sorted_blocks_offset.size(); i++) {
     int num_tasks = 0;
     if (i == (int)sorted_blocks_offset.size() - 1)
@@ -318,15 +376,31 @@ extern "C" void grid_gpu_create_task_list(
     else
       num_tasks = sorted_blocks_offset[i + 1] - sorted_blocks_offset[i];
 
-    // pointless tests since they should be equal.
+    // invariants tests since they should be equal.
     assert(num_tasks == num_tasks_per_block[i]);
 
-    // check that all tasks point to the same block
-    for (int tk = 0; tk < num_tasks; tk++)
+    int tmp_cab_size = 0;
+    for (int tk = 0; tk < num_tasks; tk++) {
+      auto &task = tasks_host[sorted_blocks[tk + sorted_blocks_offset[i]]];
+      // check that all tasks point to the same block
       assert(
           tasks_host[sorted_blocks[tk + sorted_blocks_offset[i]]].block_num ==
           i);
+
+      // calculate the largest cab block needed for this block
+      tmp_cab_size = std::max(task.max_cab_size, tmp_cab_size);
+    }
+
+    // keep the size of the largest cab block
+    cab_size_tmp[i] = tmp_cab_size;
   }
+
+  cab_size_offset_tmp[0] = 0;
+
+  for (int i = 1; i < cab_size_tmp.size(); i++) {
+    cab_size_offset_tmp[i] = cab_size_offset_tmp[i - 1] + cab_size_tmp[i - 1];
+  }
+
   for (auto &block : task_sorted_by_block)
     block.clear();
   task_sorted_by_block.clear();
@@ -334,8 +408,30 @@ extern "C" void grid_gpu_create_task_list(
   sorted_blocks.clear();
   sorted_blocks_offset.clear();
 
+  ctx->cab_block_offset_dev.resize(cab_size_offset_tmp.size());
+  ctx->cab_block_offset_dev.copy_to_gpu(cab_size_offset_tmp);
+
   ctx->num_tasks_per_block_dev_.resize(num_tasks_per_block.size());
   ctx->num_tasks_per_block_dev_.copy_to_gpu(num_tasks_per_block);
+
+  // Calculate the total amount of workspace needed
+  size_t cab_size_total = 0;
+
+  for (auto &elem : cab_size_tmp)
+    cab_size_total += elem;
+
+  cab_size_offset_tmp.clear();
+  cab_size_tmp.clear();
+
+  // To avoid memory saturation, cab only depends on the number of blocks not
+  // the number of tasks. It forces us to compute all xyz coefficients before
+  // calling collocate. However it does not change the logic of the integrate
+  // counterpart.
+
+  ctx->cab_dev_.resize(cab_size_total);
+
+  // allocate workspace for the coefficients
+  ctx->coef_dev_.resize(coef_size);
 
   // collect stats
   memset(ctx->stats, 0, 2 * 20 * sizeof(int));
@@ -354,11 +450,11 @@ extern "C" void grid_gpu_create_task_list(
   }
 
   ctx->create_streams();
-
-  tasks_host.clear();
-  ctx->coef_dev_.resize(coef_size);
-  ctx->cab_dev_.resize(cab_size_);
   ctx->compute_checksum();
+
+  // cleanup
+  tasks_host.clear();
+
   // return newly created or updated context
   *ctx_out = ctx;
 }
@@ -391,6 +487,11 @@ extern "C" void grid_gpu_collocate_task_list(const grid_gpu_task_list *ptr,
     return;
 
   ctx->verify_checksum();
+
+  if ((ctx->nblocks == 0) || (ctx->ntasks == 0)) {
+    return;
+  }
+
   assert(ctx->nlevels == nlevels);
   ctx->set_device();
 
@@ -404,7 +505,10 @@ extern "C" void grid_gpu_collocate_task_list(const grid_gpu_task_list *ptr,
       explicit
         - no unified memory : Explicit copy will happen
     */
-  ctx->pab_block_.copy_to_gpu(ctx->main_stream);
+  int lp_diff = -1;
+  ctx->pab_block_.copy_associated_host_to_gpu(ctx->main_stream);
+  ctx->coef_dev_.zero(ctx->main_stream);
+  ctx->calculate_all_coefficients(func, &lp_diff);
 
   for (int level = 0; level < ctx->nlevels; level++) {
     ctx->grid_[level].associate(grids[level]->host_buffer,
@@ -412,8 +516,6 @@ extern "C" void grid_gpu_collocate_task_list(const grid_gpu_task_list *ptr,
                                 grids[level]->size / sizeof(double));
     ctx->grid_[level].zero(ctx->level_streams[level]);
   }
-
-  int lp_diff = -1;
 
   ctx->synchronize(ctx->main_stream);
 
@@ -436,7 +538,7 @@ extern "C" void grid_gpu_collocate_task_list(const grid_gpu_task_list *ptr,
     for (int has_border_mask = 0; has_border_mask <= 1; has_border_mask++) {
       for (int lp = 0; lp < 20; lp++) {
         const int count = ctx->stats[has_border_mask][lp];
-        if (ctx->grid_[0].is_orthorhombic() && !has_border_mask) {
+        if (ctx->grid_[0].is_orthogonal() && !has_border_mask) {
           grid_library_counter_add(lp + lp_diff, GRID_BACKEND_GPU,
                                    GRID_COLLOCATE_ORTHO, count);
         } else {
@@ -485,7 +587,7 @@ extern "C" void grid_gpu_integrate_task_list(
     ctx->pab_block_.associate(pab_blocks->host_buffer,
                               pab_blocks->device_buffer,
                               pab_blocks->size / sizeof(double));
-    ctx->pab_block_.copy_to_gpu(ctx->main_stream);
+    ctx->pab_block_.copy_associated_host_to_gpu(ctx->main_stream);
   }
 
   // we do not need to wait for this to start the computations since the matrix
@@ -497,6 +599,7 @@ extern "C" void grid_gpu_integrate_task_list(
   ctx->calculate_forces = (forces != nullptr);
   ctx->calculate_virial = (virial != nullptr);
   ctx->compute_tau = compute_tau;
+
   if (forces != nullptr) {
     ctx->forces_.resize(3 * ctx->natoms);
     ctx->forces_.zero(ctx->main_stream);
@@ -521,7 +624,7 @@ extern "C" void grid_gpu_integrate_task_list(
     for (int has_border_mask = 0; has_border_mask <= 1; has_border_mask++) {
       for (int lp = 0; lp < 20; lp++) {
         const int count = ctx->stats[has_border_mask][lp];
-        if (ctx->grid_[0].is_orthorhombic() && !has_border_mask) {
+        if (ctx->grid_[0].is_orthogonal() && !has_border_mask) {
           grid_library_counter_add(lp + lp_diff, GRID_BACKEND_GPU,
                                    GRID_INTEGRATE_ORTHO, count);
         } else {
@@ -539,7 +642,7 @@ extern "C" void grid_gpu_integrate_task_list(
   // computing the hab coefficients does not depend on the number of grids so we
   // can run these calculations on the main stream
   ctx->compute_hab_coefficients();
-  ctx->hab_block_.copy_from_gpu(ctx->main_stream);
+  ctx->hab_block_.copy_gpu_to_associated_host(ctx->main_stream);
 
   if (forces != NULL) {
     ctx->forces_.copy_from_gpu(forces, ctx->main_stream);

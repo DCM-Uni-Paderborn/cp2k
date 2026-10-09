@@ -37,7 +37,7 @@ relaxed in-plane lattice constants, and structures prepared for fixed-cell molec
 ```{note}
 An optimization is not a replacement for finite-temperature pressure sampling; if the desired
 quantity is a thermal average at finite temperature, use a molecular-dynamics workflow with
-appropriate ensemble instead.
+appropriate ensemble instead. For more on this topic, see [](../sampling/molecular_dynamics).
 
 For the usual electronic-structure methods based on the Born-Oppenheimer approximation
 (which, by neglecting nuclear motion, provides the concept of "potential-energy surface"
@@ -123,10 +123,8 @@ transition-state search machinery; it requires additional method-specific settin
 treated as an ordinary minimization.
 
 [MAX_ITER](#CP2K_INPUT.MOTION.GEO_OPT.MAX_ITER) limits the number of optimization iterations. One
-optimization iteration can require more than one force evaluation, depending on the optimizer, line
-search, and the selected `CELL_OPT` mode.
-
-An optimization may terminate if one of the following events takes place:
+optimization iteration can require more than one force evaluation, depending on the optimizer and
+line search mode. An optimization may terminate if one of the following events takes place:
 
 - The convergence criteria (see below) are satisfied before reaching `MAX_ITER`;
 - The `MAX_ITER` is reached, regardless of whether the convergence criteria are satisfied or not;
@@ -146,7 +144,12 @@ vaporized or molten conditions with lots of broken chemical bonds.
 
 For `CELL_OPT`, the initial cell matters as much as the initial coordinates. The starting volume and
 shape should be close enough to the expected structure and density, such that the pressure and
-stress are not dominated by preparation artefacts.
+stress are not dominated by preparation artefacts. The directions where the cell is relaxed are
+dependent of the external pressure. For surface slabs, two- or one-dimensional materials, or systems
+with vacuum, the anisotropic nature means that the vacuum direction is not to be relaxed unless
+physically intended; it is better to constrain the appropriate cell components or use a fixed-cell
+optimization after choosing the desired cell. A rigorous test for the convergence of target
+properties with respect to different size of vacuum may be necessary.
 
 A visualization of the structure and cell in modelling programs, with the box and the neighboring
 periodic images displayed, will be very helpful; neither large vacuous gaps nor crowded cluster of
@@ -154,33 +157,11 @@ atoms should occur near the boundary of the box on the directions consistent wit
 and conversely, sufficient vacuum space on the non-periodic directions is crucial for eliminating
 unwanted interactions across the boundary.
 
-For surface slabs, two- or one-dimensional materials, or systems with vacuum, do not relax the
-vacuum direction unless physically intended; it is better to constrain the appropriate cell
-components or use a fixed-cell optimization after choosing the desired cell.
-
-```{warning}
-**Do not use experimental structure blindly.**
-
-If available, **computational** materials databases are the most recommended avenue
-to obtain structures that are "computation-ready", or even better, already optimized
-with some electronic-structure methods. On the other hand, structures that are from
-**experimental** characterization are frequently not "computation-ready", and thus
-should not be subject to optimization without careful validation in pre-processing.
-This can be prominent for `cif` and `pdb` structures determined by powder or single-
-crystal XRD which can be affected by sample quality and thermal motion.
-
-- Watch out for crystallographic disorder and atoms with low resolution or fractional
-  occupation: using the superposition of all atoms as if every occupancy is 1.00 is
-  highly likely to introduce contacting or even overlapping atoms.
-- Beware of composition: the atomic structure may not match the intended macroscopic,
-  charge-neutral chemical formula, owing to missing or duplicated hydrogen atoms,
-  small counter ions, solvent or ligand molecules.
-
-Possible resolutions vary from simple manual editing in the modelling stage, to
-utilization of supercells and enumeration of special quasirandom structures (common
-for materials with dopants), and to more rigorous XRD refinement and application of
-quantum crystallography methods.
-```
+As a reserved extreme measure, the [MAX_FORCE](#CP2K_INPUT.FORCE_EVAL.RESCALE_FORCES.MAX_FORCE)
+keyword triggers a mechanism where very large forces on atoms are artificially rescaled in
+magnitude. This setting is only meant for crude initial structure; once the geometry becomes more
+reasonable and the forces are closer to the convergence criteria, it shall not be used in the
+production run towards the final result.
 
 ```{note}
 For variable-cell optimizations, the [CELL_OPT](#CP2K_INPUT.MOTION.CELL_OPT) section
@@ -298,15 +279,20 @@ has its own extra pair of criteria named
 [WANTED_REL_F_ERROR](#CP2K_INPUT.MOTION.GEO_OPT.LBFGS.WANTED_REL_F_ERROR) which may override the
 aforementioned general ones. It is possible to see an optimization task with the `LBFGS` optimizer
 finish with the message below, even when one or more of the general criteria have not been met yet;
-try restarting the optimization task with tightened criteria or alternative optimizers until
-satisfactory convergence.
+as is suggested, try restarting the optimization task with tightened criteria or alternative
+optimizers until satisfactory convergence.
 
 ```none
- ***********************************************
- * Specific L-BFGS convergence criteria         
- * WANTED_PROJ_GRADIENT and WANTED_REL_F_ERROR  
- * satisfied .... run CONVERGED!                
- ***********************************************
+ ************************************************
+ * Specific L-BFGS convergence criteria         *
+ * WANTED_PROJ_GRADIENT and WANTED_REL_F_ERROR  *
+ * satisfied .... run CONVERGED!                *
+ *                    * * *                     *
+ * General convergence criteria on stepsize and *
+ * gradients may or may not have been satisfied *
+ * yet; if unsatisfactory, try tightening the   *
+ * L-BFGS convergence criteria and restart run. *
+ ************************************************
 ```
 
 The `LBFGS` optimizer has its own [PRINT_LEVEL](#CP2K_INPUT.MOTION.GEO_OPT.LBFGS.PRINT_LEVEL) which
@@ -328,6 +314,8 @@ of an `iterate.dat` excerpt is reproduced below.
     8   14     1     0  con    1  5.1D-01  6.6D-02  3.685D-03 -1.152D+00
     9   15     1     0  con    0  1.0D+00  1.2D-02  7.569D-04 -1.152D+00
 ```
+
+### More notes about convergence
 
 Geometry and cell optimization normally try to lower the energy, but convergence is determined by
 the active force, displacement, and pressure criteria rather than by the total energy alone.
@@ -402,7 +390,7 @@ and linked to the CP2K build in order to detect and preserve the space group. Us
 
 Density functional theory (DFT) is an electronic-structure (wavefunction) method routinely used for
 optimization. This section elaborate on the relevant aspects, assuming basic knowledge about the
-method which can be found at [](../dft/index.md).
+method which can be found at [](../dft/index).
 
 ### SCF quality
 
@@ -478,22 +466,17 @@ geometry updates could make extrapolation unavailable and automatically fall bac
 ```{danger}
 **Be responsible, and do not ignore SCF convergence failure blindly.**
 
-By default, a failure in SCF convergence aborts the program with a message like:
-`SCF run NOT converged. To continue the calculation regardless, please set the keyword
-IGNORE_CONVERGENCE_FAILURE.` Setting
-[IGNORE_CONVERGENCE_FAILURE](#CP2K_INPUT.FORCE_EVAL.DFT.SCF.IGNORE_CONVERGENCE_FAILURE)
-to `.TRUE.` turns it into a warning `SCF run NOT converged` that allows for optimization
-to continue. However, bad SCF convergence leads to unreliable energy, force, and stress
-on the current step, introducing error to the updated structure and the extrapolated
-wavefunction on the next step. An optimization process with most or all steps failing
-to converge SCF cycles does not yield trustworthy results in the end.
+The general issue of SCF convergence is discussed in [](../dft/convergence).
+Bad SCF convergence leads to unreliable energy, force, and stress on the current step,
+introducing error to the updated structure and the extrapolated wavefunction on the next
+step. An optimization process with most or all steps failing to converge SCF cycles does
+not yield trustworthy results in the end. Abnormal behaviors such as structure "blowing up"
+should not come off as surprising if convergence failure is ignored.
 
-Therefore, `IGNORE_CONVERGENCE_FAILURE` should only be considered as a **last resort**
-out of desperation, rather than a universal remedy used on a regular basis or even as
-the default. There are dozens of measures available towards SCF convergence on top of
-a realistic, chemically sensible model structure and appropriate net charge, spin
-multiplicity, atomic magnetization, and k-point sampling; please try achieving SCF
-convergence on the starting structure in a single-point calculation in the first place.
+Preparing a nice starting structure in the first place is more reliable than using a crude
+structure and wishing that it becomes easier to converge SCF cycles as optimization goes.
+A single-point energy calculation of the starting structure can be utilized to experiment
+with options that achieve convergence as well as to assess the time consumption.
 ```
 
 ## Output files and restarts
@@ -533,8 +516,9 @@ controls. These will be convenient in case an optimization does not converge and
 starting from the latest structure is needed.
 
 For expensive electronic-structure calculations, wavefunction restart files can reduce the cost of
-continuation or follow-up calculations; see
-[FORCE_EVAL/DFT/SCF/PRINT/RESTART](#CP2K_INPUT.FORCE_EVAL.DFT.SCF.PRINT.RESTART). For BFGS
+continuation or follow-up calculations; see the
+[Molecular Dynamics Restarts](../restarting.md#molecular-dynamics) section of the restarting guide
+and [FORCE_EVAL/DFT/SCF/PRINT/RESTART](#CP2K_INPUT.FORCE_EVAL.DFT.SCF.PRINT.RESTART). For BFGS
 optimizations, Hessian-restart options are available in the `BFGS` subsection of the active
 optimization driver.
 

@@ -28,9 +28,12 @@
 
 MODULE qs_sccs
 
+   USE atomic_kind_types,               ONLY: atomic_kind_type,&
+                                              get_atomic_kind
    USE cp_control_types,                ONLY: dft_control_type,&
                                               sccs_control_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
+                                              cp_logger_get_default_io_unit,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_p_file,&
                                               cp_print_key_finished_output,&
@@ -47,7 +50,8 @@ MODULE qs_sccs
                                               sccs_derivative_cd5,&
                                               sccs_derivative_cd7,&
                                               sccs_derivative_fft,&
-                                              sccs_fattebert_gygi
+                                              sccs_fattebert_gygi,&
+                                              sccs_saa_andreussi
    USE input_section_types,             ONLY: section_get_ivals,&
                                               section_get_lval,&
                                               section_vals_get_subs_vals,&
@@ -57,6 +61,8 @@ MODULE qs_sccs
                                               dp,&
                                               int_8
    USE mathconstants,                   ONLY: fourpi,&
+                                              oorootpi,&
+                                              pi,&
                                               twopi
    USE message_passing,                 ONLY: mp_para_env_type
    USE particle_list_types,             ONLY: particle_list_type
@@ -67,9 +73,11 @@ MODULE qs_sccs
                                               pw_derive,&
                                               pw_integral_ab,&
                                               pw_integrate_function,&
+                                              pw_scale,&
                                               pw_transfer,&
                                               pw_zero
-   USE pw_poisson_methods,              ONLY: pw_poisson_solve
+   USE pw_poisson_methods,              ONLY: pw_func_u_convolution,&
+                                              pw_poisson_solve
    USE pw_poisson_types,                ONLY: pw_poisson_analytic,&
                                               pw_poisson_mt,&
                                               pw_poisson_type
@@ -77,9 +85,12 @@ MODULE qs_sccs
                                               pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
+   USE qs_collocate_density,            ONLY: calculate_rho_core
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
+   USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              qs_kind_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_scf_types,                    ONLY: qs_scf_env_type
@@ -93,6 +104,7 @@ MODULE qs_sccs
    USE rs_methods,                      ONLY: derive_fdm_cd3,&
                                               derive_fdm_cd5,&
                                               derive_fdm_cd7
+   USE string_utilities,                ONLY: uppercase
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -101,7 +113,7 @@ MODULE qs_sccs
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_sccs'
 
-   PUBLIC :: print_sccs_results, sccs
+   PUBLIC :: print_sccs_results, sccs, sccs_core_fill_coefficients
 
 CONTAINS
 
@@ -137,11 +149,11 @@ CONTAINS
       INTEGER(KIND=int_8)                                :: ngpts
       INTEGER, DIMENSION(3)                              :: lb, ub
       LOGICAL                                            :: append_cube, calculate_stress_tensor, &
-                                                            mpi_io, should_output
-      REAL(KIND=dp) :: cavity_surface, cavity_volume, cell_volume, dphi2, dvol, e_tot, &
-         epsilon_solvent, f, polarisation_charge, rho_delta, rho_delta_avg, rho_delta_max, &
-         rho_iter_new, tot_rho_elec, tot_rho_solute
-      REAL(KIND=dp), DIMENSION(3)                        :: abc
+                                                            do_kpoints, mpi_io, should_output
+      REAL(KIND=dp) :: alpha_zeta, cavity_surface, cavity_volume, cell_volume, delta_eta, &
+         delta_zeta, dphi2, dvol, e_tot, epsilon_solvent, f, f0, polarisation_charge, r, R_solv, &
+         rho_delta, rho_delta_avg, rho_delta_max, rho_iter_new, tot_rho_elec, tot_rho_solute
+      REAL(KIND=dp), DIMENSION(3)                        :: abc, lxyz, uxyz
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(cp_subsys_type), POINTER                      :: cp_subsys
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -151,7 +163,9 @@ CONTAINS
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_p_type), DIMENSION(:), POINTER        :: pw_pools
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
-      TYPE(pw_r3d_rs_type)                               :: deps_elec, eps_elec
+      TYPE(pw_r3d_rs_type)                               :: d_s_rhoel, deps_elec, dtf, eps_elec, ff, &
+                                                            p_e_interface, s, t, tem_convolution, &
+                                                            tem_func, u
       TYPE(pw_r3d_rs_type), DIMENSION(3)                 :: dln_eps_elec, dphi_tot
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_pw_r
       TYPE(pw_r3d_rs_type), POINTER                      :: rho_pw_r_sccs
@@ -181,6 +195,7 @@ CONTAINS
       ! Load data from Quickstep environment
       CALL get_qs_env(qs_env=qs_env, &
                       cp_subsys=cp_subsys, &
+                      do_kpoints=do_kpoints, &
                       dft_control=dft_control, &
                       energy=energy, &
                       input=input, &
@@ -193,6 +208,10 @@ CONTAINS
       sccs_control => dft_control%sccs_control
 
       CPASSERT(ASSOCIATED(qs_env))
+
+      IF (do_kpoints) THEN
+         CPWARN("SCCS with k-points has not yet been fully validated")
+      END IF
 
       IF (PRESENT(h_stress)) THEN
          calculate_stress_tensor = .TRUE.
@@ -282,9 +301,42 @@ CONTAINS
          END DO
          tot_rho_elec = pw_integrate_function(rho_elec)
 
+         ! Optionally fill the low valence density region at the nuclei of pseudopotential
+         ! atoms with normalised Gaussians Z_val/(sqrt(pi)*sigma)**3*exp(-r**2/sigma**2)
+         ! (Environ "full" boundary). The filled density is only used for the definition
+         ! of the dielectric function (cavity)
+         IF (sccs_control%core_fill) THEN
+            BLOCK
+               REAL(KIND=dp)                                      :: tot_rho_fill
+               REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: calpha, ccore
+               TYPE(pw_r3d_rs_type)                               :: rho_fill
+               CALL sccs_core_fill_coefficients(qs_env, calpha, ccore, cp_logger_get_default_io_unit(logger))
+               CALL auxbas_pw_pool%create_pw(rho_fill)
+               ! calculate_rho_core collocates -ccore*exp(-calpha*r**2), i.e. the negated fill
+               CALL calculate_rho_core(rho_fill, tot_rho_fill, qs_env, calpha=calpha, ccore=ccore)
+               CALL pw_axpy(rho_fill, rho_elec, alpha=-1.0_dp)
+               CALL auxbas_pw_pool%give_back_pw(rho_fill)
+               DEALLOCATE (calpha, ccore)
+            END BLOCK
+         END IF
+
          ! Calculate the dielectric (smoothed) function of rho_elec in r-space
          CALL auxbas_pw_pool%create_pw(eps_elec)
          CALL auxbas_pw_pool%create_pw(deps_elec)
+         IF (sccs_control%method_id == sccs_saa_andreussi) THEN
+            CALL auxbas_pw_pool%create_pw(s)
+            CALL auxbas_pw_pool%create_pw(d_s_rhoel)
+            CALL auxbas_pw_pool%create_pw(u)
+            CALL auxbas_pw_pool%create_pw(ff)
+            CALL auxbas_pw_pool%create_pw(t)
+            CALL auxbas_pw_pool%create_pw(dtf)
+            f0 = sccs_control%f0
+            delta_eta = sccs_control%delta_eta
+            alpha_zeta = sccs_control%alpha_zeta
+            R_solv = sccs_control%R_solv
+            delta_zeta = sccs_control%delta_zeta
+         END IF
+
          ! Relative permittivity or dielectric constant of the solvent (medium)
          epsilon_solvent = sccs_control%epsilon_solvent
          SELECT CASE (sccs_control%method_id)
@@ -294,37 +346,42 @@ CONTAINS
          CASE (sccs_fattebert_gygi)
             CALL fattebert_gygi(rho_elec, eps_elec, deps_elec, epsilon_solvent, sccs_control%beta, &
                                 sccs_control%rho_zero)
+         CASE (sccs_saa_andreussi)
+            CALL sa_andreussi(rho_elec, eps_elec, deps_elec, epsilon_solvent, sccs_control%rho_max, &
+                              sccs_control%rho_min, s, d_s_rhoel)
          CASE DEFAULT
             CPABORT("Invalid method specified for SCCS model")
          END SELECT
 
-         ! Optional output of the dielectric function in cube file format
-         filename = "DIELECTRIC_FUNCTION"
-         cube_path = TRIM(print_path)//"%"//TRIM(filename)
-         IF (BTEST(cp_print_key_should_output(logger%iter_info, input, TRIM(cube_path)), &
-                   cp_p_file)) THEN
-            append_cube = section_get_lval(input, TRIM(cube_path)//"%APPEND")
-            my_pos_cube = "REWIND"
-            IF (append_cube) my_pos_cube = "APPEND"
-            mpi_io = .TRUE.
-            cube_unit = cp_print_key_unit_nr(logger, input, TRIM(cube_path), &
-                                             extension=".cube", middle_name=TRIM(filename), &
-                                             file_position=my_pos_cube, log_filename=.FALSE., &
-                                             mpi_io=mpi_io, fout=mpi_filename)
-            IF (output_unit > 0) THEN
-               IF (.NOT. mpi_io) THEN
-                  INQUIRE (UNIT=cube_unit, NAME=filename)
-               ELSE
-                  filename = mpi_filename
+         IF (sccs_control%method_id /= sccs_saa_andreussi) THEN
+            ! Optional output of the dielectric function in cube file format
+            filename = "DIELECTRIC_FUNCTION"
+            cube_path = TRIM(print_path)//"%"//TRIM(filename)
+            IF (BTEST(cp_print_key_should_output(logger%iter_info, input, TRIM(cube_path)), &
+                      cp_p_file)) THEN
+               append_cube = section_get_lval(input, TRIM(cube_path)//"%APPEND")
+               my_pos_cube = "REWIND"
+               IF (append_cube) my_pos_cube = "APPEND"
+               mpi_io = .TRUE.
+               cube_unit = cp_print_key_unit_nr(logger, input, TRIM(cube_path), &
+                                                extension=".cube", middle_name=TRIM(filename), &
+                                                file_position=my_pos_cube, log_filename=.FALSE., &
+                                                mpi_io=mpi_io, fout=mpi_filename)
+               IF (output_unit > 0) THEN
+                  IF (.NOT. mpi_io) THEN
+                     INQUIRE (UNIT=cube_unit, NAME=filename)
+                  ELSE
+                     filename = mpi_filename
+                  END IF
+                  WRITE (UNIT=output_unit, FMT="(T3,A)") &
+                     "SCCS| The dielectric function is written in cube file format to the file:", &
+                     "SCCS| "//TRIM(filename)
                END IF
-               WRITE (UNIT=output_unit, FMT="(T3,A)") &
-                  "SCCS| The dielectric function is written in cube file format to the file:", &
-                  "SCCS| "//TRIM(filename)
+               CALL cp_pw_to_cube(eps_elec, cube_unit, TRIM(filename), particles=particles, &
+                                  stride=section_get_ivals(input, TRIM(cube_path)//"%STRIDE"), &
+                                  mpi_io=mpi_io)
+               CALL cp_print_key_finished_output(cube_unit, logger, input, TRIM(cube_path), mpi_io=mpi_io)
             END IF
-            CALL cp_pw_to_cube(eps_elec, cube_unit, TRIM(filename), particles=particles, &
-                               stride=section_get_ivals(input, TRIM(cube_path)//"%STRIDE"), &
-                               mpi_io=mpi_io)
-            CALL cp_print_key_finished_output(cube_unit, logger, input, TRIM(cube_path), mpi_io=mpi_io)
          END IF
 
          ! Calculate the (quantum) volume and surface of the solute cavity
@@ -420,6 +477,7 @@ CONTAINS
                   CALL surface_fattebert_gygi(rho_elec, norm_drho_elec, theta, epsilon_solvent, &
                                               sccs_control%beta, sccs_control%rho_zero, &
                                               sccs_control%delta_rho)
+               CASE (sccs_saa_andreussi)
                CASE DEFAULT
                   CPABORT("Invalid method specified for SCCS model")
                END SELECT
@@ -461,27 +519,126 @@ CONTAINS
          ! Reassign work storage to rho_tot_zero, because rho_elec is no longer needed
          CALL auxbas_pw_pool%create_pw(rho_tot_zero)
 
-         ! Build the initial (rho_iter = 0) total charge density (solute plus polarisation) in r-space
-         ! eps_elec <- ln(eps_elec)
+         IF (sccs_control%method_id /= sccs_saa_andreussi) THEN
+
+            ! Build the initial (rho_iter = 0) total charge density (solute plus polarisation) in r-space
+            ! eps_elec <- ln(eps_elec)
 !$OMP PARALLEL DO DEFAULT(NONE) &
 !$OMP             PRIVATE(i,j,k) &
 !$OMP             SHARED(eps_elec,lb,message,output_unit,para_env,ub) &
 !$OMP             SHARED(rho_solute,rho_tot_zero)
-         DO k = lb(3), ub(3)
-            DO j = lb(2), ub(2)
-               DO i = lb(1), ub(1)
-                  IF (eps_elec%array(i, j, k) < 1.0_dp) THEN
-                     WRITE (UNIT=message, FMT="(A,ES12.3,A,3(I0,A))") &
-                        "SCCS| Invalid dielectric function value ", eps_elec%array(i, j, k), &
-                        " encountered at grid point (", i, ",", j, ",", k, ")"
-                     CPABORT(message)
-                  END IF
-                  rho_tot_zero%array(i, j, k) = rho_solute%array(i, j, k)/eps_elec%array(i, j, k)
-                  eps_elec%array(i, j, k) = LOG(eps_elec%array(i, j, k))
+            DO k = lb(3), ub(3)
+               DO j = lb(2), ub(2)
+                  DO i = lb(1), ub(1)
+                     IF (eps_elec%array(i, j, k) < 1.0_dp) THEN
+                        WRITE (UNIT=message, FMT="(A,ES12.3,A,3(I0,A))") &
+                           "SCCS| Invalid dielectric function value ", eps_elec%array(i, j, k), &
+                           " encountered at grid point (", i, ",", j, ",", k, ")"
+                        CPABORT(message)
+                     END IF
+                     rho_tot_zero%array(i, j, k) = rho_solute%array(i, j, k)/eps_elec%array(i, j, k)
+                     eps_elec%array(i, j, k) = LOG(eps_elec%array(i, j, k))
+                  END DO
                END DO
             END DO
-         END DO
 !$OMP END PARALLEL DO
+
+         ELSE
+
+            lxyz(:) = REAL(u%pw_grid%bounds(1, :), dp)
+            uxyz(:) = REAL(u%pw_grid%bounds(2, :), dp)
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP             PRIVATE(i,j,k,r) &
+!$OMP             SHARED(lb,message,output_unit,para_env,ub,dtf,uxyz,lxyz) &
+!$OMP             SHARED(u, alpha_zeta, R_solv, delta_zeta, eps_elec)
+            DO k = lb(3), ub(3)
+               DO j = lb(2), ub(2)
+                  DO i = lb(1), ub(1)
+                     IF (eps_elec%array(i, j, k) < 1.0_dp) THEN
+                        WRITE (UNIT=message, FMT="(A,ES12.3,A,3(I0,A))") &
+                           "SCCS| Invalid dielectric function value ", eps_elec%array(i, j, k), &
+                           " encountered at grid point (", i, ",", j, ",", k, ")"
+                        CPABORT(message)
+                     END IF
+                     IF (i > -1) r = ((REAL(uxyz(1), dp) - REAL(i, dp) + 0.5_dp)*u%pw_grid%dr(1))**2.0_dp
+                     IF (i < 0) r = ((REAL(i, dp) - REAL(lxyz(1), dp) + 0.5_dp)*u%pw_grid%dr(1))**2.0_dp
+                     IF (j > -1) r = ((REAL(uxyz(2), dp) - REAL(j, dp) + 0.5_dp)*u%pw_grid%dr(2))**2.0_dp + r
+                     IF (j < 0) r = ((REAL(j, dp) - REAL(lxyz(2), dp) + 0.5_dp)*u%pw_grid%dr(2))**2.0_dp + r
+                     IF (k > -1) r = ((REAL(uxyz(3), dp) - REAL(k, dp) + 0.5_dp)*u%pw_grid%dr(3))**2.0_dp + r
+                     IF (k < 0) r = ((REAL(k, dp) - REAL(lxyz(3), dp) + 0.5_dp)*u%pw_grid%dr(3))**2.0_dp + r
+                     r = SQRT(r)
+                     u%array(i, j, k) = (1.0_dp/2.0_dp)*erfc((r - alpha_zeta*R_solv)/delta_zeta)
+                     dtf%array(i, j, k) = 1.0_dp
+                  END DO
+               END DO
+            END DO
+!$OMP END PARALLEL DO
+
+            CALL pw_func_u_convolution(poisson_env=poisson_env, func=dtf, convolution=ff, u=u)
+            CALL pw_scale(u, 1.0_dp/ff%array(0, 0, 0))
+            CALL pw_func_u_convolution(poisson_env=poisson_env, func=s, convolution=ff, u=u)
+
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP             PRIVATE(i,j,k) &
+!$OMP             SHARED(lb,para_env,ub, delta_eta, f0, epsilon_solvent) &
+!$OMP             SHARED(ff, t, dtf, eps_elec, rho_tot_zero, rho_solute, s)
+            DO k = lb(3), ub(3)
+               DO j = lb(2), ub(2)
+                  DO i = lb(1), ub(1)
+                     t%array(i, j, k) = 0.5_dp*(1.0_dp + erf((ff%array(i, j, k) - f0)/delta_eta))
+                     dtf%array(i, j, k) = oorootpi*EXP(-((ff%array(i, j, k) - f0)/delta_eta)**2)
+                     eps_elec%array(i, j, k) = EXP(LOG(epsilon_solvent)*(1 - (s%array(i, j, k) &
+                                                                              + (1 - s%array(i, j, k))*t%array(i, j, k))))
+                     rho_tot_zero%array(i, j, k) = rho_solute%array(i, j, k)/eps_elec%array(i, j, k)
+!                     eps_elec%array(i, j, k) = LOG(eps_elec%array(i, j, k))
+                  END DO
+               END DO
+            END DO
+!$OMP END PARALLEL DO
+
+            ! Optional output of the dielectric function in cube file format (solvent aware algorithm case)
+            filename = "DIELECTRIC_FUNCTION"
+            cube_path = TRIM(print_path)//"%"//TRIM(filename)
+            IF (BTEST(cp_print_key_should_output(logger%iter_info, input, TRIM(cube_path)), &
+                      cp_p_file)) THEN
+               append_cube = section_get_lval(input, TRIM(cube_path)//"%APPEND")
+               my_pos_cube = "REWIND"
+               IF (append_cube) my_pos_cube = "APPEND"
+               mpi_io = .TRUE.
+               cube_unit = cp_print_key_unit_nr(logger, input, TRIM(cube_path), &
+                                                extension=".cube", middle_name=TRIM(filename), &
+                                                file_position=my_pos_cube, log_filename=.FALSE., &
+                                                mpi_io=mpi_io, fout=mpi_filename)
+               IF (output_unit > 0) THEN
+                  IF (.NOT. mpi_io) THEN
+                     INQUIRE (UNIT=cube_unit, NAME=filename)
+                  ELSE
+                     filename = mpi_filename
+                  END IF
+                  WRITE (UNIT=output_unit, FMT="(T3,A)") &
+                     "SCCS| The dielectric function is written in cube file format to the file:", &
+                     "SCCS| "//TRIM(filename)
+               END IF
+               CALL cp_pw_to_cube(eps_elec, cube_unit, TRIM(filename), particles=particles, &
+                                  stride=section_get_ivals(input, TRIM(cube_path)//"%STRIDE"), &
+                                  mpi_io=mpi_io)
+               CALL cp_print_key_finished_output(cube_unit, logger, input, TRIM(cube_path), mpi_io=mpi_io)
+            END IF
+
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP             PRIVATE(i,j,k) &
+!$OMP             SHARED(lb,para_env,ub, delta_eta, f0, epsilon_solvent) &
+!$OMP             SHARED(ff, t, dtf, eps_elec, rho_tot_zero, rho_solute, s)
+            DO k = lb(3), ub(3)
+               DO j = lb(2), ub(2)
+                  DO i = lb(1), ub(1)
+                     eps_elec%array(i, j, k) = LOG(eps_elec%array(i, j, k))
+                  END DO
+               END DO
+            END DO
+!$OMP END PARALLEL DO
+
+         END IF
 
          ! Build the derivative of LOG(eps_elec)
          DO i = 1, 3
@@ -489,7 +646,9 @@ CONTAINS
             CALL pw_zero(dln_eps_elec(i))
          END DO
          CALL derive(eps_elec, dln_eps_elec, sccs_control%derivative_method, pw_env, input)
-         CALL auxbas_pw_pool%give_back_pw(eps_elec)
+         IF (sccs_control%method_id /= sccs_saa_andreussi) THEN
+            CALL auxbas_pw_pool%give_back_pw(eps_elec)
+         END IF
 
          ! Print header for the SCCS cycle
          IF (should_output .AND. (output_unit > 0)) THEN
@@ -528,6 +687,11 @@ CONTAINS
 
          CALL auxbas_pw_pool%create_pw(phi_tot)
          CALL pw_zero(phi_tot)
+
+         IF (sccs_control%method_id == sccs_saa_andreussi) THEN
+            CALL auxbas_pw_pool%create_pw(p_e_interface)
+            CALL pw_zero(p_e_interface)
+         END IF
 
          ! Main SCCS iteration loop
          iter = 0
@@ -614,6 +778,46 @@ CONTAINS
             END IF
 
          END DO iter_loop
+
+         IF (sccs_control%method_id == sccs_saa_andreussi) THEN
+            CALL auxbas_pw_pool%create_pw(tem_convolution)
+            CALL auxbas_pw_pool%create_pw(tem_func)
+
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP                PRIVATE(i,j,k,dphi2) &
+!$OMP                SHARED(lb,ub, tem_func, s, dtf) &
+!$OMP                SHARED(dphi_tot, p_e_interface, eps_elec, epsilon_solvent)
+            DO k = lb(3), ub(3)
+               DO j = lb(2), ub(2)
+                  DO i = lb(1), ub(1)
+                     p_e_interface%array(i, j, k) = 1.0_dp/(4.0_dp*twopi)*(EXP(eps_elec%array(i, j, k))*LOG(epsilon_solvent))
+                     dphi2 = dphi_tot(1)%array(i, j, k)*dphi_tot(1)%array(i, j, k) + &
+                             dphi_tot(2)%array(i, j, k)*dphi_tot(2)%array(i, j, k) + &
+                             dphi_tot(3)%array(i, j, k)*dphi_tot(3)%array(i, j, k)
+                     p_e_interface%array(i, j, k) = p_e_interface%array(i, j, k)*dphi2
+                     tem_func%array(i, j, k) = (1.0_dp - s%array(i, j, k))*p_e_interface%array(i, j, k)*dtf%array(i, j, k)
+                  END DO
+               END DO
+            END DO
+!$OMP END PARALLEL DO
+
+            CALL pw_func_u_convolution(poisson_env=poisson_env, func=tem_func, convolution=tem_convolution, u=u)
+
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP                PRIVATE(i,j,k) &
+!$OMP                SHARED(lb,ub) &
+!$OMP                SHARED(p_e_interface, t, tem_convolution, phi_tot, d_s_rhoel)
+            DO k = lb(3), ub(3)
+               DO j = lb(2), ub(2)
+                  DO i = lb(1), ub(1)
+                     p_e_interface%array(i, j, k) = p_e_interface%array(i, j, k)*(1.0_dp - t%array(i, j, k)) &
+                                                    + tem_convolution%array(i, j, k)
+                  END DO
+               END DO
+            END DO
+!$OMP END PARALLEL DO
+
+         END IF
 
          ! Release work storage which is no longer needed
          CALL auxbas_pw_pool%give_back_pw(rho_tot_zero)
@@ -751,6 +955,16 @@ CONTAINS
          CALL auxbas_pw_pool%give_back_pw(rho_solute)
          CALL auxbas_pw_pool%give_back_pw(phi_tot)
          CALL auxbas_pw_pool%give_back_pw(rho_tot)
+         IF (sccs_control%method_id == sccs_saa_andreussi) THEN
+            CALL auxbas_pw_pool%give_back_pw(s)
+            CALL auxbas_pw_pool%give_back_pw(u)
+            CALL auxbas_pw_pool%give_back_pw(ff)
+            CALL auxbas_pw_pool%give_back_pw(t)
+            CALL auxbas_pw_pool%give_back_pw(dtf)
+            CALL auxbas_pw_pool%give_back_pw(tem_convolution)
+            CALL auxbas_pw_pool%give_back_pw(tem_func)
+            CALL auxbas_pw_pool%give_back_pw(eps_elec)
+         END IF
       END BLOCK
 
       ! Calculate additional solvation terms
@@ -772,22 +986,44 @@ CONTAINS
       END IF
 
       ! Calculate SCCS contribution to the Kohn-Sham potential
-      f = -0.5_dp*dvol/fourpi
+      IF (sccs_control%method_id /= sccs_saa_andreussi) THEN
+
+         f = -0.5_dp*dvol/fourpi
 !$OMP PARALLEL DO DEFAULT(NONE) &
 !$OMP             PRIVATE(dphi2,i,j,k) &
 !$OMP             SHARED(f,deps_elec,dphi_tot) &
 !$OMP             SHARED(lb,ub,v_sccs)
-      DO k = lb(3), ub(3)
-         DO j = lb(2), ub(2)
-            DO i = lb(1), ub(1)
-               dphi2 = dphi_tot(1)%array(i, j, k)*dphi_tot(1)%array(i, j, k) + &
-                       dphi_tot(2)%array(i, j, k)*dphi_tot(2)%array(i, j, k) + &
-                       dphi_tot(3)%array(i, j, k)*dphi_tot(3)%array(i, j, k)
-               v_sccs%array(i, j, k) = v_sccs%array(i, j, k) + f*deps_elec%array(i, j, k)*dphi2
+         DO k = lb(3), ub(3)
+            DO j = lb(2), ub(2)
+               DO i = lb(1), ub(1)
+                  dphi2 = dphi_tot(1)%array(i, j, k)*dphi_tot(1)%array(i, j, k) + &
+                          dphi_tot(2)%array(i, j, k)*dphi_tot(2)%array(i, j, k) + &
+                          dphi_tot(3)%array(i, j, k)*dphi_tot(3)%array(i, j, k)
+                  v_sccs%array(i, j, k) = v_sccs%array(i, j, k) + f*deps_elec%array(i, j, k)*dphi2
+               END DO
             END DO
          END DO
-      END DO
 !$OMP END PARALLEL DO
+
+      ELSE
+
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP                PRIVATE(i,j,k) &
+!$OMP                SHARED(lb,ub, dvol) &
+!$OMP                SHARED(p_E_interface, v_sccs, d_s_rhoel)
+         DO k = lb(3), ub(3)
+            DO j = lb(2), ub(2)
+               DO i = lb(1), ub(1)
+                  v_sccs%array(i, j, k) = dvol*d_s_rhoel%array(i, j, k)*p_E_interface%array(i, j, k)
+               END DO
+            END DO
+         END DO
+!$OMP END PARALLEL DO
+
+         CALL auxbas_pw_pool%give_back_pw(d_s_rhoel)
+         CALL auxbas_pw_pool%give_back_pw(p_E_interface)
+
+      END IF
 
       CALL auxbas_pw_pool%give_back_pw(deps_elec)
       DO i = 1, 3
@@ -940,6 +1176,87 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE fattebert_gygi
+
+! **************************************************************************************************
+!> \brief      Calculate the smoothed dielectric function of solvent aware algorithm
+!> \param rho_elec ...
+!> \param eps_elec ...
+!> \param deps_elec ...
+!> \param epsilon_solvent ...
+!> \param rho_max ...
+!> \param rho_min ...
+!> \param s ...
+!> \param d_s_rhoel ...
+!> \author     Ziwei Chai
+!> \version    1.0
+! **************************************************************************************************
+   SUBROUTINE sa_andreussi(rho_elec, eps_elec, deps_elec, epsilon_solvent, rho_max, &
+                           rho_min, s, d_s_rhoel)
+
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: rho_elec, eps_elec, deps_elec
+      REAL(KIND=dp), INTENT(IN)                          :: epsilon_solvent, rho_max, rho_min
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: s, d_s_rhoel
+
+      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'sa_andreussi'
+      REAL(KIND=dp), PARAMETER                           :: rhotol = 1.0E-12_dp
+
+      INTEGER                                            :: handle, i, j, k
+      INTEGER, DIMENSION(3)                              :: lb, ub
+      REAL(KIND=dp)                                      :: diff, dq, dt, f, ln_rho_max, ln_rho_min, &
+                                                            q, rho, t, x, y
+
+      CALL timeset(routineN, handle)
+
+      f = LOG(epsilon_solvent)/twopi
+      diff = rho_max - rho_min
+      IF (diff < SQRT(rhotol)) CPABORT("SCCS: Difference between rho(min) and rho(max) is too small")
+      IF (rho_min >= rhotol) THEN
+         ln_rho_max = LOG(rho_max)
+         ln_rho_min = LOG(rho_min)
+         q = twopi/(ln_rho_max - ln_rho_min)
+         dq = -f*q
+      END IF
+
+      lb(1:3) = rho_elec%pw_grid%bounds_local(1, 1:3)
+      ub(1:3) = rho_elec%pw_grid%bounds_local(2, 1:3)
+
+      ! Calculate the dielectric function and its derivative
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP             PRIVATE(dt,i,j,k,rho,t,x,y) &
+!$OMP             SHARED(deps_elec,dq,eps_elec,epsilon_solvent,f,lb,ub) &
+!$OMP             SHARED(ln_rho_max,rho_elec,q,rho_max,rho_min, s, d_s_rhoel)
+      DO k = lb(3), ub(3)
+         DO j = lb(2), ub(2)
+            DO i = lb(1), ub(1)
+               rho = rho_elec%array(i, j, k)
+               IF (rho < rho_min) THEN
+                  eps_elec%array(i, j, k) = epsilon_solvent
+                  s%array(i, j, k) = 0.0_dp
+                  deps_elec%array(i, j, k) = 0.0_dp
+                  d_s_rhoel%array(i, j, k) = 0.0_dp
+               ELSE IF (rho <= rho_max) THEN
+                  x = LOG(rho)
+                  y = q*(ln_rho_max - x)
+                  t = f*(y - SIN(y))
+                  s%array(i, j, k) = 1 - t/(f*twopi)
+                  eps_elec%array(i, j, k) = EXP(t)
+                  dt = dq*(1.0_dp - COS(y))
+                  deps_elec%array(i, j, k) = eps_elec%array(i, j, k)*dt/rho
+                  d_s_rhoel%array(i, j, k) = deps_elec%array(i, j, k)/(-eps_elec%array(i, j, k)*LOG(epsilon_solvent))
+               ELSE
+                  eps_elec%array(i, j, k) = 1.0_dp
+                  deps_elec%array(i, j, k) = 0.0_dp
+                  s%array(i, j, k) = 1.0_dp
+                  d_s_rhoel%array(i, j, k) = 0.0_dp
+               END IF
+            END DO
+         END DO
+      END DO
+!$OMP END PARALLEL DO
+
+      CALL timestop(handle)
+
+   END SUBROUTINE sa_andreussi
 
 ! **************************************************************************************************
 !> \brief      Build the numerical derivative of a function on realspace grid
@@ -1238,5 +1555,117 @@ CONTAINS
       END IF
 
    END SUBROUTINE print_sccs_results
+
+! **************************************************************************************************
+!> \brief Exponents and coefficients of the SCCS core fill Gaussians per atomic kind, such that
+!>        the fill density of an atom is ccore*exp(-calpha*r**2) = Z_val/(sqrt(pi)*sigma)**3*
+!>        exp(-r**2/sigma**2). A zero coefficient means that the kind is not filled.
+!> \param qs_env ...
+!> \param calpha Gaussian exponents 1/sigma**2 per kind
+!> \param ccore Gaussian coefficients per kind
+!> \param output_unit if > 0, the fill parameters are printed once
+! **************************************************************************************************
+   SUBROUTINE sccs_core_fill_coefficients(qs_env, calpha, ccore, output_unit)
+
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
+         INTENT(OUT)                                     :: calpha, ccore
+      INTEGER, INTENT(IN), OPTIONAL                      :: output_unit
+
+      CHARACTER(LEN=default_string_length)               :: kind_name
+      INTEGER                                            :: ikind, iover, nkind, z
+      LOGICAL                                            :: found
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: used
+      REAL(KIND=dp)                                      :: r_thr, rho_thr, sigma, zeff
+      TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(sccs_control_type), POINTER                   :: sccs_control
+
+      NULLIFY (atomic_kind_set, dft_control, qs_kind_set)
+      CALL get_qs_env(qs_env=qs_env, atomic_kind_set=atomic_kind_set, qs_kind_set=qs_kind_set, &
+                      dft_control=dft_control)
+      sccs_control => dft_control%sccs_control
+      nkind = SIZE(atomic_kind_set)
+      ALLOCATE (calpha(nkind), ccore(nkind), used(SIZE(sccs_control%core_fill_kind_label)))
+      used(:) = .FALSE.
+
+      ! Density threshold used only for the diagnostic radius of the fill:
+      ! the onset of the dielectric transition of the chosen method
+      SELECT CASE (sccs_control%method_id)
+      CASE (sccs_andreussi, sccs_saa_andreussi)
+         rho_thr = sccs_control%rho_min
+      CASE (sccs_fattebert_gygi)
+         rho_thr = sccs_control%rho_zero
+      CASE DEFAULT
+         rho_thr = 0.0_dp
+      END SELECT
+
+      IF (PRESENT(output_unit)) THEN
+         IF ((output_unit > 0) .AND. (.NOT. sccs_control%core_fill_printed)) THEN
+            WRITE (UNIT=output_unit, FMT="(/,T3,A,/,T3,A,ES10.3,/,T3,A)") &
+               "SCCS| Core fill: Z_val/(sqrt(pi)*sigma)**3*exp(-r**2/sigma**2) added for the cavity", &
+               "SCCS| r_thr: radius at which the fill density drops to rho_thr =", rho_thr, &
+               "SCCS|   Kind        Z   Z_val   sigma [bohr]   r_thr [Angstrom]"
+         END IF
+      END IF
+
+      DO ikind = 1, nkind
+         CALL get_atomic_kind(atomic_kind_set(ikind), name=kind_name, z=z)
+         CALL get_qs_kind(qs_kind_set(ikind), zeff=zeff)
+         CALL uppercase(kind_name)
+         ! Default spread. Kinds without removed core electrons (Z_val = Z, e.g. H-q1, He-q2,
+         ! Li-q3, Be-q4) have no core hole in the valence density and are not filled
+         ! (generalises the hydrogen exception of Environ)
+         sigma = sccs_control%core_fill_spread
+         IF (zeff >= REAL(z, KIND=dp) - 0.5_dp) sigma = 0.0_dp
+         found = .FALSE.
+         DO iover = 1, SIZE(sccs_control%core_fill_kind_label)
+            IF (TRIM(sccs_control%core_fill_kind_label(iover)) == TRIM(kind_name)) THEN
+               sigma = sccs_control%core_fill_kind_spread(iover)
+               used(iover) = .TRUE.
+               found = .TRUE.
+            END IF
+         END DO
+         IF ((sigma > 0.0_dp) .AND. (zeff > 0.0_dp)) THEN
+            calpha(ikind) = 1.0_dp/(sigma*sigma)
+            ccore(ikind) = zeff*(calpha(ikind)/pi)**1.5_dp
+         ELSE
+            calpha(ikind) = 0.0_dp
+            ccore(ikind) = 0.0_dp
+         END IF
+         IF (PRESENT(output_unit)) THEN
+            IF ((output_unit > 0) .AND. (.NOT. sccs_control%core_fill_printed)) THEN
+               IF ((ccore(ikind) > 0.0_dp) .AND. (rho_thr > 0.0_dp)) THEN
+                  r_thr = 0.0_dp
+                  IF (ccore(ikind) > rho_thr) THEN
+                     r_thr = SQRT(LOG(ccore(ikind)/rho_thr)/calpha(ikind))
+                  END IF
+                  WRITE (UNIT=output_unit, FMT="(T3,A,T10,A,T18,I3,T24,F6.2,T34,F8.4,T50,F8.4,A)") &
+                     "SCCS|", TRIM(kind_name), z, zeff, sigma, cp_unit_from_cp2k(r_thr, "angstrom"), &
+                     MERGE(" (input)", "        ", found)
+               ELSE IF (ccore(ikind) > 0.0_dp) THEN
+                  WRITE (UNIT=output_unit, FMT="(T3,A,T10,A,T18,I3,T24,F6.2,T34,F8.4,T50,A)") &
+                     "SCCS|", TRIM(kind_name), z, zeff, sigma, "-"//MERGE(" (input)", "        ", found)
+               ELSE
+                  WRITE (UNIT=output_unit, FMT="(T3,A,T10,A,T18,I3,T24,F6.2,T34,A)") &
+                     "SCCS|", TRIM(kind_name), z, zeff, "no fill"//MERGE(" (input)", "        ", found)
+               END IF
+            END IF
+         END IF
+      END DO
+
+      DO iover = 1, SIZE(used)
+         IF (.NOT. used(iover)) THEN
+            CALL cp_abort(__LOCATION__, "SCCS| CORE_FILL_KIND: unknown kind label "// &
+                          TRIM(sccs_control%core_fill_kind_label(iover)))
+         END IF
+      END DO
+      IF (PRESENT(output_unit)) THEN
+         IF (output_unit > 0) sccs_control%core_fill_printed = .TRUE.
+      END IF
+      DEALLOCATE (used)
+
+   END SUBROUTINE sccs_core_fill_coefficients
 
 END MODULE qs_sccs

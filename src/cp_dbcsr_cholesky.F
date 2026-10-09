@@ -214,8 +214,9 @@ CONTAINS
       CALL copy_dbcsr_to_fm(matrixb, fm_matrixb)
       !CALL copy_dbcsr_to_fm(matrixout, fm_matrixout)
 
-      IF (op /= "SOLVE" .AND. op /= "MULTIPLY") &
+      IF (op /= "SOLVE" .AND. op /= "MULTIPLY") THEN
          CPABORT("wrong argument op")
+      END IF
 
       IF (PRESENT(pos)) THEN
          SELECT CASE (pos)
@@ -232,9 +233,6 @@ CONTAINS
 
       chol_transa = 'N'
       IF (PRESENT(transa)) chol_transa = transa
-
-      IF ((fm_matrix%use_sp .NEQV. fm_matrixb%use_sp) .OR. (fm_matrix%use_sp .NEQV. fm_matrixout%use_sp)) &
-         CPABORT("not the same precision")
 
       CALL cp_fm_cholesky_restore(fm_matrix, neig, fm_matrixb, fm_matrixout, op, chol_pos, chol_transa)
 

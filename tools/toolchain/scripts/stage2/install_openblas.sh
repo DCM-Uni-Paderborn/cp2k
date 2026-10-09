@@ -6,8 +6,8 @@
 [ "${BASH_SOURCE[0]}" ] && SCRIPT_NAME="${BASH_SOURCE[0]}" || SCRIPT_NAME=$0
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
-openblas_ver="0.3.33" # Keep in sync with get_openblas_arch.sh
-openblas_sha256="6761af1d9f5d353ab4f0b7497be2643313b36c8f31caec0144bfef198e71e6ab"
+openblas_ver="0.3.34"
+openblas_sha256="cd7e129868320cc2d033afa920e31202dfe0b8066a5b66661900ccc0f197dfed"
 openblas_pkg="OpenBLAS-${openblas_ver}.tar.gz"
 
 source "${SCRIPT_DIR}"/common_vars.sh
@@ -25,7 +25,7 @@ case "${with_openblas}" in
   __INSTALL__)
     echo "==================== Installing OpenBLAS ===================="
     pkg_install_dir="${INSTALLDIR}/openblas-${openblas_ver}"
-    install_lock_file="$pkg_install_dir/install_successful"
+    install_lock_file="${pkg_install_dir}/install_successful"
     if verify_checksums "${install_lock_file}"; then
       echo "openblas-${openblas_ver} is already installed, skipping it."
     else
@@ -49,14 +49,14 @@ case "${with_openblas}" in
       #
       # Unfortunately, NO_SHARED=1 breaks ScaLAPACK build.
       BUILD_DYNAMIC=0
-      if [ "native" != "${TARGET_CPU}" ] || [ ! "${OPENBLAS_LIBCORE}" ]; then
+      if [ "native" != "${TARGET_CPU}" ]; then
         BUILD_DYNAMIC=1
       fi
       if [ "0" = "${BUILD_DYNAMIC}" ]; then
-        TARGET=$(tr '[:lower:]' '[:upper:]' <<< "${OPENBLAS_LIBCORE}")
-        echo "Installing OpenBLAS library for target ${TARGET}"
+        echo "Installing OpenBLAS library for native target"
+        # OpenBLAS detects the native CPU target automatically when TARGET is
+        # not specified. If that fails, fall back to a DYNAMIC_ARCH build.
         if ! make -j $(get_nprocs) \
-          TARGET=${TARGET} \
           MAKE_NB_JOBS=0 \
           NUM_THREADS=128 \
           USE_OPENMP=1 \
@@ -64,8 +64,9 @@ case "${with_openblas}" in
           CC="${CC}" \
           FC="${FC}" \
           PREFIX="${pkg_install_dir}" \
-          > make.${OPENBLAS_LIBCORE}.log 2>&1; then
-          tail_excerpt make.${OPENBLAS_LIBCORE}.log
+          > make.native.log 2>&1; then
+          # Not using tail_excerpt because it exits with 1
+          tail -v -n "${LOG_LINES}" make.native.log
           BUILD_DYNAMIC=1
         fi
       fi
@@ -100,6 +101,7 @@ case "${with_openblas}" in
     echo "==================== Finding OpenBLAS from system paths ===================="
     # assume that system openblas is threaded
     check_lib -lopenblas "OpenBLAS"
+    OPENBLAS_LIBS="-lopenblas"
     # detect separate omp builds
     check_lib -lopenblas_openmp 2> /dev/null && OPENBLAS_LIBS="-lopenblas_openmp"
     check_lib -lopenblas_omp 2> /dev/null && OPENBLAS_LIBS="-lopenblas_omp"
@@ -108,11 +110,10 @@ case "${with_openblas}" in
     if [[ "${pkg_install_dir}" == "/usr/lib"* ]]; then
       pkg_install_dir="/usr"
     else
-      INCLUDE_PATHS=${INCLUDE_PATHS}:"$pkg_install_dir/include"
+      INCLUDE_PATHS=${INCLUDE_PATHS}:"${pkg_install_dir}/include"
     fi
     add_include_from_paths OPENBLAS_CFLAGS "openblas_config.h" $INCLUDE_PATHS
     add_lib_from_paths OPENBLAS_LDFLAGS "libopenblas.*" $LIB_PATHS
-    OPENBLAS_LIBS="-lopenblas"
     ;;
   __DONTUSE__) ;;
 
@@ -121,8 +122,8 @@ case "${with_openblas}" in
     pkg_install_dir="$with_openblas"
     check_dir "${pkg_install_dir}/include"
     check_dir "${pkg_install_dir}/lib"
-    OPENBLAS_CFLAGS="-I'${pkg_install_dir}/include'"
-    OPENBLAS_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
+    OPENBLAS_CFLAGS="-I${pkg_install_dir}/include"
+    OPENBLAS_LDFLAGS="-L${pkg_install_dir}/lib -Wl,-rpath,${pkg_install_dir}/lib"
     OPENBLAS_LIBS="-lopenblas"
     # detect separate omp builds
     (__libdir="${pkg_install_dir}/lib" LIB_PATHS="__libdir" check_lib -lopenblas_openmp 2> /dev/null) &&
@@ -134,10 +135,10 @@ esac
 if [ "$with_openblas" != "__DONTUSE__" ]; then
   if [ "$with_openblas" != "__SYSTEM__" ]; then
     cat << EOF > "${BUILDDIR}/setup_openblas"
-prepend_path LD_LIBRARY_PATH "$pkg_install_dir/lib"
-prepend_path LD_RUN_PATH "$pkg_install_dir/lib"
-prepend_path LIBRARY_PATH "$pkg_install_dir/lib"
-prepend_path CPATH "$pkg_install_dir/include"
+prepend_path LD_LIBRARY_PATH "${pkg_install_dir}/lib"
+prepend_path LD_RUN_PATH "${pkg_install_dir}/lib"
+prepend_path LIBRARY_PATH "${pkg_install_dir}/lib"
+prepend_path CPATH "${pkg_install_dir}/include"
 EOF
   fi
   cat << EOF >> "${BUILDDIR}/setup_openblas"

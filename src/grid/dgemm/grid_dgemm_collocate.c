@@ -14,10 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef __LIBXSMM
-#include <libxsmm.h>
-#endif
-
 #include "../common/grid_basis_set.h"
 #include "../common/grid_common.h"
 #include "../common/grid_constants.h"
@@ -95,7 +91,7 @@ void rotate_to_cartesian_harmonics(const grid_basis_set *ibasis,
     m1.c = work->data;
     m1.ldc = work->ld_;
   }
-  m1.use_libxsmm = true;
+
   dgemm_simplified(&m1);
 
   m2.op1 = 'T';
@@ -111,7 +107,7 @@ void rotate_to_cartesian_harmonics(const grid_basis_set *ibasis,
   m2.ldb = work->ld_;
   m2.c = pab->data;
   m2.ldc = pab->ld_;
-  m2.use_libxsmm = true;
+
   dgemm_simplified(&m2);
 }
 
@@ -533,7 +529,7 @@ void tensor_reduction_for_collocate_integrate(
     m1.ldb = p_alpha_beta_reduced_->ld_;
     m1.c = T.data; // T_{\alpha, \gamma, j} = T(alpha, gamma, j)
     m1.ldc = T.ld_;
-    m1.use_libxsmm = true;
+
     /*
      * the next step is a reduction along the alpha index.
      *
@@ -559,7 +555,7 @@ void tensor_reduction_for_collocate_integrate(
     m2.ldb = p_alpha_beta_reduced_->ld_;
     m2.c = W.data; // W_{\gamma, j, i}
     m2.ldc = W.ld_;
-    m2.use_libxsmm = true;
+
     /* the final step is again a reduction along the gamma indice. It can
      * again be done with one dgemm. The operation is simply
      *
@@ -581,7 +577,7 @@ void tensor_reduction_for_collocate_integrate(
     m3.ldb = W.size[1] * W.ld_;
     m3.c = &idx3(cube[0], 0, 0, 0); // cube_{kji}
     m3.ldc = cube->ld_ * cube->size[1];
-    m3.use_libxsmm = true;
+
     dgemm_simplified(&m1);
     dgemm_simplified(&m2);
 
@@ -782,8 +778,8 @@ void grid_collocate(collocation_integration *const handler,
 
   /* seting up the cube parameters */
   int cmax = compute_cube_properties(
-      use_ortho, radius, (const double(*)[3])handler->dh,
-      (const double(*)[3])handler->dh_inv, rp, &disr_radius, roffset,
+      use_ortho, radius, (const double (*)[3])handler->dh,
+      (const double (*)[3])handler->dh_inv, rp, &disr_radius, roffset,
       cubecenter, lb_cube, ub_cube, cube_size);
 
   /* initialize the multidimensional array containing the polynomials */
@@ -821,11 +817,11 @@ void grid_collocate(collocation_integration *const handler,
                         &idx3(handler->pol, 2, 0, 0)); /* i indice */
 
     calculate_non_orthorombic_corrections_tensor(
-        zetp, roffset, (const double(*)[3])handler->dh, lb_cube, ub_cube,
+        zetp, roffset, (const double (*)[3])handler->dh, lb_cube, ub_cube,
         handler->orthogonal, &handler->Exp);
 
     /* Use a slightly modified version of Ole code */
-    grid_transform_coef_xzy_to_ikj((const double(*)[3])handler->dh,
+    grid_transform_coef_xzy_to_ikj((const double (*)[3])handler->dh,
                                    &handler->coef);
   }
 
@@ -884,7 +880,7 @@ void grid_dgemm_collocate_pgf_product(
   const double prefactor = rscale * exp(-zeta * f * rab2);
   const double zeta_pair[2] = {zeta, zetb};
   initialize_basis_vectors(handler, dh, dh_inv);
-  verify_orthogonality((const double(*)[3])dh, handler->orthogonal);
+  verify_orthogonality((const double (*)[3])dh, handler->orthogonal);
 
   initialize_tensor_3(&(handler->grid), grid_local_size[2], grid_local_size[1],
                       grid_local_size[0]);
@@ -1114,8 +1110,8 @@ void collocate_one_grid_level_dgemm(grid_context *const ctx,
     initialize_tensor_2(&pab_prep, ctx->maxco, ctx->maxco);
     alloc_tensor(&pab_prep);
 
-    initialize_basis_vectors(handler, (const double(*)[3])grid->dh,
-                             (const double(*)[3])grid->dh_inv);
+    initialize_basis_vectors(handler, (const double (*)[3])grid->dh,
+                             (const double (*)[3])grid->dh_inv);
 
     /* setup the grid parameters, window parameters (if the grid is split), etc
      */

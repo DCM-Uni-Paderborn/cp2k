@@ -1,3 +1,8 @@
+"reftraj-output-index.inp"              = [{matcher="REFTRAJ_first_frame_index", file="reftraj-output.xyz", tol=0.0, ref=101},
+                                           {matcher="REFTRAJ_last_frame_index", file="reftraj-output.xyz", tol=0.0, ref=145},
+                                           {matcher="REFTRAJ_force_file", file="reftraj_output_index-reftraj-force-1_101.xyz"},
+                                           {matcher="REFTRAJ_force_file", file="reftraj_output_index-reftraj-force-1_120.xyz"},
+                                           {matcher="REFTRAJ_force_file", file="reftraj_output_index-reftraj-force-1_145.xyz"}]
 "water_3.inp"                           = [{matcher="M002", tol=1.0E-14, ref=0.247694666375E-02}]
 "water_3_g3x3.inp"                      = [{matcher="M002", tol=1.0E-14, ref=-0.146091283588E-03}]
 "water_3_dist.inp"                      = [{matcher="M002", tol=1.0E-14, ref=-0.146090953012E-03}]
@@ -13,11 +18,11 @@
 "deca_ala_reftraj.inp"                  = [{matcher="M002", tol=1.0E-14, ref=-1.0361509045299999}]
 "deca_ala4.inp"                         = [{matcher="M002", tol=2e-12, ref=-1.04188113936}]
 "deca_ala_reftraj2.inp"                 = [{matcher="M002", tol=2e-12, ref=-1.04188113933}]
-"deca_ala_reftraj2_deprecated.inp"      = [{matcher="M002", tol=2e-12, ref=-1.04188113933}]
 "deca_ala_reftraj3.inp"                 = [{matcher="M002", tol=1.0E-14, ref=-1.0415155385499999}]
-"deca_ala_reftraj3_deprecated.inp"      = [{matcher="M002", tol=1.0E-14, ref=-1.0415155385499999}]
 "deca_ala5.inp"                         = [{matcher="M002", tol=1.0E-14, ref=-0.962650041763}]
 "h2po4.inp"                             = [{matcher="M002", tol=1.0E-14, ref=-0.793833783008E+01}]
+"deca_ala6.inp"                         = [{matcher="M002", tol=2e-12, ref=-1.04188113936}]
+"deca_ala_reftraj4.inp"                 = [{matcher="M002", tol=2e-12, ref=-1.04188113933}]
 #MOL_SET
 "multi_psf.inp"                         = [{matcher="M002", tol=1.0E-14, ref=-0.379512460146E+01}]
 "multi_frag.inp"                        = [{matcher="M002", tol=1.0E-14, ref=-0.417322869047E+01}]

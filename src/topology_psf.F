@@ -114,10 +114,8 @@ CONTAINS
       label = 'PSF'
       CALL parser_search_string(parser, label, .TRUE., found, begin_line=.TRUE.)
       IF (.NOT. found) THEN
-         IF (output_unit > 0) THEN
-            WRITE (output_unit, '(A)') "ERROR| Missing PSF specification line"
-         END IF
-         CPABORT("")
+         CALL cp_abort(__LOCATION__, &
+                       "Missing PSF specification line in <"//TRIM(filename)//">")
       END IF
       DO WHILE (parser_test_next_token(parser) /= "EOL")
          CALL parser_get_object(parser, field)
@@ -150,11 +148,12 @@ CONTAINS
          natom = 0
       ELSE
          CALL parser_get_object(parser, natom)
-         IF (natom_prev + natom > topology%natoms) &
+         IF (natom_prev + natom > topology%natoms) THEN
             CALL cp_abort(__LOCATION__, &
                           "Number of atoms in connectivity control is larger than the "// &
                           "number of atoms in coordinate control. check coordinates and "// &
                           "connectivity. ")
+         END IF
          IF (iw > 0) WRITE (iw, '(T2,A,'//TRIM(c_int)//')') 'PSF_INFO| NATOM = ', natom
          !malloc the memory that we need
          CALL reallocate(atom_info%id_molname, 1, natom_prev + natom)
@@ -460,9 +459,7 @@ CONTAINS
                conn_info%c_bond_b(i) = jatom
             END IF
          ELSE
-            IF (atom_info%id_molname(iatom) /= atom_info%id_molname(jatom)) THEN
-               CPABORT("")
-            END IF
+            CPASSERT(atom_info%id_molname(iatom) == atom_info%id_molname(jatom))
          END IF
       END DO
       !
@@ -728,7 +725,8 @@ CONTAINS
 
       CHARACTER(LEN=2*default_string_length)             :: psf_format
       CHARACTER(LEN=default_path_length)                 :: record
-      CHARACTER(LEN=default_string_length)               :: c_int, my_tag1, my_tag2, my_tag3
+      CHARACTER(LEN=default_string_length)               :: atom_name, c_int, my_tag1, my_tag2, &
+                                                            my_tag3
       CHARACTER(LEN=default_string_length), &
          DIMENSION(:), POINTER                           :: charge_atm
       INTEGER                                            :: handle, i, iw, j, my_index, nchg
@@ -761,11 +759,11 @@ CONTAINS
          ALLOCATE (charge_inp(nchg))
          CALL read_chrg_section(charge_atm, charge_inp, section=tmp_section, start=0)
          DO j = 1, topology%natoms
-            record = id2str(atom_info%id_atmname(j))
-            ldum = qmmm_ff_precond_only_qm(record)
-            CALL uppercase(record)
+            atom_name = id2str(atom_info%id_atmname(j))
+            ldum = qmmm_ff_precond_only_qm(atom_name)
+            CALL uppercase(atom_name)
             DO i = 1, nchg
-               IF (record == charge_atm(i)) THEN
+               IF (atom_name == charge_atm(i)) THEN
                   charges(j) = charge_inp(i)
                   EXIT
                END IF

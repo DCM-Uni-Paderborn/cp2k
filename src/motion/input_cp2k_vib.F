@@ -116,7 +116,11 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="THERMOCHEMISTRY", &
-                          description="Calculation of the thermochemical data. Valid for molecules in the gas phase. ", &
+                          description="Calculation of the thermochemical data. Valid for molecules in "// &
+                          "the gas phase, not supporting phonon frequencies at general **q**-points "// &
+                          "beyond wave vector **q** at gamma point. Based on the rigid-rotor harmonic "// &
+                          "oscillator (RRHO) model, which is known to break down if very low vibrational "// &
+                          "frequencies are present in a flexible system.", &
                           default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -176,6 +180,13 @@ CONTAINS
       CALL cp_print_key_section_create(print_key, __LOCATION__, "MOLDEN_VIB", &
                                        description="Controls the printing for visualization in molden format", &
                                        print_level=low_print_level, add_last=add_last_numeric, filename="VIBRATIONS")
+      CALL keyword_create(keyword, __LOCATION__, name="WRITE_CELL", &
+                          description="Controls whether the CP2K [Cell] extension is written to the MOLDEN file. "// &
+                          "The cell vectors are written in atomic units to match the vibrational coordinates.", &
+                          usage="WRITE_CELL T", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
       CALL section_add_subsection(section, print_key)
       CALL section_release(print_key)
 

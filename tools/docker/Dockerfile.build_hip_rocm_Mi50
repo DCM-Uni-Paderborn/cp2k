@@ -3,7 +3,7 @@
 # Usage: podman build --shm-size=1g -f ./Dockerfile.build_hip_rocm_Mi50 ../../
 #
 
-FROM rocm/dev-ubuntu-24.04:7.2-complete
+FROM docker.io/rocm/dev-ubuntu-24.04:7.2-complete
 
 # Install some Ubuntu packages.
 RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
@@ -33,18 +33,16 @@ RUN ./install_requirements.sh ubuntu
 # Install the toolchain.
 RUN mkdir scripts
 COPY ./tools/toolchain/scripts/VERSION \
-     ./tools/toolchain/scripts/parse_if.py \
      ./tools/toolchain/scripts/tool_kit.sh \
      ./tools/toolchain/scripts/common_vars.sh \
      ./tools/toolchain/scripts/signal_trap.sh \
-     ./tools/toolchain/scripts/get_openblas_arch.sh \
      ./scripts/
 COPY ./tools/toolchain/install_cp2k_toolchain.sh .
 RUN ./install_cp2k_toolchain.sh \
     --mpi-mode=mpich \
     --enable-hip=yes \
+    --with-sirius=install \
     --gpu-ver=Mi50 \
-    --with-dbcsr \
     --dry-run
 
 # Dry-run leaves behind config files for the followup install scripts.
@@ -86,9 +84,10 @@ COPY ./data ./data
 COPY ./tools/build_utils ./tools/build_utils
 COPY ./cmake ./cmake
 COPY ./CMakeLists.txt .
+COPY ./CMakePresets.json .
 
 # Compile CP2K.
-COPY ./tools/docker/scripts/build_cp2k.sh .
+COPY ./tools/docker/scripts/build_cp2k.sh ./tools/docker/scripts/cmake_cp2k.sh ./
 RUN ./build_cp2k.sh toolchain_hip_Mi50 psmp
 
 # Run build test.

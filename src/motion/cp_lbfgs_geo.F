@@ -35,7 +35,6 @@ MODULE cp_lbfgs_geo
    USE gopt_param_types,                ONLY: gopt_param_type
    USE input_constants,                 ONLY: default_ts_method_id
    USE input_section_types,             ONLY: section_vals_type,&
-                                              section_vals_val_get,&
                                               section_vals_val_set
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_para_env_type
@@ -106,7 +105,6 @@ CONTAINS
       CALL print_geo_opt_header(gopt_env, output_unit, "L-BFGS")
 
       ! finds space group
-      CALL section_vals_val_get(geo_section, "KEEP_SPACE_GROUP", l_val=spgr%keep_space_group)
       IF (spgr%keep_space_group) THEN
          CALL identify_space_group(subsys, geo_section, gopt_env, output_unit)
          CALL spgr_apply_rotations_coord(spgr, x0)
@@ -114,8 +112,9 @@ CONTAINS
       END IF
 
       ! Stop if not implemented
-      IF (gopt_env%type_id == default_ts_method_id) &
-         CPABORT("BFGS method not yet working with DIMER")
+      IF (gopt_env%type_id == default_ts_method_id) THEN
+         CPABORT("L-BFGS method not yet working with DIMER")
+      END IF
 
       ALLOCATE (optimizer)
       CALL cp_opt_gopt_create(optimizer, para_env=para_env, obj_funct=gopt_env, &
@@ -147,12 +146,16 @@ CONTAINS
          IF (its == gopt_param%max_iter) EXIT
       END DO
 
-      IF ((its == gopt_param%max_iter) .AND. (.NOT. converged)) THEN
+      IF (optimizer%status == 5) THEN
+         IF (output_unit > 0) THEN
+            WRITE (output_unit, FMT="(/,T2,A)") "*** L-BFGS ABNORMAL EXIT: OPTIMIZATION NOT CONVERGED ***"
+            WRITE (output_unit, FMT="(T2,A)") "L-BFGS task: "//TRIM(optimizer%task)
+         END IF
+      ELSE IF ((its == gopt_param%max_iter) .AND. (.NOT. converged)) THEN
          CALL print_geo_opt_nc(gopt_env, output_unit)
       END IF
 
       ! show space_group
-      CALL section_vals_val_get(geo_section, "SHOW_SPACE_GROUP", l_val=spgr%show_space_group)
       IF (spgr%show_space_group) THEN
          CALL identify_space_group(subsys, geo_section, gopt_env, output_unit)
          CALL print_spgr(spgr)

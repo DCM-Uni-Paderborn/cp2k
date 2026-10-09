@@ -20,7 +20,7 @@ cd "${BUILDDIR}"
 case "${with_intel}" in
   __INSTALL__)
     echo "==================== Installing the Intel compiler ===================="
-    echo "__INSTALL__ is not supported; please install the Intel compiler manually"
+    echo "Installation of Intel compilers is not supported; please install manually"
     exit 1
     ;;
   __SYSTEM__)
@@ -53,8 +53,6 @@ case "${with_intel}" in
     fi
     F90="${FC}"
     F77="${FC}"
-    INTEL_CFLAGS="-I'${pkg_install_dir}/include'"
-    INTEL_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
     ;;
 esac
 if [ "${with_intel}" != "__DONTUSE__" ]; then
@@ -74,14 +72,8 @@ prepend_path PATH "${pkg_install_dir}/bin"
 prepend_path LD_LIBRARY_PATH "${pkg_install_dir}/lib"
 prepend_path LD_RUN_PATH "${pkg_install_dir}/lib"
 prepend_path LIBRARY_PATH "${pkg_install_dir}/lib"
-prepend_path CPATH "${pkg_install_dir}/include"
 EOF
   fi
-  cat << EOF >> "${BUILDDIR}/setup_intel"
-export INTEL_CFLAGS="${INTEL_CFLAGS}"
-export INTEL_LDFLAGS="${INTEL_LDFLAGS}"
-export INTEL_LIBS="${INTEL_LIBS}"
-EOF
   filter_setup "${BUILDDIR}/setup_intel" "${SETUPFILE}"
 fi
 

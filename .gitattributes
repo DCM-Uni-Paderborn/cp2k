@@ -1,5 +1,6 @@
+*.F linguist-language=Fortran-Free-Form
+*.inc linguist-language=Text
+CODEOWNERS export-ignore
 .gitattributes export-ignore
+.git-blame-ignore-revs export-ignore
 .gitignore export-ignore
-.gitmodules export-ignore
-.pre-commit-config.yaml export-ignore
-.github/** export-ignore

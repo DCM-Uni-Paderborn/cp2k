@@ -30,9 +30,10 @@ MODULE integrator
                                               get_atomic_kind_set
    USE barostat_types,                  ONLY: barostat_type
    USE cell_methods,                    ONLY: init_cell,&
-                                              set_cell_param
+                                              read_xyz_comment
    USE cell_types,                      ONLY: cell_type,&
-                                              parse_cell_line
+                                              parse_cell_line,&
+                                              pbc
    USE constraint,                      ONLY: rattle_control,&
                                               shake_control,&
                                               shake_roll_control,&
@@ -43,7 +44,10 @@ MODULE integrator
    USE constraint_util,                 ONLY: getold,&
                                               pv_constraint
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_log_handling,                 ONLY: cp_to_string
+   USE cp_log_handling,                 ONLY: cp_get_default_logger,&
+                                              cp_logger_type,&
+                                              cp_to_string
+   USE cp_output_handling,              ONLY: cp_iterate
    USE cp_parser_methods,               ONLY: parser_get_next_line,&
                                               parser_read_line
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
@@ -88,6 +92,9 @@ MODULE integrator
    USE qs_environment_types,            ONLY: get_qs_env
    USE reftraj_types,                   ONLY: REFTRAJ_EVAL_ENERGY_FORCES,&
                                               REFTRAJ_EVAL_NONE,&
+                                              REFTRAJ_WRAP_CENTRAL,&
+                                              REFTRAJ_WRAP_NONE,&
+                                              REFTRAJ_WRAP_POSITIVE,&
                                               reftraj_type
    USE reftraj_util,                    ONLY: compute_msd_reftraj
    USE rt_propagation_methods,          ONLY: propagation_step
@@ -191,8 +198,9 @@ CONTAINS
                          nshell=nshell, &
                          particles=particles, &
                          virial=virial)
-      IF (nshell /= 0) &
+      IF (nshell /= 0) THEN
          CPABORT("Langevin dynamics is not yet implemented for core-shell models")
+      END IF
 
       nparticle_kind = atomic_kinds%n_els
       atomic_kind_set => atomic_kinds%els
@@ -1510,12 +1518,12 @@ CONTAINS
       INTEGER                                            :: cell_itimes, i, nparticle, Nread, &
                                                             trj_itimes
       INTEGER, POINTER                                   :: itimes
-      LOGICAL                                            :: init, my_end, test_ok, traj_has_cell_info
+      LOGICAL                                            :: init, my_end, traj_has_cell_info
       REAL(KIND=dp)                                      :: cell_time, h(3, 3), trj_epot, trj_time, &
                                                             vol
-      REAL(KIND=dp), DIMENSION(3)                        :: abc, albega
       REAL(KIND=dp), POINTER                             :: time
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -1524,9 +1532,10 @@ CONTAINS
       TYPE(reftraj_type), POINTER                        :: reftraj_env
       TYPE(simpar_type), POINTER                         :: simpar
 
-      NULLIFY (reftraj_env, particle_set, particles, force_env, subsys, simpar, para_env, cell, itimes, time)
+      NULLIFY (reftraj_env, particle_set, particles, force_env, subsys, simpar, para_env, cell, logger, itimes, time)
       CALL get_md_env(md_env=md_env, init=init, reftraj=reftraj_env, force_env=force_env, &
                       para_env=para_env, simpar=simpar)
+      logger => cp_get_default_logger()
 
       CALL force_env_get(force_env=force_env, cell=cell, subsys=subsys)
       reftraj_env%isnap = reftraj_env%isnap + reftraj_env%info%stride
@@ -1536,38 +1545,56 @@ CONTAINS
       CALL cp_subsys_get(subsys=subsys, particles=particles)
       nparticle = particles%n_els
       particle_set => particles%els
-      abc(:) = 0.0_dp
-      albega(:) = 0.0_dp
 
       ! SnapShots read from an external file (parsers calls are buffered! please
       ! don't put any additional MPI call!) [tlaino]
       CALL parser_read_line(reftraj_env%info%traj_parser, 1)
       READ (reftraj_env%info%traj_parser%input_line, FMT="(I8)") nread
       CALL parser_read_line(reftraj_env%info%traj_parser, 1)
-      test_ok = .FALSE.
-      IF (INDEX(reftraj_env%info%traj_parser%input_line, ", a = ") > 60) THEN
-         traj_has_cell_info = .TRUE.
-         READ (reftraj_env%info%traj_parser%input_line, &
-               FMT="(T6,I8,T23,F12.3,T41,F20.10,T67,F14.6,T87,F14.6,T107,F14.6,T131,F8.3,T149,F8.3,T167,F8.3)", &
-               ERR=999) trj_itimes, trj_time, trj_epot, abc(1:3), albega(1:3)
-         ! Convert cell parameters from angstrom and degree to the internal CP2K units
-         DO i = 1, 3
-            abc(i) = cp_unit_to_cp2k(abc(i), "angstrom")
-            albega(i) = cp_unit_to_cp2k(albega(i), "deg")
-         END DO
-      ELSE
-         traj_has_cell_info = .FALSE.
-         READ (reftraj_env%info%traj_parser%input_line, FMT="(T6,I8,T23,F12.3,T41,F20.10)", ERR=999) &
-            trj_itimes, trj_time, trj_epot
-      END IF
-      test_ok = .TRUE.
-999   IF (.NOT. test_ok) THEN
-         ! Handling properly the error when reading the title of an XYZ
+      ! Use the same parser for FORCE_EVAL/SUBSYS/CELL which allows for extxyz
+      ! Escape values for undetected cases is HUGE(0)
+      CALL read_xyz_comment(reftraj_env%info%traj_parser%input_line, cell, &
+                            traj_has_cell_info, trj_itimes, trj_time, trj_epot)
+      IF (trj_itimes == HUGE(0)) THEN
          CALL get_md_env(md_env, itimes=itimes)
          trj_itimes = itimes
-         trj_time = 0.0_dp
-         trj_epot = 0.0_dp
       END IF
+      IF (trj_time == HUGE(0.0_dp)) trj_time = 0.0_dp
+      IF (trj_epot == HUGE(0.0_dp)) trj_epot = 0.0_dp
+
+      ! The following parser for XYZ comment line with strict field widths from
+      ! the dumpdcd format is preserved for historical reference only
+      ! --------------------
+      !       LOGICAL                                            :: test_ok
+      !       REAL(KIND=dp), DIMENSION(3)                        :: abc, albega
+      ! abc(:) = 0.0_dp
+      ! albega(:) = 0.0_dp
+      ! test_ok = .FALSE.
+      ! IF (INDEX(reftraj_env%info%traj_parser%input_line, ", a = ") > 60) THEN
+      !    traj_has_cell_info = .TRUE.
+      !    READ (reftraj_env%info%traj_parser%input_line, &
+      !          FMT="(T6,I8,T23,F12.3,T41,F20.10,T67,F14.6,T87,F14.6,T107,F14.6,T131,F8.3,T149,F8.3,T167,F8.3)", &
+      !          ERR=999) trj_itimes, trj_time, trj_epot, abc(1:3), albega(1:3)
+      !    ! Convert cell parameters from angstrom and degree to the internal CP2K units
+      !    DO i = 1, 3
+      !       abc(i) = cp_unit_to_cp2k(abc(i), "angstrom")
+      !       albega(i) = cp_unit_to_cp2k(albega(i), "deg")
+      !    END DO
+      ! ELSE
+      !    traj_has_cell_info = .FALSE.
+      !    READ (reftraj_env%info%traj_parser%input_line, FMT="(T6,I8,T23,F12.3,T41,F20.10)", ERR=999) &
+      !       trj_itimes, trj_time, trj_epot
+      ! END IF
+      ! test_ok = .TRUE.
+      ! 999 IF (.NOT. test_ok) THEN
+      !    ! Handling properly the error when reading the title of an XYZ
+      !    CALL get_md_env(md_env, itimes=itimes)
+      !    trj_itimes = itimes
+      !    trj_time = 0.0_dp
+      !    trj_epot = 0.0_dp
+      ! END IF
+      ! --------------------
+
       ! Delayed print of error message until the step number is known
       IF (nread /= nparticle) THEN
          errmsg = "Number of atoms for step "//TRIM(ADJUSTL(cp_to_string(trj_itimes)))// &
@@ -1630,10 +1657,11 @@ CONTAINS
 
       ! Check if we reached the end of the file and provide some info..
       IF (my_end) THEN
-         IF (reftraj_env%isnap /= (simpar%nsteps - 1)) &
+         IF (reftraj_env%isnap /= (simpar%nsteps - 1)) THEN
             CALL cp_abort(__LOCATION__, &
                           "Reached the end of the Trajectory  frames in the TRAJECTORY file. Number of "// &
                           "missing frames ("//cp_to_string((simpar%nsteps - 1) - reftraj_env%isnap)//").")
+         END IF
       END IF
 
       ! Read cell parameters from cell file if requested and if not yet available
@@ -1643,10 +1671,11 @@ CONTAINS
          CPASSERT(trj_itimes == cell_itimes)
          ! Check if we reached the end of the file and provide some info..
          IF (my_end) THEN
-            IF (reftraj_env%isnap /= (simpar%nsteps - 1)) &
+            IF (reftraj_env%isnap /= (simpar%nsteps - 1)) THEN
                CALL cp_abort(__LOCATION__, &
                              "Reached the end of the cell info frames in the CELL file. Number of "// &
                              "missing frames ("//cp_to_string((simpar%nsteps - 1) - reftraj_env%isnap)//").")
+            END IF
          END IF
       END IF
 
@@ -1661,15 +1690,38 @@ CONTAINS
       reftraj_env%epot = trj_epot
       reftraj_env%itimes = trj_itimes
       reftraj_env%time = trj_time/femtoseconds
-      CALL get_md_env(md_env, t=time)
+      CALL get_md_env(md_env, itimes=itimes, t=time)
+      itimes = reftraj_env%itimes
       time = reftraj_env%time
+      CALL cp_iterate(logger%iter_info, &
+                      last=logger%iter_info%last_iter(logger%iter_info%n_rlevel), &
+                      iter_nr=reftraj_env%itimes)
 
       IF (traj_has_cell_info) THEN
-         CALL set_cell_param(cell, cell_length=abc, cell_angle=albega, do_init_cell=.TRUE.)
+         CALL init_cell(cell)
       ELSE IF (reftraj_env%info%variable_volume) THEN
          cell%hmat = h
          CALL init_cell(cell)
       END IF
+
+      ! Wrap coordinates if requested
+      SELECT CASE (reftraj_env%info%wrap)
+      CASE (REFTRAJ_WRAP_NONE)
+         ! Do Nothing
+      CASE (REFTRAJ_WRAP_POSITIVE)
+         ! Wrap to positive range
+         DO i = 1, nparticle
+            particle_set(i)%r(1:3) = pbc(particle_set(i)%r(1:3), cell, positive_range=.TRUE.)
+         END DO
+      CASE (REFTRAJ_WRAP_CENTRAL)
+         ! Wrap to halfway, i.e. origin is at the center
+         DO i = 1, nparticle
+            particle_set(i)%r(1:3) = pbc(particle_set(i)%r(1:3), cell)
+         END DO
+      CASE DEFAULT
+         ! Should not reach here
+         CPABORT("Option invalid or unavailable for reftraj_env%info%wrap")
+      END SELECT
 
       ![ADAPT] update input structure with new coordinates, make new labels
       CALL qmmmx_update_force_env(force_env, force_env%root_section)
@@ -2487,9 +2539,10 @@ CONTAINS
                               core_particle_set, para_env, shell_adiabatic, vel=.TRUE.)
 
       ! Update constraint virial
-      IF (simpar%constraint) &
+      IF (simpar%constraint) THEN
          CALL pv_constraint(gci, local_molecules, molecule_set, &
                             molecule_kind_set, particle_set, virial, para_env)
+      END IF
 
       CALL virial_evaluate(atomic_kind_set, particle_set, &
                            local_particles, virial, para_env)

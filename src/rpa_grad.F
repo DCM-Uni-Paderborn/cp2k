@@ -14,9 +14,9 @@ MODULE rpa_grad
    USE cp_array_utils,                  ONLY: cp_1d_r_cp_type,&
                                               cp_3d_r_cp_type
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
-   USE cp_fm_basic_linalg,              ONLY: cp_fm_geadd,&
-                                              cp_fm_scale_and_add,&
-                                              cp_fm_uplo_to_full
+   USE cp_fm_basic_linalg,              ONLY: cp_fm_add_on_diag,&
+                                              cp_fm_geadd,&
+                                              cp_fm_scale_and_add
    USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_invert
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_get,&
@@ -738,7 +738,8 @@ CONTAINS
       TYPE(mp2_type), INTENT(INOUT)                      :: mp2_env
       TYPE(rpa_grad_type), INTENT(INOUT)                 :: rpa_grad
       LOGICAL, INTENT(IN)                                :: do_ri_sos_laplace_mp2
-      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_Q, fm_mat_Q_gemm
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(INOUT)      :: fm_mat_Q
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_Q_gemm
       TYPE(dgemm_counter_type), INTENT(INOUT)            :: dgemm_counter
       TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_S
       REAL(KIND=dp), INTENT(IN)                          :: omega
@@ -749,11 +750,8 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'rpa_grad_matrix_operations'
 
-      INTEGER                                            :: col_global, col_local, dimen_ia, &
-                                                            dimen_RI, handle, handle2, ispin, &
-                                                            jspin, ncol_local, nrow_local, nspins, &
-                                                            row_local
-      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
+      INTEGER                                            :: dimen_ia, dimen_RI, handle, handle2, &
+                                                            ispin, jspin, nspins
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :), &
          TARGET                                          :: mat_S_3D, mat_work_iaP_3D
       TYPE(cp_fm_type)                                   :: fm_work_iaP, fm_work_PQ
@@ -762,28 +760,17 @@ CONTAINS
 
       nspins = SIZE(fm_mat_Q)
 
-      CALL cp_fm_get_info(fm_mat_Q(1), nrow_global=dimen_RI, nrow_local=nrow_local, ncol_local=ncol_local, &
-                          col_indices=col_indices, row_indices=row_indices)
+      CALL cp_fm_get_info(fm_mat_Q(1), nrow_global=dimen_RI)
 
       IF (.NOT. do_ri_sos_laplace_mp2) THEN
          CALL cp_fm_create(fm_work_PQ, fm_mat_Q(1)%matrix_struct)
 
-         ! calculate [1+Q(iw')]^-1
-         CALL cp_fm_cholesky_invert(fm_mat_Q(1))
-         ! symmetrize the result, fm_work_PQ is only a work matrix
-         CALL cp_fm_uplo_to_full(fm_mat_Q(1), fm_work_PQ)
+         ! Invert [1+Q(iw')], using fm_work_PQ as temporary workspace.
+         CALL cp_fm_cholesky_invert(fm_mat_Q(1), n=dimen_RI, work=fm_work_PQ)
 
          CALL cp_fm_release(fm_work_PQ)
 
-         DO col_local = 1, ncol_local
-            col_global = col_indices(col_local)
-            DO row_local = 1, nrow_local
-            IF (col_global == row_indices(row_local)) THEN
-               fm_mat_Q(1)%local_data(row_local, col_local) = fm_mat_Q(1)%local_data(row_local, col_local) - 1.0_dp
-               EXIT
-            END IF
-            END DO
-         END DO
+         CALL cp_fm_add_on_diag(fm_mat_Q(1), -1.0_dp, n_active=dimen_RI)
 
          CALL timeset(routineN//"_PQ", handle2)
          CALL dgemm_counter_start(dgemm_counter)
@@ -1054,8 +1041,9 @@ CONTAINS
       mem_per_block = REAL(number_of_elements_per_blk, KIND=dp)*8.0_dp
       number_of_parallel_channels = MAX(1, MIN(MAXVAL(grid) - 1, FLOOR(mem_real/mem_per_block)))
       CALL para_env%min(number_of_parallel_channels)
-      IF (mp2_env%ri_grad%max_parallel_comm > 0) &
+      IF (mp2_env%ri_grad%max_parallel_comm > 0) THEN
          number_of_parallel_channels = MIN(number_of_parallel_channels, mp2_env%ri_grad%max_parallel_comm)
+      END IF
 
       IF (unit_nr > 0) THEN
          WRITE (unit_nr, '(T3,A,T75,I6)') 'GRAD_INFO| Number of parallel communication channels:', number_of_parallel_channels
@@ -1671,11 +1659,13 @@ CONTAINS
             pcol_send = MODULO(my_pcol + proc_shift, num_pe_col)
             pcol_recv = MODULO(my_pcol - proc_shift, num_pe_col)
 
-            IF (ALLOCATED(index2send(pcol_send)%array)) &
+            IF (ALLOCATED(index2send(pcol_send)%array)) THEN
                size_send_buffer = MAX(size_send_buffer, SIZE(index2send(pcol_send)%array))
+            END IF
 
-            IF (ALLOCATED(index2recv(pcol_recv)%array)) &
+            IF (ALLOCATED(index2recv(pcol_recv)%array)) THEN
                size_recv_buffer = MAX(size_recv_buffer, SIZE(index2recv(pcol_recv)%array))
+            END IF
          END DO
 
          ALLOCATE (buffer_send(nrow_local, size_send_buffer), buffer_recv(nrow_local, size_recv_buffer))
@@ -1829,11 +1819,13 @@ CONTAINS
             pcol_send = MODULO(my_pcol + proc_shift, num_pe_col)
             pcol_recv = MODULO(my_pcol - proc_shift, num_pe_col)
 
-            IF (ALLOCATED(index2send(pcol_send)%array)) &
+            IF (ALLOCATED(index2send(pcol_send)%array)) THEN
                size_send_buffer = MAX(size_send_buffer, SIZE(index2send(pcol_send)%array))
+            END IF
 
-            IF (ALLOCATED(index2recv(pcol_recv)%array)) &
+            IF (ALLOCATED(index2recv(pcol_recv)%array)) THEN
                size_recv_buffer = MAX(size_recv_buffer, SIZE(index2recv(pcol_recv)%array))
+            END IF
          END DO
 
          ALLOCATE (buffer_send(nrow_local, size_send_buffer), buffer_recv(nrow_local, size_recv_buffer))
@@ -2273,14 +2265,18 @@ CONTAINS
 
       DO ispin = 1, nspins
          DO pcol = 0, SIZE(sos_mp2_work_occ(ispin)%index2send, 1) - 1
-            IF (ALLOCATED(sos_mp2_work_occ(ispin)%index2send(pcol)%array)) &
+            IF (ALLOCATED(sos_mp2_work_occ(ispin)%index2send(pcol)%array)) THEN
                DEALLOCATE (sos_mp2_work_occ(ispin)%index2send(pcol)%array)
-            IF (ALLOCATED(sos_mp2_work_occ(ispin)%index2send(pcol)%array)) &
+            END IF
+            IF (ALLOCATED(sos_mp2_work_occ(ispin)%index2send(pcol)%array)) THEN
                DEALLOCATE (sos_mp2_work_occ(ispin)%index2send(pcol)%array)
-            IF (ALLOCATED(sos_mp2_work_virt(ispin)%index2recv(pcol)%array)) &
+            END IF
+            IF (ALLOCATED(sos_mp2_work_virt(ispin)%index2recv(pcol)%array)) THEN
                DEALLOCATE (sos_mp2_work_virt(ispin)%index2recv(pcol)%array)
-            IF (ALLOCATED(sos_mp2_work_virt(ispin)%index2recv(pcol)%array)) &
+            END IF
+            IF (ALLOCATED(sos_mp2_work_virt(ispin)%index2recv(pcol)%array)) THEN
                DEALLOCATE (sos_mp2_work_virt(ispin)%index2recv(pcol)%array)
+            END IF
          END DO
          DEALLOCATE (sos_mp2_work_occ(ispin)%index2send, &
                      sos_mp2_work_occ(ispin)%index2recv, &
@@ -2309,7 +2305,8 @@ CONTAINS
          mp2_env%ri_grad%P_ij(ispin)%array(:, :) = 0.5_dp*(mp2_env%ri_grad%P_ij(ispin)%array + &
                                                            TRANSPOSE(mp2_env%ri_grad%P_ij(ispin)%array))
 
-         ! The first index of P_ab has to be distributed within the subgroups, so sum it up first and add the required elements later
+         ! The first index of P_ab has to be distributed within the subgroups,
+         ! so sum it up first and add the required elements later
          CALL para_env%sum(sos_mp2_work_virt(ispin)%P)
 
          itmp = get_limit(virtual(ispin), para_env_sub%num_pe, para_env_sub%mepos)

@@ -1177,8 +1177,9 @@ CONTAINS
          END IF
       END DO
 
-      IF (.NOT. converged) &
+      IF (.NOT. converged) THEN
          CPABORT("dense_matrix_sign_Newton_Schulz did not converge within 100 iterations")
+      END IF
 
       DEALLOCATE (tmp1)
       DEALLOCATE (tmp2)
@@ -1214,7 +1215,7 @@ CONTAINS
       ALLOCATE (eigvals(N))
 
       ! symmetrize sm
-      eigvecs(:, :) = 0.5*(sm + TRANSPOSE(sm))
+      eigvecs(:, :) = 0.5_dp*(sm + TRANSPOSE(sm))
 
       ! probe optimal sizes for WORK and IWORK
       LWORK = -1
@@ -1262,11 +1263,11 @@ CONTAINS
       DO i = 1, N
          modified_eigval = eigvals(i) - mu_correction
          IF (modified_eigval > 0) THEN
-            sm_sign(i, i) = 1.0
+            sm_sign(i, i) = 1.0_dp
          ELSE IF (modified_eigval < 0) THEN
-            sm_sign(i, i) = -1.0
+            sm_sign(i, i) = -1.0_dp
          ELSE
-            sm_sign(i, i) = 0.0
+            sm_sign(i, i) = 0.0_dp
          END IF
       END DO
 
@@ -1307,11 +1308,11 @@ CONTAINS
       DO i = 1, sm_size
          modified_eigval = eigvals(i) - mu_correction
          IF (modified_eigval > 0) THEN
-            mapped_eigvals(i) = 1.0
+            mapped_eigvals(i) = 1.0_dp
          ELSE IF (modified_eigval < 0) THEN
-            mapped_eigvals(i) = -1.0
+            mapped_eigvals(i) = -1.0_dp
          ELSE
-            mapped_eigvals(i) = 0.0
+            mapped_eigvals(i) = 0.0_dp
          END IF
       END DO
 
@@ -1807,8 +1808,9 @@ CONTAINS
             CALL m_flush(unit_nr)
          END IF
 
-         IF (abnormal_value(conv)) &
+         IF (abnormal_value(conv)) THEN
             CPABORT("conv is an abnormal value (NaN/Inf).")
+         END IF
 
          ! conv < SQRT(threshold)
          IF ((conv*conv) < threshold) THEN
@@ -2028,8 +2030,9 @@ CONTAINS
             CALL m_flush(unit_nr)
          END IF
 
-         IF (abnormal_value(conv)) &
+         IF (abnormal_value(conv)) THEN
             CPABORT("conv is an abnormal value (NaN/Inf).")
+         END IF
 
          ! conv < SQRT(threshold)
          IF ((conv*conv) < threshold) THEN

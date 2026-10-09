@@ -1763,7 +1763,6 @@ CONTAINS
 !> \author Joost VandeVondele
 ! **************************************************************************************************
    FUNCTION cost_model(nsa, nsb, nsc, nsd, npgfa, npgfb, npgfc, npgfd, ratio, p1, p2, p3) RESULT(res)
-      IMPLICIT NONE
       REAL(KIND=dp) :: estimate1, estimate2, estimate, ratio, switch, mu, sigma
       INTEGER(KIND=int_8) :: res
       REAL(KIND=dp), INTENT(IN) :: p1(12), p2(12), p3(2)
@@ -1861,9 +1860,10 @@ CONTAINS
       ! it also avoids degenerate cases where thousands of zero sized tasks
       ! are assigned to the same (least loaded) cpu
       !
-      IF (do_randomize) &
+      IF (do_randomize) THEN
          rng_stream = rng_stream_type(name="uniform_rng", &
                                       distribution_type=UNIFORM)
+      END IF
 
       DO i = total_number_of_bins, 1, -nstep
          tmp_cpu_cost = my_cost_cpu

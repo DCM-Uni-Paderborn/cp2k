@@ -53,7 +53,8 @@ MODULE qs_external_potential
 
 ! *** Public subroutines ***
    PUBLIC :: external_e_potential, &
-             external_c_potential
+             external_c_potential, &
+             interpolate_external_potential
 
 CONTAINS
 
@@ -91,7 +92,7 @@ CONTAINS
                                    qs_env%sim_step, qs_env%sim_time, &
                                    scaling_factor)
                dft_control%eval_external_potential = .FALSE.
-            ELSEIF (dft_control%expot_control%read_from_cube) THEN
+            ELSE IF (dft_control%expot_control%read_from_cube) THEN
                scaling_factor = dft_control%expot_control%scaling_factor
                CALL cp_cube_to_pw(v_ee, 'pot.cube', scaling_factor)
                dft_control%eval_external_potential = .FALSE.
@@ -505,9 +506,9 @@ CONTAINS
       DO i = 1, SIZE(dgrid, 1)
          DO j = 1, SIZE(dgrid, 2)
             DO k = 1, SIZE(dgrid, 3)
-               dgrid(i, j, k, 1) = 0.5*(grid(i + 1, j, k) - grid(i - 1, j, k))/dr(1)
-               dgrid(i, j, k, 2) = 0.5*(grid(i, j + 1, k) - grid(i, j - 1, k))/dr(2)
-               dgrid(i, j, k, 3) = 0.5*(grid(i, j, k + 1) - grid(i, j, k - 1))/dr(3)
+               dgrid(i, j, k, 1) = 0.5_dp*(grid(i + 1, j, k) - grid(i - 1, j, k))/dr(1)
+               dgrid(i, j, k, 2) = 0.5_dp*(grid(i, j + 1, k) - grid(i, j - 1, k))/dr(2)
+               dgrid(i, j, k, 3) = 0.5_dp*(grid(i, j, k + 1) - grid(i, j, k - 1))/dr(3)
             END DO
          END DO
       END DO

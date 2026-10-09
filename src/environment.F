@@ -20,8 +20,9 @@ MODULE environment
                                               Solca2024,&
                                               cite_reference
    USE cp2k_info,                       ONLY: &
-        compile_arch, compile_date, compile_host, compile_revision, cp2k_flags, cp2k_home, &
-        cp2k_version, cp2k_year, get_runtime_info, r_host_name, r_pid, r_user_name
+        compile_arch, compile_date, compile_host, compile_revision, compile_with, cp2k_flags, &
+        cp2k_home, cp2k_version, cp2k_year, get_runtime_info, r_host_name, r_pid, r_user_name
+   USE cp_cfm_elpa,                     ONLY: check_elpa_c_kernel_correctness
    USE cp_error_handling,               ONLY: warning_counter
    USE cp_files,                        ONLY: close_file,&
                                               get_data_dir,&
@@ -30,14 +31,10 @@ MODULE environment
                                               FM_CHOLESKY_TYPE_SCALAPACK,&
                                               cholesky_type,&
                                               dlaf_cholesky_n_min
-   USE cp_fm_diag,                      ONLY: FM_DIAG_TYPE_CUSOLVER,&
-                                              FM_DIAG_TYPE_DLAF,&
-                                              FM_DIAG_TYPE_ELPA,&
-                                              FM_DIAG_TYPE_SCALAPACK,&
-                                              cusolver_n_min,&
-                                              diag_finalize,&
-                                              diag_init,&
-                                              eps_check_diag_default
+   USE cp_fm_diag,                      ONLY: &
+        FM_DIAG_TYPE_CUSOLVER, FM_DIAG_TYPE_DLAF, FM_DIAG_TYPE_ELPA, FM_DIAG_TYPE_SCALAPACK, &
+        cusolver_n_min, diag_finalize, diag_init, diag_lib_explicit, diag_type, &
+        eps_check_diag_default
    USE cp_fm_diag_utils,                ONLY: cp_fm_redistribute_init
    USE cp_fm_struct,                    ONLY: cp_fm_struct_config
    USE cp_fm_types,                     ONLY: cp_fm_get_mm_type,&
@@ -81,6 +78,7 @@ MODULE environment
         section_get_ival, section_get_keyword, section_get_lval, section_get_rval, &
         section_release, section_type, section_vals_get, section_vals_get_subs_vals, &
         section_vals_get_subs_vals3, section_vals_type, section_vals_val_get, section_vals_val_set
+   USE integral_library_types,          ONLY: integral_library_init
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp,&
@@ -119,6 +117,7 @@ MODULE environment
                                               timings_report_callgraph,&
                                               timings_report_print
    USE voronoi_interface,               ONLY: finalize_libvori
+   USE xc_libxc,                        ONLY: libxc_release_workers
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num, omp_get_num_threads
 #include "./base/base_uses.f90"
@@ -159,6 +158,21 @@ CONTAINS
       CHARACTER(LEN=10*default_string_length)            :: cp_flags
       INTEGER                                            :: i, ilen, my_output_unit
       TYPE(cp_logger_type), POINTER                      :: logger
+
+#if defined(__FAST_MATH__)
+      CALL cp_abort(__LOCATION__, &
+                    "During compilation, one of the following flags was active: "// &
+                    "`-ffast-math` (GCC) or `-hfpN` (Cray, N > 0, default N=2). "// &
+                    "This can lead to wrong results and numerical instabilities "// &
+                    "and is therefore no longer supported.")
+#endif
+
+#if defined(NDEBUG)
+      CALL cp_abort(__LOCATION__, &
+                    "Please do not build CP2K with NDEBUG. There is no "// &
+                    "performance advantage and asserts will save your neck. "// &
+                    "See also <https://github.com/cp2k/cp2k/pull/3172>.")
+#endif
 
       ! create a timer_env
 
@@ -212,6 +226,9 @@ CONTAINS
             "CP2K| Program compiled on", &
             ADJUSTR(compile_host(1:MIN(50, LEN(compile_host))))
          WRITE (UNIT=my_output_unit, FMT="(T2,A,T31,A50)") &
+            "CP2K| Program compiled with", &
+            ADJUSTR(compile_with(1:MIN(50, LEN(compile_with))))
+         WRITE (UNIT=my_output_unit, FMT="(T2,A,T31,A50)") &
             "CP2K| Program compiled for", &
             ADJUSTR(compile_arch(1:MIN(50, LEN(compile_arch))))
          WRITE (UNIT=my_output_unit, FMT="(T2,A,T31,A50)") &
@@ -222,23 +239,6 @@ CONTAINS
             ADJUSTR(TRIM(input_file_name))
          FLUSH (my_output_unit) ! ignore &GLOBAL / FLUSH_SHOULD_FLUSH
       END IF
-
-#if defined(__FAST_MATH__)
-      CALL cp_warn(__LOCATION__, &
-                   "During compilation one of the following flags was active:"// &
-                   "   `-ffast-math` (GCC)"// &
-                   "   `-hfpN` (Cray, N > 0, default N=2)"// &
-                   " This can lead to wrong results and numerical instabilities"// &
-                   " and is therefore no longer supported.")
-
-#if !defined(__FORCE_USE_FAST_MATH)
-#error "-ffast-math (GCC) or -hfpN (N>0, Cray) can lead to wrong results and numerical instabilities and are therefore no longer supported"
-#endif
-#endif
-
-#if defined(NDEBUG)
-#error "Please do not build CP2K with NDEBUG. There is no performance advantage and asserts will save your neck."
-#endif
 
    END SUBROUTINE cp2k_init
 
@@ -354,7 +354,6 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
 
-      CHARACTER(LEN=3*default_string_length)             :: message
       CHARACTER(LEN=default_string_length)               :: c_val
       INTEGER                                            :: i, iw
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -374,9 +373,10 @@ CONTAINS
       ! Process project name
       CALL section_vals_val_get(root_section, "GLOBAL%PROJECT", c_val=c_val)
       IF (INDEX(c_val(:LEN_TRIM(c_val)), " ") > 0) THEN
-         message = "Project name <"//TRIM(c_val)// &
-                   "> contains spaces which will be replaced with underscores"
-         CPWARN(TRIM(message))
+         CALL cp_warn(__LOCATION__, &
+                      "Project name <"//TRIM(c_val)//"> contains one or more "// &
+                      "whitespaces; replacing them with underscores to reset "// &
+                      "the project name for better file naming practices now.")
          DO i = 1, LEN_TRIM(c_val)
             ! Replace space with underscore
             IF (c_val(i:i) == " ") c_val(i:i) = "_"
@@ -388,7 +388,8 @@ CONTAINS
       END IF
       logger%iter_info%project_name = c_val
 
-      CALL section_vals_val_get(root_section, "GLOBAL%PRINT_LEVEL", i_val=logger%iter_info%print_level)
+      CALL section_vals_val_get(root_section, "GLOBAL%PRINT_LEVEL", &
+                                i_val=logger%iter_info%print_level)
 
       ! Read the CP2K section
       CALL read_cp2k_section(root_section, para_env, globenv)
@@ -470,8 +471,9 @@ CONTAINS
 
       iw = cp_print_key_unit_nr(logger, root_section, "GLOBAL%PRINT/GLOBAL_GAUSSIAN_RNG", &
                                 extension=".Log")
-      IF (iw > 0) &
+      IF (iw > 0) THEN
          CALL globenv%gaussian_rng_stream%write(iw, write_all=.TRUE.)
+      END IF
 
       CALL cp_print_key_finished_output(iw, logger, root_section, &
                                         "GLOBAL%PRINT/GLOBAL_GAUSSIAN_RNG")
@@ -527,9 +529,8 @@ CONTAINS
          MemTotal_max, MemTotal_min, Slab, Slab_avr, Slab_max, Slab_min, SReclaimable, &
          SReclaimable_avr, SReclaimable_max, SReclaimable_min
       INTEGER, DIMENSION(:), POINTER                     :: i_force_eval
-      LOGICAL                                            :: ata, do_echo_all_hosts, efl, explicit, &
-                                                            flag, report_maxloc, trace, &
-                                                            trace_master
+      LOGICAL                                            :: ata, do_echo_all_hosts, explicit, flag, &
+                                                            report_maxloc, trace, trace_master
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(enumeration_type), POINTER                    :: enum1, enum2
       TYPE(keyword_type), POINTER                        :: keyword
@@ -553,6 +554,7 @@ CONTAINS
       CALL section_vals_val_get(global_section, "ENABLE_MPI_IO", l_val=flag)
       CALL cp_mpi_io_set(flag)
       CALL section_vals_val_get(global_section, "ELPA_KERNEL", i_val=globenv%k_elpa)
+      CALL section_vals_val_get(global_section, "ELPA_COMPLEX_KERNEL", i_val=globenv%k_elpa_c)
       CALL section_vals_val_get(global_section, "ELPA_NEIGVEC_MIN", i_val=globenv%elpa_neigvec_min)
       CALL section_vals_val_get(global_section, "ELPA_QR", l_val=globenv%elpa_qr)
       CALL section_vals_val_get(global_section, "ELPA_ONE_STAGE", l_val=globenv%elpa_one_stage)
@@ -565,7 +567,8 @@ CONTAINS
       CALL section_vals_val_get(global_section, "FFT_POOL_SCRATCH_LIMIT", i_val=globenv%fft_pool_scratch_limit)
       CALL section_vals_val_get(global_section, "FFTW_PLAN_TYPE", i_val=globenv%fftw_plan_type)
       CALL section_vals_val_get(global_section, "PROJECT_NAME", c_val=project_name)
-      CALL section_vals_val_get(global_section, "FFTW_WISDOM_FILE_NAME", c_val=globenv%fftw_wisdom_file_name)
+      CALL section_vals_val_get(global_section, "FFTW_WISDOM_FILE_NAME", c_val=globenv%fftw_wisdom_file_name, &
+                                explicit=globenv%fftw_wisdom_file_explicit)
       CALL section_vals_val_get(global_section, "RUN_TYPE", i_val=globenv%run_type_id)
       CALL cp2k_get_walltime(section=global_section, keyword_name="WALLTIME", &
                              walltime=globenv%cp2k_target_time)
@@ -594,8 +597,9 @@ CONTAINS
 
       IF (trace .AND. (.NOT. trace_master .OR. para_env%mepos == 0)) THEN
          unit_nr = -1
-         IF (logger%para_env%is_source() .OR. .NOT. trace_master) &
+         IF (logger%para_env%is_source() .OR. .NOT. trace_master) THEN
             unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+         END IF
          WRITE (tracing_string, "(I6.6,A1,I6.6)") para_env%mepos, ":", para_env%num_pe
          IF (ASSOCIATED(trace_routines)) THEN
             CALL timings_setup_tracing(trace_max, unit_nr, tracing_string, trace_routines)
@@ -682,8 +686,9 @@ CONTAINS
          CPABORT("FARMING program supports only NONE as run type")
       END IF
 
-      IF (globenv%prog_name_id == do_test .AND. globenv%run_type_id /= none_run) &
+      IF (globenv%prog_name_id == do_test .AND. globenv%run_type_id /= none_run) THEN
          CPABORT("TEST program supports only NONE as run type")
+      END IF
 
       CALL m_memory_details(MemTotal, MemFree, Buffers, Cached, Slab, SReclaimable, MemLikelyFree)
       MemTotal_avr = MemTotal
@@ -886,9 +891,6 @@ CONTAINS
          CALL section_vals_val_get(global_section, "ALLTOALL_SGL", l_val=ata)
          WRITE (UNIT=output_unit, FMT="(T2,A,T80,L1)") &
             start_section_label//"| All-to-all communication in single precision", ata
-         CALL section_vals_val_get(global_section, "EXTENDED_FFT_LENGTHS", l_val=efl)
-         WRITE (UNIT=output_unit, FMT="(T2,A,T80,L1)") &
-            start_section_label//"| FFTs using library dependent lengths", efl
 
          SELECT CASE (print_level)
          CASE (silent_print_level)
@@ -967,20 +969,27 @@ CONTAINS
          ! filter cpuids by vlen to show more relevant information
          IF (m_cpuid_vlen(cpuid_static) < m_cpuid_vlen(cpuid)) THEN
             ! base/machine_cpuid.c relies on the (same) target flags as the Fortran code
-            CALL cp_hint(__LOCATION__, "The compiler target flags ("// &
-                         TRIM(m_cpuid_name(cpuid_static))//") used to build this binary cannot exploit "// &
-                         "all extensions of this CPU model ("//TRIM(m_cpuid_name(cpuid))//"). "// &
-                         "Consider compiler target flags as part of FCFLAGS and CFLAGS (ARCH file).")
+            CALL cp_hint(__LOCATION__, "The compiler target ("// &
+                         TRIM(m_cpuid_name(cpuid_static))//") used to build this binary does "// &
+                         "not enable all instruction-set extensions available on this CPU ("// &
+                         TRIM(m_cpuid_name(cpuid))//"). Consider reconfiguring and rebuilding "// &
+                         "CP2K for this target system to enable them.")
          END IF
 
-         WRITE (UNIT=output_unit, FMT="()")
-         WRITE (UNIT=output_unit, FMT="(T2,A)") "MEMORY| system memory details [Kb]"
-         WRITE (UNIT=output_unit, FMT="(T2,A23,4A14)") "MEMORY|                ", "rank 0", "min", "max", "average"
-         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") "MEMORY| MemTotal       ", memtotal, memtotal_min, memtotal_max, memtotal_avr
-         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") "MEMORY| MemFree        ", memFree, memfree_min, memfree_max, memfree_avr
-         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") "MEMORY| Buffers        ", Buffers, Buffers_min, Buffers_max, Buffers_avr
-         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") "MEMORY| Cached         ", Cached, Cached_min, Cached_max, Cached_avr
-         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") "MEMORY| Slab           ", Slab, Slab_min, Slab_max, Slab_avr
+         WRITE (UNIT=output_unit, FMT="(/,T2,A)") &
+            "MEMORY| system memory details [Kb]"
+         WRITE (UNIT=output_unit, FMT="(T2,A23,4A14)") &
+            "MEMORY|                ", "rank 0", "min", "max", "average"
+         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") &
+            "MEMORY| MemTotal       ", memtotal, memtotal_min, memtotal_max, memtotal_avr
+         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") &
+            "MEMORY| MemFree        ", memFree, memfree_min, memfree_max, memfree_avr
+         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") &
+            "MEMORY| Buffers        ", Buffers, Buffers_min, Buffers_max, Buffers_avr
+         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") &
+            "MEMORY| Cached         ", Cached, Cached_min, Cached_max, Cached_avr
+         WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") &
+            "MEMORY| Slab           ", Slab, Slab_min, Slab_max, Slab_avr
          WRITE (UNIT=output_unit, FMT="(T2,A23,4I14)") &
             "MEMORY| SReclaimable   ", SReclaimable, SReclaimable_min, SReclaimable_max, &
             SReclaimable_avr
@@ -1021,13 +1030,43 @@ CONTAINS
       output_unit = cp_print_key_unit_nr(logger, global_section, "PROGRAM_RUN_INFO", &
                                          extension=".log")
 
+      CALL integral_setup_library(global_section)
       CALL fft_setup_library(globenv, global_section)
-      CALL diag_setup_library(globenv)
+      CALL diag_setup_library(globenv, global_section)
+
+      ! Run a one-time correctness check of the ELPA complex kernels if they may be used.
+      IF (diag_type == FM_DIAG_TYPE_ELPA .AND. diag_lib_explicit) THEN
+         CALL check_elpa_c_kernel_correctness(para_env)
+      END IF
 
       CALL cp_print_key_finished_output(output_unit, logger, global_section, &
                                         "PROGRAM_RUN_INFO")
 
    END SUBROUTINE read_cp2k_section
+
+! **************************************************************************************************
+!> \brief Resolve preferred integral libraries against the compiled-in backends.
+!> \param global_section ...
+! **************************************************************************************************
+   SUBROUTINE integral_setup_library(global_section)
+      TYPE(section_vals_type), POINTER                   :: global_section
+
+      INTEGER                                            :: coulomb2_library, coulomb3_library
+      LOGICAL                                            :: fallback_applied
+
+      CALL section_vals_val_get(global_section, "PREFERRED_INTEGRAL_LIBRARY%COULOMB_2C", &
+                                i_val=coulomb2_library)
+      CALL section_vals_val_get(global_section, "PREFERRED_INTEGRAL_LIBRARY%COULOMB_3C", &
+                                i_val=coulomb3_library)
+      CALL integral_library_init(coulomb2_library, coulomb3_library, fallback_applied)
+
+      IF (fallback_applied) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "Integral library Libint is not available. "// &
+                      "The native integral library is used as fallback.")
+      END IF
+
+   END SUBROUTINE integral_setup_library
 
 ! **************************************************************************************************
 !> \brief check FFT preferred library availability, if not switch
@@ -1066,7 +1105,6 @@ CONTAINS
       ! Initialize FFT library with the user's preferred FFT library
       CALL init_fft(fftlib=TRIM(globenv%default_fft_library), &
                     alltoall=section_get_lval(global_section, "ALLTOALL_SGL"), &
-                    fftsg_sizes=.NOT. section_get_lval(global_section, "EXTENDED_FFT_LENGTHS"), &
                     pool_limit=globenv%fft_pool_scratch_limit, &
                     wisdom_file=globenv%fftw_wisdom_file_name, &
                     plan_style=globenv%fftw_plan_type)
@@ -1081,7 +1119,6 @@ CONTAINS
             globenv%default_fft_library = "FFTW3"
             CALL init_fft(fftlib=TRIM(globenv%default_fft_library), &
                           alltoall=section_get_lval(global_section, "ALLTOALL_SGL"), &
-                          fftsg_sizes=.NOT. section_get_lval(global_section, "EXTENDED_FFT_LENGTHS"), &
                           pool_limit=globenv%fft_pool_scratch_limit, &
                           wisdom_file=globenv%fftw_wisdom_file_name, &
                           plan_style=globenv%fftw_plan_type)
@@ -1095,7 +1132,6 @@ CONTAINS
             globenv%default_fft_library = "FFTSG"
             CALL init_fft(fftlib=TRIM(globenv%default_fft_library), &
                           alltoall=section_get_lval(global_section, "ALLTOALL_SGL"), &
-                          fftsg_sizes=.NOT. section_get_lval(global_section, "EXTENDED_FFT_LENGTHS"), &
                           pool_limit=globenv%fft_pool_scratch_limit, &
                           wisdom_file=globenv%fftw_wisdom_file_name, &
                           plan_style=globenv%fftw_plan_type)
@@ -1113,17 +1149,22 @@ CONTAINS
 !> \brief availability diagonalizatioon library
 !>
 !> \param globenv ...
+!> \param global_section ...
 !> \author MI
 ! **************************************************************************************************
-   SUBROUTINE diag_setup_library(globenv)
+   SUBROUTINE diag_setup_library(globenv, global_section)
       TYPE(global_environment_type), POINTER             :: globenv
+      TYPE(section_vals_type), POINTER                   :: global_section
 
-      CHARACTER(LEN=3*default_string_length)             :: message
-      LOGICAL                                            :: fallback_applied
+      LOGICAL                                            :: diag_lib_explicit, fallback_applied
+
+      CALL section_vals_val_get(global_section, "PREFERRED_DIAG_LIBRARY", explicit=diag_lib_explicit)
 
       CALL diag_init(diag_lib=TRIM(globenv%diag_library), &
                      fallback_applied=fallback_applied, &
+                     diag_lib_explicit_input=diag_lib_explicit, &
                      elpa_kernel=globenv%k_elpa, &
+                     elpa_c_kernel=globenv%k_elpa_c, &
                      elpa_neigvec_min_input=globenv%elpa_neigvec_min, &
                      elpa_qr=globenv%elpa_qr, &
                      elpa_print=globenv%elpa_print, &
@@ -1134,9 +1175,9 @@ CONTAINS
                      globenv%direct_generalized_diagonalization)
 
       IF (fallback_applied) THEN
-         message = "Diagonalization library "//TRIM(globenv%diag_library)// &
-                   " is not available. The ScaLAPACK library is used as fallback."
-         CPWARN(TRIM(message))
+         CALL cp_warn(__LOCATION__, &
+                      "Diagonalization library "//TRIM(globenv%diag_library)//" is "// &
+                      "not available. The ScaLAPACK library is used as fallback.")
       END IF
 
    END SUBROUTINE diag_setup_library
@@ -1230,8 +1271,9 @@ CONTAINS
          IF (ierr /= 0) CPABORT('Could not parse WALLTIME: "'//txt(1:n)//'"')
       ELSE
          READ (txt(1:n), FMT="(I2,A1,I2,A1,I2)", IOSTAT=ierr) hours, c1, minutes, c2, seconds
-         IF (n /= 8 .OR. ierr /= 0 .OR. c1 /= ":" .OR. c2 /= ":") &
+         IF (n /= 8 .OR. ierr /= 0 .OR. c1 /= ":" .OR. c2 /= ":") THEN
             CPABORT('Could not parse WALLTIME: "'//txt(1:n)//'"')
+         END IF
          walltime = 3600.0_dp*REAL(hours, dp) + 60.0_dp*REAL(minutes, dp) + REAL(seconds, dp)
       END IF
    END SUBROUTINE cp2k_get_walltime
@@ -1282,8 +1324,11 @@ CONTAINS
          CALL deallocate_orbital_pointers()
          CALL deallocate_md_ftable()
          CALL diag_finalize()
-         ! finalize the fft (i.e. writes the wisdom if FFTW3 )
-         CALL finalize_fft(para_env, globenv%fftw_wisdom_file_name)
+         ! the LibXC functional objects are kept alive across calculations
+         CALL libxc_release_workers()
+         ! finalize the fft (i.e. writes the wisdom if FFTW3 and a wisdom file was specified)
+         CALL finalize_fft(para_env, globenv%fftw_wisdom_file_name, &
+                           export_wisdom=globenv%fftw_wisdom_file_explicit)
          CALL finalize_libvori()
       END IF
 
@@ -1330,15 +1375,19 @@ CONTAINS
       IF (cg_mode /= CALLGRAPH_NONE) THEN
          CALL section_vals_val_get(root_section, "GLOBAL%CALLGRAPH_FILE_NAME", c_val=cg_filename)
          IF (LEN_TRIM(cg_filename) == 0) cg_filename = TRIM(logger%iter_info%project_name)
-         IF (cg_mode == CALLGRAPH_ALL) & !incorporate mpi-rank into filename
+         IF (cg_mode == CALLGRAPH_ALL) THEN
+            !incorporate mpi-rank into filename
             cg_filename = TRIM(cg_filename)//"_"//TRIM(ADJUSTL(cp_to_string(para_env%mepos)))
-         IF (iw > 0) THEN
-            WRITE (UNIT=iw, FMT="(T2,3X,A)") "Writing callgraph to: "//TRIM(cg_filename)//".callgraph"
-            WRITE (UNIT=iw, FMT="()")
-            WRITE (UNIT=iw, FMT="(T2,A)") "-------------------------------------------------------------------------------"
          END IF
-         IF (cg_mode == CALLGRAPH_ALL .OR. para_env%is_source()) &
+         IF (iw > 0) THEN
+            WRITE (UNIT=iw, FMT="(T2,3X,A)") &
+               "Writing callgraph to: "//TRIM(cg_filename)//".callgraph"
+            WRITE (UNIT=iw, FMT="(/,T2,A)") &
+               "-------------------------------------------------------------------------------"
+         END IF
+         IF (cg_mode == CALLGRAPH_ALL .OR. para_env%is_source()) THEN
             CALL timings_report_callgraph(TRIM(cg_filename)//".callgraph")
+         END IF
       END IF
 
       CALL cp_print_key_finished_output(iw, logger, root_section, &

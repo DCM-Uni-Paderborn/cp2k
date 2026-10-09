@@ -6,7 +6,7 @@
 # shellcheck shell=bash
 
 SYS_INCLUDE_PATH=${SYS_INCLUDE_PATH:-"/usr/local/include:/usr/include"}
-SYS_LIB_PATH=${SYS_LIB_PATH:-"/usr/local/lib64:/usr/local/lib:/usr/lib64:/usr/lib:/usr/lib/x86_64-linux-gnu:/usr/lib/aarch-linux-gnu:/lib64:/lib"}
+SYS_LIB_PATH=${SYS_LIB_PATH:-"/usr/local/lib64:/usr/local/lib:/usr/lib64:/usr/lib:/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:/lib64:/lib"}
 INCLUDE_PATHS=${INCLUDE_PATHS:-"CPATH SYS_INCLUDE_PATH"}
 LIB_PATHS=${LIB_PATHS:-"LIBRARY_PATH LD_LIBRARY_PATH LD_RUN_PATH SYS_LIB_PATH"}
 time_start=$(date +%s)
@@ -39,12 +39,12 @@ report_error() {
     local __message="$1"
   fi
   echo "ERROR: (${SCRIPT_NAME}${__lineno}) $__message" >&2
+  return 1
 }
 
 # error handler for line trap from set -e
 error_handler() {
   report_error "$1" "Non-zero exit code detected."
-  exit 1
 }
 
 # source a file if it exists, otherwise do nothing
@@ -55,7 +55,7 @@ load() {
 }
 
 # Take excerpt of ${LOG_LINES} lines from tail of a file, always reporting
-# its absolute path at the top
+# its absolute path at the top, and then exit with non-zero code
 tail_excerpt() {
   local __filename=$(real_path "$1")
   if [ -n "${LOG_LINES}" ]; then
@@ -64,6 +64,7 @@ tail_excerpt() {
     local __lines="$2"
   fi
   tail -v -n "${__lines}" "${__filename}"
+  exit 1
 }
 
 # A more portable command that will give the full path, removing
@@ -155,8 +156,8 @@ reverse() (
 get_nprocs() {
   if [ -n "${NPROCS_OVERWRITE}" ]; then
     echo ${NPROCS_OVERWRITE} | sed 's/^0*//'
-  elif $(command -v lscpu > /dev/null 2>&1); then
-    echo $(lscpu -p=Core,Socket | grep -v '#' | sort -u | wc -l)
+  elif $(command -v nproc > /dev/null 2>&1); then
+    echo $(nproc)
   elif $(command -v sysctl > /dev/null 2>&1); then
     echo $(sysctl -n hw.ncpu)
   else
@@ -272,7 +273,7 @@ add_include_from_paths() {
     fi
     echo "Found include directory $__found_target"
     eval __cflags=\$"${__cflags_name}"
-    __cflags="${__cflags} -I'${__found_target}'"
+    __cflags="${__cflags} -I${__found_target}"
     # remove possible duplicates
     __cflags="$(unique $__cflags)"
     # must escape all quotes again before the last eval, as
@@ -313,7 +314,7 @@ add_lib_from_paths() {
     fi
     echo "Found lib directory $__found_target"
     eval __ldflags=\$"${__ldflags_name}"
-    __ldflags="${__ldflags} -L'${__found_target}' -Wl,-rpath,'${__found_target}'"
+    __ldflags="${__ldflags} -L${__found_target} -Wl,-rpath,${__found_target}"
     # remove possible duplicates
     __ldflags="$(unique $__ldflags)"
     # must escape all quotes again before the last eval, as
@@ -332,16 +333,7 @@ require_env() {
   local __env_var="$(eval echo \"\$$__env_var_name\")"
   if [ -z "${__env_var+set}" ]; then
     report_error "requires environment variable $__env_var_name to work"
-    return 1
   fi
-}
-
-resolve_string() {
-  local __to_resolve=$1
-  shift
-  local __flags=$@
-
-  echo $("${SCRIPTDIR}/parse_if.py" $__flags <<< "${__to_resolve}")
 }
 
 # check if a command is available
@@ -356,7 +348,16 @@ check_command() {
     echo "path to ${__command} is $(real_path $(command -v ${__command}))"
   else
     report_error "Cannot find ${__command}, please check if the package ${__package} is installed or in system search path"
-    return 1
+  fi
+}
+
+# Check pkg-config package
+check_pkgconfig() {
+  local pkg="$1"
+  if $(pkg-config --exists "${pkg}"); then
+    echo "pkg-config found ${pkg} under $(pkg-config --variable=prefix "${pkg}")"
+  else
+    report_error "Cannot find pkg-config package ${pkg}"
   fi
 }
 
@@ -367,7 +368,6 @@ check_dir() {
     echo "Found directory $__dir"
   else
     report_error "Cannot find $__dir"
-    return 1
   fi
 }
 
@@ -383,7 +383,6 @@ check_install() {
     echo "$(basename ${__command}) is installed as $(command -v ${__command})"
   else
     report_error "cannot find ${__command}, please check if the package ${__package} has been installed correctly"
-    return 1
   fi
 }
 
@@ -419,7 +418,6 @@ check_lib() {
     # containing the library name
     report_error \
       "ld cannot find -l$__libname, please check if $__package is installed or in system search path"
-    return 1
   else
     # if library is found, then ld will return error message about
     # not able to find _start or _main symbol
@@ -652,12 +650,11 @@ download_pkg_from_urlpath() {
   local __filename="$2"
   local __url="$3/${__filename}"
   local __outfile="${4:-${__filename}}"
-  local __command="wget ${DOWNLOADER_FLAGS} --quiet ${__url} -O ${__outfile}"
+  local __command="wget ${DOWNLOADER_FLAGS} --tries=5 --quiet ${__url} -O ${__outfile}"
   echo "${__command}"
   # download
   if ! eval "${__command}"; then
     report_error "failed to download ${__url}"
-    return 1
   fi
   # checksum
   if checksum "${__sha256}" "${__outfile}"; then
@@ -665,7 +662,6 @@ download_pkg_from_urlpath() {
   else
     rm -vf "${__outfile}"
     report_error "Checksum of $__filename could not be verified, abort."
-    return 1
   fi
 }
 
@@ -742,12 +738,11 @@ filter_setup() {
   local target_file="$2"
 
   # Check if setup_xxx file exists
-  if [[ ! -f "$source_file" ]]; then
+  if [ ! -f "$source_file" ]; then
     report_error "File '$source_file' does not exist."
-    return 1
   fi
 
   local filename=$(basename "$source_file")
   echo "# ==================== Setup for ${filename#*_} ==================== #" >> "$target_file"
-  sed '/if[[:space:]]/,/^[[:space:]]*fi$/d' "$source_file" | grep -v -E '# For|# Other|CPATH|FLAGS|CP_LIBS' >> "$target_file"
+  grep -v -E 'CPATH|FLAGS|_LIBS|_INCLUDES' "$source_file" >> "$target_file"
 }
