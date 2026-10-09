@@ -119,7 +119,8 @@ MODULE hfx_ri
                                               split_block_sizes
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_projection_adjoint,&
                                               qs_upf_inverse_projection_contract
-   USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_lattice_tensor,&
+   USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_gamma_images,&
+                                              qs_upf_inverse_hfx_lattice_tensor,&
                                               qs_upf_inverse_hfx_tensor,&
                                               qs_upf_inverse_hfx_tensor_adjoint
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type,&
@@ -809,6 +810,7 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: factors(:)
       INTEGER                                            :: atom, kind
+      INTEGER, ALLOCATABLE                               :: auxiliary_images(:, :)
       REAL(dp), ALLOCATABLE                              :: positions(:, :)
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
@@ -816,11 +818,11 @@ CONTAINS
       CALL get_ks_env(ks_env, upf_inverse=inverse)
       IF (.NOT. ASSOCIATED(inverse)) RETURN
       IF (.NOT. inverse%enabled) RETURN
-      IF (ASSOCIATED(inverse%bloch%kpoints) .OR. ANY(inverse%frame%ao%periodicity /= 0)) THEN
-         CPABORT("Periodic inverse UPF RI exchange is not implemented yet")
-      END IF
+      CPASSERT(.NOT. ASSOCIATED(inverse%bloch%kpoints))
       CPASSERT(ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == "ORB")
-      CPASSERT(ALL(inverse%frame%ao%images == 0))
+      IF (ALL(inverse%frame%ao%periodicity == 0)) THEN
+         CPASSERT(ALL(inverse%frame%ao%images == 0))
+      END IF
       ALLOCATE (bases(SIZE(atoms)), positions(3, SIZE(atoms)), factors(SIZE(atoms)))
       DO atom = 1, SIZE(atoms)
          kind = atoms(atom)%atomic_kind%kind_number
@@ -828,9 +830,15 @@ CONTAINS
          positions(:, atom) = atoms(atom)%r
       END DO
       factors = CMPLX(1.0_dp, 0.0_dp, dp)
+      IF (ANY(inverse%frame%ao%periodicity /= 0)) THEN
+         CALL qs_upf_inverse_hfx_gamma_images(inverse%frame%ao, kinds, inverse%augmentation%kinds, bases, &
+                                              ri_data%ri_metric, auxiliary_images)
+      END IF
+      ! A reference-cell center is integrated once over its original radial support.
+      ! The summed auxiliary field folds all its translated contributions into this integral.
       CALL qs_upf_inverse_hfx_tensor(inverse%frame%ao, inverse%frame%ao, kinds, inverse%augmentation%kinds, &
                                      bases, positions, factors, RESHAPE([0, 0, 0], [3, 1]), integrals, &
-                                     metric=ri_data%ri_metric)
+                                     metric=ri_data%ri_metric, auxiliary_images=auxiliary_images)
    END SUBROUTINE inverse_3c_integrals
 
 ! **************************************************************************************************
@@ -921,7 +929,8 @@ CONTAINS
                                                             factors(:), left(:, :), right(:, :), &
                                                             zero_factors(:)
       INTEGER                                            :: atom, axis, column, kind
-      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), auxiliary_images(:, :), kind_of(:)
+      LOGICAL                                            :: periodic
       REAL(dp)                                           :: cell_response(3, 3), explicit_response, &
                                                             inverse_virial(3, 3), &
                                                             projection_response
@@ -943,7 +952,10 @@ CONTAINS
       CPASSERT(ASSOCIATED(inverse))
       CPASSERT(inverse%enabled)
       CPASSERT(.NOT. ASSOCIATED(inverse%bloch%kpoints))
-      CPASSERT(ALL(inverse%frame%ao%periodicity == 0) .AND. ALL(inverse%frame%ao%images == 0))
+      periodic = ANY(inverse%frame%ao%periodicity /= 0)
+      IF (.NOT. periodic) THEN
+         CPASSERT(ALL(inverse%frame%ao%images == 0))
+      END IF
       CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
       ALLOCATE (bases(SIZE(atoms)), positions(3, SIZE(atoms)), factors(SIZE(atoms)), &
                 zero_factors(SIZE(atoms)), atom_response(3, SIZE(atoms)))
@@ -956,13 +968,17 @@ CONTAINS
          positions(:, atom) = atoms(atom)%r
       END DO
       factors = CMPLX(1.0_dp, 0.0_dp, dp)
+      IF (periodic) THEN
+         CALL qs_upf_inverse_hfx_gamma_images(inverse%frame%ao, kinds, inverse%augmentation%kinds, bases, &
+                                              ri_data%ri_metric, auxiliary_images)
+      END IF
       zero_factors = CMPLX(0.0_dp, 0.0_dp, dp)
       point_response = 0.0_dp
       weights_response = 0.0_dp
       inverse_virial = 0.0_dp
       CALL qs_upf_inverse_hfx_tensor_adjoint(inverse%frame%ao, inverse%frame%ao, kinds, inverse%augmentation%kinds, &
                                              bases, positions, factors, RESHAPE([0, 0, 0], [3, 1]), covector, left, right, &
-                                             metric=ri_data%ri_metric)
+                                             metric=ri_data%ri_metric, auxiliary_images=auxiliary_images)
       left(:, :) = left + right
       CALL qs_upf_inverse_projection_adjoint(inverse%frame%ao, left, beta_gaussian, beta_delta)
       DO atom = 1, SIZE(atoms)
@@ -979,11 +995,11 @@ CONTAINS
                                                    right_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
                                                    auxiliary_positions_response=atom_response, &
                                                    auxiliary_factors_response=zero_factors, &
-                                                   metric=ri_data%ri_metric)
+                                                   metric=ri_data%ri_metric, auxiliary_images=auxiliary_images)
             CALL qs_upf_inverse_projection_contract(inverse%frame%ao, beta_gaussian, beta_delta, point_response, &
                                                     atom_response, SPREAD([0.0_dp, 0.0_dp, 0.0_dp], 2, 3), &
                                                     [0.0_dp, 0.0_dp, 0.0_dp], weights_response, projection_response)
-            IF (use_virial) THEN
+            IF (use_virial .AND. .NOT. periodic) THEN
                ! With zero images, the original Cartesian radial rule has no explicit lattice
                ! response. Its affine derivative follows from all moving centers. Analytic
                ! atom-local projection overlaps have the same property.
@@ -998,7 +1014,7 @@ CONTAINS
             END IF
          END DO
       END DO
-      IF (use_virial .AND. .NOT. inverse%frame%ao%atom_local) THEN
+      IF (use_virial .AND. (periodic .OR. .NOT. inverse%frame%ao%atom_local)) THEN
          DO column = 1, 3
             DO axis = 1, 3
                ! The original radial integration offsets remain Cartesian. The defining grid
@@ -1011,6 +1027,19 @@ CONTAINS
                point_response(axis, :) = inverse%frame%ao%points(column, :)
                weights_response = 0.0_dp
                IF (axis == column) weights_response(:) = inverse%frame%ao%weights
+               IF (periodic) THEN
+                  CALL qs_upf_inverse_hfx_tensor_adjoint(inverse%frame%ao, inverse%frame%ao, kinds, &
+                                                         inverse%augmentation%kinds, bases, positions, factors, &
+                                                         RESHAPE([0, 0, 0], [3, 1]), covector, &
+                                                         geometry_response=explicit_response, atom_response=atom_response, &
+                                                         cell_response=cell_response, &
+                                                         left_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
+                                                         right_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
+                                                         auxiliary_positions_response=atom_response, &
+                                                         auxiliary_factors_response=zero_factors, &
+                                                         metric=ri_data%ri_metric, auxiliary_images=auxiliary_images)
+                  inverse_virial(axis, column) = inverse_virial(axis, column) + explicit_response
+               END IF
                CALL qs_upf_inverse_projection_contract(inverse%frame%ao, beta_gaussian, beta_delta, point_response, &
                                                        atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
                                                        weights_response, projection_response)

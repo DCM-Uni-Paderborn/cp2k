@@ -2031,8 +2031,6 @@ CONTAINS
                CPABORT("General inverse UPF lattice exchange is not implemented yet")
             END IF
          END DO
-      ELSE IF (ANY(inverse%frame%ao%periodicity /= 0)) THEN
-         CPABORT("Periodic inverse UPF exchange requires an explicit KPOINTS section")
       END IF
       CPASSERT(ASSOCIATED(exchange))
       DO contribution = 1, SIZE(exchange, 1)
@@ -2043,6 +2041,11 @@ CONTAINS
          ASSOCIATE (ri => exchange(contribution, 1)%ri_data)
             IF (ri%input_flavor /= ri_pmat .OR. TRIM(ri%orb_basis_type) /= "ORB") THEN
                CPABORT("Inverse UPF exchange requires RI-RHO with the primary orbital basis")
+            END IF
+            IF (.NOT. ASSOCIATED(inverse%bloch%kpoints)) THEN
+               IF (ANY(inverse%frame%ao%periodicity /= 0) .AND. ri%ri_metric%potential_type /= do_potential_short) THEN
+                  CPABORT("Periodic Gamma UPF fitting currently requires erfc")
+               END IF
             END IF
             ! Augmented transition integrals use the same fitting interaction as the
             ! native Gaussian integrals. The native contraction selects the exchange kernel.

@@ -33,6 +33,8 @@ MODULE qs_upf_inverse_hfx
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
                                               init_lebedev_grids,&
                                               lebedev_grid
+   USE libint_2c_3c,                    ONLY: cutoff_screen_factor
+   USE mathlib,                         ONLY: inv_3x3
    USE mathconstants,                   ONLY: fourpi,&
                                               twopi
    USE paw_onecenter,                   ONLY: paw_valence_augmentation_init
@@ -52,6 +54,7 @@ MODULE qs_upf_inverse_hfx
    PUBLIC :: qs_upf_inverse_hfx_center_adjoint, qs_upf_inverse_hfx_lattice_center
    PUBLIC :: qs_upf_inverse_hfx_lattice_tensor, qs_upf_inverse_hfx_lattice_gradient
    PUBLIC :: qs_upf_inverse_hfx_tensor_adjoint
+   PUBLIC :: qs_upf_inverse_hfx_gamma_images
 
    ! Scratch fields are recomputed at every radial row and retained only within one center call.
    TYPE inverse_field_workspace_type
@@ -66,6 +69,82 @@ MODULE qs_upf_inverse_hfx
    END TYPE lattice_overlap_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Auxiliary images covering the native erfc range and original localized transition support.
+!>        Each original center contributes once in the reference cell. Its localized integral
+!>        uses the summed auxiliary field. These bounds follow the same physical interaction
+!>        range as native Gaussian integrals and retain original Q or PAW valence support.
+!>        Forward and geometry contractions use the same integer images at a fixed geometry.
+!> \param frame Original Gamma reconstruction and physical cell.
+!> \param kinds Original radial datasets.
+!> \param augmentation Supplied USPP Q, distinct from PAW valence transitions.
+!> \param auxiliary_bases Native RI bases in atom order with their native screening radii.
+!> \param metric Native fitting interaction and prescribed erfc screening range.
+!> \param images Fixed auxiliary translations, including zero.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_hfx_gamma_images(frame, kinds, augmentation, auxiliary_bases, metric, images)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(uspp_augmentation_type), INTENT(IN)          :: augmentation(:)
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: auxiliary_bases(:)
+      TYPE(coulomb_operator_type), INTENT(IN)            :: metric
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: images(:, :)
+
+      INTEGER                                            :: atom, axis, center, image, ix, iy, iz, &
+                                                            kind, lower(3), upper(3)
+      REAL(dp)                                           :: fractional(3), inverse_cell(3, 3), &
+                                                            lower_real(3), margin, radius, reach, &
+                                                            support, upper_real(3)
+      TYPE(uspp_augmentation_type), ALLOCATABLE         :: paw_augmentation(:)
+
+      CPASSERT(ALL(frame%reduced_k == 0.0_dp))
+      CPASSERT(SIZE(auxiliary_bases) == SIZE(frame%positions, 2))
+      CPASSERT(SIZE(augmentation) == SIZE(kinds))
+      IF (ALL(frame%periodicity == 0)) THEN
+         ALLOCATE (images(3, 1))
+         images = 0
+         RETURN
+      END IF
+      IF (metric%potential_type /= do_potential_short) THEN
+         CPABORT("Periodic Gamma UPF fitting currently requires erfc")
+      END IF
+      CPASSERT(metric%omega > 0.0_dp .AND. metric%cutoff_radius > 0.0_dp)
+      inverse_cell = inv_3x3(frame%cell)
+      CALL prepare_paw_transitions(kinds, frame, paw_augmentation)
+      lower_real = 0.0_dp
+      upper_real = 0.0_dp
+      DO center = 1, SIZE(frame%center_atoms)
+         kind = frame%center_kinds(center)
+         support = MAX(frame%delta_cache(kind)%radius, augmentation(kind)%realspace_radius, &
+                       paw_augmentation(kind)%realspace_radius)
+         DO atom = 1, SIZE(auxiliary_bases)
+            radius = support + auxiliary_bases(atom)%gto_basis_set%kind_radius + &
+                     cutoff_screen_factor*metric%cutoff_radius
+            fractional = MATMUL(inverse_cell, &
+                                frame%positions(:, frame%center_atoms(center)) - frame%positions(:, atom))
+            DO axis = 1, 3
+               IF (frame%periodicity(axis) == 0) CYCLE
+               reach = radius*NORM2(inverse_cell(axis, :))
+               margin = 32.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(fractional(axis)), reach)
+               lower_real(axis) = MIN(lower_real(axis), fractional(axis) - reach - margin)
+               upper_real(axis) = MAX(upper_real(axis), fractional(axis) + reach + margin)
+            END DO
+         END DO
+      END DO
+      lower = FLOOR(lower_real)
+      upper = CEILING(upper_real)
+      ALLOCATE (images(3, PRODUCT(upper - lower + 1)))
+      image = 0
+      DO iz = lower(3), upper(3)
+         DO iy = lower(2), upper(2)
+            DO ix = lower(1), upper(1)
+               image = image + 1
+               images(:, image) = [ix, iy, iz]
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_hfx_gamma_images
 
 ! **************************************************************************************************
 !> \brief Add original transition corrections to physical AO image tensors before local RI fitting.
