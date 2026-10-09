@@ -293,7 +293,7 @@ CONTAINS
       END IF
       derivatives = PRESENT(gradient) .OR. PRESENT(cell_gradient)
       DO image = 1, SIZE(images, 2)
-         point = displacement - MATMUL(cell, REAL(images(:, image), dp))
+         point = displacement - MATMUL(cell, REAL(images(1:3, image), dp))
          IF (derivatives) THEN
             CALL gaussian_coulomb_fields_evaluate(fields, point, value, derivative)
          ELSE
