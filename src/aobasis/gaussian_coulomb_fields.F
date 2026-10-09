@@ -45,6 +45,7 @@ MODULE gaussian_coulomb_fields
    PUBLIC :: gaussian_coulomb_fields_type, gaussian_coulomb_fields_init
    PUBLIC :: gaussian_coulomb_fields_prepare, gaussian_coulomb_fields_evaluate
    PUBLIC :: gaussian_coulomb_fields_screen
+   PUBLIC :: gaussian_coulomb_fields_periodic
 
 CONTAINS
 
@@ -253,6 +254,61 @@ CONTAINS
          END ASSOCIATE
       END DO
    END SUBROUTINE gaussian_coulomb_fields_evaluate
+
+! **************************************************************************************************
+!> \brief Sum auxiliary potentials over prescribed integer cells without changing their kernels.
+!>        The caller supplies the integration domain. A finite Coulomb image sum is not an
+!>        infinite periodic Coulomb potential. Cell derivatives hold the integer images and
+!>        Cartesian displacement fixed and include the motion of each translated auxiliary.
+!> \param fields ...
+!> \param displacement Point relative to the untranslated auxiliary center.
+!> \param cell Physical cell matrix with lattice vectors in columns.
+!> \param images Integer auxiliary cells, indexed (axis,image).
+!> \param potential ...
+!> \param gradient Optional Cartesian displacement gradient, indexed (axis,function).
+!> \param cell_gradient Optional derivative with respect to cell(axis,column), indexed (axis,column,function).
+! **************************************************************************************************
+   SUBROUTINE gaussian_coulomb_fields_periodic(fields, displacement, cell, images, potential, gradient, cell_gradient)
+      TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
+      REAL(dp), INTENT(IN)                               :: displacement(3), cell(3, 3)
+      INTEGER, INTENT(IN)                                :: images(:, :)
+      REAL(dp), INTENT(OUT)                              :: potential(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :), cell_gradient(:, :, :)
+
+      INTEGER                                            :: column, image
+      LOGICAL                                            :: derivatives
+      REAL(dp) :: point(3), value(fields%nfunction), derivative(3, fields%nfunction)
+
+      CPASSERT(ALLOCATED(fields%primitives))
+      CPASSERT(ALL(ieee_is_finite(displacement)))
+      CPASSERT(ALL(ieee_is_finite(cell)))
+      CPASSERT(SIZE(images, 1) == 3 .AND. SIZE(potential) == fields%nfunction)
+      potential = 0.0_dp
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(ALL(SHAPE(gradient) == [3, fields%nfunction]))
+         gradient = 0.0_dp
+      END IF
+      IF (PRESENT(cell_gradient)) THEN
+         CPASSERT(ALL(SHAPE(cell_gradient) == [3, 3, fields%nfunction]))
+         cell_gradient = 0.0_dp
+      END IF
+      derivatives = PRESENT(gradient) .OR. PRESENT(cell_gradient)
+      DO image = 1, SIZE(images, 2)
+         point = displacement - MATMUL(cell, REAL(images(:, image), dp))
+         IF (derivatives) THEN
+            CALL gaussian_coulomb_fields_evaluate(fields, point, value, derivative)
+         ELSE
+            CALL gaussian_coulomb_fields_evaluate(fields, point, value)
+         END IF
+         potential(:) = potential + value
+         IF (PRESENT(gradient)) gradient(:, :) = gradient + derivative
+         IF (PRESENT(cell_gradient)) THEN
+            DO column = 1, 3
+               cell_gradient(:, column, :) = cell_gradient(:, column, :) - derivative*REAL(images(column, image), dp)
+            END DO
+         END IF
+      END DO
+   END SUBROUTINE gaussian_coulomb_fields_periodic
 
 ! **************************************************************************************************
 !> \brief Full radial coefficient of r^(2*power+l)Y_lm exp(-alpha*r^2), regular at the origin.

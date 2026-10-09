@@ -17,6 +17,7 @@ PROGRAM upf_inverse_unittest
                                               gaussian_basis_fields_periodic
    USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
                                               gaussian_coulomb_fields_init,&
+                                              gaussian_coulomb_fields_periodic,&
                                               gaussian_coulomb_fields_prepare,&
                                               gaussian_coulomb_fields_screen,&
                                               gaussian_coulomb_fields_type
@@ -1366,12 +1367,14 @@ CONTAINS
       COMPLEX(dp)                                        :: dg(nf, nb, 3), dv(nf, nb), g(nf, nb, 3), &
                                                             gss(nf, nb, 3, 2), other(nf, nb), &
                                                             v(nf, nb), vs(nf, nb, 2)
-      INTEGER                                            :: axis, ico, image, images(3, 3), point, &
-                                                            row, side, translated_images(3, 3)
+      INTEGER                                            :: axis, column, ico, image, images(3, 3), &
+                                                            point, row, side, &
+                                                            translated_images(3, 3)
       REAL(dp) :: bloch(3), cell(3, 3), center(3), cg(3, 8), cm(8), cp(8), cv(8), cx(3), dc(3, 3), &
          dcenter(3), dk(3), dpnt(3, nf), expected, gradient(nf, nb, 3), gs(nf, nb, 3, 2), &
-         hh(nf, nb, 3, 3), lg(3, 8), lv(8), omega, radius, samples(nf, nb, 2), sg(3, 8), shift, &
-         sv(8), value(nf, nb), width(2), x(3, nf), xp(3, nf)
+         hh(nf, nb, 3, 3), lattice_gradient(3, 3, 8), lg(3, 8), lv(8), omega, radius, &
+         samples(nf, nb, 2), sg(3, 8), shift, shifted_cell(3, 3), sv(8), value(nf, nb), width(2), &
+         x(3, nf), xp(3, nf)
       TYPE(gaussian_coulomb_fields_type)                 :: coulomb, long_range, short_range
       TYPE(gto_basis_set_type), POINTER                  :: basis
 
@@ -1503,12 +1506,37 @@ CONTAINS
             CALL check(MAXVAL(ABS((cp - cm)/(2*step) - sg(axis, :))), 'Gaussian erfc gradient', 2.e-8_dp)
          END DO
       END DO
+      cx = [.23_dp, -.41_dp, .37_dp]
+      CALL gaussian_coulomb_fields_periodic(short_range, cx, cell, images, sv, sg, lattice_gradient)
+      cv = 0.0_dp
+      DO image = 1, SIZE(images, 2)
+         CALL gaussian_coulomb_fields_evaluate(short_range, cx - MATMUL(cell, REAL(images(:, image), dp)), cp)
+         cv = cv + cp
+      END DO
+      CALL check(MAXVAL(ABS(sv - cv)), 'Gaussian auxiliary image ordering')
+      DO column = 1, 3
+         DO axis = 1, 3
+            shifted_cell = cell
+            shifted_cell(axis, column) = shifted_cell(axis, column) + step
+            CALL gaussian_coulomb_fields_periodic(short_range, cx, shifted_cell, images, cp)
+            shifted_cell(axis, column) = shifted_cell(axis, column) - 2*step
+            CALL gaussian_coulomb_fields_periodic(short_range, cx, shifted_cell, images, cm)
+            CALL check(MAXVAL(ABS((cp - cm)/(2*step) - lattice_gradient(axis, column, :))), &
+                       'Gaussian auxiliary cell gradient', 2.e-8_dp)
+         END DO
+      END DO
+      CALL gaussian_coulomb_fields_periodic(short_range, cx + cell(:, 1), cell, images + &
+                                            SPREAD([1, 0, 0], 2, SIZE(images, 2)), cp)
+      CALL check(MAXVAL(ABS(cp - sv)), 'Gaussian auxiliary lattice representative')
+      CALL gaussian_coulomb_fields_periodic(short_range, cx, cell, images(:, :0), cp, lg, lattice_gradient)
+      CALL check(MAXVAL(ABS(cp)) + MAXVAL(ABS(lg)) + MAXVAL(ABS(lattice_gradient)), 'Empty auxiliary image sum')
       long_range = coulomb
       short_range = coulomb
       CALL gaussian_coulomb_fields_screen(long_range, 0.0_dp, .FALSE.)
       CALL gaussian_coulomb_fields_screen(short_range, 0.0_dp, .TRUE.)
       CALL gaussian_coulomb_fields_evaluate(long_range, cx, lv, lg)
       CALL gaussian_coulomb_fields_evaluate(short_range, cx, sv, sg)
+      CALL gaussian_coulomb_fields_evaluate(coulomb, cx, cv, cg)
       CALL check(MAXVAL(ABS(lv)) + MAXVAL(ABS(lg)), 'Zero-screening erf field')
       CALL check(MAXVAL(ABS(sv - cv)) + MAXVAL(ABS(sg - cg)), 'Zero-screening erfc field')
    END SUBROUTINE check_gaussian_fields
