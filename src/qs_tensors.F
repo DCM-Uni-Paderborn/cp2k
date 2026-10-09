@@ -110,7 +110,7 @@ MODULE qs_tensors
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_tensors'
 
-   PUBLIC :: build_3c_neighbor_lists, &
+   PUBLIC :: build_3c_neighbor_lists, build_3c_neighbor_lists_in_range, &
              neighbor_list_3c_destroy, neighbor_list_3c_iterate, neighbor_list_3c_iterator_create, &
              neighbor_list_3c_iterator_destroy, get_3c_iterator_info, build_3c_integrals, &
              build_2c_neighbor_lists, build_2c_neighbor_lists_in_range, build_2c_integrals, cutoff_screen_factor, &
@@ -328,7 +328,46 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: op_pos
       LOGICAL, INTENT(IN), OPTIONAL                      :: own_dist
 
-      CHARACTER(len=*), PARAMETER :: routineN = 'build_3c_neighbor_lists'
+      CALL build_3c_neighbor_lists_in_range(ijk_list, basis_i, basis_j, basis_k, &
+                                            dist_3d, potential_parameter, name, qs_env, &
+                                            sym_ij, sym_jk, sym_ik, molecular, op_pos, own_dist)
+   END SUBROUTINE build_3c_neighbor_lists
+
+! **************************************************************************************************
+!> \brief Build three-center neighbors with an optional spatial bound on the j,k pair.
+!>        The bound restricts the search without modifying the integral operator.
+!> \param ijk_list ...
+!> \param basis_i ...
+!> \param basis_j ...
+!> \param basis_k ...
+!> \param dist_3d ...
+!> \param potential_parameter ...
+!> \param name ...
+!> \param qs_env ...
+!> \param sym_ij ...
+!> \param sym_jk ...
+!> \param sym_ik ...
+!> \param molecular ...
+!> \param op_pos ...
+!> \param own_dist ...
+!> \param max_jk_distance Largest required j,k interatomic distance, in bohr.
+! **************************************************************************************************
+   SUBROUTINE build_3c_neighbor_lists_in_range(ijk_list, basis_i, basis_j, basis_k, &
+                                               dist_3d, potential_parameter, name, qs_env, &
+                                               sym_ij, sym_jk, sym_ik, molecular, op_pos, own_dist, &
+                                               max_jk_distance)
+      TYPE(neighbor_list_3c_type), INTENT(OUT)           :: ijk_list
+      TYPE(gto_basis_set_p_type), DIMENSION(:)           :: basis_i, basis_j, basis_k
+      TYPE(distribution_3d_type), INTENT(IN)             :: dist_3d
+      TYPE(libint_potential_type), INTENT(IN)            :: potential_parameter
+      CHARACTER(LEN=*), INTENT(IN)                       :: name
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(IN), OPTIONAL                      :: sym_ij, sym_jk, sym_ik, molecular
+      INTEGER, INTENT(IN), OPTIONAL                      :: op_pos
+      LOGICAL, INTENT(IN), OPTIONAL                      :: own_dist
+      REAL(dp), INTENT(IN), OPTIONAL                     :: max_jk_distance
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'build_3c_neighbor_lists_in_range'
 
       INTEGER                                            :: handle, op_pos_prv, sym_level
       TYPE(libint_potential_type)                        :: pot_par_1, pot_par_2
@@ -354,9 +393,9 @@ CONTAINS
                                    qs_env, sym_ij=.FALSE., molecular=molecular, &
                                    dist_2d=dist_3d%dist_2d_1, pot_to_rad=1)
 
-      CALL build_2c_neighbor_lists(ijk_list%jk_list, basis_j, basis_k, pot_par_2, TRIM(name)//"_sub_2", &
-                                   qs_env, sym_ij=.FALSE., molecular=molecular, &
-                                   dist_2d=dist_3d%dist_2d_2, pot_to_rad=2)
+      CALL build_2c_neighbor_lists_in_range(ijk_list%jk_list, basis_j, basis_k, pot_par_2, TRIM(name)//"_sub_2", &
+                                            qs_env, sym_ij=.FALSE., molecular=molecular, &
+                                            dist_2d=dist_3d%dist_2d_2, pot_to_rad=2, max_distance=max_jk_distance)
 
       ijk_list%sym = symmetric_none
 
@@ -394,7 +433,7 @@ CONTAINS
       END IF
 
       CALL timestop(handle)
-   END SUBROUTINE build_3c_neighbor_lists
+   END SUBROUTINE build_3c_neighbor_lists_in_range
 
 ! **************************************************************************************************
 !> \brief Symmetry criterion

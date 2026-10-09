@@ -100,9 +100,9 @@ MODULE hfx_ri_kp
    USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE qs_tensors,                      ONLY: &
         build_2c_derivatives, build_2c_neighbor_lists, build_2c_neighbor_lists_in_range, &
-        build_3c_derivatives, build_3c_neighbor_lists, get_3c_iterator_info, get_tensor_occupancy, &
-        neighbor_list_3c_destroy, neighbor_list_3c_iterate, neighbor_list_3c_iterator_create, &
-        neighbor_list_3c_iterator_destroy
+        build_3c_derivatives, build_3c_neighbor_lists_in_range, get_3c_iterator_info, &
+        get_tensor_occupancy, neighbor_list_3c_destroy, neighbor_list_3c_iterate, &
+        neighbor_list_3c_iterator_create, neighbor_list_3c_iterator_destroy
    USE qs_tensors_types,                ONLY: create_2c_tensor,&
                                               create_3c_tensor,&
                                               create_tensor_batches,&
@@ -4592,6 +4592,28 @@ CONTAINS
       END DO
       CALL neighbor_list_iterator_release(nl_iterator)
       CALL release_neighbor_list_sets(nl_2c)
+      IF (inverse_transition) THEN
+         ! The local Coulomb metric needs differences of auxiliary images in
+         ! one fitting domain, even when the exchange interaction is screened.
+         CALL build_2c_neighbor_lists_in_range(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
+                                               "HFX_2c_nl_metric", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, &
+                                               max_distance=2.0_dp*ri_data%kp_RI_range)
+         CALL neighbor_list_iterator_create(nl_iterator, nl_2c)
+         DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
+            CALL get_iterator_info(nl_iterator, r=rij, cell=cell_j)
+            IF (NORM2(rij) > 2.0_dp*ri_data%kp_RI_range) CYCLE
+            IF (ANY(cell_j < kp_index_lbounds) .OR. ANY(cell_j > kp_index_ubounds)) THEN
+               CPABORT("Required UPF fitting-metric image is absent from the native cell map")
+            END IF
+            j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
+            IF (j_img < 1 .OR. j_img > nimg) THEN
+               CPABORT("Required UPF fitting-metric image is absent from the native cell map")
+            END IF
+            ri_data%nimg = MAX(j_img, ri_data%nimg)
+         END DO
+         CALL neighbor_list_iterator_release(nl_iterator)
+         CALL release_neighbor_list_sets(nl_2c)
+      END IF
       CALL para_env%max(ri_data%nimg)
       IF (ri_data%nimg > nimg) THEN
          CPABORT("Make sure the smallest exponent of the RI-HFX basis is larger than that of the ORB basis.")
@@ -4647,9 +4669,9 @@ CONTAINS
 
       !For the extension of the RI basis P in (mu^0 sigma^a |P^i), we consider an atom if the distance,
       !between mu^0 and P^i if smaller or equal to the kind radius of mu^0
-      CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, &
-                                   ri_data%ri_metric, "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., &
-                                   own_dist=.TRUE.)
+      CALL build_3c_neighbor_lists_in_range(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, &
+                                            ri_data%ri_metric, "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., &
+                                            own_dist=.TRUE., max_jk_distance=3.0_dp*ri_data%kp_RI_range)
 
       CALL neighbor_list_3c_iterator_create(nl_3c_iter, nl_3c)
       DO WHILE (neighbor_list_3c_iterate(nl_3c_iter) == 0)
@@ -5140,8 +5162,9 @@ CONTAINS
       DEALLOCATE (dist_RI, dist_AO_1, dist_AO_2)
       CALL dbt_pgrid_destroy(pgrid)
 
-      CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, ri_data%ri_metric, &
-                                   "HFX_3c_nl", qs_env, op_pos=2, sym_jk=.FALSE., own_dist=.TRUE.)
+      CALL build_3c_neighbor_lists_in_range(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, &
+                                            ri_data%ri_metric, "HFX_3c_nl", qs_env, op_pos=2, sym_jk=.FALSE., &
+                                            own_dist=.TRUE., max_jk_distance=3.0_dp*ri_data%kp_RI_range)
 
       n_mem = ri_data%n_mem
       CALL create_tensor_batches(ri_data%bsizes_RI, n_mem, dummy_start, dummy_end, &
@@ -5238,8 +5261,9 @@ CONTAINS
       CALL release_neighbor_list_sets(nl_2c)
 
       !RI metric derivatives
-      CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
-                                   "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+      CALL build_2c_neighbor_lists_in_range(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
+                                            "HFX_2c_nl_pot", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, &
+                                            max_distance=2.0_dp*ri_data%kp_RI_range)
       CALL build_2c_derivatives(mat_der_metric, ri_data%filter_eps_2c, qs_env, nl_2c, &
                                 basis_set_RI, basis_set_RI, ri_data%ri_metric, do_kpoints=.TRUE.)
       CALL release_neighbor_list_sets(nl_2c)

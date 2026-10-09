@@ -718,7 +718,7 @@ CONTAINS
                upf_ri_reach = 0.0_dp
                IF (do_hfx) THEN
                   ! The local fit uses the largest AO radius for every atom. Its
-                  ! RI sites and the selected RI/RI exchange images must also
+                  ! RI sites, local metric pairs and RI/RI exchange images must also
                   ! occur in the global map, independently of Gaussian AO overlap.
                   CALL section_vals_val_get(hfx_sections, "RI%EPS_PGF_ORB", r_val=upf_eps_pgf)
                   DO ikind = 1, nkind
@@ -739,7 +739,7 @@ CONTAINS
                                         cutoff_screen_factor*roperator)
                      CALL deallocate_gto_basis_set(screening_basis)
                   END DO
-                  upf_ri_reach = MAX(upf_ri_reach, MAXVAL(upf_orb_radius))
+                  upf_ri_reach = MAX(upf_ri_reach, 2.0_dp*MAXVAL(upf_orb_radius))
                END IF
                DO jkind = 1, nkind
                   IF (.NOT. orb_present(jkind)) CYCLE
