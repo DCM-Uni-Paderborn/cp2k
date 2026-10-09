@@ -34,9 +34,9 @@ MODULE qs_upf_inverse_hfx
                                               init_lebedev_grids,&
                                               lebedev_grid
    USE libint_2c_3c,                    ONLY: cutoff_screen_factor
-   USE mathlib,                         ONLY: inv_3x3
    USE mathconstants,                   ONLY: fourpi,&
                                               twopi
+   USE mathlib,                         ONLY: inv_3x3
    USE paw_onecenter,                   ONLY: paw_valence_augmentation_init
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_overlap
@@ -68,6 +68,12 @@ MODULE qs_upf_inverse_hfx
       COMPLEX(dp), ALLOCATABLE :: left(:, :), right(:, :), dleft(:, :), dright(:, :)
    END TYPE lattice_overlap_type
 
+   ! Original Q integrals are independent of the AO block and its coefficients.
+   ! Entries are local to one RI block, geometry and tensor/adjoint call.
+   TYPE transition_augmentation_type
+      REAL(dp), ALLOCATABLE :: values(:, :, :), gradient(:, :, :, :), cell_gradient(:, :, :, :, :)
+   END TYPE transition_augmentation_type
+
 CONTAINS
 
 ! **************************************************************************************************
@@ -86,7 +92,7 @@ CONTAINS
    SUBROUTINE qs_upf_inverse_hfx_gamma_images(frame, kinds, augmentation, auxiliary_bases, metric, images)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
-      TYPE(uspp_augmentation_type), INTENT(IN)          :: augmentation(:)
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation(:)
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: auxiliary_bases(:)
       TYPE(coulomb_operator_type), INTENT(IN)            :: metric
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: images(:, :)
@@ -96,7 +102,7 @@ CONTAINS
       REAL(dp)                                           :: fractional(3), inverse_cell(3, 3), &
                                                             lower_real(3), margin, radius, reach, &
                                                             support, upper_real(3)
-      TYPE(uspp_augmentation_type), ALLOCATABLE         :: paw_augmentation(:)
+      TYPE(uspp_augmentation_type), ALLOCATABLE          :: paw_augmentation(:)
 
       CPASSERT(ALL(frame%reduced_k == 0.0_dp))
       CPASSERT(SIZE(auxiliary_bases) == SIZE(frame%positions, 2))
@@ -524,10 +530,8 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: correction(:, :, :), dc(:, :, :), &
                                                             dn(:, :, :), native(:, :, :)
-      INTEGER                                            :: block_i, block_j, block_k, center, &
-                                                            first, image, iset, kind, last, maxl, &
-                                                            nblks(3), nl, nr, owner, rule, site, &
-                                                            start, STOP
+      INTEGER :: block_i, block_j, block_k, center, first, image, inner, iset, kind, last, maxl, &
+         nblks(3), ninner, nl, nouter, nr, outer, owner, rule, site, slot, start, STOP
       INTEGER, ALLOCATABLE                               :: auxiliary_start(:), sizes_i(:), &
                                                             sizes_j(:), sizes_k(:), start_i(:), &
                                                             start_j(:), start_k(:)
@@ -535,6 +539,9 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: radial_weights(:)
       TYPE(gaussian_coulomb_fields_type)                 :: fields
       TYPE(lattice_overlap_type), ALLOCATABLE            :: overlaps(:, :)
+      TYPE(transition_augmentation_type), ALLOCATABLE, &
+         TARGET                                          :: qcache(:, :, :)
+      TYPE(transition_augmentation_type), POINTER        :: qentry
       TYPE(uspp_augmentation_type), ALLOCATABLE, TARGET  :: paw_augmentation(:)
       TYPE(uspp_augmentation_type), POINTER              :: transition_augmentation
 
@@ -590,10 +597,28 @@ CONTAINS
       END IF
       CALL init_lebedev_grids()
       CALL gaussian_coulomb_fields_init(maxl)
-      DO block_j = 1, nblks(2)
-      DO block_k = 1, nblks(3)
-         IF (PRESENT(ao_image)) ALLOCATE (overlaps(SIZE(left_frame%center_atoms), SIZE(center_images, 2)))
-         DO block_i = 1, nblks(1)
+      nouter = nblks(2)*nblks(3)
+      ninner = nblks(1)
+      IF (.NOT. PRESENT(ao_image)) THEN
+         nouter = nblks(1)
+         ninner = nblks(2)*nblks(3)
+      END IF
+      DO outer = 1, nouter
+         IF (PRESENT(ao_image)) THEN
+            block_j = (outer - 1)/nblks(3) + 1
+            block_k = MOD(outer - 1, nblks(3)) + 1
+            ALLOCATE (overlaps(SIZE(left_frame%center_atoms), SIZE(center_images, 2)))
+         ELSE
+            block_i = outer
+            ALLOCATE (qcache(SIZE(left_frame%center_atoms), SIZE(center_images, 2), sizes_i(block_i)))
+         END IF
+         DO inner = 1, ninner
+            IF (PRESENT(ao_image)) THEN
+               block_i = inner
+            ELSE
+               block_j = (inner - 1)/nblks(3) + 1
+               block_k = MOD(inner - 1, nblks(3)) + 1
+            END IF
             CALL dbt_get_stored_coordinates(tensor_real, [block_i, block_j, block_k], owner)
             IF (owner /= tensor_real%pgrid%mp_comm_2d%mepos) CYCLE
             nl = sizes_j(block_j)
@@ -624,6 +649,11 @@ CONTAINS
                            rule = MAX(get_number_of_lebedev_grid(n=kinds(kind)%ngrid_ang), &
                                       get_number_of_lebedev_grid(l=MAX(0, transition_augmentation%lmax) + maxl + 1))
                            DO image = 1, SIZE(center_images, 2)
+                              NULLIFY (qentry)
+                              IF (ALLOCATED(qcache)) THEN
+                                 slot = start - start_i(block_i) + 1
+                                 qentry => qcache(center, image, slot)
+                              END IF
                               IF (derivatives) THEN
                                  IF (PRESENT(ao_image)) THEN
                                     CALL lattice_center_with_overlaps(left_frame, center, &
@@ -646,7 +676,7 @@ CONTAINS
                                                                   atom_response, cell_response, left_k_response, right_k_response, &
                                                                    left_coefficients_response, right_coefficients_response, &
                                                                    auxiliary_positions_response(:, site), center_images(:, image), &
-                                                                   auxiliary_images)
+                                                                   auxiliary_images, qentry)
                                  END IF
                               ELSE
                                  IF (PRESENT(ao_image)) THEN
@@ -666,7 +696,7 @@ CONTAINS
                                                                    pot%r, radial_weights, lebedev_grid(rule)%r, &
                                                                    fourpi*lebedev_grid(rule)%w, correction, &
                                                                    image_shift=center_images(:, image), &
-                                                                   auxiliary_images=auxiliary_images)
+                                                                   auxiliary_images=auxiliary_images, augmentation_integrals=qentry)
                                  END IF
                               END IF
                               native(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) = &
@@ -708,7 +738,7 @@ CONTAINS
             DEALLOCATE (native)
          END DO
          IF (ALLOCATED(overlaps)) DEALLOCATE (overlaps)
-      END DO
+         IF (ALLOCATED(qcache)) DEALLOCATE (qcache)
       END DO
       CALL dbt_finalize(tensor_real)
       IF (PRESENT(tensor_imaginary)) CALL dbt_finalize(tensor_imaginary)
@@ -779,7 +809,7 @@ CONTAINS
       INTEGER                                            :: block_i, block_j, block_k, center, &
                                                             finish, first, image, iset, kind, &
                                                             last, maxl, nblks(3), nl, nr, owner, &
-                                                            rule, site, start
+                                                            rule, site, slot, start
       INTEGER, ALLOCATABLE                               :: auxiliary_start(:), sizes_i(:), &
                                                             sizes_j(:), sizes_k(:), start_i(:), &
                                                             start_j(:), start_k(:)
@@ -789,6 +819,8 @@ CONTAINS
       REAL(dp), ALLOCATABLE, TARGET                      :: imaginary_block(:, :, :), &
                                                             real_block(:, :, :)
       TYPE(gaussian_coulomb_fields_type)                 :: fields
+      TYPE(transition_augmentation_type), ALLOCATABLE, &
+         TARGET                                          :: qcache(:, :, :)
       TYPE(uspp_augmentation_type), ALLOCATABLE, TARGET  :: paw_augmentation(:)
       TYPE(uspp_augmentation_type), POINTER              :: transition_augmentation
 
@@ -829,101 +861,105 @@ CONTAINS
       CALL init_lebedev_grids()
       CALL gaussian_coulomb_fields_init(maxl)
       DO block_i = 1, nblks(1)
-      DO block_j = 1, nblks(2)
-      DO block_k = 1, nblks(3)
-         CALL dbt_get_stored_coordinates(covector_real, [block_i, block_j, block_k], owner)
-         IF (owner /= covector_real%pgrid%mp_comm_2d%mepos) CYCLE
-         CALL dbt_get_block(covector_real, [block_i, block_j, block_k], real_block, found_real)
-         found_imaginary = .FALSE.
-         IF (PRESENT(covector_imaginary)) THEN
-            CALL dbt_get_block(covector_imaginary, [block_i, block_j, block_k], imaginary_block, found_imaginary)
-         END IF
-         IF (.NOT. (found_real .OR. found_imaginary)) CYCLE
-         nl = sizes_j(block_j)
-         nr = sizes_k(block_k)
-         ALLOCATE (g(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
-         IF (found_real) g(:, :, :) = CMPLX(real_block, 0.0_dp, dp)
-         IF (found_imaginary) g(:, :, :) = g + CMPLX(0.0_dp, imaginary_block, dp)
-         IF (coefficients) THEN
-            ALLOCATE (gl(SIZE(left_frame%coefficients, 1), nl), gr(SIZE(right_frame%coefficients, 1), nr))
-         END IF
-         DO site = 1, SIZE(auxiliary_bases)
-            IF (auxiliary_start(site + 1) <= start_i(block_i) .OR. &
-                auxiliary_start(site) >= start_i(block_i + 1)) CYCLE
-            first = auxiliary_start(site)
-            DO iset = 1, auxiliary_bases(site)%gto_basis_set%nset
-               last = first + auxiliary_bases(site)%gto_basis_set%nsgf_set(iset) - 1
-               start = MAX(first, start_i(block_i))
-               finish = MIN(last, start_i(block_i + 1) - 1)
-               IF (start <= finish) THEN
-                  CALL prepare_auxiliary_fields(auxiliary_bases(site)%gto_basis_set, iset, fields, metric)
-                  ALLOCATE (local(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
-                  local(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors(site))* &
+         ALLOCATE (qcache(SIZE(left_frame%center_atoms), SIZE(center_images, 2), sizes_i(block_i)))
+         DO block_j = 1, nblks(2)
+         DO block_k = 1, nblks(3)
+            CALL dbt_get_stored_coordinates(covector_real, [block_i, block_j, block_k], owner)
+            IF (owner /= covector_real%pgrid%mp_comm_2d%mepos) CYCLE
+            CALL dbt_get_block(covector_real, [block_i, block_j, block_k], real_block, found_real)
+            found_imaginary = .FALSE.
+            IF (PRESENT(covector_imaginary)) THEN
+               CALL dbt_get_block(covector_imaginary, [block_i, block_j, block_k], imaginary_block, found_imaginary)
+            END IF
+            IF (.NOT. (found_real .OR. found_imaginary)) CYCLE
+            nl = sizes_j(block_j)
+            nr = sizes_k(block_k)
+            ALLOCATE (g(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+            IF (found_real) g(:, :, :) = CMPLX(real_block, 0.0_dp, dp)
+            IF (found_imaginary) g(:, :, :) = g + CMPLX(0.0_dp, imaginary_block, dp)
+            IF (coefficients) THEN
+               ALLOCATE (gl(SIZE(left_frame%coefficients, 1), nl), gr(SIZE(right_frame%coefficients, 1), nr))
+            END IF
+            DO site = 1, SIZE(auxiliary_bases)
+               IF (auxiliary_start(site + 1) <= start_i(block_i) .OR. &
+                   auxiliary_start(site) >= start_i(block_i + 1)) CYCLE
+               first = auxiliary_start(site)
+               DO iset = 1, auxiliary_bases(site)%gto_basis_set%nset
+                  last = first + auxiliary_bases(site)%gto_basis_set%nsgf_set(iset) - 1
+                  start = MAX(first, start_i(block_i))
+                  finish = MIN(last, start_i(block_i + 1) - 1)
+                  IF (start <= finish) THEN
+                     CALL prepare_auxiliary_fields(auxiliary_bases(site)%gto_basis_set, iset, fields, metric)
+                     ALLOCATE (local(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+                     local(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors(site))* &
                                                       RESHAPE(g(start - start_i(block_i) + 1:finish - start_i(block_i) + 1, :, :), &
-                                                                              [nl, nr, finish - start + 1], ORDER=[3, 1, 2])
-                  IF (derivatives) THEN
-                     ALLOCATE (factor_covector(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
-                     ALLOCATE (correction(nl, nr, fields%nfunction), dc(nl, nr, fields%nfunction))
-                     factor_covector(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors_response(site))* &
+                                                                                 [nl, nr, finish - start + 1], ORDER=[3, 1, 2])
+                     IF (derivatives) THEN
+                        ALLOCATE (factor_covector(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+                        ALLOCATE (correction(nl, nr, fields%nfunction), dc(nl, nr, fields%nfunction))
+                        factor_covector(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors_response(site))* &
                                                       RESHAPE(g(start - start_i(block_i) + 1:finish - start_i(block_i) + 1, :, :), &
                                                                                       [nl, nr, finish - start + 1], ORDER=[3, 1, 2])
-                  END IF
-                  DO center = 1, SIZE(left_frame%center_atoms)
-                     kind = left_frame%center_kinds(center)
-                     CPASSERT(ASSOCIATED(kinds(kind)%sgp_potential))
-                     CPASSERT(ALLOCATED(kinds(kind)%sgp_potential%upf_data))
-                     transition_augmentation => augmentation(kind)
-                     IF (paw_augmentation(kind)%nproj > 0) transition_augmentation => paw_augmentation(kind)
-                     ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
-                        ALLOCATE (radial_weights(SIZE(pot%r)))
-                        radial_weights(:) = upf_radial_weights(pot)*pot%r**2
-                        rule = MAX(get_number_of_lebedev_grid(n=kinds(kind)%ngrid_ang), &
-                                   get_number_of_lebedev_grid(l=MAX(0, transition_augmentation%lmax) + maxl + 1))
-                        DO image = 1, SIZE(center_images, 2)
-                           IF (coefficients) THEN
-                              CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
-                                                                     [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                     [start_k(block_k), start_k(block_k + 1) - 1], fields, &
+                     END IF
+                     DO center = 1, SIZE(left_frame%center_atoms)
+                        kind = left_frame%center_kinds(center)
+                        CPASSERT(ASSOCIATED(kinds(kind)%sgp_potential))
+                        CPASSERT(ALLOCATED(kinds(kind)%sgp_potential%upf_data))
+                        transition_augmentation => augmentation(kind)
+                        IF (paw_augmentation(kind)%nproj > 0) transition_augmentation => paw_augmentation(kind)
+                        ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
+                           ALLOCATE (radial_weights(SIZE(pot%r)))
+                           radial_weights(:) = upf_radial_weights(pot)*pot%r**2
+                           rule = MAX(get_number_of_lebedev_grid(n=kinds(kind)%ngrid_ang), &
+                                      get_number_of_lebedev_grid(l=MAX(0, transition_augmentation%lmax) + maxl + 1))
+                           DO image = 1, SIZE(center_images, 2)
+                              slot = start - start_i(block_i) + 1
+                              IF (coefficients) THEN
+                                 CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
+                                                                        [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                        [start_k(block_k), start_k(block_k + 1) - 1], fields, &
                                                                      auxiliary_positions(:, site), transition_augmentation, pot%r, &
-                                                                     radial_weights, lebedev_grid(rule)%r, &
-                                                                     fourpi*lebedev_grid(rule)%w, local, gl, gr, &
-                                                                     center_images(:, image), auxiliary_images)
-                           END IF
-                           IF (derivatives) THEN
-                              CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
-                                                             [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                             [start_k(block_k), start_k(block_k + 1) - 1], fields, &
-                                                             auxiliary_positions(:, site), transition_augmentation, pot%r, &
-                                                             radial_weights, lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
-                                                             correction, dc, atom_response, cell_response, left_k_response, &
-                                                             right_k_response, zero_left, zero_right, &
-                                                             auxiliary_positions_response(:, site), center_images(:, image), &
-                                                             auxiliary_images)
-                              geometry_response = geometry_response + REAL(SUM(CONJG(local)*dc) + &
-                                                                           SUM(CONJG(factor_covector)*correction), dp)
-                           END IF
-                           IF (PRESENT(left_coefficients_covector)) THEN
-                              left_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1) = &
-                                 left_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1) + gl
-                           END IF
-                           IF (PRESENT(right_coefficients_covector)) THEN
-                              right_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1) = &
-                                 right_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1) + gr
-                           END IF
-                        END DO
-                        DEALLOCATE (radial_weights)
-                     END ASSOCIATE
-                  END DO
-                  DEALLOCATE (local)
-                  IF (derivatives) DEALLOCATE (factor_covector, correction, dc)
-               END IF
-               first = last + 1
+                                                                        radial_weights, lebedev_grid(rule)%r, &
+                                                                        fourpi*lebedev_grid(rule)%w, local, gl, gr, &
+                                                                        center_images(:, image), auxiliary_images, &
+                                                                        qcache(center, image, slot))
+                              END IF
+                              IF (derivatives) THEN
+                                 CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
+                                                                [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                [start_k(block_k), start_k(block_k + 1) - 1], fields, &
+                                                                auxiliary_positions(:, site), transition_augmentation, pot%r, &
+                                                                radial_weights, lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
+                                                                correction, dc, atom_response, cell_response, left_k_response, &
+                                                                right_k_response, zero_left, zero_right, &
+                                                                auxiliary_positions_response(:, site), center_images(:, image), &
+                                                                auxiliary_images, qcache(center, image, slot))
+                                 geometry_response = geometry_response + REAL(SUM(CONJG(local)*dc) + &
+                                                                              SUM(CONJG(factor_covector)*correction), dp)
+                              END IF
+                              IF (PRESENT(left_coefficients_covector)) THEN
+                                 left_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1) = &
+                                    left_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1) + gl
+                              END IF
+                              IF (PRESENT(right_coefficients_covector)) THEN
+                                 right_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1) = &
+                                    right_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1) + gr
+                              END IF
+                           END DO
+                           DEALLOCATE (radial_weights)
+                        END ASSOCIATE
+                     END DO
+                     DEALLOCATE (local)
+                     IF (derivatives) DEALLOCATE (factor_covector, correction, dc)
+                  END IF
+                  first = last + 1
+               END DO
             END DO
+            DEALLOCATE (g)
+            IF (coefficients) DEALLOCATE (gl, gr)
          END DO
-         DEALLOCATE (g)
-         IF (coefficients) DEALLOCATE (gl, gr)
-      END DO
-      END DO
+         END DO
+         DEALLOCATE (qcache)
       END DO
       IF (PRESENT(left_coefficients_covector)) CALL covector_real%pgrid%mp_comm_2d%sum(left_coefficients_covector)
       IF (PRESENT(right_coefficients_covector)) CALL covector_real%pgrid%mp_comm_2d%sum(right_coefficients_covector)
@@ -953,6 +989,61 @@ CONTAINS
          CPABORT("Inverse UPF fitting interaction is not implemented yet")
       END SELECT
    END SUBROUTINE prepare_auxiliary_fields
+
+! **************************************************************************************************
+!> \brief Original augmentation integrals and gradients at fixed geometry, images and RI shell.
+!> \param fields ...
+!> \param augmentation ...
+!> \param displacement ...
+!> \param directions ...
+!> \param angular_weights ...
+!> \param integrals ...
+!> \param derivatives ...
+!> \param cell ...
+!> \param images ...
+! **************************************************************************************************
+   SUBROUTINE prepare_transition_augmentation(fields, augmentation, displacement, directions, angular_weights, &
+                                              integrals, derivatives, cell, images)
+      TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
+      REAL(dp), INTENT(IN)                               :: displacement(3), directions(:, :), &
+                                                            angular_weights(:)
+      TYPE(transition_augmentation_type), INTENT(INOUT)  :: integrals
+      LOGICAL, INTENT(IN)                                :: derivatives
+      REAL(dp), INTENT(IN)                               :: cell(3, 3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: images(:, :)
+
+      INTEGER                                            :: n, naux
+
+      IF (ALLOCATED(integrals%values)) THEN
+         IF (.NOT. derivatives .OR. ALLOCATED(integrals%gradient)) RETURN
+      ELSE
+         ALLOCATE (integrals%values(augmentation%nproj, augmentation%nproj, fields%nfunction))
+      END IF
+      n = augmentation%nproj
+      naux = fields%nfunction
+      IF (derivatives) THEN
+         ALLOCATE (integrals%gradient(n, n, naux, 3))
+         IF (PRESENT(images)) THEN
+            ALLOCATE (integrals%cell_gradient(n, n, naux, 3, 3))
+            CALL upf_inverse_exchange_augmentation(fields, augmentation, displacement, directions, angular_weights, &
+                                                   integrals%values, augmentation_derivative=integrals%gradient, &
+                                                   auxiliary_cell=cell, auxiliary_images=images, &
+                                                   cell_derivative=integrals%cell_gradient)
+         ELSE
+            CALL upf_inverse_exchange_augmentation(fields, augmentation, displacement, directions, angular_weights, &
+                                                   integrals%values, augmentation_derivative=integrals%gradient)
+         END IF
+      ELSE
+         IF (PRESENT(images)) THEN
+            CALL upf_inverse_exchange_augmentation(fields, augmentation, displacement, directions, angular_weights, &
+                                                   integrals%values, auxiliary_cell=cell, auxiliary_images=images)
+         ELSE
+            CALL upf_inverse_exchange_augmentation(fields, augmentation, displacement, directions, angular_weights, &
+                                                   integrals%values)
+         END IF
+      END IF
+   END SUBROUTINE prepare_transition_augmentation
 
 ! **************************************************************************************************
 !> \brief Prepare PAW valence transition kernels without changing original compensation data.
@@ -1101,12 +1192,13 @@ CONTAINS
 !> \param auxiliary_response Cartesian motion of the RI Gaussian image.
 !> \param image_shift Original center's integer image, zero by default.
 !> \param auxiliary_images Optional fixed auxiliary Gaussian images, at fixed Gamma.
+!> \param augmentation_integrals Optional workspace valid for this center/image, geometry and RI shell.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_center(left_frame, right_frame, center, left_range, right_range, fields, &
                                         auxiliary_center, augmentation, r, radial_weights, directions, angular_weights, &
                                         integral, response, atom_response, cell_response, left_k_response, right_k_response, &
                                         left_coefficients_response, right_coefficients_response, auxiliary_response, image_shift, &
-                                        auxiliary_images)
+                                        auxiliary_images, augmentation_integrals)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2)
       TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
@@ -1123,6 +1215,8 @@ CONTAINS
          right_coefficients_response(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: auxiliary_response(3)
       INTEGER, INTENT(IN), OPTIONAL                      :: image_shift(3), auxiliary_images(:, :)
+      TYPE(transition_augmentation_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: augmentation_integrals
 
       COMPLEX(dp)                                        :: dphase, phase
       COMPLEX(dp), ALLOCATABLE :: block(:, :), cl(:, :), cr(:, :), dl(:, :), dq(:, :), dr(:, :), &
@@ -1132,11 +1226,12 @@ CONTAINS
                                                             t
       LOGICAL                                            :: derivatives
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
-      REAL(dp), ALLOCATABLE :: cell_dqi(:, :, :, :, :), dpoints(:, :), dqi(:, :, :, :), &
-         points(:, :), potential_cell_gradients(:, :, :, :), potential_gradients(:, :, :), &
-         potential_responses(:, :), potentials(:, :), qintegrals(:, :, :), weighted_potential(:), &
-         weights(:)
+      REAL(dp), ALLOCATABLE :: dpoints(:, :), points(:, :), potential_cell_gradients(:, :, :, :), &
+         potential_gradients(:, :, :), potential_responses(:, :), potentials(:, :), &
+         weighted_potential(:), weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
+      TYPE(transition_augmentation_type), POINTER        :: qi
+      TYPE(transition_augmentation_type), TARGET         :: temporary_augmentation
 
       IF (PRESENT(auxiliary_images)) THEN
          CPASSERT(SIZE(auxiliary_images, 1) == 3)
@@ -1289,30 +1384,11 @@ CONTAINS
          END DO
       END DO
       IF (augmentation%nproj == 0) RETURN
-      ALLOCATE (qintegrals(projectors, projectors, naux), q(projectors, projectors), &
-                dq(projectors, projectors))
-      IF (derivatives) THEN
-         ALLOCATE (dqi(projectors, projectors, naux, 3))
-         IF (PRESENT(auxiliary_images)) THEN
-            ALLOCATE (cell_dqi(projectors, projectors, naux, 3, 3))
-            CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                   directions, angular_weights, qintegrals, augmentation_derivative=dqi, &
-                                                   auxiliary_cell=left_frame%cell, auxiliary_images=auxiliary_images, &
-                                                   cell_derivative=cell_dqi)
-         ELSE
-            CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                   directions, angular_weights, qintegrals, augmentation_derivative=dqi)
-         END IF
-      ELSE
-         IF (PRESENT(auxiliary_images)) THEN
-            CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                   directions, angular_weights, qintegrals, auxiliary_cell=left_frame%cell, &
-                                                   auxiliary_images=auxiliary_images)
-         ELSE
-            CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                   directions, angular_weights, qintegrals)
-         END IF
-      END IF
+      ALLOCATE (q(projectors, projectors), dq(projectors, projectors))
+      qi => temporary_augmentation
+      IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
+      CALL prepare_transition_augmentation(fields, augmentation, position - auxiliary_center, directions, angular_weights, &
+                                           qi, derivatives, left_frame%cell, auxiliary_images)
       phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(right_frame%reduced_k - left_frame%reduced_k, REAL(shift, dp)), dp))
       IF (derivatives) dphase = phase*CMPLX(0.0_dp, &
                                             twopi*DOT_PRODUCT(right_k_response - left_k_response, REAL(shift, dp)), dp)
@@ -1321,17 +1397,17 @@ CONTAINS
       ASSOCIATE (wl => left_frame%coefficients(p:p + projectors - 1, left_range(1):left_range(2)), &
                  wr => right_frame%coefficients(t:t + projectors - 1, right_range(1):right_range(2)))
          DO aux = 1, naux
-            q(:, :) = phase*qintegrals(:, :, aux)
+            q(:, :) = phase*qi%values(:, :, aux)
             integral(:, :, aux) = integral(:, :, aux) + MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(q, wr))
             IF (.NOT. derivatives) CYCLE
-            dq(:, :) = dphase*qintegrals(:, :, aux)
+            dq(:, :) = dphase*qi%values(:, :, aux)
             DO ia = 1, 3
-               dq(:, :) = dq + phase*dqi(:, :, aux, ia)*(dposition(ia) - auxiliary_response(ia))
+               dq(:, :) = dq + phase*qi%gradient(:, :, aux, ia)*(dposition(ia) - auxiliary_response(ia))
             END DO
             IF (PRESENT(auxiliary_images)) THEN
                DO j = 1, 3
                   DO axis = 1, 3
-                     dq(:, :) = dq + phase*cell_dqi(:, :, aux, axis, j)*cell_response(axis, j)
+                     dq(:, :) = dq + phase*qi%cell_gradient(:, :, aux, axis, j)*cell_response(axis, j)
                   END DO
                END DO
             END IF
@@ -1743,11 +1819,12 @@ CONTAINS
 !> \param right_coefficients_covector All right projector rows and selected right AO columns.
 !> \param image_shift ...
 !> \param auxiliary_images Optional fixed auxiliary Gaussian images, at fixed Gamma.
+!> \param augmentation_integrals Optional workspace valid for this center/image, geometry and RI shell.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, left_range, right_range, &
                                                 fields, auxiliary_center, augmentation, r, radial_weights, &
                                                 directions, angular_weights, covector, left_coefficients_covector, &
-                                                right_coefficients_covector, image_shift, auxiliary_images)
+                                                right_coefficients_covector, image_shift, auxiliary_images, augmentation_integrals)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2)
       TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
@@ -1759,6 +1836,8 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT) :: left_coefficients_covector(:, :), &
          right_coefficients_covector(:, :)
       INTEGER, INTENT(IN), OPTIONAL                      :: image_shift(3), auxiliary_images(:, :)
+      TYPE(transition_augmentation_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: augmentation_integrals
 
       COMPLEX(dp)                                        :: phase
       COMPLEX(dp), ALLOCATABLE :: cl(:, :), cr(:, :), dl(:, :), dr(:, :), gcl(:, :), gcr(:, :), &
@@ -1766,9 +1845,12 @@ CONTAINS
       INTEGER                                            :: atom, aux, ia, ir, j, kind, nang, nl, &
                                                             nr, p, projectors, shift(3), t
       REAL(dp)                                           :: position(3), radius
-      REAL(dp), ALLOCATABLE :: points(:, :), potentials(:, :), qintegrals(:, :, :), &
-         unused_points(:, :), weighted_potential(:), weights(:)
+      REAL(dp), ALLOCATABLE                              :: points(:, :), potentials(:, :), &
+                                                            unused_points(:, :), &
+                                                            weighted_potential(:), weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
+      TYPE(transition_augmentation_type), POINTER        :: qi
+      TYPE(transition_augmentation_type), TARGET         :: temporary_augmentation
 
       IF (PRESENT(auxiliary_images)) THEN
          CPASSERT(SIZE(auxiliary_images, 1) == 3)
@@ -1866,15 +1948,11 @@ CONTAINS
          CALL residual_coefficients_adjoint(right_frame, center, right_fields, gcr, gdr, right_coefficients_covector)
       END DO
       IF (augmentation%nproj == 0) RETURN
-      ALLOCATE (qintegrals(projectors, projectors, fields%nfunction), q(projectors, projectors))
-      IF (PRESENT(auxiliary_images)) THEN
-         CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                directions, angular_weights, qintegrals, auxiliary_cell=left_frame%cell, &
-                                                auxiliary_images=auxiliary_images)
-      ELSE
-         CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                directions, angular_weights, qintegrals)
-      END IF
+      ALLOCATE (q(projectors, projectors))
+      qi => temporary_augmentation
+      IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
+      CALL prepare_transition_augmentation(fields, augmentation, position - auxiliary_center, directions, angular_weights, &
+                                           qi, .FALSE., left_frame%cell, auxiliary_images)
       phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(right_frame%reduced_k - left_frame%reduced_k, REAL(shift, dp)), dp))
       p = left_frame%projector_first(center)
       t = right_frame%projector_first(center)
@@ -1883,7 +1961,7 @@ CONTAINS
                  gl => left_coefficients_covector(p:p + projectors - 1, :), &
                  gr => right_coefficients_covector(t:t + projectors - 1, :))
          DO aux = 1, fields%nfunction
-            q(:, :) = phase*qintegrals(:, :, aux)
+            q(:, :) = phase*qi%values(:, :, aux)
             gl = gl + MATMUL(MATMUL(q, wr), CONJG(TRANSPOSE(covector(:, :, aux))))
             gr = gr + MATMUL(CONJG(TRANSPOSE(q)), MATMUL(wl, covector(:, :, aux)))
          END DO
