@@ -13,6 +13,7 @@
 ! **************************************************************************************************
 MODULE upf_inverse_exchange
    USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
+                                              gaussian_coulomb_fields_periodic,&
                                               gaussian_coulomb_fields_type
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
@@ -215,8 +216,8 @@ CONTAINS
 !> \brief Original Q integrals against a native Gaussian Coulomb-potential cache.
 !>        Original radial weights, angular kernels and complete nonzero tails are retained. The
 !>        integral is in the native magnetic-projector and Gaussian-function coordinates, with
-!>        no partial-wave product replacement or compensation subtraction. Image translations
-!>        and Bloch phases belong to the caller.
+!>        no partial-wave product replacement or compensation subtraction. The caller supplies
+!>        any auxiliary images and retains the reconstruction-center images and Bloch phases.
 !> \param fields Prepared native Gaussian auxiliary shell-set cache.
 !> \param augmentation Original scalar projector augmentation with its radial quadrature.
 !> \param displacement Augmentation center minus Gaussian center in bohr.
@@ -225,9 +226,13 @@ CONTAINS
 !> \param integrals New complete (projector, projector, auxiliary) block.
 !> \param gaussian_derivative Optional new Gaussian-center derivative, Cartesian axis last.
 !> \param augmentation_derivative Optional new augmentation-center derivative, Cartesian axis last.
+!> \param auxiliary_cell Optional lattice vectors in columns, with auxiliary_images.
+!> \param auxiliary_images Optional fixed integer auxiliary images, indexed (axis,image).
+!> \param cell_derivative Optional cell-matrix derivative at fixed displacement and image indices.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_exchange_augmentation(fields, augmentation, displacement, directions, weights, &
-                                                integrals, gaussian_derivative, augmentation_derivative)
+                                                integrals, gaussian_derivative, augmentation_derivative, &
+                                                auxiliary_cell, auxiliary_images, cell_derivative)
       TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(dp), INTENT(IN)                               :: displacement(3), directions(:, :), &
@@ -235,19 +240,24 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: integrals(:, :, :)
       REAL(dp), INTENT(OUT), OPTIONAL :: gaussian_derivative(:, :, :, :), &
          augmentation_derivative(:, :, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: auxiliary_cell(3, 3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: auxiliary_images(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: cell_derivative(:, :, :, :, :)
 
       INTEGER                                            :: axis, i, ia, ir, j, l, lm, m, n, naux, &
                                                             p, pair, q
       LOGICAL                                            :: derivatives
       REAL(dp)                                           :: point(3), radial
-      REAL(dp), ALLOCATABLE :: d_integrals(:, :, :, :), d_projected(:, :, :), gradient(:, :), &
-         harmonics(:, :), potential(:), projected(:, :), values(:)
+      REAL(dp), ALLOCATABLE :: cell_gradient(:, :, :), cell_projected(:, :, :, :), &
+         d_integrals(:, :, :, :), d_projected(:, :, :), gradient(:, :), harmonics(:, :), &
+         potential(:), projected(:, :), values(:)
 
       n = augmentation%nproj
       naux = fields%nfunction
       CPASSERT(ALL(SHAPE(integrals) == [n, n, naux]))
       integrals = 0.0_dp
-      derivatives = PRESENT(gaussian_derivative) .OR. PRESENT(augmentation_derivative)
+      CPASSERT(PRESENT(auxiliary_cell) .EQV. PRESENT(auxiliary_images))
+      derivatives = PRESENT(gaussian_derivative) .OR. PRESENT(augmentation_derivative) .OR. PRESENT(cell_derivative)
       IF (PRESENT(gaussian_derivative)) THEN
          CPASSERT(ALL(SHAPE(gaussian_derivative) == [n, n, naux, 3]))
          gaussian_derivative = 0.0_dp
@@ -255,6 +265,11 @@ CONTAINS
       IF (PRESENT(augmentation_derivative)) THEN
          CPASSERT(ALL(SHAPE(augmentation_derivative) == [n, n, naux, 3]))
          augmentation_derivative = 0.0_dp
+      END IF
+      IF (PRESENT(cell_derivative)) THEN
+         CPASSERT(PRESENT(auxiliary_images))
+         CPASSERT(ALL(SHAPE(cell_derivative) == [n, n, naux, 3, 3]))
+         cell_derivative = 0.0_dp
       END IF
       IF (n == 0) RETURN
       IF (.NOT. (SIZE(directions, 1) == 3 .AND. SIZE(directions, 2) == SIZE(weights))) THEN
@@ -271,6 +286,9 @@ CONTAINS
          ALLOCATE (gradient(3, naux), d_projected((augmentation%lmax + 1)**2, naux, 3), &
                    d_integrals(n, n, naux, 3), SOURCE=0.0_dp)
       END IF
+      IF (PRESENT(cell_derivative)) THEN
+         ALLOCATE (cell_gradient(3, 3, naux), cell_projected((augmentation%lmax + 1)**2, naux, 3, 3))
+      END IF
       DO l = 0, augmentation%lmax
          DO m = -l, l
             lm = l*l + l + m + 1
@@ -282,16 +300,36 @@ CONTAINS
          IF (ALL(augmentation%weighted_q(ir, :, :) == 0.0_dp)) CYCLE
          projected(:, :) = 0.0_dp
          IF (derivatives) d_projected(:, :, :) = 0.0_dp
+         IF (PRESENT(cell_derivative)) cell_projected(:, :, :, :) = 0.0_dp
          DO ia = 1, SIZE(weights)
             point = displacement + augmentation%r(ir)*directions(:, ia)
             IF (derivatives) THEN
-               CALL gaussian_coulomb_fields_evaluate(fields, point, potential, gradient)
+               IF (PRESENT(auxiliary_images)) THEN
+                  IF (PRESENT(cell_derivative)) THEN
+                     CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, &
+                                                           potential, gradient, cell_gradient)
+                     DO j = 1, 3
+                        DO axis = 1, 3
+                           cell_projected(:, :, axis, j) = cell_projected(:, :, axis, j) + &
+                                          SPREAD(harmonics(ia, :), 2, naux)*SPREAD(cell_gradient(axis, j, :), 1, SIZE(harmonics, 2))
+                        END DO
+                     END DO
+                  ELSE
+                     CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, potential, gradient)
+                  END IF
+               ELSE
+                  CALL gaussian_coulomb_fields_evaluate(fields, point, potential, gradient)
+               END IF
                DO axis = 1, 3
                   d_projected(:, :, axis) = d_projected(:, :, axis) + &
                                             SPREAD(harmonics(ia, :), 2, naux)*SPREAD(gradient(axis, :), 1, SIZE(harmonics, 2))
                END DO
             ELSE
-               CALL gaussian_coulomb_fields_evaluate(fields, point, potential)
+               IF (PRESENT(auxiliary_images)) THEN
+                  CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, potential)
+               ELSE
+                  CALL gaussian_coulomb_fields_evaluate(fields, point, potential)
+               END IF
             END IF
             projected(:, :) = projected + SPREAD(harmonics(ia, :), 2, naux)*SPREAD(potential, 1, SIZE(harmonics, 2))
          END DO
@@ -309,6 +347,10 @@ CONTAINS
                         d_integrals(p, q, :, :) = d_integrals(p, q, :, :) + &
                                                   radial*augmentation%gaunt(p, q, lm)*d_projected(lm, :, :)
                      END IF
+                     IF (PRESENT(cell_derivative)) THEN
+                        cell_derivative(p, q, :, :, :) = cell_derivative(p, q, :, :, :) + &
+                                                         radial*augmentation%gaunt(p, q, lm)*cell_projected(lm, :, :, :)
+                     END IF
                   END DO
                END DO
             END DO
@@ -318,6 +360,7 @@ CONTAINS
          DO p = 1, q - 1
             integrals(q, p, :) = integrals(p, q, :)
             IF (derivatives) d_integrals(q, p, :, :) = d_integrals(p, q, :, :)
+            IF (PRESENT(cell_derivative)) cell_derivative(q, p, :, :, :) = cell_derivative(p, q, :, :, :)
          END DO
       END DO
       IF (PRESENT(gaussian_derivative)) gaussian_derivative = -d_integrals

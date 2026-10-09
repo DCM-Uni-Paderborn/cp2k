@@ -21,6 +21,7 @@ MODULE qs_upf_inverse_hfx
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
    USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
                                               gaussian_coulomb_fields_init,&
+                                              gaussian_coulomb_fields_periodic,&
                                               gaussian_coulomb_fields_prepare,&
                                               gaussian_coulomb_fields_screen,&
                                               gaussian_coulomb_fields_type
@@ -413,13 +414,14 @@ CONTAINS
 !> \param auxiliary_factors_response Response of the owner's complex RI factors.
 !> \param ao_image Optional integer right AO cell R for individual lattice integrals.
 !> \param metric Optional native RI interaction, Coulomb by default.
+!> \param auxiliary_images Optional fixed auxiliary Gaussian images, at fixed Gamma.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_tensor(left_frame, right_frame, kinds, augmentation, auxiliary_bases, &
                                         auxiliary_positions, auxiliary_factors, center_images, tensor_real, &
                                         tensor_imaginary, response_real, response_imaginary, atom_response, cell_response, &
                                         left_k_response, right_k_response, left_coefficients_response, &
                                         right_coefficients_response, auxiliary_positions_response, auxiliary_factors_response, &
-                                        ao_image, metric)
+                                        ao_image, metric, auxiliary_images)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -439,6 +441,7 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: auxiliary_factors_response(:)
       INTEGER, INTENT(IN), OPTIONAL                      :: ao_image(3)
       TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+      INTEGER, INTENT(IN), OPTIONAL                      :: auxiliary_images(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: correction(:, :, :), dc(:, :, :), &
                                                             dn(:, :, :), native(:, :, :)
@@ -461,6 +464,7 @@ CONTAINS
       CPASSERT(SIZE(center_images, 1) == 3 .AND. SIZE(center_images, 2) > 0)
       CPASSERT(SIZE(augmentation) == SIZE(kinds))
       IF (PRESENT(ao_image)) THEN
+         CPASSERT(.NOT. PRESENT(auxiliary_images))
          CPASSERT(left_frame%atom_local .AND. right_frame%atom_local)
          CPASSERT(left_frame%direct .EQV. right_frame%direct)
          CPASSERT(ALL(left_frame%cell == right_frame%cell))
@@ -562,7 +566,8 @@ CONTAINS
                                                                    fourpi*lebedev_grid(rule)%w, correction, dc, &
                                                                   atom_response, cell_response, left_k_response, right_k_response, &
                                                                    left_coefficients_response, right_coefficients_response, &
-                                                                   auxiliary_positions_response(:, site), center_images(:, image))
+                                                                   auxiliary_positions_response(:, site), center_images(:, image), &
+                                                                   auxiliary_images)
                                  END IF
                               ELSE
                                  IF (PRESENT(ao_image)) THEN
@@ -581,7 +586,8 @@ CONTAINS
                                                                    auxiliary_positions(:, site), transition_augmentation, &
                                                                    pot%r, radial_weights, lebedev_grid(rule)%r, &
                                                                    fourpi*lebedev_grid(rule)%w, correction, &
-                                                                   image_shift=center_images(:, image))
+                                                                   image_shift=center_images(:, image), &
+                                                                   auxiliary_images=auxiliary_images)
                                  END IF
                               END IF
                               native(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) = &
@@ -662,12 +668,15 @@ CONTAINS
 !> \param right_k_response Right reduced Bloch-vector response.
 !> \param auxiliary_positions_response Motion of every supplied RI site/image.
 !> \param auxiliary_factors_response Response of the owner's complex RI image factors.
+!> \param metric Optional native RI interaction, Coulomb by default.
+!> \param auxiliary_images Optional fixed auxiliary Gaussian images, at fixed Gamma.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_tensor_adjoint(left_frame, right_frame, kinds, augmentation, auxiliary_bases, &
                                                 auxiliary_positions, auxiliary_factors, center_images, covector_real, &
                                                 left_coefficients_covector, right_coefficients_covector, covector_imaginary, &
                                                 geometry_response, atom_response, cell_response, left_k_response, &
-                                                right_k_response, auxiliary_positions_response, auxiliary_factors_response, metric)
+                                                right_k_response, auxiliary_positions_response, auxiliary_factors_response, &
+                                                metric, auxiliary_images)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -684,6 +693,7 @@ CONTAINS
          left_k_response(3), right_k_response(3), auxiliary_positions_response(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: auxiliary_factors_response(:)
       TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+      INTEGER, INTENT(IN), OPTIONAL                      :: auxiliary_images(:, :)
 
       COMPLEX(dp), ALLOCATABLE :: correction(:, :, :), dc(:, :, :), factor_covector(:, :, :), &
          g(:, :, :), gl(:, :), gr(:, :), local(:, :, :), zero_left(:, :), zero_right(:, :)
@@ -798,7 +808,7 @@ CONTAINS
                                                                      auxiliary_positions(:, site), transition_augmentation, pot%r, &
                                                                      radial_weights, lebedev_grid(rule)%r, &
                                                                      fourpi*lebedev_grid(rule)%w, local, gl, gr, &
-                                                                     center_images(:, image))
+                                                                     center_images(:, image), auxiliary_images)
                            END IF
                            IF (derivatives) THEN
                               CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
@@ -808,7 +818,8 @@ CONTAINS
                                                              radial_weights, lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
                                                              correction, dc, atom_response, cell_response, left_k_response, &
                                                              right_k_response, zero_left, zero_right, &
-                                                             auxiliary_positions_response(:, site), center_images(:, image))
+                                                             auxiliary_positions_response(:, site), center_images(:, image), &
+                                                             auxiliary_images)
                               geometry_response = geometry_response + REAL(SUM(CONJG(local)*dc) + &
                                                                            SUM(CONJG(factor_covector)*correction), dp)
                            END IF
@@ -1010,11 +1021,13 @@ CONTAINS
 !> \param right_coefficients_response dW from the original defining right frame.
 !> \param auxiliary_response Cartesian motion of the RI Gaussian image.
 !> \param image_shift Original center's integer image, zero by default.
+!> \param auxiliary_images Optional fixed auxiliary Gaussian images, at fixed Gamma.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_center(left_frame, right_frame, center, left_range, right_range, fields, &
                                         auxiliary_center, augmentation, r, radial_weights, directions, angular_weights, &
                                         integral, response, atom_response, cell_response, left_k_response, right_k_response, &
-                                        left_coefficients_response, right_coefficients_response, auxiliary_response, image_shift)
+                                        left_coefficients_response, right_coefficients_response, auxiliary_response, image_shift, &
+                                        auxiliary_images)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2)
       TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
@@ -1030,20 +1043,27 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL :: left_coefficients_response(:, :), &
          right_coefficients_response(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: auxiliary_response(3)
-      INTEGER, INTENT(IN), OPTIONAL                      :: image_shift(3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: image_shift(3), auxiliary_images(:, :)
 
       COMPLEX(dp)                                        :: dphase, phase
       COMPLEX(dp), ALLOCATABLE :: block(:, :), cl(:, :), cr(:, :), dl(:, :), dq(:, :), dr(:, :), &
          fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), q(:, :), work(:, :)
-      INTEGER                                            :: atom, aux, ia, ir, j, kind, nang, naux, &
-                                                            nl, nr, p, projectors, shift(3), t
+      INTEGER                                            :: atom, aux, axis, ia, ir, j, kind, nang, &
+                                                            naux, nl, nr, p, projectors, shift(3), &
+                                                            t
       LOGICAL                                            :: derivatives
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
-      REAL(dp), ALLOCATABLE :: dpoints(:, :), dqi(:, :, :, :), points(:, :), &
-         potential_gradients(:, :, :), potentials(:, :), qintegrals(:, :, :), &
-         weighted_potential(:), weights(:)
+      REAL(dp), ALLOCATABLE :: cell_dqi(:, :, :, :, :), dpoints(:, :), dqi(:, :, :, :), &
+         points(:, :), potential_cell_gradients(:, :, :, :), potential_gradients(:, :, :), &
+         potential_responses(:, :), potentials(:, :), qintegrals(:, :, :), weighted_potential(:), &
+         weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
 
+      IF (PRESENT(auxiliary_images)) THEN
+         CPASSERT(SIZE(auxiliary_images, 1) == 3)
+         CPASSERT(ALL(left_frame%reduced_k == 0.0_dp))
+         CPASSERT(ALL(right_frame%reduced_k == 0.0_dp))
+      END IF
       CPASSERT(center >= 1 .AND. center <= SIZE(left_frame%center_atoms))
       CPASSERT(center <= SIZE(right_frame%center_atoms))
       atom = left_frame%center_atoms(center)
@@ -1084,6 +1104,10 @@ CONTAINS
          CPASSERT(ALL(SHAPE(response) == SHAPE(integral)))
          CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
          CPASSERT(PRESENT(left_k_response) .AND. PRESENT(right_k_response))
+         IF (PRESENT(auxiliary_images)) THEN
+            CPASSERT(ALL(left_k_response == 0.0_dp))
+            CPASSERT(ALL(right_k_response == 0.0_dp))
+         END IF
          IF (.NOT. (PRESENT(left_coefficients_response) .AND. PRESENT(right_coefficients_response))) THEN
             CPABORT("Both coefficient responses are required")
          END IF
@@ -1101,7 +1125,8 @@ CONTAINS
       integral = CMPLX(0.0_dp, 0.0_dp, dp)
       ALLOCATE (points(3, nang), potentials(nang, naux), weights(nang), weighted_potential(nang), work(nang, nr), block(nl, nr))
       IF (derivatives) THEN
-         ALLOCATE (dpoints(3, nang), potential_gradients(3, naux, nang))
+         ALLOCATE (dpoints(3, nang), potential_gradients(3, naux, nang), potential_responses(nang, naux))
+         IF (PRESENT(auxiliary_images)) ALLOCATE (potential_cell_gradients(3, 3, naux, nang))
          DO ia = 1, nang
             dpoints(:, ia) = dposition
          END DO
@@ -1122,10 +1147,30 @@ CONTAINS
                               derivatives, shift, right_fields)
          DO ia = 1, nang
             IF (derivatives) THEN
-               CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, &
-                                                     potentials(ia, :), potential_gradients(:, :, ia))
+               IF (PRESENT(auxiliary_images)) THEN
+                  CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
+                                                        auxiliary_images, potentials(ia, :), potential_gradients(:, :, ia), &
+                                                        potential_cell_gradients(:, :, :, ia))
+               ELSE
+                  CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, &
+                                                        potentials(ia, :), potential_gradients(:, :, ia))
+               END IF
+               potential_responses(ia, :) = MATMUL(dposition - auxiliary_response, potential_gradients(:, :, ia))
+               IF (PRESENT(auxiliary_images)) THEN
+                  DO j = 1, 3
+                     DO axis = 1, 3
+                        potential_responses(ia, :) = potential_responses(ia, :) + &
+                                                     cell_response(axis, j)*potential_cell_gradients(axis, j, :, ia)
+                     END DO
+                  END DO
+               END IF
             ELSE
-               CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :))
+               IF (PRESENT(auxiliary_images)) THEN
+                  CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
+                                                        auxiliary_images, potentials(ia, :))
+               ELSE
+                  CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :))
+               END IF
             END IF
          END DO
          DO aux = 1, naux
@@ -1153,12 +1198,12 @@ CONTAINS
             END DO
             block(:, :) = block + MATMUL(CONJG(TRANSPOSE(dl)), work)
             DO ia = 1, nang
-               scale = weights(ia)*DOT_PRODUCT(potential_gradients(:, aux, ia), dposition - auxiliary_response)
+               scale = weights(ia)*potential_responses(ia, aux)
                work(ia, :) = scale*cr(ia, :)
             END DO
             block(:, :) = block + MATMUL(CONJG(TRANSPOSE(dl)), work)
             DO ia = 1, nang
-               scale = weights(ia)*DOT_PRODUCT(potential_gradients(:, aux, ia), dposition - auxiliary_response)
+               scale = weights(ia)*potential_responses(ia, aux)
                work(ia, :) = scale*dr(ia, :)
             END DO
             response(:, :, aux) = response(:, :, aux) + block + MATMUL(CONJG(TRANSPOSE(cl)), work)
@@ -1169,11 +1214,25 @@ CONTAINS
                 dq(projectors, projectors))
       IF (derivatives) THEN
          ALLOCATE (dqi(projectors, projectors, naux, 3))
-         CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                directions, angular_weights, qintegrals, augmentation_derivative=dqi)
+         IF (PRESENT(auxiliary_images)) THEN
+            ALLOCATE (cell_dqi(projectors, projectors, naux, 3, 3))
+            CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
+                                                   directions, angular_weights, qintegrals, augmentation_derivative=dqi, &
+                                                   auxiliary_cell=left_frame%cell, auxiliary_images=auxiliary_images, &
+                                                   cell_derivative=cell_dqi)
+         ELSE
+            CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
+                                                   directions, angular_weights, qintegrals, augmentation_derivative=dqi)
+         END IF
       ELSE
-         CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                directions, angular_weights, qintegrals)
+         IF (PRESENT(auxiliary_images)) THEN
+            CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
+                                                   directions, angular_weights, qintegrals, auxiliary_cell=left_frame%cell, &
+                                                   auxiliary_images=auxiliary_images)
+         ELSE
+            CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
+                                                   directions, angular_weights, qintegrals)
+         END IF
       END IF
       phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(right_frame%reduced_k - left_frame%reduced_k, REAL(shift, dp)), dp))
       IF (derivatives) dphase = phase*CMPLX(0.0_dp, &
@@ -1190,6 +1249,13 @@ CONTAINS
             DO ia = 1, 3
                dq(:, :) = dq + phase*dqi(:, :, aux, ia)*(dposition(ia) - auxiliary_response(ia))
             END DO
+            IF (PRESENT(auxiliary_images)) THEN
+               DO j = 1, 3
+                  DO axis = 1, 3
+                     dq(:, :) = dq + phase*cell_dqi(:, :, aux, axis, j)*cell_response(axis, j)
+                  END DO
+               END DO
+            END IF
             response(:, :, aux) = response(:, :, aux) + MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(dq, wr)) + &
                            MATMUL(CONJG(TRANSPOSE(left_coefficients_response(p:p + projectors - 1, left_range(1):left_range(2)))), &
                                          MATMUL(q, wr)) + &
@@ -1597,11 +1663,12 @@ CONTAINS
 !> \param left_coefficients_covector All left projector rows and selected left AO columns.
 !> \param right_coefficients_covector All right projector rows and selected right AO columns.
 !> \param image_shift ...
+!> \param auxiliary_images Optional fixed auxiliary Gaussian images, at fixed Gamma.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, left_range, right_range, &
                                                 fields, auxiliary_center, augmentation, r, radial_weights, &
                                                 directions, angular_weights, covector, left_coefficients_covector, &
-                                                right_coefficients_covector, image_shift)
+                                                right_coefficients_covector, image_shift, auxiliary_images)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2)
       TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
@@ -1612,7 +1679,7 @@ CONTAINS
       COMPLEX(dp), INTENT(IN)                            :: covector(:, :, :)
       COMPLEX(dp), INTENT(OUT) :: left_coefficients_covector(:, :), &
          right_coefficients_covector(:, :)
-      INTEGER, INTENT(IN), OPTIONAL                      :: image_shift(3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: image_shift(3), auxiliary_images(:, :)
 
       COMPLEX(dp)                                        :: phase
       COMPLEX(dp), ALLOCATABLE :: cl(:, :), cr(:, :), dl(:, :), dr(:, :), gcl(:, :), gcr(:, :), &
@@ -1624,6 +1691,11 @@ CONTAINS
          unused_points(:, :), weighted_potential(:), weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
 
+      IF (PRESENT(auxiliary_images)) THEN
+         CPASSERT(SIZE(auxiliary_images, 1) == 3)
+         CPASSERT(ALL(left_frame%reduced_k == 0.0_dp))
+         CPASSERT(ALL(right_frame%reduced_k == 0.0_dp))
+      END IF
       CPASSERT(center >= 1 .AND. center <= SIZE(left_frame%center_atoms))
       CPASSERT(center <= SIZE(right_frame%center_atoms))
       atom = left_frame%center_atoms(center)
@@ -1681,7 +1753,12 @@ CONTAINS
          CALL residual_fields(right_frame, center, right_range, points, cr, dr, unused_c, unused_d, &
                               unused_points, derivatives=.FALSE., shift=shift, workspace=right_fields)
          DO ia = 1, nang
-            CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :))
+            IF (PRESENT(auxiliary_images)) THEN
+               CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
+                                                     auxiliary_images, potentials(ia, :))
+            ELSE
+               CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :))
+            END IF
          END DO
          gcl = CMPLX(0.0_dp, 0.0_dp, dp)
          gdl = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -1711,8 +1788,14 @@ CONTAINS
       END DO
       IF (augmentation%nproj == 0) RETURN
       ALLOCATE (qintegrals(projectors, projectors, fields%nfunction), q(projectors, projectors))
-      CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                             directions, angular_weights, qintegrals)
+      IF (PRESENT(auxiliary_images)) THEN
+         CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
+                                                directions, angular_weights, qintegrals, auxiliary_cell=left_frame%cell, &
+                                                auxiliary_images=auxiliary_images)
+      ELSE
+         CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
+                                                directions, angular_weights, qintegrals)
+      END IF
       phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(right_frame%reduced_k - left_frame%reduced_k, REAL(shift, dp)), dp))
       p = left_frame%projector_first(center)
       t = right_frame%projector_first(center)
