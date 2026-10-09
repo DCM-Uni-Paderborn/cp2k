@@ -52,6 +52,12 @@ MODULE qs_upf_inverse_hfx
                                   phi(:, :), dphi(:, :)
    END TYPE inverse_field_workspace_type
 
+   ! Relative-image projector overlaps do not depend on the auxiliary Gaussian shell.
+   ! Each entry lives only within one physical image, AO block pair and geometry call.
+   TYPE lattice_overlap_type
+      COMPLEX(dp), ALLOCATABLE :: left(:, :), right(:, :), dleft(:, :), dright(:, :)
+   END TYPE lattice_overlap_type
+
 CONTAINS
 
 ! **************************************************************************************************
@@ -431,6 +437,7 @@ CONTAINS
       LOGICAL                                            :: derivatives
       REAL(dp), ALLOCATABLE                              :: radial_weights(:)
       TYPE(gaussian_coulomb_fields_type)                 :: fields
+      TYPE(lattice_overlap_type), ALLOCATABLE            :: overlaps(:, :)
       TYPE(uspp_augmentation_type), ALLOCATABLE, TARGET  :: paw_augmentation(:)
       TYPE(uspp_augmentation_type), POINTER              :: transition_augmentation
 
@@ -485,118 +492,122 @@ CONTAINS
       END IF
       CALL init_lebedev_grids()
       CALL gaussian_coulomb_fields_init(maxl)
-      DO block_i = 1, nblks(1)
       DO block_j = 1, nblks(2)
       DO block_k = 1, nblks(3)
-         CALL dbt_get_stored_coordinates(tensor_real, [block_i, block_j, block_k], owner)
-         IF (owner /= tensor_real%pgrid%mp_comm_2d%mepos) CYCLE
-         nl = sizes_j(block_j)
-         nr = sizes_k(block_k)
-         ALLOCATE (native(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
-         IF (derivatives) ALLOCATE (dn(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
-         DO site = 1, SIZE(auxiliary_bases)
-            IF (auxiliary_start(site + 1) <= start_i(block_i) .OR. &
-                auxiliary_start(site) >= start_i(block_i + 1)) CYCLE
-            first = auxiliary_start(site)
-            DO iset = 1, auxiliary_bases(site)%gto_basis_set%nset
-               last = first + auxiliary_bases(site)%gto_basis_set%nsgf_set(iset) - 1
-               start = MAX(first, start_i(block_i))
-               STOP = MIN(last, start_i(block_i + 1) - 1)
-               IF (start <= STOP) THEN
-                  CALL gaussian_coulomb_fields_prepare(auxiliary_bases(site)%gto_basis_set, iset, fields)
-                  ALLOCATE (correction(nl, nr, fields%nfunction))
-                  IF (derivatives) ALLOCATE (dc(nl, nr, fields%nfunction))
-                  DO center = 1, SIZE(left_frame%center_atoms)
-                     kind = left_frame%center_kinds(center)
-                     CPASSERT(ASSOCIATED(kinds(kind)%sgp_potential))
-                     CPASSERT(ALLOCATED(kinds(kind)%sgp_potential%upf_data))
-                     transition_augmentation => augmentation(kind)
-                     IF (paw_augmentation(kind)%nproj > 0) transition_augmentation => paw_augmentation(kind)
-                     ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
-                        ALLOCATE (radial_weights(SIZE(pot%r)))
-                        radial_weights(:) = upf_radial_weights(pot)*pot%r**2
-                        rule = MAX(get_number_of_lebedev_grid(n=kinds(kind)%ngrid_ang), &
-                                   get_number_of_lebedev_grid(l=MAX(0, transition_augmentation%lmax) + maxl + 1))
-                        DO image = 1, SIZE(center_images, 2)
-                           IF (derivatives) THEN
-                              IF (PRESENT(ao_image)) THEN
-                                 CALL qs_upf_inverse_hfx_lattice_center(left_frame, center, &
-                                                                        [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                        [start_k(block_k), start_k(block_k + 1) - 1], &
-                                                                        ao_image, center_images(:, image), fields, &
-                                                                        auxiliary_positions(:, site), transition_augmentation, &
-                                                                        pot%r, radial_weights, lebedev_grid(rule)%r, &
-                                                                        fourpi*lebedev_grid(rule)%w, correction, dc, &
-                                                                        atom_response, cell_response, &
-                                                                        auxiliary_positions_response(:, site))
+         IF (PRESENT(ao_image)) ALLOCATE (overlaps(SIZE(left_frame%center_atoms), SIZE(center_images, 2)))
+         DO block_i = 1, nblks(1)
+            CALL dbt_get_stored_coordinates(tensor_real, [block_i, block_j, block_k], owner)
+            IF (owner /= tensor_real%pgrid%mp_comm_2d%mepos) CYCLE
+            nl = sizes_j(block_j)
+            nr = sizes_k(block_k)
+            ALLOCATE (native(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+            IF (derivatives) ALLOCATE (dn(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+            DO site = 1, SIZE(auxiliary_bases)
+               IF (auxiliary_start(site + 1) <= start_i(block_i) .OR. &
+                   auxiliary_start(site) >= start_i(block_i + 1)) CYCLE
+               first = auxiliary_start(site)
+               DO iset = 1, auxiliary_bases(site)%gto_basis_set%nset
+                  last = first + auxiliary_bases(site)%gto_basis_set%nsgf_set(iset) - 1
+                  start = MAX(first, start_i(block_i))
+                  STOP = MIN(last, start_i(block_i + 1) - 1)
+                  IF (start <= STOP) THEN
+                     CALL gaussian_coulomb_fields_prepare(auxiliary_bases(site)%gto_basis_set, iset, fields)
+                     ALLOCATE (correction(nl, nr, fields%nfunction))
+                     IF (derivatives) ALLOCATE (dc(nl, nr, fields%nfunction))
+                     DO center = 1, SIZE(left_frame%center_atoms)
+                        kind = left_frame%center_kinds(center)
+                        CPASSERT(ASSOCIATED(kinds(kind)%sgp_potential))
+                        CPASSERT(ALLOCATED(kinds(kind)%sgp_potential%upf_data))
+                        transition_augmentation => augmentation(kind)
+                        IF (paw_augmentation(kind)%nproj > 0) transition_augmentation => paw_augmentation(kind)
+                        ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
+                           ALLOCATE (radial_weights(SIZE(pot%r)))
+                           radial_weights(:) = upf_radial_weights(pot)*pot%r**2
+                           rule = MAX(get_number_of_lebedev_grid(n=kinds(kind)%ngrid_ang), &
+                                      get_number_of_lebedev_grid(l=MAX(0, transition_augmentation%lmax) + maxl + 1))
+                           DO image = 1, SIZE(center_images, 2)
+                              IF (derivatives) THEN
+                                 IF (PRESENT(ao_image)) THEN
+                                    CALL lattice_center_with_overlaps(left_frame, center, &
+                                                                      [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                      [start_k(block_k), start_k(block_k + 1) - 1], &
+                                                                      ao_image, center_images(:, image), fields, &
+                                                                      auxiliary_positions(:, site), transition_augmentation, &
+                                                                      pot%r, radial_weights, lebedev_grid(rule)%r, &
+                                                                      fourpi*lebedev_grid(rule)%w, correction, dc, &
+                                                                      atom_response, cell_response, &
+                                                                      auxiliary_positions_response(:, site), &
+                                                                      overlaps=overlaps(center, image))
+                                 ELSE
+                                    CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
+                                                                   [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                   [start_k(block_k), start_k(block_k + 1) - 1], fields, &
+                                                                   auxiliary_positions(:, site), transition_augmentation, &
+                                                                   pot%r, radial_weights, lebedev_grid(rule)%r, &
+                                                                   fourpi*lebedev_grid(rule)%w, correction, dc, &
+                                                                  atom_response, cell_response, left_k_response, right_k_response, &
+                                                                   left_coefficients_response, right_coefficients_response, &
+                                                                   auxiliary_positions_response(:, site), center_images(:, image))
+                                 END IF
                               ELSE
-                                 CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
-                                                                [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                [start_k(block_k), start_k(block_k + 1) - 1], fields, &
-                                                                auxiliary_positions(:, site), transition_augmentation, &
-                                                                pot%r, radial_weights, lebedev_grid(rule)%r, &
-                                                                fourpi*lebedev_grid(rule)%w, correction, dc, &
-                                                                atom_response, cell_response, left_k_response, right_k_response, &
-                                                                left_coefficients_response, right_coefficients_response, &
-                                                                auxiliary_positions_response(:, site), center_images(:, image))
+                                 IF (PRESENT(ao_image)) THEN
+                                    CALL lattice_center_with_overlaps(left_frame, center, &
+                                                                      [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                      [start_k(block_k), start_k(block_k + 1) - 1], &
+                                                                      ao_image, center_images(:, image), fields, &
+                                                                      auxiliary_positions(:, site), transition_augmentation, &
+                                                                      pot%r, radial_weights, lebedev_grid(rule)%r, &
+                                                                      fourpi*lebedev_grid(rule)%w, correction, &
+                                                                      overlaps=overlaps(center, image))
+                                 ELSE
+                                    CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
+                                                                   [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                   [start_k(block_k), start_k(block_k + 1) - 1], fields, &
+                                                                   auxiliary_positions(:, site), transition_augmentation, &
+                                                                   pot%r, radial_weights, lebedev_grid(rule)%r, &
+                                                                   fourpi*lebedev_grid(rule)%w, correction, &
+                                                                   image_shift=center_images(:, image))
+                                 END IF
                               END IF
-                           ELSE
-                              IF (PRESENT(ao_image)) THEN
-                                 CALL qs_upf_inverse_hfx_lattice_center(left_frame, center, &
-                                                                        [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                        [start_k(block_k), start_k(block_k + 1) - 1], &
-                                                                        ao_image, center_images(:, image), fields, &
-                                                                        auxiliary_positions(:, site), transition_augmentation, &
-                                                                        pot%r, radial_weights, lebedev_grid(rule)%r, &
-                                                                        fourpi*lebedev_grid(rule)%w, correction)
-                              ELSE
-                                 CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
-                                                                [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                [start_k(block_k), start_k(block_k + 1) - 1], fields, &
-                                                                auxiliary_positions(:, site), transition_augmentation, &
-                                                                pot%r, radial_weights, lebedev_grid(rule)%r, &
-                                                                fourpi*lebedev_grid(rule)%w, correction, &
-                                                                image_shift=center_images(:, image))
+                              native(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) = &
+                                 native(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) + &
+                                 auxiliary_factors(site)*RESHAPE(correction(:, :, start - first + 1:STOP - first + 1), &
+                                                                 [STOP - start + 1, nl, nr], ORDER=[2, 3, 1])
+                              IF (derivatives) THEN
+                                 dn(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) = &
+                                    dn(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) + &
+                                    RESHAPE(auxiliary_factors(site)*dc(:, :, start - first + 1:STOP - first + 1) + &
+                                            auxiliary_factors_response(site)*correction(:, :, start - first + 1:STOP - first + 1), &
+                                            [STOP - start + 1, nl, nr], ORDER=[2, 3, 1])
                               END IF
-                           END IF
-                           native(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) = &
-                              native(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) + &
-                              auxiliary_factors(site)*RESHAPE(correction(:, :, start - first + 1:STOP - first + 1), &
-                                                              [STOP - start + 1, nl, nr], ORDER=[2, 3, 1])
-                           IF (derivatives) THEN
-                              dn(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) = &
-                                 dn(start - start_i(block_i) + 1:STOP - start_i(block_i) + 1, :, :) + &
-                                 RESHAPE(auxiliary_factors(site)*dc(:, :, start - first + 1:STOP - first + 1) + &
-                                         auxiliary_factors_response(site)*correction(:, :, start - first + 1:STOP - first + 1), &
-                                         [STOP - start + 1, nl, nr], ORDER=[2, 3, 1])
-                           END IF
-                        END DO
-                        DEALLOCATE (radial_weights)
-                     END ASSOCIATE
-                  END DO
-                  DEALLOCATE (correction)
-                  IF (derivatives) DEALLOCATE (dc)
-               END IF
-               first = last + 1
+                           END DO
+                           DEALLOCATE (radial_weights)
+                        END ASSOCIATE
+                     END DO
+                     DEALLOCATE (correction)
+                     IF (derivatives) DEALLOCATE (dc)
+                  END IF
+                  first = last + 1
+               END DO
             END DO
-         END DO
-         CALL dbt_put_block(tensor_real, [block_i, block_j, block_k], SHAPE(native), REAL(native, dp), summation=.TRUE.)
-         IF (PRESENT(tensor_imaginary)) THEN
-            CALL dbt_put_block(tensor_imaginary, [block_i, block_j, block_k], SHAPE(native), AIMAG(native), summation=.TRUE.)
-         ELSE
-            CPASSERT(ALL(AIMAG(native) == 0.0_dp))
-         END IF
-         IF (derivatives) THEN
-            CALL dbt_put_block(response_real, [block_i, block_j, block_k], SHAPE(dn), REAL(dn, dp), summation=.TRUE.)
-            IF (PRESENT(response_imaginary)) THEN
-               CALL dbt_put_block(response_imaginary, [block_i, block_j, block_k], SHAPE(dn), AIMAG(dn), summation=.TRUE.)
+            CALL dbt_put_block(tensor_real, [block_i, block_j, block_k], SHAPE(native), REAL(native, dp), summation=.TRUE.)
+            IF (PRESENT(tensor_imaginary)) THEN
+               CALL dbt_put_block(tensor_imaginary, [block_i, block_j, block_k], SHAPE(native), AIMAG(native), summation=.TRUE.)
             ELSE
-               CPASSERT(ALL(AIMAG(dn) == 0.0_dp))
+               CPASSERT(ALL(AIMAG(native) == 0.0_dp))
             END IF
-            DEALLOCATE (dn)
-         END IF
-         DEALLOCATE (native)
-      END DO
+            IF (derivatives) THEN
+               CALL dbt_put_block(response_real, [block_i, block_j, block_k], SHAPE(dn), REAL(dn, dp), summation=.TRUE.)
+               IF (PRESENT(response_imaginary)) THEN
+                  CALL dbt_put_block(response_imaginary, [block_i, block_j, block_k], SHAPE(dn), AIMAG(dn), summation=.TRUE.)
+               ELSE
+                  CPASSERT(ALL(AIMAG(dn) == 0.0_dp))
+               END IF
+               DEALLOCATE (dn)
+            END IF
+            DEALLOCATE (native)
+         END DO
+         IF (ALLOCATED(overlaps)) DEALLOCATE (overlaps)
       END DO
       END DO
       CALL dbt_finalize(tensor_real)
@@ -1191,6 +1202,38 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             auxiliary_response(3)
 
+      TYPE(lattice_overlap_type)                         :: overlaps
+
+      CALL lattice_center_with_overlaps(frame, center, left_range, right_range, ao_image, center_image, &
+                                        fields, auxiliary_center, augmentation, r, radial_weights, directions, &
+                                        angular_weights, integral, response, atom_response, cell_response, &
+                                        auxiliary_response, overlaps)
+   END SUBROUTINE qs_upf_inverse_hfx_lattice_center
+
+! **************************************************************************************************
+!> \brief Evaluate one lattice center with reusable relative-image projector overlaps.
+!>        The private workspace belongs to one AO block pair, physical image and geometry call.
+!> \param overlaps ...
+! **************************************************************************************************
+   SUBROUTINE lattice_center_with_overlaps(frame, center, left_range, right_range, ao_image, center_image, &
+                                           fields, auxiliary_center, augmentation, r, radial_weights, &
+                                           directions, angular_weights, integral, response, atom_response, &
+                                           cell_response, auxiliary_response, overlaps)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2), &
+                                                            ao_image(3), center_image(3)
+      TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
+      REAL(dp), INTENT(IN)                               :: auxiliary_center(3)
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
+      REAL(dp), INTENT(IN)                               :: r(:), radial_weights(:), &
+                                                            directions(:, :), angular_weights(:)
+      COMPLEX(dp), INTENT(OUT)                           :: integral(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            auxiliary_response(3)
+      TYPE(lattice_overlap_type), INTENT(INOUT)          :: overlaps
+
       COMPLEX(dp), ALLOCATABLE :: block(:, :), cl(:, :), cr(:, :), delta(:, :), dl(:, :), &
          dq(:, :), dr(:, :), dwl(:, :), dwr(:, :), fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), &
          q(:, :), wl(:, :), work(:, :), wr(:, :)
@@ -1235,14 +1278,29 @@ CONTAINS
          dposition = atom_response(:, atom) + MATMUL(cell_response, REAL(center_image, dp))
          response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
+      IF (.NOT. ALLOCATED(overlaps%left)) THEN
+         ALLOCATE (overlaps%left(np, nl), overlaps%right(np, nr))
+         IF (derivatives) THEN
+            ALLOCATE (overlaps%dleft(np, nl), overlaps%dright(np, nr))
+            CALL lattice_coefficients(frame, center, left_range, -center_image, &
+                                      overlaps%left, overlaps%dleft, atom_response, cell_response)
+            CALL lattice_coefficients(frame, center, right_range, ao_image - center_image, &
+                                      overlaps%right, overlaps%dright, atom_response, cell_response)
+         ELSE
+            CALL lattice_coefficients(frame, center, left_range, -center_image, overlaps%left)
+            CALL lattice_coefficients(frame, center, right_range, ao_image - center_image, overlaps%right)
+         END IF
+      END IF
+      CPASSERT(ALL(SHAPE(overlaps%left) == [np, nl]))
+      CPASSERT(ALL(SHAPE(overlaps%right) == [np, nr]))
       ALLOCATE (wl(np, nl), wr(np, nr))
+      wl(:, :) = overlaps%left
+      wr(:, :) = overlaps%right
       IF (derivatives) THEN
+         CPASSERT(ALLOCATED(overlaps%dleft) .AND. ALLOCATED(overlaps%dright))
          ALLOCATE (dwl(np, nl), dwr(np, nr))
-         CALL lattice_coefficients(frame, center, left_range, -center_image, wl, dwl, atom_response, cell_response)
-         CALL lattice_coefficients(frame, center, right_range, ao_image - center_image, wr, dwr, atom_response, cell_response)
-      ELSE
-         CALL lattice_coefficients(frame, center, left_range, -center_image, wl)
-         CALL lattice_coefficients(frame, center, right_range, ao_image - center_image, wr)
+         dwl(:, :) = overlaps%dleft
+         dwr(:, :) = overlaps%dright
       END IF
       integral = CMPLX(0.0_dp, 0.0_dp, dp)
       radius = frame%delta_cache(kind)%radius
@@ -1342,7 +1400,7 @@ CONTAINS
                                MATMUL(CONJG(TRANSPOSE(dwl)), MATMUL(q, wr)) + &
                                MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(q, dwr))
       END DO
-   END SUBROUTINE qs_upf_inverse_hfx_lattice_center
+   END SUBROUTINE lattice_center_with_overlaps
 
 ! **************************************************************************************************
 !> \brief Hard-projector overlaps for one relative Gaussian image, without a reciprocal phase.
