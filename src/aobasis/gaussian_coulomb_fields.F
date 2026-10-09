@@ -210,9 +210,10 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: potential(:)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :)
 
-      INTEGER                                            :: a, axis, block, l, m, powers(3), &
-                                                            reduced(3)
-      REAL(dp)                                           :: angular, dangular(3), dh, factor, h
+      INTEGER                                            :: axis, block, l, m
+      LOGICAL                                            :: angular_ready(0:1)
+      REAL(dp)                                           :: angular, dangular(3), dh, h, &
+                                                            sp_angular(4), sp_gradient(3, 4)
 
       CPASSERT(ALLOCATED(fields%primitives))
       CPASSERT(SIZE(potential) == fields%nfunction)
@@ -222,26 +223,30 @@ CONTAINS
          CPASSERT(ALL(SHAPE(gradient) == [3, fields%nfunction]))
          gradient = 0.0_dp
       END IF
+      angular_ready = .FALSE.
       DO block = 1, SIZE(fields%primitives)
          ASSOCIATE (primitive => fields%primitives(block))
             IF (.NOT. ANY(primitive%coefficients /= 0.0_dp)) CYCLE
             l = primitive%l
             CALL radial_potential(primitive%alpha, primitive%power, l, SUM(displacement**2), h, dh)
-            DO m = 1, 2*l + 1
-               angular = 0.0_dp
-               dangular = 0.0_dp
-               DO a = 1, nco(l)
-                  powers = indco(:, ncoset(l - 1) + a)
-                  factor = orbtramat(l)%slm(m, a)
-                  angular = angular + factor*PRODUCT(displacement**powers)
-                  IF (.NOT. PRESENT(gradient)) CYCLE
-                  DO axis = 1, 3
-                     IF (powers(axis) == 0) CYCLE
-                     reduced = powers
-                     reduced(axis) = reduced(axis) - 1
-                     dangular(axis) = dangular(axis) + factor*REAL(powers(axis), dp)*PRODUCT(displacement**reduced)
+            ! The native s and p solid harmonics do not depend on the radial exponent or power.
+            ! A fixed workspace retains their original arithmetic without pointwise allocation.
+            IF (l <= 1) THEN
+               IF (.NOT. angular_ready(l)) THEN
+                  DO m = 1, 2*l + 1
+                     CALL native_solid_harmonic(l, m, displacement, PRESENT(gradient), &
+                                                sp_angular(l*l + m), sp_gradient(:, l*l + m))
                   END DO
-               END DO
+                  angular_ready(l) = .TRUE.
+               END IF
+            END IF
+            DO m = 1, 2*l + 1
+               IF (l <= 1) THEN
+                  angular = sp_angular(l*l + m)
+                  dangular = sp_gradient(:, l*l + m)
+               ELSE
+                  CALL native_solid_harmonic(l, m, displacement, PRESENT(gradient), angular, dangular)
+               END IF
                potential = potential + h*angular*primitive%coefficients(m, :)
                IF (PRESENT(gradient)) THEN
                   DO axis = 1, 3
@@ -253,6 +258,40 @@ CONTAINS
          END ASSOCIATE
       END DO
    END SUBROUTINE gaussian_coulomb_fields_evaluate
+
+! **************************************************************************************************
+!> \brief Native solid harmonic and Cartesian point gradient in the original polynomial order.
+!> \param l ...
+!> \param m Native magnetic index.
+!> \param displacement ...
+!> \param derivatives Whether the point gradient is required.
+!> \param angular ...
+!> \param gradient ...
+! **************************************************************************************************
+   SUBROUTINE native_solid_harmonic(l, m, displacement, derivatives, angular, gradient)
+      INTEGER, INTENT(IN)                                :: l, m
+      REAL(dp), INTENT(IN)                               :: displacement(3)
+      LOGICAL, INTENT(IN)                                :: derivatives
+      REAL(dp), INTENT(OUT)                              :: angular, gradient(3)
+
+      INTEGER                                            :: a, axis, powers(3), reduced(3)
+      REAL(dp)                                           :: factor
+
+      angular = 0.0_dp
+      gradient = 0.0_dp
+      DO a = 1, nco(l)
+         powers = indco(:, ncoset(l - 1) + a)
+         factor = orbtramat(l)%slm(m, a)
+         angular = angular + factor*PRODUCT(displacement**powers)
+         IF (.NOT. derivatives) CYCLE
+         DO axis = 1, 3
+            IF (powers(axis) == 0) CYCLE
+            reduced = powers
+            reduced(axis) = reduced(axis) - 1
+            gradient(axis) = gradient(axis) + factor*REAL(powers(axis), dp)*PRODUCT(displacement**reduced)
+         END DO
+      END DO
+   END SUBROUTINE native_solid_harmonic
 
 ! **************************************************************************************************
 !> \brief Sum auxiliary potentials over prescribed integer cells without changing their kernels.
