@@ -97,11 +97,13 @@ CONTAINS
       IF (PRESENT(direct)) THEN
          IF (direct) THEN
             CALL upf_projector_init(pot, degree, atomic%hard)
+            CALL compact_projector(atomic%hard)
             RETURN
          END IF
       END IF
       IF (TRIM(pot%pseudo_type) == "NC" .AND. .NOT. pot%is_ultrasoft .AND. .NOT. pot%is_paw) THEN
          CALL upf_projector_init(pot, degree, atomic%hard)
+         CALL compact_projector(atomic%hard)
          ALLOCATE (atomic%kinetic(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
          ALLOCATE (atomic%metric(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
          ALLOCATE (atomic%wave_overlap(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
@@ -115,6 +117,7 @@ CONTAINS
          radial%beta = 0.0_dp
          radial%dion = 0.0_dp
          CALL upf_projector_init(radial, degree, atomic%difference)
+         CALL compact_projector(atomic%difference)
          ALLOCATE (coupling(nb, nb), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
          CALL upf_inverse_init(coupling, atomic%inverse, info)
          RETURN
@@ -122,6 +125,7 @@ CONTAINS
       waves => inverse_reference_waves(pot)
       CALL inverse_radial_data(pot, radial)
       CALL upf_projector_init(radial, degree, atomic%difference)
+      CALL compact_projector(atomic%difference)
       CALL upf_inverse_kinetic_init(pot, kinetic)
       CALL upf_inverse_kinetic_matrix(pot, kinetic, radial_kinetic, delta_kinetic, delta_overlap)
       ALLOCATE (radial_weights, SOURCE=upf_radial_weights(pot))
@@ -148,6 +152,7 @@ CONTAINS
       ALLOCATE (hard%beta, SOURCE=MATMUL(pot%beta, REAL(TRANSPOSE(rotation), dp)))
       ALLOCATE (hard%dion, SOURCE=pot%dion - radial_kinetic)
       CALL upf_projector_init(hard, degree, atomic%hard)
+      CALL compact_projector(atomic%hard)
       ALLOCATE (atomic%kinetic(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
       ALLOCATE (atomic%metric(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
       ALLOCATE (atomic%wave_overlap(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
@@ -172,6 +177,28 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE upf_inverse_atomic_init
+
+! **************************************************************************************************
+!> \brief Drop exactly zero trailing quadrature rows without changing radial weights or support.
+!> \param projector Prepared radial integrals, including their original quadrature weights.
+! **************************************************************************************************
+   SUBROUTINE compact_projector(projector)
+      TYPE(upf_projector_type), INTENT(INOUT)            :: projector
+
+      INTEGER                                            :: last
+      REAL(dp), ALLOCATABLE                              :: radial(:), weighted(:, :)
+
+      last = SIZE(projector%r)
+      DO WHILE (last > 1)
+         IF (ANY(projector%weighted_beta(last, :) /= 0.0_dp)) EXIT
+         last = last - 1
+      END DO
+      IF (last == SIZE(projector%r)) RETURN
+      ALLOCATE (radial, SOURCE=projector%r(:last))
+      ALLOCATE (weighted, SOURCE=projector%weighted_beta(:last, :))
+      CALL MOVE_ALLOC(radial, projector%r)
+      CALL MOVE_ALLOC(weighted, projector%weighted_beta)
+   END SUBROUTINE compact_projector
 
 ! **************************************************************************************************
 !> \brief Full radial-channel kinetic matrix from the same interpolated hard/soft reference waves.

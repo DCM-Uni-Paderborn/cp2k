@@ -296,7 +296,9 @@ CONTAINS
       ! calculate cell index for k-point calculations
       IF (do_kpoints) THEN
          CALL get_qs_env(qs_env, sab_kp=sab_nl, sab_kp_nosym=sab_nl_nosym)
-         CALL kpoint_init_cell_index(kpoints, sab_nl, para_env, dft_control%nimages)
+         ! RI operators use both orientations of periodic pairs. Include their
+         ! unsymmetrized images while retaining the defining AO neighbor list.
+         CALL kpoint_init_cell_index(kpoints, sab_nl, para_env, dft_control%nimages, additional_nl=sab_nl_nosym)
          CALL set_kpoint_info(kpoints, sab_nl_nosym=sab_nl_nosym)
       END IF
       IF (dft_control%qs_control%cdft) THEN

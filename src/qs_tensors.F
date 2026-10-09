@@ -113,7 +113,7 @@ MODULE qs_tensors
    PUBLIC :: build_3c_neighbor_lists, &
              neighbor_list_3c_destroy, neighbor_list_3c_iterate, neighbor_list_3c_iterator_create, &
              neighbor_list_3c_iterator_destroy, get_3c_iterator_info, build_3c_integrals, &
-             build_2c_neighbor_lists, build_2c_integrals, cutoff_screen_factor, &
+             build_2c_neighbor_lists, build_2c_neighbor_lists_in_range, build_2c_integrals, cutoff_screen_factor, &
              get_tensor_occupancy, compress_tensor, decompress_tensor, &
              build_3c_derivatives, build_2c_derivatives, calc_2c_virial, calc_3c_virial
 
@@ -151,6 +151,38 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: sym_ij, molecular
       TYPE(distribution_2d_type), OPTIONAL, POINTER      :: dist_2d
       INTEGER, INTENT(IN), OPTIONAL                      :: pot_to_rad
+
+      CALL build_2c_neighbor_lists_in_range(ij_list, basis_i, basis_j, potential_parameter, name, qs_env, &
+                                            sym_ij, molecular, dist_2d, pot_to_rad)
+   END SUBROUTINE build_2c_neighbor_lists
+
+! **************************************************************************************************
+!> \brief Build native two-center neighbors within an optional prescribed spatial domain.
+!>        The domain bounds the neighbor search without changing the integral operator.
+!> \param ij_list ...
+!> \param basis_i ...
+!> \param basis_j ...
+!> \param potential_parameter ...
+!> \param name ...
+!> \param qs_env ...
+!> \param sym_ij ...
+!> \param molecular ...
+!> \param dist_2d ...
+!> \param pot_to_rad ...
+!> \param max_distance Largest interatomic distance needed by the caller, in bohr.
+! **************************************************************************************************
+   SUBROUTINE build_2c_neighbor_lists_in_range(ij_list, basis_i, basis_j, potential_parameter, name, qs_env, &
+                                               sym_ij, molecular, dist_2d, pot_to_rad, max_distance)
+      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
+         POINTER                                         :: ij_list
+      TYPE(gto_basis_set_p_type), DIMENSION(:)           :: basis_i, basis_j
+      TYPE(libint_potential_type), INTENT(IN)            :: potential_parameter
+      CHARACTER(LEN=*), INTENT(IN)                       :: name
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(IN), OPTIONAL                      :: sym_ij, molecular
+      TYPE(distribution_2d_type), OPTIONAL, POINTER      :: dist_2d
+      INTEGER, INTENT(IN), OPTIONAL                      :: pot_to_rad
+      REAL(dp), INTENT(IN), OPTIONAL                     :: max_distance
 
       INTEGER                                            :: ikind, nkind, pot_to_rad_prv
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: i_present, j_present
@@ -246,6 +278,10 @@ CONTAINS
 
       ALLOCATE (pair_radius(nkind, nkind), SOURCE=0.0_dp)
       CALL pair_radius_setup(i_present, j_present, i_radius, j_radius, pair_radius)
+      IF (PRESENT(max_distance)) THEN
+         CPASSERT(max_distance >= 0.0_dp)
+         pair_radius = MIN(pair_radius, max_distance)
+      END IF
 
       ALLOCATE (atom2d(nkind))
 
@@ -256,7 +292,7 @@ CONTAINS
 
       CALL atom2d_cleanup(atom2d)
 
-   END SUBROUTINE build_2c_neighbor_lists
+   END SUBROUTINE build_2c_neighbor_lists_in_range
 
 ! **************************************************************************************************
 !> \brief Build a 3-center neighbor list

@@ -75,7 +75,9 @@ CONTAINS
       CALL check_hermitian(fitting_inverse_response)
       CALL check_hermitian(exchange_response)
       CPASSERT(ALL(SHAPE(exchange) == SHAPE(fitting_inverse)))
-      CPASSERT(ALL(SHAPE(fitting_inverse_response) == SHAPE(fitting_inverse)))
+      IF (.NOT. (ALL(SHAPE(fitting_inverse_response) == SHAPE(fitting_inverse)))) THEN
+         CPABORT("Inconsistent fitting-metric response shape")
+      END IF
       CPASSERT(ALL(SHAPE(exchange_response) == SHAPE(fitting_inverse)))
       CPASSERT(ALL(SHAPE(response) == SHAPE(fitting_inverse)))
       ALLOCATE (work(SIZE(response, 1), SIZE(response, 2)))
@@ -111,7 +113,9 @@ CONTAINS
       CALL check_hermitian(interaction_adjoint)
       CPASSERT(ALL(SHAPE(exchange) == SHAPE(fitting_inverse)))
       CPASSERT(ALL(SHAPE(interaction_adjoint) == SHAPE(fitting_inverse)))
-      CPASSERT(ALL(SHAPE(fitting_inverse_adjoint) == SHAPE(fitting_inverse)))
+      IF (.NOT. (ALL(SHAPE(fitting_inverse_adjoint) == SHAPE(fitting_inverse)))) THEN
+         CPABORT("Inconsistent fitting-metric adjoint shape")
+      END IF
       CPASSERT(ALL(SHAPE(exchange_adjoint) == SHAPE(fitting_inverse)))
       ALLOCATE (work(SIZE(exchange, 1), SIZE(exchange, 2)))
       work(:, :) = MATMUL(fitting_inverse, exchange)
@@ -253,10 +257,14 @@ CONTAINS
          augmentation_derivative = 0.0_dp
       END IF
       IF (n == 0) RETURN
-      CPASSERT(SIZE(directions, 1) == 3 .AND. SIZE(directions, 2) == SIZE(weights))
+      IF (.NOT. (SIZE(directions, 1) == 3 .AND. SIZE(directions, 2) == SIZE(weights))) THEN
+         CPABORT("Inconsistent spherical-quadrature dimensions")
+      END IF
       CPASSERT(SIZE(weights) > 0)
       CPASSERT(ABS(SUM(weights) - fourpi) <= 1.0e-10_dp)
-      CPASSERT(MAXVAL(ABS(SUM(directions**2, DIM=1) - 1.0_dp)) <= 1.0e-12_dp)
+      IF (.NOT. (MAXVAL(ABS(SUM(directions**2, DIM=1) - 1.0_dp)) <= 1.0e-12_dp)) THEN
+         CPABORT("Spherical directions are not normalized")
+      END IF
       ALLOCATE (harmonics(SIZE(weights), (augmentation%lmax + 1)**2), values(SIZE(weights)), &
                 potential(naux), projected((augmentation%lmax + 1)**2, naux))
       IF (derivatives) THEN
@@ -404,8 +412,12 @@ CONTAINS
       CPASSERT(ALL(SHAPE(right_response) == SHAPE(right)))
       CPASSERT(SIZE(weights_response) == SIZE(weights))
       CPASSERT(ALL(SHAPE(potential_response) == SHAPE(potential)))
-      CPASSERT(ALL(SHAPE(left_coefficients_response) == SHAPE(left_coefficients)))
-      CPASSERT(ALL(SHAPE(right_coefficients_response) == SHAPE(right_coefficients)))
+      IF (.NOT. (ALL(SHAPE(left_coefficients_response) == SHAPE(left_coefficients)))) THEN
+         CPABORT("Inconsistent left-coefficient response shape")
+      END IF
+      IF (.NOT. (ALL(SHAPE(right_coefficients_response) == SHAPE(right_coefficients)))) THEN
+         CPABORT("Inconsistent right-coefficient response shape")
+      END IF
       CPASSERT(ALL(SHAPE(augmentation_response) == SHAPE(augmentation)))
       ALLOCATE (work(SIZE(left, 2), SIZE(right, 2)))
       DO auxiliary = 1, SIZE(potential, 2)
@@ -472,8 +484,12 @@ CONTAINS
       CPASSERT(ALL(SHAPE(right_adjoint) == SHAPE(right)))
       CPASSERT(SIZE(weight_adjoint) == SIZE(weights))
       CPASSERT(ALL(SHAPE(potential_adjoint) == SHAPE(potential)))
-      CPASSERT(ALL(SHAPE(left_coefficients_adjoint) == SHAPE(left_coefficients)))
-      CPASSERT(ALL(SHAPE(right_coefficients_adjoint) == SHAPE(right_coefficients)))
+      IF (.NOT. (ALL(SHAPE(left_coefficients_adjoint) == SHAPE(left_coefficients)))) THEN
+         CPABORT("Inconsistent left-coefficient adjoint shape")
+      END IF
+      IF (.NOT. (ALL(SHAPE(right_coefficients_adjoint) == SHAPE(right_coefficients)))) THEN
+         CPABORT("Inconsistent right-coefficient adjoint shape")
+      END IF
       CPASSERT(ALL(SHAPE(augmentation_adjoint) == SHAPE(augmentation)))
       left_adjoint = CMPLX(0.0_dp, 0.0_dp, dp)
       right_adjoint = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -540,14 +556,18 @@ CONTAINS
 
       LOGICAL                                            :: valid
 
-      CPASSERT(SIZE(left, 1) == SIZE(weights) .AND. SIZE(right, 1) == SIZE(weights))
+      IF (.NOT. (SIZE(left, 1) == SIZE(weights) .AND. SIZE(right, 1) == SIZE(weights))) THEN
+         CPABORT("Inconsistent transition-quadrature dimensions")
+      END IF
       CPASSERT(SIZE(potential, 1) == SIZE(weights))
       CPASSERT(SIZE(left_coefficients, 2) == SIZE(left, 2))
       CPASSERT(SIZE(right_coefficients, 2) == SIZE(right, 2))
       valid = ALL(SHAPE(augmentation) == &
                   [SIZE(left_coefficients, 1), SIZE(right_coefficients, 1), SIZE(potential, 2)])
       CPASSERT(valid)
-      CPASSERT(ALL(output_shape == [SIZE(left, 2), SIZE(right, 2), SIZE(potential, 2)]))
+      IF (.NOT. (ALL(output_shape == [SIZE(left, 2), SIZE(right, 2), SIZE(potential, 2)]))) THEN
+         CPABORT("Inconsistent transition-integral dimensions")
+      END IF
    END SUBROUTINE check_shapes
 
 ! **************************************************************************************************

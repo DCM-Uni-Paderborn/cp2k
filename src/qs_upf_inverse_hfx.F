@@ -97,7 +97,9 @@ CONTAINS
       CPASSERT(SIZE(ao_images, 1) == 3 .AND. SIZE(ao_images, 2) == SIZE(tensors))
       CPASSERT(SIZE(center_images, 1) == 3 .AND. SIZE(center_images, 2) > 0)
       CPASSERT(SIZE(tensors) > 0)
-      CPASSERT(ALL(auxiliary_images*SPREAD(frame%periodicity, 2, SIZE(auxiliary_images, 2)) == auxiliary_images))
+      IF (.NOT. (ALL(auxiliary_images*SPREAD(frame%periodicity, 2, SIZE(auxiliary_images, 2)) == auxiliary_images))) THEN
+         CPABORT("Auxiliary images violate the periodicity")
+      END IF
       CPASSERT(ALL(ao_images*SPREAD(frame%periodicity, 2, SIZE(ao_images, 2)) == ao_images))
       IF (PRESENT(responses)) THEN
          CPASSERT(SIZE(responses) == SIZE(tensors))
@@ -403,10 +405,14 @@ CONTAINS
          CPASSERT(ALL(left_frame%center_kinds == right_frame%center_kinds))
          CPASSERT(SIZE(left_frame%bases) == SIZE(right_frame%bases))
          DO site = 1, SIZE(left_frame%bases)
-            CPASSERT(ASSOCIATED(left_frame%bases(site)%gto_basis_set, right_frame%bases(site)%gto_basis_set))
+            IF (.NOT. (ASSOCIATED(left_frame%bases(site)%gto_basis_set, right_frame%bases(site)%gto_basis_set))) THEN
+               CPABORT("Transition bases must refer to the same object")
+            END IF
          END DO
          CPASSERT(.NOT. PRESENT(left_k_response) .AND. .NOT. PRESENT(right_k_response))
-         CPASSERT(.NOT. PRESENT(left_coefficients_response) .AND. .NOT. PRESENT(right_coefficients_response))
+         IF (.NOT. (.NOT. PRESENT(left_coefficients_response) .AND. .NOT. PRESENT(right_coefficients_response))) THEN
+            CPABORT("Coefficient responses require a varying transition")
+         END IF
       END IF
       CALL prepare_paw_transitions(kinds, left_frame, paw_augmentation)
       CALL tensor_partition(left_frame, right_frame, auxiliary_bases, tensor_real, nblks, sizes_i, sizes_j, sizes_k, &
@@ -420,9 +426,13 @@ CONTAINS
          CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
          IF (.NOT. PRESENT(ao_image)) THEN
             CPASSERT(PRESENT(left_k_response) .AND. PRESENT(right_k_response))
-            CPASSERT(PRESENT(left_coefficients_response) .AND. PRESENT(right_coefficients_response))
+            IF (.NOT. (PRESENT(left_coefficients_response) .AND. PRESENT(right_coefficients_response))) THEN
+               CPABORT("Both coefficient responses are required")
+            END IF
          END IF
-         CPASSERT(PRESENT(auxiliary_positions_response) .AND. PRESENT(auxiliary_factors_response))
+         IF (.NOT. (PRESENT(auxiliary_positions_response) .AND. PRESENT(auxiliary_factors_response))) THEN
+            CPABORT("Both auxiliary responses are required")
+         END IF
          CPASSERT(ALL(SHAPE(auxiliary_positions_response) == SHAPE(auxiliary_positions)))
          CPASSERT(SIZE(auxiliary_factors_response) == SIZE(auxiliary_factors))
       ELSE
@@ -643,7 +653,9 @@ CONTAINS
       IF (derivatives) THEN
          CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
          CPASSERT(PRESENT(left_k_response) .AND. PRESENT(right_k_response))
-         CPASSERT(PRESENT(auxiliary_positions_response) .AND. PRESENT(auxiliary_factors_response))
+         IF (.NOT. (PRESENT(auxiliary_positions_response) .AND. PRESENT(auxiliary_factors_response))) THEN
+            CPABORT("Both auxiliary responses are required")
+         END IF
          CPASSERT(ALL(SHAPE(atom_response) == SHAPE(left_frame%positions)))
          CPASSERT(ALL(SHAPE(auxiliary_positions_response) == SHAPE(auxiliary_positions)))
          CPASSERT(SIZE(auxiliary_factors_response) == SIZE(auxiliary_factors))
@@ -940,7 +952,9 @@ CONTAINS
       CPASSERT(center <= SIZE(right_frame%center_atoms))
       atom = left_frame%center_atoms(center)
       kind = left_frame%center_kinds(center)
-      CPASSERT(right_frame%center_atoms(center) == atom .AND. right_frame%center_kinds(center) == kind)
+      IF (.NOT. (right_frame%center_atoms(center) == atom .AND. right_frame%center_kinds(center) == kind)) THEN
+         CPABORT("Inconsistent transition center")
+      END IF
       CPASSERT(ALL(SHAPE(left_frame%positions) == SHAPE(right_frame%positions)))
       CPASSERT(ALL(left_frame%positions == right_frame%positions))
       CPASSERT(ALL(left_frame%cell == right_frame%cell))
@@ -959,7 +973,9 @@ CONTAINS
       CPASSERT(ABS(SUM(angular_weights) - fourpi) <= 1.0e-10_dp)
       CPASSERT(MAXVAL(ABS(SUM(directions**2, DIM=1) - 1.0_dp)) <= 1.0e-12_dp)
       projectors = left_frame%projector_last(center) - left_frame%projector_first(center) + 1
-      CPASSERT(projectors == right_frame%projector_last(center) - right_frame%projector_first(center) + 1)
+      IF (.NOT. (projectors == right_frame%projector_last(center) - right_frame%projector_first(center) + 1)) THEN
+         CPABORT("Inconsistent transition projector count")
+      END IF
       CPASSERT(augmentation%nproj == 0 .OR. augmentation%nproj == projectors)
       shift = 0
       IF (PRESENT(image_shift)) shift = image_shift
@@ -970,7 +986,9 @@ CONTAINS
          CPASSERT(ALL(SHAPE(response) == SHAPE(integral)))
          CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
          CPASSERT(PRESENT(left_k_response) .AND. PRESENT(right_k_response))
-         CPASSERT(PRESENT(left_coefficients_response) .AND. PRESENT(right_coefficients_response))
+         IF (.NOT. (PRESENT(left_coefficients_response) .AND. PRESENT(right_coefficients_response))) THEN
+            CPABORT("Both coefficient responses are required")
+         END IF
          CPASSERT(PRESENT(auxiliary_response))
          CPASSERT(ALL(SHAPE(atom_response) == SHAPE(left_frame%positions)))
          CPASSERT(ALL(SHAPE(left_coefficients_response) == SHAPE(left_frame%coefficients)))
@@ -1159,7 +1177,9 @@ CONTAINS
       position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(center_image, dp))
       IF (derivatives) THEN
          CPASSERT(ALL(SHAPE(response) == SHAPE(integral)))
-         CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response) .AND. PRESENT(auxiliary_response))
+         IF (.NOT. (PRESENT(atom_response) .AND. PRESENT(cell_response) .AND. PRESENT(auxiliary_response))) THEN
+            CPABORT("All lattice geometry responses are required")
+         END IF
          CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
          dposition = atom_response(:, atom) + MATMUL(cell_response, REAL(center_image, dp))
          response = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -1459,27 +1479,37 @@ CONTAINS
       CPASSERT(center <= SIZE(right_frame%center_atoms))
       atom = left_frame%center_atoms(center)
       kind = left_frame%center_kinds(center)
-      CPASSERT(right_frame%center_atoms(center) == atom .AND. right_frame%center_kinds(center) == kind)
+      IF (.NOT. (right_frame%center_atoms(center) == atom .AND. right_frame%center_kinds(center) == kind)) THEN
+         CPABORT("Inconsistent transition center")
+      END IF
       CPASSERT(ALL(SHAPE(left_frame%positions) == SHAPE(right_frame%positions)))
       CPASSERT(ALL(left_frame%positions == right_frame%positions))
       CPASSERT(ALL(left_frame%cell == right_frame%cell))
       CPASSERT(ALL(left_frame%periodicity == right_frame%periodicity))
       CPASSERT(left_range(1) >= 1 .AND. left_range(2) <= SIZE(left_frame%coefficients, 2))
-      CPASSERT(right_range(1) >= 1 .AND. right_range(2) <= SIZE(right_frame%coefficients, 2))
+      IF (.NOT. (right_range(1) >= 1 .AND. right_range(2) <= SIZE(right_frame%coefficients, 2))) THEN
+         CPABORT("Invalid transition coefficient range")
+      END IF
       nl = left_range(2) - left_range(1) + 1
       nr = right_range(2) - right_range(1) + 1
       nang = SIZE(angular_weights)
       CPASSERT(nl > 0 .AND. nr > 0 .AND. nang > 0 .AND. fields%nfunction > 0)
       CPASSERT(ALL(SHAPE(covector) == [nl, nr, fields%nfunction]))
-      CPASSERT(ALL(SHAPE(left_coefficients_covector) == [SIZE(left_frame%coefficients, 1), nl]))
-      CPASSERT(ALL(SHAPE(right_coefficients_covector) == [SIZE(right_frame%coefficients, 1), nr]))
+      IF (.NOT. (ALL(SHAPE(left_coefficients_covector) == [SIZE(left_frame%coefficients, 1), nl]))) THEN
+         CPABORT("Inconsistent left-coefficient covector shape")
+      END IF
+      IF (.NOT. (ALL(SHAPE(right_coefficients_covector) == [SIZE(right_frame%coefficients, 1), nr]))) THEN
+         CPABORT("Inconsistent right-coefficient covector shape")
+      END IF
       CPASSERT(SIZE(r) >= 3 .AND. SIZE(radial_weights) == SIZE(r))
       CPASSERT(ALL(r >= 0.0_dp) .AND. ALL(r(2:) > r(:SIZE(r) - 1)))
       CPASSERT(ALL(SHAPE(directions) == [3, nang]))
       CPASSERT(ABS(SUM(angular_weights) - fourpi) <= 1.0e-10_dp)
       CPASSERT(MAXVAL(ABS(SUM(directions**2, DIM=1) - 1.0_dp)) <= 1.0e-12_dp)
       projectors = left_frame%projector_last(center) - left_frame%projector_first(center) + 1
-      CPASSERT(projectors == right_frame%projector_last(center) - right_frame%projector_first(center) + 1)
+      IF (.NOT. (projectors == right_frame%projector_last(center) - right_frame%projector_first(center) + 1)) THEN
+         CPABORT("Inconsistent transition projector count")
+      END IF
       CPASSERT(augmentation%nproj == 0 .OR. augmentation%nproj == projectors)
       shift = 0
       IF (PRESENT(image_shift)) shift = image_shift

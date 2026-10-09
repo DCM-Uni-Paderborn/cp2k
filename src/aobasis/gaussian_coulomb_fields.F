@@ -79,7 +79,9 @@ CONTAINS
 
       CALL get_gto_basis_set(basis, nset=nset, lmax=lmax, npgf=npgf, nsgf_set=nsgf_set, sphi=sphi, zet=zet)
       CPASSERT(iset >= 1 .AND. iset <= nset)
-      CPASSERT(ASSOCIATED(lmax) .AND. ASSOCIATED(npgf) .AND. ASSOCIATED(nsgf_set))
+      CPASSERT(ASSOCIATED(lmax))
+      CPASSERT(ASSOCIATED(npgf))
+      CPASSERT(ASSOCIATED(nsgf_set))
       CPASSERT(ASSOCIATED(sphi) .AND. ASSOCIATED(zet))
       CPASSERT(lmax(iset) >= 0 .AND. npgf(iset) > 0)
       CPASSERT(ASSOCIATED(orbtramat))

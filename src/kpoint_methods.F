@@ -1001,25 +1001,30 @@ CONTAINS
 !> \param sab_nl    Defining neighbour list
 !> \param para_env  Parallel environment
 !> \param nimages   [output]
+!> \param additional_nl Optional extra neighbors needed for the cell mapping.
 ! **************************************************************************************************
-   SUBROUTINE kpoint_init_cell_index(kpoint, sab_nl, para_env, nimages)
+   SUBROUTINE kpoint_init_cell_index(kpoint, sab_nl, para_env, nimages, additional_nl)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
       TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(OUT)                               :: nimages
+      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
+         OPTIONAL, POINTER                               :: additional_nl
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_init_cell_index'
 
-      INTEGER                                            :: handle, i1, i2, i3, ic, icount, it, &
-                                                            ncount
+      INTEGER                                            :: handle, i1, i2, i3, ic, icount, ilist, &
+                                                            it, ncount
       INTEGER, DIMENSION(3)                              :: cell, itm
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell, list
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index, cti
       LOGICAL                                            :: new
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
+      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
+         POINTER                                         :: mapping_nl
 
       NULLIFY (cell_to_index, index_to_cell)
 
@@ -1031,28 +1036,36 @@ CONTAINS
       list = 0
       icount = 1
 
-      CALL neighbor_list_iterator_create(nl_iterator, sab_nl)
-      DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
-         CALL get_iterator_info(nl_iterator, cell=cell)
-
-         new = .TRUE.
-         DO ic = 1, icount
-            IF (cell(1) == list(1, ic) .AND. cell(2) == list(2, ic) .AND. &
-                cell(3) == list(3, ic)) THEN
-               new = .FALSE.
-               EXIT
-            END IF
-         END DO
-         IF (new) THEN
-            icount = icount + 1
-            IF (icount > SIZE(list, 2)) THEN
-               CALL reallocate(list, 1, 3, 1, 2*SIZE(list, 2))
-            END IF
-            list(1:3, icount) = cell(1:3)
+      DO ilist = 1, 2
+         mapping_nl => sab_nl
+         IF (ilist == 2) THEN
+            IF (.NOT. PRESENT(additional_nl)) CYCLE
+            IF (.NOT. ASSOCIATED(additional_nl)) CYCLE
+            mapping_nl => additional_nl
          END IF
+         CALL neighbor_list_iterator_create(nl_iterator, mapping_nl)
+         DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
+            CALL get_iterator_info(nl_iterator, cell=cell)
 
+            new = .TRUE.
+            DO ic = 1, icount
+               IF (cell(1) == list(1, ic) .AND. cell(2) == list(2, ic) .AND. &
+                   cell(3) == list(3, ic)) THEN
+                  new = .FALSE.
+                  EXIT
+               END IF
+            END DO
+            IF (new) THEN
+               icount = icount + 1
+               IF (icount > SIZE(list, 2)) THEN
+                  CALL reallocate(list, 1, 3, 1, 2*SIZE(list, 2))
+               END IF
+               list(1:3, icount) = cell(1:3)
+            END IF
+
+         END DO
+         CALL neighbor_list_iterator_release(nl_iterator)
       END DO
-      CALL neighbor_list_iterator_release(nl_iterator)
 
       itm(1) = MAXVAL(ABS(list(1, 1:icount)))
       itm(2) = MAXVAL(ABS(list(2, 1:icount)))

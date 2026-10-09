@@ -99,8 +99,8 @@ MODULE hfx_ri_kp
                                               release_neighbor_list_sets
    USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE qs_tensors,                      ONLY: &
-        build_2c_derivatives, build_2c_neighbor_lists, build_3c_derivatives, &
-        build_3c_neighbor_lists, get_3c_iterator_info, get_tensor_occupancy, &
+        build_2c_derivatives, build_2c_neighbor_lists, build_2c_neighbor_lists_in_range, &
+        build_3c_derivatives, build_3c_neighbor_lists, get_3c_iterator_info, get_tensor_occupancy, &
         neighbor_list_3c_destroy, neighbor_list_3c_iterate, neighbor_list_3c_iterator_create, &
         neighbor_list_3c_iterator_destroy
    USE qs_tensors_types,                ONLY: create_2c_tensor,&
@@ -2319,8 +2319,9 @@ CONTAINS
       ALLOCATE (basis_set_RI(nkind))
       CALL basis_set_list_setup(basis_set_RI, ri_data%ri_basis_type, qs_kind_set)
 
-      CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
-                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+      CALL build_2c_neighbor_lists_in_range(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
+                                            "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, &
+                                            max_distance=ri_data%kp_RI_range)
 
       ALLOCATE (present_atoms_i(natom, nimg), present_atoms_j(natom, nimg))
       present_atoms_i = 0
@@ -4612,8 +4613,9 @@ CONTAINS
          ! contribution need not occur in the Gaussian three-center neighbor list.
          ! Use the fitting metric's neighbors, as get_ext_2c_int does, including when
          ! the exchange interaction itself is screened.
-         CALL build_2c_neighbor_lists(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
-                                      "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d)
+         CALL build_2c_neighbor_lists_in_range(nl_2c, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
+                                               "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, &
+                                               max_distance=ri_data%kp_RI_range)
          CALL neighbor_list_iterator_create(nl_iterator, nl_2c)
          DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
             CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom, r=rij, cell=cell_j)
@@ -4622,7 +4624,9 @@ CONTAINS
                CPABORT("Required UPF fitting image is absent from the native cell map")
             END IF
             j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
-            IF (j_img < 1 .OR. j_img > nimg) CPABORT("Required UPF fitting image is absent from the native cell map")
+            IF (j_img < 1 .OR. j_img > nimg) THEN
+               CPABORT("Required UPF fitting image is absent from the native cell map")
+            END IF
             RI_cells(j_img) = 1
             nRI_per_atom(iatom) = nRI_per_atom(iatom) + ri_data%bsizes_RI(jatom)
          END DO

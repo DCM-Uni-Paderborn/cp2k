@@ -2084,7 +2084,7 @@ CONTAINS
             upf_file_name = potential_name
             IF (potential_fn_kind /= "-") upf_file_name = potential_fn_kind
             IF (upf_file_name == "" .OR. upf_file_name == "UPF") THEN
-               CPABORT("POTENTIAL UPF requires a filename in KIND%POTENTIAL_FILE_NAME or POTENTIAL UPF <FILENAME>")
+               CPABORT("UPF needs POTENTIAL_FILE_NAME or POTENTIAL UPF <FILE>")
             END IF
          END IF
 
