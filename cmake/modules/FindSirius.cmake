@@ -7,19 +7,19 @@
 
 find_package(sirius 7.7.0 CONFIG REQUIRED)
 
-# Check the complete external-XC API until it is available in a numbered
-# release.
-include(CheckFortranSourceCompiles)
-include(CMakePushCheckState)
-cmake_push_check_state(RESET)
-get_target_property(_sirius_includes sirius::sirius
-                    INTERFACE_INCLUDE_DIRECTORIES)
-set(CMAKE_REQUIRED_INCLUDES ${_sirius_includes})
-set(_try_compile_target_type "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
-set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-unset(CP2K_SIRIUS_API_SUPPORTED CACHE)
-CHECK_Fortran_SOURCE_COMPILES(
-  "program check_sirius_api
+# Only the Skala bridge needs the external-XC API before its numbered release.
+if(CP2K_USE_LIBTORCH)
+  include(CheckFortranSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  get_target_property(_sirius_includes sirius::sirius
+                      INTERFACE_INCLUDE_DIRECTORIES)
+  set(CMAKE_REQUIRED_INCLUDES ${_sirius_includes})
+  set(_try_compile_target_type "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+  set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+  unset(CP2K_SIRIUS_API_SUPPORTED CACHE)
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_sirius_api
    use sirius, only: sirius_set_xc_callback, sirius_set_xc_point_callback, &
      sirius_set_xc_spinor_mode, sirius_set_xc_point_geometry_callbacks, &
      sirius_get_xc_geometry_derivatives, sirius_set_xc_point_hessian_callback, &
@@ -30,22 +30,23 @@ CHECK_Fortran_SOURCE_COMPILES(
    integer :: error
    call sirius_finalize(.false., .false., error)
    end program"
-  CP2K_SIRIUS_API_SUPPORTED
-  SRC_EXT
-  F90)
-if(_try_compile_target_type)
-  set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_try_compile_target_type}")
-else()
-  unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
-endif()
-cmake_pop_check_state()
-unset(_try_compile_target_type)
-unset(_sirius_includes)
-if(NOT CP2K_SIRIUS_API_SUPPORTED)
-  message(
-    FATAL_ERROR
-      "SIRIUS with the complete external-XC and geometry-response APIs is required"
-  )
+    CP2K_SIRIUS_API_SUPPORTED
+    SRC_EXT
+    F90)
+  if(_try_compile_target_type)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_try_compile_target_type}")
+  else()
+    unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
+  endif()
+  cmake_pop_check_state()
+  unset(_try_compile_target_type)
+  unset(_sirius_includes)
+  if(NOT CP2K_SIRIUS_API_SUPPORTED)
+    message(
+      FATAL_ERROR
+        "Skala with SIRIUS requires the complete external-XC and geometry-response APIs"
+    )
+  endif()
 endif()
 
 add_library(cp2k::sirius INTERFACE IMPORTED)
