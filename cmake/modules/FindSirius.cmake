@@ -24,13 +24,23 @@ if(CP2K_USE_LIBTORCH)
      sirius_set_xc_spinor_mode, sirius_set_xc_point_geometry_callbacks, &
      sirius_get_xc_geometry_derivatives, sirius_set_xc_point_hessian_callback, &
      sirius_set_xc_response_tolerance, sirius_set_xc_quadrature_direction_callback, &
-     sirius_update_xc_point_set, sirius_check_external_xc_derivative, &
-     sirius_check_external_xc_response, &
-     sirius_finalize
+     sirius_update_xc_point_set, sirius_finalize
    integer :: error
    call sirius_finalize(.false., .false., error)
    end program"
     CP2K_SIRIUS_API_SUPPORTED
+    SRC_EXT
+    F90)
+  # The end-to-end unit test also uses optional SIRIUS derivative checks.
+  unset(CP2K_SIRIUS_TEST_API_SUPPORTED CACHE)
+  CHECK_Fortran_SOURCE_COMPILES(
+    "program check_sirius_test_api
+   use sirius, only: sirius_check_external_xc_derivative, &
+     sirius_check_external_xc_response, sirius_finalize
+   integer :: error
+   call sirius_finalize(.false., .false., error)
+   end program"
+    CP2K_SIRIUS_TEST_API_SUPPORTED
     SRC_EXT
     F90)
   if(_try_compile_target_type)
