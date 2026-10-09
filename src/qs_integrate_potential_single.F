@@ -541,10 +541,11 @@ CONTAINS
    SUBROUTINE integrate_v_core_rspace(v_rspace, qs_env, atecc, force_response, virial_response, only_nopaw, calpha, ccore)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: v_rspace
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: atecc, calpha, ccore
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: atecc
       REAL(dp), INTENT(OUT), OPTIONAL                    :: force_response(:, :), &
                                                             virial_response(3, 3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: only_nopaw
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: calpha, ccore
 
       CHARACTER(len=*), PARAMETER :: routineN = 'integrate_v_core_rspace'
 
