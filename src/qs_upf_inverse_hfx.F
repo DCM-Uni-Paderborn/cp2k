@@ -60,6 +60,9 @@ MODULE qs_upf_inverse_hfx
    TYPE inverse_field_workspace_type
       COMPLEX(dp), ALLOCATABLE :: delta(:, :), ddelta(:, :), single_delta(:, :), single_ddelta(:, :), &
                                   phi(:, :), dphi(:, :)
+      COMPLEX(dp), ALLOCATABLE :: delta_gradient(:, :, :), delta_cell_gradient(:, :, :, :), &
+                                  phi_gradient(:, :, :), phi_cell_gradient(:, :, :, :), &
+                                  gaussian_gradient(:, :, :), gaussian_cell_gradient(:, :, :, :)
    END TYPE inverse_field_workspace_type
 
    ! Relative-image projector overlaps do not depend on the auxiliary Gaussian shell.
@@ -779,13 +782,16 @@ CONTAINS
 !> \param auxiliary_factors_response Response of the owner's complex RI image factors.
 !> \param metric Optional native RI interaction, Coulomb by default.
 !> \param auxiliary_images Optional fixed auxiliary Gaussian images, at fixed Gamma.
+!> \param atom_geometry Optional full explicit native-center derivative at fixed W, k and auxiliary factors.
+!> \param cell_geometry Optional full lattice derivative at fixed native and auxiliary centers.
+!> \param auxiliary_geometry Optional full derivative for each independent auxiliary center.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_tensor_adjoint(left_frame, right_frame, kinds, augmentation, auxiliary_bases, &
                                                 auxiliary_positions, auxiliary_factors, center_images, covector_real, &
                                                 left_coefficients_covector, right_coefficients_covector, covector_imaginary, &
                                                 geometry_response, atom_response, cell_response, left_k_response, &
                                                 right_k_response, auxiliary_positions_response, auxiliary_factors_response, &
-                                                metric, auxiliary_images)
+                                                metric, auxiliary_images, atom_geometry, cell_geometry, auxiliary_geometry)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -803,6 +809,9 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: auxiliary_factors_response(:)
       TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
       INTEGER, INTENT(IN), OPTIONAL                      :: auxiliary_images(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_geometry(:, :), &
+                                                            cell_geometry(3, 3), &
+                                                            auxiliary_geometry(:, :)
 
       COMPLEX(dp), ALLOCATABLE :: correction(:, :, :), dc(:, :, :), factor_covector(:, :, :), &
          g(:, :, :), gl(:, :), gr(:, :), local(:, :, :), zero_left(:, :), zero_right(:, :)
@@ -814,8 +823,10 @@ CONTAINS
                                                             sizes_j(:), sizes_k(:), start_i(:), &
                                                             start_j(:), start_k(:)
       LOGICAL                                            :: coefficients, derivatives, &
-                                                            found_imaginary, found_real
-      REAL(dp), ALLOCATABLE                              :: radial_weights(:)
+                                                            found_imaginary, found_real, &
+                                                            full_geometry
+      REAL(dp)                                           :: local_auxiliary(3), local_cell(3, 3)
+      REAL(dp), ALLOCATABLE                              :: local_atoms(:, :), radial_weights(:)
       REAL(dp), ALLOCATABLE, TARGET                      :: imaginary_block(:, :, :), &
                                                             real_block(:, :, :)
       TYPE(gaussian_coulomb_fields_type)                 :: fields
@@ -842,7 +853,23 @@ CONTAINS
       IF (PRESENT(covector_imaginary)) CALL matching_tensor(covector_real, covector_imaginary)
       coefficients = PRESENT(left_coefficients_covector) .OR. PRESENT(right_coefficients_covector)
       derivatives = PRESENT(geometry_response)
-      CPASSERT(coefficients .OR. derivatives)
+      full_geometry = PRESENT(atom_geometry) .OR. PRESENT(cell_geometry) .OR. PRESENT(auxiliary_geometry)
+      CPASSERT(coefficients .OR. derivatives .OR. full_geometry)
+      IF (full_geometry) THEN
+         IF (.NOT. (PRESENT(atom_geometry) .AND. PRESENT(cell_geometry) .AND. PRESENT(auxiliary_geometry))) THEN
+            CPABORT("All explicit geometry outputs are required")
+         END IF
+         IF (.NOT. ALL(SHAPE(atom_geometry) == SHAPE(left_frame%positions))) THEN
+            CPABORT("Invalid atomic geometry dimensions")
+         END IF
+         IF (.NOT. ALL(SHAPE(auxiliary_geometry) == SHAPE(auxiliary_positions))) THEN
+            CPABORT("Invalid auxiliary geometry dimensions")
+         END IF
+         atom_geometry = 0.0_dp
+         cell_geometry = 0.0_dp
+         auxiliary_geometry = 0.0_dp
+         ALLOCATE (local_atoms(3, SIZE(left_frame%positions, 2)))
+      END IF
       IF (derivatives) THEN
          CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
          CPASSERT(PRESENT(left_k_response) .AND. PRESENT(right_k_response))
@@ -877,7 +904,7 @@ CONTAINS
             ALLOCATE (g(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
             IF (found_real) g(:, :, :) = CMPLX(real_block, 0.0_dp, dp)
             IF (found_imaginary) g(:, :, :) = g + CMPLX(0.0_dp, imaginary_block, dp)
-            IF (coefficients) THEN
+            IF (coefficients .OR. full_geometry) THEN
                ALLOCATE (gl(SIZE(left_frame%coefficients, 1), nl), gr(SIZE(right_frame%coefficients, 1), nr))
             END IF
             DO site = 1, SIZE(auxiliary_bases)
@@ -914,7 +941,19 @@ CONTAINS
                                       get_number_of_lebedev_grid(l=MAX(0, transition_augmentation%lmax) + maxl + 1))
                            DO image = 1, SIZE(center_images, 2)
                               slot = start - start_i(block_i) + 1
-                              IF (coefficients) THEN
+                              IF (full_geometry) THEN
+                                 CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
+                                                                        [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                        [start_k(block_k), start_k(block_k + 1) - 1], fields, &
+                                                                     auxiliary_positions(:, site), transition_augmentation, pot%r, &
+                                                                        radial_weights, lebedev_grid(rule)%r, &
+                                                                        fourpi*lebedev_grid(rule)%w, local, gl, gr, &
+                                                                        center_images(:, image), auxiliary_images, &
+                                                              qcache(center, image, slot), local_atoms, local_cell, local_auxiliary)
+                                 atom_geometry(:, :) = atom_geometry + local_atoms
+                                 cell_geometry(:, :) = cell_geometry + local_cell
+                                 auxiliary_geometry(:, site) = auxiliary_geometry(:, site) + local_auxiliary
+                              ELSE IF (coefficients) THEN
                                  CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
                                                                         [start_j(block_j), start_j(block_j + 1) - 1], &
                                                                         [start_k(block_k), start_k(block_k + 1) - 1], fields, &
@@ -956,7 +995,7 @@ CONTAINS
                END DO
             END DO
             DEALLOCATE (g)
-            IF (coefficients) DEALLOCATE (gl, gr)
+            IF (coefficients .OR. full_geometry) DEALLOCATE (gl, gr)
          END DO
          END DO
          DEALLOCATE (qcache)
@@ -964,6 +1003,11 @@ CONTAINS
       IF (PRESENT(left_coefficients_covector)) CALL covector_real%pgrid%mp_comm_2d%sum(left_coefficients_covector)
       IF (PRESENT(right_coefficients_covector)) CALL covector_real%pgrid%mp_comm_2d%sum(right_coefficients_covector)
       IF (derivatives) CALL covector_real%pgrid%mp_comm_2d%sum(geometry_response)
+      IF (full_geometry) THEN
+         CALL covector_real%pgrid%mp_comm_2d%sum(atom_geometry)
+         CALL covector_real%pgrid%mp_comm_2d%sum(cell_geometry)
+         CALL covector_real%pgrid%mp_comm_2d%sum(auxiliary_geometry)
+      END IF
    END SUBROUTINE qs_upf_inverse_hfx_tensor_adjoint
 
 ! **************************************************************************************************
@@ -1802,6 +1846,7 @@ CONTAINS
 !>        Geometry, radial data and the auxiliary shell are fixed in this partial adjoint.
 !>        Its coefficient covectors must subsequently pass through their defining inverse solve.
 !>        This owner-local routine performs no MPI reduction and adds no occupation factors.
+!>        Optional full geometry covectors hold W, reduced k and original radial rules fixed.
 !> \param left_frame ...
 !> \param right_frame ...
 !> \param center ...
@@ -1820,11 +1865,15 @@ CONTAINS
 !> \param image_shift ...
 !> \param auxiliary_images Optional fixed auxiliary Gaussian images, at fixed Gamma.
 !> \param augmentation_integrals Optional workspace valid for this center/image, geometry and RI shell.
+!> \param atom_geometry Optional derivatives with respect to every native center.
+!> \param cell_geometry Optional lattice derivative at fixed native and auxiliary centers.
+!> \param auxiliary_geometry Optional derivative with respect to the supplied auxiliary center.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, left_range, right_range, &
                                                 fields, auxiliary_center, augmentation, r, radial_weights, &
                                                 directions, angular_weights, covector, left_coefficients_covector, &
-                                                right_coefficients_covector, image_shift, auxiliary_images, augmentation_integrals)
+                                               right_coefficients_covector, image_shift, auxiliary_images, augmentation_integrals, &
+                                                atom_geometry, cell_geometry, auxiliary_geometry)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2)
       TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
@@ -1838,16 +1887,22 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: image_shift(3), auxiliary_images(:, :)
       TYPE(transition_augmentation_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: augmentation_integrals
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_geometry(:, :), &
+                                                            cell_geometry(3, 3), &
+                                                            auxiliary_geometry(3)
 
       COMPLEX(dp)                                        :: phase
       COMPLEX(dp), ALLOCATABLE :: cl(:, :), cr(:, :), dl(:, :), dr(:, :), gcl(:, :), gcr(:, :), &
          gdl(:, :), gdr(:, :), q(:, :), unused_c(:, :), unused_d(:, :), work(:, :)
-      INTEGER                                            :: atom, aux, ia, ir, j, kind, nang, nl, &
-                                                            nr, p, projectors, shift(3), t
-      REAL(dp)                                           :: position(3), radius
-      REAL(dp), ALLOCATABLE                              :: points(:, :), potentials(:, :), &
-                                                            unused_points(:, :), &
-                                                            weighted_potential(:), weights(:)
+      INTEGER                                            :: atom, aux, axis, column, ia, ir, j, &
+                                                            kind, nang, nl, nr, p, projectors, &
+                                                            shift(3), t
+      LOGICAL                                            :: full_geometry
+      REAL(dp)                                           :: point_geometry(3), position(3), radius, &
+                                                            response
+      REAL(dp), ALLOCATABLE :: field_cell_gradient(:, :, :), field_gradient(:, :), points(:, :), &
+         potential_cell_gradient(:, :, :, :), potential_covector(:), potential_gradient(:, :, :), &
+         potentials(:, :), unused_points(:, :), weighted_potential(:), weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
       TYPE(transition_augmentation_type), POINTER        :: qi
       TYPE(transition_augmentation_type), TARGET         :: temporary_augmentation
@@ -1899,6 +1954,21 @@ CONTAINS
       position = left_frame%positions(:, atom) + MATMUL(left_frame%cell, REAL(shift, dp))
       left_coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
       right_coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+      full_geometry = PRESENT(atom_geometry) .OR. PRESENT(cell_geometry) .OR. PRESENT(auxiliary_geometry)
+      IF (full_geometry) THEN
+         IF (.NOT. (PRESENT(atom_geometry) .AND. PRESENT(cell_geometry) .AND. PRESENT(auxiliary_geometry))) THEN
+            CPABORT("All explicit geometry outputs are required")
+         END IF
+         IF (.NOT. ALL(SHAPE(atom_geometry) == SHAPE(left_frame%positions))) THEN
+            CPABORT("Invalid atomic geometry dimensions")
+         END IF
+         atom_geometry = 0.0_dp
+         cell_geometry = 0.0_dp
+         auxiliary_geometry = 0.0_dp
+         ALLOCATE (potential_gradient(nang, fields%nfunction, 3), &
+                   potential_cell_gradient(nang, fields%nfunction, 3, 3), field_gradient(3, fields%nfunction), &
+                   field_cell_gradient(3, 3, fields%nfunction), potential_covector(nang))
+      END IF
       ALLOCATE (points(3, nang), potentials(nang, fields%nfunction), weights(nang), weighted_potential(nang), work(nang, nr), &
                 gcl(nang, nl), gdl(nang, nl), gcr(nang, nr), gdr(nang, nr))
       radius = MAX(left_frame%delta_cache(kind)%radius, right_frame%delta_cache(kind)%radius)
@@ -1910,11 +1980,26 @@ CONTAINS
          END DO
          weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
          CALL residual_fields(left_frame, center, left_range, points, cl, dl, unused_c, unused_d, &
-                              unused_points, derivatives=.FALSE., shift=shift, workspace=left_fields)
+                              unused_points, derivatives=.FALSE., shift=shift, workspace=left_fields, &
+                              geometry_gradients=full_geometry)
          CALL residual_fields(right_frame, center, right_range, points, cr, dr, unused_c, unused_d, &
-                              unused_points, derivatives=.FALSE., shift=shift, workspace=right_fields)
+                              unused_points, derivatives=.FALSE., shift=shift, workspace=right_fields, &
+                              geometry_gradients=full_geometry)
          DO ia = 1, nang
-            IF (PRESENT(auxiliary_images)) THEN
+            IF (full_geometry) THEN
+               field_cell_gradient = 0.0_dp
+               IF (PRESENT(auxiliary_images)) THEN
+                  CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
+                                                        auxiliary_images, potentials(ia, :), field_gradient, field_cell_gradient)
+               ELSE
+                  CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, &
+                                                        potentials(ia, :), field_gradient)
+               END IF
+               potential_gradient(ia, :, :) = TRANSPOSE(field_gradient)
+               DO column = 1, 3
+                  potential_cell_gradient(ia, :, :, column) = TRANSPOSE(field_cell_gradient(:, column, :))
+               END DO
+            ELSE IF (PRESENT(auxiliary_images)) THEN
                CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
                                                      auxiliary_images, potentials(ia, :))
             ELSE
@@ -1925,6 +2010,7 @@ CONTAINS
          gdl = CMPLX(0.0_dp, 0.0_dp, dp)
          gcr = CMPLX(0.0_dp, 0.0_dp, dp)
          gdr = CMPLX(0.0_dp, 0.0_dp, dp)
+         point_geometry = 0.0_dp
          DO aux = 1, fields%nfunction
             weighted_potential(:) = weights*potentials(:, aux)
             DO j = 1, nr
@@ -1936,23 +2022,46 @@ CONTAINS
             END DO
             gcl(:, :) = gcl + MATMUL(work, CONJG(TRANSPOSE(covector(:, :, aux))))
             work(:, :) = MATMUL(cl, covector(:, :, aux))
+            IF (full_geometry) potential_covector(:) = weights*REAL(SUM(CONJG(work)*dr, DIM=2), dp)
             DO j = 1, nr
                gdr(:, j) = gdr(:, j) + work(:, j)*weighted_potential
             END DO
             work(:, :) = MATMUL(dl, covector(:, :, aux))
+            IF (full_geometry) THEN
+               potential_covector(:) = potential_covector + weights*REAL(SUM(CONJG(work)*cr, DIM=2), dp)
+               DO axis = 1, 3
+                  response = SUM(potential_covector*potential_gradient(:, aux, axis))
+                  point_geometry(axis) = point_geometry(axis) + response
+                  auxiliary_geometry(axis) = auxiliary_geometry(axis) - response
+                  DO column = 1, 3
+                     cell_geometry(axis, column) = cell_geometry(axis, column) + &
+                                                   SUM(potential_covector*potential_cell_gradient(:, aux, axis, column))
+                  END DO
+               END DO
+            END IF
             DO j = 1, nr
                gcr(:, j) = gcr(:, j) + work(:, j)*weighted_potential
             END DO
          END DO
          CALL residual_coefficients_adjoint(left_frame, center, left_fields, gcl, gdl, left_coefficients_covector)
          CALL residual_coefficients_adjoint(right_frame, center, right_fields, gcr, gdr, right_coefficients_covector)
+         IF (full_geometry) THEN
+            CALL residual_geometry_adjoint(left_frame, left_range, left_fields, gcl, &
+                                           point_geometry, atom_geometry, cell_geometry)
+            CALL residual_geometry_adjoint(right_frame, right_range, right_fields, gcr, &
+                                           point_geometry, atom_geometry, cell_geometry)
+            atom_geometry(:, atom) = atom_geometry(:, atom) + point_geometry
+            DO axis = 1, 3
+               cell_geometry(axis, :) = cell_geometry(axis, :) + point_geometry(axis)*REAL(shift, dp)
+            END DO
+         END IF
       END DO
       IF (augmentation%nproj == 0) RETURN
       ALLOCATE (q(projectors, projectors))
       qi => temporary_augmentation
       IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
       CALL prepare_transition_augmentation(fields, augmentation, position - auxiliary_center, directions, angular_weights, &
-                                           qi, .FALSE., left_frame%cell, auxiliary_images)
+                                           qi, full_geometry, left_frame%cell, auxiliary_images)
       phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(right_frame%reduced_k - left_frame%reduced_k, REAL(shift, dp)), dp))
       p = left_frame%projector_first(center)
       t = right_frame%projector_first(center)
@@ -1964,6 +2073,24 @@ CONTAINS
             q(:, :) = phase*qi%values(:, :, aux)
             gl = gl + MATMUL(MATMUL(q, wr), CONJG(TRANSPOSE(covector(:, :, aux))))
             gr = gr + MATMUL(CONJG(TRANSPOSE(q)), MATMUL(wl, covector(:, :, aux)))
+            IF (full_geometry) THEN
+               DO axis = 1, 3
+                  q(:, :) = phase*qi%gradient(:, :, aux, axis)
+                  response = REAL(SUM(CONJG(covector(:, :, aux))* &
+                                      MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(q, wr))), dp)
+                  atom_geometry(axis, atom) = atom_geometry(axis, atom) + response
+                  auxiliary_geometry(axis) = auxiliary_geometry(axis) - response
+                  cell_geometry(axis, :) = cell_geometry(axis, :) + response*REAL(shift, dp)
+                  IF (ALLOCATED(qi%cell_gradient)) THEN
+                     DO column = 1, 3
+                        q(:, :) = phase*qi%cell_gradient(:, :, aux, axis, column)
+                        cell_geometry(axis, column) = cell_geometry(axis, column) + &
+                                                      REAL(SUM(CONJG(covector(:, :, aux))* &
+                                                               MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(q, wr))), dp)
+                     END DO
+                  END IF
+               END DO
+            END IF
          END DO
       END ASSOCIATE
    END SUBROUTINE qs_upf_inverse_hfx_center_adjoint
@@ -2002,6 +2129,71 @@ CONTAINS
    END SUBROUTINE residual_coefficients_adjoint
 
 ! **************************************************************************************************
+!> \brief Geometry adjoint of the complete field at fixed W and reduced Bloch vector.
+!>        Points and centers are independent here. The caller adds the motion of its radial rule.
+!>        The single-image difference has no explicit response on that rule, because its point
+!>        and center/image move together and the original Cartesian radial offsets remain fixed.
+!> \param frame ...
+!> \param ao_range ...
+!> \param workspace ...
+!> \param complete_covector ...
+!> \param point_covector Summed derivative with respect to a common translation of all row points.
+!> \param atom_covector ...
+!> \param cell_covector Partial lattice derivative at fixed points and native centers.
+! **************************************************************************************************
+   SUBROUTINE residual_geometry_adjoint(frame, ao_range, workspace, complete_covector, &
+                                        point_covector, atom_covector, cell_covector)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: ao_range(2)
+      TYPE(inverse_field_workspace_type), INTENT(IN)     :: workspace
+      COMPLEX(dp), INTENT(IN)                            :: complete_covector(:, :)
+      REAL(dp), INTENT(INOUT)                            :: point_covector(3), atom_covector(:, :), &
+                                                            cell_covector(3, 3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: radial_covector(:, :)
+      INTEGER                                            :: atom, axis, column, first, last, other, &
+                                                            selected_first, selected_last
+      REAL(dp)                                           :: response
+
+      DO atom = 1, SIZE(frame%bases)
+         selected_first = MAX(frame%ao_first(atom), ao_range(1)) - ao_range(1) + 1
+         selected_last = MIN(frame%ao_last(atom), ao_range(2)) - ao_range(1) + 1
+         IF (selected_first > selected_last) CYCLE
+         DO axis = 1, 3
+            response = REAL(SUM(CONJG(complete_covector(:, selected_first:selected_last))* &
+                                workspace%gaussian_gradient(:, selected_first:selected_last, axis)), dp)
+            point_covector(axis) = point_covector(axis) + response
+            atom_covector(axis, atom) = atom_covector(axis, atom) - response
+            DO column = 1, 3
+               cell_covector(axis, column) = cell_covector(axis, column) + &
+                                             REAL(SUM(CONJG(complete_covector(:, selected_first:selected_last))* &
+                                                      workspace%gaussian_cell_gradient(:, selected_first:selected_last, &
+                                                                                       axis, column)), dp)
+            END DO
+         END DO
+      END DO
+      ALLOCATE (radial_covector(SIZE(complete_covector, 1), SIZE(frame%coefficients, 1)))
+      radial_covector(:, :) = -MATMUL(complete_covector, &
+                                      CONJG(TRANSPOSE(frame%coefficients(:, ao_range(1):ao_range(2)))))
+      DO other = 1, SIZE(frame%center_atoms)
+         atom = frame%center_atoms(other)
+         first = frame%projector_first(other)
+         last = frame%projector_last(other)
+         DO axis = 1, 3
+            response = REAL(SUM(CONJG(radial_covector(:, first:last))* &
+                                workspace%delta_gradient(:, first:last, axis)), dp)
+            point_covector(axis) = point_covector(axis) + response
+            atom_covector(axis, atom) = atom_covector(axis, atom) - response
+            DO column = 1, 3
+               cell_covector(axis, column) = cell_covector(axis, column) + &
+                                             REAL(SUM(CONJG(radial_covector(:, first:last))* &
+                                                      workspace%delta_cell_gradient(:, first:last, axis, column)), dp)
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE residual_geometry_adjoint
+
+! **************************************************************************************************
 !> \brief Complete soft-plus-Gaussian and single-center difference in a selected native AO block.
 !> \param frame ...
 !> \param center ...
@@ -2019,10 +2211,11 @@ CONTAINS
 !> \param derivatives ...
 !> \param shift ...
 !> \param workspace Scratch arrays reused across the radial rows of this center call.
+!> \param geometry_gradients Retain spatial and lattice gradients for the full geometry adjoint.
 ! **************************************************************************************************
    SUBROUTINE residual_fields(frame, center, ao_range, points, complete, difference, complete_response, &
                               difference_response, point_response, atom_response, cell_response, k_response, &
-                              coefficients_response, derivatives, shift, workspace)
+                              coefficients_response, derivatives, shift, workspace, geometry_gradients)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, ao_range(2)
       REAL(dp), INTENT(IN)                               :: points(:, :)
@@ -2036,10 +2229,12 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: derivatives
       INTEGER, INTENT(IN)                                :: shift(3)
       TYPE(inverse_field_workspace_type), INTENT(INOUT)  :: workspace
+      LOGICAL, INTENT(IN), OPTIONAL                      :: geometry_gradients
 
       INTEGER                                            :: atom, first, kind, last, max_basis, n, &
                                                             np, nproj, other, selected_first, &
                                                             selected_last, single_image(3, 1)
+      LOGICAL                                            :: full_geometry
 
       CPASSERT(frame%atom_local .OR. frame%inverse%ready)
       CPASSERT(SIZE(points, 1) == 3)
@@ -2049,6 +2244,9 @@ CONTAINS
       np = SIZE(points, 2)
       n = ao_range(2) - ao_range(1) + 1
       nproj = SIZE(frame%coefficients, 1)
+      full_geometry = .FALSE.
+      IF (PRESENT(geometry_gradients)) full_geometry = geometry_gradients
+      CPASSERT(.NOT. (full_geometry .AND. derivatives))
       CPASSERT(n > 0)
       IF (.NOT. ALLOCATED(complete)) ALLOCATE (complete(np, n), difference(np, n))
       CPASSERT(ALL(SHAPE(complete) == [np, n]) .AND. ALL(SHAPE(difference) == [np, n]))
@@ -2061,6 +2259,12 @@ CONTAINS
       END IF
       CPASSERT(ALL(SHAPE(workspace%delta) == [np, nproj]))
       CPASSERT(ALL(SHAPE(workspace%single_delta) == [np, last - first + 1]))
+      IF (full_geometry .AND. .NOT. ALLOCATED(workspace%delta_gradient)) THEN
+         max_basis = SIZE(workspace%phi, 2)
+         ALLOCATE (workspace%delta_gradient(np, nproj, 3), workspace%delta_cell_gradient(np, nproj, 3, 3), &
+                   workspace%phi_gradient(np, max_basis, 3), workspace%phi_cell_gradient(np, max_basis, 3, 3), &
+                   workspace%gaussian_gradient(np, n, 3), workspace%gaussian_cell_gradient(np, n, 3, 3))
+      END IF
       complete = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (derivatives) THEN
          CPASSERT(ALLOCATED(point_response))
@@ -2091,6 +2295,15 @@ CONTAINS
                                                 cell_response=cell_response, reduced_k_response=k_response)
             complete_response(:, selected_first - ao_range(1) + 1:selected_last - ao_range(1) + 1) = &
                2.0_dp*workspace%dphi(:, selected_first - first + 1:selected_last - first + 1)
+         ELSE IF (full_geometry) THEN
+            CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
+                                                frame%cell, frame%images, frame%reduced_k, workspace%phi(:, :last - first + 1), &
+                                                gradient=workspace%phi_gradient(:, :last - first + 1, :), &
+                                                cell_gradient=workspace%phi_cell_gradient(:, :last - first + 1, :, :))
+            workspace%gaussian_gradient(:, selected_first - ao_range(1) + 1:selected_last - ao_range(1) + 1, :) = &
+               2.0_dp*workspace%phi_gradient(:, selected_first - first + 1:selected_last - first + 1, :)
+            workspace%gaussian_cell_gradient(:, selected_first - ao_range(1) + 1:selected_last - ao_range(1) + 1, :, :) = &
+               2.0_dp*workspace%phi_cell_gradient(:, selected_first - first + 1:selected_last - first + 1, :, :)
          ELSE
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                                                 frame%cell, frame%images, frame%reduced_k, workspace%phi(:, :last - first + 1))
@@ -2110,6 +2323,11 @@ CONTAINS
                                             response=workspace%ddelta(:, first:last), points_response=point_response, &
                                             center_response=atom_response(:, atom), cell_response=cell_response, &
                                             reduced_k_response=k_response)
+         ELSE IF (full_geometry) THEN
+            CALL upf_radial_fields_periodic(frame%delta_cache(kind), points, frame%positions(:, atom), &
+                                            frame%cell, frame%images, frame%reduced_k, workspace%delta(:, first:last), &
+                                            gradient=workspace%delta_gradient(:, first:last, :), &
+                                            cell_gradient=workspace%delta_cell_gradient(:, first:last, :, :))
          ELSE
             CALL upf_radial_fields_periodic(frame%delta_cache(kind), points, frame%positions(:, atom), &
                                             frame%cell, frame%images, frame%reduced_k, workspace%delta(:, first:last))

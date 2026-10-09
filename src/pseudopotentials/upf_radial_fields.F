@@ -241,10 +241,11 @@ CONTAINS
 !> \param center_response Optional Cartesian center displacement.
 !> \param cell_response Optional cell-vector response.
 !> \param reduced_k_response Optional reduced Bloch-wavevector response.
+!> \param cell_gradient Optional lattice derivative at fixed points, centers and reduced k, axes last.
 ! **************************************************************************************************
    SUBROUTINE upf_radial_fields_periodic(fields, points, center, cell, images, reduced_k, value, &
                                          gradient, response, gradient_response, points_response, &
-                                         center_response, cell_response, reduced_k_response)
+                                         center_response, cell_response, reduced_k_response, cell_gradient)
       TYPE(upf_radial_fields_type), INTENT(IN)           :: fields
       REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -256,9 +257,10 @@ CONTAINS
                                                             center_response(3), &
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cell_gradient(:, :, :, :)
 
       COMPLEX(dp)                                        :: dphase, phase
-      INTEGER                                            :: axis, image, point
+      INTEGER                                            :: axis, column, image, point
       REAL(dp)                                           :: displacement(3), dr(3), dshift(3), &
                                                             shift(3), v(fields%nproj), &
                                                             hh(3, 3, fields%nproj), &
@@ -281,6 +283,12 @@ CONTAINS
          END IF
          gradient_response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
+      IF (PRESENT(cell_gradient)) THEN
+         IF (.NOT. ALL(SHAPE(cell_gradient) == [SIZE(points, 2), fields%nproj, 3, 3])) THEN
+            CPABORT("Invalid radial lattice-gradient dimensions")
+         END IF
+         cell_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
       IF (PRESENT(points_response)) THEN
          CPASSERT(ALL(SHAPE(points_response) == SHAPE(points)))
       END IF
@@ -301,7 +309,7 @@ CONTAINS
             IF (SUM(displacement**2) >= fields%radius**2) CYCLE
             IF (PRESENT(gradient_response)) THEN
                CALL upf_radial_fields_evaluate(fields, displacement, v, g, hh)
-            ELSE IF (PRESENT(gradient) .OR. PRESENT(response)) THEN
+            ELSE IF (PRESENT(gradient) .OR. PRESENT(response) .OR. PRESENT(cell_gradient)) THEN
                CALL upf_radial_fields_evaluate(fields, displacement, v, g)
             ELSE
                CALL upf_radial_fields_evaluate(fields, displacement, v)
@@ -311,6 +319,12 @@ CONTAINS
                                                         phase*MATMUL(dr, g) + dphase*v
             DO axis = 1, 3
                IF (PRESENT(gradient)) gradient(point, :, axis) = gradient(point, :, axis) + phase*g(axis, :)
+               IF (PRESENT(cell_gradient)) THEN
+                  DO column = 1, 3
+                     cell_gradient(point, :, axis, column) = cell_gradient(point, :, axis, column) &
+                                                             - phase*g(axis, :)*REAL(images(column, image), dp)
+                  END DO
+               END IF
                IF (PRESENT(gradient_response)) THEN
                   gradient_response(point, :, axis) = gradient_response(point, :, axis) + &
                                                       phase*MATMUL(dr, hh(axis, :, :)) + dphase*g(axis, :)

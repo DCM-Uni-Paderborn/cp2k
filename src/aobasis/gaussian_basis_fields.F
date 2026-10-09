@@ -149,10 +149,11 @@ CONTAINS
 !> \param center_response Optional Cartesian center response, default zero.
 !> \param cell_response Optional lattice response, default zero.
 !> \param reduced_k_response Optional reduced Bloch-vector response, default zero.
+!> \param cell_gradient Optional lattice derivative at fixed points, centers and reduced k, axes last.
 ! **************************************************************************************************
    SUBROUTINE gaussian_basis_fields_periodic(basis, points, center, cell, images, reduced_k, value, gradient, &
                                              response, gradient_response, point_response, center_response, &
-                                             cell_response, reduced_k_response)
+                                             cell_response, reduced_k_response, cell_gradient)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -164,6 +165,7 @@ CONTAINS
                                                             center_response(3), &
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cell_gradient(:, :, :, :)
 
       COMPLEX(dp)                                        :: phase, phase_response
       INTEGER                                            :: ao, axis, axis2, image, npoint, point
@@ -177,7 +179,7 @@ CONTAINS
       npoint = SIZE(points, 2)
       CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(images, 1) == 3)
       CPASSERT(ALL(SHAPE(value) == [npoint, basis%nsgf]))
-      need_gradient = PRESENT(gradient) .OR. PRESENT(response) .OR. PRESENT(gradient_response)
+      need_gradient = PRESENT(gradient) .OR. PRESENT(response) .OR. PRESENT(gradient_response) .OR. PRESENT(cell_gradient)
       need_hessian = PRESENT(gradient_response)
       need_geometry = PRESENT(response) .OR. PRESENT(gradient_response)
       IF (PRESENT(gradient)) THEN
@@ -191,6 +193,10 @@ CONTAINS
       IF (PRESENT(gradient_response)) THEN
          CPASSERT(ALL(SHAPE(gradient_response) == [npoint, basis%nsgf, 3]))
          gradient_response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (PRESENT(cell_gradient)) THEN
+         CPASSERT(ALL(SHAPE(cell_gradient) == [npoint, basis%nsgf, 3, 3]))
+         cell_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
       dc = 0.0_dp
       dcenter = 0.0_dp
@@ -230,6 +236,13 @@ CONTAINS
          END IF
          value = value + phase*field
          IF (PRESENT(gradient)) gradient = gradient + phase*g
+         IF (PRESENT(cell_gradient)) THEN
+            DO axis2 = 1, 3
+               DO axis = 1, 3
+                  cell_gradient(:, :, axis, axis2) = cell_gradient(:, :, axis, axis2) - phase*g(:, :, axis)*lattice(axis2)
+               END DO
+            END DO
+         END IF
          IF (PRESENT(response)) THEN
             response = response + phase_response*field
             DO axis = 1, 3

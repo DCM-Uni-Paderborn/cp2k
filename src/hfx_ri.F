@@ -926,17 +926,18 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: use_virial
 
       COMPLEX(dp), ALLOCATABLE                           :: beta_delta(:, :), beta_gaussian(:, :), &
-                                                            factors(:), left(:, :), right(:, :), &
-                                                            zero_factors(:)
+                                                            factors(:), left(:, :), right(:, :)
       INTEGER                                            :: atom, axis, column, kind
-      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), auxiliary_images(:, :), kind_of(:)
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), auxiliary_images(:, :), &
+                                                            kind_of(:)
       LOGICAL                                            :: periodic
-      REAL(dp)                                           :: cell_response(3, 3), explicit_response, &
+      REAL(dp)                                           :: cell_response(3, 3), &
+                                                            explicit_cell(3, 3), &
+                                                            explicit_response, &
                                                             inverse_virial(3, 3), &
                                                             projection_response
-      REAL(dp), ALLOCATABLE                              :: atom_response(:, :), &
-                                                            point_response(:, :), positions(:, :), &
-                                                            weights_response(:)
+      REAL(dp), ALLOCATABLE :: atom_response(:, :), explicit_atoms(:, :), &
+         explicit_auxiliary(:, :), point_response(:, :), positions(:, :), weights_response(:)
       TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
@@ -958,7 +959,7 @@ CONTAINS
       END IF
       CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
       ALLOCATE (bases(SIZE(atoms)), positions(3, SIZE(atoms)), factors(SIZE(atoms)), &
-                zero_factors(SIZE(atoms)), atom_response(3, SIZE(atoms)))
+                atom_response(3, SIZE(atoms)), explicit_atoms(3, SIZE(atoms)), explicit_auxiliary(3, SIZE(atoms)))
       ALLOCATE (left, MOLD=inverse%frame%ao%coefficients)
       ALLOCATE (right, MOLD=inverse%frame%ao%coefficients)
       ALLOCATE (point_response, MOLD=inverse%frame%ao%points)
@@ -972,13 +973,17 @@ CONTAINS
          CALL qs_upf_inverse_hfx_gamma_images(inverse%frame%ao, kinds, inverse%augmentation%kinds, bases, &
                                               ri_data%ri_metric, auxiliary_images)
       END IF
-      zero_factors = CMPLX(0.0_dp, 0.0_dp, dp)
       point_response = 0.0_dp
       weights_response = 0.0_dp
       inverse_virial = 0.0_dp
       CALL qs_upf_inverse_hfx_tensor_adjoint(inverse%frame%ao, inverse%frame%ao, kinds, inverse%augmentation%kinds, &
                                              bases, positions, factors, RESHAPE([0, 0, 0], [3, 1]), covector, left, right, &
-                                             metric=ri_data%ri_metric, auxiliary_images=auxiliary_images)
+                                             metric=ri_data%ri_metric, auxiliary_images=auxiliary_images, &
+                                             atom_geometry=explicit_atoms, cell_geometry=explicit_cell, &
+                                             auxiliary_geometry=explicit_auxiliary)
+      ! All Cartesian and lattice derivatives reuse the same radial and auxiliary fields.
+      ! The RI Gaussian centers follow their native atoms. The defining W response is added below.
+      explicit_atoms(:, :) = explicit_atoms + explicit_auxiliary
       left(:, :) = left + right
       CALL qs_upf_inverse_projection_adjoint(inverse%frame%ao, left, beta_gaussian, beta_delta)
       DO atom = 1, SIZE(atoms)
@@ -986,16 +991,7 @@ CONTAINS
          DO axis = 1, 3
             atom_response = 0.0_dp
             atom_response(axis, atom) = 1.0_dp
-            CALL qs_upf_inverse_hfx_tensor_adjoint(inverse%frame%ao, inverse%frame%ao, kinds, &
-                                                   inverse%augmentation%kinds, bases, positions, factors, &
-                                                   RESHAPE([0, 0, 0], [3, 1]), covector, &
-                                                   geometry_response=explicit_response, atom_response=atom_response, &
-                                                   cell_response=SPREAD([0.0_dp, 0.0_dp, 0.0_dp], 2, 3), &
-                                                   left_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
-                                                   right_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
-                                                   auxiliary_positions_response=atom_response, &
-                                                   auxiliary_factors_response=zero_factors, &
-                                                   metric=ri_data%ri_metric, auxiliary_images=auxiliary_images)
+            explicit_response = explicit_atoms(axis, atom)
             CALL qs_upf_inverse_projection_contract(inverse%frame%ao, beta_gaussian, beta_delta, point_response, &
                                                     atom_response, SPREAD([0.0_dp, 0.0_dp, 0.0_dp], 2, 3), &
                                                     [0.0_dp, 0.0_dp, 0.0_dp], weights_response, projection_response)
@@ -1028,16 +1024,8 @@ CONTAINS
                weights_response = 0.0_dp
                IF (axis == column) weights_response(:) = inverse%frame%ao%weights
                IF (periodic) THEN
-                  CALL qs_upf_inverse_hfx_tensor_adjoint(inverse%frame%ao, inverse%frame%ao, kinds, &
-                                                         inverse%augmentation%kinds, bases, positions, factors, &
-                                                         RESHAPE([0, 0, 0], [3, 1]), covector, &
-                                                         geometry_response=explicit_response, atom_response=atom_response, &
-                                                         cell_response=cell_response, &
-                                                         left_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
-                                                         right_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
-                                                         auxiliary_positions_response=atom_response, &
-                                                         auxiliary_factors_response=zero_factors, &
-                                                         metric=ri_data%ri_metric, auxiliary_images=auxiliary_images)
+                  explicit_response = SUM(explicit_atoms(axis, :)*positions(column, :)) &
+                                      + SUM(explicit_cell(axis, :)*cell%hmat(column, :))
                   inverse_virial(axis, column) = inverse_virial(axis, column) + explicit_response
                END IF
                CALL qs_upf_inverse_projection_contract(inverse%frame%ao, beta_gaussian, beta_delta, point_response, &
