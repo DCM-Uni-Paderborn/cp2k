@@ -68,7 +68,7 @@ CONTAINS
       IF (first(1) /= 1 .OR. first(ns + 1) /= n + 1) RETURN
       IF (ANY(first(2:) <= first(:ns)) .OR. ANY(dimensions <= 0)) RETURN
       ALLOCATE (labels(n), preferred(n), order(n), at_maximum(n), column(n))
-      labels = [(i, i=1, n)]
+      labels(:) = [(i, i=1, n)]
       DO i = 1, ns
          at_maximum(first(i):first(i + 1) - 1) = maximal(i)
       END DO
@@ -108,7 +108,7 @@ CONTAINS
          END IF
       END DO
       ALLOCATE (work%representative(n), work%expansion(n, n), work%witness_edge(n), work%witness_local(n))
-      work%representative = preferred(labels)
+      work%representative(:) = preferred(labels)
       work%expansion = 0
       work%witness_edge = 0
       work%witness_local = 0
@@ -122,7 +122,7 @@ CONTAINS
             work%witness_local(root) = j
          END DO
       END DO
-      order = [(i, i=1, n)]
+      order(:) = [(i, i=1, n)]
       DO i = 2, n
          k = order(i)
          j = i - 1
@@ -151,7 +151,7 @@ CONTAINS
             b = work%representative(c + k - 1)
             status = -2
             IF (dimensions(b) >= dimensions(root)) RETURN
-            column = column + INT(a, int_8)*INT(work%expansion(:, b), int_8)
+            column(:) = column + INT(a, int_8)*INT(work%expansion(:, b), int_8)
             status = -3
             IF (ANY(column > INT(HUGE(0), int_8))) RETURN
          END DO

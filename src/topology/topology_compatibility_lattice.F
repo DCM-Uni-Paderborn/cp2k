@@ -130,7 +130,7 @@ CONTAINS
             END DO
          END DO
       END DO
-      work%stars = stars(:, :ns)
+      ALLOCATE (work%stars, SOURCE=stars(:, :ns))
       DEALLOCATE (roots, stars)
       DO e = 1, ne
          p = sources(e)
@@ -145,14 +145,14 @@ CONTAINS
                                          INT(catalogue%points(p)%coreps%restriction, int_8), left, status)
             IF (status /= 0) RETURN
          ELSE
-            left = INT(edge%left_branch, int_8)
+            ALLOCATE (left, SOURCE=INT(edge%left_branch, int_8))
          END IF
          IF (ALLOCATED(catalogue%points(q)%coreps%restriction)) THEN
             CALL integer_lattice_product(INT(edge%right_branch, int_8), &
                                          INT(catalogue%points(q)%coreps%restriction, int_8), right, status)
             IF (status /= 0) RETURN
          ELSE
-            right = INT(edge%right_branch, int_8)
+            ALLOCATE (right, SOURCE=INT(edge%right_branch, int_8))
          END IF
          a = catalogue%row_begin(p)
          b = catalogue%row_begin(p + 1) - 1
@@ -167,8 +167,9 @@ CONTAINS
             row(c:d) = row(c:d) - right(i, :)
             CALL append_equation(row, equations, count)
          END DO
+         DEALLOCATE (left, right)
       END DO
-      work%constraints = equations(:MAX(1, count), :)
+      ALLOCATE (work%constraints, SOURCE=equations(:MAX(1, count), :))
       DEALLOCATE (equations, row)
       ! Bound dense Smith certificates using the retained, deduplicated equations.
       memory = 96.0_dp*(REAL(MAX(1, count), dp)**2 + REAL(n, dp)**2 + &

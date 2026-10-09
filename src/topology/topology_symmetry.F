@@ -178,7 +178,7 @@ CONTAINS
       ALLOCATE (work(n, n))
       residual = 0.0_dp
       DO g = first, ng, stride
-         work = MATMUL(CONJG(TRANSPOSE(sewing(:, :, g))), sewing(:, :, g))
+         work(:, :) = MATMUL(CONJG(TRANSPOSE(sewing(:, :, g))), sewing(:, :, g))
          DO i = 1, n
             work(i, i) = work(i, i) - 1.0_dp
          END DO
@@ -187,9 +187,9 @@ CONTAINS
             gh = PRODUCT(g, h)
             IF (antiunitary(gh) .NEQV. (antiunitary(g) .NEQV. antiunitary(h))) RETURN
             IF (antiunitary(g)) THEN
-               work = MATMUL(sewing(:, :, g), CONJG(sewing(:, :, h)))
+               work(:, :) = MATMUL(sewing(:, :, g), CONJG(sewing(:, :, h)))
             ELSE
-               work = MATMUL(sewing(:, :, g), sewing(:, :, h))
+               work(:, :) = MATMUL(sewing(:, :, g), sewing(:, :, h))
             END IF
             residual = MAX(residual, MAXVAL(ABS(work - factor(g, h)*sewing(:, :, gh))))
          END DO
@@ -245,25 +245,25 @@ CONTAINS
          sm_target(first:last, :) = MATMUL(metric, frame(first:last, :))
          sm_image(first:last, :) = MATMUL(metric, image(first:last, :))
       END DO
-      work = MATMUL(CONJG(TRANSPOSE(frame)), sm_target)
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(frame)), sm_target)
       DO i = 1, rank
          work(i, i) = work(i, i) - 1.0_dp
       END DO
       residuals(1) = MAXVAL(ABS(work))
-      work = MATMUL(CONJG(TRANSPOSE(image)), sm_image)
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(image)), sm_image)
       DO i = 1, rank
          work(i, i) = work(i, i) - 1.0_dp
       END DO
       residuals(2) = MAXVAL(ABS(work))
       sewing = MATMUL(CONJG(TRANSPOSE(frame)), sm_image)
-      work = MATMUL(CONJG(TRANSPOSE(sewing)), sewing)
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(sewing)), sewing)
       DO i = 1, rank
          work(i, i) = work(i, i) - 1.0_dp
       END DO
       residuals(3) = MAXVAL(ABS(work))
-      difference = image - MATMUL(frame, sewing)
-      sm_image = sm_image - MATMUL(sm_target, sewing)
-      work = MATMUL(CONJG(TRANSPOSE(difference)), sm_image)
+      difference(:, :) = image - MATMUL(frame, sewing)
+      sm_image(:, :) = sm_image - MATMUL(sm_target, sewing)
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(difference)), sm_image)
       residuals(4) = SQRT(MAXVAL(ABS(work)))
       IF (.NOT. ALL(ieee_is_finite(residuals))) RETURN
       status = -2
@@ -304,14 +304,14 @@ CONTAINS
       IF (.NOT. ALL(ieee_is_finite(REAL(left, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(left)))) RETURN
       IF (.NOT. ALL(ieee_is_finite(REAL(right, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(right)))) RETURN
       ALLOCATE (work(n, n))
-      work = MATMUL(CONJG(TRANSPOSE(left)), left)
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(left)), left)
       DO i = 1, n
          work(i, i) = work(i, i) - 1.0_dp
       END DO
       IF (MAXVAL(ABS(work)) > tolerance) RETURN
       DEALLOCATE (work)
       ALLOCATE (work(m, m))
-      work = MATMUL(CONJG(TRANSPOSE(right)), right)
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(right)), right)
       DO i = 1, m
          work(i, i) = work(i, i) - 1.0_dp
       END DO

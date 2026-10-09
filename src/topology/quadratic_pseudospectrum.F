@@ -17,7 +17,7 @@ MODULE quadratic_pseudospectrum
    USE kinds, ONLY: dp
    IMPLICIT NONE
    PRIVATE
-   PUBLIC :: quadratic_dense, quadratic_solve, quadratic_result_type
+   PUBLIC :: quadratic_dense, quadratic_solve, quadratic_result_type, quadratic_operator_type
 
    TYPE quadratic_result_type
       REAL(dp), ALLOCATABLE :: eigenvalues(:), residuals(:), errors(:, :), means(:, :)
@@ -30,7 +30,7 @@ MODULE quadratic_pseudospectrum
       MODULE PROCEDURE quadratic_dense_real, quadratic_dense_complex
    END INTERFACE
    INTERFACE quadratic_solve
-      MODULE PROCEDURE quadratic_solve_real, quadratic_solve_complex
+      MODULE PROCEDURE quadratic_solve_real, quadratic_solve_complex, quadratic_solve_core
    END INTERFACE
 
    ABSTRACT INTERFACE

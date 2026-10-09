@@ -85,7 +85,7 @@ CONTAINS
       IF (status /= 0) RETURN
       CALL integer_lattice_certificate(factor, left, right, diagonal, rank)
       q = n - rank
-      work%kernel = right(:, rank + 1:)
+      ALLOCATE (work%kernel, SOURCE=right(:, rank + 1:))
       CALL integer_lattice_product(constraints, work%kernel, verified, status)
       IF (status /= 0) RETURN
       status = -2
@@ -158,7 +158,7 @@ CONTAINS
       DO j = 1, q
          IF (quotient%invariants(j) > 0) transformed(j, 1) = MODULO(transformed(j, 1), quotient%invariants(j))
       END DO
-      indices = transformed(:, 1)
+      ALLOCATE (indices, SOURCE=transformed(:, 1))
    END SUBROUTINE integer_quotient_class
 
 ! **************************************************************************************************
@@ -187,8 +187,8 @@ CONTAINS
       status = -3
       IF (INT(m, int_8)**2 + INT(n, int_8)**2 + INT(m, int_8)*n > 10000000_int_8) RETURN
       IF (ANY(matrix > integer_limit) .OR. ANY(matrix < -integer_limit)) RETURN
-      work%matrix = matrix
-      a = matrix
+      ALLOCATE (work%matrix, SOURCE=matrix)
+      ALLOCATE (a, SOURCE=matrix)
       ALLOCATE (work%left(m, m), work%right(n, n), work%diagonal(MIN(m, n)))
       work%left = 0
       work%right = 0
@@ -334,7 +334,7 @@ CONTAINS
       IF (status /= 0) RETURN
       status = -2
       IF (ANY(verified(:, 1) /= TARGET)) RETURN
-      coefficients = solution(:, 1)
+      ALLOCATE (coefficients, SOURCE=solution(:, 1))
       exists = .TRUE.
       status = 0
    END SUBROUTINE integer_lattice_solve
@@ -354,9 +354,9 @@ CONTAINS
 
       rank = -1
       IF (.NOT. ALLOCATED(factor%matrix)) RETURN
-      left = factor%left
-      right = factor%right
-      diagonal = factor%diagonal
+      ALLOCATE (left, SOURCE=factor%left)
+      ALLOCATE (right, SOURCE=factor%right)
+      ALLOCATE (diagonal, SOURCE=factor%diagonal)
       rank = factor%rank
    END SUBROUTINE integer_lattice_certificate
 
@@ -410,7 +410,7 @@ CONTAINS
       status = -2
       exists = .FALSE.
       IF (ANY(verified(:, 1) /= TARGET)) RETURN
-      coefficients = trial
+      ALLOCATE (coefficients, SOURCE=trial)
       exists = .TRUE.
       status = 0
    CONTAINS

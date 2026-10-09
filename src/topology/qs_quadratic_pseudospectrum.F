@@ -47,6 +47,7 @@ MODULE qs_quadratic_pseudospectrum
    USE qs_localizer_torus,              ONLY: localizer_torus_operators,&
                                               torus_translation_operators
    USE quadratic_pseudospectrum,        ONLY: quadratic_dense,&
+                                              quadratic_operator_type,&
                                               quadratic_result_type,&
                                               quadratic_solve
    USE reference_manager,               ONLY: cite_reference
@@ -63,41 +64,59 @@ MODULE qs_quadratic_pseudospectrum
    PRIVATE
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_quadratic_pseudospectrum'
    PUBLIC :: qs_scf_post_quadratic
+
+   TYPE, EXTENDS(quadratic_operator_type) :: quadratic_dbcsr_type
+      TYPE(localizer_matrix_type), POINTER :: metric => NULL(), operators(:) => NULL()
+      TYPE(sparse_inertia_type), POINTER :: factors => NULL()
+      TYPE(mp_para_env_type), POINTER :: para_env => NULL()
+   CONTAINS
+      PROCEDURE :: apply => quadratic_dbcsr_apply
+      PROCEDURE :: adjoint => quadratic_dbcsr_adjoint
+      PROCEDURE :: solve => quadratic_dbcsr_solve
+   END TYPE quadratic_dbcsr_type
 CONTAINS
 ! **************************************************************************************************
 !> \brief Evaluate scans of quadratic gaps and localized joint approximate eigenstates.
 !> \param qs_env Converged Quickstep environment
 ! **************************************************************************************************
    SUBROUTINE qs_scf_post_quadratic(qs_env)
-      TYPE(qs_environment_type), POINTER :: qs_env
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_scf_post_quadratic'
-      CHARACTER(len=256) :: matrix_error
-      TYPE(section_vals_type), POINTER :: input, section
-      TYPE(cp_logger_type), POINTER :: logger
-      TYPE(mp_para_env_type), POINTER :: para_env
-      TYPE(cell_type), POINTER :: cell
-      TYPE(dft_control_type), POINTER :: dft_control
-      TYPE(dbcsr_p_type), POINTER :: matrix_s(:), matrix_ks(:), positions(:), soc(:, :)
-      TYPE(dbcsr_p_type), POINTER :: images_s(:, :), images_h(:, :), cosines(:), sines(:)
-      TYPE(localizer_matrix_type) :: metric
-      TYPE(localizer_matrix_type), ALLOCATABLE :: operators(:)
-      TYPE(sparse_inertia_type) :: factors
-      TYPE(quadratic_result_type) :: result
-      REAL(dp), POINTER :: energies(:), kappas(:), point(:)
-      REAL(dp), ALLOCATABLE :: a(:), b(:), identity(:)
-      REAL(dp), ALLOCATABLE :: shift(:), weights(:), radii(:), angles(:)
-      REAL(dp), ALLOCATABLE :: translations(:, :)
-      COMPLEX(dp), ALLOCATABLE :: complex_shift(:)
-      LOGICAL, ALLOCATABLE :: unitary(:)
-      COMPLEX(dp), ALLOCATABLE :: dense_operators(:, :, :), dense_metric(:, :), temporary(:, :)
-      INTEGER, ALLOCATABLE :: rows(:), cols(:)
-      INTEGER, ALLOCATABLE :: directions(:)
-      INTEGER, POINTER :: grid(:)
-      REAL(dp) :: eps_eigen, eps_metric, ratio, query(3), hermiticity_error, max_hermiticity_error
-      INTEGER :: handle, iw, output_unit, nao, n, order, max_ao, solver, spin, nstates, max_space, max_iter, &
-                 periodic, npositions, ip, ie, ik, i, j, status, ao, cell_periodic, formulation, ndim, nobs, axis, nt
-      LOGICAL :: active, do_soc, valid, periodic_analysis, explicit_grid, do_kpoints
-      LOGICAL :: translation_analysis, torus_analysis, explicit_value
+
+      CHARACTER(len=256)                                 :: matrix_error
+      COMPLEX(dp), ALLOCATABLE                           :: complex_shift(:), dense_metric(:, :), &
+                                                            dense_operators(:, :, :), &
+                                                            temporary(:, :)
+      INTEGER :: ao, axis, cell_periodic, formulation, handle, i, ie, ik, ip, iw, j, max_ao, &
+         max_iter, max_space, n, nao, ndim, nobs, npositions, nstates, nt, order, output_unit, &
+         periodic, solver, spin, status
+      INTEGER, ALLOCATABLE                               :: cols(:), directions(:), rows(:)
+      INTEGER, POINTER                                   :: grid(:)
+      LOGICAL :: active, do_kpoints, do_soc, explicit_grid, explicit_value, periodic_analysis, &
+         torus_analysis, translation_analysis, valid
+      LOGICAL, ALLOCATABLE                               :: unitary(:)
+      REAL(dp)                                           :: eps_eigen, eps_metric, &
+                                                            hermiticity_error, &
+                                                            max_hermiticity_error, query(3), ratio
+      REAL(dp), ALLOCATABLE                              :: a(:), angles(:), b(:), identity(:), &
+                                                            radii(:), shift(:), &
+                                                            translations(:, :), weights(:)
+      REAL(dp), POINTER                                  :: energies(:), kappas(:), point(:)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(dbcsr_p_type), POINTER                        :: cosines(:), images_h(:, :), &
+                                                            images_s(:, :), matrix_ks(:), &
+                                                            matrix_s(:), positions(:), sines(:), &
+                                                            soc(:, :)
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(localizer_matrix_type), ALLOCATABLE, TARGET   :: operators(:)
+      TYPE(localizer_matrix_type), TARGET                :: metric
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(quadratic_dbcsr_type)                         :: backend
+      TYPE(quadratic_result_type)                        :: result
+      TYPE(section_vals_type), POINTER                   :: input, section
+      TYPE(sparse_inertia_type), TARGET                  :: factors
 
       CALL timeset(routineN, handle)
       CALL get_qs_env(qs_env, input=input)
@@ -314,6 +333,10 @@ CONTAINS
             CALL sparse_inertia_finish(factors)
             CPABORT('Quadratic sparse metric is invalid or could not be factored.')
          END IF
+         backend%metric => metric
+         backend%operators => operators
+         backend%factors => factors
+         backend%para_env => para_env
       END IF
       logger => cp_get_default_logger()
       output_unit = cp_logger_get_default_io_unit(logger)
@@ -402,10 +425,10 @@ CONTAINS
                   IF (translation_analysis) THEN
                      complex_shift(1) = energies(ie)
                      CALL quadratic_solve(n, complex_shift, weights, nstates, .TRUE., max_space, max_iter, eps_eigen, &
-                                          apply, solve, RESULT, status, adjoint, unitary)
+                                          backend, RESULT, status, unitary)
                   ELSE
-                     CALL quadratic_solve(n, shift, weights, nstates, .TRUE., max_space, max_iter, eps_eigen, &
-                                          apply, solve, RESULT, status)
+                     CALL quadratic_solve(n, CMPLX(shift, 0.0_dp, dp), weights, nstates, .TRUE., &
+                                          max_space, max_iter, eps_eigen, backend, RESULT, status)
                   END IF
                END IF
                IF (status /= 0) THEN
@@ -486,61 +509,69 @@ CONTAINS
       END DO
       CALL localizer_dbcsr_release(metric)
       CALL timestop(handle)
-   CONTAINS
+   END SUBROUTINE qs_scf_post_quadratic
+
 ! **************************************************************************************************
-!> \brief DBCSR operator callback; result vectors are replicated, AO matrices are distributed.
+!> \brief Apply distributed AO operators to replicated vectors.
+!> \param this Operator matrices and communicator
 !> \param OPERATOR Zero for metric or H/X/Y/Z index
 !> \param v Input vectors
 !> \param y Output vectors
 !> \param status Return status
 ! **************************************************************************************************
-      SUBROUTINE apply(OPERATOR, v, y, status)
+   SUBROUTINE quadratic_dbcsr_apply(this, OPERATOR, v, y, status)
+      CLASS(quadratic_dbcsr_type), INTENT(INOUT) :: this
       INTEGER, INTENT(IN)                                :: operator
       COMPLEX(dp), INTENT(IN)                            :: v(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
       INTEGER, INTENT(OUT)                               :: status
 
-         IF (OPERATOR == 0) THEN
-            CALL localizer_dbcsr_apply(metric, v, y, para_env)
-         ELSE
-            CALL localizer_dbcsr_apply(operators(OPERATOR), v, y, para_env)
-         END IF
-         status = 0
-      END SUBROUTINE apply
+      IF (OPERATOR == 0) THEN
+         CALL localizer_dbcsr_apply(this%metric, v, y, this%para_env)
+      ELSE
+         CALL localizer_dbcsr_apply(this%operators(OPERATOR), v, y, this%para_env)
+      END IF
+      status = 0
+   END SUBROUTINE quadratic_dbcsr_apply
 ! **************************************************************************************************
 !> \brief Actual adjoint of a possibly nonsymmetric translation matrix.
+!> \param this Operator matrices and communicator
 !> \param OPERATOR Positive operator index
 !> \param v Input block
 !> \param y Adjoint product
 !> \param status Return status
 ! **************************************************************************************************
-      SUBROUTINE adjoint(OPERATOR, v, y, status)
+   SUBROUTINE quadratic_dbcsr_adjoint(this, OPERATOR, v, y, status)
+      CLASS(quadratic_dbcsr_type), INTENT(INOUT) :: this
       INTEGER, INTENT(IN)                                :: operator
       COMPLEX(dp), INTENT(IN)                            :: v(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
       INTEGER, INTENT(OUT)                               :: status
 
-         CALL localizer_dbcsr_apply(operators(OPERATOR), v, y, para_env, adjoint=.TRUE.)
-         status = 0
-      END SUBROUTINE adjoint
+      CALL localizer_dbcsr_apply(this%operators(OPERATOR), v, y, this%para_env, adjoint=.TRUE.)
+      status = 0
+   END SUBROUTINE quadratic_dbcsr_adjoint
 ! **************************************************************************************************
 !> \brief Reuse distributed factors of the realified metric for complex right hand sides.
+!> \param this Retained metric factors and communicator
 !> \param v Input covariant vectors
 !> \param y Contravariant metric solutions
 !> \param status Return status
 ! **************************************************************************************************
-      SUBROUTINE solve(v, y, status)
+   SUBROUTINE quadratic_dbcsr_solve(this, v, y, status)
+      CLASS(quadratic_dbcsr_type), INTENT(INOUT) :: this
       COMPLEX(dp), INTENT(IN)                            :: v(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
       INTEGER, INTENT(OUT)                               :: status
 
       REAL(dp), ALLOCATABLE                              :: rhs(:, :)
+      INTEGER :: n
 
-         ALLOCATE (rhs(2*n, SIZE(v, 2)))
-         rhs(:n, :) = REAL(v, dp)
-         rhs(n + 1:, :) = AIMAG(v)
-         CALL sparse_metric_solve(factors, rhs, para_env, status)
-         y = CMPLX(rhs(:n, :), rhs(n + 1:, :), dp)
-      END SUBROUTINE solve
-   END SUBROUTINE qs_scf_post_quadratic
+      n = SIZE(v, 1)
+      ALLOCATE (rhs(2*n, SIZE(v, 2)))
+      rhs(:n, :) = REAL(v, dp)
+      rhs(n + 1:, :) = AIMAG(v)
+      CALL sparse_metric_solve(this%factors, rhs, this%para_env, status)
+      y = CMPLX(rhs(:n, :), rhs(n + 1:, :), dp)
+   END SUBROUTINE quadratic_dbcsr_solve
 END MODULE qs_quadratic_pseudospectrum

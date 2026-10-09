@@ -38,8 +38,9 @@ CONTAINS
       COMPLEX(dp)                                        :: chi(2)
       COMPLEX(dp), ALLOCATABLE                           :: image(:, :), reference(:, :)
       INTEGER                                            :: a, b, i, info, j, n, p, parity, perm(4), &
-                                                            r(3, 3, 4), rr(3, 3, 4), s, site, spin
-      INTEGER, ALLOCATABLE                               :: counts(:), reverse(:)
+                                                            r(3, 3, 4), reverse(2), rr(3, 3, 4), &
+                                                            s, site, spin
+      INTEGER, ALLOCATABLE                               :: counts(:)
       LOGICAL                                            :: anti(4), used(17)
       REAL(dp)                                           :: angle, cell(3, 3), delta(3), &
                                                             points(3, 8), shifted(3, 4), tau(3, 4)
@@ -249,7 +250,7 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: counts(:, :)
 
       CALL unitary_counts(catalogue, p, counts)
-      characters = MATMUL(catalogue%points(p)%little%characters, CMPLX(counts, 0, dp))
+      ALLOCATE (characters, SOURCE=MATMUL(catalogue%points(p)%little%characters, CMPLX(counts, 0, dp)))
    END SUBROUTINE physical_characters
 
 ! **************************************************************************************************
@@ -268,9 +269,9 @@ CONTAINS
       a = catalogue%row_begin(p)
       b = catalogue%row_begin(p + 1) - 1
       IF (ALLOCATED(catalogue%points(p)%coreps%restriction)) THEN
-         counts = MATMUL(catalogue%points(p)%coreps%restriction, catalogue%matrix(a:b, :))
+         ALLOCATE (counts, SOURCE=MATMUL(catalogue%points(p)%coreps%restriction, catalogue%matrix(a:b, :)))
       ELSE
-         counts = catalogue%matrix(a:b, :)
+         ALLOCATE (counts, SOURCE=catalogue%matrix(a:b, :))
       END IF
    END SUBROUTINE unitary_counts
 
@@ -302,7 +303,7 @@ CONTAINS
             ERROR STOP 'Atomic signature column violates compatibility'
          END IF
       END DO
-      weights = [(MODULO(p, 3), p=1, SIZE(catalogue%matrix, 2))]
+      ALLOCATE (weights, SOURCE=[(MODULO(p, 3), p=1, SIZE(catalogue%matrix, 2))])
       DO p = 1, np
          a = catalogue%row_begin(p)
          b = catalogue%row_begin(p + 1) - 1
@@ -311,14 +312,14 @@ CONTAINS
          chi(:) = MATMUL(characters, CMPLX(weights, 0, dp))
          expected(:) = MATMUL(catalogue%matrix(a:b, :), weights)
          counts(:) = expected
-         order = [(q, q=SIZE(chi), 1, -1)]
+         ALLOCATE (order, SOURCE=[(q, q=SIZE(chi), 1, -1)])
          CALL atomic_signature_decompose(catalogue%points(p), catalogue%points(p)%mapping(order), chi(order), &
                                          counts, 1.e-7_dp, info)
          IF (info /= 0 .OR. ANY(counts /= expected)) THEN
             PRINT *, 'Signature reconstruction point/status/expected/counts:', p, info, expected, counts
             ERROR STOP 'Atomic signature additivity/row mapping failed'
          END IF
-         DEALLOCATE (chi, expected, counts)
+         DEALLOCATE (chi, expected, counts, order)
       END DO
    END SUBROUTINE check_connections
 
@@ -340,7 +341,7 @@ CONTAINS
       m = SIZE(catalogue%matrix, 1)
       n = SIZE(catalogue%matrix, 2)
       ALLOCATE (matrix(m, n), TARGET(m), weights(n), verified(m, n))
-      matrix = INT(catalogue%matrix, int_8)
+      matrix(:, :) = INT(catalogue%matrix, int_8)
       CALL integer_lattice_factor(matrix, factor, info)
       IF (info /= 0) ERROR STOP 'Generated atomic Smith form failed'
       CALL integer_lattice_certificate(factor, left, right, diagonal, rank)
@@ -349,15 +350,15 @@ CONTAINS
          verified(j, j) = verified(j, j) - diagonal(j)
       END DO
       IF (ANY(verified /= 0) .OR. rank < 1) ERROR STOP 'Generated Smith certificate failed'
-      weights = [(INT(MODULO(j, 5) - 2, int_8), j=1, n)]
+      weights(:) = [(INT(MODULO(j, 5) - 2, int_8), j=1, n)]
       TARGET(:) = MATMUL(matrix, weights)
       CALL integer_lattice_solve(factor, TARGET, exists, witness, info)
       IF (info /= 0 .OR. .NOT. exists) ERROR STOP 'Generated signed signature not recovered'
       DO j = 1, n + 1
          IF (j <= n) THEN
-            TARGET = matrix(:, j)
+            TARGET(:) = matrix(:, j)
          ELSE
-            TARGET = matrix(:, 1) + matrix(:, n) + matrix(:, (n + 1)/2)
+            TARGET(:) = matrix(:, 1) + matrix(:, n) + matrix(:, (n + 1)/2)
          END IF
          CALL nonnegative_integer_solve(matrix, TARGET, exists, witness, visited, info, 1000000_int_8)
          IF (info /= 0 .OR. .NOT. exists) THEN
@@ -385,7 +386,7 @@ CONTAINS
       TYPE(little_group_data_type), ALLOCATABLE          :: points(:)
 
       ALLOCATE (points(SIZE(catalogue%points)), weights(SIZE(catalogue%matrix, 2)), expected(SIZE(catalogue%matrix, 1)))
-      weights = [(MODULO(i, 3), i=1, SIZE(weights))]
+      weights(:) = [(MODULO(i, 3), i=1, SIZE(weights))]
       expected(:) = MATMUL(INT(catalogue%matrix, int_8), INT(weights, int_8))
       DO p = 1, SIZE(points)
          points(p) = catalogue%points(p)%little
@@ -404,31 +405,31 @@ CONTAINS
             shifts(:, g) = REAL([MODULO(g, 3), -MODULO(g, 2), MODULO(g, 5)], dp)
          END DO
          shifts(:, 1) = 0.0_dp
-         translations = original%translations + shifts
-         permutation = [(i, i=n, 1, -1)]
+         translations(:, :) = original%translations + shifts
+         ALLOCATE (permutation, SOURCE=[(i, i=n, 1, -1)])
          CALL little_group_factor_system(original%cell, original%rotations(:, :, permutation), &
                                          translations(:, permutation), original%antiunitary(permutation), original%k, &
                                          original%spinful, mapping, points(p)%product, points(p)%factors, 1.e-8_dp, info)
          IF (info /= 0) ERROR STOP 'Independent coset-shifted factor construction failed'
-         permutation = permutation(mapping)
-         points(p)%rotations = original%rotations(:, :, permutation)
-         points(p)%translations = translations(:, permutation)
-         points(p)%antiunitary = original%antiunitary(permutation)
-         unitary = PACK([(g, g=1, n)],.NOT. original%antiunitary)
+         permutation(:) = permutation(mapping)
+         points(p)%rotations(:, :, :) = original%rotations(:, :, permutation)
+         points(p)%translations(:, :) = translations(:, permutation)
+         points(p)%antiunitary(:) = original%antiunitary(permutation)
+         ALLOCATE (unitary, SOURCE=PACK([(g, g=1, n)],.NOT. original%antiunitary))
          inverse = 0
          DO i = 1, nu
             inverse(unitary(i)) = i
          END DO
-         labels = [(i, i=SIZE(original%multiplicity), 1, -1)]
-         points(p)%multiplicity = original%multiplicity(labels)
-         unitary = PACK([(g, g=1, n)],.NOT. points(p)%antiunitary)
+         ALLOCATE (labels, SOURCE=[(i, i=SIZE(original%multiplicity), 1, -1)])
+         points(p)%multiplicity(:) = original%multiplicity(labels)
+         unitary(:) = PACK([(g, g=1, n)],.NOT. points(p)%antiunitary)
          DO i = 1, nu
             g = unitary(i)
             h = permutation(g)
             angle = -2*ACOS(-1.0_dp)*DOT_PRODUCT(original%k, shifts(:, h))
             points(p)%characters(i, :) = CMPLX(COS(angle), SIN(angle), dp)*original%characters(inverse(h), labels)
          END DO
-         DEALLOCATE (translations, shifts, inverse)
+         DEALLOCATE (translations, shifts, inverse, permutation, unitary, labels)
       END DO
       CALL atomic_signature_from_bands(catalogue, points, TARGET, 1.e-7_dp, info)
       IF (info /= 0) THEN

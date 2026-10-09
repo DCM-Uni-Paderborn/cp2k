@@ -113,7 +113,7 @@ CONTAINS
       s = selected(1)
       selected(1) = selected(identity)
       selected(identity) = s
-      members = selected(:ng)
+      ALLOCATE (members, SOURCE=selected(:ng))
       ALLOCATE (products(ng, ng), factors(ng, ng))
       DO h = 1, ng
          t = members(h)
@@ -264,7 +264,7 @@ CONTAINS
                vectors(PRODUCT(g, h), g) = vectors(PRODUCT(g, h), g) + coefficient*factor(g, h)
             END DO
          END DO
-         vectors = 0.5_dp*(vectors + CONJG(TRANSPOSE(vectors)))
+         vectors(:, :) = 0.5_dp*(vectors + CONJG(TRANSPOSE(vectors)))
          CALL zheev('V', 'U', n, vectors, n, eigenvalues, work, SIZE(work), rwork, info)
          status = -3
          IF (info /= 0) RETURN
@@ -287,7 +287,7 @@ CONTAINS
                DO h = 1, n
                   image(PRODUCT(g, h), :) = factor(g, h)*vectors(h, first:last)
                END DO
-               block = MATMUL(CONJG(TRANSPOSE(vectors(:, first:last))), image)
+               block(:, :) = MATMUL(CONJG(TRANSPOSE(vectors(:, first:last))), image)
                residual = MAX(residual, MAXVAL(ABS(image - MATMUL(vectors(:, first:last), block))))
                CHARACTER(g) = 0.0_dp
                DO i = 1, d
@@ -323,11 +323,11 @@ CONTAINS
          status = -2
          IF (.NOT. valid .OR. residual > tolerance) CYCLE
          IF (SUM(dimensions(:ni)**2) /= n .OR. ANY(copies(:ni) /= dimensions(:ni))) CYCLE
-         regular = MATMUL(characters(:, :ni), CMPLX(dimensions(:ni), 0, dp))
+         regular(:) = MATMUL(characters(:, :ni), CMPLX(dimensions(:ni), 0, dp))
          regular(1) = regular(1) - n
          residual = MAX(residual, MAXVAL(ABS(regular))/n)
          IF (.NOT. ieee_is_finite(residual) .OR. residual > tolerance) CYCLE
-         table = characters(:, :ni)
+         ALLOCATE (table, SOURCE=characters(:, :ni))
          status = 0
          RETURN
       END DO

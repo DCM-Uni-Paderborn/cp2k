@@ -300,8 +300,8 @@ CONTAINS
                   CALL cp_cfm_get_submatrix(points%kp_env(ilocal)%kpoint_env%mos(spin)%cmo_coeff, source)
                   CALL get_mo_set(points%kp_env(ilocal)%kpoint_env%mos(spin), &
                                   eigenvalues=values, occupation_numbers=occupations)
-                  energies = values(:nmo)
-                  occ = occupations(:nmo)
+                  energies(:) = values(:nmo)
+                  occ(:) = occupations(:nmo)
                   IF (soc .AND. nmo < nao) window_gap = values(nmo + 1) - values(nmo)
                   owners = 1
                END IF
@@ -540,8 +540,8 @@ CONTAINS
                   END IF
                   CALL get_mo_set(points%kp_env(ilocal)%kpoint_env%mos(spin), &
                                   eigenvalues=values, occupation_numbers=occupations)
-                  energies = values(:nmo)
-                  occ = occupations(:nmo)
+                  energies(:) = values(:nmo)
+                  occ(:) = occupations(:nmo)
                   window_gap = HUGE(1.0_dp)
                   IF (soc .AND. nmo < nao) window_gap = values(nmo + 1) - values(nmo)
                   IF (window_gap <= 1.e-8_dp) THEN
@@ -567,8 +567,8 @@ CONTAINS
                   shared_status = status
                   shared_op = op
                   shared_errors = errors
-                  shared_energies = energies
-                  shared_occ = occ
+                  shared_energies(:) = energies
+                  shared_occ(:) = occ
                   CALL inter%bcast(shared_status, group - 1)
                   IF (shared_status == 2) THEN
                      CALL cp_abort(__LOCATION__, &

@@ -500,7 +500,7 @@ CONTAINS
       IF (estimate > max_memory_mb) THEN
          CPABORT('Atomic integer matrices exceed LITTLE_GROUP_MAX_MEMORY_MB.')
       END IF
-      matrix = INT(catalogue%matrix, int_8)
+      ALLOCATE (matrix, SOURCE=INT(catalogue%matrix, int_8))
       signed_result = -1
       nonnegative_result = -1
       visited = 0

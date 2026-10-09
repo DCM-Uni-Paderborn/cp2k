@@ -107,7 +107,7 @@ CONTAINS
       no = SIZE(band%positions, 2)
       n = COUNT(.NOT. band%antiunitary)
       ALLOCATE (work%blocks(n), work%dimensions(ni), chi(ni))
-      work%dimensions = no*band%dimensions
+      work%dimensions(:) = no*band%dimensions
       b = 0
       DO q = 1, SIZE(band%mapping)
          g = FINDLOC(band%mapping, q, DIM=1)
@@ -128,16 +128,16 @@ CONTAINS
          CALL integer_lattice_certificate(factor, left, right, diagonal, rank)
          work%blocks(b)%left = left
          work%blocks(b)%period = diagonal
-         members = PACK([(j, j=1, no)], band%fixed_unitary(g, :) /= 0)
+         ALLOCATE (members, SOURCE=PACK([(j, j=1, no)], band%fixed_unitary(g, :) /= 0))
          nt = SIZE(members)
          ALLOCATE (shifts(3, nt), order(nt), coefficients(nt, ni))
-         shifts = NINT(band%shifts(:, g, members), int_8)
+         shifts(:, :) = NINT(band%shifts(:, g, members), int_8)
          CALL integer_lattice_product(left, shifts, keys, status)
          IF (status /= 0) RETURN
          DO i = 1, rank
             keys(i, :) = MODULO(keys(i, :), diagonal(i))
          END DO
-         order = [(j, j=1, nt)]
+         order(:) = [(j, j=1, nt)]
          DO j = 2, nt
             k = order(j)
             i = j - 1
@@ -159,13 +159,13 @@ CONTAINS
                shifts(:, row) = key
             END IF
             h = band%fixed_unitary(g, j)
-            chi = band%site_characters(h, :)
+            chi(:) = band%site_characters(h, :)
             IF (band%conjugate_site(j)) chi = CONJG(chi)
             coefficients(row, :) = coefficients(row, :) + band%spin_factor(g, j)*chi
          END DO
-         work%blocks(b)%keys = shifts(:, :row)
-         work%blocks(b)%coefficients = coefficients(:row, :)
-         DEALLOCATE (shifts, order, coefficients)
+         ALLOCATE (work%blocks(b)%keys, SOURCE=shifts(:, :row))
+         ALLOCATE (work%blocks(b)%coefficients, SOURCE=coefficients(:row, :))
+         DEALLOCATE (shifts, order, coefficients, members)
       END DO
       polynomial = work
       status = 0
@@ -355,8 +355,9 @@ CONTAINS
                                       spinful, work%mapping, products, factors, tolerance, status, spin_lifts=spin_lifts)
       IF (status /= 0) RETURN
       n = SIZE(work%mapping)
-      work%rotations = rotations(:, :, work%mapping)
-      work%antiunitary = antiunitary(work%mapping)
+      ALLOCATE (work%rotations(3, 3, n), work%antiunitary(n))
+      work%rotations(:, :, :) = rotations(:, :, work%mapping)
+      work%antiunitary(:) = antiunitary(work%mapping)
       seed = MODULO(position, 1.0_dp)
       ALLOCATE (positions(3, n), representatives(n), image(n), site_index(n), inverse(n))
       residual = 0.0_dp
@@ -387,7 +388,7 @@ CONTAINS
       DO j = 1, no
          IF (COUNT(image == j) /= nh) RETURN
       END DO
-      site_members = PACK([(g, g=1, n)], image == 1)
+      ALLOCATE (site_members, SOURCE=PACK([(g, g=1, n)], image == 1))
       site_index = 0
       DO h = 1, nh
          site_index(site_members(h)) = h
@@ -396,11 +397,12 @@ CONTAINS
       DO h = 1, nh
          site_product(:, h) = site_index(products(site_members, site_members(h)))
       END DO
-      site_factor = factors(site_members, site_members)
+      ALLOCATE (site_factor(nh, nh))
+      site_factor(:, :) = factors(site_members, site_members)
       CALL validate_factor_system(site_product, site_factor, work%antiunitary(site_members), tolerance, error, status)
       IF (status /= 0) RETURN
       residual = MAX(residual, error)
-      unitary = PACK([(h, h=1, nh)],.NOT. work%antiunitary(site_members))
+      ALLOCATE (unitary, SOURCE=PACK([(h, h=1, nh)],.NOT. work%antiunitary(site_members)))
       nu = SIZE(unitary)
       ALLOCATE (unit_index(nh), unit_product(nu, nu))
       unit_index = 0
@@ -418,13 +420,14 @@ CONTAINS
                                            characters, coreps, tolerance, error, status)
          IF (status /= 0) RETURN
          residual = MAX(residual, error)
-         work%site_characters = MATMUL(characters, CMPLX(coreps%restriction, 0, dp))
+         ALLOCATE (work%site_characters, SOURCE=MATMUL(characters, CMPLX(coreps%restriction, 0, dp)))
       ELSE
          CALL MOVE_ALLOC(characters, work%site_characters)
       END IF
-      work%dimensions = NINT(REAL(work%site_characters(1, :), dp))
-      work%site_mapping = work%mapping(site_members(unitary))
-      work%site_full_mapping = work%mapping(site_members)
+      ALLOCATE (work%dimensions, SOURCE=NINT(REAL(work%site_characters(1, :), dp)))
+      ALLOCATE (work%site_mapping(nu), work%site_full_mapping(nh))
+      work%site_mapping(:) = work%mapping(site_members(unitary))
+      work%site_full_mapping(:) = work%mapping(site_members)
       work%spinful = spinful
       ALLOCATE (work%site_product(nh, nh), work%site_factor(nh, nh), work%site_spin(2, 2, nh), &
                 work%site_cartesian(3, 3, nh), work%site_antiunitary(nh), work%site_lattice_shifts(3, nh))
@@ -440,8 +443,9 @@ CONTAINS
          work%site_cartesian(:, :, h) = MATMUL(MATMUL(lattice, REAL(work%rotations(:, :, site_members(h)), dp)), &
                                                lattice_inverse)
       END DO
-      work%positions = positions(:, :no)
-      work%conjugate_site = work%antiunitary(representatives(:no))
+      ALLOCATE (work%positions, SOURCE=positions(:, :no))
+      ALLOCATE (work%conjugate_site(no))
+      work%conjugate_site(:) = work%antiunitary(representatives(:no))
       ALLOCATE (work%fixed_unitary(n, no), work%spin_factor(n, no), work%shifts(3, n, no))
       work%fixed_unitary = 0
       work%spin_factor = 0.0_dp
@@ -524,7 +528,7 @@ CONTAINS
          members(nu) = g
       END DO
       ALLOCATE (mapping(nu), characters(nu, SIZE(band%dimensions)), chi(SIZE(band%dimensions)))
-      mapping = band%mapping(members(:nu))
+      mapping(:) = band%mapping(members(:nu))
       characters = 0.0_dp
       DO i = 1, nu
          g = members(i)
@@ -533,7 +537,7 @@ CONTAINS
             IF (h == 0) CYCLE
             angle = -twopi*MODULO(DOT_PRODUCT(kp, band%shifts(:, g, j)), 1.0_dp)
             phase = CMPLX(COS(angle), SIN(angle), dp)*band%spin_factor(g, j)
-            chi = band%site_characters(h, :)
+            chi(:) = band%site_characters(h, :)
             IF (band%conjugate_site(j)) chi = CONJG(chi)
             characters(i, :) = characters(i, :) + phase*chi
          END DO
@@ -563,13 +567,14 @@ CONTAINS
       j = 1
       IF (PRESENT(orbit_index)) j = orbit_index
       IF (j < 1 .OR. j > SIZE(band%positions, 2)) RETURN
-      positions = band%positions
+      ALLOCATE (positions, SOURCE=band%positions)
       IF (j == 1) THEN
-         mapping = band%site_mapping
-         characters = band%site_characters
+         ALLOCATE (mapping, SOURCE=band%site_mapping)
+         ALLOCATE (characters, SOURCE=band%site_characters)
       ELSE
-         members = PACK([(g, g=1, SIZE(band%mapping))], band%fixed_unitary(:, j) /= 0)
-         mapping = band%mapping(members)
+         ALLOCATE (members, SOURCE=PACK([(g, g=1, SIZE(band%mapping))], band%fixed_unitary(:, j) /= 0))
+         ALLOCATE (mapping(SIZE(members)))
+         mapping(:) = band%mapping(members)
          ALLOCATE (characters(SIZE(members), SIZE(band%dimensions)))
          DO i = 1, SIZE(members)
             g = members(i)
@@ -595,14 +600,14 @@ CONTAINS
 
       IF (.NOT. ALLOCATED(band%site_product)) RETURN
       site%spinful = band%spinful
-      site%mapping = band%site_full_mapping
-      site%product = band%site_product
-      site%antiunitary = band%site_antiunitary
-      site%cartesian = band%site_cartesian
-      site%lattice_shifts = band%site_lattice_shifts
-      site%spin = band%site_spin
-      site%factor = band%site_factor
-      site%characters = band%site_characters
+      ALLOCATE (site%mapping, SOURCE=band%site_full_mapping)
+      ALLOCATE (site%product, SOURCE=band%site_product)
+      ALLOCATE (site%antiunitary, SOURCE=band%site_antiunitary)
+      ALLOCATE (site%cartesian, SOURCE=band%site_cartesian)
+      ALLOCATE (site%lattice_shifts, SOURCE=band%site_lattice_shifts)
+      ALLOCATE (site%spin, SOURCE=band%site_spin)
+      ALLOCATE (site%factor, SOURCE=band%site_factor)
+      ALLOCATE (site%characters, SOURCE=band%site_characters)
    END SUBROUTINE atomic_band_site_snapshot
 
 ! **************************************************************************************************

@@ -64,7 +64,7 @@ CONTAINS
       ni = SIZE(characters, 2)
       IF (n /= 2*nu .OR. SIZE(characters, 1) /= nu .OR. ni < 1) RETURN
       ALLOCATE (unitary(nu), unitary_index(n), regular(nu), conjugated(nu), multiplicities(ni))
-      unitary = PACK([(g, g=1, n)],.NOT. antiunitary)
+      unitary(:) = PACK([(g, g=1, n)],.NOT. antiunitary)
       unitary_index = 0
       DO g = 1, nu
          unitary_index(unitary(g)) = g
@@ -75,7 +75,7 @@ CONTAINS
       IF (status /= 0) RETURN
       status = -2
       ALLOCATE (dimensions(ni), partner(ni), indicators(ni), branches(ni, ni))
-      dimensions = NINT(REAL(characters(1, :), dp))
+      dimensions(:) = NINT(REAL(characters(1, :), dp))
       IF (ANY(multiplicities /= dimensions)) RETURN
       a = FINDLOC(antiunitary, .TRUE., DIM=1)
       ainv = FINDLOC(PRODUCT(a, :), 1, DIM=1)
@@ -126,8 +126,8 @@ CONTAINS
          END SELECT
       END DO
       ALLOCATE (table%restriction(ni, nc), table%indicator(nc), table%dimension(nc))
-      table%restriction = branches(:, :nc)
-      table%dimension = MATMUL(dimensions, table%restriction)
+      table%restriction(:, :) = branches(:, :nc)
+      table%dimension(:) = MATMUL(dimensions, table%restriction)
       nc = 0
       DO i = 1, ni
          IF (partner(i) < i) CYCLE

@@ -182,7 +182,7 @@ CONTAINS
             DO i = 1, n - 1, 2
                a(i, i + 1) = a(i, i + 1) + 2.0_dp
             END DO
-            a = a - TRANSPOSE(a)
+            a(:, :) = a - TRANSPOSE(a)
             CALL localizer_pfaffian_sign(a, dense_sign, dense_status)
             IF (dense_status /= 0) ERROR STOP 'Invalid dense skew fixture'
             DO swap = 1, 2
@@ -208,7 +208,7 @@ CONTAINS
                   CALL localizer_factorize(n, rows, cols, values, para_env, factor, negative, status, .TRUE., &
                                            skew=.TRUE., tolerance=1.e-10_dp, pf_sign=sign)
                   IF (status /= 0 .OR. sign /= dense_sign) ERROR STOP 'Native skew sign mismatch'
-                  rhs = scale*MATMUL(a, exact)
+                  rhs(:, :) = scale*MATMUL(a, exact)
                   CALL localizer_factor_solve(factor, rhs, para_env, status)
                   IF (status /= 0) ERROR STOP 'Native skew solve failed'
                   IF (MAXVAL(ABS(rhs - exact)) > 1.e-10_dp) ERROR STOP 'Native skew solution mismatch'
@@ -216,10 +216,10 @@ CONTAINS
                   CALL localizer_factor_release(factor)
                   DEALLOCATE (rows, cols, values)
                END DO
-               work = a(1, :)
+               work(:) = a(1, :)
                a(1, :) = a(2, :)
                a(2, :) = work
-               work = a(:, 1)
+               work(:) = a(:, 1)
                a(:, 1) = a(:, 2)
                a(:, 2) = work
                dense_sign = -dense_sign
@@ -914,8 +914,8 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: owned(:)
 
       IF (pf_native) THEN
-         owned = PACK([(i, i=1, SIZE(values))], &
-                      [(MOD(i - 1, para_env%num_pe) == para_env%mepos, i=1, SIZE(values))])
+         ALLOCATE (owned, SOURCE=PACK([(i, i=1, SIZE(values))], &
+                                      [(MOD(i - 1, para_env%num_pe) == para_env%mepos, i=1, SIZE(values))]))
          CALL sparse_pfaffian_sign(order, rows(owned), cols(owned), values(owned), tolerance, sign, residual, &
                                    fill, status, max_memory_bytes, peak_memory_bytes, para_env)
       ELSE

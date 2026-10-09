@@ -37,13 +37,13 @@ CONTAINS
 
       edges(1)%source = 1
       edges(1)%destination = 2
-      edges(1)%coefficients = RESHAPE([1], [1, 1])
+      ALLOCATE (edges(1)%coefficients, SOURCE=RESHAPE([1], [1, 1]))
       edges(2)%source = 1
       edges(2)%destination = 3
-      edges(2)%coefficients = RESHAPE([1, 1], [2, 1])
+      ALLOCATE (edges(2)%coefficients, SOURCE=RESHAPE([1, 1], [2, 1]))
       edges(3)%source = 3
       edges(3)%destination = 4
-      edges(3)%coefficients = RESHAPE([1, 1], [1, 2])
+      ALLOCATE (edges(3)%coefficients, SOURCE=RESHAPE([1, 1], [1, 2]))
       CALL site_induction_reduce(edges, [1, 2, 3, 5, 6], [2, 2, 1, 1, 1], &
                                  [.FALSE., .TRUE., .FALSE., .TRUE.], reduced, status)
       IF (status /= 0) ERROR STOP 'Synthetic transitive induction reduction failed'

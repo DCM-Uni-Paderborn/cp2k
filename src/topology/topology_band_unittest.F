@@ -85,7 +85,7 @@ CONTAINS
                collected = 0
                DO i = 1, SIZE(block%keys, 2)
                   angle = -twopi*DOT_PRODUCT(y, REAL(block%keys(:, i), dp))
-                  collected = collected + CMPLX(COS(angle), SIN(angle), dp)*block%coefficients(i, :)
+                  collected(:) = collected + CMPLX(COS(angle), SIN(angle), dp)*block%coefficients(i, :)
                END DO
                error = MAXVAL(ABS(collected - chi(row, :))/polynomial%dimensions)
                polynomial_residual = MAX(polynomial_residual, error)
@@ -786,13 +786,15 @@ CONTAINS
                                       mapping, point%product, point%factors, 1.e-9_dp, info)
       IF (info /= 0) ERROR STOP 'Atomic-band test little group failed'
       n = SIZE(mapping)
-      point%antiunitary = anti(mapping)
+      ALLOCATE (point%antiunitary(n))
+      point%antiunitary(:) = anti(mapping)
       point%cell = cell
       point%k = k
       point%spinful = spinful
-      point%rotations = rotations(:, :, mapping)
-      point%translations = tau(:, mapping)
-      unitary = PACK([(g, g=1, n)],.NOT. point%antiunitary)
+      ALLOCATE (point%rotations(3, 3, n), point%translations(3, n))
+      point%rotations(:, :, :) = rotations(:, :, mapping)
+      point%translations(:, :) = tau(:, mapping)
+      ALLOCATE (unitary, SOURCE=PACK([(g, g=1, n)],.NOT. point%antiunitary))
       nu = SIZE(unitary)
       ALLOCATE (INDEX(n), PRODUCT(nu, nu))
       index = 0
@@ -830,7 +832,7 @@ CONTAINS
             IF (info /= 0) ERROR STOP 'Induced atomic band violates antiunitary pairing'
          END IF
       END DO
-      point%multiplicity = counts(:, 1)
+      ALLOCATE (point%multiplicity, SOURCE=counts(:, 1))
    END SUBROUTINE point_characters
 
 END PROGRAM topology_band_unittest

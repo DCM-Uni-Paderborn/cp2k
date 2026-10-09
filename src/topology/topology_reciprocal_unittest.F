@@ -84,10 +84,11 @@ CONTAINS
          IF (SIZE(lattice%stars, 2) /= 2 .OR. SIZE(lattice%quotient%invariants) /= 3) THEN
             ERROR STOP 'Star-only independent character count wrong'
          END IF
-         bad = INT(catalogue%matrix(:, 1), int_8)
+         ALLOCATE (bad, SOURCE=INT(catalogue%matrix(:, 1), int_8))
          bad(catalogue%row_begin(2)) = bad(catalogue%row_begin(2)) + 1
          CALL integer_quotient_class(lattice%quotient, bad, compatible, indices, info)
          IF (info /= 0 .OR. compatible) ERROR STOP 'Star-inconsistent band signature accepted'
+         DEALLOCATE (bad)
          CALL star_operation(catalogue%group, k(:, 1), k(:, 2), operation, shift, 1.e-8_dp, info)
          IF (info /= 0 .OR. .NOT. anti(operation)) ERROR STOP 'Missing antiunitary star operation'
          IF (ANY(shift /= [0, 0, -1])) ERROR STOP 'Star reciprocal shift lost'
@@ -145,8 +146,8 @@ CONTAINS
       ALLOCATE (original%kpoints(3, 2), original%source(5), original%destination(5), original%shift(3, 5))
       original%kpoints(:, 1) = [0.13_dp, 0.29_dp, 0.77_dp]
       original%kpoints(:, 2) = [0.81_dp, 0.11_dp, 0.17_dp]
-      original%source = [1, 2, 1, 2, 1]
-      original%destination = [2, 1, 1, 2, 1]
+      original%source(:) = [1, 2, 1, 2, 1]
+      original%destination(:) = [2, 1, 1, 2, 1]
       original%shift(:, 1) = [2, -1, 3]
       original%shift(:, 2) = [-2, 1, -3]
       original%shift(:, 3) = [1, 0, -1]

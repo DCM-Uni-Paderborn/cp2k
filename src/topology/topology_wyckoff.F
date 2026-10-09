@@ -237,7 +237,7 @@ CONTAINS
          work(nf)%position = seed
          work(nf)%dimension = 3 - r
          work(nf)%multiplicity = ng/COUNT(fixed)
-         work(nf)%stabilizer = PACK(mapping, fixed)
+         ALLOCATE (work(nf)%stabilizer, SOURCE=PACK(mapping, fixed))
       END DO
       ALLOCATE (specializes(nf))
       DO j = 1, nf
@@ -256,7 +256,7 @@ CONTAINS
                EXIT
             END DO
          END DO
-         work(j)%specializations = PACK([(i, i=1, nf)], specializes)
+         ALLOCATE (work(j)%specializations, SOURCE=PACK([(i, i=1, nf)], specializes))
          work(j)%maximal_site_symmetry = .NOT. ANY(specializes)
       END DO
       families = work(:nf)

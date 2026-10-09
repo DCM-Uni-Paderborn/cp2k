@@ -117,7 +117,8 @@ CONTAINS
             old_shift = new_shift
          END DO
       END DO
-      sampling%kpoints = points(:, :np)
+      DEALLOCATE (sampling%kpoints)
+      ALLOCATE (sampling%kpoints, SOURCE=points(:, :np))
       CALL MOVE_ALLOC(sources, sampling%source)
       CALL MOVE_ALLOC(destinations, sampling%destination)
       CALL MOVE_ALLOC(shifts, sampling%shift)
@@ -197,7 +198,7 @@ CONTAINS
             work%shift(:, edge) = work%strata(i)%cycles(:, j)
          END DO
       END DO
-      work%kpoints = points(:, :np)
+      ALLOCATE (work%kpoints, SOURCE=points(:, :np))
       sampling = work
       status = 0
    END SUBROUTINE reciprocal_sampling
@@ -276,14 +277,14 @@ CONTAINS
          work(i)%normal = families(i)%normal
          work(i)%offset = families(i)%offset
          work(i)%k = families(i)%position
-         work(i)%specializations = families(i)%specializations
+         ALLOCATE (work(i)%specializations, SOURCE=families(i)%specializations)
          DO g = 1, n
             delta = MATMUL(REAL(dual(:, :, g), dp), work(i)%k) - work(i)%k
             fixed(g) = MAXVAL(ABS(delta - ANINT(delta))) <= tolerance
          END DO
          status = -2
          IF (COUNT(fixed)*work(i)%star_size /= n) RETURN
-         work(i)%stabilizer = PACK([(g, g=1, n)], fixed)
+         ALLOCATE (work(i)%stabilizer, SOURCE=PACK([(g, g=1, n)], fixed))
          normal = INT(work(i)%normal, int_8)
          CALL integer_lattice_factor(normal, integer_normal, status)
          IF (status /= 0) RETURN
@@ -292,7 +293,7 @@ CONTAINS
          IF (rank /= 3 - work(i)%dimension .OR. ANY(diagonal(:rank) /= 1)) RETURN
          status = -3
          IF (ANY(ABS(right) > 100000_int_8)) RETURN
-         work(i)%cycles = INT(right(:, rank + 1:))
+         ALLOCATE (work(i)%cycles, SOURCE=INT(right(:, rank + 1:)))
       END DO
 
       DO i = 1, nf

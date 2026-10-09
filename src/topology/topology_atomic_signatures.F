@@ -209,13 +209,14 @@ CONTAINS
       ALLOCATE (work%column_site(nc), work%column_local(nc), work%band_dimension(nc))
       DO i = 1, ns
          CALL atomic_band_site_data(bands(i), positions, mapping, characters)
-         site_dimensions = NINT(REAL(characters(1, :), dp))
+         ALLOCATE (site_dimensions, SOURCE=NINT(REAL(characters(1, :), dp)))
          DO j = 1, SIZE(site_dimensions)
             p = first(i) + j - 1
             work%column_site(p) = i
             work%column_local(p) = j
             work%band_dimension(p) = work%families(i)%multiplicity*site_dimensions(j)
          END DO
+         DEALLOCATE (site_dimensions)
       END DO
       ALLOCATE (work%site_relations(nr))
       e = 0
@@ -366,13 +367,15 @@ CONTAINS
       point%little%cell = cell
       point%little%k = k
       point%little%spinful = spinful
-      point%little%rotations = rotations(:, :, mapping)
-      point%little%translations = translations(:, mapping)
-      point%little%antiunitary = antiunitary(mapping)
       n = SIZE(mapping)
-      unitary = PACK([(g, g=1, n)],.NOT. point%little%antiunitary)
+      ALLOCATE (point%little%rotations(3, 3, n), point%little%translations(3, n), point%little%antiunitary(n))
+      point%little%rotations(:, :, :) = rotations(:, :, mapping)
+      point%little%translations(:, :) = translations(:, mapping)
+      point%little%antiunitary(:) = antiunitary(mapping)
+      ALLOCATE (unitary, SOURCE=PACK([(g, g=1, n)],.NOT. point%little%antiunitary))
       nu = SIZE(unitary)
-      point%mapping = mapping(unitary)
+      ALLOCATE (point%mapping(nu))
+      point%mapping(:) = mapping(unitary)
       ALLOCATE (INDEX(n), products(nu, nu))
       index = 0
       DO g = 1, nu
@@ -387,12 +390,12 @@ CONTAINS
       ALLOCATE (point%little%multiplicity(SIZE(point%little%characters, 2)))
       point%little%multiplicity = 0
       IF (nu == n) THEN
-         point%dimensions = NINT(REAL(point%little%characters(1, :), dp))
+         ALLOCATE (point%dimensions, SOURCE=NINT(REAL(point%little%characters(1, :), dp)))
       ELSE
          CALL projective_corepresentations(point%little%product, point%little%factors, point%little%antiunitary, &
                                            point%little%characters, point%coreps, tolerance, residual, status)
          IF (status /= 0) RETURN
-         point%dimensions = point%coreps%dimension
+         ALLOCATE (point%dimensions, SOURCE=point%coreps%dimension)
       END IF
    END SUBROUTINE signature_point
 
@@ -439,7 +442,7 @@ CONTAINS
             status = -1
             RETURN
          END IF
-         work = unitary_counts
+         work(:) = unitary_counts
       END IF
       counts = work
       status = 0
@@ -502,7 +505,7 @@ CONTAINS
             IF (.NOT. ALL(ieee_is_finite(AIMAG(band%factors)))) RETURN
             IF (.NOT. ALL(ieee_is_finite(REAL(band%characters, dp)))) RETURN
             IF (.NOT. ALL(ieee_is_finite(AIMAG(band%characters)))) RETURN
-            ALLOCATE (order(n), phase(n), inverse_unitary(n), old_character(nu), CHARACTER(nu))
+            ALLOCATE (order(n), phase(n), inverse_unitary(n), old_character(nu), CHARACTER(nu), unitary(nu))
             order = 0
             DO g = 1, n
                DO h = 1, n
@@ -532,13 +535,13 @@ CONTAINS
                   IF (ABS(expected - reference%factors(g, h)) > tolerance) RETURN
                END DO
             END DO
-            unitary = PACK([(g, g=1, n)],.NOT. band%antiunitary)
+            unitary(:) = PACK([(g, g=1, n)],.NOT. band%antiunitary)
             inverse_unitary = 0
             DO g = 1, nu
                inverse_unitary(unitary(g)) = g
             END DO
             old_character(:) = MATMUL(band%characters, CMPLX(band%multiplicity, 0, dp))
-            unitary = PACK([(g, g=1, n)],.NOT. reference%antiunitary)
+            unitary(:) = PACK([(g, g=1, n)],.NOT. reference%antiunitary)
             DO g = 1, nu
                h = unitary(g)
                CHARACTER(g) = phase(h)*old_character(inverse_unitary(order(h)))
@@ -554,9 +557,9 @@ CONTAINS
          IF (first_rank < 0) first_rank = rank
          status = -2
          IF (rank /= first_rank) RETURN
-         DEALLOCATE (order, phase, inverse_unitary, old_character, CHARACTER, counts)
+         DEALLOCATE (order, phase, inverse_unitary, old_character, CHARACTER, counts, unitary)
       END DO
-      TARGET = work
+      ALLOCATE (TARGET, SOURCE=work)
       status = 0
    END SUBROUTINE atomic_signature_from_bands
 END MODULE topology_atomic_signatures

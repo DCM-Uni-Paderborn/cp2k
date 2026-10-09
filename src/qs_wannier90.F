@@ -543,7 +543,7 @@ CONTAINS
          IF (do_sampling) THEN
             CALL prepare_little_group_sampling(qs_env, time_reversal, little_geometry, little_tolerance, &
                                                little_path_points, little_max_points, symmetry_sampling, iw)
-            kpt_latt = symmetry_sampling%kpoints
+            ALLOCATE (kpt_latt, SOURCE=symmetry_sampling%kpoints)
             ! Native symmetry uses a ragged graph, not Wannier90 overlap neighbours.
             ALLOCATE (nnlist(SIZE(kpt_latt, 2), 0), nncell(3, SIZE(kpt_latt, 2), 0))
          ELSE IF (kpoints_source == w90_kpoints_nnkp) THEN
@@ -1263,7 +1263,7 @@ CONTAINS
             END IF
             IF (ik == source_point) THEN
                CALL diag_complex(soc_h, soc_u, spinor_values(:, ik))
-               IF (property_symmetry) symmetry_soc_source = soc_u
+               IF (property_symmetry) symmetry_soc_source(:, :) = soc_u
             ELSE
                CALL property_symmetry_spin_frame(property_points, ir_property, property_operation(ik), &
                                                  symmetry_soc_source, soc_u, status)
@@ -1271,12 +1271,12 @@ CONTAINS
                   CPABORT('Could not reconstruct property SOC frame.')
                END IF
                spinor_values(:, ik) = spinor_values(:, source_point)
-               symmetry_soc_work = MATMUL(CONJG(TRANSPOSE(soc_u)), soc_u)
+               symmetry_soc_work(:, :) = MATMUL(CONJG(TRANSPOSE(soc_u)), soc_u)
                DO ib = 1, 2*nmo
                   symmetry_soc_work(ib, ib) = symmetry_soc_work(ib, ib) - 1.0_dp
                END DO
                symmetry_soc_errors(1) = MAX(symmetry_soc_errors(1), MAXVAL(ABS(symmetry_soc_work)))
-               symmetry_soc_work = MATMUL(soc_h, soc_u)
+               symmetry_soc_work(:, :) = MATMUL(soc_h, soc_u)
                DO ib = 1, 2*nmo
                   symmetry_soc_work(:, ib) = symmetry_soc_work(:, ib) - soc_u(:, ib)*spinor_values(ib, ik)
                END DO
@@ -1556,13 +1556,13 @@ CONTAINS
          IF (do_atomic_signatures) THEN
             IF (do_compatibility) THEN
                IF (do_sampling) THEN
-                  little_sources = symmetry_sampling%source
-                  little_destinations = symmetry_sampling%destination
-                  little_shifts = symmetry_sampling%shift
+                  ALLOCATE (little_sources, SOURCE=symmetry_sampling%source)
+                  ALLOCATE (little_destinations, SOURCE=symmetry_sampling%destination)
+                  ALLOCATE (little_shifts, SOURCE=symmetry_sampling%shift)
                ELSE
-                  little_sources = [(MODULO(i - 1, num_kpts) + 1, i=1, SIZE(nnlist))]
-                  little_destinations = RESHAPE(nnlist, [SIZE(nnlist)])
-                  little_shifts = RESHAPE(nncell, [3, SIZE(nnlist)])
+                  ALLOCATE (little_sources, SOURCE=[(MODULO(i - 1, num_kpts) + 1, i=1, SIZE(nnlist))])
+                  ALLOCATE (little_destinations, SOURCE=RESHAPE(nnlist, [SIZE(nnlist)]))
+                  ALLOCATE (little_shifts, SOURCE=RESHAPE(nncell, [3, SIZE(nnlist)]))
                END IF
                CALL write_atomic_signatures(qs_env_kp, little_points, time_reversal, little_geometry, little_tolerance, &
                                             REAL(little_memory, dp), atomic_max_nodes, iw, little_unit, &

@@ -64,10 +64,10 @@ CONTAINS
       IF (n /= SIZE(antiunitary)) RETURN
       work%cell = cell
       work%spinful = spinful
-      work%rotations = rotations(:, :, work%original)
-      work%translations = translations(:, work%original)
-      work%antiunitary = antiunitary(work%original)
-      ALLOCATE (work%reciprocal(3, 3, n))
+      ALLOCATE (work%rotations(3, 3, n), work%translations(3, n), work%antiunitary(n), work%reciprocal(3, 3, n))
+      work%rotations(:, :, :) = rotations(:, :, work%original)
+      work%translations(:, :) = translations(:, work%original)
+      work%antiunitary(:) = antiunitary(work%original)
       DO g = 1, n
          work%reciprocal(:, :, g) = MERGE(-1.0_dp, 1.0_dp, work%antiunitary(g))* &
                                     TRANSPOSE(inv_3x3(REAL(work%rotations(:, :, g), dp)))
@@ -190,7 +190,7 @@ CONTAINS
       DO g = 1, n
          IF (.NOT. left%antiunitary(g)) unit_left(g) = COUNT(.NOT. left%antiunitary(:g))
       END DO
-      unit_right = PACK([(g, g=1, n)],.NOT. right%antiunitary)
+      ALLOCATE (unit_right, SOURCE=PACK([(g, g=1, n)],.NOT. right%antiunitary))
       DO g = 1, n
          h = ir(g)
          source = group%product(si, group%product(h, s))

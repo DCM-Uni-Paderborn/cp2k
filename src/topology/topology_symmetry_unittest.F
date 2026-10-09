@@ -241,7 +241,7 @@ CONTAINS
       DO g = 1, 6
          phases(g) = EXP(CMPLX(0.0_dp, 0.17_dp*(g - 1)**2, dp))
       END DO
-      rephased = factors
+      ALLOCATE (rephased, SOURCE=factors)
       DO h = 1, 6
          DO g = 1, 6
             phase = phases(h)
@@ -249,8 +249,8 @@ CONTAINS
             rephased(g, h) = phases(g)*phase*CONJG(phases(products(g, h)))*factors(g, h)
          END DO
       END DO
-      characters = SPREAD(phases(:3), 2, 3)*characters
-      characters = characters(:, [3, 1, 2])
+      characters(:, :) = SPREAD(phases(:3), 2, 3)*characters
+      characters(:, :) = characters(:, [3, 1, 2])
       CALL projective_corepresentations(products, rephased, anti(:6), characters, table, 1.e-9_dp, error, info)
       IF (info /= 0) ERROR STOP 'Twisted corep gauge failed'
       IF (ANY(MATMUL(table%restriction, TRANSPOSE(table%restriction)) /= original([3, 1, 2], [3, 1, 2]))) THEN
@@ -258,7 +258,7 @@ CONTAINS
       END IF
       perm = [1, 4, 2, 5, 3, 6]
       inverse(perm) = [1, 2, 3, 4, 5, 6]
-      reordered = products
+      ALLOCATE (reordered, SOURCE=products)
       DO h = 1, 6
          DO g = 1, 6
             reordered(g, h) = inverse(products(perm(g), perm(h)))
@@ -385,7 +385,7 @@ CONTAINS
       END DO
       CALL make_little_point(cell, rotations, tau, [0.0_dp, 0.0_dp, 0.0_dp], .FALSE., left)
       CALL make_little_point(cell, rotations, tau, [0.25_dp, 0.0_dp, 0.0_dp], .FALSE., right)
-      left%multiplicity = MERGE(1, 0, NINT(REAL(left%characters(1, :), dp)) == 2)
+      left%multiplicity(:) = MERGE(1, 0, NINT(REAL(left%characters(1, :), dp)) == 2)
       IF (SUM(left%multiplicity) /= 1) ERROR STOP 'C4v doublet missing'
       right%multiplicity = 1
       CALL little_group_compatibility(left, right, [0, 0, 0], edge, 1.e-9_dp, error, info)
@@ -393,7 +393,7 @@ CONTAINS
       IF (SIZE(edge%left_count) /= 2) ERROR STOP 'Mirror irreps missing'
       IF (ANY(edge%left_count /= 1) .OR. ANY(edge%right_count /= 1)) ERROR STOP 'C4v doublet branching wrong'
       ! Equal rank alone is insufficient: two copies of one mirror branch are incompatible.
-      right%multiplicity = [2, 0]
+      right%multiplicity(:) = [2, 0]
       CALL little_group_compatibility(left, right, [0, 0, 0], edge, 1.e-9_dp, error, info)
       IF (info /= 0) ERROR STOP 'Valid mirror mismatch rejected'
       IF (ALL(edge%left_count == edge%right_count)) ERROR STOP 'Mirror-sector obstruction missed'
@@ -569,7 +569,7 @@ CONTAINS
       IF (SIZE(characters, 2) /= 4) ERROR STOP 'D2 scalar irreps incomplete'
       IF (MAXVAL(ABS(characters(1, :) - 1.0_dp)) > 1.e-10_dp) ERROR STOP 'D2 scalar irrep dimension'
       IF (MAXVAL(ABS(characters**2 - 1.0_dp)) > 1.e-10_dp) ERROR STOP 'D2 scalar characters not +/-1'
-      reference = characters
+      ALLOCATE (reference, SOURCE=characters)
       beta(1) = 1.0_dp
       DO g = 2, 4
          beta(g) = EXP(CMPLX(0.0_dp, 0.317_dp*g, dp))
@@ -663,7 +663,7 @@ CONTAINS
       END DO
       CALL check_sewing_product(sewing, products, factors, anti(:2), 1.e-12_dp, error, status)
       IF (status /= 0) ERROR STOP 'Atom/spin sewing disagrees with little-group factors'
-      original = factors
+      ALLOCATE (original, SOURCE=factors)
       CALL little_group_factor_system(cell, rotations(:, :, :2), shifts(:, :2), anti(:2), &
                                       k + [2.0_dp, -1.0_dp, 3.0_dp], .TRUE., &
                                       mapping, products, factors, 1.e-10_dp, status)
@@ -725,7 +725,7 @@ CONTAINS
       ! Antiunitary coboundaries need conjugation even when their phases are complex.
       beta(1) = 1.0_dp
       beta(2) = EXP(CMPLX(0.0_dp, 0.371_dp, dp))
-      original = factors
+      original(:, :) = factors
       DO h = 1, 2
          DO g = 1, 2
             IF (anti(g)) THEN

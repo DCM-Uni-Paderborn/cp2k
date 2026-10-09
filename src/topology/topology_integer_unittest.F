@@ -35,8 +35,8 @@ CONTAINS
       TYPE(integer_lattice_type)                         :: atomic
       TYPE(integer_quotient_type)                        :: quotient
 
-      c = RESHAPE([2_int_8, -4_int_8, 0_int_8], [1, 3])
-      a = RESHAPE([4_int_8, 2_int_8, 0_int_8], [3, 1])
+      ALLOCATE (c, SOURCE=RESHAPE([2_int_8, -4_int_8, 0_int_8], [1, 3]))
+      ALLOCATE (a, SOURCE=RESHAPE([4_int_8, 2_int_8, 0_int_8], [3, 1]))
       CALL integer_lattice_quotient(c, a, quotient, info)
       IF (info /= 0) ERROR STOP 'Free quotient failed'
       IF (COUNT(quotient%invariants == 0) /= 1 .OR. COUNT(quotient%invariants == 2) /= 1) THEN
@@ -53,8 +53,9 @@ CONTAINS
       a(1, 1) = 3
       CALL integer_lattice_quotient(c, a, quotient, info)
       IF (info /= -2 .OR. ALLOCATED(quotient%kernel)) ERROR STOP 'Incompatible atomic generator accepted'
-      c = RESHAPE([1_int_8, 0_int_8, 0_int_8, 1_int_8], [2, 2])
-      a = RESHAPE([0_int_8, 0_int_8], [2, 1])
+      DEALLOCATE (c, a)
+      ALLOCATE (c, SOURCE=RESHAPE([1_int_8, 0_int_8, 0_int_8, 1_int_8], [2, 2]))
+      ALLOCATE (a, SOURCE=RESHAPE([0_int_8, 0_int_8], [2, 1]))
       CALL integer_lattice_quotient(c, a, quotient, info)
       IF (info /= 0 .OR. SIZE(quotient%invariants) /= 0) ERROR STOP 'Zero kernel failed'
       CALL integer_quotient_class(quotient, [0_int_8, 0_int_8], compatible, indices, info)
@@ -184,7 +185,7 @@ CONTAINS
                      IF (MODULO(diagonal(k), diagonal(k - 1)) /= 0) ERROR STOP 'Smith divisibility failed'
                   END IF
                END DO
-               x = [(INT(MODULO(i + sample, 5) - 2, int_8), i=1, n)]
+               x(:) = [(INT(MODULO(i + sample, 5) - 2, int_8), i=1, n)]
                b(:) = MATMUL(a, x)
                CALL integer_lattice_solve(factor, b, exists, witness, info)
                IF (info /= 0 .OR. .NOT. exists) ERROR STOP 'Known signed witness not found'

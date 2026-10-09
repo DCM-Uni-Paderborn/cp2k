@@ -176,12 +176,12 @@ CONTAINS
             END IF
             IF (member == 0) THEN
                CALL diag_complex(h, source_u, spectrum)
-               u = source_u
+               u(:, :) = source_u
             ELSE
                CALL property_symmetry_spin_frame(points, ir, operation(ik), source_u, u, status)
                IF (status /= 0) CPABORT('Could not reconstruct group-local property SOC frame.')
             END IF
-            work = MATMUL(CONJG(TRANSPOSE(u)), u)
+            work(:, :) = MATMUL(CONJG(TRANSPOSE(u)), u)
             DO b = 1, 2*nmo
                work(b, b) = work(b, b) - 1.0_dp
             END DO
@@ -190,7 +190,7 @@ CONTAINS
                CPABORT('Nonfinite property SOC normalization.')
             END IF
             errors(1) = MAX(errors(1), MAXVAL(ABS(work)))
-            work = MATMUL(h, u)
+            work(:, :) = MATMUL(h, u)
             DO b = 1, 2*nmo
                work(:, b) = work(:, b) - u(:, b)*spectrum(b)
             END DO

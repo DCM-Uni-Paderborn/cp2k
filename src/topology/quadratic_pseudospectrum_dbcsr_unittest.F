@@ -5,56 +5,154 @@
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
 
+MODULE quadratic_dbcsr_test_methods
+   USE kinds,                           ONLY: dp
+   USE localizer_sparse_inertia,        ONLY: sparse_inertia_type,&
+                                              sparse_metric_solve
+   USE message_passing,                 ONLY: mp_para_env_type
+   USE quadratic_pseudospectrum,        ONLY: quadratic_operator_type
+   USE spectral_localizer_dbcsr,        ONLY: localizer_dbcsr_apply,&
+                                              localizer_matrix_type
+
+   IMPLICIT NONE
+   PRIVATE
+   PUBLIC :: quadratic_test_type
+
+   TYPE, EXTENDS(quadratic_operator_type) :: quadratic_test_type
+      TYPE(localizer_matrix_type), POINTER :: metric => NULL(), operators(:) => NULL()
+      TYPE(sparse_inertia_type), POINTER :: factors => NULL()
+      TYPE(mp_para_env_type), POINTER :: para_env => NULL()
+      COMPLEX(dp), POINTER :: cholesky(:, :) => NULL()
+      LOGICAL :: use_sparse = .FALSE., wrong_adjoint = .FALSE.
+   CONTAINS
+      PROCEDURE :: apply => test_apply
+      PROCEDURE :: adjoint => test_adjoint
+      PROCEDURE :: solve => test_solve
+   END TYPE quadratic_test_type
+CONTAINS
+! **************************************************************************************************
+!> \brief Apply the metric or a distributed forward operator.
+!> \param this Test context
+!> \param OPERATOR Zero for metric, positive observable index
+!> \param v Input vectors
+!> \param y Output vectors
+!> \param status Return status
+! **************************************************************************************************
+   SUBROUTINE test_apply(this, OPERATOR, v, y, status)
+      CLASS(quadratic_test_type), INTENT(INOUT) :: this
+      INTEGER, INTENT(IN) :: OPERATOR
+      COMPLEX(dp), INTENT(IN) :: v(:, :)
+      COMPLEX(dp), INTENT(OUT) :: y(:, :)
+      INTEGER, INTENT(OUT) :: status
+
+      IF (OPERATOR == 0) THEN
+         CALL localizer_dbcsr_apply(this%metric, v, y, this%para_env)
+      ELSE
+         CALL localizer_dbcsr_apply(this%operators(OPERATOR), v, y, this%para_env)
+      END IF
+      status = 0
+   END SUBROUTINE test_apply
+! **************************************************************************************************
+!> \brief Apply an independently checked adjoint, or the deliberately incorrect forward operator.
+!> \param this Test context
+!> \param OPERATOR Observable index
+!> \param v Input vectors
+!> \param y Adjoint images
+!> \param status Return status
+! **************************************************************************************************
+   SUBROUTINE test_adjoint(this, OPERATOR, v, y, status)
+      CLASS(quadratic_test_type), INTENT(INOUT) :: this
+      INTEGER, INTENT(IN) :: OPERATOR
+      COMPLEX(dp), INTENT(IN) :: v(:, :)
+      COMPLEX(dp), INTENT(OUT) :: y(:, :)
+      INTEGER, INTENT(OUT) :: status
+
+      CALL localizer_dbcsr_apply(this%operators(OPERATOR), v, y, this%para_env, adjoint=.NOT. this%wrong_adjoint)
+      status = 0
+   END SUBROUTINE test_adjoint
+! **************************************************************************************************
+!> \brief Solve the same complex metric with dense or sparse reusable factors.
+!> \param this Test context
+!> \param v Right hand sides
+!> \param y Solutions
+!> \param status Return status
+! **************************************************************************************************
+   SUBROUTINE test_solve(this, v, y, status)
+      CLASS(quadratic_test_type), INTENT(INOUT) :: this
+      COMPLEX(dp), INTENT(IN) :: v(:, :)
+      COMPLEX(dp), INTENT(OUT) :: y(:, :)
+      INTEGER, INTENT(OUT) :: status
+
+      INTEGER :: n
+      REAL(dp), ALLOCATABLE :: rhs(:, :)
+
+      n = SIZE(v, 1)
+      IF (this%use_sparse) THEN
+         ALLOCATE (rhs(2*n, SIZE(v, 2)))
+         rhs(:n, :) = REAL(v, dp)
+         rhs(n + 1:, :) = AIMAG(v)
+         CALL sparse_metric_solve(this%factors, rhs, this%para_env, status)
+         y = CMPLX(rhs(:n, :), rhs(n + 1:, :), dp)
+      ELSE
+         y = v
+         CALL zpotrs('L', n, SIZE(v, 2), this%cholesky, n, y, n, status)
+      END IF
+   END SUBROUTINE test_solve
+END MODULE quadratic_dbcsr_test_methods
+
 ! **************************************************************************************************
 !> \brief Distributed non-Hermitian products and metric-aware quadratic translations.
 !> \author Thomas D. Kuehne, tkuehne@cp2k.org
 ! **************************************************************************************************
 PROGRAM quadratic_pseudospectrum_dbcsr_unittest
-   USE bibliography,                    ONLY: add_all_references
-   USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, &
-        dbcsr_finalize, dbcsr_finalize_lib, dbcsr_get_block_p, dbcsr_init_lib, dbcsr_put_block, &
-        dbcsr_type_no_symmetry
-   USE cp_log_handling,                 ONLY: cp_add_default_logger,&
-                                              cp_logger_create,&
-                                              cp_logger_release,&
-                                              cp_logger_type,&
-                                              cp_rm_default_logger
-   USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
-                                              ieee_value
-   USE kinds,                           ONLY: dp
-   USE localizer_sparse_inertia,        ONLY: sparse_inertia_available,&
-                                              sparse_inertia_finish,&
-                                              sparse_inertia_type,&
-                                              sparse_metric_solve,&
-                                              sparse_metric_start
-   USE machine,                         ONLY: default_output_unit
-   USE message_passing,                 ONLY: mp_para_env_type,&
-                                              mp_world_finalize,&
-                                              mp_world_init
-   USE quadratic_pseudospectrum,        ONLY: quadratic_dense,&
-                                              quadratic_result_type,&
-                                              quadratic_solve
-   USE reference_manager,               ONLY: remove_all_references
-   USE spectral_localizer_dbcsr,        ONLY: localizer_dbcsr_apply,&
-                                              localizer_dbcsr_check,&
-                                              localizer_dbcsr_pencil,&
-                                              localizer_dbcsr_release,&
-                                              localizer_matrix_type
+   USE bibliography, ONLY: add_all_references
+   USE cp_dbcsr_api, ONLY: &
+      dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, &
+      dbcsr_finalize, dbcsr_finalize_lib, dbcsr_get_block_p, dbcsr_init_lib, dbcsr_put_block, &
+      dbcsr_type_no_symmetry
+   USE cp_log_handling, ONLY: cp_add_default_logger, &
+                              cp_logger_create, &
+                              cp_logger_release, &
+                              cp_logger_type, &
+                              cp_rm_default_logger
+   USE ieee_arithmetic, ONLY: ieee_quiet_nan, &
+                              ieee_value
+   USE kinds, ONLY: dp
+   USE localizer_sparse_inertia, ONLY: sparse_inertia_available, &
+                                       sparse_inertia_finish, &
+                                       sparse_inertia_type, &
+                                       sparse_metric_solve, &
+                                       sparse_metric_start
+   USE machine, ONLY: default_output_unit
+   USE message_passing, ONLY: mp_para_env_type, &
+                              mp_world_finalize, &
+                              mp_world_init
+   USE quadratic_pseudospectrum, ONLY: quadratic_dense, &
+                                       quadratic_result_type, &
+                                       quadratic_solve
+   USE quadratic_dbcsr_test_methods, ONLY: quadratic_test_type
+   USE reference_manager, ONLY: remove_all_references
+   USE spectral_localizer_dbcsr, ONLY: localizer_dbcsr_apply, &
+                                       localizer_dbcsr_check, &
+                                       localizer_dbcsr_pencil, &
+                                       localizer_dbcsr_release, &
+                                       localizer_matrix_type
 
    IMPLICIT NONE
    INTEGER, PARAMETER :: n = 18, nb = 6, bs = 3
    TYPE(mp_para_env_type), POINTER :: para_env
    TYPE(cp_logger_type), POINTER :: logger
    TYPE(dbcsr_distribution_type) :: distribution
-   TYPE(localizer_matrix_type) :: operators(2), metric, invalid_operator
-   TYPE(sparse_inertia_type) :: factors
+   TYPE(localizer_matrix_type), TARGET :: operators(2), metric, invalid_operator
+   TYPE(sparse_inertia_type), TARGET :: factors
+   TYPE(quadratic_test_type) :: backend
    TYPE(quadratic_result_type) :: reference, trial
    INTEGER, POINTER :: process_grid(:, :), row_dist(:), col_dist(:), block_size(:)
    INTEGER, ALLOCATABLE :: rows(:), cols(:)
    REAL(dp), ALLOCATABLE :: a(:), b(:), diagonal(:)
    REAL(dp), POINTER :: block(:, :)
-   COMPLEX(dp) :: dense(n, n, 2), overlap(n, n), transform(n, n), cholesky(n, n), &
+   COMPLEX(dp), TARGET :: cholesky(n, n)
+   COMPLEX(dp) :: dense(n, n, 2), overlap(n, n), transform(n, n), &
                   vectors(n, 3), image(n, 3), reverse(n, 3), query(2)
    REAL(dp) :: weights(2), ratio, error_forward, error_adjoint, error_metric, error_gap
    REAL(dp) :: error_hermiticity, expected_hermiticity
@@ -137,20 +235,27 @@ PROGRAM quadratic_pseudospectrum_dbcsr_unittest
    cholesky = overlap
    CALL zpotrf('L', n, cholesky, n, status)
    IF (status /= 0) ERROR STOP 'Unit metric factor failed'
+   backend%metric => metric
+   backend%operators => operators
+   backend%factors => factors
+   backend%para_env => para_env
+   backend%cholesky => cholesky
    DO mode = 0, 1
       use_sparse = mode == 1
+      backend%use_sparse = use_sparse
+      backend%wrong_adjoint = .FALSE.
       IF (use_sparse) THEN
          IF (.NOT. sparse_inertia_available()) CYCLE
          CALL localizer_dbcsr_pencil(metric, metric, para_env, order, rows, cols, a, b, diagonal)
          CALL sparse_metric_start(factors, order, rows, cols, b, diagonal, 1.e-10_dp, para_env, ratio, status)
          IF (status /= 0) ERROR STOP 'Distributed quadratic sparse metric failed'
       END IF
-      CALL solve(vectors, image, status)
+      CALL backend%solve(vectors, image, status)
       IF (status /= 0) ERROR STOP 'Distributed metric solve failed'
       error_metric = MAXVAL(ABS(MATMUL(overlap, image) - vectors))
       IF (error_metric > 1.e-11_dp) ERROR STOP 'Distributed complex metric residual failed'
       CALL quadratic_solve(n, query, weights, 2, .TRUE., 10, 2000, 1.e-10_dp, &
-                           apply, solve, trial, status, adjoint)
+                           backend, trial, status)
       IF (status /= 0) ERROR STOP 'Distributed quadratic iteration failed'
       error_gap = MAXVAL(ABS(trial%eigenvalues - reference%eigenvalues))
       IF (error_gap > 1.e-10_dp) ERROR STOP 'Distributed non-Hermitian spectrum mismatch'
@@ -160,8 +265,9 @@ PROGRAM quadratic_pseudospectrum_dbcsr_unittest
       IF (para_env%is_source()) PRINT '(A,I1,A,5ES15.6)', 'Quadratic DBCSR metric mode ', mode, &
          ' forward/adjoint/solve/spectrum/Ritz: ', error_forward, error_adjoint, error_metric, &
          error_gap, MAXVAL(trial%residuals)
+      backend%wrong_adjoint = .TRUE.
       CALL quadratic_solve(n, query, weights, 2, .TRUE., 10, 2000, 1.e-10_dp, &
-                           apply, solve, trial, status, apply)
+                           backend, trial, status)
       IF (status /= -4) ERROR STOP 'Incorrect non-Hermitian adjoint was accepted'
       IF (use_sparse) THEN
          CALL sparse_inertia_finish(factors)
@@ -210,64 +316,4 @@ CONTAINS
       CALL dbcsr_finalize(matrix%real_part)
       CALL dbcsr_finalize(matrix%imaginary_part)
    END SUBROUTINE make_operator
-! **************************************************************************************************
-!> \brief Apply the metric or a distributed forward operator.
-!> \param OPERATOR Zero for metric, positive observable index
-!> \param v Input vectors
-!> \param y Output vectors
-!> \param status Return status
-! **************************************************************************************************
-   SUBROUTINE apply(OPERATOR, v, y, status)
-      INTEGER, INTENT(IN)                                :: operator
-      COMPLEX(dp), INTENT(IN)                            :: v(:, :)
-      COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
-      INTEGER, INTENT(OUT)                               :: status
-
-      IF (OPERATOR == 0) THEN
-         CALL localizer_dbcsr_apply(metric, v, y, para_env)
-      ELSE
-         CALL localizer_dbcsr_apply(operators(OPERATOR), v, y, para_env)
-      END IF
-      status = 0
-   END SUBROUTINE apply
-! **************************************************************************************************
-!> \brief Apply a distributed adjoint with its independently checked conjugation.
-!> \param OPERATOR Observable index
-!> \param v Input vectors
-!> \param y Adjoint images
-!> \param status Return status
-! **************************************************************************************************
-   SUBROUTINE adjoint(OPERATOR, v, y, status)
-      INTEGER, INTENT(IN)                                :: operator
-      COMPLEX(dp), INTENT(IN)                            :: v(:, :)
-      COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
-      INTEGER, INTENT(OUT)                               :: status
-
-      CALL localizer_dbcsr_apply(operators(OPERATOR), v, y, para_env, adjoint=.TRUE.)
-      status = 0
-   END SUBROUTINE adjoint
-! **************************************************************************************************
-!> \brief Solve the same complex metric with dense or sparse reusable factors.
-!> \param v Right hand sides
-!> \param y Solutions
-!> \param status Return status
-! **************************************************************************************************
-   SUBROUTINE solve(v, y, status)
-      COMPLEX(dp), INTENT(IN)                            :: v(:, :)
-      COMPLEX(dp), INTENT(OUT)                           :: y(:, :)
-      INTEGER, INTENT(OUT)                               :: status
-
-      REAL(dp), ALLOCATABLE                              :: rhs(:, :)
-
-      IF (use_sparse) THEN
-         ALLOCATE (rhs(2*n, SIZE(v, 2)))
-         rhs(:n, :) = REAL(v, dp)
-         rhs(n + 1:, :) = AIMAG(v)
-         CALL sparse_metric_solve(factors, rhs, para_env, status)
-         y = CMPLX(rhs(:n, :), rhs(n + 1:, :), dp)
-      ELSE
-         y = v
-         CALL zpotrs('L', n, SIZE(v, 2), cholesky, n, y, n, status)
-      END IF
-   END SUBROUTINE solve
 END PROGRAM quadratic_pseudospectrum_dbcsr_unittest

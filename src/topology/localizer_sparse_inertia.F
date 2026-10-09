@@ -104,8 +104,8 @@ CONTAINS
       CALL para_env%max(maximum)
       IF (ANY(minimum /= maximum)) RETURN
       IF (state%native_backend) THEN
-         state%rows = rows
-         state%cols = cols
+         ALLOCATE (state%rows, SOURCE=rows)
+         ALLOCATE (state%cols, SOURCE=cols)
          state%order = order
          state%initialized = .TRUE.
          state%factor_valid = .FALSE.

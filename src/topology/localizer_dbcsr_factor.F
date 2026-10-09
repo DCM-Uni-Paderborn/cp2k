@@ -374,7 +374,7 @@ CONTAINS
       send_count = 0
       send_disp = 0
       DO pass = 1, 2
-         position = send_disp
+         position(:) = send_disp
          DO i = 1, SIZE(values)
             IF (values(i) == 0.0_dp) CYCLE
             DO mirror = 1, nmirror
@@ -646,10 +646,10 @@ CONTAINS
       IF (reserved > limit/8_int_8) RETURN
       ALLOCATE (canonical_rows(SIZE(rows)), canonical_cols(SIZE(rows)), canonical(SIZE(values)), row_norm(order))
       peak = 8_int_8*reserved
-      canonical_rows = MAX(rows, cols)
-      canonical_cols = MIN(rows, cols)
+      canonical_rows(:) = MAX(rows, cols)
+      canonical_cols(:) = MIN(rows, cols)
       DO pass = 1, 2
-         canonical = 0.5_dp*(values/scale)
+         canonical(:) = 0.5_dp*(values/scale)
          IF (pass == 1) THEN
             WHERE (rows == cols) canonical = values/scale
          ELSE
@@ -772,7 +772,7 @@ CONTAINS
                   probes(i, j) = SIN(REAL(17*i + 13*j, dp)) + COS(REAL(11*i - 7*j, dp))
                END DO
             END DO
-            rhs = probes
+            rhs(:, :) = probes
             CALL localizer_factor_solve(factor, rhs, para_env, status)
             IF (status == 0) THEN
                DO j = 1, 4
