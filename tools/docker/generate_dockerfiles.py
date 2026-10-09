@@ -310,7 +310,12 @@ def main() -> None:
 
     with OutputFile("Dockerfile.test_arm64-psmp", args.check) as f:
         base_img = "arm64v8/ubuntu:26.04"
-        libs = dict(with_libtorch="no", with_deepmd="no", with_gauxc="no")
+        libs = dict(
+            with_libtorch="no",
+            with_skala_ftorch="no",
+            with_deepmd="no",
+            with_gauxc="no",
+        )
         f.write(install_deps_toolchain(base_img, **libs))
         f.write(regtest("toolchain_arm64", "psmp"))
 
@@ -614,7 +619,7 @@ RUN ln -sf /usr/bin/gcc-{gcc_version}      /usr/local/bin/gcc  && \
         with_openblas="system",
         with_libxc="no",
         with_libint="no",
-        with_fftw="no",
+        with_fftw="system",
         with_libxsmm="install",
         with_libxs="install",
         with_spglib="no",
@@ -638,6 +643,7 @@ FROM docker.io/{base_image}
         with_mkl="",
         with_libsmeagol="",
         with_libtorch="no",
+        with_skala_ftorch="no",
         with_deepmd="no",
         with_gauxc="no",
     )
@@ -876,7 +882,7 @@ RUN mkdir -p ./tools/docker/scripts
 COPY ./tools/docker/scripts/plot_performance.py ./tools/docker/scripts/
 
 # Run CP2K performance test
-RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_benchmarks {benchmark_profile} || echo "ERROR: Performance test run failed"
+RUN ( /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_benchmarks {benchmark_profile} || printf "\nSummary: Performance test run failed\nStatus: FAILED\n" ) 2>&1 | tee report.log
 """
         else:
             sys.exit(
@@ -885,7 +891,7 @@ RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_benchmarks {benchmark
     elif test_type == "regression":
         output += rf"""
 # Run CP2K regression test
-RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests {testopts} || echo "ERROR: Regression test run failed"
+RUN ( /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests {testopts} || printf "\nSummary: Regression test run failed\nStatus: FAILED\n" ) 2>&1 | tee report.log
 """
     elif test_type == "ase":
         output += rf"""

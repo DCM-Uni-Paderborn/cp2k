@@ -1328,7 +1328,7 @@ CONTAINS
                           "The current CP2K bridge uses GauXC's molecular quadrature. Periodic inputs "// &
                           "are limited to isolated validation cells and are not compact periodic "// &
                           "material calculations.", &
-                          n_keywords=29, n_subsections=0, repeats=.FALSE.)
+                          n_keywords=30, n_subsections=0, repeats=.FALSE.)
 
       NULLIFY (keyword)
 
@@ -1488,12 +1488,23 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="NATIVE_GRID_MODEL_FP64", &
+                          description="Promote float32 numerical state and explicit floating-point casts "// &
+                          "in the native SKALA TorchScript model to double precision. Trained parameter "// &
+                          "values are retained exactly. This improves SCF and geometry-derivative "// &
+                          "consistency for mixed-precision exports. Disable to retain the export's "// &
+                          "original numerical precision.", &
+                          usage="NATIVE_GRID_MODEL_FP64 T", &
+                          default_l_val=.TRUE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="NATIVE_GRID_USE_CUDA", &
                           description="Evaluate the experimental CP2K-native SKALA GPW TorchScript "// &
                           "model on CUDA when libtorch CUDA support is available. This requires a "// &
                           "CUDA-compatible SKALA model export; MODEL SKALA first checks "// &
                           "GAUXC_SKALA_CUDA_MODEL in this mode and otherwise falls back to "// &
-                          "GAUXC_SKALA_MODEL. The portable default uses CPU tensors.", &
+                          "SKALA_MODEL. The portable default uses CPU tensors.", &
                           usage="NATIVE_GRID_USE_CUDA T", &
                           default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
