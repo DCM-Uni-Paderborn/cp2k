@@ -708,12 +708,13 @@ CONTAINS
    END SUBROUTINE check_center_angular
 
 ! **************************************************************************************************
-!> \brief Periodic residual image sum against the shell theorem, both density legs and cell response.
+!> \brief Residual image sums against the shell theorem, density adjoints and cell response.
 ! **************************************************************************************************
    SUBROUTINE check_periodic_coulomb()
       COMPLEX(dp)                                        :: adjoint(3), background(3), &
                                                             cached_adjoint(3), db(3)
-      INTEGER                                            :: a, b, i, ix, iy, iz, j, side
+      INTEGER                                            :: a, b, boundary, i, ix, iy, iz, j, &
+                                                            periodicity(3), side
       REAL(dp) :: cached_energy, cached_response, cell(3, 3), dcell(3, 3), dg(3, 3), &
          displacement(3), distance, dkw(3), dvolume, energy, exact, g(3, 3), kernel, kw(3), norm, &
          qa(2), qb(2), response, samples(2), shift, trace, volume
@@ -752,111 +753,119 @@ CONTAINS
          derivative(a)%shapes(:, :) = 0.017_dp*centers(a)%shapes
          derivative(a)%position = REAL(a, dp)*[0.009_dp, -0.011_dp, 0.013_dp]
       END DO
-      CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, energy, potential, adjoint)
-      exact = 0.0_dp
-      DO a = 1, 2
-         norm = SUM(centers(a)%weights*centers(a)%shapes(:, 1))
-         qa = centers(a)%weights*(centers(a)%density(:, 1) - centers(a)%shapes(:, 1)* &
-                                  SUM(centers(a)%weights*centers(a)%density(:, 1))/norm)
-         DO b = 1, 2
-            norm = SUM(centers(b)%weights*centers(b)%shapes(:, 1))
-            qb = centers(b)%weights*(centers(b)%density(:, 1) - centers(b)%shapes(:, 1)* &
-                                     SUM(centers(b)%weights*centers(b)%density(:, 1))/norm)
-            DO iz = -3, 3
-               DO iy = -3, 3
-                  DO ix = -3, 3
-                     displacement = centers(a)%position - centers(b)%position - MATMUL(cell, REAL([ix, iy, iz], dp))
-                     distance = SQRT(SUM(displacement**2))
-                     DO i = 1, 2
-                        DO j = 1, 2
-                           IF (distance <= ABS(centers(a)%radii(i) - centers(b)%radii(j))) THEN
-                              kernel = 4.0_dp*pi/MAX(centers(a)%radii(i), centers(b)%radii(j))
-                           ELSE IF (distance >= centers(a)%radii(i) + centers(b)%radii(j)) THEN
-                              kernel = 4.0_dp*pi/distance
-                           ELSE
-                              kernel = pi/(distance*centers(a)%radii(i)*centers(b)%radii(j))* &
-                                       (2.0_dp*distance*(centers(a)%radii(i) + centers(b)%radii(j)) - distance**2 - &
-                                        (centers(a)%radii(i) - centers(b)%radii(j))**2)
-                           END IF
-                           exact = exact + 0.5_dp*qa(i)*qb(j)*kernel
+      ALLOCATE (map)
+      DO boundary = 1, 4
+         periodicity = 0
+         IF (boundary > 1) periodicity(:boundary - 1) = 1
+         kw = 0.0_dp
+         CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, energy, potential, adjoint, &
+                                           periodicity=periodicity)
+         exact = 0.0_dp
+         DO a = 1, 2
+            norm = SUM(centers(a)%weights*centers(a)%shapes(:, 1))
+            qa = centers(a)%weights*(centers(a)%density(:, 1) - centers(a)%shapes(:, 1)* &
+                                     SUM(centers(a)%weights*centers(a)%density(:, 1))/norm)
+            DO b = 1, 2
+               norm = SUM(centers(b)%weights*centers(b)%shapes(:, 1))
+               qb = centers(b)%weights*(centers(b)%density(:, 1) - centers(b)%shapes(:, 1)* &
+                                        SUM(centers(b)%weights*centers(b)%density(:, 1))/norm)
+               DO iz = -3, 3
+                  DO iy = -3, 3
+                     DO ix = -3, 3
+                        IF (ANY([ix, iy, iz]*(1 - periodicity) /= 0)) CYCLE
+                        displacement = centers(a)%position - centers(b)%position - MATMUL(cell, REAL([ix, iy, iz], dp))
+                        distance = SQRT(SUM(displacement**2))
+                        DO i = 1, 2
+                           DO j = 1, 2
+                              IF (distance <= ABS(centers(a)%radii(i) - centers(b)%radii(j))) THEN
+                                 kernel = 4.0_dp*pi/MAX(centers(a)%radii(i), centers(b)%radii(j))
+                              ELSE IF (distance >= centers(a)%radii(i) + centers(b)%radii(j)) THEN
+                                 kernel = 4.0_dp*pi/distance
+                              ELSE
+                                 kernel = pi/(distance*centers(a)%radii(i)*centers(b)%radii(j))* &
+                                          (2.0_dp*distance*(centers(a)%radii(i) + centers(b)%radii(j)) - distance**2 - &
+                                           (centers(a)%radii(i) - centers(b)%radii(j))**2)
+                              END IF
+                              exact = exact + 0.5_dp*qa(i)*qb(j)*kernel
+                           END DO
                         END DO
                      END DO
                   END DO
                END DO
             END DO
          END DO
-      END DO
-      CALL check(ABS(energy - exact), "Complete periodic residual shell sum", 3.e-12_dp)
-      kw(2:3) = volume*4.0_dp*pi/SUM(g(:, 2)**2)
-      dkw = 0.065_dp*kw
-      CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, energy, potential, adjoint, &
-                                        response=response, center_response=derivative, cell_response=dcell, &
-                                        gvecs_response=dg, volume_response=dvolume, background_response=db, &
-                                        poisson_weights_response=dkw)
-      ALLOCATE (map)
-      CALL upf_inverse_coulomb_prepare(centers, cell, g, volume, map)
-      CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
-                                        cached_potential, cached_adjoint, map=map)
-      CALL check(ABS(cached_energy - energy), "Cached periodic Coulomb energy", 3.e-12_dp)
-      CALL check(MAXVAL(ABS(cached_adjoint - adjoint)), "Cached periodic Coulomb background adjoint", 3.e-12_dp)
-      DO a = 1, SIZE(centers)
-         CALL check(MAXVAL(ABS(cached_potential(a)%values - potential(a)%values)), &
-                    "Cached periodic Coulomb center adjoint", 3.e-12_dp)
-      END DO
-      CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
-                                        cached_potential, cached_adjoint, response=cached_response, &
-                                        center_response=derivative, cell_response=dcell, gvecs_response=dg, &
-                                        volume_response=dvolume, background_response=db, poisson_weights_response=dkw, map=map)
-      CALL check(ABS(cached_response - response), "Cached periodic Coulomb joint response", 3.e-12_dp)
-      trace = REAL(SUM(CONJG(background)*adjoint), dp)
-      DO a = 1, 2
-         trace = trace + SUM(SPREAD(centers(a)%weights, 2, 1)*centers(a)%density*potential(a)%values)
-      END DO
-      CALL check(ABS(trace - 2.0_dp*energy), "Periodic Coulomb density and background adjoints", 3.e-12_dp)
-      trace = REAL(SUM(CONJG(db)*adjoint), dp)
-      DO a = 1, 2
-         trace = trace + SUM(SPREAD(centers(a)%weights, 2, 1)*derivative(a)%density*potential(a)%values)
-      END DO
-      changed = derivative
-      DO a = 1, SIZE(changed)
-         changed(a)%position = 0.0_dp
-         changed(a)%radii = 0.0_dp
-         changed(a)%weights = 0.0_dp
-         changed(a)%shapes = 0.0_dp
-      END DO
-      CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
-                                        cached_potential, cached_adjoint, response=cached_response, &
-                                        center_response=changed, cell_response=0.0_dp*dcell, gvecs_response=0.0_dp*dg, &
-                                        volume_response=0.0_dp, background_response=db, poisson_weights_response=0.0_dp*dkw, &
-                                        map=map)
-      CALL check(ABS(cached_response - trace), "Cached fixed-shell density response", 3.e-12_dp)
-      DO side = 1, 2
-         shift = REAL(2*side - 3, dp)*step
-         changed = centers
-         DO a = 1, 2
-            changed(a)%density(:, :) = centers(a)%density + shift*derivative(a)%density
+         CALL check(ABS(energy - exact), "Complete periodic residual shell sum", 3.e-12_dp)
+         kw(2:3) = volume*4.0_dp*pi/SUM(g(:, 2)**2)
+         dkw = 0.065_dp*kw
+         CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, energy, potential, adjoint, &
+                                           response=response, center_response=derivative, cell_response=dcell, &
+                                           gvecs_response=dg, volume_response=dvolume, background_response=db, &
+                                           poisson_weights_response=dkw, periodicity=periodicity)
+         CALL upf_inverse_coulomb_prepare(centers, cell, g, volume, map, periodicity)
+         CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
+                                           cached_potential, cached_adjoint, map=map)
+         CALL check(ABS(cached_energy - energy), "Cached periodic Coulomb energy", 3.e-12_dp)
+         CALL check(MAXVAL(ABS(cached_adjoint - adjoint)), "Cached periodic Coulomb background adjoint", 3.e-12_dp)
+         DO a = 1, SIZE(centers)
+            CALL check(MAXVAL(ABS(cached_potential(a)%values - potential(a)%values)), &
+                       "Cached periodic Coulomb center adjoint", 3.e-12_dp)
          END DO
-         CALL upf_inverse_coulomb_periodic(changed, cell, g, volume, background + shift*db, kw, &
-                                           samples(side), potential, adjoint)
-         CALL upf_inverse_coulomb_periodic(changed, cell, g, volume, background + shift*db, kw, &
-                                           cached_energy, cached_potential, cached_adjoint, map=map)
-         CALL check(ABS(cached_energy - samples(side)), "Cached periodic Coulomb density update", 3.e-12_dp)
-      END DO
-      CALL check(ABS((samples(2) - samples(1))/(2.0_dp*step) - trace), "Periodic Coulomb density variation", 3.e-10_dp)
-      DO side = 1, 2
-         shift = REAL(2*side - 3, dp)*step
-         changed = centers
+         CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
+                                           cached_potential, cached_adjoint, response=cached_response, &
+                                           center_response=derivative, cell_response=dcell, gvecs_response=dg, &
+                                           volume_response=dvolume, background_response=db, poisson_weights_response=dkw, map=map)
+         CALL check(ABS(cached_response - response), "Cached periodic Coulomb joint response", 3.e-12_dp)
+         trace = REAL(SUM(CONJG(background)*adjoint), dp)
          DO a = 1, 2
-            changed(a)%position = centers(a)%position + shift*derivative(a)%position
-            changed(a)%radii(:) = centers(a)%radii + shift*derivative(a)%radii
-            changed(a)%weights(:) = centers(a)%weights + shift*derivative(a)%weights
-            changed(a)%density(:, :) = centers(a)%density + shift*derivative(a)%density
-            changed(a)%shapes(:, :) = centers(a)%shapes + shift*derivative(a)%shapes
+            trace = trace + SUM(SPREAD(centers(a)%weights, 2, 1)*centers(a)%density*potential(a)%values)
          END DO
-         CALL upf_inverse_coulomb_periodic(changed, cell + shift*dcell, g + shift*dg, volume + shift*dvolume, &
-                                           background + shift*db, kw + shift*dkw, samples(side), potential, adjoint)
+         CALL check(ABS(trace - 2.0_dp*energy), "Periodic Coulomb density and background adjoints", 3.e-12_dp)
+         trace = REAL(SUM(CONJG(db)*adjoint), dp)
+         DO a = 1, 2
+            trace = trace + SUM(SPREAD(centers(a)%weights, 2, 1)*derivative(a)%density*potential(a)%values)
+         END DO
+         changed = derivative
+         DO a = 1, SIZE(changed)
+            changed(a)%position = 0.0_dp
+            changed(a)%radii = 0.0_dp
+            changed(a)%weights = 0.0_dp
+            changed(a)%shapes = 0.0_dp
+         END DO
+         CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
+                                           cached_potential, cached_adjoint, response=cached_response, &
+                                           center_response=changed, cell_response=0.0_dp*dcell, gvecs_response=0.0_dp*dg, &
+                                           volume_response=0.0_dp, background_response=db, poisson_weights_response=0.0_dp*dkw, &
+                                           map=map)
+         CALL check(ABS(cached_response - trace), "Cached fixed-shell density response", 3.e-12_dp)
+         DO side = 1, 2
+            shift = REAL(2*side - 3, dp)*step
+            changed = centers
+            DO a = 1, 2
+               changed(a)%density(:, :) = centers(a)%density + shift*derivative(a)%density
+            END DO
+            CALL upf_inverse_coulomb_periodic(changed, cell, g, volume, background + shift*db, kw, &
+                                              samples(side), potential, adjoint, periodicity=periodicity)
+            CALL upf_inverse_coulomb_periodic(changed, cell, g, volume, background + shift*db, kw, &
+                                              cached_energy, cached_potential, cached_adjoint, map=map)
+            CALL check(ABS(cached_energy - samples(side)), "Cached periodic Coulomb density update", 3.e-12_dp)
+         END DO
+         CALL check(ABS((samples(2) - samples(1))/(2.0_dp*step) - trace), "Periodic Coulomb density variation", 3.e-10_dp)
+         DO side = 1, 2
+            shift = REAL(2*side - 3, dp)*step
+            changed = centers
+            DO a = 1, 2
+               changed(a)%position = centers(a)%position + shift*derivative(a)%position
+               changed(a)%radii(:) = centers(a)%radii + shift*derivative(a)%radii
+               changed(a)%weights(:) = centers(a)%weights + shift*derivative(a)%weights
+               changed(a)%density(:, :) = centers(a)%density + shift*derivative(a)%density
+               changed(a)%shapes(:, :) = centers(a)%shapes + shift*derivative(a)%shapes
+            END DO
+            CALL upf_inverse_coulomb_periodic(changed, cell + shift*dcell, g + shift*dg, volume + shift*dvolume, &
+                                              background + shift*db, kw + shift*dkw, samples(side), potential, adjoint, &
+                                              periodicity=periodicity)
+         END DO
+         CALL check(ABS((samples(2) - samples(1))/(2.0_dp*step) - response), "Complete periodic Coulomb joint response", 3.e-9_dp)
       END DO
-      CALL check(ABS((samples(2) - samples(1))/(2.0_dp*step) - response), "Complete periodic Coulomb joint response", 3.e-9_dp)
    END SUBROUTINE check_periodic_coulomb
 ! **************************************************************************************************
 !> \brief Translated shell theorem, overlap, reciprocity and joint geometry response.

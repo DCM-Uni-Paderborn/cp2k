@@ -374,7 +374,7 @@ CONTAINS
          END DO
          DEALLOCATE (unit)
       END DO
-      CALL upf_inverse_coulomb_prepare(map%centers, map%cell, map%grid%g, map%grid%vol, map%maps)
+      CALL upf_inverse_coulomb_prepare(map%centers, map%cell, map%grid%g, map%grid%vol, map%maps, frame%periodicity)
       map%ready = .TRUE.
    END SUBROUTINE qs_upf_inverse_coulomb_prepare
 

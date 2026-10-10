@@ -51,6 +51,7 @@ MODULE upf_inverse_coulomb
 
    TYPE upf_inverse_coulomb_map_type
       PRIVATE
+      INTEGER :: periodicity(3) = [1, 1, 1]
       REAL(dp) :: cell(3, 3) = 0.0_dp, volume = 0.0_dp
       REAL(dp), ALLOCATABLE :: gvecs(:, :)
       TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: centers(:)
@@ -76,20 +77,23 @@ CONTAINS
 !> \param gvecs ...
 !> \param volume ...
 !> \param map Owned maps. Rebuild after changing centers, cell, reciprocal vectors or radial grids.
+!> \param periodicity Optional lattice directions to repeat. Defaults to three periodic directions.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_coulomb_prepare(centers, cell, gvecs, volume, map)
+   SUBROUTINE upf_inverse_coulomb_prepare(centers, cell, gvecs, volume, map, periodicity)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
       TYPE(upf_inverse_coulomb_map_type), INTENT(OUT)    :: map
+      INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3)
 
       INTEGER                                            :: a, b, h, i, image(3), info, j, k, &
                                                             limits(2, 3), r
-      REAL(dp)                                           :: bound(3), displacement(3), &
-                                                            fractional(3), inverse_cell(3, 3), &
+      REAL(dp)                                           :: displacement(3), inverse_cell(3, 3), &
                                                             radius
       REAL(dp), ALLOCATABLE                              :: kernel(:, :, :, :)
 
       CPASSERT(volume > 0.0_dp .AND. SIZE(gvecs, 1) == 3)
+      IF (PRESENT(periodicity)) map%periodicity = periodicity
+      CPASSERT(ALL(map%periodicity == 0 .OR. map%periodicity == 1))
       map%cell = cell
       map%volume = volume
       ALLOCATE (map%gvecs, SOURCE=gvecs)
@@ -108,10 +112,8 @@ CONTAINS
             ALLOCATE (map%pairs(a, b)%values, MOLD=kernel)
             map%pairs(a, b)%values = 0.0_dp
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
-            fractional = MATMUL(inverse_cell, centers(a)%position - centers(b)%position)
-            bound = radius*SQRT(SUM(inverse_cell**2, DIM=2))
-            limits(1, :) = CEILING(fractional - bound)
-            limits(2, :) = FLOOR(fractional + bound)
+            CALL residual_image_limits(inverse_cell, centers(a)%position - centers(b)%position, &
+                                       radius, map%periodicity, limits)
             DO k = limits(1, 3), limits(2, 3)
                DO j = limits(1, 2), limits(2, 2)
                   DO i = limits(1, 1), limits(2, 1)
@@ -164,11 +166,14 @@ CONTAINS
 !> \param poisson_weights_response Complete native Coulomb-weight derivative, required with response.
 !> \param map Optional immutable maps for this exact geometry. Joint responses use the original
 !>        differentiated kernels, so freezing a map never freezes the geometry derivative.
+!> \param periodicity Optional lattice directions to repeat. Defaults to the map's periodicity
+!>        when a map is supplied, otherwise to three periodic directions. The Fourier weights
+!>        and their response must use the same electrostatic boundary conditions.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_coulomb_periodic(centers, cell, gvecs, volume, background, poisson_weights, &
                                            energy, potentials, background_adjoint, comm, response, center_response, &
                                            cell_response, gvecs_response, volume_response, background_response, &
-                                           poisson_weights_response, map)
+                                           poisson_weights_response, map, periodicity)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
       COMPLEX(dp), INTENT(IN)                            :: background(:)
@@ -187,19 +192,27 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: poisson_weights_response(:)
       TYPE(upf_inverse_coulomb_map_type), INTENT(IN), &
          OPTIONAL                                        :: map
+      INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3)
 
       COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), dg(:), dh(:), e(:), &
                                                             h(:)
       INTEGER                                            :: a, b, channel, i, image(3), info, j, &
-                                                            limits(2, 3), na, nb, ng, nh, nr
+                                                            limits(2, 3), na, nb, ng, nh, nr, &
+                                                            REPEAT(3)
       LOGICAL                                            :: derive, fixed_pair
-      REAL(dp) :: bound(3), ddisplacement(3), displacement(3), dmoment, dnorm, dpair, dpw, epair, &
-         fractional(3), inverse_cell(3, 3), moment, norm, radius
+      REAL(dp)                                           :: ddisplacement(3), displacement(3), &
+                                                            dmoment, dnorm, dpair, dpw, epair, &
+                                                            inverse_cell(3, 3), moment, norm, &
+                                                            radius
       REAL(dp), ALLOCATABLE :: adjoint(:, :), dc(:, :), de(:, :), df(:), dkernel(:, :, :, :), &
          f(:), kernel(:, :, :, :), moments(:), ve(:, :), vh(:, :)
       TYPE(center_work_type), ALLOCATABLE                :: work(:)
 
       ng = SIZE(background)
+      repeat = [1, 1, 1]
+      IF (PRESENT(map)) repeat = map%periodicity
+      IF (PRESENT(periodicity)) repeat = periodicity
+      CPASSERT(ALL(repeat == 0 .OR. repeat == 1))
       CPASSERT(ALL(SHAPE(gvecs) == [3, ng]))
       CPASSERT(SIZE(poisson_weights) == ng)
       CPASSERT(SIZE(background_adjoint) == ng)
@@ -219,7 +232,7 @@ CONTAINS
          CPASSERT(SIZE(background_response) == ng)
          CPASSERT(SIZE(poisson_weights_response) == ng)
       END IF
-      IF (PRESENT(map)) CALL check_map(map, centers, cell, gvecs, volume)
+      IF (PRESENT(map)) CALL check_map(map, centers, cell, gvecs, volume, repeat)
       ALLOCATE (work(SIZE(centers)), potentials(SIZE(centers)), h(ng), e(ng), dh(ng), dg(ng))
       h(:) = background
       e(:) = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -324,10 +337,8 @@ CONTAINS
             END IF
             nb = SIZE(centers(b)%radii)
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
-            fractional = MATMUL(inverse_cell, centers(a)%position - centers(b)%position)
-            bound = radius*SQRT(SUM(inverse_cell**2, DIM=2))
-            limits(1, :) = CEILING(fractional - bound)
-            limits(2, :) = FLOOR(fractional + bound)
+            CALL residual_image_limits(inverse_cell, centers(a)%position - centers(b)%position, &
+                                       radius, repeat, limits)
             ALLOCATE (kernel(na, SIZE(centers(a)%l), nb, SIZE(centers(b)%l)))
             IF (derive) ALLOCATE (dkernel, MOLD=kernel)
             DO j = limits(1, 3), limits(2, 3)
@@ -399,17 +410,20 @@ CONTAINS
 !> \param cell ...
 !> \param gvecs ...
 !> \param volume ...
+!> \param periodicity ...
 ! **************************************************************************************************
-   SUBROUTINE check_map(map, centers, cell, gvecs, volume)
+   SUBROUTINE check_map(map, centers, cell, gvecs, volume, periodicity)
       TYPE(upf_inverse_coulomb_map_type), INTENT(IN)     :: map
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
+      INTEGER, INTENT(IN)                                :: periodicity(3)
 
       INTEGER                                            :: a
 
       CPASSERT(ALLOCATED(map%centers) .AND. ALLOCATED(map%pairs))
       CPASSERT(SIZE(map%centers) == SIZE(centers))
       CPASSERT(ALL(map%cell == cell) .AND. map%volume == volume)
+      CPASSERT(ALL(map%periodicity == periodicity))
       CPASSERT(ALL(SHAPE(map%gvecs) == SHAPE(gvecs)))
       CPASSERT(ALL(map%gvecs == gvecs))
       DO a = 1, SIZE(centers)
@@ -421,6 +435,35 @@ CONTAINS
          CPASSERT(ALL(map%centers(a)%indices == centers(a)%indices))
       END DO
    END SUBROUTINE check_map
+
+! **************************************************************************************************
+!> \brief Bound overlapping residual images, without repeating nonperiodic lattice directions.
+!> \param inverse_cell ...
+!> \param displacement ...
+!> \param radius ...
+!> \param periodicity ...
+!> \param limits ...
+! **************************************************************************************************
+   SUBROUTINE residual_image_limits(inverse_cell, displacement, radius, periodicity, limits)
+      REAL(dp), INTENT(IN)                               :: inverse_cell(3, 3), displacement(3), &
+                                                            radius
+      INTEGER, INTENT(IN)                                :: periodicity(3)
+      INTEGER, INTENT(OUT)                               :: limits(2, 3)
+
+      INTEGER                                            :: direction
+      REAL(dp)                                           :: bound(3), fractional(3)
+
+      fractional = MATMUL(inverse_cell, displacement)
+      bound = radius*SQRT(SUM(inverse_cell**2, DIM=2))
+      DO direction = 1, 3
+         IF (periodicity(direction) == 1) THEN
+            limits(1, direction) = CEILING(fractional(direction) - bound(direction))
+            limits(2, direction) = FLOOR(fractional(direction) + bound(direction))
+         ELSE
+            limits(:, direction) = 0
+         END IF
+      END DO
+   END SUBROUTINE residual_image_limits
 
 ! **************************************************************************************************
 !> \brief Reciprocal Coulomb map between two translated harmonic radial-shell distributions.
