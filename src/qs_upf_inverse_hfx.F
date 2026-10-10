@@ -40,6 +40,7 @@ MODULE qs_upf_inverse_hfx
    USE paw_onecenter,                   ONLY: paw_valence_augmentation_init
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_overlap
+   USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_lattice_fields
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
    USE upf_inverse_exchange,            ONLY: upf_inverse_exchange_augmentation
    USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
@@ -168,9 +169,9 @@ CONTAINS
 !>        Auxiliary sites are stacked by cell and then by atom, in the native RI order. AO images
 !>        retain the supplied order. Reconstruction images are summed before any owner filtering.
 !>        The common frame supplies original radial fields and geometry, never its Bloch-summed W.
-!>        Its defining lattice domain is supplied explicitly. This routine does not select or
+!>        General INVERSE uses the supplied full W_Q and dW_Q. Its domains are explicit. It does not select or
 !>        truncate images, change the fitting domain, or apply a Bloch phase or exchange weight.
-!> \param frame Common DIRECT or INVERSE_1C frame with the original basis and lattice geometry.
+!> \param frame Original basis and geometry for DIRECT, INVERSE_1C or general INVERSE.
 !> \param kinds ...
 !> \param augmentation ...
 !> \param auxiliary_bases Native per-atom RI bases.
@@ -182,9 +183,14 @@ CONTAINS
 !> \param atom_response Motion of the unshifted physical atoms and their RI centers.
 !> \param cell_response Lattice-vector response at fixed integer cells and reduced k points.
 !> \param metric Optional native RI interaction, Coulomb by default.
+!> \param coefficient_images Coupled physical translations, required for general INVERSE.
+!> \param coupled_coefficients Full projector/AO W_Q in coefficient-image order.
+!> \param coupled_response Complete coupled dW_Q, required for a general inverse response.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_lattice_tensor(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
-                                                ao_images, center_images, tensors, responses, atom_response, cell_response, metric)
+                                                ao_images, center_images, tensors, responses, atom_response, &
+                                                cell_response, metric, &
+                                                coefficient_images, coupled_coefficients, coupled_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -195,13 +201,16 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT), OPTIONAL            :: responses(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
       TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+      INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
+                                                            coupled_response(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: factor_response(:), factors(:)
       INTEGER                                            :: atom, image, natom, nsite, site
       REAL(dp), ALLOCATABLE                              :: position_response(:, :), positions(:, :)
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
 
-      CPASSERT(frame%atom_local)
+      CALL check_coupled_lattice(frame, coefficient_images, coupled_coefficients, coupled_response, PRESENT(responses))
       natom = SIZE(frame%positions, 2)
       CPASSERT(SIZE(auxiliary_bases) == natom)
       CPASSERT(SIZE(auxiliary_images, 1) == 3 .AND. SIZE(auxiliary_images, 2) > 0)
@@ -242,10 +251,15 @@ CONTAINS
                                            tensors(image), response_real=responses(image), &
                                            atom_response=atom_response, cell_response=cell_response, &
                                            auxiliary_positions_response=position_response, &
-                                           auxiliary_factors_response=factor_response, ao_image=ao_images(:, image), metric=metric)
+                                           auxiliary_factors_response=factor_response, ao_image=ao_images(:, image), &
+                                           metric=metric, &
+                                           coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                           coupled_response=coupled_response)
          ELSE
             CALL qs_upf_inverse_hfx_tensor(frame, frame, kinds, augmentation, bases, positions, factors, center_images, &
-                                           tensors(image), ao_image=ao_images(:, image), metric=metric)
+                                           tensors(image), ao_image=ao_images(:, image), metric=metric, &
+                                           coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                           coupled_response=coupled_response)
          END IF
       END DO
    END SUBROUTINE qs_upf_inverse_hfx_lattice_tensor
@@ -511,13 +525,17 @@ CONTAINS
 !> \param ao_image Optional integer right AO cell R for individual lattice integrals.
 !> \param metric Optional native RI interaction, Coulomb by default.
 !> \param auxiliary_images Optional fixed auxiliary Gaussian images, at fixed Gamma.
+!> \param coefficient_images Coupled physical translations, required for general INVERSE.
+!> \param coupled_coefficients Full projector/AO W_Q in coefficient-image order.
+!> \param coupled_response Complete coupled dW_Q, required for a general inverse response.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_tensor(left_frame, right_frame, kinds, augmentation, auxiliary_bases, &
                                         auxiliary_positions, auxiliary_factors, center_images, tensor_real, &
                                         tensor_imaginary, response_real, response_imaginary, atom_response, cell_response, &
                                         left_k_response, right_k_response, left_coefficients_response, &
                                         right_coefficients_response, auxiliary_positions_response, auxiliary_factors_response, &
-                                        ao_image, metric, auxiliary_images)
+                                        ao_image, metric, auxiliary_images, &
+                                        coefficient_images, coupled_coefficients, coupled_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -537,7 +555,10 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: auxiliary_factors_response(:)
       INTEGER, INTENT(IN), OPTIONAL                      :: ao_image(3)
       TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
-      INTEGER, INTENT(IN), OPTIONAL                      :: auxiliary_images(:, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: auxiliary_images(:, :), &
+                                                            coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
+                                                            coupled_response(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: correction(:, :, :), dc(:, :, :), &
                                                             dn(:, :, :), native(:, :, :)
@@ -563,7 +584,9 @@ CONTAINS
       CPASSERT(SIZE(augmentation) == SIZE(kinds))
       IF (PRESENT(ao_image)) THEN
          CPASSERT(.NOT. PRESENT(auxiliary_images))
-         CPASSERT(left_frame%atom_local .AND. right_frame%atom_local)
+         CPASSERT(left_frame%atom_local .EQV. right_frame%atom_local)
+         CALL check_coupled_lattice(left_frame, coefficient_images, coupled_coefficients, coupled_response, &
+                                    PRESENT(response_real))
          CPASSERT(left_frame%direct .EQV. right_frame%direct)
          CPASSERT(ALL(left_frame%cell == right_frame%cell))
          CPASSERT(ALL(left_frame%positions == right_frame%positions))
@@ -582,6 +605,9 @@ CONTAINS
          IF (.NOT. (.NOT. PRESENT(left_coefficients_response) .AND. .NOT. PRESENT(right_coefficients_response))) THEN
             CPABORT("Coefficient responses require a varying transition")
          END IF
+      ELSE
+         CPASSERT(.NOT. PRESENT(coefficient_images))
+         CPASSERT(.NOT. PRESENT(coupled_coefficients) .AND. .NOT. PRESENT(coupled_response))
       END IF
       CALL prepare_paw_transitions(kinds, left_frame, paw_augmentation)
       CALL tensor_partition(left_frame, right_frame, auxiliary_bases, tensor_real, nblks, sizes_i, sizes_j, sizes_k, &
@@ -679,7 +705,10 @@ CONTAINS
                                                                       fourpi*lebedev_grid(rule)%w, correction, dc, &
                                                                       atom_response, cell_response, &
                                                                       auxiliary_positions_response(:, site), &
-                                                                      overlaps=overlaps(center, image))
+                                                                      overlaps=overlaps(center, image), &
+                                                                      coefficient_images=coefficient_images, &
+                                                                      coupled_coefficients=coupled_coefficients, &
+                                                                      coupled_response=coupled_response)
                                  ELSE
                                     CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
                                                                    [start_j(block_j), start_j(block_j + 1) - 1], &
@@ -701,7 +730,10 @@ CONTAINS
                                                                       auxiliary_positions(:, site), transition_augmentation, &
                                                                       pot%r, radial_weights, lebedev_grid(rule)%r, &
                                                                       fourpi*lebedev_grid(rule)%w, correction, &
-                                                                      overlaps=overlaps(center, image))
+                                                                      overlaps=overlaps(center, image), &
+                                                                      coefficient_images=coefficient_images, &
+                                                                      coupled_coefficients=coupled_coefficients, &
+                                                                      coupled_response=coupled_response)
                                  ELSE
                                     CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
                                                                    [start_j(block_j), start_j(block_j + 1) - 1], &
@@ -1605,11 +1637,15 @@ CONTAINS
 !> \param atom_response Motion of unshifted atom centers.
 !> \param cell_response Motion of the lattice vectors.
 !> \param auxiliary_response Motion of the actual RI image position.
+!> \param coefficient_images Coupled physical translations, required for general INVERSE.
+!> \param coupled_coefficients Full projector/AO W_Q in coefficient-image order.
+!> \param coupled_response Complete coupled dW_Q, required for a general inverse response.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_lattice_center(frame, center, left_range, right_range, ao_image, center_image, &
                                                 fields, auxiliary_center, augmentation, r, radial_weights, &
                                                 directions, angular_weights, integral, response, atom_response, &
-                                                cell_response, auxiliary_response)
+                                                cell_response, auxiliary_response, &
+                                                coefficient_images, coupled_coefficients, coupled_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2), &
                                                             ao_image(3), center_image(3)
@@ -1623,13 +1659,16 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), &
                                                             cell_response(3, 3), &
                                                             auxiliary_response(3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
+                                                            coupled_response(:, :, :)
 
       TYPE(lattice_overlap_type)                         :: overlaps
 
       CALL lattice_center_with_overlaps(frame, center, left_range, right_range, ao_image, center_image, &
                                         fields, auxiliary_center, augmentation, r, radial_weights, directions, &
                                         angular_weights, integral, response, atom_response, cell_response, &
-                                        auxiliary_response, overlaps)
+                                        auxiliary_response, overlaps, coefficient_images, coupled_coefficients, coupled_response)
    END SUBROUTINE qs_upf_inverse_hfx_lattice_center
 
 ! **************************************************************************************************
@@ -1640,7 +1679,8 @@ CONTAINS
    SUBROUTINE lattice_center_with_overlaps(frame, center, left_range, right_range, ao_image, center_image, &
                                            fields, auxiliary_center, augmentation, r, radial_weights, &
                                            directions, angular_weights, integral, response, atom_response, &
-                                           cell_response, auxiliary_response, overlaps)
+                                           cell_response, auxiliary_response, overlaps, &
+                                           coefficient_images, coupled_coefficients, coupled_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2), &
                                                             ao_image(3), center_image(3)
@@ -1655,6 +1695,9 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             auxiliary_response(3)
       TYPE(lattice_overlap_type), INTENT(INOUT)          :: overlaps
+      INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
+                                                            coupled_response(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE :: block(:, :), cl(:, :), cr(:, :), delta(:, :), dl(:, :), &
          dq(:, :), dr(:, :), dwl(:, :), dwr(:, :), fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), &
@@ -1668,7 +1711,7 @@ CONTAINS
          weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
 
-      CPASSERT(frame%atom_local)
+      CALL check_coupled_lattice(frame, coefficient_images, coupled_coefficients, coupled_response, PRESENT(response))
       CPASSERT(center >= 1 .AND. center <= SIZE(frame%center_atoms))
       CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
       CPASSERT(ALL(center_image*frame%periodicity == center_image))
@@ -1705,12 +1748,16 @@ CONTAINS
          IF (derivatives) THEN
             ALLOCATE (overlaps%dleft(np, nl), overlaps%dright(np, nr))
             CALL lattice_coefficients(frame, center, left_range, -center_image, &
-                                      overlaps%left, overlaps%dleft, atom_response, cell_response)
+                                      overlaps%left, overlaps%dleft, atom_response, cell_response, &
+                                      coefficient_images, coupled_coefficients, coupled_response)
             CALL lattice_coefficients(frame, center, right_range, ao_image - center_image, &
-                                      overlaps%right, overlaps%dright, atom_response, cell_response)
+                                      overlaps%right, overlaps%dright, atom_response, cell_response, &
+                                      coefficient_images, coupled_coefficients, coupled_response)
          ELSE
-            CALL lattice_coefficients(frame, center, left_range, -center_image, overlaps%left)
-            CALL lattice_coefficients(frame, center, right_range, ao_image - center_image, overlaps%right)
+            CALL lattice_coefficients(frame, center, left_range, -center_image, overlaps%left, &
+                                      coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
+            CALL lattice_coefficients(frame, center, right_range, ao_image - center_image, overlaps%right, &
+                                      coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
          END IF
       END IF
       CPASSERT(ALL(SHAPE(overlaps%left) == [np, nl]))
@@ -1751,9 +1798,11 @@ CONTAINS
                                             [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
                                             [0.0_dp, 0.0_dp, 0.0_dp], delta)
             CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, &
-                                         left_fields, fcl, fdl, dwl, atom_response, cell_response, dpoints, derivatives)
+                                         left_fields, fcl, fdl, dwl, atom_response, cell_response, dpoints, derivatives, &
+                                         coefficient_images, coupled_coefficients, coupled_response)
             CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, &
-                                         right_fields, fcr, fdr, dwr, atom_response, cell_response, dpoints, derivatives)
+                                         right_fields, fcr, fdr, dwr, atom_response, cell_response, dpoints, derivatives, &
+                                         coefficient_images, coupled_coefficients, coupled_response)
             weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
             DO ia = 1, nang
                IF (derivatives) THEN
@@ -1825,6 +1874,50 @@ CONTAINS
    END SUBROUTINE lattice_center_with_overlaps
 
 ! **************************************************************************************************
+!> \brief Validate the full physical coefficient domain of a general inverse transition.
+!>        Missing translations are zeros of the supplied finite representation. The caller owns
+!>        its full interior/exterior residual and tail qualification. These coefficients are
+!>        never inferred from a single Bloch frame or from a discrete reciprocal transform.
+!> \param frame ...
+!> \param images ...
+!> \param coefficients ...
+!> \param response ...
+!> \param derivatives ...
+! **************************************************************************************************
+   SUBROUTINE check_coupled_lattice(frame, images, coefficients, response, derivatives)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN), OPTIONAL                      :: images(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients(:, :, :), response(:, :, :)
+      LOGICAL, INTENT(IN)                                :: derivatives
+
+      INTEGER                                            :: i, j
+
+      IF (frame%atom_local) THEN
+         CPASSERT(.NOT. PRESENT(images))
+         CPASSERT(.NOT. PRESENT(coefficients) .AND. .NOT. PRESENT(response))
+         RETURN
+      END IF
+      CPASSERT(.NOT. frame%direct)
+      CPASSERT(PRESENT(images) .AND. PRESENT(coefficients))
+      CPASSERT(SIZE(images, 1) == 3 .AND. SIZE(images, 2) > 0)
+      IF (ANY(SHAPE(coefficients) /= [SIZE(frame%coefficients, 1), SIZE(frame%coefficients, 2), SIZE(images, 2)])) THEN
+         CPABORT("Invalid coupled lattice coefficient dimensions")
+      END IF
+      CPASSERT(ALL(images*SPREAD(frame%periodicity, 2, SIZE(images, 2)) == images))
+      DO i = 1, SIZE(images, 2)
+         DO j = 1, i - 1
+            CPASSERT(ANY(images(:, i) /= images(:, j)))
+         END DO
+      END DO
+      IF (derivatives) THEN
+         CPASSERT(PRESENT(response))
+         CPASSERT(ALL(SHAPE(response) == SHAPE(coefficients)))
+      ELSE
+         CPASSERT(.NOT. PRESENT(response))
+      END IF
+   END SUBROUTINE check_coupled_lattice
+
+! **************************************************************************************************
 !> \brief Hard-projector overlaps for one relative Gaussian image, without a reciprocal phase.
 !> \param frame ...
 !> \param center ...
@@ -1835,17 +1928,40 @@ CONTAINS
 !> \param atom_response ...
 !> \param cell_response ...
 ! **************************************************************************************************
-   SUBROUTINE lattice_coefficients(frame, center, ao_range, image, coefficients, response, atom_response, cell_response)
+   SUBROUTINE lattice_coefficients(frame, center, ao_range, image, coefficients, response, atom_response, cell_response, &
+                                   coefficient_images, coupled_coefficients, coupled_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, ao_range(2), image(3)
       COMPLEX(dp), INTENT(OUT)                           :: coefficients(:, :)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
+                                                            coupled_response(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: dfull(:, :), full(:, :)
       INTEGER                                            :: atom, b, first, hi, images(3, 1), kind, &
-                                                            last, lo, nproj
+                                                            last, lo, nproj, q
 
+      IF (.NOT. frame%atom_local) THEN
+         CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coupled_coefficients))
+         coefficients = CMPLX(0.0_dp, 0.0_dp, dp)
+         IF (PRESENT(response)) THEN
+            CPASSERT(PRESENT(coupled_response))
+            response = CMPLX(0.0_dp, 0.0_dp, dp)
+         END IF
+         DO q = 1, SIZE(coefficient_images, 2)
+            IF (ANY(coefficient_images(:, q) /= image)) CYCLE
+            coefficients(:, :) = coupled_coefficients(frame%projector_first(center):frame%projector_last(center), &
+                                                      ao_range(1):ao_range(2), q)
+            IF (PRESENT(response)) THEN
+               response(:, :) = coupled_response(frame%projector_first(center):frame%projector_last(center), &
+                                                 ao_range(1):ao_range(2), q)
+            END IF
+            EXIT
+         END DO
+         RETURN
+      END IF
       atom = frame%center_atoms(center)
       kind = frame%center_kinds(center)
       nproj = frame%atomic_cache(kind)%hard%nproj
@@ -1898,7 +2014,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE lattice_residual_fields(frame, ao_range, image, points, delta, coefficients, complete, difference, &
                                       workspace, complete_response, difference_response, coefficients_response, &
-                                      atom_response, cell_response, point_response, derivatives)
+                                      atom_response, cell_response, point_response, derivatives, &
+                                      coefficient_images, coupled_coefficients, coupled_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: ao_range(2), image(3)
       REAL(dp), INTENT(IN)                               :: points(:, :)
@@ -1911,7 +2028,11 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), ALLOCATABLE, INTENT(IN)                  :: point_response(:, :)
       LOGICAL, INTENT(IN)                                :: derivatives
+      INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
+                                                            coupled_response(:, :, :)
 
+      COMPLEX(dp), ALLOCATABLE                           :: soft(:, :), soft_response(:, :)
       INTEGER                                            :: atom, first, hi, images(3, 1), last, lo, &
                                                             max_basis, np
 
@@ -1949,10 +2070,28 @@ CONTAINS
          complete(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = 2.0_dp*workspace%phi(:, lo - first + 1:hi - first + 1)
       END DO
       difference(:, :) = -MATMUL(delta, coefficients)
-      complete(:, :) = complete + difference
-      IF (derivatives) THEN
-         difference_response(:, :) = -MATMUL(delta, coefficients_response)
-         complete_response(:, :) = complete_response + difference_response
+      IF (derivatives) difference_response(:, :) = -MATMUL(delta, coefficients_response)
+      IF (frame%atom_local) THEN
+         complete(:, :) = complete + difference
+         IF (derivatives) complete_response(:, :) = complete_response + difference_response
+      ELSE
+         CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coupled_coefficients))
+         ALLOCATE (soft(np, SIZE(complete, 2)))
+         IF (derivatives) THEN
+            CPASSERT(PRESENT(coupled_response))
+            ALLOCATE (soft_response(np, SIZE(complete, 2)))
+            CALL qs_upf_inverse_lattice_fields(frame, points, image, coefficient_images, &
+                                               coupled_coefficients(:, ao_range(1):ao_range(2), :), ao_range, soft, &
+                                               response=soft_response, &
+                                               coefficients_response=coupled_response(:, ao_range(1):ao_range(2), :), &
+                                               point_response=point_response, atom_response=atom_response, &
+                                               cell_response=cell_response)
+            complete_response(:, :) = 0.5_dp*complete_response + soft_response
+         ELSE
+            CALL qs_upf_inverse_lattice_fields(frame, points, image, coefficient_images, &
+                                               coupled_coefficients(:, ao_range(1):ao_range(2), :), ao_range, soft)
+         END IF
+         complete(:, :) = 0.5_dp*complete + soft
       END IF
    END SUBROUTINE lattice_residual_fields
 
