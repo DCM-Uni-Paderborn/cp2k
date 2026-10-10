@@ -64,6 +64,14 @@ PROGRAM upf_inverse_unittest
         upf_inverse_coulomb_periodic, upf_inverse_coulomb_potential_type, &
         upf_inverse_coulomb_prepare, upf_inverse_coulomb_radial, &
         upf_inverse_coulomb_radial_response
+   USE upf_inverse_lattice,             ONLY: upf_inverse_lattice_adjoint,&
+                                              upf_inverse_lattice_bloch,&
+                                              upf_inverse_lattice_init,&
+                                              upf_inverse_lattice_project,&
+                                              upf_inverse_lattice_residual,&
+                                              upf_inverse_lattice_response,&
+                                              upf_inverse_lattice_response_residual,&
+                                              upf_inverse_lattice_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
                                               upf_inverse_density_residual,&
                                               upf_inverse_projector_density,&
@@ -84,6 +92,7 @@ PROGRAM upf_inverse_unittest
    REAL(dp), PARAMETER :: step = 1.e-5_dp
    REAL(dp) :: max_error = 0.0_dp
    CALL check_inverse()
+   CALL check_lattice_inverse()
    CALL check_projector_density()
    CALL check_density_residual()
    CALL check_radial_coulomb()
@@ -99,6 +108,141 @@ PROGRAM upf_inverse_unittest
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Physical-image inverse against a noncommuting matrix geometric sequence.
+!>        Checks the exterior equation, Bloch limit, coupled response and real energy adjoint.
+! **************************************************************************************************
+   SUBROUTINE check_lattice_inverse()
+      INTEGER, PARAMETER                                 :: nao = 2, np = 2, nr = 21, &
+                                                            domains(3) = [3, 8, nr]
+
+      COMPLEX(dp) :: b(np, nao, nr), bloch(np, nao), c(np, np, 3), covector(np, nao, nr), &
+         db(np, nao, nr), dc(np, np, 3), exact(np, nao, nr), exact_bloch(np, nao), &
+         gb(np, nao, nr), gc(np, np, 3), inverse(np, np), k(np, np), response(np, nao, nr), &
+         samples(np, nao, nr, 2), solution(np, nao, nr)
+      COMPLEX(dp), ALLOCATABLE                           :: residual(:, :, :), &
+                                                            residual_samples(:, :, :, :), &
+                                                            response_residual(:, :, :)
+      INTEGER                                            :: i, images(3, nr), info, &
+                                                            kernel_images(3, 3), padding, side, &
+                                                            tail
+      INTEGER, ALLOCATABLE                               :: residual_images(:, :), &
+                                                            response_images(:, :)
+      REAL(dp)                                           :: error, previous, reduced_k(3), shift
+      TYPE(upf_inverse_lattice_type)                     :: lattice, shifted
+
+      kernel_images(:, 1) = [0, 0, 0]
+      kernel_images(:, 2) = [1, -2, 1]
+      kernel_images(:, 3) = -kernel_images(:, 2)
+      DO i = 1, nr
+         images(:, i) = (i - 1)*kernel_images(:, 2)
+      END DO
+      c = CMPLX(0.0_dp, 0.0_dp, dp)
+      c(:, :, 1) = RESHAPE([CMPLX(0.2_dp, 0.04_dp, dp), CMPLX(-0.1_dp, 0.03_dp, dp), &
+                            CMPLX(0.07_dp, -0.08_dp, dp), CMPLX(-0.12_dp, 0.06_dp, dp)], [np, np])
+      c(:, :, 2) = RESHAPE([CMPLX(0.12_dp, -0.03_dp, dp), CMPLX(0.08_dp, 0.01_dp, dp), &
+                            CMPLX(-0.04_dp, 0.09_dp, dp), CMPLX(0.17_dp, 0.02_dp, dp)], [np, np])
+      b = CMPLX(0.0_dp, 0.0_dp, dp)
+      b(:, :, 1) = RESHAPE([CMPLX(0.8_dp, -0.3_dp, dp), CMPLX(-0.2_dp, 0.1_dp, dp), &
+                            CMPLX(0.3_dp, 0.4_dp, dp), CMPLX(0.6_dp, -0.2_dp, dp)], [np, nao])
+      k = c(:, :, 1)
+      k(1, 1) = k(1, 1) + 1.0_dp
+      k(2, 2) = k(2, 2) + 1.0_dp
+      CALL invert_two(k, inverse)
+      exact(:, :, 1) = MATMUL(inverse, b(:, :, 1))
+      DO i = 2, nr
+         exact(:, :, i) = -MATMUL(inverse, MATMUL(c(:, :, 2), exact(:, :, i - 1)))
+      END DO
+      previous = HUGE(0.0_dp)
+      DO padding = 1, 3
+         i = domains(padding)
+         CALL upf_inverse_lattice_init(kernel_images, c, images(:, :i), lattice, info)
+         CALL check(ABS(REAL(info, dp)), "Physical-image preconditioner")
+         CALL upf_inverse_lattice_project(lattice, b(:, :, :i), solution(:, :, :i), 2.e-14_dp, info)
+         CALL check(ABS(REAL(info, dp)), "Coupled physical-image solve")
+         CALL check(MAXVAL(ABS(solution(:, :, :i) - exact(:, :, :i))), "Noncommuting inverse image sequence")
+         CALL upf_inverse_lattice_residual(lattice, solution(:, :, :i), images(:, :1), b(:, :, :1), &
+                                           residual_images, residual)
+         tail = 0
+         DO side = 1, SIZE(residual_images, 2)
+            IF (ALL(residual_images(:, side) == i*kernel_images(:, 2))) tail = side
+         END DO
+         CALL check(MERGE(0.0_dp, 1.0_dp, tail > 0), "Exterior convolution equation retained", 0.0_dp)
+         CALL check(MAXVAL(ABS(residual(:, :, tail) - MATMUL(c(:, :, 2), exact(:, :, i)))), &
+                    "Independent exterior residual")
+         error = MAXVAL(ABS(residual))
+         CALL check(MERGE(0.0_dp, 1.0_dp, error < previous), "Image padding reduces the full residual", 0.0_dp)
+         previous = error
+      END DO
+      DO side = 1, 2
+         reduced_k = 0.0_dp
+         IF (side == 2) reduced_k = [0.17_dp, 0.11_dp, -0.09_dp]
+         CALL upf_inverse_lattice_bloch(kernel_images, c, reduced_k, k)
+         k(1, 1) = k(1, 1) + 1.0_dp
+         k(2, 2) = k(2, 2) + 1.0_dp
+         CALL invert_two(k, inverse)
+         exact_bloch = MATMUL(inverse, b(:, :, 1))
+         CALL upf_inverse_lattice_bloch(images, solution, reduced_k, bloch)
+         CALL check(MAXVAL(ABS(bloch - exact_bloch)), "Unaliased image sum agrees with the Bloch inverse")
+         IF (side == 1) CALL check(MERGE(0.0_dp, 1.0_dp, MAXVAL(ABS(bloch - solution(:, :, 1))) > 0.01_dp), &
+                                   "Gamma coefficients differ from the individual home image", 0.0_dp)
+      END DO
+      DO i = 1, nr
+         db(:, :, i) = CMPLX(0.013_dp*COS(REAL(i, dp)), -0.009_dp*SIN(REAL(i, dp)), dp)
+         covector(:, :, i) = CMPLX(0.07_dp*SIN(REAL(i, dp)), 0.11_dp*COS(REAL(i, dp)), dp)
+         covector(1, 2, i) = CONJG(covector(1, 2, i))*0.3_dp
+      END DO
+      dc(:, :, 1) = c(:, :, 2)*0.2_dp
+      dc(:, :, 2) = CONJG(TRANSPOSE(c(:, :, 1)))*0.11_dp
+      dc(:, :, 3) = c(:, :, 1)*CMPLX(0.03_dp, -0.02_dp, dp)
+      CALL upf_inverse_lattice_response(lattice, solution, db, dc, response, 2.e-14_dp, info)
+      CALL check(ABS(REAL(info, dp)), "Coupled image response converged")
+      DO side = 1, 2
+         shift = REAL(2*side - 3, dp)*step
+         CALL upf_inverse_lattice_init(kernel_images, c + shift*dc, images, shifted, info)
+         CALL check(ABS(REAL(info, dp)), "Perturbed image preconditioner")
+         CALL upf_inverse_lattice_project(shifted, b + shift*db, samples(:, :, :, side), 2.e-14_dp, info)
+         CALL check(ABS(REAL(info, dp)), "Perturbed coupled image solve")
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, :, :, 2) - samples(:, :, :, 1))/(2.0_dp*step) - response)), &
+                 "Coupled image response against fresh inverse solves", 3.e-9_dp)
+      CALL upf_inverse_lattice_response_residual(lattice, solution, response, images, db, dc, &
+                                                 response_images, response_residual)
+      CALL check(MAXVAL(ABS(response_residual(:, :, :nr))), "Interior coupled response equations")
+      ALLOCATE (residual_samples(np, nao, SIZE(response_images, 2), 2))
+      DO side = 1, 2
+         shift = REAL(2*side - 3, dp)*step
+         CALL upf_inverse_lattice_init(kernel_images, c + shift*dc, images, shifted, info)
+         CALL upf_inverse_lattice_residual(shifted, samples(:, :, :, side), images, b + shift*db, &
+                                           residual_images, residual)
+         CALL check(REAL(MAXVAL(ABS(residual_images - response_images)), dp), "Identical physical residual support", 0.0_dp)
+         residual_samples(:, :, :, side) = residual
+      END DO
+      CALL check(MAXVAL(ABS((residual_samples(:, :, :, 2) - residual_samples(:, :, :, 1))/(2.0_dp*step) - response_residual)), &
+                 "Full exterior response residual against fresh kernels", 3.e-9_dp)
+      CALL upf_inverse_lattice_adjoint(lattice, solution, covector, gb, gc, 2.e-14_dp, info)
+      CALL check(ABS(REAL(info, dp)), "Coupled image adjoint converged")
+      CALL check(ABS(REAL(SUM(CONJG(covector)*response) - SUM(CONJG(gb)*db) - SUM(CONJG(gc)*dc), dp)), &
+                 "Complete shared-kernel image adjoint")
+      CALL upf_inverse_lattice_project(lattice, b, samples(:, :, :, 1), 2.e-14_dp, info, max_iterations=1)
+      CALL check(ABS(REAL(info - 1, dp)), "Unconverged lattice solve reports failure", 0.0_dp)
+      CALL upf_inverse_lattice_residual(lattice, samples(:, :, :, 1), images, b, residual_images, residual)
+      CALL check(MERGE(0.0_dp, 1.0_dp, MAXVAL(ABS(residual(:, :, :nr))) > 1.e-4_dp), &
+                 "Failed solve retains its true interior residual", 0.0_dp)
+
+   END SUBROUTINE check_lattice_inverse
+! **************************************************************************************************
+!> \brief Independent two-projector inverse for the lattice geometric-series control.
+!> \param matrix ...
+!> \param inverse_matrix ...
+! **************************************************************************************************
+   SUBROUTINE invert_two(matrix, inverse_matrix)
+      COMPLEX(dp), INTENT(IN)                            :: matrix(2, 2)
+      COMPLEX(dp), INTENT(OUT)                           :: inverse_matrix(2, 2)
+
+      inverse_matrix = RESHAPE([matrix(2, 2), -matrix(2, 1), -matrix(1, 2), matrix(1, 1)], [2, 2])/ &
+                       (matrix(1, 1)*matrix(2, 2) - matrix(1, 2)*matrix(2, 1))
+   END SUBROUTINE invert_two
 ! **************************************************************************************************
 !> \brief Cusped radial AE charge and signed-orbital kinetic fields with independent exact derivatives.
 ! **************************************************************************************************
