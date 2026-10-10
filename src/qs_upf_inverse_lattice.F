@@ -24,6 +24,7 @@ MODULE qs_upf_inverse_lattice
    PRIVATE
 
    PUBLIC :: qs_upf_inverse_lattice_kernel
+   PUBLIC :: qs_upf_inverse_lattice_kernel_adjoint
    PUBLIC :: qs_upf_inverse_lattice_fields, qs_upf_inverse_lattice_field_adjoint
    PUBLIC :: qs_upf_inverse_lattice_geometry_adjoint
 
@@ -561,4 +562,136 @@ CONTAINS
          END DO
       END SUBROUTINE original_fields
    END SUBROUTINE qs_upf_inverse_lattice_kernel
+
+! **************************************************************************************************
+!> \brief Transpose the original physical-image defining integrals into geometry and measure.
+!>        Uses Re sum(conjg(G_C)*dC+conjg(G_B)*dB), with complete projector and AO matrices.
+!>        Both original fields and their actual image indices are differentiated. Point and
+!>        weight outputs belong to local quadrature rows. All center and cell outputs are
+!>        point-owner local too. The caller reduces their complete energy contraction once.
+!>        Cell derivatives hold Cartesian points and native centers fixed. Moving-point and
+!>        integration-measure responses are returned separately, without division by weights.
+!> \param frame Original fields, distributed quadrature and physical image domain.
+!> \param kernel_images Distinct physical differences including every original image pair.
+!> \param coupling_covector Complete original C_Q energy derivative in kernel-image order.
+!> \param overlaps_covector Complete original B_Q energy derivative in the same order.
+!> \param point_geometry New owner-local Cartesian point derivative.
+!> \param atom_geometry New owner-local native Cartesian center derivative.
+!> \param cell_geometry New owner-local lattice derivative at fixed Cartesian coordinates.
+!> \param weights_covector New owner-local derivative of each original quadrature weight.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_lattice_kernel_adjoint(frame, kernel_images, coupling_covector, overlaps_covector, &
+                                                    point_geometry, atom_geometry, cell_geometry, weights_covector)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: kernel_images(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: coupling_covector(:, :, :), &
+                                                            overlaps_covector(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: point_geometry(:, :), atom_geometry(:, :), &
+                                                            cell_geometry(3, 3), weights_covector(:)
+
+      COMPLEX(dp), ALLOCATABLE :: beta(:, :), beta_gradient(:, :, :), delta(:, :), delta_gradient(:, :, :), &
+                                  gaussian(:, :), gaussian_gradient(:, :, :), g_beta(:, :), g_delta(:, :), g_gaussian(:, :)
+      INTEGER                                            :: atom, center, first, i, image(3), j, &
+                                                            kind, last, n, nao, np, point, q, &
+                                                            single_image(3, 1)
+
+      CALL check_lattice_images(frame, kernel_images)
+      np = SIZE(frame%beta, 2)
+      nao = SIZE(frame%gaussian, 2)
+      n = SIZE(frame%weights)
+      IF (ANY(SHAPE(coupling_covector) /= [np, np, SIZE(kernel_images, 2)]) .OR. &
+          ANY(SHAPE(overlaps_covector) /= [np, nao, SIZE(kernel_images, 2)])) THEN
+         CPABORT("Invalid defining lattice covector dimensions")
+      END IF
+      CPASSERT(ALL(SHAPE(point_geometry) == SHAPE(frame%points)))
+      CPASSERT(ALL(SHAPE(atom_geometry) == SHAPE(frame%positions)))
+      CPASSERT(SIZE(weights_covector) == n)
+      point_geometry = 0.0_dp
+      atom_geometry = 0.0_dp
+      cell_geometry = 0.0_dp
+      weights_covector = 0.0_dp
+      ALLOCATE (beta(n, np), beta_gradient(n, np, 3), delta(n, np), delta_gradient(n, np, 3), &
+                gaussian(n, nao), gaussian_gradient(n, nao, 3), &
+                g_beta(n, np), g_delta(n, np), g_gaussian(n, nao))
+      DO i = 1, SIZE(frame%images, 2)
+         single_image(:, 1) = frame%images(:, i)
+         DO center = 1, SIZE(frame%center_atoms)
+            atom = frame%center_atoms(center)
+            kind = frame%center_kinds(center)
+            first = frame%projector_first(center)
+            last = frame%projector_last(center)
+            CALL upf_radial_fields_periodic(frame%beta_cache(kind), frame%points, frame%positions(:, atom), &
+                                            frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], beta(:, first:last), &
+                                            gradient=beta_gradient(:, first:last, :))
+         END DO
+         DO j = 1, SIZE(frame%images, 2)
+            image = frame%images(:, j) - frame%images(:, i)
+            q = 1
+            DO WHILE (q <= SIZE(kernel_images, 2))
+               IF (ALL(kernel_images(:, q) == image)) EXIT
+               q = q + 1
+            END DO
+            IF (q > SIZE(kernel_images, 2)) THEN
+               CPABORT("Missing original defining lattice image difference")
+            END IF
+            CALL lattice_delta_fields(frame, frame%points, frame%images(:, j), delta, delta_gradient)
+            single_image(:, 1) = frame%images(:, j)
+            DO atom = 1, SIZE(frame%bases)
+               first = frame%ao_first(atom)
+               last = frame%ao_last(atom)
+               CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, frame%points, &
+                                                   frame%positions(:, atom), frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], &
+                                                   gaussian(:, first:last), gaussian_gradient(:, first:last, :))
+            END DO
+            g_delta(:, :) = MATMUL(beta, coupling_covector(:, :, q))
+            g_gaussian(:, :) = MATMUL(beta, overlaps_covector(:, :, q))
+            weights_covector(:) = weights_covector + REAL(SUM(CONJG(g_delta)*delta, DIM=2) + &
+                                                          SUM(CONJG(g_gaussian)*gaussian, DIM=2), dp)
+            g_beta(:, :) = MATMUL(delta, CONJG(TRANSPOSE(coupling_covector(:, :, q)))) + &
+                           MATMUL(gaussian, CONJG(TRANSPOSE(overlaps_covector(:, :, q))))
+            DO point = 1, n
+               g_beta(point, :) = frame%weights(point)*g_beta(point, :)
+               g_delta(point, :) = frame%weights(point)*g_delta(point, :)
+               g_gaussian(point, :) = frame%weights(point)*g_gaussian(point, :)
+            END DO
+            DO center = 1, SIZE(frame%center_atoms)
+               atom = frame%center_atoms(center)
+               first = frame%projector_first(center)
+               last = frame%projector_last(center)
+               CALL field_geometry(g_beta(:, first:last), beta_gradient(:, first:last, :), atom, frame%images(:, i))
+               CALL field_geometry(g_delta(:, first:last), delta_gradient(:, first:last, :), atom, frame%images(:, j))
+            END DO
+            DO atom = 1, SIZE(frame%bases)
+               first = frame%ao_first(atom)
+               last = frame%ao_last(atom)
+               CALL field_geometry(g_gaussian(:, first:last), gaussian_gradient(:, first:last, :), atom, frame%images(:, j))
+            END DO
+         END DO
+      END DO
+
+   CONTAINS
+
+! **************************************************************************************************
+!> \brief Contract one weighted field covector with its original Cartesian gradients.
+!> \param covector ...
+!> \param gradient ...
+!> \param atom ...
+!> \param image ...
+! **************************************************************************************************
+      SUBROUTINE field_geometry(covector, gradient, atom, image)
+      COMPLEX(dp), INTENT(IN)                            :: covector(:, :), gradient(:, :, :)
+      INTEGER, INTENT(IN)                                :: atom, image(3)
+
+      INTEGER                                            :: axis
+      REAL(dp)                                           :: component(n), total
+
+         DO axis = 1, 3
+            component(:) = REAL(SUM(CONJG(covector)*gradient(:, :, axis), DIM=2), dp)
+            point_geometry(axis, :) = point_geometry(axis, :) + component
+            total = SUM(component)
+            atom_geometry(axis, atom) = atom_geometry(axis, atom) - total
+            cell_geometry(axis, :) = cell_geometry(axis, :) - total*REAL(image, dp)
+         END DO
+      END SUBROUTINE field_geometry
+   END SUBROUTINE qs_upf_inverse_lattice_kernel_adjoint
 END MODULE qs_upf_inverse_lattice
