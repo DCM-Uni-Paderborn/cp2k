@@ -120,6 +120,7 @@ MODULE hfx_ri
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_projection_adjoint,&
                                               qs_upf_inverse_projection_contract
    USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_gamma_images,&
+                                              qs_upf_inverse_hfx_lattice_centers,&
                                               qs_upf_inverse_hfx_lattice_tensor,&
                                               qs_upf_inverse_hfx_tensor,&
                                               qs_upf_inverse_hfx_tensor_adjoint
@@ -863,11 +864,9 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: integrals(:)
 
       COMPLEX(dp), POINTER                               :: coefficients(:, :, :)
-      INTEGER                                            :: atom, axis, image, info, ix, iy, iz, kind, &
-                                                            lower(3), upper(3)
-      INTEGER, POINTER                                   :: cells(:, :)
-      INTEGER, POINTER                                   :: coefficient_images(:, :)
+      INTEGER                                            :: atom, info, kind
       INTEGER, ALLOCATABLE                               :: center_images(:, :)
+      INTEGER, POINTER                                   :: cells(:, :), coefficient_images(:, :)
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -917,24 +916,7 @@ CONTAINS
          END IF
          coefficient_images => inverse%lattice%inverse%images
          coefficients => inverse%lattice%coefficients
-         ! Every retained left or right reconstruction is integrated. Its center images
-         ! are -Q and R-Q respectively, independently of the original defining image set.
-         DO axis = 1, 3
-            lower(axis) = MIN(-MAXVAL(coefficient_images(axis, :)), &
-                              MINVAL(cells(axis, 1:ri_data%nimg)) - MAXVAL(coefficient_images(axis, :)))
-            upper(axis) = MAX(-MINVAL(coefficient_images(axis, :)), &
-                              MAXVAL(cells(axis, 1:ri_data%nimg)) - MINVAL(coefficient_images(axis, :)))
-         END DO
-         ALLOCATE (center_images(3, PRODUCT(upper - lower + 1)))
-         image = 0
-         DO iz = lower(3), upper(3)
-         DO iy = lower(2), upper(2)
-         DO ix = lower(1), upper(1)
-            image = image + 1
-            center_images(:, image) = [ix, iy, iz]
-         END DO
-         END DO
-         END DO
+         CALL qs_upf_inverse_hfx_lattice_centers(coefficient_images, cells(:, 1:ri_data%nimg), center_images)
       END IF
       CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, augmentation, bases, &
                                              cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &

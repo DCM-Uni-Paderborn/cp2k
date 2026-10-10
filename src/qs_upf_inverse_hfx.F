@@ -57,6 +57,7 @@ MODULE qs_upf_inverse_hfx
    PUBLIC :: qs_upf_inverse_hfx_center_adjoint, qs_upf_inverse_hfx_lattice_center
    PUBLIC :: qs_upf_inverse_hfx_lattice_center_adjoint
    PUBLIC :: qs_upf_inverse_hfx_lattice_tensor, qs_upf_inverse_hfx_lattice_gradient
+   PUBLIC :: qs_upf_inverse_hfx_lattice_centers, qs_upf_inverse_hfx_lattice_adjoint
    PUBLIC :: qs_upf_inverse_hfx_tensor_adjoint
    PUBLIC :: qs_upf_inverse_hfx_gamma_images
 
@@ -266,6 +267,138 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE qs_upf_inverse_hfx_lattice_tensor
+
+! **************************************************************************************************
+!> \brief Enclose every retained reconstruction center for the left and right physical AO images.
+!> \param coefficient_images Retained physical coefficient domain.
+!> \param ao_images Right AO translations relative to the left reference cell.
+!> \param center_images New rectangular enclosure of -D and R-D.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_hfx_lattice_centers(coefficient_images, ao_images, center_images)
+      INTEGER, INTENT(IN)                                :: coefficient_images(:, :), ao_images(:, :)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: center_images(:, :)
+
+      INTEGER                                            :: axis, image, ix, iy, iz, lower(3), &
+                                                            upper(3)
+
+      CPASSERT(SIZE(coefficient_images, 1) == 3 .AND. SIZE(coefficient_images, 2) > 0)
+      CPASSERT(SIZE(ao_images, 1) == 3 .AND. SIZE(ao_images, 2) > 0)
+      DO axis = 1, 3
+         lower(axis) = MIN(-MAXVAL(coefficient_images(axis, :)), &
+                           MINVAL(ao_images(axis, :)) - MAXVAL(coefficient_images(axis, :)))
+         upper(axis) = MAX(-MINVAL(coefficient_images(axis, :)), &
+                           MAXVAL(ao_images(axis, :)) - MINVAL(coefficient_images(axis, :)))
+      END DO
+      ALLOCATE (center_images(3, PRODUCT(upper - lower + 1)))
+      image = 0
+      DO iz = lower(3), upper(3)
+      DO iy = lower(2), upper(2)
+      DO ix = lower(1), upper(1)
+         image = image + 1
+         center_images(:, image) = [ix, iy, iz]
+      END DO
+      END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_hfx_lattice_centers
+
+! **************************************************************************************************
+!> \brief Transpose complete physical RI covectors into shared coefficients and explicit geometry.
+!>        Outputs are replicated on the tensor communicator. Auxiliary centers follow their atoms
+!>        and actual lattice translations. The caller reduces coefficient covectors across RI
+!>        subgroups before differentiating their common defining quadrature. Native Gaussian,
+!>        fitting-metric and bump derivatives are separate.
+!> \param frame Original common physical geometry and reconstruction data.
+!> \param kinds ...
+!> \param augmentation ...
+!> \param auxiliary_bases Native per-atom RI bases.
+!> \param auxiliary_images RI cells in the forward cell/atom ordering.
+!> \param ao_images Right AO cells in covector ordering.
+!> \param center_images Complete reconstruction centers used in the forward tensor.
+!> \param covectors Complete native energy derivatives in (RI,AO0,AOR) order.
+!> \param coefficient_images Retained shared physical coefficient domain.
+!> \param coupled_coefficients Prepared common coefficient sequence.
+!> \param coefficients_covector New derivative of the shared coefficient sequence.
+!> \param atom_geometry New explicit positive native Cartesian energy gradient.
+!> \param cell_geometry New explicit cell-vector gradient at fixed Cartesian atoms.
+!> \param metric Optional native RI interaction, Coulomb by default.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_hfx_lattice_adjoint(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
+                                                 ao_images, center_images, covectors, coefficient_images, &
+                                                 coupled_coefficients, coefficients_covector, atom_geometry, cell_geometry, &
+                                                 metric)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: auxiliary_bases(:)
+      INTEGER, INTENT(IN)                                :: auxiliary_images(:, :), ao_images(:, :), &
+                                                            center_images(:, :)
+      TYPE(dbt_type), INTENT(INOUT)                      :: covectors(:)
+      INTEGER, INTENT(IN)                                :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: coupled_coefficients(:, :, :)
+      COMPLEX(dp), INTENT(OUT)                           :: coefficients_covector(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: atom_geometry(:, :), cell_geometry(3, 3)
+      TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+
+      COMPLEX(dp), ALLOCATABLE                           :: factors(:), shared(:, :, :)
+      INTEGER                                            :: atom, axis, image, natom, nsite, &
+                                                            ri_image, site
+      INTEGER, ALLOCATABLE                               :: active(:)
+      REAL(dp)                                           :: local_cell(3, 3)
+      REAL(dp), ALLOCATABLE                              :: local_atoms(:, :), &
+                                                            local_auxiliary(:, :), positions(:, :)
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
+
+      CALL check_coupled_lattice(frame, coefficient_images, coupled_coefficients, derivatives=.FALSE.)
+      natom = SIZE(frame%positions, 2)
+      CPASSERT(SIZE(auxiliary_bases) == natom)
+      CPASSERT(SIZE(auxiliary_images, 1) == 3 .AND. SIZE(auxiliary_images, 2) > 0)
+      CPASSERT(SIZE(ao_images, 1) == 3 .AND. SIZE(ao_images, 2) == SIZE(covectors))
+      CPASSERT(SIZE(center_images, 1) == 3 .AND. SIZE(center_images, 2) > 0)
+      CPASSERT(SIZE(covectors) > 0)
+      CPASSERT(ALL(SHAPE(coefficients_covector) == SHAPE(coupled_coefficients)))
+      CPASSERT(ALL(SHAPE(atom_geometry) == SHAPE(frame%positions)))
+      IF (.NOT. ALL(auxiliary_images*SPREAD(frame%periodicity, 2, SIZE(auxiliary_images, 2)) == auxiliary_images)) THEN
+         CPABORT("Auxiliary images violate the periodicity")
+      END IF
+      CPASSERT(ALL(ao_images*SPREAD(frame%periodicity, 2, SIZE(ao_images, 2)) == ao_images))
+      nsite = natom*SIZE(auxiliary_images, 2)
+      ALLOCATE (bases(nsite), positions(3, nsite), factors(nsite), active(SIZE(covectors)), &
+                local_atoms(3, natom), local_auxiliary(3, nsite))
+      ALLOCATE (shared, MOLD=coupled_coefficients)
+      factors = CMPLX(1.0_dp, 0.0_dp, dp)
+      DO image = 1, SIZE(auxiliary_images, 2)
+      DO atom = 1, natom
+         site = (image - 1)*natom + atom
+         bases(site)%gto_basis_set => auxiliary_bases(atom)%gto_basis_set
+         positions(:, site) = frame%positions(:, atom) + MATMUL(frame%cell, REAL(auxiliary_images(:, image), dp))
+      END DO
+      END DO
+      CALL active_lattice_covectors(covectors, active)
+      coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+      atom_geometry = 0.0_dp
+      cell_geometry = 0.0_dp
+      DO image = 1, SIZE(covectors)
+         IF (active(image) == 0) CYCLE
+         CALL qs_upf_inverse_hfx_tensor_adjoint(frame, frame, kinds, augmentation, bases, positions, factors, &
+                                                center_images, covectors(image), metric=metric, &
+                                                atom_geometry=local_atoms, cell_geometry=local_cell, &
+                                                auxiliary_geometry=local_auxiliary, ao_image=ao_images(:, image), &
+                                                coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                                coupled_coefficients_covector=shared)
+         coefficients_covector(:, :, :) = coefficients_covector + shared
+         atom_geometry(:, :) = atom_geometry + local_atoms
+         cell_geometry(:, :) = cell_geometry + local_cell
+         DO site = 1, nsite
+            atom = MODULO(site - 1, natom) + 1
+            ri_image = (site - 1)/natom + 1
+            atom_geometry(:, atom) = atom_geometry(:, atom) + local_auxiliary(:, site)
+            DO axis = 1, 3
+               cell_geometry(axis, :) = cell_geometry(axis, :) &
+                                        + local_auxiliary(axis, site)*REAL(auxiliary_images(:, ri_image), dp)
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_hfx_lattice_adjoint
 
 ! **************************************************************************************************
 !> \brief Contract complete physical AO image covectors with original transition geometry responses.
@@ -936,7 +1069,9 @@ CONTAINS
          left_coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
       IF (PRESENT(right_coefficients_covector)) THEN
-         CPASSERT(ALL(SHAPE(right_coefficients_covector) == SHAPE(right_frame%coefficients)))
+         IF (ANY(SHAPE(right_coefficients_covector) /= SHAPE(right_frame%coefficients))) THEN
+            CPABORT("Invalid right coefficient covector dimensions")
+         END IF
          right_coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
       CALL tensor_partition(left_frame, right_frame, auxiliary_bases, covector_real, nblks, sizes_i, sizes_j, sizes_k, &

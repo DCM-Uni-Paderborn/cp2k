@@ -59,8 +59,8 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :), max_shells
 
       COMPLEX(dp), ALLOCATABLE                           :: coupling(:, :, :), rhs(:, :, :)
-      INTEGER                                            :: extent(3), i, image, ix, iy, iz, &
-                                                            limit, nao, np, q, shell, status
+      INTEGER                                            :: extent(3), i, image, ix, iy, iz, limit, &
+                                                            nao, np, q, shell, status
       INTEGER, ALLOCATABLE                               :: images(:, :)
 
       CPASSERT(.NOT. frame%atom_local .AND. .NOT. frame%direct)
@@ -144,8 +144,10 @@ CONTAINS
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_lattice_type), INTENT(IN)      :: state
       COMPLEX(dp), INTENT(IN)                            :: covector(:, :, :)
-      REAL(dp), INTENT(OUT)                              :: point_geometry(:, :), atom_geometry(:, :), &
-                                                            cell_geometry(3, 3), weights_covector(:)
+      REAL(dp), INTENT(OUT)                              :: point_geometry(:, :), &
+                                                            atom_geometry(:, :), &
+                                                            cell_geometry(3, 3), &
+                                                            weights_covector(:)
       INTEGER, INTENT(OUT)                               :: info
 
       COMPLEX(dp), ALLOCATABLE                           :: coupling_covector(:, :, :), &
@@ -164,7 +166,7 @@ CONTAINS
       ALLOCATE (coupling_covector, MOLD=state%inverse%coupling)
       ALLOCATE (overlaps_covector, MOLD=state%overlaps)
       CALL upf_inverse_lattice_adjoint(state%inverse, state%coefficients, covector, retained_covector, &
-                                        coupling_covector, state%solve_tolerance, info)
+                                       coupling_covector, state%solve_tolerance, info)
       IF (info /= 0) RETURN
       overlaps_covector = CMPLX(0.0_dp, 0.0_dp, dp)
       DO q = 1, SIZE(state%overlap_images, 2)
@@ -175,8 +177,8 @@ CONTAINS
          END DO
       END DO
       CALL qs_upf_inverse_lattice_kernel_adjoint(frame, state%inverse%kernel_images, coupling_covector, &
-                                                  overlaps_covector, point_geometry, atom_geometry, &
-                                                  cell_geometry, weights_covector)
+                                                 overlaps_covector, point_geometry, atom_geometry, &
+                                                 cell_geometry, weights_covector)
    END SUBROUTINE qs_upf_inverse_lattice_adjoint
 
 ! **************************************************************************************************
@@ -785,6 +787,11 @@ CONTAINS
                                             frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], beta(:, first:last), &
                                             gradient=beta_gradient(:, first:last, :))
          END DO
+         ! Outside every compact projector support, both the defining integrals and
+         ! all geometry/measure derivatives vanish. Values alone do not suffice
+         ! here, since a zero field can still have a nonzero spatial derivative.
+         IF (ALL(beta == CMPLX(0.0_dp, 0.0_dp, dp)) .AND. &
+             ALL(beta_gradient == CMPLX(0.0_dp, 0.0_dp, dp))) CYCLE
          DO j = 1, SIZE(frame%images, 2)
             image = frame%images(:, j) - frame%images(:, i)
             q = 1

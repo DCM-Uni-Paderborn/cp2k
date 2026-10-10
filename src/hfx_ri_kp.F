@@ -111,9 +111,13 @@ MODULE hfx_ri_kp
                                               distribution_3d_type,&
                                               neighbor_list_3c_iterator_type,&
                                               neighbor_list_3c_type
-   USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_lattice_gradient
+   USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_lattice_adjoint,&
+                                              qs_upf_inverse_hfx_lattice_centers,&
+                                              qs_upf_inverse_hfx_lattice_gradient
+   USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_lattice_adjoint
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type
+   USE uspp_augmentation,               ONLY: uspp_augmentation_type
    USE util,                            ONLY: get_limit
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -1553,34 +1557,42 @@ CONTAINS
       TYPE(mp_para_env_type), INTENT(IN)                 :: subgroup
       LOGICAL, INTENT(IN)                                :: use_virial
 
-      INTEGER                                            :: atom, kind
-      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
+      COMPLEX(dp), ALLOCATABLE                           :: coefficients_covector(:, :, :)
+      INTEGER                                            :: atom, axis, defining_owner, info, kind
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), center_images(:, :), &
+                                                            kind_of(:)
       INTEGER, POINTER                                   :: cells(:, :)
-      REAL(dp)                                           :: strain_gradient(3, 3)
-      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :)
+      REAL(dp)                                           :: defining_cell(3, 3), &
+                                                            explicit_cell(3, 3), &
+                                                            strain_gradient(3, 3)
+      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :), &
+                                                            defining_atoms(:, :), &
+                                                            defining_points(:, :), &
+                                                            defining_weights(:)
       TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:), kind_bases(:)
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(qs_force_type), POINTER                       :: force(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      TYPE(uspp_augmentation_type), POINTER              :: augmentation(:)
       TYPE(virial_type), POINTER                         :: virial
 
       CALL get_qs_env(qs_env, ks_env=ks_env, kpoints=kpoints, qs_kind_set=kinds, particle_set=atoms, &
-                      atomic_kind_set=atomic_kinds, force=force, virial=virial)
+                      atomic_kind_set=atomic_kinds, force=force, virial=virial, para_env=para_env)
       CALL get_ks_env(ks_env, upf_inverse=inverse)
       CPASSERT(ASSOCIATED(inverse))
       CPASSERT(inverse%enabled .AND. ASSOCIATED(kpoints))
       IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          frame => inverse%bloch%frames(1)%ao
+         augmentation => inverse%bloch%augmentation%kinds
       ELSE
          frame => inverse%frame%ao
-      END IF
-      IF (.NOT. frame%atom_local) THEN
-         CPABORT("General inverse UPF lattice exchange forces are not implemented yet")
+         augmentation => inverse%augmentation%kinds
       END IF
       CALL get_kpoint_info(kpoints, index_to_cell=cells)
       CPASSERT(SIZE(covectors) == ri_data%nimg .AND. ri_data%nimg <= SIZE(cells, 2))
@@ -1590,26 +1602,58 @@ CONTAINS
       DO atom = 1, SIZE(atoms)
          bases(atom)%gto_basis_set => kind_bases(kind_of(atom))%gto_basis_set
       END DO
-      IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
-         IF (use_virial) THEN
-            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%bloch%augmentation%kinds, bases, &
-                                                     cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                     frame%images, covectors, atom_gradient, strain_gradient, &
-                                                     metric=ri_data%ri_metric)
-         ELSE
-            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%bloch%augmentation%kinds, bases, &
-                                                     cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                     frame%images, covectors, atom_gradient, &
-                                                     metric=ri_data%ri_metric)
+      IF (.NOT. frame%atom_local) THEN
+         CPASSERT(inverse%lattice%ready)
+         CALL qs_upf_inverse_hfx_lattice_centers(inverse%lattice%inverse%images, &
+                                                 cells(:, 1:ri_data%nimg), center_images)
+         ALLOCATE (coefficients_covector, MOLD=inverse%lattice%coefficients)
+         CALL qs_upf_inverse_hfx_lattice_adjoint(frame, kinds, augmentation, bases, &
+                                                 cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
+                                                 center_images, covectors, inverse%lattice%inverse%images, &
+                                                 inverse%lattice%coefficients, coefficients_covector, atom_gradient, &
+                                                 explicit_cell, metric=ri_data%ri_metric)
+         strain_gradient = MATMUL(atom_gradient, TRANSPOSE(frame%positions)) &
+                           + MATMUL(explicit_cell, TRANSPOSE(frame%cell))
+         ! Each subgroup has one replicated coefficient covector. The common defining
+         ! quadrature must see every subgroup contribution, exactly once.
+         IF (subgroup%mepos /= 0) coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+         CALL para_env%sum(coefficients_covector)
+         defining_owner = 0
+         IF (para_env%mepos == 0) defining_owner = 1
+         CALL frame%point_comm%sum(defining_owner)
+         IF (defining_owner /= 0) THEN
+            ! Use only the point communicator containing the world source. This also
+            ! selects one copy of a replicated local PW grid whose communicator is self.
+            ALLOCATE (defining_atoms, MOLD=frame%positions)
+            ALLOCATE (defining_points, MOLD=frame%points)
+            ALLOCATE (defining_weights, MOLD=frame%weights)
+            CALL qs_upf_inverse_lattice_adjoint(frame, inverse%lattice, coefficients_covector, &
+                                                defining_points, defining_atoms, defining_cell, defining_weights, info)
+            IF (info /= 0) CPABORT("Coupled physical inverse exchange adjoint could not be solved")
+            DO atom = 1, SIZE(atoms)
+               kind = kind_of(atom)
+               force(kind)%fock_4c(:, atom_of_kind(atom)) = force(kind)%fock_4c(:, atom_of_kind(atom)) &
+                                                            + defining_atoms(:, atom)
+            END DO
+            IF (use_virial) THEN
+               virial%pv_fock_4c(:, :) = virial%pv_fock_4c &
+                                         + MATMUL(defining_atoms, TRANSPOSE(frame%positions)) &
+                                         + MATMUL(defining_cell, TRANSPOSE(frame%cell)) &
+                                         + MATMUL(defining_points, TRANSPOSE(frame%points))
+               DO axis = 1, 3
+                  virial%pv_fock_4c(axis, axis) = virial%pv_fock_4c(axis, axis) &
+                                                  + SUM(defining_weights*frame%weights)
+               END DO
+            END IF
          END IF
       ELSE
          IF (use_virial) THEN
-            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%augmentation%kinds, bases, &
+            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, augmentation, bases, &
                                                      cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
                                                      frame%images, covectors, atom_gradient, strain_gradient, &
                                                      metric=ri_data%ri_metric)
          ELSE
-            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, inverse%augmentation%kinds, bases, &
+            CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, augmentation, bases, &
                                                      cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
                                                      frame%images, covectors, atom_gradient, &
                                                      metric=ri_data%ri_metric)
