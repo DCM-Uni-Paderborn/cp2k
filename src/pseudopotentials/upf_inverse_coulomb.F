@@ -49,6 +49,10 @@ MODULE upf_inverse_coulomb
       REAL(dp), ALLOCATABLE :: values(:, :, :, :)
    END TYPE pair_map_type
 
+   TYPE harmonic_work_type
+      REAL(dp), ALLOCATABLE :: values(:), response(:), gradient(:, :)
+   END TYPE harmonic_work_type
+
    TYPE upf_inverse_coulomb_map_type
       PRIVATE
       INTEGER :: periodicity(3) = [1, 1, 1]
@@ -500,6 +504,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: ab(:, :), ba(:, :), dab(:, :), &
                                                             dba(:, :), dpoint(:, :), nodes(:), &
                                                             point(:, :), weights(:)
+      TYPE(harmonic_work_type)                           :: work_a, work_b
 
       CPASSERT(ALL(radii_a > 0.0_dp) .AND. ALL(ieee_is_finite(radii_a)))
       CPASSERT(ALL(radii_b > 0.0_dp) .AND. ALL(ieee_is_finite(radii_b)))
@@ -558,6 +563,12 @@ CONTAINS
       CALL init_spherical_harmonics(MAX(MAXVAL(l_a), MAXVAL(l_b)), -1)
       ALLOCATE (ab(SIZE(l_a), SIZE(l_b)), ba(SIZE(l_b), SIZE(l_a)))
       IF (PRESENT(response)) ALLOCATE (dab(SIZE(l_a), SIZE(l_b)), dba(SIZE(l_b), SIZE(l_a)))
+      ! Reuse harmonic fields for every radial-shell pair and both orientations.
+      ALLOCATE (work_a%values(SIZE(l_a)), work_b%values(SIZE(l_b)))
+      IF (PRESENT(response)) THEN
+         ALLOCATE (work_a%response(SIZE(l_a)), work_a%gradient(3, SIZE(l_a)))
+         ALLOCATE (work_b%response(SIZE(l_b)), work_b%gradient(3, SIZE(l_b)))
+      END IF
       nq = MAX(32, MAXVAL(l_a) + MAXVAL(l_b) + 2)
       ALLOCATE (nodes(nq), weights(nq))
       CALL polar_rule(nodes, weights)
@@ -595,14 +606,14 @@ CONTAINS
             END IF
             IF (PRESENT(response)) THEN
                CALL translated_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
-                                     displacement, da, db, delta, ab, nodes, weights, dab)
+                                     displacement, da, db, delta, ab, nodes, weights, work_a, work_b, dab)
                CALL translated_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
-                                     -displacement, db, da, -delta, ba, nodes, weights, dba)
+                                     -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, dba)
             ELSE
                CALL translated_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
-                                     displacement, da, db, delta, ab, nodes, weights)
+                                     displacement, da, db, delta, ab, nodes, weights, work_a, work_b)
                CALL translated_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
-                                     -displacement, db, da, -delta, ba, nodes, weights)
+                                     -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a)
             END IF
             kernel(i, :, j, :) = 0.5_dp*(ab + TRANSPOSE(ba))
             IF (PRESENT(response)) response(i, :, j, :) = 0.5_dp*(dab + TRANSPOSE(dba))
@@ -715,14 +726,17 @@ CONTAINS
 !> \param value ...
 !> \param nodes Shared polar quadrature nodes, independent of the two shell radii.
 !> \param weights Shared polar quadrature weights.
+!> \param work_a Harmonic fields reused across target shells.
+!> \param work_b Harmonic fields reused across source shells.
 !> \param response ...
 ! **************************************************************************************************
-   SUBROUTINE translated_shell(a, b, la, ia, lb, ib, d, da, db, dd, value, nodes, weights, response)
+   SUBROUTINE translated_shell(a, b, la, ia, lb, ib, d, da, db, dd, value, nodes, weights, work_a, work_b, response)
       REAL(dp), INTENT(IN)                               :: a, b
       INTEGER, INTENT(IN)                                :: la(:), ia(:), lb(:), ib(:)
       REAL(dp), INTENT(IN)                               :: d(3), da, db, dd(3)
       REAL(dp), INTENT(OUT)                              :: value(:, :)
       REAL(dp), INTENT(IN)                               :: nodes(:), weights(:)
+      TYPE(harmonic_work_type), INTENT(INOUT)            :: work_a, work_b
       REAL(dp), INTENT(OUT), OPTIONAL                    :: response(:, :)
 
       INTEGER                                            :: axis, channel, iphi, iq, nphi, nq
@@ -730,8 +744,6 @@ CONTAINS
       REAL(dp) :: azimuth, bound, dbound, dex(3), dey(3), dez(3), dfactor, distance, dleft, &
          dlength, dmu, dright, dt, du(3), dweight, dx(3), ex(3), ey(3), ez(3), factor, left, &
          length, mu, norm_x, reference(3), right, scale, sine, t, tmax, u(3), weight, x(3)
-      REAL(dp), ALLOCATABLE                              :: dya(:), dyb(:), ga(:, :), gb(:, :), &
-                                                            ya(:), yb(:)
 
       derive = PRESENT(response)
       distance = SQRT(SUM(d**2))
@@ -753,8 +765,6 @@ CONTAINS
       IF (derive) dey = cross(dez, ex) + cross(ez, dex)
       nq = SIZE(nodes)
       nphi = MAXVAL(la) + MAXVAL(lb) + 1
-      ALLOCATE (ya(SIZE(la)), yb(SIZE(lb)))
-      IF (derive) ALLOCATE (dya(SIZE(la)), dyb(SIZE(lb)), ga(3, SIZE(la)), gb(3, SIZE(lb)))
       value = 0.0_dp
       IF (derive) response = 0.0_dp
       tmax = distance + a
@@ -809,17 +819,17 @@ CONTAINS
                   du = dmu*ez + mu*dez - mu*dmu/sine*(COS(azimuth)*ex + SIN(azimuth)*ey) + &
                        sine*(COS(azimuth)*dex + SIN(azimuth)*dey)
                   dx = dd + da*u + a*du
-                  CALL solid_fields(u, la, ia, ya, ga)
-                  CALL solid_fields(x, lb, ib, yb, gb)
+                  CALL solid_fields(u, la, ia, work_a%values, work_a%gradient)
+                  CALL solid_fields(x, lb, ib, work_b%values, work_b%gradient)
                   DO channel = 1, SIZE(la)
-                     dya(channel) = DOT_PRODUCT(du, ga(:, channel))
+                     work_a%response(channel) = DOT_PRODUCT(du, work_a%gradient(:, channel))
                   END DO
                   DO channel = 1, SIZE(lb)
-                     dyb(channel) = DOT_PRODUCT(dx, gb(:, channel))
+                     work_b%response(channel) = DOT_PRODUCT(dx, work_b%gradient(:, channel))
                   END DO
                ELSE
-                  CALL solid_fields(u, la, ia, ya)
-                  CALL solid_fields(x, lb, ib, yb)
+                  CALL solid_fields(u, la, ia, work_a%values)
+                  CALL solid_fields(x, lb, ib, work_b%values)
                END IF
                DO channel = 1, SIZE(lb)
                   IF (norm_x < b) THEN
@@ -831,10 +841,12 @@ CONTAINS
                      IF (derive) dfactor = factor*(lb(channel)*db/b - &
                                                    (2*lb(channel) + 1)*DOT_PRODUCT(x, dx)/norm_x**2)
                   END IF
-                  scale = factor*yb(channel)
-                  value(:, channel) = value(:, channel) + weight*ya*scale
-                  IF (derive) response(:, channel) = response(:, channel) + dweight*ya*scale + &
-                                                     weight*(dya*scale + ya*(dfactor*yb(channel) + factor*dyb(channel)))
+                  scale = factor*work_b%values(channel)
+                  value(:, channel) = value(:, channel) + weight*work_a%values*scale
+                  IF (derive) response(:, channel) = response(:, channel) + dweight*work_a%values*scale + &
+                                                     weight*(work_a%response*scale + &
+                                                             work_a%values*(dfactor*work_b%values(channel) + &
+                                                                            factor*work_b%response(channel)))
                END DO
             END DO
          END DO
