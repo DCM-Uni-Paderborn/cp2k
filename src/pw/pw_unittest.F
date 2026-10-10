@@ -6,6 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 
 PROGRAM pw_unittest
+   USE bessel_lib,                      ONLY: bessk1
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE kinds,                           ONLY: dp
@@ -26,11 +27,19 @@ PROGRAM pw_unittest
    USE pw_methods,                      ONLY: do_accurate_sum,&
                                               do_standard_sum,&
                                               pw_integral_ab
-   USE pw_poisson_methods,              ONLY: pw_poisson_set,&
+   USE pw_poisson_methods,              ONLY: pw_green_strain_response,&
+                                              pw_poisson_set,&
                                               pw_poisson_solve
-   USE pw_poisson_types,                ONLY: pw_poisson_mt,&
+   USE pw_poisson_types,                ONLY: greens_fn_type,&
+                                              pw_green_create,&
+                                              pw_green_release,&
+                                              pw_poisson_analytic,&
+                                              pw_poisson_mt,&
+                                              pw_poisson_parameter_type,&
                                               pw_poisson_type
-   USE pw_pool_types,                   ONLY: pw_pool_create
+   USE pw_pool_types,                   ONLY: pw_pool_create,&
+                                              pw_pool_release,&
+                                              pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r1d_gs_type
    USE realspace_grid_cube,             ONLY: cube_read_values,&
@@ -54,7 +63,8 @@ PROGRAM pw_unittest
    max_error = 0.0_dp
    CALL check_pw_integral_and_poisson()
    CALL check_mt2d_kernel()
-   PRINT '(A,ES16.7)', 'PW integral and MT2D kernel maximum scaled error: ', max_error
+   CALL check_green_strain()
+   PRINT '(A,ES16.7)', 'PW integral and Coulomb kernel maximum scaled error: ', max_error
    CALL cp2k_finalize()
 
 CONTAINS
@@ -301,6 +311,82 @@ CONTAINS
          CALL pw_grid_release(grid)
       END DO
    END SUBROUTINE check_pw_integral_and_poisson
+
+! **************************************************************************************************
+!> \brief Compare native FFT kernels with newly constructed strained-cell kernels.
+!>        Fixed reciprocal indices are matched across MPI layouts, including G0.
+! **************************************************************************************************
+   SUBROUTINE check_green_strain()
+      REAL(dp), PARAMETER :: step = 3.e-4_dp, shifts(4) = [step, -step, 2.0_dp*step, -2.0_dp*step]
+
+      INTEGER                                            :: alpha, axis, beta, ig, mask, sign_step
+      REAL(dp)                                           :: cell(3, 3), derivative, &
+                                                            shifted_cell(3, 3), strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: response(:), shifted_values(:, :)
+      TYPE(greens_fn_type)                               :: green, shifted_green
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(pw_c1d_gs_type)                               :: matched
+      TYPE(pw_grid_type), POINTER                        :: dct_grid, grid, shifted_grid, super_grid
+      TYPE(pw_poisson_parameter_type)                    :: parameters
+      TYPE(pw_pool_type), POINTER                        :: pool, shifted_pool
+
+      CALL comm%set_handle(mp_comm_world%get_handle())
+      NULLIFY (dct_grid, grid, shifted_grid, super_grid, pool, shifted_pool)
+      ! x*K1(x) tends to one. The missing factor x in the I1 polynomial violates this limit.
+      CALL check_error(1.e-6_dp*bessk1(1.e-6_dp), 1.0_dp, 2.e-11_dp)
+      cell = 0.0_dp
+      DO axis = 1, 3
+         cell(axis, axis) = REAL(5 + 4*axis, dp)
+      END DO
+      DO mask = 0, 8
+         parameters%solver = pw_poisson_analytic
+         parameters%periodic = MERGE(1, 0, BTEST(mask, [0, 1, 2]))
+         IF (mask == 8) THEN
+            parameters%solver = pw_poisson_mt
+            parameters%periodic = [1, 1, 0]
+            parameters%mt_alpha = 1.0_dp
+         END IF
+         CALL pw_grid_create(grid, comm, cell, grid_span=HALFSPACE, npts=[5, 5, 5], odd=.TRUE., fft_usage=.FALSE.)
+         CALL pw_pool_create(pool, grid)
+         CALL pw_green_create(green, parameters, cell, pool, super_grid, dct_grid)
+         CALL matched%create(grid)
+         ALLOCATE (response(SIZE(matched%array)), shifted_values(SIZE(matched%array), 4))
+         strain = 0.0_dp
+         CALL pw_green_strain_response(green, strain, response)
+         CALL check_error(MAXVAL(ABS(response)), 0.0_dp, 0.0_dp)
+         DO alpha = 1, 3
+            IF (parameters%periodic(alpha) == 0) CYCLE
+            DO beta = 1, 3
+               IF (parameters%periodic(beta) == 0) CYCLE
+               strain = 0.0_dp
+               strain(alpha, beta) = 1.0_dp
+               CALL pw_green_strain_response(green, strain, response)
+               DO sign_step = 1, 4
+                  shifted_cell = cell + shifts(sign_step)*MATMUL(strain, cell)
+                  CALL pw_grid_create(shifted_grid, comm, shifted_cell, grid_span=HALFSPACE, &
+                                      npts=[5, 5, 5], odd=.TRUE., fft_usage=.FALSE.)
+                  CALL pw_pool_create(shifted_pool, shifted_grid)
+                  CALL pw_green_create(shifted_green, parameters, shifted_cell, shifted_pool, super_grid, dct_grid)
+                  CALL pw_copy_match(shifted_green%influence_fn, matched)
+                  shifted_values(:, sign_step) = REAL(matched%array, dp)
+                  CALL pw_green_release(shifted_green, shifted_pool)
+                  CALL pw_pool_release(shifted_pool)
+                  CALL pw_grid_release(shifted_grid)
+               END DO
+               DO ig = 1, SIZE(response)
+                  derivative = (8.0_dp*(shifted_values(ig, 1) - shifted_values(ig, 2)) &
+                                - shifted_values(ig, 3) + shifted_values(ig, 4))/(12.0_dp*step)
+                  CALL check_error(response(ig), derivative, 3.e-9_dp)
+               END DO
+            END DO
+         END DO
+         DEALLOCATE (response, shifted_values)
+         CALL matched%release()
+         CALL pw_green_release(green, pool)
+         CALL pw_pool_release(pool)
+         CALL pw_grid_release(grid)
+      END DO
+   END SUBROUTINE check_green_strain
 
 ! **************************************************************************************************
 !> \brief Compare the MT2D kernel and in-plane virial with independent strained-cell energies.

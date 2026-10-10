@@ -12,6 +12,7 @@
 ! **************************************************************************************************
 MODULE pw_poisson_methods
 
+   USE bessel_lib, ONLY: bessk0_response, bessk1, bessk1_response
    USE cp_log_handling, ONLY: cp_to_string
    USE dielectric_methods, ONLY: dielectric_compute
    USE kinds, ONLY: dp
@@ -64,7 +65,7 @@ MODULE pw_poisson_methods
    LOGICAL, PRIVATE, PARAMETER :: debug_this_module = .TRUE.
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'pw_poisson_methods'
 
-   PUBLIC :: pw_poisson_rebuild, &
+   PUBLIC :: pw_green_strain_response, pw_poisson_rebuild, &
              pw_poisson_solve, pw_poisson_set, pw_func_u_convolution
 
    INTEGER, PARAMETER                       :: use_rs_grid = 0, &
@@ -95,6 +96,82 @@ MODULE pw_poisson_methods
    END INTERFACE
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Directional derivative of the FFT Coulomb kernel in its periodic subspace.
+!>        Reciprocal indices and isolated cell dimensions remain fixed. The volume contribution
+!>        belongs to the caller. Isolated systems have no periodic strain or associated stress.
+!> \param green The actual unscreened kernel at the unperturbed geometry.
+!> \param strain Affine Cartesian strain, with zero rows and columns along isolated axes.
+!> \param response Kernel derivative, in the same local reciprocal ordering as influence_fn.
+! **************************************************************************************************
+   SUBROUTINE pw_green_strain_response(green, strain, response)
+      TYPE(greens_fn_type), INTENT(IN)                   :: green
+      REAL(dp), INTENT(IN)                               :: strain(3, 3)
+      REAL(dp), INTENT(OUT)                              :: response(:)
+
+      INTEGER                                            :: axis, ig, iz, periodic(3)
+      REAL(dp)                                           :: dg(3), dz, g2, kernel, parallel(3), q, &
+                                                            radius, tail, tolerance, z
+      TYPE(pw_grid_type), POINTER                        :: grid
+
+      CPASSERT(.NOT. green%p3m .AND. .NOT. green%sr_screening)
+      grid => green%influence_fn%pw_grid
+      CPASSERT(SIZE(response) == SIZE(green%influence_fn%array))
+      periodic = 1
+      iz = green%special_dimension
+      SELECT CASE (green%method)
+      CASE (PERIODIC3D)
+      CASE (ANALYTIC0D)
+         periodic = 0
+      CASE (ANALYTIC1D)
+         CPASSERT(iz >= 1 .AND. iz <= 3)
+         periodic = 0
+         periodic(iz) = 1
+      CASE (ANALYTIC2D, MT2D)
+         CPASSERT(iz >= 1 .AND. iz <= 3)
+         periodic(iz) = 0
+      CASE DEFAULT
+         CPABORT("Strain response for this Coulomb kernel is not implemented")
+      END SELECT
+      tolerance = 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(strain)))
+      DO axis = 1, 3
+         IF (periodic(axis) == 1) CYCLE
+         CPASSERT(MAXVAL(ABS(strain(axis, :))) <= tolerance)
+         CPASSERT(MAXVAL(ABS(strain(:, axis))) <= tolerance)
+      END DO
+      response = 0.0_dp
+      IF (green%method == ANALYTIC0D) RETURN
+      DO ig = grid%first_gne0, grid%ngpts_cut_local
+         g2 = grid%gsq(ig)
+         dg = -MATMUL(TRANSPOSE(strain), grid%g(:, ig))
+         kernel = REAL(green%influence_fn%array(ig), dp)
+         response(ig) = -2.0_dp*kernel*DOT_PRODUCT(grid%g(:, ig), dg)/g2
+         SELECT CASE (green%method)
+         CASE (ANALYTIC1D)
+            z = ABS(grid%g(iz, ig))
+            IF (z == 0.0_dp) CYCLE
+            radius = green%radius
+            q = SQRT(MAX(0.0_dp, g2 - z*z))
+            dz = -strain(iz, iz)*z
+            response(ig) = response(ig) + fourpi/g2*radius*dz* &
+                           (radius*q*BESSEL_J1(radius*q)*bessk0_response(radius*z) - &
+                            BESSEL_J0(radius*q)*(bessk1(radius*z) + radius*z*bessk1_response(radius*z)))
+         CASE (ANALYTIC2D, MT2D)
+            parallel = grid%g(:, ig)
+            parallel(iz) = 0.0_dp
+            q = NORM2(parallel)
+            IF (q == 0.0_dp) CYCLE
+            radius = 0.5_dp*green%slab_size
+            IF (green%method == ANALYTIC2D) THEN
+               tail = (-1.0_dp)**grid%g_hat(iz, ig)*EXP(-radius*q)
+            ELSE
+               tail = COS(grid%g(iz, ig)*radius)*EXP(-radius*q)
+            END IF
+            response(ig) = response(ig) + fourpi/g2*tail*radius*DOT_PRODUCT(parallel, dg)/q
+         END SELECT
+      END DO
+   END SUBROUTINE pw_green_strain_response
 
 ! **************************************************************************************************
 !> \brief removes all the object created from the parameters pw_pools and cell
