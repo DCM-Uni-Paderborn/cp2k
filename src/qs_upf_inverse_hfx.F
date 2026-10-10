@@ -56,6 +56,8 @@ MODULE qs_upf_inverse_hfx
    PUBLIC :: qs_upf_inverse_hfx_tensor_adjoint
    PUBLIC :: qs_upf_inverse_hfx_gamma_images
 
+   INTEGER, PARAMETER :: max_cached_potential_words = 16*1024**2
+
    ! Scratch fields are recomputed at every radial row and retained only within one center call.
    TYPE inverse_field_workspace_type
       COMPLEX(dp), ALLOCATABLE :: delta(:, :), ddelta(:, :), single_delta(:, :), single_ddelta(:, :), &
@@ -71,10 +73,16 @@ MODULE qs_upf_inverse_hfx
       COMPLEX(dp), ALLOCATABLE :: left(:, :), right(:, :), dleft(:, :), dright(:, :)
    END TYPE lattice_overlap_type
 
-   ! Original Q integrals are independent of the AO block and its coefficients.
+   TYPE transition_potential_type
+      REAL(dp), ALLOCATABLE :: values(:, :, :), gradient(:, :, :, :), cell_gradient(:, :, :, :, :)
+   END TYPE transition_potential_type
+
+   ! Original Q integrals and auxiliary potentials are independent of the AO block and its coefficients.
    ! Entries are local to one RI block, geometry and tensor/adjoint call.
    TYPE transition_augmentation_type
       REAL(dp), ALLOCATABLE :: values(:, :, :), gradient(:, :, :, :), cell_gradient(:, :, :, :, :)
+      TYPE(transition_potential_type), ALLOCATABLE :: potential_fields
+      INTEGER, POINTER :: potential_budget => NULL()
    END TYPE transition_augmentation_type
 
 CONTAINS
@@ -538,6 +546,7 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: auxiliary_start(:), sizes_i(:), &
                                                             sizes_j(:), sizes_k(:), start_i(:), &
                                                             start_j(:), start_k(:)
+      INTEGER, TARGET                                    :: potential_budget
       LOGICAL                                            :: derivatives
       REAL(dp), ALLOCATABLE                              :: radial_weights(:)
       TYPE(gaussian_coulomb_fields_type)                 :: fields
@@ -614,6 +623,7 @@ CONTAINS
          ELSE
             block_i = outer
             ALLOCATE (qcache(SIZE(left_frame%center_atoms), SIZE(center_images, 2), sizes_i(block_i)))
+            potential_budget = max_cached_potential_words
          END IF
          DO inner = 1, ninner
             IF (PRESENT(ao_image)) THEN
@@ -656,6 +666,7 @@ CONTAINS
                               IF (ALLOCATED(qcache)) THEN
                                  slot = start - start_i(block_i) + 1
                                  qentry => qcache(center, image, slot)
+                                 qentry%potential_budget => potential_budget
                               END IF
                               IF (derivatives) THEN
                                  IF (PRESENT(ao_image)) THEN
@@ -822,6 +833,7 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: auxiliary_start(:), sizes_i(:), &
                                                             sizes_j(:), sizes_k(:), start_i(:), &
                                                             start_j(:), start_k(:)
+      INTEGER, TARGET                                    :: potential_budget
       LOGICAL                                            :: coefficients, derivatives, &
                                                             found_imaginary, found_real, &
                                                             full_geometry
@@ -889,6 +901,7 @@ CONTAINS
       CALL gaussian_coulomb_fields_init(maxl)
       DO block_i = 1, nblks(1)
          ALLOCATE (qcache(SIZE(left_frame%center_atoms), SIZE(center_images, 2), sizes_i(block_i)))
+         potential_budget = max_cached_potential_words
          DO block_j = 1, nblks(2)
          DO block_k = 1, nblks(3)
             CALL dbt_get_stored_coordinates(covector_real, [block_i, block_j, block_k], owner)
@@ -941,6 +954,7 @@ CONTAINS
                                       get_number_of_lebedev_grid(l=MAX(0, transition_augmentation%lmax) + maxl + 1))
                            DO image = 1, SIZE(center_images, 2)
                               slot = start - start_i(block_i) + 1
+                              qcache(center, image, slot)%potential_budget => potential_budget
                               IF (full_geometry) THEN
                                  CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
                                                                         [start_j(block_j), start_j(block_j + 1) - 1], &
@@ -1088,6 +1102,95 @@ CONTAINS
          END IF
       END IF
    END SUBROUTINE prepare_transition_augmentation
+
+! **************************************************************************************************
+!> \brief Retain auxiliary fields on the active radial rows for reuse across AO blocks.
+!>        The caller owns one workspace per center/image and RI shell at one geometry. All
+!>        entries in its RI block share a bounded budget in real words. An exhausted budget
+!>        leaves the original pointwise evaluation available. Gradients can be added later.
+!> \param cache ...
+!> \param fields ...
+!> \param r ...
+!> \param radial_weights ...
+!> \param directions ...
+!> \param position ...
+!> \param auxiliary_center ...
+!> \param radius ...
+!> \param cell ...
+!> \param auxiliary_images ...
+!> \param gradients ...
+! **************************************************************************************************
+   SUBROUTINE prepare_transition_potentials(cache, fields, r, radial_weights, directions, position, &
+                                            auxiliary_center, radius, cell, auxiliary_images, gradients)
+      TYPE(transition_augmentation_type), INTENT(INOUT)  :: cache
+      TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
+      REAL(dp), INTENT(IN)                               :: r(:), radial_weights(:), &
+                                                            directions(:, :), position(3), &
+                                                            auxiliary_center(3), radius, cell(3, 3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: auxiliary_images(:, :)
+      LOGICAL, INTENT(IN)                                :: gradients
+
+      INTEGER                                            :: ia, ir, nang, naux, ncomponent, nrow, row
+      LOGICAL                                            :: new_gradients, new_values
+      REAL(dp)                                           :: point(3), words
+
+      IF (.NOT. ASSOCIATED(cache%potential_budget)) RETURN
+      CPASSERT(cache%potential_budget >= 0)
+      nang = SIZE(directions, 2)
+      naux = fields%nfunction
+      nrow = COUNT(r < radius .AND. radial_weights /= 0.0_dp)
+      IF (nrow == 0) RETURN
+      new_values = .NOT. ALLOCATED(cache%potential_fields)
+      new_gradients = gradients
+      IF (.NOT. new_values) THEN
+         CPASSERT(ALL(SHAPE(cache%potential_fields%values) == [nang, naux, nrow]))
+         new_gradients = gradients .AND. .NOT. ALLOCATED(cache%potential_fields%gradient)
+      END IF
+      IF (.NOT. (new_values .OR. new_gradients)) RETURN
+      ncomponent = 0
+      IF (new_values) ncomponent = 1
+      IF (new_gradients) THEN
+         ncomponent = ncomponent + 3
+         IF (PRESENT(auxiliary_images)) ncomponent = ncomponent + 9
+      END IF
+      ! Compare before converting to an integer, avoiding overflow for an uncached large shell.
+      words = REAL(nang, dp)*REAL(naux, dp)*REAL(nrow, dp)*REAL(ncomponent, dp)
+      IF (words > REAL(cache%potential_budget, dp)) RETURN
+      IF (new_values) THEN
+         ALLOCATE (cache%potential_fields)
+         ALLOCATE (cache%potential_fields%values(nang, naux, nrow))
+      END IF
+      IF (new_gradients) THEN
+         ALLOCATE (cache%potential_fields%gradient(3, naux, nang, nrow))
+         IF (PRESENT(auxiliary_images)) ALLOCATE (cache%potential_fields%cell_gradient(3, 3, naux, nang, nrow))
+      END IF
+      cache%potential_budget = cache%potential_budget - INT(words)
+      row = 0
+      DO ir = 1, SIZE(r)
+         IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
+         row = row + 1
+         DO ia = 1, nang
+            point = position + r(ir)*directions(:, ia)
+            IF (new_gradients) THEN
+               IF (PRESENT(auxiliary_images)) THEN
+                  CALL gaussian_coulomb_fields_periodic(fields, point - auxiliary_center, cell, auxiliary_images, &
+                                        cache%potential_fields%values(ia, :, row), cache%potential_fields%gradient(:, :, ia, row), &
+                                                        cache%potential_fields%cell_gradient(:, :, :, ia, row))
+               ELSE
+                CALL gaussian_coulomb_fields_evaluate(fields, point - auxiliary_center, cache%potential_fields%values(ia, :, row), &
+                                                        cache%potential_fields%gradient(:, :, ia, row))
+               END IF
+            ELSE
+               IF (PRESENT(auxiliary_images)) THEN
+                  CALL gaussian_coulomb_fields_periodic(fields, point - auxiliary_center, cell, auxiliary_images, &
+                                                        cache%potential_fields%values(ia, :, row))
+               ELSE
+                  CALL gaussian_coulomb_fields_evaluate(fields, point - auxiliary_center, cache%potential_fields%values(ia, :, row))
+               END IF
+            END IF
+         END DO
+      END DO
+   END SUBROUTINE prepare_transition_potentials
 
 ! **************************************************************************************************
 !> \brief Prepare PAW valence transition kernels without changing original compensation data.
@@ -1266,9 +1369,9 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE :: block(:, :), cl(:, :), cr(:, :), dl(:, :), dq(:, :), dr(:, :), &
          fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), q(:, :), work(:, :)
       INTEGER                                            :: atom, aux, axis, ia, ir, j, kind, nang, &
-                                                            naux, nl, nr, p, projectors, shift(3), &
-                                                            t
-      LOGICAL                                            :: derivatives
+                                                            naux, nl, nr, p, projectors, row, &
+                                                            shift(3), t
+      LOGICAL                                            :: cached, derivatives
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
       REAL(dp), ALLOCATABLE :: dpoints(:, :), points(:, :), potential_cell_gradients(:, :, :, :), &
          potential_gradients(:, :, :), potential_responses(:, :), potentials(:, :), &
@@ -1351,8 +1454,16 @@ CONTAINS
       END IF
       radius = MAX(left_frame%delta_cache(kind)%radius, right_frame%delta_cache(kind)%radius)
       CPASSERT(r(SIZE(r)) >= radius)
+      qi => temporary_augmentation
+      IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
+      CALL prepare_transition_potentials(qi, fields, r, radial_weights, directions, position, auxiliary_center, &
+                                         radius, left_frame%cell, auxiliary_images, derivatives)
+      cached = ALLOCATED(qi%potential_fields)
+      IF (cached .AND. derivatives) cached = ALLOCATED(qi%potential_fields%gradient)
+      row = 0
       DO ir = 1, SIZE(r)
          IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
+         row = row + 1
          DO ia = 1, nang
             points(:, ia) = position + r(ir)*directions(:, ia)
          END DO
@@ -1365,7 +1476,13 @@ CONTAINS
                               derivatives, shift, right_fields)
          DO ia = 1, nang
             IF (derivatives) THEN
-               IF (PRESENT(auxiliary_images)) THEN
+               IF (cached) THEN
+                  potentials(ia, :) = qi%potential_fields%values(ia, :, row)
+                  potential_gradients(:, :, ia) = qi%potential_fields%gradient(:, :, ia, row)
+                  IF (PRESENT(auxiliary_images)) THEN
+                     potential_cell_gradients(:, :, :, ia) = qi%potential_fields%cell_gradient(:, :, :, ia, row)
+                  END IF
+               ELSE IF (PRESENT(auxiliary_images)) THEN
                   CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
                                                         auxiliary_images, potentials(ia, :), potential_gradients(:, :, ia), &
                                                         potential_cell_gradients(:, :, :, ia))
@@ -1383,7 +1500,9 @@ CONTAINS
                   END DO
                END IF
             ELSE
-               IF (PRESENT(auxiliary_images)) THEN
+               IF (cached) THEN
+                  potentials(ia, :) = qi%potential_fields%values(ia, :, row)
+               ELSE IF (PRESENT(auxiliary_images)) THEN
                   CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
                                                         auxiliary_images, potentials(ia, :))
                ELSE
@@ -1429,8 +1548,6 @@ CONTAINS
       END DO
       IF (augmentation%nproj == 0) RETURN
       ALLOCATE (q(projectors, projectors), dq(projectors, projectors))
-      qi => temporary_augmentation
-      IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
       CALL prepare_transition_augmentation(fields, augmentation, position - auxiliary_center, directions, angular_weights, &
                                            qi, derivatives, left_frame%cell, auxiliary_images)
       phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(right_frame%reduced_k - left_frame%reduced_k, REAL(shift, dp)), dp))
@@ -1896,8 +2013,8 @@ CONTAINS
          gdl(:, :), gdr(:, :), q(:, :), unused_c(:, :), unused_d(:, :), work(:, :)
       INTEGER                                            :: atom, aux, axis, column, ia, ir, j, &
                                                             kind, nang, nl, nr, p, projectors, &
-                                                            shift(3), t
-      LOGICAL                                            :: full_geometry
+                                                            row, shift(3), t
+      LOGICAL                                            :: cached, full_geometry
       REAL(dp)                                           :: point_geometry(3), position(3), radius, &
                                                             response
       REAL(dp), ALLOCATABLE :: field_cell_gradient(:, :, :), field_gradient(:, :), points(:, :), &
@@ -1973,8 +2090,16 @@ CONTAINS
                 gcl(nang, nl), gdl(nang, nl), gcr(nang, nr), gdr(nang, nr))
       radius = MAX(left_frame%delta_cache(kind)%radius, right_frame%delta_cache(kind)%radius)
       CPASSERT(r(SIZE(r)) >= radius)
+      qi => temporary_augmentation
+      IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
+      CALL prepare_transition_potentials(qi, fields, r, radial_weights, directions, position, auxiliary_center, &
+                                         radius, left_frame%cell, auxiliary_images, full_geometry)
+      cached = ALLOCATED(qi%potential_fields)
+      IF (cached .AND. full_geometry) cached = ALLOCATED(qi%potential_fields%gradient)
+      row = 0
       DO ir = 1, SIZE(r)
          IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
+         row = row + 1
          DO ia = 1, nang
             points(:, ia) = position + r(ir)*directions(:, ia)
          END DO
@@ -1988,7 +2113,13 @@ CONTAINS
          DO ia = 1, nang
             IF (full_geometry) THEN
                field_cell_gradient = 0.0_dp
-               IF (PRESENT(auxiliary_images)) THEN
+               IF (cached) THEN
+                  potentials(ia, :) = qi%potential_fields%values(ia, :, row)
+                  field_gradient(:, :) = qi%potential_fields%gradient(:, :, ia, row)
+                  IF (PRESENT(auxiliary_images)) THEN
+                     field_cell_gradient(:, :, :) = qi%potential_fields%cell_gradient(:, :, :, ia, row)
+                  END IF
+               ELSE IF (PRESENT(auxiliary_images)) THEN
                   CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
                                                         auxiliary_images, potentials(ia, :), field_gradient, field_cell_gradient)
                ELSE
@@ -1999,6 +2130,8 @@ CONTAINS
                DO column = 1, 3
                   potential_cell_gradient(ia, :, :, column) = TRANSPOSE(field_cell_gradient(:, column, :))
                END DO
+            ELSE IF (cached) THEN
+               potentials(ia, :) = qi%potential_fields%values(ia, :, row)
             ELSE IF (PRESENT(auxiliary_images)) THEN
                CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
                                                      auxiliary_images, potentials(ia, :))
@@ -2058,8 +2191,6 @@ CONTAINS
       END DO
       IF (augmentation%nproj == 0) RETURN
       ALLOCATE (q(projectors, projectors))
-      qi => temporary_augmentation
-      IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
       CALL prepare_transition_augmentation(fields, augmentation, position - auxiliary_center, directions, angular_weights, &
                                            qi, full_geometry, left_frame%cell, auxiliary_images)
       phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(right_frame%reduced_k - left_frame%reduced_k, REAL(shift, dp)), dp))
