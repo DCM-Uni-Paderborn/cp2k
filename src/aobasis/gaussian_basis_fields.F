@@ -43,8 +43,9 @@ CONTAINS
       INTEGER                                            :: axis, axis2, first, ico, ipgf, ipoint, &
                                                             irow, iset, isgf, ishell, l, last, &
                                                             ncart, powers(3), reduced(3)
-      REAL(dp) :: alpha, exponential, pg, ph, polynomial, polynomial_gradient(3), &
-         polynomial_hessian(3, 3), r(3), weight, cartesian_value(ncoset(MAXVAL(basis%lmax))), &
+      REAL(dp) :: alpha, exponential, polynomial, polynomial_gradient(3), &
+         polynomial_hessian(3, 3), primitive_gradient(3), primitive_hessian(3, 3), &
+         r(3), weight, cartesian_value(ncoset(MAXVAL(basis%lmax))), &
          cartesian_hessian(3, 3, ncoset(MAXVAL(basis%lmax))), &
          cartesian_gradient(3, ncoset(MAXVAL(basis%lmax)))
 
@@ -66,7 +67,8 @@ CONTAINS
       !$OMP SHARED(basis, displacements, value, gradient, hessian, cutoff_squared, ncoset, indco) &
       !$OMP PRIVATE(ipoint, r, iset, ncart, ishell, l, first, last, ipgf, alpha, exponential, &
       !$OMP         isgf, ico, irow, weight, powers, reduced, polynomial, polynomial_gradient, &
-      !$OMP         polynomial_hessian, cartesian_value, cartesian_gradient, cartesian_hessian, axis, axis2, pg, ph)
+      !$OMP         polynomial_hessian, primitive_gradient, primitive_hessian, cartesian_value, &
+      !$OMP         cartesian_gradient, cartesian_hessian, axis, axis2)
       DO ipoint = 1, SIZE(displacements, 2)
          r = displacements(:, ipoint)
          IF (PRESENT(cutoff_squared)) THEN
@@ -102,25 +104,38 @@ CONTAINS
                DO ipgf = 1, basis%npgf(iset)
                   alpha = basis%zet(ipgf, iset)
                   exponential = EXP(-alpha*SUM(r**2))
-                  DO isgf = first, last
-                     DO ico = ncoset(l - 1) + 1, ncoset(l)
-                        irow = (ipgf - 1)*ncart + ico
-                        weight = basis%sphi(irow, isgf)*exponential
-                        polynomial = cartesian_value(ico)
-                        value(ipoint, isgf) = value(ipoint, isgf) + weight*polynomial
-                        IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(hessian)) CYCLE
+                  ! Primitive Cartesian derivatives are shared by every spherical contraction.
+                  DO ico = ncoset(l - 1) + 1, ncoset(l)
+                     irow = (ipgf - 1)*ncart + ico
+                     polynomial = cartesian_value(ico)
+                     IF (PRESENT(gradient) .OR. PRESENT(hessian)) THEN
                         polynomial_gradient = cartesian_gradient(:, ico)
                         polynomial_hessian = cartesian_hessian(:, :, ico)
                         DO axis = 1, 3
-                           pg = polynomial_gradient(axis) - 2.0_dp*alpha*r(axis)*polynomial
-                           IF (PRESENT(gradient)) gradient(ipoint, isgf, axis) = gradient(ipoint, isgf, axis) + weight*pg
+                           primitive_gradient(axis) = polynomial_gradient(axis) - 2.0_dp*alpha*r(axis)*polynomial
                            IF (.NOT. PRESENT(hessian)) CYCLE
                            DO axis2 = 1, 3
-                              ph = polynomial_hessian(axis, axis2) - 2.0_dp*alpha*( &
+                              primitive_hessian(axis, axis2) = polynomial_hessian(axis, axis2) - 2.0_dp*alpha*( &
                                    r(axis)*polynomial_gradient(axis2) + r(axis2)*polynomial_gradient(axis)) + &
                                    4.0_dp*alpha**2*r(axis)*r(axis2)*polynomial
-                              IF (axis == axis2) ph = ph - 2.0_dp*alpha*polynomial
-                              hessian(ipoint, isgf, axis, axis2) = hessian(ipoint, isgf, axis, axis2) + weight*ph
+                              IF (axis == axis2) THEN
+                                 primitive_hessian(axis, axis2) = primitive_hessian(axis, axis2) - 2.0_dp*alpha*polynomial
+                              END IF
+                           END DO
+                        END DO
+                     END IF
+                     DO isgf = first, last
+                        weight = basis%sphi(irow, isgf)*exponential
+                        value(ipoint, isgf) = value(ipoint, isgf) + weight*polynomial
+                        IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(hessian)) CYCLE
+                        DO axis = 1, 3
+                           IF (PRESENT(gradient)) THEN
+                              gradient(ipoint, isgf, axis) = gradient(ipoint, isgf, axis) + weight*primitive_gradient(axis)
+                           END IF
+                           IF (.NOT. PRESENT(hessian)) CYCLE
+                           DO axis2 = 1, 3
+                              hessian(ipoint, isgf, axis, axis2) = hessian(ipoint, isgf, axis, axis2) + &
+                                                                 weight*primitive_hessian(axis, axis2)
                            END DO
                         END DO
                      END DO
