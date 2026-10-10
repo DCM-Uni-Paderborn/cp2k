@@ -319,15 +319,17 @@ CONTAINS
    SUBROUTINE check_green_strain()
       REAL(dp), PARAMETER :: step = 3.e-4_dp, shifts(4) = [step, -step, 2.0_dp*step, -2.0_dp*step]
 
-      INTEGER                                            :: alpha, axis, beta, ig, mask, sign_step
-      REAL(dp)                                           :: cell(3, 3), derivative, &
-                                                            shifted_cell(3, 3), strain(3, 3)
+      INTEGER                                            :: alpha, axis, beta, ig, mask, sign_step, &
+                                                            test
+      REAL(dp) :: cell(3, 3), derivative, energy(2), norm, shifted_cell(3, 3), strain(3, 3), &
+         strain_energy(4, 2), stress(3, 3, 2), volume_ratio
       REAL(dp), ALLOCATABLE                              :: response(:), shifted_values(:, :)
       TYPE(greens_fn_type)                               :: green, shifted_green
       TYPE(mp_comm_type)                                 :: comm
-      TYPE(pw_c1d_gs_type)                               :: matched
+      TYPE(pw_c1d_gs_type)                               :: a, b, matched, weighted
       TYPE(pw_grid_type), POINTER                        :: dct_grid, grid, shifted_grid, super_grid
       TYPE(pw_poisson_parameter_type)                    :: parameters
+      TYPE(pw_poisson_type)                              :: poisson
       TYPE(pw_pool_type), POINTER                        :: pool, shifted_pool
 
       CALL comm%set_handle(mp_comm_world%get_handle())
@@ -350,6 +352,33 @@ CONTAINS
          CALL pw_pool_create(pool, grid)
          CALL pw_green_create(green, parameters, cell, pool, super_grid, dct_grid)
          CALL matched%create(grid)
+         CALL a%create(grid)
+         CALL b%create(grid)
+         CALL weighted%create(grid)
+         DO ig = 1, SIZE(a%array)
+            norm = 1.0_dp + REAL(SUM(grid%g_hat(:, ig)**2), dp)
+            a%array(ig) = CMPLX(1.0_dp, 0.3_dp*SIN(REAL(SUM(grid%g_hat(:, ig)), dp)), dp)/norm
+            b%array(ig) = CMPLX(-0.2_dp, 0.5_dp*SIN(REAL(DOT_PRODUCT([1, 2, 3], grid%g_hat(:, ig)), dp)), dp)/norm
+         END DO
+         ALLOCATE (poisson%pw_pools(1))
+         CALL pw_pool_create(poisson%pw_pools(1)%pool, grid)
+         poisson%pw_level = 1
+         poisson%parameters = parameters
+         CALL pw_poisson_set(poisson, cell_hmat=cell, use_level=1)
+         CALL pw_poisson_solve(poisson, a, energy(1), h_stress=stress(:, :, 1))
+         CALL pw_poisson_solve(poisson, a, energy(2), h_stress=stress(:, :, 2), aux_density=b)
+         weighted%array = green%influence_fn%array*a%array
+         CALL check_error(energy(1), 0.5_dp*pw_integral_ab(a, weighted), 3.e-13_dp)
+         CALL check_error(energy(2), 0.5_dp*pw_integral_ab(b, weighted), 3.e-13_dp)
+         IF (mask == 0) THEN
+            CALL pw_poisson_solve(poisson, a, energy(1), h_stress=stress(:, :, 1), greenfn=green%influence_fn)
+            CALL check_error(energy(1), 0.5_dp*pw_integral_ab(a, weighted), 3.e-13_dp)
+         END IF
+         DO axis = 1, 3
+            IF (parameters%periodic(axis) == 1) CYCLE
+            CALL check_error(MAXVAL(ABS(stress(axis, :, :))), 0.0_dp, 0.0_dp)
+            CALL check_error(MAXVAL(ABS(stress(:, axis, :))), 0.0_dp, 0.0_dp)
+         END DO
          ALLOCATE (response(SIZE(matched%array)), shifted_values(SIZE(matched%array), 4))
          strain = 0.0_dp
          CALL pw_green_strain_response(green, strain, response)
@@ -369,9 +398,21 @@ CONTAINS
                   CALL pw_green_create(shifted_green, parameters, shifted_cell, shifted_pool, super_grid, dct_grid)
                   CALL pw_copy_match(shifted_green%influence_fn, matched)
                   shifted_values(:, sign_step) = REAL(matched%array, dp)
+                  ! Hold Fourier charges V*rho fixed. The reciprocal integral
+                  ! uses the original volume, so divide once by V_strained/V.
+                  volume_ratio = 1.0_dp
+                  IF (alpha == beta) volume_ratio = 1.0_dp + shifts(sign_step)
+                  weighted%array = matched%array*a%array
+                  strain_energy(sign_step, 1) = 0.5_dp*pw_integral_ab(a, weighted)/volume_ratio
+                  strain_energy(sign_step, 2) = 0.5_dp*pw_integral_ab(b, weighted)/volume_ratio
                   CALL pw_green_release(shifted_green, shifted_pool)
                   CALL pw_pool_release(shifted_pool)
                   CALL pw_grid_release(shifted_grid)
+               END DO
+               DO test = 1, 2
+                  derivative = (8.0_dp*(strain_energy(1, test) - strain_energy(2, test)) &
+                                - strain_energy(3, test) + strain_energy(4, test))/(12.0_dp*step)
+                  CALL check_error(stress(alpha, beta, test), -derivative, 3.e-9_dp)
                END DO
                DO ig = 1, SIZE(response)
                   derivative = (8.0_dp*(shifted_values(ig, 1) - shifted_values(ig, 2)) &
@@ -382,6 +423,10 @@ CONTAINS
          END DO
          DEALLOCATE (response, shifted_values)
          CALL matched%release()
+         CALL a%release()
+         CALL b%release()
+         CALL weighted%release()
+         CALL poisson%release()
          CALL pw_green_release(green, pool)
          CALL pw_pool_release(pool)
          CALL pw_grid_release(grid)

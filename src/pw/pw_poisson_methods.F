@@ -19,7 +19,7 @@ MODULE pw_poisson_methods
    USE mathconstants, ONLY: fourpi
    USE mt_util, ONLY: MT0D, &
                       MT1D, &
-                      MT2D, mt2d_kernel_strain
+                      MT2D
    USE ps_implicit_methods, ONLY: implicit_poisson_solver_mixed, &
                                   implicit_poisson_solver_mixed_periodic, &
                                   implicit_poisson_solver_neumann, &
@@ -91,8 +91,8 @@ MODULE pw_poisson_methods
       #:endfor
    END INTERFACE
 
-   INTERFACE mt2d_hartree_stress
-      MODULE PROCEDURE mt2d_hartree_stress_r3d_rs, mt2d_hartree_stress_c1d_gs
+   INTERFACE truncated_hartree_stress
+      MODULE PROCEDURE truncated_hartree_stress_r3d_rs, truncated_hartree_stress_c1d_gs
    END INTERFACE
 
 CONTAINS
@@ -558,7 +558,7 @@ CONTAINS
          ELSE
             CALL calc_stress_and_gradient_${kindd}$ (poisson_env, rhog, ehartree, h_stress=h_stress)
          END IF
-         CALL mt2d_hartree_stress(poisson_env, density, ehartree, h_stress, aux_density, greenfn)
+         CALL truncated_hartree_stress(poisson_env, density, ehartree, h_stress, aux_density, greenfn)
 
          CALL pw_pool%give_back_pw(rhog)
          IF (PRESENT(aux_density)) THEN
@@ -780,7 +780,7 @@ CONTAINS
             ELSE
                CALL calc_stress_and_gradient_${kindd}$ (poisson_env, rhog, ehartree, h_stress=h_stress)
             END IF
-            CALL mt2d_hartree_stress(poisson_env, density, ehartree, h_stress, aux_density, greenfn)
+            CALL truncated_hartree_stress(poisson_env, density, ehartree, h_stress, aux_density, greenfn)
 
             CALL pw_pool%give_back_pw(rhog)
             IF (PRESENT(aux_density)) THEN
@@ -968,7 +968,7 @@ CONTAINS
             ELSE
                CALL calc_stress_and_gradient_${kindg}$ (poisson_env, rhog, ehartree, h_stress=h_stress, dvhartree=dvhartree)
             END IF
-            CALL mt2d_hartree_stress(poisson_env, density, ehartree, h_stress, aux_density, greenfn)
+            CALL truncated_hartree_stress(poisson_env, density, ehartree, h_stress, aux_density, greenfn)
 
             CALL pw_pool%give_back_pw(rhog)
             IF (PRESENT(aux_density)) THEN
@@ -1192,7 +1192,7 @@ CONTAINS
                ELSE
                   CALL calc_stress_and_gradient_${kindg}$ (poisson_env, rhog, ehartree, h_stress=h_stress, dvhartree=dvhartree)
                END IF
-               CALL mt2d_hartree_stress(poisson_env, density, ehartree, h_stress, aux_density, greenfn)
+               CALL truncated_hartree_stress(poisson_env, density, ehartree, h_stress, aux_density, greenfn)
 
                CALL pw_pool%give_back_pw(rhog)
                IF (PRESENT(aux_density)) THEN
@@ -1208,7 +1208,7 @@ CONTAINS
 
    #:for kind in ["r3d_rs", "c1d_gs"]
 ! **************************************************************************************************
-!> \brief Contract the MT2D kernel strain derivative against the original reciprocal densities.
+!> \brief Contract a truncated FFT kernel strain derivative against the original reciprocal densities.
 !> \param poisson_env Poisson environment.
 !> \param density Original charge density before multiplication by the Coulomb kernel.
 !> \param ehartree Hartree energy, supplying the existing plane-wave volume contribution.
@@ -1216,7 +1216,7 @@ CONTAINS
 !> \param aux_density Optional second density for the bilinear Hartree energy.
 !> \param greenfn Optional custom kernel, whose strain dependence is unavailable.
 ! **************************************************************************************************
-      SUBROUTINE mt2d_hartree_stress_${kind}$ (poisson_env, density, ehartree, h_stress, aux_density, greenfn)
+      SUBROUTINE truncated_hartree_stress_${kind}$ (poisson_env, density, ehartree, h_stress, aux_density, greenfn)
          TYPE(pw_poisson_type), INTENT(IN)                  :: poisson_env
          TYPE(pw_${kind}$_type), INTENT(IN)                 :: density
          REAL(KIND=dp), INTENT(IN), OPTIONAL                :: ehartree
@@ -1224,29 +1224,41 @@ CONTAINS
          TYPE(pw_${kind}$_type), INTENT(IN), OPTIONAL       :: aux_density
          TYPE(pw_c1d_gs_type), INTENT(IN), OPTIONAL          :: greenfn
 
-         INTEGER                                            :: alpha, beta, ig, iz
-         REAL(KIND=dp)                                      :: energy, kernel, strain(3, 3), tolerance
+         INTEGER                                            :: alpha, axis, beta, iz, periodic(3)
+         REAL(KIND=dp)                                      :: energy, strain(3, 3), tolerance
+         REAL(KIND=dp), ALLOCATABLE                          :: response(:)
          TYPE(pw_c1d_gs_type)                               :: rho_g, rho_aux_g, weighted_g
-         TYPE(pw_grid_type), POINTER                        :: grid
          TYPE(pw_pool_type), POINTER                        :: pool
 
          IF (.NOT. PRESENT(h_stress)) RETURN
          IF (poisson_env%used_grid /= use_gs_grid) RETURN
-         IF (poisson_env%green_fft%method /= MT2D) RETURN
+         SELECT CASE (poisson_env%green_fft%method)
+         CASE (ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT2D)
+         CASE DEFAULT
+            RETURN
+         END SELECT
+         h_stress = 0.0_dp
+         IF (poisson_env%green_fft%method == ANALYTIC0D) RETURN
          IF (PRESENT(greenfn)) THEN
-            CPABORT("MT2D stress for a custom Green function is not implemented")
+            CPABORT("Truncated Coulomb stress for a custom Green function is not implemented")
          END IF
          iz = poisson_env%green_fft%special_dimension
          CPASSERT(iz >= 1 .AND. iz <= 3)
-         ! The existing MT2D kernel uses a Cartesian slab normal. Permit shear
-         ! within the periodic plane, but not mixing the vacuum axis with it.
+         periodic = 1
+         periodic(iz) = 0
+         IF (poisson_env%green_fft%method == ANALYTIC1D) periodic = 1 - periodic
+         ! The truncated kernels have Cartesian isolated axes. Permit shear
+         ! within the periodic plane, with the isolated cell dimensions fixed.
          tolerance = 64.0_dp*EPSILON(1.0_dp)*MAXVAL(ABS(poisson_env%cell_hmat))
-         DO alpha = 1, 3
-            IF (alpha == iz) CYCLE
-            IF (ABS(poisson_env%cell_hmat(alpha, iz)) > tolerance .OR. &
-                ABS(poisson_env%cell_hmat(iz, alpha)) > tolerance) THEN
-               CPABORT("MT2D stress requires a Cartesian slab normal")
-            END IF
+         DO axis = 1, 3
+            IF (periodic(axis) == 1) CYCLE
+            DO alpha = 1, 3
+               IF (alpha == axis) CYCLE
+               IF (ABS(poisson_env%cell_hmat(alpha, axis)) > tolerance .OR. &
+                   ABS(poisson_env%cell_hmat(axis, alpha)) > tolerance) THEN
+                  CPABORT("Truncated Coulomb stress requires Cartesian isolated cell axes")
+               END IF
+            END DO
          END DO
          pool => poisson_env%pw_pools(poisson_env%pw_level)%pool
          CALL pool%create_pw(rho_g)
@@ -1256,7 +1268,7 @@ CONTAINS
             CALL pool%create_pw(rho_aux_g)
             CALL pw_transfer(aux_density, rho_aux_g)
          END IF
-         grid => rho_g%pw_grid
+         ALLOCATE (response(SIZE(rho_g%array)))
          IF (PRESENT(ehartree)) THEN
             energy = ehartree
          ELSE
@@ -1269,17 +1281,17 @@ CONTAINS
          END IF
          h_stress = 0.0_dp
          DO alpha = 1, 3
-            IF (alpha == iz) CYCLE
+            IF (periodic(alpha) == 0) CYCLE
             h_stress(alpha, alpha) = energy
             DO beta = alpha, 3
-               IF (beta == iz) CYCLE
+               IF (periodic(beta) == 0) CYCLE
                ! The Maxwell K**2 identity holds for K=4*pi/G**2.
-               ! For MT2D use -1/2 rho_aux* rho dK/dstrain instead. The PW
+               ! For truncated kernels use -1/2 rho_aux* rho dK/dstrain. The PW
                ! integral supplies volume, reciprocal multiplicity and MPI sum.
-               DO ig = 1, grid%ngpts_cut_local
-                  CALL mt2d_kernel_strain(grid%g(:, ig), iz, poisson_env%green_fft%slab_size, kernel, strain)
-                  weighted_g%array(ig) = rho_g%array(ig)*strain(alpha, beta)
-               END DO
+               strain = 0.0_dp
+               strain(alpha, beta) = 1.0_dp
+               CALL pw_green_strain_response(poisson_env%green_fft, strain, response)
+               weighted_g%array = rho_g%array*response
                IF (PRESENT(aux_density)) THEN
                   h_stress(alpha, beta) = h_stress(alpha, beta) &
                                           - 0.5_dp*pw_integral_ab(rho_aux_g, weighted_g)
@@ -1290,10 +1302,11 @@ CONTAINS
                h_stress(beta, alpha) = h_stress(alpha, beta)
             END DO
          END DO
+         DEALLOCATE (response)
          CALL pool%give_back_pw(rho_g)
          CALL pool%give_back_pw(weighted_g)
          IF (PRESENT(aux_density)) CALL pool%give_back_pw(rho_aux_g)
-      END SUBROUTINE mt2d_hartree_stress_${kind}$
+      END SUBROUTINE truncated_hartree_stress_${kind}$
    #:endfor
 
    #:for kind in ["c1d_gs", "r3d_rs"]
@@ -1339,9 +1352,12 @@ CONTAINS
          ! the Greens FUNCTION and the volume factor of the plane waves
          calculate_stress = PRESENT(h_stress)
          IF (calculate_stress .AND. poisson_env%used_grid == use_gs_grid) THEN
-            ! MT2D is contracted against the original density by the caller.
-            ! Its kernel derivative does not obey the Maxwell K**2 identity.
-            calculate_stress = poisson_env%green_fft%method /= MT2D
+            ! Truncated FFT kernels are contracted against the original density
+            ! by the caller. Their derivatives do not obey the Maxwell K**2 identity.
+            SELECT CASE (poisson_env%green_fft%method)
+            CASE (ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT2D)
+               calculate_stress = .FALSE.
+            END SELECT
          END IF
          IF (calculate_stress) THEN
             CPASSERT(PRESENT(ehartree))

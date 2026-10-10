@@ -16,8 +16,15 @@ MODULE qs_upf_inverse_forces
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_para_env_type
+   USE mt_util,                         ONLY: MT2D
    USE particle_types,                  ONLY: particle_type
+   USE pw_env_types,                    ONLY: pw_env_get,&
+                                              pw_env_type
    USE pw_methods,                      ONLY: pw_integral_ab
+   USE pw_poisson_types,                ONLY: ANALYTIC0D,&
+                                              ANALYTIC1D,&
+                                              ANALYTIC2D,&
+                                              pw_poisson_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
@@ -74,6 +81,8 @@ CONTAINS
       TYPE(cell_type), POINTER                           :: cell
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(pw_poisson_type), POINTER                     :: poisson
       TYPE(pw_r3d_rs_type), ALLOCATABLE                  :: vdensity(:), vgradient(:, :), vtau(:)
       TYPE(pw_r3d_rs_type), POINTER                      :: density(:), kinetic_density(:)
       TYPE(qs_force_type), POINTER                       :: force(:)
@@ -158,7 +167,14 @@ CONTAINS
       END DO
       IF (virial%pv_availability .AND. .NOT. virial%pv_numer) THEN
          IF (ANY(cell%perd == 0) .AND. .NOT. complete_coulomb) THEN
-            CPABORT("Inverse analytic stress requires periodic electrostatics in all directions")
+            CALL get_qs_env(qs_env, pw_env=pw_env)
+            CALL pw_env_get(pw_env, poisson_env=poisson)
+            CPASSERT(ALL(poisson%parameters%periodic == cell%perd))
+            SELECT CASE (poisson%green_fft%method)
+            CASE (ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT2D)
+            CASE DEFAULT
+               CPABORT("Inverse nonperiodic stress for this Poisson solver is not implemented")
+            END SELECT
          END IF
          CALL qs_rho_get(rho, rho_r=density, tau_r=kinetic_density)
          CPASSERT(SIZE(density) == nspin)
