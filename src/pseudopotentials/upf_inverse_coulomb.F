@@ -221,7 +221,7 @@ CONTAINS
       CPASSERT(SIZE(poisson_weights) == ng)
       CPASSERT(SIZE(background_adjoint) == ng)
       CPASSERT(ALL(ieee_is_finite(poisson_weights)))
-      CPASSERT(ALL(poisson_weights >= 0.0_dp))
+      ! Truncated Coulomb kernels can have signed reciprocal coefficients.
       inverse_cell = cell
       CALL invmat(inverse_cell, info)
       CPASSERT(info == 0)

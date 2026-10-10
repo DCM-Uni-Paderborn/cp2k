@@ -474,6 +474,12 @@ CONTAINS
                ! There should be a more elegant solution to that ...
             END DO
          END IF
+         IF ((.NOT. virial%pv_numer) .AND. COUNT(cell%perd /= 0) < 2) THEN
+            CALL get_ks_env(ks_env, upf_inverse=inverse)
+            IF (ASSOCIATED(inverse)) THEN
+               IF (ASSOCIATED(inverse%coulomb)) CALL project_virial_to_periodic_subspace(virial, cell%perd)
+            END IF
+         END IF
          IF ((.NOT. virial%pv_numer) .AND. COUNT(cell%perd /= 0) == 2) THEN
             SELECT CASE (dft_control%qs_control%method_id)
             CASE (do_method_gapw, do_method_gapw_xc, do_method_gpw, &

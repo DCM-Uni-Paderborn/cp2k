@@ -796,6 +796,8 @@ CONTAINS
          END DO
          CALL check(ABS(energy - exact), "Complete periodic residual shell sum", 3.e-12_dp)
          kw(2:3) = volume*4.0_dp*pi/SUM(g(:, 2)**2)
+         ! A wire kernel can have negative Fourier coefficients. Its adjoints remain unchanged.
+         IF (boundary == 2) kw = -kw
          dkw = 0.065_dp*kw
          CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, energy, potential, adjoint, &
                                            response=response, center_response=derivative, cell_response=dcell, &

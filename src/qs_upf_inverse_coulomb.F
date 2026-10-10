@@ -13,6 +13,7 @@ MODULE qs_upf_inverse_coulomb
    USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_para_env_type
+   USE mt_util,                         ONLY: MT2D
    USE orbital_pointers,                ONLY: indso
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
@@ -23,8 +24,12 @@ MODULE qs_upf_inverse_coulomb
    USE pw_methods,                      ONLY: pw_integral_ab,&
                                               pw_scale,&
                                               pw_transfer
-   USE pw_poisson_methods,              ONLY: pw_poisson_rebuild
-   USE pw_poisson_types,                ONLY: PERIODIC3D,&
+   USE pw_poisson_methods,              ONLY: pw_green_strain_response,&
+                                              pw_poisson_rebuild
+   USE pw_poisson_types,                ONLY: ANALYTIC0D,&
+                                              ANALYTIC1D,&
+                                              ANALYTIC2D,&
+                                              PERIODIC3D,&
                                               pw_poisson_type
    USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
@@ -254,10 +259,10 @@ CONTAINS
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
 
       COMPLEX(dp), ALLOCATABLE                           :: ao_operator(:, :)
-      INTEGER                                            :: a, atom, channel, k, kind, nao, ncenter, &
-                                                            nh, nr
+      INTEGER                                            :: a, atom, b, channel, k, kind, nao, &
+                                                            ncenter, nh, nr
       LOGICAL                                            :: paw_atom
-      REAL(dp)                                           :: alpha, total
+      REAL(dp)                                           :: alpha, tolerance, total
       REAL(dp), ALLOCATABLE                              :: unit(:, :)
       TYPE(grid_atom_type), POINTER                      :: grid_atom
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
@@ -289,10 +294,15 @@ CONTAINS
       CALL map%ionic%create(map%grid)
       CALL pw_poisson_rebuild(poisson, map%source_g)
       CPASSERT(ASSOCIATED(poisson%green_fft))
-      IF (poisson%green_fft%method /= PERIODIC3D .OR. poisson%parameters%has_dielectric .OR. &
+      IF (poisson%parameters%has_dielectric .OR. &
           poisson%green_fft%p3m .OR. poisson%green_fft%sr_screening) THEN
-         CPABORT("Inverse GAPW Coulomb requires periodic Poisson")
+         CPABORT("Inverse GAPW requires an unscreened Coulomb kernel without a dielectric")
       END IF
+      SELECT CASE (poisson%green_fft%method)
+      CASE (PERIODIC3D, ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT2D)
+      CASE DEFAULT
+         CPABORT("Inverse GAPW Coulomb for this Poisson solver is not implemented")
+      END SELECT
       CALL calculate_rho_core(map%ionic, total, qs_env, only_nopaw=.FALSE.)
       ALLOCATE (map%multiplicity(SIZE(map%ionic%array)), map%poisson_weights(SIZE(map%ionic%array)))
       map%multiplicity = 1.0_dp
@@ -302,7 +312,6 @@ CONTAINS
       END IF
       map%poisson_weights(:) = map%grid%vol*map%multiplicity*REAL(poisson%green_fft%influence_fn%array, dp)
       CPASSERT(ALL(AIMAG(poisson%green_fft%influence_fn%array) == 0.0_dp))
-      CPASSERT(ALL(map%poisson_weights >= 0.0_dp))
       IF (ASSOCIATED(state%bloch%kpoints)) THEN
          ALLOCATE (map%weights, SOURCE=state%bloch%weights)
       ELSE
@@ -310,9 +319,19 @@ CONTAINS
          map%weights = 1.0_dp
       END IF
       CALL select_frame(state, 1, frame, augmentation)
-      CPASSERT(ALL(frame%periodicity == 1))
+      CPASSERT(ALL(frame%periodicity == poisson%parameters%periodic))
       nao = SIZE(frame%gaussian, 2)
       map%cell = frame%cell
+      ! Wire and slab kernels use Cartesian isolated axes. Shear within a periodic plane is allowed.
+      tolerance = 64.0_dp*EPSILON(1.0_dp)*MAXVAL(ABS(map%cell))
+      DO a = 1, 3
+         DO b = 1, 3
+            IF (frame%periodicity(a) == frame%periodicity(b)) CYCLE
+            IF (ABS(map%cell(a, b)) > tolerance) THEN
+               CPABORT("Inverse GAPW requires Cartesian isolated axes")
+            END IF
+         END DO
+      END DO
       ALLOCATE (map%positions, SOURCE=frame%positions)
       ncenter = SIZE(frame%center_atoms)
       DO atom = 1, SIZE(atoms)
@@ -486,14 +505,16 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: adjoint(:), background(:), &
                                                             background_response(:), &
                                                             operators(:, :, :)
-      INTEGER                                            :: a, g, info
-      REAL(dp)                                           :: energy, g2, inverse_cell(3, 3), &
+      INTEGER                                            :: a, info
+      REAL(dp)                                           :: energy, inverse_cell(3, 3), &
                                                             ionic_virial(3, 3), kernel_response, &
                                                             strain(3, 3), trace_strain, &
                                                             virial(3, 3)
       REAL(dp), ALLOCATABLE                              :: forces(:, :), gvecs_response(:, :), &
                                                             ionic_forces(:, :), &
                                                             poisson_weights_response(:)
+      TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(pw_poisson_type), POINTER                     :: poisson
       TYPE(pw_r3d_rs_type)                               :: unit
       TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: centers_response(:)
       TYPE(upf_inverse_coulomb_potential_type), &
@@ -533,13 +554,11 @@ CONTAINS
       END IF
       ALLOCATE (gvecs_response(3, SIZE(map%grid%g, 2)), poisson_weights_response(SIZE(map%poisson_weights)))
       gvecs_response(:, :) = -MATMUL(TRANSPOSE(strain), map%grid%g)
-      poisson_weights_response(:) = trace_strain*map%poisson_weights
-      DO g = 1, SIZE(map%poisson_weights)
-         g2 = SUM(map%grid%g(:, g)**2)
-         IF (g2 == 0.0_dp) CYCLE
-         poisson_weights_response(g) = poisson_weights_response(g) - &
-                                       2.0_dp*map%poisson_weights(g)*SUM(map%grid%g(:, g)*gvecs_response(:, g))/g2
-      END DO
+      CALL get_qs_env(qs_env, pw_env=pw_env)
+      CALL pw_env_get(pw_env, poisson_env=poisson)
+      CALL pw_green_strain_response(poisson%green_fft, strain, poisson_weights_response)
+      poisson_weights_response(:) = trace_strain*map%poisson_weights + &
+                                    map%grid%vol*map%multiplicity*poisson_weights_response
       ALLOCATE (background, SOURCE=map%source_g%array + map%ionic%array)
       ALLOCATE (adjoint(SIZE(background)), background_response(SIZE(background)))
       background_response = CMPLX(0.0_dp, 0.0_dp, dp)

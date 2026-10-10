@@ -157,7 +157,7 @@ CONTAINS
          END DO
       END DO
       IF (virial%pv_availability .AND. .NOT. virial%pv_numer) THEN
-         IF (ANY(cell%perd == 0)) THEN
+         IF (ANY(cell%perd == 0) .AND. .NOT. complete_coulomb) THEN
             CPABORT("Inverse analytic stress requires periodic electrostatics in all directions")
          END IF
          CALL qs_rho_get(rho, rho_r=density, tau_r=kinetic_density)
@@ -171,7 +171,9 @@ CONTAINS
             END IF
          END DO
          DO axis = 1, 3
+            IF (cell%perd(axis) == 0) CYCLE
             DO other = 1, 3
+               IF (cell%perd(other) == 0) CYCLE
                strain = 0.0_dp
                strain(axis, other) = 1.0_dp
                atom_response(:, :) = MATMUL(strain, positions)

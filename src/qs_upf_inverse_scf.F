@@ -47,6 +47,9 @@ MODULE qs_upf_inverse_scf
    USE pw_methods,                      ONLY: pw_integrate_function,&
                                               pw_scale,&
                                               pw_transfer
+   USE pw_poisson_types,                ONLY: pw_poisson_analytic,&
+                                              pw_poisson_mt,&
+                                              pw_poisson_type
    USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
@@ -1434,6 +1437,7 @@ CONTAINS
       TYPE(gto_basis_set_type), POINTER                  :: basis
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(pw_poisson_type), POINTER                     :: poisson
       TYPE(pw_pool_type), POINTER                        :: pool
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_uspp_type), POINTER                        :: uspp
@@ -1468,7 +1472,11 @@ CONTAINS
          radial_radius(ikind) = MAX(beta%radius, delta%radius)
       END DO
       IF (control%qs_control%gapw .AND. ANY(cell%perd == 0)) THEN
-         CPABORT("Inverse GAPW currently requires fully periodic electrostatics")
+         CALL pw_env_get(pw_env, poisson_env=poisson)
+         IF (poisson%parameters%solver /= pw_poisson_analytic .AND. &
+             .NOT. (poisson%parameters%solver == pw_poisson_mt .AND. COUNT(cell%perd == 1) == 2)) THEN
+            CPABORT("Inverse nonperiodic GAPW requires analytic Poisson or the MT slab solver")
+         END IF
       END IF
       lower_real = 0.0_dp
       upper_real = 0.0_dp
