@@ -13,8 +13,14 @@
 ! **************************************************************************************************
 MODULE qs_upf_inverse_lattice
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_lattice_type,&
+                                              qs_upf_inverse_type
+   USE upf_inverse_lattice,             ONLY: upf_inverse_lattice_adjoint,&
+                                              upf_inverse_lattice_error_bounds,&
+                                              upf_inverse_lattice_init,&
+                                              upf_inverse_lattice_project
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_pair_response
    USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
@@ -27,8 +33,151 @@ MODULE qs_upf_inverse_lattice
    PUBLIC :: qs_upf_inverse_lattice_kernel_adjoint
    PUBLIC :: qs_upf_inverse_lattice_fields, qs_upf_inverse_lattice_field_adjoint
    PUBLIC :: qs_upf_inverse_lattice_geometry_adjoint
+   PUBLIC :: qs_upf_inverse_lattice_prepare, qs_upf_inverse_lattice_adjoint
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Own the original defining integrals and a controlled physical inverse coefficient sequence.
+!>        The original point communicator computes C and B once. Complete B support remains
+!>        separate from the solution domain. Increasing physical shells are accepted only when
+!>        both the sequence and uniform Bloch error bounds satisfy the requested tolerance.
+!>        These bounds concern the original finite defining quadrature and its supplied images.
+!> \param frame Original common point distribution, unphased fields and native geometry.
+!> \param state New owned convolution, original B and retained W sequence.
+!> \param tolerance Absolute Frobenius bounds for the W sequence and every Bloch sum.
+!> \param info Zero on success, one for LU failure, two for solve failure, three for an
+!>        inconclusive uniform inverse bound, four for insufficient physical image support.
+!> \param coefficient_images Optional fixed physical solution domain instead of adaptive shells.
+!> \param max_shells Maximum adaptive shell extent in periodic directions, twelve by default.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_lattice_prepare(frame, state, tolerance, info, coefficient_images, max_shells)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_upf_inverse_lattice_type), INTENT(OUT)     :: state
+      REAL(dp), INTENT(IN)                               :: tolerance
+      INTEGER, INTENT(OUT)                               :: info
+      INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :), max_shells
+
+      COMPLEX(dp), ALLOCATABLE                           :: coupling(:, :, :), rhs(:, :, :)
+      INTEGER                                            :: extent(3), i, image, ix, iy, iz, &
+                                                            limit, nao, np, q, shell, status
+      INTEGER, ALLOCATABLE                               :: images(:, :)
+
+      CPASSERT(.NOT. frame%atom_local .AND. .NOT. frame%direct)
+      CPASSERT(ieee_is_finite(tolerance) .AND. tolerance > 0.0_dp)
+      state%tolerance = tolerance
+      state%solve_tolerance = MIN(0.01_dp*tolerance, 1.0e-12_dp)
+      CALL qs_upf_inverse_lattice_kernel(frame, state%overlap_images, coupling, state%overlaps)
+      np = SIZE(coupling, 1)
+      nao = SIZE(state%overlaps, 2)
+      limit = 12
+      IF (PRESENT(max_shells)) limit = max_shells
+      CPASSERT(limit >= 0)
+      IF (PRESENT(coefficient_images)) THEN
+         CALL check_lattice_images(frame, coefficient_images)
+         CPASSERT(SIZE(coefficient_images, 2) > 0)
+         limit = 0
+      END IF
+      DO shell = 0, limit
+         IF (PRESENT(coefficient_images)) THEN
+            ALLOCATE (images, SOURCE=coefficient_images)
+         ELSE
+            extent = shell*MIN(frame%periodicity, MAXVAL(ABS(state%overlap_images), DIM=2))
+            ALLOCATE (images(3, PRODUCT(2*extent + 1)))
+            image = 0
+            DO iz = -extent(3), extent(3)
+            DO iy = -extent(2), extent(2)
+            DO ix = -extent(1), extent(1)
+               image = image + 1
+               images(:, image) = [ix, iy, iz]
+            END DO
+            END DO
+            END DO
+         END IF
+         CALL upf_inverse_lattice_init(state%overlap_images, coupling, images, state%inverse, status)
+         info = 1
+         IF (status /= 0) RETURN
+         ALLOCATE (rhs(np, nao, SIZE(images, 2)), state%coefficients(np, nao, SIZE(images, 2)))
+         rhs = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO i = 1, SIZE(images, 2)
+            DO q = 1, SIZE(state%overlap_images, 2)
+               IF (ANY(images(:, i) /= state%overlap_images(:, q))) CYCLE
+               rhs(:, :, i) = state%overlaps(:, :, q)
+               EXIT
+            END DO
+         END DO
+         CALL upf_inverse_lattice_project(state%inverse, rhs, state%coefficients, state%solve_tolerance, status)
+         info = 2
+         IF (status /= 0) RETURN
+         CALL upf_inverse_lattice_error_bounds(state%inverse, state%coefficients, state%overlap_images, &
+                                               state%overlaps, state%coefficient_error, state%bloch_error, &
+                                               state%lower_bound, status)
+         info = 3
+         IF (status /= 0) RETURN
+         IF (MAX(state%coefficient_error, state%bloch_error) <= tolerance) THEN
+            state%ready = .TRUE.
+            info = 0
+            RETURN
+         END IF
+         info = 4
+         IF (shell == limit) RETURN
+         DEALLOCATE (images, rhs, state%coefficients)
+      END DO
+   END SUBROUTINE qs_upf_inverse_lattice_prepare
+
+! **************************************************************************************************
+!> \brief Return the original defining-quadrature geometry transpose of the owned W sequence.
+!>        The caller supplies the complete coefficient energy covector after its RI owner sum.
+!>        Outputs belong to the original point owners and are not reduced here. Complete C_Q
+!>        variations and the retained B_R rows are mapped back to the original defining support.
+!> \param frame Unchanged original point distribution and native radial/Gaussian fields.
+!> \param state Controlled physical convolution used for the forward RI integrals.
+!> \param covector Complete W derivative, indexed (projector,AO,physical image).
+!> \param point_geometry New owner-local Cartesian point derivative.
+!> \param atom_geometry New owner-local Cartesian derivative in native atom order.
+!> \param cell_geometry New owner-local cell-vector derivative at fixed Cartesian points/atoms.
+!> \param weights_covector New owner-local original measure derivative, including zero weights.
+!> \param info Zero on success, otherwise the coupled transpose solve status.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_lattice_adjoint(frame, state, covector, point_geometry, atom_geometry, &
+                                             cell_geometry, weights_covector, info)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_upf_inverse_lattice_type), INTENT(IN)      :: state
+      COMPLEX(dp), INTENT(IN)                            :: covector(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: point_geometry(:, :), atom_geometry(:, :), &
+                                                            cell_geometry(3, 3), weights_covector(:)
+      INTEGER, INTENT(OUT)                               :: info
+
+      COMPLEX(dp), ALLOCATABLE                           :: coupling_covector(:, :, :), &
+                                                            overlaps_covector(:, :, :), &
+                                                            retained_covector(:, :, :)
+      INTEGER                                            :: i, q
+
+      CPASSERT(state%ready)
+      CPASSERT(.NOT. frame%atom_local .AND. .NOT. frame%direct)
+      CPASSERT(ALL(SHAPE(covector) == SHAPE(state%coefficients)))
+      point_geometry = 0.0_dp
+      atom_geometry = 0.0_dp
+      cell_geometry = 0.0_dp
+      weights_covector = 0.0_dp
+      ALLOCATE (retained_covector, MOLD=state%coefficients)
+      ALLOCATE (coupling_covector, MOLD=state%inverse%coupling)
+      ALLOCATE (overlaps_covector, MOLD=state%overlaps)
+      CALL upf_inverse_lattice_adjoint(state%inverse, state%coefficients, covector, retained_covector, &
+                                        coupling_covector, state%solve_tolerance, info)
+      IF (info /= 0) RETURN
+      overlaps_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO q = 1, SIZE(state%overlap_images, 2)
+         DO i = 1, SIZE(state%inverse%images, 2)
+            IF (ANY(state%overlap_images(:, q) /= state%inverse%images(:, i))) CYCLE
+            overlaps_covector(:, :, q) = retained_covector(:, :, i)
+            EXIT
+         END DO
+      END DO
+      CALL qs_upf_inverse_lattice_kernel_adjoint(frame, state%inverse%kernel_images, coupling_covector, &
+                                                  overlaps_covector, point_geometry, atom_geometry, &
+                                                  cell_geometry, weights_covector)
+   END SUBROUTINE qs_upf_inverse_lattice_adjoint
 
 ! **************************************************************************************************
 !> \brief Evaluate a localized inverse AO image from its coupled physical-image coefficients.
@@ -486,11 +635,18 @@ CONTAINS
          ALLOCATE (dbeta(n, np), dleft(n, np), ddelta(n, np), dgaussian(n, nao))
       END IF
       DO i = 1, image_count
-         CALL original_fields(frame%images(:, i))
+         CALL original_fields(frame%images(:, i), projector_only=.TRUE.)
          left(:, :) = beta
          IF (derivative) dleft(:, :) = dbeta
+         ! Compact original projectors outside their support contribute exactly zero.
+         ! A zero value with a nonzero supplied response must still be retained.
+         IF (derivative) THEN
+            IF (.NOT. ANY(left /= 0.0_dp) .AND. .NOT. ANY(dleft /= 0.0_dp)) CYCLE
+         ELSE
+            IF (.NOT. ANY(left /= 0.0_dp)) CYCLE
+         END IF
          DO j = 1, image_count
-            CALL original_fields(frame%images(:, j))
+            CALL original_fields(frame%images(:, j), projector_only=.FALSE.)
             q = pair_index(j, i)
             CALL upf_inverse_pair(left, delta, frame%weights, pair_c)
             CALL upf_inverse_pair(left, gaussian, frame%weights, pair_b)
@@ -518,15 +674,18 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Evaluate original unphased fields at one physical image, using native column order.
 !> \param physical_image ...
+!> \param projector_only Evaluate the left projectors or the right difference/Gaussian fields.
 ! **************************************************************************************************
-      SUBROUTINE original_fields(physical_image)
+      SUBROUTINE original_fields(physical_image, projector_only)
       INTEGER, INTENT(IN)                                :: physical_image(3)
+      LOGICAL, INTENT(IN)                                :: projector_only
 
       INTEGER                                            :: atom, center, first, kind, last, &
                                                             single_image(3, 1)
 
          single_image(:, 1) = physical_image
          DO atom = 1, SIZE(frame%bases)
+            IF (projector_only) EXIT
             first = frame%ao_first(atom)
             last = frame%ao_last(atom)
             IF (derivative) THEN
@@ -544,18 +703,20 @@ CONTAINS
             kind = frame%center_kinds(center)
             first = frame%projector_first(center)
             last = frame%projector_last(center)
-            IF (derivative) THEN
+            IF (projector_only .AND. derivative) THEN
                CALL upf_radial_fields_periodic(frame%beta_cache(kind), frame%points, frame%positions(:, atom), &
                                                frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], beta(:, first:last), &
                                                response=dbeta(:, first:last), points_response=point_response, &
                                                center_response=atom_response(:, atom), cell_response=cell_response)
+            ELSE IF (derivative) THEN
                CALL upf_radial_fields_periodic(frame%delta_cache(kind), frame%points, frame%positions(:, atom), &
                                                frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], delta(:, first:last), &
                                                response=ddelta(:, first:last), points_response=point_response, &
                                                center_response=atom_response(:, atom), cell_response=cell_response)
-            ELSE
+            ELSE IF (projector_only) THEN
                CALL upf_radial_fields_periodic(frame%beta_cache(kind), frame%points, frame%positions(:, atom), &
                                                frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], beta(:, first:last))
+            ELSE
                CALL upf_radial_fields_periodic(frame%delta_cache(kind), frame%points, frame%positions(:, atom), &
                                                frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], delta(:, first:last))
             END IF

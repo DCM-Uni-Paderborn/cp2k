@@ -123,9 +123,11 @@ MODULE hfx_ri
                                               qs_upf_inverse_hfx_lattice_tensor,&
                                               qs_upf_inverse_hfx_tensor,&
                                               qs_upf_inverse_hfx_tensor_adjoint
+   USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_lattice_prepare
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type
    USE string_utilities,                ONLY: uppercase
+   USE uspp_augmentation,               ONLY: uspp_augmentation_type
    USE util,                            ONLY: sort
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -860,26 +862,33 @@ CONTAINS
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(dbt_type), INTENT(INOUT)                      :: integrals(:)
 
-      INTEGER                                            :: atom, kind
+      COMPLEX(dp), POINTER                               :: coefficients(:, :, :)
+      INTEGER                                            :: atom, axis, image, info, ix, iy, iz, kind, &
+                                                            lower(3), upper(3)
       INTEGER, POINTER                                   :: cells(:, :)
+      INTEGER, POINTER                                   :: coefficient_images(:, :)
+      INTEGER, ALLOCATABLE                               :: center_images(:, :)
+      TYPE(dft_control_type), POINTER                    :: control
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      TYPE(uspp_augmentation_type), POINTER              :: augmentation(:)
 
       CALL get_qs_env(qs_env, ks_env=ks_env, kpoints=kpoints)
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      CALL get_ks_env(ks_env, upf_inverse=inverse, dft_control=control)
       IF (.NOT. ASSOCIATED(inverse)) RETURN
       IF (.NOT. inverse%enabled) RETURN
       CPASSERT(ASSOCIATED(kpoints))
       IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          CPASSERT(SIZE(inverse%bloch%frames) > 0)
          frame => inverse%bloch%frames(1)%ao
+         augmentation => inverse%bloch%augmentation%kinds
       ELSE
          frame => inverse%frame%ao
+         augmentation => inverse%augmentation%kinds
       END IF
-      IF (.NOT. frame%atom_local) CPABORT("General inverse UPF lattice exchange is not implemented yet")
       CPASSERT(ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == "ORB")
       CALL get_kpoint_info(kpoints, index_to_cell=cells)
       CPASSERT(ri_data%nimg == SIZE(integrals) .AND. ri_data%nimg <= SIZE(cells, 2))
@@ -890,17 +899,47 @@ CONTAINS
          kind = atoms(atom)%atomic_kind%kind_number
          bases(atom)%gto_basis_set => basis_set_RI(kind)%gto_basis_set
       END DO
-      IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
-         CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, inverse%bloch%augmentation%kinds, bases, &
-                                                cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                frame%images, integrals, &
-                                                metric=ri_data%ri_metric)
+      NULLIFY (coefficient_images, coefficients)
+      IF (frame%atom_local) THEN
+         ALLOCATE (center_images, SOURCE=frame%images)
       ELSE
-         CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, inverse%augmentation%kinds, bases, &
-                                                cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
-                                                frame%images, integrals, &
-                                                metric=ri_data%ri_metric)
+         IF (.NOT. inverse%lattice%ready) THEN
+            CALL qs_upf_inverse_lattice_prepare(frame, inverse%lattice, control%qs_control%eps_ppnl, info)
+            SELECT CASE (info)
+            CASE (1, 2)
+               CPABORT("Coupled physical inverse RI coefficients could not be solved")
+            CASE (3)
+               CPABORT("The uniform inverse RI coefficient bound is inconclusive")
+            CASE (4)
+               CPABORT("The physical inverse RI coefficient domain needs further expansion")
+            END SELECT
+            CPASSERT(info == 0 .AND. inverse%lattice%ready)
+         END IF
+         coefficient_images => inverse%lattice%inverse%images
+         coefficients => inverse%lattice%coefficients
+         ! Every retained left or right reconstruction is integrated. Its center images
+         ! are -Q and R-Q respectively, independently of the original defining image set.
+         DO axis = 1, 3
+            lower(axis) = MIN(-MAXVAL(coefficient_images(axis, :)), &
+                              MINVAL(cells(axis, 1:ri_data%nimg)) - MAXVAL(coefficient_images(axis, :)))
+            upper(axis) = MAX(-MINVAL(coefficient_images(axis, :)), &
+                              MAXVAL(cells(axis, 1:ri_data%nimg)) - MINVAL(coefficient_images(axis, :)))
+         END DO
+         ALLOCATE (center_images(3, PRODUCT(upper - lower + 1)))
+         image = 0
+         DO iz = lower(3), upper(3)
+         DO iy = lower(2), upper(2)
+         DO ix = lower(1), upper(1)
+            image = image + 1
+            center_images(:, image) = [ix, iy, iz]
+         END DO
+         END DO
+         END DO
       END IF
+      CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, augmentation, bases, &
+                                             cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
+                                             center_images, integrals, metric=ri_data%ri_metric, &
+                                             coefficient_images=coefficient_images, coupled_coefficients=coefficients)
    END SUBROUTINE inverse_3c_lattice_integrals
 
 ! **************************************************************************************************

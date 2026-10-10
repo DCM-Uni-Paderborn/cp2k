@@ -1579,6 +1579,9 @@ CONTAINS
       ELSE
          frame => inverse%frame%ao
       END IF
+      IF (.NOT. frame%atom_local) THEN
+         CPABORT("General inverse UPF lattice exchange forces are not implemented yet")
+      END IF
       CALL get_kpoint_info(kpoints, index_to_cell=cells)
       CPASSERT(SIZE(covectors) == ri_data%nimg .AND. ri_data%nimg <= SIZE(cells, 2))
       CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)

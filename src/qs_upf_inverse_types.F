@@ -35,6 +35,7 @@ MODULE qs_upf_inverse_types
                                               upf_inverse_type
    USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_center_type,&
                                               upf_inverse_coulomb_map_type
+   USE upf_inverse_lattice,             ONLY: upf_inverse_lattice_type
    USE upf_radial_fields,               ONLY: upf_radial_fields_type
    USE uspp_augmentation,               ONLY: uspp_augmentation_type
 
@@ -59,6 +60,16 @@ MODULE qs_upf_inverse_types
                                   delta_gradient(:, :, :), gaussian(:, :), gaussian_gradient(:, :, :), &
                                   soft(:, :), soft_gradient(:, :, :)
    END TYPE qs_upf_inverse_type
+
+   TYPE qs_upf_inverse_lattice_type
+      LOGICAL :: ready = .FALSE.
+      TYPE(upf_inverse_lattice_type) :: inverse
+      ! B keeps its complete defining support, independently of the retained W domain.
+      INTEGER, ALLOCATABLE :: overlap_images(:, :)
+      COMPLEX(dp), ALLOCATABLE :: overlaps(:, :, :), coefficients(:, :, :)
+      REAL(dp) :: tolerance = 0.0_dp, solve_tolerance = 0.0_dp, lower_bound = 0.0_dp
+      REAL(dp) :: coefficient_error = HUGE(0.0_dp), bloch_error = HUGE(0.0_dp)
+   END TYPE qs_upf_inverse_lattice_type
 
    TYPE qs_upf_inverse_grid_type
       TYPE(qs_upf_inverse_type) :: ao
@@ -119,6 +130,7 @@ MODULE qs_upf_inverse_types
       LOGICAL :: gaussian_background = .FALSE.
       INTEGER :: density_evaluations = 0, operator_evaluations = 0
       TYPE(qs_upf_inverse_grid_type) :: frame
+      TYPE(qs_upf_inverse_lattice_type) :: lattice
       TYPE(qs_upf_inverse_augmentation_type) :: augmentation
       TYPE(kpoint_transitional_type) :: metric
       TYPE(upf_inverse_kinetic_type), ALLOCATABLE :: kinetic_cache(:)
@@ -148,6 +160,7 @@ MODULE qs_upf_inverse_types
    END TYPE qs_upf_inverse_scf_type
 
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_grid_type, qs_upf_inverse_augmentation_type
+   PUBLIC :: qs_upf_inverse_lattice_type
    PUBLIC :: qs_upf_inverse_kpoints_type, qs_upf_inverse_scf_type, qs_upf_inverse_scf_release
    PUBLIC :: qs_upf_inverse_xc_type
    PUBLIC :: qs_upf_inverse_background_type, qs_upf_inverse_background_release
