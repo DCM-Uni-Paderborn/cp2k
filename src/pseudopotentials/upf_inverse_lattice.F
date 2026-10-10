@@ -16,6 +16,7 @@ MODULE upf_inverse_lattice
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: twopi
    USE upf_inverse,                     ONLY: upf_inverse_init,&
+                                              upf_inverse_project,&
                                               upf_inverse_type
 #include "../base/base_uses.f90"
 
@@ -32,6 +33,7 @@ MODULE upf_inverse_lattice
    PUBLIC :: upf_inverse_lattice_response, upf_inverse_lattice_adjoint
    PUBLIC :: upf_inverse_lattice_residual, upf_inverse_lattice_bloch
    PUBLIC :: upf_inverse_lattice_response_residual
+   PUBLIC :: upf_inverse_lattice_bound, upf_inverse_lattice_error_bounds
 
 CONTAINS
 
@@ -273,6 +275,212 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE upf_inverse_lattice_response_residual
+
+! **************************************************************************************************
+!> \brief Sufficient lower bound on the smallest singular value of K(k) for every Bloch k.
+!>        For the computed M=(I+C_0)^(-1), bound I-K(k)M by the sum of Frobenius norms.
+!>        The measured zero-cell inverse residual and a floating-point margin are retained.
+!>        Failure of this sufficient condition does not establish singularity of K(k).
+!> \param lattice Original finite convolution, including every supplied nonzero image.
+!> \param lower_bound Positive uniform bound on success, otherwise zero.
+!> \param info Zero on success, one for an inconclusive bound, two for an unavailable inverse.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_lattice_bound(lattice, lower_bound, info)
+      TYPE(upf_inverse_lattice_type), INTENT(IN)         :: lattice
+      REAL(dp), INTENT(OUT)                              :: lower_bound
+      INTEGER, INTENT(OUT)                               :: info
+
+      COMPLEX(dp), ALLOCATABLE                           :: diagonal(:, :), identity(:, :), &
+                                                            inverse(:, :), PRODUCT(:, :)
+      INTEGER                                            :: i, np, q, zero
+      REAL(dp)                                           :: defect, inverse_norm, kernel_norm, &
+                                                            roundoff
+
+      lower_bound = 0.0_dp
+      info = 2
+      IF (.NOT. lattice%diagonal%ready) RETURN
+      np = lattice%diagonal%nproj
+      IF (np == 0) THEN
+         lower_bound = 1.0_dp
+         info = 0
+         RETURN
+      END IF
+      ALLOCATE (identity(np, np), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      ALLOCATE (inverse(np, np), PRODUCT(np, np), diagonal(np, np))
+      DO i = 1, np
+         identity(i, i) = 1.0_dp
+      END DO
+      diagonal(:, :) = identity
+      zero = find_image(lattice%kernel_images, [0, 0, 0])
+      IF (zero > 0) diagonal(:, :) = diagonal + lattice%coupling(:, :, zero)
+      CALL upf_inverse_project(lattice%diagonal, identity, inverse)
+      inverse_norm = matrix_norm(inverse)
+      PRODUCT(:, :) = identity - MATMUL(diagonal, inverse)
+      defect = matrix_norm(product)
+      kernel_norm = matrix_norm(diagonal)
+      DO q = 1, SIZE(lattice%kernel_images, 2)
+         IF (q == zero) CYCLE
+         PRODUCT(:, :) = MATMUL(lattice%coupling(:, :, q), inverse)
+         defect = defect + matrix_norm(product)
+         kernel_norm = kernel_norm + matrix_norm(lattice%coupling(:, :, q))
+      END DO
+      roundoff = 32.0_dp*EPSILON(0.0_dp)*REAL(np, dp)* &
+                 REAL(MAX(1, SIZE(lattice%kernel_images, 2)), dp)
+      defect = defect + roundoff*(1.0_dp + kernel_norm*inverse_norm)
+      info = 1
+      IF (.NOT. ieee_is_finite(defect) .OR. .NOT. ieee_is_finite(inverse_norm)) RETURN
+      IF (defect >= 1.0_dp .OR. inverse_norm <= 0.0_dp) RETURN
+      lower_bound = (1.0_dp - defect)/inverse_norm
+      info = 0
+   END SUBROUTINE upf_inverse_lattice_bound
+
+! **************************************************************************************************
+!> \brief Bound omitted coefficients and their Bloch sums using the full exterior residual.
+!>        The l2 sequence error uses the l2 residual. A uniform pointwise Bloch error instead
+!>        uses its l1 norm. Responses also retain dC times the forward coefficient error.
+!>        These bounds concern the supplied finite kernel. Omitted kernel data and quadrature
+!>        errors require separate control. Margins account for ordinary arithmetic rounding,
+!>        without providing interval-arithmetic certification.
+!> \param lattice ...
+!> \param coefficients Finite W, zero outside the retained domain.
+!> \param overlap_images Complete support of the supplied B sequence, independent of W.
+!> \param overlaps ...
+!> \param coefficient_error Absolute l2 Frobenius bound for the full coefficient sequence.
+!> \param bloch_error Absolute Frobenius bound for W(k) at every Bloch k.
+!> \param lower_bound Uniform smallest-singular-value bound of the supplied K(k).
+!> \param info Zero on success. Otherwise errors remain HUGE and no bound is established.
+!> \param overlap_tail Optional proven omitted B bounds, ordered [l2,l1]. Absent means zero.
+!> \param response Optional finite dW. All response arrays and error outputs must be supplied.
+!> \param overlaps_response Optional dB in the overlap image order.
+!> \param coupling_response Optional original dC in the kernel image order.
+!> \param response_error Optional absolute l2 Frobenius bound for the full dW sequence.
+!> \param response_bloch_error Optional uniform pointwise Bloch bound for dW(k).
+!> \param response_overlap_tail Optional proven omitted dB bounds, ordered [l2,l1].
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_lattice_error_bounds(lattice, coefficients, overlap_images, overlaps, &
+                                               coefficient_error, bloch_error, lower_bound, info, overlap_tail, &
+                                               response, overlaps_response, coupling_response, response_error, &
+                                               response_bloch_error, response_overlap_tail)
+      TYPE(upf_inverse_lattice_type), INTENT(IN)         :: lattice
+      COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :, :)
+      INTEGER, INTENT(IN)                                :: overlap_images(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: overlaps(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: coefficient_error, bloch_error, &
+                                                            lower_bound
+      INTEGER, INTENT(OUT)                               :: info
+      REAL(dp), INTENT(IN), OPTIONAL                     :: overlap_tail(2)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: response(:, :, :), &
+                                                            overlaps_response(:, :, :), &
+                                                            coupling_response(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response_error, response_bloch_error
+      REAL(dp), INTENT(IN), OPTIONAL                     :: response_overlap_tail(2)
+
+      COMPLEX(dp), ALLOCATABLE                           :: residual(:, :, :)
+      INTEGER, ALLOCATABLE                               :: residual_images(:, :)
+      LOGICAL                                            :: have_response
+      REAL(dp)                                           :: b_norm, c_norm, db_norm, dc_norm, &
+                                                            dw_norm, norm1, norm2, roundoff, w_norm
+
+      have_response = PRESENT(response) .OR. PRESENT(overlaps_response) .OR. PRESENT(coupling_response) .OR. &
+                      PRESENT(response_error) .OR. PRESENT(response_bloch_error) .OR. PRESENT(response_overlap_tail)
+      IF (have_response) THEN
+         IF (.NOT. (PRESENT(response) .AND. PRESENT(overlaps_response) .AND. PRESENT(coupling_response) .AND. &
+                    PRESENT(response_error) .AND. PRESENT(response_bloch_error))) THEN
+            CPABORT("Incomplete lattice response bound arguments")
+         END IF
+         response_error = HUGE(0.0_dp)
+         response_bloch_error = HUGE(0.0_dp)
+      END IF
+      IF (PRESENT(overlap_tail)) THEN
+         IF (.NOT. ALL(ieee_is_finite(overlap_tail)) .OR. ANY(overlap_tail < 0.0_dp)) THEN
+            CPABORT("Invalid overlap tail bound")
+         END IF
+      END IF
+      IF (PRESENT(response_overlap_tail)) THEN
+         IF (.NOT. ALL(ieee_is_finite(response_overlap_tail)) .OR. ANY(response_overlap_tail < 0.0_dp)) THEN
+            CPABORT("Invalid response overlap tail bound")
+         END IF
+      END IF
+      coefficient_error = HUGE(0.0_dp)
+      bloch_error = HUGE(0.0_dp)
+      lower_bound = 0.0_dp
+      info = 2
+      IF (.NOT. ALL(ieee_is_finite(REAL(coefficients, dp))) .OR. &
+          .NOT. ALL(ieee_is_finite(AIMAG(coefficients))) .OR. &
+          .NOT. ALL(ieee_is_finite(REAL(overlaps, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(overlaps)))) RETURN
+      IF (have_response) THEN
+         IF (.NOT. ALL(ieee_is_finite(REAL(response, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(response))) .OR. &
+             .NOT. ALL(ieee_is_finite(REAL(overlaps_response, dp))) .OR. &
+             .NOT. ALL(ieee_is_finite(AIMAG(overlaps_response))) .OR. &
+             .NOT. ALL(ieee_is_finite(REAL(coupling_response, dp))) .OR. &
+             .NOT. ALL(ieee_is_finite(AIMAG(coupling_response)))) RETURN
+      END IF
+      CALL upf_inverse_lattice_bound(lattice, lower_bound, info)
+      IF (info /= 0) RETURN
+      CALL sequence_norms(lattice%coupling, norm2, c_norm)
+      CALL sequence_norms(coefficients, norm2, w_norm)
+      CALL sequence_norms(overlaps, norm2, b_norm)
+      CALL upf_inverse_lattice_residual(lattice, coefficients, overlap_images, overlaps, residual_images, residual)
+      CALL sequence_norms(residual, norm2, norm1)
+      roundoff = 32.0_dp*EPSILON(0.0_dp)*REAL(MAX(1, lattice%diagonal%nproj), dp)* &
+                 REAL(MAX(1, SIZE(lattice%kernel_images, 2) + SIZE(lattice%images, 2) + SIZE(overlap_images, 2)), dp)
+      norm2 = norm2 + roundoff*((1.0_dp + c_norm)*w_norm + b_norm)
+      norm1 = norm1 + roundoff*((1.0_dp + c_norm)*w_norm + b_norm)
+      IF (PRESENT(overlap_tail)) THEN
+         norm2 = norm2 + overlap_tail(1)
+         norm1 = norm1 + overlap_tail(2)
+      END IF
+      coefficient_error = norm2/lower_bound
+      bloch_error = norm1/lower_bound
+      IF (have_response) THEN
+         CALL sequence_norms(response, norm2, dw_norm)
+         CALL sequence_norms(overlaps_response, norm2, db_norm)
+         CALL sequence_norms(coupling_response, norm2, dc_norm)
+         CALL upf_inverse_lattice_response_residual(lattice, coefficients, response, overlap_images, &
+                                                    overlaps_response, coupling_response, residual_images, residual)
+         CALL sequence_norms(residual, norm2, norm1)
+         norm2 = norm2 + roundoff*((1.0_dp + c_norm)*dw_norm + dc_norm*w_norm + db_norm)
+         norm1 = norm1 + roundoff*((1.0_dp + c_norm)*dw_norm + dc_norm*w_norm + db_norm)
+         IF (PRESENT(response_overlap_tail)) THEN
+            norm2 = norm2 + response_overlap_tail(1)
+            norm1 = norm1 + response_overlap_tail(2)
+         END IF
+         response_error = (norm2 + dc_norm*coefficient_error)/lower_bound
+         response_bloch_error = (norm1 + dc_norm*bloch_error)/lower_bound
+      END IF
+   END SUBROUTINE upf_inverse_lattice_error_bounds
+
+! **************************************************************************************************
+!> \brief Stable Frobenius norm and l1/l2 matrix-sequence norms, without squared large entries.
+! **************************************************************************************************
+   FUNCTION matrix_norm(matrix) RESULT(norm)
+      COMPLEX(dp), INTENT(IN)                            :: matrix(:, :)
+      REAL(dp)                                           :: norm
+
+      INTEGER                                            :: column
+      REAL(dp), EXTERNAL                                 :: dznrm2
+
+      norm = 0.0_dp
+      DO column = 1, SIZE(matrix, 2)
+         norm = HYPOT(norm, dznrm2(SIZE(matrix, 1), matrix(:, column), 1))
+      END DO
+   END FUNCTION matrix_norm
+
+   SUBROUTINE sequence_norms(SEQUENCE, norm2, norm1)
+      COMPLEX(dp), INTENT(IN)                            :: sequence(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: norm2, norm1
+
+      INTEGER                                            :: image
+      REAL(dp)                                           :: norm
+
+      norm2 = 0.0_dp
+      norm1 = 0.0_dp
+      DO image = 1, SIZE(SEQUENCE, 3)
+         norm = matrix_norm(SEQUENCE(:, :, image))
+         norm2 = HYPOT(norm2, norm)
+         norm1 = norm1 + norm
+      END DO
+   END SUBROUTINE sequence_norms
 
 ! **************************************************************************************************
 !> \brief Fourier sum of physical coefficients, without reciprocal mesh weights or image aliasing.

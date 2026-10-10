@@ -64,14 +64,11 @@ PROGRAM upf_inverse_unittest
         upf_inverse_coulomb_periodic, upf_inverse_coulomb_potential_type, &
         upf_inverse_coulomb_prepare, upf_inverse_coulomb_radial, &
         upf_inverse_coulomb_radial_response
-   USE upf_inverse_lattice,             ONLY: upf_inverse_lattice_adjoint,&
-                                              upf_inverse_lattice_bloch,&
-                                              upf_inverse_lattice_init,&
-                                              upf_inverse_lattice_project,&
-                                              upf_inverse_lattice_residual,&
-                                              upf_inverse_lattice_response,&
-                                              upf_inverse_lattice_response_residual,&
-                                              upf_inverse_lattice_type
+   USE upf_inverse_lattice,             ONLY: &
+        upf_inverse_lattice_adjoint, upf_inverse_lattice_bloch, upf_inverse_lattice_bound, &
+        upf_inverse_lattice_error_bounds, upf_inverse_lattice_init, upf_inverse_lattice_project, &
+        upf_inverse_lattice_residual, upf_inverse_lattice_response, &
+        upf_inverse_lattice_response_residual, upf_inverse_lattice_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
                                               upf_inverse_density_residual,&
                                               upf_inverse_projector_density,&
@@ -117,9 +114,10 @@ CONTAINS
                                                             domains(3) = [3, 8, nr]
 
       COMPLEX(dp) :: b(np, nao, nr), bloch(np, nao), c(np, np, 3), covector(np, nao, nr), &
-         db(np, nao, nr), dc(np, np, 3), exact(np, nao, nr), exact_bloch(np, nao), &
-         gb(np, nao, nr), gc(np, np, 3), inverse(np, np), k(np, np), response(np, nao, nr), &
-         samples(np, nao, nr, 2), solution(np, nao, nr)
+         db(np, nao, nr), db_bloch(np, nao), dc(np, np, 3), dc_bloch(np, np), &
+         difference(np, nao, nr), exact(np, nao, nr), exact_bloch(np, nao), &
+         exact_response(np, nao, nr + 1), gb(np, nao, nr), gc(np, np, 3), inverse(np, np), &
+         k(np, np), response(np, nao, nr), samples(np, nao, nr, 2), solution(np, nao, nr)
       COMPLEX(dp), ALLOCATABLE                           :: residual(:, :, :), &
                                                             residual_samples(:, :, :, :), &
                                                             response_residual(:, :, :)
@@ -128,7 +126,8 @@ CONTAINS
                                                             tail
       INTEGER, ALLOCATABLE                               :: residual_images(:, :), &
                                                             response_images(:, :)
-      REAL(dp)                                           :: error, previous, reduced_k(3), shift
+      REAL(dp) :: bloch_bound, coefficient_bound, error, lower_bound, previous, previous_bound, &
+         reduced_k(3), response_bloch_bound, response_bound, shift, tail_bound(2)
       TYPE(upf_inverse_lattice_type)                     :: lattice, shifted
 
       kernel_images(:, 1) = [0, 0, 0]
@@ -154,6 +153,7 @@ CONTAINS
          exact(:, :, i) = -MATMUL(inverse, MATMUL(c(:, :, 2), exact(:, :, i - 1)))
       END DO
       previous = HUGE(0.0_dp)
+      previous_bound = HUGE(0.0_dp)
       DO padding = 1, 3
          i = domains(padding)
          CALL upf_inverse_lattice_init(kernel_images, c, images(:, :i), lattice, info)
@@ -173,6 +173,25 @@ CONTAINS
          error = MAXVAL(ABS(residual))
          CALL check(MERGE(0.0_dp, 1.0_dp, error < previous), "Image padding reduces the full residual", 0.0_dp)
          previous = error
+         CALL upf_inverse_lattice_error_bounds(lattice, solution(:, :, :i), images(:, :1), b(:, :, :1), &
+                                               coefficient_bound, bloch_bound, lower_bound, info)
+         CALL check(ABS(REAL(info, dp)), "Uniform inverse bound established")
+         difference = exact
+         difference(:, :, :i) = difference(:, :, :i) - solution(:, :, :i)
+         error = SQRT(SUM(ABS(difference)**2))
+         CALL check(MAX(0.0_dp, error - coefficient_bound), "Full coefficient tail bounded", 0.0_dp)
+         CALL check(MERGE(0.0_dp, 1.0_dp, bloch_bound < previous_bound), &
+                    "Image padding reduces the uniform Bloch bound", 0.0_dp)
+         previous_bound = bloch_bound
+         reduced_k = [0.17_dp, 0.11_dp, -0.09_dp]
+         CALL upf_inverse_lattice_bloch(kernel_images, c, reduced_k, k)
+         k(1, 1) = k(1, 1) + 1.0_dp
+         k(2, 2) = k(2, 2) + 1.0_dp
+         CALL invert_two(k, inverse)
+         exact_bloch = MATMUL(inverse, b(:, :, 1))
+         CALL upf_inverse_lattice_bloch(images(:, :i), solution(:, :, :i), reduced_k, bloch)
+         error = SQRT(SUM(ABS(bloch - exact_bloch)**2))
+         CALL check(MAX(0.0_dp, error - bloch_bound), "Pointwise Bloch error bounded", 0.0_dp)
       END DO
       DO side = 1, 2
          reduced_k = 0.0_dp
@@ -209,6 +228,44 @@ CONTAINS
       CALL upf_inverse_lattice_response_residual(lattice, solution, response, images, db, dc, &
                                                  response_images, response_residual)
       CALL check(MAXVAL(ABS(response_residual(:, :, :nr))), "Interior coupled response equations")
+      CALL upf_inverse_lattice_error_bounds(lattice, solution, images, b, coefficient_bound, bloch_bound, &
+                                            lower_bound, info, response=response, overlaps_response=db, &
+                                            coupling_response=dc, response_error=response_bound, &
+                                            response_bloch_error=response_bloch_bound)
+      CALL check(ABS(REAL(info, dp)), "Full coupled response bound established")
+      k = c(:, :, 1)
+      k(1, 1) = k(1, 1) + 1.0_dp
+      k(2, 2) = k(2, 2) + 1.0_dp
+      CALL invert_two(k, inverse)
+      exact_response(:, :, 1) = -MATMUL(inverse, MATMUL(dc(:, :, 3), exact(:, :, 1)))
+      DO i = 1, nr
+         db_bloch = db(:, :, i) - MATMUL(dc(:, :, 1), exact(:, :, i))
+         IF (i > 1) db_bloch = db_bloch - MATMUL(dc(:, :, 2), exact(:, :, i - 1))
+         bloch = -MATMUL(inverse, MATMUL(c(:, :, 2), exact(:, :, i)))
+         db_bloch = db_bloch - MATMUL(dc(:, :, 3), bloch)
+         exact_response(:, :, i + 1) = MATMUL(inverse, db_bloch - MATMUL(c(:, :, 2), exact_response(:, :, i)))
+      END DO
+      difference = exact_response(:, :, 2:) - response
+      error = SQRT(SUM(ABS(difference)**2) + SUM(ABS(exact_response(:, :, 1))**2))
+      CALL check(MAX(0.0_dp, error - response_bound), "Full response coefficient tail bounded", 0.0_dp)
+      CALL upf_inverse_lattice_bloch(kernel_images, c, reduced_k, k)
+      k(1, 1) = k(1, 1) + 1.0_dp
+      k(2, 2) = k(2, 2) + 1.0_dp
+      CALL invert_two(k, inverse)
+      exact_bloch = MATMUL(inverse, b(:, :, 1))
+      CALL upf_inverse_lattice_bloch(images, db, reduced_k, db_bloch)
+      CALL upf_inverse_lattice_bloch(kernel_images, dc, reduced_k, dc_bloch)
+      exact_bloch = MATMUL(inverse, db_bloch - MATMUL(dc_bloch, exact_bloch))
+      CALL upf_inverse_lattice_bloch(images, response, reduced_k, bloch)
+      CALL check(MAX(0.0_dp, SQRT(SUM(ABS(bloch - exact_bloch)**2)) - response_bloch_bound), &
+                 "Exterior Bloch response error bounded", 0.0_dp)
+      tail_bound = [0.02_dp, 0.03_dp]
+      error = coefficient_bound
+      previous = bloch_bound
+      CALL upf_inverse_lattice_error_bounds(lattice, solution, images, b, coefficient_bound, bloch_bound, &
+                                            lower_bound, info, overlap_tail=tail_bound)
+      CALL check(ABS(coefficient_bound - error - tail_bound(1)/lower_bound), "Omitted B l2 tail retained")
+      CALL check(ABS(bloch_bound - previous - tail_bound(2)/lower_bound), "Omitted B l1 tail retained")
       ALLOCATE (residual_samples(np, nao, SIZE(response_images, 2), 2))
       DO side = 1, 2
          shift = REAL(2*side - 3, dp)*step
@@ -229,6 +286,18 @@ CONTAINS
       CALL upf_inverse_lattice_residual(lattice, samples(:, :, :, 1), images, b, residual_images, residual)
       CALL check(MERGE(0.0_dp, 1.0_dp, MAXVAL(ABS(residual(:, :, :nr))) > 1.e-4_dp), &
                  "Failed solve retains its true interior residual", 0.0_dp)
+      c = CMPLX(0.0_dp, 0.0_dp, dp)
+      c(1, 1, 2) = 0.8_dp
+      c(2, 2, 2) = 0.8_dp
+      CALL upf_inverse_lattice_init(kernel_images, c, images(:, :1), shifted, info)
+      CALL upf_inverse_lattice_bound(shifted, lower_bound, info)
+      CALL check(ABS(REAL(info - 1, dp)) + ABS(lower_bound), "Inconclusive bound reports no certificate", 0.0_dp)
+      CALL upf_inverse_lattice_project(shifted, b(:, :, :1), samples(:, :, :1, 1), 2.e-14_dp, info)
+      CALL check(ABS(REAL(info, dp)), "Inconclusive uniform bound permits the finite solve")
+      CALL upf_inverse_lattice_error_bounds(shifted, samples(:, :, :1, 1), images(:, :1), b(:, :, :1), &
+                                            coefficient_bound, bloch_bound, lower_bound, info)
+      CALL check(MERGE(0.0_dp, 1.0_dp, info == 1 .AND. coefficient_bound == HUGE(0.0_dp) .AND. &
+                       bloch_bound == HUGE(0.0_dp)), "Uncertified errors are not reported as zero", 0.0_dp)
 
    END SUBROUTINE check_lattice_inverse
 ! **************************************************************************************************
