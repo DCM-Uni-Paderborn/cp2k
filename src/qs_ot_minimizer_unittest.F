@@ -16,7 +16,7 @@ PROGRAM qs_ot_minimizer_unittest
         lbfgs_response_secant_parameters, lbfgs_step_restart_required, ot_mermin_response_assess, &
         ot_mermin_response_candidate_preferred, ot_mermin_response_compare, &
         ot_mermin_response_preparation_needed, ot_mermin_response_probe, &
-        ot_mermin_response_shadow_followup, ot_mermin_secant_curvature
+        ot_mermin_response_shadow_followup, ot_mermin_secant_curvature, ot_two_point_search_step
    USE qs_scf_loop_utils,               ONLY: qs_scf_kp_ref_refresh_ready,&
                                               qs_scf_kp_search_endpoint
 
@@ -29,6 +29,15 @@ PROGRAM qs_ot_minimizer_unittest
                                                          response_advantage, response_gain, response_quality, &
                                                          response_scale, response_weight, residual_ratio, &
                                                          secant_curvature, sy_damped, yy_damped
+
+   IF (ABS(ot_two_point_search_step(-0.03_dp, -0.4_dp, 0.1_dp) - 0.2_dp) > &
+       32.0_dp*EPSILON(1.0_dp)) THEN
+      ERROR STOP "Two-point search did not minimize a resolved quadratic"
+   END IF
+   IF (ABS(ot_two_point_search_step(0.0_dp, -1.0E-12_dp, 0.003_dp) - 0.0015_dp) > &
+       32.0_dp*EPSILON(1.0_dp)) THEN
+      ERROR STOP "Two-point search lost the descent slope at equal rounded energies"
+   END IF
 
    IF (.NOT. broyden_history_restart_required(.TRUE., .FALSE., .TRUE.)) THEN
       ERROR STOP "Mermin Broyden did not restart a non-descent product history"

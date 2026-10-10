@@ -58,7 +58,8 @@ MODULE qs_ot_minimizer
               ot_mermin_response_shadow_followup, &
               ot_mermin_secant_curvature, &
               ot_mini, &
-              ot_mini_prepare_gradient
+              ot_mini_prepare_gradient, &
+              ot_two_point_search_step
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot_minimizer'
 
@@ -1262,8 +1263,33 @@ CONTAINS
    END SUBROUTINE do_line_search_3pnt
 
 ! **************************************************************************************************
-!> \brief ...
-!> \param qs_ot_env ...
+!> \brief Minimize the two-point quadratic relative to the initial energy.
+!> \param delta_energy trial energy minus the initial energy
+!> \param slope initial directional energy derivative
+!> \param step trial position along the search direction
+!> \return bounded next position, with the existing extrapolation fallback
+   PURE FUNCTION ot_two_point_search_step(delta_energy, slope, step) RESULT(position)
+      REAL(KIND=dp), INTENT(IN)                          :: delta_energy, slope, step
+      REAL(KIND=dp)                                      :: position
+
+      REAL(KIND=dp)                                      :: curvature, minimum_energy, maximum_step
+
+      curvature = (delta_energy - slope*step)/(step**2)
+      IF (curvature <= 0.0_dp) curvature = 1.0E-15_dp
+      position = -slope/(2.0_dp*curvature)
+      minimum_energy = (curvature*position + slope)*position
+      maximum_step = MAX(0.0_dp, step)
+      IF (minimum_energy < 0.0_dp .AND. minimum_energy <= delta_energy) THEN
+         position = MAX(maximum_step*0.01_dp, MIN(position, maximum_step*4.0_dp))
+      ELSE
+         position = maximum_step*2.0_dp
+      END IF
+
+   END FUNCTION ot_two_point_search_step
+
+! **************************************************************************************************
+!> \brief Perform the two-point quadratic line search.
+!> \param qs_ot_env orbital transformation environments
 ! **************************************************************************************************
    SUBROUTINE do_line_search_2pnt(qs_ot_env)
 
@@ -1272,14 +1298,14 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'do_line_search_2pnt'
 
       INTEGER                                            :: count, handle
-      REAL(KIND=dp)                                      :: a, b, c, ds, pos, val, x0, x1
+      REAL(KIND=dp)                                      :: delta_energy, ds
 
       CALL timeset(routineN, handle)
 
       qs_ot_env(1)%line_search_might_be_done = .FALSE.
       qs_ot_env(1)%energy_only = .TRUE.
 
-      ! a three point interpolation based on the energy
+      ! Two energies and the initial directional derivative define the quadratic.
       qs_ot_env(1)%line_search_count = qs_ot_env(1)%line_search_count + 1
       count = qs_ot_env(1)%line_search_count
       qs_ot_env(1)%ot_energy(count) = qs_ot_env(1)%etotal
@@ -1289,24 +1315,11 @@ CONTAINS
          qs_ot_env(1)%ot_grad(count) = qs_ot_env(1)%gradient
          qs_ot_env(1)%ot_pos(count + 1) = qs_ot_env(1)%ds_min*1.0_dp
       CASE (2)
-         x0 = 0.0_dp
-         c = qs_ot_env(1)%ot_energy(1)
-         b = qs_ot_env(1)%ot_grad(1)
-         x1 = qs_ot_env(1)%ot_pos(2)
-         a = (qs_ot_env(1)%ot_energy(2) - b*x1 - c)/(x1**2)
-         IF (a <= 0.0_dp) a = 1.0E-15_dp
-         pos = -b/(2.0_dp*a)
-         val = a*pos**2 + b*pos + c
+         delta_energy = qs_ot_env(1)%ot_energy(2) - qs_ot_env(1)%ot_energy(1)
          qs_ot_env(1)%energy_only = .FALSE.
          qs_ot_env(1)%line_search_might_be_done = .TRUE.
-         IF (val < qs_ot_env(1)%ot_energy(1) .AND. val <= qs_ot_env(1)%ot_energy(2)) THEN
-            ! we go to a minimum, but ...
-            ! we take a guard against too large steps
-            qs_ot_env(1)%OT_pos(count + 1) = MAX(MAXVAL(qs_ot_env(1)%OT_pos(1:2))*0.01_dp, &
-                                                 MIN(pos, MAXVAL(qs_ot_env(1)%OT_pos(1:2))*4.0_dp))
-         ELSE ! just take an extended step
-            qs_ot_env(1)%OT_pos(count + 1) = MAXVAL(qs_ot_env(1)%OT_pos(1:2))*2.0_dp
-         END IF
+         qs_ot_env(1)%OT_pos(count + 1) = ot_two_point_search_step( &
+                                          delta_energy, qs_ot_env(1)%ot_grad(1), qs_ot_env(1)%ot_pos(2))
       CASE DEFAULT
          CPABORT("NYI")
       END SELECT
