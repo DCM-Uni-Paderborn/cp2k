@@ -13,7 +13,6 @@
 !> \author Joost VandeVondele (06.2002)
 ! **************************************************************************************************
 MODULE qs_ot
-   USE arnoldi_api,                     ONLY: arnoldi_extremal
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_distribution_type, dbcsr_filter, &
         dbcsr_finalize, dbcsr_get_block_p, dbcsr_get_info, dbcsr_get_occupation, dbcsr_init_p, &
@@ -2647,25 +2646,17 @@ CONTAINS
       CHARACTER(len=*), PARAMETER                        :: routineN = 'qs_ot_get_p'
       REAL(KIND=dp), PARAMETER                           :: rone = 1.0_dp, rzero = 0.0_dp
 
-      INTEGER                                            :: handle, k, max_iter, n
-      LOGICAL                                            :: converged
-      REAL(KIND=dp)                                      :: max_ev, min_ev, threshold
+      INTEGER                                            :: handle
 
       CALL timeset(routineN, handle)
-
-      CALL dbcsr_get_info(matrix_x, nfullrows_total=n, nfullcols_total=k)
 
       ! get the overlap
       CALL dbcsr_multiply('T', 'N', rone, matrix_x, matrix_sx, rzero, &
                           qs_ot_env%matrix_p)
 
-      ! get an upper bound for the largest eigenvalue
-      ! try using lancos first and fall back to gershgorin norm if it fails
-      max_iter = 30; threshold = 1.0E-03_dp
-      CALL arnoldi_extremal(qs_ot_env%matrix_p, max_ev, min_ev, converged, threshold, max_iter)
-      qs_ot_env%largest_eval_upper_bound = MAX(max_ev, ABS(min_ev))
-
-      IF (.NOT. converged) qs_ot_env%largest_eval_upper_bound = dbcsr_gershgorin_norm(qs_ot_env%matrix_p)
+      ! Ritz estimates within an absolute tolerance do not bound the spectrum.
+      ! Use a guaranteed row-sum bound for the Taylor remainder.
+      qs_ot_env%largest_eval_upper_bound = dbcsr_gershgorin_norm(qs_ot_env%matrix_p)
       CALL decide_strategy(qs_ot_env)
       IF (qs_ot_env%do_taylor) THEN
          CALL qs_ot_p2m_taylor(qs_ot_env)
