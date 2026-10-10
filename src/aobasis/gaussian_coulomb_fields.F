@@ -210,10 +210,12 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: potential(:)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :)
 
+      INTEGER, PARAMETER                                 :: max_cached_l = 4
+
       INTEGER                                            :: axis, block, l, m
-      LOGICAL                                            :: angular_ready(0:1)
-      REAL(dp)                                           :: angular, dangular(3), dh, h, &
-                                                            sp_angular(4), sp_gradient(3, 4)
+      LOGICAL                                            :: angular_ready(0:max_cached_l)
+      REAL(dp) :: angular, cached_angular((max_cached_l + 1)**2), &
+         cached_gradient(3, (max_cached_l + 1)**2), dangular(3), dh, h
 
       CPASSERT(ALLOCATED(fields%primitives))
       CPASSERT(SIZE(potential) == fields%nfunction)
@@ -229,21 +231,21 @@ CONTAINS
             IF (.NOT. ANY(primitive%coefficients /= 0.0_dp)) CYCLE
             l = primitive%l
             CALL radial_potential(primitive%alpha, primitive%power, l, SUM(displacement**2), h, dh)
-            ! The native s and p solid harmonics do not depend on the radial exponent or power.
-            ! A fixed workspace retains their original arithmetic without pointwise allocation.
-            IF (l <= 1) THEN
+            ! Solid harmonics do not depend on the radial exponent or power. Reuse them through
+            ! g in a fixed workspace, retaining the generic evaluation for higher angular orders.
+            IF (l <= max_cached_l) THEN
                IF (.NOT. angular_ready(l)) THEN
                   DO m = 1, 2*l + 1
                      CALL native_solid_harmonic(l, m, displacement, PRESENT(gradient), &
-                                                sp_angular(l*l + m), sp_gradient(:, l*l + m))
+                                                cached_angular(l*l + m), cached_gradient(:, l*l + m))
                   END DO
                   angular_ready(l) = .TRUE.
                END IF
             END IF
             DO m = 1, 2*l + 1
-               IF (l <= 1) THEN
-                  angular = sp_angular(l*l + m)
-                  dangular = sp_gradient(:, l*l + m)
+               IF (l <= max_cached_l) THEN
+                  angular = cached_angular(l*l + m)
+                  dangular = cached_gradient(:, l*l + m)
                ELSE
                   CALL native_solid_harmonic(l, m, displacement, PRESENT(gradient), angular, dangular)
                END IF
