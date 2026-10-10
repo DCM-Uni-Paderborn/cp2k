@@ -2579,8 +2579,10 @@ CONTAINS
                END IF
             END DO
             IF (all_equal) THEN
+               ! Spin overlaps use the same charge metric as orbital normalization,
+               ! including the original USPP/PAW augmentation.
                CALL get_qs_env(qs_env=qs_env, &
-                               matrix_s=matrix_s, &
+                               matrix_metric=matrix_s, &
                                energy=energy)
                CALL compute_s_square(mos=mos, matrix_s=matrix_s, s_square=s_square, &
                                      s_square_ideal=s_square_ideal)
