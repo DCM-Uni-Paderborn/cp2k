@@ -1474,8 +1474,9 @@ CONTAINS
       IF (control%qs_control%gapw .AND. ANY(cell%perd == 0)) THEN
          CALL pw_env_get(pw_env, poisson_env=poisson)
          IF (poisson%parameters%solver /= pw_poisson_analytic .AND. &
-             .NOT. (poisson%parameters%solver == pw_poisson_mt .AND. COUNT(cell%perd == 1) == 2)) THEN
-            CPABORT("Inverse nonperiodic GAPW requires analytic Poisson or the MT slab solver")
+             .NOT. (poisson%parameters%solver == pw_poisson_mt .AND. &
+                    (COUNT(cell%perd == 1) == 0 .OR. COUNT(cell%perd == 1) == 2))) THEN
+            CPABORT("Inverse GAPW supports analytic Poisson or isolated/slab MT")
          END IF
       END IF
       lower_real = 0.0_dp

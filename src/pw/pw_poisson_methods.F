@@ -122,7 +122,7 @@ CONTAINS
       iz = green%special_dimension
       SELECT CASE (green%method)
       CASE (PERIODIC3D)
-      CASE (ANALYTIC0D)
+      CASE (ANALYTIC0D, MT0D)
          periodic = 0
       CASE (ANALYTIC1D)
          CPASSERT(iz >= 1 .AND. iz <= 3)
@@ -141,7 +141,7 @@ CONTAINS
          CPASSERT(MAXVAL(ABS(strain(:, axis))) <= tolerance)
       END DO
       response = 0.0_dp
-      IF (green%method == ANALYTIC0D) RETURN
+      IF (green%method == ANALYTIC0D .OR. green%method == MT0D) RETURN
       DO ig = grid%first_gne0, grid%ngpts_cut_local
          g2 = grid%gsq(ig)
          dg = -MATMUL(TRANSPOSE(strain), grid%g(:, ig))
@@ -1233,12 +1233,12 @@ CONTAINS
          IF (.NOT. PRESENT(h_stress)) RETURN
          IF (poisson_env%used_grid /= use_gs_grid) RETURN
          SELECT CASE (poisson_env%green_fft%method)
-         CASE (ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT2D)
+         CASE (ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT0D, MT2D)
          CASE DEFAULT
             RETURN
          END SELECT
          h_stress = 0.0_dp
-         IF (poisson_env%green_fft%method == ANALYTIC0D) RETURN
+         IF (poisson_env%green_fft%method == ANALYTIC0D .OR. poisson_env%green_fft%method == MT0D) RETURN
          IF (PRESENT(greenfn)) THEN
             CPABORT("Truncated Coulomb stress for a custom Green function is not implemented")
          END IF
@@ -1355,7 +1355,7 @@ CONTAINS
             ! Truncated FFT kernels are contracted against the original density
             ! by the caller. Their derivatives do not obey the Maxwell K**2 identity.
             SELECT CASE (poisson_env%green_fft%method)
-            CASE (ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT2D)
+            CASE (ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT0D, MT2D)
                calculate_stress = .FALSE.
             END SELECT
          END IF

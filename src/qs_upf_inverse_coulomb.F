@@ -13,7 +13,8 @@ MODULE qs_upf_inverse_coulomb
    USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_para_env_type
-   USE mt_util,                         ONLY: MT2D
+   USE mt_util,                         ONLY: MT0D,&
+                                              MT2D
    USE orbital_pointers,                ONLY: indso
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
@@ -299,7 +300,7 @@ CONTAINS
          CPABORT("Inverse GAPW requires an unscreened Coulomb kernel without a dielectric")
       END IF
       SELECT CASE (poisson%green_fft%method)
-      CASE (PERIODIC3D, ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT2D)
+      CASE (PERIODIC3D, ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT0D, MT2D)
       CASE DEFAULT
          CPABORT("Inverse GAPW Coulomb for this Poisson solver is not implemented")
       END SELECT
@@ -310,8 +311,10 @@ CONTAINS
          map%multiplicity = 2.0_dp
          IF (map%grid%have_g0) map%multiplicity(1) = 1.0_dp
       END IF
+      ! The inversion-symmetric MT kernel is real up to roundoff in its numerical FFT.
+      tolerance = 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(REAL(poisson%green_fft%influence_fn%array, dp))))
+      CPASSERT(MAXVAL(ABS(AIMAG(poisson%green_fft%influence_fn%array))) <= tolerance)
       map%poisson_weights(:) = map%grid%vol*map%multiplicity*REAL(poisson%green_fft%influence_fn%array, dp)
-      CPASSERT(ALL(AIMAG(poisson%green_fft%influence_fn%array) == 0.0_dp))
       IF (ASSOCIATED(state%bloch%kpoints)) THEN
          ALLOCATE (map%weights, SOURCE=state%bloch%weights)
       ELSE

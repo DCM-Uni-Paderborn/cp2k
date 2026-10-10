@@ -16,7 +16,8 @@ MODULE qs_upf_inverse_forces
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_para_env_type
-   USE mt_util,                         ONLY: MT2D
+   USE mt_util,                         ONLY: MT0D,&
+                                              MT2D
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
@@ -171,7 +172,7 @@ CONTAINS
             CALL pw_env_get(pw_env, poisson_env=poisson)
             CPASSERT(ALL(poisson%parameters%periodic == cell%perd))
             SELECT CASE (poisson%green_fft%method)
-            CASE (ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT2D)
+            CASE (ANALYTIC0D, ANALYTIC1D, ANALYTIC2D, MT0D, MT2D)
             CASE DEFAULT
                CPABORT("Inverse nonperiodic stress for this Poisson solver is not implemented")
             END SELECT

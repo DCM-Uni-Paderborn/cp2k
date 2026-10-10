@@ -9,6 +9,8 @@ PROGRAM pw_unittest
    USE bessel_lib,                      ONLY: bessk1
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
+   USE fft_tools,                       ONLY: finalize_fft,&
+                                              init_fft
    USE kinds,                           ONLY: dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
@@ -56,6 +58,7 @@ PROGRAM pw_unittest
    CALL cp2k_init()
    logger => cp_get_default_logger()
    para_env => logger%para_env
+   CALL init_fft("FFTSG", alltoall=.FALSE., pool_limit=4, wisdom_file="", plan_style=1)
    CALL check_cube_values()
    DO mode = 0, 8
       CALL check_copy(mode)
@@ -65,6 +68,7 @@ PROGRAM pw_unittest
    CALL check_mt2d_kernel()
    CALL check_green_strain()
    PRINT '(A,ES16.7)', 'PW integral and Coulomb kernel maximum scaled error: ', max_error
+   CALL finalize_fft(para_env, wisdom_file="")
    CALL cp2k_finalize()
 
 CONTAINS
@@ -340,15 +344,20 @@ CONTAINS
       DO axis = 1, 3
          cell(axis, axis) = REAL(5 + 4*axis, dp)
       END DO
-      DO mask = 0, 8
+      DO mask = 0, 9
          parameters%solver = pw_poisson_analytic
          parameters%periodic = MERGE(1, 0, BTEST(mask, [0, 1, 2]))
          IF (mask == 8) THEN
             parameters%solver = pw_poisson_mt
             parameters%periodic = [1, 1, 0]
             parameters%mt_alpha = 1.0_dp
+         ELSE IF (mask == 9) THEN
+            parameters%solver = pw_poisson_mt
+            parameters%periodic = 0
+            parameters%mt_alpha = 1.0_dp
          END IF
-         CALL pw_grid_create(grid, comm, cell, grid_span=HALFSPACE, npts=[5, 5, 5], odd=.TRUE., fft_usage=.FALSE.)
+         ! The isolated MT kernel uses the native FFT of its real-space long-range part.
+         CALL pw_grid_create(grid, comm, cell, grid_span=HALFSPACE, npts=[5, 5, 5], odd=.TRUE., fft_usage=(mask == 9))
          CALL pw_pool_create(pool, grid)
          CALL pw_green_create(green, parameters, cell, pool, super_grid, dct_grid)
          CALL matched%create(grid)
