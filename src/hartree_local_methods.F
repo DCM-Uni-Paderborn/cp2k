@@ -50,6 +50,8 @@ MODULE hartree_local_methods
                                               rho_atom_type
    USE util,                            ONLY: get_limit
    USE virial_types,                    ONLY: virial_type
+   USE whittaker,                       ONLY: whittaker_c0a,&
+                                              whittaker_ci
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -236,10 +238,11 @@ CONTAINS
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: background_potential, gexp, sqrtwr
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: aVh1b_00, aVh1b_00_nuc, aVh1b_hh, &
                                                             aVh1b_hh_nuc, aVh1b_ss, aVh1b_ss_nuc, &
-                                                            g0_h_w
+                                                            g0_h_w, source_h, source_s
       REAL(dp), DIMENSION(:), POINTER                    :: rrad_z, vrrad_z
       REAL(dp), DIMENSION(:, :), POINTER                 :: g0_h, g0_h_2nd, gsph, gsph_nuc, rrad_0, &
-                                                            Vh1_h, Vh1_s, vrrad_0, zet, zet_nuc
+                                                            vg0_h, Vh1_h, Vh1_s, vrrad_0, zet, &
+                                                            zet_nuc
       REAL(dp), DIMENSION(:, :, :), POINTER              :: my_CG, Qlm_gg, Qlm_gg_2nd
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
@@ -254,6 +257,7 @@ CONTAINS
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(rho0_atom_type), DIMENSION(:), POINTER        :: rho0_atom_set, rho0_atom_set_2nd
       TYPE(rho0_mpole_type), POINTER                     :: rho0_mpole, rho0_mpole_2nd
+      TYPE(rho_atom_coeff), POINTER                      :: radial_h(:), radial_s(:)
       TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho_atom_set, rho_atom_set_2nd
       TYPE(rho_atom_type), POINTER                       :: rho_atom
       TYPE(rhoz_cneo_type), DIMENSION(:), POINTER        :: rhoz_cneo_set
@@ -373,7 +377,7 @@ CONTAINS
             NULLIFY (Qlm_gg, g0_h)
             CALL get_rho0_mpole(rho0_mpole=rho0_mpole, ikind=ikind, &
                                 l0_ikind=lmax0, &
-                                Qlm_gg=Qlm_gg, g0_h=g0_h) ! Qlm_gg of density
+                                Qlm_gg=Qlm_gg, g0_h=g0_h, vg0_h=vg0_h) ! Qlm_gg of density
 
             IF (PRESENT(local_rho_set_2nd)) THEN ! for potential
                NULLIFY (Qlm_gg_2nd, g0_h_2nd)
@@ -390,6 +394,7 @@ CONTAINS
             NULLIFY (Vh1_h, Vh1_s)
             ALLOCATE (Vh1_h(nr, max_iso_not0))
             ALLOCATE (Vh1_s(nr, MAX(max_iso_not0, max_iso_not0_nuc, nchan_0)))
+            ALLOCATE (source_h(nr, max_iso_not0), source_s(nr, MAX(max_iso_not0, nchan_0)))
 
             NULLIFY (lmax_nuc, lmin_nuc, npgf_nuc, zet_nuc, gsph_nuc)
             maxso_nuc = 0
@@ -573,6 +578,28 @@ CONTAINS
 
                IF (l_2nd_local_rho) rho_atom => rho_atom_set_2nd(iatom) ! rho_atom for potential (2nd)
 
+               source_h = 0.0_dp
+               source_s = 0.0_dp
+               IF (.NOT. cneo) THEN
+                  CALL get_rho_atom(rho_atom, rho_rad_h=radial_h, rho_rad_s=radial_s)
+                  DO iso = 1, nspins
+                     source_h(:, :) = source_h(:, :) + radial_h(iso)%r_coef(:, :)
+                     source_s(:, 1:max_iso_not0) = source_s(:, 1:max_iso_not0) + radial_s(iso)%r_coef(:, :)
+                  END DO
+                  IF (my_core_2nd) THEN
+                     IF (l_2nd_local_rho) THEN
+                        source_h(:, 1) = source_h(:, 1) + rhoz_set_2nd(ikind)%r_coef(:)
+                     ELSE
+                        source_h(:, 1) = source_h(:, 1) + rhoz_set(ikind)%r_coef(:)
+                     END IF
+                  END IF
+                  IF (l_2nd_local_rho) THEN
+                     source_s(:, 1:nchan_0) = source_s(:, 1:nchan_0) + rho0_atom_set_2nd(iatom)%rho0_rad_h%r_coef
+                  ELSE
+                     source_s(:, 1:nchan_0) = source_s(:, 1:nchan_0) + rho0_atom_set(iatom)%rho0_rad_h%r_coef
+                  END IF
+               END IF
+
                IF (cneo) THEN
                   CALL set_ecoul_1c(ecoul_1c, iatom, ecoul_1_z=ecoul_1c(iatom)%ecoul_1_z + ecoul_1_z_cneo)
                   energy_hartree_1c = energy_hartree_1c + ecoul_1_z_cneo
@@ -594,7 +621,8 @@ CONTAINS
                                          aVh1b_hh, aVh1b_ss, aVh1b_00, Vh1_h, Vh1_s, max_iso_not0, &
                                          max_s_harm, llmax, cg_list, cg_n_list, &
                                          nset, npgf, lmin, lmax, nsotot, maxso, nspins, nchan_0, gsph, &
-                                         g0_h_w, my_CG, Qlm_gg) ! Qlm_gg for density from local_rho_set
+                                         g0_h_w, my_CG, Qlm_gg, grid_atom, zet, vg0_h, source_h, source_s, &
+                                         background_potential, symmetric_radial=.NOT. cneo)
 
             END DO ! iat
 
@@ -604,7 +632,7 @@ CONTAINS
             IF (ALLOCATED(aVh1b_hh_nuc)) DEALLOCATE (aVh1b_hh_nuc)
             IF (ALLOCATED(aVh1b_ss_nuc)) DEALLOCATE (aVh1b_ss_nuc)
             IF (ALLOCATED(aVh1b_00_nuc)) DEALLOCATE (aVh1b_00_nuc)
-            DEALLOCATE (Vh1_h, Vh1_s)
+            DEALLOCATE (Vh1_h, Vh1_s, source_h, source_s)
             DEALLOCATE (cg_list, cg_n_list)
             DEALLOCATE (gsph)
             IF (ASSOCIATED(gsph_nuc)) DEALLOCATE (gsph_nuc)
@@ -832,12 +860,20 @@ CONTAINS
 !> \param g0_h_w ...
 !> \param my_CG ...
 !> \param Qlm_gg ...
+!> \param grid_atom Radial quadrature used in the one-center energy.
+!> \param zet Primitive Gaussian exponents.
+!> \param vg0_h Analytic potentials of the compensation-charge Gaussians.
+!> \param source_h Hard radial density including the nuclear charge.
+!> \param source_s Soft radial density including the compensation charge.
+!> \param background_potential Unweighted l=0 potential of the uniform background.
+!> \param symmetric_radial Include both derivatives of the finite-quadrature Hartree energy.
 ! **************************************************************************************************
    SUBROUTINE Vh_1c_atom_integrals(rho_atom, &
                                    aVh1b_hh, aVh1b_ss, aVh1b_00, Vh1_h, Vh1_s, max_iso_not0, &
                                    max_s_harm, llmax, cg_list, cg_n_list, &
                                    nset, npgf, lmin, lmax, nsotot, maxso, nspins, nchan_0, gsph, &
-                                   g0_h_w, my_CG, Qlm_gg)
+                                   g0_h_w, my_CG, Qlm_gg, grid_atom, zet, vg0_h, source_h, source_s, &
+                                   background_potential, symmetric_radial)
 
       TYPE(rho_atom_type), POINTER                       :: rho_atom
       REAL(dp), DIMENSION(:, :)                          :: aVh1b_hh, aVh1b_ss, aVh1b_00
@@ -851,11 +887,18 @@ CONTAINS
       REAL(dp), DIMENSION(:, :), POINTER                 :: gsph
       REAL(dp), DIMENSION(:, 0:)                         :: g0_h_w
       REAL(dp), DIMENSION(:, :, :), POINTER              :: my_CG, Qlm_gg
+      TYPE(grid_atom_type), INTENT(IN)                   :: grid_atom
+      REAL(dp), INTENT(IN)                               :: zet(:, :), vg0_h(:, 0:), source_h(:, :), &
+                                                            source_s(:, :), background_potential(:)
+      LOGICAL, INTENT(IN)                                :: symmetric_radial
 
       INTEGER                                            :: icg, ipgf1, ipgf2, ir, is1, is2, iset1, &
                                                             iset2, iso, iso1, iso2, ispin, l_ang, &
-                                                            m1, m2, max_iso_not0_local, n1, n2, nr
-      REAL(dp)                                           :: gVg_0, gVg_h, gVg_s
+                                                            l_pair, m1, m2, max_iso_not0_local, &
+                                                            n1, n2, nr
+      LOGICAL, ALLOCATABLE                               :: pair_done(:, :)
+      REAL(dp)                                           :: background, gVg_0, gVg_h, gVg_s
+      REAL(dp), ALLOCATABLE                              :: pair_potential(:, :, :)
       TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: int_local_h, int_local_s
 
       NULLIFY (int_local_h, int_local_s)
@@ -869,6 +912,13 @@ CONTAINS
       aVh1b_00 = 0.0_dp
 
       nr = SIZE(gsph, 1)
+      IF (symmetric_radial) THEN
+         ! The sampled analytic Coulomb map need not be self-adjoint under
+         ! radial quadrature. Differentiate both density and potential in
+         ! 1/2 integral rho*V while retaining the original energy and grid.
+         ALLOCATE (pair_potential(nr, 0:2*MAXVAL(lmax), 0:indso(1, max_iso_not0)))
+         ALLOCATE (pair_done(0:2*MAXVAL(lmax), 0:indso(1, max_iso_not0)))
+      END IF
 
       m1 = 0
       DO iset1 = 1, nset
@@ -881,10 +931,17 @@ CONTAINS
             DO ipgf1 = 1, npgf(iset1)
                n2 = nsoset(lmax(iset2))
                DO ipgf2 = 1, npgf(iset2)
+                  IF (symmetric_radial) pair_done = .FALSE.
                   !               with contributions to  V1_s*rho0
                   DO iso = 1, MIN(nchan_0, max_iso_not0)
                      l_ang = indso(1, iso)
                      gVg_0 = SUM(Vh1_s(:, iso)*g0_h_w(:, l_ang))
+                     IF (symmetric_radial) THEN
+                        background = 0.0_dp
+                        IF (iso == 1) background = SUM(background_potential(:)*g0_h_w(:, l_ang))
+                        gVg_0 = 0.5_dp*(gVg_0 + background + &
+                                        SUM(vg0_h(:, l_ang)*source_s(:, iso)*grid_atom%wr(:)))
+                     END IF
                      DO icg = 1, cg_n_list(iso)
                         is1 = cg_list(1, icg, iso)
                         is2 = cg_list(2, icg, iso)
@@ -898,6 +955,21 @@ CONTAINS
                            gVg_h = gVg_h + gsph(ir, iso1)*gsph(ir, iso2)*Vh1_h(ir, iso)
                            gVg_s = gVg_s + gsph(ir, iso1)*gsph(ir, iso2)*Vh1_s(ir, iso)
                         END DO ! ir
+
+                        IF (symmetric_radial) THEN
+                           l_pair = indso(1, is1) + indso(1, is2)
+                           IF (.NOT. pair_done(l_pair, l_ang)) THEN
+                              CALL gaussian_pair_potential(grid_atom, zet(ipgf1, iset1) + zet(ipgf2, iset2), &
+                                                           l_pair, l_ang, pair_potential(:, l_pair, l_ang))
+                              pair_done(l_pair, l_ang) = .TRUE.
+                           END IF
+                           background = 0.0_dp
+                           IF (iso == 1) background = SUM(gsph(:, iso1)*gsph(:, iso2)*background_potential(:))
+                           gVg_h = 0.5_dp*(gVg_h + background + &
+                                           SUM(pair_potential(:, l_pair, l_ang)*source_h(:, iso)*grid_atom%wr(:)))
+                           gVg_s = 0.5_dp*(gVg_s + background + &
+                                           SUM(pair_potential(:, l_pair, l_ang)*source_s(:, iso)*grid_atom%wr(:)))
+                        END IF
 
                         aVh1b_hh(iso1, iso2) = aVh1b_hh(iso1, iso2) + gVg_h*my_CG(is1, is2, iso)
                         aVh1b_ss(iso1, iso2) = aVh1b_ss(iso1, iso2) + gVg_s*my_CG(is1, is2, iso)
@@ -907,6 +979,7 @@ CONTAINS
                   END DO ! iso
                   !               without contributions to  V1_s*rho0
                   DO iso = nchan_0 + 1, max_iso_not0
+                     l_ang = indso(1, iso)
                      DO icg = 1, cg_n_list(iso)
                         is1 = cg_list(1, icg, iso)
                         is2 = cg_list(2, icg, iso)
@@ -920,6 +993,19 @@ CONTAINS
                            gVg_h = gVg_h + gsph(ir, iso1)*gsph(ir, iso2)*Vh1_h(ir, iso)
                            gVg_s = gVg_s + gsph(ir, iso1)*gsph(ir, iso2)*Vh1_s(ir, iso)
                         END DO ! ir
+
+                        IF (symmetric_radial) THEN
+                           l_pair = indso(1, is1) + indso(1, is2)
+                           IF (.NOT. pair_done(l_pair, l_ang)) THEN
+                              CALL gaussian_pair_potential(grid_atom, zet(ipgf1, iset1) + zet(ipgf2, iset2), &
+                                                           l_pair, l_ang, pair_potential(:, l_pair, l_ang))
+                              pair_done(l_pair, l_ang) = .TRUE.
+                           END IF
+                           gVg_h = 0.5_dp*(gVg_h + &
+                                           SUM(pair_potential(:, l_pair, l_ang)*source_h(:, iso)*grid_atom%wr(:)))
+                           gVg_s = 0.5_dp*(gVg_s + &
+                                           SUM(pair_potential(:, l_pair, l_ang)*source_s(:, iso)*grid_atom%wr(:)))
+                        END IF
 
                         aVh1b_hh(iso1, iso2) = aVh1b_hh(iso1, iso2) + gVg_h*my_CG(is1, is2, iso)
                         aVh1b_ss(iso1, iso2) = aVh1b_ss(iso1, iso2) + gVg_s*my_CG(is1, is2, iso)
@@ -939,7 +1025,40 @@ CONTAINS
          CALL daxpy(nsotot*nsotot, -1.0_dp, aVh1b_00, 1, int_local_s(ispin)%r_coef, 1)
       END DO ! ispin
 
+      IF (symmetric_radial) DEALLOCATE (pair_potential, pair_done)
    END SUBROUTINE Vh_1c_atom_integrals
+
+! **************************************************************************************************
+!> \brief Analytic Coulomb potential of a radial Gaussian product.
+!>        At finite quadrature the density/potential map is not self-adjoint.
+!>        The derivative of 1/2 rho*V therefore averages both contractions.
+!> \param grid_atom Native radial quadrature.
+!> \param exponent Sum of primitive Gaussian exponents.
+!> \param l_pair Radial power of the primitive product.
+!> \param l_multipole Spherical-harmonic angular momentum.
+!> \param potential Analytic radial potential, without quadrature weights.
+! **************************************************************************************************
+   SUBROUTINE gaussian_pair_potential(grid_atom, exponent, l_pair, l_multipole, potential)
+      TYPE(grid_atom_type), INTENT(IN)                   :: grid_atom
+      REAL(dp), INTENT(IN)                               :: exponent
+      INTEGER, INTENT(IN)                                :: l_pair, l_multipole
+      REAL(dp), INTENT(OUT)                              :: potential(:)
+
+      REAL(dp)                                           :: radial_erf(grid_atom%nr), &
+                                                            int2(grid_atom%nr), &
+                                                            int1(grid_atom%nr), &
+                                                            gaussian(grid_atom%nr)
+
+      gaussian(:) = EXP(-exponent*grid_atom%rad2(:))
+      radial_erf(:) = ERF(SQRT(exponent)*grid_atom%rad(:))
+      IF (l_pair + l_multipole == 0) THEN
+         potential(:) = radial_erf(:)*grid_atom%oorad2l(:, 1)*SQRT((pi/exponent)**3)
+      ELSE
+         CALL whittaker_c0a(int1, grid_atom%rad, gaussian, radial_erf, exponent, l_pair, l_multipole, grid_atom%nr)
+         CALL whittaker_ci(int2, grid_atom%rad, gaussian, exponent, l_pair - l_multipole, grid_atom%nr)
+         potential(:) = fourpi/(2.0_dp*l_multipole + 1.0_dp)*(int1(:) + grid_atom%rad2l(:, l_multipole)*int2(:))
+      END IF
+   END SUBROUTINE gaussian_pair_potential
 
 !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
