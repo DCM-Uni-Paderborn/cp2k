@@ -1334,11 +1334,19 @@ CONTAINS
 
       IF (do_kpoints) THEN
          IF (ALLOCATED(kpoints%native_density)) THEN
-            IF (scf_env%method /= general_diag_method_nr .OR. &
-                scf_control%diagonalization%update_method == diag_update_method_adiis .OR. &
-                (scf_env%mixing_method /= direct_mixing_nr .AND. scf_env%mixing_method /= no_mixing_nr)) THEN
-               CPABORT("Inverse Bloch SCF requires STANDARD and direct mixing")
-            END IF
+            SELECT CASE (scf_env%method)
+            CASE (general_diag_method_nr)
+               IF (scf_control%diagonalization%update_method == diag_update_method_adiis .OR. &
+                   (scf_env%mixing_method /= direct_mixing_nr .AND. scf_env%mixing_method /= no_mixing_nr)) THEN
+                  CPABORT("Inverse Bloch diagonalization requires STANDARD and direct mixing")
+               END IF
+            CASE (ot_method_nr)
+               IF (scf_env%mixing_method /= no_mixing_nr) THEN
+                  CPABORT("Inverse Bloch OT requires unmixed orbital densities")
+               END IF
+            CASE DEFAULT
+               CPABORT("Inverse Bloch SCF requires STANDARD diagonalization or OT")
+            END SELECT
             IF (.NOT. kpoints%native_density_seeded) THEN
                CALL qs_upf_inverse_scf_core(qs_env%ks_env)
                CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks_kp, matrix_metric_kp=matrix_s_kp)

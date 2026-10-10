@@ -42,6 +42,9 @@ MODULE qs_kpoint_state
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
+   USE qs_kpoint_density_state,         ONLY: kpoint_density_state_accept,&
+                                              kpoint_density_state_active,&
+                                              kpoint_density_state_capture
    USE qs_ks_types,                     ONLY: qs_ks_did_change
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
@@ -280,6 +283,12 @@ CONTAINS
          IF (fixed) CALL qs_kpoint_set_fixed_occupations(kpoints)
       END IF
       CALL kpoint_density_matrices(kpoints)
+      IF (kpoint_density_state_active(kpoints)) THEN
+         ! A committed orbital state also supplies the complete augmented density.
+         ! Its finite real-space image transform is not the variational P(k).
+         CALL kpoint_density_state_capture(kpoints)
+         CALL kpoint_density_state_accept(kpoints, 1.0_dp)
+      END IF
       CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
       CALL kpoint_density_transform(kpoints, rho_ao_kp, .FALSE., &
                                     matrix_s_kp(1, 1)%matrix, sab_nl, scf_env%scf_work1, &

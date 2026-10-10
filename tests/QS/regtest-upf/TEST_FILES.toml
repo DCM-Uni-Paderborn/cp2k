@@ -22,7 +22,7 @@
   {matcher="Atomic_force_1_z", tol=1e-7, ref=0.94605072},
   {matcher="M031", tol=1e-7, ref=1703909.06027},
 ]
-# Complete complex Bloch density with unequal k-point weights.
+# Complete complex Bloch density and native OT with unequal k-point weights.
 "H2_inverse_GPW_kpoints.inp" = [
   {matcher="M011", tol=1e-10, ref=-1.19361636287530},
   {matcher="Atomic_force_1_z", tol=1e-7, ref=0.942684424},

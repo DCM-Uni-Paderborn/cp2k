@@ -88,6 +88,7 @@ MODULE qs_scf_loop_utils
                                               qs_kind_type,&
                                               set_qs_kind
    USE qs_kpoint_density_state,         ONLY: kpoint_density_state_accept,&
+                                              kpoint_density_state_capture,&
                                               kpoint_density_state_delta
    USE qs_kpoint_operators,             ONLY: kpoint_operator_context_create,&
                                               kpoint_operator_context_release,&
@@ -769,7 +770,9 @@ CONTAINS
                                        require_local_state=.TRUE., &
                                        require_complex_state=.TRUE.)
 
-      IF (nkp_groups > 1) THEN
+      ! Complete native Bloch operators use the local cache even in a single group.
+      ! Refresh that cache at every orbital step with the current Hamiltonian.
+      IF (nkp_groups > 1 .OR. ALLOCATED(kpoints%native_density)) THEN
          CALL kpoint_operator_store(kpoints, fmwork(1), matrix_ks, matrix_s)
       END IF
 
@@ -1208,6 +1211,7 @@ CONTAINS
             density_target => rho_ao_kp
          END IF
          CALL kpoint_density_matrices(kpoints)
+         IF (ALLOCATED(kpoints%native_density)) CALL kpoint_density_state_capture(kpoints)
          CALL kpoint_density_transform(kpoints, density_target, .FALSE., &
                                        matrix_s(1, 1)%matrix, sab_nl, fmwork, &
                                        overlap_rs=matrix_s)
@@ -3305,6 +3309,13 @@ CONTAINS
       IF (PRESENT(kpoints)) THEN
          IF (ASSOCIATED(kpoints)) THEN
             IF (ALLOCATED(kpoints%native_density)) THEN
+               IF (scf_env%method == ot_method_nr) THEN
+                  ! OT owns the orbital search and its convergence residual. Publish the
+                  ! current complete P(k) without replacing that residual by a density delta.
+                  CPASSERT(scf_env%mixing_method == no_mixing_nr)
+                  CALL kpoint_density_state_accept(kpoints, 1.0_dp)
+                  RETURN
+               END IF
                IF (scf_env%mixing_method /= direct_mixing_nr .AND. scf_env%mixing_method /= no_mixing_nr) THEN
                   CPABORT("Native k-point densities require direct or no mixing")
                END IF
