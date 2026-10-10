@@ -102,12 +102,17 @@ CONTAINS
       NULLIFY (subsection)
       CALL section_create(subsection, __LOCATION__, name="SKALA_GRID", &
                           description="Experimental periodic atom quadrature for native Skala with SIRIUS. "// &
-                          "Required for joint PAW or FP-LAPW field reconstruction. Uses Gauss-Legendre radial and Lebedev "// &
+                          "Required for joint PAW, ultrasoft or FP-LAPW field reconstruction. "// &
+                          "Uses Gauss-Legendre radial and Lebedev "// &
                           "angular integration, periodic Becke energy partitions and independent self-image "// &
                           "descriptor windows. Geometry changes require SIRIUS with the point-quadrature update API. "// &
                           "CPU and GPU scalar, collinear and noncollinear calculations use host-staged fields. "// &
                           "Skala CUDA inference is selected independently in XC_FUNCTIONAL/GAUXC. "// &
-                          "PW and PAW forces and stress require the point geometry callbacks. "// &
+                          "Crystal symmetry requires invariant atom blocks and both quadrature weights. "// &
+                          "The full atom quadrature is retained while k-points can be reduced. "// &
+                          "Ultrasoft JSON setups require independent kinetic-augmentation tables, "// &
+                          "not only charge augmentation. PW, PAW and ultrasoft forces and stress "// &
+                          "require the point geometry callbacks. "// &
                           "FP-LAPW forces and total stress require the joint Hessian and quadrature-direction "// &
                           "callbacks, with scalar-relativistic full variation for scalar/collinear states and "// &
                           "NR/ZORA second variation for spinor states, including SOC, or native Dirac full "// &

@@ -88,7 +88,7 @@ PROGRAM skala_sirius_unittest
    REAL(dp), ALLOCATABLE :: points(:, :), weights(:), descriptor_weights(:), centres(:, :)
    INTEGER, ALLOCATABLE :: sizes(:)
    LOGICAL :: converged, atom_grid, force_test, stress_test, derivative_test, update_test, spinor_test, orbital_only
-   LOGICAL :: spinor_stress, soc_test, paw_soc_test, lapw_soc_test
+   LOGICAL :: spinor_stress, soc_test, paw_soc_test, lapw_soc_test, symmetry_test, ultrasoft_test
 
    CALL get_command_argument(1, model)
    CALL get_command_argument(2, paw_setup)
@@ -150,19 +150,23 @@ PROGRAM skala_sirius_unittest
                  TRIM(grid_arg) == "spinor-lapw-soc-stress"
    derivative_test = force_test .OR. stress_test
    update_test = TRIM(grid_arg) == "atom-grid-update"
+   symmetry_test = TRIM(grid_arg) == "atom-grid-symmetry" .OR. TRIM(grid_arg) == "atom-grid-symmetry-orbitals"
+   ultrasoft_test = TRIM(grid_arg) == "atom-grid-ultrasoft" .OR. TRIM(grid_arg) == "atom-grid-ultrasoft-orbitals"
    paw_soc_test = TRIM(grid_arg) == "spinor-paw-soc-orbitals"
    lapw_soc_test = TRIM(grid_arg) == "spinor-lapw-soc-orbitals" .OR. &
                    TRIM(grid_arg) == "spinor-lapw-soc-forces" .OR. TRIM(grid_arg) == "spinor-lapw-soc-stress"
    soc_test = TRIM(grid_arg) == "spinor-soc-orbitals" .OR. paw_soc_test
    orbital_only = TRIM(grid_arg) == "atom-grid-orbitals" .OR. &
+                  TRIM(grid_arg) == "atom-grid-symmetry-orbitals" .OR. TRIM(grid_arg) == "atom-grid-ultrasoft-orbitals" .OR. &
                   TRIM(grid_arg) == "spinor-orbitals" .OR. TRIM(grid_arg) == "spinor-paw-orbitals" .OR. &
                   TRIM(grid_arg) == "spinor-atom-grid-orbitals" .OR. soc_test .OR. (lapw_soc_test .AND. .NOT. derivative_test)
    spinor_stress = TRIM(grid_arg) == "spinor-stress"
    spinor_test = TRIM(grid_arg) == "spinor" .OR. TRIM(grid_arg) == "spinor-atom-grid" .OR. &
                  TRIM(grid_arg) == "spinor-atom-grid-forces" .OR. TRIM(grid_arg) == "spinor-atom-grid-stress" .OR. &
-                 (orbital_only .AND. TRIM(grid_arg) /= "atom-grid-orbitals") .OR. spinor_stress .OR. lapw_soc_test
+                 (orbital_only .AND. TRIM(grid_arg) /= "atom-grid-orbitals" .AND. &
+                  .NOT. (symmetry_test .OR. ultrasoft_test)) .OR. spinor_stress .OR. lapw_soc_test
    atom_grid = TRIM(grid_arg) == "atom-grid" .OR. TRIM(grid_arg) == "atom-grid-orbitals" .OR. &
-               derivative_test .OR. update_test .OR. &
+               derivative_test .OR. update_test .OR. symmetry_test .OR. ultrasoft_test .OR. &
                TRIM(grid_arg) == "spinor-atom-grid" .OR. TRIM(grid_arg) == "spinor-atom-grid-orbitals" .OR. &
                spinor_stress .OR. paw_soc_test .OR. lapw_soc_test
    IF (LEN_TRIM(grid_arg) > 0 .AND. .NOT. (atom_grid .OR. spinor_test)) ERROR STOP "Unknown atom-grid test mode"
@@ -198,7 +202,9 @@ PROGRAM skala_sirius_unittest
    first_mode = 0
    last_mode = 1
    IF (LEN_TRIM(paw_setup) > 0) first_mode = 1
+   IF (ultrasoft_test) first_mode = 1
    IF (TRIM(paw_setup) == "LAPW") THEN
+      IF (ultrasoft_test) ERROR STOP "Ultrasoft mode requires a pseudopotential fixture"
       first_mode = 2
       last_mode = 2
    END IF
@@ -362,6 +368,7 @@ PROGRAM skala_sirius_unittest
                                                 '"iterative_solver":{"type":"exact","min_tolerance":1e-11,"num_steps":80}}')
                END IF
                CALL sirius_set_parameters(ctx, num_mag_dims=mag, num_bands=num_bands)
+               IF (symmetry_test) CALL sirius_set_parameters(ctx, use_symmetry=.TRUE.)
                CALL sirius_option_set(ctx, "parameters", "extra_charge", SIRIUS_NUMBER_TYPE, C_LOC(extra_charge), error_code=ierr)
                IF (ierr /= 0) ERROR STOP "SIRIUS could not set the extra charge"
                IF (spinor_test .AND. extra_charge /= 0.0_dp .AND. model_mode == "skala-float32") THEN
@@ -437,10 +444,18 @@ PROGRAM skala_sirius_unittest
                         CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_paw_wf", r*EXP(-0.8_dp*r**2), nrad)
                         CALL sirius_add_atom_type_radial_function(ctx, "He", "q_aug", 0.05_dp*r**2*EXP(-2*r**2), nrad, &
                                                                   l=0, idxrf1=1, idxrf2=1)
+                        IF (ultrasoft_test) THEN
+                           CALL sirius_add_atom_type_radial_function(ctx, "He", "t_aug", &
+                                                                     0.07_dp*r**2*(1.0_dp + r**2)*EXP(-3*r**2), nrad, &
+                                                                     l=0, idxrf1=1, idxrf2=1)
+                        END IF
                      END IF
                      CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_core", 0.02_dp*EXP(-3*r**2), nrad)
                      CALL sirius_add_atom_type_radial_function(ctx, "He", "ae_paw_core_tau", 0.03_dp*EXP(-3*r**2), nrad)
                      CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_rho_core", 0.01_dp*EXP(-2*r**2), nrad)
+                     IF (ultrasoft_test) THEN
+                        CALL sirius_add_atom_type_radial_function(ctx, "He", "ps_core_tau", 0.03_dp*EXP(-3*r**2), nrad)
+                     END IF
                      IF (soc_test) THEN
                         soc_dion = 0.0_dp
                         soc_dion(1, 1) = 0.7_dp
@@ -449,7 +464,7 @@ PROGRAM skala_sirius_unittest
                         CALL sirius_set_atom_type_paw(ctx, "He", 0.0_dp, [1.0_dp, 1.0_dp], 2)
                      ELSE
                         CALL sirius_set_atom_type_dion(ctx, "He", 1, dion)
-                        CALL sirius_set_atom_type_paw(ctx, "He", 0.0_dp, [2.0_dp], 1)
+                        IF (.NOT. ultrasoft_test) CALL sirius_set_atom_type_paw(ctx, "He", 0.0_dp, [2.0_dp], 1)
                      END IF
                   ELSE IF (soc_test) THEN
                      CALL sirius_add_atom_type_radial_function(ctx, "He", "beta", r**2*EXP(-r**2), nrad, l=-1)
