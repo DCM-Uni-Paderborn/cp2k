@@ -39,6 +39,15 @@ PROGRAM qs_ot_minimizer_unittest
       ERROR STOP "Two-point search lost the descent slope at equal rounded energies"
    END IF
 
+   IF (ABS(ot_two_point_search_step(1.0E-14_dp, -1.0E-20_dp, 0.003_dp, 2.0E-20_dp) - &
+           0.001_dp) > 32.0_dp*EPSILON(1.0_dp)) THEN
+      ERROR STOP "Two-point derivative fit was changed by unresolved energy noise"
+   END IF
+   IF (ABS(ot_two_point_search_step(-0.03_dp, -0.4_dp, 0.1_dp, -0.5_dp) - 0.2_dp) > &
+       32.0_dp*EPSILON(1.0_dp)) THEN
+      ERROR STOP "Nonpositive derivative curvature changed the energy fallback"
+   END IF
+
    IF (.NOT. broyden_history_restart_required(.TRUE., .FALSE., .TRUE.)) THEN
       ERROR STOP "Mermin Broyden did not restart a non-descent product history"
    END IF

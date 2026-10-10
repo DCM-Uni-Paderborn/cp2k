@@ -1267,13 +1267,23 @@ CONTAINS
 !> \param delta_energy trial energy minus the initial energy
 !> \param slope initial directional energy derivative
 !> \param step trial position along the search direction
+!> \param trial_slope optional trial directional derivative for unresolved energies
 !> \return bounded next position, with the existing extrapolation fallback
-   PURE FUNCTION ot_two_point_search_step(delta_energy, slope, step) RESULT(position)
+   PURE FUNCTION ot_two_point_search_step(delta_energy, slope, step, trial_slope) RESULT(position)
       REAL(KIND=dp), INTENT(IN)                          :: delta_energy, slope, step
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: trial_slope
       REAL(KIND=dp)                                      :: position
 
       REAL(KIND=dp)                                      :: curvature, minimum_energy, maximum_step
 
+      IF (PRESENT(trial_slope)) THEN
+         ! Fit the derivative when the total-energy difference is unresolved.
+         IF (slope < 0.0_dp .AND. trial_slope > slope .AND. step > 0.0_dp) THEN
+            position = -slope*step/(trial_slope - slope)
+            position = MAX(step*0.01_dp, MIN(position, step*4.0_dp))
+            RETURN
+         END IF
+      END IF
       curvature = (delta_energy - slope*step)/(step**2)
       IF (curvature <= 0.0_dp) curvature = 1.0E-15_dp
       position = -slope/(2.0_dp*curvature)
@@ -1298,10 +1308,12 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'do_line_search_2pnt'
 
       INTEGER                                            :: count, handle
-      REAL(KIND=dp)                                      :: delta_energy, ds
+      LOGICAL                                            :: trial_gradient_available
+      REAL(KIND=dp)                                      :: delta_energy, ds, energy_resolution
 
       CALL timeset(routineN, handle)
 
+      trial_gradient_available = .NOT. qs_ot_env(1)%energy_only
       qs_ot_env(1)%line_search_might_be_done = .FALSE.
       qs_ot_env(1)%energy_only = .TRUE.
 
@@ -1314,12 +1326,21 @@ CONTAINS
          qs_ot_env(1)%ot_pos(count) = 0.0_dp
          qs_ot_env(1)%ot_grad(count) = qs_ot_env(1)%gradient
          qs_ot_env(1)%ot_pos(count + 1) = qs_ot_env(1)%ds_min*1.0_dp
+         ! Obtain the trial slope if the predicted decrease is below energy resolution.
+         energy_resolution = 16.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(qs_ot_env(1)%etotal))
+         qs_ot_env(1)%energy_only = ABS(qs_ot_env(1)%gradient*qs_ot_env(1)%ot_pos(2)) > &
+                                    energy_resolution
       CASE (2)
          delta_energy = qs_ot_env(1)%ot_energy(2) - qs_ot_env(1)%ot_energy(1)
          qs_ot_env(1)%energy_only = .FALSE.
          qs_ot_env(1)%line_search_might_be_done = .TRUE.
-         qs_ot_env(1)%OT_pos(count + 1) = ot_two_point_search_step( &
-                                          delta_energy, qs_ot_env(1)%ot_grad(1), qs_ot_env(1)%ot_pos(2))
+         IF (trial_gradient_available) THEN
+            qs_ot_env(1)%OT_pos(count + 1) = ot_two_point_search_step( &
+               delta_energy, qs_ot_env(1)%ot_grad(1), qs_ot_env(1)%ot_pos(2), qs_ot_env(1)%gradient)
+         ELSE
+            qs_ot_env(1)%OT_pos(count + 1) = ot_two_point_search_step( &
+               delta_energy, qs_ot_env(1)%ot_grad(1), qs_ot_env(1)%ot_pos(2))
+         END IF
       CASE DEFAULT
          CPABORT("NYI")
       END SELECT
