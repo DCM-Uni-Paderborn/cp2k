@@ -25,6 +25,7 @@ MODULE qs_upf_inverse_lattice
 
    PUBLIC :: qs_upf_inverse_lattice_kernel
    PUBLIC :: qs_upf_inverse_lattice_fields, qs_upf_inverse_lattice_field_adjoint
+   PUBLIC :: qs_upf_inverse_lattice_geometry_adjoint
 
 CONTAINS
 
@@ -213,6 +214,116 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_lattice_field_adjoint
+
+! **************************************************************************************************
+!> \brief Return the explicit geometry covectors of a localized field at fixed coupled W.
+!>        The field is gaussian_factor*chi_R-sum_Q Delta_(R-Q)*W_Q, with default factor one.
+!>        The value covector contains the consumer's measure. Point, native-center and lattice
+!>        outputs are owner-local real derivatives. Cell vectors vary at fixed Cartesian points
+!>        and native centers. All physical translations retain their actual integer indices.
+!>        The caller adds moving-point geometry and the defining inverse-coefficient response.
+!> \param frame ...
+!> \param points ...
+!> \param ao_image ...
+!> \param coefficient_images ...
+!> \param coefficients Complete projector rows and selected AO columns of W_Q.
+!> \param ao_range ...
+!> \param covector Weighted complex value derivative, in (point,selected AO) order.
+!> \param point_geometry New Cartesian point covector, in (axis,point) order.
+!> \param atom_geometry New native Cartesian center covector, in (axis,atom) order.
+!> \param cell_geometry New lattice covector, in (axis,cell vector) order.
+!> \param gaussian_factor Optional fixed Gaussian multiplier, two for soft-plus-Gaussian fields.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_lattice_geometry_adjoint(frame, points, ao_image, coefficient_images, coefficients, &
+                                                      ao_range, covector, point_geometry, atom_geometry, cell_geometry, &
+                                                      gaussian_factor)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      REAL(dp), INTENT(IN)                               :: points(:, :)
+      INTEGER, INTENT(IN)                                :: ao_image(3), coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :, :)
+      INTEGER, INTENT(IN)                                :: ao_range(2)
+      COMPLEX(dp), INTENT(IN)                            :: covector(:, :)
+      REAL(dp), INTENT(OUT)                              :: point_geometry(:, :), &
+                                                            atom_geometry(:, :), &
+                                                            cell_geometry(3, 3)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: gaussian_factor
+
+      COMPLEX(dp), ALLOCATABLE                           :: delta(:, :), delta_covector(:, :), &
+                                                            delta_gradient(:, :, :), &
+                                                            gaussian(:, :), &
+                                                            gaussian_gradient(:, :, :)
+      INTEGER                                            :: atom, axis, center, first, image(3), j, &
+                                                            last, n, nao, np, q, &
+                                                            single_image(3, 1), source_first, &
+                                                            source_last
+      REAL(dp)                                           :: factor, total
+      REAL(dp), ALLOCATABLE                              :: point_component(:)
+
+      CALL check_lattice_images(frame, coefficient_images)
+      CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
+      CPASSERT(SIZE(points, 1) == 3)
+      n = SIZE(points, 2)
+      np = SIZE(frame%coefficients, 1)
+      nao = ao_range(2) - ao_range(1) + 1
+      CPASSERT(nao > 0 .AND. ao_range(1) > 0)
+      CPASSERT(ao_range(2) <= SIZE(frame%gaussian, 2))
+      CPASSERT(ALL(SHAPE(covector) == [n, nao]))
+      IF (ANY(SHAPE(coefficients) /= [np, nao, SIZE(coefficient_images, 2)])) THEN
+         CPABORT("Invalid lattice geometry coefficient dimensions")
+      END IF
+      CPASSERT(ALL(SHAPE(point_geometry) == SHAPE(points)))
+      CPASSERT(ALL(SHAPE(atom_geometry) == SHAPE(frame%positions)))
+      point_geometry = 0.0_dp
+      atom_geometry = 0.0_dp
+      cell_geometry = 0.0_dp
+      factor = 1.0_dp
+      IF (PRESENT(gaussian_factor)) factor = gaussian_factor
+      ALLOCATE (point_component(n))
+      single_image(:, 1) = ao_image
+      DO atom = 1, SIZE(frame%bases)
+         first = MAX(frame%ao_first(atom), ao_range(1))
+         last = MIN(frame%ao_last(atom), ao_range(2))
+         IF (last < first) CYCLE
+         ALLOCATE (gaussian(n, frame%bases(atom)%gto_basis_set%nsgf), &
+                   gaussian_gradient(n, frame%bases(atom)%gto_basis_set%nsgf, 3))
+         CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
+                                             frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, gaussian_gradient)
+         source_first = first - frame%ao_first(atom) + 1
+         source_last = last - frame%ao_first(atom) + 1
+         first = first - ao_range(1) + 1
+         last = last - ao_range(1) + 1
+         DO axis = 1, 3
+            point_component(:) = factor*REAL(SUM(CONJG(covector(:, first:last))* &
+                                                 gaussian_gradient(:, source_first:source_last, axis), DIM=2), dp)
+            point_geometry(axis, :) = point_geometry(axis, :) + point_component
+            total = SUM(point_component)
+            atom_geometry(axis, atom) = atom_geometry(axis, atom) - total
+            cell_geometry(axis, :) = cell_geometry(axis, :) - total*REAL(ao_image, dp)
+         END DO
+         DEALLOCATE (gaussian, gaussian_gradient)
+      END DO
+      ALLOCATE (delta(n, np), delta_gradient(n, np, 3), delta_covector(n, np))
+      DO q = 1, SIZE(coefficient_images, 2)
+         image = ao_image - coefficient_images(:, q)
+         CALL lattice_delta_fields(frame, points, image, delta, delta_gradient)
+         delta_covector(:, :) = -MATMUL(covector, CONJG(TRANSPOSE(coefficients(:, :, q))))
+         DO center = 1, SIZE(frame%center_atoms)
+            atom = frame%center_atoms(center)
+            first = frame%projector_first(center)
+            last = frame%projector_last(center)
+            DO axis = 1, 3
+               point_component(:) = REAL(SUM(CONJG(delta_covector(:, first:last))* &
+                                             delta_gradient(:, first:last, axis), DIM=2), dp)
+               point_geometry(axis, :) = point_geometry(axis, :) + point_component
+               total = SUM(point_component)
+               atom_geometry(axis, atom) = atom_geometry(axis, atom) - total
+               DO j = 1, 3
+                  cell_geometry(axis, j) = cell_geometry(axis, j) - total*REAL(image(j), dp)
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_lattice_geometry_adjoint
 
 ! **************************************************************************************************
 !> \brief Evaluate all original Delta columns at one unphased physical image.
