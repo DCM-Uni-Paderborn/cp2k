@@ -54,6 +54,7 @@ MODULE qs_ot
    PUBLIC  :: qs_ot_get_orbitals_ref_complex
    PUBLIC  :: qs_ot_get_derivative_ref
    PUBLIC  :: qs_ot_get_derivative_ref_complex
+   PUBLIC  :: qs_ot_apply_preconditioner
    PUBLIC  :: qs_ot_apply_complex_frechet_dbcsr
    PUBLIC  :: qs_ot_antihermitian_spectral_norm
    PUBLIC  :: qs_ot_complex_exp_frechet_kernel
@@ -89,6 +90,10 @@ MODULE qs_ot
    PRIVATE :: qs_ot_on_the_fly_localize
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot'
+
+   INTERFACE qs_ot_apply_preconditioner
+      MODULE PROCEDURE qs_ot_precondition_real, qs_ot_precondition_complex
+   END INTERFACE
 
 CONTAINS
 
@@ -1408,6 +1413,68 @@ CONTAINS
       END IF
 
    END SUBROUTINE qs_ot_new_preconditioner
+
+! **************************************************************************************************
+!> \brief precondition a real OT vector and preserve the STRICT tangent constraint
+!>        Roundoff in the projected covector can be amplified by the preconditioner. Two passes
+!>        remove its reference-orbital component before it enters minimizer history or a line search.
+!> \param qs_ot_env OT state with C0^T*S*C0=I
+!> \param matrix_in projected covector
+!> \param matrix_out preconditioned vector with C0^T*S*matrix_out=0 for STRICT
+! **************************************************************************************************
+   SUBROUTINE qs_ot_precondition_real(qs_ot_env, matrix_in, matrix_out)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      TYPE(dbcsr_type)                                   :: matrix_in, matrix_out
+
+      INTEGER                                            :: pass
+      TYPE(dbcsr_type)                                   :: overlap
+
+      CALL apply_preconditioner(qs_ot_env%preconditioner, matrix_in, matrix_out)
+      IF (qs_ot_env%settings%ot_algorithm /= 'TOD') RETURN
+
+      CALL dbcsr_copy(overlap, qs_ot_env%matrix_buf1_ortho, name='ot_tangent_overlap')
+      DO pass = 1, 2
+         CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%matrix_sc0, matrix_out, 0.0_dp, overlap)
+         CALL dbcsr_multiply('N', 'N', -1.0_dp, qs_ot_env%matrix_c0, overlap, 1.0_dp, matrix_out)
+      END DO
+      CALL dbcsr_release(overlap)
+
+   END SUBROUTINE qs_ot_precondition_real
+
+! **************************************************************************************************
+!> \brief precondition a complex OT vector and preserve C0^H*S*matrix_out=0 for STRICT
+!> \param qs_ot_env complex OT state with C0^H*S*C0=I
+!> \param matrix_in real projected covector
+!> \param matrix_in_im imaginary projected covector
+!> \param matrix_out real preconditioned vector
+!> \param matrix_out_im imaginary preconditioned vector
+! **************************************************************************************************
+   SUBROUTINE qs_ot_precondition_complex(qs_ot_env, matrix_in, matrix_in_im, matrix_out, matrix_out_im)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      TYPE(dbcsr_type)                                   :: matrix_in, matrix_in_im, matrix_out, matrix_out_im
+
+      INTEGER                                            :: pass
+      TYPE(dbcsr_type)                                   :: overlap, overlap_im, work
+
+      CALL apply_preconditioner(qs_ot_env%preconditioner, matrix_in, matrix_in_im, matrix_out, matrix_out_im)
+      IF (qs_ot_env%settings%ot_algorithm /= 'TOD') RETURN
+
+      CALL dbcsr_copy(overlap, qs_ot_env%matrix_buf1_ortho, name='ot_tangent_overlap')
+      CALL dbcsr_copy(overlap_im, qs_ot_env%matrix_buf1_ortho_im, name='ot_tangent_overlap_im')
+      CALL dbcsr_copy(work, overlap, name='ot_tangent_work')
+      DO pass = 1, 2
+         CALL qs_ot_complex_multiply('C', 'N', qs_ot_env%matrix_sc0, qs_ot_env%matrix_sc0_im, &
+                                     matrix_out, matrix_out_im, overlap, overlap_im, work)
+         CALL dbcsr_multiply('N', 'N', -1.0_dp, qs_ot_env%matrix_c0, overlap, 1.0_dp, matrix_out)
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%matrix_c0_im, overlap_im, 1.0_dp, matrix_out)
+         CALL dbcsr_multiply('N', 'N', -1.0_dp, qs_ot_env%matrix_c0, overlap_im, 1.0_dp, matrix_out_im)
+         CALL dbcsr_multiply('N', 'N', -1.0_dp, qs_ot_env%matrix_c0_im, overlap, 1.0_dp, matrix_out_im)
+      END DO
+      CALL dbcsr_release(work)
+      CALL dbcsr_release(overlap_im)
+      CALL dbcsr_release(overlap)
+
+   END SUBROUTINE qs_ot_precondition_complex
 
 ! **************************************************************************************************
 !> \brief multiply paired real/imaginary DBCSR matrices, with optional conjugate transposes

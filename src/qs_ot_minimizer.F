@@ -31,8 +31,8 @@ MODULE qs_ot_minimizer
                                               int_8
    USE mathlib,                         ONLY: diamat_all
    USE message_passing,                 ONLY: mp_para_env_type
-   USE preconditioner,                  ONLY: apply_preconditioner
-   USE qs_ot,                           ONLY: qs_ot_get_derivative,&
+   USE qs_ot,                           ONLY: qs_ot_apply_preconditioner,&
+                                              qs_ot_get_derivative,&
                                               qs_ot_get_derivative_complex,&
                                               qs_ot_get_derivative_ref,&
                                               qs_ot_get_derivative_ref_complex
@@ -1498,13 +1498,13 @@ CONTAINS
             DO ispin = 1, nspin
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                   IF (qs_ot_env(ispin)%settings%occupation_preconditioner) THEN
-                     CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                     CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                                qs_ot_env(ispin)%matrix_preconditioned_gx, &
                                                qs_ot_env(ispin)%matrix_preconditioned_gx_im, &
                                                qs_ot_env(ispin)%matrix_dx, &
                                                qs_ot_env(ispin)%matrix_dx_im)
                   ELSE
-                     CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                     CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                                qs_ot_env(ispin)%matrix_gx, &
                                                qs_ot_env(ispin)%matrix_gx_im, &
                                                qs_ot_env(ispin)%matrix_dx, &
@@ -1517,11 +1517,11 @@ CONTAINS
                                    qs_ot_kpoint_preconditioner_scale(qs_ot_env(ispin)%kpoint_weight))
                ELSE
                   IF (qs_ot_env(ispin)%settings%occupation_preconditioner) THEN
-                     CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                     CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                                qs_ot_env(ispin)%matrix_preconditioned_gx, &
                                                qs_ot_env(ispin)%matrix_dx)
                   ELSE
-                     CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                     CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                                qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_dx)
                   END IF
                END IF
@@ -1535,7 +1535,7 @@ CONTAINS
                IF (qs_ot_env(ispin)%settings%occupation_preconditioner .AND. &
                    channel_gnorm <= 0.0_dp) THEN
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                     CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                     CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                                qs_ot_env(ispin)%matrix_gx, &
                                                qs_ot_env(ispin)%matrix_gx_im, &
                                                qs_ot_env(ispin)%matrix_dx, &
@@ -1545,7 +1545,7 @@ CONTAINS
                      CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx_im, &
                                       qs_ot_kpoint_preconditioner_scale(qs_ot_env(ispin)%kpoint_weight))
                   ELSE
-                     CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                     CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                                qs_ot_env(ispin)%matrix_gx, &
                                                qs_ot_env(ispin)%matrix_dx)
                   END IF
@@ -1790,13 +1790,13 @@ CONTAINS
          DO ispin = 1, nspin
             IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                IF (qs_ot_env(ispin)%settings%occupation_preconditioner) THEN
-                  CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                             qs_ot_env(ispin)%matrix_preconditioned_gx, &
                                             qs_ot_env(ispin)%matrix_preconditioned_gx_im, &
                                             qs_ot_env(ispin)%matrix_gx_old, &
                                             qs_ot_env(ispin)%matrix_gx_old_im)
                ELSE
-                  CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                             qs_ot_env(ispin)%matrix_gx, &
                                             qs_ot_env(ispin)%matrix_gx_im, &
                                             qs_ot_env(ispin)%matrix_gx_old, &
@@ -1809,11 +1809,11 @@ CONTAINS
                                 qs_ot_kpoint_preconditioner_scale(qs_ot_env(ispin)%kpoint_weight))
             ELSE
                IF (qs_ot_env(ispin)%settings%occupation_preconditioner) THEN
-                  CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                             qs_ot_env(ispin)%matrix_preconditioned_gx, &
                                             qs_ot_env(ispin)%matrix_gx_old)
                ELSE
-                  CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                             qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx_old)
                END IF
             END IF
@@ -1944,7 +1944,7 @@ CONTAINS
             DO ispin = 1, nspin
                IF (ASSOCIATED(qs_ot_env(1)%preconditioner)) THEN
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                     CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                     CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                                qs_ot_env(ispin)%matrix_gx, &
                                                qs_ot_env(ispin)%matrix_gx_im, &
                                                qs_ot_env(ispin)%matrix_gx_old, &
@@ -1954,7 +1954,7 @@ CONTAINS
                      CALL dbcsr_scale(qs_ot_env(ispin)%matrix_gx_old_im, &
                                       qs_ot_kpoint_preconditioner_scale(qs_ot_env(ispin)%kpoint_weight))
                   ELSE
-                     CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                     CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                                qs_ot_env(ispin)%matrix_gx, &
                                                qs_ot_env(ispin)%matrix_gx_old)
                   END IF
@@ -2277,7 +2277,7 @@ CONTAINS
       DO ispin = 1, SIZE(qs_ot_env)
          IF (ASSOCIATED(qs_ot_env(1)%preconditioner)) THEN
             IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-               CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+               CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                          qs_ot_env(ispin)%matrix_gx_old, &
                                          qs_ot_env(ispin)%matrix_gx_old_im, &
                                          qs_ot_env(ispin)%matrix_dx, &
@@ -2288,7 +2288,7 @@ CONTAINS
                CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx, kpoint_scale)
                CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx_im, kpoint_scale)
             ELSE
-               CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+               CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                          qs_ot_env(ispin)%matrix_gx_old, &
                                          qs_ot_env(ispin)%matrix_dx)
             END IF
@@ -2322,7 +2322,7 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env(1)%preconditioner)) THEN
             IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                CPASSERT(ASSOCIATED(qs_ot_env(ispin)%matrix_preconditioned_gx_im))
-               CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+               CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                          qs_ot_env(ispin)%matrix_preconditioned_gx, &
                                          qs_ot_env(ispin)%matrix_preconditioned_gx_im, &
                                          qs_ot_env(ispin)%matrix_h_e(scratch_index)%matrix, &
@@ -2334,7 +2334,7 @@ CONTAINS
                CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e_im(scratch_index)%matrix, &
                                 kpoint_scale)
             ELSE
-               CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+               CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                          qs_ot_env(ispin)%matrix_preconditioned_gx, &
                                          qs_ot_env(ispin)%matrix_h_e(scratch_index)%matrix)
             END IF
@@ -2447,7 +2447,7 @@ CONTAINS
       DO ispin = 1, SIZE(qs_ot_env)
          IF (ASSOCIATED(qs_ot_env(1)%preconditioner)) THEN
             IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-               CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+               CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                          qs_ot_env(ispin)%matrix_gx, &
                                          qs_ot_env(ispin)%matrix_gx_im, &
                                          qs_ot_env(ispin)%matrix_gx_old, &
@@ -2457,7 +2457,7 @@ CONTAINS
                CALL dbcsr_scale(qs_ot_env(ispin)%matrix_gx_old, kpoint_scale)
                CALL dbcsr_scale(qs_ot_env(ispin)%matrix_gx_old_im, kpoint_scale)
             ELSE
-               CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+               CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                          qs_ot_env(ispin)%matrix_gx, &
                                          qs_ot_env(ispin)%matrix_gx_old)
             END IF
@@ -3108,7 +3108,7 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env(1)%preconditioner)) THEN
             DO ispin = 1, nspin
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                  CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                             qs_ot_env(ispin)%matrix_gx, &
                                             qs_ot_env(ispin)%matrix_gx_im, &
                                             qs_ot_env(ispin)%matrix_dx, &
@@ -3118,7 +3118,7 @@ CONTAINS
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx, tmp)
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx_im, tmp)
                ELSE
-                  CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                             qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_dx)
                END IF
                IF (qs_ot_env(1)%settings%do_rotation) THEN
@@ -3344,7 +3344,7 @@ CONTAINS
 
             IF (ASSOCIATED(qs_ot_env(1)%preconditioner)) THEN
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                  CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), &
                                             orbital_residual, orbital_residual_im, &
                                             qs_ot_env(ispin)%matrix_h_e(history_index)%matrix, &
                                             qs_ot_env(ispin)%matrix_h_e_im(history_index)%matrix)
@@ -3353,7 +3353,7 @@ CONTAINS
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e(history_index)%matrix, kpoint_scale)
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e_im(history_index)%matrix, kpoint_scale)
                ELSE
-                  CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, orbital_residual, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ispin), orbital_residual, &
                                             qs_ot_env(ispin)%matrix_h_e(history_index)%matrix)
                END IF
             ELSE
@@ -4135,7 +4135,7 @@ CONTAINS
          DO ichannel = 1, nspin
             IF (ASSOCIATED(qs_ot_env(1)%preconditioner)) THEN
                IF (qs_ot_env(ichannel)%has_complex_kpoint_state) THEN
-                  CALL apply_preconditioner(qs_ot_env(ichannel)%preconditioner, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ichannel), &
                                             qs_ot_env(ichannel)%matrix_gx, &
                                             qs_ot_env(ichannel)%matrix_gx_im, &
                                             qs_ot_env(ichannel)%matrix_x, &
@@ -4146,7 +4146,7 @@ CONTAINS
                   CALL dbcsr_scale(qs_ot_env(ichannel)%matrix_x, kpoint_scale)
                   CALL dbcsr_scale(qs_ot_env(ichannel)%matrix_x_im, kpoint_scale)
                ELSE
-                  CALL apply_preconditioner(qs_ot_env(ichannel)%preconditioner, &
+                  CALL qs_ot_apply_preconditioner(qs_ot_env(ichannel), &
                                             qs_ot_env(ichannel)%matrix_gx, &
                                             qs_ot_env(ichannel)%matrix_x)
                END IF
