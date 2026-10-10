@@ -14,6 +14,7 @@ MODULE qs_ks_apply_restraints
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr
    USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_release,&
                                               cp_fm_type
    USE input_constants,                 ONLY: cdft_charge_constraint,&
                                               outer_scf_becke_constraint,&
@@ -217,12 +218,15 @@ CONTAINS
             CALL copy_dbcsr_to_fm(mo_derivs(i)%matrix, fm_mo_derivs(i)) !fm->dbcsr
          END DO !fm->dbcsr
 
-         smat => matrix_s(:, 1)
+         ! Use the orbital normalization metric for interspin overlaps,
+         ! including the original USPP/PAW augmentation.
+         CALL get_qs_env(qs_env, matrix_metric=smat)
          CALL s2_restraint(mo_array, smat, fm_mo_derivs, energy%s2_restraint, &
                            dft_control%qs_control%s2_restraint_control, just_energy)
 
          DO i = 1, SIZE(mo_derivs, 1) !fm->dbcsr
             CALL copy_fm_to_dbcsr(fm_mo_derivs(i), mo_derivs(i)%matrix) !fm->dbcsr
+            CALL cp_fm_release(fm_mo_derivs(i))
          END DO !fm->dbcsr
          DEALLOCATE (fm_mo_derivs) !fm->dbcsr
 
