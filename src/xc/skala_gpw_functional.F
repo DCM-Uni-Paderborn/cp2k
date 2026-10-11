@@ -2056,20 +2056,20 @@ CONTAINS
       INTEGER                                            :: bo(2, 3), c, e, first_spin, i, &
                                                             last_spin, n, nlocal, pos, row, spin
       INTEGER, ALLOCATABLE :: active(:, :), counts(:), displs(:), global_entries(:), &
-         local_entries(:), local_rows(:), owners(:), points(:, :), spins(:)
-      REAL(dp)                                           :: energies(2), error, probe, tolerance
-      REAL(dp), ALLOCATABLE                              :: negative(:, :), negative_weights(:), &
-                                                            positive(:, :)
+         local_entries(:), local_entry_counts(:), local_rows(:), owners(:), points(:, :), spins(:)
+      REAL(dp)                                           :: energies(2), probe, tolerance
+      REAL(dp), ALLOCATABLE                              :: constraint_error(:), negative(:, :), &
+                                                            negative_weights(:), positive(:, :)
 
       CPASSERT(.NOT. features%uses_atom_chunks)
       CALL skala_density_constraints_get(state, points, spins, negative_weights, probe, tolerance)
       n = SIZE(spins)
       bo = rho_r(1)%pw_grid%bounds_local
-      ALLOCATE (local_rows(n), owners(n))
+      ALLOCATE (local_rows(n), owners(n), local_entry_counts(n), constraint_error(n))
       local_rows = 0
       owners = 0
-      nlocal = 0
-      error = 0.0_dp
+      local_entry_counts = 0
+      constraint_error = 0.0_dp
       DO c = 1, n
          IF (ANY(points(:, c) < bo(1, :)) .OR. ANY(points(:, c) > bo(2, :))) CYCLE
          owners(c) = 1
@@ -2083,20 +2083,22 @@ CONTAINS
          END IF
          DO pos = features%local_feature_offsets(row), features%local_feature_offsets(row + 1) - 1
             i = features%local_feature_rows(pos)
-            error = MAX(error, MAXVAL(ABS(features%density(i, first_spin:last_spin))))
-            nlocal = nlocal + 3*(last_spin - first_spin + 1)
+            constraint_error(c) = MAX(constraint_error(c), MAXVAL(ABS(features%density(i, first_spin:last_spin))))
+            local_entry_counts(c) = local_entry_counts(c) + 3*(last_spin - first_spin + 1)
          END DO
       END DO
       CALL rho_r(1)%pw_grid%para%group%sum(owners)
       CPASSERT(ALL(owners == 1))
-      CALL rho_r(1)%pw_grid%para%group%max(error)
+      CALL rho_r(1)%pw_grid%para%group%max(constraint_error)
       ! Away from zero the original differentiable branch supplies the derivative.
-      IF (error > tolerance) RETURN
+      IF (ALL(constraint_error > tolerance)) RETURN
+      nlocal = SUM(local_entry_counts, MASK=constraint_error <= tolerance)
 
       ALLOCATE (local_entries(nlocal), counts(rho_r(1)%pw_grid%para%group%num_pe), &
                 displs(rho_r(1)%pw_grid%para%group%num_pe))
       e = 0
       DO c = 1, n
+         IF (constraint_error(c) > tolerance) CYCLE
          row = local_rows(c)
          IF (row == 0) CYCLE
          first_spin = MAX(1, spins(c))
@@ -2111,6 +2113,7 @@ CONTAINS
       END DO
       CPASSERT(e == nlocal)
       CALL rho_r(1)%pw_grid%para%group%allgather(nlocal, counts)
+      IF (SUM(counts) == 0) RETURN
       displs(1) = 0
       DO i = 2, SIZE(counts)
          displs(i) = displs(i - 1) + counts(i - 1)
@@ -2123,6 +2126,7 @@ CONTAINS
       CALL skala_torch_model_density_limits(cached_model, features%inputs, features%density, &
                                             active, probe, negative, positive, energies)
       DO c = 1, n
+         IF (constraint_error(c) > tolerance) CYCLE
          row = local_rows(c)
          IF (row == 0) CYCLE
          first_spin = MAX(1, spins(c))
