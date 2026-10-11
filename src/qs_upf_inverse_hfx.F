@@ -1233,29 +1233,29 @@ CONTAINS
                               qcache(center, image, slot)%potential_budget => potential_budget
                               IF (physical .AND. (coefficients .OR. full_geometry)) THEN
                                  IF (full_geometry) THEN
-                                    CALL qs_upf_inverse_hfx_lattice_center_adjoint(left_frame, center, &
-                                                                                   [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                                   [start_k(block_k), start_k(block_k + 1) - 1], &
-                                                                                   ao_image, center_images(:, image), fields, &
-                                                                                   auxiliary_positions(:, site), &
-                                                                                   transition_augmentation, pot%r, radial_weights, &
-                                                                                lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
-                                                                                   coefficient_images, coupled_coefficients, &
-                                                                                   local, gl_lattice, gr_lattice, local_atoms, &
-                                                                                   local_cell, local_auxiliary)
+                                    CALL lattice_center_adjoint_validated(left_frame, center, &
+                                                                          [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                          [start_k(block_k), start_k(block_k + 1) - 1], &
+                                                                          ao_image, center_images(:, image), fields, &
+                                                                          auxiliary_positions(:, site), &
+                                                                          transition_augmentation, pot%r, radial_weights, &
+                                                                          lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
+                                                                          coefficient_images, coupled_coefficients, &
+                                                                          local, gl_lattice, gr_lattice, local_atoms, &
+                                                                          local_cell, local_auxiliary)
                                     atom_geometry(:, :) = atom_geometry + local_atoms
                                     cell_geometry(:, :) = cell_geometry + local_cell
                                     auxiliary_geometry(:, site) = auxiliary_geometry(:, site) + local_auxiliary
                                  ELSE
-                                    CALL qs_upf_inverse_hfx_lattice_center_adjoint(left_frame, center, &
-                                                                                   [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                                   [start_k(block_k), start_k(block_k + 1) - 1], &
-                                                                                   ao_image, center_images(:, image), fields, &
-                                                                                   auxiliary_positions(:, site), &
-                                                                                   transition_augmentation, pot%r, radial_weights, &
-                                                                                lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
-                                                                                   coefficient_images, coupled_coefficients, &
-                                                                                   local, gl_lattice, gr_lattice)
+                                    CALL lattice_center_adjoint_validated(left_frame, center, &
+                                                                          [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                          [start_k(block_k), start_k(block_k + 1) - 1], &
+                                                                          ao_image, center_images(:, image), fields, &
+                                                                          auxiliary_positions(:, site), &
+                                                                          transition_augmentation, pot%r, radial_weights, &
+                                                                          lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
+                                                                          coefficient_images, coupled_coefficients, &
+                                                                          local, gl_lattice, gr_lattice)
                                  END IF
                               ELSE IF (full_geometry) THEN
                                  CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
@@ -1956,6 +1956,7 @@ CONTAINS
 
       TYPE(lattice_overlap_type)                         :: overlaps
 
+      CALL check_coupled_lattice(frame, coefficient_images, coupled_coefficients, coupled_response, PRESENT(response))
       CALL lattice_center_with_overlaps(frame, center, left_range, right_range, ao_image, center_image, &
                                         fields, auxiliary_center, augmentation, r, radial_weights, directions, &
                                         angular_weights, integral, response, atom_response, cell_response, &
@@ -2015,6 +2016,41 @@ CONTAINS
                                                             cell_geometry(3, 3), &
                                                             auxiliary_geometry(3)
 
+      CALL check_coupled_lattice(frame, coefficient_images, coupled_coefficients, derivatives=.FALSE.)
+      CALL lattice_center_adjoint_validated(frame, center, left_range, right_range, ao_image, center_image, &
+                                            fields, auxiliary_center, augmentation, r, radial_weights, &
+                                            directions, angular_weights, coefficient_images, coupled_coefficients, &
+                                            covector, left_coefficients_covector, right_coefficients_covector, &
+                                            atom_geometry, cell_geometry, auxiliary_geometry)
+   END SUBROUTINE qs_upf_inverse_hfx_lattice_center_adjoint
+
+! **************************************************************************************************
+!> \brief Reverse one center after the public caller validates the common coefficient domain.
+!>        Center, AO, quadrature and geometry-output checks remain local to this integral.
+! **************************************************************************************************
+   SUBROUTINE lattice_center_adjoint_validated(frame, center, left_range, right_range, ao_image, center_image, &
+                                               fields, auxiliary_center, augmentation, r, radial_weights, &
+                                               directions, angular_weights, coefficient_images, &
+                                               coupled_coefficients, covector, left_coefficients_covector, &
+                                               right_coefficients_covector, atom_geometry, cell_geometry, &
+                                               auxiliary_geometry)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2), &
+                                                            ao_image(3), center_image(3)
+      TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
+      REAL(dp), INTENT(IN)                               :: auxiliary_center(3)
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
+      REAL(dp), INTENT(IN)                               :: r(:), radial_weights(:), &
+                                                            directions(:, :), angular_weights(:)
+      INTEGER, INTENT(IN)                                :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: coupled_coefficients(:, :, :), &
+                                                            covector(:, :, :)
+      COMPLEX(dp), INTENT(OUT) :: left_coefficients_covector(:, :, :), &
+         right_coefficients_covector(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_geometry(:, :), &
+                                                            cell_geometry(3, 3), &
+                                                            auxiliary_geometry(3)
+
       COMPLEX(dp), ALLOCATABLE :: cl(:, :), cr(:, :), delta(:, :), dl(:, :), dr(:, :), gcl(:, :), &
          gcr(:, :), gdl(:, :), gdr(:, :), gl(:, :), gr(:, :), lattice_gl(:, :, :), &
          lattice_gr(:, :, :), q(:, :), unused_c(:, :), unused_d(:, :), unused_w(:, :), wl(:, :), &
@@ -2032,7 +2068,6 @@ CONTAINS
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
 
       CPASSERT(.NOT. frame%atom_local .AND. .NOT. frame%direct)
-      CALL check_coupled_lattice(frame, coefficient_images, coupled_coefficients, derivatives=.FALSE.)
       CPASSERT(center >= 1 .AND. center <= SIZE(frame%center_atoms))
       CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
       CPASSERT(ALL(center_image*frame%periodicity == center_image))
@@ -2222,11 +2257,12 @@ CONTAINS
       IF (right_image > 0) THEN
          right_coefficients_covector(first:last, :, right_image) = right_coefficients_covector(first:last, :, right_image) + gr
       END IF
-   END SUBROUTINE qs_upf_inverse_hfx_lattice_center_adjoint
+   END SUBROUTINE lattice_center_adjoint_validated
 
 ! **************************************************************************************************
 !> \brief Evaluate one lattice center with reusable relative-image projector overlaps.
-!>        The private workspace belongs to one AO block pair, physical image and geometry call.
+!>        The public caller validates the shared coefficient domain. The private workspace
+!>        belongs to one AO block pair, physical image and geometry call.
 !> \param overlaps ...
 ! **************************************************************************************************
    SUBROUTINE lattice_center_with_overlaps(frame, center, left_range, right_range, ao_image, center_image, &
@@ -2264,7 +2300,6 @@ CONTAINS
          weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
 
-      CALL check_coupled_lattice(frame, coefficient_images, coupled_coefficients, coupled_response, PRESENT(response))
       CPASSERT(center >= 1 .AND. center <= SIZE(frame%center_atoms))
       CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
       CPASSERT(ALL(center_image*frame%periodicity == center_image))
