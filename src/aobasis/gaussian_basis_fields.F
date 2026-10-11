@@ -15,6 +15,8 @@ MODULE gaussian_basis_fields
    USE mathconstants,                   ONLY: twopi
    USE orbital_pointers,                ONLY: indco,&
                                               ncoset
+
+!$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -25,6 +27,8 @@ MODULE gaussian_basis_fields
       PRIVATE
       REAL(dp), ALLOCATABLE :: displacement(:, :), field(:, :), ddisplacement(:, :), &
                                gradient(:, :, :), hessian(:, :, :, :)
+      REAL(dp), ALLOCATABLE :: coordinate_power(:, :, :), cartesian_value(:, :), &
+                               cartesian_gradient(:, :, :), cartesian_hessian(:, :, :, :)
    END TYPE gaussian_basis_workspace_type
 
 CONTAINS
@@ -38,23 +42,30 @@ CONTAINS
 !> \param gradient Optional Cartesian derivatives, indexed (point,AO,axis).
 !> \param hessian Optional Cartesian Hessians, indexed (point,AO,axis,axis).
 !> \param cutoff_squared Optional squared cutoff radius; fields beyond it are zero.
+!> \param workspace Optional caller-owned scratch arrays, with independent storage per OpenMP thread.
 ! **************************************************************************************************
-   SUBROUTINE gaussian_basis_fields_evaluate(basis, displacements, value, gradient, hessian, cutoff_squared)
+   SUBROUTINE gaussian_basis_fields_evaluate(basis, displacements, value, gradient, hessian, cutoff_squared, workspace)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       REAL(dp), INTENT(IN)                               :: displacements(:, :)
       REAL(dp), INTENT(OUT)                              :: value(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :, :), hessian(:, :, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_squared
+      TYPE(gaussian_basis_workspace_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: workspace
 
       INTEGER                                            :: axis, axis2, first, ico, ipgf, ipoint, &
                                                             irow, iset, isgf, ishell, l, last, &
-                                                            ncart, powers(3), reduced(3)
+                                                            maxl, ncart, powers(3), reduced(3), &
+                                                            thread, threads
       REAL(dp) :: alpha, exponential, polynomial, polynomial_gradient(3), &
          polynomial_hessian(3, 3), primitive_gradient(3), primitive_hessian(3, 3), r(3), &
-         r_squared, weight, coordinate_power(3, 0:MAXVAL(basis%lmax)), &
-         cartesian_value(ncoset(MAXVAL(basis%lmax))), &
-         cartesian_hessian(3, 3, ncoset(MAXVAL(basis%lmax))), &
-         cartesian_gradient(3, ncoset(MAXVAL(basis%lmax)))
+         r_squared, weight
+      REAL(dp), POINTER                                  :: cartesian_gradient(:, :), &
+                                                            cartesian_hessian(:, :, :), &
+                                                            cartesian_value(:), &
+                                                            coordinate_power(:, :)
+      TYPE(gaussian_basis_workspace_type), POINTER       :: scratch
+      TYPE(gaussian_basis_workspace_type), TARGET        :: local_workspace
 
       CPASSERT(basis%nset > 0 .AND. basis%nsgf > 0)
       CPASSERT(ASSOCIATED(basis%sphi) .AND. ASSOCIATED(basis%zet))
@@ -70,12 +81,26 @@ CONTAINS
          hessian = 0.0_dp
       END IF
       value = 0.0_dp
-      !$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(STATIC) &
-      !$OMP SHARED(basis, displacements, value, gradient, hessian, cutoff_squared, ncoset, indco) &
+      maxl = MAXVAL(basis%lmax)
+      threads = 1
+!$    threads = omp_get_max_threads()
+      scratch => local_workspace
+      IF (PRESENT(workspace)) scratch => workspace
+      CALL prepare_polynomial_workspace(scratch, maxl, threads, PRESENT(gradient) .OR. PRESENT(hessian), PRESENT(hessian))
+      !$OMP PARALLEL DEFAULT(NONE) &
+      !$OMP SHARED(basis, displacements, value, gradient, hessian, cutoff_squared, ncoset, indco, scratch) &
       !$OMP PRIVATE(ipoint, r, iset, ncart, ishell, l, first, last, ipgf, alpha, exponential, &
       !$OMP         isgf, ico, irow, weight, powers, reduced, polynomial, polynomial_gradient, &
       !$OMP         polynomial_hessian, primitive_gradient, primitive_hessian, cartesian_value, &
-      !$OMP         cartesian_gradient, cartesian_hessian, coordinate_power, r_squared, axis, axis2)
+      !$OMP         cartesian_gradient, cartesian_hessian, coordinate_power, r_squared, axis, axis2, thread)
+      thread = 1
+!$    thread = omp_get_thread_num() + 1
+      coordinate_power(1:, 0:) => scratch%coordinate_power(:, :, thread)
+      cartesian_value => scratch%cartesian_value(:, thread)
+      NULLIFY (cartesian_gradient, cartesian_hessian)
+      IF (PRESENT(gradient) .OR. PRESENT(hessian)) cartesian_gradient => scratch%cartesian_gradient(:, :, thread)
+      IF (PRESENT(hessian)) cartesian_hessian => scratch%cartesian_hessian(:, :, :, thread)
+      !$OMP DO SCHEDULE(STATIC)
       DO ipoint = 1, SIZE(displacements, 2)
          r = displacements(:, ipoint)
          r_squared = SUM(r**2)
@@ -93,7 +118,7 @@ CONTAINS
                                    coordinate_power(3, powers(3))
             IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(hessian)) CYCLE
             cartesian_gradient(:, ico) = 0.0_dp
-            cartesian_hessian(:, :, ico) = 0.0_dp
+            IF (PRESENT(hessian)) cartesian_hessian(:, :, ico) = 0.0_dp
             DO axis = 1, 3
                IF (powers(axis) == 0) CYCLE
                reduced = powers
@@ -126,7 +151,7 @@ CONTAINS
                      polynomial = cartesian_value(ico)
                      IF (PRESENT(gradient) .OR. PRESENT(hessian)) THEN
                         polynomial_gradient = cartesian_gradient(:, ico)
-                        polynomial_hessian = cartesian_hessian(:, :, ico)
+                        IF (PRESENT(hessian)) polynomial_hessian = cartesian_hessian(:, :, ico)
                         DO axis = 1, 3
                            primitive_gradient(axis) = polynomial_gradient(axis) - 2.0_dp*alpha*r(axis)*polynomial
                            IF (.NOT. PRESENT(hessian)) CYCLE
@@ -160,7 +185,8 @@ CONTAINS
             END DO
          END DO
       END DO
-      !$OMP END PARALLEL DO
+      !$OMP END DO
+      !$OMP END PARALLEL
    END SUBROUTINE gaussian_basis_fields_evaluate
 
 ! **************************************************************************************************
@@ -269,11 +295,11 @@ CONTAINS
          phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(reduced_k, lattice), dp))
          phase_response = CMPLX(0.0_dp, twopi*DOT_PRODUCT(dk, lattice), dp)*phase
          IF (need_hessian) THEN
-            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g, h)
+            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g, h, workspace=scratch)
          ELSE IF (need_gradient) THEN
-            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g)
+            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g, workspace=scratch)
          ELSE
-            CALL gaussian_basis_fields_evaluate(basis, displacement, field)
+            CALL gaussian_basis_fields_evaluate(basis, displacement, field, workspace=scratch)
          END IF
          value = value + phase*field
          IF (PRESENT(gradient)) gradient = gradient + phase*g
@@ -342,5 +368,37 @@ CONTAINS
          ALLOCATE (workspace%hessian(npoint, nao, 3, 3))
       END IF
    END SUBROUTINE prepare_workspace
+
+! **************************************************************************************************
+!> \brief Reuse Cartesian polynomial scratch storage independently on every OpenMP thread.
+!>        All entries used by the requested derivatives are refilled for each point.
+!> \param workspace ...
+!> \param maxl ...
+!> \param threads ...
+!> \param need_gradient ...
+!> \param need_hessian ...
+! **************************************************************************************************
+   SUBROUTINE prepare_polynomial_workspace(workspace, maxl, threads, need_gradient, need_hessian)
+      TYPE(gaussian_basis_workspace_type), INTENT(INOUT) :: workspace
+      INTEGER, INTENT(IN)                                :: maxl, threads
+      LOGICAL, INTENT(IN)                                :: need_gradient, need_hessian
+
+      IF (ALLOCATED(workspace%coordinate_power)) THEN
+         IF (ANY(SHAPE(workspace%coordinate_power) /= [3, maxl + 1, threads])) THEN
+            DEALLOCATE (workspace%coordinate_power, workspace%cartesian_value)
+            IF (ALLOCATED(workspace%cartesian_gradient)) DEALLOCATE (workspace%cartesian_gradient)
+            IF (ALLOCATED(workspace%cartesian_hessian)) DEALLOCATE (workspace%cartesian_hessian)
+         END IF
+      END IF
+      IF (.NOT. ALLOCATED(workspace%coordinate_power)) THEN
+         ALLOCATE (workspace%coordinate_power(3, 0:maxl, threads), workspace%cartesian_value(ncoset(maxl), threads))
+      END IF
+      IF (need_gradient .AND. .NOT. ALLOCATED(workspace%cartesian_gradient)) THEN
+         ALLOCATE (workspace%cartesian_gradient(3, ncoset(maxl), threads))
+      END IF
+      IF (need_hessian .AND. .NOT. ALLOCATED(workspace%cartesian_hessian)) THEN
+         ALLOCATE (workspace%cartesian_hessian(3, 3, ncoset(maxl), threads))
+      END IF
+   END SUBROUTINE prepare_polynomial_workspace
 
 END MODULE gaussian_basis_fields
