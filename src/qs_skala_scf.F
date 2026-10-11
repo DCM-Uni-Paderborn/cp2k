@@ -48,7 +48,7 @@ MODULE qs_skala_scf
                                               qs_upf_inverse_type
    USE skala_density_constraints,       ONLY: &
         skala_background_domain, skala_density_constraints_type, skala_density_descriptor, &
-        skala_density_root, skala_density_samples_begin, skala_density_samples_end, &
+        skala_density_crossings, skala_density_root, skala_density_samples_begin, skala_density_samples_end, &
         skala_density_samples_get, skala_fft_domain, skala_kinetic_descriptor
    USE skala_orbital_constraints,       ONLY: skala_orbital_chart_derivative,&
                                               skala_orbital_chart_size
@@ -62,6 +62,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
    PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_value, qs_skala_scf_root
    PUBLIC :: qs_skala_scf_point_derivative
+   PUBLIC :: qs_skala_scf_crossings
 
    TYPE qs_skala_scf_type
       PRIVATE
@@ -85,6 +86,12 @@ MODULE qs_skala_scf
       REAL(dp), ALLOCATABLE :: first(:), direction(:)
       INTEGER :: domain, point(3), spin, descriptor
    END TYPE physical_root_context
+
+   TYPE physical_domain_samples
+      INTEGER, ALLOCATABLE :: points(:, :)
+      REAL(dp), ALLOCATABLE :: density(:, :), kinetic(:, :)
+      LOGICAL :: available = .FALSE.
+   END TYPE physical_domain_samples
 
 CONTAINS
 
@@ -680,6 +687,125 @@ CONTAINS
       CALL qs_skala_scf_evaluate(state, coordinate, energy)
       IF (converged) CALL qs_skala_scf_value(state, domain, point, spin, descriptor, value)
    END SUBROUTINE qs_skala_scf_root
+
+! **************************************************************************************************
+!> \brief Collect jointly bracketed physical rho/tau zeros from two actual native orbital states.
+!>        Samples remain on their native owners; only candidate keys and endpoint values are
+!>        gathered. Identically zero fields supply no candidate. This endpoint test does not
+!>        locate roots or exclude an even number of crossings along the nonlinear orbital curve.
+!>        Restore the first state, including its complete native KS operator, before returning.
+!> \param state ...
+!> \param first Initial global orbital coordinate.
+!> \param last Final global orbital coordinate.
+!> \param points Global FFT indices or (global atom, row within that atom, 1).
+!> \param domains FFT, exact atomic or interpolated atomic background for each candidate.
+!> \param spins Zero for paired RKS, one or two for UKS.
+!> \param descriptors Density or kinetic density for each candidate.
+!> \param endpoint_values Actual first and last physical inputs, one candidate per column.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_crossings(state, first, last, points, domains, spins, descriptors, endpoint_values)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: endpoint_values(:, :)
+
+      INTEGER                                            :: descriptor, domain, i, local_count, &
+                                                            offset, row, spin, total
+      INTEGER, ALLOCATABLE                               :: counts(:), keys(:, :)
+      LOGICAL                                            :: valid
+      LOGICAL, ALLOCATABLE                               :: mask(:, :)
+      REAL(dp)                                           :: energy
+      REAL(dp), ALLOCATABLE                              :: gradient(:), values(:, :)
+      TYPE(physical_domain_samples) :: final(skala_fft_domain:skala_background_domain), &
+         initial(skala_fft_domain:skala_background_domain)
+
+      valid = SIZE(first) == qs_skala_scf_size(state) .AND. SIZE(last) == SIZE(first)
+      CPASSERT(valid)
+      CALL qs_skala_scf_evaluate(state, first, energy)
+      DO domain = skala_fft_domain, skala_background_domain
+         CALL skala_density_samples_get(state%constraints, domain, initial(domain)%points, &
+                                        initial(domain)%density, initial(domain)%kinetic, initial(domain)%available)
+      END DO
+      CALL qs_skala_scf_evaluate(state, last, energy)
+      local_count = 0
+      DO domain = skala_fft_domain, skala_background_domain
+         CALL skala_density_samples_get(state%constraints, domain, final(domain)%points, &
+                                        final(domain)%density, final(domain)%kinetic, final(domain)%available)
+         valid = initial(domain)%available .EQV. final(domain)%available
+         CPASSERT(valid)
+         IF (.NOT. initial(domain)%available) CYCLE
+         valid = ALL(SHAPE(initial(domain)%points) == SHAPE(final(domain)%points))
+         CPASSERT(valid)
+         valid = ALL(initial(domain)%points == final(domain)%points)
+         CPASSERT(valid)
+         valid = ALL(SHAPE(initial(domain)%density) == SHAPE(final(domain)%density))
+         CPASSERT(valid)
+         ALLOCATE (mask(SIZE(initial(domain)%density, 1), SIZE(initial(domain)%density, 2)))
+         CALL skala_density_crossings(initial(domain)%density, final(domain)%density, mask)
+         local_count = local_count + COUNT(mask)
+         CALL skala_density_crossings(initial(domain)%kinetic, final(domain)%kinetic, mask)
+         local_count = local_count + COUNT(mask)
+         DEALLOCATE (mask)
+      END DO
+      ALLOCATE (keys(6, local_count), values(2, local_count))
+      row = 0
+      DO domain = skala_fft_domain, skala_background_domain
+         IF (.NOT. initial(domain)%available) CYCLE
+         ALLOCATE (mask(SIZE(initial(domain)%density, 1), SIZE(initial(domain)%density, 2)))
+         DO descriptor = skala_density_descriptor, skala_kinetic_descriptor
+            IF (descriptor == skala_density_descriptor) THEN
+               CALL skala_density_crossings(initial(domain)%density, final(domain)%density, mask)
+            ELSE
+               CALL skala_density_crossings(initial(domain)%kinetic, final(domain)%kinetic, mask)
+            END IF
+            DO spin = 1, SIZE(mask, 2)
+               DO i = 1, SIZE(mask, 1)
+                  IF (.NOT. mask(i, spin)) CYCLE
+                  row = row + 1
+                  keys(1, row) = domain
+                  keys(2:4, row) = initial(domain)%points(:, i)
+                  keys(5, row) = spin
+                  IF (SIZE(mask, 2) == 1) keys(5, row) = 0
+                  keys(6, row) = descriptor
+                  IF (descriptor == skala_density_descriptor) THEN
+                     values(:, row) = [initial(domain)%density(i, spin), final(domain)%density(i, spin)]
+                  ELSE
+                     values(:, row) = [initial(domain)%kinetic(i, spin), final(domain)%kinetic(i, spin)]
+                  END IF
+               END DO
+            END DO
+         END DO
+         DEALLOCATE (mask)
+      END DO
+      CPASSERT(row == local_count)
+      ALLOCATE (counts(state%para_env%num_pe))
+      counts = 0
+      counts(state%para_env%mepos + 1) = local_count
+      CALL state%para_env%sum(counts)
+      total = SUM(counts)
+      offset = SUM(counts(:state%para_env%mepos))
+      ALLOCATE (points(3, total), domains(total), spins(total), descriptors(total), endpoint_values(2, total))
+      points = 0
+      domains = 0
+      spins = 0
+      descriptors = 0
+      endpoint_values = 0.0_dp
+      points(:, offset + 1:offset + local_count) = keys(2:4, :)
+      domains(offset + 1:offset + local_count) = keys(1, :)
+      spins(offset + 1:offset + local_count) = keys(5, :)
+      descriptors(offset + 1:offset + local_count) = keys(6, :)
+      endpoint_values(:, offset + 1:offset + local_count) = values
+      IF (total > 0) THEN
+         CALL state%para_env%sum(points)
+         CALL state%para_env%sum(domains)
+         CALL state%para_env%sum(spins)
+         CALL state%para_env%sum(descriptors)
+         CALL state%para_env%sum(endpoint_values)
+      END IF
+      ALLOCATE (gradient(SIZE(first)))
+      CALL qs_skala_scf_evaluate(state, first, energy, gradient)
+   END SUBROUTINE qs_skala_scf_crossings
 
    SUBROUTINE evaluate_physical_input(step, value, context)
       REAL(dp), INTENT(IN)                              :: step
