@@ -53,6 +53,7 @@ MODULE qs_skala_scf
         skala_density_crossings, skala_density_root, skala_density_samples_begin, skala_density_samples_end, &
         skala_density_samples_get, skala_fft_domain, skala_kinetic_descriptor
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
+                                              skala_cusp_admissibility,&
                                               skala_orbital_chart_derivative,&
                                               skala_orbital_chart_size
    USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair
@@ -68,6 +69,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_crossings
    PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
    PUBLIC :: qs_skala_scf_select, qs_skala_scf_limiting, qs_skala_scf_balance
+   PUBLIC :: qs_skala_scf_admissibility
 
    TYPE qs_skala_scf_type
       PRIVATE
@@ -1093,6 +1095,41 @@ CONTAINS
       CALL skala_density_constraints_balance(state%constraints, positive, changes, tolerance, predicted, balanced)
       CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=balanced_gradient)
    END SUBROUTINE qs_skala_scf_balance
+
+! **************************************************************************************************
+!> \brief Check native limiting derivatives along independent physical constraint normals.
+!>        Retain the original weights and the complete native MOs, P, fields, energy and KS.
+!>        Dependent or excess constraints return invalid. Normal admissibility alone does not
+!>        establish tangential stationarity, stability or automatic SCF convergence.
+!> \param state Native state with registered physical cusp samples.
+!> \param coordinate Global normalized-orbital coordinates.
+!> \param admissible Whether the one-sided normal derivatives have the signs required for a minimum.
+!> \param release_side Minus one for negative-side descent, plus one for positive-side descent.
+!> \param valid Whether the selected physical normals are independent.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_admissibility(state, coordinate, admissible, release_side, valid)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      LOGICAL, INTENT(OUT)                               :: admissible(:)
+      INTEGER, INTENT(OUT)                               :: release_side(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      INTEGER                                            :: m, n
+      REAL(dp), ALLOCATABLE                              :: changes(:, :), jacobian(:, :), &
+                                                            positive(:)
+
+      n = qs_skala_scf_size(state)
+      m = skala_density_constraints_count(state%constraints)
+      CPASSERT(SIZE(coordinate) == n)
+      CPASSERT(SIZE(admissible) == m .AND. SIZE(release_side) == m)
+      admissible = .FALSE.
+      release_side = 0
+      valid = .FALSE.
+      ALLOCATE (positive(n), changes(n, m), jacobian(m, n))
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian)
+      IF (m > n) RETURN
+      CALL skala_cusp_admissibility(positive, changes, jacobian, admissible, release_side, valid)
+   END SUBROUTINE qs_skala_scf_admissibility
 
    SUBROUTINE evaluate_native_constraints(coordinate, values, jacobian, context)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
