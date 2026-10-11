@@ -9,11 +9,15 @@ MODULE qs_skala_scf
    USE cell_types,                      ONLY: cell_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE input_section_types,             ONLY: section_get_ival
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
-   USE message_passing,                 ONLY: mp_para_env_type
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE particle_types,                  ONLY: particle_type
+   USE pw_grid_types,                   ONLY: pw_grid_type
+   USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
@@ -22,27 +26,42 @@ MODULE qs_skala_scf
                                               qs_ks_did_change,&
                                               qs_ks_env_type
    USE qs_mo_types,                     ONLY: mo_set_type
+   USE qs_native_grid_interpolation,    ONLY: native_grid_batch_adjoint
    USE qs_rho_methods,                  ONLY: qs_rho_update_rho
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_set,&
                                               qs_rho_type
-   USE qs_skala_orbitals,               ONLY: &
-        qs_skala_orbitals_create, qs_skala_orbitals_evaluate, qs_skala_orbitals_install_gamma, &
-        qs_skala_orbitals_install_kpoint, qs_skala_orbitals_release, qs_skala_orbitals_type
-   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
+   USE qs_skala_orbitals,               ONLY: qs_skala_orbitals_create,&
+                                              qs_skala_orbitals_evaluate,&
+                                              qs_skala_orbitals_install_gamma,&
+                                              qs_skala_orbitals_install_kpoint,&
+                                              qs_skala_orbitals_release,&
+                                              qs_skala_orbitals_type
+   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_integrate
+   USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_integrate
+   USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_kinetic_operator
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_integrate_dense,&
+                                              qs_upf_inverse_matrix_gather
+   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_operator
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_scf_type,&
+                                              qs_upf_inverse_type
    USE skala_density_constraints,       ONLY: &
-        skala_density_constraints_type, skala_density_descriptor, skala_density_root, &
-        skala_density_samples_begin, skala_density_samples_end, skala_density_samples_get, &
-        skala_fft_domain, skala_background_domain, skala_kinetic_descriptor
+        skala_background_domain, skala_density_constraints_type, skala_density_descriptor, &
+        skala_density_root, skala_density_samples_begin, skala_density_samples_end, &
+        skala_density_samples_get, skala_fft_domain, skala_kinetic_descriptor
    USE skala_orbital_constraints,       ONLY: skala_orbital_chart_derivative,&
                                               skala_orbital_chart_size
+   USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair
+   USE xc_input_constants,              ONLY: xc_rho_no_smooth
+   USE xc_util,                         ONLY: xc_pw_smooth
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
    PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_value, qs_skala_scf_root
+   PUBLIC :: qs_skala_scf_point_derivative
 
    TYPE qs_skala_scf_type
       PRIVATE
@@ -378,6 +397,244 @@ CONTAINS
       CPASSERT(owners == 1)
       CALL state%para_env%sum(value)
    END SUBROUTINE qs_skala_scf_value
+
+! **************************************************************************************************
+!> \brief Differentiate one actual physical rho/tau input without changing the native KS operator.
+!>        Core terms are constant at fixed geometry. The paired-spin factor and each k weight are
+!>        applied once. Atomic background inputs use the transpose of their actual interpolation,
+!>        without the negative sign belonging to the background energy contribution.
+!> \param state Evaluated native orbital state, with current physical model samples.
+!> \param domain FFT, exact atomic or interpolated atomic background.
+!> \param point Global FFT index or (global atom, row within that atom, 1).
+!> \param spin Zero for the paired RKS input, one or two for UKS.
+!> \param descriptor Density or kinetic density.
+!> \param derivative Global derivative in the current Cayley coordinates.
+!> \param physical_derivative Optional covector in the orthonormal physical orbital tangent.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_point_derivative(state, domain, point, spin, descriptor, derivative, physical_derivative)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      INTEGER, INTENT(IN)                                :: domain, point(3), spin, descriptor
+      REAL(dp), INTENT(OUT)                              :: derivative(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_derivative(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), operators(:, :, :)
+      INTEGER                                            :: first, ik, last, local, ns, selected_spin
+      LOGICAL                                            :: owner
+      REAL(dp)                                           :: scale, value
+
+      CALL qs_skala_scf_value(state, domain, point, spin, descriptor, value)
+      CPASSERT(SIZE(derivative) == qs_skala_scf_size(state))
+      derivative = 0.0_dp
+      IF (PRESENT(physical_derivative)) THEN
+         CPASSERT(SIZE(physical_derivative) == SIZE(derivative))
+         physical_derivative = 0.0_dp
+      END IF
+      ns = SIZE(state%orbitals, 2)
+      selected_spin = spin
+      scale = 1.0_dp
+      IF (ns == 1) THEN
+         selected_spin = 1
+         scale = 0.5_dp
+      END IF
+      IF (domain == skala_fft_domain .OR. domain == skala_background_domain) THEN
+         CALL grid_point_operators(state, domain, point, descriptor, operators)
+      ELSE
+         CALL atom_point_operators(state, point, descriptor, operators)
+      END IF
+      owner = state%para_env%mepos == 0
+      IF (state%bloch) owner = state%kpoints%para_env_kp%mepos == 0
+      ALLOCATE (matrix(SIZE(operators, 1), SIZE(operators, 2)))
+      DO local = 1, SIZE(state%orbitals, 1)
+         IF (.NOT. ASSOCIATED(state%orbitals(local, selected_spin)%native)) CYCLE
+         ik = 1
+         IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+         first = state%offsets(ik, selected_spin) + 1
+         last = first + state%dimensions(ik, selected_spin) - 1
+         IF (.NOT. owner) CYCLE
+         matrix(:, :) = scale*state%orbitals(local, selected_spin)%weight*operators(:, :, ik)
+         CALL skala_orbital_chart_derivative(state%orbitals(local, selected_spin)%chart, &
+                                             matrix, derivative(first:last))
+         IF (PRESENT(physical_derivative)) THEN
+            CALL skala_orbital_chart_derivative(state%orbitals(local, selected_spin)%chart, &
+                                                matrix, physical_derivative(first:last), physical_tangent=.TRUE.)
+         END IF
+      END DO
+      CALL state%para_env%sum(derivative)
+      IF (PRESENT(physical_derivative)) CALL state%para_env%sum(physical_derivative)
+   END SUBROUTINE qs_skala_scf_point_derivative
+
+   SUBROUTINE grid_point_operators(state, domain, point, descriptor, operators)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      INTEGER, INTENT(IN)                                :: domain, point(3), descriptor
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      INTEGER                                            :: axis, bounds(2, 3), i, ik, nao, nk, row, &
+                                                            smooth
+      REAL(dp), ALLOCATABLE                              :: fields(:, :, :, :), values(:, :)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type)                               :: density, filtered, gradient(3), kinetic
+      TYPE(pw_r3d_rs_type), POINTER                      :: rho_r(:)
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+
+      CALL qs_rho_get(state%rho, rho_r=rho_r)
+      grid => rho_r(1)%pw_grid
+      IF (domain == skala_background_domain) grid => state%inverse%xc_grid
+      CPASSERT(ASSOCIATED(grid))
+      CALL density%create(grid)
+      CALL kinetic%create(grid)
+      density%array = 0.0_dp
+      kinetic%array = 0.0_dp
+      DO axis = 1, 3
+         CALL gradient(axis)%create(grid)
+         gradient(axis)%array = 0.0_dp
+      END DO
+      IF (domain == skala_fft_domain) THEN
+         IF (ALL(point >= grid%bounds_local(1, :)) .AND. ALL(point <= grid%bounds_local(2, :))) THEN
+            IF (descriptor == skala_density_descriptor) THEN
+               density%array(point(1), point(2), point(3)) = 1.0_dp/grid%dvol
+            ELSE
+               kinetic%array(point(1), point(2), point(3)) = 1.0_dp/grid%dvol
+            END IF
+         END IF
+         smooth = section_get_ival(state%qs_env%input, "DFT%XC%XC_GRID%XC_SMOOTH_RHO")
+         IF (descriptor == skala_density_descriptor .AND. smooth /= xc_rho_no_smooth) THEN
+            CALL filtered%create(grid)
+            ! The native smoothing stencils are symmetric on the auxiliary PW grid.
+            CALL xc_pw_smooth(density, filtered, smooth)
+            density%array(:, :, :) = filtered%array
+            CALL filtered%release()
+         END IF
+      ELSE
+         ALLOCATE (fields(grid%npts(1), grid%npts(2), grid%npts(3), 1), &
+                   values(SIZE(state%inverse%atom_grid%atoms), 1))
+         fields = 0.0_dp
+         values = 0.0_dp
+         row = 0
+         DO i = 1, SIZE(values, 1)
+            IF (state%inverse%atom_grid%atoms(i) /= point(1)) CYCLE
+            row = row + 1
+            IF (row == point(2)) values(i, 1) = 1.0_dp
+         END DO
+         CALL get_qs_env(state%qs_env, cell=cell)
+         CALL native_grid_batch_adjoint(values, grid, cell, state%inverse%atom_grid%points, fields, &
+                                        wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
+         CALL state%para_env%sum(fields)
+         bounds = grid%bounds_local - SPREAD(grid%bounds(1, :) - 1, 1, 2)
+         IF (descriptor == skala_density_descriptor) THEN
+            density%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
+                                            bounds(1, 3):bounds(2, 3), 1)/grid%dvol
+         ELSE
+            kinetic%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
+                                            bounds(1, 3):bounds(2, 3), 1)/grid%dvol
+         END IF
+      END IF
+      nk = SIZE(state%dimensions, 1)
+      IF (state%bloch) THEN
+         nao = SIZE(state%inverse%bloch%frames(1)%ao%coefficients, 2)
+      ELSE
+         nao = SIZE(state%inverse%frame%ao%coefficients, 2)
+      END IF
+      ALLOCATE (operators(nao, nao, nk))
+      IF (state%inverse%gaussian_background) THEN
+         IF (descriptor == skala_density_descriptor) THEN
+            CALL qs_upf_inverse_background_integrate(state%inverse%coulomb%background, state%qs_env, density, operators)
+         ELSE
+            CALL qs_upf_inverse_background_integrate(state%inverse%coulomb%background, state%qs_env, kinetic, operators, &
+                                                     kinetic=.TRUE.)
+         END IF
+      ELSE
+         augmentation => state%inverse%augmentation
+         IF (state%bloch) augmentation => state%inverse%bloch%augmentation
+         DO ik = 1, nk
+            IF (state%bloch) THEN
+               CALL qs_upf_inverse_grid_integrate_dense(state%inverse%bloch%frames(ik), density, gradient, kinetic, &
+                                                        matrix, augmentation=augmentation, fourier_charge=.TRUE., &
+                                                        kinetic=state%inverse%kinetic_cache)
+            ELSE
+               CALL qs_upf_inverse_grid_integrate_dense(state%inverse%frame, density, gradient, kinetic, matrix, &
+                                                        augmentation=augmentation, fourier_charge=.TRUE., &
+                                                        kinetic=state%inverse%kinetic_cache)
+            END IF
+            operators(:, :, ik) = matrix
+         END DO
+      END IF
+      CALL density%release()
+      CALL kinetic%release()
+      DO axis = 1, 3
+         CALL gradient(axis)%release()
+      END DO
+   END SUBROUTINE grid_point_operators
+
+   SUBROUTINE atom_point_operators(state, point, descriptor, operators)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      INTEGER, INTENT(IN)                                :: point(3), descriptor
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: correction(:, :), q(:, :)
+      INTEGER                                            :: i, ik, nao, nk, np, row
+      REAL(dp), ALLOCATABLE                              :: density(:), gradient(:, :), kinetic(:), &
+                                                            weights(:)
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+
+      CPASSERT(point(3) == 1)
+      CPASSERT(ALLOCATED(state%inverse%xc%soft))
+      np = SIZE(state%inverse%atom_grid%atoms)
+      nk = SIZE(state%dimensions, 1)
+      nao = SIZE(state%inverse%xc%soft, 2)
+      ALLOCATE (density(np), kinetic(np), gradient(np, 3), weights(np), operators(nao, nao, nk), correction(nao, nao))
+      density = 0.0_dp
+      kinetic = 0.0_dp
+      gradient = 0.0_dp
+      weights = 1.0_dp
+      row = 0
+      DO i = 1, np
+         IF (state%inverse%atom_grid%atoms(i) /= point(1)) CYCLE
+         row = row + 1
+         IF (row /= point(2)) CYCLE
+         IF (descriptor == skala_density_descriptor) THEN
+            density(i) = 1.0_dp
+         ELSE
+            kinetic(i) = 1.0_dp
+         END IF
+      END DO
+      CALL comm%set_handle(state%para_env%get_handle())
+      augmentation => state%inverse%augmentation
+      IF (state%bloch) augmentation => state%inverse%bloch%augmentation
+      DO ik = 1, nk
+         frame => state%inverse%frame%ao
+         IF (state%bloch) frame => state%inverse%bloch%frames(ik)%ao
+         CALL upf_inverse_semilocal_pair(state%inverse%xc%soft(:, :, ik), state%inverse%xc%soft(:, :, ik), &
+                                         state%inverse%xc%gradient(:, :, :, ik), state%inverse%xc%gradient(:, :, :, ik), &
+                                         weights, density, gradient, kinetic, operators(:, :, ik), comm)
+         IF (descriptor == skala_density_descriptor) THEN
+            ALLOCATE (q(SIZE(frame%coefficients, 1), SIZE(frame%coefficients, 1)))
+            CALL qs_upf_inverse_augmentation_integrate(frame, augmentation, density, gradient, q, &
+                                                       state%inverse%atom_grid%points, weights, comm)
+            operators(:, :, ik) = operators(:, :, ik) + &
+                                  MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(q, frame%coefficients))
+            DEALLOCATE (q)
+            IF (ALLOCATED(state%inverse%paw_reconstruction)) THEN
+               CALL qs_upf_inverse_paw_operator(frame, state%inverse%paw_reconstruction, augmentation, &
+                                                state%inverse%atom_grid%points, weights, density, gradient, correction, comm)
+               operators(:, :, ik) = operators(:, :, ik) + correction
+            END IF
+         ELSE
+            CPASSERT(ALLOCATED(state%inverse%kinetic_cache))
+            CALL qs_upf_inverse_kinetic_operator(frame, state%inverse%kinetic_cache, state%inverse%atom_grid%points, &
+                                                 weights, kinetic, correction, comm)
+            operators(:, :, ik) = operators(:, :, ik) + correction
+            IF (ALLOCATED(state%inverse%paw_reconstruction)) THEN
+               CALL qs_upf_inverse_kinetic_operator(frame, state%inverse%paw_reconstruction, state%inverse%atom_grid%points, &
+                                                    weights, kinetic, correction, comm)
+               operators(:, :, ik) = operators(:, :, ik) + correction
+            END IF
+         END IF
+      END DO
+   END SUBROUTINE atom_point_operators
 
 ! **************************************************************************************************
 !> \brief Find a physical root along a normalized orbital curve by complete native reevaluations.
