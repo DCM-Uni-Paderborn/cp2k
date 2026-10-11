@@ -2744,9 +2744,28 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
                                                             coupled_response(:, :, :)
 
-      COMPLEX(dp), ALLOCATABLE                           :: soft(:, :), soft_response(:, :)
       INTEGER                                            :: atom, first, hi, images(3, 1), last, lo, &
                                                             max_basis, np
+
+      difference(:, :) = -MATMUL(delta, coefficients)
+      IF (derivatives) difference_response(:, :) = -MATMUL(delta, coefficients_response)
+      IF (.NOT. frame%atom_local) THEN
+         CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coupled_coefficients))
+         IF (derivatives) THEN
+            CPASSERT(PRESENT(coupled_response))
+            CALL qs_upf_inverse_lattice_fields(frame, points, image, coefficient_images, &
+                                               coupled_coefficients(:, ao_range(1):ao_range(2), :), ao_range, complete, &
+                                               response=complete_response, &
+                                               coefficients_response=coupled_response(:, ao_range(1):ao_range(2), :), &
+                                               point_response=point_response, atom_response=atom_response, &
+                                               cell_response=cell_response, gaussian_factor=2.0_dp)
+         ELSE
+            CALL qs_upf_inverse_lattice_fields(frame, points, image, coefficient_images, &
+                                               coupled_coefficients(:, ao_range(1):ao_range(2), :), ao_range, complete, &
+                                               gaussian_factor=2.0_dp)
+         END IF
+         RETURN
+      END IF
 
       np = SIZE(points, 2)
       images(:, 1) = image
@@ -2782,30 +2801,8 @@ CONTAINS
          END IF
          complete(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = 2.0_dp*workspace%phi(:, lo - first + 1:hi - first + 1)
       END DO
-      difference(:, :) = -MATMUL(delta, coefficients)
-      IF (derivatives) difference_response(:, :) = -MATMUL(delta, coefficients_response)
-      IF (frame%atom_local) THEN
-         complete(:, :) = complete + difference
-         IF (derivatives) complete_response(:, :) = complete_response + difference_response
-      ELSE
-         CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coupled_coefficients))
-         ALLOCATE (soft(np, SIZE(complete, 2)))
-         IF (derivatives) THEN
-            CPASSERT(PRESENT(coupled_response))
-            ALLOCATE (soft_response(np, SIZE(complete, 2)))
-            CALL qs_upf_inverse_lattice_fields(frame, points, image, coefficient_images, &
-                                               coupled_coefficients(:, ao_range(1):ao_range(2), :), ao_range, soft, &
-                                               response=soft_response, &
-                                               coefficients_response=coupled_response(:, ao_range(1):ao_range(2), :), &
-                                               point_response=point_response, atom_response=atom_response, &
-                                               cell_response=cell_response)
-            complete_response(:, :) = 0.5_dp*complete_response + soft_response
-         ELSE
-            CALL qs_upf_inverse_lattice_fields(frame, points, image, coefficient_images, &
-                                               coupled_coefficients(:, ao_range(1):ao_range(2), :), ao_range, soft)
-         END IF
-         complete(:, :) = 0.5_dp*complete + soft
-      END IF
+      complete(:, :) = complete + difference
+      IF (derivatives) complete_response(:, :) = complete_response + difference_response
    END SUBROUTINE lattice_residual_fields
 
 ! **************************************************************************************************

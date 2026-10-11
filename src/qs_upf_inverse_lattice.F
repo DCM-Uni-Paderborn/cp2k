@@ -202,10 +202,11 @@ CONTAINS
 !> \param point_response Physical point displacements, required for a geometry response.
 !> \param atom_response Physical displacements of all original centers.
 !> \param cell_response Cell-vector displacement at fixed integer images.
+!> \param gaussian_factor Optional Gaussian multiplier, one for soft and two for soft-plus-Gaussian fields.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_lattice_fields(frame, points, ao_image, coefficient_images, coefficients, ao_range, &
                                             value, gradient, response, gradient_response, coefficients_response, &
-                                            point_response, atom_response, cell_response)
+                                            point_response, atom_response, cell_response, gaussian_factor)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       INTEGER, INTENT(IN)                                :: ao_image(3), coefficient_images(:, :)
@@ -217,7 +218,7 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
                                                             atom_response(:, :), &
-                                                            cell_response(3, 3)
+                                                            cell_response(3, 3), gaussian_factor
 
       COMPLEX(dp), ALLOCATABLE :: delta(:, :), delta_gradient(:, :, :), &
          delta_gradient_response(:, :, :), delta_response(:, :), gaussian(:, :), &
@@ -226,6 +227,7 @@ CONTAINS
                                                             single_image(3, 1), source_first, &
                                                             source_last
       LOGICAL                                            :: derivative, gradients
+      REAL(dp)                                           :: factor
 
       CALL check_lattice_images(frame, coefficient_images)
       CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
@@ -260,6 +262,8 @@ CONTAINS
          CPASSERT(ALL(SHAPE(gradient_response) == [n, nao, 3]))
          gradient_response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
+      factor = 1.0_dp
+      IF (PRESENT(gaussian_factor)) factor = gaussian_factor
       value = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (gradients) gradient = CMPLX(0.0_dp, 0.0_dp, dp)
       single_image(:, 1) = ao_image
@@ -284,11 +288,11 @@ CONTAINS
          source_last = last - frame%ao_first(atom) + 1
          first = first - ao_range(1) + 1
          last = last - ao_range(1) + 1
-         value(:, first:last) = gaussian(:, source_first:source_last)
-         IF (gradients) gradient(:, first:last, :) = gaussian_gradient(:, source_first:source_last, :)
-         IF (derivative) response(:, first:last) = gaussian_response(:, source_first:source_last)
+         value(:, first:last) = factor*gaussian(:, source_first:source_last)
+         IF (gradients) gradient(:, first:last, :) = factor*gaussian_gradient(:, source_first:source_last, :)
+         IF (derivative) response(:, first:last) = factor*gaussian_response(:, source_first:source_last)
          IF (PRESENT(gradient_response)) THEN
-            gradient_response(:, first:last, :) = gaussian_gradient_response(:, source_first:source_last, :)
+            gradient_response(:, first:last, :) = factor*gaussian_gradient_response(:, source_first:source_last, :)
             DEALLOCATE (gaussian_gradient_response)
          END IF
          IF (derivative) DEALLOCATE (gaussian_response)
