@@ -1968,8 +1968,8 @@ CONTAINS
          lattice_gr(:, :, :), q(:, :), unused_c(:, :), unused_d(:, :), unused_w(:, :), wl(:, :), &
          work(:, :), wr(:, :)
       INTEGER                                            :: atom, aux, axis, first, ia, image, ir, &
-                                                            kind, last, nang, nl, np, nr, &
-                                                            zero(3, 1)
+                                                            kind, last, left_image, nang, nl, np, &
+                                                            nr, right_image, zero(3, 1)
       LOGICAL                                            :: geometry
       REAL(dp)                                           :: local_cell(3, 3), position(3), &
                                                             potential_geometry(3), radius, &
@@ -2033,6 +2033,15 @@ CONTAINS
       position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(center_image, dp))
       radius = frame%delta_cache(kind)%radius
       CPASSERT(r(SIZE(r)) >= radius)
+      left_image = 0
+      right_image = 0
+      DO image = 1, SIZE(coefficient_images, 2)
+         IF (ALL(coefficient_images(:, image) == -center_image)) left_image = image
+         IF (ALL(coefficient_images(:, image) == ao_image - center_image)) right_image = image
+      END DO
+      ! Missing translations are fixed zeros of this finite representation. A stored
+      ! zero coefficient is still a variable and must retain its coefficient derivative.
+      IF (left_image == 0 .AND. right_image == 0) RETURN
       IF (radius > 0.0_dp) THEN
          ALLOCATE (points(3, nang), local_points(3, nang), potentials(nang, fields%nfunction), &
                    weights(nang), weighted_potential(nang), delta(nang, np), work(nang, nr), &
@@ -2155,14 +2164,12 @@ CONTAINS
             auxiliary_geometry = auxiliary_geometry - potential_geometry
          END IF
       END IF
-      DO image = 1, SIZE(coefficient_images, 2)
-         IF (ALL(coefficient_images(:, image) == -center_image)) THEN
-            left_coefficients_covector(first:last, :, image) = left_coefficients_covector(first:last, :, image) + gl
-         END IF
-         IF (ALL(coefficient_images(:, image) == ao_image - center_image)) THEN
-            right_coefficients_covector(first:last, :, image) = right_coefficients_covector(first:last, :, image) + gr
-         END IF
-      END DO
+      IF (left_image > 0) THEN
+         left_coefficients_covector(first:last, :, left_image) = left_coefficients_covector(first:last, :, left_image) + gl
+      END IF
+      IF (right_image > 0) THEN
+         right_coefficients_covector(first:last, :, right_image) = right_coefficients_covector(first:last, :, right_image) + gr
+      END IF
    END SUBROUTINE qs_upf_inverse_hfx_lattice_center_adjoint
 
 ! **************************************************************************************************
@@ -2268,6 +2275,12 @@ CONTAINS
       integral = CMPLX(0.0_dp, 0.0_dp, dp)
       radius = frame%delta_cache(kind)%radius
       CPASSERT(r(SIZE(r)) >= radius)
+      ! A zero correction can have a nonzero response through its coefficients.
+      ! Skip the radial integrals only when that response is zero as well.
+      IF (ALL(wl == CMPLX(0.0_dp, 0.0_dp, dp)) .AND. ALL(wr == CMPLX(0.0_dp, 0.0_dp, dp))) THEN
+         IF (.NOT. derivatives) RETURN
+         IF (ALL(dwl == CMPLX(0.0_dp, 0.0_dp, dp)) .AND. ALL(dwr == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
+      END IF
       IF (.NOT. frame%direct .AND. radius > 0.0_dp) THEN
          ALLOCATE (points(3, nang), local_points(3, nang), potentials(nang, fields%nfunction), &
                    weights(nang), weighted_potential(nang), delta(nang, np), work(nang, nr), &
