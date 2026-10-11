@@ -13,7 +13,8 @@
 ! **************************************************************************************************
 MODULE upf_inverse_lattice
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE mathconstants,                   ONLY: twopi
    USE upf_inverse,                     ONLY: upf_inverse_init,&
                                               upf_inverse_project,&
@@ -204,7 +205,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: residual(:, :, :)
 
       INTEGER                                            :: i, image(3), n, nao, np, nr, q, TARGET
-      INTEGER, ALLOCATABLE                               :: union_images(:, :)
+      INTEGER, ALLOCATABLE                               :: buckets(:), union_images(:, :)
 
       EXTERNAL zgemm
 
@@ -216,9 +217,13 @@ CONTAINS
       CPASSERT(SIZE(overlaps, 1) == np)
       n = SIZE(overlap_images, 2)
       CPASSERT(SIZE(overlaps, 3) == n)
-      ALLOCATE (union_images(3, nr*(1 + SIZE(lattice%kernel_images, 2)) + SIZE(overlap_images, 2)))
-      n = nr
-      union_images(:, :n) = lattice%images
+      ALLOCATE (union_images(3, MAX(16, nr)))
+      CPASSERT(SIZE(union_images, 2) <= HUGE(0)/2)
+      ALLOCATE (buckets(2*SIZE(union_images, 2)), SOURCE=0)
+      n = 0
+      DO i = 1, nr
+         CALL append_image(lattice%images(:, i))
+      END DO
       DO i = 1, SIZE(overlap_images, 2)
          CALL append_image(overlap_images(:, i))
       END DO
@@ -232,14 +237,14 @@ CONTAINS
       ALLOCATE (residual(np, SIZE(overlaps, 2), n), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
       residual(:, :, :nr) = coefficients
       DO i = 1, SIZE(overlap_images, 2)
-         TARGET = find_image(residual_images, overlap_images(:, i))
+         TARGET = lookup_image(overlap_images(:, i))
          residual(:, :, TARGET) = residual(:, :, TARGET) - overlaps(:, :, i)
       END DO
       IF (np == 0 .OR. nao == 0) RETURN
       DO i = 1, nr
          DO q = 1, SIZE(lattice%kernel_images, 2)
             image(:) = lattice%images(:, i) + lattice%kernel_images(:, q)
-            TARGET = find_image(residual_images, image)
+            TARGET = lookup_image(image)
             CALL zgemm('N', 'N', np, nao, np, CMPLX(1.0_dp, 0.0_dp, dp), lattice%coupling(:, :, q), np, &
                        coefficients(:, :, i), np, CMPLX(1.0_dp, 0.0_dp, dp), residual(:, :, TARGET), np)
          END DO
@@ -250,10 +255,61 @@ CONTAINS
       SUBROUTINE append_image(new_image)
       INTEGER, INTENT(IN)                                :: new_image(3)
 
-         IF (find_image(union_images(:, :n), new_image) > 0) RETURN
+      INTEGER                                            :: capacity, item, slot
+      INTEGER, ALLOCATABLE                               :: expanded(:, :)
+
+         IF (lookup_image(new_image) > 0) RETURN
+         IF (n == SIZE(union_images, 2)) THEN
+            capacity = SIZE(union_images, 2)
+            CPASSERT(capacity <= HUGE(0)/4)
+            ALLOCATE (expanded(3, 2*capacity))
+            expanded(:, :n) = union_images(:, :n)
+            CALL MOVE_ALLOC(expanded, union_images)
+            DEALLOCATE (buckets)
+            ALLOCATE (buckets(4*capacity), SOURCE=0)
+            DO item = 1, n
+               slot = image_bucket(union_images(:, item))
+               DO WHILE (buckets(slot) /= 0)
+                  slot = MODULO(slot, SIZE(buckets)) + 1
+               END DO
+               buckets(slot) = item
+            END DO
+         END IF
          n = n + 1
          union_images(:, n) = new_image
+         slot = image_bucket(new_image)
+         DO WHILE (buckets(slot) /= 0)
+            slot = MODULO(slot, SIZE(buckets)) + 1
+         END DO
+         buckets(slot) = n
       END SUBROUTINE append_image
+
+      INTEGER FUNCTION lookup_image(new_image) RESULT(index)
+      INTEGER, INTENT(IN)                                :: new_image(3)
+
+      INTEGER                                            :: slot
+
+         index = 0
+         slot = image_bucket(new_image)
+         DO WHILE (buckets(slot) /= 0)
+            IF (ALL(union_images(:, buckets(slot)) == new_image)) THEN
+               index = buckets(slot)
+               RETURN
+            END IF
+            slot = MODULO(slot, SIZE(buckets)) + 1
+         END DO
+      END FUNCTION lookup_image
+
+      INTEGER FUNCTION image_bucket(new_image) RESULT(slot)
+      INTEGER, INTENT(IN)                                :: new_image(3)
+
+      INTEGER(int_8)                                     :: hash
+
+         ! Hash collisions compare all three original integers. Images are never folded.
+         hash = IEOR(IEOR(INT(new_image(1), int_8)*73856093_int_8, &
+                          INT(new_image(2), int_8)*19349663_int_8), INT(new_image(3), int_8)*83492791_int_8)
+         slot = INT(MODULO(hash, INT(SIZE(buckets), int_8))) + 1
+      END FUNCTION image_bucket
    END SUBROUTINE upf_inverse_lattice_residual
 
 ! **************************************************************************************************
@@ -278,6 +334,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: residual(:, :, :)
 
       INTEGER                                            :: i, image(3), nao, np, q, TARGET
+      INTEGER, ALLOCATABLE                               :: image_order(:), sorted_images(:, :)
 
       EXTERNAL zgemm
 
@@ -287,10 +344,13 @@ CONTAINS
       np = SIZE(coefficients, 1)
       nao = SIZE(coefficients, 2)
       IF (np == 0 .OR. nao == 0) RETURN
+      ALLOCATE (sorted_images, SOURCE=residual_images)
+      ALLOCATE (image_order(SIZE(residual_images, 2)))
+      CALL sort(sorted_images, 1, SIZE(residual_images, 2), 1, 3, image_order)
       DO i = 1, SIZE(lattice%images, 2)
          DO q = 1, SIZE(lattice%kernel_images, 2)
             image(:) = lattice%images(:, i) + lattice%kernel_images(:, q)
-            TARGET = find_image(residual_images, image)
+            TARGET = image_order(find_sorted_image(sorted_images, image))
             CALL zgemm('N', 'N', np, nao, np, CMPLX(1.0_dp, 0.0_dp, dp), coupling_response(:, :, q), np, &
                        coefficients(:, :, i), np, CMPLX(1.0_dp, 0.0_dp, dp), residual(:, :, TARGET), np)
          END DO
