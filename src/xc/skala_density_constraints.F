@@ -20,7 +20,16 @@ MODULE skala_density_constraints
    PUBLIC :: skala_density_constraints_type, skala_density_constraints_reset, &
              skala_density_constraints_set, skala_density_constraints_count, &
              skala_density_constraints_matches, skala_density_constraints_get, &
-             skala_density_constraints_balance
+             skala_density_constraints_balance, skala_density_crossings, skala_density_root
+
+   ABSTRACT INTERFACE
+      SUBROUTINE evaluate_physical_density(step, value, context)
+         IMPORT :: dp
+         REAL(dp), INTENT(IN) :: step
+         REAL(dp), INTENT(OUT) :: value
+         CLASS(*), INTENT(INOUT) :: context
+      END SUBROUTINE evaluate_physical_density
+   END INTERFACE
 
    TYPE skala_density_constraints_type
       PRIVATE
@@ -31,6 +40,104 @@ MODULE skala_density_constraints
    END TYPE skala_density_constraints_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Detect physical density zeros bracketed by two orbital evaluations.
+!>        The caller supplies matching physical point/spin layouts, before nonlinear features.
+!>        A field that is zero at both ends supplies no sign-changing constraint.
+!>        Endpoint zeros are candidates, not proof of an admissible stationary minimum.
+!> \param first Physical spin densities at the first orbital state.
+!> \param last Physical spin densities at the last orbital state.
+!> \param crossings Candidate mask with the same physical point/spin layout.
+! **************************************************************************************************
+   SUBROUTINE skala_density_crossings(first, last, crossings)
+      REAL(dp), INTENT(IN)                               :: first(:, :), last(:, :)
+      LOGICAL, INTENT(OUT)                               :: crossings(:, :)
+
+      CPASSERT(ALL(SHAPE(first) == SHAPE(last)))
+      CPASSERT(ALL(SHAPE(first) == SHAPE(crossings)))
+      CPASSERT(ALL(ieee_is_finite(first)))
+      CPASSERT(ALL(ieee_is_finite(last)))
+      crossings(:, :) = ((first < 0.0_dp .AND. last >= 0.0_dp) .OR. &
+                         (first > 0.0_dp .AND. last <= 0.0_dp) .OR. &
+                         (first == 0.0_dp .AND. last /= 0.0_dp))
+   END SUBROUTINE skala_density_crossings
+
+! **************************************************************************************************
+!> \brief Locate a bracketed zero by reevaluating the physical density along an orbital curve.
+!>        The callback retains the actual normalization, density map and frozen core.
+!>        Only the absolute physical density tolerance establishes convergence.
+!>        Unbracketed and unresolved roots return the best observed endpoint with failure.
+!> \param evaluate Callback for one fixed physical point/spin on the caller's orbital curve.
+!> \param context Owned orbital-curve data and native evaluation workspace.
+!> \param first_step First endpoint of the supplied orbital-curve interval.
+!> \param last_step Last endpoint, strictly larger than the first.
+!> \param tolerance Maximum absolute physical spin density at the returned root.
+!> \param step Best observed orbital-curve parameter.
+!> \param value Its actual physical spin density.
+!> \param converged Whether the physical density meets the requested tolerance.
+!> \param max_iterations Maximum safeguarded interpolation steps, defaults to 100.
+! **************************************************************************************************
+   SUBROUTINE skala_density_root(evaluate, context, first_step, last_step, tolerance, step, value, &
+                                 converged, max_iterations)
+      PROCEDURE(evaluate_physical_density)                :: evaluate
+      CLASS(*), INTENT(INOUT)                             :: context
+      REAL(dp), INTENT(IN)                               :: first_step, last_step, tolerance
+      REAL(dp), INTENT(OUT)                              :: step, value
+      LOGICAL, INTENT(OUT)                               :: converged
+      INTEGER, INTENT(IN), OPTIONAL                      :: max_iterations
+
+      INTEGER                                            :: iteration, limit
+      LOGICAL                                            :: bracketed
+      REAL(dp)                                           :: first, first_value, fraction, last, last_value, &
+                                                            scale, trial, trial_value
+
+      CPASSERT(ieee_is_finite(first_step) .AND. ieee_is_finite(last_step))
+      CPASSERT(last_step > first_step)
+      CPASSERT(ieee_is_finite(tolerance) .AND. tolerance > 0.0_dp)
+      limit = 100
+      IF (PRESENT(max_iterations)) limit = max_iterations
+      CPASSERT(limit > 0)
+      first = first_step
+      last = last_step
+      CALL evaluate(first, first_value, context)
+      CALL evaluate(last, last_value, context)
+      CPASSERT(ieee_is_finite(first_value) .AND. ieee_is_finite(last_value))
+      step = first
+      value = first_value
+      IF (ABS(last_value) < ABS(value)) THEN
+         step = last
+         value = last_value
+      END IF
+      converged = ABS(value) <= tolerance
+      IF (converged) RETURN
+      bracketed = (first_value < 0.0_dp .AND. last_value > 0.0_dp) .OR. &
+                  (first_value > 0.0_dp .AND. last_value < 0.0_dp)
+      IF (.NOT. bracketed) RETURN
+
+      DO iteration = 1, limit
+         scale = MAX(ABS(first_value), ABS(last_value))
+         fraction = (first_value/scale)/(first_value/scale - last_value/scale)
+         fraction = MAX(0.1_dp, MIN(0.9_dp, fraction))
+         trial = (1.0_dp - fraction)*first + fraction*last
+         IF (trial <= first .OR. trial >= last) EXIT
+         CALL evaluate(trial, trial_value, context)
+         CPASSERT(ieee_is_finite(trial_value))
+         IF (ABS(trial_value) < ABS(value)) THEN
+            step = trial
+            value = trial_value
+         END IF
+         converged = ABS(value) <= tolerance
+         IF (converged) RETURN
+         IF ((trial_value < 0.0_dp) .EQV. (first_value < 0.0_dp)) THEN
+            first = trial
+            first_value = trial_value
+         ELSE
+            last = trial
+            last_value = trial_value
+         END IF
+      END DO
+   END SUBROUTINE skala_density_root
 
 ! **************************************************************************************************
 !> \brief Clear the selected constraints without changing their owner.
