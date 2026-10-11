@@ -173,8 +173,9 @@ CONTAINS
 !>        Auxiliary sites are stacked by cell and then by atom, in the native RI order. AO images
 !>        retain the supplied order. Reconstruction images are summed before any owner filtering.
 !>        The common frame supplies original radial fields and geometry, never its Bloch-summed W.
-!>        General INVERSE uses the supplied full W_Q and dW_Q. Its domains are explicit. It does not select or
-!>        truncate images, change the fitting domain, or apply a Bloch phase or exchange weight.
+!>        General INVERSE uses the supplied full W_Q and dW_Q. For each AO translation it omits
+!>        centers whose two relative coefficient translations are absent from the retained domain.
+!>        It does not change that domain or the fitting domain, apply a Bloch phase or exchange weight.
 !> \param frame Original basis and geometry for DIRECT, INVERSE_1C or general INVERSE.
 !> \param kinds ...
 !> \param augmentation ...
@@ -211,6 +212,7 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: factor_response(:), factors(:)
       INTEGER                                            :: atom, image, natom, nsite, site
+      INTEGER, ALLOCATABLE                               :: selected_centers(:, :)
       REAL(dp), ALLOCATABLE                              :: position_response(:, :), positions(:, :)
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
 
@@ -250,8 +252,17 @@ CONTAINS
       END DO
       END DO
       DO image = 1, SIZE(tensors)
+         IF (frame%atom_local) THEN
+            ALLOCATE (selected_centers, SOURCE=center_images)
+         ELSE
+            CALL lattice_center_subset(center_images, coefficient_images, ao_images(:, image), selected_centers)
+         END IF
+         IF (SIZE(selected_centers, 2) == 0) THEN
+            DEALLOCATE (selected_centers)
+            CYCLE
+         END IF
          IF (PRESENT(responses)) THEN
-            CALL qs_upf_inverse_hfx_tensor(frame, frame, kinds, augmentation, bases, positions, factors, center_images, &
+            CALL qs_upf_inverse_hfx_tensor(frame, frame, kinds, augmentation, bases, positions, factors, selected_centers, &
                                            tensors(image), response_real=responses(image), &
                                            atom_response=atom_response, cell_response=cell_response, &
                                            auxiliary_positions_response=position_response, &
@@ -260,13 +271,48 @@ CONTAINS
                                            coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
                                            coupled_response=coupled_response)
          ELSE
-            CALL qs_upf_inverse_hfx_tensor(frame, frame, kinds, augmentation, bases, positions, factors, center_images, &
+            CALL qs_upf_inverse_hfx_tensor(frame, frame, kinds, augmentation, bases, positions, factors, selected_centers, &
                                            tensors(image), ao_image=ao_images(:, image), metric=metric, &
                                            coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
                                            coupled_response=coupled_response)
          END IF
+         DEALLOCATE (selected_centers)
       END DO
    END SUBROUTINE qs_upf_inverse_hfx_lattice_tensor
+
+! **************************************************************************************************
+!> \brief Retain centers with a left or right coefficient block for one physical AO translation.
+!>        Missing translations are fixed zeros, independent of coefficient values and geometry.
+!>        The supplied order is preserved. Stored zero blocks remain part of the selection.
+!> \param centers Supplied reconstruction images.
+!> \param coefficient_images Retained physical coefficient translations.
+!> \param ao_image Right AO translation relative to the left reference cell.
+!> \param selected New exact subset of the supplied reconstruction images.
+! **************************************************************************************************
+   SUBROUTINE lattice_center_subset(centers, coefficient_images, ao_image, selected)
+      INTEGER, INTENT(IN)                                :: centers(:, :), coefficient_images(:, :), &
+                                                            ao_image(3)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: selected(:, :)
+
+      INTEGER                                            :: center, image, n
+      LOGICAL, ALLOCATABLE                               :: active(:)
+
+      ALLOCATE (active(SIZE(centers, 2)))
+      active = .FALSE.
+      DO image = 1, SIZE(coefficient_images, 2)
+         DO center = 1, SIZE(centers, 2)
+            IF (ALL(centers(:, center) == -coefficient_images(:, image)) .OR. &
+                ALL(centers(:, center) == ao_image - coefficient_images(:, image))) active(center) = .TRUE.
+         END DO
+      END DO
+      ALLOCATE (selected(3, COUNT(active)))
+      n = 0
+      DO center = 1, SIZE(centers, 2)
+         IF (.NOT. active(center)) CYCLE
+         n = n + 1
+         selected(:, n) = centers(:, center)
+      END DO
+   END SUBROUTINE lattice_center_subset
 
 ! **************************************************************************************************
 !> \brief Enclose every retained reconstruction center for the left and right physical AO images.
@@ -342,7 +388,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: factors(:), shared(:, :, :)
       INTEGER                                            :: atom, axis, image, natom, nsite, &
                                                             ri_image, site
-      INTEGER, ALLOCATABLE                               :: active(:)
+      INTEGER, ALLOCATABLE                               :: active(:), selected_centers(:, :)
       REAL(dp)                                           :: local_cell(3, 3)
       REAL(dp), ALLOCATABLE                              :: local_atoms(:, :), &
                                                             local_auxiliary(:, :), positions(:, :)
@@ -379,12 +425,18 @@ CONTAINS
       cell_geometry = 0.0_dp
       DO image = 1, SIZE(covectors)
          IF (active(image) == 0) CYCLE
+         CALL lattice_center_subset(center_images, coefficient_images, ao_images(:, image), selected_centers)
+         IF (SIZE(selected_centers, 2) == 0) THEN
+            DEALLOCATE (selected_centers)
+            CYCLE
+         END IF
          CALL qs_upf_inverse_hfx_tensor_adjoint(frame, frame, kinds, augmentation, bases, positions, factors, &
-                                                center_images, covectors(image), metric=metric, &
+                                                selected_centers, covectors(image), metric=metric, &
                                                 atom_geometry=local_atoms, cell_geometry=local_cell, &
                                                 auxiliary_geometry=local_auxiliary, ao_image=ao_images(:, image), &
                                                 coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
                                                 coupled_coefficients_covector=shared)
+         DEALLOCATE (selected_centers)
          coefficients_covector(:, :, :) = coefficients_covector + shared
          atom_geometry(:, :) = atom_geometry + local_atoms
          cell_geometry(:, :) = cell_geometry + local_cell
