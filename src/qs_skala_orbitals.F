@@ -1,0 +1,328 @@
+!--------------------------------------------------------------------------------------------------!
+!   CP2K: A general program to perform molecular dynamics simulations                              !
+!   Copyright 2000-2026 CP2K developers group <https://cp2k.org>                                   !
+!                                                                                                  !
+!   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
+!--------------------------------------------------------------------------------------------------!
+!> \brief Native orbitals and densities for fixed-occupation Skala constraint steps.
+MODULE qs_skala_orbitals
+   USE cp_cfm_types,                    ONLY: cp_cfm_get_submatrix,&
+                                              cp_cfm_set_submatrix
+   USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
+                                              dbcsr_release,&
+                                              dbcsr_type
+   USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
+                                              copy_fm_to_dbcsr
+   USE cp_fm_types,                     ONLY: cp_fm_get_submatrix,&
+                                              cp_fm_set_submatrix
+   USE kinds,                           ONLY: dp
+   USE kpoint_types,                    ONLY: kpoint_env_type,&
+                                              kpoint_type
+   USE qs_mo_types,                     ONLY: mo_set_type
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_scatter
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
+   USE skala_orbital_constraints,       ONLY: skala_orbital_chart_create,&
+                                              skala_orbital_chart_derivative,&
+                                              skala_orbital_chart_evaluate,&
+                                              skala_orbital_chart_release,&
+                                              skala_orbital_chart_size,&
+                                              skala_orbital_chart_type
+#include "./base/base_uses.f90"
+
+   IMPLICIT NONE
+   PRIVATE
+   PUBLIC :: qs_skala_orbitals_type, qs_skala_orbitals_create, qs_skala_orbitals_release
+   PUBLIC :: qs_skala_orbitals_evaluate, qs_skala_orbitals_canonicalize
+   PUBLIC :: qs_skala_orbitals_install_gamma, qs_skala_orbitals_install_kpoint
+
+   TYPE qs_skala_orbitals_type
+      TYPE(skala_orbital_chart_type) :: chart
+      TYPE(mo_set_type), POINTER :: native => NULL()
+      COMPLEX(dp), ALLOCATABLE :: coefficients(:, :)
+      REAL(dp), ALLOCATABLE :: occupations(:), eigenvalues(:)
+      REAL(dp) :: weight = 1.0_dp
+      LOGICAL :: canonicalized = .FALSE.
+   END TYPE qs_skala_orbitals_type
+
+CONTAINS
+
+! **************************************************************************************************
+!> \brief Borrow native MOs and complete their missing virtual space in the original charge metric.
+!>        Collective on the MO matrix communicator. The owner must outlive this orbital state.
+!> \param state Owned chart and replicated coefficients, borrowing only the native MO set.
+!> \param native Live spin and k-point MO set, including its fixed occupations.
+!> \param metric Original normalization operator in the same AO order.
+!> \param complex_orbitals Whether imaginary orbital variations are physical.
+!> \param weight Positive k-point weight, applied once to physical tangent derivatives.
+!> \param valid Whether the complete requested charge space is positive.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_create(state, native, metric, complex_orbitals, weight, valid)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      TYPE(mo_set_type), INTENT(INOUT), TARGET           :: native
+      COMPLEX(dp), INTENT(IN)                            :: metric(:, :)
+      LOGICAL, INTENT(IN)                                :: complex_orbitals
+      REAL(dp), INTENT(IN)                               :: weight
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      COMPLEX(dp), ALLOCATABLE                           :: reference(:, :)
+      INTEGER                                            :: n, nreference
+      REAL(dp), ALLOCATABLE                              :: real_part(:, :), zero(:)
+
+      CALL qs_skala_orbitals_release(state)
+      n = native%nao
+      nreference = native%nmo
+      valid = n > 0 .AND. nreference > 0 .AND. nreference <= n
+      CPASSERT(valid)
+      CPASSERT(ALL(SHAPE(metric) == [n, n]))
+      CPASSERT(ASSOCIATED(native%occupation_numbers))
+      CPASSERT(SIZE(native%occupation_numbers) >= nreference)
+      ALLOCATE (reference(n, nreference))
+      IF (ASSOCIATED(native%cmo_coeff)) THEN
+         CALL cp_cfm_get_submatrix(native%cmo_coeff, reference)
+      ELSE
+         CPASSERT(ASSOCIATED(native%mo_coeff))
+         IF (native%use_mo_coeff_b) THEN
+            CPASSERT(ASSOCIATED(native%mo_coeff_b))
+            CALL copy_dbcsr_to_fm(native%mo_coeff_b, native%mo_coeff)
+         END IF
+         ALLOCATE (real_part(n, nreference))
+         CALL cp_fm_get_submatrix(native%mo_coeff, real_part)
+         reference(:, :) = CMPLX(real_part, 0.0_dp, dp)
+      END IF
+      CALL skala_orbital_chart_create(reference, metric, native%occupation_numbers(:nreference), &
+                                      complex_orbitals, state%chart, valid, metric_weight=weight, complete_space=.TRUE.)
+      IF (.NOT. valid) RETURN
+      state%native => native
+      state%weight = weight
+      ALLOCATE (state%coefficients(n, n), state%occupations(n), state%eigenvalues(n), &
+                zero(skala_orbital_chart_size(state%chart)))
+      state%occupations = 0.0_dp
+      state%occupations(:nreference) = native%occupation_numbers(:nreference)
+      state%eigenvalues = 0.0_dp
+      zero = 0.0_dp
+      CALL qs_skala_orbitals_evaluate(state, zero)
+   END SUBROUTINE qs_skala_orbitals_create
+
+! **************************************************************************************************
+!> \brief Release only owned storage. The native environment retains its MO matrices.
+!> \param state ...
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_release(state)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+
+      CALL skala_orbital_chart_release(state%chart)
+      IF (ALLOCATED(state%coefficients)) DEALLOCATE (state%coefficients, state%occupations, state%eigenvalues)
+      NULLIFY (state%native)
+      state%weight = 1.0_dp
+      state%canonicalized = .FALSE.
+   END SUBROUTINE qs_skala_orbitals_release
+
+! **************************************************************************************************
+!> \brief Evaluate the complete fixed-occupation orbital trial without changing native storage.
+!> \param state ...
+!> \param coordinate ...
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_evaluate(state, coordinate)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+
+      CPASSERT(ASSOCIATED(state%native))
+      CALL skala_orbital_chart_evaluate(state%chart, coordinate, state%coefficients)
+      state%canonicalized = .FALSE.
+   END SUBROUTINE qs_skala_orbitals_evaluate
+
+! **************************************************************************************************
+!> \brief Canonicalize equal-occupation subspaces after physical orbital stationarity is established.
+!>        This leaves the density unchanged and prepares eigenvalues for the weighted density.
+!>        The caller supplies the same limiting Hamiltonian used by the complete functional.
+!> \param state ...
+!> \param hamiltonian Unweighted native Hermitian operator in the original AO order.
+!> \param tolerance Physical tangent-gradient norm required before accepting weighted densities.
+!> \param valid Whether stationarity and all subspace diagonalizations succeeded.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_canonicalize(state, hamiltonian, tolerance, valid)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      COMPLEX(dp), INTENT(IN)                            :: hamiltonian(:, :)
+      REAL(dp), INTENT(IN)                               :: tolerance
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), rotation(:, :), &
+                                                            trial(:, :), work(:)
+      INTEGER                                            :: i, info, n, ng
+      INTEGER, ALLOCATABLE                               :: indices(:)
+      LOGICAL, ALLOCATABLE                               :: done(:)
+      REAL(dp), ALLOCATABLE                              :: eigenvalues(:), gradient(:), &
+                                                            group_values(:), real_work(:)
+
+      CPASSERT(ASSOCIATED(state%native))
+      n = SIZE(state%occupations)
+      CPASSERT(ALL(SHAPE(hamiltonian) == [n, n]))
+      CPASSERT(tolerance > 0.0_dp)
+      state%canonicalized = .FALSE.
+      ALLOCATE (gradient(skala_orbital_chart_size(state%chart)))
+      CALL skala_orbital_chart_derivative(state%chart, state%weight*hamiltonian, gradient, physical_tangent=.TRUE.)
+      valid = NORM2(gradient) <= tolerance
+      IF (.NOT. valid) RETURN
+      ALLOCATE (projected(n, n), trial(n, n), eigenvalues(n), done(n))
+      projected(:, :) = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(hamiltonian, state%coefficients))
+      trial(:, :) = state%coefficients
+      done = .FALSE.
+      DO i = 1, n
+         IF (done(i)) CYCLE
+         ng = COUNT(state%occupations == state%occupations(i))
+         ALLOCATE (indices(ng), rotation(ng, ng), group_values(ng), &
+                   work(MAX(1, 2*ng - 1)), real_work(MAX(1, 3*ng - 2)))
+         indices(:) = PACK([(info, info=1, n)], state%occupations == state%occupations(i))
+         done(indices) = .TRUE.
+         rotation(:, :) = projected(indices, indices)
+         CALL zheev('V', 'U', ng, rotation, ng, group_values, work, SIZE(work), real_work, info)
+         valid = info == 0
+         IF (.NOT. valid) RETURN
+         eigenvalues(indices) = group_values
+         trial(:, indices) = MATMUL(state%coefficients(:, indices), rotation)
+         DEALLOCATE (indices, rotation, group_values, work, real_work)
+      END DO
+      state%coefficients(:, :) = trial
+      state%eigenvalues(:) = eigenvalues
+      state%canonicalized = .TRUE.
+   END SUBROUTINE qs_skala_orbitals_canonicalize
+
+! **************************************************************************************************
+!> \brief Install matching Gamma MOs and density, optionally including the canonical weighted density.
+!>        The caller invalidates and rebuilds rho and tau before the next KS evaluation.
+!> \param state ...
+!> \param frame Original inverse AO layout, also valid for its DIRECT representation.
+!> \param density Native AO spin density, overwritten without changing occupations.
+!> \param weighted Optional native energy-weighted density, requiring canonicalized stationary MOs.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_install_gamma(state, frame, density, weighted)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: density
+      TYPE(dbcsr_type), INTENT(INOUT), OPTIONAL          :: weighted
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      REAL(dp)                                           :: defect, tolerance
+      TYPE(dbcsr_type)                                   :: imaginary, real_part
+
+      CALL write_native_mos(state)
+      CALL orbital_density(state, matrix)
+      defect = MAXVAL(ABS(AIMAG(matrix)))
+      tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(matrix)))
+      CPASSERT(defect <= tolerance)
+      CALL qs_upf_inverse_matrix_scatter(frame, matrix, density, real_part, imaginary)
+      CALL dbcsr_copy(density, real_part)
+      CALL dbcsr_release(real_part)
+      CALL dbcsr_release(imaginary)
+      IF (PRESENT(weighted)) THEN
+         CALL orbital_density(state, matrix, energy_weighted=.TRUE.)
+         CALL qs_upf_inverse_matrix_scatter(frame, matrix, weighted, real_part, imaginary)
+         CALL dbcsr_copy(weighted, real_part)
+         CALL dbcsr_release(real_part)
+         CALL dbcsr_release(imaginary)
+      END IF
+   END SUBROUTINE qs_skala_orbitals_install_gamma
+
+! **************************************************************************************************
+!> \brief Install matching group-local Bloch MOs, real/imaginary P(k), and its accepted native cache.
+!>        No k weight is included in P(k). The caller updates every owned spin/k block before
+!>        rebuilding the physical density and evaluating KS. Existing density-mixing trials expire.
+!> \param state ...
+!> \param kpoints Live native group environment.
+!> \param local Local k-point index within this owning group.
+!> \param spin Native spin index.
+!> \param energy_weighted Also update W(k), after canonicalization with the accepted Hamiltonian.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_install_kpoint(state, kpoints, local, spin, energy_weighted)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      TYPE(kpoint_type), INTENT(INOUT)                   :: kpoints
+      INTEGER, INTENT(IN)                                :: local, spin
+      LOGICAL, INTENT(IN), OPTIONAL                      :: energy_weighted
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      REAL(dp)                                           :: defect, tolerance
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      CPASSERT(ALLOCATED(kpoints%native_density))
+      CPASSERT(local >= 1 .AND. local <= SIZE(kpoints%kp_env))
+      kp => kpoints%kp_env(local)%kpoint_env
+      CPASSERT(spin >= 1 .AND. spin <= SIZE(kp%mos))
+      CPASSERT(ASSOCIATED(state%native, kp%mos(spin)))
+      CALL write_native_mos(state)
+      CALL orbital_density(state, matrix)
+      CALL cp_cfm_set_submatrix(kpoints%native_density(local, spin), matrix)
+      CALL cp_fm_set_submatrix(kp%pmat(1, spin), REAL(matrix, dp))
+      IF (kpoints%use_real_wfn) THEN
+         defect = MAXVAL(ABS(AIMAG(matrix)))
+         tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(matrix)))
+         CPASSERT(defect <= tolerance)
+      ELSE
+         CALL cp_fm_set_submatrix(kp%pmat(2, spin), AIMAG(matrix))
+      END IF
+      kpoints%native_density_seeded = .TRUE.
+      kpoints%native_trial_valid = .FALSE.
+      IF (PRESENT(energy_weighted)) THEN
+         IF (energy_weighted) THEN
+            CPASSERT(ASSOCIATED(kp%wmat))
+            CALL orbital_density(state, matrix, energy_weighted=.TRUE.)
+            CALL cp_fm_set_submatrix(kp%wmat(1, spin), REAL(matrix, dp))
+            IF (.NOT. kpoints%use_real_wfn) CALL cp_fm_set_submatrix(kp%wmat(2, spin), AIMAG(matrix))
+         END IF
+      END IF
+   END SUBROUTINE qs_skala_orbitals_install_kpoint
+
+! **************************************************************************************************
+!> \brief Store only the number of native MOs requested by the SCF setup.
+!> \param state ...
+! **************************************************************************************************
+   SUBROUTINE write_native_mos(state)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+
+      INTEGER                                            :: nreference
+      REAL(dp)                                           :: defect, tolerance
+
+      CPASSERT(ASSOCIATED(state%native))
+      nreference = state%native%nmo
+      IF (ASSOCIATED(state%native%cmo_coeff)) THEN
+         CALL cp_cfm_set_submatrix(state%native%cmo_coeff, state%coefficients(:, :nreference))
+      ELSE
+         defect = MAXVAL(ABS(AIMAG(state%coefficients(:, :nreference))))
+         tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(state%coefficients)))
+         CPASSERT(defect <= tolerance)
+         CALL cp_fm_set_submatrix(state%native%mo_coeff, REAL(state%coefficients(:, :nreference), dp))
+         IF (state%native%use_mo_coeff_b) THEN
+            CALL copy_fm_to_dbcsr(state%native%mo_coeff, state%native%mo_coeff_b)
+         END IF
+      END IF
+      IF (state%canonicalized) state%native%eigenvalues(:nreference) = state%eigenvalues(:nreference)
+   END SUBROUTINE write_native_mos
+
+! **************************************************************************************************
+!> \brief Form P=C f C^dagger or W=C f epsilon C^dagger without applying a k weight.
+!> \param state ...
+!> \param density ...
+!> \param energy_weighted ...
+! **************************************************************************************************
+   SUBROUTINE orbital_density(state, density, energy_weighted)
+      TYPE(qs_skala_orbitals_type), INTENT(IN)           :: state
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: density(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: energy_weighted
+
+      COMPLEX(dp), ALLOCATABLE                           :: weighted(:, :)
+      INTEGER                                            :: i, n
+      LOGICAL                                            :: use_energy
+
+      use_energy = .FALSE.
+      IF (PRESENT(energy_weighted)) use_energy = energy_weighted
+      IF (use_energy) THEN
+         CPASSERT(state%canonicalized)
+      END IF
+      n = SIZE(state%occupations)
+      ALLOCATE (density(n, n), weighted(n, n))
+      DO i = 1, n
+         weighted(:, i) = state%occupations(i)*state%coefficients(:, i)
+         IF (use_energy) weighted(:, i) = state%eigenvalues(i)*weighted(:, i)
+      END DO
+      density(:, :) = MATMUL(weighted, CONJG(TRANSPOSE(state%coefficients)))
+   END SUBROUTINE orbital_density
+END MODULE qs_skala_orbitals
