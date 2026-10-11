@@ -59,26 +59,36 @@ CONTAINS
 !> \param occupations Fixed nonnegative occupations of the reference columns.
 !> \param complex_orbitals Whether to include independent imaginary rotations.
 !> \param chart Owned normalized reference, rotation and derivative storage.
-!> \param valid Whether the reference Gram matrix has positive rank.
+!> \param valid Whether the requested orbital space has a positive charge metric.
 !> \param metric_weight Positive k-point weight for the physical occupied-orbital tangent norm.
+!> \param complete_space Append the missing zero-occupation directions of a positive charge metric.
+!>        By default only the supplied orbital span is retained.
 ! **************************************************************************************************
-   SUBROUTINE skala_orbital_chart_create(coefficients, metric, occupations, complex_orbitals, chart, valid, metric_weight)
+   SUBROUTINE skala_orbital_chart_create(coefficients, metric, occupations, complex_orbitals, chart, valid, &
+                                         metric_weight, complete_space)
       COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :), metric(:, :)
       REAL(dp), INTENT(IN)                               :: occupations(:)
       LOGICAL, INTENT(IN)                                :: complex_orbitals
       TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
       LOGICAL, INTENT(OUT)                               :: valid
       REAL(dp), INTENT(IN), OPTIONAL                     :: metric_weight
+      LOGICAL, INTENT(IN), OPTIONAL                      :: complete_space
 
       COMPLEX(dp), ALLOCATABLE                           :: gram(:, :)
-      INTEGER                                            :: a, b, count, i, info, n, rows
+      INTEGER                                            :: a, b, count, i, info, n, nreference, rows
+      REAL(dp), ALLOCATABLE                              :: full_occupations(:)
 
       CALL skala_orbital_chart_release(chart)
       rows = SIZE(coefficients, 1)
-      n = SIZE(coefficients, 2)
-      CPASSERT(rows > 0 .AND. n > 0 .AND. n <= rows)
+      nreference = SIZE(coefficients, 2)
+      n = nreference
+      IF (PRESENT(complete_space)) THEN
+         IF (complete_space) n = rows
+      END IF
+      valid = rows > 0 .AND. nreference > 0 .AND. nreference <= rows
+      CPASSERT(valid)
       CPASSERT(SIZE(metric, 1) == rows .AND. SIZE(metric, 2) == rows)
-      CPASSERT(SIZE(occupations) == n)
+      CPASSERT(SIZE(occupations) == nreference)
       CPASSERT(ALL(ieee_is_finite(REAL(coefficients, dp))))
       CPASSERT(ALL(ieee_is_finite(AIMAG(coefficients))))
       CPASSERT(ALL(ieee_is_finite(REAL(metric, dp))))
@@ -87,15 +97,17 @@ CONTAINS
       IF (PRESENT(metric_weight)) chart%metric_weight = metric_weight
       CPASSERT(ieee_is_finite(chart%metric_weight))
       CPASSERT(chart%metric_weight > 0.0_dp)
-      ALLOCATE (gram(n, n))
+      ALLOCATE (gram(nreference, nreference), full_occupations(n))
+      full_occupations = 0.0_dp
+      full_occupations(:nreference) = occupations
       gram(:, :) = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, coefficients))
-      CALL zpotrf('L', n, gram, n, info)
+      CALL zpotrf('L', nreference, gram, nreference, info)
       valid = info == 0
       IF (.NOT. valid) RETURN
       count = 0
       DO b = 2, n
          DO a = 1, b - 1
-            IF (occupations(a) == occupations(b)) CYCLE
+            IF (full_occupations(a) == full_occupations(b)) CYCLE
             count = count + MERGE(2, 1, complex_orbitals)
          END DO
       END DO
@@ -103,13 +115,21 @@ CONTAINS
                 chart%rotation(n, n), chart%work(n, n), chart%transformed(n, n), &
                 chart%occupations(n), chart%coordinate(count), chart%pairs(2, count), &
                 chart%component(count), chart%pivots(n))
-      chart%base(:, :) = coefficients
-      CALL ztrsm('R', 'L', 'C', 'N', rows, n, CMPLX(1.0_dp, 0.0_dp, dp), gram, n, chart%base, rows)
-      chart%occupations(:) = occupations
+      chart%base(:, :nreference) = coefficients
+      CALL ztrsm('R', 'L', 'C', 'N', rows, nreference, CMPLX(1.0_dp, 0.0_dp, dp), &
+                 gram, nreference, chart%base, rows)
+      IF (n > nreference) THEN
+         CALL complete_metric_space(chart%base, metric, nreference, valid)
+         IF (.NOT. valid) THEN
+            CALL skala_orbital_chart_release(chart)
+            RETURN
+         END IF
+      END IF
+      chart%occupations(:) = full_occupations
       i = 0
       DO b = 2, n
          DO a = 1, b - 1
-            IF (occupations(a) == occupations(b)) CYCLE
+            IF (full_occupations(a) == full_occupations(b)) CYCLE
             i = i + 1
             chart%pairs(:, i) = [a, b]
             chart%component(i) = 1
@@ -121,6 +141,54 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE skala_orbital_chart_create
+
+! **************************************************************************************************
+!> \brief Complete normalized reference columns in the original positive charge metric.
+!>        QR in the whitened space supplies only the missing complement. The existing reference
+!>        columns are retained, including their phases, and no Gaussian-overlap substitution is made.
+!> \param coefficients Normalized reference columns followed by storage for their complement.
+!> \param metric Original Hermitian charge operator in the AO space.
+!> \param nreference Number of supplied normalized columns.
+!> \param valid Whether the full charge metric is positive definite.
+! **************************************************************************************************
+   SUBROUTINE complete_metric_space(coefficients, metric, nreference, valid)
+      COMPLEX(dp), INTENT(INOUT)                         :: coefficients(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: metric(:, :)
+      INTEGER, INTENT(IN)                                :: nreference
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      COMPLEX(dp)                                        :: query(1)
+      COMPLEX(dp), ALLOCATABLE                           :: q(:, :), tau(:), upper(:, :), work(:)
+      INTEGER                                            :: info, n, workspace
+
+      n = SIZE(coefficients, 1)
+      CPASSERT(SIZE(coefficients, 2) == n)
+      CPASSERT(nreference > 0 .AND. nreference < n)
+      ALLOCATE (upper(n, n), q(n, n), tau(nreference))
+      upper(:, :) = metric
+      CALL zpotrf('U', n, upper, n, info)
+      valid = info == 0
+      IF (.NOT. valid) RETURN
+      q = CMPLX(0.0_dp, 0.0_dp, dp)
+      q(:, :nreference) = coefficients(:, :nreference)
+      CALL ztrmm('L', 'U', 'N', 'N', n, nreference, CMPLX(1.0_dp, 0.0_dp, dp), upper, n, q, n)
+      CALL zgeqrf(n, nreference, q, n, tau, query, -1, info)
+      CPASSERT(info == 0)
+      workspace = MAX(1, INT(REAL(query(1), dp)))
+      ALLOCATE (work(workspace))
+      CALL zgeqrf(n, nreference, q, n, tau, work, workspace, info)
+      CPASSERT(info == 0)
+      DEALLOCATE (work)
+      CALL zungqr(n, n, nreference, q, n, tau, query, -1, info)
+      CPASSERT(info == 0)
+      workspace = MAX(1, INT(REAL(query(1), dp)))
+      ALLOCATE (work(workspace))
+      CALL zungqr(n, n, nreference, q, n, tau, work, workspace, info)
+      CPASSERT(info == 0)
+      coefficients(:, nreference + 1:n) = q(:, nreference + 1:n)
+      CALL ztrsm('L', 'U', 'N', 'N', n, n - nreference, CMPLX(1.0_dp, 0.0_dp, dp), &
+                 upper, n, coefficients(:, nreference + 1:n), n)
+   END SUBROUTINE complete_metric_space
 
 ! **************************************************************************************************
 !> \brief Release the owned orbital chart, including its evaluated coordinates.
