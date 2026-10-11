@@ -675,6 +675,7 @@ CONTAINS
       LOGICAL, INTENT(OUT)                              :: converged
 
       REAL(dp)                                         :: energy, step
+      REAL(dp), ALLOCATABLE                             :: gradient(:)
       TYPE(physical_root_context)                      :: context
 
       CPASSERT(state%evaluated)
@@ -691,7 +692,8 @@ CONTAINS
       coordinate(:) = state%coordinate
       CALL skala_density_root(evaluate_physical_input, context, 0.0_dp, 1.0_dp, tolerance, step, value, converged)
       IF (converged) coordinate(:) = first + step*context%direction
-      CALL qs_skala_scf_evaluate(state, coordinate, energy)
+      ALLOCATE (gradient(SIZE(coordinate)))
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
       IF (converged) CALL qs_skala_scf_value(state, domain, point, spin, descriptor, value)
    END SUBROUTINE qs_skala_scf_root
 
