@@ -797,6 +797,7 @@ list(
   qs_scf_types.F
   qs_scf_wfn_mix.F
   qs_skala_orbitals.F
+  qs_skala_scf.F
   qs_spin_orbit.F
   qs_subsys_methods.F
   qs_subsys_types.F

@@ -1,0 +1,445 @@
+!--------------------------------------------------------------------------------------------------!
+!   CP2K: A general program to perform molecular dynamics simulations                              !
+!   Copyright 2000-2026 CP2K developers group <https://cp2k.org>                                   !
+!                                                                                                  !
+!   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
+!--------------------------------------------------------------------------------------------------!
+!> \brief Evaluate fixed-occupation native orbital trials and physical Skala roots.
+MODULE qs_skala_scf
+   USE cell_types,                      ONLY: cell_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE kinds,                           ONLY: dp
+   USE kpoint_types,                    ONLY: kpoint_env_type,&
+                                              kpoint_type
+   USE message_passing,                 ONLY: mp_para_env_type
+   USE particle_types,                  ONLY: particle_type
+   USE qs_energy_types,                 ONLY: qs_energy_type
+   USE qs_environment_types,            ONLY: get_qs_env,&
+                                              qs_environment_type
+   USE qs_ks_methods,                   ONLY: qs_ks_update_qs_env
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_did_change,&
+                                              qs_ks_env_type
+   USE qs_mo_types,                     ONLY: mo_set_type
+   USE qs_rho_methods,                  ONLY: qs_rho_update_rho
+   USE qs_rho_types,                    ONLY: qs_rho_get,&
+                                              qs_rho_set,&
+                                              qs_rho_type
+   USE qs_skala_orbitals,               ONLY: &
+        qs_skala_orbitals_create, qs_skala_orbitals_evaluate, qs_skala_orbitals_install_gamma, &
+        qs_skala_orbitals_install_kpoint, qs_skala_orbitals_release, qs_skala_orbitals_type
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
+   USE skala_density_constraints,       ONLY: &
+        skala_density_constraints_type, skala_density_descriptor, skala_density_root, &
+        skala_density_samples_begin, skala_density_samples_end, skala_density_samples_get, &
+        skala_fft_domain, skala_background_domain, skala_kinetic_descriptor
+   USE skala_orbital_constraints,       ONLY: skala_orbital_chart_derivative,&
+                                              skala_orbital_chart_size
+#include "./base/base_uses.f90"
+
+   IMPLICIT NONE
+   PRIVATE
+   PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
+   PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_value, qs_skala_scf_root
+
+   TYPE qs_skala_scf_type
+      PRIVATE
+      TYPE(qs_environment_type), POINTER :: qs_env => NULL()
+      TYPE(qs_ks_env_type), POINTER :: ks_env => NULL()
+      TYPE(qs_rho_type), POINTER :: rho => NULL()
+      TYPE(qs_energy_type), POINTER :: energy => NULL()
+      TYPE(qs_upf_inverse_scf_type), POINTER :: inverse => NULL()
+      TYPE(skala_density_constraints_type), POINTER :: constraints => NULL()
+      TYPE(kpoint_type), POINTER :: kpoints => NULL()
+      TYPE(mp_para_env_type), POINTER :: para_env => NULL()
+      TYPE(qs_skala_orbitals_type), ALLOCATABLE :: orbitals(:, :)
+      INTEGER, ALLOCATABLE :: dimensions(:, :), offsets(:, :)
+      REAL(dp), ALLOCATABLE :: coordinate(:), positions(:, :)
+      REAL(dp) :: hmat(3, 3) = 0.0_dp
+      LOGICAL :: bloch = .FALSE., evaluated = .FALSE.
+   END TYPE qs_skala_scf_type
+
+   TYPE physical_root_context
+      TYPE(qs_skala_scf_type), POINTER :: state => NULL()
+      REAL(dp), ALLOCATABLE :: first(:), direction(:)
+      INTEGER :: domain, point(3), spin, descriptor
+   END TYPE physical_root_context
+
+CONTAINS
+
+! **************************************************************************************************
+!> \brief Borrow the native QS state and complete each occupied block in its original charge metric.
+!>        Collective over QS and each owning k group. Zero-weight and empty-spin blocks have no
+!>        coordinates. Geometry, occupations and k weights stay fixed throughout this state.
+!> \param state Owned orbital charts, borrowing a QS environment that must outlive this state.
+!> \param qs_env Native USPP or PAW environment with initialized MOs and normalization operators.
+!> \param valid Whether every active block has a positive complete charge metric.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_create(state, qs_env, valid)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)            :: state
+      TYPE(qs_environment_type), POINTER               :: qs_env
+      LOGICAL, INTENT(OUT)                              :: valid
+
+      COMPLEX(dp), ALLOCATABLE                         :: metric(:, :)
+      INTEGER                                          :: i, ik, local, nk, nl, ns, offset, spin, failed
+      LOGICAL                                          :: block_valid, complex_orbitals, owner
+      REAL(dp)                                         :: weight
+      TYPE(cell_type), POINTER                         :: cell
+      TYPE(dbcsr_p_type), POINTER                      :: metrics(:)
+      TYPE(kpoint_env_type), POINTER                   :: kp
+      TYPE(mo_set_type), POINTER                       :: mos(:), native
+      TYPE(particle_type), POINTER                     :: particles(:)
+
+      CALL qs_skala_scf_release(state)
+      CPASSERT(ASSOCIATED(qs_env))
+      state%qs_env => qs_env
+      CALL get_qs_env(qs_env, ks_env=state%ks_env, rho=state%rho, energy=state%energy, &
+                      kpoints=state%kpoints, mos=mos, para_env=state%para_env, cell=cell, particle_set=particles)
+      CALL get_ks_env(state%ks_env, upf_inverse=state%inverse, skala_constraints=state%constraints)
+      valid = ASSOCIATED(state%inverse) .AND. ASSOCIATED(state%constraints)
+      IF (valid) valid = state%inverse%enabled
+      IF (.NOT. valid) THEN
+         CALL qs_skala_scf_release(state)
+         RETURN
+      END IF
+      state%bloch = ASSOCIATED(state%inverse%bloch%kpoints)
+      nk = 1
+      nl = 1
+      ns = SIZE(mos)
+      owner = state%para_env%mepos == 0
+      complex_orbitals = .FALSE.
+      IF (state%bloch) THEN
+         nk = SIZE(state%kpoints%wkp)
+         nl = SIZE(state%kpoints%kp_env)
+         ns = SIZE(state%kpoints%kp_env(1)%kpoint_env%mos)
+         owner = state%kpoints%para_env_kp%mepos == 0
+         complex_orbitals = .NOT. state%kpoints%use_real_wfn
+      ELSE
+         CALL get_ks_env(state%ks_env, matrix_metric=metrics)
+      END IF
+      ALLOCATE (state%orbitals(nl, ns), state%dimensions(nk, ns), state%offsets(nk, ns), &
+                state%positions(3, SIZE(particles)))
+      state%hmat(:, :) = cell%hmat
+      DO i = 1, SIZE(particles)
+         state%positions(:, i) = particles(i)%r
+      END DO
+      state%dimensions = 0
+      failed = 0
+      DO spin = 1, ns
+         DO local = 1, nl
+            ik = 1
+            weight = 1.0_dp
+            native => mos(spin)
+            IF (state%bloch) THEN
+               kp => state%kpoints%kp_env(local)%kpoint_env
+               ik = kp%nkpoint
+               native => kp%mos(spin)
+               weight = state%kpoints%wkp(ik)
+            END IF
+            CPASSERT(ieee_is_finite(weight) .AND. weight >= 0.0_dp)
+            IF (weight == 0.0_dp .OR. native%nmo == 0) CYCLE
+            IF (ALL(native%occupation_numbers(:native%nmo) == 0.0_dp)) CYCLE
+            IF (state%bloch) THEN
+               IF (ALLOCATED(metric)) DEALLOCATE (metric)
+               ALLOCATE (metric(native%nao, native%nao))
+               metric(:, :) = state%inverse%metric_k(:, :, ik)
+            ELSE
+               CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, metrics(1)%matrix, metric)
+            END IF
+            CALL qs_skala_orbitals_create(state%orbitals(local, spin), native, metric, &
+                                           complex_orbitals, weight, block_valid)
+            IF (.NOT. block_valid) failed = 1
+            IF (block_valid .AND. owner) THEN
+               state%dimensions(ik, spin) = skala_orbital_chart_size(state%orbitals(local, spin)%chart)
+            END IF
+         END DO
+      END DO
+      CALL state%para_env%max(failed)
+      valid = failed == 0
+      IF (.NOT. valid) THEN
+         CALL qs_skala_scf_release(state)
+         RETURN
+      END IF
+      CALL state%para_env%sum(state%dimensions)
+      offset = 0
+      DO spin = 1, ns
+         DO ik = 1, nk
+            state%offsets(ik, spin) = offset
+            offset = offset + state%dimensions(ik, spin)
+         END DO
+      END DO
+      ALLOCATE (state%coordinate(offset))
+      state%coordinate = 0.0_dp
+   END SUBROUTINE qs_skala_scf_create
+
+! **************************************************************************************************
+!> \brief Release owned charts and buffers without releasing or resetting the borrowed native QS state.
+!> \param state ...
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_release(state)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)            :: state
+
+      INTEGER                                          :: local, spin
+
+      IF (ALLOCATED(state%orbitals)) THEN
+         DO spin = 1, SIZE(state%orbitals, 2)
+            DO local = 1, SIZE(state%orbitals, 1)
+               CALL qs_skala_orbitals_release(state%orbitals(local, spin))
+            END DO
+         END DO
+         DEALLOCATE (state%orbitals, state%dimensions, state%offsets, state%positions)
+      END IF
+      IF (ALLOCATED(state%coordinate)) DEALLOCATE (state%coordinate)
+      NULLIFY (state%qs_env, state%ks_env, state%rho, state%energy, state%inverse, state%constraints, &
+               state%kpoints, state%para_env)
+      state%hmat = 0.0_dp
+      state%bloch = .FALSE.
+      state%evaluated = .FALSE.
+   END SUBROUTINE qs_skala_scf_release
+
+! **************************************************************************************************
+!> \brief Number of global independent fixed-occupation orbital coordinates.
+!> \param state ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION qs_skala_scf_size(state) RESULT(n)
+      TYPE(qs_skala_scf_type), INTENT(IN)               :: state
+      INTEGER                                          :: n
+
+      CPASSERT(ALLOCATED(state%coordinate))
+      n = SIZE(state%coordinate)
+   END FUNCTION qs_skala_scf_size
+
+! **************************************************************************************************
+!> \brief Install all owning orbital blocks, rebuild rho/tau and evaluate the complete native energy.
+!>        Samples are the actual local model inputs of this trial, including atomic/background maps.
+!>        Gradients are globally ordered and include each k weight once. Reevaluate the accepted
+!>        coordinate after rejecting a trial; native MOs, P and fields then describe the same state.
+!> \param state ...
+!> \param coordinate Replicated global coordinates, in spin then global k-point order.
+!> \param energy Complete native energy at fixed occupations.
+!> \param gradient Optional derivative in the supplied Cayley coordinates.
+!> \param physical_gradient Optional derivative in the orthonormal physical orbital tangent.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical_gradient)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)            :: state
+      REAL(dp), INTENT(IN)                              :: coordinate(:)
+      REAL(dp), INTENT(OUT)                             :: energy
+      REAL(dp), INTENT(OUT), OPTIONAL                   :: gradient(:), physical_gradient(:)
+
+      COMPLEX(dp), ALLOCATABLE                         :: hamiltonian(:, :)
+      INTEGER                                          :: first, ik, last, local, spin
+      LOGICAL                                          :: owner, need_gradient, valid
+      REAL(dp), ALLOCATABLE                            :: block_gradient(:)
+      TYPE(cell_type), POINTER                         :: cell
+      TYPE(dbcsr_p_type), POINTER                      :: densities(:, :), matrices(:, :)
+      TYPE(particle_type), POINTER                     :: particles(:)
+
+      CPASSERT(ASSOCIATED(state%qs_env))
+      CPASSERT(SIZE(coordinate) == qs_skala_scf_size(state))
+      CPASSERT(ALL(ieee_is_finite(coordinate)))
+      CALL get_qs_env(state%qs_env, cell=cell, particle_set=particles)
+      CPASSERT(ALL(cell%hmat == state%hmat))
+      CPASSERT(SIZE(particles) == SIZE(state%positions, 2))
+      DO local = 1, SIZE(particles)
+         CPASSERT(ALL(particles(local)%r == state%positions(:, local)))
+      END DO
+      CALL qs_rho_get(state%rho, rho_ao_kp=densities)
+      DO spin = 1, SIZE(state%orbitals, 2)
+         DO local = 1, SIZE(state%orbitals, 1)
+            IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
+            valid = ALL(state%orbitals(local, spin)%native%occupation_numbers(: &
+                        state%orbitals(local, spin)%native%nmo) == &
+                        state%orbitals(local, spin)%occupations(:state%orbitals(local, spin)%native%nmo))
+            CPASSERT(valid)
+            ik = 1
+            IF (state%bloch) THEN
+               ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+               CPASSERT(state%kpoints%wkp(ik) == state%orbitals(local, spin)%weight)
+            END IF
+            first = state%offsets(ik, spin) + 1
+            last = first + state%dimensions(ik, spin) - 1
+            CALL qs_skala_orbitals_evaluate(state%orbitals(local, spin), coordinate(first:last))
+            IF (state%bloch) THEN
+               CALL qs_skala_orbitals_install_kpoint(state%orbitals(local, spin), state%kpoints, local, spin)
+            ELSE
+               CALL qs_skala_orbitals_install_gamma(state%orbitals(local, spin), &
+                                                      state%inverse%frame%ao, densities(spin, 1)%matrix)
+            END IF
+         END DO
+      END DO
+      CALL qs_rho_set(state%rho, rho_r_valid=.FALSE., rho_g_valid=.FALSE., tau_r_valid=.FALSE., tau_g_valid=.FALSE.)
+      CALL qs_rho_update_rho(state%rho, state%qs_env)
+      CALL skala_density_samples_begin(state%constraints)
+      CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
+      need_gradient = PRESENT(gradient) .OR. PRESENT(physical_gradient)
+      CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., &
+                               just_energy=.NOT. need_gradient, print_active=.FALSE.)
+      CALL skala_density_samples_end(state%constraints)
+      energy = state%energy%total
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(SIZE(gradient) == SIZE(coordinate))
+         gradient = 0.0_dp
+      END IF
+      IF (PRESENT(physical_gradient)) THEN
+         CPASSERT(SIZE(physical_gradient) == SIZE(coordinate))
+         physical_gradient = 0.0_dp
+      END IF
+      IF (need_gradient) THEN
+         owner = state%para_env%mepos == 0
+         IF (state%bloch) THEN
+            owner = state%kpoints%para_env_kp%mepos == 0
+         ELSE
+            CALL get_ks_env(state%ks_env, matrix_ks_kp=matrices)
+         END IF
+         DO spin = 1, SIZE(state%orbitals, 2)
+            DO local = 1, SIZE(state%orbitals, 1)
+               IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
+               ik = 1
+               IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+               first = state%offsets(ik, spin) + 1
+               last = first + state%dimensions(ik, spin) - 1
+               IF (state%bloch) THEN
+                  IF (ALLOCATED(hamiltonian)) DEALLOCATE (hamiltonian)
+                  ALLOCATE (hamiltonian(SIZE(state%inverse%ks_k, 1), SIZE(state%inverse%ks_k, 2)))
+                  hamiltonian(:, :) = state%inverse%ks_k(:, :, ik, spin)
+               ELSE
+                  CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
+               END IF
+               IF (.NOT. owner) CYCLE
+               ALLOCATE (block_gradient(last - first + 1))
+               hamiltonian = state%orbitals(local, spin)%weight*hamiltonian
+               IF (PRESENT(gradient)) THEN
+                  CALL skala_orbital_chart_derivative(state%orbitals(local, spin)%chart, hamiltonian, block_gradient)
+                  gradient(first:last) = block_gradient
+               END IF
+               IF (PRESENT(physical_gradient)) THEN
+                  CALL skala_orbital_chart_derivative(state%orbitals(local, spin)%chart, hamiltonian, &
+                                                       block_gradient, physical_tangent=.TRUE.)
+                  physical_gradient(first:last) = block_gradient
+               END IF
+               DEALLOCATE (block_gradient)
+            END DO
+         END DO
+         IF (PRESENT(gradient)) CALL state%para_env%sum(gradient)
+         IF (PRESENT(physical_gradient)) CALL state%para_env%sum(physical_gradient)
+      END IF
+      state%coordinate(:) = coordinate
+      state%evaluated = .TRUE.
+   END SUBROUTINE qs_skala_scf_evaluate
+
+! **************************************************************************************************
+!> \brief Read one actual physical model input, requiring exactly one distributed owner.
+!> \param state ...
+!> \param domain FFT, exact atomic or interpolated atomic background.
+!> \param point Global FFT index or (global atom, row within that atom, 1).
+!> \param spin Zero for the paired RKS input, one or two for UKS.
+!> \param descriptor Density or kinetic density.
+!> \param value Physical model input, including native core and density processing.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_value(state, domain, point, spin, descriptor, value)
+      TYPE(qs_skala_scf_type), INTENT(IN)               :: state
+      INTEGER, INTENT(IN)                               :: domain, point(3), spin, descriptor
+      REAL(dp), INTENT(OUT)                             :: value
+
+      INTEGER                                          :: column, i, owners
+      INTEGER, ALLOCATABLE                             :: points(:, :)
+      LOGICAL                                          :: available, valid
+      REAL(dp), ALLOCATABLE                            :: density(:, :), kinetic(:, :)
+
+      CPASSERT(state%evaluated)
+      valid = domain >= skala_fft_domain .AND. domain <= skala_background_domain
+      CPASSERT(valid)
+      valid = descriptor == skala_density_descriptor .OR. descriptor == skala_kinetic_descriptor
+      CPASSERT(valid)
+      CALL skala_density_samples_get(state%constraints, domain, points, density, kinetic, available)
+      owners = 0
+      value = 0.0_dp
+      IF (available) THEN
+         column = spin
+         IF (SIZE(density, 2) == 1) THEN
+            CPASSERT(spin == 0)
+            column = 1
+         END IF
+         CPASSERT(column >= 1 .AND. column <= SIZE(density, 2))
+         DO i = 1, SIZE(points, 2)
+            IF (.NOT. ALL(points(:, i) == point)) CYCLE
+            owners = owners + 1
+            IF (descriptor == skala_density_descriptor) THEN
+               value = density(i, column)
+            ELSE
+               value = kinetic(i, column)
+            END IF
+         END DO
+      END IF
+      CALL state%para_env%sum(owners)
+      CPASSERT(owners == 1)
+      CALL state%para_env%sum(value)
+   END SUBROUTINE qs_skala_scf_value
+
+! **************************************************************************************************
+!> \brief Find a physical root along a normalized orbital curve by complete native reevaluations.
+!>        Density matrices and physical fields are never interpolated. On failure restore the
+!>        previously evaluated coordinate. On success all native caches describe the returned root.
+!> \param state ...
+!> \param first Initial global orbital coordinate.
+!> \param last Final global orbital coordinate.
+!> \param domain ...
+!> \param point ...
+!> \param spin ...
+!> \param descriptor ...
+!> \param tolerance Absolute physical root tolerance in atomic units.
+!> \param coordinate Root coordinate on success, previous evaluated coordinate on failure.
+!> \param value Best physical residual found by the root search.
+!> \param converged Whether the actual physical input meets the requested tolerance.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_root(state, first, last, domain, point, spin, descriptor, tolerance, &
+                                 coordinate, value, converged)
+      TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET    :: state
+      REAL(dp), INTENT(IN)                              :: first(:), last(:), tolerance
+      INTEGER, INTENT(IN)                               :: domain, point(3), spin, descriptor
+      REAL(dp), INTENT(OUT)                             :: coordinate(:), value
+      LOGICAL, INTENT(OUT)                              :: converged
+
+      REAL(dp)                                         :: energy, step
+      TYPE(physical_root_context)                      :: context
+
+      CPASSERT(state%evaluated)
+      CPASSERT(SIZE(first) == qs_skala_scf_size(state) .AND. SIZE(last) == SIZE(first))
+      CPASSERT(SIZE(coordinate) == SIZE(first))
+      ALLOCATE (context%first(SIZE(first)), context%direction(SIZE(first)))
+      context%state => state
+      context%first(:) = first
+      context%direction(:) = last - first
+      context%domain = domain
+      context%point = point
+      context%spin = spin
+      context%descriptor = descriptor
+      coordinate(:) = state%coordinate
+      CALL skala_density_root(evaluate_physical_input, context, 0.0_dp, 1.0_dp, tolerance, step, value, converged)
+      IF (converged) coordinate(:) = first + step*context%direction
+      CALL qs_skala_scf_evaluate(state, coordinate, energy)
+      IF (converged) CALL qs_skala_scf_value(state, domain, point, spin, descriptor, value)
+   END SUBROUTINE qs_skala_scf_root
+
+   SUBROUTINE evaluate_physical_input(step, value, context)
+      REAL(dp), INTENT(IN)                              :: step
+      REAL(dp), INTENT(OUT)                             :: value
+      CLASS(*), INTENT(INOUT)                           :: context
+
+      REAL(dp)                                         :: energy
+      REAL(dp), ALLOCATABLE                            :: coordinate(:)
+
+      SELECT TYPE (context)
+      TYPE IS (physical_root_context)
+         ALLOCATE (coordinate(SIZE(context%first)))
+         coordinate(:) = context%first + step*context%direction
+         CALL qs_skala_scf_evaluate(context%state, coordinate, energy)
+         CALL qs_skala_scf_value(context%state, context%domain, context%point, context%spin, context%descriptor, value)
+      CLASS DEFAULT
+         CPABORT("Invalid native Skala root context.")
+      END SELECT
+   END SUBROUTINE evaluate_physical_input
+END MODULE qs_skala_scf
