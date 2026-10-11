@@ -44,8 +44,9 @@ CONTAINS
                                                             irow, iset, isgf, ishell, l, last, &
                                                             ncart, powers(3), reduced(3)
       REAL(dp) :: alpha, exponential, polynomial, polynomial_gradient(3), &
-         polynomial_hessian(3, 3), primitive_gradient(3), primitive_hessian(3, 3), &
-         r(3), weight, cartesian_value(ncoset(MAXVAL(basis%lmax))), &
+         polynomial_hessian(3, 3), primitive_gradient(3), primitive_hessian(3, 3), r(3), &
+         r_squared, weight, coordinate_power(3, 0:MAXVAL(basis%lmax)), &
+         cartesian_value(ncoset(MAXVAL(basis%lmax))), &
          cartesian_hessian(3, 3, ncoset(MAXVAL(basis%lmax))), &
          cartesian_gradient(3, ncoset(MAXVAL(basis%lmax)))
 
@@ -68,16 +69,22 @@ CONTAINS
       !$OMP PRIVATE(ipoint, r, iset, ncart, ishell, l, first, last, ipgf, alpha, exponential, &
       !$OMP         isgf, ico, irow, weight, powers, reduced, polynomial, polynomial_gradient, &
       !$OMP         polynomial_hessian, primitive_gradient, primitive_hessian, cartesian_value, &
-      !$OMP         cartesian_gradient, cartesian_hessian, axis, axis2)
+      !$OMP         cartesian_gradient, cartesian_hessian, coordinate_power, r_squared, axis, axis2)
       DO ipoint = 1, SIZE(displacements, 2)
          r = displacements(:, ipoint)
+         r_squared = SUM(r**2)
          IF (PRESENT(cutoff_squared)) THEN
-            IF (SUM(r**2) > cutoff_squared) CYCLE
+            IF (r_squared > cutoff_squared) CYCLE
          END IF
+         coordinate_power(:, 0) = 1.0_dp
+         DO l = 1, UBOUND(coordinate_power, 2)
+            coordinate_power(:, l) = coordinate_power(:, l - 1)*r
+         END DO
          ! Cartesian monomials and their derivatives do not depend on the primitive or contraction.
          DO ico = 1, SIZE(cartesian_value)
             powers = indco(:, ico)
-            cartesian_value(ico) = PRODUCT(r**powers)
+            cartesian_value(ico) = coordinate_power(1, powers(1))*coordinate_power(2, powers(2))* &
+                                   coordinate_power(3, powers(3))
             IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(hessian)) CYCLE
             cartesian_gradient(:, ico) = 0.0_dp
             cartesian_hessian(:, :, ico) = 0.0_dp
@@ -85,12 +92,15 @@ CONTAINS
                IF (powers(axis) == 0) CYCLE
                reduced = powers
                reduced(axis) = reduced(axis) - 1
-               cartesian_gradient(axis, ico) = REAL(powers(axis), dp)*PRODUCT(r**reduced)
+               cartesian_gradient(axis, ico) = REAL(powers(axis), dp)*coordinate_power(1, reduced(1))* &
+                                               coordinate_power(2, reduced(2))*coordinate_power(3, reduced(3))
                IF (.NOT. PRESENT(hessian)) CYCLE
                DO axis2 = 1, 3
                   IF (reduced(axis2) == 0) CYCLE
                   reduced(axis2) = reduced(axis2) - 1
-                  cartesian_hessian(axis, axis2, ico) = REAL(powers(axis)*(reduced(axis2) + 1), dp)*PRODUCT(r**reduced)
+                  cartesian_hessian(axis, axis2, ico) = REAL(powers(axis)*(reduced(axis2) + 1), dp)* &
+                                                        coordinate_power(1, reduced(1))*coordinate_power(2, reduced(2))* &
+                                                        coordinate_power(3, reduced(3))
                   reduced(axis2) = reduced(axis2) + 1
                END DO
             END DO
@@ -103,7 +113,7 @@ CONTAINS
                last = basis%last_sgf(ishell, iset)
                DO ipgf = 1, basis%npgf(iset)
                   alpha = basis%zet(ipgf, iset)
-                  exponential = EXP(-alpha*SUM(r**2))
+                  exponential = EXP(-alpha*r_squared)
                   ! Primitive Cartesian derivatives are shared by every spherical contraction.
                   DO ico = ncoset(l - 1) + 1, ncoset(l)
                      irow = (ipgf - 1)*ncart + ico
@@ -116,8 +126,8 @@ CONTAINS
                            IF (.NOT. PRESENT(hessian)) CYCLE
                            DO axis2 = 1, 3
                               primitive_hessian(axis, axis2) = polynomial_hessian(axis, axis2) - 2.0_dp*alpha*( &
-                                   r(axis)*polynomial_gradient(axis2) + r(axis2)*polynomial_gradient(axis)) + &
-                                   4.0_dp*alpha**2*r(axis)*r(axis2)*polynomial
+                                                        r(axis)*polynomial_gradient(axis2) + r(axis2)*polynomial_gradient(axis)) + &
+                                                               4.0_dp*alpha**2*r(axis)*r(axis2)*polynomial
                               IF (axis == axis2) THEN
                                  primitive_hessian(axis, axis2) = primitive_hessian(axis, axis2) - 2.0_dp*alpha*polynomial
                               END IF
@@ -135,7 +145,7 @@ CONTAINS
                            IF (.NOT. PRESENT(hessian)) CYCLE
                            DO axis2 = 1, 3
                               hessian(ipoint, isgf, axis, axis2) = hessian(ipoint, isgf, axis, axis2) + &
-                                                                 weight*primitive_hessian(axis, axis2)
+                                                                   weight*primitive_hessian(axis, axis2)
                            END DO
                         END DO
                      END DO
