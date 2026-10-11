@@ -38,6 +38,7 @@ MODULE skala_gpw_functional
                                               skala_density_constraints_matches,&
                                               skala_density_constraints_type,&
                                               skala_density_descriptor,&
+                                              skala_fft_domain,&
                                               skala_kinetic_descriptor
    USE skala_gpw_features,              ONLY: &
         skala_gpw_atom_partition_hard, skala_gpw_atom_partition_smooth, &
@@ -1172,13 +1173,17 @@ CONTAINS
 !> \param grid_weight_grad_out ...
 !> \param atomic_grid_weight_grad_out ...
 !> \param atom_coord_grad_out ...
+!> \param density_constraints Selected physical descriptor derivatives of the KS environment.
+!> \param constraint_domain Exact atomic or interpolated-background evaluation identifier.
+!> \param atomic_ids Global atom identifiers in the order of atomic_grid_sizes.
 ! **************************************************************************************************
    SUBROUTINE skala_gapw_atom_composite_energy(xc_section, group, density, grad, kin, &
                                                grid_coords, grid_weights, atomic_grid_weights, &
                                                atomic_grid_sizes, atomic_coords, exc, &
                                                density_grad_out, grad_grad_out, kin_grad_out, &
                                                grid_coord_grad_out, grid_weight_grad_out, &
-                                               atomic_grid_weight_grad_out, atom_coord_grad_out)
+                                               atomic_grid_weight_grad_out, atom_coord_grad_out, &
+                                               density_constraints, constraint_domain, atomic_ids)
       TYPE(section_vals_type), POINTER                   :: xc_section
 
       CLASS(mp_comm_type), INTENT(IN)                    :: group
@@ -1195,6 +1200,8 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :), INTENT(OUT), OPTIONAL :: grad_grad_out
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), INTENT(OUT), OPTIONAL :: grid_weight_grad_out, &
                                                                          atomic_grid_weight_grad_out
+      TYPE(skala_density_constraints_type), OPTIONAL, POINTER :: density_constraints
+      INTEGER, INTENT(IN), OPTIONAL                      :: constraint_domain, atomic_ids(:)
 
       CHARACTER(len=default_path_length)                 :: model_path
       INTEGER :: atom_begin, atom_count, chunk_max_rows, chunk_row_count, chunk_row_start, &
@@ -1202,10 +1209,15 @@ CONTAINS
                  nchunks, omp_max_threads_restore, phase_handle, selected_cuda_device
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: chunk_atom_begin, chunk_atom_count, &
                                                             chunk_row_begin, chunk_row_counts
+      INTEGER, ALLOCATABLE                               :: selected_rows(:), selected_spins(:), &
+                                                            selected_descriptors(:)
       INTEGER(KIND=int_8), ALLOCATABLE, DIMENSION(:, :)  :: atomic_grid_size_bound_shape
       LOGICAL :: active_rank, native_grid_atom_chunks, native_grid_use_cuda, &
-                 need_coordinate_derivatives, need_derivatives
-      REAL(KIND=dp)                                      :: chunk_exc
+                 need_coordinate_derivatives, need_derivatives, use_constraints
+      LOGICAL, ALLOCATABLE                               :: selected_applied(:)
+      REAL(KIND=dp)                                      :: chunk_exc, probes(2), tolerances(2)
+      REAL(dp), ALLOCATABLE                              :: selected_weights(:), selected_limits(:, :)
+      INTEGER                                            :: constraint, first_spin, last_spin
       REAL(KIND=dp), DIMENSION(:), POINTER               :: atomic_grid_weight_grad, grid_weight_grad
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: atom_coord_grad, density_grad, &
                                                             grid_coord_grad, kin_grad
@@ -1258,6 +1270,21 @@ CONTAINS
       local_natom = SIZE(atomic_grid_sizes)
       active_rank = local_natom > 0
       CPASSERT(active_rank .EQV. (local_nrow > 0))
+      use_constraints = .FALSE.
+      IF (PRESENT(density_constraints) .AND. need_derivatives) THEN
+         IF (ASSOCIATED(density_constraints)) THEN
+            CPASSERT(PRESENT(constraint_domain) .AND. PRESENT(atomic_ids))
+            use_constraints = skala_density_constraints_count(density_constraints, constraint_domain) > 0
+            IF (use_constraints) THEN
+               CALL prepare_atom_constraints(density_constraints, constraint_domain, atomic_ids, &
+                                             atomic_grid_sizes, group, selected_rows, selected_spins, &
+                                             selected_descriptors, selected_weights, probes, tolerances)
+               ALLOCATE (selected_limits(SIZE(selected_rows), 2), selected_applied(SIZE(selected_rows)))
+               selected_limits = 0.0_dp
+               selected_applied = .FALSE.
+            END IF
+         END IF
+      END IF
 
       CALL get_skala_model_path(xc_section, model_path)
       gauxc_section => get_gauxc_section(xc_section)
@@ -1388,6 +1415,12 @@ CONTAINS
                CALL torch_tensor_backward_scalar(exc_tensor)
                CALL timestop(phase_handle)
             END IF
+            IF (use_constraints) THEN
+               CALL atom_descriptor_limits(inputs, density(chunk_row_start:chunk_row_start + chunk_row_count - 1, :), &
+                                           kin(chunk_row_start:chunk_row_start + chunk_row_count - 1, :), &
+                                           chunk_row_start, selected_rows, selected_spins, selected_descriptors, &
+                                           selected_weights, probes, tolerances, selected_limits, selected_applied)
+            END IF
 
             CALL torch_tensor_release(exc_tensor)
             CALL torch_dict_release(inputs)
@@ -1423,6 +1456,21 @@ CONTAINS
             grad_grad_out(:, :, :) = grad_grad
             kin_grad_out(:, :) = kin_grad
             CALL timestop(phase_handle)
+         END IF
+         IF (use_constraints) THEN
+            DO constraint = 1, SIZE(selected_rows)
+               IF (.NOT. selected_applied(constraint)) CYCLE
+               first_spin = MAX(1, selected_spins(constraint))
+               last_spin = selected_spins(constraint)
+               IF (last_spin == 0) last_spin = 2
+               IF (selected_descriptors(constraint) == skala_density_descriptor) THEN
+                  density_grad_out(selected_rows(constraint), first_spin:last_spin) = &
+                     selected_limits(constraint, first_spin:last_spin)
+               ELSE
+                  kin_grad_out(selected_rows(constraint), first_spin:last_spin) = &
+                     selected_limits(constraint, first_spin:last_spin)
+               END IF
+            END DO
          END IF
 
          IF (need_coordinate_derivatives) THEN
@@ -1480,6 +1528,138 @@ CONTAINS
       CALL omp_set_num_threads(omp_max_threads_restore)
 
    END SUBROUTINE skala_gapw_atom_composite_energy
+
+! **************************************************************************************************
+!> \brief Match selected global atomic rows to their single complete-atom owner.
+!> \param state ...
+!> \param domain ...
+!> \param atomic_ids ...
+!> \param atomic_sizes ...
+!> \param group ...
+!> \param rows Zero on ranks that do not own the selected atom.
+!> \param spins ...
+!> \param descriptors ...
+!> \param weights ...
+!> \param probes ...
+!> \param tolerances ...
+! **************************************************************************************************
+   SUBROUTINE prepare_atom_constraints(state, domain, atomic_ids, atomic_sizes, group, &
+                                       rows, spins, descriptors, weights, probes, tolerances)
+      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      INTEGER, INTENT(IN)                                :: domain, atomic_ids(:)
+      INTEGER(int_8), INTENT(IN)                         :: atomic_sizes(:)
+
+      CLASS(mp_comm_type), INTENT(IN)                    :: group
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: rows(:), spins(:), descriptors(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: weights(:)
+      REAL(dp), INTENT(OUT)                              :: probes(2), tolerances(2)
+
+      INTEGER                                            :: atom, c, offset
+      INTEGER, ALLOCATABLE                               :: owners(:), points(:, :)
+
+      CPASSERT(SIZE(atomic_ids) == SIZE(atomic_sizes))
+      CALL skala_density_constraints_get(state, points, spins, weights, probes(1), tolerances(1), &
+                                         descriptors, probes(2), tolerances(2), domain=domain)
+      ALLOCATE (rows(SIZE(spins)), owners(SIZE(spins)))
+      rows = 0
+      owners = 0
+      offset = 0
+      DO atom = 1, SIZE(atomic_ids)
+         DO c = 1, SIZE(spins)
+            IF (points(1, c) /= atomic_ids(atom)) CYCLE
+            CPASSERT(points(2, c) <= atomic_sizes(atom))
+            rows(c) = offset + points(2, c)
+            owners(c) = owners(c) + 1
+         END DO
+         offset = offset + INT(atomic_sizes(atom))
+      END DO
+      CALL group%sum(owners)
+      CPASSERT(ALL(owners == 1))
+   END SUBROUTINE prepare_atom_constraints
+
+! **************************************************************************************************
+!> \brief Obtain selected density and tau limits from the unchanged complete atomic model inputs.
+!>        The original energy and all other covectors remain unchanged. Away from the physical
+!>        zero, the original smooth derivative is retained. A paired spin constraint probes both spins.
+!> \param inputs ...
+!> \param density ...
+!> \param kinetic ...
+!> \param first_row ...
+!> \param rows ...
+!> \param spins ...
+!> \param descriptors ...
+!> \param weights ...
+!> \param probes ...
+!> \param tolerances ...
+!> \param limits ...
+!> \param applied ...
+! **************************************************************************************************
+   SUBROUTINE atom_descriptor_limits(inputs, density, kinetic, first_row, rows, spins, descriptors, &
+                                     weights, probes, tolerances, limits, applied)
+      TYPE(torch_dict_type), INTENT(IN)                  :: inputs
+      REAL(dp), INTENT(IN)                               :: density(:, :), kinetic(:, :)
+      INTEGER, INTENT(IN)                                :: first_row, rows(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), INTENT(IN)                               :: weights(:), probes(2), tolerances(2)
+      REAL(dp), INTENT(INOUT)                            :: limits(:, :)
+      LOGICAL, INTENT(INOUT)                             :: applied(:)
+
+      INTEGER                                            :: c, descriptor, first_spin, last_spin, n, &
+                                                            row, spin
+      INTEGER, ALLOCATABLE                               :: active(:, :)
+      LOGICAL, ALLOCATABLE                               :: selected(:)
+      REAL(dp)                                           :: energies(2), error
+      REAL(dp), ALLOCATABLE                              :: negative(:, :), positive(:, :)
+
+      ALLOCATE (selected(SIZE(rows)))
+      DO descriptor = skala_density_descriptor, skala_kinetic_descriptor
+         selected = .FALSE.
+         n = 0
+         DO c = 1, SIZE(rows)
+            IF (descriptors(c) /= descriptor .OR. rows(c) == 0) CYCLE
+            row = rows(c) - first_row + 1
+            IF (row < 1 .OR. row > SIZE(density, 1)) CYCLE
+            first_spin = MAX(1, spins(c))
+            last_spin = spins(c)
+            IF (last_spin == 0) last_spin = 2
+            IF (descriptor == skala_density_descriptor) THEN
+               error = MAXVAL(ABS(density(row, first_spin:last_spin)))
+            ELSE
+               error = MAXVAL(ABS(kinetic(row, first_spin:last_spin)))
+            END IF
+            IF (error > tolerances(descriptor)) CYCLE
+            selected(c) = .TRUE.
+            n = n + last_spin - first_spin + 1
+         END DO
+         IF (n == 0) CYCLE
+         ALLOCATE (active(2, n))
+         n = 0
+         DO c = 1, SIZE(rows)
+            IF (.NOT. selected(c)) CYCLE
+            first_spin = MAX(1, spins(c))
+            last_spin = spins(c)
+            IF (last_spin == 0) last_spin = 2
+            DO spin = first_spin, last_spin
+               n = n + 1
+               active(:, n) = [rows(c) - first_row + 1, spin]
+            END DO
+         END DO
+         IF (descriptor == skala_density_descriptor) THEN
+            CALL skala_torch_model_descriptor_limits(cached_model, inputs, "density", density, &
+                                                     active, probes(descriptor), negative, positive, energies)
+         ELSE
+            CALL skala_torch_model_descriptor_limits(cached_model, inputs, "kin", kinetic, &
+                                                     active, probes(descriptor), negative, positive, energies)
+         END IF
+         DO c = 1, SIZE(rows)
+            IF (.NOT. selected(c)) CYCLE
+            row = rows(c) - first_row + 1
+            limits(c, :) = weights(c)*negative(row, :) + (1.0_dp - weights(c))*positive(row, :)
+            applied(c) = .TRUE.
+         END DO
+         DEALLOCATE (active)
+      END DO
+   END SUBROUTINE atom_descriptor_limits
 
 ! **************************************************************************************************
 !> \brief Select an automatic row cap for atom-composite Torch calls.
@@ -2031,7 +2211,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: positions(:, :)
 
       matches = .FALSE.
-      IF (skala_density_constraints_count(state) == 0) RETURN
+      IF (skala_density_constraints_count(state, skala_fft_domain) == 0) RETURN
       ALLOCATE (positions(3, SIZE(particle_set)))
       DO i = 1, SIZE(particle_set)
          positions(:, i) = particle_set(i)%r
@@ -2056,18 +2236,20 @@ CONTAINS
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
       REAL(dp), INTENT(INOUT), TARGET                    :: density_grad(:, :), kin_grad(:, :)
 
-      INTEGER                                            :: bo(2, 3), c, descriptor, e, first_spin, i, &
-                                                            last_spin, n, nactive, nlocal, pos, row, spin
-      INTEGER, ALLOCATABLE :: active(:, :), counts(:), descriptors(:), displs(:), global_entries(:), &
-         local_entries(:), local_entry_counts(:), local_rows(:), owners(:), points(:, :), spins(:)
+      INTEGER                                            :: bo(2, 3), c, descriptor, e, first_spin, &
+                                                            i, last_spin, n, nactive, nlocal, pos, &
+                                                            row, spin
+      INTEGER, ALLOCATABLE :: active(:, :), counts(:), descriptors(:), displs(:), &
+         global_entries(:), local_entries(:), local_entry_counts(:), local_rows(:), owners(:), &
+         points(:, :), spins(:)
       REAL(dp)                                           :: energies(2), probes(2), tolerances(2)
-      REAL(dp), POINTER                                  :: covector(:, :)
       REAL(dp), ALLOCATABLE                              :: constraint_error(:), negative(:, :), &
                                                             negative_weights(:), positive(:, :)
+      REAL(dp), POINTER                                  :: covector(:, :)
 
       CPASSERT(.NOT. features%uses_atom_chunks)
       CALL skala_density_constraints_get(state, points, spins, negative_weights, probes(1), tolerances(1), &
-                                          descriptors, probes(2), tolerances(2))
+                                         descriptors, probes(2), tolerances(2), domain=skala_fft_domain)
       n = SIZE(spins)
       bo = rho_r(1)%pw_grid%bounds_local
       ALLOCATE (local_rows(n), owners(n), local_entry_counts(n), constraint_error(n))
@@ -2160,8 +2342,8 @@ CONTAINS
             DO pos = features%local_feature_offsets(row), features%local_feature_offsets(row + 1) - 1
                i = features%local_feature_rows(pos)
                covector(row, first_spin:last_spin) = covector(row, first_spin:last_spin) + &
-                                                    negative_weights(c)*negative(i, first_spin:last_spin) + &
-                                                    (1.0_dp - negative_weights(c))*positive(i, first_spin:last_spin)
+                                                     negative_weights(c)*negative(i, first_spin:last_spin) + &
+                                                     (1.0_dp - negative_weights(c))*positive(i, first_spin:last_spin)
             END DO
          END DO
          NULLIFY (covector)

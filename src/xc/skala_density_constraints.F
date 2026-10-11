@@ -22,6 +22,7 @@ MODULE skala_density_constraints
              skala_density_constraints_matches, skala_density_constraints_get, &
              skala_density_constraints_balance, skala_density_crossings, skala_density_root
    INTEGER, PARAMETER, PUBLIC :: skala_density_descriptor = 1, skala_kinetic_descriptor = 2
+   INTEGER, PARAMETER, PUBLIC :: skala_fft_domain = 0, skala_atom_domain = 1, skala_background_domain = 2
 
    ABSTRACT INTERFACE
       SUBROUTINE evaluate_physical_density(step, value, context)
@@ -35,7 +36,7 @@ MODULE skala_density_constraints
    TYPE skala_density_constraints_type
       PRIVATE
       INTEGER :: nspins = 0, npts(3) = 0, bounds(2, 3) = 0
-      INTEGER, ALLOCATABLE :: points(:, :), spins(:), descriptors(:)
+      INTEGER, ALLOCATABLE :: points(:, :), spins(:), descriptors(:), domains(:), atomic_sizes(:)
       REAL(dp) :: hmat(3, 3) = 0.0_dp, probe = 0.0_dp, tolerance = 0.0_dp
       REAL(dp) :: kinetic_probe = 0.0_dp, kinetic_tolerance = 0.0_dp
       REAL(dp), ALLOCATABLE :: positions(:, :), negative_weights(:)
@@ -152,6 +153,8 @@ CONTAINS
       IF (ALLOCATED(state%points)) DEALLOCATE (state%points)
       IF (ALLOCATED(state%spins)) DEALLOCATE (state%spins)
       IF (ALLOCATED(state%descriptors)) DEALLOCATE (state%descriptors)
+      IF (ALLOCATED(state%domains)) DEALLOCATE (state%domains)
+      IF (ALLOCATED(state%atomic_sizes)) DEALLOCATE (state%atomic_sizes)
       IF (ALLOCATED(state%positions)) DEALLOCATE (state%positions)
       IF (ALLOCATED(state%negative_weights)) DEALLOCATE (state%negative_weights)
       state%nspins = 0
@@ -169,7 +172,7 @@ CONTAINS
 !>        Spin zero denotes the paired alpha/beta density of an RKS calculation.
 !>        The orbital solver supplies the weights. This routine does not select them.
 !> \param state ...
-!> \param points Global FFT grid indices, one column per physical constraint.
+!> \param points Global FFT indices or (global atom, atomic row, 1), one column per constraint.
 !> \param spins Zero for RKS, one or two for the physical UKS spin.
 !> \param negative_weights Weight of the negative-side limiting derivative.
 !> \param probe Positive physical density displacement used by the original model.
@@ -182,10 +185,12 @@ CONTAINS
 !> \param descriptors Physical density or kinetic density, defaults to density for every constraint.
 !> \param kinetic_probe Positive physical kinetic-density displacement, required for kinetic constraints.
 !> \param kinetic_tolerance Maximum absolute spin kinetic density, required for kinetic constraints.
+!> \param domains FFT, exact atomic or interpolated atomic-background evaluation, defaults to FFT.
+!> \param atomic_sizes Complete row count per global atom, required for atomic constraints.
 ! **************************************************************************************************
    SUBROUTINE skala_density_constraints_set(state, points, spins, negative_weights, &
                                             probe, tolerance, nspins, npts, bounds, hmat, positions, &
-                                            descriptors, kinetic_probe, kinetic_tolerance)
+                                            descriptors, kinetic_probe, kinetic_tolerance, domains, atomic_sizes)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
       INTEGER, INTENT(IN)                                :: points(:, :), spins(:)
@@ -194,9 +199,11 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: hmat(3, 3), positions(:, :)
       INTEGER, INTENT(IN), OPTIONAL                      :: descriptors(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: kinetic_probe, kinetic_tolerance
+      INTEGER, INTENT(IN), OPTIONAL                      :: domains(:), atomic_sizes(:)
 
       INTEGER                                            :: i, j
-      INTEGER, ALLOCATABLE                               :: selected_descriptors(:)
+      INTEGER, ALLOCATABLE                               :: selected_descriptors(:), &
+                                                            selected_domains(:)
       LOGICAL                                            :: valid
 
       CPASSERT(nspins == 1 .OR. nspins == 2)
@@ -211,7 +218,20 @@ CONTAINS
       CPASSERT(ALL(negative_weights >= 0.0_dp))
       CPASSERT(ALL(negative_weights <= 1.0_dp))
       ALLOCATE (selected_descriptors(SIZE(spins)))
+      ALLOCATE (selected_domains(SIZE(spins)))
       selected_descriptors = skala_density_descriptor
+      selected_domains = skala_fft_domain
+      IF (PRESENT(domains)) THEN
+         CPASSERT(SIZE(domains) == SIZE(spins))
+         valid = ALL(domains >= skala_fft_domain .AND. domains <= skala_background_domain)
+         CPASSERT(valid)
+         selected_domains(:) = domains
+      END IF
+      IF (ANY(selected_domains /= skala_fft_domain)) THEN
+         CPASSERT(PRESENT(atomic_sizes))
+         CPASSERT(SIZE(atomic_sizes) == SIZE(positions, 2))
+         CPASSERT(ALL(atomic_sizes >= 0))
+      END IF
       IF (PRESENT(descriptors)) THEN
          CPASSERT(SIZE(descriptors) == SIZE(spins))
          valid = ALL(descriptors == skala_density_descriptor .OR. descriptors == skala_kinetic_descriptor)
@@ -234,11 +254,20 @@ CONTAINS
          CPASSERT(ALL(spins >= 1) .AND. ALL(spins <= 2))
       END IF
       DO i = 1, SIZE(spins)
-         CPASSERT(ALL(points(:, i) >= bounds(1, :)))
-         CPASSERT(ALL(points(:, i) <= bounds(2, :)))
+         IF (selected_domains(i) == skala_fft_domain) THEN
+            CPASSERT(ALL(points(:, i) >= bounds(1, :)))
+            CPASSERT(ALL(points(:, i) <= bounds(2, :)))
+         ELSE
+            valid = points(1, i) >= 1 .AND. points(1, i) <= SIZE(atomic_sizes)
+            CPASSERT(valid)
+            valid = points(2, i) >= 1 .AND. points(2, i) <= atomic_sizes(points(1, i))
+            CPASSERT(valid)
+            CPASSERT(points(3, i) == 1)
+         END IF
          DO j = 1, i - 1
             IF (ALL(points(:, i) == points(:, j)) .AND. spins(i) == spins(j) .AND. &
-                selected_descriptors(i) == selected_descriptors(j)) THEN
+                selected_descriptors(i) == selected_descriptors(j) .AND. &
+                selected_domains(i) == selected_domains(j)) THEN
                CPABORT("Duplicate SKALA physical descriptor constraint.")
             END IF
          END DO
@@ -254,11 +283,16 @@ CONTAINS
       IF (PRESENT(kinetic_probe)) state%kinetic_probe = kinetic_probe
       IF (PRESENT(kinetic_tolerance)) state%kinetic_tolerance = kinetic_tolerance
       ALLOCATE (state%points(3, SIZE(spins)), state%spins(SIZE(spins)), &
-                state%descriptors(SIZE(spins)), state%negative_weights(SIZE(spins)), &
+                state%descriptors(SIZE(spins)), state%domains(SIZE(spins)), state%negative_weights(SIZE(spins)), &
                 state%positions(3, SIZE(positions, 2)))
       state%points(:, :) = points
       state%spins(:) = spins
       state%descriptors(:) = selected_descriptors
+      state%domains(:) = selected_domains
+      IF (ANY(selected_domains /= skala_fft_domain)) THEN
+         ALLOCATE (state%atomic_sizes(SIZE(atomic_sizes)))
+         state%atomic_sizes(:) = atomic_sizes
+      END IF
       state%negative_weights(:) = negative_weights
       state%positions(:, :) = positions
    END SUBROUTINE skala_density_constraints_set
@@ -266,14 +300,17 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Number of selected physical constraints.
 !> \param state ...
+!> \param domain Optional evaluation domain whose constraints are counted.
 !> \return ...
 ! **************************************************************************************************
-   FUNCTION skala_density_constraints_count(state) RESULT(n)
+   FUNCTION skala_density_constraints_count(state, domain) RESULT(n)
       TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      INTEGER, INTENT(IN), OPTIONAL                      :: domain
       INTEGER                                            :: n
 
       n = 0
       IF (ALLOCATED(state%spins)) n = SIZE(state%spins)
+      IF (PRESENT(domain) .AND. n > 0) n = COUNT(state%domains == domain)
    END FUNCTION skala_density_constraints_count
 
 ! **************************************************************************************************
@@ -284,12 +321,14 @@ CONTAINS
 !> \param bounds ...
 !> \param hmat ...
 !> \param positions ...
+!> \param atomic_sizes Optional current atomic layout, also required to validate atomic selections.
 !> \return ...
 ! **************************************************************************************************
-   FUNCTION skala_density_constraints_matches(state, nspins, npts, bounds, hmat, positions) RESULT(matches)
+   FUNCTION skala_density_constraints_matches(state, nspins, npts, bounds, hmat, positions, atomic_sizes) RESULT(matches)
       TYPE(skala_density_constraints_type), INTENT(IN)   :: state
       INTEGER, INTENT(IN)                                :: nspins, npts(3), bounds(2, 3)
       REAL(dp), INTENT(IN)                               :: hmat(3, 3), positions(:, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: atomic_sizes(:)
       LOGICAL                                            :: matches
 
       matches = .FALSE.
@@ -297,6 +336,11 @@ CONTAINS
       IF (state%nspins /= nspins .OR. ANY(state%npts /= npts) .OR. ANY(state%bounds /= bounds)) RETURN
       IF (ANY(state%hmat /= hmat)) RETURN
       IF (ANY(SHAPE(state%positions) /= SHAPE(positions))) RETURN
+      IF (PRESENT(atomic_sizes)) THEN
+         IF (.NOT. ALLOCATED(state%atomic_sizes)) RETURN
+         IF (SIZE(state%atomic_sizes) /= SIZE(atomic_sizes)) RETURN
+         IF (ANY(state%atomic_sizes /= atomic_sizes)) RETURN
+      END IF
       matches = ALL(state%positions == positions)
    END FUNCTION skala_density_constraints_matches
 
@@ -311,33 +355,51 @@ CONTAINS
 !> \param descriptors Owned physical descriptor identifiers, required for kinetic constraints.
 !> \param kinetic_probe ...
 !> \param kinetic_tolerance ...
+!> \param domains Owned evaluation-domain identifiers, required when retrieving several domains.
+!> \param domain Optional domain filter, preserving the original constraint order.
 ! **************************************************************************************************
    SUBROUTINE skala_density_constraints_get(state, points, spins, negative_weights, probe, tolerance, &
-                                            descriptors, kinetic_probe, kinetic_tolerance)
+                                            descriptors, kinetic_probe, kinetic_tolerance, domains, domain)
       TYPE(skala_density_constraints_type), INTENT(IN)   :: state
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), spins(:)
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: negative_weights(:)
       REAL(dp), INTENT(OUT)                              :: probe, tolerance
       INTEGER, ALLOCATABLE, INTENT(OUT), OPTIONAL        :: descriptors(:)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: kinetic_probe, kinetic_tolerance
+      INTEGER, ALLOCATABLE, INTENT(OUT), OPTIONAL        :: domains(:)
+      INTEGER, INTENT(IN), OPTIONAL                      :: domain
 
-      INTEGER                                            :: n
+      INTEGER                                            :: i, n
+      INTEGER, ALLOCATABLE                               :: selected(:)
 
-      n = skala_density_constraints_count(state)
+      n = skala_density_constraints_count(state, domain)
       CPASSERT(n > 0)
-      IF (ANY(state%descriptors == skala_kinetic_descriptor)) THEN
+      ALLOCATE (selected(n))
+      IF (PRESENT(domain)) THEN
+         selected(:) = PACK([(i, i=1, SIZE(state%spins))], state%domains == domain)
+      ELSE
+         selected(:) = [(i, i=1, n)]
+         IF (ANY(state%domains /= skala_fft_domain)) THEN
+            CPASSERT(PRESENT(domains))
+         END IF
+      END IF
+      IF (ANY(state%descriptors(selected) == skala_kinetic_descriptor)) THEN
          CPASSERT(PRESENT(descriptors))
          CPASSERT(PRESENT(kinetic_probe) .AND. PRESENT(kinetic_tolerance))
       END IF
       ALLOCATE (points(3, n), spins(n), negative_weights(n))
-      points(:, :) = state%points
-      spins(:) = state%spins
-      negative_weights(:) = state%negative_weights
+      points(:, :) = state%points(:, selected)
+      spins(:) = state%spins(selected)
+      negative_weights(:) = state%negative_weights(selected)
       probe = state%probe
       tolerance = state%tolerance
       IF (PRESENT(descriptors)) THEN
          ALLOCATE (descriptors(n))
-         descriptors(:) = state%descriptors
+         descriptors(:) = state%descriptors(selected)
+      END IF
+      IF (PRESENT(domains)) THEN
+         ALLOCATE (domains(n))
+         domains(:) = state%domains(selected)
       END IF
       IF (PRESENT(kinetic_probe)) kinetic_probe = state%kinetic_probe
       IF (PRESENT(kinetic_tolerance)) kinetic_tolerance = state%kinetic_tolerance

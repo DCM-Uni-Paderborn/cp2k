@@ -39,6 +39,11 @@ MODULE qs_upf_inverse_xc
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_type,&
                                               qs_upf_inverse_xc_type
+   USE skala_density_constraints,       ONLY: skala_atom_domain,&
+                                              skala_background_domain,&
+                                              skala_density_constraints_count,&
+                                              skala_density_constraints_matches,&
+                                              skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: skala_gapw_atom_composite_energy,&
                                               xc_section_uses_native_skala_evaluator
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
@@ -101,11 +106,12 @@ CONTAINS
 !> \param core_tau Prescribed frozen-core kinetic density in the exact fields, with the same spin convention.
 !> \param atom_grid Complete local atom blocks required by the nonlocal Skala evaluator.
 !> \param paw_reconstruction Optional PAW-only reference caches for the composite AE valence fields.
+!> \param density_constraints Selected exact and background atomic descriptor derivatives for this geometry.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                          background_density, background_gradient, core_density, core_gradient, &
                                          xc_section, lsd, comm, state, energy, kinetic, background_tau, core_tau, atom_grid, &
-                                         paw_reconstruction)
+                                         paw_reconstruction, density_constraints)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -123,6 +129,8 @@ CONTAINS
          OPTIONAL                                        :: atom_grid
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: paw_reconstruction(:)
+      TYPE(skala_density_constraints_type), OPTIONAL, &
+         POINTER                                         :: density_constraints
 
       COMPLEX(dp), ALLOCATABLE                           :: kinetic_operator(:, :), projected(:, :), &
                                                             qoperator(:, :)
@@ -203,7 +211,8 @@ CONTAINS
       IF (xc_section_uses_native_skala_evaluator(xc_section)) THEN
          CPASSERT(PRESENT(atom_grid) .AND. state%kinetic)
          CALL evaluate_skala_residual(xc_section, comm, state, background_density, background_gradient, &
-                                      background_tau, points, weights, atom_grid, frames(1)%frame%positions, energy)
+                                      background_tau, points, weights, atom_grid, frames(1)%frame%positions, energy, &
+                                      density_constraints)
          ! Skala supplies derivatives of the complete weighted energy. Do not divide by
          ! quadrature weights, including at zero-weight rows used by its nonlocal descriptors.
          integration_weights = 1.0_dp
@@ -269,9 +278,10 @@ CONTAINS
 !> \param atom_grid Complete local atom blocks, including fixed radial base weights.
 !> \param positions All original-coordinate atomic positions.
 !> \param energy Globally reduced difference of the two complete functional evaluations.
+!> \param density_constraints ...
 ! **************************************************************************************************
    SUBROUTINE evaluate_skala_residual(xc_section, comm, state, background_density, background_gradient, &
-                                      background_tau, points, weights, atom_grid, positions, energy)
+                                      background_tau, points, weights, atom_grid, positions, energy, density_constraints)
       TYPE(section_vals_type), POINTER                   :: xc_section
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_xc_type), INTENT(INOUT)        :: state
@@ -282,6 +292,8 @@ CONTAINS
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
       REAL(dp), INTENT(IN)                               :: positions(:, :)
       REAL(dp), INTENT(OUT)                              :: energy
+      TYPE(skala_density_constraints_type), OPTIONAL, &
+         POINTER                                         :: density_constraints
 
       INTEGER                                            :: atom, local_atom, np, ns, row, spin
       INTEGER(int_8), ALLOCATABLE                        :: sizes(:)
@@ -331,7 +343,8 @@ CONTAINS
       END DO
       CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
                                             base_weights, sizes, atom_coords, energy, vdensity, vgradient, vtau, &
-                                            point_derivative, weight_derivative, base_derivative, atom_derivative)
+                                            point_derivative, weight_derivative, base_derivative, atom_derivative, &
+                                            density_constraints, skala_atom_domain, local_atoms)
       DO spin = 1, ns
          IF (ns == 1) THEN
             state%vdensity(:, spin) = 0.5_dp*SUM(vdensity, DIM=2)
@@ -351,7 +364,8 @@ CONTAINS
       CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
                                             base_weights, sizes, atom_coords, background_energy, vdensity, vgradient, vtau, &
                                             background_point_derivative, background_weight_derivative, &
-                                            background_base_derivative, background_atom_derivative)
+                                            background_base_derivative, background_atom_derivative, &
+                                            density_constraints, skala_background_domain, local_atoms)
       DO spin = 1, ns
          IF (ns == 1) THEN
             state%background_vdensity(:, spin) = -0.5_dp*SUM(vdensity, DIM=2)
@@ -652,10 +666,12 @@ CONTAINS
 !> \param core_tau Prescribed exact frozen-core kinetic density when kinetic is supplied.
 !> \param atom_grid Complete local atom blocks for nonlocal Skala evaluation.
 !> \param paw_reconstruction Optional PAW-only reconstruction caches for the composite fields.
+!> \param density_constraints Owned selected derivatives, invalidated by geometry or atomic-layout changes.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_grid_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                               fields, grid, cell, core_density, core_gradient, xc_section, &
-                                           lsd, comm, state, energy, grid_adjoint, kinetic, core_tau, atom_grid, paw_reconstruction)
+                                              lsd, comm, state, energy, grid_adjoint, kinetic, core_tau, atom_grid, &
+                                              paw_reconstruction, density_constraints)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -678,15 +694,37 @@ CONTAINS
          OPTIONAL                                        :: atom_grid
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: paw_reconstruction(:)
+      TYPE(skala_density_constraints_type), OPTIONAL, &
+         POINTER                                         :: density_constraints
 
-      INTEGER                                            :: axis, np, ns, spin, stride
+      INTEGER                                            :: atom, axis, np, ns, spin, stride
+      INTEGER, ALLOCATABLE                               :: atomic_sizes(:)
       REAL(dp), ALLOCATABLE                              :: background(:, :), covectors(:, :), &
                                                             gradient(:, :, :), &
                                                             integration_weights(:), tau(:, :), &
                                                             values(:, :)
+      TYPE(skala_density_constraints_type), POINTER      :: selected_constraints
 
       np = SIZE(points, 2)
       ns = SIZE(matrices, 4)
+      NULLIFY (selected_constraints)
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints)) THEN
+            IF (skala_density_constraints_count(density_constraints, skala_atom_domain) + &
+                skala_density_constraints_count(density_constraints, skala_background_domain) > 0) THEN
+               CPASSERT(PRESENT(atom_grid))
+               ALLOCATE (atomic_sizes(SIZE(frames(1)%frame%positions, 2)))
+               DO atom = 1, SIZE(atomic_sizes)
+                  atomic_sizes(atom) = COUNT(atom_grid%atoms == atom)
+               END DO
+               CALL comm%sum(atomic_sizes)
+               IF (skala_density_constraints_matches(density_constraints, ns, grid%npts, grid%bounds, &
+                                                     cell%hmat, frames(1)%frame%positions, atomic_sizes)) THEN
+                  selected_constraints => density_constraints
+               END IF
+            END IF
+         END IF
+      END IF
       CPASSERT(PRESENT(kinetic) .EQV. PRESENT(core_tau))
       stride = 4
       IF (PRESENT(kinetic)) stride = 5
@@ -703,7 +741,8 @@ CONTAINS
       END DO
       CALL qs_upf_inverse_xc_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                       background, gradient, core_density, core_gradient, xc_section, &
-                                      lsd, comm, state, energy, kinetic, tau, core_tau, atom_grid, paw_reconstruction)
+                                      lsd, comm, state, energy, kinetic, tau, core_tau, atom_grid, paw_reconstruction, &
+                                      selected_constraints)
       ALLOCATE (integration_weights(np))
       integration_weights(:) = weights
       IF (state%weighted_adjoint) integration_weights = 1.0_dp

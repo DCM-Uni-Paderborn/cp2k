@@ -48,6 +48,7 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_xc_grid_response,&
                                               qs_upf_inverse_xc_pw_adjoint,&
                                               qs_upf_inverse_xc_pw_fields
+   USE skala_density_constraints,       ONLY: skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_evaluator
    USE upf_radial_fields,               ONLY: upf_radial_fields_init,&
                                               upf_radial_fields_periodic
@@ -95,8 +96,10 @@ CONTAINS
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
       TYPE(qs_upf_inverse_frame_ref_type), ALLOCATABLE   :: frames(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      TYPE(skala_density_constraints_type), POINTER      :: density_constraints
 
-      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho, cell=cell, para_env=para_env)
+      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho, cell=cell, para_env=para_env, &
+                      skala_constraints=density_constraints)
       CALL comm%set_handle(para_env%get_handle())
       CPASSERT(ASSOCIATED(state) .AND. state%enabled)
       IF (ALLOCATED(state%paw_reconstruction)) THEN
@@ -146,7 +149,7 @@ CONTAINS
                                            state%atom_grid%points, state%atom_grid%weights, state%xc_fields, &
                                            state%xc_grid, cell, core, core_gradient, xc_section, ns == 2, &
                                            comm, state%xc, energy, adjoint, state%kinetic_cache, core_tau, state%atom_grid, &
-                                           state%paw_reconstruction)
+                                           state%paw_reconstruction, density_constraints)
       IF (PRESENT(potential)) THEN
          CPASSERT(SIZE(potential) == ns)
          ALLOCATE (background_potential(ns))
