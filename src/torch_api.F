@@ -82,6 +82,7 @@ MODULE torch_api
    PUBLIC :: torch_tensor_to_device_leaf
    PUBLIC :: torch_tensor_item_double, torch_tensor_weighted_sum
    PUBLIC :: torch_dict_type, torch_dict_clone, torch_dict_create, torch_dict_insert
+   PUBLIC :: torch_dict_clone_detached
    PUBLIC :: torch_dict_get, torch_dict_release
    PUBLIC :: torch_model_type, torch_model_load, torch_model_load_with_metadata, &
              torch_model_forward, torch_model_release
@@ -635,6 +636,39 @@ CONTAINS
       MARK_USED(target)
 #endif
    END SUBROUTINE torch_dict_clone
+
+! **************************************************************************************************
+!> \brief Copy inputs without their autograd graphs, omitting one replaced tensor.
+!> \param source Original inputs, whose storage remains borrowed by the detached copy.
+!> \param target New owned dictionary.
+!> \param exclude Key to omit before inserting a new differentiable leaf.
+! **************************************************************************************************
+   SUBROUTINE torch_dict_clone_detached(source, target, exclude)
+      TYPE(torch_dict_type), INTENT(IN)                  :: source
+      TYPE(torch_dict_type), INTENT(INOUT)               :: target
+      CHARACTER(len=*), INTENT(IN)                       :: exclude
+
+#if defined(__LIBTORCH)
+      INTERFACE
+         SUBROUTINE torch_c_dict_clone_detached(source, exclude, target) BIND(C, name="torch_c_dict_clone_detached")
+            IMPORT :: C_CHAR, C_PTR
+            TYPE(C_PTR), VALUE                        :: source
+            CHARACTER(kind=C_CHAR), DIMENSION(*)     :: exclude
+            TYPE(C_PTR)                               :: target
+         END SUBROUTINE torch_c_dict_clone_detached
+      END INTERFACE
+
+      CPASSERT(C_ASSOCIATED(source%c_ptr))
+      CPASSERT(.NOT. C_ASSOCIATED(target%c_ptr))
+      CALL torch_c_dict_clone_detached(source%c_ptr, TRIM(exclude)//C_NULL_CHAR, target%c_ptr)
+      CPASSERT(C_ASSOCIATED(target%c_ptr))
+#else
+      CPABORT("CP2K was compiled without Torch library.")
+      MARK_USED(source)
+      MARK_USED(target)
+      MARK_USED(exclude)
+#endif
+   END SUBROUTINE torch_dict_clone_detached
 
 ! **************************************************************************************************
 !> \brief Inserts a Torch tensor into a Torch dictionary.

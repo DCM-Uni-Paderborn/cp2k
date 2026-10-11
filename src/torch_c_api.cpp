@@ -691,6 +691,24 @@ void torch_c_dict_clone(const torch_c_dict_t *dict, torch_c_dict_t **dict_out) {
 }
 
 /*******************************************************************************
+ * \brief Copy input tensors without retaining their autograd graphs.
+ *        Omit the tensor that the caller will replace by a new leaf.
+ ******************************************************************************/
+void torch_c_dict_clone_detached(const torch_c_dict_t *dict,
+                                const char *exclude,
+                                torch_c_dict_t **dict_out) {
+  assert(*dict_out == NULL);
+  auto *clone = new c10::Dict<std::string, torch::Tensor>();
+  const std::string excluded_key(exclude);
+  for (const auto &entry : *dict) {
+    if (entry.key() != excluded_key) {
+      clone->insert(entry.key(), entry.value().detach());
+    }
+  }
+  *dict_out = clone;
+}
+
+/*******************************************************************************
  * \brief Inserts a Torch tensor into a Torch dictionary.
  * \author Ole Schuett
  ******************************************************************************/

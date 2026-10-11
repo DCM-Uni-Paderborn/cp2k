@@ -18,10 +18,12 @@ MODULE skala_torch_api
                     dp
    USE string_utilities, ONLY: uppercase
    USE torch_api, ONLY: &
-      torch_dict_type, torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
+      torch_dict_clone_detached, torch_dict_get, torch_dict_insert, torch_dict_release, torch_dict_type, &
+      torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
       torch_model_freeze_preserving_method, torch_model_load_with_metadata, torch_model_release, &
       torch_model_remap_device_constants, torch_model_promote_float32, torch_model_type, &
-      torch_tensor_item_double, torch_tensor_release, torch_tensor_type, &
+      torch_tensor_backward_scalar, torch_tensor_data_ptr, torch_tensor_from_array, torch_tensor_grad, &
+      torch_tensor_item_double, torch_tensor_release, torch_tensor_to_device_leaf, torch_tensor_type, &
       torch_tensor_weighted_sum
 #include "../base/base_uses.f90"
 
@@ -33,6 +35,7 @@ MODULE skala_torch_api
 
    PUBLIC :: skala_torch_model_type, skala_torch_model_load, skala_torch_model_release
    PUBLIC :: skala_torch_model_get_exc, skala_torch_model_get_exc_density
+   PUBLIC :: skala_torch_model_density_limits
    PUBLIC :: skala_torch_model_needs_feature, skala_torch_model_protocol_version
 
    TYPE skala_torch_model_type
@@ -193,6 +196,71 @@ CONTAINS
 #endif
 
    END SUBROUTINE skala_torch_model_get_exc
+
+! **************************************************************************************************
+!> \brief Evaluate both density covectors at selected zero-density samples.
+!>        The original model and input tensors are unchanged. Both calculations have detached
+!>        static inputs and a fresh density leaf, so they do not accumulate original input gradients.
+!>        The caller must satisfy the selected density constraints before using their convex weights.
+!> \param model Original loaded model.
+!> \param inputs Complete original feature dictionary, including its integration weights.
+!> \param density Original full two-spin density layout, with one row per model feature.
+!> \param active One-based feature row and spin indices, with shape (2, number of selected samples).
+!> \param probe Positive density magnitude for the one-sided limit. Refine it to verify the limit.
+!> \param negative New owned weighted density covector on the negative side.
+!> \param positive New owned weighted density covector on the positive side.
+!> \param energies Complete discrete energies of the two limit evaluations.
+! **************************************************************************************************
+   SUBROUTINE skala_torch_model_density_limits(model, inputs, density, active, probe, negative, positive, energies)
+      TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
+      TYPE(torch_dict_type), INTENT(IN)                  :: inputs
+      REAL(dp), INTENT(IN)                               :: density(:, :), probe
+      INTEGER, INTENT(IN)                                :: active(:, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: negative(:, :), positive(:, :)
+      REAL(dp), INTENT(OUT)                              :: energies(2)
+
+      INTEGER                                            :: branch, sample
+      REAL(dp), ALLOCATABLE                              :: branch_density(:, :)
+      REAL(dp), POINTER                                  :: derivative(:, :)
+      TYPE(torch_dict_type)                             :: branch_inputs
+      TYPE(torch_tensor_type)                           :: density_t, weights_t, energy_t, derivative_t
+
+      CPASSERT(SIZE(density, 2) == 2)
+      CPASSERT(SIZE(active, 1) == 2 .AND. SIZE(active, 2) > 0)
+      CPASSERT(ALL(active(1, :) >= 1) .AND. ALL(active(1, :) <= SIZE(density, 1)))
+      CPASSERT(ALL(active(2, :) >= 1) .AND. ALL(active(2, :) <= 2))
+      CPASSERT(probe > 0.0_dp .AND. probe < HUGE(probe))
+      ALLOCATE (branch_density(SIZE(density, 1), 2))
+      ALLOCATE (negative(SIZE(density, 1), 2), positive(SIZE(density, 1), 2))
+      DO branch = 1, 2
+         branch_density(:, :) = density
+         DO sample = 1, SIZE(active, 2)
+            branch_density(active(1, sample), active(2, sample)) = REAL(2*branch - 3, dp)*probe
+         END DO
+         CALL torch_dict_clone_detached(inputs, branch_inputs, "density")
+         CALL torch_tensor_from_array(density_t, branch_density, requires_grad=.TRUE.)
+         CALL torch_tensor_to_device_leaf(density_t, .TRUE.)
+         CALL torch_dict_insert(branch_inputs, "density", density_t)
+         CALL torch_dict_get(branch_inputs, "grid_weights", weights_t)
+         CALL skala_torch_model_get_exc(model, branch_inputs, weights_t, energy_t, energies(branch))
+         CALL torch_tensor_backward_scalar(energy_t)
+         CALL torch_tensor_grad(density_t, derivative_t)
+         NULLIFY (derivative)
+         CALL torch_tensor_data_ptr(derivative_t, derivative)
+         CPASSERT(ALL(SHAPE(derivative) == SHAPE(density)))
+         IF (branch == 1) THEN
+            negative(:, :) = derivative
+         ELSE
+            positive(:, :) = derivative
+         END IF
+         CALL torch_tensor_release(derivative_t)
+         CALL torch_tensor_release(energy_t)
+         CALL torch_tensor_release(weights_t)
+         CALL torch_dict_release(branch_inputs)
+         CALL torch_tensor_release(density_t)
+      END DO
+      DEALLOCATE (branch_density)
+   END SUBROUTINE skala_torch_model_density_limits
 
 ! **************************************************************************************************
 !> \brief Parse a TorchScript extra_files JSON list of feature names.
