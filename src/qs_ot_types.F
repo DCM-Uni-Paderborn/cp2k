@@ -456,13 +456,17 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Scale an inverse k-point Hessian block consistently with its irreducible weight.
-!> \param kpoint_weight positive irreducible k-point weight
+!> \param kpoint_weight Nonnegative irreducible weight. Zero freezes the inactive block.
 !> \return ...
 ! **************************************************************************************************
    PURE ELEMENTAL REAL(KIND=dp) FUNCTION qs_ot_kpoint_preconditioner_scale(kpoint_weight)
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
 
-      qs_ot_kpoint_preconditioner_scale = 1.0_dp/kpoint_weight
+      IF (kpoint_weight == 0.0_dp) THEN
+         qs_ot_kpoint_preconditioner_scale = 0.0_dp
+      ELSE
+         qs_ot_kpoint_preconditioner_scale = 1.0_dp/kpoint_weight
+      END IF
 
    END FUNCTION qs_ot_kpoint_preconditioner_scale
 

@@ -1531,7 +1531,7 @@ CONTAINS
                                                qs_ot_env(ispin)%matrix_dx, &
                                                qs_ot_env(ispin)%matrix_dx_im)
                   END IF
-                  CPASSERT(qs_ot_env(ispin)%kpoint_weight > 0.0_dp)
+                  CPASSERT(qs_ot_env(ispin)%kpoint_weight >= 0.0_dp)
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx, &
                                    qs_ot_kpoint_preconditioner_scale(qs_ot_env(ispin)%kpoint_weight))
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx_im, &
@@ -1823,7 +1823,7 @@ CONTAINS
                                             qs_ot_env(ispin)%matrix_gx_old, &
                                             qs_ot_env(ispin)%matrix_gx_old_im)
                END IF
-               CPASSERT(qs_ot_env(ispin)%kpoint_weight > 0.0_dp)
+               CPASSERT(qs_ot_env(ispin)%kpoint_weight >= 0.0_dp)
                CALL dbcsr_scale(qs_ot_env(ispin)%matrix_gx_old, &
                                 qs_ot_kpoint_preconditioner_scale(qs_ot_env(ispin)%kpoint_weight))
                CALL dbcsr_scale(qs_ot_env(ispin)%matrix_gx_old_im, &
@@ -2303,7 +2303,7 @@ CONTAINS
                                          qs_ot_env(ispin)%matrix_gx_old_im, &
                                          qs_ot_env(ispin)%matrix_dx, &
                                          qs_ot_env(ispin)%matrix_dx_im)
-               CPASSERT(qs_ot_env(ispin)%kpoint_weight > 0.0_dp)
+               CPASSERT(qs_ot_env(ispin)%kpoint_weight >= 0.0_dp)
                kpoint_scale = qs_ot_kpoint_preconditioner_scale( &
                               qs_ot_env(ispin)%kpoint_weight)
                CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx, kpoint_scale)
@@ -3134,7 +3134,7 @@ CONTAINS
                                             qs_ot_env(ispin)%matrix_gx_im, &
                                             qs_ot_env(ispin)%matrix_dx, &
                                             qs_ot_env(ispin)%matrix_dx_im)
-                  CPASSERT(qs_ot_env(ispin)%kpoint_weight > 0.0_dp)
+                  CPASSERT(qs_ot_env(ispin)%kpoint_weight >= 0.0_dp)
                   tmp = qs_ot_kpoint_preconditioner_scale(qs_ot_env(ispin)%kpoint_weight)
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx, tmp)
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_dx_im, tmp)
@@ -3369,7 +3369,7 @@ CONTAINS
                                             orbital_residual, orbital_residual_im, &
                                             qs_ot_env(ispin)%matrix_h_e(history_index)%matrix, &
                                             qs_ot_env(ispin)%matrix_h_e_im(history_index)%matrix)
-                  CPASSERT(qs_ot_env(ispin)%kpoint_weight > 0.0_dp)
+                  CPASSERT(qs_ot_env(ispin)%kpoint_weight >= 0.0_dp)
                   kpoint_scale = qs_ot_kpoint_preconditioner_scale(qs_ot_env(ispin)%kpoint_weight)
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e(history_index)%matrix, kpoint_scale)
                   CALL dbcsr_scale(qs_ot_env(ispin)%matrix_h_e_im(history_index)%matrix, kpoint_scale)
@@ -4161,7 +4161,7 @@ CONTAINS
                                             qs_ot_env(ichannel)%matrix_gx_im, &
                                             qs_ot_env(ichannel)%matrix_x, &
                                             qs_ot_env(ichannel)%matrix_x_im)
-                  CPASSERT(qs_ot_env(ichannel)%kpoint_weight > 0.0_dp)
+                  CPASSERT(qs_ot_env(ichannel)%kpoint_weight >= 0.0_dp)
                   kpoint_scale = qs_ot_kpoint_preconditioner_scale( &
                                  qs_ot_env(ichannel)%kpoint_weight)
                   CALL dbcsr_scale(qs_ot_env(ichannel)%matrix_x, kpoint_scale)
