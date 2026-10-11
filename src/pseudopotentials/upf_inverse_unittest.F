@@ -14,7 +14,8 @@ PROGRAM upf_inverse_unittest
                                               deallocate_gto_basis_set,&
                                               gto_basis_set_type
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_evaluate,&
-                                              gaussian_basis_fields_periodic
+                                              gaussian_basis_fields_periodic,&
+                                              gaussian_basis_workspace_type
    USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
                                               gaussian_coulomb_fields_init,&
                                               gaussian_coulomb_fields_periodic,&
@@ -1610,9 +1611,8 @@ CONTAINS
    SUBROUTINE check_gaussian_fields()
       INTEGER, PARAMETER                                 :: nb = 11, nf = 5
 
-      COMPLEX(dp)                                        :: dg(nf, nb, 3), dv(nf, nb), g(nf, nb, 3), &
-                                                            gss(nf, nb, 3, 2), other(nf, nb), &
-                                                            v(nf, nb), vs(nf, nb, 2)
+      COMPLEX(dp) :: dg(nf, nb, 3), dv(nf, nb), g(nf, nb, 3), gss(nf, nb, 3, 2), other(nf, nb), &
+         small(2, nb), v(nf, nb), vs(nf, nb, 2)
       INTEGER                                            :: axis, column, ico, image, images(3, 3), &
                                                             point, row, side, &
                                                             translated_images(3, 3)
@@ -1621,6 +1621,7 @@ CONTAINS
          hh(nf, nb, 3, 3), lattice_gradient(3, 3, 8), lg(3, 8), lv(8), omega, radius, &
          samples(nf, nb, 2), sg(3, 8), shift, shifted_cell(3, 3), sv(8), value(nf, nb), width(2), &
          x(3, nf), xp(3, nf)
+      TYPE(gaussian_basis_workspace_type)                :: workspace
       TYPE(gaussian_coulomb_fields_type)                 :: coulomb, long_range, short_range
       TYPE(gto_basis_set_type), POINTER                  :: basis
 
@@ -1689,6 +1690,14 @@ CONTAINS
       dpnt = .02_dp*x
       dk = [.03_dp, .02_dp, -.01_dp]
       CALL gaussian_basis_fields_periodic(basis, x, center, cell, images, bloch, v, g, dv, dg, dpnt, dcenter, dc, dk)
+      CALL gaussian_basis_fields_periodic(basis, x, center, cell, images, bloch, vs(:, :, 1), gss(:, :, :, 1), &
+                                          vs(:, :, 2), gss(:, :, :, 2), dpnt, dcenter, dc, dk, workspace=workspace)
+      CALL check(MAX(MAXVAL(ABS(vs(:, :, 1) - v)), MAXVAL(ABS(vs(:, :, 2) - dv))), &
+                 'reused Gaussian value and joint response')
+      CALL check(MAX(MAXVAL(ABS(gss(:, :, :, 1) - g)), MAXVAL(ABS(gss(:, :, :, 2) - dg))), &
+                 'reused Gaussian gradient and Hessian response')
+      CALL gaussian_basis_fields_periodic(basis, x(:, :2), center, cell, images, bloch, small, workspace=workspace)
+      CALL check(MAXVAL(ABS(small - v(:2, :))), 'resized Gaussian value-only workspace')
       DO side = 1, 2
          shift = (2*side - 3)*step
          CALL gaussian_basis_fields_periodic(basis, x + shift*dpnt, center + shift*dcenter, cell + shift*dc, &
@@ -1696,7 +1705,7 @@ CONTAINS
       END DO
       CALL check(MAXVAL(ABS(dv - (vs(:, :, 2) - vs(:, :, 1))/(2*step))), 'native Gaussian Bloch joint response', 2.e-8_dp)
      CALL check(MAXVAL(ABS(dg - (gss(:, :, :, 2) - gss(:, :, :, 1))/(2*step))), 'native Gaussian Bloch gradient response', 2.e-7_dp)
-      CALL gaussian_basis_fields_periodic(basis, x, center, cell, images, -bloch, other)
+      CALL gaussian_basis_fields_periodic(basis, x, center, cell, images, -bloch, other, workspace=workspace)
       CALL check(MAXVAL(ABS(other - CONJG(v))), 'native Gaussian Bloch time reversal')
       DO image = 1, 3
          translated_images(:, image) = images(:, image) - [1, 0, 0]

@@ -19,7 +19,13 @@ MODULE gaussian_basis_fields
 
    IMPLICIT NONE
    PRIVATE
-   PUBLIC :: gaussian_basis_fields_evaluate, gaussian_basis_fields_periodic
+   PUBLIC :: gaussian_basis_fields_evaluate, gaussian_basis_fields_periodic, gaussian_basis_workspace_type
+
+   TYPE gaussian_basis_workspace_type
+      PRIVATE
+      REAL(dp), ALLOCATABLE :: displacement(:, :), field(:, :), ddisplacement(:, :), &
+                               gradient(:, :, :), hessian(:, :, :, :)
+   END TYPE gaussian_basis_workspace_type
 
 CONTAINS
 
@@ -175,10 +181,11 @@ CONTAINS
 !> \param cell_response Optional lattice response, default zero.
 !> \param reduced_k_response Optional reduced Bloch-vector response, default zero.
 !> \param cell_gradient Optional lattice derivative at fixed points, centers and reduced k, axes last.
+!> \param workspace Optional caller-owned scratch arrays, refilled at every invocation.
 ! **************************************************************************************************
    SUBROUTINE gaussian_basis_fields_periodic(basis, points, center, cell, images, reduced_k, value, gradient, &
                                              response, gradient_response, point_response, center_response, &
-                                             cell_response, reduced_k_response, cell_gradient)
+                                             cell_response, reduced_k_response, cell_gradient, workspace)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -191,6 +198,8 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cell_gradient(:, :, :, :)
+      TYPE(gaussian_basis_workspace_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: workspace
 
       COMPLEX(dp)                                        :: phase, phase_response
       INTEGER                                            :: ao, axis, axis2, image, npoint, point
@@ -198,8 +207,10 @@ CONTAINS
                                                             need_hessian
       REAL(dp)                                           :: dc(3, 3), dcenter(3), dk(3), dshift(3), &
                                                             lattice(3), shift(3)
-      REAL(dp), ALLOCATABLE                              :: ddisplacement(:, :), displacement(:, :), &
+      REAL(dp), POINTER                                  :: ddisplacement(:, :), displacement(:, :), &
                                                             field(:, :), g(:, :, :), h(:, :, :, :)
+      TYPE(gaussian_basis_workspace_type), POINTER       :: scratch
+      TYPE(gaussian_basis_workspace_type), TARGET        :: local_workspace
 
       npoint = SIZE(points, 2)
       CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(images, 1) == 3)
@@ -229,13 +240,18 @@ CONTAINS
       IF (PRESENT(cell_response)) dc = cell_response
       IF (PRESENT(center_response)) dcenter = center_response
       IF (PRESENT(reduced_k_response)) dk = reduced_k_response
-      ALLOCATE (displacement(3, npoint), field(npoint, basis%nsgf))
-      IF (need_geometry) ALLOCATE (ddisplacement(3, npoint))
+      scratch => local_workspace
+      IF (PRESENT(workspace)) scratch => workspace
+      CALL prepare_workspace(scratch, npoint, basis%nsgf, need_geometry, need_gradient, need_hessian)
+      displacement => scratch%displacement
+      field => scratch%field
+      NULLIFY (ddisplacement, g, h)
+      IF (need_geometry) ddisplacement => scratch%ddisplacement
+      IF (need_gradient) g => scratch%gradient
+      IF (need_hessian) h => scratch%hessian
       IF (PRESENT(point_response)) THEN
          CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
       END IF
-      IF (need_gradient) ALLOCATE (g(npoint, basis%nsgf, 3))
-      IF (need_hessian) ALLOCATE (h(npoint, basis%nsgf, 3, 3))
       value = CMPLX(0.0_dp, 0.0_dp, dp)
       DO image = 1, SIZE(images, 2)
          lattice = REAL(images(:, image), dp)
@@ -289,5 +305,42 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE gaussian_basis_fields_periodic
+
+! **************************************************************************************************
+!> \brief Retain only scratch storage. No geometry or field values are reused.
+!> \param workspace ...
+!> \param npoint ...
+!> \param nao ...
+!> \param need_geometry ...
+!> \param need_gradient ...
+!> \param need_hessian ...
+! **************************************************************************************************
+   SUBROUTINE prepare_workspace(workspace, npoint, nao, need_geometry, need_gradient, need_hessian)
+      TYPE(gaussian_basis_workspace_type), INTENT(INOUT) :: workspace
+      INTEGER, INTENT(IN)                                :: npoint, nao
+      LOGICAL, INTENT(IN)                                :: need_geometry, need_gradient, &
+                                                            need_hessian
+
+      IF (ALLOCATED(workspace%field)) THEN
+         IF (ANY(SHAPE(workspace%field) /= [npoint, nao])) THEN
+            DEALLOCATE (workspace%displacement, workspace%field)
+            IF (ALLOCATED(workspace%ddisplacement)) DEALLOCATE (workspace%ddisplacement)
+            IF (ALLOCATED(workspace%gradient)) DEALLOCATE (workspace%gradient)
+            IF (ALLOCATED(workspace%hessian)) DEALLOCATE (workspace%hessian)
+         END IF
+      END IF
+      IF (.NOT. ALLOCATED(workspace%field)) THEN
+         ALLOCATE (workspace%displacement(3, npoint), workspace%field(npoint, nao))
+      END IF
+      IF (need_geometry .AND. .NOT. ALLOCATED(workspace%ddisplacement)) THEN
+         ALLOCATE (workspace%ddisplacement(3, npoint))
+      END IF
+      IF (need_gradient .AND. .NOT. ALLOCATED(workspace%gradient)) THEN
+         ALLOCATE (workspace%gradient(npoint, nao, 3))
+      END IF
+      IF (need_hessian .AND. .NOT. ALLOCATED(workspace%hessian)) THEN
+         ALLOCATE (workspace%hessian(npoint, nao, 3, 3))
+      END IF
+   END SUBROUTINE prepare_workspace
 
 END MODULE gaussian_basis_fields

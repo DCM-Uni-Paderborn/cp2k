@@ -18,7 +18,8 @@ MODULE qs_upf_inverse_hfx
    USE dbt_api,                         ONLY: &
         dbt_clear, dbt_create, dbt_destroy, dbt_finalize, dbt_get_block, dbt_get_info, &
         dbt_get_stored_coordinates, dbt_put_block, dbt_type
-   USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
+   USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic,&
+                                              gaussian_basis_workspace_type
    USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
                                               gaussian_coulomb_fields_init,&
                                               gaussian_coulomb_fields_periodic,&
@@ -67,6 +68,7 @@ MODULE qs_upf_inverse_hfx
 
    ! Scratch fields are recomputed at every radial row and retained only within one center call.
    TYPE inverse_field_workspace_type
+      TYPE(gaussian_basis_workspace_type), ALLOCATABLE :: gaussian(:)
       COMPLEX(dp), ALLOCATABLE :: delta(:, :), ddelta(:, :), single_delta(:, :), single_ddelta(:, :), &
                                   phi(:, :), dphi(:, :)
       COMPLEX(dp), ALLOCATABLE :: delta_gradient(:, :, :), delta_cell_gradient(:, :, :, :), &
@@ -2298,8 +2300,9 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE :: block(:, :), cl(:, :), cr(:, :), delta(:, :), dl(:, :), &
          dq(:, :), dr(:, :), dwl(:, :), dwr(:, :), fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), &
          q(:, :), wl(:, :), work(:, :), wr(:, :)
-      INTEGER                                            :: atom, aux, cache_row, cache_rows, ia, ir, j, kind, nang, nl, &
-                                                            np, nr, zero(3, 1)
+      INTEGER                                            :: atom, aux, cache_row, cache_rows, ia, &
+                                                            ir, j, kind, nang, nl, np, nr, &
+                                                            zero(3, 1)
       INTEGER(int_8)                                     :: field_words
       LOGICAL                                            :: cache_fields, cache_ready, derivatives
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
@@ -2698,6 +2701,7 @@ CONTAINS
          ALLOCATE (workspace%phi(np, max_basis))
          IF (derivatives) ALLOCATE (workspace%dphi(np, max_basis))
       END IF
+      IF (.NOT. ALLOCATED(workspace%gaussian)) ALLOCATE (workspace%gaussian(SIZE(frame%bases)))
       complete = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (derivatives) THEN
          complete_response = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -2714,13 +2718,13 @@ CONTAINS
                                                 workspace%phi(:, :last - first + 1), &
                                                 response=workspace%dphi(:, :last - first + 1), &
                                                 point_response=point_response, center_response=atom_response(:, atom), &
-                                                cell_response=cell_response)
+                                                cell_response=cell_response, workspace=workspace%gaussian(atom))
             complete_response(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = &
                2.0_dp*workspace%dphi(:, lo - first + 1:hi - first + 1)
          ELSE
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                                                 frame%cell, images, [0.0_dp, 0.0_dp, 0.0_dp], &
-                                                workspace%phi(:, :last - first + 1))
+                                                workspace%phi(:, :last - first + 1), workspace=workspace%gaussian(atom))
          END IF
          complete(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = 2.0_dp*workspace%phi(:, lo - first + 1:hi - first + 1)
       END DO
@@ -3182,6 +3186,7 @@ CONTAINS
          ALLOCATE (workspace%delta(np, nproj), workspace%single_delta(np, last - first + 1), &
                    workspace%phi(np, max_basis))
       END IF
+      IF (.NOT. ALLOCATED(workspace%gaussian)) ALLOCATE (workspace%gaussian(SIZE(frame%bases)))
       CPASSERT(ALL(SHAPE(workspace%delta) == [np, nproj]))
       CPASSERT(ALL(SHAPE(workspace%single_delta) == [np, last - first + 1]))
       IF (full_geometry .AND. .NOT. ALLOCATED(workspace%delta_gradient)) THEN
@@ -3217,21 +3222,24 @@ CONTAINS
                                                 frame%cell, frame%images, frame%reduced_k, workspace%phi(:, :last - first + 1), &
                                                 response=workspace%dphi(:, :last - first + 1), &
                                                 point_response=point_response, center_response=atom_response(:, atom), &
-                                                cell_response=cell_response, reduced_k_response=k_response)
+                                                cell_response=cell_response, reduced_k_response=k_response, &
+                                                workspace=workspace%gaussian(atom))
             complete_response(:, selected_first - ao_range(1) + 1:selected_last - ao_range(1) + 1) = &
                2.0_dp*workspace%dphi(:, selected_first - first + 1:selected_last - first + 1)
          ELSE IF (full_geometry) THEN
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                                                 frame%cell, frame%images, frame%reduced_k, workspace%phi(:, :last - first + 1), &
                                                 gradient=workspace%phi_gradient(:, :last - first + 1, :), &
-                                                cell_gradient=workspace%phi_cell_gradient(:, :last - first + 1, :, :))
+                                                cell_gradient=workspace%phi_cell_gradient(:, :last - first + 1, :, :), &
+                                                workspace=workspace%gaussian(atom))
             workspace%gaussian_gradient(:, selected_first - ao_range(1) + 1:selected_last - ao_range(1) + 1, :) = &
                2.0_dp*workspace%phi_gradient(:, selected_first - first + 1:selected_last - first + 1, :)
             workspace%gaussian_cell_gradient(:, selected_first - ao_range(1) + 1:selected_last - ao_range(1) + 1, :, :) = &
                2.0_dp*workspace%phi_cell_gradient(:, selected_first - first + 1:selected_last - first + 1, :, :)
          ELSE
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                                                frame%cell, frame%images, frame%reduced_k, workspace%phi(:, :last - first + 1))
+                                                frame%cell, frame%images, frame%reduced_k, workspace%phi(:, :last - first + 1), &
+                                                workspace=workspace%gaussian(atom))
          END IF
          complete(:, selected_first - ao_range(1) + 1:selected_last - ao_range(1) + 1) = &
             2.0_dp*workspace%phi(:, selected_first - first + 1:selected_last - first + 1)
