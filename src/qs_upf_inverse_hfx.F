@@ -1847,37 +1847,37 @@ CONTAINS
             DO j = 1, nr
                work(:, j) = cr(:, j)*weighted_potential
             END DO
-            CALL adjoint_field_product(dl, work, block, .FALSE.)
+            CALL field_product(dl, work, block, .FALSE., .TRUE., .FALSE.)
             DO j = 1, nr
                work(:, j) = dr(:, j)*weighted_potential
             END DO
             integral(:, :, aux) = integral(:, :, aux) + block
-            CALL adjoint_field_product(cl, work, integral(:, :, aux), .TRUE.)
+            CALL field_product(cl, work, integral(:, :, aux), .TRUE., .TRUE., .FALSE.)
             IF (.NOT. derivatives) CYCLE
-            CALL adjoint_field_product(fcl, work, block, .FALSE.)
+            CALL field_product(fcl, work, block, .FALSE., .TRUE., .FALSE.)
             DO j = 1, nr
                work(:, j) = fdr(:, j)*weighted_potential
             END DO
-            CALL adjoint_field_product(cl, work, block, .TRUE.)
+            CALL field_product(cl, work, block, .TRUE., .TRUE., .FALSE.)
             DO j = 1, nr
                work(:, j) = cr(:, j)*weighted_potential
             END DO
-            CALL adjoint_field_product(fdl, work, block, .TRUE.)
+            CALL field_product(fdl, work, block, .TRUE., .TRUE., .FALSE.)
             DO j = 1, nr
                work(:, j) = fcr(:, j)*weighted_potential
             END DO
-            CALL adjoint_field_product(dl, work, block, .TRUE.)
+            CALL field_product(dl, work, block, .TRUE., .TRUE., .FALSE.)
             DO ia = 1, nang
                scale = weights(ia)*potential_responses(ia, aux)
                work(ia, :) = scale*cr(ia, :)
             END DO
-            CALL adjoint_field_product(dl, work, block, .TRUE.)
+            CALL field_product(dl, work, block, .TRUE., .TRUE., .FALSE.)
             DO ia = 1, nang
                scale = weights(ia)*potential_responses(ia, aux)
                work(ia, :) = scale*dr(ia, :)
             END DO
             response(:, :, aux) = response(:, :, aux) + block
-            CALL adjoint_field_product(cl, work, response(:, :, aux), .TRUE.)
+            CALL field_product(cl, work, response(:, :, aux), .TRUE., .TRUE., .FALSE.)
          END DO
       END DO
       IF (augmentation%nproj == 0) RETURN
@@ -2181,17 +2181,17 @@ CONTAINS
                DO ia = 1, nang
                   work(ia, :) = weighted_potential(ia)*cr(ia, :)
                END DO
-               gdl(:, :) = gdl + MATMUL(work, CONJG(TRANSPOSE(covector(:, :, aux))))
+               CALL field_product(work, covector(:, :, aux), gdl, .TRUE., .FALSE., .TRUE.)
                DO ia = 1, nang
                   work(ia, :) = weighted_potential(ia)*dr(ia, :)
                END DO
-               gcl(:, :) = gcl + MATMUL(work, CONJG(TRANSPOSE(covector(:, :, aux))))
-               work(:, :) = MATMUL(cl, covector(:, :, aux))
+               CALL field_product(work, covector(:, :, aux), gcl, .TRUE., .FALSE., .TRUE.)
+               CALL field_product(cl, covector(:, :, aux), work, .FALSE., .FALSE., .FALSE.)
                IF (geometry) potential_covector(:) = weights*REAL(SUM(CONJG(work)*dr, DIM=2), dp)
                DO ia = 1, nang
                   gdr(ia, :) = gdr(ia, :) + weighted_potential(ia)*work(ia, :)
                END DO
-               work(:, :) = MATMUL(dl, covector(:, :, aux))
+               CALL field_product(dl, covector(:, :, aux), work, .FALSE., .FALSE., .FALSE.)
                IF (geometry) THEN
                   potential_covector(:) = potential_covector + weights*REAL(SUM(CONJG(work)*cr, DIM=2), dp)
                   DO ia = 1, nang
@@ -2202,8 +2202,8 @@ CONTAINS
                   gcr(ia, :) = gcr(ia, :) + weighted_potential(ia)*work(ia, :)
                END DO
             END DO
-            gl(:, :) = gl - MATMUL(CONJG(TRANSPOSE(delta)), gdl)
-            gr(:, :) = gr - MATMUL(CONJG(TRANSPOSE(delta)), gdr)
+            CALL field_product(delta, gdl, gl, .TRUE., .TRUE., .FALSE., -1.0_dp)
+            CALL field_product(delta, gdr, gr, .TRUE., .TRUE., .FALSE., -1.0_dp)
             CALL qs_upf_inverse_lattice_field_adjoint(frame, points, [0, 0, 0], coefficient_images, gcl, lattice_gl)
             CALL qs_upf_inverse_lattice_field_adjoint(frame, points, ao_image, coefficient_images, gcr, lattice_gr)
             left_coefficients_covector(:, :, :) = left_coefficients_covector + lattice_gl
@@ -2477,37 +2477,37 @@ CONTAINS
                DO j = 1, nr
                   work(:, j) = cr(:, j)*weighted_potential
                END DO
-               CALL adjoint_field_product(dl, work, block, .FALSE.)
+               CALL field_product(dl, work, block, .FALSE., .TRUE., .FALSE.)
                DO j = 1, nr
                   work(:, j) = dr(:, j)*weighted_potential
                END DO
                integral(:, :, aux) = integral(:, :, aux) + block
-               CALL adjoint_field_product(cl, work, integral(:, :, aux), .TRUE.)
+               CALL field_product(cl, work, integral(:, :, aux), .TRUE., .TRUE., .FALSE.)
                IF (.NOT. derivatives) CYCLE
-               CALL adjoint_field_product(fcl, work, block, .FALSE.)
+               CALL field_product(fcl, work, block, .FALSE., .TRUE., .FALSE.)
                DO j = 1, nr
                   work(:, j) = fdr(:, j)*weighted_potential
                END DO
-               CALL adjoint_field_product(cl, work, block, .TRUE.)
+               CALL field_product(cl, work, block, .TRUE., .TRUE., .FALSE.)
                DO j = 1, nr
                   work(:, j) = cr(:, j)*weighted_potential
                END DO
-               CALL adjoint_field_product(fdl, work, block, .TRUE.)
+               CALL field_product(fdl, work, block, .TRUE., .TRUE., .FALSE.)
                DO j = 1, nr
                   work(:, j) = fcr(:, j)*weighted_potential
                END DO
-               CALL adjoint_field_product(dl, work, block, .TRUE.)
+               CALL field_product(dl, work, block, .TRUE., .TRUE., .FALSE.)
                DO ia = 1, nang
                   scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
                   work(ia, :) = scale*cr(ia, :)
                END DO
-               CALL adjoint_field_product(dl, work, block, .TRUE.)
+               CALL field_product(dl, work, block, .TRUE., .TRUE., .FALSE.)
                DO ia = 1, nang
                   scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
                   work(ia, :) = scale*dr(ia, :)
                END DO
                response(:, :, aux) = response(:, :, aux) + block
-               CALL adjoint_field_product(cl, work, response(:, :, aux), .TRUE.)
+               CALL field_product(cl, work, response(:, :, aux), .TRUE., .TRUE., .FALSE.)
             END DO
          END DO
       END IF
@@ -2537,32 +2537,53 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Form or accumulate a complex field product without transpose or result temporaries.
-!>        The contraction is left^H*right in the original point order.
+!>        Conjugate-transposed factors preserve the original point and projector ordering.
 !> \param left ...
 !> \param right ...
 !> \param result ...
 !> \param accumulate Whether to add to the existing result.
+!> \param adjoint_left Conjugate transpose the left factor.
+!> \param adjoint_right Conjugate transpose the right factor.
+!> \param factor Optional real multiplier of the product.
 ! **************************************************************************************************
-   SUBROUTINE adjoint_field_product(left, right, RESULT, accumulate)
+   SUBROUTINE field_product(left, right, RESULT, accumulate, adjoint_left, adjoint_right, factor)
       COMPLEX(dp), CONTIGUOUS, INTENT(IN)                :: left(:, :), right(:, :)
       COMPLEX(dp), CONTIGUOUS, INTENT(INOUT)             :: result(:, :)
-      LOGICAL, INTENT(IN)                                :: accumulate
+      LOGICAL, INTENT(IN)                                :: accumulate, adjoint_left, adjoint_right
+      REAL(dp), INTENT(IN), OPTIONAL                     :: factor
 
-      INTEGER                                            :: k, m, n
+      CHARACTER(LEN=1)                                   :: transa, transb
+      INTEGER                                            :: k, m, n, right_k
+      REAL(dp)                                           :: alpha
 
       EXTERNAL zgemm
 
-      k = SIZE(left, 1)
-      m = SIZE(left, 2)
+      m = SIZE(left, 1)
+      k = SIZE(left, 2)
+      transa = 'N'
+      IF (adjoint_left) THEN
+         m = SIZE(left, 2)
+         k = SIZE(left, 1)
+         transa = 'C'
+      END IF
+      right_k = SIZE(right, 1)
       n = SIZE(right, 2)
-      CPASSERT(SIZE(right, 1) == k .AND. ALL(SHAPE(RESULT) == [m, n]))
+      transb = 'N'
+      IF (adjoint_right) THEN
+         right_k = SIZE(right, 2)
+         n = SIZE(right, 1)
+         transb = 'C'
+      END IF
+      CPASSERT(right_k == k .AND. ALL(SHAPE(RESULT) == [m, n]))
       IF (m == 0 .OR. n == 0 .OR. k == 0) THEN
          IF (.NOT. accumulate) RESULT = CMPLX(0.0_dp, 0.0_dp, dp)
          RETURN
       END IF
-      CALL zgemm('C', 'N', m, n, k, CMPLX(1.0_dp, 0.0_dp, dp), left, k, right, k, &
-                 CMPLX(MERGE(1.0_dp, 0.0_dp, accumulate), 0.0_dp, dp), RESULT, m)
-   END SUBROUTINE adjoint_field_product
+      alpha = 1.0_dp
+      IF (PRESENT(factor)) alpha = factor
+      CALL zgemm(transa, transb, m, n, k, CMPLX(alpha, 0.0_dp, dp), left, MAX(1, SIZE(left, 1)), &
+                 right, MAX(1, SIZE(right, 1)), CMPLX(MERGE(1.0_dp, 0.0_dp, accumulate), 0.0_dp, dp), RESULT, m)
+   END SUBROUTINE field_product
 
 ! **************************************************************************************************
 !> \brief Validate the full physical coefficient domain of a general inverse transition.
@@ -2980,17 +3001,17 @@ CONTAINS
             DO j = 1, nr
                work(:, j) = cr(:, j)*weighted_potential
             END DO
-            gdl(:, :) = gdl + MATMUL(work, CONJG(TRANSPOSE(covector(:, :, aux))))
+            CALL field_product(work, covector(:, :, aux), gdl, .TRUE., .FALSE., .TRUE.)
             DO j = 1, nr
                work(:, j) = dr(:, j)*weighted_potential
             END DO
-            gcl(:, :) = gcl + MATMUL(work, CONJG(TRANSPOSE(covector(:, :, aux))))
-            work(:, :) = MATMUL(cl, covector(:, :, aux))
+            CALL field_product(work, covector(:, :, aux), gcl, .TRUE., .FALSE., .TRUE.)
+            CALL field_product(cl, covector(:, :, aux), work, .FALSE., .FALSE., .FALSE.)
             IF (full_geometry) potential_covector(:) = weights*REAL(SUM(CONJG(work)*dr, DIM=2), dp)
             DO j = 1, nr
                gdr(:, j) = gdr(:, j) + work(:, j)*weighted_potential
             END DO
-            work(:, :) = MATMUL(dl, covector(:, :, aux))
+            CALL field_product(dl, covector(:, :, aux), work, .FALSE., .FALSE., .FALSE.)
             IF (full_geometry) THEN
                potential_covector(:) = potential_covector + weights*REAL(SUM(CONJG(work)*cr, DIM=2), dp)
                DO axis = 1, 3
