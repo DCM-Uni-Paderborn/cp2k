@@ -193,6 +193,11 @@ CONTAINS
          error = SQRT(SUM(ABS(bloch - exact_bloch)**2))
          CALL check(MAX(0.0_dp, error - bloch_bound), "Pointwise Bloch error bounded", 0.0_dp)
       END DO
+      CALL upf_inverse_lattice_init(kernel_images(:, 3:1:-1), c(:, :, 3:1:-1), images(:, nr:1:-1), shifted, info)
+      CALL check(ABS(REAL(info, dp)), "Reordered physical-image preconditioner")
+      CALL upf_inverse_lattice_project(shifted, b(:, :, nr:1:-1), samples(:, :, :, 1), 2.e-14_dp, info)
+      CALL check(ABS(REAL(info, dp)), "Reordered coupled image solve")
+      CALL check(MAXVAL(ABS(samples(:, :, :, 1) - exact(:, :, nr:1:-1))), "Inverse preserves physical image order")
       DO side = 1, 2
          reduced_k = 0.0_dp
          IF (side == 2) reduced_k = [0.17_dp, 0.11_dp, -0.09_dp]

@@ -18,6 +18,7 @@ MODULE upf_inverse_lattice
    USE upf_inverse,                     ONLY: upf_inverse_init,&
                                               upf_inverse_project,&
                                               upf_inverse_type
+   USE util,                            ONLY: sort
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -54,7 +55,8 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: info
 
       COMPLEX(dp), ALLOCATABLE                           :: diagonal(:, :)
-      INTEGER                                            :: i, np, q, zero
+      INTEGER                                            :: i, image(3), np, q, source, zero
+      INTEGER, ALLOCATABLE                               :: image_order(:), sorted_images(:, :)
 
       CALL check_images(kernel_images)
       CALL check_images(images)
@@ -70,9 +72,15 @@ CONTAINS
       ALLOCATE (lattice%kernel_images, SOURCE=kernel_images)
       ALLOCATE (lattice%coupling, SOURCE=coupling)
       ALLOCATE (lattice%source_index(SIZE(kernel_images, 2), SIZE(images, 2)))
+      ALLOCATE (sorted_images, SOURCE=images)
+      ALLOCATE (image_order(SIZE(images, 2)))
+      CALL sort(sorted_images, 1, SIZE(images, 2), 1, 3, image_order)
       DO i = 1, SIZE(images, 2)
          DO q = 1, SIZE(kernel_images, 2)
-            lattice%source_index(q, i) = find_image(images, images(:, i) - kernel_images(:, q))
+            image(:) = images(:, i) - kernel_images(:, q)
+            source = find_sorted_image(sorted_images, image)
+            lattice%source_index(q, i) = 0
+            IF (source > 0) lattice%source_index(q, i) = image_order(source)
          END DO
       END DO
       ALLOCATE (diagonal(np, np), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
@@ -723,4 +731,36 @@ CONTAINS
          RETURN
       END DO
    END FUNCTION find_image
+
+! **************************************************************************************************
+!> \brief Locate a physical image in a lexicographically sorted list, without folding indices.
+!> \param images Sorted integer triples.
+!> \param image Exact physical translation.
+!> \return Sorted column index, or zero for an absent triple.
+! **************************************************************************************************
+   INTEGER FUNCTION find_sorted_image(images, image) RESULT(index)
+      INTEGER, INTENT(IN)                                :: images(:, :), image(3)
+
+      INTEGER                                            :: axis, lower, middle, upper
+
+      index = 0
+      lower = 1
+      upper = SIZE(images, 2)
+      DO WHILE (lower <= upper)
+         middle = lower + (upper - lower)/2
+         DO axis = 1, 3
+            IF (image(axis) < images(axis, middle)) THEN
+               upper = middle - 1
+               EXIT
+            ELSE IF (image(axis) > images(axis, middle)) THEN
+               lower = middle + 1
+               EXIT
+            END IF
+         END DO
+         IF (axis > 3) THEN
+            index = middle
+            RETURN
+         END IF
+      END DO
+   END FUNCTION find_sorted_image
 END MODULE upf_inverse_lattice
