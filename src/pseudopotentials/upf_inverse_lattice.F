@@ -203,11 +203,14 @@ CONTAINS
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: residual_images(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: residual(:, :, :)
 
-      INTEGER                                            :: i, image(3), n, np, nr, q, TARGET
+      INTEGER                                            :: i, image(3), n, nao, np, nr, q, TARGET
       INTEGER, ALLOCATABLE                               :: union_images(:, :)
+
+      EXTERNAL zgemm
 
       CALL check_images(overlap_images)
       np = lattice%diagonal%nproj
+      nao = SIZE(overlaps, 2)
       nr = SIZE(lattice%images, 2)
       CPASSERT(ALL(SHAPE(coefficients) == [np, SIZE(overlaps, 2), nr]))
       CPASSERT(SIZE(overlaps, 1) == np)
@@ -232,10 +235,13 @@ CONTAINS
          TARGET = find_image(residual_images, overlap_images(:, i))
          residual(:, :, TARGET) = residual(:, :, TARGET) - overlaps(:, :, i)
       END DO
+      IF (np == 0 .OR. nao == 0) RETURN
       DO i = 1, nr
          DO q = 1, SIZE(lattice%kernel_images, 2)
-            TARGET = find_image(residual_images, lattice%images(:, i) + lattice%kernel_images(:, q))
-            residual(:, :, TARGET) = residual(:, :, TARGET) + MATMUL(lattice%coupling(:, :, q), coefficients(:, :, i))
+            image(:) = lattice%images(:, i) + lattice%kernel_images(:, q)
+            TARGET = find_image(residual_images, image)
+            CALL zgemm('N', 'N', np, nao, np, CMPLX(1.0_dp, 0.0_dp, dp), lattice%coupling(:, :, q), np, &
+                       coefficients(:, :, i), np, CMPLX(1.0_dp, 0.0_dp, dp), residual(:, :, TARGET), np)
          END DO
       END DO
 
@@ -271,15 +277,22 @@ CONTAINS
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: residual_images(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: residual(:, :, :)
 
-      INTEGER                                            :: i, q, TARGET
+      INTEGER                                            :: i, image(3), nao, np, q, TARGET
+
+      EXTERNAL zgemm
 
       CPASSERT(ALL(SHAPE(coefficients) == SHAPE(response)))
       CPASSERT(ALL(SHAPE(coupling_response) == SHAPE(lattice%coupling)))
       CALL upf_inverse_lattice_residual(lattice, response, overlap_images, overlaps_response, residual_images, residual)
+      np = SIZE(coefficients, 1)
+      nao = SIZE(coefficients, 2)
+      IF (np == 0 .OR. nao == 0) RETURN
       DO i = 1, SIZE(lattice%images, 2)
          DO q = 1, SIZE(lattice%kernel_images, 2)
-            TARGET = find_image(residual_images, lattice%images(:, i) + lattice%kernel_images(:, q))
-            residual(:, :, TARGET) = residual(:, :, TARGET) + MATMUL(coupling_response(:, :, q), coefficients(:, :, i))
+            image(:) = lattice%images(:, i) + lattice%kernel_images(:, q)
+            TARGET = find_image(residual_images, image)
+            CALL zgemm('N', 'N', np, nao, np, CMPLX(1.0_dp, 0.0_dp, dp), coupling_response(:, :, q), np, &
+                       coefficients(:, :, i), np, CMPLX(1.0_dp, 0.0_dp, dp), residual(:, :, TARGET), np)
          END DO
       END DO
    END SUBROUTINE upf_inverse_lattice_response_residual
