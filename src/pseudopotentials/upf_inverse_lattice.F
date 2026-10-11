@@ -406,7 +406,9 @@ CONTAINS
          kernel_norm = kernel_norm + matrix_norm(lattice%coupling(:, :, q))
       END DO
       roundoff = 32.0_dp*EPSILON(0.0_dp)*REAL(np, dp)* &
-                 REAL(MAX(1, SIZE(lattice%kernel_images, 2)), dp)
+                 REAL(MAX(1, nonzero_matrices(lattice%coupling)), dp)
+      IF (roundoff >= 1.0_dp) RETURN
+      roundoff = roundoff/(1.0_dp - roundoff)
       defect = defect + roundoff*(1.0_dp + kernel_norm*inverse_norm)
       info = 1
       IF (.NOT. ieee_is_finite(defect) .OR. .NOT. ieee_is_finite(inverse_norm)) RETURN
@@ -460,7 +462,8 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: residual_images(:, :)
       LOGICAL                                            :: have_response
       REAL(dp)                                           :: b_norm, c_norm, db_norm, dc_norm, &
-                                                            dw_norm, norm1, norm2, roundoff, w_norm
+                                                            dw_norm, norm1, norm2, roundoff, &
+                                                            terms, w_norm
 
       have_response = PRESENT(response) .OR. PRESENT(overlaps_response) .OR. PRESENT(coupling_response) .OR. &
                       PRESENT(response_error) .OR. PRESENT(response_bloch_error) .OR. PRESENT(response_overlap_tail)
@@ -503,8 +506,15 @@ CONTAINS
       CALL sequence_norms(overlaps, norm2, b_norm)
       CALL upf_inverse_lattice_residual(lattice, coefficients, overlap_images, overlaps, residual_images, residual)
       CALL sequence_norms(residual, norm2, norm1)
-      roundoff = 32.0_dp*EPSILON(0.0_dp)*REAL(MAX(1, lattice%diagonal%nproj), dp)* &
-                 REAL(MAX(1, SIZE(lattice%kernel_images, 2) + SIZE(lattice%images, 2) + SIZE(overlap_images, 2)), dp)
+      ! Count contributions to one residual image. The sequence norms already sum over images.
+      ! Exact zero kernels perform no inexact update, but their geometry responses remain below.
+      terms = 1.0_dp + REAL(nonzero_matrices(lattice%coupling), dp) + REAL(image_multiplicity(overlap_images), dp)
+      roundoff = 32.0_dp*EPSILON(0.0_dp)*REAL(MAX(1, lattice%diagonal%nproj), dp)*terms
+      IF (roundoff >= 1.0_dp) THEN
+         info = 2
+         RETURN
+      END IF
+      roundoff = roundoff/(1.0_dp - roundoff)
       norm2 = norm2 + roundoff*((1.0_dp + c_norm)*w_norm + b_norm)
       norm1 = norm1 + roundoff*((1.0_dp + c_norm)*w_norm + b_norm)
       IF (PRESENT(overlap_tail)) THEN
@@ -520,6 +530,13 @@ CONTAINS
          CALL upf_inverse_lattice_response_residual(lattice, coefficients, response, overlap_images, &
                                                     overlaps_response, coupling_response, residual_images, residual)
          CALL sequence_norms(residual, norm2, norm1)
+         terms = terms + REAL(nonzero_matrices(coupling_response), dp)
+         roundoff = 32.0_dp*EPSILON(0.0_dp)*REAL(MAX(1, lattice%diagonal%nproj), dp)*terms
+         IF (roundoff >= 1.0_dp) THEN
+            info = 2
+            RETURN
+         END IF
+         roundoff = roundoff/(1.0_dp - roundoff)
          norm2 = norm2 + roundoff*((1.0_dp + c_norm)*dw_norm + dc_norm*w_norm + db_norm)
          norm1 = norm1 + roundoff*((1.0_dp + c_norm)*dw_norm + dc_norm*w_norm + db_norm)
          IF (PRESENT(response_overlap_tail)) THEN
@@ -530,6 +547,48 @@ CONTAINS
          response_bloch_error = (norm1 + dc_norm*bloch_error)/lower_bound
       END IF
    END SUBROUTINE upf_inverse_lattice_error_bounds
+
+! **************************************************************************************************
+!> \brief Count exact nonzero kernel blocks without removing any physical images.
+! **************************************************************************************************
+   FUNCTION nonzero_matrices(matrices) RESULT(n)
+      COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :)
+      INTEGER                                            :: n
+
+      INTEGER                                            :: image
+
+      n = 0
+      DO image = 1, SIZE(matrices, 3)
+         IF (ANY(matrices(:, :, image) /= CMPLX(0.0_dp, 0.0_dp, dp))) n = n + 1
+      END DO
+   END FUNCTION nonzero_matrices
+
+! **************************************************************************************************
+!> \brief Maximum number of overlap contributions to any one physical image.
+! **************************************************************************************************
+   FUNCTION image_multiplicity(images) RESULT(multiplicity)
+      INTEGER, INTENT(IN)                                :: images(:, :)
+      INTEGER                                            :: multiplicity
+
+      INTEGER                                            :: i, run
+      INTEGER, ALLOCATABLE                               :: image_order(:), sorted_images(:, :)
+
+      multiplicity = 0
+      IF (SIZE(images, 2) == 0) RETURN
+      ALLOCATE (sorted_images, SOURCE=images)
+      ALLOCATE (image_order(SIZE(images, 2)))
+      CALL sort(sorted_images, 1, SIZE(images, 2), 1, 3, image_order)
+      multiplicity = 1
+      run = 1
+      DO i = 2, SIZE(images, 2)
+         IF (ALL(sorted_images(:, i) == sorted_images(:, i - 1))) THEN
+            run = run + 1
+         ELSE
+            run = 1
+         END IF
+         multiplicity = MAX(multiplicity, run)
+      END DO
+   END FUNCTION image_multiplicity
 
 ! **************************************************************************************************
 !> \brief Stable Frobenius norm and l1/l2 matrix-sequence norms, without squared large entries.
@@ -552,7 +611,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: norm2, norm1
 
       INTEGER                                            :: image
-      REAL(dp)                                           :: norm
+      REAL(dp)                                           :: norm, roundoff
 
       norm2 = 0.0_dp
       norm1 = 0.0_dp
@@ -561,6 +620,12 @@ CONTAINS
          norm2 = HYPOT(norm2, norm)
          norm1 = norm1 + norm
       END DO
+      ! Norm-reduction rounding scales the measured norm, rather than every residual operand.
+      roundoff = 32.0_dp*EPSILON(0.0_dp)*(REAL(SIZE(SEQUENCE, 1), dp) + &
+                                          REAL(SIZE(SEQUENCE, 2), dp) + REAL(MAX(1, SIZE(SEQUENCE, 3)), dp))
+      CPASSERT(roundoff < 1.0_dp)
+      norm2 = norm2/(1.0_dp - roundoff)
+      norm1 = norm1/(1.0_dp - roundoff)
    END SUBROUTINE sequence_norms
 
 ! **************************************************************************************************
@@ -720,30 +785,60 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: result(:)
       LOGICAL, INTENT(IN)                                :: adjoint
 
-      INTEGER                                            :: first, i, j, last, np, q, source_first, &
-                                                            source_last
+      COMPLEX(dp), ALLOCATABLE                           :: coupled(:, :), gathered(:, :)
+      INTEGER                                            :: batch_size, column, first, i, j, last, &
+                                                            n, np, nr, q, source_first, source_last
 
-      EXTERNAL zgemv
+      EXTERNAL zgemm
 
       np = lattice%diagonal%nproj
       RESULT = vector
       IF (np == 0) RETURN
-      DO i = 1, SIZE(lattice%images, 2)
-         first = (i - 1)*np + 1
-         last = i*np
-         DO q = 1, SIZE(lattice%kernel_images, 2)
-            j = lattice%source_index(q, i)
-            IF (j == 0) CYCLE
-            source_first = (j - 1)*np + 1
-            source_last = j*np
+      nr = SIZE(lattice%images, 2)
+      batch_size = MIN(128, nr)
+      ALLOCATE (coupled(np, batch_size), gathered(np, batch_size))
+      DO i = 1, nr, batch_size
+         n = MIN(batch_size, nr - i + 1)
+         DO column = 1, n
+            first = (i + column - 2)*np + 1
+            last = (i + column - 1)*np
             IF (adjoint) THEN
-               CALL zgemv('C', np, np, CMPLX(1.0_dp, 0.0_dp, dp), lattice%coupling(:, :, q), np, &
-                          vector(first:last), 1, CMPLX(1.0_dp, 0.0_dp, dp), RESULT(source_first:source_last), 1)
+               gathered(:, column) = vector(first:last)
             ELSE
-               CALL zgemv('N', np, np, CMPLX(1.0_dp, 0.0_dp, dp), lattice%coupling(:, :, q), np, &
-                          vector(source_first:source_last), 1, CMPLX(1.0_dp, 0.0_dp, dp), RESULT(first:last), 1)
+               coupled(:, column) = vector(first:last)
             END IF
          END DO
+         DO q = 1, SIZE(lattice%kernel_images, 2)
+            IF (adjoint) THEN
+               CALL zgemm('C', 'N', np, n, np, CMPLX(1.0_dp, 0.0_dp, dp), lattice%coupling(:, :, q), np, &
+                          gathered, np, CMPLX(0.0_dp, 0.0_dp, dp), coupled, np)
+               DO column = 1, n
+                  j = lattice%source_index(q, i + column - 1)
+                  IF (j == 0) CYCLE
+                  source_first = (j - 1)*np + 1
+                  source_last = j*np
+                  RESULT(source_first:source_last) = RESULT(source_first:source_last) + coupled(:, column)
+               END DO
+            ELSE
+               gathered(:, :n) = CMPLX(0.0_dp, 0.0_dp, dp)
+               DO column = 1, n
+                  j = lattice%source_index(q, i + column - 1)
+                  IF (j == 0) CYCLE
+                  source_first = (j - 1)*np + 1
+                  source_last = j*np
+                  gathered(:, column) = vector(source_first:source_last)
+               END DO
+               CALL zgemm('N', 'N', np, n, np, CMPLX(1.0_dp, 0.0_dp, dp), lattice%coupling(:, :, q), np, &
+                          gathered, np, CMPLX(1.0_dp, 0.0_dp, dp), coupled, np)
+            END IF
+         END DO
+         IF (.NOT. adjoint) THEN
+            DO column = 1, n
+               first = (i + column - 2)*np + 1
+               last = (i + column - 1)*np
+               RESULT(first:last) = coupled(:, column)
+            END DO
+         END IF
       END DO
    END SUBROUTINE apply
 

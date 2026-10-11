@@ -110,19 +110,20 @@ CONTAINS
 !>        Checks the exterior equation, Bloch limit, coupled response and real energy adjoint.
 ! **************************************************************************************************
    SUBROUTINE check_lattice_inverse()
-      INTEGER, PARAMETER                                 :: nao = 2, np = 2, nr = 21, &
+      INTEGER, PARAMETER                                 :: nao = 2, np = 2, nr = 129, &
                                                             domains(3) = [3, 8, nr]
 
-      COMPLEX(dp) :: b(np, nao, nr), bloch(np, nao), c(np, np, 3), covector(np, nao, nr), &
-         db(np, nao, nr), db_bloch(np, nao), dc(np, np, 3), dc_bloch(np, np), &
-         difference(np, nao, nr), exact(np, nao, nr), exact_bloch(np, nao), &
+      COMPLEX(dp) :: b(np, nao, nr), bloch(np, nao), c(np, np, 3), c_padded(np, np, 16), &
+         covector(np, nao, nr), db(np, nao, nr), db_bloch(np, nao), dc(np, np, 3), &
+         dc_bloch(np, np), difference(np, nao, nr), exact(np, nao, nr), exact_bloch(np, nao), &
          exact_response(np, nao, nr + 1), gb(np, nao, nr), gc(np, np, 3), inverse(np, np), &
          k(np, np), response(np, nao, nr), samples(np, nao, nr, 2), solution(np, nao, nr)
       COMPLEX(dp), ALLOCATABLE                           :: residual(:, :, :), &
                                                             residual_samples(:, :, :, :), &
                                                             response_residual(:, :, :)
       INTEGER                                            :: i, images(3, nr), info, &
-                                                            kernel_images(3, 3), padding, side, &
+                                                            kernel_images(3, 3), &
+                                                            padded_images(3, 16), padding, side, &
                                                             tail
       INTEGER, ALLOCATABLE                               :: residual_images(:, :), &
                                                             response_images(:, :)
@@ -193,6 +194,22 @@ CONTAINS
          error = SQRT(SUM(ABS(bloch - exact_bloch)**2))
          CALL check(MAX(0.0_dp, error - bloch_bound), "Pointwise Bloch error bounded", 0.0_dp)
       END DO
+      c_padded = CMPLX(0.0_dp, 0.0_dp, dp)
+      c_padded(:, :, :3) = c
+      padded_images(:, :3) = kernel_images
+      DO i = 4, 16
+         padded_images(:, i) = [i, 3*i, 0]
+      END DO
+      CALL upf_inverse_lattice_init(padded_images, c_padded, images, shifted, info)
+      CALL check(ABS(REAL(info, dp)), "Zero kernel images preserve the preconditioner")
+      CALL upf_inverse_lattice_project(shifted, b, samples(:, :, :, 1), 2.e-14_dp, info)
+      CALL check(ABS(REAL(info, dp)), "Zero kernel images preserve the solve")
+      CALL check(MAXVAL(ABS(samples(:, :, :, 1) - solution)), "Zero kernels preserve the physical operator")
+      CALL upf_inverse_lattice_error_bounds(shifted, solution, images(:, :1), b(:, :, :1), &
+                                            error, previous, lower_bound, info)
+      CALL check(ABS(REAL(info, dp)), "Zero kernel images retain the uniform inverse bound")
+      CALL check(ABS(error/coefficient_bound - 1.0_dp), "Zero kernels preserve the coefficient error bound", 1.e-9_dp)
+      CALL check(ABS(previous/bloch_bound - 1.0_dp), "Zero kernels preserve the Bloch error bound", 1.e-9_dp)
       CALL upf_inverse_lattice_init(kernel_images(:, 3:1:-1), c(:, :, 3:1:-1), images(:, nr:1:-1), shifted, info)
       CALL check(ABS(REAL(info, dp)), "Reordered physical-image preconditioner")
       CALL upf_inverse_lattice_project(shifted, b(:, :, nr:1:-1), samples(:, :, :, 1), 2.e-14_dp, info)
