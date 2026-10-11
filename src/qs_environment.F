@@ -2296,6 +2296,8 @@ CONTAINS
             n_mo_add = n_ao - n_mo(2)  ! use all available MOs
          ELSE IF (scf_control%added_mos(2) > 0) THEN
             n_mo_add = scf_control%added_mos(2)
+         ELSE IF (scf_control%added_mos(1) < 0) THEN
+            n_mo_add = n_ao - n_mo(2)
          ELSE
             n_mo_add = scf_control%added_mos(1)
          END IF
