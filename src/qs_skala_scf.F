@@ -50,7 +50,8 @@ MODULE qs_skala_scf
         skala_background_domain, skala_density_constraints_type, skala_density_descriptor, &
         skala_density_crossings, skala_density_root, skala_density_samples_begin, skala_density_samples_end, &
         skala_density_samples_get, skala_fft_domain, skala_kinetic_descriptor
-   USE skala_orbital_constraints,       ONLY: skala_orbital_chart_derivative,&
+   USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
+                                              skala_orbital_chart_derivative,&
                                               skala_orbital_chart_size
    USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair
    USE xc_input_constants,              ONLY: xc_rho_no_smooth
@@ -63,6 +64,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_value, qs_skala_scf_root
    PUBLIC :: qs_skala_scf_point_derivative
    PUBLIC :: qs_skala_scf_crossings
+   PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
 
    TYPE qs_skala_scf_type
       PRIVATE
@@ -92,6 +94,11 @@ MODULE qs_skala_scf
       REAL(dp), ALLOCATABLE :: density(:, :), kinetic(:, :)
       LOGICAL :: available = .FALSE.
    END TYPE physical_domain_samples
+
+   TYPE physical_constraints_context
+      TYPE(qs_skala_scf_type), POINTER :: state => NULL()
+      INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
+   END TYPE physical_constraints_context
 
 CONTAINS
 
@@ -806,6 +813,150 @@ CONTAINS
       ALLOCATE (gradient(SIZE(first)))
       CALL qs_skala_scf_evaluate(state, first, energy, gradient)
    END SUBROUTINE qs_skala_scf_crossings
+
+! **************************************************************************************************
+!> \brief Evaluate several actual physical constraints and their joint native orbital Jacobian.
+!>        The complete native energy and KS operator describe the requested orbital state on
+!>        return. Density and kinetic constraints retain their distinct physical units. No
+!>        interpolation of fields, feature rows or previously accepted Jacobians is used.
+!> \param state ...
+!> \param coordinate Global normalized-orbital coordinates.
+!> \param points Global FFT indices or (global atom, atomic row, 1), one column per constraint.
+!> \param domains Physical evaluation domain of each constraint.
+!> \param spins Zero for paired RKS, one or two for UKS.
+!> \param descriptors Density or kinetic density of each constraint.
+!> \param values Current physical inputs, with zero as the constraint target.
+!> \param jacobian One constraint per row, one global orbital coordinate per column.
+!> \param physical_jacobian Optional covectors in the orthonormal physical orbital tangent.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_constraints(state, coordinate, points, domains, spins, descriptors, &
+                                       values, jacobian, physical_jacobian)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), INTENT(OUT)                              :: values(:), jacobian(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_jacobian(:, :)
+
+      INTEGER                                            :: i, m, n
+      LOGICAL                                            :: valid
+      REAL(dp)                                           :: energy
+      REAL(dp), ALLOCATABLE                              :: derivative(:), physical_derivative(:)
+
+      m = SIZE(values)
+      n = qs_skala_scf_size(state)
+      valid = SIZE(coordinate) == n .AND. ALL(SHAPE(points) == [3, m])
+      CPASSERT(valid)
+      valid = SIZE(domains) == m .AND. SIZE(spins) == m .AND. SIZE(descriptors) == m
+      CPASSERT(valid)
+      CPASSERT(ALL(SHAPE(jacobian) == [m, n]))
+      IF (PRESENT(physical_jacobian)) THEN
+         valid = ALL(SHAPE(physical_jacobian) == [m, n])
+         CPASSERT(valid)
+         ALLOCATE (physical_derivative(n))
+      END IF
+      ALLOCATE (derivative(n))
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, derivative)
+      DO i = 1, m
+         CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), values(i))
+         IF (PRESENT(physical_jacobian)) THEN
+            CALL qs_skala_scf_point_derivative(state, domains(i), points(:, i), spins(i), descriptors(i), &
+                                               derivative, physical_derivative)
+            physical_jacobian(i, :) = physical_derivative
+         ELSE
+            CALL qs_skala_scf_point_derivative(state, domains(i), points(:, i), spins(i), descriptors(i), derivative)
+         END IF
+         jacobian(i, :) = derivative
+      END DO
+   END SUBROUTINE qs_skala_scf_constraints
+
+! **************************************************************************************************
+!> \brief Restore simultaneous physical zeros and solve tangential native orbital stationarity.
+!>        Every constraint and energy trial reevaluates the original native fields and functional.
+!>        The caller's selected limiting derivatives remain in effect. Convergence does not
+!>        establish normal cusp admissibility, tangential stability or automatic active-set SCF.
+!>        On failure retain the supplied coordinates and restore their native MOs, P, fields and
+!>        KS operator. On success these quantities describe the returned stationary coordinates.
+!> \param state ...
+!> \param coordinate Initial coordinates, replaced only on convergence.
+!> \param points ...
+!> \param domains ...
+!> \param spins ...
+!> \param descriptors ...
+!> \param physical_tolerances Absolute physical tolerance per constraint, in its own units.
+!> \param gradient_tolerance Absolute norm tolerance for the implicit free-coordinate derivative.
+!> \param energy Complete native energy at the returned coordinates.
+!> \param converged Whether simultaneous physical zeros and tangential stationarity are established.
+!> \param max_iterations Optional iteration limit.
+!> \param max_step Optional bound on the free-coordinate step norm.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
+                                        physical_tolerances, gradient_tolerance, energy, converged, &
+                                        max_iterations, max_step)
+      TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
+      REAL(dp), INTENT(INOUT)                            :: coordinate(:)
+      INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), INTENT(IN)                               :: physical_tolerances(:), &
+                                                            gradient_tolerance
+      REAL(dp), INTENT(OUT)                              :: energy
+      LOGICAL, INTENT(OUT)                               :: converged
+      INTEGER, INTENT(IN), OPTIONAL                      :: max_iterations
+      REAL(dp), INTENT(IN), OPTIONAL                     :: max_step
+
+      INTEGER                                            :: m
+      LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: gradient(:)
+      TYPE(physical_constraints_context)                 :: context
+
+      m = SIZE(physical_tolerances)
+      valid = SIZE(coordinate) == qs_skala_scf_size(state) .AND. ALL(SHAPE(points) == [3, m])
+      CPASSERT(valid)
+      valid = SIZE(domains) == m .AND. SIZE(spins) == m .AND. SIZE(descriptors) == m
+      CPASSERT(valid)
+      context%state => state
+      ALLOCATE (context%points(3, m), context%domains(m), context%spins(m), context%descriptors(m))
+      context%points(:, :) = points
+      context%domains(:) = domains
+      context%spins(:) = spins
+      context%descriptors(:) = descriptors
+      CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
+                                          coordinate, physical_tolerances, gradient_tolerance, converged, &
+                                          max_iterations=max_iterations, max_step=max_step)
+      ALLOCATE (gradient(SIZE(coordinate)))
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
+   END SUBROUTINE qs_skala_scf_stationarity
+
+   SUBROUTINE evaluate_native_constraints(coordinate, values, jacobian, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: values(:), jacobian(:, :)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      ! With no active constraints the gradient callback supplies the complete native trial.
+      IF (SIZE(values) == 0) RETURN
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         CALL qs_skala_scf_constraints(context%state, coordinate, context%points, context%domains, &
+                                       context%spins, context%descriptors, values, jacobian)
+      CLASS DEFAULT
+         CPABORT("Invalid native Skala constraint context.")
+      END SELECT
+   END SUBROUTINE evaluate_native_constraints
+
+   SUBROUTINE evaluate_native_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient)
+      CLASS DEFAULT
+         CPABORT("Invalid native Skala gradient context.")
+      END SELECT
+   END SUBROUTINE evaluate_native_gradient
 
    SUBROUTINE evaluate_physical_input(step, value, context)
       REAL(dp), INTENT(IN)                              :: step
