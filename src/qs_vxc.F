@@ -62,6 +62,7 @@ MODULE qs_vxc
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
                                               qs_upf_inverse_scf_paw_composite
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_evaluate
+   USE skala_density_constraints,       ONLY: skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: get_gauxc_section,&
                                               native_skala_gapw_composite_direct_ao,&
                                               native_skala_gapw_composite_reference,&
@@ -178,6 +179,7 @@ CONTAINS
                                                             weights_xc
       TYPE(qs_energy_type), POINTER                      :: inverse_energy
       TYPE(section_vals_type), POINTER                   :: gauxc_section
+      TYPE(skala_density_constraints_type), POINTER      :: skala_constraints
       TYPE(virial_type), POINTER                         :: virial
 
       CALL timeset(routineN, handle)
@@ -213,7 +215,7 @@ CONTAINS
                       xcint_weights=weights, &
                       virial=virial, &
                       rho_nlcc=rho_nlcc, &
-                      rho_nlcc_g=rho_nlcc_g)
+                      rho_nlcc_g=rho_nlcc_g, skala_constraints=skala_constraints)
       rho_nlcc_use => rho_nlcc
       rho_nlcc_g_use => rho_nlcc_g
       weights_use => weights
@@ -663,7 +665,8 @@ CONTAINS
                                    weights=weights_use, pw_pool=xc_pw_pool, &
                                    particle_set=particle_set, cell=cell, &
                                    compute_virial=compute_virial, virial_xc=virial%pv_xc, &
-                                   just_energy=.FALSE., atom_force=native_skala_atom_force)
+                                   just_energy=.FALSE., atom_force=native_skala_atom_force, &
+                                   density_constraints=skala_constraints)
             END IF
          ELSE IF (my_just_energy) THEN
             exc = xc_exc_calc(rho_r=rho_r, tau=tau, &

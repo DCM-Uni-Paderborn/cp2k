@@ -33,13 +33,18 @@ MODULE skala_gpw_functional
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
+   USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
+                                              skala_density_constraints_get,&
+                                              skala_density_constraints_matches,&
+                                              skala_density_constraints_type
    USE skala_gpw_features,              ONLY: &
         skala_gpw_atom_partition_hard, skala_gpw_atom_partition_smooth, &
         skala_gpw_atom_subchunk_count, skala_gpw_atom_subchunk_layout, skala_gpw_feature_build, &
         skala_gpw_feature_build_atom_subchunk_bounds, skala_gpw_feature_release, &
         skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives, &
         smooth_partition_atomic_weight_scale_derivative
-   USE skala_torch_api,                 ONLY: skala_torch_model_get_exc,&
+   USE skala_torch_api,                 ONLY: skala_torch_model_density_limits,&
+                                              skala_torch_model_get_exc,&
                                               skala_torch_model_load,&
                                               skala_torch_model_release,&
                                               skala_torch_model_type
@@ -398,10 +403,11 @@ CONTAINS
 !> \param virial_xc ...
 !> \param just_energy ...
 !> \param atom_force ...
+!> \param density_constraints Selected density subgradients of this KS environment.
 ! **************************************************************************************************
    SUBROUTINE skala_gpw_eval(vxc_rho, vxc_tau, exc, rho_r, rho_g, tau, xc_section, &
                              weights, pw_pool, particle_set, cell, compute_virial, virial_xc, &
-                             just_energy, atom_force)
+                             just_energy, atom_force, density_constraints)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: vxc_rho, vxc_tau
       REAL(KIND=dp), INTENT(OUT)                         :: exc
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
@@ -417,6 +423,8 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT), &
          OPTIONAL                                        :: atom_force
+      TYPE(skala_density_constraints_type), OPTIONAL, &
+         POINTER                                         :: density_constraints
 
       CHARACTER(len=default_path_length)                 :: model_path
       INTEGER :: i, ipt, ispin, iw, j, k, native_grid_atom_chunk_max_rows, &
@@ -426,7 +434,7 @@ CONTAINS
       INTEGER, DIMENSION(2, 3)                           :: bo
       LOGICAL :: has_atom_chunk_work, have_atom_coord_grad, lsd, my_just_energy, &
          native_grid_atom_chunk_routing, native_grid_atom_chunks, native_grid_diagnostics, &
-         native_grid_use_cuda, needs_atom_force, use_atom_subchunks
+         native_grid_use_cuda, needs_atom_force, use_atom_subchunks, use_density_constraints
       REAL(KIND=dp)                                      :: density_contraction, tau_contraction
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: density_grad, kin_grad
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: grad_grad
@@ -463,6 +471,13 @@ CONTAINS
 
       nspins = SIZE(rho_r)
       lsd = (nspins /= 1)
+      use_density_constraints = .FALSE.
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints)) THEN
+            use_density_constraints = density_constraints_match_geometry( &
+                                      density_constraints, rho_r, particle_set, cell)
+         END IF
+      END IF
       CALL get_skala_model_path(xc_section, model_path)
       gauxc_section => get_gauxc_section(xc_section)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_USE_CUDA", l_val=native_grid_use_cuda)
@@ -495,6 +510,11 @@ CONTAINS
          IF (native_grid_atom_partition == skala_gpw_atom_partition_hard) THEN
             native_grid_atom_partition = skala_gpw_atom_partition_smooth
          END IF
+         native_grid_atom_chunk_routing = .FALSE.
+         native_grid_atom_chunks = .FALSE.
+      END IF
+      IF (use_density_constraints .AND. .NOT. my_just_energy) THEN
+         ! Both limiting covectors refer to the complete original feature dictionary.
          native_grid_atom_chunk_routing = .FALSE.
          native_grid_atom_chunks = .FALSE.
       END IF
@@ -597,6 +617,9 @@ CONTAINS
                CALL fetch_local_feature_grads(features, density_grad, grad_grad, kin_grad)
             END IF
             CALL timestop(phase_handle)
+         END IF
+         IF (use_density_constraints) THEN
+            CALL apply_density_constraints(density_constraints, features, rho_r, density_grad)
          END IF
          IF (needs_atom_force) THEN
             CALL add_explicit_coordinate_force(atom_force, features, atom_coord_grad_t, &
@@ -1986,6 +2009,134 @@ CONTAINS
       max_rows = MAX(atom_chunk_auto_min_rows, MIN(atom_chunk_auto_max_rows, max_rows))
 
    END FUNCTION auto_atom_chunk_max_rows
+
+! **************************************************************************************************
+!> \brief Check the geometry associated with a selected density subgradient.
+!> \param state ...
+!> \param rho_r ...
+!> \param particle_set ...
+!> \param cell ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION density_constraints_match_geometry(state, rho_r, particle_set, cell) RESULT(matches)
+      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
+      TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
+      TYPE(cell_type), POINTER                           :: cell
+      LOGICAL                                            :: matches
+
+      INTEGER                                            :: i
+      REAL(dp), ALLOCATABLE                              :: positions(:, :)
+
+      matches = .FALSE.
+      IF (skala_density_constraints_count(state) == 0) RETURN
+      ALLOCATE (positions(3, SIZE(particle_set)))
+      DO i = 1, SIZE(particle_set)
+         positions(:, i) = particle_set(i)%r
+      END DO
+      matches = skala_density_constraints_matches(state, SIZE(rho_r), rho_r(1)%pw_grid%npts, &
+                                                  rho_r(1)%pw_grid%bounds, cell%hmat, positions)
+   END FUNCTION density_constraints_match_geometry
+
+! **************************************************************************************************
+!> \brief Apply the selected subgradient at physical zero-density constraints.
+!>        Every duplicated atomic feature row at an RKS point uses the same weight.
+!>        All other covectors and the original energy remain unchanged.
+!> \param state ...
+!> \param features ...
+!> \param rho_r ...
+!> \param density_grad ...
+! **************************************************************************************************
+   SUBROUTINE apply_density_constraints(state, features, rho_r, density_grad)
+      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
+      TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
+      REAL(dp), INTENT(INOUT)                            :: density_grad(:, :)
+
+      INTEGER                                            :: bo(2, 3), c, e, first_spin, i, &
+                                                            last_spin, n, nlocal, pos, row, spin
+      INTEGER, ALLOCATABLE :: active(:, :), counts(:), displs(:), global_entries(:), &
+         local_entries(:), local_rows(:), owners(:), points(:, :), spins(:)
+      REAL(dp)                                           :: energies(2), error, probe, tolerance
+      REAL(dp), ALLOCATABLE                              :: negative(:, :), negative_weights(:), &
+                                                            positive(:, :)
+
+      CPASSERT(.NOT. features%uses_atom_chunks)
+      CALL skala_density_constraints_get(state, points, spins, negative_weights, probe, tolerance)
+      n = SIZE(spins)
+      bo = rho_r(1)%pw_grid%bounds_local
+      ALLOCATE (local_rows(n), owners(n))
+      local_rows = 0
+      owners = 0
+      nlocal = 0
+      error = 0.0_dp
+      DO c = 1, n
+         IF (ANY(points(:, c) < bo(1, :)) .OR. ANY(points(:, c) > bo(2, :))) CYCLE
+         owners(c) = 1
+         row = features%feature_index(points(1, c), points(2, c), points(3, c))
+         local_rows(c) = row
+         first_spin = spins(c)
+         last_spin = spins(c)
+         IF (spins(c) == 0) THEN
+            first_spin = 1
+            last_spin = 2
+         END IF
+         DO pos = features%local_feature_offsets(row), features%local_feature_offsets(row + 1) - 1
+            i = features%local_feature_rows(pos)
+            error = MAX(error, MAXVAL(ABS(features%density(i, first_spin:last_spin))))
+            nlocal = nlocal + 3*(last_spin - first_spin + 1)
+         END DO
+      END DO
+      CALL rho_r(1)%pw_grid%para%group%sum(owners)
+      CPASSERT(ALL(owners == 1))
+      CALL rho_r(1)%pw_grid%para%group%max(error)
+      ! Away from zero the original differentiable branch supplies the derivative.
+      IF (error > tolerance) RETURN
+
+      ALLOCATE (local_entries(nlocal), counts(rho_r(1)%pw_grid%para%group%num_pe), &
+                displs(rho_r(1)%pw_grid%para%group%num_pe))
+      e = 0
+      DO c = 1, n
+         row = local_rows(c)
+         IF (row == 0) CYCLE
+         first_spin = MAX(1, spins(c))
+         last_spin = spins(c)
+         IF (spins(c) == 0) last_spin = 2
+         DO pos = features%local_feature_offsets(row), features%local_feature_offsets(row + 1) - 1
+            DO spin = first_spin, last_spin
+               local_entries(e + 1:e + 3) = [features%local_feature_rows(pos), spin, c]
+               e = e + 3
+            END DO
+         END DO
+      END DO
+      CPASSERT(e == nlocal)
+      CALL rho_r(1)%pw_grid%para%group%allgather(nlocal, counts)
+      displs(1) = 0
+      DO i = 2, SIZE(counts)
+         displs(i) = displs(i - 1) + counts(i - 1)
+      END DO
+      ALLOCATE (global_entries(SUM(counts)), active(2, SUM(counts)/3))
+      CALL rho_r(1)%pw_grid%para%group%allgatherv(local_entries, global_entries, counts, displs)
+      DO i = 1, SIZE(active, 2)
+         active(:, i) = global_entries(3*i - 2:3*i - 1)
+      END DO
+      CALL skala_torch_model_density_limits(cached_model, features%inputs, features%density, &
+                                            active, probe, negative, positive, energies)
+      DO c = 1, n
+         row = local_rows(c)
+         IF (row == 0) CYCLE
+         first_spin = MAX(1, spins(c))
+         last_spin = spins(c)
+         IF (spins(c) == 0) last_spin = 2
+         density_grad(row, first_spin:last_spin) = 0.0_dp
+         DO pos = features%local_feature_offsets(row), features%local_feature_offsets(row + 1) - 1
+            i = features%local_feature_rows(pos)
+            density_grad(row, first_spin:last_spin) = density_grad(row, first_spin:last_spin) + &
+                                                      negative_weights(c)*negative(i, first_spin:last_spin) + &
+                                                      (1.0_dp - negative_weights(c))*positive(i, first_spin:last_spin)
+         END DO
+      END DO
+   END SUBROUTINE apply_density_constraints
 
 ! **************************************************************************************************
 !> \brief Map full Torch feature gradients back to this rank's local grid order.

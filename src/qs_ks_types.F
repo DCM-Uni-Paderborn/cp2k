@@ -63,6 +63,8 @@ MODULE qs_ks_types
                                               qs_upf_inverse_scf_type
    USE qs_uspp_types,                   ONLY: qs_uspp_release,&
                                               qs_uspp_type
+   USE skala_density_constraints,       ONLY: skala_density_constraints_reset,&
+                                              skala_density_constraints_type
    USE task_list_types,                 ONLY: deallocate_task_list,&
                                               task_list_type
    USE virial_types,                    ONLY: virial_type
@@ -154,6 +156,7 @@ MODULE qs_ks_types
 
       TYPE(qs_uspp_type), POINTER                           :: uspp => NULL()
       TYPE(qs_upf_inverse_scf_type), POINTER                :: upf_inverse => NULL()
+      TYPE(skala_density_constraints_type), POINTER        :: skala_constraints => NULL()
 
       TYPE(kpoint_transitional_type)                        :: matrix_ks, &
                                                                matrix_s, &
@@ -231,6 +234,7 @@ CONTAINS
       CALL qs_rho_create(ks_env%rho)
       ALLOCATE (ks_env%rho_xc)
       CALL qs_rho_create(ks_env%rho_xc)
+      ALLOCATE (ks_env%skala_constraints)
    END SUBROUTINE qs_ks_env_create
 
 ! **************************************************************************************************
@@ -329,6 +333,7 @@ CONTAINS
 !> \param matrix_metric Orbital normalization metric (Gaussian overlap for ordinary kinds).
 !> \param matrix_metric_kp Metric in the image-indexed representation.
 !> \param upf_inverse ...
+!> \param skala_constraints ...
 ! **************************************************************************************************
    SUBROUTINE get_ks_env(ks_env, v_hartree_rspace, &
                          s_mstruct_changed, rho_changed, exc_accint, &
@@ -350,7 +355,8 @@ CONTAINS
                          particle_set, energy, force, local_particles, local_molecules, &
                          molecule_kind_set, molecule_set, subsys, cp_subsys, virial, results, atprop, &
                          nkind, natom, dft_control, dbcsr_dist, distribution_2d, pw_env, &
-                         para_env, blacs_env, nelectron_total, nelectron_spin, uspp, matrix_metric, matrix_metric_kp, upf_inverse)
+                         para_env, blacs_env, nelectron_total, nelectron_spin, uspp, matrix_metric, matrix_metric_kp, &
+                         upf_inverse, skala_constraints)
 
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: v_hartree_rspace
@@ -410,6 +416,8 @@ CONTAINS
       TYPE(qs_uspp_type), OPTIONAL, POINTER              :: uspp
       TYPE(dbcsr_p_type), OPTIONAL, POINTER              :: matrix_metric(:), matrix_metric_kp(:, :)
       TYPE(qs_upf_inverse_scf_type), OPTIONAL, POINTER   :: upf_inverse
+      TYPE(skala_density_constraints_type), OPTIONAL, &
+         POINTER                                         :: skala_constraints
 
       IF (.NOT. ASSOCIATED(ks_env%subsys)) CPABORT("get_ks_env: subsys not associated")
 
@@ -422,6 +430,7 @@ CONTAINS
       IF (PRESENT(v_hartree_rspace)) v_hartree_rspace => ks_env%v_hartree_rspace
 
       IF (PRESENT(upf_inverse)) upf_inverse => ks_env%upf_inverse
+      IF (PRESENT(skala_constraints)) skala_constraints => ks_env%skala_constraints
       IF (PRESENT(uspp)) uspp => ks_env%uspp
       ! Eigensolvers and electron counts use the metric. AO integrals continue to use matrix_s.
       IF (PRESENT(matrix_metric)) THEN
@@ -794,6 +803,11 @@ CONTAINS
    SUBROUTINE qs_ks_release(ks_env)
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
 
+      IF (ASSOCIATED(ks_env%skala_constraints)) THEN
+         CALL skala_density_constraints_reset(ks_env%skala_constraints)
+         DEALLOCATE (ks_env%skala_constraints)
+         NULLIFY (ks_env%skala_constraints)
+      END IF
       CALL qs_upf_inverse_scf_release(ks_env%upf_inverse)
       CALL qs_uspp_release(ks_env%uspp)
 
@@ -913,6 +927,7 @@ CONTAINS
    SUBROUTINE qs_ks_part_release(ks_env)
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
 
+      IF (ASSOCIATED(ks_env%skala_constraints)) CALL skala_density_constraints_reset(ks_env%skala_constraints)
       CALL qs_upf_inverse_scf_release(ks_env%upf_inverse)
       CALL qs_uspp_release(ks_env%uspp)
 

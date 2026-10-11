@@ -1477,6 +1477,7 @@ list(
   xc_adiabatic_methods.F
   xc_adiabatic_utils.F
   xc/cp_linked_list_xc_deriv.F
+  xc/skala_density_constraints.F
   xc/skala_gpw_features.F
   xc/skala_gpw_functional.F
   xc/skala_torch_api.F
