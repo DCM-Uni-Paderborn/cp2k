@@ -36,14 +36,16 @@ MODULE skala_gpw_functional
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
                                               skala_density_constraints_get,&
                                               skala_density_constraints_matches,&
-                                              skala_density_constraints_type
+                                              skala_density_constraints_type,&
+                                              skala_density_descriptor,&
+                                              skala_kinetic_descriptor
    USE skala_gpw_features,              ONLY: &
         skala_gpw_atom_partition_hard, skala_gpw_atom_partition_smooth, &
         skala_gpw_atom_subchunk_count, skala_gpw_atom_subchunk_layout, skala_gpw_feature_build, &
         skala_gpw_feature_build_atom_subchunk_bounds, skala_gpw_feature_release, &
         skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives, &
         smooth_partition_atomic_weight_scale_derivative
-   USE skala_torch_api,                 ONLY: skala_torch_model_density_limits,&
+   USE skala_torch_api,                 ONLY: skala_torch_model_descriptor_limits,&
                                               skala_torch_model_get_exc,&
                                               skala_torch_model_load,&
                                               skala_torch_model_release,&
@@ -619,7 +621,7 @@ CONTAINS
             CALL timestop(phase_handle)
          END IF
          IF (use_density_constraints) THEN
-            CALL apply_density_constraints(density_constraints, features, rho_r, density_grad)
+            CALL apply_descriptor_constraints(density_constraints, features, rho_r, density_grad, kin_grad)
          END IF
          IF (needs_atom_force) THEN
             CALL add_explicit_coordinate_force(atom_force, features, atom_coord_grad_t, &
@@ -2039,30 +2041,33 @@ CONTAINS
    END FUNCTION density_constraints_match_geometry
 
 ! **************************************************************************************************
-!> \brief Apply the selected subgradient at physical zero-density constraints.
+!> \brief Apply selected subgradients at physical density and kinetic-density zeros.
 !>        Every duplicated atomic feature row at an RKS point uses the same weight.
 !>        All other covectors and the original energy remain unchanged.
 !> \param state ...
 !> \param features ...
 !> \param rho_r ...
 !> \param density_grad ...
+!> \param kin_grad ...
 ! **************************************************************************************************
-   SUBROUTINE apply_density_constraints(state, features, rho_r, density_grad)
+   SUBROUTINE apply_descriptor_constraints(state, features, rho_r, density_grad, kin_grad)
       TYPE(skala_density_constraints_type), INTENT(IN)   :: state
       TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
-      REAL(dp), INTENT(INOUT)                            :: density_grad(:, :)
+      REAL(dp), INTENT(INOUT), TARGET                    :: density_grad(:, :), kin_grad(:, :)
 
-      INTEGER                                            :: bo(2, 3), c, e, first_spin, i, &
-                                                            last_spin, n, nlocal, pos, row, spin
-      INTEGER, ALLOCATABLE :: active(:, :), counts(:), displs(:), global_entries(:), &
+      INTEGER                                            :: bo(2, 3), c, descriptor, e, first_spin, i, &
+                                                            last_spin, n, nactive, nlocal, pos, row, spin
+      INTEGER, ALLOCATABLE :: active(:, :), counts(:), descriptors(:), displs(:), global_entries(:), &
          local_entries(:), local_entry_counts(:), local_rows(:), owners(:), points(:, :), spins(:)
-      REAL(dp)                                           :: energies(2), probe, tolerance
+      REAL(dp)                                           :: energies(2), probes(2), tolerances(2)
+      REAL(dp), POINTER                                  :: covector(:, :)
       REAL(dp), ALLOCATABLE                              :: constraint_error(:), negative(:, :), &
                                                             negative_weights(:), positive(:, :)
 
       CPASSERT(.NOT. features%uses_atom_chunks)
-      CALL skala_density_constraints_get(state, points, spins, negative_weights, probe, tolerance)
+      CALL skala_density_constraints_get(state, points, spins, negative_weights, probes(1), tolerances(1), &
+                                          descriptors, probes(2), tolerances(2))
       n = SIZE(spins)
       bo = rho_r(1)%pw_grid%bounds_local
       ALLOCATE (local_rows(n), owners(n), local_entry_counts(n), constraint_error(n))
@@ -2083,22 +2088,26 @@ CONTAINS
          END IF
          DO pos = features%local_feature_offsets(row), features%local_feature_offsets(row + 1) - 1
             i = features%local_feature_rows(pos)
-            constraint_error(c) = MAX(constraint_error(c), MAXVAL(ABS(features%density(i, first_spin:last_spin))))
-            local_entry_counts(c) = local_entry_counts(c) + 3*(last_spin - first_spin + 1)
+            IF (descriptors(c) == skala_density_descriptor) THEN
+               constraint_error(c) = MAX(constraint_error(c), MAXVAL(ABS(features%density(i, first_spin:last_spin))))
+            ELSE
+               constraint_error(c) = MAX(constraint_error(c), MAXVAL(ABS(features%kin(i, first_spin:last_spin))))
+            END IF
+            local_entry_counts(c) = local_entry_counts(c) + 4*(last_spin - first_spin + 1)
          END DO
       END DO
       CALL rho_r(1)%pw_grid%para%group%sum(owners)
       CPASSERT(ALL(owners == 1))
       CALL rho_r(1)%pw_grid%para%group%max(constraint_error)
       ! Away from zero the original differentiable branch supplies the derivative.
-      IF (ALL(constraint_error > tolerance)) RETURN
-      nlocal = SUM(local_entry_counts, MASK=constraint_error <= tolerance)
+      IF (ALL(constraint_error > tolerances(descriptors))) RETURN
+      nlocal = SUM(local_entry_counts, MASK=constraint_error <= tolerances(descriptors))
 
       ALLOCATE (local_entries(nlocal), counts(rho_r(1)%pw_grid%para%group%num_pe), &
                 displs(rho_r(1)%pw_grid%para%group%num_pe))
       e = 0
       DO c = 1, n
-         IF (constraint_error(c) > tolerance) CYCLE
+         IF (constraint_error(c) > tolerances(descriptors(c))) CYCLE
          row = local_rows(c)
          IF (row == 0) CYCLE
          first_spin = MAX(1, spins(c))
@@ -2106,8 +2115,8 @@ CONTAINS
          IF (spins(c) == 0) last_spin = 2
          DO pos = features%local_feature_offsets(row), features%local_feature_offsets(row + 1) - 1
             DO spin = first_spin, last_spin
-               local_entries(e + 1:e + 3) = [features%local_feature_rows(pos), spin, c]
-               e = e + 3
+               local_entries(e + 1:e + 4) = [features%local_feature_rows(pos), spin, c, descriptors(c)]
+               e = e + 4
             END DO
          END DO
       END DO
@@ -2118,29 +2127,47 @@ CONTAINS
       DO i = 2, SIZE(counts)
          displs(i) = displs(i - 1) + counts(i - 1)
       END DO
-      ALLOCATE (global_entries(SUM(counts)), active(2, SUM(counts)/3))
+      ALLOCATE (global_entries(SUM(counts)))
       CALL rho_r(1)%pw_grid%para%group%allgatherv(local_entries, global_entries, counts, displs)
-      DO i = 1, SIZE(active, 2)
-         active(:, i) = global_entries(3*i - 2:3*i - 1)
-      END DO
-      CALL skala_torch_model_density_limits(cached_model, features%inputs, features%density, &
-                                            active, probe, negative, positive, energies)
-      DO c = 1, n
-         IF (constraint_error(c) > tolerance) CYCLE
-         row = local_rows(c)
-         IF (row == 0) CYCLE
-         first_spin = MAX(1, spins(c))
-         last_spin = spins(c)
-         IF (spins(c) == 0) last_spin = 2
-         density_grad(row, first_spin:last_spin) = 0.0_dp
-         DO pos = features%local_feature_offsets(row), features%local_feature_offsets(row + 1) - 1
-            i = features%local_feature_rows(pos)
-            density_grad(row, first_spin:last_spin) = density_grad(row, first_spin:last_spin) + &
-                                                      negative_weights(c)*negative(i, first_spin:last_spin) + &
-                                                      (1.0_dp - negative_weights(c))*positive(i, first_spin:last_spin)
+      DO descriptor = skala_density_descriptor, skala_kinetic_descriptor
+         nactive = COUNT(global_entries(4::4) == descriptor)
+         IF (nactive == 0) CYCLE
+         ALLOCATE (active(2, nactive))
+         e = 0
+         DO i = 1, SIZE(global_entries)/4
+            IF (global_entries(4*i) /= descriptor) CYCLE
+            e = e + 1
+            active(:, e) = global_entries(4*i - 3:4*i - 2)
          END DO
+         IF (descriptor == skala_density_descriptor) THEN
+            CALL skala_torch_model_descriptor_limits(cached_model, features%inputs, "density", features%density, &
+                                                     active, probes(descriptor), negative, positive, energies)
+            covector => density_grad
+         ELSE
+            CALL skala_torch_model_descriptor_limits(cached_model, features%inputs, "kin", features%kin, &
+                                                     active, probes(descriptor), negative, positive, energies)
+            covector => kin_grad
+         END IF
+         DO c = 1, n
+            IF (descriptors(c) /= descriptor) CYCLE
+            IF (constraint_error(c) > tolerances(descriptor)) CYCLE
+            row = local_rows(c)
+            IF (row == 0) CYCLE
+            first_spin = MAX(1, spins(c))
+            last_spin = spins(c)
+            IF (spins(c) == 0) last_spin = 2
+            covector(row, first_spin:last_spin) = 0.0_dp
+            DO pos = features%local_feature_offsets(row), features%local_feature_offsets(row + 1) - 1
+               i = features%local_feature_rows(pos)
+               covector(row, first_spin:last_spin) = covector(row, first_spin:last_spin) + &
+                                                    negative_weights(c)*negative(i, first_spin:last_spin) + &
+                                                    (1.0_dp - negative_weights(c))*positive(i, first_spin:last_spin)
+            END DO
+         END DO
+         NULLIFY (covector)
+         DEALLOCATE (active)
       END DO
-   END SUBROUTINE apply_density_constraints
+   END SUBROUTINE apply_descriptor_constraints
 
 ! **************************************************************************************************
 !> \brief Map full Torch feature gradients back to this rank's local grid order.

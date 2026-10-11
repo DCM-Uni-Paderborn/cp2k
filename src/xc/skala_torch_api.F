@@ -35,7 +35,7 @@ MODULE skala_torch_api
 
    PUBLIC :: skala_torch_model_type, skala_torch_model_load, skala_torch_model_release
    PUBLIC :: skala_torch_model_get_exc, skala_torch_model_get_exc_density
-   PUBLIC :: skala_torch_model_density_limits
+   PUBLIC :: skala_torch_model_density_limits, skala_torch_model_descriptor_limits
    PUBLIC :: skala_torch_model_needs_feature, skala_torch_model_protocol_version
 
    TYPE skala_torch_model_type
@@ -219,35 +219,64 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: negative(:, :), positive(:, :)
       REAL(dp), INTENT(OUT)                              :: energies(2)
 
+      CALL skala_torch_model_descriptor_limits(model, inputs, "density", density, active, probe, &
+                                               negative, positive, energies)
+   END SUBROUTINE skala_torch_model_density_limits
+
+! **************************************************************************************************
+!> \brief Evaluate original-model one-sided covectors of a physical density or kinetic density.
+!>        Other features are detached and unchanged. Original input gradients are not accumulated.
+!>        The caller supplies physical zero constraints and verifies convergence in probe magnitude.
+!> \param model Original loaded model.
+!> \param inputs Complete original feature dictionary, including its integration weights.
+!> \param feature Dictionary key, density or kin.
+!> \param values Original full two-spin physical descriptor layout.
+!> \param active One-based feature row and spin indices, shape (2, number of selected samples).
+!> \param probe Positive physical descriptor magnitude for the one-sided limit.
+!> \param negative New owned weighted descriptor covector on the negative side.
+!> \param positive New owned weighted descriptor covector on the positive side.
+!> \param energies Complete discrete energies of the two limit evaluations.
+! **************************************************************************************************
+   SUBROUTINE skala_torch_model_descriptor_limits(model, inputs, feature, values, active, probe, &
+                                                 negative, positive, energies)
+      TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
+      TYPE(torch_dict_type), INTENT(IN)                  :: inputs
+      CHARACTER(len=*), INTENT(IN)                       :: feature
+      REAL(dp), INTENT(IN)                               :: values(:, :), probe
+      INTEGER, INTENT(IN)                                :: active(:, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: negative(:, :), positive(:, :)
+      REAL(dp), INTENT(OUT)                              :: energies(2)
+
       INTEGER                                            :: branch, sample
-      REAL(dp), ALLOCATABLE                              :: branch_density(:, :)
+      REAL(dp), ALLOCATABLE                              :: branch_values(:, :)
       REAL(dp), POINTER                                  :: derivative(:, :)
       TYPE(torch_dict_type)                             :: branch_inputs
-      TYPE(torch_tensor_type)                           :: density_t, weights_t, energy_t, derivative_t
+      TYPE(torch_tensor_type)                           :: descriptor_t, weights_t, energy_t, derivative_t
 
-      CPASSERT(SIZE(density, 2) == 2)
+      CPASSERT(feature == "density" .OR. feature == "kin")
+      CPASSERT(SIZE(values, 2) == 2)
       CPASSERT(SIZE(active, 1) == 2 .AND. SIZE(active, 2) > 0)
-      CPASSERT(ALL(active(1, :) >= 1) .AND. ALL(active(1, :) <= SIZE(density, 1)))
+      CPASSERT(ALL(active(1, :) >= 1) .AND. ALL(active(1, :) <= SIZE(values, 1)))
       CPASSERT(ALL(active(2, :) >= 1) .AND. ALL(active(2, :) <= 2))
       CPASSERT(probe > 0.0_dp .AND. probe < HUGE(probe))
-      ALLOCATE (branch_density(SIZE(density, 1), 2))
-      ALLOCATE (negative(SIZE(density, 1), 2), positive(SIZE(density, 1), 2))
+      ALLOCATE (branch_values(SIZE(values, 1), 2))
+      ALLOCATE (negative(SIZE(values, 1), 2), positive(SIZE(values, 1), 2))
       DO branch = 1, 2
-         branch_density(:, :) = density
+         branch_values(:, :) = values
          DO sample = 1, SIZE(active, 2)
-            branch_density(active(1, sample), active(2, sample)) = REAL(2*branch - 3, dp)*probe
+            branch_values(active(1, sample), active(2, sample)) = REAL(2*branch - 3, dp)*probe
          END DO
-         CALL torch_dict_clone_detached(inputs, branch_inputs, "density")
-         CALL torch_tensor_from_array(density_t, branch_density, requires_grad=.TRUE.)
-         CALL torch_tensor_to_device_leaf(density_t, .TRUE.)
-         CALL torch_dict_insert(branch_inputs, "density", density_t)
+         CALL torch_dict_clone_detached(inputs, branch_inputs, feature)
+         CALL torch_tensor_from_array(descriptor_t, branch_values, requires_grad=.TRUE.)
+         CALL torch_tensor_to_device_leaf(descriptor_t, .TRUE.)
+         CALL torch_dict_insert(branch_inputs, feature, descriptor_t)
          CALL torch_dict_get(branch_inputs, "grid_weights", weights_t)
          CALL skala_torch_model_get_exc(model, branch_inputs, weights_t, energy_t, energies(branch))
          CALL torch_tensor_backward_scalar(energy_t)
-         CALL torch_tensor_grad(density_t, derivative_t)
+         CALL torch_tensor_grad(descriptor_t, derivative_t)
          NULLIFY (derivative)
          CALL torch_tensor_data_ptr(derivative_t, derivative)
-         CPASSERT(ALL(SHAPE(derivative) == SHAPE(density)))
+         CPASSERT(ALL(SHAPE(derivative) == SHAPE(values)))
          IF (branch == 1) THEN
             negative(:, :) = derivative
          ELSE
@@ -257,10 +286,10 @@ CONTAINS
          CALL torch_tensor_release(energy_t)
          CALL torch_tensor_release(weights_t)
          CALL torch_dict_release(branch_inputs)
-         CALL torch_tensor_release(density_t)
+         CALL torch_tensor_release(descriptor_t)
       END DO
-      DEALLOCATE (branch_density)
-   END SUBROUTINE skala_torch_model_density_limits
+      DEALLOCATE (branch_values)
+   END SUBROUTINE skala_torch_model_descriptor_limits
 
 ! **************************************************************************************************
 !> \brief Parse a TorchScript extra_files JSON list of feature names.
