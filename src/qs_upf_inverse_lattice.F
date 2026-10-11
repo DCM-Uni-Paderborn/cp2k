@@ -24,6 +24,7 @@ MODULE qs_upf_inverse_lattice
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_pair_response
    USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
+   USE util,                            ONLY: sort
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -592,15 +593,22 @@ CONTAINS
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: images(:, :)
 
-      INTEGER                                            :: i, j
+      INTEGER                                            :: i, n
+      INTEGER, ALLOCATABLE                               :: ordered(:, :), permutation(:)
 
       CPASSERT(.NOT. frame%atom_local)
       CPASSERT(SIZE(images, 1) == 3 .AND. SIZE(images, 2) > 0)
-      DO i = 1, SIZE(images, 2)
+      n = SIZE(images, 2)
+      DO i = 1, n
          CPASSERT(ALL(images(:, i)*frame%periodicity == images(:, i)))
-         DO j = 1, i - 1
-            CPASSERT(ANY(images(:, i) /= images(:, j)))
-         END DO
+      END DO
+      IF (n == 1) RETURN
+      ! Sort a private copy. The caller's coefficient/image correspondence is unchanged.
+      ALLOCATE (ordered(3, n), permutation(n))
+      ordered(:, :) = images
+      CALL sort(ordered, 1, n, 1, 3, permutation)
+      DO i = 2, n
+         CPASSERT(ANY(ordered(:, i) /= ordered(:, i - 1)))
       END DO
    END SUBROUTINE check_lattice_images
 
