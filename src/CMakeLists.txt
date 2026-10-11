@@ -1480,6 +1480,7 @@ list(
   xc/skala_density_constraints.F
   xc/skala_gpw_features.F
   xc/skala_gpw_functional.F
+  xc/skala_orbital_constraints.F
   xc/skala_torch_api.F
   xc_pot_saop.F
   xc_write_output.F
