@@ -2058,11 +2058,11 @@ CONTAINS
             CPASSERT(ASSOCIATED(mo_set%cmo_coeff))
             CPASSERT(ASSOCIATED(eigenvalues))
             CPASSERT(nao > 0)
-            CPASSERT(nmo > 0)
+            CPASSERT(nmo >= 0)
             IF (scf_env%qs_ot_env(ot_channel)%settings%do_ener) nocc = nmo
-            IF (nocc < 1 .OR. nocc > nmo) THEN
+            IF (nocc < 0 .OR. nocc > nmo) THEN
                CALL cp_abort(__LOCATION__, &
-                             "K-point OT requires at least one occupied orbital in every spin channel.")
+                             "K-point OT rank exceeds the available orbital space.")
             END IF
 
             CALL cp_fm_create(mo_coeff, mo_set%cmo_coeff%matrix_struct)
@@ -2273,6 +2273,13 @@ CONTAINS
          END IF
          DO ispin = 1, nspin_ot
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
+            CALL dbcsr_get_info(scf_env%qs_ot_env(ot_channel)%matrix_c0, nfullcols_total=nocc)
+            IF (nocc == 0) THEN
+               CALL qs_ot_new_preconditioner(scf_env%qs_ot_env(ot_channel), &
+                                             scf_env%ot_preconditioner(ot_channel)%preconditioner)
+               NULLIFY (scf_env%qs_ot_env(ot_channel)%preconditioner)
+               CYCLE
+            END IF
             IF (ispin > 1 .AND. &
                 (prec_type == ot_precond_full_kinetic .OR. prec_type == ot_precond_s_inverse)) THEN
                source_channel = qs_ot_channel_index(1, ikpoint, nspin_ot)

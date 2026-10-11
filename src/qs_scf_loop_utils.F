@@ -841,8 +841,8 @@ CONTAINS
             CALL cp_fm_create(mo_coeff_im, kp%mos(ispin)%cmo_coeff%matrix_struct)
             CALL cp_cfm_to_fm(kp%mos(ispin)%cmo_coeff, mo_coeff, mo_coeff_im)
             IF (local_ot_env(local_channel)%settings%do_ener) homo = nmo
-            CPASSERT(homo >= 1 .AND. homo <= nmo)
-            IF (.NOT. local_ot_env(local_channel)%settings%do_ener) THEN
+            CPASSERT(homo >= 0 .AND. homo <= nmo)
+            IF (.NOT. local_ot_env(local_channel)%settings%do_ener .AND. homo > 0) THEN
                IF (MAXVAL(ABS(occupation_numbers(1:homo) - occupation_numbers(1))) > &
                    100.0_dp*EPSILON(1.0_dp)) THEN
                   CALL cp_abort(__LOCATION__, &

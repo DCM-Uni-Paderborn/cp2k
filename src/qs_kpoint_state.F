@@ -77,7 +77,8 @@ CONTAINS
    SUBROUTINE qs_kpoint_state_prepare_fixed_density(kpoints)
       TYPE(kpoint_type), POINTER                         :: kpoints
 
-      INTEGER                                            :: ikpoint_local, ispin, nao, nmo, nocc
+      INTEGER                                            :: ikpoint_local, ispin, nao, nmo, nocc, &
+                                                            nactive
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: density_eigenvalues
       TYPE(cp_cfm_type)                                  :: density_metric, density_work, matrix_p, &
@@ -112,11 +113,15 @@ CONTAINS
 
          DO ispin = 1, SIZE(kp%mos)
             CALL get_mo_set(kp%mos(ispin), homo=nocc, cmo_coeff=cmo_coeff, nmo=nmo)
+            CPASSERT(nocc >= 0 .AND. nocc <= nmo)
+            IF (nmo == 0) CYCLE
             CPASSERT(ASSOCIATED(cmo_coeff))
-            CPASSERT(nocc >= 1 .AND. nocc <= nmo)
+            ! Retained empty-spin virtuals need a metric-normalized reference, although P is zero.
+            nactive = nocc
+            IF (nocc == 0) nactive = nmo
 
             CALL cp_fm_struct_create(active_struct, template_fmstruct=cmo_coeff%matrix_struct, &
-                                     ncol_global=nocc)
+                                     ncol_global=nactive)
             CALL cp_fm_to_cfm(kp%ot_hmat(1, ispin), kp%ot_hmat(2, ispin), matrix_p)
             CALL cp_cfm_create(projected, active_struct, name="fixed-density natural orbitals")
             CALL cp_cfm_create(density_metric, square_struct, name="natural-orbital metric")
@@ -132,13 +137,13 @@ CONTAINS
                                z_zero, density_metric)
             CALL cp_cfm_scale(-z_one, density_metric)
             CALL cp_cfm_to_cfm(matrix_s, matrix_s_work)
-            ALLOCATE (density_eigenvalues(nocc))
+            ALLOCATE (density_eigenvalues(nactive))
             CALL cp_cfm_geeig(density_metric, matrix_s_work, projected, &
                               density_eigenvalues, density_work, lowest_subset=.TRUE.)
             DEALLOCATE (density_eigenvalues)
 
             CALL cp_cfm_set_all(cmo_coeff, CMPLX(0.0_dp, 0.0_dp, KIND=dp))
-            CALL cp_cfm_to_cfm(projected, cmo_coeff, nocc)
+            CALL cp_cfm_to_cfm(projected, cmo_coeff, nactive)
             CALL cp_cfm_release(matrix_s_work)
             CALL cp_cfm_release(density_work)
             CALL cp_cfm_release(density_metric)
@@ -196,9 +201,10 @@ CONTAINS
          DO ispin = 1, SIZE(kp%mos)
             CALL get_mo_set(kp%mos(ispin), homo=nocc, cmo_coeff=cmo_coeff, nmo=nmo, &
                             eigenvalues=eigenvalues_re)
+            CPASSERT(nocc >= 0 .AND. nocc <= nmo)
+            IF (nocc == 0) CYCLE
             CPASSERT(ASSOCIATED(cmo_coeff))
             CPASSERT(ASSOCIATED(eigenvalues_re))
-            CPASSERT(nocc >= 1 .AND. nocc <= nmo)
             CPASSERT(SIZE(eigenvalues_re) >= nocc)
 
             CALL cp_fm_struct_create(active_struct, template_fmstruct=cmo_coeff%matrix_struct, &
@@ -343,6 +349,7 @@ CONTAINS
             CALL get_mo_set(kp%mos(ispin), homo=nocc, cmo_coeff=cmo_coeff, &
                             mo_coeff=mo_coeff, nmo=nmo)
             nactive = MERGE(nmo, nocc, full_space)
+            IF (nactive == 0 .AND. .NOT. full_space) CYCLE
             IF (nactive < 1 .OR. nactive > nmo) THEN
                coefficient_norm = 0.0_dp
                CYCLE
@@ -448,8 +455,8 @@ CONTAINS
             CPASSERT(ASSOCIATED(occupation_numbers))
             ! The fixed rank comes from the spin electron count, not a previous k-point filling.
             nocc = NINT(REAL(nelectron, KIND=dp)/maxocc)
-            IF (nocc < 1 .OR. nocc > nmo) THEN
-               CPABORT("Fixed-occupation k-point OT requires a nonempty occupied subspace.")
+            IF (nocc < 0 .OR. nocc > nmo) THEN
+               CPABORT("Fixed-occupation k-point OT rank exceeds the available orbital space.")
             END IF
             IF (ABS(maxocc*REAL(nocc, KIND=dp) - REAL(nelectron, KIND=dp)) > &
                 100.0_dp*EPSILON(1.0_dp)) THEN

@@ -1453,9 +1453,15 @@ CONTAINS
       TYPE(qs_ot_type)                                   :: qs_ot_env
       TYPE(dbcsr_type)                                   :: matrix_in, matrix_in_im, matrix_out, matrix_out_im
 
-      INTEGER                                            :: pass
+      INTEGER                                            :: k, pass
       TYPE(dbcsr_type)                                   :: overlap, overlap_im, work
 
+      CALL dbcsr_get_info(matrix_in, nfullcols_total=k)
+      IF (k == 0) THEN
+         CALL dbcsr_set(matrix_out, 0.0_dp)
+         CALL dbcsr_set(matrix_out_im, 0.0_dp)
+         RETURN
+      END IF
       CALL apply_preconditioner(qs_ot_env%preconditioner, matrix_in, matrix_in_im, matrix_out, matrix_out_im)
       IF (qs_ot_env%settings%ot_algorithm /= 'TOD') RETURN
 
@@ -2087,6 +2093,10 @@ CONTAINS
       tmp_nk => qs_ot_env%buf1_n_k
 
       CALL dbcsr_get_info(c_re, nfullrows_total=n, nfullcols_total=k)
+      IF (k == 0) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
       IF (PRESENT(qs_ot_env1)) THEN
          update = qs_ot_ref_update(qs_ot_env1)
       ELSE
@@ -3485,6 +3495,11 @@ CONTAINS
 
       IF (PRESENT(preconditioner_rejected)) preconditioner_rejected = .FALSE.
       IF (qs_ot_env%os_valid) RETURN
+      CALL dbcsr_get_info(qs_ot_env%matrix_sc0, nfullcols_total=k)
+      IF (k == 0) THEN
+         qs_ot_env%os_valid = .TRUE.
+         RETURN
+      END IF
 
       IF (ASSOCIATED(qs_ot_env%preconditioner)) THEN
          target_re => qs_ot_env%matrix_psc0
@@ -4080,6 +4095,10 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       CALL dbcsr_get_info(qs_ot_env%matrix_p, nfullrows_total=k)
+      IF (k == 0) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
       CALL cp_dbcsr_heevd(matrix_re=qs_ot_env%matrix_p, matrix_im=qs_ot_env%matrix_p_im, &
                           eigenvectors_re=qs_ot_env%matrix_r, eigenvectors_im=qs_ot_env%matrix_r_im, &
                           eigenvalues=qs_ot_env%evals, para_env=qs_ot_env%para_env, &
