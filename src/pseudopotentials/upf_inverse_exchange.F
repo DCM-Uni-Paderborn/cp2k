@@ -244,7 +244,7 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: auxiliary_images(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: cell_derivative(:, :, :, :, :)
 
-      INTEGER                                            :: axis, i, ia, ir, j, l, lm, m, n, naux, &
+      INTEGER                                            :: auxiliary, axis, i, ia, ir, j, l, lm, m, n, naux, &
                                                             p, pair, q
       LOGICAL                                            :: derivatives
       REAL(dp)                                           :: point(3), radial
@@ -310,8 +310,12 @@ CONTAINS
                                                            potential, gradient, cell_gradient)
                      DO j = 1, 3
                         DO axis = 1, 3
-                           cell_projected(:, :, axis, j) = cell_projected(:, :, axis, j) + &
-                                          SPREAD(harmonics(ia, :), 2, naux)*SPREAD(cell_gradient(axis, j, :), 1, SIZE(harmonics, 2))
+                           DO auxiliary = 1, naux
+                              DO lm = 1, SIZE(harmonics, 2)
+                                 cell_projected(lm, auxiliary, axis, j) = cell_projected(lm, auxiliary, axis, j) + &
+                                                                        harmonics(ia, lm)*cell_gradient(axis, j, auxiliary)
+                              END DO
+                           END DO
                         END DO
                      END DO
                   ELSE
@@ -321,8 +325,12 @@ CONTAINS
                   CALL gaussian_coulomb_fields_evaluate(fields, point, potential, gradient)
                END IF
                DO axis = 1, 3
-                  d_projected(:, :, axis) = d_projected(:, :, axis) + &
-                                            SPREAD(harmonics(ia, :), 2, naux)*SPREAD(gradient(axis, :), 1, SIZE(harmonics, 2))
+                  DO auxiliary = 1, naux
+                     DO lm = 1, SIZE(harmonics, 2)
+                        d_projected(lm, auxiliary, axis) = d_projected(lm, auxiliary, axis) + &
+                                                           harmonics(ia, lm)*gradient(axis, auxiliary)
+                     END DO
+                  END DO
                END DO
             ELSE
                IF (PRESENT(auxiliary_images)) THEN
@@ -331,7 +339,11 @@ CONTAINS
                   CALL gaussian_coulomb_fields_evaluate(fields, point, potential)
                END IF
             END IF
-            projected(:, :) = projected + SPREAD(harmonics(ia, :), 2, naux)*SPREAD(potential, 1, SIZE(harmonics, 2))
+            DO auxiliary = 1, naux
+               DO lm = 1, SIZE(harmonics, 2)
+                  projected(lm, auxiliary) = projected(lm, auxiliary) + harmonics(ia, lm)*potential(auxiliary)
+               END DO
+            END DO
          END DO
          DO q = 1, n
             j = augmentation%radial_index(q)
