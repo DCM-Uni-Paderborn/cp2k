@@ -328,22 +328,41 @@ CONTAINS
 !> \brief Accumulate a field product, retaining independent value and response contributions.
 !>        An exact zero left field requires no matrix product or temporary result.
 ! **************************************************************************************************
-   SUBROUTINE subtract_product(left, right, result)
+   SUBROUTINE subtract_product(left, right, RESULT, left_adjoint, right_adjoint)
       COMPLEX(dp), INTENT(IN)                            :: left(:, :), right(:, :)
       COMPLEX(dp), INTENT(INOUT)                         :: result(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: left_adjoint, right_adjoint
 
-      INTEGER                                            :: k, m, n
+      CHARACTER                                          :: transa, transb
+      INTEGER                                            :: k, m, n, rk
 
       EXTERNAL zgemm
 
+      transa = 'N'
+      transb = 'N'
+      IF (PRESENT(left_adjoint)) THEN
+         IF (left_adjoint) transa = 'C'
+      END IF
+      IF (PRESENT(right_adjoint)) THEN
+         IF (right_adjoint) transb = 'C'
+      END IF
       m = SIZE(left, 1)
       k = SIZE(left, 2)
+      IF (transa == 'C') THEN
+         m = SIZE(left, 2)
+         k = SIZE(left, 1)
+      END IF
       n = SIZE(right, 2)
-      CPASSERT(SIZE(right, 1) == k .AND. ALL(SHAPE(result) == [m, n]))
+      rk = SIZE(right, 1)
+      IF (transb == 'C') THEN
+         n = SIZE(right, 1)
+         rk = SIZE(right, 2)
+      END IF
+      CPASSERT(rk == k .AND. ALL(SHAPE(RESULT) == [m, n]))
       IF (m == 0 .OR. k == 0 .OR. n == 0) RETURN
       IF (ALL(left == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
-      CALL zgemm('N', 'N', m, n, k, CMPLX(-1.0_dp, 0.0_dp, dp), left, m, right, k, &
-                 CMPLX(1.0_dp, 0.0_dp, dp), result, m)
+      CALL zgemm(transa, transb, m, n, k, CMPLX(-1.0_dp, 0.0_dp, dp), left, SIZE(left, 1), right, SIZE(right, 1), &
+                 CMPLX(1.0_dp, 0.0_dp, dp), RESULT, m)
    END SUBROUTINE subtract_product
 
 ! **************************************************************************************************
@@ -383,13 +402,14 @@ CONTAINS
          CPASSERT(ALL(SHAPE(gradient_covector) == [n, SIZE(covector, 2), 3]))
          ALLOCATE (gradient(n, np, 3))
       END IF
+      coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
       DO q = 1, SIZE(coefficient_images, 2)
          CALL lattice_delta_fields(frame, points, ao_image - coefficient_images(:, q), delta, gradient)
-         coefficients_covector(:, :, q) = -MATMUL(CONJG(TRANSPOSE(delta)), covector)
+         CALL subtract_product(delta, covector, coefficients_covector(:, :, q), left_adjoint=.TRUE.)
          DO axis = 1, 3
             IF (.NOT. PRESENT(gradient_covector)) CYCLE
-            coefficients_covector(:, :, q) = coefficients_covector(:, :, q) - &
-                                             MATMUL(CONJG(TRANSPOSE(gradient(:, :, axis))), gradient_covector(:, :, axis))
+            CALL subtract_product(gradient(:, :, axis), gradient_covector(:, :, axis), &
+                                  coefficients_covector(:, :, q), left_adjoint=.TRUE.)
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_lattice_field_adjoint
@@ -485,7 +505,9 @@ CONTAINS
       DO q = 1, SIZE(coefficient_images, 2)
          image = ao_image - coefficient_images(:, q)
          CALL lattice_delta_fields(frame, points, image, delta, delta_gradient)
-         delta_covector(:, :) = -MATMUL(covector, CONJG(TRANSPOSE(coefficients(:, :, q))))
+         IF (ALL(delta_gradient == CMPLX(0.0_dp, 0.0_dp, dp))) CYCLE
+         delta_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+         CALL subtract_product(covector, coefficients(:, :, q), delta_covector, right_adjoint=.TRUE.)
          DO center = 1, SIZE(frame%center_atoms)
             atom = frame%center_atoms(center)
             first = frame%projector_first(center)
