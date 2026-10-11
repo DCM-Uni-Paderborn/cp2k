@@ -7,7 +7,11 @@
 !> \brief Evaluate fixed-occupation native orbital trials and physical Skala roots.
 MODULE qs_skala_scf
    USE cell_types,                      ONLY: cell_type
-   USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
+                                              dbcsr_p_type,&
+                                              dbcsr_set
+   USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set
+   USE cp_fm_types,                     ONLY: cp_fm_set_all
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_section_types,             ONLY: section_get_ival
    USE kinds,                           ONLY: dp
@@ -24,14 +28,16 @@ MODULE qs_skala_scf
    USE qs_ks_methods,                   ONLY: qs_ks_update_qs_env
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_did_change,&
-                                              qs_ks_env_type
+                                              qs_ks_env_type,&
+                                              set_ks_env
    USE qs_mo_types,                     ONLY: mo_set_type
    USE qs_native_grid_interpolation,    ONLY: native_grid_batch_adjoint
    USE qs_rho_methods,                  ONLY: qs_rho_update_rho
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_set,&
                                               qs_rho_type
-   USE qs_skala_orbitals,               ONLY: qs_skala_orbitals_create,&
+   USE qs_skala_orbitals,               ONLY: qs_skala_orbitals_canonicalize,&
+                                              qs_skala_orbitals_create,&
                                               qs_skala_orbitals_evaluate,&
                                               qs_skala_orbitals_install_gamma,&
                                               qs_skala_orbitals_install_kpoint,&
@@ -70,6 +76,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
    PUBLIC :: qs_skala_scf_select, qs_skala_scf_limiting, qs_skala_scf_balance
    PUBLIC :: qs_skala_scf_admissibility
+   PUBLIC :: qs_skala_scf_accept
 
    TYPE qs_skala_scf_type
       PRIVATE
@@ -178,7 +185,7 @@ CONTAINS
             END IF
             CPASSERT(ieee_is_finite(weight) .AND. weight >= 0.0_dp)
             IF (weight == 0.0_dp .OR. native%nmo == 0) CYCLE
-            IF (ALL(native%occupation_numbers(:native%nmo) == 0.0_dp)) CYCLE
+            ! Retained virtuals in an empty spin still require matching canonical eigenvalues.
             IF (state%bloch) THEN
                IF (ALLOCATED(metric)) DEALLOCATE (metric)
                ALLOCATE (metric(native%nao, native%nao))
@@ -1130,6 +1137,112 @@ CONTAINS
       IF (m > n) RETURN
       CALL skala_cusp_admissibility(positive, changes, jacobian, admissible, release_side, valid)
    END SUBROUTINE qs_skala_scf_admissibility
+
+! **************************************************************************************************
+!> \brief Accept a stationary native trial with matching canonical MOs, P, W, fields, energy and KS.
+!>        Check complete physical stationarity and the independent cusp-normal minimum conditions
+!>        before changing native eigenvalues or W. On rejection the evaluated trial remains live.
+!>        Success consumes the orbital charts because canonicalization changes their reference.
+!>        This does not establish tangential stability or perform an automatic SCF search.
+!> \param state Native charts, released only on successful acceptance.
+!> \param coordinate Replicated coordinates of the trial to accept.
+!> \param tolerance Bound on the complete physical orbital-gradient norm.
+!> \param accepted Whether all blocks were canonicalized and the native state was rebuilt.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_accept(state, coordinate, tolerance, accepted)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:), tolerance
+      LOGICAL, INTENT(OUT)                               :: accepted
+
+      COMPLEX(dp), ALLOCATABLE                           :: hamiltonian(:, :)
+      INTEGER                                            :: component, failed, ik, local, m, spin
+      INTEGER, ALLOCATABLE                               :: release_side(:)
+      LOGICAL                                            :: valid
+      LOGICAL, ALLOCATABLE                               :: admissible(:)
+      REAL(dp)                                           :: energy
+      REAL(dp), ALLOCATABLE                              :: gradient(:)
+      TYPE(dbcsr_p_type), POINTER                        :: densities(:, :), matrices(:, :), weighted(:)
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      accepted = .FALSE.
+      CPASSERT(ieee_is_finite(tolerance) .AND. tolerance > 0.0_dp)
+      ALLOCATE (gradient(qs_skala_scf_size(state)))
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=gradient)
+      IF (NORM2(gradient) > tolerance) RETURN
+      m = skala_density_constraints_count(state%constraints)
+      IF (m > 0) THEN
+         ALLOCATE (admissible(m), release_side(m))
+         CALL qs_skala_scf_admissibility(state, coordinate, admissible, release_side, valid)
+         IF (.NOT. valid) RETURN
+         IF (.NOT. ALL(admissible)) RETURN
+      END IF
+      IF (.NOT. state%bloch) CALL get_ks_env(state%ks_env, matrix_ks_kp=matrices)
+      failed = 0
+      DO spin = 1, SIZE(state%orbitals, 2)
+         DO local = 1, SIZE(state%orbitals, 1)
+            IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
+            IF (state%bloch) THEN
+               ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+               IF (ALLOCATED(hamiltonian)) DEALLOCATE (hamiltonian)
+               ALLOCATE (hamiltonian(SIZE(state%inverse%ks_k, 1), SIZE(state%inverse%ks_k, 2)))
+               hamiltonian(:, :) = state%inverse%ks_k(:, :, ik, spin)
+            ELSE
+               CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
+            END IF
+            CALL qs_skala_orbitals_canonicalize(state%orbitals(local, spin), hamiltonian, tolerance, valid)
+            IF (.NOT. valid) failed = 1
+         END DO
+      END DO
+      CALL state%para_env%max(failed)
+      IF (failed /= 0) THEN
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=gradient)
+         RETURN
+      END IF
+      IF (.NOT. state%bloch) THEN
+         CALL qs_rho_get(state%rho, rho_ao_kp=densities)
+         CALL get_ks_env(state%ks_env, matrix_w=weighted)
+         IF (.NOT. ASSOCIATED(weighted)) THEN
+            CALL dbcsr_allocate_matrix_set(weighted, SIZE(state%orbitals, 2))
+            DO spin = 1, SIZE(weighted)
+               ALLOCATE (weighted(spin)%matrix)
+               CALL dbcsr_copy(weighted(spin)%matrix, densities(spin, 1)%matrix, name="W MATRIX")
+            END DO
+            CALL set_ks_env(state%ks_env, matrix_w=weighted)
+         END IF
+         DO spin = 1, SIZE(weighted)
+            CALL dbcsr_set(weighted(spin)%matrix, 0.0_dp)
+         END DO
+      ELSE
+         DO local = 1, SIZE(state%kpoints%kp_env)
+            kp => state%kpoints%kp_env(local)%kpoint_env
+            DO spin = 1, SIZE(kp%wmat, 2)
+               DO component = 1, SIZE(kp%wmat, 1)
+                  CALL cp_fm_set_all(kp%wmat(component, spin), 0.0_dp)
+               END DO
+            END DO
+         END DO
+      END IF
+      DO spin = 1, SIZE(state%orbitals, 2)
+         DO local = 1, SIZE(state%orbitals, 1)
+            IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
+            IF (state%bloch) THEN
+               CALL qs_skala_orbitals_install_kpoint(state%orbitals(local, spin), state%kpoints, local, spin, &
+                                                     energy_weighted=.TRUE.)
+            ELSE
+               CALL qs_skala_orbitals_install_gamma(state%orbitals(local, spin), state%inverse%frame%ao, &
+                                                    densities(spin, 1)%matrix, weighted(spin)%matrix)
+            END IF
+         END DO
+      END DO
+      CALL qs_rho_set(state%rho, rho_r_valid=.FALSE., rho_g_valid=.FALSE., tau_r_valid=.FALSE., tau_g_valid=.FALSE.)
+      CALL qs_rho_update_rho(state%rho, state%qs_env)
+      CALL skala_density_samples_begin(state%constraints)
+      CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
+      CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.FALSE., print_active=.FALSE.)
+      CALL skala_density_samples_end(state%constraints)
+      CALL qs_skala_scf_release(state)
+      accepted = .TRUE.
+   END SUBROUTINE qs_skala_scf_accept
 
    SUBROUTINE evaluate_native_constraints(coordinate, values, jacobian, context)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
