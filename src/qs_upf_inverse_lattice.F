@@ -524,15 +524,33 @@ CONTAINS
                                                             atom_response(:, :), &
                                                             cell_response(3, 3)
 
-      INTEGER                                            :: atom, center, first, kind, last, &
+      INTEGER                                            :: atom, center, first, kind, last, point, &
                                                             single_image(3, 1)
+      LOGICAL                                            :: intersects
+      REAL(dp)                                           :: position(3), radius_squared
 
       single_image(:, 1) = image
+      value = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(gradient)) gradient = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(response)) response = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(gradient_response)) gradient_response = CMPLX(0.0_dp, 0.0_dp, dp)
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          kind = frame%center_kinds(center)
          first = frame%projector_first(center)
          last = frame%projector_last(center)
+         ! Use the original radial evaluator's exact support test before allocating its work arrays.
+         ! Values and geometry responses outside that same support are identically zero.
+         position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(image, dp))
+         radius_squared = frame%delta_cache(kind)%radius**2
+         intersects = .FALSE.
+         DO point = 1, SIZE(points, 2)
+            IF (.NOT. (SUM((points(:, point) - position)**2) >= radius_squared)) THEN
+               intersects = .TRUE.
+               EXIT
+            END IF
+         END DO
+         IF (.NOT. intersects) CYCLE
          IF (PRESENT(response)) THEN
             IF (PRESENT(gradient_response)) THEN
                CALL upf_radial_fields_periodic(frame%delta_cache(kind), points, frame%positions(:, atom), frame%cell, &
