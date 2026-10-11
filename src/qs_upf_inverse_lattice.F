@@ -302,22 +302,44 @@ CONTAINS
          CALL lattice_delta_fields(frame, points, ao_image - coefficient_images(:, q), delta, &
                                    delta_gradient, delta_response, delta_gradient_response, &
                                    point_response, atom_response, cell_response)
-         value(:, :) = value - MATMUL(delta, coefficients(:, :, q))
+         CALL subtract_product(delta, coefficients(:, :, q), value)
          IF (derivative) THEN
-            response(:, :) = response - MATMUL(delta_response, coefficients(:, :, q)) - &
-                             MATMUL(delta, coefficients_response(:, :, q))
+            CALL subtract_product(delta_response, coefficients(:, :, q), response)
+            CALL subtract_product(delta, coefficients_response(:, :, q), response)
          END IF
          DO axis = 1, 3
-            IF (gradients) gradient(:, :, axis) = gradient(:, :, axis) - &
-                                                  MATMUL(delta_gradient(:, :, axis), coefficients(:, :, q))
+            IF (gradients) CALL subtract_product(delta_gradient(:, :, axis), coefficients(:, :, q), gradient(:, :, axis))
             IF (PRESENT(gradient_response)) THEN
-               gradient_response(:, :, axis) = gradient_response(:, :, axis) - &
-                                               MATMUL(delta_gradient_response(:, :, axis), coefficients(:, :, q)) - &
-                                               MATMUL(delta_gradient(:, :, axis), coefficients_response(:, :, q))
+               CALL subtract_product(delta_gradient_response(:, :, axis), coefficients(:, :, q), &
+                                     gradient_response(:, :, axis))
+               CALL subtract_product(delta_gradient(:, :, axis), coefficients_response(:, :, q), &
+                                     gradient_response(:, :, axis))
             END IF
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_lattice_fields
+
+! **************************************************************************************************
+!> \brief Accumulate a field product, retaining independent value and response contributions.
+!>        An exact zero left field requires no matrix product or temporary result.
+! **************************************************************************************************
+   SUBROUTINE subtract_product(left, right, result)
+      COMPLEX(dp), INTENT(IN)                            :: left(:, :), right(:, :)
+      COMPLEX(dp), INTENT(INOUT)                         :: result(:, :)
+
+      INTEGER                                            :: k, m, n
+
+      EXTERNAL zgemm
+
+      m = SIZE(left, 1)
+      k = SIZE(left, 2)
+      n = SIZE(right, 2)
+      CPASSERT(SIZE(right, 1) == k .AND. ALL(SHAPE(result) == [m, n]))
+      IF (m == 0 .OR. k == 0 .OR. n == 0) RETURN
+      IF (ALL(left == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
+      CALL zgemm('N', 'N', m, n, k, CMPLX(-1.0_dp, 0.0_dp, dp), left, m, right, k, &
+                 CMPLX(1.0_dp, 0.0_dp, dp), result, m)
+   END SUBROUTINE subtract_product
 
 ! **************************************************************************************************
 !> \brief Transpose the localized value and gradient maps to their coupled W_Q coefficients.
