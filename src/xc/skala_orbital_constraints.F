@@ -440,7 +440,12 @@ CONTAINS
             END IF
             fraction = 0.5_dp*fraction
          END DO
-         IF (.NOT. accepted) EXIT
+         IF (.NOT. accepted) THEN
+            IF (history == 0) EXIT
+            ! Retry with steepest descent when the stored curvature gives no acceptable step.
+            history = 0
+            CYCLE
+         END IF
          motion(:) = trial(free) - x(free)
          old_gradient(:) = trial_reduced - reduced
          curvature = DOT_PRODUCT(motion, old_gradient)
