@@ -23,6 +23,7 @@ MODULE skala_density_constraints
              skala_density_constraints_balance, skala_density_crossings, skala_density_root
    PUBLIC :: skala_density_samples_begin, skala_density_samples_end, skala_density_samples_active, &
              skala_density_samples_put, skala_density_samples_get
+   PUBLIC :: skala_density_constraints_update_weights
    INTEGER, PARAMETER, PUBLIC :: skala_density_descriptor = 1, skala_kinetic_descriptor = 2
    INTEGER, PARAMETER, PUBLIC :: skala_fft_domain = 0, skala_atom_domain = 1, skala_background_domain = 2
 
@@ -561,6 +562,25 @@ CONTAINS
       IF (PRESENT(kinetic_probe)) kinetic_probe = state%kinetic_probe
       IF (PRESENT(kinetic_tolerance)) kinetic_tolerance = state%kinetic_tolerance
    END SUBROUTINE skala_density_constraints_get
+
+! **************************************************************************************************
+!> \brief Replace convex weights without changing the selected physical samples or geometry.
+!>        A native caller must rebuild its KS operator after changing these weights.
+!> \param state Registered physical constraints.
+!> \param negative_weights Negative-side weights in the existing constraint order.
+! **************************************************************************************************
+   SUBROUTINE skala_density_constraints_update_weights(state, negative_weights)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+      REAL(dp), INTENT(IN)                               :: negative_weights(:)
+
+      CPASSERT(SIZE(negative_weights) == skala_density_constraints_count(state))
+      CPASSERT(ALL(ieee_is_finite(negative_weights)))
+      CPASSERT(ALL(negative_weights >= 0.0_dp .AND. negative_weights <= 1.0_dp))
+      IF (SIZE(negative_weights) == 0) RETURN
+      CPASSERT(ALLOCATED(state%negative_weights))
+      state%negative_weights(:) = negative_weights
+   END SUBROUTINE skala_density_constraints_update_weights
 
 ! **************************************************************************************************
 !> \brief Select the minimum-norm convex orbital derivative at supplied density constraints.

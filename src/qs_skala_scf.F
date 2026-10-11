@@ -48,6 +48,8 @@ MODULE qs_skala_scf
                                               qs_upf_inverse_type
    USE skala_density_constraints,       ONLY: &
         skala_background_domain, skala_density_constraints_type, skala_density_descriptor, &
+        skala_density_constraints_balance, skala_density_constraints_count, skala_density_constraints_get, &
+        skala_density_constraints_set, skala_density_constraints_update_weights, &
         skala_density_crossings, skala_density_root, skala_density_samples_begin, skala_density_samples_end, &
         skala_density_samples_get, skala_fft_domain, skala_kinetic_descriptor
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
@@ -65,6 +67,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_point_derivative
    PUBLIC :: qs_skala_scf_crossings
    PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
+   PUBLIC :: qs_skala_scf_select, qs_skala_scf_limiting, qs_skala_scf_balance
 
    TYPE qs_skala_scf_type
       PRIVATE
@@ -928,6 +931,168 @@ CONTAINS
       ALLOCATE (gradient(SIZE(coordinate)))
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
    END SUBROUTINE qs_skala_scf_stationarity
+
+! **************************************************************************************************
+!> \brief Register physical cusp samples using the current native grid and atomic layout.
+!>        Collective over QS. Geometry and sample row counts come from the actual native state.
+!>        Selection changes derivatives only. Reevaluate before using the native KS operator.
+!> \param state Evaluated native orbital state.
+!> \param points Global FFT indices or (global atom, atomic row, 1).
+!> \param domains Physical evaluation domains, in constraint order.
+!> \param spins Zero for paired RKS, one or two for UKS.
+!> \param descriptors Physical density or kinetic density.
+!> \param negative_weights Negative-side convex weights.
+!> \param density_probe Positive physical density displacement in bohr^-3.
+!> \param density_tolerance Absolute physical density window in bohr^-3.
+!> \param kinetic_probe Positive physical kinetic-density displacement in bohr^-5.
+!> \param kinetic_tolerance Absolute physical kinetic-density window in bohr^-5.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_select(state, points, domains, spins, descriptors, negative_weights, &
+                                  density_probe, density_tolerance, kinetic_probe, kinetic_tolerance)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), INTENT(IN)                               :: negative_weights(:), density_probe, &
+                                                            density_tolerance, kinetic_probe, &
+                                                            kinetic_tolerance
+
+      INTEGER                                            :: domain, i, m
+      INTEGER, ALLOCATABLE                               :: atomic_sizes(:), keys(:, :)
+      LOGICAL                                            :: available, valid
+      REAL(dp), ALLOCATABLE                              :: density(:, :), kinetic(:, :)
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type), POINTER                      :: rho_r(:)
+
+      CPASSERT(state%evaluated)
+      m = SIZE(negative_weights)
+      valid = ALL(SHAPE(points) == [3, m]) .AND. SIZE(domains) == m
+      CPASSERT(valid)
+      CPASSERT(SIZE(spins) == m .AND. SIZE(descriptors) == m)
+      CALL qs_rho_get(state%rho, rho_r=rho_r)
+      grid => rho_r(1)%pw_grid
+      CPASSERT(ASSOCIATED(grid))
+      ALLOCATE (atomic_sizes(SIZE(state%positions, 2)))
+      atomic_sizes = 0
+      DO domain = skala_fft_domain + 1, skala_background_domain
+         CALL skala_density_samples_get(state%constraints, domain, keys, density, kinetic, available)
+         IF (.NOT. available) CYCLE
+         DO i = 1, SIZE(keys, 2)
+            CPASSERT(keys(1, i) >= 1 .AND. keys(1, i) <= SIZE(atomic_sizes))
+            atomic_sizes(keys(1, i)) = MAX(atomic_sizes(keys(1, i)), keys(2, i))
+         END DO
+      END DO
+      CALL state%para_env%max(atomic_sizes)
+      CALL skala_density_constraints_set(state%constraints, points, spins, negative_weights, &
+                                         density_probe, density_tolerance, SIZE(state%orbitals, 2), &
+                                         grid%npts, grid%bounds, state%hmat, state%positions, &
+                                         descriptors=descriptors, kinetic_probe=kinetic_probe, &
+                                         kinetic_tolerance=kinetic_tolerance, domains=domains, &
+                                         atomic_sizes=atomic_sizes)
+   END SUBROUTINE qs_skala_scf_select
+
+! **************************************************************************************************
+!> \brief Evaluate complete native limiting covectors at the registered physical cusp samples.
+!>        Columns switch one selected descriptor from its positive to its negative limit. All
+!>        other native energy derivatives remain present. Covectors use the orthonormal physical
+!>        orbital tangent, including occupations and k weights. Retain the original selection
+!>        weights and restore the complete native KS evaluation at the supplied coordinates.
+!> \param state Native state with the physical samples already registered.
+!> \param coordinate Global normalized-orbital coordinates.
+!> \param positive_gradient Complete all-positive physical limiting covector.
+!> \param negative_changes Negative-minus-positive changes, one column per registered sample.
+!> \param physical_jacobian Optional physical sample covectors, one constraint per row.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_limiting(state, coordinate, positive_gradient, negative_changes, physical_jacobian)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: positive_gradient(:), &
+                                                            negative_changes(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_jacobian(:, :)
+
+      INTEGER                                            :: i, m, n
+      INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
+                                                            points(:, :), spins(:)
+      LOGICAL                                            :: valid
+      REAL(dp)                                           :: energy, kinetic_probe, &
+                                                            kinetic_tolerance, probe, tolerance, &
+                                                            value
+      REAL(dp), ALLOCATABLE                              :: gradient(:), original_weights(:), &
+                                                            physical(:), weights(:)
+
+      n = qs_skala_scf_size(state)
+      m = skala_density_constraints_count(state%constraints)
+      CPASSERT(SIZE(coordinate) == n .AND. SIZE(positive_gradient) == n)
+      CPASSERT(ALL(SHAPE(negative_changes) == [n, m]))
+      IF (PRESENT(physical_jacobian)) THEN
+         valid = ALL(SHAPE(physical_jacobian) == [m, n])
+         CPASSERT(valid)
+      END IF
+      negative_changes = 0.0_dp
+      IF (m == 0) THEN
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=positive_gradient)
+         RETURN
+      END IF
+      CALL skala_density_constraints_get(state%constraints, points, spins, original_weights, &
+                                         probe, tolerance, descriptors=descriptors, domains=domains, &
+                                         kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
+      ALLOCATE (weights(m), gradient(n), physical(n))
+      weights = 0.0_dp
+      CALL skala_density_constraints_update_weights(state%constraints, weights)
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=positive_gradient)
+      DO i = 1, m
+         CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), value)
+         IF (descriptors(i) == skala_density_descriptor) THEN
+            CPASSERT(ABS(value) <= tolerance)
+         ELSE
+            CPASSERT(descriptors(i) == skala_kinetic_descriptor)
+            CPASSERT(ABS(value) <= kinetic_tolerance)
+         END IF
+         IF (PRESENT(physical_jacobian)) THEN
+            CALL qs_skala_scf_point_derivative(state, domains(i), points(:, i), spins(i), descriptors(i), &
+                                               gradient, physical)
+            physical_jacobian(i, :) = physical
+         END IF
+      END DO
+      DO i = 1, m
+         weights(i) = 1.0_dp
+         CALL skala_density_constraints_update_weights(state%constraints, weights)
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=physical)
+         negative_changes(:, i) = physical - positive_gradient
+         weights(i) = 0.0_dp
+      END DO
+      CALL skala_density_constraints_update_weights(state%constraints, original_weights)
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=physical)
+   END SUBROUTINE qs_skala_scf_limiting
+
+! **************************************************************************************************
+!> \brief Determine convex weights from complete native physical limiting covectors.
+!>        Leave native MOs, P, fields, energy and KS consistent with the resulting weights.
+!>        Box optimality alone does not establish zero orbital gradient, normal admissibility,
+!>        tangential stability or automatic SCF convergence.
+!> \param state Registered physical cusp samples and their current convex weights.
+!> \param coordinate Global normalized-orbital coordinates.
+!> \param tolerance Absolute box optimality tolerance in physical tangent energy units.
+!> \param balanced_gradient Complete native physical covector at the resulting weights.
+!> \param balanced Whether the convex box optimality conditions meet tolerance.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_balance(state, coordinate, tolerance, balanced_gradient, balanced)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:), tolerance
+      REAL(dp), INTENT(OUT)                              :: balanced_gradient(:)
+      LOGICAL, INTENT(OUT)                               :: balanced
+
+      INTEGER                                            :: m, n
+      REAL(dp)                                           :: energy
+      REAL(dp), ALLOCATABLE                              :: changes(:, :), positive(:), predicted(:)
+
+      n = qs_skala_scf_size(state)
+      m = skala_density_constraints_count(state%constraints)
+      CPASSERT(SIZE(balanced_gradient) == n)
+      ALLOCATE (positive(n), changes(n, m), predicted(n))
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes)
+      CALL skala_density_constraints_balance(state%constraints, positive, changes, tolerance, predicted, balanced)
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=balanced_gradient)
+   END SUBROUTINE qs_skala_scf_balance
 
    SUBROUTINE evaluate_native_constraints(coordinate, values, jacobian, context)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
