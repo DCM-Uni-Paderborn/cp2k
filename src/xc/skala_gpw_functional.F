@@ -2315,7 +2315,10 @@ CONTAINS
       DO c = 1, n
          IF (ANY(points(:, c) < bo(1, :)) .OR. ANY(points(:, c) > bo(2, :))) CYCLE
          owners(c) = 1
-         row = features%feature_index(points(1, c), points(2, c), points(3, c))
+         ! The feature index refers to a global atomic feature, not the local FFT point.
+         row = points(1, c) - bo(1, 1) + 1 + (bo(2, 1) - bo(1, 1) + 1)* &
+               (points(2, c) - bo(1, 2) + (bo(2, 2) - bo(1, 2) + 1)*(points(3, c) - bo(1, 3)))
+         CPASSERT(row >= 1 .AND. row <= features%nflat_local)
          local_rows(c) = row
          first_spin = spins(c)
          last_spin = spins(c)
