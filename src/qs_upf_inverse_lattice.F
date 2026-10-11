@@ -621,6 +621,7 @@ CONTAINS
 
       INTEGER                                            :: i, n
       INTEGER, ALLOCATABLE                               :: ordered(:, :), permutation(:)
+      LOGICAL                                            :: ordered_sequence
 
       CPASSERT(.NOT. frame%atom_local)
       CPASSERT(SIZE(images, 1) == 3 .AND. SIZE(images, 2) > 0)
@@ -629,6 +630,17 @@ CONTAINS
          CPASSERT(ALL(images(:, i)*frame%periodicity == images(:, i)))
       END DO
       IF (n == 1) RETURN
+      ! Physical image boxes are ordered by z, then y, then x. Check those without allocating.
+      ordered_sequence = .TRUE.
+      DO i = 2, n
+         ordered_sequence = images(3, i) > images(3, i - 1) .OR. &
+                            (images(3, i) == images(3, i - 1) .AND. &
+                             (images(2, i) > images(2, i - 1) .OR. &
+                              (images(2, i) == images(2, i - 1) .AND. &
+                               images(1, i) > images(1, i - 1))))
+         IF (.NOT. ordered_sequence) EXIT
+      END DO
+      IF (ordered_sequence) RETURN
       ! Sort a private copy. The caller's coefficient/image correspondence is unchanged.
       ALLOCATE (ordered(3, n), permutation(n))
       ordered(:, :) = images
