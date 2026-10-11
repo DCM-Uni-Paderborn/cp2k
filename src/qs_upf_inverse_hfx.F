@@ -1847,35 +1847,37 @@ CONTAINS
             DO j = 1, nr
                work(:, j) = cr(:, j)*weighted_potential
             END DO
-            block(:, :) = MATMUL(CONJG(TRANSPOSE(dl)), work)
+            CALL adjoint_field_product(dl, work, block, .FALSE.)
             DO j = 1, nr
                work(:, j) = dr(:, j)*weighted_potential
             END DO
-            integral(:, :, aux) = integral(:, :, aux) + block + MATMUL(CONJG(TRANSPOSE(cl)), work)
+            integral(:, :, aux) = integral(:, :, aux) + block
+            CALL adjoint_field_product(cl, work, integral(:, :, aux), .TRUE.)
             IF (.NOT. derivatives) CYCLE
-            block(:, :) = MATMUL(CONJG(TRANSPOSE(fcl)), work)
+            CALL adjoint_field_product(fcl, work, block, .FALSE.)
             DO j = 1, nr
                work(:, j) = fdr(:, j)*weighted_potential
             END DO
-            block(:, :) = block + MATMUL(CONJG(TRANSPOSE(cl)), work)
+            CALL adjoint_field_product(cl, work, block, .TRUE.)
             DO j = 1, nr
                work(:, j) = cr(:, j)*weighted_potential
             END DO
-            block(:, :) = block + MATMUL(CONJG(TRANSPOSE(fdl)), work)
+            CALL adjoint_field_product(fdl, work, block, .TRUE.)
             DO j = 1, nr
                work(:, j) = fcr(:, j)*weighted_potential
             END DO
-            block(:, :) = block + MATMUL(CONJG(TRANSPOSE(dl)), work)
+            CALL adjoint_field_product(dl, work, block, .TRUE.)
             DO ia = 1, nang
                scale = weights(ia)*potential_responses(ia, aux)
                work(ia, :) = scale*cr(ia, :)
             END DO
-            block(:, :) = block + MATMUL(CONJG(TRANSPOSE(dl)), work)
+            CALL adjoint_field_product(dl, work, block, .TRUE.)
             DO ia = 1, nang
                scale = weights(ia)*potential_responses(ia, aux)
                work(ia, :) = scale*dr(ia, :)
             END DO
-            response(:, :, aux) = response(:, :, aux) + block + MATMUL(CONJG(TRANSPOSE(cl)), work)
+            response(:, :, aux) = response(:, :, aux) + block
+            CALL adjoint_field_product(cl, work, response(:, :, aux), .TRUE.)
          END DO
       END DO
       IF (augmentation%nproj == 0) RETURN
@@ -2475,35 +2477,37 @@ CONTAINS
                DO j = 1, nr
                   work(:, j) = cr(:, j)*weighted_potential
                END DO
-               block(:, :) = MATMUL(CONJG(TRANSPOSE(dl)), work)
+               CALL adjoint_field_product(dl, work, block, .FALSE.)
                DO j = 1, nr
                   work(:, j) = dr(:, j)*weighted_potential
                END DO
-               integral(:, :, aux) = integral(:, :, aux) + block + MATMUL(CONJG(TRANSPOSE(cl)), work)
+               integral(:, :, aux) = integral(:, :, aux) + block
+               CALL adjoint_field_product(cl, work, integral(:, :, aux), .TRUE.)
                IF (.NOT. derivatives) CYCLE
-               block(:, :) = MATMUL(CONJG(TRANSPOSE(fcl)), work)
+               CALL adjoint_field_product(fcl, work, block, .FALSE.)
                DO j = 1, nr
                   work(:, j) = fdr(:, j)*weighted_potential
                END DO
-               block(:, :) = block + MATMUL(CONJG(TRANSPOSE(cl)), work)
+               CALL adjoint_field_product(cl, work, block, .TRUE.)
                DO j = 1, nr
                   work(:, j) = cr(:, j)*weighted_potential
                END DO
-               block(:, :) = block + MATMUL(CONJG(TRANSPOSE(fdl)), work)
+               CALL adjoint_field_product(fdl, work, block, .TRUE.)
                DO j = 1, nr
                   work(:, j) = fcr(:, j)*weighted_potential
                END DO
-               block(:, :) = block + MATMUL(CONJG(TRANSPOSE(dl)), work)
+               CALL adjoint_field_product(dl, work, block, .TRUE.)
                DO ia = 1, nang
                   scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
                   work(ia, :) = scale*cr(ia, :)
                END DO
-               block(:, :) = block + MATMUL(CONJG(TRANSPOSE(dl)), work)
+               CALL adjoint_field_product(dl, work, block, .TRUE.)
                DO ia = 1, nang
                   scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
                   work(ia, :) = scale*dr(ia, :)
                END DO
-               response(:, :, aux) = response(:, :, aux) + block + MATMUL(CONJG(TRANSPOSE(cl)), work)
+               response(:, :, aux) = response(:, :, aux) + block
+               CALL adjoint_field_product(cl, work, response(:, :, aux), .TRUE.)
             END DO
          END DO
       END IF
@@ -2530,6 +2534,35 @@ CONTAINS
                                MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(q, dwr))
       END DO
    END SUBROUTINE lattice_center_with_overlaps
+
+! **************************************************************************************************
+!> \brief Form or accumulate a complex field product without transpose or result temporaries.
+!>        The contraction is left^H*right in the original point order.
+!> \param left ...
+!> \param right ...
+!> \param result ...
+!> \param accumulate Whether to add to the existing result.
+! **************************************************************************************************
+   SUBROUTINE adjoint_field_product(left, right, RESULT, accumulate)
+      COMPLEX(dp), CONTIGUOUS, INTENT(IN)                :: left(:, :), right(:, :)
+      COMPLEX(dp), CONTIGUOUS, INTENT(INOUT)             :: result(:, :)
+      LOGICAL, INTENT(IN)                                :: accumulate
+
+      INTEGER                                            :: k, m, n
+
+      EXTERNAL zgemm
+
+      k = SIZE(left, 1)
+      m = SIZE(left, 2)
+      n = SIZE(right, 2)
+      CPASSERT(SIZE(right, 1) == k .AND. ALL(SHAPE(RESULT) == [m, n]))
+      IF (m == 0 .OR. n == 0 .OR. k == 0) THEN
+         IF (.NOT. accumulate) RESULT = CMPLX(0.0_dp, 0.0_dp, dp)
+         RETURN
+      END IF
+      CALL zgemm('C', 'N', m, n, k, CMPLX(1.0_dp, 0.0_dp, dp), left, k, right, k, &
+                 CMPLX(MERGE(1.0_dp, 0.0_dp, accumulate), 0.0_dp, dp), RESULT, m)
+   END SUBROUTINE adjoint_field_product
 
 ! **************************************************************************************************
 !> \brief Validate the full physical coefficient domain of a general inverse transition.
