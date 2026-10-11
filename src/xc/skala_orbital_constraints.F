@@ -18,6 +18,18 @@ MODULE skala_orbital_constraints
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'skala_orbital_constraints'
 
    PUBLIC :: skala_constrained_stationarity, skala_cusp_admissibility
+   PUBLIC :: skala_orbital_chart_type, skala_orbital_chart_create, skala_orbital_chart_release, &
+             skala_orbital_chart_size, skala_orbital_chart_evaluate, skala_orbital_chart_derivative
+
+   TYPE skala_orbital_chart_type
+      PRIVATE
+      COMPLEX(dp), ALLOCATABLE :: base(:, :), coefficients(:, :), inverse(:, :), rotation(:, :), &
+                                  work(:, :), transformed(:, :)
+      REAL(dp), ALLOCATABLE :: occupations(:), coordinate(:)
+      INTEGER, ALLOCATABLE :: pairs(:, :), component(:), pivots(:)
+      REAL(dp) :: metric_weight = 1.0_dp
+      LOGICAL :: evaluated = .FALSE.
+   END TYPE skala_orbital_chart_type
 
    ABSTRACT INTERFACE
       SUBROUTINE physical_constraints(coordinate, values, jacobian, context)
@@ -35,6 +47,224 @@ MODULE skala_orbital_constraints
    END INTERFACE
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Define a fixed-occupation orbital chart in the original charge metric.
+!>        The supplied columns span the caller's retained orbital space. Cholesky normalization
+!>        uses the supplied metric, which need not be the ordinary Gaussian overlap. Only pairs
+!>        with different occupations define physical rotations. A complex chart retains their
+!>        independent real and imaginary rotations. Create a new chart after a geometry change.
+!> \param coefficients Reference columns, including the retained unoccupied space.
+!> \param metric Original Hermitian charge-normalization operator.
+!> \param occupations Fixed nonnegative occupations of the reference columns.
+!> \param complex_orbitals Whether to include independent imaginary rotations.
+!> \param chart Owned normalized reference, rotation and derivative storage.
+!> \param valid Whether the reference Gram matrix has positive rank.
+!> \param metric_weight Positive k-point weight for the physical occupied-orbital tangent norm.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_create(coefficients, metric, occupations, complex_orbitals, chart, valid, metric_weight)
+      COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :), metric(:, :)
+      REAL(dp), INTENT(IN)                               :: occupations(:)
+      LOGICAL, INTENT(IN)                                :: complex_orbitals
+      TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
+      LOGICAL, INTENT(OUT)                               :: valid
+      REAL(dp), INTENT(IN), OPTIONAL                     :: metric_weight
+
+      COMPLEX(dp), ALLOCATABLE                           :: gram(:, :)
+      INTEGER                                            :: a, b, count, i, info, n, rows
+
+      CALL skala_orbital_chart_release(chart)
+      rows = SIZE(coefficients, 1)
+      n = SIZE(coefficients, 2)
+      CPASSERT(rows > 0 .AND. n > 0 .AND. n <= rows)
+      CPASSERT(SIZE(metric, 1) == rows .AND. SIZE(metric, 2) == rows)
+      CPASSERT(SIZE(occupations) == n)
+      CPASSERT(ALL(ieee_is_finite(REAL(coefficients, dp))))
+      CPASSERT(ALL(ieee_is_finite(AIMAG(coefficients))))
+      CPASSERT(ALL(ieee_is_finite(REAL(metric, dp))))
+      CPASSERT(ALL(ieee_is_finite(AIMAG(metric))))
+      CPASSERT(ALL(ieee_is_finite(occupations)) .AND. ALL(occupations >= 0.0_dp))
+      IF (PRESENT(metric_weight)) chart%metric_weight = metric_weight
+      CPASSERT(ieee_is_finite(chart%metric_weight))
+      CPASSERT(chart%metric_weight > 0.0_dp)
+      ALLOCATE (gram(n, n))
+      gram(:, :) = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, coefficients))
+      CALL zpotrf('L', n, gram, n, info)
+      valid = info == 0
+      IF (.NOT. valid) RETURN
+      count = 0
+      DO b = 2, n
+         DO a = 1, b - 1
+            IF (occupations(a) == occupations(b)) CYCLE
+            count = count + MERGE(2, 1, complex_orbitals)
+         END DO
+      END DO
+      ALLOCATE (chart%base(rows, n), chart%coefficients(rows, n), chart%inverse(n, n), &
+                chart%rotation(n, n), chart%work(n, n), chart%transformed(n, n), &
+                chart%occupations(n), chart%coordinate(count), chart%pairs(2, count), &
+                chart%component(count), chart%pivots(n))
+      chart%base(:, :) = coefficients
+      CALL ztrsm('R', 'L', 'C', 'N', rows, n, CMPLX(1.0_dp, 0.0_dp, dp), gram, n, chart%base, rows)
+      chart%occupations(:) = occupations
+      i = 0
+      DO b = 2, n
+         DO a = 1, b - 1
+            IF (occupations(a) == occupations(b)) CYCLE
+            i = i + 1
+            chart%pairs(:, i) = [a, b]
+            chart%component(i) = 1
+            IF (complex_orbitals) THEN
+               i = i + 1
+               chart%pairs(:, i) = [a, b]
+               chart%component(i) = 2
+            END IF
+         END DO
+      END DO
+   END SUBROUTINE skala_orbital_chart_create
+
+! **************************************************************************************************
+!> \brief Release the owned orbital chart, including its evaluated coordinates.
+!> \param chart ...
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_release(chart)
+      TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
+
+      IF (ALLOCATED(chart%base)) THEN
+         DEALLOCATE (chart%base, chart%coefficients, chart%inverse, chart%rotation, &
+                     chart%work, chart%transformed, chart%occupations, chart%coordinate, &
+                     chart%pairs, chart%component, chart%pivots)
+      END IF
+      chart%evaluated = .FALSE.
+      chart%metric_weight = 1.0_dp
+   END SUBROUTINE skala_orbital_chart_release
+
+! **************************************************************************************************
+!> \brief Number of independent real orbital coordinates at fixed occupations.
+!> \param chart ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION skala_orbital_chart_size(chart) RESULT(d)
+      TYPE(skala_orbital_chart_type), INTENT(IN)         :: chart
+      INTEGER                                            :: d
+
+      d = 0
+      IF (ALLOCATED(chart%coordinate)) d = SIZE(chart%coordinate)
+   END FUNCTION skala_orbital_chart_size
+
+! **************************************************************************************************
+!> \brief Evaluate metric-normalized orbitals with a Cayley rotation.
+!>        For the anti-Hermitian generator A, use L=(I-A/2)^(-1) and U=2L-I.
+!>        The original metric is preserved for every finite coordinate vector. Repeated evaluation
+!>        at identical coordinates reuses owned factors. No variable occupation or entropy update
+!>        is performed by this fixed-occupation chart.
+!> \param chart ...
+!> \param coordinate ...
+!> \param coefficients ...
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_evaluate(chart, coordinate, coefficients)
+      TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      COMPLEX(dp), INTENT(OUT)                           :: coefficients(:, :)
+
+      COMPLEX(dp)                                        :: element
+      INTEGER                                            :: a, b, i, info, n
+
+      CPASSERT(ALLOCATED(chart%base))
+      CPASSERT(SIZE(coordinate) == SIZE(chart%coordinate))
+      CPASSERT(ALL(ieee_is_finite(coordinate)))
+      CPASSERT(SIZE(coefficients, 1) == SIZE(chart%base, 1))
+      CPASSERT(SIZE(coefficients, 2) == SIZE(chart%base, 2))
+      IF (chart%evaluated) THEN
+         IF (ALL(coordinate == chart%coordinate)) THEN
+            coefficients(:, :) = chart%coefficients
+            RETURN
+         END IF
+      END IF
+      n = SIZE(chart%base, 2)
+      chart%work = CMPLX(0.0_dp, 0.0_dp, dp)
+      chart%inverse = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO i = 1, n
+         chart%work(i, i) = 1.0_dp
+         chart%inverse(i, i) = 1.0_dp
+      END DO
+      DO i = 1, SIZE(coordinate)
+         a = chart%pairs(1, i)
+         b = chart%pairs(2, i)
+         element = CMPLX(coordinate(i), 0.0_dp, dp)
+         IF (chart%component(i) == 2) element = CMPLX(0.0_dp, coordinate(i), dp)
+         chart%work(a, b) = chart%work(a, b) - 0.5_dp*element
+         chart%work(b, a) = chart%work(b, a) + 0.5_dp*CONJG(element)
+      END DO
+      CALL zgesv(n, n, chart%work, n, chart%pivots, chart%inverse, n, info)
+      CPASSERT(info == 0)
+      chart%rotation(:, :) = 2.0_dp*chart%inverse
+      DO i = 1, n
+         chart%rotation(i, i) = chart%rotation(i, i) - 1.0_dp
+      END DO
+      chart%coefficients(:, :) = MATMUL(chart%base, chart%rotation)
+      chart%coordinate(:) = coordinate
+      chart%evaluated = .TRUE.
+      coefficients(:, :) = chart%coefficients
+   END SUBROUTINE skala_orbital_chart_evaluate
+
+! **************************************************************************************************
+!> \brief Differentiate an original Hermitian AO expectation in the evaluated orbital chart.
+!>        The coordinate derivative includes both factors of the Cayley inverse. Alternatively
+!>        return the covector in orthonormal weighted occupied-orbital tangent directions at the
+!>        current orbitals. This representation supplies physical cusp normals and convex weights
+!>        without constructing a coordinate Gram matrix. The caller includes the k-point weight
+!>        and any spin-density convention in the operator for the quantity being differentiated.
+!> \param chart ...
+!> \param operator ...
+!> \param derivative ...
+!> \param physical_tangent Whether to return the current orthonormal tangent covector.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_derivative(chart, OPERATOR, derivative, physical_tangent)
+      TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
+      COMPLEX(dp), INTENT(IN)                            :: operator(:, :)
+      REAL(dp), INTENT(OUT)                              :: derivative(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: physical_tangent
+
+      INTEGER                                            :: a, b, i, n
+      LOGICAL                                            :: physical
+      REAL(dp)                                           :: value
+
+      CPASSERT(chart%evaluated)
+      CPASSERT(SIZE(OPERATOR, 1) == SIZE(chart%base, 1))
+      CPASSERT(SIZE(OPERATOR, 2) == SIZE(chart%base, 1))
+      CPASSERT(SIZE(derivative) == SIZE(chart%coordinate))
+      physical = .FALSE.
+      IF (PRESENT(physical_tangent)) physical = physical_tangent
+      n = SIZE(chart%base, 2)
+      IF (physical) THEN
+         chart%transformed(:, :) = MATMUL(CONJG(TRANSPOSE(chart%coefficients)), &
+                                          MATMUL(OPERATOR, chart%coefficients))
+      ELSE
+         chart%transformed(:, :) = MATMUL(CONJG(TRANSPOSE(chart%base)), MATMUL(OPERATOR, chart%base))
+         chart%work(:, :) = MATMUL(CONJG(TRANSPOSE(chart%rotation)), chart%transformed)
+         DO i = 1, n
+            chart%work(i, :) = chart%occupations(i)*chart%work(i, :)
+         END DO
+         chart%transformed(:, :) = MATMUL(chart%inverse, MATMUL(chart%work, chart%inverse))
+      END IF
+      DO i = 1, SIZE(derivative)
+         a = chart%pairs(1, i)
+         b = chart%pairs(2, i)
+         IF (physical) THEN
+            IF (chart%component(i) == 1) THEN
+               value = REAL(chart%transformed(a, b), dp)
+            ELSE
+               value = AIMAG(chart%transformed(a, b))
+            END IF
+            derivative(i) = 2.0_dp*(chart%occupations(b) - chart%occupations(a))*value/ &
+                            SQRT(chart%metric_weight*(chart%occupations(a) + chart%occupations(b)))
+         ELSE IF (chart%component(i) == 1) THEN
+            derivative(i) = 2.0_dp*REAL(chart%transformed(b, a) - chart%transformed(a, b), dp)
+         ELSE
+            derivative(i) = -2.0_dp*AIMAG(chart%transformed(b, a) + chart%transformed(a, b))
+         END IF
+      END DO
+   END SUBROUTINE skala_orbital_chart_derivative
 
 ! **************************************************************************************************
 !> \brief Solve tangential orbital stationarity while reevaluating the physical constraints.
