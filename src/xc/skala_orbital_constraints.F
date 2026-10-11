@@ -366,7 +366,7 @@ CONTAINS
       INTEGER :: d, history, i, iteration, j, limit, m, nf, shortening
       INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:)
       LOGICAL :: accepted, valid
-      REAL(dp) :: curvature, energy, fraction, radius, slope, trial_energy
+      REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), &
                                old_gradient(:), reduced(:), scales(:), steps(:, :), trial(:), trial_reduced(:), &
                                values(:), x(:), changes(:, :)
@@ -428,13 +428,14 @@ CONTAINS
             trial(free) = x(free) + fraction*direction
             CALL reduced_evaluation(trial, trial_energy, trial_reduced, valid)
             IF (valid) THEN
-               IF (NORM2(trial_reduced) < NORM2(reduced)) THEN
-                  IF (trial_energy <= energy + 1.0e-4_dp*fraction*slope .OR. &
-                      ABS(trial_energy - energy) <= 64.0_dp*EPSILON(0.0_dp)* &
-                      MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))) THEN
-                     accepted = .TRUE.
-                     EXIT
-                  END IF
+               ! Descent may increase the gradient norm in a region of negative curvature.
+               roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+               IF ((trial_energy < energy - roundoff .AND. &
+                    trial_energy <= energy + 1.0e-4_dp*fraction*slope) .OR. &
+                   (ABS(trial_energy - energy) <= roundoff .AND. &
+                    NORM2(trial_reduced) < NORM2(reduced))) THEN
+                  accepted = .TRUE.
+                  EXIT
                END IF
             END IF
             fraction = 0.5_dp*fraction
