@@ -21,6 +21,8 @@ MODULE skala_density_constraints
              skala_density_constraints_set, skala_density_constraints_count, &
              skala_density_constraints_matches, skala_density_constraints_get, &
              skala_density_constraints_balance, skala_density_crossings, skala_density_root
+   PUBLIC :: skala_density_samples_begin, skala_density_samples_end, skala_density_samples_active, &
+             skala_density_samples_put, skala_density_samples_get
    INTEGER, PARAMETER, PUBLIC :: skala_density_descriptor = 1, skala_kinetic_descriptor = 2
    INTEGER, PARAMETER, PUBLIC :: skala_fft_domain = 0, skala_atom_domain = 1, skala_background_domain = 2
 
@@ -33,6 +35,11 @@ MODULE skala_density_constraints
       END SUBROUTINE evaluate_physical_density
    END INTERFACE
 
+   TYPE skala_density_samples_type
+      INTEGER, ALLOCATABLE :: points(:, :)
+      REAL(dp), ALLOCATABLE :: density(:, :), kinetic(:, :)
+   END TYPE skala_density_samples_type
+
    TYPE skala_density_constraints_type
       PRIVATE
       INTEGER :: nspins = 0, npts(3) = 0, bounds(2, 3) = 0
@@ -40,9 +47,147 @@ MODULE skala_density_constraints
       REAL(dp) :: hmat(3, 3) = 0.0_dp, probe = 0.0_dp, tolerance = 0.0_dp
       REAL(dp) :: kinetic_probe = 0.0_dp, kinetic_tolerance = 0.0_dp
       REAL(dp), ALLOCATABLE :: positions(:, :), negative_weights(:)
+      LOGICAL :: sampling = .FALSE.
+      INTEGER :: sample_nspins = 0
+      TYPE(skala_density_samples_type) :: samples(skala_fft_domain:skala_background_domain)
    END TYPE skala_density_constraints_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Start one native evaluation, discarding the previous physical descriptor samples.
+!>        Consumers record their unchanged model inputs on their existing MPI owners.
+!>        RKS stores one column containing the half density and half kinetic density.
+!>        Every trial must begin a new sample. No orbital history or root is inferred here.
+!> \param state ...
+! **************************************************************************************************
+   SUBROUTINE skala_density_samples_begin(state)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+
+      CALL clear_samples(state)
+      state%sampling = .TRUE.
+   END SUBROUTINE skala_density_samples_begin
+
+! **************************************************************************************************
+!> \brief Freeze the descriptors consumed by the native evaluation.
+!> \param state ...
+! **************************************************************************************************
+   SUBROUTINE skala_density_samples_end(state)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+
+      state%sampling = .FALSE.
+   END SUBROUTINE skala_density_samples_end
+
+! **************************************************************************************************
+!> \brief Whether the native consumers should retain their current physical inputs.
+!> \param state ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION skala_density_samples_active(state) RESULT(active)
+      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      LOGICAL                                            :: active
+
+      active = state%sampling
+   END FUNCTION skala_density_samples_active
+
+! **************************************************************************************************
+!> \brief Record unchanged local rho and tau inputs before nonlinear model features.
+!>        Sampling is opt-in. Updating selected derivatives does not erase these inputs.
+!> \param state ...
+!> \param domain FFT, exact atomic or interpolated atomic-background evaluation.
+!> \param points Global FFT indices or (global atom, atomic row, 1), one column per local row.
+!> \param density Physical model spin density, one paired RKS or two UKS columns.
+!> \param kinetic Physical model kinetic density with the same spin convention.
+! **************************************************************************************************
+   SUBROUTINE skala_density_samples_put(state, domain, points, density, kinetic)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+      INTEGER, INTENT(IN)                                :: domain, points(:, :)
+      REAL(dp), INTENT(IN)                               :: density(:, :), kinetic(:, :)
+
+      INTEGER                                            :: np, ns
+      LOGICAL                                            :: valid
+
+      IF (.NOT. state%sampling) RETURN
+      valid = domain >= skala_fft_domain .AND. domain <= skala_background_domain
+      CPASSERT(valid)
+      np = SIZE(density, 1)
+      ns = SIZE(density, 2)
+      CPASSERT(ns == 1 .OR. ns == 2)
+      CPASSERT(ALL(SHAPE(kinetic) == [np, ns]))
+      CPASSERT(ALL(SHAPE(points) == [3, np]))
+      CPASSERT(ALL(ieee_is_finite(density)) .AND. ALL(ieee_is_finite(kinetic)))
+      IF (state%sample_nspins /= 0) THEN
+         CPASSERT(state%sample_nspins == ns)
+      END IF
+      state%sample_nspins = ns
+      IF (domain /= skala_fft_domain) THEN
+         CPASSERT(ALL(points(1:2, :) >= 1) .AND. ALL(points(3, :) == 1))
+      END IF
+      ASSOCIATE (sample => state%samples(domain))
+         IF (ALLOCATED(sample%points)) DEALLOCATE (sample%points, sample%density, sample%kinetic)
+         ALLOCATE (sample%points(3, np), sample%density(np, ns), sample%kinetic(np, ns))
+         sample%points(:, :) = points
+         sample%density(:, :) = density
+         sample%kinetic(:, :) = kinetic
+      END ASSOCIATE
+   END SUBROUTINE skala_density_samples_put
+
+! **************************************************************************************************
+!> \brief Copy one domain's native descriptor samples without gathering MPI-owned rows.
+!> \param state ...
+!> \param domain ...
+!> \param points ...
+!> \param density ...
+!> \param kinetic ...
+!> \param available Whether this domain was evaluated since the last begin call.
+! **************************************************************************************************
+   SUBROUTINE skala_density_samples_get(state, domain, points, density, kinetic, available)
+      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      INTEGER, INTENT(IN)                                :: domain
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: density(:, :), kinetic(:, :)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      INTEGER                                            :: np, ns
+      LOGICAL                                            :: valid
+
+      valid = domain >= skala_fft_domain .AND. domain <= skala_background_domain
+      CPASSERT(valid)
+      ASSOCIATE (sample => state%samples(domain))
+         available = ALLOCATED(sample%points)
+         np = 0
+         ns = state%sample_nspins
+         IF (available) np = SIZE(sample%points, 2)
+         ALLOCATE (points(3, np), density(np, ns), kinetic(np, ns))
+         IF (available) THEN
+            points(:, :) = sample%points
+            density(:, :) = sample%density
+            kinetic(:, :) = sample%kinetic
+         END IF
+      END ASSOCIATE
+   END SUBROUTINE skala_density_samples_get
+
+! **************************************************************************************************
+!> \brief Release current samples, including domains absent from the next evaluation.
+!> \param state ...
+! **************************************************************************************************
+   SUBROUTINE clear_samples(state)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+
+      INTEGER                                            :: domain
+
+      DO domain = skala_fft_domain, skala_background_domain
+         ASSOCIATE (sample => state%samples(domain))
+            IF (ALLOCATED(sample%points)) DEALLOCATE (sample%points, sample%density, sample%kinetic)
+         END ASSOCIATE
+      END DO
+      state%sampling = .FALSE.
+      state%sample_nspins = 0
+   END SUBROUTINE clear_samples
 
 ! **************************************************************************************************
 !> \brief Detect physical density zeros bracketed by two orbital evaluations.
@@ -150,6 +295,18 @@ CONTAINS
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
 
+      CALL clear_selection(state)
+      CALL clear_samples(state)
+   END SUBROUTINE skala_density_constraints_reset
+
+! **************************************************************************************************
+!> \brief Clear selected derivatives while retaining this trial's physical samples.
+!> \param state ...
+! **************************************************************************************************
+   SUBROUTINE clear_selection(state)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+
       IF (ALLOCATED(state%points)) DEALLOCATE (state%points)
       IF (ALLOCATED(state%spins)) DEALLOCATE (state%spins)
       IF (ALLOCATED(state%descriptors)) DEALLOCATE (state%descriptors)
@@ -165,7 +322,7 @@ CONTAINS
       state%tolerance = 0.0_dp
       state%kinetic_probe = 0.0_dp
       state%kinetic_tolerance = 0.0_dp
-   END SUBROUTINE skala_density_constraints_reset
+   END SUBROUTINE clear_selection
 
 ! **************************************************************************************************
 !> \brief Store physical grid constraints and their selected convex weights.
@@ -273,7 +430,7 @@ CONTAINS
          END DO
       END DO
 
-      CALL skala_density_constraints_reset(state)
+      CALL clear_selection(state)
       state%nspins = nspins
       state%npts = npts
       state%bounds = bounds

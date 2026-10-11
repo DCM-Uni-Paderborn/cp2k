@@ -658,7 +658,8 @@ CONTAINS
                                    rho_r=rho_r, rho_g=rho_g, tau=tau, xc_section=xc_section, &
                                    weights=weights_use, pw_pool=xc_pw_pool, &
                                    particle_set=particle_set, cell=cell, &
-                                   compute_virial=.FALSE., virial_xc=virial_xc_tmp, just_energy=.TRUE.)
+                                   compute_virial=.FALSE., virial_xc=virial_xc_tmp, just_energy=.TRUE., &
+                                   density_constraints=skala_constraints)
             ELSE
                CALL skala_gpw_eval(vxc_rho=my_vxc_rho, vxc_tau=my_vxc_tau, exc=exc, &
                                    rho_r=rho_r, rho_g=rho_g, tau=tau, xc_section=xc_section, &

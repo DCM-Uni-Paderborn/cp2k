@@ -33,13 +33,11 @@ MODULE skala_gpw_functional
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
-   USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
-                                              skala_density_constraints_get,&
-                                              skala_density_constraints_matches,&
-                                              skala_density_constraints_type,&
-                                              skala_density_descriptor,&
-                                              skala_fft_domain,&
-                                              skala_kinetic_descriptor
+   USE skala_density_constraints,       ONLY: &
+        skala_density_constraints_count, skala_density_constraints_get, &
+        skala_density_constraints_matches, skala_density_constraints_type, &
+        skala_density_descriptor, skala_density_samples_active, skala_density_samples_put, &
+        skala_fft_domain, skala_kinetic_descriptor
    USE skala_gpw_features,              ONLY: &
         skala_gpw_atom_partition_hard, skala_gpw_atom_partition_smooth, &
         skala_gpw_atom_subchunk_count, skala_gpw_atom_subchunk_layout, skala_gpw_feature_build, &
@@ -547,6 +545,12 @@ CONTAINS
                              tau_cutoff=section_get_rval(xc_section, "tau_cutoff"))
       CALL xc_rho_set_update(rho_set, rho_r, rho_g, tau, needs, &
                              xc_deriv_method_id, xc_rho_smooth_id, pw_pool)
+
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints)) THEN
+            CALL record_fft_descriptors(density_constraints, rho_set, rho_r)
+         END IF
+      END IF
 
       CALL skala_gpw_feature_build(features, rho_set, rho_r, particle_set, cell, &
                                    requires_grad=(.NOT. my_just_energy), weights=weights, &
@@ -2219,6 +2223,57 @@ CONTAINS
       matches = skala_density_constraints_matches(state, SIZE(rho_r), rho_r(1)%pw_grid%npts, &
                                                   rho_r(1)%pw_grid%bounds, cell%hmat, positions)
    END FUNCTION density_constraints_match_geometry
+
+! **************************************************************************************************
+!> \brief Record the same local spin inputs packed by skala_gpw_feature_build.
+!>        The XC rho set already includes the caller's core and density processing.
+!>        Samples precede atom duplication, routing and nonlinear model features.
+!> \param state ...
+!> \param rho_set ...
+!> \param rho_r ...
+! **************************************************************************************************
+   SUBROUTINE record_fft_descriptors(state, rho_set, rho_r)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+      TYPE(xc_rho_set_type), INTENT(IN)                  :: rho_set
+      TYPE(pw_r3d_rs_type), POINTER                      :: rho_r(:)
+
+      INTEGER                                            :: bo(2, 3), i, j, k, np, ns, row
+      INTEGER, ALLOCATABLE                               :: points(:, :)
+      REAL(dp), ALLOCATABLE                              :: density(:, :), kinetic(:, :)
+      REAL(dp), POINTER                                  :: rho(:, :, :), rhoa(:, :, :), &
+                                                            rhob(:, :, :), tau(:, :, :), &
+                                                            tau_a(:, :, :), tau_b(:, :, :)
+
+      IF (.NOT. skala_density_samples_active(state)) RETURN
+      ns = SIZE(rho_r)
+      bo = rho_r(1)%pw_grid%bounds_local
+      np = PRODUCT(MAX(0, bo(2, :) - bo(1, :) + 1))
+      ALLOCATE (points(3, np), density(np, ns), kinetic(np, ns))
+      IF (ns == 1) THEN
+         CALL xc_rho_set_get(rho_set, rho=rho, tau=tau)
+      ELSE
+         CPASSERT(ns == 2)
+         CALL xc_rho_set_get(rho_set, rhoa=rhoa, rhob=rhob, tau_a=tau_a, tau_b=tau_b)
+      END IF
+      row = 0
+      DO k = bo(1, 3), bo(2, 3)
+         DO j = bo(1, 2), bo(2, 2)
+            DO i = bo(1, 1), bo(2, 1)
+               row = row + 1
+               points(:, row) = [i, j, k]
+               IF (ns == 1) THEN
+                  density(row, 1) = 0.5_dp*rho(i, j, k)
+                  kinetic(row, 1) = 0.5_dp*tau(i, j, k)
+               ELSE
+                  density(row, :) = [rhoa(i, j, k), rhob(i, j, k)]
+                  kinetic(row, :) = [tau_a(i, j, k), tau_b(i, j, k)]
+               END IF
+            END DO
+         END DO
+      END DO
+      CALL skala_density_samples_put(state, skala_fft_domain, points, density, kinetic)
+   END SUBROUTINE record_fft_descriptors
 
 ! **************************************************************************************************
 !> \brief Apply selected subgradients at physical density and kinetic-density zeros.

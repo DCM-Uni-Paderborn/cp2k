@@ -43,7 +43,9 @@ MODULE qs_upf_inverse_xc
                                               skala_background_domain,&
                                               skala_density_constraints_count,&
                                               skala_density_constraints_matches,&
-                                              skala_density_constraints_type
+                                              skala_density_constraints_type,&
+                                              skala_density_samples_active,&
+                                              skala_density_samples_put
    USE skala_gpw_functional,            ONLY: skala_gapw_atom_composite_energy,&
                                               xc_section_uses_native_skala_evaluator
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
@@ -743,6 +745,16 @@ CONTAINS
                                       background, gradient, core_density, core_gradient, xc_section, &
                                       lsd, comm, state, energy, kinetic, tau, core_tau, atom_grid, paw_reconstruction, &
                                       selected_constraints)
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints)) THEN
+            IF (skala_density_samples_active(density_constraints)) THEN
+               IF (xc_section_uses_native_skala_evaluator(xc_section)) THEN
+                  CPASSERT(PRESENT(atom_grid) .AND. PRESENT(kinetic))
+                  CALL record_atom_descriptors(density_constraints, atom_grid, state, background, tau)
+               END IF
+            END IF
+         END IF
+      END IF
       ALLOCATE (integration_weights(np))
       integration_weights(:) = weights
       IF (state%weighted_adjoint) integration_weights = 1.0_dp
@@ -758,6 +770,47 @@ CONTAINS
       CALL native_grid_batch_adjoint(covectors, grid, cell, points, grid_adjoint, wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
       CALL comm%sum(grid_adjoint)
    END SUBROUTINE qs_upf_inverse_xc_grid_evaluate
+
+! **************************************************************************************************
+!> \brief Retain the physical inputs of the exact and background atomic Skala evaluations.
+!>        Recording uses the KS owner even when no subgradient has been selected yet.
+!>        Core terms, original augmentation and paired-spin scaling are unchanged.
+!> \param constraints ...
+!> \param atom_grid ...
+!> \param state ...
+!> \param background_density ...
+!> \param background_tau ...
+! **************************************************************************************************
+   SUBROUTINE record_atom_descriptors(constraints, atom_grid, state, background_density, background_tau)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: constraints
+      TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
+      TYPE(qs_upf_inverse_xc_type), INTENT(IN)           :: state
+      REAL(dp), INTENT(IN)                               :: background_density(:, :), &
+                                                            background_tau(:, :)
+
+      INTEGER                                            :: atom, point, row
+      INTEGER, ALLOCATABLE                               :: indices(:, :)
+      REAL(dp)                                           :: scale
+
+      ALLOCATE (indices(3, SIZE(atom_grid%atoms)))
+      atom = 0
+      row = 0
+      DO point = 1, SIZE(atom_grid%atoms)
+         IF (atom_grid%atoms(point) /= atom) THEN
+            atom = atom_grid%atoms(point)
+            row = 0
+         END IF
+         row = row + 1
+         indices(:, point) = [atom, row, 1]
+      END DO
+      scale = 1.0_dp
+      IF (SIZE(state%density, 2) == 1) scale = 0.5_dp
+      CALL skala_density_samples_put(constraints, skala_atom_domain, indices, &
+                                     scale*state%density, scale*state%tau)
+      CALL skala_density_samples_put(constraints, skala_background_domain, indices, &
+                                     scale*background_density, scale*background_tau)
+   END SUBROUTINE record_atom_descriptors
 
 ! **************************************************************************************************
 !> \brief Joint inverse XC response including native source-field and interpolation geometry.
