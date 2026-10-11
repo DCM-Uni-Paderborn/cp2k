@@ -107,13 +107,13 @@ CONTAINS
          END DO
          DO iset = 1, basis%nset
             ncart = ncoset(basis%lmax(iset))
-            DO ishell = 1, basis%nshell(iset)
-               l = basis%l(ishell, iset)
-               first = basis%first_sgf(ishell, iset)
-               last = basis%last_sgf(ishell, iset)
-               DO ipgf = 1, basis%npgf(iset)
-                  alpha = basis%zet(ipgf, iset)
-                  exponential = EXP(-alpha*r_squared)
+            DO ipgf = 1, basis%npgf(iset)
+               alpha = basis%zet(ipgf, iset)
+               exponential = EXP(-alpha*r_squared)
+               DO ishell = 1, basis%nshell(iset)
+                  l = basis%l(ishell, iset)
+                  first = basis%first_sgf(ishell, iset)
+                  last = basis%last_sgf(ishell, iset)
                   ! Primitive Cartesian derivatives are shared by every spherical contraction.
                   DO ico = ncoset(l - 1) + 1, ncoset(l)
                      irow = (ipgf - 1)*ncart + ico
