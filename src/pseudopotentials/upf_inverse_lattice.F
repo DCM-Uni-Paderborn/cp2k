@@ -642,8 +642,11 @@ CONTAINS
       INTEGER                                            :: first, i, j, last, np, q, source_first, &
                                                             source_last
 
+      EXTERNAL zgemv
+
       np = lattice%diagonal%nproj
       RESULT = vector
+      IF (np == 0) RETURN
       DO i = 1, SIZE(lattice%images, 2)
          first = (i - 1)*np + 1
          last = i*np
@@ -653,10 +656,11 @@ CONTAINS
             source_first = (j - 1)*np + 1
             source_last = j*np
             IF (adjoint) THEN
-               RESULT(source_first:source_last) = RESULT(source_first:source_last) + &
-                                                  MATMUL(CONJG(TRANSPOSE(lattice%coupling(:, :, q))), vector(first:last))
+               CALL zgemv('C', np, np, CMPLX(1.0_dp, 0.0_dp, dp), lattice%coupling(:, :, q), np, &
+                          vector(first:last), 1, CMPLX(1.0_dp, 0.0_dp, dp), RESULT(source_first:source_last), 1)
             ELSE
-               RESULT(first:last) = RESULT(first:last) + MATMUL(lattice%coupling(:, :, q), vector(source_first:source_last))
+               CALL zgemv('N', np, np, CMPLX(1.0_dp, 0.0_dp, dp), lattice%coupling(:, :, q), np, &
+                          vector(source_first:source_last), 1, CMPLX(1.0_dp, 0.0_dp, dp), RESULT(first:last), 1)
             END IF
          END DO
       END DO
