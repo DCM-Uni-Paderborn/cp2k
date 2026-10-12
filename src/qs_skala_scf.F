@@ -20,6 +20,7 @@ MODULE qs_skala_scf
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_para_env_type
    USE particle_types,                  ONLY: particle_type
+   USE paw_xc,                          ONLY: paw_xc_point_adjoint
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_energy_types,                 ONLY: qs_energy_type
@@ -57,7 +58,8 @@ MODULE qs_skala_scf
         skala_density_constraints_balance, skala_density_constraints_count, skala_density_constraints_get, &
         skala_density_constraints_set, skala_density_constraints_update_weights, &
         skala_density_crossings, skala_density_root, skala_density_samples_begin, skala_density_samples_end, &
-        skala_density_samples_get, skala_fft_domain, skala_kinetic_descriptor
+        skala_density_samples_get, skala_fft_domain, skala_kinetic_descriptor, &
+        skala_last_sample_domain, skala_paw_ae_domain, skala_paw_ps_domain
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
                                               skala_cusp_admissibility,&
                                               skala_orbital_chart_derivative,&
@@ -380,8 +382,8 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Read one actual physical model input, requiring exactly one distributed owner.
 !> \param state ...
-!> \param domain FFT, exact atomic or interpolated atomic background.
-!> \param point Global FFT index or (global atom, row within that atom, 1).
+!> \param domain FFT, exact atomic, interpolated background, PAW AE or compensated PAW PS.
+!> \param point FFT index, (global atom, atomic row, 1), or PAW (global atom, radial node, angular node).
 !> \param spin Minus two for the positive-part density sum, minus one for the spin sum,
 !>        zero for paired RKS, one or two for UKS.
 !> \param descriptor Density or kinetic density.
@@ -398,7 +400,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                            :: density(:, :), kinetic(:, :)
 
       CPASSERT(state%evaluated)
-      valid = domain >= skala_fft_domain .AND. domain <= skala_background_domain
+      valid = domain >= skala_fft_domain .AND. domain <= skala_last_sample_domain
       CPASSERT(valid)
       valid = descriptor == skala_density_descriptor .OR. descriptor == skala_kinetic_descriptor
       CPASSERT(valid)
@@ -449,8 +451,8 @@ CONTAINS
 !>        applied once. Atomic background inputs use the transpose of their actual interpolation,
 !>        without the negative sign belonging to the background energy contribution.
 !> \param state Evaluated native orbital state, with current physical model samples.
-!> \param domain FFT, exact atomic or interpolated atomic background.
-!> \param point Global FFT index or (global atom, row within that atom, 1).
+!> \param domain FFT, exact atomic, interpolated background, PAW AE or compensated PAW PS.
+!> \param point FFT index, (global atom, atomic row, 1), or PAW (global atom, radial node, angular node).
 !> \param spin Minus two for the positive-part density sum, minus one for the spin sum,
 !>        zero for paired RKS, one or two for UKS. At a zero spin density, the
 !>        positive-part sum uses the below-threshold derivative.
@@ -492,6 +494,8 @@ CONTAINS
       END IF
       IF (domain == skala_fft_domain .OR. domain == skala_background_domain) THEN
          CALL grid_point_operators(state, domain, point, descriptor, operators)
+      ELSE IF (domain == skala_paw_ae_domain .OR. domain == skala_paw_ps_domain) THEN
+         CALL paw_point_operators(state, domain, point, descriptor, operators)
       ELSE
          CALL atom_point_operators(state, point, descriptor, operators)
       END IF
@@ -699,6 +703,43 @@ CONTAINS
       END DO
    END SUBROUTINE atom_point_operators
 
+   SUBROUTINE paw_point_operators(state, domain, point, descriptor, operators)
+      TYPE(qs_skala_scf_type), INTENT(IN)               :: state
+      INTEGER, INTENT(IN)                                :: domain, point(3), descriptor
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
+
+      INTEGER                                            :: center, first, i, ik, ikind, last, nao, nk, side
+      REAL(dp), ALLOCATABLE                              :: potential(:, :)
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+
+      nk = SIZE(state%dimensions, 1)
+      frame => state%inverse%frame%ao
+      IF (state%bloch) frame => state%inverse%bloch%frames(1)%ao
+      center = 0
+      DO i = 1, SIZE(frame%center_atoms)
+         IF (frame%center_atoms(i) /= point(1)) CYCLE
+         CPASSERT(center == 0)
+         center = i
+      END DO
+      CPASSERT(center > 0)
+      ikind = frame%center_kinds(center)
+      CPASSERT(state%inverse%paw(ikind)%active)
+      first = frame%projector_first(center)
+      last = frame%projector_last(center)
+      nao = SIZE(frame%coefficients, 2)
+      ALLOCATE (potential(last - first + 1, last - first + 1), operators(nao, nao, nk))
+      side = 1
+      IF (domain == skala_paw_ps_domain) side = 2
+      CALL paw_xc_point_adjoint(state%inverse%paw(ikind)%xcgrid, state%inverse%paw(ikind)%onecenter, &
+                                point(2), point(3), side, descriptor == skala_kinetic_descriptor, potential)
+      DO ik = 1, nk
+         frame => state%inverse%frame%ao
+         IF (state%bloch) frame => state%inverse%bloch%frames(ik)%ao
+         operators(:, :, ik) = MATMUL(CONJG(TRANSPOSE(frame%coefficients(first:last, :))), &
+                                      MATMUL(CMPLX(potential, KIND=dp), frame%coefficients(first:last, :)))
+      END DO
+   END SUBROUTINE paw_point_operators
+
 ! **************************************************************************************************
 !> \brief Find a physical root along a normalized orbital curve by complete native reevaluations.
 !>        Density matrices and physical fields are never interpolated. On failure restore the
@@ -785,8 +826,8 @@ CONTAINS
       LOGICAL, ALLOCATABLE                               :: mask(:, :)
       REAL(dp)                                           :: energy, level, levels(2), total_levels(2), positive_level
       REAL(dp), ALLOCATABLE                              :: first_field(:, :), gradient(:), last_field(:, :), values(:, :)
-      TYPE(physical_domain_samples) :: final(skala_fft_domain:skala_background_domain), &
-         initial(skala_fft_domain:skala_background_domain)
+      TYPE(physical_domain_samples) :: final(skala_fft_domain:skala_last_sample_domain), &
+         initial(skala_fft_domain:skala_last_sample_domain)
 
       valid = SIZE(first) == qs_skala_scf_size(state) .AND. SIZE(last) == SIZE(first)
       CPASSERT(valid)
@@ -800,13 +841,13 @@ CONTAINS
       IF (PRESENT(positive_density_target)) positive_level = positive_density_target
       CPASSERT(ieee_is_finite(positive_level) .AND. positive_level >= 0.0_dp)
       CALL qs_skala_scf_evaluate(state, first, energy)
-      DO domain = skala_fft_domain, skala_background_domain
+      DO domain = skala_fft_domain, skala_last_sample_domain
          CALL skala_density_samples_get(state%constraints, domain, initial(domain)%points, &
                                         initial(domain)%density, initial(domain)%kinetic, initial(domain)%available)
       END DO
       CALL qs_skala_scf_evaluate(state, last, energy)
       local_count = 0
-      DO domain = skala_fft_domain, skala_background_domain
+      DO domain = skala_fft_domain, skala_last_sample_domain
          CALL skala_density_samples_get(state%constraints, domain, final(domain)%points, &
                                         final(domain)%density, final(domain)%kinetic, final(domain)%available)
          valid = initial(domain)%available .EQV. final(domain)%available
@@ -841,7 +882,7 @@ CONTAINS
       END DO
       ALLOCATE (keys(6, local_count), values(2, local_count))
       row = 0
-      DO domain = skala_fft_domain, skala_background_domain
+      DO domain = skala_fft_domain, skala_last_sample_domain
          IF (.NOT. initial(domain)%available) CYCLE
          DO descriptor = skala_density_descriptor, skala_kinetic_descriptor
             IF (descriptor == skala_kinetic_descriptor .AND. SIZE(initial(domain)%kinetic, 2) == 0) CYCLE

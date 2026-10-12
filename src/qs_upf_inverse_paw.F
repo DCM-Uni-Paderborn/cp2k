@@ -35,6 +35,7 @@ MODULE qs_upf_inverse_paw
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_grid_type,&
                                               qs_upf_inverse_type
+   USE skala_density_constraints,       ONLY: skala_density_constraints_type
    USE upf_inverse,                     ONLY: upf_inverse_density_evaluate,&
                                               upf_inverse_kinetic_type
    USE upf_projector_integrals,         ONLY: upf_projector_type
@@ -410,12 +411,13 @@ CONTAINS
 !> \param hamiltonian Unweighted Gaussian Hamiltonian correction for each global k point and spin.
 !> \param potential Owned per-center projector potentials for the corresponding geometry response.
 !> \param semilocal_xc Include atomic semilocal XC. A separate composite XC consumer may disable it.
+!> \param samples Optional physical XC arguments, retained on the existing atomic owners.
 !> \param core_energy Optional kind-indexed core-core exchange constants for the native HF interactions.
 !> \param core_potential Optional kind-indexed core-valence operators, with one spin-independent matrix.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_paw_evaluate(kinds, frames, density, kweights, functional, density_cutoff, &
                                           gradient_cutoff, energies, hamiltonian, potential, semilocal_xc, &
-                                          core_energy, core_potential)
+                                          core_energy, core_potential, samples)
       TYPE(paw_kind_type), INTENT(IN)                    :: kinds(:)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
       COMPLEX(dp), INTENT(IN)                            :: density(:, :, :, :)
@@ -428,6 +430,8 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: semilocal_xc
       REAL(dp), INTENT(IN), OPTIONAL                     :: core_energy(:)
       TYPE(paw_potential_type), INTENT(IN), OPTIONAL     :: core_potential(:)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT), OPTIONAL, POINTER                :: samples
 
       COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
       INTEGER                                            :: center, first, ik, ikind, last, n, nao, &
@@ -505,11 +509,13 @@ CONTAINS
             IF (PRESENT(semilocal_xc)) THEN
                IF (semilocal_xc) THEN
                   CALL paw_xc_evaluate(kinds(ikind)%xcgrid, kinds(ikind)%onecenter, functional, dm, &
-                                       density_cutoff, gradient_cutoff, ex, vxc)
+                                       density_cutoff, gradient_cutoff, ex, vxc, &
+                                       samples=samples, atom=frames(1)%ao%center_atoms(center))
                END IF
             ELSE
                CALL paw_xc_evaluate(kinds(ikind)%xcgrid, kinds(ikind)%onecenter, functional, dm, &
-                                    density_cutoff, gradient_cutoff, ex, vxc)
+                                    density_cutoff, gradient_cutoff, ex, vxc, &
+                                    samples=samples, atom=frames(1)%ao%center_atoms(center))
             END IF
             IF (PRESENT(core_energy)) THEN
                ex = ex + core_energy(ikind) + SUM(SUM(dm, DIM=3)*core_potential(ikind)%matrix(:, :, 1))

@@ -99,6 +99,7 @@ MODULE qs_upf_inverse_scf
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
                                               qs_uspp_release,&
                                               qs_uspp_type
+   USE skala_density_constraints,       ONLY: skala_density_constraints_type
    USE upf_inverse,                     ONLY: upf_inverse_fields_init,&
                                               upf_inverse_kinetic_init
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
@@ -393,9 +394,10 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(section_vals_type), POINTER                   :: functional
+      TYPE(skala_density_constraints_type), POINTER      :: samples
 
       energies = 0.0_dp
-      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho, dft_control=control, qs_kind_set=kinds)
+      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho, dft_control=control, qs_kind_set=kinds, skala_constraints=samples)
       IF (.NOT. ASSOCIATED(state)) RETURN
       IF (.NOT. ANY(state%paw%active)) RETURN
       CALL check_geometry(ks_env, state)
@@ -440,13 +442,13 @@ CONTAINS
                                           functional, density_cutoff, gradient_cutoff, energies, &
                                           state%paw_operator, state%paw_potential, &
                                           semilocal_xc=.NOT. ALLOCATED(state%paw_reconstruction), &
-                                          core_energy=core_energy, core_potential=core_potential)
+                                          core_energy=core_energy, core_potential=core_potential, samples=samples)
       ELSE
          CALL qs_upf_inverse_paw_evaluate(state%paw, [state%frame], state%paw_density, [1.0_dp], &
                                           functional, density_cutoff, gradient_cutoff, energies, &
                                           state%paw_operator, state%paw_potential, &
                                           semilocal_xc=.NOT. ALLOCATED(state%paw_reconstruction), &
-                                          core_energy=core_energy, core_potential=core_potential)
+                                          core_energy=core_energy, core_potential=core_potential, samples=samples)
       END IF
       state%paw_density_evaluation = state%density_evaluations
    END SUBROUTINE qs_upf_inverse_scf_paw_evaluate

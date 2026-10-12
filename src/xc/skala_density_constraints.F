@@ -26,6 +26,8 @@ MODULE skala_density_constraints
    PUBLIC :: skala_density_constraints_update_weights
    INTEGER, PARAMETER, PUBLIC :: skala_density_descriptor = 1, skala_kinetic_descriptor = 2
    INTEGER, PARAMETER, PUBLIC :: skala_fft_domain = 0, skala_atom_domain = 1, skala_background_domain = 2
+   INTEGER, PARAMETER, PUBLIC :: skala_paw_ae_domain = 3, skala_paw_ps_domain = 4
+   INTEGER, PARAMETER, PUBLIC :: skala_last_sample_domain = skala_paw_ps_domain
 
    ABSTRACT INTERFACE
       SUBROUTINE evaluate_physical_density(step, value, context)
@@ -50,7 +52,7 @@ MODULE skala_density_constraints
       REAL(dp), ALLOCATABLE :: positions(:, :), negative_weights(:)
       LOGICAL :: sampling = .FALSE.
       INTEGER :: sample_nspins = 0
-      TYPE(skala_density_samples_type) :: samples(skala_fft_domain:skala_background_domain)
+      TYPE(skala_density_samples_type) :: samples(skala_fft_domain:skala_last_sample_domain)
    END TYPE skala_density_constraints_type
 
 CONTAINS
@@ -97,24 +99,28 @@ CONTAINS
 !> \brief Record unchanged local rho and tau inputs before nonlinear model features.
 !>        Sampling is opt-in. Updating selected derivatives does not erase these inputs.
 !> \param state ...
-!> \param domain FFT, exact atomic or interpolated atomic-background evaluation.
-!> \param points Global FFT indices or (global atom, atomic row, 1), one column per local row.
+!> \param domain FFT, exact atomic, interpolated background, PAW AE or compensated PAW PS.
+!> \param points FFT indices, (global atom, atomic row, 1), or PAW (global atom, radial node, angular node).
 !> \param density Physical model spin density, one paired RKS or two UKS columns.
 !> \param kinetic Optional physical kinetic density with the same spin convention.
 !>        Omission records that the functional did not request this descriptor.
+!> \param append Append a further chunk in this domain; otherwise replace its previous samples.
 ! **************************************************************************************************
-   SUBROUTINE skala_density_samples_put(state, domain, points, density, kinetic)
+   SUBROUTINE skala_density_samples_put(state, domain, points, density, kinetic, append)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
       INTEGER, INTENT(IN)                                :: domain, points(:, :)
       REAL(dp), INTENT(IN)                               :: density(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: kinetic(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: append
 
-      INTEGER                                            :: nk, np, ns
+      INTEGER                                            :: first, nk, np, ns
+      INTEGER, ALLOCATABLE                               :: combined_points(:, :)
       LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: combined_density(:, :), combined_kinetic(:, :)
 
       IF (.NOT. state%sampling) RETURN
-      valid = domain >= skala_fft_domain .AND. domain <= skala_background_domain
+      valid = domain >= skala_fft_domain .AND. domain <= skala_last_sample_domain
       CPASSERT(valid)
       np = SIZE(density, 1)
       ns = SIZE(density, 2)
@@ -131,15 +137,32 @@ CONTAINS
          CPASSERT(state%sample_nspins == ns)
       END IF
       state%sample_nspins = ns
-      IF (domain /= skala_fft_domain) THEN
+      IF (domain == skala_paw_ae_domain .OR. domain == skala_paw_ps_domain) THEN
+         CPASSERT(ALL(points >= 1))
+      ELSE IF (domain /= skala_fft_domain) THEN
          CPASSERT(ALL(points(1:2, :) >= 1) .AND. ALL(points(3, :) == 1))
       END IF
       ASSOCIATE (sample => state%samples(domain))
-         IF (ALLOCATED(sample%points)) DEALLOCATE (sample%points, sample%density, sample%kinetic)
-         ALLOCATE (sample%points(3, np), sample%density(np, ns), sample%kinetic(np, nk))
-         sample%points(:, :) = points
-         sample%density(:, :) = density
-         IF (PRESENT(kinetic)) sample%kinetic(:, :) = kinetic
+         first = 0
+         IF (PRESENT(append)) THEN
+            IF (append .AND. ALLOCATED(sample%points)) THEN
+               valid = SIZE(sample%density, 2) == ns .AND. SIZE(sample%kinetic, 2) == nk
+               CPASSERT(valid)
+               first = SIZE(sample%points, 2)
+            END IF
+         END IF
+         ALLOCATE (combined_points(3, first + np), combined_density(first + np, ns), combined_kinetic(first + np, nk))
+         IF (first > 0) THEN
+            combined_points(:, :first) = sample%points
+            combined_density(:first, :) = sample%density
+            combined_kinetic(:first, :) = sample%kinetic
+         END IF
+         combined_points(:, first + 1:) = points
+         combined_density(first + 1:, :) = density
+         IF (PRESENT(kinetic)) combined_kinetic(first + 1:, :) = kinetic
+         CALL MOVE_ALLOC(combined_points, sample%points)
+         CALL MOVE_ALLOC(combined_density, sample%density)
+         CALL MOVE_ALLOC(combined_kinetic, sample%kinetic)
       END ASSOCIATE
    END SUBROUTINE skala_density_samples_put
 
@@ -162,7 +185,7 @@ CONTAINS
       INTEGER                                            :: nk, np, ns
       LOGICAL                                            :: valid
 
-      valid = domain >= skala_fft_domain .AND. domain <= skala_background_domain
+      valid = domain >= skala_fft_domain .AND. domain <= skala_last_sample_domain
       CPASSERT(valid)
       ASSOCIATE (sample => state%samples(domain))
          available = ALLOCATED(sample%points)
@@ -192,7 +215,7 @@ CONTAINS
 
       INTEGER                                            :: domain
 
-      DO domain = skala_fft_domain, skala_background_domain
+      DO domain = skala_fft_domain, skala_last_sample_domain
          ASSOCIATE (sample => state%samples(domain))
             IF (ALLOCATED(sample%points)) DEALLOCATE (sample%points, sample%density, sample%kinetic)
          END ASSOCIATE

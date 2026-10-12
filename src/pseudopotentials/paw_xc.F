@@ -28,6 +28,11 @@ MODULE paw_xc
                                               paw_xc_build_ae_core_tau => paw_core_kinetic_build_ae
    USE paw_onecenter,                   ONLY: paw_onecenter_type
    USE paw_types,                       ONLY: paw_xc_type
+   USE skala_density_constraints,       ONLY: skala_density_constraints_type,&
+                                              skala_density_samples_active,&
+                                              skala_density_samples_put,&
+                                              skala_paw_ae_domain,&
+                                              skala_paw_ps_domain
    USE splines,                         ONLY: spline3ders
    USE upf_types,                       ONLY: atom_upfpot_type,&
                                               upf_radial_weights
@@ -53,6 +58,7 @@ MODULE paw_xc
    PUBLIC :: paw_xc_kinetic_adjoint
    PUBLIC :: paw_xc_build_ae_core_tau
    PUBLIC :: paw_xc_ae_core_cartesian
+   PUBLIC :: paw_xc_point_adjoint
 
 CONTAINS
 
@@ -352,6 +358,48 @@ CONTAINS
    END SUBROUTINE paw_xc_collocate
 
 ! **************************************************************************************************
+!> \brief Projector-density derivative of one PAW density or kinetic-density sample.
+!>        Frozen cores are constant in this derivative. No energy sign, quadrature weight,
+!>        spin-pairing factor or k-point weight belongs to this unweighted field operator.
+!> \param grid Original radial and angular data.
+!> \param onecenter Corresponding projector mapping and Gaunt tensor.
+!> \param ir Positive radial node.
+!> \param angular Angular node.
+!> \param side AE (1) or compensated PS (2).
+!> \param kinetic Select the valence kinetic density instead of the charge density.
+!> \param potential Symmetric projector-density derivative of this scalar sample.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_point_adjoint(grid, onecenter, ir, angular, side, kinetic, potential)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      INTEGER, INTENT(IN)                                :: ir, angular, side
+      LOGICAL, INTENT(IN)                                :: kinetic
+      REAL(dp), INTENT(OUT)                              :: potential(:, :)
+
+      INTEGER                                            :: l, lm, p, pair, q
+      REAL(dp)                                           :: value
+
+      CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
+      CPASSERT(ir >= 1 .AND. ir <= grid%nr)
+      CPASSERT(grid%r(ir) > 0.0_dp .AND. angular >= 1 .AND. angular <= grid%na)
+      CPASSERT(side == 1 .OR. side == 2)
+      CPASSERT(ALL(SHAPE(potential) == [onecenter%nproj, onecenter%nproj]))
+      potential = 0.0_dp
+      IF (ir > grid%nval) RETURN
+      DO q = 1, onecenter%nproj
+         DO p = 1, onecenter%nproj
+            pair = onecenter%pair_index(p, q)
+            DO lm = 1, SIZE(onecenter%gaunt, 3)
+               l = INT(SQRT(REAL(lm - 1, dp)))
+               value = grid%radial(ir, pair, l, side)
+               IF (kinetic) value = grid%kinetic_radial(ir, pair, l, side)
+               potential(p, q) = potential(p, q) + onecenter%gaunt(p, q, lm)*grid%harmonics(angular, lm)*value
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE paw_xc_point_adjoint
+
+! **************************************************************************************************
 !> \brief Adjoint of valence kinetic-density collocation on a single radial shell.
 !> \param grid Prepared PAW radial and angular data.
 !> \param onecenter Projector indices and Gaunt coefficients.
@@ -406,9 +454,11 @@ CONTAINS
 !> \param potential Derivative dE/d(density), separately for each spin.
 !> \param core_kinetic Optional spin-summed frozen-core kinetic density on the UPF mesh, AE then PS.
 !>        Required for tau-dependent XC when either frozen-core density is nonzero.
+!> \param samples Optional native physical-input samples on this atomic functional's MPI owner.
+!> \param atom Global atom index required when sampling is active.
 ! **************************************************************************************************
    SUBROUTINE paw_xc_evaluate(grid, onecenter, functional, density, density_cutoff, gradient_cutoff, energy, potential, &
-                              core_kinetic)
+                              core_kinetic, samples, atom)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
       TYPE(section_vals_type), POINTER                   :: functional
@@ -416,11 +466,14 @@ CONTAINS
                                                             gradient_cutoff
       REAL(dp), INTENT(OUT)                              :: energy, potential(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: core_kinetic(:, :)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT), OPTIONAL, POINTER                :: samples
+      INTEGER, INTENT(IN), OPTIONAL                      :: atom
 
       INTEGER                                            :: axis, bounds(2, 3), first, ir, jr, l, &
                                                             lm, na, nlm, nr, nspin, p, pair, q, &
                                                             side, spin
-      LOGICAL                                            :: lsd, use_tau
+      LOGICAL                                            :: lsd, record_samples, use_tau
       REAL(dp)                                           :: batch_energy, sign
       REAL(dp), ALLOCATABLE :: angular_value(:), drho(:, :, :, :), kinetic_value(:), &
          radial_value(:), rho(:, :, :), tau(:, :, :), weights(:, :)
@@ -445,6 +498,14 @@ CONTAINS
          CPABORT("PAW one-center XC Laplacian dependence is not implemented")
       END IF
       use_tau = needs%tau .OR. needs%tau_spin
+      record_samples = .FALSE.
+      IF (PRESENT(samples)) THEN
+         IF (ASSOCIATED(samples)) record_samples = skala_density_samples_active(samples)
+      END IF
+      IF (record_samples) THEN
+         CPASSERT(PRESENT(atom))
+         CPASSERT(atom > 0)
+      END IF
       IF (use_tau) THEN
          IF (PRESENT(core_kinetic)) THEN
             CPASSERT(ALL(SHAPE(core_kinetic) == [grid%nr, 2]))
@@ -496,6 +557,9 @@ CONTAINS
                END IF
                CALL fill_rho_set(rho_set, lsd, nspin, needs, rho, drho, tau, na, jr)
             END DO
+            IF (record_samples) THEN
+               CALL record_xc_samples(grid, first, side, rho, tau, samples, atom, use_tau)
+            END IF
             CALL xc_dset_zero_all(derivatives)
             vxc = 0.0_dp
             vxg = 0.0_dp
@@ -546,5 +610,46 @@ CONTAINS
       CALL xc_rho_set_release(rho_set)
       DEALLOCATE (vxc, vxg, vtau)
    END SUBROUTINE paw_xc_evaluate
+
+   SUBROUTINE record_xc_samples(grid, first, side, rho, tau, samples, atom, use_tau)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      INTEGER, INTENT(IN)                                :: first, side, atom
+      REAL(dp), INTENT(IN)                               :: rho(:, :, :), tau(:, :, :)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: samples
+      LOGICAL, INTENT(IN)                                :: use_tau
+
+      INTEGER                                            :: angular, domain, ir, jr, np, nspin, row
+      INTEGER, ALLOCATABLE                               :: points(:, :)
+      REAL(dp)                                           :: scale
+      REAL(dp), ALLOCATABLE                              :: density(:, :), kinetic(:, :)
+
+      np = 0
+      DO ir = first, MIN(grid%nr, first + SIZE(rho, 2) - 1)
+         IF (grid%r(ir) > 0.0_dp .AND. grid%wr(ir) /= 0.0_dp) np = np + COUNT(grid%wa /= 0.0_dp)
+      END DO
+      nspin = SIZE(rho, 3)
+      scale = REAL(nspin, dp)/2.0_dp
+      ALLOCATE (points(3, np), density(np, nspin), kinetic(np, nspin))
+      row = 0
+      DO ir = first, MIN(grid%nr, first + SIZE(rho, 2) - 1)
+         IF (grid%r(ir) <= 0.0_dp .OR. grid%wr(ir) == 0.0_dp) CYCLE
+         jr = ir - first + 1
+         DO angular = 1, grid%na
+            IF (grid%wa(angular) == 0.0_dp) CYCLE
+            row = row + 1
+            points(:, row) = [atom, ir, angular]
+            density(row, :) = scale*rho(angular, jr, :)
+            IF (use_tau) kinetic(row, :) = scale*tau(angular, jr, :)
+         END DO
+      END DO
+      domain = skala_paw_ae_domain
+      IF (side == 2) domain = skala_paw_ps_domain
+      IF (use_tau) THEN
+         CALL skala_density_samples_put(samples, domain, points, density, kinetic, append=.TRUE.)
+      ELSE
+         CALL skala_density_samples_put(samples, domain, points, density, append=.TRUE.)
+      END IF
+   END SUBROUTINE record_xc_samples
 
 END MODULE paw_xc
