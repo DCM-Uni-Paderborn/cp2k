@@ -271,16 +271,18 @@ CONTAINS
 !> \param energy Complete native energy at fixed occupations.
 !> \param gradient Optional derivative in the supplied Cayley coordinates.
 !> \param physical_gradient Optional derivative in the orthonormal physical orbital tangent.
+!> \param sample_inputs Retain physical point fields, default true. Disabled fields are cleared.
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical_gradient)
+   SUBROUTINE qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical_gradient, sample_inputs)
       TYPE(qs_skala_scf_type), INTENT(INOUT)            :: state
       REAL(dp), INTENT(IN)                              :: coordinate(:)
       REAL(dp), INTENT(OUT)                             :: energy
       REAL(dp), INTENT(OUT), OPTIONAL                   :: gradient(:), physical_gradient(:)
+      LOGICAL, INTENT(IN), OPTIONAL                     :: sample_inputs
 
       COMPLEX(dp), ALLOCATABLE                         :: hamiltonian(:, :)
       INTEGER                                          :: first, ik, last, local, spin
-      LOGICAL                                          :: owner, need_gradient, valid
+      LOGICAL                                          :: owner, need_gradient, record_inputs, valid
       REAL(dp), ALLOCATABLE                            :: block_gradient(:)
       TYPE(cell_type), POINTER                         :: cell
       TYPE(dbcsr_p_type), POINTER                      :: densities(:, :), matrices(:, :)
@@ -321,7 +323,10 @@ CONTAINS
       END DO
       CALL qs_rho_set(state%rho, rho_r_valid=.FALSE., rho_g_valid=.FALSE., tau_r_valid=.FALSE., tau_g_valid=.FALSE.)
       CALL qs_rho_update_rho(state%rho, state%qs_env)
+      record_inputs = .TRUE.
+      IF (PRESENT(sample_inputs)) record_inputs = sample_inputs
       CALL skala_density_samples_begin(state%constraints)
+      IF (.NOT. record_inputs) CALL skala_density_samples_end(state%constraints)
       CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
       need_gradient = PRESENT(gradient) .OR. PRESENT(physical_gradient)
       CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., &
@@ -1427,7 +1432,8 @@ CONTAINS
 
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
-         CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient)
+         CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient, &
+                                    sample_inputs=SIZE(context%points, 2) > 0)
       CLASS DEFAULT
          CPABORT("Invalid native Skala gradient context.")
       END SELECT
