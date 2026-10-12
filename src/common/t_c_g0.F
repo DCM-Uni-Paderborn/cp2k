@@ -66,7 +66,7 @@ MODULE t_c_g0
 
    PRIVATE
 
-   PUBLIC :: t_c_g0_n, init, free_C0, get_lmax_init
+   PUBLIC :: t_c_g0_n, t_c_g0_response, init, free_C0, get_lmax_init
 
    INTEGER, PARAMETER :: degree = 13
    REAL(KIND=dp), PARAMETER :: target_error = 1.000000E-09_dp
@@ -85,13 +85,70 @@ CONTAINS
 !> \param NDERIV ...
 ! **************************************************************************************************
    SUBROUTINE t_c_g0_n(RES, use_gamma, R, T, NDERIV)
+      REAL(dp), INTENT(OUT)                              :: RES(*)
+      LOGICAL, INTENT(OUT)                               :: use_gamma
+      REAL(dp), INTENT(IN)                               :: R, T
+      INTEGER, INTENT(IN)                                :: NDERIV
+
+      CALL evaluate_moments(RES, use_gamma, R, T, NDERIV)
+   END SUBROUTINE t_c_g0_n
+
+! **************************************************************************************************
+!> \brief Analytic derivative of the original moment interpolants with respect to T.
+!> \param RES ...
+!> \param dres_dt ...
+!> \param use_gamma ...
+!> \param R ...
+!> \param T ...
+!> \param NDERIV ...
+!> \note R and the coefficient table are held fixed. If use_gamma is true, the caller
+!>       uses ordinary Boys moments and their exact recurrence instead.
+! **************************************************************************************************
+   SUBROUTINE t_c_g0_response(RES, dres_dt, use_gamma, R, T, NDERIV)
+      REAL(dp), INTENT(OUT)                              :: RES(*), dres_dt(*)
+      LOGICAL, INTENT(OUT)                               :: use_gamma
+      REAL(dp), INTENT(IN)                               :: R, T
+      INTEGER, INTENT(IN)                                :: NDERIV
+
+      CALL evaluate_moments(RES, use_gamma, R, T, NDERIV, dres_dt)
+   END SUBROUTINE t_c_g0_response
+
+! **************************************************************************************************
+!> \brief ...
+!> \param x ...
+!> \param center ...
+!> \param factor ...
+!> \param coordinate ...
+!> \param derivative ...
+! **************************************************************************************************
+   PURE SUBROUTINE patch_coordinate(x, center, factor, coordinate, derivative)
+      REAL(dp), INTENT(IN)                               :: x, center, factor
+      REAL(dp), INTENT(OUT)                              :: coordinate, derivative
+
+      coordinate = (2*x - center)*factor
+      derivative = 2*factor
+   END SUBROUTINE patch_coordinate
+
+! **************************************************************************************************
+!> \brief ...
+!> \param RES ...
+!> \param use_gamma ...
+!> \param R ...
+!> \param T ...
+!> \param NDERIV ...
+!> \param dres_dt ...
+! **************************************************************************************************
+   SUBROUTINE evaluate_moments(RES, use_gamma, R, T, NDERIV, dres_dt)
       REAL(KIND=dp), INTENT(OUT)                         :: RES(*)
       LOGICAL, INTENT(OUT)                               :: use_gamma
       REAL(KIND=dp), INTENT(IN)                          :: R, T
       INTEGER, INTENT(IN)                                :: NDERIV
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: dres_dt(*)
 
-      REAL(KIND=dp)                                      :: lower, TG1, TG2, upper, X1, X2
+      INTEGER                                            :: patch
+      REAL(KIND=dp)                                      :: lower, scale, TG1, TG2, upper, X1, X2
 
+      IF (PRESENT(dres_dt)) dres_dt(1:NDERIV + 1) = 0._dp
       use_gamma = .FALSE.
       upper = R**2 + 11.0_dp*R + 50.0_dp
       lower = R**2 - 11.0_dp*R + 0.0_dp
@@ -115,91 +172,91 @@ CONTAINS
                                  IF (X1 <= 0.625000000000000000E-01_dp) THEN
                                     IF (X2 <= 0.156250000000000000E-01_dp) THEN
                                        IF (X1 <= 0.312500000000000000E-01_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.156250000000000000E-01_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 1))
+                                          patch = 1
                                        ELSE
-                                          TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.156250000000000000E-01_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 2))
+                                          patch = 2
                                        END IF
                                     ELSE
                                        IF (X1 <= 0.312500000000000000E-01_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.468750000000000000E-01_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 3))
+                                          patch = 3
                                        ELSE
-                                          TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.468750000000000000E-01_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 4))
+                                          patch = 4
                                        END IF
                                     END IF
                                  ELSE
                                     IF (X2 <= 0.156250000000000000E-01_dp) THEN
-                                       TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.156250000000000000E-01_dp)*0.640000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 5))
+                                       patch = 5
                                     ELSE
-                                       TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.468750000000000000E-01_dp)*0.640000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 6))
+                                       patch = 6
                                     END IF
                                  END IF
                               ELSE
                                  IF (X1 <= 0.625000000000000000E-01_dp) THEN
                                     IF (X2 <= 0.468750000000000000E-01_dp) THEN
                                        IF (X1 <= 0.312500000000000000E-01_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.781250000000000000E-01_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 7))
+                                          patch = 7
                                        ELSE
-                                          TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.781250000000000000E-01_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 8))
+                                          patch = 8
                                        END IF
                                     ELSE
                                        IF (X1 <= 0.312500000000000000E-01_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.109375000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 9))
+                                          patch = 9
                                        ELSE
-                                          TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.109375000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 10))
+                                          patch = 10
                                        END IF
                                     END IF
                                  ELSE
                                     IF (X2 <= 0.468750000000000000E-01_dp) THEN
-                                       TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.781250000000000000E-01_dp)*0.640000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 11))
+                                       patch = 11
                                     ELSE
-                                       TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.109375000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 12))
+                                       patch = 12
                                     END IF
                                  END IF
                               END IF
                            ELSE
                               IF (X2 <= 0.312500000000000000E-01_dp) THEN
                                  IF (X1 <= 0.187500000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 13))
+                                    patch = 13
                                  ELSE
-                                    TG1 = (2*X1 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.4375_dp, 16.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 14))
+                                    patch = 14
                                  END IF
                               ELSE
                                  IF (X1 <= 0.187500000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 15))
+                                    patch = 15
                                  ELSE
-                                    TG1 = (2*X1 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.4375_dp, 16.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 16))
+                                    patch = 16
                                  END IF
                               END IF
                            END IF
@@ -209,98 +266,98 @@ CONTAINS
                                  IF (X1 <= 0.625000000000000000E-01_dp) THEN
                                     IF (X2 <= 0.781250000000000000E-01_dp) THEN
                                        IF (X1 <= 0.312500000000000000E-01_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.140625000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 17))
+                                          patch = 17
                                        ELSE
-                                          TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.140625000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 18))
+                                          patch = 18
                                        END IF
                                     ELSE
                                        IF (X1 <= 0.312500000000000000E-01_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.171875000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 19))
+                                          patch = 19
                                        ELSE
-                                          TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.171875000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 20))
+                                          patch = 20
                                        END IF
                                     END IF
                                  ELSE
                                     IF (X2 <= 0.781250000000000000E-01_dp) THEN
-                                       TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.140625000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 21))
+                                       patch = 21
                                     ELSE
-                                       TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.171875000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 22))
+                                       patch = 22
                                     END IF
                                  END IF
                               ELSE
                                  IF (X1 <= 0.625000000000000000E-01_dp) THEN
                                     IF (X2 <= 0.109375000000000000E+00_dp) THEN
                                        IF (X1 <= 0.312500000000000000E-01_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.203125000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 23))
+                                          patch = 23
                                        ELSE
-                                          TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.203125000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 24))
+                                          patch = 24
                                        END IF
                                     ELSE
                                        IF (X1 <= 0.312500000000000000E-01_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.234375000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 25))
+                                          patch = 25
                                        ELSE
-                                          TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.234375000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 26))
+                                          patch = 26
                                        END IF
                                     END IF
                                  ELSE
                                     IF (X2 <= 0.109375000000000000E+00_dp) THEN
-                                       TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.203125000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 27))
+                                       patch = 27
                                     ELSE
-                                       TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.234375000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 28))
+                                       patch = 28
                                     END IF
                                  END IF
                               END IF
                            ELSE
                               IF (X1 <= 0.187500000000000000E+00_dp) THEN
                                  IF (X2 <= 0.937500000000000000E-01_dp) THEN
-                                    TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 29))
+                                    patch = 29
                                  ELSE
-                                    TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 30))
+                                    patch = 30
                                  END IF
                               ELSE
-                                 TG1 = (2*X1 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.4375_dp, 16.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 31))
+                                 patch = 31
                               END IF
                            END IF
                         END IF
                      ELSE
                         IF (X1 <= 0.375000000000000000E+00_dp) THEN
-                           TG1 = (2*X1 - 0.625000000000000000E+00_dp)*0.800000000000000000E+01_dp
+                           CALL patch_coordinate(X1, 0.625_dp, 8.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.125000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 32))
+                           patch = 32
                         ELSE
-                           TG1 = (2*X1 - 0.875000000000000000E+00_dp)*0.800000000000000000E+01_dp
+                           CALL patch_coordinate(X1, 0.875_dp, 8.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.125000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 33))
+                           patch = 33
                         END IF
                      END IF
                   ELSE
@@ -311,62 +368,62 @@ CONTAINS
                                  IF (X1 <= 0.625000000000000000E-01_dp) THEN
                                     IF (X1 <= 0.312500000000000000E-01_dp) THEN
                                        IF (X2 <= 0.140625000000000000E+00_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.265625000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 34))
+                                          patch = 34
                                        ELSE
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.296875000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 35))
+                                          patch = 35
                                        END IF
                                     ELSE
-                                       TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.281250000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 36))
+                                       patch = 36
                                     END IF
                                  ELSE
                                     IF (X1 <= 0.937500000000000000E-01_dp) THEN
-                                       TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.281250000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 37))
+                                       patch = 37
                                     ELSE
-                                       TG1 = (2*X1 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.21875_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.281250000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 38))
+                                       patch = 38
                                     END IF
                                  END IF
                               ELSE
                                  IF (X1 <= 0.625000000000000000E-01_dp) THEN
                                     IF (X1 <= 0.312500000000000000E-01_dp) THEN
                                        IF (X2 <= 0.171875000000000000E+00_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.328125000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 39))
+                                          patch = 39
                                        ELSE
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.359375000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 40))
+                                          patch = 40
                                        END IF
                                     ELSE
-                                       TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.343750000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 41))
+                                       patch = 41
                                     END IF
                                  ELSE
-                                    TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.343750000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 42))
+                                    patch = 42
                                  END IF
                               END IF
                            ELSE
                               IF (X1 <= 0.187500000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 43))
+                                 patch = 43
                               ELSE
-                                 TG1 = (2*X1 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.4375_dp, 16.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 44))
+                                 patch = 44
                               END IF
                            END IF
                         ELSE
@@ -375,74 +432,74 @@ CONTAINS
                                  IF (X2 <= 0.218750000000000000E+00_dp) THEN
                                     IF (X1 <= 0.312500000000000000E-01_dp) THEN
                                        IF (X2 <= 0.203125000000000000E+00_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.390625000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 45))
+                                          patch = 45
                                        ELSE
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.421875000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 46))
+                                          patch = 46
                                        END IF
                                     ELSE
-                                       TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.406250000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 47))
+                                       patch = 47
                                     END IF
                                  ELSE
                                     IF (X1 <= 0.312500000000000000E-01_dp) THEN
                                        IF (X2 <= 0.234375000000000000E+00_dp) THEN
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.453125000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 48))
+                                          patch = 48
                                        ELSE
-                                          TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.484375000000000000E+00_dp)*0.640000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 49))
+                                          patch = 49
                                        END IF
                                     ELSE
-                                       TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.468750000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 50))
+                                       patch = 50
                                     END IF
                                  END IF
                               ELSE
                                  IF (X2 <= 0.218750000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.406250000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 51))
+                                    patch = 51
                                  ELSE
-                                    TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.468750000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 52))
+                                    patch = 52
                                  END IF
                               END IF
                            ELSE
                               IF (X1 <= 0.187500000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 53))
+                                 patch = 53
                               ELSE
-                                 TG1 = (2*X1 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.4375_dp, 16.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 54))
+                                 patch = 54
                               END IF
                            END IF
                         END IF
                      ELSE
                         IF (X1 <= 0.375000000000000000E+00_dp) THEN
                            IF (X1 <= 0.312500000000000000E+00_dp) THEN
-                              TG1 = (2*X1 - 0.562500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.5625_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.375000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 55))
+                              patch = 55
                            ELSE
-                              TG1 = (2*X1 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.6875_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.375000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 56))
+                              patch = 56
                            END IF
                         ELSE
-                           TG1 = (2*X1 - 0.875000000000000000E+00_dp)*0.800000000000000000E+01_dp
+                           CALL patch_coordinate(X1, 0.875_dp, 8.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.375000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 57))
+                           patch = 57
                         END IF
                      END IF
                   END IF
@@ -454,74 +511,74 @@ CONTAINS
                               IF (X2 <= 0.312500000000000000E+00_dp) THEN
                                  IF (X1 <= 0.312500000000000000E-01_dp) THEN
                                     IF (X2 <= 0.281250000000000000E+00_dp) THEN
-                                       TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.531250000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 58))
+                                       patch = 58
                                     ELSE
-                                       TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.593750000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 59))
+                                       patch = 59
                                     END IF
                                  ELSE
                                     IF (X2 <= 0.281250000000000000E+00_dp) THEN
-                                       TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.531250000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 60))
+                                       patch = 60
                                     ELSE
-                                       TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.593750000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 61))
+                                       patch = 61
                                     END IF
                                  END IF
                               ELSE
                                  IF (X1 <= 0.312500000000000000E-01_dp) THEN
                                     IF (X2 <= 0.343750000000000000E+00_dp) THEN
-                                       TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.656250000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 62))
+                                       patch = 62
                                     ELSE
-                                       TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.718750000000000000E+00_dp)*0.320000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 63))
+                                       patch = 63
                                     END IF
                                  ELSE
-                                    TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 64))
+                                    patch = 64
                                  END IF
                               END IF
                            ELSE
                               IF (X1 <= 0.312500000000000000E-01_dp) THEN
                                  IF (X2 <= 0.437500000000000000E+00_dp) THEN
                                     IF (X1 <= 0.156250000000000000E-01_dp) THEN
-                                       TG1 = (2*X1 - 0.156250000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.015625_dp, 64.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 65))
+                                       patch = 65
                                     ELSE
-                                       TG1 = (2*X1 - 0.468750000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.046875_dp, 64.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 66))
+                                       patch = 66
                                     END IF
                                  ELSE
                                     IF (X1 <= 0.156250000000000000E-01_dp) THEN
-                                       TG1 = (2*X1 - 0.156250000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.015625_dp, 64.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 67))
+                                       patch = 67
                                     ELSE
-                                       TG1 = (2*X1 - 0.468750000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.046875_dp, 64.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 68))
+                                       patch = 68
                                     END IF
                                  END IF
                               ELSE
                                  IF (X2 <= 0.437500000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 69))
+                                    patch = 69
                                  ELSE
-                                    TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 70))
+                                    patch = 70
                                  END IF
                               END IF
                            END IF
@@ -529,45 +586,45 @@ CONTAINS
                            IF (X2 <= 0.375000000000000000E+00_dp) THEN
                               IF (X2 <= 0.312500000000000000E+00_dp) THEN
                                  IF (X1 <= 0.937500000000000000E-01_dp) THEN
-                                    TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.562500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 71))
+                                    patch = 71
                                  ELSE
-                                    TG1 = (2*X1 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.21875_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.562500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 72))
+                                    patch = 72
                                  END IF
                               ELSE
                                  IF (X1 <= 0.937500000000000000E-01_dp) THEN
-                                    TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 73))
+                                    patch = 73
                                  ELSE
-                                    TG1 = (2*X1 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.21875_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 74))
+                                    patch = 74
                                  END IF
                               END IF
                            ELSE
                               IF (X1 <= 0.937500000000000000E-01_dp) THEN
                                  IF (X2 <= 0.437500000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 75))
+                                    patch = 75
                                  ELSE
-                                    TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 76))
+                                    patch = 76
                                  END IF
                               ELSE
                                  IF (X2 <= 0.437500000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.21875_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 77))
+                                    patch = 77
                                  ELSE
-                                    TG1 = (2*X1 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.21875_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 78))
+                                    patch = 78
                                  END IF
                               END IF
                            END IF
@@ -576,57 +633,57 @@ CONTAINS
                         IF (X2 <= 0.375000000000000000E+00_dp) THEN
                            IF (X1 <= 0.187500000000000000E+00_dp) THEN
                               IF (X2 <= 0.312500000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.562500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 79))
+                                 patch = 79
                               ELSE
                                  IF (X1 <= 0.156250000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.281250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.28125_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 80))
+                                    patch = 80
                                  ELSE
-                                    TG1 = (2*X1 - 0.343750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.34375_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 81))
+                                    patch = 81
                                  END IF
                               END IF
                            ELSE
                               IF (X2 <= 0.312500000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.4375_dp, 16.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.562500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 82))
+                                 patch = 82
                               ELSE
-                                 TG1 = (2*X1 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.4375_dp, 16.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 83))
+                                 patch = 83
                               END IF
                            END IF
                         ELSE
                            IF (X1 <= 0.187500000000000000E+00_dp) THEN
                               IF (X2 <= 0.437500000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 84))
+                                 patch = 84
                               ELSE
                                  IF (X1 <= 0.156250000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.281250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.28125_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 85))
+                                    patch = 85
                                  ELSE
-                                    TG1 = (2*X1 - 0.343750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.34375_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 86))
+                                    patch = 86
                                  END IF
                               END IF
                            ELSE
                               IF (X1 <= 0.218750000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.406250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.40625_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.875000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 87))
+                                 patch = 87
                               ELSE
-                                 TG1 = (2*X1 - 0.468750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.46875_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.875000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 88))
+                                 patch = 88
                               END IF
                            END IF
                         END IF
@@ -635,40 +692,40 @@ CONTAINS
                      IF (X1 <= 0.375000000000000000E+00_dp) THEN
                         IF (X2 <= 0.375000000000000000E+00_dp) THEN
                            IF (X1 <= 0.312500000000000000E+00_dp) THEN
-                              TG1 = (2*X1 - 0.562500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.5625_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.625000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 89))
+                              patch = 89
                            ELSE
-                              TG1 = (2*X1 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.6875_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.625000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 90))
+                              patch = 90
                            END IF
                         ELSE
                            IF (X1 <= 0.312500000000000000E+00_dp) THEN
                               IF (X1 <= 0.281250000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.531250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.53125_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.875000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 91))
+                                 patch = 91
                               ELSE
-                                 TG1 = (2*X1 - 0.593750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.59375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.875000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 92))
+                                 patch = 92
                               END IF
                            ELSE
-                              TG1 = (2*X1 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.6875_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.875000000000000000E+00_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 93))
+                              patch = 93
                            END IF
                         END IF
                      ELSE
                         IF (X1 <= 0.437500000000000000E+00_dp) THEN
-                           TG1 = (2*X1 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 0.8125_dp, 16.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.750000000000000000E+00_dp)*0.400000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 94))
+                           patch = 94
                         ELSE
-                           TG1 = (2*X1 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 0.9375_dp, 16.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.750000000000000000E+00_dp)*0.400000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 95))
+                           patch = 95
                         END IF
                      END IF
                   END IF
@@ -681,56 +738,56 @@ CONTAINS
                            IF (X1 <= 0.156250000000000000E-01_dp) THEN
                               IF (X1 <= 0.781250000000000000E-02_dp) THEN
                                  IF (X2 <= 0.750000000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.781250000000000000E-02_dp)*0.128000000000000000E+03_dp
+                                    CALL patch_coordinate(X1, 0.0078125_dp, 128.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.125000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 96))
+                                    patch = 96
                                  ELSE
-                                    TG1 = (2*X1 - 0.781250000000000000E-02_dp)*0.128000000000000000E+03_dp
+                                    CALL patch_coordinate(X1, 0.0078125_dp, 128.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 97))
+                                    patch = 97
                                  END IF
                               ELSE
                                  IF (X2 <= 0.750000000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.234375000000000000E-01_dp)*0.128000000000000000E+03_dp
+                                    CALL patch_coordinate(X1, 0.0234375_dp, 128.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.125000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 98))
+                                    patch = 98
                                  ELSE
-                                    TG1 = (2*X1 - 0.234375000000000000E-01_dp)*0.128000000000000000E+03_dp
+                                    CALL patch_coordinate(X1, 0.0234375_dp, 128.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 99))
+                                    patch = 99
                                  END IF
                               END IF
                            ELSE
                               IF (X2 <= 0.750000000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.468750000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.046875_dp, 64.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.125000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 100))
+                                 patch = 100
                               ELSE
-                                 TG1 = (2*X1 - 0.468750000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.046875_dp, 64.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 101))
+                                 patch = 101
                               END IF
                            END IF
                         ELSE
                            IF (X2 <= 0.750000000000000000E+00_dp) THEN
                               IF (X2 <= 0.625000000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 102))
+                                 patch = 102
                               ELSE
-                                 TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 103))
+                                 patch = 103
                               END IF
                            ELSE
                               IF (X1 <= 0.468750000000000000E-01_dp) THEN
-                                 TG1 = (2*X1 - 0.781250000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.078125_dp, 64.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 104))
+                                 patch = 104
                               ELSE
-                                 TG1 = (2*X1 - 0.109375000000000000E+00_dp)*0.640000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.109375_dp, 64.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 105))
+                                 patch = 105
                               END IF
                            END IF
                         END IF
@@ -738,34 +795,34 @@ CONTAINS
                         IF (X2 <= 0.750000000000000000E+00_dp) THEN
                            IF (X2 <= 0.625000000000000000E+00_dp) THEN
                               IF (X1 <= 0.937500000000000000E-01_dp) THEN
-                                 TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 106))
+                                 patch = 106
                               ELSE
-                                 TG1 = (2*X1 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.21875_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 107))
+                                 patch = 107
                               END IF
                            ELSE
                               IF (X1 <= 0.937500000000000000E-01_dp) THEN
-                                 TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 108))
+                                 patch = 108
                               ELSE
-                                 TG1 = (2*X1 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.21875_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 109))
+                                 patch = 109
                               END IF
                            END IF
                         ELSE
                            IF (X1 <= 0.937500000000000000E-01_dp) THEN
-                              TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 110))
+                              patch = 110
                            ELSE
-                              TG1 = (2*X1 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.21875_dp, 32.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 111))
+                              patch = 111
                            END IF
                         END IF
                      END IF
@@ -774,74 +831,74 @@ CONTAINS
                         IF (X2 <= 0.625000000000000000E+00_dp) THEN
                            IF (X1 <= 0.187500000000000000E+00_dp) THEN
                               IF (X1 <= 0.156250000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.281250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.28125_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 112))
+                                 patch = 112
                               ELSE
-                                 TG1 = (2*X1 - 0.343750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.34375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 113))
+                                 patch = 113
                               END IF
                            ELSE
                               IF (X1 <= 0.218750000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.406250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.40625_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 114))
+                                 patch = 114
                               ELSE
-                                 TG1 = (2*X1 - 0.468750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.46875_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 115))
+                                 patch = 115
                               END IF
                            END IF
                         ELSE
                            IF (X1 <= 0.187500000000000000E+00_dp) THEN
                               IF (X1 <= 0.156250000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.281250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.28125_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 116))
+                                 patch = 116
                               ELSE
-                                 TG1 = (2*X1 - 0.343750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.34375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 117))
+                                 patch = 117
                               END IF
                            ELSE
                               IF (X1 <= 0.218750000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.406250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.40625_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 118))
+                                 patch = 118
                               ELSE
-                                 TG1 = (2*X1 - 0.468750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.46875_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 119))
+                                 patch = 119
                               END IF
                            END IF
                         END IF
                      ELSE
                         IF (X1 <= 0.187500000000000000E+00_dp) THEN
                            IF (X2 <= 0.875000000000000000E+00_dp) THEN
-                              TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 120))
+                              patch = 120
                            ELSE
-                              TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 121))
+                              patch = 121
                            END IF
                         ELSE
                            IF (X2 <= 0.875000000000000000E+00_dp) THEN
                               IF (X1 <= 0.218750000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.406250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.40625_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 122))
+                                 patch = 122
                               ELSE
-                                 TG1 = (2*X1 - 0.468750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.46875_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 123))
+                                 patch = 123
                               END IF
                            ELSE
-                              TG1 = (2*X1 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.4375_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 124))
+                              patch = 124
                            END IF
                         END IF
                      END IF
@@ -852,39 +909,39 @@ CONTAINS
                         IF (X1 <= 0.312500000000000000E+00_dp) THEN
                            IF (X2 <= 0.625000000000000000E+00_dp) THEN
                               IF (X1 <= 0.281250000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.531250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.53125_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 125))
+                                 patch = 125
                               ELSE
-                                 TG1 = (2*X1 - 0.593750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.59375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 126))
+                                 patch = 126
                               END IF
                            ELSE
                               IF (X1 <= 0.281250000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.531250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.53125_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 127))
+                                 patch = 127
                               ELSE
-                                 TG1 = (2*X1 - 0.593750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.59375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 128))
+                                 patch = 128
                               END IF
                            END IF
                         ELSE
                            IF (X2 <= 0.625000000000000000E+00_dp) THEN
-                              TG1 = (2*X1 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.6875_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 129))
+                              patch = 129
                            ELSE
                               IF (X1 <= 0.343750000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.656250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.65625_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 130))
+                                 patch = 130
                               ELSE
-                                 TG1 = (2*X1 - 0.718750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.71875_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 131))
+                                 patch = 131
                               END IF
                            END IF
                         END IF
@@ -892,40 +949,40 @@ CONTAINS
                         IF (X1 <= 0.312500000000000000E+00_dp) THEN
                            IF (X2 <= 0.875000000000000000E+00_dp) THEN
                               IF (X1 <= 0.281250000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.531250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.53125_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 132))
+                                 patch = 132
                               ELSE
-                                 TG1 = (2*X1 - 0.593750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.59375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 133))
+                                 patch = 133
                               END IF
                            ELSE
                               IF (X1 <= 0.281250000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.531250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.53125_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 134))
+                                 patch = 134
                               ELSE
-                                 TG1 = (2*X1 - 0.593750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.59375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 135))
+                                 patch = 135
                               END IF
                            END IF
                         ELSE
                            IF (X2 <= 0.875000000000000000E+00_dp) THEN
                               IF (X1 <= 0.343750000000000000E+00_dp) THEN
-                                 TG1 = (2*X1 - 0.656250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.65625_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 136))
+                                 patch = 136
                               ELSE
-                                 TG1 = (2*X1 - 0.718750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.71875_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 137))
+                                 patch = 137
                               END IF
                            ELSE
-                              TG1 = (2*X1 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.6875_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 138))
+                              patch = 138
                            END IF
                         END IF
                      END IF
@@ -933,39 +990,39 @@ CONTAINS
                      IF (X2 <= 0.750000000000000000E+00_dp) THEN
                         IF (X1 <= 0.437500000000000000E+00_dp) THEN
                            IF (X2 <= 0.625000000000000000E+00_dp) THEN
-                              TG1 = (2*X1 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.8125_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 139))
+                              patch = 139
                            ELSE
-                              TG1 = (2*X1 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.8125_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 140))
+                              patch = 140
                            END IF
                         ELSE
-                           TG1 = (2*X1 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 0.9375_dp, 16.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.125000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 141))
+                           patch = 141
                         END IF
                      ELSE
                         IF (X1 <= 0.437500000000000000E+00_dp) THEN
                            IF (X2 <= 0.875000000000000000E+00_dp) THEN
-                              TG1 = (2*X1 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.8125_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 142))
+                              patch = 142
                            ELSE
-                              TG1 = (2*X1 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.8125_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 143))
+                              patch = 143
                            END IF
                         ELSE
                            IF (X2 <= 0.875000000000000000E+00_dp) THEN
-                              TG1 = (2*X1 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.9375_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 144))
+                              patch = 144
                            ELSE
-                              TG1 = (2*X1 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.9375_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 145))
+                              patch = 145
                            END IF
                         END IF
                      END IF
@@ -977,58 +1034,58 @@ CONTAINS
                IF (X2 <= 0.500000000000000000E+00_dp) THEN
                   IF (X1 <= 0.625000000000000000E+00_dp) THEN
                      IF (X2 <= 0.250000000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
+                        CALL patch_coordinate(X1, 1.125_dp, 8.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.250000000000000000E+00_dp)*0.400000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 146))
+                        patch = 146
                      ELSE
-                        TG1 = (2*X1 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
+                        CALL patch_coordinate(X1, 1.125_dp, 8.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.750000000000000000E+00_dp)*0.400000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 147))
+                        patch = 147
                      END IF
                   ELSE
-                     TG1 = (2*X1 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
+                     CALL patch_coordinate(X1, 1.375_dp, 8.0_dp, TG1, scale)
                      TG2 = (2*X2 - 0.500000000000000000E+00_dp)*0.200000000000000000E+01_dp
-                     CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 148))
+                     patch = 148
                   END IF
                ELSE
                   IF (X1 <= 0.625000000000000000E+00_dp) THEN
                      IF (X2 <= 0.750000000000000000E+00_dp) THEN
                         IF (X1 <= 0.562500000000000000E+00_dp) THEN
-                           TG1 = (2*X1 - 0.106250000000000000E+01_dp)*0.160000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 1.0625_dp, 16.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.125000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 149))
+                           patch = 149
                         ELSE
-                           TG1 = (2*X1 - 0.118750000000000000E+01_dp)*0.160000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 1.1875_dp, 16.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.125000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 150))
+                           patch = 150
                         END IF
                      ELSE
                         IF (X1 <= 0.562500000000000000E+00_dp) THEN
-                           TG1 = (2*X1 - 0.106250000000000000E+01_dp)*0.160000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 1.0625_dp, 16.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 151))
+                           patch = 151
                         ELSE
-                           TG1 = (2*X1 - 0.118750000000000000E+01_dp)*0.160000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 1.1875_dp, 16.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 152))
+                           patch = 152
                         END IF
                      END IF
                   ELSE
                      IF (X1 <= 0.687500000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.131250000000000000E+01_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 1.3125_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.150000000000000000E+01_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 153))
+                        patch = 153
                      ELSE
-                        TG1 = (2*X1 - 0.143750000000000000E+01_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 1.4375_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.150000000000000000E+01_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 154))
+                        patch = 154
                      END IF
                   END IF
                END IF
             ELSE
-               TG1 = (2*X1 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
+               CALL patch_coordinate(X1, 1.75_dp, 4.0_dp, TG1, scale)
                TG2 = (2*X2 - 0.100000000000000000E+01_dp)*0.100000000000000000E+01_dp
-               CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 155))
+               patch = 155
             END IF
          END IF
       ELSE
@@ -1043,35 +1100,35 @@ CONTAINS
                IF (X2 <= 0.500000000000000000E+00_dp) THEN
                   IF (X1 <= 0.125000000000000000E+00_dp) THEN
                      IF (X2 <= 0.250000000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.125000000000000000E+00_dp)*0.800000000000000000E+01_dp
+                        CALL patch_coordinate(X1, 0.125_dp, 8.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.250000000000000000E+00_dp)*0.400000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 156))
+                        patch = 156
                      ELSE
-                        TG1 = (2*X1 - 0.125000000000000000E+00_dp)*0.800000000000000000E+01_dp
+                        CALL patch_coordinate(X1, 0.125_dp, 8.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.750000000000000000E+00_dp)*0.400000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 157))
+                        patch = 157
                      END IF
                   ELSE
-                     TG1 = (2*X1 - 0.375000000000000000E+00_dp)*0.800000000000000000E+01_dp
+                     CALL patch_coordinate(X1, 0.375_dp, 8.0_dp, TG1, scale)
                      TG2 = (2*X2 - 0.500000000000000000E+00_dp)*0.200000000000000000E+01_dp
-                     CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 158))
+                     patch = 158
                   END IF
                ELSE
                   IF (X1 <= 0.125000000000000000E+00_dp) THEN
                      IF (X2 <= 0.750000000000000000E+00_dp) THEN
                         IF (X2 <= 0.625000000000000000E+00_dp) THEN
-                           TG1 = (2*X1 - 0.125000000000000000E+00_dp)*0.800000000000000000E+01_dp
+                           CALL patch_coordinate(X1, 0.125_dp, 8.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.112500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 159))
+                           patch = 159
                         ELSE
                            IF (X1 <= 0.625000000000000000E-01_dp) THEN
-                              TG1 = (2*X1 - 0.625000000000000000E-01_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.0625_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 160))
+                              patch = 160
                            ELSE
-                              TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 161))
+                              patch = 161
                            END IF
                         END IF
                      ELSE
@@ -1079,164 +1136,164 @@ CONTAINS
                            IF (X2 <= 0.875000000000000000E+00_dp) THEN
                               IF (X1 <= 0.312500000000000000E-01_dp) THEN
                                  IF (X2 <= 0.812500000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.156250000000000000E+01_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 162))
+                                    patch = 162
                                  ELSE
-                                    TG1 = (2*X1 - 0.312500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.03125_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.168750000000000000E+01_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 163))
+                                    patch = 163
                                  END IF
                               ELSE
-                                 TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 164))
+                                 patch = 164
                               END IF
                            ELSE
                               IF (X1 <= 0.312500000000000000E-01_dp) THEN
                                  IF (X2 <= 0.937500000000000000E+00_dp) THEN
                                     IF (X1 <= 0.156250000000000000E-01_dp) THEN
                                        IF (X2 <= 0.906250000000000000E+00_dp) THEN
-                                          TG1 = (2*X1 - 0.156250000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.015625_dp, 64.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.178125000000000000E+01_dp)*0.320000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 165))
+                                          patch = 165
                                        ELSE
-                                          TG1 = (2*X1 - 0.156250000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.015625_dp, 64.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.184375000000000000E+01_dp)*0.320000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 166))
+                                          patch = 166
                                        END IF
                                     ELSE
-                                       TG1 = (2*X1 - 0.468750000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.046875_dp, 64.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.181250000000000000E+01_dp)*0.160000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 167))
+                                       patch = 167
                                     END IF
                                  ELSE
                                     IF (X1 <= 0.156250000000000000E-01_dp) THEN
                                        IF (X2 <= 0.968750000000000000E+00_dp) THEN
                                           IF (X1 <= 0.781250000000000000E-02_dp) THEN
                                              IF (X2 <= 0.953125000000000000E+00_dp) THEN
-                                                TG1 = (2*X1 - 0.781250000000000000E-02_dp)*0.128000000000000000E+03_dp
+                                                CALL patch_coordinate(X1, 0.0078125_dp, 128.0_dp, TG1, scale)
                                                 TG2 = (2*X2 - 0.189062500000000000E+01_dp)*0.640000000000000000E+02_dp
-                                                CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 168))
+                                                patch = 168
                                              ELSE
-                                                TG1 = (2*X1 - 0.781250000000000000E-02_dp)*0.128000000000000000E+03_dp
+                                                CALL patch_coordinate(X1, 0.0078125_dp, 128.0_dp, TG1, scale)
                                                 TG2 = (2*X2 - 0.192187500000000000E+01_dp)*0.640000000000000000E+02_dp
-                                                CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 169))
+                                                patch = 169
                                              END IF
                                           ELSE
-                                             TG1 = (2*X1 - 0.234375000000000000E-01_dp)*0.128000000000000000E+03_dp
+                                             CALL patch_coordinate(X1, 0.0234375_dp, 128.0_dp, TG1, scale)
                                              TG2 = (2*X2 - 0.190625000000000000E+01_dp)*0.320000000000000000E+02_dp
-                                             CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 170))
+                                             patch = 170
                                           END IF
                                        ELSE
                                           IF (X1 <= 0.781250000000000000E-02_dp) THEN
                                              IF (X2 <= 0.984375000000000000E+00_dp) THEN
-                                                TG1 = (2*X1 - 0.781250000000000000E-02_dp)*0.128000000000000000E+03_dp
+                                                CALL patch_coordinate(X1, 0.0078125_dp, 128.0_dp, TG1, scale)
                                                 TG2 = (2*X2 - 0.195312500000000000E+01_dp)*0.640000000000000000E+02_dp
-                                                CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 171))
+                                                patch = 171
                                              ELSE
-                                                TG1 = (2*X1 - 0.781250000000000000E-02_dp)*0.128000000000000000E+03_dp
+                                                CALL patch_coordinate(X1, 0.0078125_dp, 128.0_dp, TG1, scale)
                                                 TG2 = (2*X2 - 0.198437500000000000E+01_dp)*0.640000000000000000E+02_dp
-                                                CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 172))
+                                                patch = 172
                                              END IF
                                           ELSE
                                              IF (X2 <= 0.984375000000000000E+00_dp) THEN
-                                                TG1 = (2*X1 - 0.234375000000000000E-01_dp)*0.128000000000000000E+03_dp
+                                                CALL patch_coordinate(X1, 0.0234375_dp, 128.0_dp, TG1, scale)
                                                 TG2 = (2*X2 - 0.195312500000000000E+01_dp)*0.640000000000000000E+02_dp
-                                                CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 173))
+                                                patch = 173
                                              ELSE
-                                                TG1 = (2*X1 - 0.234375000000000000E-01_dp)*0.128000000000000000E+03_dp
+                                                CALL patch_coordinate(X1, 0.0234375_dp, 128.0_dp, TG1, scale)
                                                 TG2 = (2*X2 - 0.198437500000000000E+01_dp)*0.640000000000000000E+02_dp
-                                                CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 174))
+                                                patch = 174
                                              END IF
                                           END IF
                                        END IF
                                     ELSE
                                        IF (X2 <= 0.968750000000000000E+00_dp) THEN
-                                          TG1 = (2*X1 - 0.468750000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.046875_dp, 64.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.190625000000000000E+01_dp)*0.320000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 175))
+                                          patch = 175
                                        ELSE
                                           IF (X1 <= 0.234375000000000000E-01_dp) THEN
-                                             TG1 = (2*X1 - 0.390625000000000000E-01_dp)*0.128000000000000000E+03_dp
+                                             CALL patch_coordinate(X1, 0.0390625_dp, 128.0_dp, TG1, scale)
                                              TG2 = (2*X2 - 0.196875000000000000E+01_dp)*0.320000000000000000E+02_dp
-                                             CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 176))
+                                             patch = 176
                                           ELSE
-                                             TG1 = (2*X1 - 0.546875000000000000E-01_dp)*0.128000000000000000E+03_dp
+                                             CALL patch_coordinate(X1, 0.0546875_dp, 128.0_dp, TG1, scale)
                                              TG2 = (2*X2 - 0.196875000000000000E+01_dp)*0.320000000000000000E+02_dp
-                                             CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 177))
+                                             patch = 177
                                           END IF
                                        END IF
                                     END IF
                                  END IF
                               ELSE
                                  IF (X2 <= 0.937500000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.937500000000000000E-01_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.09375_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.181250000000000000E+01_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 178))
+                                    patch = 178
                                  ELSE
                                     IF (X1 <= 0.468750000000000000E-01_dp) THEN
                                        IF (X2 <= 0.968750000000000000E+00_dp) THEN
-                                          TG1 = (2*X1 - 0.781250000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.078125_dp, 64.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.190625000000000000E+01_dp)*0.320000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 179))
+                                          patch = 179
                                        ELSE
-                                          TG1 = (2*X1 - 0.781250000000000000E-01_dp)*0.640000000000000000E+02_dp
+                                          CALL patch_coordinate(X1, 0.078125_dp, 64.0_dp, TG1, scale)
                                           TG2 = (2*X2 - 0.196875000000000000E+01_dp)*0.320000000000000000E+02_dp
-                                          CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 180))
+                                          patch = 180
                                        END IF
                                     ELSE
-                                       TG1 = (2*X1 - 0.109375000000000000E+00_dp)*0.640000000000000000E+02_dp
+                                       CALL patch_coordinate(X1, 0.109375_dp, 64.0_dp, TG1, scale)
                                        TG2 = (2*X2 - 0.193750000000000000E+01_dp)*0.160000000000000000E+02_dp
-                                       CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 181))
+                                       patch = 181
                                     END IF
                                  END IF
                               END IF
                            END IF
                         ELSE
                            IF (X2 <= 0.875000000000000000E+00_dp) THEN
-                              TG1 = (2*X1 - 0.187500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.1875_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 182))
+                              patch = 182
                            ELSE
                               IF (X1 <= 0.937500000000000000E-01_dp) THEN
                                  IF (X2 <= 0.937500000000000000E+00_dp) THEN
-                                    TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.181250000000000000E+01_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 183))
+                                    patch = 183
                                  ELSE
-                                    TG1 = (2*X1 - 0.156250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                    CALL patch_coordinate(X1, 0.15625_dp, 32.0_dp, TG1, scale)
                                     TG2 = (2*X2 - 0.193750000000000000E+01_dp)*0.160000000000000000E+02_dp
-                                    CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 184))
+                                    patch = 184
                                  END IF
                               ELSE
-                                 TG1 = (2*X1 - 0.218750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                                 CALL patch_coordinate(X1, 0.21875_dp, 32.0_dp, TG1, scale)
                                  TG2 = (2*X2 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                                 CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 185))
+                                 patch = 185
                               END IF
                            END IF
                         END IF
                      END IF
                   ELSE
                      IF (X2 <= 0.750000000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.375000000000000000E+00_dp)*0.800000000000000000E+01_dp
+                        CALL patch_coordinate(X1, 0.375_dp, 8.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.125000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 186))
+                        patch = 186
                      ELSE
                         IF (X1 <= 0.187500000000000000E+00_dp) THEN
                            IF (X2 <= 0.875000000000000000E+00_dp) THEN
-                              TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 187))
+                              patch = 187
                            ELSE
-                              TG1 = (2*X1 - 0.312500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                              CALL patch_coordinate(X1, 0.3125_dp, 16.0_dp, TG1, scale)
                               TG2 = (2*X2 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
-                              CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 188))
+                              patch = 188
                            END IF
                         ELSE
-                           TG1 = (2*X1 - 0.437500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 0.4375_dp, 16.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.175000000000000000E+01_dp)*0.400000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 189))
+                           patch = 189
                         END IF
                      END IF
                   END IF
@@ -1245,51 +1302,51 @@ CONTAINS
                IF (X1 <= 0.375000000000000000E+00_dp) THEN
                   IF (X1 <= 0.312500000000000000E+00_dp) THEN
                      IF (X1 <= 0.281250000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.531250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 0.53125_dp, 32.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.100000000000000000E+01_dp)*0.100000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 190))
+                        patch = 190
                      ELSE
-                        TG1 = (2*X1 - 0.593750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 0.59375_dp, 32.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.100000000000000000E+01_dp)*0.100000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 191))
+                        patch = 191
                      END IF
                   ELSE
                      IF (X2 <= 0.500000000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 0.6875_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.500000000000000000E+00_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 192))
+                        patch = 192
                      ELSE
-                        TG1 = (2*X1 - 0.687500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 0.6875_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.150000000000000000E+01_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 193))
+                        patch = 193
                      END IF
                   END IF
                ELSE
                   IF (X1 <= 0.437500000000000000E+00_dp) THEN
                      IF (X2 <= 0.500000000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.812500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 0.8125_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.500000000000000000E+00_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 194))
+                        patch = 194
                      ELSE
                         IF (X1 <= 0.406250000000000000E+00_dp) THEN
-                           TG1 = (2*X1 - 0.781250000000000000E+00_dp)*0.320000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 0.78125_dp, 32.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.150000000000000000E+01_dp)*0.200000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 195))
+                           patch = 195
                         ELSE
-                           TG1 = (2*X1 - 0.843750000000000000E+00_dp)*0.320000000000000000E+02_dp
+                           CALL patch_coordinate(X1, 0.84375_dp, 32.0_dp, TG1, scale)
                            TG2 = (2*X2 - 0.150000000000000000E+01_dp)*0.200000000000000000E+01_dp
-                           CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 196))
+                           patch = 196
                         END IF
                      END IF
                   ELSE
                      IF (X2 <= 0.500000000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 0.9375_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.500000000000000000E+00_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 197))
+                        patch = 197
                      ELSE
-                        TG1 = (2*X1 - 0.937500000000000000E+00_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 0.9375_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.150000000000000000E+01_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 198))
+                        patch = 198
                      END IF
                   END IF
                END IF
@@ -1299,56 +1356,57 @@ CONTAINS
                IF (X1 <= 0.625000000000000000E+00_dp) THEN
                   IF (X2 <= 0.500000000000000000E+00_dp) THEN
                      IF (X1 <= 0.562500000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.106250000000000000E+01_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 1.0625_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.500000000000000000E+00_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 199))
+                        patch = 199
                      ELSE
-                        TG1 = (2*X1 - 0.118750000000000000E+01_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 1.1875_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.500000000000000000E+00_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 200))
+                        patch = 200
                      END IF
                   ELSE
                      IF (X1 <= 0.562500000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.106250000000000000E+01_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 1.0625_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.150000000000000000E+01_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 201))
+                        patch = 201
                      ELSE
-                        TG1 = (2*X1 - 0.118750000000000000E+01_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 1.1875_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.150000000000000000E+01_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 202))
+                        patch = 202
                      END IF
                   END IF
                ELSE
                   IF (X2 <= 0.500000000000000000E+00_dp) THEN
                      IF (X1 <= 0.687500000000000000E+00_dp) THEN
-                        TG1 = (2*X1 - 0.131250000000000000E+01_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 1.3125_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.500000000000000000E+00_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 203))
+                        patch = 203
                      ELSE
-                        TG1 = (2*X1 - 0.143750000000000000E+01_dp)*0.160000000000000000E+02_dp
+                        CALL patch_coordinate(X1, 1.4375_dp, 16.0_dp, TG1, scale)
                         TG2 = (2*X2 - 0.500000000000000000E+00_dp)*0.200000000000000000E+01_dp
-                        CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 204))
+                        patch = 204
                      END IF
                   ELSE
-                     TG1 = (2*X1 - 0.137500000000000000E+01_dp)*0.800000000000000000E+01_dp
+                     CALL patch_coordinate(X1, 1.375_dp, 8.0_dp, TG1, scale)
                      TG2 = (2*X2 - 0.150000000000000000E+01_dp)*0.200000000000000000E+01_dp
-                     CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 205))
+                     patch = 205
                   END IF
                END IF
             ELSE
                IF (X1 <= 0.875000000000000000E+00_dp) THEN
-                  TG1 = (2*X1 - 0.162500000000000000E+01_dp)*0.800000000000000000E+01_dp
+                  CALL patch_coordinate(X1, 1.625_dp, 8.0_dp, TG1, scale)
                   TG2 = (2*X2 - 0.100000000000000000E+01_dp)*0.100000000000000000E+01_dp
-                  CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 206))
+                  patch = 206
                ELSE
-                  TG1 = (2*X1 - 0.187500000000000000E+01_dp)*0.800000000000000000E+01_dp
+                  CALL patch_coordinate(X1, 1.875_dp, 8.0_dp, TG1, scale)
                   TG2 = (2*X2 - 0.100000000000000000E+01_dp)*0.100000000000000000E+01_dp
-                  CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, 207))
+                  patch = 207
                END IF
             END IF
          END IF
       END IF
-   END SUBROUTINE t_c_g0_n
+      CALL PD2VAL(RES, NDERIV, TG1, TG2, C0(1, patch), dres_dt, scale/(upper - lower))
+   END SUBROUTINE evaluate_moments
 
 ! **************************************************************************************************
 !> \brief ...
@@ -1400,16 +1458,20 @@ CONTAINS
 !> \param TG1 ...
 !> \param TG2 ...
 !> \param C0 ...
+!> \param dres_dt ...
+!> \param scale ...
 ! **************************************************************************************************
-   SUBROUTINE PD2VAL(RES, NDERIV, TG1, TG2, C0)
+   SUBROUTINE PD2VAL(RES, NDERIV, TG1, TG2, C0, dres_dt, scale)
       REAL(KIND=dp), INTENT(OUT)                         :: res(*)
       INTEGER, INTENT(IN)                                :: NDERIV
       REAL(KIND=dp), INTENT(IN)                          :: TG1, TG2, C0(105, *)
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: dres_dt(*)
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: scale
 
       REAL(KIND=dp), PARAMETER :: SQRT2 = 1.4142135623730950488016887242096980785696718753_dp
 
-      INTEGER                                            :: K
-      REAL(KIND=dp)                                      :: T1(0:13), T2(0:13)
+      INTEGER                                            :: j, K
+      REAL(KIND=dp)                                      :: dT1(0:13), T1(0:13), T2(0:13)
 
       T1(0) = 1.0_dp
       T2(0) = 1.0_dp
@@ -1456,6 +1518,33 @@ CONTAINS
          RES(K) = RES(K) + DOT_PRODUCT(T1(0:1), C0(103:104, K))*T2(12)
          RES(K) = RES(K) + DOT_PRODUCT(T1(0:0), C0(105:105, K))*T2(13)
       END DO
+      IF (PRESENT(dres_dt)) THEN
+         CPASSERT(PRESENT(scale))
+         dT1(0) = 0._dp
+         dT1(1) = SQRT2
+         dT1(2) = 2*T1(1) + 2*TG1*dT1(1)
+         DO j = 3, 13
+            dT1(j) = 2*T1(j - 1) + 2*TG1*dT1(j - 1) - dT1(j - 2)
+         END DO
+         DO K = 1, NDERIV + 1
+            dres_dt(K) = 0.0_dp
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:13), C0(1:14, K))*T2(0)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:12), C0(15:27, K))*T2(1)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:11), C0(28:39, K))*T2(2)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:10), C0(40:50, K))*T2(3)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:9), C0(51:60, K))*T2(4)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:8), C0(61:69, K))*T2(5)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:7), C0(70:77, K))*T2(6)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:6), C0(78:84, K))*T2(7)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:5), C0(85:90, K))*T2(8)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:4), C0(91:95, K))*T2(9)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:3), C0(96:99, K))*T2(10)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:2), C0(100:102, K))*T2(11)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:1), C0(103:104, K))*T2(12)
+            dres_dt(K) = dres_dt(K) + DOT_PRODUCT(dT1(0:0), C0(105:105, K))*T2(13)
+            dres_dt(K) = dres_dt(K)*scale
+         END DO
+      END IF
    END SUBROUTINE PD2VAL
 
 ! **************************************************************************************************

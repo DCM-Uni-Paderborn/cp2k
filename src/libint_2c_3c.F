@@ -22,19 +22,17 @@ MODULE libint_2c_3c
    USE integral_library_types,          ONLY: coulomb_operator_type,&
                                               libint_potential_type => coulomb_operator_type
    USE kinds,                           ONLY: dp
-   USE libint_wrapper,                  ONLY: cp_libint_get_2eri_derivs,&
-                                              cp_libint_get_2eris,&
-                                              cp_libint_get_3eri_derivs,&
-                                              cp_libint_get_3eris,&
-                                              cp_libint_set_params_eri,&
-                                              cp_libint_set_params_eri_deriv,&
-                                              cp_libint_t,&
-                                              prim_data_f_size
+   USE libint_wrapper,                  ONLY: &
+        cp_libint_cleanup_2eri, cp_libint_get_2eri_derivs, cp_libint_get_2eris, &
+        cp_libint_get_3eri_derivs, cp_libint_get_3eris, cp_libint_init_2eri, &
+        cp_libint_set_contrdepth, cp_libint_set_params_eri, cp_libint_set_params_eri_deriv, &
+        cp_libint_t, prim_data_f_size
    USE mathconstants,                   ONLY: pi
    USE orbital_pointers,                ONLY: nco,&
                                               ncoset
    USE t_c_g0,                          ONLY: get_lmax_init,&
-                                              t_c_g0_n
+                                              t_c_g0_n,&
+                                              t_c_g0_response
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -1125,10 +1123,21 @@ CONTAINS
                                                             b_offset, b_start, i, i_deriv, ipgf, &
                                                             j, jpgf, li, lj, ncoa, ncob, p1, p2
       INTEGER, DIMENSION(3)                              :: permute
-      REAL(dp)                                           :: dr_ab, zeti, zetj
+      LOGICAL                                            :: interpolate_response, response_active
+      REAL(dp)                                           :: dr_ab, t_response(3), zeti, zetj
       REAL(dp), DIMENSION(:, :), POINTER                 :: p_deriv
+      REAL(dp), POINTER                                  :: p_response(:)
+      TYPE(cp_libint_t)                                  :: response_lib
 
       NULLIFY (p_deriv)
+      NULLIFY (p_response)
+
+      interpolate_response = potential_parameter%potential_type == do_potential_truncated .OR. &
+                             potential_parameter%potential_type == do_potential_mix_cl_trunc
+      IF (interpolate_response) THEN
+         CALL cp_libint_init_2eri(response_lib, MAX(la_max, lb_max))
+         CALL cp_libint_set_contrdepth(response_lib, 1)
+      END IF
 
       permute = [4, 5, 6]
 
@@ -1156,6 +1165,11 @@ CONTAINS
             IF (rpgfa(ipgf) + rpgfb(jpgf) + dr_ab < dab) CYCLE
 
             CALL set_params_2c_deriv(lib, ra, rb, zeti, zetj, la_max, lb_max, potential_parameter)
+            response_active = .FALSE.
+            IF (interpolate_response) THEN
+               CALL set_params_2c_response(response_lib, ra, rb, zeti, zetj, la_max, lb_max, &
+                                           potential_parameter, response_active, t_response)
+            END IF
 
             DO li = la_min, la_max
                a_offset = a_start + ncoset(li - 1)
@@ -1166,6 +1180,7 @@ CONTAINS
 
                   a_mysize(1) = ncoa*ncob
                   CALL cp_libint_get_2eri_derivs(li, lj, lib, p_deriv, a_mysize)
+                  IF (response_active) CALL cp_libint_get_2eris(li, lj, response_lib, p_response, a_mysize)
 
                   DO i_deriv = 1, 3
                      DO j = 1, ncob
@@ -1173,6 +1188,10 @@ CONTAINS
                         DO i = 1, ncoa
                            p2 = p1 + i
                            der_ab(a_offset + i, b_offset + j, i_deriv) = p_deriv(p2, permute(i_deriv))
+                           IF (response_active) THEN
+                              der_ab(a_offset + i, b_offset + j, i_deriv) = &
+                                 der_ab(a_offset + i, b_offset + j, i_deriv) + t_response(i_deriv)*p_response(p2)
+                           END IF
                         END DO
                      END DO
                   END DO
@@ -1184,7 +1203,66 @@ CONTAINS
          END DO
       END DO
 
+      IF (interpolate_response) CALL cp_libint_cleanup_2eri(response_lib)
+
    END SUBROUTINE eri_2center_derivs
+
+! **************************************************************************************************
+!> \brief ...
+!> \param lib ...
+!> \param rj ...
+!> \param rk ...
+!> \param zetj ...
+!> \param zetk ...
+!> \param lj_max ...
+!> \param lk_max ...
+!> \param potential ...
+!> \param active ...
+!> \param t_response ...
+!> The moment polynomials are fitted separately. Their geometry derivative therefore
+!> contains (dF_m/dT + F_{m+1}) dT in addition to the ordinary integral recurrence.
+!> Evaluate this residual with the same forward recurrence and unchanged geometry.
+! **************************************************************************************************
+   SUBROUTINE set_params_2c_response(lib, rj, rk, zetj, zetk, lj_max, lk_max, potential, active, t_response)
+      TYPE(cp_libint_t), INTENT(INOUT)                   :: lib
+      REAL(dp), INTENT(IN)                               :: rj(3), rk(3), zetj, zetk
+      INTEGER, INTENT(IN)                                :: lj_max, lk_max
+      TYPE(coulomb_operator_type), INTENT(IN)            :: potential
+      LOGICAL, INTENT(OUT)                               :: active
+      REAL(dp), INTENT(OUT)                              :: t_response(3)
+
+      INTEGER                                            :: last
+      LOGICAL                                            :: use_gamma
+      REAL(dp)                                           :: moments(prim_data_f_size), prefac, r, &
+                                                            response(prim_data_f_size), scale, t
+      TYPE(params_2c)                                    :: params
+
+      active = .FALSE.
+      t_response = 0.0_dp
+      params%m_max = lj_max + lk_max
+      last = params%m_max + 1
+      params%ZetaInv = 1.0_dp/zetk
+      params%EtaInv = 1.0_dp/zetj
+      params%ZetapEtaInv = 1.0_dp/(zetk + zetj)
+      params%Rho = zetk*zetj/(zetk + zetj)
+      params%W = (zetk*rk + zetj*rj)*params%ZetapEtaInv
+      r = potential%cutoff_radius*SQRT(params%Rho)
+      t = params%Rho*SUM((rj - rk)**2)
+      CALL t_c_g0_response(moments, response, use_gamma, r, t, last)
+      IF (use_gamma) RETURN
+      scale = 1.0_dp
+      IF (potential%potential_type == do_potential_mix_cl_trunc) THEN
+         scale = potential%scale_coulomb + potential%scale_longrange
+      END IF
+      prefac = scale*2.0_dp*pi/params%Rho*SQRT((pi*params%ZetapEtaInv)**3)
+      params%Fm(:last) = prefac*(response(:last) + moments(2:last + 1))
+      IF (.NOT. ANY(params%Fm(:last) /= 0.0_dp)) RETURN
+      t_response = 2.0_dp*params%Rho*(rj - rk)
+      CALL cp_libint_set_params_eri(lib, rk, rk, rj, rj, params%ZetaInv, params%EtaInv, &
+                                    params%ZetapEtaInv, params%Rho, rk, rj, params%W, &
+                                    params%m_max, params%Fm)
+      active = .TRUE.
+   END SUBROUTINE set_params_2c_response
 
 ! **************************************************************************************************
 !> \brief Sets the internals of the cp_libint_t object for derivatives of integrals of type (k|j)
