@@ -1453,8 +1453,7 @@ CONTAINS
       TYPE(qs_ot_type)                                   :: qs_ot_env
       TYPE(dbcsr_type)                                   :: matrix_in, matrix_in_im, matrix_out, matrix_out_im
 
-      INTEGER                                            :: k, pass
-      TYPE(dbcsr_type)                                   :: overlap, overlap_im, work
+      INTEGER                                            :: k
 
       CALL dbcsr_get_info(matrix_in, nfullcols_total=k)
       IF (k == 0) THEN
@@ -1465,6 +1464,26 @@ CONTAINS
       CALL apply_preconditioner(qs_ot_env%preconditioner, matrix_in, matrix_in_im, matrix_out, matrix_out_im)
       IF (qs_ot_env%settings%ot_algorithm /= 'TOD') RETURN
 
+      CALL qs_ot_project_tangent_complex(qs_ot_env, matrix_out, matrix_out_im)
+
+   END SUBROUTINE qs_ot_precondition_complex
+
+! **************************************************************************************************
+!> \brief Remove reference-orbital components from a complex STRICT coordinate.
+!>        Extrapolation can amplify roundoff in individually tangent history vectors.
+!> \param qs_ot_env OT state with C0^H*S*C0=I
+!> \param matrix_out real coordinate, projected in place
+!> \param matrix_out_im imaginary coordinate, projected in place
+! **************************************************************************************************
+   SUBROUTINE qs_ot_project_tangent_complex(qs_ot_env, matrix_out, matrix_out_im)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      TYPE(dbcsr_type)                                   :: matrix_out, matrix_out_im
+
+      INTEGER                                            :: k, pass
+      TYPE(dbcsr_type)                                   :: overlap, overlap_im, work
+
+      CALL dbcsr_get_info(matrix_out, nfullcols_total=k)
+      IF (k == 0) RETURN
       CALL dbcsr_copy(overlap, qs_ot_env%matrix_buf1_ortho, name='ot_tangent_overlap')
       CALL dbcsr_copy(overlap_im, qs_ot_env%matrix_buf1_ortho_im, name='ot_tangent_overlap_im')
       CALL dbcsr_copy(work, overlap, name='ot_tangent_work')
@@ -1480,7 +1499,7 @@ CONTAINS
       CALL dbcsr_release(overlap_im)
       CALL dbcsr_release(overlap)
 
-   END SUBROUTINE qs_ot_precondition_complex
+   END SUBROUTINE qs_ot_project_tangent_complex
 
 ! **************************************************************************************************
 !> \brief multiply paired real/imaginary DBCSR matrices, with optional conjugate transposes
@@ -3338,6 +3357,7 @@ CONTAINS
       CPASSERT(qs_ot_env%has_complex_kpoint_state)
       CPASSERT(qs_ot_env%settings%ot_algorithm == 'TOD')
 
+      CALL qs_ot_project_tangent_complex(qs_ot_env, qs_ot_env%matrix_x, qs_ot_env%matrix_x_im)
       CALL qs_ot_complex_multiply('N', 'N', matrix_s, matrix_s_im, &
                                   qs_ot_env%matrix_x, qs_ot_env%matrix_x_im, &
                                   qs_ot_env%matrix_sx, qs_ot_env%matrix_sx_im, &
