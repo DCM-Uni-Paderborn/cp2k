@@ -672,7 +672,7 @@ CONTAINS
          ELSE IF (my_just_energy) THEN
             exc = xc_exc_calc(rho_r=rho_r, tau=tau, &
                               rho_g=rho_g, xc_section=xc_section, &
-                              weights=weights_use, pw_pool=xc_pw_pool)
+                              weights=weights_use, pw_pool=xc_pw_pool, density_constraints=skala_constraints)
 
          ELSE
             CALL xc_vxc_pw_create(vxc_rho=my_vxc_rho, vxc_tau=my_vxc_tau, rho_r=rho_r, &
@@ -680,7 +680,7 @@ CONTAINS
                                   xc_section=xc_section, &
                                   weights=weights_use, pw_pool=xc_pw_pool, &
                                   compute_virial=compute_virial, &
-                                  virial_xc=virial%pv_xc)
+                                  virial_xc=virial%pv_xc, density_constraints=skala_constraints)
          END IF
 
          IF ((dft_control%qs_control%gapw_xc .OR. dft_control%qs_control%gapw .OR. &

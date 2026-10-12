@@ -100,15 +100,17 @@ CONTAINS
 !> \param domain FFT, exact atomic or interpolated atomic-background evaluation.
 !> \param points Global FFT indices or (global atom, atomic row, 1), one column per local row.
 !> \param density Physical model spin density, one paired RKS or two UKS columns.
-!> \param kinetic Physical model kinetic density with the same spin convention.
+!> \param kinetic Optional physical kinetic density with the same spin convention.
+!>        Omission records that the functional did not request this descriptor.
 ! **************************************************************************************************
    SUBROUTINE skala_density_samples_put(state, domain, points, density, kinetic)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
       INTEGER, INTENT(IN)                                :: domain, points(:, :)
-      REAL(dp), INTENT(IN)                               :: density(:, :), kinetic(:, :)
+      REAL(dp), INTENT(IN)                               :: density(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: kinetic(:, :)
 
-      INTEGER                                            :: np, ns
+      INTEGER                                            :: nk, np, ns
       LOGICAL                                            :: valid
 
       IF (.NOT. state%sampling) RETURN
@@ -117,9 +119,14 @@ CONTAINS
       np = SIZE(density, 1)
       ns = SIZE(density, 2)
       CPASSERT(ns == 1 .OR. ns == 2)
-      CPASSERT(ALL(SHAPE(kinetic) == [np, ns]))
       CPASSERT(ALL(SHAPE(points) == [3, np]))
-      CPASSERT(ALL(ieee_is_finite(density)) .AND. ALL(ieee_is_finite(kinetic)))
+      CPASSERT(ALL(ieee_is_finite(density)))
+      nk = 0
+      IF (PRESENT(kinetic)) THEN
+         CPASSERT(ALL(SHAPE(kinetic) == [np, ns]))
+         CPASSERT(ALL(ieee_is_finite(kinetic)))
+         nk = ns
+      END IF
       IF (state%sample_nspins /= 0) THEN
          CPASSERT(state%sample_nspins == ns)
       END IF
@@ -129,10 +136,10 @@ CONTAINS
       END IF
       ASSOCIATE (sample => state%samples(domain))
          IF (ALLOCATED(sample%points)) DEALLOCATE (sample%points, sample%density, sample%kinetic)
-         ALLOCATE (sample%points(3, np), sample%density(np, ns), sample%kinetic(np, ns))
+         ALLOCATE (sample%points(3, np), sample%density(np, ns), sample%kinetic(np, nk))
          sample%points(:, :) = points
          sample%density(:, :) = density
-         sample%kinetic(:, :) = kinetic
+         IF (PRESENT(kinetic)) sample%kinetic(:, :) = kinetic
       END ASSOCIATE
    END SUBROUTINE skala_density_samples_put
 
@@ -142,7 +149,7 @@ CONTAINS
 !> \param domain ...
 !> \param points ...
 !> \param density ...
-!> \param kinetic ...
+!> \param kinetic Native kinetic inputs, or zero columns when this descriptor was not requested.
 !> \param available Whether this domain was evaluated since the last begin call.
 ! **************************************************************************************************
    SUBROUTINE skala_density_samples_get(state, domain, points, density, kinetic, available)
@@ -152,7 +159,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: density(:, :), kinetic(:, :)
       LOGICAL, INTENT(OUT)                               :: available
 
-      INTEGER                                            :: np, ns
+      INTEGER                                            :: nk, np, ns
       LOGICAL                                            :: valid
 
       valid = domain >= skala_fft_domain .AND. domain <= skala_background_domain
@@ -161,8 +168,12 @@ CONTAINS
          available = ALLOCATED(sample%points)
          np = 0
          ns = state%sample_nspins
-         IF (available) np = SIZE(sample%points, 2)
-         ALLOCATE (points(3, np), density(np, ns), kinetic(np, ns))
+         nk = 0
+         IF (available) THEN
+            np = SIZE(sample%points, 2)
+            nk = SIZE(sample%kinetic, 2)
+         END IF
+         ALLOCATE (points(3, np), density(np, ns), kinetic(np, nk))
          IF (available) THEN
             points(:, :) = sample%points
             density(:, :) = sample%density
@@ -191,29 +202,36 @@ CONTAINS
    END SUBROUTINE clear_samples
 
 ! **************************************************************************************************
-!> \brief Detect physical density zeros bracketed by two orbital evaluations.
+!> \brief Detect a physical density target bracketed by two orbital evaluations.
 !>        The caller supplies matching physical point/spin layouts, before nonlinear features.
-!>        A field that is zero at both ends supplies no sign-changing constraint.
-!>        Endpoint zeros are candidates, not proof of an admissible stationary minimum.
+!>        A field equal to the target at both ends supplies no sign-changing constraint.
+!>        Endpoint equality is a candidate, not proof of an admissible stationary minimum.
 !> \param first Physical spin densities at the first orbital state.
 !> \param last Physical spin densities at the last orbital state.
 !> \param crossings Candidate mask with the same physical point/spin layout.
+!> \param target Physical threshold, zero by default.
 ! **************************************************************************************************
-   SUBROUTINE skala_density_crossings(first, last, crossings)
+   SUBROUTINE skala_density_crossings(first, last, crossings, target)
       REAL(dp), INTENT(IN)                               :: first(:, :), last(:, :)
       LOGICAL, INTENT(OUT)                               :: crossings(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: target
 
+      REAL(dp)                                           :: level
+
+      level = 0.0_dp
+      IF (PRESENT(target)) level = target
+      CPASSERT(ieee_is_finite(level))
       CPASSERT(ALL(SHAPE(first) == SHAPE(last)))
       CPASSERT(ALL(SHAPE(first) == SHAPE(crossings)))
       CPASSERT(ALL(ieee_is_finite(first)))
       CPASSERT(ALL(ieee_is_finite(last)))
-      crossings(:, :) = ((first < 0.0_dp .AND. last >= 0.0_dp) .OR. &
-                         (first > 0.0_dp .AND. last <= 0.0_dp) .OR. &
-                         (first == 0.0_dp .AND. last /= 0.0_dp))
+      crossings(:, :) = ((first < level .AND. last >= level) .OR. &
+                         (first > level .AND. last <= level) .OR. &
+                         (first == level .AND. last /= level))
    END SUBROUTINE skala_density_crossings
 
 ! **************************************************************************************************
-!> \brief Locate a bracketed zero by reevaluating the physical density along an orbital curve.
+!> \brief Locate a bracketed target by reevaluating the physical density along an orbital curve.
 !>        The callback retains the actual normalization, density map and frozen core.
 !>        Only the absolute physical density tolerance establishes convergence.
 !>        Unbracketed and unresolved roots return the best observed endpoint with failure.
@@ -221,26 +239,31 @@ CONTAINS
 !> \param context Owned orbital-curve data and native evaluation workspace.
 !> \param first_step First endpoint of the supplied orbital-curve interval.
 !> \param last_step Last endpoint, strictly larger than the first.
-!> \param tolerance Maximum absolute physical spin density at the returned root.
+!> \param tolerance Maximum absolute difference from the physical target.
 !> \param step Best observed orbital-curve parameter.
 !> \param value Its actual physical spin density.
 !> \param converged Whether the physical density meets the requested tolerance.
 !> \param max_iterations Maximum safeguarded interpolation steps, defaults to 100.
+!> \param target Physical threshold, zero by default. Value retains the actual physical input.
 ! **************************************************************************************************
    SUBROUTINE skala_density_root(evaluate, context, first_step, last_step, tolerance, step, value, &
-                                 converged, max_iterations)
+                                 converged, max_iterations, target)
       PROCEDURE(evaluate_physical_density)                :: evaluate
       CLASS(*), INTENT(INOUT)                             :: context
       REAL(dp), INTENT(IN)                               :: first_step, last_step, tolerance
       REAL(dp), INTENT(OUT)                              :: step, value
       LOGICAL, INTENT(OUT)                               :: converged
       INTEGER, INTENT(IN), OPTIONAL                      :: max_iterations
+      REAL(dp), INTENT(IN), OPTIONAL                     :: target
 
       INTEGER                                            :: iteration, limit
       LOGICAL                                            :: bracketed
-      REAL(dp)                                           :: first, first_value, fraction, last, last_value, &
+      REAL(dp)                                           :: first, first_value, fraction, last, last_value, level, &
                                                             scale, trial, trial_value
 
+      level = 0.0_dp
+      IF (PRESENT(target)) level = target
+      CPASSERT(ieee_is_finite(level))
       CPASSERT(ieee_is_finite(first_step) .AND. ieee_is_finite(last_step))
       CPASSERT(last_step > first_step)
       CPASSERT(ieee_is_finite(tolerance) .AND. tolerance > 0.0_dp)
@@ -254,31 +277,31 @@ CONTAINS
       CPASSERT(ieee_is_finite(first_value) .AND. ieee_is_finite(last_value))
       step = first
       value = first_value
-      IF (ABS(last_value) < ABS(value)) THEN
+      IF (ABS(last_value - level) < ABS(value - level)) THEN
          step = last
          value = last_value
       END IF
-      converged = ABS(value) <= tolerance
+      converged = ABS(value - level) <= tolerance
       IF (converged) RETURN
-      bracketed = (first_value < 0.0_dp .AND. last_value > 0.0_dp) .OR. &
-                  (first_value > 0.0_dp .AND. last_value < 0.0_dp)
+      bracketed = (first_value < level .AND. last_value > level) .OR. &
+                  (first_value > level .AND. last_value < level)
       IF (.NOT. bracketed) RETURN
 
       DO iteration = 1, limit
-         scale = MAX(ABS(first_value), ABS(last_value))
-         fraction = (first_value/scale)/(first_value/scale - last_value/scale)
+         scale = MAX(ABS(first_value - level), ABS(last_value - level))
+         fraction = ((first_value - level)/scale)/((first_value - level)/scale - (last_value - level)/scale)
          fraction = MAX(0.1_dp, MIN(0.9_dp, fraction))
          trial = (1.0_dp - fraction)*first + fraction*last
          IF (trial <= first .OR. trial >= last) EXIT
          CALL evaluate(trial, trial_value, context)
          CPASSERT(ieee_is_finite(trial_value))
-         IF (ABS(trial_value) < ABS(value)) THEN
+         IF (ABS(trial_value - level) < ABS(value - level)) THEN
             step = trial
             value = trial_value
          END IF
-         converged = ABS(value) <= tolerance
+         converged = ABS(value - level) <= tolerance
          IF (converged) RETURN
-         IF ((trial_value < 0.0_dp) .EQV. (first_value < 0.0_dp)) THEN
+         IF ((trial_value < level) .EQV. (first_value < level)) THEN
             first = trial
             first_value = trial_value
          ELSE

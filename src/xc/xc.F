@@ -48,6 +48,8 @@ MODULE xc
       pw_pool_type
    USE pw_types, ONLY: &
       pw_c1d_gs_type, pw_r3d_rs_type
+   USE skala_density_constraints, ONLY: skala_density_constraints_type, &
+                                       skala_density_samples_active, skala_density_samples_put, skala_fft_domain
    USE xc_derivative_desc, ONLY: &
       deriv_rho, deriv_rhoa, deriv_rhob, &
       deriv_norm_drhoa, deriv_norm_drhob, deriv_norm_drho, deriv_tau_a, deriv_tau_b, deriv_tau, &
@@ -155,7 +157,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE xc_rho_set_and_dset_create(rho_set, deriv_set, deriv_order, &
                                          rho_r, rho_g, tau, xc_section, pw_pool, &
-                                         weights, calc_potential)
+                                         weights, calc_potential, density_constraints)
 
       TYPE(xc_rho_set_type)                              :: rho_set
       TYPE(xc_derivative_set_type)                       :: deriv_set
@@ -166,6 +168,8 @@ CONTAINS
       TYPE(pw_pool_type), POINTER                        :: pw_pool
       TYPE(pw_r3d_rs_type), POINTER                      :: weights
       LOGICAL, INTENT(in)                                :: calc_potential
+      TYPE(skala_density_constraints_type), OPTIONAL, &
+         POINTER                                         :: density_constraints
 
       CHARACTER(len=*), PARAMETER :: routineN = 'xc_rho_set_and_dset_create'
 
@@ -206,6 +210,12 @@ CONTAINS
                              section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO"), &
                              pw_pool)
 
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints)) THEN
+            CALL record_fft_descriptors(density_constraints, rho_set, nspins)
+         END IF
+      END IF
+
       ! Calculate values of the functional on the grid
       CALL xc_functionals_eval(xc_fun_sections, &
                                lsd=lsd, &
@@ -226,6 +236,62 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE xc_rho_set_and_dset_create
+
+! **************************************************************************************************
+!> \brief Record the actual smoothed XC inputs before functional projections and cutoffs.
+!>        Core contributions have already been added by the caller. Sampling is opt-in.
+!>        An unused kinetic input is absent, rather than replaced with a physical zero.
+!> \param state Native descriptor samples owned by the KS environment.
+!> \param rho_set Fields requested by the active functional.
+!> \param ns One RKS or two UKS density columns.
+! **************************************************************************************************
+   SUBROUTINE record_fft_descriptors(state, rho_set, ns)
+      TYPE(skala_density_constraints_type), INTENT(INOUT) :: state
+      TYPE(xc_rho_set_type), INTENT(IN)                  :: rho_set
+      INTEGER, INTENT(IN)                                :: ns
+
+      INTEGER                                            :: bounds(2, 3), i, j, k, np, row
+      INTEGER, ALLOCATABLE                               :: points(:, :)
+      LOGICAL                                            :: has_kinetic
+      REAL(dp), ALLOCATABLE                              :: density(:, :), kinetic(:, :)
+
+      IF (.NOT. skala_density_samples_active(state)) RETURN
+      CPASSERT(ns == 1 .OR. ns == 2)
+      IF (ns == 1) THEN
+         IF (.NOT. ASSOCIATED(rho_set%rho)) RETURN
+         has_kinetic = ASSOCIATED(rho_set%tau)
+      ELSE
+         CPASSERT(ASSOCIATED(rho_set%rhoa) .EQV. ASSOCIATED(rho_set%rhob))
+         IF (.NOT. ASSOCIATED(rho_set%rhoa)) RETURN
+         CPASSERT(ASSOCIATED(rho_set%tau_a) .EQV. ASSOCIATED(rho_set%tau_b))
+         has_kinetic = ASSOCIATED(rho_set%tau_a)
+      END IF
+      bounds = rho_set%local_bounds
+      np = PRODUCT(MAX(0, bounds(2, :) - bounds(1, :) + 1))
+      ALLOCATE (points(3, np), density(np, ns))
+      IF (has_kinetic) ALLOCATE (kinetic(np, ns))
+      row = 0
+      DO k = bounds(1, 3), bounds(2, 3)
+         DO j = bounds(1, 2), bounds(2, 2)
+            DO i = bounds(1, 1), bounds(2, 1)
+               row = row + 1
+               points(:, row) = [i, j, k]
+               IF (ns == 1) THEN
+                  density(row, 1) = 0.5_dp*rho_set%rho(i, j, k)
+                  IF (has_kinetic) kinetic(row, 1) = 0.5_dp*rho_set%tau(i, j, k)
+               ELSE
+                  density(row, :) = [rho_set%rhoa(i, j, k), rho_set%rhob(i, j, k)]
+                  IF (has_kinetic) kinetic(row, :) = [rho_set%tau_a(i, j, k), rho_set%tau_b(i, j, k)]
+               END IF
+            END DO
+         END DO
+      END DO
+      IF (has_kinetic) THEN
+         CALL skala_density_samples_put(state, skala_fft_domain, points, density, kinetic)
+      ELSE
+         CALL skala_density_samples_put(state, skala_fft_domain, points, density)
+      END IF
+   END SUBROUTINE record_fft_descriptors
 
 ! **************************************************************************************************
 !> \brief smooths the cutoff on rho with a function smoothderiv_rho that is 0
@@ -476,7 +542,7 @@ CONTAINS
 !>      energy should be kept consistent with xc_exc_calc
 ! **************************************************************************************************
    SUBROUTINE xc_vxc_pw_create(vxc_rho, vxc_tau, exc, rho_r, rho_g, tau, xc_section, weights, &
-                               pw_pool, compute_virial, virial_xc, exc_r)
+                               pw_pool, compute_virial, virial_xc, exc_r, density_constraints)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: vxc_rho, vxc_tau
       REAL(KIND=dp), INTENT(out)                         :: exc
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r, tau
@@ -487,6 +553,8 @@ CONTAINS
       LOGICAL                                            :: compute_virial
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(OUT)        :: virial_xc
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: exc_r
+      TYPE(skala_density_constraints_type), OPTIONAL, &
+         POINTER                                         :: density_constraints
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'xc_vxc_pw_create'
       INTEGER, DIMENSION(2), PARAMETER :: norm_drho_spin_name = [deriv_norm_drhoa, deriv_norm_drhob]
@@ -537,7 +605,7 @@ CONTAINS
                                       deriv_order=1, rho_r=rho_r, rho_g=rho_g, tau=tau, &
                                       xc_section=xc_section, &
                                       pw_pool=pw_pool, weights=weights, &
-                                      calc_potential=.TRUE.)
+                                      calc_potential=.TRUE., density_constraints=density_constraints)
 
       CALL section_vals_val_get(xc_section, "XC_GRID%XC_DERIV", &
                                 i_val=xc_deriv_method_id)
@@ -792,7 +860,7 @@ CONTAINS
 !> \note
 !>      has to be kept consistent with xc_vxc_pw_create
 ! **************************************************************************************************
-   FUNCTION xc_exc_calc(rho_r, rho_g, tau, xc_section, weights, pw_pool) &
+   FUNCTION xc_exc_calc(rho_r, rho_g, tau, xc_section, weights, pw_pool, density_constraints) &
       RESULT(exc)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r, tau
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g
@@ -800,6 +868,8 @@ CONTAINS
       TYPE(pw_r3d_rs_type), POINTER                      :: weights
       TYPE(pw_pool_type), POINTER                        :: pw_pool
       REAL(kind=dp)                                      :: exc
+      TYPE(skala_density_constraints_type), OPTIONAL, &
+         POINTER                                         :: density_constraints
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'xc_exc_calc'
 
@@ -820,7 +890,7 @@ CONTAINS
                                       deriv_set=deriv_set, deriv_order=0, &
                                       rho_r=rho_r, rho_g=rho_g, tau=tau, xc_section=xc_section, &
                                       pw_pool=pw_pool, weights=weights, &
-                                      calc_potential=.FALSE.)
+                                      calc_potential=.FALSE., density_constraints=density_constraints)
       deriv => xc_dset_get_derivative(deriv_set, [INTEGER::])
 
       IF (ASSOCIATED(deriv)) THEN
