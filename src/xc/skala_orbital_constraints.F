@@ -366,7 +366,7 @@ CONTAINS
       INTEGER :: d, history, i, iteration, j, limit, m, nf, shortening
       INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:)
       LOGICAL :: accepted, valid
-      REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy
+      REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), &
                                old_gradient(:), reduced(:), scales(:), steps(:, :), trial(:), trial_reduced(:), &
                                values(:), x(:), changes(:, :)
@@ -430,10 +430,14 @@ CONTAINS
             IF (valid) THEN
                ! Descent may increase the gradient norm in a region of negative curvature.
                roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+               trial_slope = DOT_PRODUCT(trial_reduced, direction)
                IF ((trial_energy < energy - roundoff .AND. &
                     trial_energy <= energy + 1.0e-4_dp*fraction*slope) .OR. &
                    (ABS(trial_energy - energy) <= roundoff .AND. &
-                    NORM2(trial_reduced) < NORM2(reduced))) THEN
+                    (NORM2(trial_reduced) < NORM2(reduced) .OR. &
+                     ABS(trial_slope) <= 0.9_dp*ABS(slope)))) THEN
+                  ! Below energy resolution, directional curvature can establish a useful
+                  ! step even when other gradient components grow in an anisotropic valley.
                   accepted = .TRUE.
                   EXIT
                END IF
