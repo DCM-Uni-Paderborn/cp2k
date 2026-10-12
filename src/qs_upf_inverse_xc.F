@@ -748,9 +748,12 @@ CONTAINS
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             IF (skala_density_samples_active(density_constraints)) THEN
-               IF (xc_section_uses_native_skala_evaluator(xc_section)) THEN
-                  CPASSERT(PRESENT(atom_grid) .AND. PRESENT(kinetic))
-                  CALL record_atom_descriptors(density_constraints, atom_grid, state, background, tau)
+               IF (PRESENT(atom_grid)) THEN
+                  IF (state%kinetic) THEN
+                     CALL record_atom_descriptors(density_constraints, atom_grid, state, background, tau)
+                  ELSE
+                     CALL record_atom_descriptors(density_constraints, atom_grid, state, background)
+                  END IF
                END IF
             END IF
          END IF
@@ -779,37 +782,35 @@ CONTAINS
 !> \param atom_grid ...
 !> \param state ...
 !> \param background_density ...
-!> \param background_tau ...
+!> \param background_tau Optional kinetic inputs, present when the functional requests them.
 ! **************************************************************************************************
    SUBROUTINE record_atom_descriptors(constraints, atom_grid, state, background_density, background_tau)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: constraints
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
       TYPE(qs_upf_inverse_xc_type), INTENT(IN)           :: state
-      REAL(dp), INTENT(IN)                               :: background_density(:, :), &
-                                                            background_tau(:, :)
+      REAL(dp), INTENT(IN)                               :: background_density(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: background_tau(:, :)
 
-      INTEGER                                            :: atom, point, row
       INTEGER, ALLOCATABLE                               :: indices(:, :)
       REAL(dp)                                           :: scale
 
       ALLOCATE (indices(3, SIZE(atom_grid%atoms)))
-      atom = 0
-      row = 0
-      DO point = 1, SIZE(atom_grid%atoms)
-         IF (atom_grid%atoms(point) /= atom) THEN
-            atom = atom_grid%atoms(point)
-            row = 0
-         END IF
-         row = row + 1
-         indices(:, point) = [atom, row, 1]
-      END DO
+      indices(1, :) = atom_grid%atoms
+      indices(2, :) = atom_grid%atom_rows
+      indices(3, :) = 1
       scale = 1.0_dp
       IF (SIZE(state%density, 2) == 1) scale = 0.5_dp
-      CALL skala_density_samples_put(constraints, skala_atom_domain, indices, &
-                                     scale*state%density, scale*state%tau)
-      CALL skala_density_samples_put(constraints, skala_background_domain, indices, &
-                                     scale*background_density, scale*background_tau)
+      IF (state%kinetic) THEN
+         CPASSERT(PRESENT(background_tau))
+         CALL skala_density_samples_put(constraints, skala_atom_domain, indices, &
+                                        scale*state%density, scale*state%tau)
+         CALL skala_density_samples_put(constraints, skala_background_domain, indices, &
+                                        scale*background_density, scale*background_tau)
+      ELSE
+         CALL skala_density_samples_put(constraints, skala_atom_domain, indices, scale*state%density)
+         CALL skala_density_samples_put(constraints, skala_background_domain, indices, scale*background_density)
+      END IF
    END SUBROUTINE record_atom_descriptors
 
 ! **************************************************************************************************

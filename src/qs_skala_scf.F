@@ -536,7 +536,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
-      INTEGER                                            :: axis, bounds(2, 3), i, ik, nao, nk, row, &
+      INTEGER                                            :: axis, bounds(2, 3), i, ik, nao, nk, &
                                                             smooth
       REAL(dp), ALLOCATABLE                              :: fields(:, :, :, :), values(:, :)
       TYPE(cell_type), POINTER                           :: cell
@@ -578,11 +578,9 @@ CONTAINS
                    values(SIZE(state%inverse%atom_grid%atoms), 1))
          fields = 0.0_dp
          values = 0.0_dp
-         row = 0
          DO i = 1, SIZE(values, 1)
             IF (state%inverse%atom_grid%atoms(i) /= point(1)) CYCLE
-            row = row + 1
-            IF (row == point(2)) values(i, 1) = 1.0_dp
+            IF (state%inverse%atom_grid%atom_rows(i) == point(2)) values(i, 1) = 1.0_dp
          END DO
          CALL get_qs_env(state%qs_env, cell=cell)
          CALL native_grid_batch_adjoint(values, grid, cell, state%inverse%atom_grid%points, fields, &
@@ -640,7 +638,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: correction(:, :), q(:, :)
-      INTEGER                                            :: i, ik, nao, nk, np, row
+      INTEGER                                            :: i, ik, nao, nk, np
       REAL(dp), ALLOCATABLE                              :: density(:), gradient(:, :), kinetic(:), &
                                                             weights(:)
       TYPE(mp_comm_type)                                 :: comm
@@ -657,11 +655,9 @@ CONTAINS
       kinetic = 0.0_dp
       gradient = 0.0_dp
       weights = 1.0_dp
-      row = 0
       DO i = 1, np
          IF (state%inverse%atom_grid%atoms(i) /= point(1)) CYCLE
-         row = row + 1
-         IF (row /= point(2)) CYCLE
+         IF (state%inverse%atom_grid%atom_rows(i) /= point(2)) CYCLE
          IF (descriptor == skala_density_descriptor) THEN
             density(i) = 1.0_dp
          ELSE

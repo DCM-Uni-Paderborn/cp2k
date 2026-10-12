@@ -29,6 +29,8 @@ MODULE qs_upf_inverse_atom_grid
 
    TYPE qs_upf_inverse_atom_grid_type
       INTEGER, ALLOCATABLE :: atoms(:)
+      ! Row within the complete atom quadrature, independent of MPI distribution.
+      INTEGER, ALLOCATABLE :: atom_rows(:)
       REAL(dp), ALLOCATABLE :: points(:, :), weights(:), base_weights(:)
       TYPE(atom_image_layout_type), ALLOCATABLE :: layouts(:)
    END TYPE qs_upf_inverse_atom_grid_type
@@ -66,7 +68,7 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: image_shell(3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_blocks
 
-      INTEGER                                            :: atom, ia, idir, ir, kind, nlocal, row, &
+      INTEGER                                            :: atom, atom_row, ia, idir, ir, kind, nlocal, row, &
                                                             shell(3)
       LOGICAL                                            :: complete_atoms, owned
       REAL(dp)                                           :: radius, taper, u, weight
@@ -106,11 +108,13 @@ CONTAINS
             END DO
          END DO
       END DO
-      ALLOCATE (state%atoms(nlocal), state%points(3, nlocal), state%weights(nlocal), state%base_weights(nlocal))
+      ALLOCATE (state%atoms(nlocal), state%atom_rows(nlocal), state%points(3, nlocal), &
+                state%weights(nlocal), state%base_weights(nlocal))
       row = 0
       nlocal = 0
       DO atom = 1, SIZE(atom_kinds)
          grid => grids(atom_kinds(atom))%grid
+         atom_row = 0
          DO ir = 1, grid%nr
             radius = grid%rad(ir)
             IF (radius >= support_radii(atom)) CYCLE
@@ -118,11 +122,13 @@ CONTAINS
             taper = (1.0_dp - u)**3*(1.0_dp + 3.0_dp*u + 6.0_dp*u*u)
             DO ia = 1, grid%ng_sphere
                row = row + 1
+               atom_row = atom_row + 1
                owned = MODULO(row - 1, comm%num_pe) == comm%mepos
                IF (complete_atoms) owned = MODULO(atom - 1, comm%num_pe) == comm%mepos
                IF (.NOT. owned) CYCLE
                nlocal = nlocal + 1
                state%atoms(nlocal) = atom
+               state%atom_rows(nlocal) = atom_row
                state%points(:, nlocal) = atom_coords(:, atom) + radius* &
                                          [grid%sin_pol(ia)*grid%cos_azi(ia), &
                                           grid%sin_pol(ia)*grid%sin_azi(ia), grid%cos_pol(ia)]
