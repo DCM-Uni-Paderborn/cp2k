@@ -32,12 +32,26 @@ MODULE skala_orbital_constraints
    END TYPE skala_orbital_chart_type
 
    ABSTRACT INTERFACE
+! **************************************************************************************************
+!> \brief Evaluate physical constraints and their derivatives in orbital coordinates.
+!> \param coordinate Complete orbital coordinates.
+!> \param values Physical constraint residuals.
+!> \param jacobian Derivative of each residual with respect to the coordinates.
+!> \param context Borrowed problem state.
+! **************************************************************************************************
       SUBROUTINE physical_constraints(coordinate, values, jacobian, context)
          IMPORT :: dp
          REAL(dp), INTENT(IN) :: coordinate(:)
          REAL(dp), INTENT(OUT) :: values(:), jacobian(:, :)
          CLASS(*), INTENT(INOUT) :: context
       END SUBROUTINE physical_constraints
+! **************************************************************************************************
+!> \brief Evaluate the complete energy and its orbital derivative.
+!> \param coordinate Complete orbital coordinates.
+!> \param energy Energy of the trial state.
+!> \param gradient Energy derivative in the same coordinates.
+!> \param context Borrowed problem state.
+! **************************************************************************************************
       SUBROUTINE orbital_energy_gradient(coordinate, energy, gradient, context)
          IMPORT :: dp
          REAL(dp), INTENT(IN) :: coordinate(:)
@@ -283,7 +297,7 @@ CONTAINS
 !>        without constructing a coordinate Gram matrix. The caller includes the k-point weight
 !>        and any spin-density convention in the operator for the quantity being differentiated.
 !> \param chart ...
-!> \param operator ...
+!> \param OPERATOR ...
 !> \param derivative ...
 !> \param physical_tangent Whether to return the current orthonormal tangent covector.
 ! **************************************************************************************************
@@ -363,7 +377,7 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL :: max_iterations
       REAL(dp), INTENT(IN), OPTIONAL :: max_step
 
-      INTEGER :: d, history, i, iteration, j, limit, m, nf, shortening
+      INTEGER :: capacity, d, history, i, iteration, j, limit, m, nf, shortening
       INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:)
       LOGICAL :: accepted, valid
       REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy, trial_slope
@@ -374,6 +388,7 @@ CONTAINS
       d = SIZE(coordinate)
       m = SIZE(density_tolerances)
       nf = d - m
+      capacity = MAX(7, MIN(nf, 32))
       CPASSERT(d > 0 .AND. m <= d)
       CPASSERT(ALL(ieee_is_finite(coordinate)))
       CPASSERT(ALL(ieee_is_finite(density_tolerances)))
@@ -388,7 +403,7 @@ CONTAINS
       CPASSERT(ieee_is_finite(radius) .AND. radius > 0.0_dp)
       ALLOCATE (x(d), trial(d), values(m), jacobian(m, d), scales(m), dependent(m), free(nf), &
                 g(d), reduced(nf), trial_reduced(nf), direction(nf), motion(nf), &
-                old_gradient(nf), steps(nf, 7), changes(nf, 7), pivots(d))
+                old_gradient(nf), steps(nf, capacity), changes(nf, capacity), pivots(d))
       x(:) = coordinate
       CALL constraints(x)
       converged = .FALSE.
@@ -454,10 +469,10 @@ CONTAINS
          old_gradient(:) = trial_reduced - reduced
          curvature = DOT_PRODUCT(motion, old_gradient)
          IF (curvature > 128.0_dp*EPSILON(0.0_dp)*NORM2(motion)*NORM2(old_gradient)) THEN
-            IF (history == 7) THEN
-               steps(:, 1:6) = steps(:, 2:7)
-               changes(:, 1:6) = changes(:, 2:7)
-               history = 6
+            IF (history == capacity) THEN
+               steps(:, 1:capacity - 1) = steps(:, 2:capacity)
+               changes(:, 1:capacity - 1) = changes(:, 2:capacity)
+               history = capacity - 1
             END IF
             history = history + 1
             steps(:, history) = motion
@@ -475,6 +490,10 @@ CONTAINS
       END IF
       ! Trial callbacks may update native caches; the caller's unchanged coordinates remain authoritative.
    CONTAINS
+! **************************************************************************************************
+!> \brief Refresh the physical constraint values and Jacobian at a trial.
+!> \param c Complete orbital coordinates.
+! **************************************************************************************************
       SUBROUTINE constraints(c)
       REAL(dp), INTENT(IN)                               :: c(:)
 
@@ -483,6 +502,13 @@ CONTAINS
          CPASSERT(ALL(ieee_is_finite(jacobian)))
       END SUBROUTINE constraints
 
+! **************************************************************************************************
+!> \brief Restore the physical targets and eliminate the dependent-coordinate derivatives.
+!> \param c Trial coordinates, including restored dependent coordinates.
+!> \param e Complete energy at the restored trial.
+!> \param rg Energy derivative in the independent coordinates.
+!> \param success Whether the constraints and reduced derivative were evaluated successfully.
+! **************************************************************************************************
       SUBROUTINE reduced_evaluation(c, e, rg, success)
       REAL(dp), INTENT(INOUT)                            :: c(:)
       REAL(dp), INTENT(OUT)                              :: e, rg(:)
@@ -672,8 +698,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: direction(:)
 
       INTEGER                                            :: i
-      REAL(dp)                                           :: alpha(7), beta, inverse_curvature(7), &
-                                                            scale
+      REAL(dp) :: beta, scale, inverse_curvature(SIZE(steps, 2)), alpha(SIZE(steps, 2))
 
       direction(:) = gradient
       DO i = history, 1, -1
