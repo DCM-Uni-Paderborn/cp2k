@@ -126,6 +126,8 @@ MODULE qs_skala_scf
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
       REAL(dp), ALLOCATABLE :: targets(:)
       REAL(dp) :: gradient_tolerance = 0.0_dp
+      REAL(dp) :: max_coordinate_norm = 0.0_dp
+      LOGICAL :: rechart = .FALSE.
       LOGICAL :: check_external = .FALSE.
    END TYPE physical_constraints_context
 
@@ -1175,10 +1177,14 @@ CONTAINS
 !>        Return all endpoint candidates and their trial segment before accepting the step.
 !>        A detected crossing returns the last accepted coordinate with converged false.
 !>        Root location, selection and minimum conditions must be established by the caller.
+!> \param max_coordinate_norm Optional coordinate-norm bound for an unconstrained minimization.
+!>        A trial exceeding this bound returns the accepted state for rebuilding its Cayley chart.
+!> \param rechart Whether the coordinate bound requested a new chart, independent of convergence or stop.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
                                         physical_tolerances, gradient_tolerance, energy, converged, &
-                                        max_iterations, max_step, targets, iterations, check_external, stopped, crossings)
+                                        max_iterations, max_step, targets, iterations, check_external, stopped, crossings, &
+                                        max_coordinate_norm, rechart)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(INOUT)                            :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -1194,6 +1200,8 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL                     :: stopped
       TYPE(qs_skala_scf_crossing_type), INTENT(OUT), &
          OPTIONAL, TARGET                                :: crossings
+      REAL(dp), INTENT(IN), OPTIONAL                     :: max_coordinate_norm
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: rechart
 
       INTEGER                                            :: m
       LOGICAL                                            :: valid
@@ -1211,6 +1219,11 @@ CONTAINS
       IF (PRESENT(crossings)) THEN
          CPASSERT(m == 0)
          context%crossings => crossings
+      END IF
+      IF (PRESENT(max_coordinate_norm)) THEN
+         CPASSERT(m == 0)
+         CPASSERT(ieee_is_finite(max_coordinate_norm) .AND. max_coordinate_norm > 0.0_dp)
+         context%max_coordinate_norm = max_coordinate_norm
       END IF
       ALLOCATE (context%points(3, m), context%domains(m), context%spins(m), context%descriptors(m), context%targets(m))
       context%points(:, :) = points
@@ -1238,6 +1251,7 @@ CONTAINS
       END IF
       ALLOCATE (gradient(SIZE(coordinate)))
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
+      IF (PRESENT(rechart)) rechart = context%rechart
    END SUBROUTINE qs_skala_scf_stationarity
 
 ! **************************************************************************************************
@@ -1639,6 +1653,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Return physical zero crossings from a native normalized-orbital trial segment.
+!>        An optional coordinate-norm bound returns the accepted state for a new Cayley chart.
 !>        Preserve all candidate keys and endpoint values. The first native state is restored
 !>        by the scan. Endpoint signs do not exclude additional interior crossings.
 !> \param first Last accepted feasible orbital coordinates.
@@ -1657,6 +1672,13 @@ CONTAINS
       interrupted = .FALSE.
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
+         IF (context%max_coordinate_norm > 0.0_dp) THEN
+            IF (NORM2(last) > context%max_coordinate_norm) THEN
+               context%rechart = .TRUE.
+               interrupted = .TRUE.
+               RETURN
+            END IF
+         END IF
          IF (.NOT. ASSOCIATED(context%crossings)) RETURN
          crossings => context%crossings
          CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &

@@ -1064,6 +1064,8 @@ CONTAINS
 !>        Count the bounded minimization against the original SCF limit. Acceptance reconstructs
 !>        matching MOs, P and energy-weighted W in the original charge metric. Native Skala cusp
 !>        handling requires an active constraint search and uses the existing SCF loop here.
+!>        Rebuild the Cayley chart at its accepted orbitals when a trial leaves the bounded
+!>        coordinate region. All attempted steps still consume the original SCF budget.
 !> \param qs_env Native Quickstep environment.
 !> \param scf_env Initialized OT iteration state.
 !> \param scf_control Original SCF limits and occupation settings.
@@ -1079,9 +1081,9 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: iterations
       LOGICAL, INTENT(OUT)                               :: stopped
 
-      INTEGER                                            :: n, remaining
+      INTEGER                                            :: n, remaining, steps
       INTEGER, ALLOCATABLE                               :: indices(:), points(:, :)
-      LOGICAL                                            :: accepted, converged, valid
+      LOGICAL                                            :: accepted, converged, rechart, valid
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: coordinate(:), gradient(:), physical(:), &
                                                             tolerances(:)
@@ -1118,9 +1120,20 @@ CONTAINS
       handled = .TRUE.
       ALLOCATE (coordinate(n), gradient(n), physical(n), points(3, 0), indices(0), tolerances(0))
       coordinate = 0.0_dp
-      CALL qs_skala_scf_stationarity(state, coordinate, points, indices, indices, indices, tolerances, &
-                                     scf_control%eps_scf, energy, converged, max_iterations=remaining, &
-                                     max_step=0.1_dp, iterations=iterations, check_external=.TRUE., stopped=stopped)
+      DO
+         CALL qs_skala_scf_stationarity(state, coordinate, points, indices, indices, indices, tolerances, &
+                                        scf_control%eps_scf, energy, converged, max_iterations=remaining, &
+                                        max_step=0.1_dp, iterations=steps, check_external=.TRUE., stopped=stopped, &
+                                        max_coordinate_norm=1.0_dp, rechart=rechart)
+         iterations = iterations + steps
+         remaining = remaining - steps
+         IF (converged .OR. stopped .OR. .NOT. rechart .OR. remaining <= 0) EXIT
+         CALL qs_skala_scf_release(state)
+         CALL qs_skala_scf_create(state, qs_env, valid)
+         IF (.NOT. valid) CPABORT("Could not rebuild the accepted inverse orbital chart.")
+         CPASSERT(qs_skala_scf_size(state) == n)
+         coordinate = 0.0_dp
+      END DO
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
       scf_env%iter_delta = MAX(NORM2(gradient), NORM2(physical))
       IF (converged) THEN
