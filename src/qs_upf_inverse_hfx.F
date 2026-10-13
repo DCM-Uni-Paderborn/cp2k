@@ -2812,6 +2812,7 @@ CONTAINS
       IF (derivatives) difference_response(:, :) = -MATMUL(delta, coefficients_response)
       IF (.NOT. frame%atom_local) THEN
          CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coupled_coefficients))
+         IF (.NOT. ALLOCATED(workspace%gaussian)) ALLOCATE (workspace%gaussian(SIZE(frame%bases)))
          IF (derivatives) THEN
             CPASSERT(PRESENT(coupled_response))
             CALL qs_upf_inverse_lattice_fields(frame, points, image, coefficient_images, &
@@ -2819,11 +2820,12 @@ CONTAINS
                                                response=complete_response, &
                                                coefficients_response=coupled_response(:, ao_range(1):ao_range(2), :), &
                                                point_response=point_response, atom_response=atom_response, &
-                                               cell_response=cell_response, gaussian_factor=2.0_dp)
+                                               cell_response=cell_response, gaussian_factor=2.0_dp, &
+                                               workspace=workspace%gaussian)
          ELSE
             CALL qs_upf_inverse_lattice_fields(frame, points, image, coefficient_images, &
                                                coupled_coefficients(:, ao_range(1):ao_range(2), :), ao_range, complete, &
-                                               gaussian_factor=2.0_dp)
+                                               gaussian_factor=2.0_dp, workspace=workspace%gaussian)
          END IF
          RETURN
       END IF

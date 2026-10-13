@@ -12,7 +12,8 @@
 !>        finite-image Bloch defining matrices without assigning Bloch W to individual images.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_lattice
-   USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
+   USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic,&
+                                              gaussian_basis_workspace_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_lattice_type,&
@@ -203,10 +204,11 @@ CONTAINS
 !> \param atom_response Physical displacements of all original centers.
 !> \param cell_response Cell-vector displacement at fixed integer images.
 !> \param gaussian_factor Optional Gaussian multiplier, one for soft and two for soft-plus-Gaussian fields.
+!> \param workspace Optional Gaussian scratch storage per atom. Every requested field is recomputed.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_lattice_fields(frame, points, ao_image, coefficient_images, coefficients, ao_range, &
                                             value, gradient, response, gradient_response, coefficients_response, &
-                                            point_response, atom_response, cell_response, gaussian_factor)
+                                            point_response, atom_response, cell_response, gaussian_factor, workspace)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       INTEGER, INTENT(IN)                                :: ao_image(3), coefficient_images(:, :)
@@ -219,6 +221,8 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
                                                             atom_response(:, :), &
                                                             cell_response(3, 3), gaussian_factor
+      TYPE(gaussian_basis_workspace_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: workspace(:)
 
       COMPLEX(dp), ALLOCATABLE :: delta(:, :), delta_gradient(:, :, :), &
          delta_gradient_response(:, :, :), delta_response(:, :), gaussian(:, :), &
@@ -228,6 +232,8 @@ CONTAINS
                                                             source_last
       LOGICAL                                            :: derivative, gradients
       REAL(dp)                                           :: factor, point_bounds(3, 2)
+      TYPE(gaussian_basis_workspace_type), POINTER       :: scratch
+      TYPE(gaussian_basis_workspace_type), TARGET        :: local_workspace
 
       CALL check_lattice_images(frame, coefficient_images)
       CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
@@ -264,6 +270,9 @@ CONTAINS
       END IF
       factor = 1.0_dp
       IF (PRESENT(gaussian_factor)) factor = gaussian_factor
+      IF (PRESENT(workspace)) THEN
+         CPASSERT(SIZE(workspace) == SIZE(frame%bases))
+      END IF
       value = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (gradients) gradient = CMPLX(0.0_dp, 0.0_dp, dp)
       single_image(:, 1) = ao_image
@@ -271,6 +280,8 @@ CONTAINS
          first = MAX(frame%ao_first(atom), ao_range(1))
          last = MIN(frame%ao_last(atom), ao_range(2))
          IF (last < first) CYCLE
+         scratch => local_workspace
+         IF (PRESENT(workspace)) scratch => workspace(atom)
          ALLOCATE (gaussian(n, frame%bases(atom)%gto_basis_set%nsgf))
          IF (gradients) ALLOCATE (gaussian_gradient(n, SIZE(gaussian, 2), 3))
          IF (derivative) ALLOCATE (gaussian_response(n, SIZE(gaussian, 2)))
@@ -279,10 +290,11 @@ CONTAINS
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                                                 frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, &
                                                 gaussian_gradient, gaussian_response, gaussian_gradient_response, &
-                                                point_response, atom_response(:, atom), cell_response)
+                                                point_response, atom_response(:, atom), cell_response, workspace=scratch)
          ELSE
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                                                frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, gaussian_gradient)
+                                                frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, gaussian_gradient, &
+                                                workspace=scratch)
          END IF
          source_first = first - frame%ao_first(atom) + 1
          source_last = last - frame%ao_first(atom) + 1
