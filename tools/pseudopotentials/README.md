@@ -65,6 +65,29 @@ checks have been reviewed. Only qualified prepared data should be added under `d
 distinct filenames and their preparation recorded in `SOURCE`. Original collections remain upstream
 inputs and must not overwrite supplemented data.
 
+## Prepare an explicit USPP model core kinetic density
+
+For tau-dependent XC with NLCC, `add_upf_core_tau.py` can define an auxiliary core model from
+original GIPAW core orbitals. Select every core-shell occupation explicitly in the original GIPAW
+index order. For the Al-q3 and P-q5 examples the frozen Ne core gives `2 2 6 0`, excluding the
+valence 3s orbital also present in the GIPAW table.
+
+```bash
+python3 tools/pseudopotentials/add_upf_core_tau.py \
+  /path/to/prepared/Al-full-waves.upf /path/to/prepared/Al-full-waves-core-tau.upf \
+  --model orbital-rescale --core-occupations 2 2 6 0
+```
+
+The common rescaling of the selected core orbitals reproduces the supplied nonnegative NLCC density.
+It defines `tau_model = tau_W[n_model] + n_model * (tau_AE - tau_W[n_AE]) / n_AE`, where
+`tau_W[n] = |grad(n)|^2/(8*n)`. The Pauli remainder is evaluated as positive orbital squares. This
+is an explicitly chosen auxiliary model, not recovery of an original generator kinetic field. The
+core orbitals must be normalized closed shells with occupations summing to the frozen-core charge.
+Occupied valence states, negative NLCC densities, missing data and existing core tau are rejected.
+All original sections are retained apart from the kinetic-data availability flag. The added
+`PP_TAUMOD` declares the canonical spin-summed `hartree_per_volume` convention and records the model
+and source provenance. Valence kinetic augmentation still requires full partial waves.
+
 ## Use the supplied H example
 
 For a CP2K version with the native inverse-USPP implementation, the supplied PBE H dataset can be

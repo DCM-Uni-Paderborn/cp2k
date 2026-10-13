@@ -138,7 +138,7 @@ CONTAINS
       CPASSERT(ALLOCATED(pot%r))
       ALLOCATE (kinetic(SIZE(pot%r)), SOURCE=0.0_dp)
       available = .FALSE.
-      reason = "UPF model-core kinetic density has not been supplied"
+      reason = "UPF model-core tau is missing. Supply canonical PP_TAUMOD or prepare an explicit model with add_upf_core_tau.py"
       has_core = .FALSE.
       IF (ALLOCATED(pot%rho_nlcc)) has_core = ANY(pot%rho_nlcc /= 0.0_dp)
       IF (.NOT. has_core) THEN
