@@ -6,13 +6,16 @@
 !--------------------------------------------------------------------------------------------------!
 
 MODULE quadratic_dbcsr_test_methods
-   USE kinds,                           ONLY: dp
-   USE localizer_sparse_inertia,        ONLY: sparse_inertia_type,&
-                                              sparse_metric_solve
-   USE message_passing,                 ONLY: mp_para_env_type
-   USE quadratic_pseudospectrum,        ONLY: quadratic_operator_type
-   USE spectral_localizer_dbcsr,        ONLY: localizer_dbcsr_apply,&
-                                              localizer_matrix_type
+#if defined(__HAS_IEEE_EXCEPTIONS)
+   USE ieee_exceptions, ONLY: IEEE_ALL, ieee_get_halting_mode, ieee_set_halting_mode
+#endif
+   USE kinds, ONLY: dp
+   USE localizer_sparse_inertia, ONLY: sparse_inertia_type, &
+                                       sparse_metric_solve
+   USE message_passing, ONLY: mp_para_env_type
+   USE quadratic_pseudospectrum, ONLY: quadratic_operator_type
+   USE spectral_localizer_dbcsr, ONLY: localizer_dbcsr_apply, &
+                                       localizer_matrix_type
 
    IMPLICIT NONE
    PRIVATE
@@ -85,6 +88,9 @@ CONTAINS
 
       INTEGER :: n
       REAL(dp), ALLOCATABLE :: rhs(:, :)
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      LOGICAL :: halt(SIZE(IEEE_ALL))
+#endif
 
       n = SIZE(v, 1)
       IF (this%use_sparse) THEN
@@ -95,7 +101,14 @@ CONTAINS
          y = CMPLX(rhs(:n, :), rhs(n + 1:, :), dp)
       ELSE
          y = v
+#if defined(__HAS_IEEE_EXCEPTIONS)
+         CALL ieee_get_halting_mode(IEEE_ALL, halt)
+         CALL ieee_set_halting_mode(IEEE_ALL, .FALSE.)
+#endif
          CALL zpotrs('L', n, SIZE(v, 2), this%cholesky, n, y, n, status)
+#if defined(__HAS_IEEE_EXCEPTIONS)
+         CALL ieee_set_halting_mode(IEEE_ALL, halt)
+#endif
       END IF
    END SUBROUTINE test_solve
 END MODULE quadratic_dbcsr_test_methods
