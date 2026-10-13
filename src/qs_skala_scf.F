@@ -77,7 +77,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
    PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_value, qs_skala_scf_root
    PUBLIC :: qs_skala_scf_point_derivative
-   PUBLIC :: qs_skala_scf_crossings
+   PUBLIC :: qs_skala_scf_crossings, qs_skala_scf_crossing_roots
    PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
    PUBLIC :: qs_skala_scf_select, qs_skala_scf_limiting, qs_skala_scf_balance
    PUBLIC :: qs_skala_scf_admissibility
@@ -979,6 +979,65 @@ CONTAINS
       ALLOCATE (gradient(SIZE(first)))
       CALL qs_skala_scf_evaluate(state, first, energy, gradient)
    END SUBROUTINE qs_skala_scf_crossings
+
+! **************************************************************************************************
+!> \brief Locate native input roots for every crossing detected between two orbital states.
+!>        Retain every physical sample, including coincident roots. Endpoint signs do not exclude
+!>        additional crossings within the nonlinear orbital segment. Selection, admissibility and
+!>        stationarity remain separate operations. Restore the initial native state before returning.
+!> \param state Native orbital and physical input state.
+!> \param first Initial normalized orbital coordinates.
+!> \param last Final normalized orbital coordinates.
+!> \param tolerances Absolute density and kinetic-density root tolerances in atomic units.
+!> \param points Global FFT indices or native atomic sample indices, one candidate per column.
+!> \param domains Physical domain of each candidate.
+!> \param spins Physical spin selector of each candidate.
+!> \param descriptors Density or kinetic density for each candidate.
+!> \param coordinates Located root coordinates, or first for an unresolved candidate.
+!> \param values Actual input at the best evaluated root trial.
+!> \param converged Whether each candidate satisfies its original physical root tolerance.
+!> \param targets Optional density and kinetic thresholds, zero by default.
+!> \param total_targets Optional thresholds for the physical spin sums.
+!> \param positive_density_target Optional threshold for the sum of positive spin densities.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_crossing_roots(state, first, last, tolerances, points, domains, spins, &
+                                          descriptors, coordinates, values, converged, targets, &
+                                          total_targets, positive_density_target)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: first(:), last(:), tolerances(2)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: coordinates(:, :), values(:)
+      LOGICAL, ALLOCATABLE, INTENT(OUT)                  :: converged(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: targets(2), total_targets(2), &
+                                                            positive_density_target
+
+      INTEGER                                            :: i, m
+      REAL(dp)                                           :: energy, level, levels(2), &
+                                                            positive_level, total_levels(2)
+      REAL(dp), ALLOCATABLE                              :: endpoints(:, :), gradient(:)
+
+      CPASSERT(ALL(ieee_is_finite(tolerances)) .AND. ALL(tolerances > 0.0_dp))
+      levels = 0.0_dp
+      total_levels = 0.0_dp
+      positive_level = 0.0_dp
+      IF (PRESENT(targets)) levels = targets
+      IF (PRESENT(total_targets)) total_levels = total_targets
+      IF (PRESENT(positive_density_target)) positive_level = positive_density_target
+      CALL qs_skala_scf_crossings(state, first, last, points, domains, spins, descriptors, endpoints, &
+                                  targets, total_targets, positive_density_target)
+      m = SIZE(spins)
+      ALLOCATE (coordinates(SIZE(first), m), values(m), converged(m), gradient(SIZE(first)))
+      DO i = 1, m
+         level = levels(descriptors(i))
+         IF (spins(i) == -1) level = total_levels(descriptors(i))
+         IF (spins(i) == qs_skala_positive_density_sum) level = positive_level
+         CALL qs_skala_scf_root(state, first, last, domains(i), points(:, i), spins(i), descriptors(i), &
+                                tolerances(descriptors(i)), coordinates(:, i), values(i), converged(i), TARGET=level)
+         IF (.NOT. converged(i)) coordinates(:, i) = first
+      END DO
+      CALL qs_skala_scf_evaluate(state, first, energy, gradient)
+   END SUBROUTINE qs_skala_scf_crossing_roots
 
 ! **************************************************************************************************
 !> \brief Select the requested density or kinetic-density values from recorded samples.
