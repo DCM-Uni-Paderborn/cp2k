@@ -33,7 +33,7 @@ MODULE bibliography
    PUBLIC :: add_all_references ! f77_interface only
 
    ! all reference keys
-   INTEGER, PUBLIC, SAVE :: BiancoResta2011, BauMarrazzo2024, EsteveParedes2023
+   INTEGER, PUBLIC, SAVE :: BiancoResta2011, BauMarrazzo2024
    INTEGER, PUBLIC, SAVE :: Richters2018, VandeVondele2005a, VandeVondele2003, &
                             Laino2005, Laino2006, Goedecker1996, Hartwigsen1998, Krack2005, &
                             Lippert1997, Lippert1999, Krack2000, Krack2002, Iannuzzi2005, &
@@ -52,7 +52,7 @@ MODULE bibliography
                             Hunt2003, Guidon2008, Elber1987, Jonsson1998, Jonsson2000_1, &
                             Jonsson2000_2, Wales2004, Stewart1982, E2002, Laino2008, &
                             Blochl1995, Tao2003, VandeVondele2006, VanVoorhis2015, Hu2007, Hu2010, Grimme2006, &
-                            Branduardi2007, Schenter2008, BeckeRoussel1989, Proynov2007, &
+                            Chai2008, Branduardi2007, Schenter2008, BeckeRoussel1989, Proynov2007, &
                             VandenCic2006, Becke1997, Foiles1986, Ricci2003, Kolafa2004, &
                             Kuhne2007, Kunert2003, Ceriotti2009, ceriotti2009b, Guidon2009, &
                             BarducBus2008, Grimme2010, Guidon2010, Marques2012, Jones2011, &
@@ -101,8 +101,9 @@ MODULE bibliography
                             Shiga2022, Lindh1995, Chai2024a, Rullan2026, Sundararaman2017, Andreussi2019, &
                             Chai2025a, Neugebauer2023, Chai2024b, Moynihan2017, Cococcioni2005, &
                             Cances2000, Herbst2022, Zhang2025, Gresch2017, Soluyanov2011, Dixon2023, Doll2025, &
-                            Wong2026, Loring2015, Cerjan2023, Bairnsfather2026, Davidson1975, &
-                            Olsen1988, Stratmann1998, Vecharynski2017, Stathopoulos1998, Bai2012, Fukaya2014, Schreder2024_3
+                            Wong2026, Loring2015, EsteveParedes2023, Cerjan2023, Bairnsfather2026, Davidson1975, &
+                            Olsen1988, Stratmann1998, Vecharynski2017, Stathopoulos1998, Bai2012, &
+                            Fukaya2014, Schreder2024_3, Pizzi2020, Marzari1997, Souza2001
 
 CONTAINS
 
@@ -758,6 +759,13 @@ CONTAINS
                          source="J. Comput. Chem.", volume="27", pages="1787-1799", &
                          year=2006, doi="10.1002/jcc.20495")
 
+      CALL add_reference(key=Chai2008, &
+                         authors=s2a("J.-D. Chai", "M. Head-Gordon"), &
+                         title="Long-range corrected hybrid density functionals with "// &
+                         "damped atom-atom dispersion corrections", &
+                         source="Phys. Chem. Chem. Phys.", volume="10", pages="6615-6620", &
+                         year=2008, doi="10.1039/B810189B")
+
       CALL add_reference(key=Grimme2010, &
                          authors=s2a("S. Grimme", "J. Antony", "S. Ehrlich", "H. Krieg"), &
                          title="A consistent and accurate ab initio parametrization of density "// &
@@ -1296,6 +1304,30 @@ CONTAINS
                          "and molecular dynamics simulations", &
                          source="J. Am. Chem. Soc.", volume="114", pages="10024-10035", &
                          year=1992, doi="10.1021/ja00051a040")
+
+      CALL add_reference(key=Pizzi2020, &
+                         authors=s2a("G. Pizzi", "V. Vitale", "R. Arita", "S. Blugel", "F. Freimuth", &
+                                     "G. Geranton", "M. Gibertini", "D. Gresch", "C. Johnson", "T. Koretsune", &
+                                     "J. Ibanez-Azpiroz", "H. Lee", "J.-M. Lihm", "D. Marchand", "A. Marrazzo", &
+                                     "Y. Mokrousov", "J. I. Mustafa", "Y. Nohara", "Y. Nomura", "L. Paulatto", &
+                                     "S. Ponce", "T. Ponweiser", "J. Qiao", "F. Thole", "S. S. Tsirkin", &
+                                     "M. Wierzbowska", "N. Marzari", "D. Vanderbilt", "I. Souza", &
+                                     "A. A. Mostofi", "J. R. Yates"), &
+                         title="Wannier90 as a community code: new features and applications", &
+                         source="J. Phys.: Condens. Matter", volume="32", pages="165902", &
+                         year=2020, doi="10.1088/1361-648X/ab51ff")
+
+      CALL add_reference(key=Marzari1997, &
+                         authors=s2a("N. Marzari", "D. Vanderbilt"), &
+                         title="Maximally localized generalized Wannier functions for composite energy bands", &
+                         source="Phys. Rev. B", volume="56", pages="12847-12865", &
+                         year=1997, doi="10.1103/PhysRevB.56.12847")
+
+      CALL add_reference(key=Souza2001, &
+                         authors=s2a("I. Souza", "N. Marzari", "D. Vanderbilt"), &
+                         title="Maximally localized Wannier functions for entangled energy bands", &
+                         source="Phys. Rev. B", volume="65", pages="035109", &
+                         year=2001, doi="10.1103/PhysRevB.65.035109")
 
       CALL add_reference(key=Monkhorst1976, &
                          authors=s2a("H. J. Monkhorst", "J. D. Pack"), &

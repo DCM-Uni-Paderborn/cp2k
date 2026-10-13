@@ -76,6 +76,8 @@ or
 docker pull cp2k/cp2k:latest
 ```
 
+On macOS with Apple Silicon, see [](./macos) for a step-by-step guide.
+
 See also [hub.docker.com](https://hub.docker.com/r/cp2k/cp2k),
 [podman.io](https://podman.io/docs/installation), and
 [cp2k-containers](https://github.com/cp2k/cp2k-containers).
@@ -135,7 +137,3 @@ spack install cp2k
 ```
 
 See also [spack.io](https://packages.spack.io/package.html?name=cp2k) and [](./build-with-spack).
-
-# Next Steps
-
-Once CP2K is installed, continue with [](./first-calculation).

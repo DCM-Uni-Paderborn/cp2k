@@ -792,7 +792,7 @@ CONTAINS
          sym%apply_symmetry = .TRUE.
          sym%nwred = 1
          ALLOCATE (sym%rot(3, 3, 1), sym%rotp(1), sym%xkp(3, 1), sym%f0(2, 1), &
-                   sym%fcell_gauge(3, 2, 1), sym%kgphase(2, 1))
+                   sym%fcell_gauge(3, 2, 1))
          sym%rot = 0.0_dp
          DO i = 1, 3
             sym%rot(i, i, 1) = 1.0_dp
@@ -802,7 +802,6 @@ CONTAINS
          sym%f0(:, 1) = [2, 1]
          sym%fcell_gauge = 0
          sym%fcell_gauge(1, 2, 1) = 1
-         sym%kgphase = 0.37_dp
          CALL kpoint_cell_gauge_action(points, 1, 1, k, action, rotation, antiunitary, status)
          IF (status /= 0 .OR. antiunitary) ERROR STOP 'Half-translation construction failed'
          expected = 0.0_dp

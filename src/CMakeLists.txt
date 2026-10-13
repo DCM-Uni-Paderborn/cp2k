@@ -111,6 +111,7 @@ list(
   cp_dbcsr_cp2k_link.F
   cp_dbcsr_diag.F
   cp_dbcsr_operations.F
+  cp_dbcsr_redistribution.F
   cp_dbcsr_output.F
   cp_ddapc.F
   cp_ddapc_forces.F
@@ -236,7 +237,6 @@ list(
   gw_auto_ri_types.F
   gw_utils_dbcsr.F
   gw_utils_fm.F
-  gw_utils_communication.F
   gw.F
   gw_tensor_large_cell_gamma.F
   gw_tensor_large_cell_gamma_static_cohsex.F
@@ -301,6 +301,7 @@ list(
   input_cp2k_field.F
   input_cp2k_force_eval.F
   input_cp2k_free_energy.F
+  input_cp2k_function.F
   input_cp2k_global.F
   input_cp2k_hfx.F
   input_cp2k_kpoints.F
@@ -432,6 +433,7 @@ list(
   mp2_ri_gpw.F
   mp2_ri_grad.F
   mp2_ri_grad_util.F
+  matrix_communication.F
   mp2_ri_libint.F
   mp2_setup.F
   mp2_types.F
@@ -798,7 +800,6 @@ list(
   rixs_types.F
   rmsd.F
   rpa_exchange.F
-  rpa_communication.F
   rpa_grad.F
   rpa_gw.F
   rpa_gw_ic.F
@@ -895,6 +896,7 @@ list(
   voronoi_interface.F
   wannier90.F
   wannier90_nnkpts.F
+  wannier90_projections.F
   wannier_states.F
   wannier_states_types.F
   xas_control.F
@@ -1087,6 +1089,7 @@ list(
   CP2K_SRCS_F
   dbt/dbt_allocate_wrap.F
   dbt/dbt_api.F
+  dbt/dbt_matrix_redistribution.F
   dbt/dbt_array_list_methods.F
   dbt/dbt_block.F
   dbt/dbt_index.F
@@ -1145,6 +1148,7 @@ list(
   fm/cp_fm_elpa.F
   fm/cp_fm_pool_types.F
   fm/cp_fm_types.F
+  fm/cp_fm_redistribution.F
   fm/cp_fm_struct.F
   fm/cp_linked_list_fm.F)
 
@@ -1653,8 +1657,7 @@ set(CP2K_PROGS_F
     xc/xc_semilocal_unittest.F
     pseudopotentials/upf_projector_integrals_unittest.F
     pseudopotentials/upf_local_integrals_unittest.F
-    gapw_background_unittest.F
-    gapw_1c_basis_unittest.F
+    gapw_unittest.F
     kpoint_lattice_fft_unittest.F
     kpoint_smearing_unittest.F
     motion/cell_opt_utils_unittest.F
@@ -1683,8 +1686,11 @@ set(CP2K_PROGS_F
     ot_covariant_preconditioner_unittest.F
     qs_charge_mixing_unittest.F
     qs_fod_unittest.F
+    qs_active_space_utils_unittest.F
     qs_ot_complex_ref_unittest.F
+    wannier90_projections_unittest.F
     subsys/cell_types_unittest.F
+    hfx_pair_list_methods_unittest.F
     metadyn_tools/graph.F
     motion/dumpdcd.F
     motion/xyz2dcd.F
@@ -2110,8 +2116,7 @@ list(
   "xc_semilocal_unittest"
   "upf_projector_integrals_unittest"
   "upf_local_integrals_unittest"
-  "gapw_background_unittest"
-  "gapw_1c_basis_unittest"
+  "gapw_unittest"
   "kpoint_lattice_fft_unittest"
   "kpoint_smearing_unittest"
   "topology_wilson_unittest"
@@ -2139,8 +2144,11 @@ list(
   "ot_covariant_preconditioner_unittest"
   "qs_charge_mixing_unittest"
   "qs_fod_unittest"
+  "qs_active_space_utils_unittest"
   "qs_ot_complex_ref_unittest"
+  "wannier90_projections_unittest"
   "cell_types_unittest"
+  "hfx_pair_list_methods_unittest"
   "graph"
   "dumpdcd"
   "xyz2dcd"
@@ -2168,8 +2176,7 @@ add_executable(upf_projector_integrals_unittest
                pseudopotentials/upf_projector_integrals_unittest.F)
 add_executable(upf_local_integrals_unittest
                pseudopotentials/upf_local_integrals_unittest.F)
-add_executable(gapw_background_unittest gapw_background_unittest.F)
-add_executable(gapw_1c_basis_unittest gapw_1c_basis_unittest.F)
+add_executable(gapw_unittest gapw_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
 add_executable(kpoint_smearing_unittest kpoint_smearing_unittest.F)
 add_executable(topology_wilson_unittest topology/topology_wilson_unittest.F)
@@ -2207,8 +2214,11 @@ add_executable(ot_covariant_preconditioner_unittest
                ot_covariant_preconditioner_unittest.F)
 add_executable(qs_charge_mixing_unittest qs_charge_mixing_unittest.F)
 add_executable(qs_fod_unittest qs_fod_unittest.F)
+add_executable(qs_active_space_utils_unittest qs_active_space_utils_unittest.F)
 add_executable(qs_ot_complex_ref_unittest qs_ot_complex_ref_unittest.F)
+add_executable(wannier90_projections_unittest wannier90_projections_unittest.F)
 add_executable(cell_types_unittest subsys/cell_types_unittest.F)
+add_executable(hfx_pair_list_methods_unittest hfx_pair_list_methods_unittest.F)
 add_executable(cell_opt_utils_unittest motion/cell_opt_utils_unittest.F)
 add_executable(graph metadyn_tools/graph.F)
 add_executable(dumpdcd motion/dumpdcd.F)
