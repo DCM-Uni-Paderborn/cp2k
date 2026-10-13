@@ -58,6 +58,18 @@ MODULE skala_orbital_constraints
          REAL(dp), INTENT(OUT) :: energy, gradient(:)
          CLASS(*), INTENT(INOUT) :: context
       END SUBROUTINE orbital_energy_gradient
+! **************************************************************************************************
+!> \brief Verify a stationary trial against an additional physical convergence criterion.
+!> \param coordinate Complete orbital coordinates.
+!> \param context Borrowed problem state.
+!> \param converged Whether the physical criterion is satisfied.
+! **************************************************************************************************
+      SUBROUTINE orbital_stationarity(coordinate, context, converged)
+         IMPORT :: dp
+         REAL(dp), INTENT(IN) :: coordinate(:)
+         CLASS(*), INTENT(INOUT) :: context
+         LOGICAL, INTENT(OUT) :: converged
+      END SUBROUTINE orbital_stationarity
    END INTERFACE
 
 CONTAINS
@@ -364,18 +376,22 @@ CONTAINS
 !> \param converged Whether physical constraints and tangential stationarity meet their tolerances.
 !> \param max_iterations Maximum BFGS iterations, defaults to 200.
 !> \param max_step Maximum free-coordinate step norm, defaults to 0.1.
+!> \param verify_stationarity Optional physical check, additional to the free-coordinate norm.
+!> \param iterations Optional number of attempted BFGS iterations, bounded by max_iterations.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
-                                             max_iterations, max_step)
+                                             max_iterations, max_step, verify_stationarity, iterations)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
+      PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
       CLASS(*), INTENT(INOUT) :: context
       REAL(dp), INTENT(INOUT) :: coordinate(:)
       REAL(dp), INTENT(IN) :: density_tolerances(:), gradient_tolerance
       LOGICAL, INTENT(OUT) :: converged
       INTEGER, INTENT(IN), OPTIONAL :: max_iterations
       REAL(dp), INTENT(IN), OPTIONAL :: max_step
+      INTEGER, INTENT(OUT), OPTIONAL :: iterations
 
       INTEGER :: capacity, d, history, i, iteration, j, limit, m, nf, shortening
       INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:)
@@ -386,6 +402,7 @@ CONTAINS
                                values(:), x(:), changes(:, :)
 
       d = SIZE(coordinate)
+      IF (PRESENT(iterations)) iterations = 0
       m = SIZE(density_tolerances)
       nf = d - m
       capacity = MAX(7, MIN(nf, 32))
@@ -424,11 +441,12 @@ CONTAINS
       IF (.NOT. valid) RETURN
       history = 0
       DO iteration = 1, limit
-         IF (NORM2(reduced) <= gradient_tolerance) THEN
+         IF (stationary(x, reduced)) THEN
             coordinate(:) = x
             converged = .TRUE.
             RETURN
          END IF
+         IF (PRESENT(iterations)) iterations = iteration
          CALL bfgs_direction(reduced, steps, changes, history, direction)
          IF (DOT_PRODUCT(reduced, direction) >= 0.0_dp) THEN
             history = 0
@@ -484,12 +502,26 @@ CONTAINS
          reduced(:) = trial_reduced
          energy = trial_energy
       END DO
-      IF (NORM2(reduced) <= gradient_tolerance) THEN
+      IF (stationary(x, reduced)) THEN
          coordinate(:) = x
          converged = .TRUE.
       END IF
       ! Trial callbacks may update native caches; the caller's unchanged coordinates remain authoritative.
    CONTAINS
+! **************************************************************************************************
+!> \brief Require both the reduced derivative and any supplied physical convergence check.
+!> \param c Complete trial coordinates.
+!> \param rg Reduced energy derivative at the trial.
+!> \return Whether the trial satisfies both criteria.
+! **************************************************************************************************
+      FUNCTION stationary(c, rg) RESULT(converged_trial)
+      REAL(dp), INTENT(IN)                               :: c(:), rg(:)
+      LOGICAL                                            :: converged_trial
+
+         converged_trial = NORM2(rg) <= gradient_tolerance
+         IF (.NOT. converged_trial) RETURN
+         IF (PRESENT(verify_stationarity)) CALL verify_stationarity(c, context, converged_trial)
+      END FUNCTION stationary
 ! **************************************************************************************************
 !> \brief Refresh the physical constraint values and Jacobian at a trial.
 !> \param c Complete orbital coordinates.

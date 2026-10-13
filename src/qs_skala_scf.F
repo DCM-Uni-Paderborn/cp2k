@@ -54,12 +54,14 @@ MODULE qs_skala_scf
                                               qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type
    USE skala_density_constraints,       ONLY: &
-        skala_background_domain, skala_density_constraints_type, skala_density_descriptor, &
-        skala_density_constraints_balance, skala_density_constraints_count, skala_density_constraints_get, &
-        skala_density_constraints_set, skala_density_constraints_update_weights, &
-        skala_density_crossings, skala_density_root, skala_density_samples_begin, skala_density_samples_end, &
-        skala_density_samples_get, skala_fft_domain, skala_kinetic_descriptor, &
-        skala_last_sample_domain, skala_paw_ae_domain, skala_paw_ps_domain
+        skala_background_domain, skala_density_constraints_balance, &
+        skala_density_constraints_count, skala_density_constraints_get, &
+        skala_density_constraints_set, skala_density_constraints_type, &
+        skala_density_constraints_update_weights, skala_density_crossings, &
+        skala_density_descriptor, skala_density_root, skala_density_samples_begin, &
+        skala_density_samples_end, skala_density_samples_get, skala_fft_domain, &
+        skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
+        skala_paw_ps_domain
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
                                               skala_cusp_admissibility,&
                                               skala_orbital_chart_derivative,&
@@ -114,6 +116,7 @@ MODULE qs_skala_scf
       TYPE(qs_skala_scf_type), POINTER :: state => NULL()
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
       REAL(dp), ALLOCATABLE :: targets(:)
+      REAL(dp) :: gradient_tolerance = 0.0_dp
    END TYPE physical_constraints_context
 
 CONTAINS
@@ -127,19 +130,20 @@ CONTAINS
 !> \param valid Whether every active block has a positive complete charge metric.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_create(state, qs_env, valid)
-      TYPE(qs_skala_scf_type), INTENT(INOUT)            :: state
-      TYPE(qs_environment_type), POINTER               :: qs_env
-      LOGICAL, INTENT(OUT)                              :: valid
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(OUT)                               :: valid
 
-      COMPLEX(dp), ALLOCATABLE                         :: metric(:, :)
-      INTEGER                                          :: i, ik, local, nk, nl, ns, offset, spin, failed
-      LOGICAL                                          :: block_valid, complex_orbitals, owner
-      REAL(dp)                                         :: weight
-      TYPE(cell_type), POINTER                         :: cell
-      TYPE(dbcsr_p_type), POINTER                      :: metrics(:)
-      TYPE(kpoint_env_type), POINTER                   :: kp
-      TYPE(mo_set_type), POINTER                       :: mos(:), native
-      TYPE(particle_type), POINTER                     :: particles(:)
+      COMPLEX(dp), ALLOCATABLE                           :: metric(:, :)
+      INTEGER                                            :: failed, i, ik, local, nk, nl, ns, &
+                                                            offset, spin
+      LOGICAL                                            :: block_valid, complex_orbitals, owner
+      REAL(dp)                                           :: weight
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(dbcsr_p_type), POINTER                        :: metrics(:)
+      TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(mo_set_type), POINTER                         :: mos(:), native
+      TYPE(particle_type), POINTER                       :: particles(:)
 
       CALL qs_skala_scf_release(state)
       CPASSERT(ASSOCIATED(qs_env))
@@ -198,7 +202,7 @@ CONTAINS
                CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, metrics(1)%matrix, metric)
             END IF
             CALL qs_skala_orbitals_create(state%orbitals(local, spin), native, metric, &
-                                           complex_orbitals, weight, block_valid)
+                                          complex_orbitals, weight, block_valid)
             IF (.NOT. block_valid) failed = 1
             IF (block_valid .AND. owner) THEN
                state%dimensions(ik, spin) = skala_orbital_chart_size(state%orbitals(local, spin)%chart)
@@ -228,9 +232,9 @@ CONTAINS
 !> \param state ...
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_release(state)
-      TYPE(qs_skala_scf_type), INTENT(INOUT)            :: state
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
 
-      INTEGER                                          :: local, spin
+      INTEGER                                            :: local, spin
 
       IF (ALLOCATED(state%orbitals)) THEN
          DO spin = 1, SIZE(state%orbitals, 2)
@@ -254,8 +258,8 @@ CONTAINS
 !> \return ...
 ! **************************************************************************************************
    FUNCTION qs_skala_scf_size(state) RESULT(n)
-      TYPE(qs_skala_scf_type), INTENT(IN)               :: state
-      INTEGER                                          :: n
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      INTEGER                                            :: n
 
       CPASSERT(ALLOCATED(state%coordinate))
       n = SIZE(state%coordinate)
@@ -274,19 +278,20 @@ CONTAINS
 !> \param sample_inputs Retain physical point fields, default true. Disabled fields are cleared.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical_gradient, sample_inputs)
-      TYPE(qs_skala_scf_type), INTENT(INOUT)            :: state
-      REAL(dp), INTENT(IN)                              :: coordinate(:)
-      REAL(dp), INTENT(OUT)                             :: energy
-      REAL(dp), INTENT(OUT), OPTIONAL                   :: gradient(:), physical_gradient(:)
-      LOGICAL, INTENT(IN), OPTIONAL                     :: sample_inputs
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:), physical_gradient(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: sample_inputs
 
-      COMPLEX(dp), ALLOCATABLE                         :: hamiltonian(:, :)
-      INTEGER                                          :: first, ik, last, local, spin
-      LOGICAL                                          :: owner, need_gradient, record_inputs, valid
-      REAL(dp), ALLOCATABLE                            :: block_gradient(:)
-      TYPE(cell_type), POINTER                         :: cell
-      TYPE(dbcsr_p_type), POINTER                      :: densities(:, :), matrices(:, :)
-      TYPE(particle_type), POINTER                     :: particles(:)
+      COMPLEX(dp), ALLOCATABLE                           :: hamiltonian(:, :)
+      INTEGER                                            :: first, ik, last, local, spin
+      LOGICAL                                            :: need_gradient, owner, record_inputs, &
+                                                            valid
+      REAL(dp), ALLOCATABLE                              :: block_gradient(:)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(dbcsr_p_type), POINTER                        :: densities(:, :), matrices(:, :)
+      TYPE(particle_type), POINTER                       :: particles(:)
 
       CPASSERT(ASSOCIATED(state%qs_env))
       CPASSERT(SIZE(coordinate) == qs_skala_scf_size(state))
@@ -302,7 +307,7 @@ CONTAINS
          DO local = 1, SIZE(state%orbitals, 1)
             IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
             valid = ALL(state%orbitals(local, spin)%native%occupation_numbers(: &
-                        state%orbitals(local, spin)%native%nmo) == &
+                                                                              state%orbitals(local, spin)%native%nmo) == &
                         state%orbitals(local, spin)%occupations(:state%orbitals(local, spin)%native%nmo))
             CPASSERT(valid)
             ik = 1
@@ -317,7 +322,7 @@ CONTAINS
                CALL qs_skala_orbitals_install_kpoint(state%orbitals(local, spin), state%kpoints, local, spin)
             ELSE
                CALL qs_skala_orbitals_install_gamma(state%orbitals(local, spin), &
-                                                      state%inverse%frame%ao, densities(spin, 1)%matrix)
+                                                    state%inverse%frame%ao, densities(spin, 1)%matrix)
             END IF
          END DO
       END DO
@@ -371,7 +376,7 @@ CONTAINS
                END IF
                IF (PRESENT(physical_gradient)) THEN
                   CALL skala_orbital_chart_derivative(state%orbitals(local, spin)%chart, hamiltonian, &
-                                                       block_gradient, physical_tangent=.TRUE.)
+                                                      block_gradient, physical_tangent=.TRUE.)
                   physical_gradient(first:last) = block_gradient
                END IF
                DEALLOCATE (block_gradient)
@@ -395,14 +400,14 @@ CONTAINS
 !> \param value Physical model input, including native core and density processing.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_value(state, domain, point, spin, descriptor, value)
-      TYPE(qs_skala_scf_type), INTENT(IN)               :: state
-      INTEGER, INTENT(IN)                               :: domain, point(3), spin, descriptor
-      REAL(dp), INTENT(OUT)                             :: value
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      INTEGER, INTENT(IN)                                :: domain, point(3), spin, descriptor
+      REAL(dp), INTENT(OUT)                              :: value
 
-      INTEGER                                          :: column, i, owners
-      INTEGER, ALLOCATABLE                             :: points(:, :)
-      LOGICAL                                          :: available, valid
-      REAL(dp), ALLOCATABLE                            :: density(:, :), kinetic(:, :)
+      INTEGER                                            :: column, i, owners
+      INTEGER, ALLOCATABLE                               :: points(:, :)
+      LOGICAL                                            :: available, valid
+      REAL(dp), ALLOCATABLE                              :: density(:, :), kinetic(:, :)
 
       CPASSERT(state%evaluated)
       valid = domain >= skala_fft_domain .AND. domain <= skala_last_sample_domain
@@ -472,7 +477,8 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_derivative(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), operators(:, :, :)
-      INTEGER :: first, first_spin, ik, last, last_spin, local, ns, sample_spin, selected_spin
+      INTEGER                                            :: first, first_spin, ik, last, last_spin, &
+                                                            local, ns, sample_spin, selected_spin
       LOGICAL                                            :: owner
       REAL(dp)                                           :: scale, spin_scale, value
 
@@ -515,26 +521,34 @@ CONTAINS
             CALL qs_skala_scf_value(state, domain, point, sample_spin, skala_density_descriptor, value)
             IF (value <= 0.0_dp) spin_scale = 0.0_dp
          END IF
-      DO local = 1, SIZE(state%orbitals, 1)
-         IF (.NOT. ASSOCIATED(state%orbitals(local, selected_spin)%native)) CYCLE
-         ik = 1
-         IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
-         first = state%offsets(ik, selected_spin) + 1
-         last = first + state%dimensions(ik, selected_spin) - 1
-         IF (.NOT. owner) CYCLE
-         matrix(:, :) = spin_scale*state%orbitals(local, selected_spin)%weight*operators(:, :, ik)
-         CALL skala_orbital_chart_derivative(state%orbitals(local, selected_spin)%chart, &
-                                             matrix, derivative(first:last))
-         IF (PRESENT(physical_derivative)) THEN
+         DO local = 1, SIZE(state%orbitals, 1)
+            IF (.NOT. ASSOCIATED(state%orbitals(local, selected_spin)%native)) CYCLE
+            ik = 1
+            IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+            first = state%offsets(ik, selected_spin) + 1
+            last = first + state%dimensions(ik, selected_spin) - 1
+            IF (.NOT. owner) CYCLE
+            matrix(:, :) = spin_scale*state%orbitals(local, selected_spin)%weight*operators(:, :, ik)
             CALL skala_orbital_chart_derivative(state%orbitals(local, selected_spin)%chart, &
-                                                matrix, physical_derivative(first:last), physical_tangent=.TRUE.)
-         END IF
-      END DO
+                                                matrix, derivative(first:last))
+            IF (PRESENT(physical_derivative)) THEN
+               CALL skala_orbital_chart_derivative(state%orbitals(local, selected_spin)%chart, &
+                                                   matrix, physical_derivative(first:last), physical_tangent=.TRUE.)
+            END IF
+         END DO
       END DO
       CALL state%para_env%sum(derivative)
       IF (PRESENT(physical_derivative)) CALL state%para_env%sum(physical_derivative)
    END SUBROUTINE qs_skala_scf_point_derivative
 
+! **************************************************************************************************
+!> \brief Construct descriptor operators for one sample on the original FFT grid.
+!> \param state Native orbital and field state.
+!> \param domain Physical evaluation domain.
+!> \param point Global FFT indices or original atomic sample indices.
+!> \param descriptor Density or kinetic density selector.
+!> \param operators Descriptor matrices in the original Gaussian orbital space.
+! **************************************************************************************************
    SUBROUTINE grid_point_operators(state, domain, point, descriptor, operators)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       INTEGER, INTENT(IN)                                :: domain, point(3), descriptor
@@ -637,6 +651,13 @@ CONTAINS
       END DO
    END SUBROUTINE grid_point_operators
 
+! **************************************************************************************************
+!> \brief Construct descriptor operators for one inverse reconstruction sample.
+!> \param state Native orbital and field state.
+!> \param point Global FFT indices or original atomic sample indices.
+!> \param descriptor Density or kinetic density selector.
+!> \param operators Descriptor matrices in the original Gaussian orbital space.
+! **************************************************************************************************
    SUBROUTINE atom_point_operators(state, point, descriptor, operators)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       INTEGER, INTENT(IN)                                :: point(3), descriptor
@@ -704,12 +725,21 @@ CONTAINS
       END DO
    END SUBROUTINE atom_point_operators
 
+! **************************************************************************************************
+!> \brief Construct descriptor operators for one PAW partial-wave sample.
+!> \param state Native orbital and field state.
+!> \param domain Physical evaluation domain.
+!> \param point Global FFT indices or original atomic sample indices.
+!> \param descriptor Density or kinetic density selector.
+!> \param operators Descriptor matrices in the original Gaussian orbital space.
+! **************************************************************************************************
    SUBROUTINE paw_point_operators(state, domain, point, descriptor, operators)
-      TYPE(qs_skala_scf_type), INTENT(IN)               :: state
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
       INTEGER, INTENT(IN)                                :: domain, point(3), descriptor
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
 
-      INTEGER                                            :: center, first, i, ik, ikind, last, nao, nk, side
+      INTEGER                                            :: center, first, i, ik, ikind, last, nao, &
+                                                            nk, side
       REAL(dp), ALLOCATABLE                              :: potential(:, :)
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
 
@@ -756,20 +786,21 @@ CONTAINS
 !> \param coordinate Root coordinate on success, previous evaluated coordinate on failure.
 !> \param value Actual physical input at the best point found by the root search.
 !> \param converged Whether the actual physical input meets the requested tolerance.
-!> \param target Physical density or kinetic-density threshold, zero by default.
+!> \param TARGET Physical density or kinetic-density threshold, zero by default.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_root(state, first, last, domain, point, spin, descriptor, tolerance, &
-                                 coordinate, value, converged, target)
-      TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET    :: state
-      REAL(dp), INTENT(IN)                              :: first(:), last(:), tolerance
-      INTEGER, INTENT(IN)                               :: domain, point(3), spin, descriptor
-      REAL(dp), INTENT(OUT)                             :: coordinate(:), value
-      LOGICAL, INTENT(OUT)                              :: converged
-      REAL(dp), INTENT(IN), OPTIONAL                    :: target
+                                coordinate, value, converged, TARGET)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: target
+      LOGICAL, INTENT(OUT)                               :: converged
+      REAL(dp), INTENT(OUT)                              :: value, coordinate(:)
+      REAL(dp), INTENT(IN)                               :: tolerance
+      INTEGER, INTENT(IN)                                :: descriptor, spin, point(3), domain
+      REAL(dp), INTENT(IN)                               :: last(:), first(:)
+      TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
 
-      REAL(dp)                                         :: energy, step
-      REAL(dp), ALLOCATABLE                             :: gradient(:)
-      TYPE(physical_root_context)                      :: context
+      REAL(dp)                                           :: energy, step
+      REAL(dp), ALLOCATABLE                              :: gradient(:)
+      TYPE(physical_root_context)                        :: context
 
       CPASSERT(state%evaluated)
       CPASSERT(SIZE(first) == qs_skala_scf_size(state) .AND. SIZE(last) == SIZE(first))
@@ -784,7 +815,7 @@ CONTAINS
       context%descriptor = descriptor
       coordinate(:) = state%coordinate
       CALL skala_density_root(evaluate_physical_input, context, 0.0_dp, 1.0_dp, tolerance, step, value, converged, &
-                              target=target)
+                              TARGET=TARGET)
       IF (converged) coordinate(:) = first + step*context%direction
       ALLOCATE (gradient(SIZE(coordinate)))
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
@@ -810,23 +841,24 @@ CONTAINS
 !> \param positive_density_target Optional cutoff for the sum of the positive spin densities.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_crossings(state, first, last, points, domains, spins, descriptors, &
-                                    endpoint_values, targets, total_targets, positive_density_target)
+                                     endpoint_values, targets, total_targets, positive_density_target)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), domains(:), spins(:), &
                                                             descriptors(:)
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: endpoint_values(:, :)
-      REAL(dp), INTENT(IN), OPTIONAL                    :: targets(2)
-      REAL(dp), INTENT(IN), OPTIONAL                    :: total_targets(2)
-      REAL(dp), INTENT(IN), OPTIONAL                    :: positive_density_target
+      REAL(dp), INTENT(IN), OPTIONAL                     :: targets(2), total_targets(2), &
+                                                            positive_density_target
 
       INTEGER                                            :: descriptor, domain, i, local_count, &
                                                             offset, row, selection, spin, total
       INTEGER, ALLOCATABLE                               :: counts(:), keys(:, :)
       LOGICAL                                            :: valid
       LOGICAL, ALLOCATABLE                               :: mask(:, :)
-      REAL(dp)                                           :: energy, level, levels(2), total_levels(2), positive_level
-      REAL(dp), ALLOCATABLE                              :: first_field(:, :), gradient(:), last_field(:, :), values(:, :)
+      REAL(dp)                                           :: energy, level, levels(2), &
+                                                            positive_level, total_levels(2)
+      REAL(dp), ALLOCATABLE                              :: first_field(:, :), gradient(:), &
+                                                            last_field(:, :), values(:, :)
       TYPE(physical_domain_samples) :: final(skala_fft_domain:skala_last_sample_domain), &
          initial(skala_fft_domain:skala_last_sample_domain)
 
@@ -946,8 +978,15 @@ CONTAINS
       CALL qs_skala_scf_evaluate(state, first, energy, gradient)
    END SUBROUTINE qs_skala_scf_crossings
 
+! **************************************************************************************************
+!> \brief Select the requested density or kinetic-density values from recorded samples.
+!> \param sample Recorded physical fields.
+!> \param descriptor Density or kinetic density selector.
+!> \param selection Selected sample rows.
+!> \param field Selected descriptor values.
+! **************************************************************************************************
    SUBROUTINE sample_descriptor(sample, descriptor, selection, field)
-      TYPE(physical_domain_samples), INTENT(IN)         :: sample
+      TYPE(physical_domain_samples), INTENT(IN)          :: sample
       INTEGER, INTENT(IN)                                :: descriptor, selection
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: field(:, :)
 
@@ -1059,10 +1098,11 @@ CONTAINS
 !> \param max_iterations Optional iteration limit.
 !> \param max_step Optional bound on the free-coordinate step norm.
 !> \param targets Optional fixed physical target per constraint, zero by default.
+!> \param iterations Optional number of attempted orbital minimization iterations.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
                                         physical_tolerances, gradient_tolerance, energy, converged, &
-                                        max_iterations, max_step, targets)
+                                        max_iterations, max_step, targets, iterations)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(INOUT)                            :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -1072,8 +1112,8 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: energy
       LOGICAL, INTENT(OUT)                               :: converged
       INTEGER, INTENT(IN), OPTIONAL                      :: max_iterations
-      REAL(dp), INTENT(IN), OPTIONAL                     :: max_step
-      REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: max_step, targets(:)
+      INTEGER, INTENT(OUT), OPTIONAL                     :: iterations
 
       INTEGER                                            :: m
       LOGICAL                                            :: valid
@@ -1086,6 +1126,7 @@ CONTAINS
       valid = SIZE(domains) == m .AND. SIZE(spins) == m .AND. SIZE(descriptors) == m
       CPASSERT(valid)
       context%state => state
+      context%gradient_tolerance = gradient_tolerance
       ALLOCATE (context%points(3, m), context%domains(m), context%spins(m), context%descriptors(m), context%targets(m))
       context%points(:, :) = points
       context%domains(:) = domains
@@ -1097,9 +1138,16 @@ CONTAINS
          CPASSERT(ALL(ieee_is_finite(targets)))
          context%targets(:) = targets
       END IF
-      CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
-                                          coordinate, physical_tolerances, gradient_tolerance, converged, &
-                                          max_iterations=max_iterations, max_step=max_step)
+      IF (m == 0) THEN
+         CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
+                                             coordinate, physical_tolerances, gradient_tolerance, converged, &
+                                             max_iterations=max_iterations, max_step=max_step, &
+                                             verify_stationarity=evaluate_native_stationarity, iterations=iterations)
+      ELSE
+         CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
+                                             coordinate, physical_tolerances, gradient_tolerance, converged, &
+                                             max_iterations=max_iterations, max_step=max_step, iterations=iterations)
+      END IF
       ALLOCATE (gradient(SIZE(coordinate)))
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
    END SUBROUTINE qs_skala_scf_stationarity
@@ -1324,7 +1372,8 @@ CONTAINS
       LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: gradient(:)
-      TYPE(dbcsr_p_type), POINTER                        :: densities(:, :), matrices(:, :), weighted(:)
+      TYPE(dbcsr_p_type), POINTER                        :: densities(:, :), matrices(:, :), &
+                                                            weighted(:)
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       accepted = .FALSE.
@@ -1407,6 +1456,13 @@ CONTAINS
       accepted = .TRUE.
    END SUBROUTINE qs_skala_scf_accept
 
+! **************************************************************************************************
+!> \brief Evaluate the original physical residuals and their coordinate derivatives.
+!> \param coordinate Complete normalized orbital coordinates.
+!> \param values Physical residuals relative to the supplied targets.
+!> \param jacobian Derivative of the physical residuals in orbital coordinates.
+!> \param context Borrowed native orbital and constraint state.
+! **************************************************************************************************
    SUBROUTINE evaluate_native_constraints(coordinate, values, jacobian, context)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       REAL(dp), INTENT(OUT)                              :: values(:), jacobian(:, :)
@@ -1424,6 +1480,13 @@ CONTAINS
       END SELECT
    END SUBROUTINE evaluate_native_constraints
 
+! **************************************************************************************************
+!> \brief Evaluate the complete native energy and its coordinate derivative.
+!> \param coordinate Complete normalized orbital coordinates.
+!> \param energy Complete native energy of the trial.
+!> \param gradient Energy derivative in the same orbital coordinates.
+!> \param context Borrowed native orbital and constraint state.
+! **************************************************************************************************
    SUBROUTINE evaluate_native_gradient(coordinate, energy, gradient, context)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
@@ -1439,9 +1502,42 @@ CONTAINS
       END SELECT
    END SUBROUTINE evaluate_native_gradient
 
+! **************************************************************************************************
+!> \brief Verify the complete physical orbital derivative of an unconstrained native trial.
+!> \param coordinate Complete normalized orbital coordinates.
+!> \param context Native orbital and constraint state.
+!> \param converged Whether the physical gradient meets the original tolerance.
+! **************************************************************************************************
+   SUBROUTINE evaluate_native_stationarity(coordinate, context, converged)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+      LOGICAL, INTENT(OUT) :: converged
+
+      REAL(dp) :: energy
+      REAL(dp), ALLOCATABLE :: gradient(:)
+
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         CPASSERT(SIZE(context%points, 2) == 0)
+         ALLOCATE (gradient(SIZE(coordinate)))
+         CALL qs_skala_scf_evaluate(context%state, coordinate, energy, physical_gradient=gradient, sample_inputs=.FALSE.)
+         converged = NORM2(gradient) <= context%gradient_tolerance
+      CLASS DEFAULT
+         CPABORT("Invalid native orbital convergence context.")
+      END SELECT
+   END SUBROUTINE evaluate_native_stationarity
+
+! **************************************************************************************************
+!> \brief Evaluate one physical descriptor along an orbital trial segment.
+!> \param step Position along the original orbital trial segment.
+!> \param value Physical descriptor value at the trial.
+!> \param context Borrowed native orbital and constraint state.
+! **************************************************************************************************
    SUBROUTINE evaluate_physical_input(step, value, context)
-      REAL(dp), INTENT(IN)                              :: step
-      REAL(dp), INTENT(OUT)                             :: value
+      REAL(dp), INTENT(IN)                               :: step
+      REAL(dp), INTENT(OUT)                              :: value
+
       CLASS(*), INTENT(INOUT)                           :: context
 
       REAL(dp)                                         :: energy

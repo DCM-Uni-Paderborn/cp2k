@@ -156,6 +156,7 @@ MODULE qs_scf
                                               qs_kind_type
    USE qs_kpoint_density_state,         ONLY: kpoint_density_state_accept,&
                                               kpoint_density_state_active,&
+                                              kpoint_density_state_capture,&
                                               kpoint_density_state_restore
    USE qs_kpoint_operators,             ONLY: kpoint_operator_get_local,&
                                               kpoint_operator_store
@@ -237,11 +238,20 @@ MODULE qs_scf
         block_davidson_diag_method_nr, block_krylov_diag_method_nr, filter_matrix_diag_method_nr, &
         general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, &
         smeagol_method_nr, special_diag_method_nr
+   USE qs_skala_scf,                    ONLY: qs_skala_scf_accept,&
+                                              qs_skala_scf_create,&
+                                              qs_skala_scf_evaluate,&
+                                              qs_skala_scf_release,&
+                                              qs_skala_scf_size,&
+                                              qs_skala_scf_stationarity,&
+                                              qs_skala_scf_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_core
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc_atom,                     ONLY: gapw_cdft_one_center
    USE qs_wf_history_methods,           ONLY: wfi_purge_history,&
                                               wfi_update
    USE scf_control_types,               ONLY: scf_control_type
+   USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_grid
    USE smeagol_interface,               ONLY: run_smeagol_bulktrans,&
                                               run_smeagol_emtrans
    USE tblite_interface,                ONLY: tb_get_energy,&
@@ -445,13 +455,13 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: adiis_stagnation_ratio = 1.0E-2_dp
 
       CHARACTER(LEN=default_string_length)               :: description, name
-      INTEGER :: accepted_ot_kp_searches, ext_master_id, handle, handle2, i_tmp, ic, ispin, &
-         iter_count, kp_ot_entry_reason, ot_kp_subspace_refresh_count, &
+      INTEGER :: accepted_ot_kp_searches, ext_master_id, handle, handle2, i_tmp, ic, &
+         inverse_ot_steps, ispin, iter_count, kp_ot_entry_reason, ot_kp_subspace_refresh_count, &
          ot_kp_subspace_refresh_iter_count, output_unit, scf_energy_message_tag, total_steps
       LOGICAL :: added_mos_auto_grow, adiis_pushed, adiis_restarted, adiis_stagnated, &
          adiis_validation, density_full_step, diis_step, do_kpoints, energy_only, exit_inner_loop, &
          exit_outer_loop, inner_loop_converged, internal_tblite_density_full_step, &
-         internal_tblite_mixer, just_energy, ot_kp_subspace_refresh, &
+         internal_tblite_mixer, inverse_ot_handled, just_energy, ot_kp_subspace_refresh, &
          ot_kp_subspace_refresh_pending, outer_loop_converged, tblite_native_mixer, u_changed
       REAL(dp), POINTER                                  :: subspace_density(:, :), &
                                                             subspace_fock(:, :)
@@ -820,6 +830,18 @@ CONTAINS
                accepted_ot_kp_searches = accepted_ot_kp_searches + 1
             END IF
 
+            inverse_ot_handled = .FALSE.
+            IF (.NOT. just_energy .AND. scf_env%iter_count == 1) THEN
+               CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps)
+               IF (inverse_ot_handled) THEN
+                  scf_env%iter_count = scf_env%iter_count + inverse_ot_steps
+                  iter_count = iter_count + inverse_ot_steps
+                  total_steps = total_steps + inverse_ot_steps
+                  CALL cp_iterate(logger%iter_info, last=.FALSE., iter_nr=iter_count)
+                  energy_only = .FALSE.
+               END IF
+            END IF
+
             ! Print requested MO information (can be computationally expensive with OT)
             CALL qs_scf_write_mos(qs_env, scf_env, final_mos=.FALSE.)
 
@@ -835,7 +857,9 @@ CONTAINS
                CALL tb_get_energy(qs_env, qs_env%tb_tblite, energy)
             END IF
 
-            IF (scf_control%diagonalization%update_method == diag_update_method_adiis) THEN
+            IF (inverse_ot_handled) THEN
+               density_full_step = .TRUE.
+            ELSE IF (scf_control%diagonalization%update_method == diag_update_method_adiis) THEN
                CALL qs_scf_commit_density_candidate(scf_env, rho)
                density_full_step = .TRUE.
             ELSE
@@ -1024,6 +1048,81 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE scf_env_do_scf
+
+! **************************************************************************************************
+!> \brief Minimize fixed-occupation inverse orbitals after initializing the native OT state.
+!>        Count the bounded minimization against the original SCF limit. Acceptance reconstructs
+!>        matching MOs, P and energy-weighted W in the original charge metric. Native Skala cusp
+!>        handling requires an active constraint search and uses the existing SCF loop here.
+!> \param qs_env Native Quickstep environment.
+!> \param scf_env Initialized OT iteration state.
+!> \param scf_control Original SCF limits and occupation settings.
+!> \param handled Whether the normalized inverse minimization was attempted.
+!> \param iterations Number of attempted minimization iterations.
+! **************************************************************************************************
+   SUBROUTINE qs_scf_inverse_ot(qs_env, scf_env, scf_control, handled, iterations)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(scf_control_type), POINTER                    :: scf_control
+      LOGICAL, INTENT(OUT)                               :: handled
+      INTEGER, INTENT(OUT)                               :: iterations
+
+      INTEGER                                            :: n, remaining
+      INTEGER, ALLOCATABLE                               :: indices(:), points(:, :)
+      LOGICAL                                            :: accepted, converged, valid
+      REAL(dp)                                           :: energy
+      REAL(dp), ALLOCATABLE                              :: coordinate(:), gradient(:), physical(:), &
+                                                            tolerances(:)
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_skala_scf_type)                            :: state
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+      TYPE(section_vals_type), POINTER                   :: input, xc_section
+
+      handled = .FALSE.
+      iterations = 0
+      IF (scf_env%method /= ot_method_nr) RETURN
+      IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) RETURN
+      IF (SIZE(scf_env%qs_ot_env) == 0) RETURN
+      IF (scf_env%qs_ot_env(1)%settings%ot_method /= "LBFG") RETURN
+      IF (scf_control%smear%do_smear .OR. scf_control%outer_scf%have_scf) RETURN
+      remaining = scf_control%max_scf - scf_env%iter_count
+      IF (remaining <= 0) RETURN
+      CALL get_qs_env(qs_env, dft_control=dft_control, input=input, kpoints=kpoints)
+      IF (dft_control%qs_control%cdft .OR. dft_control%roks) RETURN
+      CALL get_ks_env(qs_env%ks_env, upf_inverse=inverse)
+      IF (.NOT. ASSOCIATED(inverse)) RETURN
+      IF (.NOT. inverse%enabled) RETURN
+      xc_section => section_vals_get_subs_vals(input, "DFT%XC")
+      IF (xc_section_uses_native_skala_grid(xc_section)) RETURN
+      CALL qs_skala_scf_create(state, qs_env, valid)
+      IF (.NOT. valid) RETURN
+      n = qs_skala_scf_size(state)
+      IF (n == 0) THEN
+         CALL qs_skala_scf_release(state)
+         RETURN
+      END IF
+      handled = .TRUE.
+      ALLOCATE (coordinate(n), gradient(n), physical(n), points(3, 0), indices(0), tolerances(0))
+      coordinate = 0.0_dp
+      CALL qs_skala_scf_stationarity(state, coordinate, points, indices, indices, indices, tolerances, &
+                                     scf_control%eps_scf, energy, converged, max_iterations=remaining, &
+                                     max_step=0.1_dp, iterations=iterations)
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
+      scf_env%iter_delta = MAX(NORM2(gradient), NORM2(physical))
+      IF (converged) THEN
+         CALL qs_skala_scf_accept(state, coordinate, scf_control%eps_scf, accepted)
+         IF (.NOT. accepted) CPABORT("Could not accept the stationary inverse orbital state.")
+      END IF
+      CALL qs_skala_scf_release(state)
+      IF (ASSOCIATED(kpoints)) THEN
+         IF (ALLOCATED(kpoints%native_density)) THEN
+            ! The ordinary SCF finalizer accepts the raw trial as well as the current P(k).
+            CALL kpoint_density_state_capture(kpoints)
+         END IF
+      END IF
+      scf_env%iter_method = "OT/INVERSE"
+   END SUBROUTINE qs_scf_inverse_ot
 
 ! **************************************************************************************************
 !> \brief grow an automatic k-point smearing virtual space and rebuild dimensioned state

@@ -22,7 +22,8 @@
       EPS_SCF 1.E-11
       MAX_SCF 60
       &OT
-        MINIMIZER DIIS
+        ALGORITHM STRICT
+        MINIMIZER LBFGS
         PRECONDITIONER FULL_ALL
       &END OT
     &END SCF

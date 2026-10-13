@@ -49,6 +49,7 @@ PROGRAM upf_inverse_unittest
                                               qs_upf_inverse_paw_operator
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_type
+   USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity
    USE upf_core,                        ONLY: upf_core_fourier,&
                                               upf_core_kinetic_fourier
    USE upf_inverse,                     ONLY: &
@@ -88,8 +89,10 @@ PROGRAM upf_inverse_unittest
 
    IMPLICIT NONE
    REAL(dp), PARAMETER :: step = 1.e-5_dp
+   REAL(dp), PARAMETER :: stationarity_tolerance = 1.e-8_dp
    REAL(dp) :: max_error = 0.0_dp
    CALL check_inverse()
+   CALL check_physical_stationarity()
    CALL check_lattice_inverse()
    CALL check_projector_density()
    CALL check_density_residual()
@@ -106,6 +109,98 @@ PROGRAM upf_inverse_unittest
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief A scaled physical coordinate must satisfy its own gradient bound and iteration budget.
+! **************************************************************************************************
+   SUBROUTINE check_physical_stationarity()
+      INTEGER                                            :: iterations
+      LOGICAL                                            :: converged
+      REAL(dp)                                           :: coordinate(1), empty(0), scale
+
+      scale = 20.0_dp
+      coordinate = 1.e-6_dp
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=8, iterations=iterations)
+      IF (.NOT. converged .OR. iterations /= 0) ERROR STOP 'Initial coordinate derivative should satisfy its bound'
+      IF (NORM2(coordinate)/scale <= stationarity_tolerance) ERROR STOP 'Physical gradient control is not distinct'
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, &
+                                          verify_stationarity=scaled_physical_gradient, iterations=iterations)
+      IF (converged .OR. iterations /= 1 .OR. coordinate(1) /= 1.e-6_dp) then
+        ERROR STOP 'Physical stationarity exceeded its budget or changed a failed trial'
+      end if
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=8, &
+                                          verify_stationarity=scaled_physical_gradient, iterations=iterations)
+      IF (.NOT. converged .OR. iterations <= 0 .OR. iterations > 8 .OR. ABS(coordinate(1)) > 1.e-12_dp) then
+        ERROR STOP 'Known physical minimum was not established'
+      end if
+   END SUBROUTINE check_physical_stationarity
+
+! **************************************************************************************************
+!> \brief Supply an unconstrained scaled-coordinate problem.
+!> \param coordinate Trial coordinate.
+!> \param values Empty residuals.
+!> \param jacobian Empty residual derivatives.
+!> \param context Positive coordinate scale.
+! **************************************************************************************************
+   SUBROUTINE empty_constraints(coordinate, values, jacobian, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: values(:), jacobian(:, :)
+
+      CLASS(*), INTENT(INOUT) :: context
+
+      IF (SIZE(coordinate) /= 1 .OR. SIZE(values) /= 0) ERROR STOP 'Wrong scaled-coordinate control'
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         IF (context <= 0.0_dp) ERROR STOP 'Nonpositive physical coordinate scale'
+      END SELECT
+      values = 0.0_dp
+      jacobian = 0.0_dp
+   END SUBROUTINE empty_constraints
+
+! **************************************************************************************************
+!> \brief Differentiate E=2+r^2/2 for the scaled coordinate x=scale*r.
+!> \param coordinate Scaled trial coordinate.
+!> \param energy Physical energy.
+!> \param gradient Derivative with respect to x.
+!> \param context Coordinate scale.
+! **************************************************************************************************
+   SUBROUTINE scaled_energy_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         gradient(:) = coordinate/context**2
+         energy = 2.0_dp + 0.5_dp*DOT_PRODUCT(coordinate, gradient)
+      CLASS DEFAULT
+         ERROR STOP 'Wrong physical coordinate scale'
+      END SELECT
+   END SUBROUTINE scaled_energy_gradient
+
+! **************************************************************************************************
+!> \brief Check the derivative with respect to the original physical coordinate r.
+!> \param coordinate Scaled trial coordinate.
+!> \param context Coordinate scale.
+!> \param converged Whether the physical energy derivative satisfies its bound.
+! **************************************************************************************************
+   SUBROUTINE scaled_physical_gradient(coordinate, context, converged)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+      LOGICAL, INTENT(OUT) :: converged
+
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         converged = NORM2(coordinate)/context <= stationarity_tolerance
+      CLASS DEFAULT
+         ERROR STOP 'Wrong physical coordinate scale'
+      END SELECT
+   END SUBROUTINE scaled_physical_gradient
+
 ! **************************************************************************************************
 !> \brief Physical-image inverse against a noncommuting matrix geometric sequence.
 !>        Checks the exterior equation, Bloch limit, coupled response and real energy adjoint.
