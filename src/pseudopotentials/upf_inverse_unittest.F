@@ -115,7 +115,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE check_physical_stationarity()
       INTEGER                                            :: iterations
-      LOGICAL                                            :: converged, stopped
+      LOGICAL                                            :: converged, interrupted, stopped
       REAL(dp)                                           :: coordinate(1), empty(0), scale
 
       scale = 20.0_dp
@@ -143,16 +143,49 @@ CONTAINS
                                           verify_stationarity=scaled_physical_gradient, iterations=iterations, &
                                           check_stop=stop_after_first_step, stopped=stopped)
       IF (converged .OR. .NOT. stopped .OR. iterations /= 1) ERROR STOP 'Requested stop was lost'
-      IF (ABS(coordinate(1) - (1.0_dp - 1.0_dp/scale**2)) > 1.e-14_dp) then
-        ERROR STOP 'Requested stop discarded the accepted state'
-      end if
+      IF (ABS(coordinate(1) - (1.0_dp - 1.0_dp/scale**2)) > 1.e-14_dp) THEN
+         ERROR STOP 'Requested stop discarded the accepted state'
+      END IF
       CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=32, &
                                           verify_stationarity=scaled_physical_gradient, stopped=stopped)
-      IF (.NOT. converged .OR. stopped .OR. ABS(coordinate(1)) > 1.e-12_dp) then
-        ERROR STOP 'Could not resume a stopped orbital minimization'
-      end if
+      IF (.NOT. converged .OR. stopped .OR. ABS(coordinate(1)) > 1.e-12_dp) THEN
+         ERROR STOP 'Could not resume a stopped orbital minimization'
+      END IF
+      coordinate = 1.0_dp
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=32, &
+                                          verify_stationarity=scaled_physical_gradient, iterations=iterations, &
+                                          check_segment=crossing_segment, interrupted=interrupted, stopped=stopped)
+      IF (converged .OR. stopped .OR. .NOT. interrupted .OR. iterations /= 2) THEN
+         ERROR STOP 'A crossing event was confused with convergence or an external stop'
+      END IF
+      IF (ABS(coordinate(1) - (1.0_dp - 1.0_dp/scale**2)) > 1.e-14_dp) THEN
+         ERROR STOP 'A crossing event lost the last accepted feasible state'
+      END IF
    END SUBROUTINE check_physical_stationarity
+
+! **************************************************************************************************
+!> \brief Detect a known threshold along a scaled physical orbital trial.
+!> \param first Last accepted coordinate.
+!> \param last Proposed coordinate.
+!> \param context Positive coordinate scale.
+!> \param interrupted Whether the trial crosses the threshold.
+! **************************************************************************************************
+   SUBROUTINE crossing_segment(first, last, context, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+      LOGICAL, INTENT(OUT)                               :: interrupted
+
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         IF (context <= 0.0_dp) ERROR STOP 'Nonpositive crossing coordinate scale'
+      CLASS DEFAULT
+         ERROR STOP 'Wrong crossing coordinate scale'
+      END SELECT
+      interrupted = first(1) > 0.9_dp .AND. last(1) <= 0.9_dp
+   END SUBROUTINE crossing_segment
 
 ! **************************************************************************************************
 !> \brief Request termination after the first accepted line-search trial.

@@ -79,6 +79,19 @@ MODULE skala_orbital_constraints
          CLASS(*), INTENT(INOUT) :: context
          LOGICAL, INTENT(OUT) :: requested
       END SUBROUTINE orbital_stop
+! **************************************************************************************************
+!> \brief Check a trial segment before accepting a minimization step.
+!> \param first Last accepted feasible coordinates.
+!> \param last Proposed feasible coordinates.
+!> \param context Borrowed problem state, including any discovered event.
+!> \param interrupted Whether to return the accepted state for caller event handling.
+! **************************************************************************************************
+      SUBROUTINE orbital_segment(first, last, context, interrupted)
+         IMPORT :: dp
+         REAL(dp), INTENT(IN) :: first(:), last(:)
+         CLASS(*), INTENT(INOUT) :: context
+         LOGICAL, INTENT(OUT) :: interrupted
+      END SUBROUTINE orbital_segment
    END INTERFACE
 
 CONTAINS
@@ -379,8 +392,8 @@ CONTAINS
 !> \param evaluate_constraints Original physical values and their coordinate derivatives.
 !> \param evaluate_gradient Original energy and a consistently chosen limiting coordinate gradient.
 !> \param context Owned native orbital and field evaluation data.
-!> \param coordinate Initial coordinates, replaced on convergence or a requested stop.
-!>        A stop returns the last accepted feasible trial. Other failures retain the initial state.
+!> \param coordinate Initial coordinates, replaced on convergence, a stop or a segment event.
+!>        A stop or event returns the last accepted feasible trial. Other failures retain the initial state.
 !> \param density_tolerances Absolute physical tolerance for each independent constraint.
 !> \param gradient_tolerance Absolute tolerance for the norm of the implicit free derivative.
 !> \param converged Whether physical constraints and tangential stationarity meet their tolerances.
@@ -390,14 +403,18 @@ CONTAINS
 !> \param iterations Optional number of attempted BFGS iterations, bounded by max_iterations.
 !> \param check_stop Optional external stop check between iterations and line-search trials.
 !> \param stopped Whether an external stop was requested, independent of convergence.
+!> \param check_segment Optional trial-segment check before step acceptance.
+!> \param interrupted Whether that check requests event handling at the last accepted state.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
-                                             max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped)
+                                             max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped, &
+                                             check_segment, interrupted)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
       PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
       PROCEDURE(orbital_stop), OPTIONAL :: check_stop
+      PROCEDURE(orbital_segment), OPTIONAL :: check_segment
       CLASS(*), INTENT(INOUT) :: context
       REAL(dp), INTENT(INOUT) :: coordinate(:)
       REAL(dp), INTENT(IN) :: density_tolerances(:), gradient_tolerance
@@ -406,10 +423,11 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL :: max_step
       INTEGER, INTENT(OUT), OPTIONAL :: iterations
       LOGICAL, INTENT(OUT), OPTIONAL :: stopped
+      LOGICAL, INTENT(OUT), OPTIONAL :: interrupted
 
       INTEGER :: capacity, d, history, i, iteration, j, limit, m, nf, shortening
       INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:)
-      LOGICAL :: accepted, valid
+      LOGICAL :: accepted, valid, event
       REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), &
                                old_gradient(:), reduced(:), scales(:), steps(:, :), trial(:), trial_reduced(:), &
@@ -418,6 +436,7 @@ CONTAINS
       d = SIZE(coordinate)
       IF (PRESENT(iterations)) iterations = 0
       IF (PRESENT(stopped)) stopped = .FALSE.
+      IF (PRESENT(interrupted)) interrupted = .FALSE.
       m = SIZE(density_tolerances)
       nf = d - m
       capacity = MAX(7, MIN(nf, 32))
@@ -478,6 +497,13 @@ CONTAINS
             trial(free) = x(free) + fraction*direction
             CALL reduced_evaluation(trial, trial_energy, trial_reduced, valid)
             IF (valid) THEN
+               event = .FALSE.
+               IF (PRESENT(check_segment)) CALL check_segment(x, trial, context, event)
+               IF (event) THEN
+                  coordinate(:) = x
+                  IF (PRESENT(interrupted)) interrupted = .TRUE.
+                  RETURN
+               END IF
                ! Descent may increase the gradient norm in a region of negative curvature.
                roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
                trial_slope = DOT_PRODUCT(trial_reduced, direction)

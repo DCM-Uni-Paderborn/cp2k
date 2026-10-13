@@ -79,6 +79,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_point_derivative
    PUBLIC :: qs_skala_scf_crossings, qs_skala_scf_crossing_roots
    PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
+   PUBLIC :: qs_skala_scf_crossing_type
    PUBLIC :: qs_skala_scf_select, qs_skala_scf_limiting, qs_skala_scf_balance
    PUBLIC :: qs_skala_scf_admissibility
    PUBLIC :: qs_skala_scf_accept
@@ -101,6 +102,12 @@ MODULE qs_skala_scf
       LOGICAL :: bloch = .FALSE., evaluated = .FALSE.
    END TYPE qs_skala_scf_type
 
+   TYPE qs_skala_scf_crossing_type
+      INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
+      REAL(dp), ALLOCATABLE :: first(:), last(:), values(:, :)
+      LOGICAL :: encountered = .FALSE.
+   END TYPE qs_skala_scf_crossing_type
+
    TYPE physical_root_context
       TYPE(qs_skala_scf_type), POINTER :: state => NULL()
       REAL(dp), ALLOCATABLE :: first(:), direction(:)
@@ -115,6 +122,7 @@ MODULE qs_skala_scf
 
    TYPE physical_constraints_context
       TYPE(qs_skala_scf_type), POINTER :: state => NULL()
+      TYPE(qs_skala_scf_crossing_type), POINTER :: crossings => NULL()
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
       REAL(dp), ALLOCATABLE :: targets(:)
       REAL(dp) :: gradient_tolerance = 0.0_dp
@@ -1144,11 +1152,11 @@ CONTAINS
 !>        Every constraint and energy trial reevaluates the original native fields and functional.
 !>        The caller's selected limiting derivatives remain in effect. Convergence does not
 !>        establish normal cusp admissibility, tangential stability or automatic active-set SCF.
-!>        On failure retain the supplied coordinates. A requested stop returns the last accepted
-!>        feasible coordinates. In both cases restore their native MOs, P, fields and
+!>        On failure retain the supplied coordinates. A stop or crossing event returns the last
+!>        accepted feasible coordinates. In both cases restore their native MOs, P, fields and
 !>        KS operator. On success these quantities describe the returned stationary coordinates.
 !> \param state ...
-!> \param coordinate Initial coordinates, replaced on convergence or a requested stop.
+!> \param coordinate Initial coordinates, replaced on convergence, a stop or a crossing event.
 !> \param points ...
 !> \param domains ...
 !> \param spins ...
@@ -1163,10 +1171,14 @@ CONTAINS
 !> \param iterations Optional number of attempted orbital minimization iterations.
 !> \param check_external Poll the normal CP2K stop conditions, false by default.
 !> \param stopped Whether an external stop was requested, independent of convergence.
+!> \param crossings Optional physical zero-crossing scan for an unconstrained minimization.
+!>        Return all endpoint candidates and their trial segment before accepting the step.
+!>        A detected crossing returns the last accepted coordinate with converged false.
+!>        Root location, selection and minimum conditions must be established by the caller.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
                                         physical_tolerances, gradient_tolerance, energy, converged, &
-                                        max_iterations, max_step, targets, iterations, check_external, stopped)
+                                        max_iterations, max_step, targets, iterations, check_external, stopped, crossings)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(INOUT)                            :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -1180,6 +1192,8 @@ CONTAINS
       INTEGER, INTENT(OUT), OPTIONAL                     :: iterations
       LOGICAL, INTENT(IN), OPTIONAL                      :: check_external
       LOGICAL, INTENT(OUT), OPTIONAL                     :: stopped
+      TYPE(qs_skala_scf_crossing_type), INTENT(OUT), &
+         OPTIONAL, TARGET                                :: crossings
 
       INTEGER                                            :: m
       LOGICAL                                            :: valid
@@ -1194,6 +1208,10 @@ CONTAINS
       context%state => state
       context%gradient_tolerance = gradient_tolerance
       IF (PRESENT(check_external)) context%check_external = check_external
+      IF (PRESENT(crossings)) THEN
+         CPASSERT(m == 0)
+         context%crossings => crossings
+      END IF
       ALLOCATE (context%points(3, m), context%domains(m), context%spins(m), context%descriptors(m), context%targets(m))
       context%points(:, :) = points
       context%domains(:) = domains
@@ -1210,7 +1228,8 @@ CONTAINS
                                              coordinate, physical_tolerances, gradient_tolerance, converged, &
                                              max_iterations=max_iterations, max_step=max_step, &
                                              verify_stationarity=evaluate_native_stationarity, iterations=iterations, &
-                                             check_stop=check_native_stop, stopped=stopped)
+                                             check_stop=check_native_stop, stopped=stopped, &
+                                             check_segment=check_native_segment)
       ELSE
          CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
                                              coordinate, physical_tolerances, gradient_tolerance, converged, &
@@ -1617,6 +1636,41 @@ CONTAINS
          CPABORT("Invalid native orbital stop context.")
       END SELECT
    END SUBROUTINE check_native_stop
+
+! **************************************************************************************************
+!> \brief Return physical zero crossings from a native normalized-orbital trial segment.
+!>        Preserve all candidate keys and endpoint values. The first native state is restored
+!>        by the scan. Endpoint signs do not exclude additional interior crossings.
+!> \param first Last accepted feasible orbital coordinates.
+!> \param last Proposed normalized-orbital coordinates.
+!> \param context Borrowed native state and optional caller crossing output.
+!> \param interrupted Whether physical crossing candidates were found.
+! **************************************************************************************************
+   SUBROUTINE check_native_segment(first, last, context, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+      LOGICAL, INTENT(OUT)                               :: interrupted
+
+      TYPE(qs_skala_scf_crossing_type), POINTER         :: crossings
+
+      interrupted = .FALSE.
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         IF (.NOT. ASSOCIATED(context%crossings)) RETURN
+         crossings => context%crossings
+         CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
+                                     crossings%spins, crossings%descriptors, crossings%values)
+         interrupted = SIZE(crossings%spins) > 0
+         IF (.NOT. interrupted) RETURN
+         ALLOCATE (crossings%first(SIZE(first)), crossings%last(SIZE(last)))
+         crossings%first(:) = first
+         crossings%last(:) = last
+         crossings%encountered = .TRUE.
+      CLASS DEFAULT
+         CPABORT("Invalid native orbital crossing context.")
+      END SELECT
+   END SUBROUTINE check_native_segment
 
 ! **************************************************************************************************
 !> \brief Evaluate one physical descriptor along an orbital trial segment.
