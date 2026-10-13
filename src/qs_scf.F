@@ -461,8 +461,9 @@ CONTAINS
       LOGICAL :: added_mos_auto_grow, adiis_pushed, adiis_restarted, adiis_stagnated, &
          adiis_validation, density_full_step, diis_step, do_kpoints, energy_only, exit_inner_loop, &
          exit_outer_loop, inner_loop_converged, internal_tblite_density_full_step, &
-         internal_tblite_mixer, inverse_ot_handled, just_energy, ot_kp_subspace_refresh, &
-         ot_kp_subspace_refresh_pending, outer_loop_converged, tblite_native_mixer, u_changed
+         internal_tblite_mixer, inverse_ot_handled, inverse_ot_stopped, just_energy, &
+         ot_kp_subspace_refresh, ot_kp_subspace_refresh_pending, outer_loop_converged, &
+         tblite_native_mixer, u_changed
       REAL(dp), POINTER                                  :: subspace_density(:, :), &
                                                             subspace_fock(:, :)
       REAL(KIND=dp)                                      :: adiis_raw_delta, adiis_step_delta, t1, t2
@@ -831,8 +832,9 @@ CONTAINS
             END IF
 
             inverse_ot_handled = .FALSE.
+            inverse_ot_stopped = .FALSE.
             IF (.NOT. just_energy .AND. scf_env%iter_count == 1) THEN
-               CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps)
+               CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, inverse_ot_stopped)
                IF (inverse_ot_handled) THEN
                   scf_env%iter_count = scf_env%iter_count + inverse_ot_steps
                   iter_count = iter_count + inverse_ot_steps
@@ -906,8 +908,16 @@ CONTAINS
                CALL external_comm%send(energy%total, ext_master_id, scf_energy_message_tag)
             END IF
 
-            CALL qs_scf_check_inner_exit(qs_env, scf_env, scf_control, should_stop, just_energy, &
-                                         exit_inner_loop, inner_loop_converged, output_unit, u_changed)
+            IF (inverse_ot_stopped) THEN
+               ! EXIT_SCF files are consumed by external_control. Preserve that decision.
+               should_stop = .TRUE.
+               exit_inner_loop = .TRUE.
+               inner_loop_converged = .FALSE.
+               u_changed = .FALSE.
+            ELSE
+               CALL qs_scf_check_inner_exit(qs_env, scf_env, scf_control, should_stop, just_energy, &
+                                            exit_inner_loop, inner_loop_converged, output_unit, u_changed)
+            END IF
             IF (u_changed) THEN
                CALL qs_scf_inner_finalize(scf_env, qs_env, density_full_step, 0)
                IF (scf_env%mixing_method > 1) THEN
@@ -1059,13 +1069,15 @@ CONTAINS
 !> \param scf_control Original SCF limits and occupation settings.
 !> \param handled Whether the normalized inverse minimization was attempted.
 !> \param iterations Number of attempted minimization iterations.
+!> \param stopped Whether the minimization received an external stop request.
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_inverse_ot(qs_env, scf_env, scf_control, handled, iterations)
+   SUBROUTINE qs_scf_inverse_ot(qs_env, scf_env, scf_control, handled, iterations, stopped)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
       LOGICAL, INTENT(OUT)                               :: handled
       INTEGER, INTENT(OUT)                               :: iterations
+      LOGICAL, INTENT(OUT)                               :: stopped
 
       INTEGER                                            :: n, remaining
       INTEGER, ALLOCATABLE                               :: indices(:), points(:, :)
@@ -1080,6 +1092,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: input, xc_section
 
       handled = .FALSE.
+      stopped = .FALSE.
       iterations = 0
       IF (scf_env%method /= ot_method_nr) RETURN
       IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) RETURN
@@ -1107,7 +1120,7 @@ CONTAINS
       coordinate = 0.0_dp
       CALL qs_skala_scf_stationarity(state, coordinate, points, indices, indices, indices, tolerances, &
                                      scf_control%eps_scf, energy, converged, max_iterations=remaining, &
-                                     max_step=0.1_dp, iterations=iterations)
+                                     max_step=0.1_dp, iterations=iterations, check_external=.TRUE., stopped=stopped)
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
       scf_env%iter_delta = MAX(NORM2(gradient), NORM2(physical))
       IF (converged) THEN

@@ -70,6 +70,15 @@ MODULE skala_orbital_constraints
          CLASS(*), INTENT(INOUT) :: context
          LOGICAL, INTENT(OUT) :: converged
       END SUBROUTINE orbital_stationarity
+! **************************************************************************************************
+!> \brief Poll the caller's external stop condition between orbital trials.
+!> \param context Borrowed problem state.
+!> \param requested Whether the caller requests termination.
+! **************************************************************************************************
+      SUBROUTINE orbital_stop(context, requested)
+         CLASS(*), INTENT(INOUT) :: context
+         LOGICAL, INTENT(OUT) :: requested
+      END SUBROUTINE orbital_stop
    END INTERFACE
 
 CONTAINS
@@ -370,7 +379,8 @@ CONTAINS
 !> \param evaluate_constraints Original physical values and their coordinate derivatives.
 !> \param evaluate_gradient Original energy and a consistently chosen limiting coordinate gradient.
 !> \param context Owned native orbital and field evaluation data.
-!> \param coordinate Initial chart coordinates, replaced only on convergence.
+!> \param coordinate Initial coordinates, replaced on convergence or a requested stop.
+!>        A stop returns the last accepted feasible trial. Other failures retain the initial state.
 !> \param density_tolerances Absolute physical tolerance for each independent constraint.
 !> \param gradient_tolerance Absolute tolerance for the norm of the implicit free derivative.
 !> \param converged Whether physical constraints and tangential stationarity meet their tolerances.
@@ -378,13 +388,16 @@ CONTAINS
 !> \param max_step Maximum free-coordinate step norm, defaults to 0.1.
 !> \param verify_stationarity Optional physical check, additional to the free-coordinate norm.
 !> \param iterations Optional number of attempted BFGS iterations, bounded by max_iterations.
+!> \param check_stop Optional external stop check between iterations and line-search trials.
+!> \param stopped Whether an external stop was requested, independent of convergence.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
-                                             max_iterations, max_step, verify_stationarity, iterations)
+                                             max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
       PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
+      PROCEDURE(orbital_stop), OPTIONAL :: check_stop
       CLASS(*), INTENT(INOUT) :: context
       REAL(dp), INTENT(INOUT) :: coordinate(:)
       REAL(dp), INTENT(IN) :: density_tolerances(:), gradient_tolerance
@@ -392,6 +405,7 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL :: max_iterations
       REAL(dp), INTENT(IN), OPTIONAL :: max_step
       INTEGER, INTENT(OUT), OPTIONAL :: iterations
+      LOGICAL, INTENT(OUT), OPTIONAL :: stopped
 
       INTEGER :: capacity, d, history, i, iteration, j, limit, m, nf, shortening
       INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:)
@@ -403,6 +417,7 @@ CONTAINS
 
       d = SIZE(coordinate)
       IF (PRESENT(iterations)) iterations = 0
+      IF (PRESENT(stopped)) stopped = .FALSE.
       m = SIZE(density_tolerances)
       nf = d - m
       capacity = MAX(7, MIN(nf, 32))
@@ -441,6 +456,7 @@ CONTAINS
       IF (.NOT. valid) RETURN
       history = 0
       DO iteration = 1, limit
+         IF (stop_requested()) RETURN
          IF (stationary(x, reduced)) THEN
             coordinate(:) = x
             converged = .TRUE.
@@ -457,6 +473,7 @@ CONTAINS
          accepted = .FALSE.
          fraction = 1.0_dp
          DO shortening = 1, 24
+            IF (stop_requested()) RETURN
             trial(:) = x
             trial(free) = x(free) + fraction*direction
             CALL reduced_evaluation(trial, trial_energy, trial_reduced, valid)
@@ -502,12 +519,26 @@ CONTAINS
          reduced(:) = trial_reduced
          energy = trial_energy
       END DO
+      IF (stop_requested()) RETURN
       IF (stationary(x, reduced)) THEN
          coordinate(:) = x
          converged = .TRUE.
       END IF
       ! Trial callbacks may update native caches; the caller's unchanged coordinates remain authoritative.
    CONTAINS
+! **************************************************************************************************
+!> \brief Preserve the last accepted feasible coordinates when the caller requests a stop.
+!> \return Whether termination was requested.
+! **************************************************************************************************
+      FUNCTION stop_requested() RESULT(requested)
+      LOGICAL                                            :: requested
+
+         requested = .FALSE.
+         IF (PRESENT(check_stop)) CALL check_stop(context, requested)
+         IF (.NOT. requested) RETURN
+         coordinate(:) = x
+         IF (PRESENT(stopped)) stopped = .TRUE.
+      END FUNCTION stop_requested
 ! **************************************************************************************************
 !> \brief Require both the reduced derivative and any supplied physical convergence check.
 !> \param c Complete trial coordinates.

@@ -64,8 +64,9 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: weight
       LOGICAL, INTENT(OUT)                               :: valid
 
-      COMPLEX(dp), ALLOCATABLE                           :: reference(:, :)
-      INTEGER                                            :: n, nreference
+      COMPLEX(dp), ALLOCATABLE                           :: completed(:, :), reference(:, :)
+      INTEGER                                            :: i, n, nreference
+      INTEGER, ALLOCATABLE                               :: occupied(:), virtuals(:)
       REAL(dp), ALLOCATABLE                              :: real_part(:, :), zero(:)
 
       CALL qs_skala_orbitals_release(state)
@@ -91,6 +92,35 @@ CONTAINS
       END IF
       CALL skala_orbital_chart_create(reference, metric, native%occupation_numbers(:nreference), &
                                       complex_orbitals, state%chart, valid, metric_weight=weight, complete_space=.TRUE.)
+      IF (.NOT. valid) THEN
+         ! A density-only restart can leave virtual or empty-spin MO columns uninitialized.
+         ! Complete the occupied span in the original metric, preserving native occupations.
+         ALLOCATE (occupied, SOURCE=PACK([(i, i=1, nreference)], native%occupation_numbers(:nreference) > 0.0_dp))
+         ALLOCATE (virtuals, SOURCE=PACK([(i, i=1, nreference)], native%occupation_numbers(:nreference) == 0.0_dp))
+         IF (SIZE(occupied) == 0) THEN
+            reference = CMPLX(0.0_dp, 0.0_dp, dp)
+            reference(1, 1) = CMPLX(1.0_dp, 0.0_dp, dp)
+            CALL skala_orbital_chart_create(reference(:, :1), metric, [0.0_dp], complex_orbitals, &
+                                            state%chart, valid, metric_weight=weight, complete_space=.TRUE.)
+         ELSE
+            CALL skala_orbital_chart_create(reference(:, occupied), metric, native%occupation_numbers(occupied), &
+                                            complex_orbitals, state%chart, valid, metric_weight=weight, complete_space=.TRUE.)
+         END IF
+         IF (valid) THEN
+            ALLOCATE (completed(n, n), zero(skala_orbital_chart_size(state%chart)))
+            zero = 0.0_dp
+            CALL skala_orbital_chart_evaluate(state%chart, zero, completed)
+            IF (SIZE(occupied) == 0) THEN
+               reference(:, :) = completed(:, :nreference)
+            ELSE
+               reference(:, occupied) = completed(:, :SIZE(occupied))
+               reference(:, virtuals) = completed(:, SIZE(occupied) + 1:nreference)
+            END IF
+            DEALLOCATE (zero)
+            CALL skala_orbital_chart_create(reference, metric, native%occupation_numbers(:nreference), &
+                                            complex_orbitals, state%chart, valid, metric_weight=weight, complete_space=.TRUE.)
+         END IF
+      END IF
       IF (.NOT. valid) RETURN
       state%native => native
       state%weight = weight

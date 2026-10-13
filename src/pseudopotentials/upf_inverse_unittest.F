@@ -91,6 +91,7 @@ PROGRAM upf_inverse_unittest
    REAL(dp), PARAMETER :: step = 1.e-5_dp
    REAL(dp), PARAMETER :: stationarity_tolerance = 1.e-8_dp
    REAL(dp) :: max_error = 0.0_dp
+   INTEGER :: stop_polls = 0
    CALL check_inverse()
    CALL check_physical_stationarity()
    CALL check_lattice_inverse()
@@ -114,7 +115,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE check_physical_stationarity()
       INTEGER                                            :: iterations
-      LOGICAL                                            :: converged
+      LOGICAL                                            :: converged, stopped
       REAL(dp)                                           :: coordinate(1), empty(0), scale
 
       scale = 20.0_dp
@@ -126,16 +127,51 @@ CONTAINS
       CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=1, &
                                           verify_stationarity=scaled_physical_gradient, iterations=iterations)
-      IF (converged .OR. iterations /= 1 .OR. coordinate(1) /= 1.e-6_dp) then
-        ERROR STOP 'Physical stationarity exceeded its budget or changed a failed trial'
-      end if
+      IF (converged .OR. iterations /= 1 .OR. coordinate(1) /= 1.e-6_dp) THEN
+         ERROR STOP 'Physical stationarity exceeded its budget or changed a failed trial'
+      END IF
       CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=8, &
                                           verify_stationarity=scaled_physical_gradient, iterations=iterations)
-      IF (.NOT. converged .OR. iterations <= 0 .OR. iterations > 8 .OR. ABS(coordinate(1)) > 1.e-12_dp) then
-        ERROR STOP 'Known physical minimum was not established'
+      IF (.NOT. converged .OR. iterations <= 0 .OR. iterations > 8 .OR. ABS(coordinate(1)) > 1.e-12_dp) THEN
+         ERROR STOP 'Known physical minimum was not established'
+      END IF
+      coordinate = 1.0_dp
+      stop_polls = 0
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=32, &
+                                          verify_stationarity=scaled_physical_gradient, iterations=iterations, &
+                                          check_stop=stop_after_first_step, stopped=stopped)
+      IF (converged .OR. .NOT. stopped .OR. iterations /= 1) ERROR STOP 'Requested stop was lost'
+      IF (ABS(coordinate(1) - (1.0_dp - 1.0_dp/scale**2)) > 1.e-14_dp) then
+        ERROR STOP 'Requested stop discarded the accepted state'
+      end if
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=32, &
+                                          verify_stationarity=scaled_physical_gradient, stopped=stopped)
+      IF (.NOT. converged .OR. stopped .OR. ABS(coordinate(1)) > 1.e-12_dp) then
+        ERROR STOP 'Could not resume a stopped orbital minimization'
       end if
    END SUBROUTINE check_physical_stationarity
+
+! **************************************************************************************************
+!> \brief Request termination after the first accepted line-search trial.
+!> \param context Positive coordinate scale.
+!> \param requested Whether one complete step has been accepted.
+! **************************************************************************************************
+   SUBROUTINE stop_after_first_step(context, requested)
+      CLASS(*), INTENT(INOUT) :: context
+      LOGICAL, INTENT(OUT) :: requested
+
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         IF (context <= 0.0_dp) ERROR STOP 'Nonpositive stopped coordinate scale'
+      CLASS DEFAULT
+         ERROR STOP 'Wrong stopped coordinate scale'
+      END SELECT
+      stop_polls = stop_polls + 1
+      requested = stop_polls >= 3
+   END SUBROUTINE stop_after_first_step
 
 ! **************************************************************************************************
 !> \brief Supply an unconstrained scaled-coordinate problem.

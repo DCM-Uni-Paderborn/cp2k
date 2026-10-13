@@ -11,6 +11,7 @@ MODULE qs_skala_scf
                                               dbcsr_p_type,&
                                               dbcsr_set
    USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set
+   USE cp_external_control,             ONLY: external_control
    USE cp_fm_types,                     ONLY: cp_fm_set_all
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_section_types,             ONLY: section_get_ival
@@ -117,6 +118,7 @@ MODULE qs_skala_scf
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
       REAL(dp), ALLOCATABLE :: targets(:)
       REAL(dp) :: gradient_tolerance = 0.0_dp
+      LOGICAL :: check_external = .FALSE.
    END TYPE physical_constraints_context
 
 CONTAINS
@@ -1083,10 +1085,11 @@ CONTAINS
 !>        Every constraint and energy trial reevaluates the original native fields and functional.
 !>        The caller's selected limiting derivatives remain in effect. Convergence does not
 !>        establish normal cusp admissibility, tangential stability or automatic active-set SCF.
-!>        On failure retain the supplied coordinates and restore their native MOs, P, fields and
+!>        On failure retain the supplied coordinates. A requested stop returns the last accepted
+!>        feasible coordinates. In both cases restore their native MOs, P, fields and
 !>        KS operator. On success these quantities describe the returned stationary coordinates.
 !> \param state ...
-!> \param coordinate Initial coordinates, replaced only on convergence.
+!> \param coordinate Initial coordinates, replaced on convergence or a requested stop.
 !> \param points ...
 !> \param domains ...
 !> \param spins ...
@@ -1099,10 +1102,12 @@ CONTAINS
 !> \param max_step Optional bound on the free-coordinate step norm.
 !> \param targets Optional fixed physical target per constraint, zero by default.
 !> \param iterations Optional number of attempted orbital minimization iterations.
+!> \param check_external Poll the normal CP2K stop conditions, false by default.
+!> \param stopped Whether an external stop was requested, independent of convergence.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
                                         physical_tolerances, gradient_tolerance, energy, converged, &
-                                        max_iterations, max_step, targets, iterations)
+                                        max_iterations, max_step, targets, iterations, check_external, stopped)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(INOUT)                            :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -1114,6 +1119,8 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: max_iterations
       REAL(dp), INTENT(IN), OPTIONAL                     :: max_step, targets(:)
       INTEGER, INTENT(OUT), OPTIONAL                     :: iterations
+      LOGICAL, INTENT(IN), OPTIONAL                      :: check_external
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: stopped
 
       INTEGER                                            :: m
       LOGICAL                                            :: valid
@@ -1127,6 +1134,7 @@ CONTAINS
       CPASSERT(valid)
       context%state => state
       context%gradient_tolerance = gradient_tolerance
+      IF (PRESENT(check_external)) context%check_external = check_external
       ALLOCATE (context%points(3, m), context%domains(m), context%spins(m), context%descriptors(m), context%targets(m))
       context%points(:, :) = points
       context%domains(:) = domains
@@ -1142,11 +1150,13 @@ CONTAINS
          CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
                                              coordinate, physical_tolerances, gradient_tolerance, converged, &
                                              max_iterations=max_iterations, max_step=max_step, &
-                                             verify_stationarity=evaluate_native_stationarity, iterations=iterations)
+                                             verify_stationarity=evaluate_native_stationarity, iterations=iterations, &
+                                             check_stop=check_native_stop, stopped=stopped)
       ELSE
          CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
                                              coordinate, physical_tolerances, gradient_tolerance, converged, &
-                                             max_iterations=max_iterations, max_step=max_step, iterations=iterations)
+                                             max_iterations=max_iterations, max_step=max_step, iterations=iterations, &
+                                             check_stop=check_native_stop, stopped=stopped)
       END IF
       ALLOCATE (gradient(SIZE(coordinate)))
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
@@ -1527,6 +1537,27 @@ CONTAINS
          CPABORT("Invalid native orbital convergence context.")
       END SELECT
    END SUBROUTINE evaluate_native_stationarity
+
+! **************************************************************************************************
+!> \brief Poll normal CP2K stop files, external communication and the target runtime.
+!> \param context Native orbital state and optional stop monitoring.
+!> \param requested Whether an external stop was requested.
+! **************************************************************************************************
+   SUBROUTINE check_native_stop(context, requested)
+      CLASS(*), INTENT(INOUT) :: context
+      LOGICAL, INTENT(OUT) :: requested
+
+      requested = .FALSE.
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         IF (context%check_external) THEN
+            CALL external_control(requested, "SCF", target_time=context%state%qs_env%target_time, &
+                                  start_time=context%state%qs_env%start_time)
+         END IF
+      CLASS DEFAULT
+         CPABORT("Invalid native orbital stop context.")
+      END SELECT
+   END SUBROUTINE check_native_stop
 
 ! **************************************************************************************************
 !> \brief Evaluate one physical descriptor along an orbital trial segment.
