@@ -6945,7 +6945,7 @@ CONTAINS
          DIMENSION(:, :, :, :)                           :: density_reduced
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: overlap_full_qualification, &
                                                             overlap_reduced, overlap_cached
-      INTEGER                                            :: batch_size, first_image, ifull, ispin, &
+      INTEGER                                            :: batch_size, done_count, first_image, ifull, ispin, &
                                                             last_image, local_image_count, &
                                                             local_image_first, nao, nowners, nred, &
                                                             nspin, provider_stream_mode, &
@@ -7124,7 +7124,9 @@ CONTAINS
                                             mode=cp2k_exchange_stream_batched, &
                                             batch_size=batch_size, &
                                             image_first=local_image_first, &
-                                            image_count=local_image_count)
+                                            image_count=local_image_count, &
+                                            transform_backend=transform_backend, &
+                                            transform_pair_batch_size=transform_pair_batch_size)
          ELSE
             ! Ranks beyond the number of BvK images still need the current
             ! geometry/charge-dependent exchange cache for the replicated
@@ -7183,13 +7185,31 @@ CONTAINS
                CPABORT("save_tblite returned a different distributed image range")
             END IF
          END IF
-         DO ifull = 1, kmap%nfull
-            CALL prepare_stream_block(ifull, .TRUE.)
-            IF (owns_image_range) THEN
-               CALL cp2k_exchange_stream_push(stream, ifull, density_block, overlap_block, error)
-               IF (ALLOCATED(error)) THEN
-                  CPABORT("save_tblite distributed image range rejected a Bloch block")
+         transform_done = .FALSE.
+         DO WHILE (.NOT. transform_done)
+            DO ifull = 1, kmap%nfull
+               CALL prepare_stream_block(ifull, .TRUE.)
+               IF (owns_image_range) THEN
+                  CALL cp2k_exchange_stream_push(stream, ifull, density_block, overlap_block, error)
+                  IF (ALLOCATED(error)) THEN
+                     CPABORT("save_tblite distributed image range rejected a Bloch block")
+                  END IF
                END IF
+            END DO
+            IF (transform_backend == cp2k_exchange_transform_dense) THEN
+               transform_done = .TRUE.
+            ELSE
+               done_count = 0
+               IF (owns_image_range) THEN
+                  CALL cp2k_exchange_stream_transform_advance(stream, transform_done, error)
+                  IF (ALLOCATED(error)) CPABORT("save_tblite distributed compact transform failed")
+                  done_count = MERGE(1, 0, transform_done)
+               END IF
+               CALL para_env%sum(done_count)
+               IF (done_count /= 0 .AND. done_count /= nowners) THEN
+                  CPABORT("Distributed compact forward transform tiles diverged")
+               END IF
+               transform_done = done_count == nowners
             END IF
          END DO
          IF (owns_image_range) THEN
@@ -7306,7 +7326,8 @@ CONTAINS
             ", cachedRepresentativeOverlaps=", nred, ", persistentFullExchangeStarMatrices=", 0, &
             ", transformPairTile=", transform_pair_batch_size
       END IF
-      IF (fused_symmetry .AND. para_env%is_source()) THEN
+      IF (para_env%is_source() .AND. &
+          (fused_symmetry .OR. transform_backend /= cp2k_exchange_transform_dense)) THEN
          SELECT CASE (transform_backend)
          CASE (cp2k_exchange_transform_dense)
             WRITE (*, '(A,I0)') &
@@ -10908,8 +10929,10 @@ CONTAINS
          END IF
 #endif
          IF (acceleration_transform_backend /= cp2k_exchange_transform_dense .AND. &
-             .NOT. (acceleration_stream_mode == tb_gxtb_exchange_stream_symmetry_fused .OR. &
-                    acceleration_stream_mode == tb_gxtb_exchange_stream_kgroup_partial_images .OR. &
+             .NOT. (ANY(acceleration_stream_mode == &
+                        [cp2k_exchange_stream_batched, tb_gxtb_exchange_stream_distributed, &
+                         tb_gxtb_exchange_stream_symmetry_fused, &
+                         tb_gxtb_exchange_stream_kgroup_partial_images]) .OR. &
                     (acceleration_stream_mode == 0 .AND. &
                      acceleration_gradient_mode == tb_gxtb_exchange_gradient_dense))) THEN
             CPABORT("Compact g-XTB transform has an incompatible exchange/gradient combination")
