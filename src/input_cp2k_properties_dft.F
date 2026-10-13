@@ -17,6 +17,8 @@ MODULE input_cp2k_properties_dft
                            Hybertsen1986, &
                            Tyagi2024, &
                            Tyagi2026, &
+                           Ditler2021, &
+                           Ditler2022, &
                            Hanasaki2025, &
                            Hernandez2025, &
                            Iannuzzi2005, &
@@ -56,7 +58,7 @@ MODULE input_cp2k_properties_dft
    USE input_cp2k_mp2, ONLY: create_bse_section
    USE input_cp2k_qs, ONLY: create_ddapc_restraint_section, &
                             create_lrigpw_section
-   USE input_cp2k_kpoints, ONLY: create_kpoint_set_section
+   USE input_cp2k_kpoints, ONLY: create_kpoint_set_section, use_k290_kpoint_backend, use_spglib_kpoint_backend
    USE input_cp2k_loc, ONLY: create_localize_section
    USE input_cp2k_resp, ONLY: create_resp_section
    USE input_cp2k_xc, ONLY: create_xc_section
@@ -204,6 +206,75 @@ CONTAINS
                           "reserved for future diagonalization-free implementations.", &
                           usage="METHOD DIAGONALIZATION", &
                           n_var=1, type_of_var=char_t, default_c_val="DIAGONALIZATION")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="CURRENT_OPERATOR", type_of_var=enum_t, &
+                          description="ATOM_EMBEDDING retains the finite-volume atom-coordinate model. "// &
+                          "PROJECTED_AO uses analytic AO positions and the metric-aware commutator "// &
+                          "H*S^-1*X-X*S^-1*H, with complex spinors when SOC is enabled. "// &
+                          "PROJECTED_AO requires PERIODIC NONE and GPW/GAPW. This is the current of the "// &
+                          "projected AO Hamiltonian. BLOCH evaluates analytic Hamiltonian/overlap k derivatives "// &
+                          "and the AO connection on a full MP_GRID, with optional SOC and intraband terms. "// &
+                          "BLOCH requires a periodic GPW/GAPW calculation.", &
+                          enum_c_vals=s2a("ATOM_EMBEDDING", "PROJECTED_AO", "BLOCH"), enum_i_vals=[0, 1, 2], default_i_val=0)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="SOC", &
+                          description="Add GTH-SOC in the complete AO spinor space after a restricted SCF. "// &
+                          "Requires CURRENT_OPERATOR PROJECTED_AO or BLOCH and SOC pseudopotential parameters. "// &
+                          "Does not perform self-consistent noncollinear DFT. A time-reversal-symmetric "// &
+                          "Hamiltonian has zero net charge Hall response.", default_l_val=.FALSE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="HALL_RESPONSE", &
+                          description="Include the antisymmetric DC charge response in the conductivity tensor "// &
+                          "and print its three independent components separately. Requires PROJECTED_AO or BLOCH. "// &
+                          "Uses the same positive scalar DISSIPATION; does not add magnetic order, an applied "// &
+                          "magnetic field, spin Hall currents, or microscopic scattering mechanisms.", default_l_val=.FALSE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="MAX_AO", &
+                          description="Safety limit on scalar AO dimension for PROJECTED_AO or BLOCH. "// &
+                          "Dense spinor matrices have dimension 2*NAO when SOC is enabled.", default_i_val=512)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="MP_GRID", &
+                          description="Full Gamma-centered property mesh for CURRENT_OPERATOR BLOCH. "// &
+                          "Independent of SCF sampling and symmetry reduction, at the frozen SCF potential. "// &
+                          "Nonperiodic directions must be one.", &
+                          type_of_var=integer_t, n_var=3, default_i_vals=[1, 1, 1])
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="MAX_MEMORY_MB", &
+                          description="Safety bound in MiB on replicated BLOCH array storage per MPI rank. "// &
+                          "Excludes CP2K/DBCSR environment and library workspace.", default_i_val=1024)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SYMMETRY", &
+                          description="Reconstruct equivalent BLOCH property eigenframes from independent irreducible points. "// &
+                          "Includes atom/AO, cell-image and physical SOC spin transformations. "// &
+                          "Every reconstructed frame is checked against the target H/S and current; "// &
+                          "an inconsistent frozen SCF potential aborts instead of silently changing the response.", &
+                          default_l_val=.FALSE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="SYMMETRY_BACKEND", type_of_var=enum_t, &
+                          description="Backend for the independent BLOCH property symmetry mesh.", &
+                          enum_c_vals=s2a("K290", "SPGLIB"), &
+                          enum_i_vals=[use_k290_kpoint_backend, use_spglib_kpoint_backend], &
+                          default_i_val=use_k290_kpoint_backend)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="EPS_SYMMETRY", &
+                          description="Geometric tolerance for BLOCH property symmetry detection.", default_r_val=1.e-6_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="EPS_SYMMETRY_OPERATORS", &
+                          description="Tolerance for target metric, energy-scaled Hamiltonian, and current covariance checks. "// &
+                          "The current error is scaled by max(1,|J|) in atomic units.", default_r_val=1.e-8_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -367,7 +438,7 @@ CONTAINS
       CPASSERT(.NOT. ASSOCIATED(section))
       CALL section_create(section, __LOCATION__, name="linres", &
                           description=desc, n_keywords=5, n_subsections=2, repeats=.FALSE., &
-                          citations=[Putrino2000])
+                          citations=[Putrino2000, Hanasaki2025])
 
       CALL keyword_create(keyword, __LOCATION__, name="EPS", &
                           description="target accuracy for the convergence of the conjugate gradient.", &
@@ -534,7 +605,7 @@ CONTAINS
       IF (.NOT. failure) THEN
          CALL section_create(section, __LOCATION__, name="DCDR", &
                              description="Compute analytical gradients the dipole moments.", &
-                             n_keywords=50, n_subsections=1, repeats=.FALSE.)
+                             n_keywords=50, n_subsections=1, repeats=.FALSE., citations=[Ditler2021])
 
          CALL keyword_create(keyword, __LOCATION__, name="_SECTION_PARAMETERS_", &
                              description="Controls the activation of the APT calculation. "// &
@@ -679,7 +750,8 @@ CONTAINS
 
       CALL section_create(section, __LOCATION__, name="VCD", &
                           description="Carry out a VCD calculation.", &
-                          n_keywords=50, n_subsections=1, repeats=.FALSE.)
+                          n_keywords=50, n_subsections=1, repeats=.FALSE., &
+                          citations=[Ditler2022])
 
       CALL keyword_create(keyword, __LOCATION__, name="_SECTION_PARAMETERS_", &
                           description="controls the activation of the APT/AAT calculation", &
@@ -1383,7 +1455,7 @@ CONTAINS
       CALL section_create(section, __LOCATION__, name="POLAR", &
                           description="Compute polarizabilities.", &
                           n_keywords=5, n_subsections=1, repeats=.FALSE., &
-                          citations=[Putrino2002])
+                          citations=[Putrino2002, Luber2014])
 
       CALL keyword_create(keyword, __LOCATION__, name="_SECTION_PARAMETERS_", &
                           description="controls the activation of the polarizability calculation", &
@@ -1396,7 +1468,6 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="DO_RAMAN", &
                           description="Compute the electric-dipole--electric-dipole polarizability", &
                           usage="DO_RAMAN F", &
-                          citations=[Luber2014], &
                           default_l_val=.TRUE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -2975,6 +3046,24 @@ CONTAINS
                           usage="SOC_WINDOW_SMEARING 1.0", &
                           default_r_val=cp_unit_to_cp2k(value=1.0_dp, unit_str="eV"), &
                           unit_str="eV")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SOC_NBANDS_OCC", &
+                          description="Truncate the second-variational SOC diagonalization to this "// &
+                          "many occupied bands below the Fermi level (per spin). Must be used "// &
+                          "together with SOC_NBANDS_VIRT. Default -1 = off. ", &
+                          usage="SOC_NBANDS_OCC 2000", &
+                          default_i_val=-1)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SOC_NBANDS_VIRT", &
+                          description="Truncate the second-variational SOC diagonalization to this "// &
+                          "many virtual bands above the Fermi level (per spin). See SOC_NBANDS_OCC. "// &
+                          "Default -1 = off.", &
+                          usage="SOC_NBANDS_VIRT 2000", &
+                          default_i_val=-1)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

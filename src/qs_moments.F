@@ -26,6 +26,7 @@ MODULE qs_moments
    USE block_p_types, ONLY: block_p_type
    USE cell_types, ONLY: cell_type, &
                          pbc, &
+                         pbc_stable, &
                          get_cell
    USE commutator_rpnl, ONLY: build_com_mom_nl
    USE cp_blacs_env, ONLY: cp_blacs_env_type
@@ -158,7 +159,7 @@ CONTAINS
 !> \param basis_type ...
 !> \param all_images accumulate all neighbor images belonging to one atom pair
 !> \param minimum_image apply the half-cell image filter
-!> \param neighbor_image use the neighbor-list image vector for one atom-pair representative
+!> \param neighbor_image preserve the neighbor-list image geometry
 !> \param first_component first Cartesian moment component to write
 ! **************************************************************************************************
    SUBROUTINE build_local_moment_matrix(qs_env, moments, nmoments, ref_point, ref_points, basis_type, &
@@ -207,7 +208,6 @@ CONTAINS
       IF (PRESENT(minimum_image)) my_minimum_image = minimum_image
       my_neighbor_image = .FALSE.
       IF (PRESENT(neighbor_image)) my_neighbor_image = neighbor_image
-      CPASSERT(.NOT. (my_all_images .AND. my_neighbor_image))
 
       nm = (6 + 11*nmoments + 6*nmoments**2 + nmoments**3)/6 - 1
       CPASSERT(SIZE(moments) >= nm)
@@ -330,7 +330,11 @@ CONTAINS
                ra(:) = pbc(particle_set(iatom)%r(:), cell)
                rb(:) = ra(:) + rab(:)
                rac(:) = pbc(rc, ra, cell)
-               rbc(:) = pbc(rc, rb, cell)
+               IF (my_neighbor_image) THEN
+                  rbc(:) = rac(:) + rab(:)
+               ELSE
+                  rbc(:) = pbc(rc, rb, cell)
+               END IF
                dab = NORM2(rab)
             ELSE IF (my_neighbor_image) THEN
                ! Keep the neighbor-list image while selecting one atom-pair representative.
@@ -1151,7 +1155,7 @@ CONTAINS
       INTEGER, DIMENSION(3)                              :: icell
       INTEGER, DIMENSION(:), POINTER                     :: row_blk_sizes
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: found, full_pairs, use_cell_mapping
+      LOGICAL                                            :: found, full_pairs, stable_images, use_cell_mapping
       REAL(dp), DIMENSION(:, :), POINTER                 :: cblock, sblock, work
       REAL(KIND=dp)                                      :: dab
       REAL(KIND=dp), DIMENSION(3)                        :: ra, rab, rb
@@ -1180,9 +1184,10 @@ CONTAINS
       CALL get_qs_env(qs_env, &
                       ks_env=ks_env, &
                       dft_control=dft_control)
+      CALL get_ks_env(ks_env=ks_env, kpoints=kpoints)
+      stable_images = kpoints%nkp > 0 .AND. kpoints%symmetry
       nimg = dft_control%nimages
       IF (nimg > 1) THEN
-         CALL get_ks_env(ks_env=ks_env, kpoints=kpoints)
          CALL get_kpoint_info(kpoint=kpoints, cell_to_index=cell_to_index)
          use_cell_mapping = .TRUE.
       ELSE
@@ -1306,7 +1311,12 @@ CONTAINS
                                    row=irow, col=icol, BLOCK=cblock, found=found)
             CPASSERT(found)
 
-            ra(:) = pbc(particle_set(iatom)%r(:), cell)
+            ! Absolute phases must use the same atom images as the orbital neighbour list.
+            IF (stable_images) THEN
+               ra(:) = pbc_stable(particle_set(iatom)%r(:), cell)
+            ELSE
+               ra(:) = pbc(particle_set(iatom)%r(:), cell)
+            END IF
             rb(:) = ra + rab
             dab = SQRT(rab(1)*rab(1) + rab(2)*rab(2) + rab(3)*rab(3))
 
@@ -1946,7 +1956,7 @@ CONTAINS
       INTEGER                                            :: akind, handle, i, ia, iatom, idir, &
                                                             ikind, ispin, ix, iy, iz, l, nm, nmom, &
                                                             order
-      LOGICAL                                            :: my_com_nl, my_velreprs
+      LOGICAL                                            :: my_com_nl, my_velreprs, use_periodic_images
       REAL(dp)                                           :: charge, dd, strace, trace
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: mmom, nlcom_rrv, nlcom_rrv_vrr, &
                                                             nlcom_rv, nlcom_rvr, nlcom_rxrv, &
@@ -2048,7 +2058,10 @@ CONTAINS
          END DO
          CALL build_local_moments_der_matrix(qs_env, moments_der, 1, 2, ref_point=rcc, moments=moments)
       ELSE
-         CALL build_local_moment_matrix(qs_env, moments, nmom, ref_point=rcc)
+         ! In non-periodic directions the moment must include the same images as the overlap.
+         use_periodic_images = ANY(cell%perd /= 0) .AND. ANY(cell%perd == 0)
+         CALL build_local_moment_matrix(qs_env, moments, nmom, ref_point=rcc, &
+                                        all_images=use_periodic_images, neighbor_image=use_periodic_images)
       END IF
 
       CALL qs_rho_get(rho, rho_ao=rho_ao)
@@ -2266,6 +2279,11 @@ CONTAINS
       CALL cp_results_erase(results=results, description=description)
       CALL put_results(results=results, description=description, &
                        values=rmom(2:4, 3))
+
+      IF (unit_number > 0 .AND. ANY(cell%perd /= 0) .AND. ANY(cell%perd == 0)) THEN
+         WRITE (unit_number, "(T3,A)") &
+            "Only dipole components perpendicular to the periodic lattice vectors are well-defined."
+      END IF
 
       IF (magnetic .AND. my_velreprs) THEN
          CALL print_moments(unit_number, nmom, rmom, rlab, rcc, cell, periodic=.FALSE., mmom=mmom, rmom_vel=rmom_vel)
