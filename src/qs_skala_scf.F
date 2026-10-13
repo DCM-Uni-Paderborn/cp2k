@@ -78,6 +78,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_value, qs_skala_scf_root
    PUBLIC :: qs_skala_scf_point_derivative
    PUBLIC :: qs_skala_scf_crossings, qs_skala_scf_crossing_roots
+   PUBLIC :: qs_skala_scf_choose_root
    PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
    PUBLIC :: qs_skala_scf_crossing_type
    PUBLIC :: qs_skala_scf_select, qs_skala_scf_limiting, qs_skala_scf_balance
@@ -1048,6 +1049,80 @@ CONTAINS
       END DO
       CALL qs_skala_scf_evaluate(state, first, energy, gradient)
    END SUBROUTINE qs_skala_scf_crossing_roots
+
+! **************************************************************************************************
+!> \brief Choose the earliest supplied converged root on a native orbital trial segment.
+!>        At that root retain every candidate whose actual physical value meets its tolerance,
+!>        including coincident or dependent constraints. Incomplete root searches return failure
+!>        and restore the first state. Unrecorded interior roots, normal admissibility and a
+!>        minimum are not established by this selection.
+!> \param state Native orbital and physical input state.
+!> \param first Initial normalized orbital coordinates.
+!> \param last Final normalized orbital coordinates.
+!> \param coordinates Supplied root coordinates, one column per candidate.
+!> \param points Physical sample keys in the same candidate order.
+!> \param domains Physical evaluation domains.
+!> \param spins Physical spin selectors.
+!> \param descriptors Density or kinetic density for each candidate.
+!> \param converged Whether each supplied root was located successfully.
+!> \param tolerances Absolute density and kinetic-density zero tolerances in atomic units.
+!> \param root Selected coordinates, or first on failure.
+!> \param selected Candidates meeting their original tolerance at the selected root.
+!> \param found Whether a complete supplied search yields a verified physical zero.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_choose_root(state, first, last, coordinates, points, domains, spins, &
+                                       descriptors, converged, tolerances, root, selected, found)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: first(:), last(:), coordinates(:, :)
+      INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      LOGICAL, INTENT(IN)                                :: converged(:)
+      REAL(dp), INTENT(IN)                               :: tolerances(2)
+      REAL(dp), INTENT(OUT)                              :: root(:)
+      LOGICAL, ALLOCATABLE, INTENT(OUT)                  :: selected(:)
+      LOGICAL, INTENT(OUT)                               :: found
+
+      INTEGER                                            :: earliest, i, m, n
+      REAL(dp)                                           :: energy, length2, roundoff, value
+      REAL(dp), ALLOCATABLE                              :: direction(:), gradient(:), steps(:)
+
+      n = qs_skala_scf_size(state)
+      m = SIZE(spins)
+      CPASSERT(SIZE(first) == n .AND. SIZE(last) == n .AND. SIZE(root) == n)
+      CPASSERT(ALL(SHAPE(coordinates) == [n, m]) .AND. ALL(SHAPE(points) == [3, m]))
+      CPASSERT(SIZE(domains) == m .AND. SIZE(descriptors) == m .AND. SIZE(converged) == m)
+      CPASSERT(ALL(descriptors >= 1 .AND. descriptors <= 2))
+      CPASSERT(ALL(ieee_is_finite(coordinates)))
+      CPASSERT(ALL(ieee_is_finite(tolerances)) .AND. ALL(tolerances > 0.0_dp))
+      ALLOCATE (selected(m), direction(n), gradient(n), steps(m))
+      selected = .FALSE.
+      found = .FALSE.
+      root(:) = first
+      CALL qs_skala_scf_evaluate(state, first, energy, gradient)
+      IF (m == 0 .OR. .NOT. ALL(converged)) RETURN
+      direction(:) = last - first
+      length2 = DOT_PRODUCT(direction, direction)
+      IF (length2 <= TINY(0.0_dp)) RETURN
+      roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(NORM2(first), NORM2(last), TINY(0.0_dp))
+      DO i = 1, m
+         steps(i) = DOT_PRODUCT(coordinates(:, i) - first, direction)/length2
+         IF (steps(i) < -64.0_dp*EPSILON(0.0_dp) .OR. steps(i) > 1.0_dp + 64.0_dp*EPSILON(0.0_dp)) RETURN
+         IF (NORM2(coordinates(:, i) - first - steps(i)*direction) > roundoff) RETURN
+      END DO
+      earliest = MINLOC(steps, DIM=1)
+      root(:) = coordinates(:, earliest)
+      CALL qs_skala_scf_evaluate(state, root, energy, gradient)
+      DO i = 1, m
+         CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), value)
+         selected(i) = ABS(value) <= tolerances(descriptors(i))
+      END DO
+      found = selected(earliest)
+      IF (.NOT. found) THEN
+         selected = .FALSE.
+         root(:) = first
+         CALL qs_skala_scf_evaluate(state, first, energy, gradient)
+      END IF
+   END SUBROUTINE qs_skala_scf_choose_root
 
 ! **************************************************************************************************
 !> \brief Select the requested density or kinetic-density values from recorded samples.
