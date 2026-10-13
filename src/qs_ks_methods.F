@@ -62,6 +62,7 @@ MODULE qs_ks_methods
                                               hfx_ks_matrix_kp
    USE hfx_types,                       ONLY: hfx_type
    USE input_constants,                 ONLY: do_potential_coulomb,&
+                                              do_potential_id,&
                                               do_potential_long,&
                                               do_potential_short,&
                                               do_ppl_grid,&
@@ -2043,14 +2044,15 @@ CONTAINS
                CPABORT("Inverse UPF exchange requires RI-RHO with the primary orbital basis")
             END IF
             IF (.NOT. ASSOCIATED(inverse%bloch%kpoints)) THEN
-               IF (ANY(inverse%frame%ao%periodicity /= 0) .AND. ri%ri_metric%potential_type /= do_potential_short) THEN
-                  CPABORT("Periodic Gamma UPF fitting currently requires erfc")
+               IF (ANY(inverse%frame%ao%periodicity /= 0) .AND. &
+                   ri%ri_metric%potential_type /= do_potential_short .AND. ri%ri_metric%potential_type /= do_potential_id) THEN
+                  CPABORT("Periodic Gamma UPF fitting currently requires erfc or identity")
                END IF
             END IF
             ! Augmented transition integrals use the same fitting interaction as the
             ! native Gaussian integrals. The native contraction selects the exchange kernel.
             SELECT CASE (ri%ri_metric%potential_type)
-            CASE (do_potential_coulomb, do_potential_long, do_potential_short)
+            CASE (do_potential_coulomb, do_potential_long, do_potential_short, do_potential_id)
             CASE DEFAULT
                CPABORT("Inverse UPF fitting interaction is not implemented yet")
             END SELECT

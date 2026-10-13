@@ -1622,7 +1622,8 @@ CONTAINS
          samples(nf, nb, 2), sg(3, 8), shift, shifted_cell(3, 3), sv(8), value(nf, nb), width(2), &
          x(3, nf), xp(3, nf)
       TYPE(gaussian_basis_workspace_type)                :: workspace
-      TYPE(gaussian_coulomb_fields_type)                 :: coulomb, long_range, short_range
+      TYPE(gaussian_coulomb_fields_type)                 :: coulomb, identity, long_range, &
+                                                            short_range
       TYPE(gto_basis_set_type), POINTER                  :: basis
 
       NULLIFY (basis)
@@ -1714,6 +1715,14 @@ CONTAINS
       CALL check(MAXVAL(ABS(other - EXP(CMPLX(0.0_dp, -2*pi*bloch(1), dp))*v)), 'native Gaussian lattice representative')
       CALL gaussian_coulomb_fields_init(3)
       CALL gaussian_coulomb_fields_prepare(basis, 1, coulomb)
+      CALL gaussian_coulomb_fields_prepare(basis, 1, identity, identity=.TRUE.)
+      expected = 0.0_dp
+      DO point = 1, nf
+         CALL gaussian_coulomb_fields_evaluate(identity, x(:, point), cv, cg)
+         expected = MAX(expected, MAXVAL(ABS(cv - value(point, :8))), &
+                        MAXVAL(ABS(cg - TRANSPOSE(gradient(point, :8, :)))))
+      END DO
+      CALL check(expected, 'overlap RI field and independent Cartesian Gaussian gradient')
       CALL deallocate_gto_basis_set(basis)
       omega = .31_dp
       width = SQRT([.4_dp, .9_dp]*omega**2/([.4_dp, .9_dp] + omega**2))

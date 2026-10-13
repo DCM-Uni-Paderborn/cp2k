@@ -38,6 +38,7 @@ MODULE gaussian_coulomb_fields
 
    TYPE gaussian_coulomb_fields_type
       INTEGER :: nfunction = 0
+      LOGICAL :: identity = .FALSE.
       TYPE(gaussian_coulomb_primitive_type), ALLOCATABLE :: primitives(:)
    END TYPE gaussian_coulomb_fields_type
 
@@ -67,11 +68,13 @@ CONTAINS
 !> \param basis Native contracted Gaussian basis.
 !> \param iset Native shell-set index.
 !> \param fields New owned cache for the functions in this shell set.
+!> \param identity Optional overlap interaction, returning the Gaussian functions themselves.
 ! **************************************************************************************************
-   SUBROUTINE gaussian_coulomb_fields_prepare(basis, iset, fields)
+   SUBROUTINE gaussian_coulomb_fields_prepare(basis, iset, fields, identity)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       INTEGER, INTENT(IN)                                :: iset
       TYPE(gaussian_coulomb_fields_type), INTENT(OUT)    :: fields
+      LOGICAL, INTENT(IN), OPTIONAL                      :: identity
 
       INTEGER                                            :: count, degree, first, ip, l, last, m, &
                                                             nc, nset, row, t
@@ -87,6 +90,7 @@ CONTAINS
       CPASSERT(lmax(iset) >= 0 .AND. npgf(iset) > 0)
       CPASSERT(ASSOCIATED(orbtramat))
       CPASSERT(UBOUND(orbtramat, 1) >= lmax(iset))
+      IF (PRESENT(identity)) fields%identity = identity
       fields%nfunction = nsgf_set(iset)
       nc = ncoset(lmax(iset))
       first = SUM(nsgf_set(:iset - 1)) + 1
@@ -144,6 +148,7 @@ CONTAINS
       TYPE(gaussian_coulomb_primitive_type), ALLOCATABLE :: screened(:)
 
       CPASSERT(ALLOCATED(fields%primitives))
+      CPASSERT(.NOT. fields%identity)
       CPASSERT(ieee_is_finite(omega) .AND. omega >= 0.0_dp)
       IF (omega == 0.0_dp) THEN
          IF (.NOT. short_range) THEN
@@ -215,7 +220,7 @@ CONTAINS
       INTEGER                                            :: axis, block, l, m
       LOGICAL                                            :: angular_ready(0:max_cached_l)
       REAL(dp) :: angular, cached_angular((max_cached_l + 1)**2), &
-         cached_gradient(3, (max_cached_l + 1)**2), dangular(3), dh, h
+         cached_gradient(3, (max_cached_l + 1)**2), dangular(3), dh, exponential, h, s
 
       CPASSERT(ALLOCATED(fields%primitives))
       CPASSERT(SIZE(potential) == fields%nfunction)
@@ -225,12 +230,20 @@ CONTAINS
          CPASSERT(ALL(SHAPE(gradient) == [3, fields%nfunction]))
          gradient = 0.0_dp
       END IF
+      s = SUM(displacement**2)
       angular_ready = .FALSE.
       DO block = 1, SIZE(fields%primitives)
          ASSOCIATE (primitive => fields%primitives(block))
             IF (.NOT. ANY(primitive%coefficients /= 0.0_dp)) CYCLE
             l = primitive%l
-            CALL radial_potential(primitive%alpha, primitive%power, l, SUM(displacement**2), h, dh)
+            IF (fields%identity) THEN
+               exponential = EXP(-primitive%alpha*s)
+               h = s**primitive%power*exponential
+               dh = -primitive%alpha*h
+               IF (primitive%power > 0) dh = dh + primitive%power*s**(primitive%power - 1)*exponential
+            ELSE
+               CALL radial_potential(primitive%alpha, primitive%power, l, s, h, dh)
+            END IF
             ! Solid harmonics do not depend on the radial exponent or power. Reuse them through
             ! g in a fixed workspace, retaining the generic evaluation for higher angular orders.
             IF (l <= max_cached_l) THEN
