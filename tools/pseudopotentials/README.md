@@ -54,6 +54,12 @@ potential, projectors and augmentation with the replay; only the atomic guess wa
 allow roundoff differences. Original bytes are retained apart from the `has_wfc` flag, and
 `PP_FULL_WFC` is added. Missing core kinetic data are not inferred.
 
+For small numerical differences from a generator replay, `--replay-tolerance VALUE` permits a
+relative maximum difference per numeric table and per reference-energy or cutoff attribute. The
+radial mesh, quadrature, functional, electron count and projector assignment must still agree
+exactly. All original arrays remain unchanged. Check the reconstructed calculation's internal
+consistency before using such supplemented data. The default still requires exact operator tables.
+
 Keep new generated data in a separate working directory until their provenance and CP2K calculation
 checks have been reviewed. Only qualified prepared data should be added under `data/UPF/`, with
 distinct filenames and their preparation recorded in `SOURCE`. Original collections remain upstream
