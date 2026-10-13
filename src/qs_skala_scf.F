@@ -1322,6 +1322,7 @@ CONTAINS
          CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
                                              coordinate, physical_tolerances, gradient_tolerance, converged, &
                                              max_iterations=max_iterations, max_step=max_step, iterations=iterations, &
+                                             verify_stationarity=evaluate_native_stationarity, &
                                              check_stop=check_native_stop, stopped=stopped)
       END IF
       ALLOCATE (gradient(SIZE(coordinate)))
@@ -1680,7 +1681,9 @@ CONTAINS
    END SUBROUTINE evaluate_native_gradient
 
 ! **************************************************************************************************
-!> \brief Verify the complete physical orbital derivative of an unconstrained native trial.
+!> \brief Verify physical orbital stationarity, retaining only tangent motion for constrained trials.
+!>        Project in the orthonormal physical orbital metric, using fresh sample covectors.
+!>        Independent constraints and their original physical tolerances remain required.
 !> \param coordinate Complete normalized orbital coordinates.
 !> \param context Native orbital and constraint state.
 !> \param converged Whether the physical gradient meets the original tolerance.
@@ -1691,14 +1694,41 @@ CONTAINS
       CLASS(*), INTENT(INOUT) :: context
       LOGICAL, INTENT(OUT) :: converged
 
-      REAL(dp) :: energy
-      REAL(dp), ALLOCATABLE :: gradient(:)
+      INTEGER :: info, lwork, m, n, rank
+      REAL(dp) :: energy, query(1)
+      REAL(dp), ALLOCATABLE :: coefficients(:, :), gradient(:), jacobian(:, :), matrix(:, :), &
+                               normals(:, :), physical(:, :), scales(:), singular(:), values(:), work(:)
 
+      converged = .FALSE.
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
-         CPASSERT(SIZE(context%points, 2) == 0)
-         ALLOCATE (gradient(SIZE(coordinate)))
+         n = SIZE(coordinate)
+         m = SIZE(context%points, 2)
+         CPASSERT(m <= n)
+         ALLOCATE (gradient(n))
+         IF (m > 0) THEN
+            ALLOCATE (values(m), jacobian(m, n), physical(m, n), scales(m), &
+                      matrix(n, m), normals(n, m), coefficients(n, 1), singular(m))
+            CALL qs_skala_scf_constraints(context%state, coordinate, context%points, context%domains, &
+                                          context%spins, context%descriptors, values, jacobian, physical, context%targets)
+            scales(:) = MAXVAL(ABS(physical), DIM=2)
+            IF (ANY(scales <= TINY(0.0_dp))) RETURN
+            normals(:, :) = TRANSPOSE(physical/SPREAD(scales, 2, n))
+         END IF
          CALL qs_skala_scf_evaluate(context%state, coordinate, energy, physical_gradient=gradient, sample_inputs=.FALSE.)
+         IF (m > 0) THEN
+            ! The fitted normal component is removed from the physical covector, not from
+            ! its Cayley-coordinate derivative. Scaling each constraint preserves its units.
+            matrix(:, :) = normals
+            coefficients(:, 1) = gradient
+            CALL dgelss(n, m, 1, matrix, n, coefficients, n, singular, EPSILON(0.0_dp), rank, query, -1, info)
+            IF (info /= 0) RETURN
+            lwork = MAX(1, CEILING(query(1)))
+            ALLOCATE (work(lwork))
+            CALL dgelss(n, m, 1, matrix, n, coefficients, n, singular, EPSILON(0.0_dp), rank, work, lwork, info)
+            IF (info /= 0 .OR. rank /= m) RETURN
+            gradient(:) = gradient - MATMUL(normals, coefficients(:m, 1))
+         END IF
          converged = NORM2(gradient) <= context%gradient_tolerance
       CLASS DEFAULT
          CPABORT("Invalid native orbital convergence context.")
