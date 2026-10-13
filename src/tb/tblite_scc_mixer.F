@@ -14,8 +14,8 @@ MODULE tblite_scc_mixer
    USE mctc_env, ONLY: error_type, &
                        fatal_error, &
                        wp
-   USE tblite_lapack, ONLY: getrf, &
-                            getrs
+   USE tblite_lapack_getrf, ONLY: getrf => wrap_getrf
+   USE tblite_lapack_getrs, ONLY: getrs => wrap_getrs
 #endif
 
    IMPLICIT NONE

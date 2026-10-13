@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
 tblite_ver="0.7.0"
 tblite_sha256="3a7cb4602101e828caf41c38ca5e30f82de82d0d26d5db40168acdcad3462b92"
-save_tblite_rev="d9a937f23749f44c3da98dd0ea1387edf6507db9"
+save_tblite_rev="8a5d86bc7bcf1c31e0d29cae7904b5cf5a0eef11"
 save_tblite_repo="${SAVE_TBLITE_REPOSITORY:-https://github.com/DCM-Uni-Paderborn/save_tblite.git}"
 save_tblite_src_dir="save_tblite-${save_tblite_rev}"
 save_tblite_dftd_rev="92f4c4dc62be78cd25227ef1335dfa11e247a832"

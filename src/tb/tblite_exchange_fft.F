@@ -72,9 +72,9 @@ CONTAINS
       END IF
       IF (same) RETURN
       CALL release_exchange_transform(self)
-      self%points = points
-      self%cells = cells
-      self%weights = weights
+      ALLOCATE (self%points, SOURCE=points)
+      ALLOCATE (self%cells, SOURCE=cells)
+      ALLOCATE (self%weights, SOURCE=weights)
       self%nmesh = nmesh
       self%direct_requested = direct
       ALLOCATE (self%grid_index(3, nk))

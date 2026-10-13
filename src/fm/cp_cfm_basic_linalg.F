@@ -14,20 +14,25 @@
 !> \author Joost VandeVondele
 ! **************************************************************************************************
 MODULE cp_cfm_basic_linalg
-   USE cp_blacs_env,                    ONLY: cp_blacs_env_type
-   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
-                                              cp_cfm_get_info,&
-                                              cp_cfm_release,&
-                                              cp_cfm_to_cfm,&
-                                              cp_cfm_type
-   USE cp_fm_struct,                    ONLY: cp_fm_struct_equivalent
-   USE cp_fm_types,                     ONLY: cp_fm_type
-   USE cp_log_handling,                 ONLY: cp_to_string
-   USE kahan_sum,                       ONLY: accurate_dot_product
-   USE kinds,                           ONLY: dp
-   USE mathconstants,                   ONLY: z_one,&
-                                              z_zero
-   USE message_passing,                 ONLY: mp_comm_type
+   USE cp_blacs_env, ONLY: cp_blacs_env_type
+   USE cp_cfm_types, ONLY: cp_cfm_create, &
+                           cp_cfm_get_info, &
+                           cp_cfm_release, &
+                           cp_cfm_to_cfm, &
+                           cp_cfm_type
+   USE cp_fm_struct, ONLY: cp_fm_struct_equivalent
+   USE cp_fm_types, ONLY: cp_fm_type
+   USE cp_log_handling, ONLY: cp_to_string
+#if defined(__HAS_IEEE_EXCEPTIONS)
+   USE ieee_exceptions, ONLY: IEEE_DIVIDE_BY_ZERO, IEEE_INVALID, &
+                              ieee_get_halting_mode, &
+                              ieee_set_halting_mode
+#endif
+   USE kahan_sum, ONLY: accurate_dot_product
+   USE kinds, ONLY: dp
+   USE mathconstants, ONLY: z_one, &
+                            z_zero
+   USE message_passing, ONLY: mp_comm_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -989,6 +994,9 @@ CONTAINS
       COMPLEX(kind=dp)                                   :: al
       INTEGER                                            :: handle, m, n
       LOGICAL                                            :: invert
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      LOGICAL                                            :: halt(2)
+#endif
 
       CALL timeset(routineN, handle)
       side_char = 'L'
@@ -1015,6 +1023,11 @@ CONTAINS
 
       IF (invert) THEN
 
+#if defined(__HAS_IEEE_EXCEPTIONS)
+         ! Optimized complex TRSM can speculatively divide by a zero imaginary diagonal part.
+         CALL ieee_get_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], halt)
+         CALL ieee_set_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], .FALSE.)
+#endif
 #if defined(__parallel)
          CALL pztrsm(side_char, uplo, transa, unit_diag, m, n, al, &
                      triangular_matrix%local_data(1, 1), 1, 1, &
@@ -1026,6 +1039,9 @@ CONTAINS
                     triangular_matrix%local_data(1, 1), &
                     SIZE(triangular_matrix%local_data, 1), &
                     matrix_b%local_data(1, 1), SIZE(matrix_b%local_data, 1))
+#endif
+#if defined(__HAS_IEEE_EXCEPTIONS)
+         CALL ieee_set_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], halt)
 #endif
 
       ELSE
@@ -1070,6 +1086,9 @@ CONTAINS
 #if defined(__parallel)
       INTEGER, DIMENSION(9)                    :: desca
 #endif
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      LOGICAL                                  :: halt(2)
+#endif
 
       CALL timeset(routineN, handle)
 
@@ -1081,11 +1100,19 @@ CONTAINS
 
       a => matrix_a%local_data
 
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      ! Optimized BLAS packing can evaluate unused padded diagonal entries.
+      CALL ieee_get_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], halt)
+      CALL ieee_set_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], .FALSE.)
+#endif
 #if defined(__parallel)
       desca(:) = matrix_a%matrix_struct%descriptor(:)
       CALL pztrtri(my_uplo, unit_diag, ncol_global, a(1, 1), 1, 1, desca, info)
 #else
       CALL ztrtri(my_uplo, unit_diag, ncol_global, a(1, 1), ncol_global, info)
+#endif
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      CALL ieee_set_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], halt)
 #endif
 
       IF (PRESENT(info_out)) THEN

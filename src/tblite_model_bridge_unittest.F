@@ -202,8 +202,8 @@ CONTAINS
       ALLOCATE (sk(nao, nao), hk(nao, nao), source=(0.0_wp, 0.0_wp))
       DO itr = 1, SIZE(images%translation, 2)
          phase = EXP(CMPLX(0.0_wp, DOT_PRODUCT(qvec, images%translation(:, itr)), wp))
-         sk = sk + phase*images%overlap(:, :, itr)
-         hk = hk + phase*images%hamiltonian(:, :, itr)
+         sk(:, :) = sk + phase*images%overlap(:, :, itr)
+         hk(:, :) = hk + phase*images%hamiltonian(:, :, itr)
       END DO
       CALL check(error, MAXVAL(ABS(sk - CONJG(TRANSPOSE(sk)))), &
          & 0.0_wp, thr=1.0e-11_wp)
@@ -223,7 +223,7 @@ CONTAINS
       ALLOCATE (hamiltonian_total(nao, nao), acp_gamma(nao, nao))
       CALL cp2k_build_gamma_h0(calc, mol, bcache, acache, acc, selfenergy, &
          & overlap, dipole, quadrupole, hamiltonian_total)
-      acp_gamma = hamiltonian_total - hamiltonian
+      acp_gamma(:, :) = hamiltonian_total - hamiltonian
       ALLOCATE (lattr_acp(3, SIZE(lattr_acp_ref, 2) + 2))
       lattr_acp(:, :SIZE(lattr_acp_ref, 2)) = lattr_acp_ref
       lattr_acp(:, SIZE(lattr_acp_ref, 2) + 1) = 20.0_wp*SUM(lattice, dim=2)
@@ -280,15 +280,15 @@ CONTAINS
       DO itr = 1, SIZE(acp_images%projector_translation, 2)
          phase = EXP(CMPLX(0.0_wp, -DOT_PRODUCT(qvec, &
             & acp_images%projector_translation(:, itr)), wp))
-         ck = ck + phase*acp_images%projector_overlap(:, :, itr)
-         csk = csk + phase*acp_images%scaled_projector_overlap(:, :, itr)
+         ck(:, :) = ck + phase*acp_images%projector_overlap(:, :, itr)
+         csk(:, :) = csk + phase*acp_images%scaled_projector_overlap(:, :, itr)
       END DO
       DO itr = 1, SIZE(acp_images%translation, 2)
          phase = EXP(CMPLX(0.0_wp, &
             & DOT_PRODUCT(qvec, acp_images%translation(:, itr)), wp))
-         hk_acp = hk_acp + phase*acp_images%hamiltonian(:, :, itr)
+         hk_acp(:, :) = hk_acp + phase*acp_images%hamiltonian(:, :, itr)
       END DO
-      hk_acp_direct = MATMUL(CONJG(TRANSPOSE(ck)), csk)
+      hk_acp_direct(:, :) = MATMUL(CONJG(TRANSPOSE(ck)), csk)
       CALL check(error, MAXVAL(ABS(hk_acp - hk_acp_direct)), &
          & 0.0_wp, thr=1.0e-11_wp)
       IF (ALLOCATED(error)) THEN
@@ -354,7 +354,7 @@ CONTAINS
       ALLOCATE (amat(nao, nao), bmat(nao, nao), &
          & density(nao, nao, nimg, 1), density_gamma(nao, nao, nimg, 1), &
          & density_translation(3, nimg))
-      density_translation = images%translation
+      density_translation(:, :) = images%translation
 
       ! One artificial complex-Hermitian k-point density, transformed to real
       ! images.  A is symmetric and B antisymmetric, hence
@@ -527,10 +527,10 @@ CONTAINS
             eps = unity
             eps(jc, ic) = eps(jc, ic) + step
             mol_work = mol
-            mol_work%xyz = MATMUL(eps, mol%xyz)
-            mol_work%lattice = MATMUL(eps, mol%lattice)
-            lattr_work = MATMUL(eps, lattr)
-            density_translation_work = MATMUL(eps, density_translation)
+            mol_work%xyz(:, :) = MATMUL(eps, mol%xyz)
+            mol_work%lattice(:, :) = MATMUL(eps, mol%lattice)
+            lattr_work(:, :) = MATMUL(eps, lattr)
+            density_translation_work(:, :) = MATMUL(eps, density_translation)
             CALL cp2k_build_image_acp(calc, mol_work, bcache, acache, lattr_work, &
                & images_work)
             er = contract_acp_image_energy(images_work, &
@@ -539,10 +539,10 @@ CONTAINS
             eps = unity
             eps(jc, ic) = eps(jc, ic) - step
             mol_work = mol
-            mol_work%xyz = MATMUL(eps, mol%xyz)
-            mol_work%lattice = MATMUL(eps, mol%lattice)
-            lattr_work = MATMUL(eps, lattr)
-            density_translation_work = MATMUL(eps, density_translation)
+            mol_work%xyz(:, :) = MATMUL(eps, mol%xyz)
+            mol_work%lattice(:, :) = MATMUL(eps, mol%lattice)
+            lattr_work(:, :) = MATMUL(eps, lattr)
+            density_translation_work(:, :) = MATMUL(eps, density_translation)
             CALL cp2k_build_image_acp(calc, mol_work, bcache, acache, lattr_work, &
                & images_work)
             el = contract_acp_image_energy(images_work, &
@@ -550,7 +550,7 @@ CONTAINS
             numsigma(jc, ic) = 0.5_wp*(er - el)/step
          END DO
       END DO
-      numsigma = 0.5_wp*(numsigma + TRANSPOSE(numsigma))
+      numsigma(:, :) = 0.5_wp*(numsigma + TRANSPOSE(numsigma))
       CALL check(error, MAXVAL(ABS(sigma - numsigma)), 0.0_wp, thr=fd_thr)
       IF (ALLOCATED(error)) THEN
          CALL test_failed(error, "Image ACP strain derivative does not match finite differences")
@@ -565,10 +565,10 @@ CONTAINS
             eps = unity
             eps(jc, ic) = eps(jc, ic) + step
             mol_work = mol
-            mol_work%xyz = MATMUL(eps, mol%xyz)
-            mol_work%lattice = MATMUL(eps, mol%lattice)
-            lattr_work = MATMUL(eps, lattr)
-            density_translation_work = MATMUL(eps, density_translation)
+            mol_work%xyz(:, :) = MATMUL(eps, mol%xyz)
+            mol_work%lattice(:, :) = MATMUL(eps, mol%lattice)
+            lattr_work(:, :) = MATMUL(eps, lattr)
+            density_translation_work(:, :) = MATMUL(eps, density_translation)
             CALL cp2k_update_basis(calc, mol_work, bcache_work, error, &
                & wfn_aux=wfn_aux_work)
             IF (ALLOCATED(error)) RETURN
@@ -580,10 +580,10 @@ CONTAINS
             eps = unity
             eps(jc, ic) = eps(jc, ic) - step
             mol_work = mol
-            mol_work%xyz = MATMUL(eps, mol%xyz)
-            mol_work%lattice = MATMUL(eps, mol%lattice)
-            lattr_work = MATMUL(eps, lattr)
-            density_translation_work = MATMUL(eps, density_translation)
+            mol_work%xyz(:, :) = MATMUL(eps, mol%xyz)
+            mol_work%lattice(:, :) = MATMUL(eps, mol%lattice)
+            lattr_work(:, :) = MATMUL(eps, lattr)
+            density_translation_work(:, :) = MATMUL(eps, density_translation)
             CALL cp2k_update_basis(calc, mol_work, bcache_work, error, &
                & wfn_aux=wfn_aux_work)
             IF (ALLOCATED(error)) RETURN
@@ -594,7 +594,7 @@ CONTAINS
             numsigma_full(jc, ic) = 0.5_wp*(er - el)/step
          END DO
       END DO
-      numsigma_full = 0.5_wp*(numsigma_full + TRANSPOSE(numsigma_full))
+      numsigma_full(:, :) = 0.5_wp*(numsigma_full + TRANSPOSE(numsigma_full))
       CALL check(error, MAXVAL(ABS(sigma_full - numsigma_full)), 0.0_wp, &
          & thr=fd_thr)
       IF (ALLOCATED(error)) THEN
@@ -716,7 +716,7 @@ CONTAINS
       END DO
       density_k(:, :, 1, 1) = CMPLX(amat, bmat, wp)
       density_k(:, :, 1, 2) = CONJG(density_k(:, :, 1, 1))
-      cells = MATMUL(matinv_3x3(mol%lattice), images%translation)
+      cells(:, :) = MATMUL(matinv_3x3(mol%lattice), images%translation)
       DO itr = 1, nimg
          angle = 2.0_wp*pi*DOT_PRODUCT(kfrac(:, 1), cells(:, itr))
          density_image(:, :, itr, 1) = COS(angle)*amat + SIN(angle)*bmat

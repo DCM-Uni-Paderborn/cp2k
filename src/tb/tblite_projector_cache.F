@@ -55,10 +55,6 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, INTENT(OUT) :: reals(:)
       INTEGER :: atom, species, shell, offset, total, count, base
 
-      integers = [basis%nsh, basis%nao, basis%maxl, SIZE(basis%nsh_id), basis%nsh_id, &
-                  SIZE(basis%nsh_at), basis%nsh_at, SIZE(basis%ish_at), basis%ish_at, &
-                  SIZE(basis%iao_sh), basis%iao_sh, SIZE(basis%nao_sh), basis%nao_sh]
-      base = SIZE(integers)
       total = 0
       count = 0
       DO atom = 1, mol%nat
@@ -68,7 +64,11 @@ CONTAINS
             count = count + 1
          END DO
       END DO
-      integers = [integers, SPREAD(0, 1, 2*count)]
+      ALLOCATE (integers, SOURCE=[basis%nsh, basis%nao, basis%maxl, SIZE(basis%nsh_id), basis%nsh_id, &
+                                  SIZE(basis%nsh_at), basis%nsh_at, SIZE(basis%ish_at), basis%ish_at, &
+                                  SIZE(basis%iao_sh), basis%iao_sh, SIZE(basis%nao_sh), basis%nao_sh, &
+                                  SPREAD(0, 1, 2*count)])
+      base = SIZE(integers) - 2*count
       ALLOCATE (reals(1 + 2*total))
       reals(1) = basis%intcut
       offset = 1
@@ -126,12 +126,12 @@ CONTAINS
       END IF
       CALL basis_key(mol, basis, live, valence_i, valence_r)
       CALL basis_key(mol, acp%auxbas, auxiliary%auxbas, auxiliary_i, auxiliary_r)
-      integers = [mol%nat, SIZE(mol%id), mol%id, SIZE(mol%num), mol%num, &
-                  MERGE(1, 0, mol%periodic), SHAPE(mol%xyz), SHAPE(translations), SHAPE(acp%levels), &
-                  SIZE(valence_i), valence_i, SIZE(auxiliary_i), auxiliary_i]
-      reals = [RESHAPE(mol%xyz, [SIZE(mol%xyz)]), RESHAPE(mol%lattice, [9]), &
-               RESHAPE(translations, [SIZE(translations)]), RESHAPE(acp%levels, [SIZE(acp%levels)]), &
-               valence_r, auxiliary_r]
+      ALLOCATE (integers, SOURCE=[mol%nat, SIZE(mol%id), mol%id, SIZE(mol%num), mol%num, &
+                                  MERGE(1, 0, mol%periodic), SHAPE(mol%xyz), SHAPE(translations), SHAPE(acp%levels), &
+                                  SIZE(valence_i), valence_i, SIZE(auxiliary_i), auxiliary_i])
+      ALLOCATE (reals, SOURCE=[RESHAPE(mol%xyz, [SIZE(mol%xyz)]), RESHAPE(mol%lattice, [9]), &
+                               RESHAPE(translations, [SIZE(translations)]), RESHAPE(acp%levels, [SIZE(acp%levels)]), &
+                               valence_r, auxiliary_r])
       IF (.NOT. ALL(ieee_is_finite(reals))) THEN
          cache%valid = .FALSE.
          cache%pending = .FALSE.
@@ -147,22 +147,25 @@ CONTAINS
          ! Invalidate first: no stale payload can be accepted after a failed direct rebuild.
          cache%valid = .FALSE.
          cache%pending = .TRUE.
-         cache%integer_key = integers
-         cache%real_key = reals
+         CALL MOVE_ALLOC(integers, cache%integer_key)
+         CALL MOVE_ALLOC(reals, cache%real_key)
          cache%misses = cache%misses + 1
          RETURN
       END IF
       cache%hits = cache%hits + 1
-      images%projector_translation = cache%translation
-      images%projector_overlap = cache%overlap
-      images%level = cache%level
+      ALLOCATE (images%projector_translation, SOURCE=cache%translation)
+      ALLOCATE (images%projector_overlap, SOURCE=cache%overlap)
+      ALLOCATE (images%level, SOURCE=cache%level)
       ALLOCATE (images%scaled_projector_overlap, MOLD=images%projector_overlap)
       DO image = 1, SIZE(images%projector_overlap, 3)
          DO ao = 1, SIZE(images%projector_overlap, 2)
             images%scaled_projector_overlap(:, ao, image) = images%level*images%projector_overlap(:, ao, image)
          END DO
       END DO
-      auxiliary%scaled_pv_overlap = SUM(images%scaled_projector_overlap, DIM=3)
+      IF (.NOT. ALLOCATED(auxiliary%scaled_pv_overlap)) THEN
+         ALLOCATE (auxiliary%scaled_pv_overlap(acp%auxbas%nao, basis%nao))
+      END IF
+      auxiliary%scaled_pv_overlap(:, :) = SUM(images%scaled_projector_overlap, DIM=3)
    END SUBROUTINE projector_cache_lookup
 
 ! **************************************************************************************************
@@ -186,9 +189,12 @@ CONTAINS
       IF (.NOT. ALL(ieee_is_finite(images%projector_translation))) RETURN
       IF (.NOT. ALL(ieee_is_finite(images%projector_overlap))) RETURN
       IF (.NOT. ALL(ieee_is_finite(images%level))) RETURN
-      cache%translation = images%projector_translation
-      cache%overlap = images%projector_overlap
-      cache%level = images%level
+      IF (ALLOCATED(cache%translation)) DEALLOCATE (cache%translation)
+      IF (ALLOCATED(cache%overlap)) DEALLOCATE (cache%overlap)
+      IF (ALLOCATED(cache%level)) DEALLOCATE (cache%level)
+      ALLOCATE (cache%translation, SOURCE=images%projector_translation)
+      ALLOCATE (cache%overlap, SOURCE=images%projector_overlap)
+      ALLOCATE (cache%level, SOURCE=images%level)
       cache%valid = .TRUE.
    END SUBROUTINE projector_cache_store
 

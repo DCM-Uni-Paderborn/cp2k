@@ -305,7 +305,6 @@ CONTAINS
       ALLOCATE (kpsym%rot(3, 3, ns), kpsym%xkp(3, ns), kpsym%rotp(ns))
       ALLOCATE (kpsym%f0(natom, ns), kpsym%fcell(3, natom, ns), kpsym%fcell_gauge(3, natom, ns))
       ALLOCATE (kpsym%phase_mode(ns), kpsym%phase_gauge(ns))
-      ALLOCATE (kpsym%kgphase(natom, ns), kpsym%kgphase_input(natom, ns))
       kpsym%phase_mode(:) = 0
       kpsym%phase_gauge(:) = 0
 
@@ -323,11 +322,6 @@ CONTAINS
             srotmat(1:3, 1:3) = srot_cache(1:3, 1:3, ic)
             frot(1:3, 1:3) = frot_cache(1:3, 1:3, ic)
             kpsym%xkp(1:3, nr) = crys_sym%kpmesh(1:3, is)
-            krot(1:3, 1:3) = krot_cache(1:3, 1:3, ic)
-            IF (ir < 0) krot(1:3, 1:3) = -krot(1:3, 1:3)
-            kgvec(1:3) = kpsym%xkp(1:3, nr) - &
-                         MATMUL(REAL(krot(1:3, 1:3), KIND=dp), kpoint%xkp(1:3, ik))
-            kgvec(1:3) = ANINT(kgvec(1:3))
             kpsym%f0(1:natom, nr) = crys_sym%f0(1:natom, ic)
             DO j = 1, natom
                srot(1:3) = MATMUL(srotmat, scoord(1:3, j)) + crys_sym%vt(1:3, ic)
@@ -335,9 +329,6 @@ CONTAINS
                kpsym%fcell_gauge(1:3, j, nr) = kpsym%fcell(1:3, j, nr) + &
                                                MATMUL(frot, agauge(1:3, j)) - &
                                                agauge(1:3, kpsym%f0(j, nr))
-               kpsym%kgphase(j, nr) = DOT_PRODUCT(kgvec(1:3), &
-                                                  scoord(1:3, j) + REAL(agauge(1:3, j), KIND=dp))
-               kpsym%kgphase_input(j, nr) = DOT_PRODUCT(kgvec(1:3), scoord(1:3, j))
             END DO
             EXIT
          END DO
@@ -364,7 +355,6 @@ CONTAINS
                kpsym%rotp(nr) = ir
                kpsym%rot(1:3, 1:3, nr) = crys_sym%rt(1:3, 1:3, ic)
                kpsym%xkp(1:3, nr) = crys_sym%kpmesh(1:3, is)
-               kgvec(1:3) = ANINT(kgvec(1:3))
                kpsym%f0(1:natom, nr) = crys_sym%f0(1:natom, ic)
                DO j = 1, natom
                   srot(1:3) = MATMUL(srotmat, scoord(1:3, j)) + crys_sym%vt(1:3, ic)
@@ -372,9 +362,6 @@ CONTAINS
                   kpsym%fcell_gauge(1:3, j, nr) = kpsym%fcell(1:3, j, nr) + &
                                                   MATMUL(frot, agauge(1:3, j)) - &
                                                   agauge(1:3, kpsym%f0(j, nr))
-                  kpsym%kgphase(j, nr) = DOT_PRODUCT(kgvec(1:3), &
-                                                     scoord(1:3, j) + REAL(agauge(1:3, j), KIND=dp))
-                  kpsym%kgphase_input(j, nr) = DOT_PRODUCT(kgvec(1:3), scoord(1:3, j))
                END DO
             END DO
          END DO
@@ -2807,12 +2794,12 @@ CONTAINS
                                        packed, phases, sums, rotation_work, gemm_ctx)
       TYPE(cp_fm_p_type), INTENT(IN)                     :: source(:, :)
       INTEGER, INTENT(IN)                                :: tiles(:, :, :, :)
-      TYPE(kp_density_group_type), INTENT(IN)            :: groups(0:)
-      INTEGER, INTENT(IN)                                :: jobs(:, :), available(:, 0:)
-      LOGICAL, INTENT(IN)                                :: symmetric
-      INTEGER, INTENT(IN)                                :: row_size(:), col_size(:), row_offset(:), &
-                                                            col_offset(:)
       REAL(KIND=dp), CONTIGUOUS, INTENT(INOUT), TARGET   :: target(:, :)
+      INTEGER, INTENT(IN)                                :: col_offset(:), row_offset(:), &
+                                                            col_size(:), row_size(:)
+      LOGICAL, INTENT(IN)                                :: symmetric
+      INTEGER, INTENT(IN)                                :: available(:, 0:), jobs(:, :)
+      TYPE(kp_density_group_type), INTENT(IN), TARGET    :: groups(0:)
       REAL(KIND=dp), ALLOCATABLE, INTENT(INOUT)          :: packed(:, :), phases(:, :)
       REAL(KIND=dp), ALLOCATABLE, INTENT(INOUT), TARGET  :: sums(:, :)
       REAL(KIND=dp), ALLOCATABLE, INTENT(INOUT)          :: rotation_work(:, :)
@@ -2826,8 +2813,9 @@ CONTAINS
                                                             orientation, shift(3), slot
       LOGICAL                                            :: contributes, real_only, trans
       REAL(KIND=dp)                                      :: arg, cosine, factors(2, 2), sine
-      REAL(KIND=dp), POINTER                             :: left_rot(:, :), right_rot(:, :), &
-                                                            source_block(:, :), target_block(:, :)
+      REAL(KIND=dp), POINTER                             :: group_kpoints(:, :), left_rot(:, :), &
+                                                            right_rot(:, :), source_block(:, :), &
+                                                            target_block(:, :)
       TYPE(cp_fm_type), POINTER                          :: matrix
 
 ! Up to 512 KiB of packed input per worker, except for a single larger AO block.
@@ -2837,6 +2825,8 @@ CONTAINS
       nimage = SIZE(jobs, 2)
       DO slot = 0, UBOUND(groups, 1)
          IF (SIZE(groups(slot)%ikp) == 0) CYCLE
+         ! Borrow the full descriptor before selecting individual k-point columns.
+         group_kpoints => groups(slot)%xkp
          DO orientation = 1, 2
             IF (available(orientation, slot) == 0) CYCLE
             CALL kp_density_source_block(groups(slot), jobs(1:2, 1), symmetric, orientation, a, b, trans)
@@ -2858,10 +2848,10 @@ CONTAINS
                contributes = .FALSE.
                DO k = first, last
                   ikp = groups(slot)%ikp(k)
-                  CALL kp_symmetry_phase_factors(shift, groups(slot)%xkp(:, k), &
+                  CALL kp_symmetry_phase_factors(shift, group_kpoints(:, k), &
                                                  groups(slot)%op%time_reversal, real_only, factors)
                   DO image = 1, nimage
-                     arg = twopi*DOT_PRODUCT(REAL(jobs(4:6, image), dp), groups(slot)%xkp(:, k))
+                     arg = twopi*DOT_PRODUCT(REAL(jobs(4:6, image), dp), group_kpoints(:, k))
                      cosine = REAL(jobs(7, image), dp)*COS(arg)
                      sine = REAL(jobs(8, image), dp)*SIN(arg)*MERGE(-1.0_dp, 1.0_dp, trans)
                      IF (real_only) sine = 0.0_dp
@@ -3758,8 +3748,6 @@ CONTAINS
          CPASSERT(kpsym%nwred == SIZE(kpsym%f0, 2))
          CPASSERT(kpsym%nwred == SIZE(kpsym%fcell, 3))
          CPASSERT(kpsym%nwred == SIZE(kpsym%fcell_gauge, 3))
-         CPASSERT(kpsym%nwred == SIZE(kpsym%kgphase, 2))
-         CPASSERT(kpsym%nwred == SIZE(kpsym%kgphase_input, 2))
          CPASSERT(kpsym%nwred == SIZE(kpsym%rotp))
 
          ! Stabilizers can request the same reciprocal point many times. Pack each

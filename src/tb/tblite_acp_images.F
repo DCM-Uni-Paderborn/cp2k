@@ -179,7 +179,15 @@ CONTAINS
             & scaled_projector_overlap(:, :, itr)
       END DO
 
-      acache%scaled_pv_overlap = SUM(images%scaled_projector_overlap, dim=3)
+      IF (ALLOCATED(acache%scaled_pv_overlap)) THEN
+         IF (ANY(SHAPE(acache%scaled_pv_overlap) /= [acp%auxbas%nao, bas%nao])) THEN
+            DEALLOCATE (acache%scaled_pv_overlap)
+         END IF
+      END IF
+      IF (.NOT. ALLOCATED(acache%scaled_pv_overlap)) THEN
+         ALLOCATE (acache%scaled_pv_overlap(acp%auxbas%nao, bas%nao))
+      END IF
+      acache%scaled_pv_overlap(:, :) = SUM(images%scaled_projector_overlap, dim=3)
 
       with_hamiltonian = .TRUE.
       IF (PRESENT(build_hamiltonian)) with_hamiltonian = build_hamiltonian
@@ -211,7 +219,7 @@ CONTAINS
       ALLOCATE (images%translation(3, nhtr), &
          & images%hamiltonian(bas%nao, bas%nao, nhtr), source=0.0_wp)
       ALLOCATE (images%inverse(nhtr), source=0)
-      images%translation = htrans_work(:, :nhtr)
+      images%translation(:, :) = htrans_work(:, :nhtr)
       images%origin = find_translation(images%translation, &
          & [0.0_wp, 0.0_wp, 0.0_wp], tol2)
       images%inversion_closed = .TRUE.
@@ -291,8 +299,8 @@ CONTAINS
          DO itr = 1, ntr
             angle = -2.0_wp*pi*DOT_PRODUCT(kfrac(:, ik), projector_cell(:, itr))
             phase = EXP(CMPLX(0.0_wp, angle, wp))
-            ck = ck + phase*images%projector_overlap(:, :, itr)
-            csk = csk + phase*images%scaled_projector_overlap(:, :, itr)
+            ck(:, :) = ck + phase*images%projector_overlap(:, :, itr)
+            csk(:, :) = csk + phase*images%scaled_projector_overlap(:, :, itr)
          END DO
          hamiltonian(:, :, ik) = MATMUL(CONJG(TRANSPOSE(ck)), csk)
       END DO
@@ -376,10 +384,10 @@ CONTAINS
          DO itr = 1, ntr
             angle = -2.0_wp*pi*DOT_PRODUCT(kfrac(:, ik), projector_cell(:, itr))
             phase = EXP(CMPLX(0.0_wp, angle, wp))
-            csk = csk + phase*images%scaled_projector_overlap(:, :, itr)
+            csk(:, :) = csk + phase*images%scaled_projector_overlap(:, :, itr)
          END DO
          DO spin = 1, nspin
-            work = MATMUL(csk, density(:, :, spin, ik))
+            work(:, :) = MATMUL(csk, density(:, :, spin, ik))
             DO itr = 1, ntr
                angle = -2.0_wp*pi*DOT_PRODUCT(kfrac(:, ik), projector_cell(:, itr))
                phase = EXP(CMPLX(0.0_wp, angle, wp))
@@ -714,8 +722,8 @@ CONTAINS
 
                   gradient_local(:, iat) = gradient_local(:, iat) + dG
                   gradient_local(:, jat) = gradient_local(:, jat) - dG
-                  sigma_local = sigma_local + 0.5_wp*(SPREAD(vec, 1, 3) &
-                                                     & *SPREAD(dG, 2, 3) + SPREAD(dG, 1, 3)*SPREAD(vec, 2, 3))
+                  sigma_local(:, :) = sigma_local + 0.5_wp*(SPREAD(vec, 1, 3) &
+                                                           & *SPREAD(dG, 2, 3) + SPREAD(dG, 1, 3)*SPREAD(vec, 2, 3))
                END DO
             END DO
             IF (compute_qeff_grad) THEN

@@ -30,9 +30,99 @@ MODULE kpoint_mo_symmetry_methods
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_mo_symmetry_methods'
 
    PUBLIC :: kpoint_same_periodic, &
-             kpoint_transform_scf_mo
+             kpoint_transform_scf_mo, kpoint_cell_gauge_action
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief AO action in the cell Fourier gauge H(k)=sum_R exp(+ikR) H(R).
+!> \param kpoints Symmetry geometry and Gaussian basis rotation blocks
+!> \param representative Source irreducible point
+!> \param operation Orbit operation; zero identity, minus one pure time reversal
+!> \param TARGET Target fractional k point, modulo reciprocal vectors
+!> \param action Scalar AO action, excluding conjugation and physical spin rotation
+!> \param rotation Cartesian spatial operation
+!> \param antiunitary Whether the source coefficients must be conjugated
+!> \param status Zero on success, negative for unavailable or inconsistent mappings
+!> \note An atom shifted to image L contributes exp(-i*k_target*L). No atomic-gauge
+!>       reciprocal-vector phase or legacy SCF phase calibration belongs in this cell gauge.
+! **************************************************************************************************
+   SUBROUTINE kpoint_cell_gauge_action(kpoints, representative, operation, TARGET, action, &
+                                       rotation, antiunitary, status)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      INTEGER, INTENT(IN)                                :: representative, operation
+      REAL(dp), INTENT(IN)                               :: target(3)
+      COMPLEX(dp), INTENT(OUT)                           :: action(:, :)
+      REAL(dp), INTENT(OUT)                              :: rotation(3, 3)
+      LOGICAL, INTENT(OUT)                               :: antiunitary
+      INTEGER, INTENT(OUT)                               :: status
+
+      INTEGER                                            :: a, b, first, i, kind, n, na, nb, slot
+      INTEGER, ALLOCATABLE                               :: offset(:), seen(:), width(:)
+      REAL(dp)                                           :: angle
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+
+      action = 0.0_dp
+      rotation = 0.0_dp
+      antiunitary = .FALSE.
+      status = -1
+      n = SIZE(action, 1)
+      IF (n < 1 .OR. SIZE(action, 2) /= n .OR. .NOT. ASSOCIATED(kpoints)) RETURN
+      IF (representative < 1 .OR. representative > kpoints%nkp) RETURN
+      IF (operation == 0 .OR. operation == -1) THEN
+         antiunitary = operation == -1
+         IF (operation == 0) THEN
+            IF (.NOT. kpoint_same_periodic(TARGET, kpoints%xkp(:, representative))) RETURN
+         ELSE
+            IF (.NOT. kpoint_same_periodic(TARGET, -kpoints%xkp(:, representative))) RETURN
+         END IF
+         DO i = 1, n
+            action(i, i) = 1.0_dp
+         END DO
+         DO i = 1, 3
+            rotation(i, i) = 1.0_dp
+         END DO
+         status = 0
+         RETURN
+      END IF
+      IF (operation < 1 .OR. .NOT. ASSOCIATED(kpoints%kp_sym)) RETURN
+      sym => kpoints%kp_sym(representative)%kpoint_sym
+      IF (.NOT. ASSOCIATED(sym)) RETURN
+      IF (.NOT. sym%apply_symmetry .OR. operation > sym%nwred) RETURN
+      IF (.NOT. kpoint_same_periodic(TARGET, sym%xkp(:, operation))) RETURN
+      IF (.NOT. ASSOCIATED(kpoints%atype) .OR. .NOT. ASSOCIATED(kpoints%kind_rotmat)) RETURN
+      IF (.NOT. ASSOCIATED(sym%fcell_gauge)) RETURN
+      slot = find_kpoint_rotation_slot(kpoints, sym%rotp(operation))
+      IF (slot == 0) RETURN
+      na = SIZE(kpoints%atype)
+      ALLOCATE (offset(na), width(na), seen(na))
+      first = 1
+      seen = 0
+      DO a = 1, na
+         kind = kpoints%atype(a)
+         IF (kind < 1 .OR. kind > SIZE(kpoints%kind_rotmat, 2)) RETURN
+         IF (.NOT. ASSOCIATED(kpoints%kind_rotmat(slot, kind)%rmat)) RETURN
+         offset(a) = first
+         width(a) = SIZE(kpoints%kind_rotmat(slot, kind)%rmat, 2)
+         first = first + width(a)
+      END DO
+      IF (first /= n + 1) RETURN
+      DO a = 1, na
+         b = sym%f0(a, operation)
+         IF (b < 1 .OR. b > na) RETURN
+         seen(b) = seen(b) + 1
+         IF (seen(b) /= 1 .OR. kpoints%atype(b) /= kpoints%atype(a)) RETURN
+         kind = kpoints%atype(a)
+         nb = width(b)
+         IF (SIZE(kpoints%kind_rotmat(slot, kind)%rmat, 1) /= nb) RETURN
+         angle = -twopi*DOT_PRODUCT(TARGET, REAL(sym%fcell_gauge(:, a, operation), dp))
+         action(offset(b):offset(b) + nb - 1, offset(a):offset(a) + width(a) - 1) = &
+            CMPLX(COS(angle), SIN(angle), dp)*kpoints%kind_rotmat(slot, kind)%rmat
+      END DO
+      rotation = sym%rot(:, :, operation)
+      antiunitary = sym%rotp(operation) < 0
+      status = 0
+   END SUBROUTINE kpoint_cell_gauge_action
 
 ! **************************************************************************************************
 !> \brief Compare two fractional k-points modulo reciprocal lattice vectors.
@@ -78,7 +168,6 @@ CONTAINS
       LOGICAL                                            :: reverse_phase, time_reversal
       REAL(KIND=dp)                                      :: arg, coskl, sinkl
       REAL(KIND=dp), DIMENSION(3)                        :: xkp_phase
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: phase_kg
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: rotmat
       TYPE(kind_rotmat_type), DIMENSION(:), POINTER      :: kind_rot
       TYPE(kpoint_sym_type), POINTER                     :: kpsym
@@ -156,19 +245,17 @@ CONTAINS
       END IF
       SELECT CASE (kpsym%phase_gauge(isym))
       CASE (kpoint_phase_gauge_pbc)
-         IF (.NOT. ASSOCIATED(kpsym%fcell_gauge) .OR. .NOT. ASSOCIATED(kpsym%kgphase)) THEN
+         IF (.NOT. ASSOCIATED(kpsym%fcell_gauge)) THEN
             reason = "SCF PBC-gauge phase data are not available"
             RETURN
          END IF
          phase_fcell => kpsym%fcell_gauge(:, :, isym)
-         phase_kg => kpsym%kgphase(:, isym)
       CASE (kpoint_phase_gauge_input)
-         IF (.NOT. ASSOCIATED(kpsym%fcell) .OR. .NOT. ASSOCIATED(kpsym%kgphase_input)) THEN
+         IF (.NOT. ASSOCIATED(kpsym%fcell)) THEN
             reason = "SCF input-coordinate phase data are not available"
             RETURN
          END IF
          phase_fcell => kpsym%fcell(:, :, isym)
-         phase_kg => kpsym%kgphase_input(:, isym)
       CASE DEFAULT
          reason = "SCF atom-cell phase gauge has not been calibrated"
          RETURN
@@ -187,8 +274,9 @@ CONTAINS
          END IF
          arg = REAL(phase_fcell(1, source_atom), KIND=dp)*xkp_phase(1) + &
                REAL(phase_fcell(2, source_atom), KIND=dp)*xkp_phase(2) + &
-               REAL(phase_fcell(3, source_atom), KIND=dp)*xkp_phase(3) + &
-               phase_kg(source_atom)
+               REAL(phase_fcell(3, source_atom), KIND=dp)*xkp_phase(3)
+
+         ! Reciprocal folding adds no atom-position phase in the lattice-periodic AO gauge.
          IF (reverse_phase) arg = -arg
          coskl = COS(twopi*arg)
          sinkl = SIN(twopi*arg)

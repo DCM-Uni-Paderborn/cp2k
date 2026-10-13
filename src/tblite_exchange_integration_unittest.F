@@ -186,7 +186,8 @@ CONTAINS
 !53-56
 !57-60
 
-      nshell = p_nshell(mol%num)
+      ALLOCATE (nshell(SIZE(mol%num)))
+      nshell(:) = p_nshell(mol%num)
       ALLOCATE (cgto(MAXVAL(nshell), mol%nid))
       DO isp = 1, mol%nid
          izp = mol%num(isp)
@@ -525,8 +526,9 @@ CONTAINS
       END DO
 
       ! Obtain the correlation scaling factor and radii
-      corr_scale = fock_corr_scale(mol%num)
-      corr_rad = fock_corr_rad(mol%num)
+      ALLOCATE (corr_scale(SIZE(mol%num)), corr_rad(SIZE(mol%num)))
+      corr_scale(:) = fock_corr_scale(mol%num)
+      corr_rad(:) = fock_corr_rad(mol%num)
 
       ALLOCATE (fock)
       CALL new_exchange_fock(fock, mol, bas, hardness_fx, hubbard_average, &
@@ -669,6 +671,7 @@ CONTAINS
       TYPE(cp2k_exchange_stream_type), ALLOCATABLE       :: stream(:)
 
       nk = SIZE(weights)
+      ALLOCATE (owner_sum(nk), owner_trial(nk))
       ALLOCATE (fock_ref(SIZE(density, 1), SIZE(density, 2), &
          & SIZE(density, 3), nk), vsh_ref(SIZE(wfn%qsh, 1)), &
          & overlap_adjoint_ref(SIZE(overlap, 1), SIZE(overlap, 2), nk), &
@@ -745,9 +748,9 @@ CONTAINS
                ALLOCATE (forward_sum(SIZE(forward_raw)), &
                   & source=(0.0_wp, 0.0_wp))
             END IF
-            forward_sum = forward_sum + forward_raw
+            forward_sum(:) = forward_sum + forward_raw
          END DO
-         owner_sum = SUM(owner_matrix, dim=2)
+         owner_sum(:) = SUM(owner_matrix, dim=2)
          ncomplex = 4*SIZE(density, 1)*SIZE(density, 2)*nk*SIZE(density, 3)
          IF (cp2k_exchange_partial_forward_size(forward_buffer(1)) /= &
             & INT(ncomplex, int64)) THEN
@@ -795,7 +798,7 @@ CONTAINS
          END IF
 
          IF (run_negative .AND. npart == 2) THEN
-            owner_trial = owner_sum
+            owner_trial(:) = owner_sum
             owner_trial(1) = 0
             CALL cp2k_exchange_partial_import_forward(stream(1), descriptor(1), &
                & owner_trial, forward_sum_buffer, calc, mol, cache, cache_plan, error)
@@ -804,7 +807,7 @@ CONTAINS
                RETURN
             END IF
             DEALLOCATE (error)
-            owner_trial = owner_sum
+            owner_trial(:) = owner_sum
             owner_trial(1) = 2
             CALL cp2k_exchange_partial_import_forward(stream(1), descriptor(1), &
                & owner_trial, forward_sum_buffer, calc, mol, cache, cache_plan, error)
@@ -842,7 +845,7 @@ CONTAINS
             ALLOCATE (density_trial(SIZE(density, 1), SIZE(density, 2), &
                & SIZE(density, 3)))
             DO ik = 1, nk
-               density_trial = density(:, :, :, ik)
+               density_trial(:, :, :) = density(:, :, :, ik)
                IF (ik == 1) density_trial(1, 1, 1) = &
                   & density_trial(1, 1, 1) + CMPLX(1.0e-7_wp, 0.0_wp, wp)
                CALL cp2k_exchange_partial_push(mismatch_stream, ik, &
@@ -899,7 +902,7 @@ CONTAINS
             CALL cp2k_exchange_partial_discard(mismatch_stream, error)
             IF (ALLOCATED(error)) RETURN
 
-            forward_raw = forward_sum
+            forward_raw(:) = forward_sum
             forward_raw(1) = CMPLX(ieee_value(0.0_wp, ieee_quiet_nan), &
                & 0.0_wp, wp)
             CALL cp2k_exchange_partial_forward_unpack(forward_sum_buffer, &
@@ -1008,9 +1011,9 @@ CONTAINS
                ALLOCATE (reverse_sum(SIZE(reverse_raw)), &
                   & source=(0.0_wp, 0.0_wp))
             END IF
-            reverse_sum = reverse_sum + reverse_raw
+            reverse_sum(:) = reverse_sum + reverse_raw
          END DO
-         owner_sum = SUM(owner_matrix, dim=2)
+         owner_sum(:) = SUM(owner_matrix, dim=2)
          ncomplex = 6*SIZE(density, 1)*SIZE(density, 2)*nk*SIZE(density, 3) &
             & + 5*SIZE(density, 1)*SIZE(density, 3)
          IF (cp2k_exchange_partial_reverse_size(reverse_buffer(1)) /= &
@@ -1113,7 +1116,7 @@ CONTAINS
       TYPE(cp2k_exchange_stream_type)                    :: contributor_stream, stream(npart)
 
       nk = SIZE(weights)
-      ALLOCATE (pull_owner(nk))
+      ALLOCATE (pull_owner(nk), owner_sum(nk))
       DO ik = 1, nk
          pull_owner(ik) = 1 + MODULO(ik - 1, npart)
       END DO
@@ -1172,9 +1175,9 @@ CONTAINS
                ALLOCATE (forward_sum(SIZE(forward_raw)), &
                   & source=(0.0_wp, 0.0_wp))
             END IF
-            forward_sum = forward_sum + forward_raw
+            forward_sum(:) = forward_sum + forward_raw
          END DO
-         owner_sum = SUM(owner_matrix, dim=2)
+         owner_sum(:) = SUM(owner_matrix, dim=2)
          ncomplex = 4*SIZE(density, 1)*SIZE(density, 2)*SIZE(density, 3)
          IF (cp2k_exchange_partial_forward_size(forward_buffer(1)) /= &
             & INT(ncomplex, int64)) THEN
@@ -1356,9 +1359,9 @@ CONTAINS
                ALLOCATE (reverse_sum(SIZE(reverse_raw)), &
                   & source=(0.0_wp, 0.0_wp))
             END IF
-            reverse_sum = reverse_sum + reverse_raw
+            reverse_sum(:) = reverse_sum + reverse_raw
          END DO
-         owner_sum = SUM(owner_matrix, dim=2)
+         owner_sum(:) = SUM(owner_matrix, dim=2)
          ncomplex = 6*SIZE(density, 1)*SIZE(density, 2)*SIZE(density, 3) &
             & + 5*SIZE(density, 1)*SIZE(density, 3)
          IF (cp2k_exchange_partial_reverse_size(reverse_buffer(1)) /= &
@@ -1670,9 +1673,9 @@ CONTAINS
                ALLOCATE (forward_sum(SIZE(forward_raw)), &
                   & source=(0.0_wp, 0.0_wp))
             END IF
-            forward_sum = forward_sum + forward_raw
+            forward_sum(:) = forward_sum + forward_raw
          END DO
-         owner_sum = SUM(owner_matrix, dim=2)
+         owner_sum(:) = SUM(owner_matrix, dim=2)
          CALL cp2k_exchange_partial_forward_unpack(forward_sum_buffer, &
             & descriptor(1), forward_sum, error)
          IF (ALLOCATED(error)) RETURN
@@ -1822,7 +1825,7 @@ CONTAINS
                & "Empty image importer produced energy or shell potential")
             RETURN
          END IF
-         vsh_partial = vsh_partial + vsh_local
+         vsh_partial(:) = vsh_partial + vsh_local
          energy_partial = energy_partial + energy_local
          CALL cp2k_exchange_stream_reverse_begin(stream(ipart), mol, error)
          IF (ALLOCATED(error)) RETURN
@@ -1899,9 +1902,9 @@ CONTAINS
                ALLOCATE (reverse_sum(SIZE(reverse_raw)), &
                   & source=(0.0_wp, 0.0_wp))
             END IF
-            reverse_sum = reverse_sum + reverse_raw
+            reverse_sum(:) = reverse_sum + reverse_raw
          END DO
-         owner_sum = SUM(owner_matrix, dim=2)
+         owner_sum(:) = SUM(owner_matrix, dim=2)
          CALL cp2k_exchange_partial_reverse_unpack(reverse_sum_buffer, &
             & descriptor(1), reverse_sum, error)
          IF (ALLOCATED(error)) RETURN
@@ -1993,8 +1996,8 @@ CONTAINS
                & "Empty image importer produced force or stress response")
             RETURN
          END IF
-         gradient_partial = gradient_partial + gradient_local
-         sigma_partial = sigma_partial + sigma_local
+         gradient_partial(:, :) = gradient_partial + gradient_local
+         sigma_partial(:, :) = sigma_partial + sigma_local
          CALL cp2k_exchange_stream_end(stream(ipart), error)
          IF (ALLOCATED(error)) RETURN
       END DO
@@ -2057,9 +2060,9 @@ CONTAINS
                ALLOCATE (reverse_sum(SIZE(reverse_raw)), &
                   & source=(0.0_wp, 0.0_wp))
             END IF
-            reverse_sum = reverse_sum + reverse_raw
+            reverse_sum(:) = reverse_sum + reverse_raw
          END DO
-         owner_sum = SUM(owner_matrix, dim=2)
+         owner_sum(:) = SUM(owner_matrix, dim=2)
          CALL cp2k_exchange_partial_reverse_unpack(reverse_sum_buffer, &
             & descriptor(1), reverse_sum, error)
          IF (ALLOCATED(error)) RETURN
@@ -2126,8 +2129,8 @@ CONTAINS
                & "Empty reverse-only importer produced force or stress")
             RETURN
          END IF
-         gradient_partial = gradient_partial + gradient_local
-         sigma_partial = sigma_partial + sigma_local
+         gradient_partial(:, :) = gradient_partial + gradient_local
+         sigma_partial(:, :) = sigma_partial + sigma_local
          CALL cp2k_exchange_stream_end(stream(ipart), error)
          IF (ALLOCATED(error)) RETURN
       END DO
@@ -2328,9 +2331,9 @@ CONTAINS
                ALLOCATE (forward_full_raw(SIZE(forward_raw)), &
                   & source=(0.0_wp, 0.0_wp))
             END IF
-            forward_full_raw = forward_full_raw + forward_raw
+            forward_full_raw(:) = forward_full_raw + forward_raw
          END DO
-         owner_sum = SUM(owner_matrix, dim=2)
+         owner_sum(:) = SUM(owner_matrix, dim=2)
          IF (ANY(owner_sum /= 1)) THEN
             CALL test_failed(error, &
                & "Range-local forward contributors do not exactly cover k")
@@ -2365,7 +2368,7 @@ CONTAINS
                   ALLOCATE (forward_range_raw(SIZE(forward_raw)), &
                      & source=(0.0_wp, 0.0_wp))
                END IF
-               forward_range_raw = forward_range_raw + forward_raw
+               forward_range_raw(:) = forward_range_raw + forward_raw
             END DO
             forward_range_scalars = forward_range_scalars &
                & + SIZE(forward_range_raw, kind=int64)
@@ -2393,7 +2396,7 @@ CONTAINS
                RETURN
             END IF
             DEALLOCATE (error)
-            owner_bad = owner_sum
+            owner_bad(:) = owner_sum
             owner_bad(1) = 0
             CALL cp2k_exchange_partial_import_forward_range(importer(1), &
                & descriptor(1), owner_bad, forward_range_buffer(1), calc, mol, &
@@ -2503,7 +2506,7 @@ CONTAINS
                & "Empty range-local importer produced a scalar response")
             RETURN
          END IF
-         vsh_partial = vsh_partial + vsh_local
+         vsh_partial(:) = vsh_partial + vsh_local
          energy_partial = energy_partial + energy_local
          CALL cp2k_exchange_stream_end(importer(ipart), error)
          IF (ALLOCATED(error)) RETURN
@@ -2603,9 +2606,9 @@ CONTAINS
                ALLOCATE (reverse_full_raw(SIZE(reverse_raw)), &
                   & source=(0.0_wp, 0.0_wp))
             END IF
-            reverse_full_raw = reverse_full_raw + reverse_raw
+            reverse_full_raw(:) = reverse_full_raw + reverse_raw
          END DO
-         owner_sum = SUM(owner_matrix, dim=2)
+         owner_sum(:) = SUM(owner_matrix, dim=2)
          IF (ANY(owner_sum /= 1)) THEN
             CALL test_failed(error, &
                & "Range-local reverse contributors do not exactly cover k")
@@ -2640,7 +2643,7 @@ CONTAINS
                   ALLOCATE (reverse_range_raw(SIZE(reverse_raw)), &
                      & source=(0.0_wp, 0.0_wp))
                END IF
-               reverse_range_raw = reverse_range_raw + reverse_raw
+               reverse_range_raw(:) = reverse_range_raw + reverse_raw
             END DO
             reverse_range_scalars = reverse_range_scalars &
                & + SIZE(reverse_range_raw, kind=int64)
@@ -2753,8 +2756,8 @@ CONTAINS
                & "Empty range-local importer produced force or stress")
             RETURN
          END IF
-         gradient_partial = gradient_partial + gradient_local
-         sigma_partial = sigma_partial + sigma_local
+         gradient_partial(:, :) = gradient_partial + gradient_local
+         sigma_partial(:, :) = sigma_partial + sigma_local
          CALL cp2k_exchange_stream_end(importer(ipart), error)
          IF (ALLOCATED(error)) RETURN
          CALL cp2k_exchange_partial_discard(contributor(ipart), error)
@@ -3218,7 +3221,7 @@ CONTAINS
       INTEGER, PARAMETER :: korder(3) = [3, 1, 2]
       INTEGER :: acell, bcell, bvk_builds, i, iat, ibatch_case, icell, ik, ir, &
          & ish, j, jat, jsh
-      INTEGER :: first, first_image, ii, izp, jao, jj, jzp, last, last_image, &
+      INTEGER :: first, first_image, ii, izp, jj, jzp, last, last_image, &
          & nao, ncell, ni, nj, nsh, requested_batch_size
       INTEGER(int64) :: peak_expected, stream_compact_fft_peak, &
          & stream_compact_separable_peak
@@ -3457,7 +3460,7 @@ CONTAINS
       DO icell = 1, ncell
          first = (icell - 1)*nsh + 1
          last = icell*nsh
-         vsh_ref = vsh_ref + ptr_sc%prev_vsh(first:last, 1)/REAL(ncell, wp)
+         vsh_ref(:) = vsh_ref + ptr_sc%prev_vsh(first:last, 1)/REAL(ncell, wp)
       END DO
 
       err = MAX(MAXVAL(ABS(fock_mesh - fock_ref)), ABS(energy_mesh - energy_sc), &
@@ -3484,8 +3487,8 @@ CONTAINS
          END DO
       END DO
       step = 1.0e-5_wp
-      density_m = density_mesh - step*direction
-      density_p = density_mesh + step*direction
+      density_m(:, :, :, :) = density_mesh - step*direction
+      density_p(:, :, :, :) = density_mesh + step*direction
       SELECT TYPE (fock => exchange)
       TYPE is (exchange_fock)
          CALL get_KFock_kmesh(fock, mol, ptr, oracle_plan, kernel, kfrac, weights, &
@@ -3529,8 +3532,8 @@ CONTAINS
          CALL get_KGrad_kmesh(fock, mol, ptr, oracle_plan, kernel, kfrac, weights, &
             & density_mesh, overlap_mesh, overlap_grad_mesh, &
             & mulliken_grad_r, bocorr_grad_r)
-         overlap_m = overlap_mesh - step*overlap_direction
-         overlap_p = overlap_mesh + step*overlap_direction
+         overlap_m(:, :, :) = overlap_mesh - step*overlap_direction
+         overlap_p(:, :, :) = overlap_mesh + step*overlap_direction
          CALL get_KFock_kmesh(fock, mol, ptr, oracle_plan, kernel, kfrac, weights, &
             & density_mesh, overlap_m, fock_m, vsh_mesh, energy_m)
          CALL get_KFock_kmesh(fock, mol, ptr, oracle_plan, kernel, kfrac, weights, &
@@ -3553,8 +3556,8 @@ CONTAINS
          & kernel_mulliken_direction(nsh, nsh, ncell), &
          & kernel_bocorr_backup(mol%nat, mol%nat, ncell), &
          & kernel_bocorr_direction(mol%nat, mol%nat, ncell))
-      kernel_mulliken_backup = kernel%g_mulliken_r
-      kernel_bocorr_backup = kernel%g_bocorr_r
+      kernel_mulliken_backup(:, :, :) = kernel%g_mulliken_r
+      kernel_bocorr_backup(:, :, :) = kernel%g_bocorr_r
       DO icell = 1, ncell
          DO ish = 1, nsh
             DO jsh = 1, nsh
@@ -3569,24 +3572,24 @@ CONTAINS
             END DO
          END DO
       END DO
-      kernel%g_mulliken_r = kernel_mulliken_backup &
+      kernel%g_mulliken_r(:, :, :) = kernel_mulliken_backup &
          & - step*kernel_mulliken_direction
-      kernel%g_bocorr_r = kernel_bocorr_backup - step*kernel_bocorr_direction
+      kernel%g_bocorr_r(:, :, :) = kernel_bocorr_backup - step*kernel_bocorr_direction
       SELECT TYPE (fock => exchange)
       TYPE is (exchange_fock)
          CALL get_KFock_kmesh(fock, mol, ptr, oracle_plan, kernel, kfrac, weights, &
             & density_mesh, overlap_mesh, fock_m, vsh_mesh, energy_m)
       END SELECT
-      kernel%g_mulliken_r = kernel_mulliken_backup &
+      kernel%g_mulliken_r(:, :, :) = kernel_mulliken_backup &
          & + step*kernel_mulliken_direction
-      kernel%g_bocorr_r = kernel_bocorr_backup + step*kernel_bocorr_direction
+      kernel%g_bocorr_r(:, :, :) = kernel_bocorr_backup + step*kernel_bocorr_direction
       SELECT TYPE (fock => exchange)
       TYPE is (exchange_fock)
          CALL get_KFock_kmesh(fock, mol, ptr, oracle_plan, kernel, kfrac, weights, &
             & density_mesh, overlap_mesh, fock_p, vsh_mesh, energy_p)
       END SELECT
-      kernel%g_mulliken_r = kernel_mulliken_backup
-      kernel%g_bocorr_r = kernel_bocorr_backup
+      kernel%g_mulliken_r(:, :, :) = kernel_mulliken_backup
+      kernel%g_bocorr_r(:, :, :) = kernel_bocorr_backup
       deriv_fd = (energy_p - energy_m)/(2.0_wp*step)
       deriv_ref = 0.0_wp
       DO icell = 1, ncell
@@ -3635,14 +3638,14 @@ CONTAINS
          END DO
       END DO
       xyz0 = mol%xyz
-      mol%xyz = xyz0 - step*coord_direction
+      mol%xyz(:, :) = xyz0 - step*coord_direction
       SELECT TYPE (fock => exchange)
       TYPE is (exchange_fock)
          CALL fock%get_bvk_Kmatrix(mol, nmesh, kernel)
          CALL get_KFock_kmesh(fock, mol, ptr, oracle_plan, kernel, kfrac, weights, &
             & density_mesh, overlap_mesh, fock_m, vsh_mesh, energy_m)
       END SELECT
-      mol%xyz = xyz0 + step*coord_direction
+      mol%xyz(:, :) = xyz0 + step*coord_direction
       SELECT TYPE (fock => exchange)
       TYPE is (exchange_fock)
          CALL fock%get_bvk_Kmatrix(mol, nmesh, kernel)
@@ -3663,8 +3666,8 @@ CONTAINS
          & -0.01_wp, 0.03_wp, 0.05_wp], [3, 3])
       lattice0 = mol%lattice
       transform = identity - step*strain_direction
-      mol%xyz = MATMUL(transform, xyz0)
-      mol%lattice = MATMUL(transform, lattice0)
+      mol%xyz(:, :) = MATMUL(transform, xyz0)
+      mol%lattice(:, :) = MATMUL(transform, lattice0)
       SELECT TYPE (fock => exchange)
       TYPE is (exchange_fock)
          CALL fock%get_bvk_Kmatrix(mol, nmesh, kernel)
@@ -3672,8 +3675,8 @@ CONTAINS
             & density_mesh, overlap_mesh, fock_m, vsh_mesh, energy_m)
       END SELECT
       transform = identity + step*strain_direction
-      mol%xyz = MATMUL(transform, xyz0)
-      mol%lattice = MATMUL(transform, lattice0)
+      mol%xyz(:, :) = MATMUL(transform, xyz0)
+      mol%lattice(:, :) = MATMUL(transform, lattice0)
       SELECT TYPE (fock => exchange)
       TYPE is (exchange_fock)
          CALL fock%get_bvk_Kmatrix(mol, nmesh, kernel)
@@ -3683,8 +3686,8 @@ CONTAINS
       deriv_fd = (energy_p - energy_m)/(2.0_wp*step)
       deriv_ref = SUM(sigma_mesh*strain_direction)
       err = MAX(err, ABS(deriv_fd - deriv_ref))
-      mol%xyz = xyz0
-      mol%lattice = lattice0
+      mol%xyz(:, :) = xyz0
+      mol%lattice(:, :) = lattice0
       SELECT TYPE (fock => exchange)
       TYPE is (exchange_fock)
          CALL fock%get_bvk_Kmatrix(mol, nmesh, kernel)
@@ -4748,7 +4751,7 @@ CONTAINS
          CALL cp2k_exchange_stream_batch_result(stream_batch, calc_cp2k, mol, &
             & cache_cp2k, cache_cp2k_plan, vsh_stream_order, energy_tile, error)
          IF (ALLOCATED(error)) RETURN
-         vsh_stream = vsh_stream + vsh_stream_order
+         vsh_stream(:) = vsh_stream + vsh_stream_order
          energy_tile_sum = energy_tile_sum + energy_tile
          CALL cp2k_exchange_stream_end(stream_batch, error)
          IF (ALLOCATED(error)) RETURN
@@ -5476,9 +5479,9 @@ CONTAINS
       DO ik = 1, PRODUCT(nmesh_large)
          angle = 2.0_wp*pi*kfrac_large(1, ik)
          phase = weights_large(ik)*EXP(CMPLX(0.0_wp, -angle, wp))
-         density_image_large = density_image_large &
+         density_image_large(:, :) = density_image_large &
             & + phase*density_large(:, :, 1, ik)
-         overlap_image_large = overlap_image_large + phase*overlap_large(:, :, ik)
+         overlap_image_large(:, :) = overlap_image_large + phase*overlap_large(:, :, ik)
       END DO
       IF (MAXVAL(ABS(density_image_large)) < 1.0e-6_wp &
          & .OR. MAXVAL(ABS(overlap_image_large)) < 1.0e-6_wp) THEN
@@ -6063,8 +6066,8 @@ CONTAINS
 
       ALLOCATE (density_k(nao, nao, 1), overlap_k(nao, nao), &
          & fock_k(nao, nao, 1), vsh(bas%nsh))
-      density_k = CMPLX(wfn%density, 0.0_wp, wp)
-      overlap_k = CMPLX(overlap, 0.0_wp, wp)
+      density_k(:, :, :) = CMPLX(wfn%density, 0.0_wp, wp)
+      overlap_k(:, :) = CMPLX(overlap, 0.0_wp, wp)
       SELECT TYPE (fock => exchange)
       TYPE is (exchange_fock)
          CALL get_KFock_kpoint(fock, mol, ptr, density_k, overlap_k, &
@@ -6223,8 +6226,8 @@ CONTAINS
             END DO
          END DO
          step = 1.0e-5_wp
-         density_m = density_k - step*direction
-         density_p = density_k + step*direction
+         density_m(:, :, :) = density_k - step*direction
+         density_p(:, :, :) = density_k + step*direction
          CALL get_KFock_kpoint(fock, mol, ptr, density_m, overlap_k, &
             & fock_m, vsh_m, energy_m)
          CALL get_KFock_kpoint(fock, mol, ptr, density_p, overlap_k, &
@@ -6239,8 +6242,8 @@ CONTAINS
          ALLOCATE (overlap_m(nao, nao), overlap_p(nao, nao))
          CALL get_KGrad_kpoint(fock, mol, ptr, density_k, overlap_k, &
             & mulliken_grad, bocorr_grad, overlap_grad)
-         overlap_m = overlap_k - step*direction(:, :, 1)
-         overlap_p = overlap_k + step*direction(:, :, 1)
+         overlap_m(:, :) = overlap_k - step*direction(:, :, 1)
+         overlap_p(:, :) = overlap_k + step*direction(:, :, 1)
          CALL get_KFock_kpoint(fock, mol, ptr, density_k, overlap_m, &
             & fock_m, vsh_m, energy_m)
          CALL get_KFock_kpoint(fock, mol, ptr, density_k, overlap_p, &
@@ -6264,14 +6267,14 @@ CONTAINS
                kernel_direction(ish, jsh) = kernel_direction(jsh, ish)
             END DO
          END DO
-         kernel_backup = ptr%g_mulliken
-         ptr%g_mulliken = kernel_backup - step*kernel_direction
+         kernel_backup(:, :) = ptr%g_mulliken
+         ptr%g_mulliken(:, :) = kernel_backup - step*kernel_direction
          CALL get_KFock_kpoint(fock, mol, ptr, density_k, overlap_k, &
             & fock_m, vsh_m, energy_m)
-         ptr%g_mulliken = kernel_backup + step*kernel_direction
+         ptr%g_mulliken(:, :) = kernel_backup + step*kernel_direction
          CALL get_KFock_kpoint(fock, mol, ptr, density_k, overlap_k, &
             & fock_p, vsh_p, energy_p)
-         ptr%g_mulliken = kernel_backup
+         ptr%g_mulliken(:, :) = kernel_backup
          deriv_fd = (energy_p - energy_m)/(2.0_wp*step)
          deriv_ref = 0.0_wp
          DO ish = 1, fock%nsh
@@ -6301,14 +6304,14 @@ CONTAINS
                kernel_direction(iat, jat) = kernel_direction(jat, iat)
             END DO
          END DO
-         kernel_backup = ptr%g_bocorr
-         ptr%g_bocorr = kernel_backup - step*kernel_direction
+         kernel_backup(:, :) = ptr%g_bocorr
+         ptr%g_bocorr(:, :) = kernel_backup - step*kernel_direction
          CALL get_KFock_kpoint(fock, mol, ptr, density_k, overlap_k, &
             & fock_m, vsh_m, energy_m)
-         ptr%g_bocorr = kernel_backup + step*kernel_direction
+         ptr%g_bocorr(:, :) = kernel_backup + step*kernel_direction
          CALL get_KFock_kpoint(fock, mol, ptr, density_k, overlap_k, &
             & fock_p, vsh_p, energy_p)
-         ptr%g_bocorr = kernel_backup
+         ptr%g_bocorr(:, :) = kernel_backup
          deriv_fd = (energy_p - energy_m)/(2.0_wp*step)
          deriv_ref = 0.0_wp
          DO iat = 1, mol%nat
@@ -6351,13 +6354,13 @@ CONTAINS
             END DO
          END DO
          xyz0 = mol%xyz
-         mol%xyz = xyz0 - step*coord_direction
+         mol%xyz(:, :) = xyz0 - step*coord_direction
          CALL ptr%update(mol)
          CALL fock%get_mulliken_Kmatrix(mol, ptr)
          CALL fock%get_bocorr_Kmatrix(mol, ptr)
          CALL get_KFock_kpoint(fock, mol, ptr, density_k, overlap_k, &
             & fock_m, vsh_m, energy_m)
-         mol%xyz = xyz0 + step*coord_direction
+         mol%xyz(:, :) = xyz0 + step*coord_direction
          CALL ptr%update(mol)
          CALL fock%get_mulliken_Kmatrix(mol, ptr)
          CALL fock%get_bocorr_Kmatrix(mol, ptr)
@@ -6379,18 +6382,18 @@ CONTAINS
             & 0.02_wp, -0.04_wp, 0.03_wp, &
             & -0.01_wp, 0.03_wp, 0.05_wp], [3, 3])
          lattice0 = mol%lattice
-         mol%xyz = xyz0
+         mol%xyz(:, :) = xyz0
          transform = identity - step*strain_direction
-         mol%xyz = MATMUL(transform, xyz0)
-         mol%lattice = MATMUL(transform, lattice0)
+         mol%xyz(:, :) = MATMUL(transform, xyz0)
+         mol%lattice(:, :) = MATMUL(transform, lattice0)
          CALL ptr%update(mol)
          CALL fock%get_mulliken_Kmatrix(mol, ptr)
          CALL fock%get_bocorr_Kmatrix(mol, ptr)
          CALL get_KFock_kpoint(fock, mol, ptr, density_k, overlap_k, &
             & fock_m, vsh_m, energy_m)
          transform = identity + step*strain_direction
-         mol%xyz = MATMUL(transform, xyz0)
-         mol%lattice = MATMUL(transform, lattice0)
+         mol%xyz(:, :) = MATMUL(transform, xyz0)
+         mol%lattice(:, :) = MATMUL(transform, lattice0)
          CALL ptr%update(mol)
          CALL fock%get_mulliken_Kmatrix(mol, ptr)
          CALL fock%get_bocorr_Kmatrix(mol, ptr)
@@ -6400,8 +6403,8 @@ CONTAINS
          deriv_ref = SUM(sigma_k*strain_direction)
          err = MAX(err, ABS(deriv_fd - deriv_ref))
 
-         mol%xyz = xyz0
-         mol%lattice = lattice0
+         mol%xyz(:, :) = xyz0
+         mol%lattice(:, :) = lattice0
          CALL ptr%update(mol)
          CALL fock%get_mulliken_Kmatrix(mol, ptr)
          CALL fock%get_bocorr_Kmatrix(mol, ptr)
@@ -6431,8 +6434,8 @@ CONTAINS
             & fock_uks, vsh, energy)
          CALL get_KGrad_kpoint(fock, mol, ptr, density_uks, overlap_k, &
             & mulliken_grad, bocorr_grad, overlap_grad_uks)
-         overlap_m = overlap_k - step*direction(:, :, 1)
-         overlap_p = overlap_k + step*direction(:, :, 1)
+         overlap_m(:, :) = overlap_k - step*direction(:, :, 1)
+         overlap_p(:, :) = overlap_k + step*direction(:, :, 1)
          CALL get_KFock_kpoint(fock, mol, ptr, density_uks, overlap_m, &
             & fock_uks, vsh_m, energy_m)
          CALL get_KFock_kpoint(fock, mol, ptr, density_uks, overlap_p, &

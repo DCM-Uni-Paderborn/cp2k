@@ -14,7 +14,7 @@
 MODULE tblite_types
 
 #if defined(__TBLITE)
-   USE mctc_io, ONLY: structure_type, new
+   USE mctc_io, ONLY: structure_type
 #if defined(__TBLITE_GXTB)
    USE tblite_acp_cache, ONLY: acp_cache
    USE tblite_basis_cache, ONLY: basis_cache
@@ -24,7 +24,7 @@ MODULE tblite_types
    USE tblite_model_bridge, ONLY: cp2k_potential_mixer_type
 #endif
    USE tblite_xtb_calculator, ONLY: xtb_calculator
-   USE tblite_container, ONLY: container_cache
+   USE tblite_container_cache, ONLY: container_cache
    USE tblite_scc_mixer, ONLY: cp2k_tblite_broyden_mixer_type
    USE tblite_wavefunction_type, ONLY: wavefunction_type
    USE tblite_scf_potential, ONLY: potential_type
@@ -47,8 +47,7 @@ MODULE tblite_types
                               tblite_mixer_max_weight_default, &
                               tblite_mixer_min_weight_default, &
                               tblite_mixer_omega0_default, &
-                              tblite_mixer_weight_factor_default, &
-                              tblite_solver_gvd
+                              tblite_mixer_weight_factor_default
    USE kinds, ONLY: dp
    USE kpoint_lattice_fft, ONLY: kpoint_mesh_certificate_type
 
@@ -91,6 +90,8 @@ MODULE tblite_types
 
       REAL(KIND=dp)                                      :: accuracy = 1.0_dp
       REAL(KIND=dp), DIMENSION(3, 3)                     :: sigma = -1.0_dp
+      ! tblite contributions are currently replicated on every MPI rank.
+      ! Force/virial assembly accounts for CP2K's subsequent MPI reductions.
       REAL(KIND=dp), ALLOCATABLE                         :: e_hal(:)
       REAL(KIND=dp), ALLOCATABLE                         :: e_rep(:)
       REAL(KIND=dp), ALLOCATABLE                         :: e_rep_sc(:)
@@ -114,9 +115,9 @@ MODULE tblite_types
                                                             dipket => Null()
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: quadbra => Null(), &
                                                             quadket => Null()
+      ! Spin-resolved density snapshot used by the UKS/LSD force path.
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: rho_ao_kp_ref => Null()
       INTEGER                                            :: mixer_memory = tblite_mixer_iterations_default
-      INTEGER                                            :: mixer_solver = tblite_solver_gvd
       REAL(KIND=dp)                                      :: mixer_damping = tblite_mixer_damping_default
       REAL(KIND=dp)                                      :: mixer_max_weight = tblite_mixer_max_weight_default
       REAL(KIND=dp)                                      :: mixer_min_weight = tblite_mixer_min_weight_default
@@ -168,6 +169,8 @@ MODULE tblite_types
 #if defined(__TBLITE)
       TYPE(structure_type)                               :: mol = structure_type()
       TYPE(xtb_calculator)                               :: calc = xtb_calculator()
+      ! Geometry-dependent caches: Coulomb, dispersion and additional interactions.
+      ! Refreshed by tb_init_ham, reused for SCC potentials, energies and gradients.
       TYPE(container_cache)                              :: cache = container_cache()
       TYPE(container_cache)                              :: dcache = container_cache()
       TYPE(container_cache)                              :: icache = container_cache()
@@ -204,43 +207,8 @@ CONTAINS
       TYPE(tblite_type), POINTER                         :: tb_tblite
 
       IF (ASSOCIATED(tb_tblite)) THEN
-         IF (ALLOCATED(tb_tblite%el_num)) DEALLOCATE (tb_tblite%el_num)
-
-         IF (ALLOCATED(tb_tblite%e_hal)) DEALLOCATE (tb_tblite%e_hal)
-         IF (ALLOCATED(tb_tblite%e_rep)) DEALLOCATE (tb_tblite%e_rep)
-         IF (ALLOCATED(tb_tblite%e_rep_sc)) DEALLOCATE (tb_tblite%e_rep_sc)
-         IF (ALLOCATED(tb_tblite%e_disp)) DEALLOCATE (tb_tblite%e_disp)
-         IF (ALLOCATED(tb_tblite%e_scd)) DEALLOCATE (tb_tblite%e_scd)
-         IF (ALLOCATED(tb_tblite%e_es)) DEALLOCATE (tb_tblite%e_es)
-         IF (ALLOCATED(tb_tblite%e_int)) DEALLOCATE (tb_tblite%e_int)
-         IF (ALLOCATED(tb_tblite%e_inc)) DEALLOCATE (tb_tblite%e_inc)
-         IF (ALLOCATED(tb_tblite%e_exchange)) DEALLOCATE (tb_tblite%e_exchange)
-         IF (ALLOCATED(tb_tblite%e_spin)) DEALLOCATE (tb_tblite%e_spin)
-         IF (ALLOCATED(tb_tblite%selfenergy)) DEALLOCATE (tb_tblite%selfenergy)
-         IF (ALLOCATED(tb_tblite%cn)) DEALLOCATE (tb_tblite%cn)
-
-         IF (ALLOCATED(tb_tblite%grad)) DEALLOCATE (tb_tblite%grad)
-         IF (ALLOCATED(tb_tblite%dsedcn)) DEALLOCATE (tb_tblite%dsedcn)
-         IF (ALLOCATED(tb_tblite%dcndr)) DEALLOCATE (tb_tblite%dcndr)
-         IF (ALLOCATED(tb_tblite%dcndL)) DEALLOCATE (tb_tblite%dcndL)
-#if defined(__TBLITE_GXTB)
-         IF (ALLOCATED(tb_tblite%overlap_dense)) DEALLOCATE (tb_tblite%overlap_dense)
-         IF (ALLOCATED(tb_tblite%gxtb_kmesh_map)) DEALLOCATE (tb_tblite%gxtb_kmesh_map)
-         IF (ALLOCATED(tb_tblite%acp_fock_kp)) DEALLOCATE (tb_tblite%acp_fock_kp)
-         IF (ALLOCATED(tb_tblite%qualification_acp_fock_full)) THEN
-            DEALLOCATE (tb_tblite%qualification_acp_fock_full)
-         END IF
-         IF (ALLOCATED(tb_tblite%exchange_fock_kp)) DEALLOCATE (tb_tblite%exchange_fock_kp)
-         IF (ALLOCATED(tb_tblite%mixed_fock_kp)) DEALLOCATE (tb_tblite%mixed_fock_kp)
-         IF (ALLOCATED(tb_tblite%previous_density_kp)) DEALLOCATE (tb_tblite%previous_density_kp)
-         tb_tblite%acp_fock_kp_valid = .FALSE.
-         tb_tblite%exchange_fock_kp_valid = .FALSE.
-         tb_tblite%mixed_fock_kp_valid = .FALSE.
-         tb_tblite%previous_density_kp_valid = .FALSE.
-         IF (ALLOCATED(tb_tblite%potential_mixer)) DEALLOCATE (tb_tblite%potential_mixer)
-         tb_tblite%potential_mixer_dimension = 0
-#endif
-
+         ! Release pointer-owned DBCSR objects; allocatable components are released
+         ! automatically when the parent object is deallocated.
          IF (ASSOCIATED(tb_tblite%dipbra)) THEN
             CALL dbcsr_deallocate_matrix_set(tb_tblite%dipbra)
          END IF
@@ -256,12 +224,8 @@ CONTAINS
          IF (ASSOCIATED(tb_tblite%rho_ao_kp_ref)) THEN
             CALL dbcsr_deallocate_matrix_set(tb_tblite%rho_ao_kp_ref)
          END IF
-#if defined(__TBLITE)
-         IF (ALLOCATED(tb_tblite%mixer)) DEALLOCATE (tb_tblite%mixer)
-         IF (ALLOCATED(tb_tblite%param)) DEALLOCATE (tb_tblite%param)
-#endif
-
          DEALLOCATE (tb_tblite)
+         NULLIFY (tb_tblite)
       END IF
 
    END SUBROUTINE deallocate_tblite_type

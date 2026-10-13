@@ -177,11 +177,11 @@ CONTAINS
          angle = -2.0_wp*pi*DOT_PRODUCT(kfrac, &
             & stream%projector_cell(:, itr))
          phase = EXP(CMPLX(0.0_wp, angle, wp))
-         stream%csk = stream%csk + &
+         stream%csk(:, :) = stream%csk + &
             & phase*images%scaled_projector_overlap(:, :, itr)
       END DO
       DO spin = 1, stream%nspin
-         stream%work = MATMUL(stream%csk, density(:, :, spin))
+         stream%work(:, :) = MATMUL(stream%csk, density(:, :, spin))
          DO itr = 1, stream%ntr
             angle = -2.0_wp*pi*DOT_PRODUCT(kfrac, &
                & stream%projector_cell(:, itr))

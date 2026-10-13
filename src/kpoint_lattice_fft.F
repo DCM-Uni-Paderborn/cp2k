@@ -119,9 +119,13 @@ CONTAINS
             IF (ABS(orthogonality - TARGET) > 1.0E-10_dp) RETURN
          END DO
       END DO
-      certificate%cells = cells
-      certificate%points = xkp
-      certificate%weights = weights
+      IF (ALLOCATED(certificate%cells)) DEALLOCATE (certificate%cells)
+      IF (ALLOCATED(certificate%points)) DEALLOCATE (certificate%points)
+      IF (ALLOCATED(certificate%weights)) DEALLOCATE (certificate%weights)
+      ALLOCATE (certificate%cells(3, nk), certificate%points(3, nk), certificate%weights(nk))
+      certificate%cells(:, :) = cells
+      certificate%points(:, :) = xkp
+      certificate%weights(:) = weights
       certificate%nmesh = nmesh
       certificate%valid = .TRUE.
       valid = .TRUE.

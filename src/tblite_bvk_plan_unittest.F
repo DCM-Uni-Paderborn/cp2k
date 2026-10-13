@@ -198,7 +198,7 @@ PROGRAM tblite_bvk_plan_unittest
    DO nspin = 1, 2
       CALL new_wavefunction(wfn, mol%nat, model%nsh, nao, nspin, 0.0_dp)
       ALLOCATE (density(nao, nao, nspin, nk), overlap(nao, nao, nk), fock(nao, nao, nspin, nk), &
-                oracle_fock(nao, nao, nspin, nk))
+                oracle_fock(nao, nao, nspin, nk), first_fock(nao, nao, nspin, nk))
       DO cell = 1, nk
          DO a = 1, nao
             DO b = 1, a
@@ -213,7 +213,7 @@ PROGRAM tblite_bvk_plan_unittest
          END DO
       END DO
       CALL compare_exchange()
-      first_fock = fock
+      first_fock(:, :, :, :) = fock
       CALL bvk_plan_counts(plan, before, hits, valid)
       wfn%qsh(:, 1) = 0.12_dp
       CALL compare_exchange()
@@ -225,7 +225,7 @@ PROGRAM tblite_bvk_plan_unittest
       CALL compare_exchange()
       CALL bvk_plan_counts(plan, builds, hits, valid)
       CALL check(builds == before, 'live density and overlap not cached')
-      DEALLOCATE (density, overlap, fock, oracle_fock)
+      DEALLOCATE (density, overlap, fock, oracle_fock, first_fock)
    END DO
    WRITE (*, '(A)') 'CP2K BVK PLAN: exact-key invalidation, live charge and independent dense-oracle checks passed'
 #if defined(__TBLITE_GXTB_TRANSFORM)
@@ -380,9 +380,9 @@ CONTAINS
             END DO
          END DO
          ! A complete but independently reordered/translated cell representation and point order.
-         reps = reps(:, count:1:-1)
+         reps(:, :) = reps(:, count:1:-1)
          reps(1, :) = reps(1, :) - dimensions(1)
-         points = points(:, count:1:-1)
+         points(:, :) = points(:, count:1:-1)
          w = 1.0_dp/REAL(count, dp)
          CALL prepare_exchange_transform(fast, points, dimensions, reps, w)
          CALL exchange_transform_counts(fast, old_nf, old_nd)

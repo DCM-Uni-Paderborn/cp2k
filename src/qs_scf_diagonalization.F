@@ -452,13 +452,12 @@ CONTAINS
       IF (use_native_gxtb_mixer) use_cdiis = .FALSE.
 
       DO ispin = 1, nspin
-         IF (use_cdiis) THEN
-            CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, scf_env%scf_work1(ispin))
-         ELSE IF (use_subspace_fock) THEN
+         IF (use_subspace_fock .AND. .NOT. use_cdiis) THEN
             CALL copy_dbcsr_to_fm(scf_env%scf_subspace_buffer%combined_fock(ispin, 1)%matrix, &
-                                  scf_env%scf_work1(ispin))
+                                  scf_env%scf_work1(ispin), scf_env%fm_copy_plan(ispin), check_plan=.TRUE.)
          ELSE
-            CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, scf_env%scf_work1(ispin))
+            CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, scf_env%scf_work1(ispin), &
+                                  scf_env%fm_copy_plan(ispin), check_plan=.TRUE.)
          END IF
       END DO
 
@@ -496,9 +495,11 @@ CONTAINS
                DO ispin = 1, nspin
                   IF (use_subspace_fock) THEN
                      CALL copy_dbcsr_to_fm( &
-                        scf_env%scf_subspace_buffer%combined_fock(ispin, 1)%matrix, scf_env%scf_work2)
+                        scf_env%scf_subspace_buffer%combined_fock(ispin, 1)%matrix, scf_env%scf_work2, &
+                        scf_env%fm_copy_plan(ispin), check_plan=.TRUE.)
                   ELSE
-                     CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, scf_env%scf_work2)
+                     CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, scf_env%scf_work2, &
+                                           scf_env%fm_copy_plan(ispin), check_plan=.TRUE.)
                   END IF
                   CALL cp_fm_scale_and_add(diis_weight, scf_env%scf_work1(ispin), &
                                            1.0_dp - diis_weight, scf_env%scf_work2)
@@ -526,7 +527,7 @@ CONTAINS
       candidate_shift = 0.0_dp
       IF (use_adiis) candidate_shift = adiis_candidate_shift(scf_env)
       IF (candidate_shift > 0.0_dp) THEN
-         CALL copy_dbcsr_to_fm(matrix_s(1)%matrix, scf_env%scf_work2)
+         CALL copy_dbcsr_to_fm(matrix_s(1)%matrix, scf_env%scf_work2, scf_env%fm_copy_plan(0), check_plan=.TRUE.)
          DO ispin = 1, nspin
             CALL shift_candidate_real(scf_env%scf_work1(ispin), scf_env%scf_work2, mos(ispin), candidate_shift)
          END DO
@@ -1999,7 +2000,8 @@ CONTAINS
       nspin = SIZE(matrix_ks)
 
       DO ispin = 1, nspin
-         CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, scf_env%scf_work1(ispin))
+         CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, scf_env%scf_work1(ispin), &
+                               scf_env%fm_copy_plan(ispin), check_plan=.TRUE.)
       END DO
       IF (scf_env%iter_count > 1 .AND. .NOT. scf_env%skip_diis) THEN
          CALL qs_diis_b_step(scf_env%scf_diis_buffer, mos, scf_env%scf_work1, &
@@ -2386,8 +2388,8 @@ CONTAINS
       ksa => scf_env%scf_work1(1)
       ksb => scf_env%scf_work1(2)
 
-      CALL copy_dbcsr_to_fm(matrix_ks(1)%matrix, ksa)
-      CALL copy_dbcsr_to_fm(matrix_ks(2)%matrix, ksb)
+      CALL copy_dbcsr_to_fm(matrix_ks(1)%matrix, ksa, scf_env%fm_copy_plan(1), check_plan=.TRUE.)
+      CALL copy_dbcsr_to_fm(matrix_ks(2)%matrix, ksb, scf_env%fm_copy_plan(2), check_plan=.TRUE.)
 
       ! Get MO information
 
@@ -2667,7 +2669,7 @@ CONTAINS
 
       DO ispin = 1, SIZE(matrix_ks)
          CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, &
-                               scf_env%scf_work1(ispin))
+                               scf_env%scf_work1(ispin), scf_env%fm_copy_plan(ispin), check_plan=.TRUE.)
       END DO
 
       IF (scf_env%mixing_method == 1) THEN

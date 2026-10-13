@@ -1236,7 +1236,7 @@ CONTAINS
       ! persistent CP2K potential is neither changed nor accumulated twice.
       pot_work = pot
       CALL new_integral(ints, SIZE(overlap, 1))
-      ints%overlap = overlap
+      ints%overlap(:, :) = overlap
       ALLOCATE (h1(SIZE(overlap, 1), SIZE(overlap, 2), wfn%nspin))
       CALL add_pot_to_h1(calc%bas, ints, pot_work, h1)
 
@@ -1330,7 +1330,7 @@ CONTAINS
 
       pot_work = pot
       CALL new_integral(ints, SIZE(overlap_gamma, 1))
-      ints%overlap = overlap_gamma
+      ints%overlap(:, :) = overlap_gamma
       ALLOCATE (h1(SIZE(overlap_gamma, 1), SIZE(overlap_gamma, 2), &
          & SIZE(density_images, 4)))
       CALL add_pot_to_h1(calc%bas, ints, pot_work, h1)
@@ -1340,8 +1340,8 @@ CONTAINS
          CALL calc%ncoord%get_cn(mol, cn, dcndr, dcndL)
       END IF
 
-      density_work = density_images
-      wdensity_work = wdensity_images
+      ALLOCATE (density_work, SOURCE=density_images)
+      ALLOCATE (wdensity_work, SOURCE=wdensity_images)
       CALL updown_to_magnet(density_work)
       CALL updown_to_magnet(wdensity_work)
       CALL get_hamiltonian_gradient(mol, translations, list, calc%bas, bcache, &

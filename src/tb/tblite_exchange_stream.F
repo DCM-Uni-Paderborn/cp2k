@@ -780,7 +780,7 @@ CONTAINS
          END IF
       END IF
       ALLOCATE (kred(3, nk))
-      kred = MODULO(kfrac, 1.0_wp)
+      kred(:, :) = MODULO(kfrac, 1.0_wp)
       IF (.NOT. reuse_kernel) THEN
          plan%bvk_plan_valid = .FALSE.
 
@@ -1969,11 +1969,11 @@ CONTAINS
          cmat = (0.0_wp, 0.0_wp)
          vmat = (0.0_wp, 0.0_wp)
          DO icell = 1, SIZE(phase_forward)
-            amat = amat + phase_forward(icell)*amat_r(:, :, icell, spin)
-            cmat = cmat + phase_forward(icell)*cmat_r(:, :, icell, spin)
-            vmat = vmat + phase_forward(icell)*vmat_r(:, :, icell, spin)
+            amat(:, :) = amat + phase_forward(icell)*amat_r(:, :, icell, spin)
+            cmat(:, :) = cmat + phase_forward(icell)*cmat_r(:, :, icell, spin)
+            vmat(:, :) = vmat + phase_forward(icell)*vmat_r(:, :, icell, spin)
          END DO
-         work = amat + 0.5_wp*MATMUL(overlap, vmat)
+         work(:, :) = amat + 0.5_wp*MATMUL(overlap, vmat)
          IF (add_onsite) THEN
             DO iao = 1, SIZE(overlap, 1)
                work(:, iao) = work(:, iao) &
@@ -3823,20 +3823,20 @@ CONTAINS
          & SHAPE(stream%reverse_vmat_r(:, :, 1:stream%batch_count, :)))
       first = last + 1_int64
       last = last + nonsite
-      stream%gdiagP = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagP))
+      stream%gdiagP(:, :) = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagP))
       first = last + 1_int64
       last = last + nonsite
-      stream%gdiagSP = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagSP))
+      stream%gdiagSP(:, :) = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagSP))
       first = last + 1_int64
       last = last + nonsite
-      stream%gdiagSPS = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagSPS))
+      stream%gdiagSPS(:, :) = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagSPS))
       first = last + 1_int64
       last = last + nonsite
-      stream%reverse_bdiagSP = RESHAPE(buffer%values(first:last), &
+      stream%reverse_bdiagSP(:, :) = RESHAPE(buffer%values(first:last), &
          & SHAPE(stream%reverse_bdiagSP))
       first = last + 1
       last = last + nonsite
-      stream%reverse_bdiagSPS = RESHAPE(buffer%values(first:last), &
+      stream%reverse_bdiagSPS(:, :) = RESHAPE(buffer%values(first:last), &
          & SHAPE(stream%reverse_bdiagSPS))
       stream%seen = .TRUE.
       IF (stream%transform_backend /= bvk_transform_dense) THEN
@@ -3970,20 +3970,20 @@ CONTAINS
       END IF
       first = 6_int64*nblock + 1_int64
       last = first + nonsite - 1_int64
-      stream%gdiagP = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagP))
+      stream%gdiagP(:, :) = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagP))
       first = last + 1_int64
       last = last + nonsite
-      stream%gdiagSP = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagSP))
+      stream%gdiagSP(:, :) = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagSP))
       first = last + 1_int64
       last = last + nonsite
-      stream%gdiagSPS = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagSPS))
+      stream%gdiagSPS(:, :) = RESHAPE(buffer%values(first:last), SHAPE(stream%gdiagSPS))
       first = last + 1_int64
       last = last + nonsite
-      stream%reverse_bdiagSP = RESHAPE(buffer%values(first:last), &
+      stream%reverse_bdiagSP(:, :) = RESHAPE(buffer%values(first:last), &
          & SHAPE(stream%reverse_bdiagSP))
       first = last + 1_int64
       last = last + nonsite
-      stream%reverse_bdiagSPS = RESHAPE(buffer%values(first:last), &
+      stream%reverse_bdiagSPS(:, :) = RESHAPE(buffer%values(first:last), &
          & SHAPE(stream%reverse_bdiagSPS))
       stream%seen = .TRUE.
       IF (stream%transform_backend /= bvk_transform_dense) THEN
@@ -4626,8 +4626,8 @@ CONTAINS
       ELSE IF (stream%mode == cp2k_exchange_stream_reduced) THEN
          ALLOCATE (amat(stream%nao, stream%nao), cmat(stream%nao, stream%nao))
          DO spin = 1, stream%nspin
-            amat = MATMUL(overlap, density(:, :, spin))
-            cmat = 0.5_wp*MATMUL(amat, overlap)
+            amat(:, :) = MATMUL(overlap, density(:, :, spin))
+            cmat(:, :) = 0.5_wp*MATMUL(amat, overlap)
             DO icell = 1, stream%nk
                angle = 2.0_wp*pi*DOT_PRODUCT(stream%kfrac(:, ik), &
                   & REAL(stream%reps(:, icell), wp))
@@ -4643,8 +4643,8 @@ CONTAINS
       ELSE IF (stream%transform_backend == bvk_transform_dense) THEN
          ALLOCATE (amat(stream%nao, stream%nao), cmat(stream%nao, stream%nao))
          DO spin = 1, stream%nspin
-            amat = MATMUL(overlap, density(:, :, spin))
-            cmat = 0.5_wp*MATMUL(amat, overlap)
+            amat(:, :) = MATMUL(overlap, density(:, :, spin))
+            cmat(:, :) = 0.5_wp*MATMUL(amat, overlap)
             DO ibatch = 1, stream%batch_count
                icell = stream%batch_first + (ibatch - 1)
                inverse_cell = stream%inverse_image(icell)
@@ -4670,8 +4670,8 @@ CONTAINS
       ELSE
          ALLOCATE (amat(stream%nao, stream%nao), cmat(stream%nao, stream%nao))
          DO spin = 1, stream%nspin
-            amat = MATMUL(overlap, density(:, :, spin))
-            cmat = 0.5_wp*MATMUL(amat, overlap)
+            amat(:, :) = MATMUL(overlap, density(:, :, spin))
+            cmat(:, :) = 0.5_wp*MATMUL(amat, overlap)
             DO ilocal = 1, stream%transform_pair_count
                ipair = stream%transform_pair_first + (ilocal - 1)
                iao = MODULO(ipair - 1, stream%nao) + 1
@@ -5097,7 +5097,7 @@ CONTAINS
       energy_batch = 0.0_wp
       IF (local_count > 0) THEN
          ALLOCATE (image_index(local_count))
-         image_index = [(first_global + (ibatch - first_local), &
+         image_index(:) = [(first_global + (ibatch - first_local), &
             & ibatch=first_local, last_local)]
          last_image = first_global + (local_count - 1)
          SELECT TYPE (cache => ecache%raw)
@@ -5123,7 +5123,7 @@ CONTAINS
             RETURN
          END SELECT
       END IF
-      stream%vsh = stream%vsh + vsh_batch
+      stream%vsh(:) = stream%vsh + vsh_batch
       stream%energy = stream%energy + energy_batch
       stream%batch_applied = .TRUE.
    END SUBROUTINE cp2k_exchange_stream_batch_apply
@@ -5452,16 +5452,16 @@ CONTAINS
       END DO
 
       DO spin = 1, stream%nspin
-         xmat = MATMUL(overlap, density(:, :, spin))
-         dmat = 0.5_wp*MATMUL(xmat, overlap)
+         xmat(:, :) = MATMUL(overlap, density(:, :, spin))
+         dmat(:, :) = 0.5_wp*MATMUL(xmat, overlap)
          IF (stream%transform_backend == bvk_transform_dense) THEN
-            amat = -0.25_wp*spin_factor*stream%weights(ik) &
-                  & *density(:, :, spin)
+            amat(:, :) = -0.25_wp*spin_factor*stream%weights(ik) &
+                        & *density(:, :, spin)
          ELSE
-            amat = -0.25_wp*spin_factor*density(:, :, spin)
+            amat(:, :) = -0.25_wp*spin_factor*density(:, :, spin)
          END IF
-         bmat = MATMUL(amat, CONJG(TRANSPOSE(overlap)))
-         vseed = 0.5_wp*MATMUL(CONJG(TRANSPOSE(overlap)), bmat)
+         bmat(:, :) = MATMUL(amat, CONJG(TRANSPOSE(overlap)))
+         vseed(:, :) = 0.5_wp*MATMUL(CONJG(TRANSPOSE(overlap)), bmat)
 
          IF (has_origin .AND. (stream%transform_backend == bvk_transform_dense &
             & .OR. stream%transform_pair_first == 1)) THEN
@@ -5729,7 +5729,7 @@ CONTAINS
          & local_count, first_global)
       IF (local_count > 0) THEN
          ALLOCATE (image_index(local_count))
-         image_index = [(first_global + (ibatch - first_local), &
+         image_index(:) = [(first_global + (ibatch - first_local), &
             & ibatch=first_local, last_local)]
          SELECT TYPE (cache => ecache%raw)
          TYPE is (exchange_cache)
@@ -5864,19 +5864,19 @@ CONTAINS
             angle = 2.0_wp*pi*DOT_PRODUCT(stream%kfrac(:, ik), &
                & REAL(stream%reps(:, icell), wp))
             phase = EXP(CMPLX(0.0_wp, angle, wp))
-            tmat = tmat + phase*stream%amat_r(:, :, ibatch, spin)
-            vmat = vmat + phase*stream%vmat_r(:, :, ibatch, spin)
-            dadj = dadj + stream%weights(ik)*phase &
-                  & *stream%cmat_r(:, :, ibatch, spin)
-            xadj = xadj + stream%weights(ik)*phase &
-                  & *stream%amat_partner_r(:, :, ibatch, spin)
+            tmat(:, :) = tmat + phase*stream%amat_r(:, :, ibatch, spin)
+            vmat(:, :) = vmat + phase*stream%vmat_r(:, :, ibatch, spin)
+            dadj(:, :) = dadj + stream%weights(ik)*phase &
+                        & *stream%cmat_r(:, :, ibatch, spin)
+            xadj(:, :) = xadj + stream%weights(ik)*phase &
+                        & *stream%amat_partner_r(:, :, ibatch, spin)
          END DO
 
-         xmat = MATMUL(overlap, density(:, :, spin))
-         amat = -0.25_wp*spin_factor*stream%weights(ik) &
-               & *density(:, :, spin)
-         bmat = MATMUL(amat, CONJG(TRANSPOSE(overlap)))
-         work = tmat + 0.5_wp*MATMUL(overlap, vmat)
+         xmat(:, :) = MATMUL(overlap, density(:, :, spin))
+         amat(:, :) = -0.25_wp*spin_factor*stream%weights(ik) &
+                     & *density(:, :, spin)
+         bmat(:, :) = MATMUL(amat, CONJG(TRANSPOSE(overlap)))
+         work(:, :) = tmat + 0.5_wp*MATMUL(overlap, vmat)
          raw_spin = (0.0_wp, 0.0_wp)
 
          IF (has_origin) THEN
@@ -5885,7 +5885,7 @@ CONTAINS
                   & + 0.25_wp*stream%gdiagP(iao, spin)*overlap(:, iao)
             END DO
          END IF
-         raw_spin = raw_spin + MATMUL(CONJG(TRANSPOSE(work)), amat)
+         raw_spin(:, :) = raw_spin + MATMUL(CONJG(TRANSPOSE(work)), amat)
          IF (has_origin) THEN
             DO iao = 1, stream%nao
                raw_spin(:, iao) = raw_spin(:, iao) &
@@ -5893,7 +5893,7 @@ CONTAINS
                   & + 0.25_wp*CONJG(stream%gdiagP(iao, spin))*bmat(:, iao)
             END DO
          END IF
-         raw_spin = raw_spin + 0.5_wp*MATMUL(bmat, CONJG(TRANSPOSE(vmat)))
+         raw_spin(:, :) = raw_spin + 0.5_wp*MATMUL(bmat, CONJG(TRANSPOSE(vmat)))
 
          IF (has_origin) THEN
             DO iao = 1, stream%nao
@@ -5907,11 +5907,11 @@ CONTAINS
                   & *CONJG(xmat(iao, :))
             END DO
          END IF
-         xadj = xadj + 0.5_wp*MATMUL(dadj, CONJG(TRANSPOSE(overlap)))
-         raw_spin = raw_spin &
+         xadj(:, :) = xadj + 0.5_wp*MATMUL(dadj, CONJG(TRANSPOSE(overlap)))
+         raw_spin(:, :) = raw_spin &
             & + 0.5_wp*MATMUL(CONJG(TRANSPOSE(xmat)), dadj) &
             & + MATMUL(xadj, CONJG(TRANSPOSE(density(:, :, spin))))
-         raw = raw + raw_spin
+         raw(:, :) = raw + raw_spin
       END DO
 
       overlap_adjoint = overlap_adjoint &

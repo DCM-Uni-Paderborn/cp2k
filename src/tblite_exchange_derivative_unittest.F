@@ -95,7 +95,7 @@ PROGRAM tblite_exchange_derivative_unittest
                   plus = energy(mol)
                   mol%xyz(axis, atom) = xyz(axis, atom) - h
                   minus = energy(mol)
-                  mol%xyz = xyz
+                  mol%xyz(:, :) = xyz
                   numerical_gradient(axis, atom) = (plus - minus)/(2.0_wp*h)
                END DO
             END DO
@@ -107,15 +107,15 @@ PROGRAM tblite_exchange_derivative_unittest
                   END DO
                   xyz = mol%xyz
                   deformation(col, row) = deformation(col, row) + h
-                  mol%xyz = MATMUL(deformation, xyz)
-                  mol%lattice = MATMUL(deformation, lattice)
+                  mol%xyz(:, :) = MATMUL(deformation, xyz)
+                  mol%lattice(:, :) = MATMUL(deformation, lattice)
                   plus = energy(mol)
                   deformation(col, row) = deformation(col, row) - 2.0_wp*h
-                  mol%xyz = MATMUL(deformation, xyz)
-                  mol%lattice = MATMUL(deformation, lattice)
+                  mol%xyz(:, :) = MATMUL(deformation, xyz)
+                  mol%lattice(:, :) = MATMUL(deformation, lattice)
                   minus = energy(mol)
-                  mol%xyz = xyz
-                  mol%lattice = lattice
+                  mol%xyz(:, :) = xyz
+                  mol%lattice(:, :) = lattice
                   numerical_sigma(row, col) = (plus - minus)/(2.0_wp*h)
                END DO
             END DO

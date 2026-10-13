@@ -82,21 +82,21 @@ CONTAINS
          END IF
          cells = cells*nmesh(axis)
       END DO
-      integers = [mol%nat, mol%nid, nmesh, MERGE(1, 0, mol%periodic), SIZE(mol%id), mol%id, &
-                  SIZE(mol%num), mol%num, SHAPE(mol%xyz), exchange%nao, exchange%nsh, exchange%maxsh, &
-                  SIZE(exchange%nsh_id), exchange%nsh_id, SIZE(exchange%nao_sh), exchange%nao_sh, &
-                  SIZE(exchange%ish_at), exchange%ish_at, SIZE(exchange%iao_sh), exchange%iao_sh, &
-                  SHAPE(exchange%hubbard), SHAPE(exchange%offdiag_scale), SHAPE(exchange%onecxints), &
-                  SHAPE(exchange%rad), SHAPE(exchange%kq), SHAPE(exchange%corr_scale), SHAPE(exchange%corr_rad)]
-      reals = [RESHAPE(mol%xyz, [SIZE(mol%xyz)]), RESHAPE(mol%lattice, [9]), &
-               exchange%frscale, exchange%onsite_frscale, exchange%omega, exchange%lrscale, &
-               exchange%ondiag_scale, exchange%hubbard_exp, exchange%hubbard_exp_r0, exchange%gexp, exchange%corr_exp, &
-               RESHAPE(exchange%hubbard, [SIZE(exchange%hubbard)]), &
-               RESHAPE(exchange%offdiag_scale, [SIZE(exchange%offdiag_scale)]), &
-               RESHAPE(exchange%onecxints, [SIZE(exchange%onecxints)]), &
-               RESHAPE(exchange%rad, [SIZE(exchange%rad)]), RESHAPE(exchange%kq, [SIZE(exchange%kq)]), &
-               RESHAPE(exchange%corr_scale, [SIZE(exchange%corr_scale)]), &
-               RESHAPE(exchange%corr_rad, [SIZE(exchange%corr_rad)])]
+      ALLOCATE (integers, SOURCE=[mol%nat, mol%nid, nmesh, MERGE(1, 0, mol%periodic), SIZE(mol%id), mol%id, &
+                                  SIZE(mol%num), mol%num, SHAPE(mol%xyz), exchange%nao, exchange%nsh, exchange%maxsh, &
+                                  SIZE(exchange%nsh_id), exchange%nsh_id, SIZE(exchange%nao_sh), exchange%nao_sh, &
+                                  SIZE(exchange%ish_at), exchange%ish_at, SIZE(exchange%iao_sh), exchange%iao_sh, &
+                                  SHAPE(exchange%hubbard), SHAPE(exchange%offdiag_scale), SHAPE(exchange%onecxints), &
+                                  SHAPE(exchange%rad), SHAPE(exchange%kq), SHAPE(exchange%corr_scale), SHAPE(exchange%corr_rad)])
+      ALLOCATE (reals, SOURCE=[RESHAPE(mol%xyz, [SIZE(mol%xyz)]), RESHAPE(mol%lattice, [9]), &
+                               exchange%frscale, exchange%onsite_frscale, exchange%omega, exchange%lrscale, &
+                           exchange%ondiag_scale, exchange%hubbard_exp, exchange%hubbard_exp_r0, exchange%gexp, exchange%corr_exp, &
+                               RESHAPE(exchange%hubbard, [SIZE(exchange%hubbard)]), &
+                               RESHAPE(exchange%offdiag_scale, [SIZE(exchange%offdiag_scale)]), &
+                               RESHAPE(exchange%onecxints, [SIZE(exchange%onecxints)]), &
+                               RESHAPE(exchange%rad, [SIZE(exchange%rad)]), RESHAPE(exchange%kq, [SIZE(exchange%kq)]), &
+                               RESHAPE(exchange%corr_scale, [SIZE(exchange%corr_scale)]), &
+                               RESHAPE(exchange%corr_rad, [SIZE(exchange%corr_rad)])])
       IF (.NOT. ALL(ieee_is_finite(reals))) THEN
          plan%valid = .FALSE.
          CALL fatal_error(error, 'Nonfinite geometry or model in BvK descriptor')
@@ -144,8 +144,8 @@ CONTAINS
          CALL fatal_error(error, 'Nonfinite BvK model kernel')
          RETURN
       END IF
-      plan%integer_key = integers
-      plan%real_key = reals
+      CALL MOVE_ALLOC(integers, plan%integer_key)
+      CALL MOVE_ALLOC(reals, plan%real_key)
       plan%builds = plan%builds + 1
       plan%valid = .TRUE.
    END SUBROUTINE prepare_bvk_kernel

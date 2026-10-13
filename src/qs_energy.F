@@ -41,7 +41,7 @@ MODULE qs_energy
    USE qs_scf,                          ONLY: scf
    USE qs_tddfpt2_smearing_methods,     ONLY: deallocate_fermi_params
    USE scf_control_types,               ONLY: scf_control_type
-   USE tblite_interface,                ONLY: tb_reference_cli_compare
+   USE tblite_reference_cli,            ONLY: tb_reference_cli_compare
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE

@@ -185,11 +185,11 @@ CONTAINS
          x0 = (0.0_wp, 0.0_wp)
          d0 = (0.0_wp, 0.0_wp)
          DO ik = 1, SIZE(weights)
-            xmat = MATMUL(overlap(:, :, ik), density(:, :, spin, ik))
-            dmat = 0.5_wp*MATMUL(xmat, overlap(:, :, ik))
-            p0 = p0 + weights(ik)*density(:, :, spin, ik)
-            x0 = x0 + weights(ik)*xmat
-            d0 = d0 + weights(ik)*dmat
+            xmat(:, :) = MATMUL(overlap(:, :, ik), density(:, :, spin, ik))
+            dmat(:, :) = 0.5_wp*MATMUL(xmat, overlap(:, :, ik))
+            p0(:, :) = p0 + weights(ik)*density(:, :, spin, ik)
+            x0(:, :) = x0 + weights(ik)*xmat
+            d0(:, :) = d0 + weights(ik)*dmat
          END DO
 
          bt0 = (0.0_wp, 0.0_wp)
@@ -199,11 +199,11 @@ CONTAINS
          bgsp = (0.0_wp, 0.0_wp)
          bgsps = (0.0_wp, 0.0_wp)
          DO ik = 1, SIZE(weights)
-            bq = -0.25_wp*spin_factor*weights(ik)*density(:, :, spin, ik)
-            bu0 = bu0 + bq
-            bw = MATMUL(bq, CONJG(TRANSPOSE(overlap(:, :, ik))))
-            bt0 = bt0 + bw
-            bv0 = bv0 + 0.5_wp*MATMUL( &
+            bq(:, :) = -0.25_wp*spin_factor*weights(ik)*density(:, :, spin, ik)
+            bu0(:, :) = bu0 + bq
+            bw(:, :) = MATMUL(bq, CONJG(TRANSPOSE(overlap(:, :, ik))))
+            bt0(:, :) = bt0 + bw
+            bv0(:, :) = bv0 + 0.5_wp*MATMUL( &
                & CONJG(TRANSPOSE(overlap(:, :, ik))), bw)
             DO iao = 1, self%nao
                bgp(iao) = bgp(iao) + 0.25_wp*SUM( &
@@ -419,12 +419,12 @@ CONTAINS
             & transform=transform)
 
          DO ik = 1, SIZE(weights)
-            work = amat(:, :, ik)
+            work(:, :) = amat(:, :, ik)
             DO iao = 1, self%nao
                work(:, iao) = work(:, iao) &
                   & + 0.25_wp*gdiagP(iao)*overlap(:, iao, ik)
             END DO
-            work = work + 0.5_wp*MATMUL(overlap(:, :, ik), vmat(:, :, ik))
+            work(:, :) = work + 0.5_wp*MATMUL(overlap(:, :, ik), vmat(:, :, ik))
             fock(:, :, spin, ik) = cmat(:, :, ik) &
                & + MATMUL(work, overlap(:, :, ik))
             DO iao = 1, self%nao
@@ -590,10 +590,10 @@ CONTAINS
             & self%nao_sh, self%ish_at, self%iao_sh, cache%g_onsfx, &
             & diag2d, gdiagSPS(:, spin))
 
-         bt0 = -0.25_wp*spin_factor*CONJG( &
+         bt0(:, :) = -0.25_wp*spin_factor*CONJG( &
             & TRANSPOSE(amat_r(:, :, origin, spin)))
-         bu0 = -0.25_wp*spin_factor*vmat_r(:, :, origin, spin)
-         bv0 = -0.25_wp*spin_factor*cmat_r(:, :, origin, spin)
+         bu0(:, :) = -0.25_wp*spin_factor*vmat_r(:, :, origin, spin)
+         bv0(:, :) = -0.25_wp*spin_factor*cmat_r(:, :, origin, spin)
          DO iao = 1, self%nao
             bgp(iao) = -0.125_wp*spin_factor &
                       & *cmat_r(iao, iao, origin, spin)
@@ -649,7 +649,7 @@ CONTAINS
             DO jcell = 1, SIZE(kernel%reps, 2)
                coeff = SUM(weights*CONJG(phase_forward(icell, :) &
                                         & *phase_forward(jcell, :)))
-               bmat = bmat + coeff*CONJG( &
+               bmat(:, :) = bmat + coeff*CONJG( &
                   & TRANSPOSE(amat_r(:, :, jcell, spin)))
             END DO
             energy_raw = energy_raw + SUM(CONJG(bmat)*result_r(:, :, icell))
@@ -821,10 +821,10 @@ CONTAINS
                & self%nao_sh, self%ish_at, self%iao_sh, cache%g_onsfx, &
                & diag2d, gdiagSPS(:, spin))
 
-            bt0 = -0.25_wp*spin_factor*CONJG( &
+            bt0(:, :) = -0.25_wp*spin_factor*CONJG( &
                & TRANSPOSE(amat_r(:, :, origin_local, spin)))
-            bu0 = -0.25_wp*spin_factor*vmat_r(:, :, origin_local, spin)
-            bv0 = -0.25_wp*spin_factor*cmat_r(:, :, origin_local, spin)
+            bu0(:, :) = -0.25_wp*spin_factor*vmat_r(:, :, origin_local, spin)
+            bv0(:, :) = -0.25_wp*spin_factor*cmat_r(:, :, origin_local, spin)
             DO iao = 1, self%nao
                bgp(iao) = -0.125_wp*spin_factor &
                          & *cmat_r(iao, iao, origin_local, spin)
@@ -880,7 +880,7 @@ CONTAINS
                & amat_r(:, :, ibatch, spin), work, cache%g_onsfx, &
                & cache%g_onsri, 1.0_wp, -4.0_wp, 0.5_wp, -2.0_wp, &
                & .TRUE., .TRUE.)
-            bmat = inverse_coeff(ibatch)*CONJG( &
+            bmat(:, :) = inverse_coeff(ibatch)*CONJG( &
                & TRANSPOSE(amat_partner_r(:, :, ibatch, spin)))
             energy_raw = energy_raw + SUM(CONJG(bmat)*work)
             amat_r(:, :, ibatch, spin) = work
@@ -1129,7 +1129,7 @@ CONTAINS
       ! Materialize the vector-subscript section in an explicitly bounded array
       ! before passing its allocatable descriptor across the provider boundary.
       ALLOCATE (batch%reps(3, SIZE(image_index)))
-      batch%reps = kernel%reps(:, image_index)
+      batch%reps(:, :) = kernel%reps(:, image_index)
       CALL self%get_bvk_Kmatrix_derivs(mol, batch, mulliken_grad, &
          & bocorr_grad, gradient, sigma)
    END SUBROUTINE get_kernel_image_batch_derivs
@@ -1643,9 +1643,9 @@ CONTAINS
          CALL onsite_fx_symv_complex(mol%nat, mol%id, self%nsh_id, &
             & self%nao_sh, self%ish_at, self%iao_sh, cache%g_onsfx, &
             & gdiag_sps, bdiag_sps)
-         gdiag_p = bdiag_p
-         gdiag_sp = bdiag_sp
-         gdiag_sps = bdiag_sps
+         gdiag_p(:) = bdiag_p
+         gdiag_sp(:) = bdiag_sp
+         gdiag_sps(:) = bdiag_sps
          bdiag_sp = (0.0_wp, 0.0_wp)
          bdiag_sps = (0.0_wp, 0.0_wp)
 
@@ -2358,8 +2358,8 @@ CONTAINS
       DO spin = 1, SIZE(density, 3)
          ! Forward intermediates of build_KFock_complex, kept explicitly for the
          ! reverse sweep below.
-         xmat = MATMUL(overlap, density(:, :, spin))
-         dmat = 0.5_wp*MATMUL(xmat, overlap)
+         xmat(:, :) = MATMUL(overlap, density(:, :, spin))
+         dmat(:, :) = 0.5_wp*MATMUL(xmat, overlap)
          CALL onsite_fx_symv_complex(mol%nat, mol%id, self%nsh_id, &
             & self%nao_sh, self%ish_at, self%iao_sh, cache%g_onsfx, &
             & [(density(iao, iao, spin), iao=1, self%nao)], gdiag_p)
@@ -2403,12 +2403,12 @@ CONTAINS
             & self%nao_sh, self%ish_at, self%iao_sh, cache%g_onsri, &
             & density(:, :, spin), -2.0_wp, vmat)
 
-         t2mat = tmat + 0.5_wp*MATMUL(overlap, vmat)
+         t2mat(:, :) = tmat + 0.5_wp*MATMUL(overlap, vmat)
          DO iao = 1, self%nao
             t2mat(:, iao) = t2mat(:, iao) &
                & + 0.25_wp*gdiag_p(iao)*overlap(:, iao)
          END DO
-         amat = umat + MATMUL(t2mat, overlap)
+         amat(:, :) = umat + MATMUL(t2mat, overlap)
          DO iao = 1, self%nao
             amat(:, iao) = amat(:, iao) &
                & + 0.5_wp*gdiag_sp(iao)*overlap(:, iao)
@@ -2416,9 +2416,9 @@ CONTAINS
          END DO
 
          ! Reverse sweep, seeded by E=-(spin_factor/4)*Re<P,A>.
-         bamat = -0.25_wp*spin_factor*density(:, :, spin)
-         bmat = bamat  ! adjoint of U
-         btmp = MATMUL(bamat, CONJG(TRANSPOSE(overlap)))  ! adjoint of T2
+         bamat(:, :) = -0.25_wp*spin_factor*density(:, :, spin)
+         bmat(:, :) = bamat  ! adjoint of U
+         btmp(:, :) = MATMUL(bamat, CONJG(TRANSPOSE(overlap)))  ! adjoint of T2
          overlap_grad = overlap_grad + MATMUL(CONJG(TRANSPOSE(t2mat)), bamat)
          bdiag_sp = (0.0_wp, 0.0_wp)
          bdiag_sps = (0.0_wp, 0.0_wp)
@@ -2430,7 +2430,7 @@ CONTAINS
          END DO
 
          ! T2 = T + 1/4 S diag(gdiagP) + 1/2 S V.
-         tmat = btmp  ! adjoint of T
+         tmat(:, :) = btmp  ! adjoint of T
          bdiag_p = (0.0_wp, 0.0_wp)
          DO iao = 1, self%nao
             overlap_grad(:, iao) = overlap_grad(:, iao) &
@@ -2439,7 +2439,7 @@ CONTAINS
          END DO
          overlap_grad = overlap_grad &
             & + 0.5_wp*MATMUL(btmp, CONJG(TRANSPOSE(vmat)))
-         vmat = 0.5_wp*MATMUL(CONJG(TRANSPOSE(overlap)), btmp) ! adjoint of V
+         vmat(:, :) = 0.5_wp*MATMUL(CONJG(TRANSPOSE(overlap)), btmp) ! adjoint of V
 
          ! U response: U = Gm(D) + 1/2 Gfx(D) - 2 Gri(D).
          dmat = (0.0_wp, 0.0_wp)
@@ -2495,7 +2495,7 @@ CONTAINS
          END DO
 
          ! D = 1/2 X S and X = S P.
-         bamat = bamat + 0.5_wp*MATMUL(dmat, CONJG(TRANSPOSE(overlap)))
+         bamat(:, :) = bamat + 0.5_wp*MATMUL(dmat, CONJG(TRANSPOSE(overlap)))
          overlap_grad = overlap_grad &
             & + 0.5_wp*MATMUL(CONJG(TRANSPOSE(xmat)), dmat)
          overlap_grad = overlap_grad &
@@ -2549,7 +2549,7 @@ CONTAINS
 
       DO spin = 1, SIZE(density, 3)
          ! A = S P
-         tmpA = MATMUL(overlap, density(:, :, spin))
+         tmpA(:, :) = MATMUL(overlap, density(:, :, spin))
 
          DO iao = 1, self%nao
             diagP(iao) = density(iao, iao, spin)
@@ -2580,7 +2580,7 @@ CONTAINS
          CALL onsite_ri_hadamard_add_complex(mol%nat, mol%id, self%nsh_id, &
             & self%nao_sh, self%ish_at, self%iao_sh, g_onsri, tmpA, &
             & -2.0_wp, tmpB)
-         tmpA = tmpB
+         tmpA(:, :) = tmpB
 
          ! g*(1/2 S P S)
          tmpB = (0.0_wp, 0.0_wp)
@@ -2609,7 +2609,7 @@ CONTAINS
             tmpA(:, iao) = tmpA(:, iao) &
                & + 0.25_wp*gdiagP(iao)*overlap(:, iao)
          END DO
-         tmpA = tmpA + 0.5_wp*MATMUL(overlap, tmpB)
+         tmpA(:, :) = tmpA + 0.5_wp*MATMUL(overlap, tmpB)
          fock(:, :, spin) = fock(:, :, spin) + MATMUL(tmpA, overlap)
 
          DO iao = 1, self%nao

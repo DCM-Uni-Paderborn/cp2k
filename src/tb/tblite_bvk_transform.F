@@ -305,7 +305,7 @@ CONTAINS
       ALLOCATE (child_in(SIZE(input, 1), m), child_out(SIZE(input, 1), m), &
          & stage(SIZE(input, 1), m, radix))
       DO j1 = 0, radix - 1
-         child_in = input(:, j1 + 1:n:radix)
+         child_in(:, :) = input(:, j1 + 1:n:radix)
          CALL mixed_radix_fft_1d(child_in, child_out, full_n, &
             & root_stride*radix, roots, forward)
          stage(:, :, j1 + 1) = child_out

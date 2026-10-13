@@ -12,6 +12,9 @@
 ! **************************************************************************************************
 MODULE cp_cfm_cholesky
    USE cp_cfm_types, ONLY: cp_cfm_type
+#if defined(__HAS_IEEE_EXCEPTIONS)
+   USE ieee_exceptions, ONLY: IEEE_DIVIDE_BY_ZERO, IEEE_INVALID, ieee_get_halting_mode, ieee_set_halting_mode
+#endif
    USE kinds, ONLY: dp
 #if defined(__DLAF)
    USE cp_cfm_dlaf_api, ONLY: cp_cfm_pzpotrf_dlaf, cp_cfm_pzpotri_dlaf
@@ -58,6 +61,9 @@ CONTAINS
 
       COMPLEX(kind=dp), DIMENSION(:, :), POINTER         :: a
       INTEGER                                            :: handle, info, my_n
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      LOGICAL                                            :: halt(2)
+#endif
 #if defined(__parallel)
       INTEGER, DIMENSION(9)                              :: desca
 #else
@@ -75,6 +81,11 @@ CONTAINS
 
       a => matrix%local_data
 
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      ! Optimized BLAS packing can evaluate unused padded diagonal entries.
+      CALL ieee_get_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], halt)
+      CALL ieee_set_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], .FALSE.)
+#endif
 #if defined(__parallel)
       desca(:) = matrix%matrix_struct%descriptor(:)
 #if defined(__DLAF)
@@ -96,6 +107,9 @@ CONTAINS
 #else
       lda = SIZE(a, 1)
       CALL zpotrf('U', my_n, a(1, 1), lda, info)
+#endif
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      CALL ieee_set_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], halt)
 #endif
 
       IF (PRESENT(info_out)) THEN
@@ -129,6 +143,9 @@ CONTAINS
       COMPLEX(kind=dp), DIMENSION(:, :), POINTER :: aa
       INTEGER                                    :: info, handle
       INTEGER                                    :: my_n
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      LOGICAL                                    :: halt(2)
+#endif
 #if defined(__parallel)
       INTEGER, DIMENSION(9)                      :: desca
 #endif
@@ -144,6 +161,11 @@ CONTAINS
 
       aa => matrix%local_data
 
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      ! The inverse factorization also calls optimized complex triangular solves.
+      CALL ieee_get_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], halt)
+      CALL ieee_set_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], .FALSE.)
+#endif
 #if defined(__parallel)
       desca = matrix%matrix_struct%descriptor
 #if defined(__DLAF)
@@ -163,6 +185,9 @@ CONTAINS
 #endif
 #else
       CALL zpotri('U', my_n, aa(1, 1), SIZE(aa, 1), info)
+#endif
+#if defined(__HAS_IEEE_EXCEPTIONS)
+      CALL ieee_set_halting_mode([IEEE_INVALID, IEEE_DIVIDE_BY_ZERO], halt)
 #endif
 
       IF (PRESENT(info_out)) THEN
