@@ -244,12 +244,15 @@ CONTAINS
       COMPLEX(dp), INTENT(IN) :: v(:, :)
       COMPLEX(dp), INTENT(OUT) :: y(:, :)
       INTEGER, INTENT(OUT) :: status
+      COMPLEX(dp), POINTER :: observables(:, :, :)
 
+      ! Materialize the component descriptor before slicing it for external MATMUL.
+      observables => this%operators
       status = 0
       IF (OPERATOR == 0) THEN
          y = MATMUL(this%metric, v)
       ELSE
-         y = MATMUL(this%operators(:, :, OPERATOR), v)
+         y = MATMUL(observables(:, :, OPERATOR), v)
       END IF
    END SUBROUTINE dense_apply
 
@@ -267,8 +270,10 @@ CONTAINS
       COMPLEX(dp), INTENT(IN) :: v(:, :)
       COMPLEX(dp), INTENT(OUT) :: y(:, :)
       INTEGER, INTENT(OUT) :: status
+      COMPLEX(dp), POINTER :: observables(:, :, :)
 
-      y = MATMUL(CONJG(TRANSPOSE(this%operators(:, :, OPERATOR))), v)
+      observables => this%operators
+      y = MATMUL(CONJG(TRANSPOSE(observables(:, :, OPERATOR))), v)
       status = 0
    END SUBROUTINE dense_adjoint
 

@@ -2719,12 +2719,12 @@ CONTAINS
                                        packed, phases, sums, rotation_work, gemm_ctx)
       TYPE(cp_fm_p_type), INTENT(IN)                     :: source(:, :)
       INTEGER, INTENT(IN)                                :: tiles(:, :, :, :)
-      TYPE(kp_density_group_type), INTENT(IN)            :: groups(0:)
-      INTEGER, INTENT(IN)                                :: jobs(:, :), available(:, 0:)
-      LOGICAL, INTENT(IN)                                :: symmetric
-      INTEGER, INTENT(IN)                                :: row_size(:), col_size(:), row_offset(:), &
-                                                            col_offset(:)
       REAL(KIND=dp), CONTIGUOUS, INTENT(INOUT), TARGET   :: target(:, :)
+      INTEGER, INTENT(IN)                                :: col_offset(:), row_offset(:), &
+                                                            col_size(:), row_size(:)
+      LOGICAL, INTENT(IN)                                :: symmetric
+      INTEGER, INTENT(IN)                                :: available(:, 0:), jobs(:, :)
+      TYPE(kp_density_group_type), INTENT(IN), TARGET    :: groups(0:)
       REAL(KIND=dp), ALLOCATABLE, INTENT(INOUT)          :: packed(:, :), phases(:, :)
       REAL(KIND=dp), ALLOCATABLE, INTENT(INOUT), TARGET  :: sums(:, :)
       REAL(KIND=dp), ALLOCATABLE, INTENT(INOUT)          :: rotation_work(:, :)
@@ -2738,8 +2738,9 @@ CONTAINS
                                                             orientation, shift(3), slot
       LOGICAL                                            :: contributes, real_only, trans
       REAL(KIND=dp)                                      :: arg, cosine, factors(2, 2), sine
-      REAL(KIND=dp), POINTER                             :: left_rot(:, :), right_rot(:, :), &
-                                                            source_block(:, :), target_block(:, :)
+      REAL(KIND=dp), POINTER                             :: group_kpoints(:, :), left_rot(:, :), &
+                                                            right_rot(:, :), source_block(:, :), &
+                                                            target_block(:, :)
       TYPE(cp_fm_type), POINTER                          :: matrix
 
 ! Up to 512 KiB of packed input per worker, except for a single larger AO block.
@@ -2749,6 +2750,8 @@ CONTAINS
       nimage = SIZE(jobs, 2)
       DO slot = 0, UBOUND(groups, 1)
          IF (SIZE(groups(slot)%ikp) == 0) CYCLE
+         ! Borrow the full descriptor before selecting individual k-point columns.
+         group_kpoints => groups(slot)%xkp
          DO orientation = 1, 2
             IF (available(orientation, slot) == 0) CYCLE
             CALL kp_density_source_block(groups(slot), jobs(1:2, 1), symmetric, orientation, a, b, trans)
@@ -2770,10 +2773,10 @@ CONTAINS
                contributes = .FALSE.
                DO k = first, last
                   ikp = groups(slot)%ikp(k)
-                  CALL kp_symmetry_phase_factors(shift, groups(slot)%xkp(:, k), &
+                  CALL kp_symmetry_phase_factors(shift, group_kpoints(:, k), &
                                                  groups(slot)%op%time_reversal, real_only, factors)
                   DO image = 1, nimage
-                     arg = twopi*DOT_PRODUCT(REAL(jobs(4:6, image), dp), groups(slot)%xkp(:, k))
+                     arg = twopi*DOT_PRODUCT(REAL(jobs(4:6, image), dp), group_kpoints(:, k))
                      cosine = REAL(jobs(7, image), dp)*COS(arg)
                      sine = REAL(jobs(8, image), dp)*SIN(arg)*MERGE(-1.0_dp, 1.0_dp, trans)
                      IF (real_only) sine = 0.0_dp
