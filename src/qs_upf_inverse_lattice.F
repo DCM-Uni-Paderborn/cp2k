@@ -227,7 +227,7 @@ CONTAINS
                                                             single_image(3, 1), source_first, &
                                                             source_last
       LOGICAL                                            :: derivative, gradients
-      REAL(dp)                                           :: factor
+      REAL(dp)                                           :: factor, point_bounds(3, 2)
 
       CALL check_lattice_images(frame, coefficient_images)
       CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
@@ -303,7 +303,14 @@ CONTAINS
       IF (gradients) ALLOCATE (delta_gradient(n, np, 3))
       IF (derivative) ALLOCATE (delta_response(n, np))
       IF (PRESENT(gradient_response)) ALLOCATE (delta_gradient_response(n, np, 3))
+      IF (n > 0) THEN
+         CPASSERT(ALL(ieee_is_finite(points)))
+         point_bounds(:, 1) = MINVAL(points, DIM=2)
+         point_bounds(:, 2) = MAXVAL(points, DIM=2)
+      END IF
       DO q = 1, SIZE(coefficient_images, 2)
+         IF (n == 0) CYCLE
+         IF (.NOT. delta_image_intersects(frame, point_bounds, ao_image - coefficient_images(:, q))) CYCLE
          CALL lattice_delta_fields(frame, points, ao_image - coefficient_images(:, q), delta, &
                                    delta_gradient, delta_response, delta_gradient_response, &
                                    point_response, atom_response, cell_response)
@@ -327,6 +334,11 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Accumulate a field product, retaining independent value and response contributions.
 !>        An exact zero left field requires no matrix product or temporary result.
+!> \param left ...
+!> \param right ...
+!> \param RESULT ...
+!> \param left_adjoint ...
+!> \param right_adjoint ...
 ! **************************************************************************************************
    SUBROUTINE subtract_product(left, right, RESULT, left_adjoint, right_adjoint)
       COMPLEX(dp), INTENT(IN)                            :: left(:, :), right(:, :)
@@ -388,6 +400,7 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: delta(:, :), gradient(:, :, :)
       INTEGER                                            :: axis, n, np, q
+      REAL(dp)                                           :: point_bounds(3, 2)
 
       CALL check_lattice_images(frame, coefficient_images)
       CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
@@ -403,7 +416,14 @@ CONTAINS
          ALLOCATE (gradient(n, np, 3))
       END IF
       coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (n > 0) THEN
+         CPASSERT(ALL(ieee_is_finite(points)))
+         point_bounds(:, 1) = MINVAL(points, DIM=2)
+         point_bounds(:, 2) = MAXVAL(points, DIM=2)
+      END IF
       DO q = 1, SIZE(coefficient_images, 2)
+         IF (n == 0) CYCLE
+         IF (.NOT. delta_image_intersects(frame, point_bounds, ao_image - coefficient_images(:, q))) CYCLE
          CALL lattice_delta_fields(frame, points, ao_image - coefficient_images(:, q), delta, gradient)
          CALL subtract_product(delta, covector, coefficients_covector(:, :, q), left_adjoint=.TRUE.)
          DO axis = 1, 3
@@ -455,7 +475,7 @@ CONTAINS
                                                             last, n, nao, np, q, &
                                                             single_image(3, 1), source_first, &
                                                             source_last
-      REAL(dp)                                           :: factor, total
+      REAL(dp)                                           :: factor, point_bounds(3, 2), total
       REAL(dp), ALLOCATABLE                              :: point_component(:)
 
       CALL check_lattice_images(frame, coefficient_images)
@@ -502,8 +522,15 @@ CONTAINS
          DEALLOCATE (gaussian, gaussian_gradient)
       END DO
       ALLOCATE (delta(n, np), delta_gradient(n, np, 3), delta_covector(n, np))
+      IF (n > 0) THEN
+         CPASSERT(ALL(ieee_is_finite(points)))
+         point_bounds(:, 1) = MINVAL(points, DIM=2)
+         point_bounds(:, 2) = MAXVAL(points, DIM=2)
+      END IF
       DO q = 1, SIZE(coefficient_images, 2)
+         IF (n == 0) CYCLE
          image = ao_image - coefficient_images(:, q)
+         IF (.NOT. delta_image_intersects(frame, point_bounds, image)) CYCLE
          CALL lattice_delta_fields(frame, points, image, delta, delta_gradient)
          IF (ALL(delta_gradient == CMPLX(0.0_dp, 0.0_dp, dp))) CYCLE
          delta_covector = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -525,6 +552,38 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_lattice_geometry_adjoint
+
+! **************************************************************************************************
+!> \brief Reject an image only when every original radial support misses the point bounding box.
+!>        The box distance is a lower bound for the original pointwise squared-distance test.
+!>        This preserves its exact zero fields and responses without scanning each point per image.
+!> \param frame Original radial supports and geometry.
+!> \param bounds Cartesian minima and maxima of the actual evaluation points.
+!> \param image Physical integer translation.
+!> \return Whether an original radial support may contain an evaluation point.
+! **************************************************************************************************
+   FUNCTION delta_image_intersects(frame, bounds, image) RESULT(intersects)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      REAL(dp), INTENT(IN)                               :: bounds(3, 2)
+      INTEGER, INTENT(IN)                                :: image(3)
+      LOGICAL                                            :: intersects
+
+      INTEGER                                            :: atom, center, kind
+      REAL(dp)                                           :: distance(3), position(3), translation(3)
+
+      intersects = .FALSE.
+      translation = MATMUL(frame%cell, REAL(image, dp))
+      DO center = 1, SIZE(frame%center_atoms)
+         atom = frame%center_atoms(center)
+         kind = frame%center_kinds(center)
+         position = frame%positions(:, atom) + translation
+         distance = MAX(bounds(:, 1) - position, position - bounds(:, 2), 0.0_dp)
+         IF (.NOT. (SUM(distance**2) >= frame%delta_cache(kind)%radius**2)) THEN
+            intersects = .TRUE.
+            RETURN
+         END IF
+      END DO
+   END FUNCTION delta_image_intersects
 
 ! **************************************************************************************************
 !> \brief Evaluate all original Delta columns at one unphased physical image.
