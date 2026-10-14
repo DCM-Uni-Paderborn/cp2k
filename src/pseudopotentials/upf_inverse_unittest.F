@@ -172,6 +172,13 @@ CONTAINS
       IF (ABS(coordinate(1) - (1.0_dp - 1.0_dp/scale**2)) > 1.e-14_dp) THEN
          ERROR STOP 'A crossing event lost the last accepted feasible state'
       END IF
+      scale = 1.e-8_dp
+      coordinate = 1.e-12_dp
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=8, iterations=iterations)
+      IF (.NOT. converged .OR. iterations > 8 .OR. NORM2(coordinate)/scale**2 > stationarity_tolerance) THEN
+         ERROR STOP 'A steep quadratic exhausted its line search above coordinate resolution'
+      END IF
    END SUBROUTINE check_physical_stationarity
 
 ! **************************************************************************************************

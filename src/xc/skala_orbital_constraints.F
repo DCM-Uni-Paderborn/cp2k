@@ -494,10 +494,11 @@ CONTAINS
          slope = DOT_PRODUCT(reduced, direction)
          accepted = .FALSE.
          fraction = 1.0_dp
-         DO shortening = 1, 24
+         DO shortening = 1, DIGITS(1.0_dp)
             IF (stop_requested()) RETURN
             trial(:) = x
             trial(free) = x(free) + fraction*direction
+            IF (ALL(trial(free) == x(free))) EXIT
             CALL reduced_evaluation(trial, trial_energy, trial_reduced, valid)
             IF (valid) THEN
                event = .FALSE.
