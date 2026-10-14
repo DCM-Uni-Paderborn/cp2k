@@ -141,6 +141,7 @@ CONTAINS
             DO ipgf = 1, basis%npgf(iset)
                alpha = basis%zet(ipgf, iset)
                exponential = EXP(-alpha*r_squared)
+               IF (exponential == 0.0_dp) CYCLE
                DO ishell = 1, basis%nshell(iset)
                   l = basis%l(ishell, iset)
                   first = basis%first_sgf(ishell, iset)
@@ -166,7 +167,9 @@ CONTAINS
                         END DO
                      END IF
                      DO isgf = first, last
-                        weight = basis%sphi(irow, isgf)*exponential
+                        weight = basis%sphi(irow, isgf)
+                        IF (weight == 0.0_dp) CYCLE
+                        weight = weight*exponential
                         value(ipoint, isgf) = value(ipoint, isgf) + weight*polynomial
                         IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(hessian)) CYCLE
                         DO axis = 1, 3
