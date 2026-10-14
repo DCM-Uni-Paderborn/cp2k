@@ -13,7 +13,8 @@ MODULE qs_upf_inverse
    USE basis_set_types,                 ONLY: gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE mathconstants,                   ONLY: twopi
    USE message_passing,                 ONLY: mp_comm_type
    USE orbital_pointers,                ONLY: coset,&
@@ -43,6 +44,8 @@ MODULE qs_upf_inverse
    IMPLICIT NONE
    PRIVATE
 
+   INTEGER(KIND=int_8), PARAMETER :: max_point_field_bytes = 128_int_8*1024*1024
+
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_prepare, qs_upf_inverse_from_ks
    PUBLIC :: qs_upf_inverse_response, qs_upf_inverse_release
    PUBLIC :: qs_upf_inverse_projection_adjoint, qs_upf_inverse_projection_contract
@@ -51,6 +54,7 @@ MODULE qs_upf_inverse
    PUBLIC :: qs_upf_inverse_atomic_operators
    PUBLIC :: qs_upf_inverse_transition, qs_upf_inverse_transition_response
    PUBLIC :: qs_upf_inverse_exchange_pair, qs_upf_inverse_exchange_pair_response
+   PUBLIC :: qs_upf_inverse_block_size
 
 CONTAINS
 
@@ -195,8 +199,10 @@ CONTAINS
 !> \param info Zero on success, otherwise the inverse-factorization status.
 !> \param atom_local Optional nonoverlapping one-center inverse; the general reference is the default.
 !> \param direct Use original projectors and soft orbitals without reconstruction.
+!> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame, info, atom_local, direct)
+   SUBROUTINE qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame, info, atom_local, direct, &
+                                     store_fields)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       REAL(dp), INTENT(IN)                               :: points(:, :), weights(:)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -204,7 +210,7 @@ CONTAINS
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_type), INTENT(OUT)             :: frame
       INTEGER, INTENT(OUT)                               :: info
-      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
 
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), POINTER                       :: particles(:)
@@ -215,7 +221,7 @@ CONTAINS
       CPASSERT(ASSOCIATED(kinds) .AND. ASSOCIATED(particles) .AND. ASSOCIATED(cell))
       CPASSERT(ASSOCIATED(uspp))
       CALL qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
-                                  comm, frame, info, atom_local, direct)
+                                  comm, frame, info, atom_local, direct, store_fields)
    END SUBROUTINE qs_upf_inverse_from_ks
 
 ! **************************************************************************************************
@@ -236,9 +242,10 @@ CONTAINS
 !> \param info ...
 !> \param atom_local Optional nonoverlapping one-center inverse. Status -2 reports overlapping support.
 !> \param direct Use original projectors and soft orbitals without reconstruction.
+!> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
-                                     comm, frame, info, atom_local, direct)
+                                     comm, frame, info, atom_local, direct, store_fields)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
       TYPE(cell_type), INTENT(IN)                        :: cell
@@ -249,12 +256,12 @@ CONTAINS
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_type), INTENT(OUT)             :: frame
       INTEGER, INTENT(OUT)                               :: info
-      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: coupling(:, :), overlaps(:, :)
       INTEGER                                            :: atom, axis, center, degree, first, &
-                                                            ikind, last, nao, ncenter, npoint, &
-                                                            nproj, p, q
+                                                            ikind, last, nao, ncenter, nfield, &
+                                                            npoint, nproj, p, q
       LOGICAL                                            :: use_atomic
       TYPE(gto_basis_set_type), POINTER                  :: basis
       LOGICAL                                            :: nc_kind(SIZE(kinds))
@@ -264,6 +271,7 @@ CONTAINS
       use_atomic = .FALSE.
       IF (PRESENT(atom_local)) use_atomic = atom_local
       IF (PRESENT(direct)) frame%direct = direct
+      IF (PRESENT(store_fields)) frame%fields_stored = store_fields
       IF (frame%direct) use_atomic = .TRUE.
       info = 0
       frame%periodicity = cell%perd
@@ -297,14 +305,6 @@ CONTAINS
          nao = nao + basis%nsgf
          frame%ao_last(atom) = nao
          frame%positions(:, atom) = particles(atom)%r
-      END DO
-      ALLOCATE (frame%gaussian(npoint, nao), frame%gaussian_gradient(npoint, nao, 3), &
-                frame%soft(npoint, nao), frame%soft_gradient(npoint, nao, 3))
-      DO atom = 1, SIZE(particles)
-         first = frame%ao_first(atom)
-         last = frame%ao_last(atom)
-         CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                            frame%cell, images, reduced_k, frame%gaussian(:, first:last), frame%gaussian_gradient(:, first:last, :))
       END DO
       nc_kind = .FALSE.
       DO ikind = 1, SIZE(kinds)
@@ -355,7 +355,27 @@ CONTAINS
          nproj = nproj + frame%beta_cache(ikind)%nproj
          frame%projector_last(center) = nproj
       END DO
-      ALLOCATE (frame%beta(npoint, nproj), frame%delta(npoint, nproj), frame%delta_gradient(npoint, nproj, 3), &
+      IF (.NOT. PRESENT(store_fields)) THEN
+         frame%fields_stored = 16_int_8*INT(npoint, int_8)*(8_int_8*nao + 5_int_8*nproj) <= max_point_field_bytes
+      END IF
+      ! Every point owner must choose the same defining-response collective sequence.
+      nfield = 0
+      IF (frame%fields_stored) nfield = 1
+      CALL comm%min(nfield)
+      frame%fields_stored = nfield == 1
+      nfield = 0
+      IF (frame%fields_stored) nfield = npoint
+      ALLOCATE (frame%gaussian(nfield, nao), frame%gaussian_gradient(nfield, nao, 3), &
+                frame%soft(nfield, nao), frame%soft_gradient(nfield, nao, 3))
+      IF (frame%fields_stored) THEN
+         DO atom = 1, SIZE(particles)
+            first = frame%ao_first(atom)
+            last = frame%ao_last(atom)
+            CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
+                            frame%cell, images, reduced_k, frame%gaussian(:, first:last), frame%gaussian_gradient(:, first:last, :))
+         END DO
+      END IF
+      ALLOCATE (frame%beta(nfield, nproj), frame%delta(nfield, nproj), frame%delta_gradient(nfield, nproj, 3), &
                 frame%q(nproj, nproj), frame%radial_q(nproj, nproj), frame%dion(nproj, nproj), frame%coefficients(nproj, nao))
       frame%q(:, :) = CMPLX(0.0_dp, 0.0_dp, dp)
       frame%radial_q(:, :) = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -378,6 +398,7 @@ CONTAINS
             END IF
          END ASSOCIATE
          frame%dion(first:last, first:last) = kinds(ikind)%sgp_potential%upf_projectors%d
+         IF (.NOT. frame%fields_stored) CYCLE
          CALL upf_radial_fields_periodic(frame%beta_cache(ikind), points, frame%positions(:, atom), &
                                          frame%cell, images, reduced_k, frame%beta(:, first:last))
          CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
@@ -392,18 +413,156 @@ CONTAINS
          frame%atom_local = .TRUE.
       ELSE
          ALLOCATE (coupling(nproj, nproj), overlaps(nproj, nao))
-         CALL upf_inverse_pair(frame%beta, frame%delta, weights, coupling, comm)
-         CALL upf_inverse_pair(frame%beta, frame%gaussian, weights, overlaps, comm)
+         IF (frame%fields_stored) THEN
+            CALL upf_inverse_pair(frame%beta, frame%delta, weights, coupling, comm)
+            CALL upf_inverse_pair(frame%beta, frame%gaussian, weights, overlaps, comm)
+         ELSE
+            CALL defining_pairs(frame, coupling, overlaps)
+         END IF
          CALL upf_inverse_init(coupling, frame%inverse, info)
          IF (info /= 0) RETURN
          CALL upf_inverse_project(frame%inverse, overlaps, frame%coefficients)
       END IF
-      CALL upf_inverse_basis(frame%gaussian, frame%delta, frame%coefficients, frame%soft)
-      DO axis = 1, 3
-         CALL upf_inverse_basis(frame%gaussian_gradient(:, :, axis), frame%delta_gradient(:, :, axis), &
-                                frame%coefficients, frame%soft_gradient(:, :, axis))
-      END DO
+      IF (frame%fields_stored) THEN
+         CALL upf_inverse_basis(frame%gaussian, frame%delta, frame%coefficients, frame%soft)
+         DO axis = 1, 3
+            CALL upf_inverse_basis(frame%gaussian_gradient(:, :, axis), frame%delta_gradient(:, :, axis), &
+                                   frame%coefficients, frame%soft_gradient(:, :, axis))
+         END DO
+      END IF
    END SUBROUTINE qs_upf_inverse_prepare
+
+! **************************************************************************************************
+!> \brief Bound point-by-orbital work arrays, including values, gradients and their responses.
+!>        At least one row is required even when one orbital row exceeds the work budget.
+!> \param frame Native orbital and projector dimensions, independent of stored point fields.
+!> \return Number of local rows per block. Ranks may have different numbers of blocks.
+! **************************************************************************************************
+   FUNCTION qs_upf_inverse_block_size(frame) RESULT(n)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER                                            :: n
+
+      INTEGER(KIND=int_8)                                :: columns
+
+      columns = SIZE(frame%coefficients, 1, KIND=int_8) + SIZE(frame%coefficients, 2, KIND=int_8)
+      n = INT(MAX(1_int_8, MIN(4096_int_8, max_point_field_bytes/(16*24*MAX(1_int_8, columns)))))
+   END FUNCTION qs_upf_inverse_block_size
+
+! **************************************************************************************************
+!> \brief Integrate the complete defining K-I and B in bounded point blocks, with optional response.
+!>        Original points, weights, images and radial fields are retained. Reduce only after all
+!>        local blocks, since distributed ranks need not own the same number of point rows.
+!> \param frame Original defining quadrature and borrowed native Gaussian bases.
+!> \param coupling Original beta-Delta integral, without the identity.
+!> \param overlaps Original beta-Gaussian integral.
+!> \param coupling_response Optional joint response, with all remaining response arguments.
+!> \param overlaps_response Optional response of B.
+!> \param point_response Cartesian motion of the original defining rows.
+!> \param atom_response Cartesian motion of the native centers.
+!> \param cell_response Physical-cell response.
+!> \param reduced_k_response Reduced Bloch-vector response.
+!> \param weights_response Response of the original integration weights.
+! **************************************************************************************************
+   SUBROUTINE defining_pairs(frame, coupling, overlaps, coupling_response, overlaps_response, &
+                             point_response, atom_response, cell_response, reduced_k_response, weights_response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: coupling(:, :), overlaps(:, :), &
+                                                            coupling_response(:, :), &
+                                                            overlaps_response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL :: point_response(:, :), atom_response(:, :), &
+         cell_response(3, 3), reduced_k_response(3), weights_response(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: beta(:, :), chi(:, :), dbeta(:, :), &
+                                                            dchi(:, :), ddelta(:, :), delta(:, :), &
+                                                            pair_b(:, :), pair_k(:, :)
+      INTEGER                                            :: atom, block, center, first, hi, ikind, &
+                                                            last, lo, m, nao, nproj
+      LOGICAL                                            :: derivative, values
+
+      values = PRESENT(coupling)
+      CPASSERT(values .EQV. PRESENT(overlaps))
+      derivative = PRESENT(coupling_response)
+      CPASSERT(derivative .EQV. PRESENT(overlaps_response))
+      CPASSERT(values .OR. derivative)
+      IF (derivative) THEN
+         CPASSERT(PRESENT(point_response) .AND. PRESENT(atom_response))
+         CPASSERT(PRESENT(cell_response))
+         CPASSERT(PRESENT(reduced_k_response))
+         CPASSERT(PRESENT(weights_response))
+         coupling_response = CMPLX(0.0_dp, 0.0_dp, dp)
+         overlaps_response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      nao = SIZE(frame%coefficients, 2)
+      nproj = SIZE(frame%coefficients, 1)
+      block = qs_upf_inverse_block_size(frame)
+      ALLOCATE (beta(block, nproj), delta(block, nproj), chi(block, nao), pair_k(nproj, nproj), pair_b(nproj, nao))
+      IF (derivative) ALLOCATE (dbeta(block, nproj), ddelta(block, nproj), dchi(block, nao))
+      IF (values) THEN
+         coupling = CMPLX(0.0_dp, 0.0_dp, dp)
+         overlaps = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      DO lo = 1, SIZE(frame%weights), block
+         hi = MIN(SIZE(frame%weights), lo + block - 1)
+         m = hi - lo + 1
+         DO atom = 1, SIZE(frame%bases)
+            first = frame%ao_first(atom)
+            last = frame%ao_last(atom)
+            IF (derivative) THEN
+               CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, frame%points(:, lo:hi), &
+                                         frame%positions(:, atom), frame%cell, frame%images, frame%reduced_k, chi(:m, first:last), &
+                                                   response=dchi(:m, first:last), point_response=point_response(:, lo:hi), &
+                                                   center_response=atom_response(:, atom), cell_response=cell_response, &
+                                                   reduced_k_response=reduced_k_response)
+            ELSE
+               CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, frame%points(:, lo:hi), &
+                                           frame%positions(:, atom), frame%cell, frame%images, frame%reduced_k, chi(:m, first:last))
+            END IF
+         END DO
+         DO center = 1, SIZE(frame%center_atoms)
+            atom = frame%center_atoms(center)
+            ikind = frame%center_kinds(center)
+            first = frame%projector_first(center)
+            last = frame%projector_last(center)
+            IF (derivative) THEN
+               CALL upf_radial_fields_periodic(frame%beta_cache(ikind), frame%points(:, lo:hi), frame%positions(:, atom), &
+                                  frame%cell, frame%images, frame%reduced_k, beta(:m, first:last), response=dbeta(:m, first:last), &
+                                               points_response=point_response(:, lo:hi), center_response=atom_response(:, atom), &
+                                               cell_response=cell_response, reduced_k_response=reduced_k_response)
+               CALL upf_radial_fields_periodic(frame%delta_cache(ikind), frame%points(:, lo:hi), frame%positions(:, atom), &
+                                frame%cell, frame%images, frame%reduced_k, delta(:m, first:last), response=ddelta(:m, first:last), &
+                                               points_response=point_response(:, lo:hi), center_response=atom_response(:, atom), &
+                                               cell_response=cell_response, reduced_k_response=reduced_k_response)
+            ELSE
+               CALL upf_radial_fields_periodic(frame%beta_cache(ikind), frame%points(:, lo:hi), frame%positions(:, atom), &
+                                               frame%cell, frame%images, frame%reduced_k, beta(:m, first:last))
+               CALL upf_radial_fields_periodic(frame%delta_cache(ikind), frame%points(:, lo:hi), frame%positions(:, atom), &
+                                               frame%cell, frame%images, frame%reduced_k, delta(:m, first:last))
+            END IF
+         END DO
+         IF (values) THEN
+            CALL upf_inverse_pair(beta(:m, :), delta(:m, :), frame%weights(lo:hi), pair_k)
+            CALL upf_inverse_pair(beta(:m, :), chi(:m, :), frame%weights(lo:hi), pair_b)
+            coupling(:, :) = coupling + pair_k
+            overlaps(:, :) = overlaps + pair_b
+         END IF
+         IF (derivative) THEN
+            CALL upf_inverse_pair_response(beta(:m, :), delta(:m, :), frame%weights(lo:hi), dbeta(:m, :), ddelta(:m, :), &
+                                           weights_response(lo:hi), pair_k)
+            CALL upf_inverse_pair_response(beta(:m, :), chi(:m, :), frame%weights(lo:hi), dbeta(:m, :), dchi(:m, :), &
+                                           weights_response(lo:hi), pair_b)
+            coupling_response(:, :) = coupling_response + pair_k
+            overlaps_response(:, :) = overlaps_response + pair_b
+         END IF
+      END DO
+      IF (values) THEN
+         CALL frame%point_comm%sum(coupling)
+         CALL frame%point_comm%sum(overlaps)
+      END IF
+      IF (derivative) THEN
+         CALL frame%point_comm%sum(coupling_response)
+         CALL frame%point_comm%sum(overlaps_response)
+      END IF
+   END SUBROUTINE defining_pairs
 
 ! **************************************************************************************************
 !> \brief Reject cross-center beta-Delta and Delta-Delta support in the local inverse.
@@ -603,10 +762,12 @@ CONTAINS
 !> \param cell_response Optional lattice response at fixed reduced Bloch convention.
 !> \param reduced_k_response Optional reduced Bloch-vector response.
 !> \param coefficients_response Optional dW from the original frame's quadrature response.
+!> \param gaussian Optional untransformed Gaussian values at the same points.
+!> \param gaussian_gradient Optional physical Gaussian gradients at the same points.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_evaluate(frame, points, soft, gradient, soft_response, gradient_response, &
                                       point_response, atom_response, cell_response, reduced_k_response, &
-                                      coefficients_response)
+                                      coefficients_response, gaussian, gaussian_gradient)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: soft(:, :), gradient(:, :, :)
@@ -617,6 +778,8 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gaussian(:, :), &
+                                                            gaussian_gradient(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :), ddelta(:, :), &
                                                             delta(:, :), dgc(:, :, :), &
@@ -673,6 +836,14 @@ CONTAINS
                                                 frame%cell, frame%images, frame%reduced_k, chi(:, first:last), gc(:, first:last, :))
          END IF
       END DO
+      IF (PRESENT(gaussian)) THEN
+         CPASSERT(ALL(SHAPE(gaussian) == [npoint, nao]))
+         gaussian = chi
+      END IF
+      IF (PRESENT(gaussian_gradient)) THEN
+         CPASSERT(ALL(SHAPE(gaussian_gradient) == [npoint, nao, 3]))
+         gaussian_gradient = gc
+      END IF
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
@@ -1056,10 +1227,10 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: soft_response(:, :), &
                                                             gradient_response(:, :, :)
 
-      COMPLEX(dp), ALLOCATABLE                           :: db(:, :), dbeta(:, :), dchi(:, :), &
-                                                            ddelta(:, :), dgc(:, :, :), &
-                                                            dgd(:, :, :), dk(:, :)
-      INTEGER                                            :: axis, nao, npoint, nproj
+      COMPLEX(dp), ALLOCATABLE :: db(:, :), dbeta(:, :), dchi(:, :), ddelta(:, :), dg(:, :, :), &
+         dgc(:, :, :), dgd(:, :, :), dk(:, :), ds(:, :), gradient(:, :, :), soft(:, :)
+      INTEGER                                            :: axis, block, hi, lo, m, nao, npoint, &
+                                                            nproj
 
       CPASSERT(frame%atom_local .OR. frame%inverse%ready)
       CPASSERT(ALL(SHAPE(point_response) == SHAPE(frame%points)))
@@ -1074,6 +1245,32 @@ CONTAINS
       END IF
       IF (PRESENT(gradient_response)) THEN
          CPASSERT(ALL(SHAPE(gradient_response) == [npoint, nao, 3]))
+      END IF
+      IF (.NOT. frame%fields_stored .OR. &
+          (frame%atom_local .AND. .NOT. PRESENT(soft_response) .AND. .NOT. PRESENT(gradient_response))) THEN
+         ALLOCATE (db(nproj, nao))
+         IF (frame%atom_local) THEN
+            CALL atomic_coefficients(frame, db, coefficients_response, atom_response, cell_response, reduced_k_response)
+         ELSE
+            ALLOCATE (dk(nproj, nproj))
+            CALL defining_pairs(frame, coupling_response=dk, overlaps_response=db, point_response=point_response, &
+                                atom_response=atom_response, cell_response=cell_response, &
+                                reduced_k_response=reduced_k_response, weights_response=weights_response)
+            CALL upf_inverse_project_response(frame%inverse, frame%coefficients, db, dk, coefficients_response)
+         END IF
+         IF (.NOT. PRESENT(soft_response) .AND. .NOT. PRESENT(gradient_response)) RETURN
+         block = qs_upf_inverse_block_size(frame)
+         ALLOCATE (soft(block, nao), gradient(block, nao, 3), ds(block, nao), dg(block, nao, 3))
+         DO lo = 1, npoint, block
+            hi = MIN(npoint, lo + block - 1)
+            m = hi - lo + 1
+            CALL qs_upf_inverse_evaluate(frame, frame%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                         ds(:m, :), dg(:m, :, :), point_response(:, lo:hi), atom_response, &
+                                         cell_response, reduced_k_response, coefficients_response)
+            IF (PRESENT(soft_response)) soft_response(lo:hi, :) = ds(:m, :)
+            IF (PRESENT(gradient_response)) gradient_response(lo:hi, :, :) = dg(:m, :, :)
+         END DO
+         RETURN
       END IF
       ALLOCATE (dbeta(npoint, nproj), ddelta(npoint, nproj), dchi(npoint, nao), dk(nproj, nproj), db(nproj, nao))
       IF (PRESENT(gradient_response)) THEN
@@ -1277,6 +1474,12 @@ CONTAINS
          ALLOCATE (overlaps(nproj, nao))
          CALL atomic_coefficients(frame, overlaps, db, atom_response, cell_response, reduced_k_response)
          response = REAL(SUM(CONJG(beta_gaussian_covector)*db), dp)
+      ELSE IF (.NOT. frame%fields_stored) THEN
+         ALLOCATE (dk(nproj, nproj))
+         CALL defining_pairs(frame, coupling_response=dk, overlaps_response=db, point_response=point_response, &
+                             atom_response=atom_response, cell_response=cell_response, &
+                             reduced_k_response=reduced_k_response, weights_response=weights_response)
+         response = REAL(SUM(CONJG(beta_gaussian_covector)*db) + SUM(CONJG(beta_delta_covector)*dk), dp)
       ELSE
          ALLOCATE (dbeta(npoint, nproj), ddelta(npoint, nproj), dchi(npoint, nao), dk(nproj, nproj))
          CALL defining_responses(frame, point_response, atom_response, cell_response, reduced_k_response, dbeta, ddelta, dchi)

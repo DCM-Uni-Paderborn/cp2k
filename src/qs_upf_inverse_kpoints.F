@@ -55,14 +55,15 @@ CONTAINS
 !> \param info Factorization status; nonzero releases the partially prepared bridge.
 !> \param atom_local Optional one-center reconstruction for every native Bloch vector.
 !> \param direct Use original projectors and soft orbitals without reconstruction.
+!> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_prepare(ks_env, grid, images, frame, info, atom_local, direct)
+   SUBROUTINE qs_upf_inverse_kpoints_prepare(ks_env, grid, images, frame, info, atom_local, direct, store_fields)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(OUT)     :: frame
       INTEGER, INTENT(OUT)                               :: info
-      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
 
       INTEGER                                            :: ik
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -84,7 +85,8 @@ CONTAINS
       frame%weights(:) = kpoints%wkp
       ALLOCATE (frame%frames(kpoints%nkp))
       DO ik = 1, kpoints%nkp
-         CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, frame%reduced_k(:, ik), frame%frames(ik), info, atom_local, direct)
+         CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, frame%reduced_k(:, ik), frame%frames(ik), info, &
+                                          atom_local, direct, store_fields)
          IF (info /= 0) THEN
             CALL qs_upf_inverse_kpoints_release(frame)
             RETURN

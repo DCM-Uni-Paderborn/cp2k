@@ -26,7 +26,9 @@ MODULE qs_upf_inverse_grid
                                               pw_grid_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_ks_types,                     ONLY: qs_ks_env_type
-   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_from_ks,&
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_block_size,&
+                                              qs_upf_inverse_evaluate,&
+                                              qs_upf_inverse_from_ks,&
                                               qs_upf_inverse_release,&
                                               qs_upf_inverse_response,&
                                               qs_upf_inverse_type
@@ -74,15 +76,16 @@ CONTAINS
 !> \param info Inverse-factorization status.
 !> \param atom_local Optional one-center reconstruction with native Gaussian projector integrals.
 !> \param direct Use original projectors and soft orbitals without reconstruction.
+!> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info, atom_local, direct)
+   SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info, atom_local, direct, store_fields)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
       REAL(dp), INTENT(IN)                               :: reduced_k(3)
       TYPE(qs_upf_inverse_grid_type), INTENT(OUT)        :: frame
       INTEGER, INTENT(OUT)                               :: info
-      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
 
       INTEGER                                            :: ix, iy, iz, n, point
       REAL(dp), ALLOCATABLE                              :: points(:, :), weights(:)
@@ -115,7 +118,7 @@ CONTAINS
             END DO
          END DO
       END DO
-      CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info, atom_local, direct)
+     CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info, atom_local, direct, store_fields)
    END SUBROUTINE qs_upf_inverse_grid_prepare
 
 ! **************************************************************************************************
@@ -180,8 +183,10 @@ CONTAINS
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
-      INTEGER                                            :: axis, n, nproj
+      COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), gg(:, :, :), &
+                                                            projected(:, :), sg(:, :, :), &
+                                                            soft(:, :)
+      INTEGER                                            :: axis, block, hi, lo, m, n, nao, nproj
       LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dn(:, :), dn_reference(:, :), rho(:), &
                                                             rho_reference(:), t(:), t_reference(:)
@@ -194,11 +199,19 @@ CONTAINS
       END IF
       CPASSERT(ALL(SHAPE(p) == SIZE(frame%ao%soft, 2)))
       n = SIZE(frame%ao%weights)
+      nao = SIZE(frame%ao%coefficients, 2)
+      block = qs_upf_inverse_block_size(frame%ao)
       ALLOCATE (rho(n), dn(n, 3), t(n), rho_reference(n), dn_reference(n, 3), t_reference(n))
-      CALL upf_inverse_smooth_density(frame%ao%gaussian, frame%ao%gaussian_gradient, p, &
-                                      rho_reference, dn_reference, t_reference)
-      CALL upf_inverse_density_residual(frame%ao%gaussian, frame%ao%gaussian_gradient, &
-                                        frame%ao%soft, frame%ao%soft_gradient, p, rho, dn, t)
+      ALLOCATE (soft(block, nao), sg(block, nao, 3), gaussian(block, nao), gg(block, nao, 3))
+      DO lo = 1, n, block
+         hi = MIN(n, lo + block - 1)
+         m = hi - lo + 1
+         CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :), gaussian(:m, :), gg(:m, :, :))
+         CALL upf_inverse_smooth_density(gaussian(:m, :), gg(:m, :, :), p, &
+                                         rho_reference(lo:hi), dn_reference(lo:hi, :), t_reference(lo:hi))
+         CALL upf_inverse_density_residual(gaussian(:m, :), gg(:m, :, :), soft(:m, :), sg(:m, :, :), p, &
+                                           rho(lo:hi), dn(lo:hi, :), t(lo:hi))
+      END DO
       IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
          nproj = SIZE(frame%ao%coefficients, 1)
          ALLOCATE (projected(nproj, nproj))
@@ -288,8 +301,10 @@ CONTAINS
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), residual(:, :)
-      INTEGER                                            :: axis, n, nao, nproj
+      COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), gg(:, :, :), &
+                                                            partial(:, :), projected(:, :), &
+                                                            residual(:, :), sg(:, :, :), soft(:, :)
+      INTEGER                                            :: axis, block, hi, lo, m, n, nao, nproj
       LOGICAL                                            :: use_fourier
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
 
@@ -301,19 +316,26 @@ CONTAINS
       END IF
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%soft, 2)
-      ALLOCATE (dn(n), dg(n, 3), dt(n), h(nao, nao), residual(nao, nao))
+      block = qs_upf_inverse_block_size(frame%ao)
+      ALLOCATE (dn(n), dg(n, 3), dt(n), h(nao, nao), residual(nao, nao), partial(nao, nao), &
+                soft(block, nao), sg(block, nao, 3), gaussian(block, nao), gg(block, nao, 3))
       CALL pack_grid(frame, vdensity, dn)
       CALL pack_grid(frame, vtau, dt)
       DO axis = 1, 3
          CALL pack_grid(frame, vgradient(axis), dg(:, axis))
       END DO
-      CALL upf_inverse_semilocal_pair(frame%ao%gaussian, frame%ao%gaussian, &
-                                      frame%ao%gaussian_gradient, frame%ao%gaussian_gradient, &
-                                      frame%ao%weights, dn, dg, dt, h, frame%ao%point_comm)
-      CALL upf_inverse_semilocal_residual(frame%ao%gaussian, frame%ao%gaussian_gradient, &
-                                          frame%ao%soft, frame%ao%soft_gradient, frame%ao%weights, dn, dg, dt, &
-                                          residual, frame%ao%point_comm)
-      h(:, :) = h + residual
+      h = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO lo = 1, n, block
+         hi = MIN(n, lo + block - 1)
+         m = hi - lo + 1
+         CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :), gaussian(:m, :), gg(:m, :, :))
+         CALL upf_inverse_semilocal_pair(gaussian(:m, :), gaussian(:m, :), gg(:m, :, :), gg(:m, :, :), &
+                                         frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), partial)
+         CALL upf_inverse_semilocal_residual(gaussian(:m, :), gg(:m, :, :), soft(:m, :), sg(:m, :, :), &
+                                             frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
+         h(:, :) = h + partial + residual
+      END DO
+      CALL frame%ao%point_comm%sum(h)
       IF (PRESENT(kinetic)) THEN
          CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt, &
                                               residual, frame%ao%point_comm)
@@ -369,14 +391,25 @@ CONTAINS
       COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: metric(:, :)
 
-      INTEGER                                            :: nao, nproj
+      COMPLEX(dp), ALLOCATABLE                           :: gradient(:, :, :), partial(:, :), &
+                                                            soft(:, :)
+      INTEGER                                            :: block, hi, lo, m, nao, nproj
 
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       nao = SIZE(frame%ao%soft, 2)
       nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
-      ALLOCATE (metric(nao, nao))
-      CALL upf_inverse_pair(frame%ao%soft, frame%ao%soft, frame%ao%weights, metric, frame%ao%point_comm)
+      block = qs_upf_inverse_block_size(frame%ao)
+      ALLOCATE (metric(nao, nao), partial(nao, nao), soft(block, nao), gradient(block, nao, 3))
+      metric = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO lo = 1, SIZE(frame%ao%weights), block
+         hi = MIN(SIZE(frame%ao%weights), lo + block - 1)
+         m = hi - lo + 1
+         CALL point_fields(frame%ao, lo, hi, soft(:m, :), gradient(:m, :, :))
+         CALL upf_inverse_pair(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), partial)
+         metric(:, :) = metric + partial
+      END DO
+      CALL frame%ao%point_comm%sum(metric)
       metric(:, :) = metric + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), &
                                      MATMUL(projector_metric, frame%ao%coefficients))
    END SUBROUTINE qs_upf_inverse_grid_metric_dense
@@ -422,10 +455,11 @@ CONTAINS
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
 
-      COMPLEX(dp), ALLOCATABLE :: coefficients_response(:, :), gradient_response(:, :, :), &
-         kinetic_operator(:, :), kinetic_response(:, :), projected(:, :), &
-         projected_response(:, :), soft_response(:, :)
-      INTEGER                                            :: axis, info, n, nao, nproj
+      COMPLEX(dp), ALLOCATABLE :: coefficients_response(:, :), gradient(:, :, :), &
+         gradient_response(:, :, :), kinetic_operator(:, :), kinetic_response(:, :), &
+         partial(:, :), projected(:, :), projected_response(:, :), soft(:, :), soft_response(:, :)
+      INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
+                                                            nproj
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
                                                             volume_response
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:), dvg(:, :), &
@@ -437,8 +471,10 @@ CONTAINS
       nao = SIZE(frame%ao%soft, 2)
       nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
+      block = qs_upf_inverse_block_size(frame%ao)
       ALLOCATE (dn(n), dg(n, 3), dt(n), dvn(n), dvg(n, 3), dvt(n), points_response(3, n), weights_response(n), &
-                coefficients_response(nproj, nao), soft_response(n, nao), gradient_response(n, nao, 3), &
+                coefficients_response(nproj, nao), soft_response(block, nao), gradient_response(block, nao, 3), &
+                soft(block, nao), gradient(block, nao, 3), partial(nao, nao), &
                 projected(nproj, nproj), projected_response(nproj, nproj), &
                 operator_response(nao, nao), metric_response(nao, nao))
       cell_inverse = frame%ao%cell
@@ -449,7 +485,7 @@ CONTAINS
       points_response(:, :) = MATMUL(strain, frame%ao%points)
       weights_response(:) = volume_response*frame%ao%weights
       CALL qs_upf_inverse_response(frame%ao, points_response, atom_response, cell_response, reduced_k_response, &
-                                   weights_response, coefficients_response, soft_response, gradient_response)
+                                   weights_response, coefficients_response)
       CALL pack_grid(frame, vdensity, dn)
       CALL pack_grid(frame, vtau, dt)
       CALL pack_grid(frame, vdensity_response, dvn)
@@ -458,10 +494,26 @@ CONTAINS
          CALL pack_grid(frame, vgradient(axis), dg(:, axis))
          CALL pack_grid(frame, vgradient_response(axis), dvg(:, axis))
       END DO
-      CALL upf_inverse_semilocal_response(frame%ao%soft, frame%ao%soft, &
-                                          frame%ao%soft_gradient, frame%ao%soft_gradient, frame%ao%weights, dn, dg, dt, &
-                                          soft_response, soft_response, gradient_response, gradient_response, &
-                                          weights_response, dvn, dvg, dvt, operator_response, frame%ao%point_comm)
+      operator_response = CMPLX(0.0_dp, 0.0_dp, dp)
+      metric_response = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO lo = 1, n, block
+         hi = MIN(n, lo + block - 1)
+         m = hi - lo + 1
+         CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                      soft_response(:m, :), gradient_response(:m, :, :), points_response(:, lo:hi), &
+                                      atom_response, cell_response, reduced_k_response, coefficients_response)
+         CALL upf_inverse_semilocal_response(soft(:m, :), soft(:m, :), gradient(:m, :, :), gradient(:m, :, :), &
+                                             frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), &
+                                             soft_response(:m, :), soft_response(:m, :), &
+                                             gradient_response(:m, :, :), gradient_response(:m, :, :), &
+                                             weights_response(lo:hi), dvn(lo:hi), dvg(lo:hi, :), dvt(lo:hi), partial)
+         operator_response(:, :) = operator_response + partial
+         CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), &
+                                        soft_response(:m, :), soft_response(:m, :), weights_response(lo:hi), partial)
+         metric_response(:, :) = metric_response + partial
+      END DO
+      CALL frame%ao%point_comm%sum(operator_response)
+      CALL frame%ao%point_comm%sum(metric_response)
       IF (PRESENT(kinetic)) THEN
          ALLOCATE (kinetic_operator(nao, nao), kinetic_response(nao, nao))
          CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt, &
@@ -483,12 +535,38 @@ CONTAINS
       operator_response(:, :) = operator_response + MATMUL(CONJG(TRANSPOSE(coefficients_response)), &
                                                            MATMUL(projected, frame%ao%coefficients)) + &
                                 MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, coefficients_response))
-      CALL upf_inverse_pair_response(frame%ao%soft, frame%ao%soft, frame%ao%weights, soft_response, soft_response, &
-                                     weights_response, metric_response, frame%ao%point_comm)
       metric_response(:, :) = metric_response + MATMUL(CONJG(TRANSPOSE(coefficients_response)), &
                                                        MATMUL(projector_metric, frame%ao%coefficients)) + &
                               MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_metric, coefficients_response))
    END SUBROUTINE qs_upf_inverse_grid_response
+
+! **************************************************************************************************
+!> \brief Read or recompute one bounded block with the original W, images and point coordinates.
+!> \param frame Original prepared inverse, with optional stored fields.
+!> \param first First local row, inclusive.
+!> \param last Last local row, inclusive.
+!> \param soft Transformed orbital values.
+!> \param gradient Physical spatial gradients.
+!> \param gaussian Optional original Gaussian values for the reference/residual decomposition.
+!> \param gaussian_gradient Optional original Gaussian gradients.
+! **************************************************************************************************
+   SUBROUTINE point_fields(frame, first, last, soft, gradient, gaussian, gaussian_gradient)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: first, last
+      COMPLEX(dp), INTENT(OUT)                           :: soft(:, :), gradient(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gaussian(:, :), &
+                                                            gaussian_gradient(:, :, :)
+
+      IF (frame%fields_stored) THEN
+         soft(:, :) = frame%soft(first:last, :)
+         gradient(:, :, :) = frame%soft_gradient(first:last, :, :)
+         IF (PRESENT(gaussian)) gaussian(:, :) = frame%gaussian(first:last, :)
+         IF (PRESENT(gaussian_gradient)) gaussian_gradient(:, :, :) = frame%gaussian_gradient(first:last, :, :)
+      ELSE
+         CALL qs_upf_inverse_evaluate(frame, frame%points(:, first:last), soft, gradient, &
+                                      gaussian=gaussian, gaussian_gradient=gaussian_gradient)
+      END IF
+   END SUBROUTINE point_fields
 
 ! **************************************************************************************************
 !> \brief Gather native AO components collectively, using native desymmetrization for S/A signs.

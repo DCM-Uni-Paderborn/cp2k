@@ -44,7 +44,7 @@ MODULE qs_upf_inverse_types
 
    TYPE qs_upf_inverse_type
       TYPE(upf_inverse_type) :: inverse
-      LOGICAL :: atom_local = .FALSE., direct = .FALSE.
+      LOGICAL :: atom_local = .FALSE., direct = .FALSE., fields_stored = .TRUE.
       TYPE(upf_inverse_atomic_type), ALLOCATABLE :: atomic_cache(:)
       TYPE(mp_comm_type) :: point_comm
       ! Bases are borrowed from the live Quickstep environment; radial caches and fields are owned.
