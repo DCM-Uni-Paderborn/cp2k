@@ -499,9 +499,18 @@ CONTAINS
       DO lo = 1, n, block
          hi = MIN(n, lo + block - 1)
          m = hi - lo + 1
-         CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
-                                      soft_response(:m, :), gradient_response(:m, :, :), points_response(:, lo:hi), &
-                                      atom_response, cell_response, reduced_k_response, coefficients_response)
+         IF (ANY(dg(lo:hi, :) /= 0.0_dp) .OR. ANY(dt(lo:hi) /= 0.0_dp)) THEN
+            CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                         soft_response(:m, :), gradient_response(:m, :, :), points_response(:, lo:hi), &
+                                         atom_response, cell_response, reduced_k_response, coefficients_response)
+         ELSE
+            ! Gradient responses enter only through the unperturbed gradient and tau potentials.
+            gradient_response(:m, :, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+            CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                         soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
+                                         atom_response=atom_response, cell_response=cell_response, &
+                                         reduced_k_response=reduced_k_response, coefficients_response=coefficients_response)
+         END IF
          CALL upf_inverse_semilocal_response(soft(:m, :), soft(:m, :), gradient(:m, :, :), gradient(:m, :, :), &
                                              frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), &
                                              soft_response(:m, :), soft_response(:m, :), &
