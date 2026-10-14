@@ -1,0 +1,268 @@
+--- a/src/maple2c/mgga_exc/mgga_c_r2scan.c
++++ b/src/maple2c/mgga_exc/mgga_c_r2scan.c
+@@ -132,7 +132,7 @@
+   const double _t8 = xc_expm1(_t7);
+ #if _KMAX >= 1
+   const double _t9 = log(p->zeta_threshold);
+-  const double _t10 = _t8 + 0.1e1;
++  const double _t10 = exp(_t7);
+   const double _t11 = my_piecewise3(_t4, 0.1e1, 0);
+   const double _t12 = _t5 + 0.1e1;
+   const double _t13 = _t10*_t11/_t12;
+@@ -159,23 +159,62 @@
+ #endif
+ }
+
++GPU_DEVICE_FUNCTION static inline void XC_CAT(opz_pow_n_k, _KMAX)(const xc_func_type *p, double z, double n, double *out) {
++
++  const double _t1 = z + 0.1e1 <= p->zeta_threshold;
++  const double _t2 = pow(p->zeta_threshold, n);
++  const double _t3 = p->zeta_threshold - 0.1e1;
++  const double _t4 = z > _t3;
++  const double _t5 = my_piecewise3(_t4, z, _t3);
++  const double _t6 = xc_log1p(_t5);
++  const double _t7 = _t6*n;
++  const double _t8 = exp(_t7);
++#if _KMAX >= 1
++  const double _t9 = log(p->zeta_threshold);
++  const double _t10 = _t8;
++  const double _t11 = my_piecewise3(_t4, 0.1e1, 0);
++  const double _t12 = _t5 + 0.1e1;
++  const double _t13 = _t10*_t11/_t12;
++#endif
++#if _KMAX >= 2
++  const double _t14 = _t10*(_t11 * _t11)/(_t12 * _t12);
++#endif
++
++  const double f = my_piecewise3(_t1, _t2, _t8);
++  out[0] = f;
++#if _KMAX >= 1
++  const double df_dn = my_piecewise3(_t1, _t2*_t9, _t10*_t6);
++  out[1] = df_dn;
++  const double df_dz = my_piecewise3(_t1, 0, _t13*n);
++  out[2] = df_dz;
++#endif
++#if _KMAX >= 2
++  const double d2f_dn2 = my_piecewise3(_t1, _t2*(_t9 * _t9), _t10*(_t6 * _t6));
++  out[3] = d2f_dn2;
++  const double d2f_dz_dn = my_piecewise3(_t1, 0, _t13*_t7 + _t13);
++  out[4] = d2f_dz_dn;
++  const double d2f_dz2 = my_piecewise3(_t1, 0, _t14*(n * n) - _t14*n);
++  out[5] = d2f_dz2;
++#endif
++}
++
+ GPU_DEVICE_FUNCTION static inline void XC_CAT(mgga_alpha_total_reg_k, _KMAX)(const xc_func_type *p, double z, double xt, double ts0, double ts1, double eta, double *out) {
+
+   double _hc0[(_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1];
+-  XC_CAT(opz_pow_n_m1_k, _KMAX)(p, z, 0.5e1 / 0.3e1, _hc0);
++  XC_CAT(opz_pow_n_k, _KMAX)(p, z, 0.5e1 / 0.3e1, _hc0);
+   double _hc1[(_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1];
+-  XC_CAT(opz_pow_n_m1_k, _KMAX)(p, -z, 0.5e1 / 0.3e1, _hc1);
++  XC_CAT(opz_pow_n_k, _KMAX)(p, -z, 0.5e1 / 0.3e1, _hc1);
+   const double _t1 = (xt * xt);
+   const double _t2 = (0.1e1 / 0.8e1)*_t1;
+   const double _t3 = _t2*eta;
+   const double _t4 = xc_powr(0.3e1, 2, 3)*(M_PI * M_CBRTPI);
+   const double _t5 = (0.3e1 / 0.20e2)*_t4;
+-  const double _t6 = _t3 + _t5*(_hc0[0] + _hc1[0] + 0.2e1);
++  const double _t6 = _hc0[0]*_t5 + _hc1[0]*_t5 + _t3;
+   const double _t7 = (0.1e1 / _t6);
+   const double _t8 = M_CBRT2;
+-  const double _t9 = _hc0[0] + 0.1e1;
++  const double _t9 = _hc0[0];
+   const double _t10 = _t9*ts0;
+-  const double _t11 = _hc1[0] + 0.1e1;
++  const double _t11 = _hc1[0];
+   const double _t12 = _t11*ts1;
+   const double _t13 = -_t2 + (0.1e1 / 0.4e1)*_t8*(_t10 + _t12);
+ #if _KMAX >= 1
+--- a/src/maple2c/mgga_exc/mgga_c_tpss.c
++++ b/src/maple2c/mgga_exc/mgga_c_tpss.c
+@@ -186,7 +186,7 @@
+   const double _t8 = xc_expm1(_t7);
+ #if _KMAX >= 1
+   const double _t9 = log(p->zeta_threshold);
+-  const double _t10 = _t8 + 0.1e1;
++  const double _t10 = exp(_t7);
+   const double _t11 = _t10*_t6;
+   const double _t12 = _t5 + 0.1e1;
+   const double _t13 = my_piecewise3(_t4, 0.1e1, 0);
+@@ -205,6 +205,64 @@
+ #endif
+
+   const double f = my_piecewise3(_t1, _t2 - 0.1e1, _t8);
++  out[0] = f;
++#if _KMAX >= 1
++  const double df_dn = my_piecewise3(_t1, _t2*_t9, _t11);
++  out[1] = df_dn;
++  const double df_dz = my_piecewise3(_t1, 0, _t15*n);
++  out[2] = df_dz;
++#endif
++#if _KMAX >= 2
++  const double d2f_dn2 = my_piecewise3(_t1, _t2*(_t9 * _t9), _t16);
++  out[3] = d2f_dn2;
++  const double d2f_dz_dn = my_piecewise3(_t1, 0, _t15*_t7 + _t15);
++  out[4] = d2f_dz_dn;
++  const double d2f_dz2 = my_piecewise3(_t1, 0, _t18*_t20 - _t19);
++  out[5] = d2f_dz2;
++#endif
++#if _KMAX >= 3
++  const double d3f_dn3 = my_piecewise3(_t1, _t2*(_t9 * _t9 * _t9), _t10*(_t6 * _t6 * _t6));
++  out[6] = d3f_dn3;
++  const double d3f_dz_dn2 = my_piecewise3(_t1, 0, 0.2e1*_t11*_t14 + _t14*_t16*n);
++  out[7] = d3f_dz_dn2;
++  const double d3f_dz2_dn = my_piecewise3(_t1, 0, _t11*_t17*_t20 - _t18*_t7 - _t18 + 0.2e1*_t19);
++  out[8] = d3f_dz2_dn;
++  const double d3f_dz3 = my_piecewise3(_t1, 0, -0.3e1*_t20*_t21 + _t21*(n * n * n) + 0.2e1*_t21*n);
++  out[9] = d3f_dz3;
++#endif
++}
++
++GPU_DEVICE_FUNCTION static inline void XC_CAT(opz_pow_n_k, _KMAX)(const xc_func_type *p, double z, double n, double *out) {
++
++  const double _t1 = z + 0.1e1 <= p->zeta_threshold;
++  const double _t2 = pow(p->zeta_threshold, n);
++  const double _t3 = p->zeta_threshold - 0.1e1;
++  const double _t4 = z > _t3;
++  const double _t5 = my_piecewise3(_t4, z, _t3);
++  const double _t6 = xc_log1p(_t5);
++  const double _t7 = _t6*n;
++  const double _t8 = exp(_t7);
++#if _KMAX >= 1
++  const double _t9 = log(p->zeta_threshold);
++  const double _t10 = _t8;
++  const double _t11 = _t10*_t6;
++  const double _t12 = _t5 + 0.1e1;
++  const double _t13 = my_piecewise3(_t4, 0.1e1, 0);
++  const double _t14 = _t13/_t12;
++  const double _t15 = _t10*_t14;
++#endif
++#if _KMAX >= 2
++  const double _t16 = _t10*(_t6 * _t6);
++  const double _t17 = (_t13 * _t13)/(_t12 * _t12);
++  const double _t18 = _t10*_t17;
++  const double _t19 = _t18*n;
++  const double _t20 = (n * n);
++#endif
++#if _KMAX >= 3
++  const double _t21 = _t10*(_t13 * _t13 * _t13)/(_t12 * _t12 * _t12);
++#endif
++
++  const double f = my_piecewise3(_t1, _t2, _t8);
+   out[0] = f;
+ #if _KMAX >= 1
+   const double df_dn = my_piecewise3(_t1, _t2*_t9, _t11);
+@@ -1280,12 +1338,12 @@
+ GPU_DEVICE_FUNCTION static inline void XC_CAT(tpss_aux_k, _KMAX)(const xc_func_type *p, double z, double xt, double ts0, double ts1, double *out) {
+
+   double _hc0[(_KMAX) >= 3 ? 10 : (_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1];
+-  XC_CAT(opz_pow_n_m1_k, _KMAX)(p, z, 0.5e1 / 0.3e1, _hc0);
++  XC_CAT(opz_pow_n_k, _KMAX)(p, z, 0.5e1 / 0.3e1, _hc0);
+   double _hc1[(_KMAX) >= 3 ? 10 : (_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1];
+-  XC_CAT(opz_pow_n_m1_k, _KMAX)(p, -z, 0.5e1 / 0.3e1, _hc1);
++  XC_CAT(opz_pow_n_k, _KMAX)(p, -z, 0.5e1 / 0.3e1, _hc1);
+   const double _t1 = xc_powr(0.2e1, 2, 3);
+-  const double _t2 = _hc0[0] + 0.1e1;
+-  const double _t3 = _hc1[0] + 0.1e1;
++  const double _t2 = _hc0[0];
++  const double _t3 = _hc1[0];
+   const double _t4 = _t2*ts0 + _t3*ts1;
+   const double _t5 = _t1/_t4;
+   const double _t6 = (xt * xt);
+@@ -1302,12 +1360,12 @@
+   const double _t16 = _hc1[2]*ts1 - _t15;
+ #endif
+ #if _KMAX >= 2
+-  const double _t17 = -0.2e1*_hc1[0] - 0.2e1;
++  const double _t17 = -2*_hc1[0];
+   const double _t18 = (0.1e1 / (_t4 * _t4 * _t4));
+   const double _t19 = _t1*_t18;
+   const double _t20 = _t19*_t7;
+   const double _t21 = _t17*_t20;
+-  const double _t22 = -0.2e1*_hc0[0] - 0.2e1;
++  const double _t22 = -2*_hc0[0];
+   const double _t23 = _t20*_t22;
+   const double _t24 = (0.1e1 / 0.2e1)*_t11;
+   const double _t25 = _t10*_t24;
+@@ -1323,9 +1381,9 @@
+   const double _t33 = _t10*_t17;
+   const double _t34 = (0.1e1 / (_t4 * _t4 * _t4 * _t4));
+   const double _t35 = _t1*_t34*_t7;
+-  const double _t36 = _t35*(-0.3e1*_hc1[0] - 0.3e1);
++  const double _t36 = -3*_hc1[0]*_t35;
+   const double _t37 = _t13*_t36;
+-  const double _t38 = -0.3e1*_hc0[0] - 0.3e1;
++  const double _t38 = -3*_hc0[0];
+   const double _t39 = (0.1e1 / 0.2e1)*_t19;
+   const double _t40 = _t39*xt;
+   const double _t41 = _t13*_t40;
+@@ -3815,7 +3873,7 @@
+   double _hc1[(_KMAX) >= 3 ? 4 : (_KMAX) >= 2 ? 3 : (_KMAX) >= 1 ? 2 : 1];
+   XC_CAT(z_thr_k, _KMAX)(p, _t4, _hc1);
+   double _hc2[(_KMAX) >= 3 ? 10 : (_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1] = {0.};
+-  if(!(_t35)) XC_CAT(opz_pow_n_m1_k, _KMAX)(p, _hc1[0], 0.5e1 / 0.3e1, _hc2);
++  if(!(_t35)) XC_CAT(opz_pow_n_k, _KMAX)(p, _hc1[0], 0.5e1 / 0.3e1, _hc2);
+   const double _t11 = -_hc1[0];
+   const double _t18 = _hc1[0] + 0.1e1;
+   const double _t19 = (0.1e1 / _t18);
+@@ -3826,17 +3884,17 @@
+   const double _t31 = ((_hc0[0]) * (_hc0[0]));
+   const double _t51 = _t26*_t50;
+   const double _t52 = _t18*_t51;
+-  const double _t56 = _hc2[0] + 0.1e1;
++  const double _t56 = _hc2[0];
+   const double _t57 = _t55*_t56*gaa;
+   const double _t70 = (0.1e1 / 0.2e1)*_t18;
+   const double _t72 = (0.1e1 / 0.2e1)*_t26;
+   const double _t77 = ((_hc0[0]) * (_hc0[0]) * (_hc0[0]))*params->d;
+   double _hc3[(_KMAX) >= 3 ? 10 : (_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1] = {0.};
+-  if(!(_t35)) XC_CAT(opz_pow_n_m1_k, _KMAX)(p, _t11, 0.5e1 / 0.3e1, _hc3);
++  if(!(_t35)) XC_CAT(opz_pow_n_k, _KMAX)(p, _t11, 0.5e1 / 0.3e1, _hc3);
+   double _hc4[(_KMAX) >= 3 ? 10 : (_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1] = {0.};
+-  if(!(_t35)) XC_CAT(opz_pow_n_m1_k, _KMAX)(p, _t11, -0.4e1 / 0.3e1, _hc4);
++  if(!(_t35)) XC_CAT(opz_pow_n_k, _KMAX)(p, _t11, -0.4e1 / 0.3e1, _hc4);
+   double _hc5[(_KMAX) >= 3 ? 10 : (_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1] = {0.};
+-  if(!(_t35)) XC_CAT(opz_pow_n_m1_k, _KMAX)(p, _hc1[0], -0.4e1 / 0.3e1, _hc5);
++  if(!(_t35)) XC_CAT(opz_pow_n_k, _KMAX)(p, _hc1[0], -0.4e1 / 0.3e1, _hc5);
+   double _hc6[(_KMAX) >= 3 ? 56 : (_KMAX) >= 2 ? 21 : (_KMAX) >= 1 ? 6 : 1];
+   XC_CAT(f_pbe_k, _KMAX)(p, _t17, _t4, _t8, 0, 0, _hc6);
+   double _hc7[(_KMAX) >= 3 ? 56 : (_KMAX) >= 2 ? 21 : (_KMAX) >= 1 ? 6 : 1];
+@@ -3849,8 +3907,8 @@
+   XC_CAT(f_pbe_k, _KMAX)(p, _t23*_t28, -0.1e1, _t29*_t30, 0, 0, _hc10);
+   double _hc11[(_KMAX) >= 3 ? 10 : (_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1];
+   XC_CAT(tpss_fmax_k, _KMAX)(p, _hc10[0], _hc7[0], _hc11);
+-  const double _t53 = _hc4[0] + _hc5[0] + 0.2e1;
+-  const double _t59 = _hc3[0] + 0.1e1;
++  const double _t53 = _hc4[0] + _hc5[0];
++  const double _t59 = _hc3[0];
+   const double _t60 = _t58*_t59*gbb;
+   const double _t63 = -_t54*_t6 + _t62*(_t57 + _t60);
+   const double _t64 = _t53*_t63;
+@@ -4400,7 +4458,7 @@
+   const double _t982 = _hc0[3]*_t948;
+   const double _t985 = (0.3e1 / 0.2e1)*_t943;
+   const double _t986 = _hc0[10]*_t942;
+-  const double _t992 = -_t54 + _t55*_t61*((0.1e1 / 0.4e1)*_hc2[0] + 0.1e1 / 0.4e1);
++  const double _t992 = (1.0/4.0)*_hc2[0]*_t55*_t61 - _t54;
+   const double _t1020 = 0.3e1*_t943;
+   const double _t1074 = 0.6e1*_t226;
+   const double _t1121 = _t225*_t867;
+@@ -4857,7 +4915,7 @@
+   const double _t1025 = _t1024*_t76;
+   const double _t1026 = _t258*_t286;
+   const double _t1027 = _t254*_t288;
+-  const double _t1028 = -_t54 + _t58*_t61*((0.1e1 / 0.4e1)*_hc3[0] + 0.1e1 / 0.4e1);
++  const double _t1028 = (1.0/4.0)*_hc3[0]*_t58*_t61 - _t54;
+   const double _t1029 = _t1028*_t993;
+   const double _t1030 = (0.5e1 / 0.144e3)*_t1029;
+   const double _t1031 = my_piecewise3(_t35, 0, _t1030*_t419);
+@@ -6113,7 +6171,7 @@
+   const double _t1934 = (0.88e2 / 0.27e2)*_t431*_t733;
+   const double _t1936 = _t1935*_t53;
+   const double _t1937 = _t354*_t738;
+-  const double _t1938 = _t54*(-0.2e1 / 0.3e1*_hc4[0] - 0.2e1 / 0.3e1*_hc5[0] - 0.4e1 / 0.3e1);
++  const double _t1938 = -2.0/3.0*_hc4[0]*_t54 - 2.0/3.0*_hc5[0]*_t54;
+   const double _t1939 = _t153*_t52;
+   const double _t1940 = (0.2e1 / 0.3e1)*_t153;
+   const double _t1942 = _t31*my_piecewise3(_t35, 0, _t1409*_t1933 + _t1413*_t740 + _t1586*_t740 + _t167*(_t1426*_t1938 - _t1603*_t738 - _t1930*_t1940 + _t1931*_t1940 + _t1934 - _t1935*_t1939 - _t1936*_t426 + _t1936*_t737 + _t1937*_t51 - _t1937*_t736 + _t1941*_t430 + _t425*_t738) + _t1812*_t262 + _t1814*_t1928 + _t1819*_t742 + _t420*(-_t1411*_t1930 + _t1411*_t1931 + _t1412*_t261 + _t1929));

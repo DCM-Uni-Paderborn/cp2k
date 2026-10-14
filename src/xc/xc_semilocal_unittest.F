@@ -105,6 +105,7 @@ PROGRAM xc_semilocal_unittest
    CALL check_libxc_c2_window()
    CALL check_libxc_c2_rounding()
    CALL check_libxc_individual_floor()
+   CALL check_libxc_spin_powers()
 #endif
    CALL section_vals_release(functional)
    CALL section_release(specification)
@@ -388,6 +389,39 @@ CONTAINS
       IF (error_second > 2.e-6_dp) ERROR STOP 'Libxc individual spin-floor kernel is not a potential derivative'
       IF (error_third > 2.e-5_dp) ERROR STOP 'Libxc individual spin-floor third derivatives are inconsistent'
    END SUBROUTINE check_libxc_individual_floor
+
+! **************************************************************************************************
+!> \brief Check correlation potentials where a small spin power multiplies a large reduced tau.
+! **************************************************************************************************
+   SUBROUTINE check_libxc_spin_powers()
+      CHARACTER(len=24), PARAMETER :: &
+         names(2) = [CHARACTER(len=24) :: 'MGGA_C_TPSS', 'MGGA_C_R2SCAN']
+      REAL(dp), PARAMETER :: &
+         x(7) = [0.003_dp, -1.e-9_dp, 0.004_dp, 0.0040003_dp, 4.7e-7_dp, 0.000786_dp, 0.000112_dp]
+
+      INTEGER                                            :: family, order
+      REAL(dp)                                           :: energy, error, estimates(2), &
+                                                            gradient(7), hessian(7, 7), minus, &
+                                                            plus, scratch(7, 7), step, trial(7), &
+                                                            values(7)
+
+      error = 0.0_dp
+      DO family = 1, SIZE(names)
+         CALL evaluate_libxc_point(TRIM(names(family)), x, energy, gradient, hessian, 1.e-10_dp)
+         DO order = 1, 2
+            step = x(1)*1.e-3_dp/REAL(order, dp)
+            trial = x
+            trial(1) = x(1) + step
+            CALL evaluate_libxc_point(TRIM(names(family)), trial, plus, values, scratch, 1.e-10_dp)
+            trial(1) = x(1) - step
+            CALL evaluate_libxc_point(TRIM(names(family)), trial, minus, values, scratch, 1.e-10_dp)
+            estimates(order) = (plus - minus)/(2.0_dp*step)
+         END DO
+         error = MAX(error, ABS((4.0_dp*estimates(2) - estimates(1))/3.0_dp - gradient(1)))
+      END DO
+      WRITE (*, '(A,ES15.6)') 'Libxc small-spin-power potential error:', error
+      IF (error > 2.e-7_dp) ERROR STOP 'Libxc small-spin-power potential is not an energy derivative'
+   END SUBROUTINE check_libxc_spin_powers
 
 ! **************************************************************************************************
 !> \brief Evaluate Libxc with independently varied density, gradient-norm and kinetic-density inputs.

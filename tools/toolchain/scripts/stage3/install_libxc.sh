@@ -32,6 +32,9 @@ case "$with_libxc" in
       [ -d libxc-${libxc_ver} ] && rm -rf libxc-${libxc_ver}
       tar -xjf libxc-${libxc_ver}.tar.bz2
       cd libxc-${libxc_ver}
+      # Avoid cancellation in spin powers of meta-GGA correlation.
+      patch -p1 < "${SCRIPT_DIR}/stage3/libxc-${libxc_ver}-spin-powers.patch" \
+        > libxc_spin_powers.patch.log 2>&1 || tail_excerpt libxc_spin_powers.patch.log
 
       if [ "${with_gcc}" != "__DONTUSE__" ] &&
         [ "${with_intel}" = "__DONTUSE__" ] && [ "${with_amd}" = "__DONTUSE__" ]; then
@@ -98,7 +101,8 @@ case "$with_libxc" in
         cd ..
       fi
 
-      write_checksums "${install_lock_file}" "${SCRIPT_DIR}/stage3/$(basename ${SCRIPT_NAME})"
+      write_checksums "${install_lock_file}" "${SCRIPT_DIR}/stage3/$(basename ${SCRIPT_NAME})" \
+        "${SCRIPT_DIR}/stage3/libxc-${libxc_ver}-spin-powers.patch"
     fi
     ;;
   __SYSTEM__)

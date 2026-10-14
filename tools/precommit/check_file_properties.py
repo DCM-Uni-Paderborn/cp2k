@@ -299,7 +299,10 @@ def check_file(path: pathlib.Path) -> List[str]:
     flags = {flag for flag in flags if not FLAG_EXCEPTIONS_RE.match(flag)}
 
     for flag in sorted(flags):
-        if fn_ext == ".cl":  # usually compiled at RT (no direct user-control)
+        if fn_ext in (
+            ".cl",
+            ".patch",
+        ):  # runtime kernels and dependency patches have their own flags
             continue
         if flag == "_OMP_H" and fn_ext == ".cu":
             continue
