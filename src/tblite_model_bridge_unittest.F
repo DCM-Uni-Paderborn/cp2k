@@ -59,7 +59,7 @@ MODULE tblite_model_bridge_tests
    USE tblite_wavefunction, ONLY: wavefunction_type, new_wavefunction, eeqbc_guess
    USE tblite_xtb_calculator, ONLY: xtb_calculator, xtb_config
    USE tblite_xtb_gxtb, ONLY: new_gxtb_calculator
-   USE tblite_xtb_h0, ONLY: get_selfenergy
+   USE tblite_xtb_h0, ONLY: get_anisotropy, get_anisotropy_gradient, get_selfenergy
    USE tblite_xtb_singlepoint, ONLY: xtb_singlepoint
    IMPLICIT NONE
    PRIVATE
@@ -82,6 +82,8 @@ CONTAINS
       TYPE(unittest_type), ALLOCATABLE, INTENT(out)      :: testsuite(:)
 
       testsuite = [ &
+         new_unittest("diamond-anisotropy-supercell", &
+            & test_diamond_anisotropy_supercell), &
          new_unittest("image-h0-h2o-pbc", &
             & test_image_h0_h2o_pbc), &
          new_unittest("image-acp-gradient-h2o-pbc", &
@@ -103,6 +105,99 @@ CONTAINS
          new_unittest("cp2k-potential-mixer-nonfinite", &
             & test_cp2k_potential_mixer_nonfinite, should_fail=.TRUE.)]
    END SUBROUTINE collect_model_bridge
+
+! **************************************************************************************************
+!> \brief Check tensor anisotropy in cubic and strained diamond primitive cells and supercells.
+!> \param error test failure
+! **************************************************************************************************
+   SUBROUTINE test_diamond_anisotropy_supercell(error)
+      TYPE(error_type), ALLOCATABLE, INTENT(OUT)         :: error
+
+      REAL(wp), PARAMETER :: alat = 5.43_wp*aatoau, lattice0(3, 3) = 0.5_wp*alat*RESHAPE([0.0_wp, &
+         1.0_wp, 1.0_wp, 1.0_wp, 0.0_wp, 1.0_wp, 1.0_wp, 1.0_wp, 0.0_wp], [3, 3]), &
+         tiny_scale = EPSILON(1.0_wp)/4.0_wp, xyz0(3, 2) = 0.25_wp*alat*RESHAPE([0.0_wp, 0.0_wp, &
+         0.0_wp, 1.0_wp, 1.0_wp, 1.0_wp], [3, 2])
+
+      INTEGER                                            :: atom, first, geometry, ix, iy, iz
+      REAL(wp) :: aniso(3, 3, 2), aniso_ref(3, 3, 2), aniso_sc(3, 3, 16), cutoff, gradient(3, 2), &
+         gradient_ref(3, 2), lattice(3, 3), response(3, 3, 2), sigma(3, 3), sigma_ref(3, 3), &
+         xyz(3, 2), xyz_sc(3, 16)
+      REAL(wp), ALLOCATABLE                              :: scales(:, :), trans(:, :), trans_sc(:, :)
+      TYPE(structure_type)                               :: mol, supercell
+      TYPE(xtb_calculator)                               :: calc, supercalc
+
+      DO geometry = 1, 2
+         lattice = lattice0
+         xyz = xyz0
+         IF (geometry == 2) THEN
+            lattice(1, :) = 1.15_wp*lattice(1, :)
+            xyz(1, :) = 1.15_wp*xyz(1, :)
+         END IF
+         CALL new(mol, [14, 14], xyz, lattice=lattice, periodic=[.TRUE., .TRUE., .TRUE.])
+         CALL new_gxtb_calculator(calc, mol, error, accuracy=acc)
+         IF (ALLOCATED(error)) RETURN
+         first = 1
+         DO iz = 0, 1
+            DO iy = 0, 1
+               DO ix = 0, 1
+                  DO atom = 1, 2
+                     xyz_sc(:, first + atom - 1) = xyz(:, atom) + MATMUL(lattice, REAL([ix, iy, iz], wp))
+                  END DO
+                  first = first + 2
+               END DO
+            END DO
+         END DO
+         CALL new(supercell, SPREAD(14, 1, 16), xyz_sc, lattice=2.0_wp*lattice, &
+                  periodic=[.TRUE., .TRUE., .TRUE.])
+         CALL new_gxtb_calculator(supercalc, supercell, error, accuracy=acc)
+         IF (ALLOCATED(error)) RETURN
+         cutoff = MAX(get_cutoff(calc%bas, acc), get_cutoff(supercalc%bas, acc))
+         CALL get_lattice_points(mol%periodic, lattice, cutoff, trans)
+         CALL get_lattice_points(supercell%periodic, supercell%lattice, cutoff, trans_sc)
+         CALL get_anisotropy(calc%h0, mol, trans, cutoff, aniso)
+         CALL get_anisotropy(supercalc%h0, supercell, trans_sc, cutoff, aniso_sc)
+         IF (geometry == 1) THEN
+            CALL check(error, MAXVAL(ABS(aniso)), 0.0_wp, thr=1.0e-11_wp)
+         ELSE
+            ! A distorted cell prevents a vacuous comparison of two zero tensors.
+            CALL check(error, MAXVAL(ABS(aniso)) > 1.0e-6_wp)
+         END IF
+         IF (ALLOCATED(error)) RETURN
+         DO first = 1, 16, 2
+            CALL check(error, MAXVAL(ABS(aniso_sc(:, :, first:first + 1) - aniso)), &
+                       0.0_wp, thr=1.0e-11_wp)
+            IF (ALLOCATED(error)) RETURN
+         END DO
+      END DO
+
+      response = SPREAD(RESHAPE([1.0_wp, 0.2_wp, 0.0_wp, 0.2_wp, 0.3_wp, &
+                                 0.0_wp, 0.0_wp, 0.0_wp, -0.4_wp], [3, 3]), 3, 2)
+      aniso_ref = aniso
+      gradient_ref = 0.0_wp
+      sigma_ref = 0.0_wp
+      CALL get_anisotropy_gradient(calc%h0, mol, trans, cutoff, response, gradient_ref, sigma_ref)
+      ALLOCATE (scales, SOURCE=calc%h0%aniso_scale)
+      calc%h0%aniso_scale(:, :) = 0.0_wp
+      aniso = 1.0_wp
+      gradient = 2.0_wp
+      sigma = 3.0_wp
+      CALL get_anisotropy(calc%h0, mol, trans, cutoff, aniso)
+      CALL get_anisotropy_gradient(calc%h0, mol, trans, cutoff, response, gradient, sigma)
+      CALL check(error, ALL(aniso == 0.0_wp) .AND. ALL(gradient == 2.0_wp) .AND. ALL(sigma == 3.0_wp))
+      IF (ALLOCATED(error)) RETURN
+
+      ! Only exact zero may bypass the calculation, not a small physical coefficient.
+      calc%h0%aniso_scale(:, :) = tiny_scale*scales
+      gradient = 0.0_wp
+      sigma = 0.0_wp
+      CALL get_anisotropy(calc%h0, mol, trans, cutoff, aniso)
+      CALL get_anisotropy_gradient(calc%h0, mol, trans, cutoff, response, gradient, sigma)
+      CALL check(error, MAXVAL(ABS(aniso/tiny_scale - aniso_ref)), 0.0_wp, thr=1.0e-11_wp)
+      IF (ALLOCATED(error)) RETURN
+      CALL check(error, MAXVAL(ABS(gradient/tiny_scale - gradient_ref)), 0.0_wp, thr=1.0e-11_wp)
+      IF (ALLOCATED(error)) RETURN
+      CALL check(error, MAXVAL(ABS(sigma/tiny_scale - sigma_ref)), 0.0_wp, thr=1.0e-11_wp)
+   END SUBROUTINE test_diamond_anisotropy_supercell
 
 ! **************************************************************************************************
 !> \brief ...
