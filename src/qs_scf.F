@@ -1127,7 +1127,7 @@ CONTAINS
          CALL qs_skala_scf_stationarity(state, coordinate, points, indices, indices, indices, tolerances, &
                                         scf_control%eps_scf, energy, converged, max_iterations=remaining, &
                                         max_step=0.1_dp, iterations=steps, check_external=.TRUE., stopped=stopped, &
-                                        max_coordinate_norm=1.0_dp, rechart=rechart)
+                                        max_coordinate_norm=1.0_dp, rechart=rechart, retain_progress=.TRUE.)
          iterations = iterations + steps
          remaining = remaining - steps
          IF (converged .OR. stopped .OR. .NOT. rechart .OR. remaining <= 0) EXIT

@@ -1230,7 +1230,8 @@ CONTAINS
 !>        The caller's selected limiting derivatives remain in effect. Convergence does not
 !>        establish normal cusp admissibility, tangential stability or automatic active-set SCF.
 !>        On failure retain the supplied coordinates. A stop or crossing event returns the last
-!>        accepted feasible coordinates. In both cases restore their native MOs, P, fields and
+!>        accepted feasible coordinates. An explicit retain_progress request also keeps the last
+!>        accepted state on other failures. In each case restore their native MOs, P, fields and
 !>        KS operator. On success these quantities describe the returned stationary coordinates.
 !> \param state ...
 !> \param coordinate Initial coordinates, replaced on convergence, a stop or a crossing event.
@@ -1255,11 +1256,12 @@ CONTAINS
 !> \param max_coordinate_norm Optional coordinate-norm bound for an unconstrained minimization.
 !>        A trial exceeding this bound returns the accepted state for rebuilding its Cayley chart.
 !> \param rechart Whether the coordinate bound requested a new chart, independent of convergence or stop.
+!> \param retain_progress Preserve the last accepted state on failure, default false.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
                                         physical_tolerances, gradient_tolerance, energy, converged, &
                                         max_iterations, max_step, targets, iterations, check_external, stopped, crossings, &
-                                        max_coordinate_norm, rechart)
+                                        max_coordinate_norm, rechart, retain_progress)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(INOUT)                            :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -1277,6 +1279,7 @@ CONTAINS
          OPTIONAL, TARGET                                :: crossings
       REAL(dp), INTENT(IN), OPTIONAL                     :: max_coordinate_norm
       LOGICAL, INTENT(OUT), OPTIONAL                     :: rechart
+      LOGICAL, INTENT(IN), OPTIONAL                      :: retain_progress
 
       INTEGER                                            :: m
       LOGICAL                                            :: valid
@@ -1317,13 +1320,13 @@ CONTAINS
                                              max_iterations=max_iterations, max_step=max_step, &
                                              verify_stationarity=evaluate_native_stationarity, iterations=iterations, &
                                              check_stop=check_native_stop, stopped=stopped, &
-                                             check_segment=check_native_segment)
+                                             check_segment=check_native_segment, retain_progress=retain_progress)
       ELSE
          CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
                                              coordinate, physical_tolerances, gradient_tolerance, converged, &
                                              max_iterations=max_iterations, max_step=max_step, iterations=iterations, &
                                              verify_stationarity=evaluate_native_stationarity, &
-                                             check_stop=check_native_stop, stopped=stopped)
+                                             check_stop=check_native_stop, stopped=stopped, retain_progress=retain_progress)
       END IF
       ALLOCATE (gradient(SIZE(coordinate)))
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)

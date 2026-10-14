@@ -393,7 +393,8 @@ CONTAINS
 !> \param evaluate_gradient Original energy and a consistently chosen limiting coordinate gradient.
 !> \param context Owned native orbital and field evaluation data.
 !> \param coordinate Initial coordinates, replaced on convergence, a stop or a segment event.
-!>        A stop or event returns the last accepted feasible trial. Other failures retain the initial state.
+!>        A stop or event returns the last accepted feasible trial. Other failures retain the initial state
+!>        unless retain_progress is requested.
 !> \param density_tolerances Absolute physical tolerance for each independent constraint.
 !> \param gradient_tolerance Absolute tolerance for the norm of the implicit free derivative.
 !> \param converged Whether physical constraints and tangential stationarity meet their tolerances.
@@ -405,11 +406,12 @@ CONTAINS
 !> \param stopped Whether an external stop was requested, independent of convergence.
 !> \param check_segment Optional trial-segment check before step acceptance.
 !> \param interrupted Whether that check requests event handling at the last accepted state.
+!> \param retain_progress Return the last accepted feasible coordinates on failure, default false.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
                                              max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped, &
-                                             check_segment, interrupted)
+                                             check_segment, interrupted, retain_progress)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
       PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
@@ -424,6 +426,7 @@ CONTAINS
       INTEGER, INTENT(OUT), OPTIONAL :: iterations
       LOGICAL, INTENT(OUT), OPTIONAL :: stopped
       LOGICAL, INTENT(OUT), OPTIONAL :: interrupted
+      LOGICAL, INTENT(IN), OPTIONAL :: retain_progress
 
       INTEGER :: capacity, d, history, i, iteration, j, limit, m, nf, shortening
       INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:)
@@ -550,7 +553,10 @@ CONTAINS
          coordinate(:) = x
          converged = .TRUE.
       END IF
-      ! Trial callbacks may update native caches; the caller's unchanged coordinates remain authoritative.
+      IF (PRESENT(retain_progress)) THEN
+         IF (retain_progress) coordinate(:) = x
+      END IF
+      ! Trial callbacks may update native caches; the returned coordinates remain authoritative.
    CONTAINS
 ! **************************************************************************************************
 !> \brief Preserve the last accepted feasible coordinates when the caller requests a stop.

@@ -137,6 +137,15 @@ CONTAINS
          ERROR STOP 'Known physical minimum was not established'
       END IF
       coordinate = 1.0_dp
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, &
+                                          verify_stationarity=scaled_physical_gradient, iterations=iterations, &
+                                          retain_progress=.TRUE.)
+      IF (converged .OR. iterations /= 1) ERROR STOP 'Retained progress was confused with convergence'
+      IF (ABS(coordinate(1) - (1.0_dp - 1.0_dp/scale**2)) > 1.e-14_dp) THEN
+         ERROR STOP 'An incomplete minimization discarded its accepted state'
+      END IF
+      coordinate = 1.0_dp
       stop_polls = 0
       CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=32, &
