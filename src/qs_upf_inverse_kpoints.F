@@ -182,13 +182,15 @@ CONTAINS
 !> \param gradient Overwritten physical Cartesian gradient.
 !> \param tau Overwritten smooth kinetic density.
 !> \param kinetic Optional independent original-wave valence kinetic kernels, indexed by kind.
+!> \param orbital_fields Include soft-orbital fields. False returns only the requested augmentation.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_collocate(frame, spin, density, gradient, tau, kinetic)
+   SUBROUTINE qs_upf_inverse_kpoints_collocate(frame, spin, density, gradient, tau, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(INOUT)   :: frame
       INTEGER, INTENT(IN)                                :: spin
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: matrices(:, :, :)
       INTEGER                                            :: axis, ik
@@ -206,7 +208,8 @@ CONTAINS
       DO ik = 1, SIZE(frame%weights)
          matrices(:, :, ik) = frame%weights(ik)*matrices(:, :, ik)
          CALL qs_upf_inverse_grid_collocate_dense(frame%frames(ik), matrices(:, :, ik), part, dpart, tpart, &
-                                                  augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic)
+                                                  augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic, &
+                                                  orbital_fields=orbital_fields)
          density%array = density%array + part%array
          tau%array = tau%array + tpart%array
          DO axis = 1, 3
@@ -229,14 +232,16 @@ CONTAINS
 !> \param operators New owned CFM array, indexed by local k; release after use.
 !> \param dense Optional replicated operators indexed by global k, without mesh weights.
 !> \param kinetic Optional independent valence kinetic kernels; omitted for the bare soft kinetic operator.
+!> \param orbital_fields Include soft-orbital fields. False returns only the requested augmentation.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_integrate(frame, vdensity, vgradient, vtau, operators, dense, kinetic)
+   SUBROUTINE qs_upf_inverse_kpoints_integrate(frame, vdensity, vgradient, vtau, operators, dense, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(INOUT)   :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       TYPE(cp_cfm_type), ALLOCATABLE, INTENT(OUT)        :: operators(:)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: dense(:, :, :)
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: all_k(:, :, :), matrix(:, :)
       INTEGER                                            :: ik
@@ -245,7 +250,8 @@ CONTAINS
       ALLOCATE (all_k(frame%nao, frame%nao, SIZE(frame%weights)))
       DO ik = 1, SIZE(frame%weights)
          CALL qs_upf_inverse_grid_integrate_dense(frame%frames(ik), vdensity, vgradient, vtau, matrix, &
-                                                  augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic)
+                                                  augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic, &
+                                                  orbital_fields=orbital_fields)
          all_k(:, :, ik) = matrix
       END DO
       CALL qs_upf_inverse_kpoints_distribute(frame, all_k, operators)
@@ -259,12 +265,13 @@ CONTAINS
 !> \param dense Optional replicated global metrics.
 !> \param supplied_q Select supplied PP_Q; default uses the original Fourier-Q radial integral.
 !>        A supplied-q defect is retained and never fitted or rescaled.
+!> \param orbital_fields Include the soft-orbital metric. False returns only the projector metric.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_metric(frame, operators, dense, supplied_q)
+   SUBROUTINE qs_upf_inverse_kpoints_metric(frame, operators, dense, supplied_q, orbital_fields)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
       TYPE(cp_cfm_type), ALLOCATABLE, INTENT(OUT)        :: operators(:)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: dense(:, :, :)
-      LOGICAL, INTENT(IN), OPTIONAL                      :: supplied_q
+      LOGICAL, INTENT(IN), OPTIONAL                      :: supplied_q, orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: all_k(:, :, :), matrix(:, :)
       INTEGER                                            :: ik
@@ -276,9 +283,9 @@ CONTAINS
       ALLOCATE (all_k(frame%nao, frame%nao, SIZE(frame%weights)))
       DO ik = 1, SIZE(frame%weights)
          IF (use_supplied) THEN
-            CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), frame%frames(ik)%ao%q, matrix)
+            CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), frame%frames(ik)%ao%q, matrix, orbital_fields)
          ELSE
-            CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), frame%frames(ik)%ao%radial_q, matrix)
+            CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), frame%frames(ik)%ao%radial_q, matrix, orbital_fields)
          END IF
          all_k(:, :, ik) = matrix
       END DO

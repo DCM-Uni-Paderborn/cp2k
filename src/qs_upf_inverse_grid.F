@@ -137,9 +137,10 @@ CONTAINS
 !> \param fourier_charge Optional native Fourier Q map, instead of point Q; default is false.
 !>        Its zero mode equals the reference radial q; a supplied-q metric retains the explicit defect.
 !> \param kinetic Optional independent original-wave valence kinetic kernels, indexed by kind.
+!> \param orbital_fields Include soft-orbital fields. False returns only the requested augmentation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_collocate(frame, density_real, density, gradient, tau, density_imag, &
-                                            projector_density, augmentation, fourier_charge, kinetic)
+                                            projector_density, augmentation, fourier_charge, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(dbcsr_type), INTENT(IN)                       :: density_real
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
@@ -150,12 +151,13 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: p(:, :)
 
       CALL qs_upf_inverse_matrix_gather(frame%ao, density_real, p, density_imag)
       CALL qs_upf_inverse_grid_collocate_dense(frame, p, density, gradient, tau, &
-                                               projector_density, augmentation, fourier_charge, kinetic)
+                                               projector_density, augmentation, fourier_charge, kinetic, orbital_fields)
    END SUBROUTINE qs_upf_inverse_grid_collocate
 
 ! **************************************************************************************************
@@ -170,9 +172,10 @@ CONTAINS
 !> \param augmentation ...
 !> \param fourier_charge ...
 !> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
+!> \param orbital_fields ...
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_collocate_dense(frame, p, density, gradient, tau, &
-                                                  projector_density, augmentation, fourier_charge, kinetic)
+                                                  projector_density, augmentation, fourier_charge, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       COMPLEX(dp), INTENT(IN)                            :: p(:, :)
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
@@ -182,18 +185,21 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), gg(:, :, :), &
                                                             projected(:, :), sg(:, :, :), &
                                                             soft(:, :)
       INTEGER                                            :: axis, block, hi, lo, m, n, nao, nproj
-      LOGICAL                                            :: use_fourier
+      LOGICAL                                            :: use_fourier, use_orbitals
       REAL(dp), ALLOCATABLE                              :: dn(:, :), dn_reference(:, :), rho(:), &
                                                             rho_reference(:), t(:), t_reference(:)
 
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       use_fourier = .FALSE.
       IF (PRESENT(fourier_charge)) use_fourier = fourier_charge
+      use_orbitals = .TRUE.
+      IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
       IF (use_fourier) THEN
          CPASSERT(PRESENT(augmentation))
       END IF
@@ -202,16 +208,24 @@ CONTAINS
       nao = SIZE(frame%ao%coefficients, 2)
       block = qs_upf_inverse_block_size(frame%ao)
       ALLOCATE (rho(n), dn(n, 3), t(n), rho_reference(n), dn_reference(n, 3), t_reference(n))
-      ALLOCATE (soft(block, nao), sg(block, nao, 3), gaussian(block, nao), gg(block, nao, 3))
-      DO lo = 1, n, block
-         hi = MIN(n, lo + block - 1)
-         m = hi - lo + 1
-         CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :), gaussian(:m, :), gg(:m, :, :))
-         CALL upf_inverse_smooth_density(gaussian(:m, :), gg(:m, :, :), p, &
-                                         rho_reference(lo:hi), dn_reference(lo:hi, :), t_reference(lo:hi))
-         CALL upf_inverse_density_residual(gaussian(:m, :), gg(:m, :, :), soft(:m, :), sg(:m, :, :), p, &
-                                           rho(lo:hi), dn(lo:hi, :), t(lo:hi))
-      END DO
+      rho = 0.0_dp
+      dn = 0.0_dp
+      t = 0.0_dp
+      rho_reference = 0.0_dp
+      dn_reference = 0.0_dp
+      t_reference = 0.0_dp
+      IF (use_orbitals) THEN
+         ALLOCATE (soft(block, nao), sg(block, nao, 3), gaussian(block, nao), gg(block, nao, 3))
+         DO lo = 1, n, block
+            hi = MIN(n, lo + block - 1)
+            m = hi - lo + 1
+            CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :), gaussian(:m, :), gg(:m, :, :))
+            CALL upf_inverse_smooth_density(gaussian(:m, :), gg(:m, :, :), p, &
+                                            rho_reference(lo:hi), dn_reference(lo:hi, :), t_reference(lo:hi))
+            CALL upf_inverse_density_residual(gaussian(:m, :), gg(:m, :, :), soft(:m, :), sg(:m, :, :), p, &
+                                              rho(lo:hi), dn(lo:hi, :), t(lo:hi))
+         END DO
+      END IF
       IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
          nproj = SIZE(frame%ao%coefficients, 1)
          ALLOCATE (projected(nproj, nproj))
@@ -256,9 +270,10 @@ CONTAINS
 !> \param augmentation Optional original charge/gradient adjoint on the same native point rows.
 !> \param fourier_charge Select the native Fourier adjoint of the same density map; default is false.
 !> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
+!> \param orbital_fields ...
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_integrate(frame, vdensity, vgradient, vtau, template, &
-                                            operator_real, operator_imag, projector_operator, augmentation, fourier_charge, kinetic)
+                            operator_real, operator_imag, projector_operator, augmentation, fourier_charge, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       TYPE(dbcsr_type), INTENT(IN)                       :: template
@@ -269,11 +284,12 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: h(:, :)
 
       CALL qs_upf_inverse_grid_integrate_dense(frame, vdensity, vgradient, vtau, h, &
-                                               projector_operator, augmentation, fourier_charge, kinetic)
+                                               projector_operator, augmentation, fourier_charge, kinetic, orbital_fields)
       CALL qs_upf_inverse_matrix_scatter(frame%ao, h, template, operator_real, operator_imag)
    END SUBROUTINE qs_upf_inverse_grid_integrate
 
@@ -288,9 +304,10 @@ CONTAINS
 !> \param augmentation ...
 !> \param fourier_charge ...
 !> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
+!> \param orbital_fields ...
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_integrate_dense(frame, vdensity, vgradient, vtau, h, &
-                                                  projector_operator, augmentation, fourier_charge, kinetic)
+                                                  projector_operator, augmentation, fourier_charge, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: h(:, :)
@@ -300,15 +317,18 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: fourier_charge
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), gg(:, :, :), &
                                                             partial(:, :), projected(:, :), &
                                                             residual(:, :), sg(:, :, :), soft(:, :)
       INTEGER                                            :: axis, block, hi, lo, m, n, nao, nproj
-      LOGICAL                                            :: use_fourier
+      LOGICAL                                            :: use_fourier, use_orbitals
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
 
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
+      use_orbitals = .TRUE.
+      IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
       use_fourier = .FALSE.
       IF (PRESENT(fourier_charge)) use_fourier = fourier_charge
       IF (use_fourier) THEN
@@ -317,24 +337,27 @@ CONTAINS
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%soft, 2)
       block = qs_upf_inverse_block_size(frame%ao)
-      ALLOCATE (dn(n), dg(n, 3), dt(n), h(nao, nao), residual(nao, nao), partial(nao, nao), &
-                soft(block, nao), sg(block, nao, 3), gaussian(block, nao), gg(block, nao, 3))
+      ALLOCATE (dn(n), dg(n, 3), dt(n), h(nao, nao), residual(nao, nao))
       CALL pack_grid(frame, vdensity, dn)
       CALL pack_grid(frame, vtau, dt)
       DO axis = 1, 3
          CALL pack_grid(frame, vgradient(axis), dg(:, axis))
       END DO
       h = CMPLX(0.0_dp, 0.0_dp, dp)
-      DO lo = 1, n, block
-         hi = MIN(n, lo + block - 1)
-         m = hi - lo + 1
-         CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :), gaussian(:m, :), gg(:m, :, :))
-         CALL upf_inverse_semilocal_pair(gaussian(:m, :), gaussian(:m, :), gg(:m, :, :), gg(:m, :, :), &
-                                         frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), partial)
-         CALL upf_inverse_semilocal_residual(gaussian(:m, :), gg(:m, :, :), soft(:m, :), sg(:m, :, :), &
-                                             frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
-         h(:, :) = h + partial + residual
-      END DO
+      IF (use_orbitals) THEN
+         ALLOCATE (partial(nao, nao), soft(block, nao), sg(block, nao, 3), &
+                   gaussian(block, nao), gg(block, nao, 3))
+         DO lo = 1, n, block
+            hi = MIN(n, lo + block - 1)
+            m = hi - lo + 1
+            CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :), gaussian(:m, :), gg(:m, :, :))
+            CALL upf_inverse_semilocal_pair(gaussian(:m, :), gaussian(:m, :), gg(:m, :, :), gg(:m, :, :), &
+                                            frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), partial)
+            CALL upf_inverse_semilocal_residual(gaussian(:m, :), gg(:m, :, :), soft(:m, :), sg(:m, :, :), &
+                                                frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
+            h(:, :) = h + partial + residual
+         END DO
+      END IF
       CALL frame%ao%point_comm%sum(h)
       IF (PRESENT(kinetic)) THEN
          CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt, &
@@ -367,16 +390,18 @@ CONTAINS
 !> \param template ...
 !> \param metric_real New owned real symmetric metric.
 !> \param metric_imag New owned imaginary antisymmetric metric.
+!> \param orbital_fields ...
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_grid_metric(frame, projector_metric, template, metric_real, metric_imag)
+   SUBROUTINE qs_upf_inverse_grid_metric(frame, projector_metric, template, metric_real, metric_imag, orbital_fields)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
       TYPE(dbcsr_type), INTENT(IN)                       :: template
       TYPE(dbcsr_type), INTENT(INOUT)                    :: metric_real, metric_imag
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: metric(:, :)
 
-      CALL qs_upf_inverse_grid_metric_dense(frame, projector_metric, metric)
+      CALL qs_upf_inverse_grid_metric_dense(frame, projector_metric, metric, orbital_fields)
       CALL qs_upf_inverse_matrix_scatter(frame%ao, metric, template, metric_real, metric_imag)
    END SUBROUTINE qs_upf_inverse_grid_metric
 
@@ -385,30 +410,38 @@ CONTAINS
 !> \param frame ...
 !> \param projector_metric ...
 !> \param metric New owned dense metric; radial Q and supplied PP_Q remain distinct.
+!> \param orbital_fields ...
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_grid_metric_dense(frame, projector_metric, metric)
+   SUBROUTINE qs_upf_inverse_grid_metric_dense(frame, projector_metric, metric, orbital_fields)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: metric(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: gradient(:, :, :), partial(:, :), &
                                                             soft(:, :)
       INTEGER                                            :: block, hi, lo, m, nao, nproj
+      LOGICAL                                            :: use_orbitals
 
+      use_orbitals = .TRUE.
+      IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       nao = SIZE(frame%ao%soft, 2)
       nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
       block = qs_upf_inverse_block_size(frame%ao)
-      ALLOCATE (metric(nao, nao), partial(nao, nao), soft(block, nao), gradient(block, nao, 3))
+      ALLOCATE (metric(nao, nao))
       metric = CMPLX(0.0_dp, 0.0_dp, dp)
-      DO lo = 1, SIZE(frame%ao%weights), block
-         hi = MIN(SIZE(frame%ao%weights), lo + block - 1)
-         m = hi - lo + 1
-         CALL point_fields(frame%ao, lo, hi, soft(:m, :), gradient(:m, :, :))
-         CALL upf_inverse_pair(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), partial)
-         metric(:, :) = metric + partial
-      END DO
+      IF (use_orbitals) THEN
+         ALLOCATE (partial(nao, nao), soft(block, nao), gradient(block, nao, 3))
+         DO lo = 1, SIZE(frame%ao%weights), block
+            hi = MIN(SIZE(frame%ao%weights), lo + block - 1)
+            m = hi - lo + 1
+            CALL point_fields(frame%ao, lo, hi, soft(:m, :), gradient(:m, :, :))
+            CALL upf_inverse_pair(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), partial)
+            metric(:, :) = metric + partial
+         END DO
+      END IF
       CALL frame%ao%point_comm%sum(metric)
       metric(:, :) = metric + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), &
                                      MATMUL(projector_metric, frame%ao%coefficients))
@@ -434,11 +467,12 @@ CONTAINS
 !> \param metric_response New metric response in the same inverse AO variables.
 !> \param projector_operator Optional original geometry-independent operator, e.g. Dion.
 !> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
+!> \param orbital_fields ...
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_response(frame, augmentation, projector_metric, vdensity, vgradient, vtau, &
                                            atom_response, cell_response, reduced_k_response, vdensity_response, &
                                            vgradient_response, vtau_response, operator_response, metric_response, &
-                                           projector_operator, kinetic)
+                                           projector_operator, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT)                                   :: augmentation
@@ -454,18 +488,22 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: projector_operator(:, :)
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE :: coefficients_response(:, :), gradient(:, :, :), &
          gradient_response(:, :, :), kinetic_operator(:, :), kinetic_response(:, :), &
          partial(:, :), projected(:, :), projected_response(:, :), soft(:, :), soft_response(:, :)
       INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
                                                             nproj
+      LOGICAL                                            :: use_orbitals
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
                                                             volume_response
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:), dvg(:, :), &
                                                             dvn(:), dvt(:), points_response(:, :), &
                                                             weights_response(:)
 
+      use_orbitals = .TRUE.
+      IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%soft, 2)
@@ -473,8 +511,7 @@ CONTAINS
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
       block = qs_upf_inverse_block_size(frame%ao)
       ALLOCATE (dn(n), dg(n, 3), dt(n), dvn(n), dvg(n, 3), dvt(n), points_response(3, n), weights_response(n), &
-                coefficients_response(nproj, nao), soft_response(block, nao), gradient_response(block, nao, 3), &
-                soft(block, nao), gradient(block, nao, 3), partial(nao, nao), &
+                coefficients_response(nproj, nao), &
                 projected(nproj, nproj), projected_response(nproj, nproj), &
                 operator_response(nao, nao), metric_response(nao, nao))
       cell_inverse = frame%ao%cell
@@ -496,31 +533,35 @@ CONTAINS
       END DO
       operator_response = CMPLX(0.0_dp, 0.0_dp, dp)
       metric_response = CMPLX(0.0_dp, 0.0_dp, dp)
-      DO lo = 1, n, block
-         hi = MIN(n, lo + block - 1)
-         m = hi - lo + 1
-         IF (ANY(dg(lo:hi, :) /= 0.0_dp) .OR. ANY(dt(lo:hi) /= 0.0_dp)) THEN
-            CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
-                                         soft_response(:m, :), gradient_response(:m, :, :), points_response(:, lo:hi), &
-                                         atom_response, cell_response, reduced_k_response, coefficients_response)
-         ELSE
-            ! Gradient responses enter only through the unperturbed gradient and tau potentials.
-            gradient_response(:m, :, :) = CMPLX(0.0_dp, 0.0_dp, dp)
-            CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
-                                         soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
-                                         atom_response=atom_response, cell_response=cell_response, &
-                                         reduced_k_response=reduced_k_response, coefficients_response=coefficients_response)
-         END IF
-         CALL upf_inverse_semilocal_response(soft(:m, :), soft(:m, :), gradient(:m, :, :), gradient(:m, :, :), &
-                                             frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), &
-                                             soft_response(:m, :), soft_response(:m, :), &
-                                             gradient_response(:m, :, :), gradient_response(:m, :, :), &
-                                             weights_response(lo:hi), dvn(lo:hi), dvg(lo:hi, :), dvt(lo:hi), partial)
-         operator_response(:, :) = operator_response + partial
-         CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), &
-                                        soft_response(:m, :), soft_response(:m, :), weights_response(lo:hi), partial)
-         metric_response(:, :) = metric_response + partial
-      END DO
+      IF (use_orbitals) THEN
+         ALLOCATE (soft_response(block, nao), gradient_response(block, nao, 3), &
+                   soft(block, nao), gradient(block, nao, 3), partial(nao, nao))
+         DO lo = 1, n, block
+            hi = MIN(n, lo + block - 1)
+            m = hi - lo + 1
+            IF (ANY(dg(lo:hi, :) /= 0.0_dp) .OR. ANY(dt(lo:hi) /= 0.0_dp)) THEN
+               CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                            soft_response(:m, :), gradient_response(:m, :, :), points_response(:, lo:hi), &
+                                            atom_response, cell_response, reduced_k_response, coefficients_response)
+            ELSE
+               ! Gradient responses enter only through the unperturbed gradient and tau potentials.
+               gradient_response(:m, :, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+               CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                            soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
+                                            atom_response=atom_response, cell_response=cell_response, &
+                                            reduced_k_response=reduced_k_response, coefficients_response=coefficients_response)
+            END IF
+            CALL upf_inverse_semilocal_response(soft(:m, :), soft(:m, :), gradient(:m, :, :), gradient(:m, :, :), &
+                                                frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), &
+                                                soft_response(:m, :), soft_response(:m, :), &
+                                                gradient_response(:m, :, :), gradient_response(:m, :, :), &
+                                                weights_response(lo:hi), dvn(lo:hi), dvg(lo:hi, :), dvt(lo:hi), partial)
+            operator_response(:, :) = operator_response + partial
+            CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), &
+                                           soft_response(:m, :), soft_response(:m, :), weights_response(lo:hi), partial)
+            metric_response(:, :) = metric_response + partial
+         END DO
+      END IF
       CALL frame%ao%point_comm%sum(operator_response)
       CALL frame%ao%point_comm%sum(metric_response)
       IF (PRESENT(kinetic)) THEN
