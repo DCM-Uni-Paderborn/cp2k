@@ -45,6 +45,7 @@ MODULE qs_skala_scf
                                               qs_skala_orbitals_install_kpoint,&
                                               qs_skala_orbitals_release,&
                                               qs_skala_orbitals_type
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_evaluate
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_integrate
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_integrate
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_kinetic_operator
@@ -676,32 +677,40 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: point(3), descriptor
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
 
-      COMPLEX(dp), ALLOCATABLE                           :: correction(:, :), q(:, :)
-      INTEGER                                            :: i, ik, nao, nk, np
+      COMPLEX(dp), ALLOCATABLE                           :: correction(:, :), &
+                                                            orbital_gradient(:, :, :), q(:, :), &
+                                                            soft(:, :)
+      INTEGER                                            :: i, ik, nao, nk, np, row
       REAL(dp), ALLOCATABLE                              :: density(:), gradient(:, :), kinetic(:), &
-                                                            weights(:)
+                                                            points(:, :), weights(:)
       TYPE(mp_comm_type)                                 :: comm
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
 
       CPASSERT(point(3) == 1)
-      CPASSERT(ALLOCATED(state%inverse%xc%soft))
-      np = SIZE(state%inverse%atom_grid%atoms)
+      np = COUNT(state%inverse%atom_grid%atoms == point(1) .AND. &
+                 state%inverse%atom_grid%atom_rows == point(2))
       nk = SIZE(state%dimensions, 1)
-      nao = SIZE(state%inverse%xc%soft, 2)
-      ALLOCATE (density(np), kinetic(np), gradient(np, 3), weights(np), operators(nao, nao, nk), correction(nao, nao))
+      frame => state%inverse%frame%ao
+      IF (state%bloch) frame => state%inverse%bloch%frames(1)%ao
+      nao = SIZE(frame%coefficients, 2)
+      ALLOCATE (density(np), kinetic(np), gradient(np, 3), weights(np), points(3, np), &
+                soft(np, nao), orbital_gradient(np, nao, 3), operators(nao, nao, nk), correction(nao, nao))
       density = 0.0_dp
       kinetic = 0.0_dp
       gradient = 0.0_dp
       weights = 1.0_dp
-      DO i = 1, np
+      IF (descriptor == skala_density_descriptor) THEN
+         density = 1.0_dp
+      ELSE
+         kinetic = 1.0_dp
+      END IF
+      row = 0
+      DO i = 1, SIZE(state%inverse%atom_grid%atoms)
          IF (state%inverse%atom_grid%atoms(i) /= point(1)) CYCLE
          IF (state%inverse%atom_grid%atom_rows(i) /= point(2)) CYCLE
-         IF (descriptor == skala_density_descriptor) THEN
-            density(i) = 1.0_dp
-         ELSE
-            kinetic(i) = 1.0_dp
-         END IF
+         row = row + 1
+         points(:, row) = state%inverse%atom_grid%points(:, i)
       END DO
       CALL comm%set_handle(state%para_env%get_handle())
       augmentation => state%inverse%augmentation
@@ -709,28 +718,29 @@ CONTAINS
       DO ik = 1, nk
          frame => state%inverse%frame%ao
          IF (state%bloch) frame => state%inverse%bloch%frames(ik)%ao
-         CALL upf_inverse_semilocal_pair(state%inverse%xc%soft(:, :, ik), state%inverse%xc%soft(:, :, ik), &
-                                         state%inverse%xc%gradient(:, :, :, ik), state%inverse%xc%gradient(:, :, :, ik), &
+         ! Reconstruct only the selected sample on its owner, including an empty selection elsewhere.
+         CALL qs_upf_inverse_evaluate(frame, points, soft, orbital_gradient)
+         CALL upf_inverse_semilocal_pair(soft, soft, orbital_gradient, orbital_gradient, &
                                          weights, density, gradient, kinetic, operators(:, :, ik), comm)
          IF (descriptor == skala_density_descriptor) THEN
             ALLOCATE (q(SIZE(frame%coefficients, 1), SIZE(frame%coefficients, 1)))
             CALL qs_upf_inverse_augmentation_integrate(frame, augmentation, density, gradient, q, &
-                                                       state%inverse%atom_grid%points, weights, comm)
+                                                       points, weights, comm)
             operators(:, :, ik) = operators(:, :, ik) + &
                                   MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(q, frame%coefficients))
             DEALLOCATE (q)
             IF (ALLOCATED(state%inverse%paw_reconstruction)) THEN
                CALL qs_upf_inverse_paw_operator(frame, state%inverse%paw_reconstruction, augmentation, &
-                                                state%inverse%atom_grid%points, weights, density, gradient, correction, comm)
+                                                points, weights, density, gradient, correction, comm)
                operators(:, :, ik) = operators(:, :, ik) + correction
             END IF
          ELSE
             CPASSERT(ALLOCATED(state%inverse%kinetic_cache))
-            CALL qs_upf_inverse_kinetic_operator(frame, state%inverse%kinetic_cache, state%inverse%atom_grid%points, &
+            CALL qs_upf_inverse_kinetic_operator(frame, state%inverse%kinetic_cache, points, &
                                                  weights, kinetic, correction, comm)
             operators(:, :, ik) = operators(:, :, ik) + correction
             IF (ALLOCATED(state%inverse%paw_reconstruction)) THEN
-               CALL qs_upf_inverse_kinetic_operator(frame, state%inverse%paw_reconstruction, state%inverse%atom_grid%points, &
+               CALL qs_upf_inverse_kinetic_operator(frame, state%inverse%paw_reconstruction, points, &
                                                     weights, kinetic, correction, comm)
                operators(:, :, ik) = operators(:, :, ik) + correction
             END IF

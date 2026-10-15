@@ -9,6 +9,7 @@
 !> \brief Mixed-quadrature XC residual in the reconstructed Gaussian representation.
 !>        The exact point density uses the defining PW inverse and the original Q functions.
 !>        The background is supplied by the caller with its interpolation adjoint retained.
+!>        Keep complete scalar descriptors for nonlocal XC, but evaluate orbitals in bounded blocks.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_xc
    USE cell_types,                      ONLY: cell_type
@@ -27,7 +28,8 @@ MODULE qs_upf_inverse_xc
    USE qs_native_grid_interpolation,    ONLY: interpolate_native_grid_batch,&
                                               native_grid_batch_adjoint,&
                                               native_grid_batch_response
-   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_evaluate
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_block_size,&
+                                              qs_upf_inverse_evaluate
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_type
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_collocate,&
                                               qs_upf_inverse_augmentation_integrate,&
@@ -134,9 +136,10 @@ CONTAINS
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
 
-      COMPLEX(dp), ALLOCATABLE                           :: kinetic_operator(:, :), projected(:, :), &
-                                                            qoperator(:, :)
-      INTEGER                                            :: ik, nao, nk, np, nproj, nspin, spin
+      COMPLEX(dp), ALLOCATABLE :: kinetic_operator(:, :), orbital_gradient(:, :, :), &
+         partial(:, :), projected(:, :), qoperator(:, :), soft(:, :)
+      INTEGER                                            :: block, hi, ik, lo, m, nao, nk, np, &
+                                                            nproj, nspin, spin
       REAL(dp), ALLOCATABLE :: ebackground(:), gradient(:, :), integration_weights(:), &
          reconstruction_density(:), reconstruction_gradient(:, :), rho(:), tau(:), &
          tau_augmentation(:)
@@ -164,7 +167,8 @@ CONTAINS
          CPASSERT(ALL(SHAPE(background_tau) == [np, nspin]))
          CPASSERT(ALL(SHAPE(core_tau) == [np, nspin]))
       END IF
-      ALLOCATE (state%soft(np, nao, nk), state%gradient(np, nao, 3, nk), &
+      block = qs_upf_inverse_block_size(frames(1)%frame)
+      ALLOCATE (soft(block, nao), orbital_gradient(block, nao, 3), partial(nao, nao), &
                 state%operators(nao, nao, nk, nspin), state%density(np, nspin), &
                 state%density_gradient(np, 3, nspin), state%energy_density(np), &
                 state%vdensity(np, nspin), state%vgradient(np, 3, nspin), &
@@ -180,12 +184,24 @@ CONTAINS
          CPASSERT(ASSOCIATED(frames(ik)%frame))
          frame => frames(ik)%frame
          CPASSERT(SIZE(frame%coefficients, 2) == nao)
-         CALL qs_upf_inverse_evaluate(frame, points, state%soft(:, :, ik), state%gradient(:, :, :, ik))
+         DO lo = 1, np, block
+            hi = MIN(np, lo + block - 1)
+            m = hi - lo + 1
+            CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), orbital_gradient(:m, :, :))
+            DO spin = 1, nspin
+               CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
+                                               matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi))
+               state%density(lo:hi, spin) = state%density(lo:hi, spin) + kweights(ik)*rho(lo:hi)
+               state%density_gradient(lo:hi, :, spin) = state%density_gradient(lo:hi, :, spin) + &
+                                                        kweights(ik)*gradient(lo:hi, :)
+               IF (state%kinetic) state%tau(lo:hi, spin) = state%tau(lo:hi, spin) + kweights(ik)*tau(lo:hi)
+            END DO
+         END DO
          nproj = SIZE(frame%coefficients, 1)
          ALLOCATE (projected(nproj, nproj))
          DO spin = 1, nspin
-            CALL upf_inverse_smooth_density(state%soft(:, :, ik), state%gradient(:, :, :, ik), &
-                                            matrices(:, :, ik, spin), rho, gradient, tau)
+            rho = 0.0_dp
+            gradient = 0.0_dp
             CALL upf_inverse_projector_density(frame%coefficients, matrices(:, :, ik, spin), projected)
             CALL qs_upf_inverse_augmentation_collocate(frame, augmentation, projected, rho, gradient, points)
             IF (state%paw_reconstruction) THEN
@@ -203,7 +219,7 @@ CONTAINS
                                                         reconstruction_density)
                   tau_augmentation(:) = tau_augmentation + reconstruction_density
                END IF
-               state%tau(:, spin) = state%tau(:, spin) + kweights(ik)*(tau + tau_augmentation)
+               state%tau(:, spin) = state%tau(:, spin) + kweights(ik)*tau_augmentation
             END IF
          END DO
          DEALLOCATE (projected)
@@ -236,11 +252,22 @@ CONTAINS
          frame => frames(ik)%frame
          nproj = SIZE(frame%coefficients, 1)
          ALLOCATE (qoperator(nproj, nproj), kinetic_operator(nao, nao))
+         state%operators(:, :, ik, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO lo = 1, np, block
+            hi = MIN(np, lo + block - 1)
+            m = hi - lo + 1
+            CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), orbital_gradient(:m, :, :))
+            DO spin = 1, nspin
+               CALL upf_inverse_semilocal_pair(soft(:m, :), soft(:m, :), &
+                                               orbital_gradient(:m, :, :), orbital_gradient(:m, :, :), &
+                                               integration_weights(lo:hi), state%vdensity(lo:hi, spin), &
+                                               state%vgradient(lo:hi, :, spin), state%vtau(lo:hi, spin), partial)
+               state%operators(:, :, ik, spin) = state%operators(:, :, ik, spin) + partial
+            END DO
+         END DO
          DO spin = 1, nspin
-            CALL upf_inverse_semilocal_pair(state%soft(:, :, ik), state%soft(:, :, ik), &
-                                            state%gradient(:, :, :, ik), state%gradient(:, :, :, ik), integration_weights, &
-                                            state%vdensity(:, spin), state%vgradient(:, :, spin), state%vtau(:, spin), &
-                                            state%operators(:, :, ik, spin), comm)
+            ! Point owners can have different block counts, including none.
+            CALL comm%sum(state%operators(:, :, ik, spin))
             CALL qs_upf_inverse_augmentation_integrate(frame, augmentation, state%vdensity(:, spin), &
                                                        state%vgradient(:, :, spin), qoperator, points, integration_weights, comm)
             state%operators(:, :, ik, spin) = state%operators(:, :, ik, spin) + &
@@ -445,8 +472,9 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE :: dgradient(:, :, :), dqoperator(:, :), dsoft(:, :), &
          gradient(:, :, :), matrix(:, :), qoperator(:, :), soft(:, :)
-      INTEGER                                            :: ik, nao, np, nproj, spin
-      REAL(dp)                                           :: kinetic_response
+      INTEGER                                            :: block, hi, ik, lo, m, nao, np, nproj, &
+                                                            spin
+      REAL(dp)                                           :: kinetic_response, local_response
       REAL(dp), ALLOCATABLE :: dtau(:), integration_weights(:), reconstruction_density(:), &
          reconstruction_gradient(:, :), reconstruction_gradient_response(:, :), &
          reconstruction_response(:), tau(:), zero(:), zeros(:, :)
@@ -469,7 +497,8 @@ CONTAINS
          CPASSERT(ALL(SHAPE(background_tau_response) == SHAPE(state%vtau)))
          CPASSERT(ALL(SHAPE(core_tau_response) == SHAPE(state%vtau)))
       END IF
-      ALLOCATE (soft(np, nao), gradient(np, nao, 3), dsoft(np, nao), dgradient(np, nao, 3), &
+      block = qs_upf_inverse_block_size(frames(1)%frame)
+      ALLOCATE (soft(block, nao), gradient(block, nao, 3), dsoft(block, nao), dgradient(block, nao, 3), &
                 matrix(nao, nao), tau(np), dtau(np), zero(np), zeros(np, 3))
       IF (state%paw_reconstruction) ALLOCATE (reconstruction_density(np), reconstruction_gradient(np, 3), &
                                               reconstruction_response(np), reconstruction_gradient_response(np, 3))
@@ -497,22 +526,35 @@ CONTAINS
          frame => frames(ik)%frame
          nproj = SIZE(frame%coefficients, 1)
          ALLOCATE (qoperator(nproj, nproj), dqoperator(nproj, nproj))
-         CALL qs_upf_inverse_evaluate(frame, points, soft, gradient, dsoft, dgradient, point_response, atom_response, &
-                                      cell_response, reduced_k_response(:, ik), coefficients_response(:, :, ik))
+         local_response = 0.0_dp
+         DO lo = 1, np, block
+            hi = MIN(np, lo + block - 1)
+            m = hi - lo + 1
+            CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                         dsoft(:m, :), dgradient(:m, :, :), point_response(:, lo:hi), atom_response, &
+                                         cell_response, reduced_k_response(:, ik), coefficients_response(:, :, ik))
+            DO spin = 1, SIZE(matrices, 4)
+               CALL upf_inverse_semilocal_response(soft(:m, :), soft(:m, :), &
+                                                   gradient(:m, :, :), gradient(:m, :, :), integration_weights(lo:hi), &
+                                                   state%vdensity(lo:hi, spin), state%vgradient(lo:hi, :, spin), &
+                                                   state%vtau(lo:hi, spin), dsoft(:m, :), dsoft(:m, :), &
+                                                   dgradient(:m, :, :), dgradient(:m, :, :), &
+                                                   zero(lo:hi), zero(lo:hi), zeros(lo:hi, :), zero(lo:hi), matrix)
+               local_response = local_response + kweights(ik)*REAL(SUM(matrices(:, :, ik, spin)*TRANSPOSE(matrix)), dp)
+            END DO
+         END DO
+         CALL comm%sum(local_response)
+         response = response + local_response
          DO spin = 1, SIZE(matrices, 4)
-            CALL upf_inverse_semilocal_response(state%soft(:, :, ik), state%soft(:, :, ik), &
-                                                state%gradient(:, :, :, ik), state%gradient(:, :, :, ik), integration_weights, &
-                    state%vdensity(:, spin), state%vgradient(:, :, spin), state%vtau(:, spin), dsoft, dsoft, dgradient, dgradient, &
-                                                zero, zero, zeros, zero, matrix, comm)
             CALL qs_upf_inverse_augmentation_integrate(frame, augmentation, state%vdensity(:, spin), &
                                                        state%vgradient(:, :, spin), qoperator, points, integration_weights, comm)
             CALL qs_upf_inverse_augmentation_response(frame, augmentation, state%vdensity(:, spin), &
                                      state%vgradient(:, :, spin), point_response, atom_response, cell_response, zero, zero, zeros, &
                                                       dqoperator, points, integration_weights, comm)
-            matrix(:, :) = matrix + &
-                           MATMUL(CONJG(TRANSPOSE(coefficients_response(:, :, ik))), MATMUL(qoperator, frame%coefficients)) + &
-                           MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(dqoperator, frame%coefficients)) + &
-                           MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(qoperator, coefficients_response(:, :, ik)))
+            matrix(:, :) = &
+               MATMUL(CONJG(TRANSPOSE(coefficients_response(:, :, ik))), MATMUL(qoperator, frame%coefficients)) + &
+               MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(dqoperator, frame%coefficients)) + &
+               MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(qoperator, coefficients_response(:, :, ik)))
             response = response + kweights(ik)*REAL(SUM(matrices(:, :, ik, spin)*TRANSPOSE(matrix)), dp)
             IF (state%paw_reconstruction) THEN
                CALL qs_upf_inverse_paw_collocate(frame, paw_reconstruction, augmentation, points, matrices(:, :, ik, spin), &

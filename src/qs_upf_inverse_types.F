@@ -94,7 +94,7 @@ MODULE qs_upf_inverse_types
       LOGICAL :: kinetic = .FALSE.
       LOGICAL :: paw_reconstruction = .FALSE.
       LOGICAL :: weighted_adjoint = .FALSE.
-      COMPLEX(dp), ALLOCATABLE :: soft(:, :, :), gradient(:, :, :, :), operators(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE :: operators(:, :, :, :)
       REAL(dp), ALLOCATABLE :: density(:, :), density_gradient(:, :, :), energy_density(:), &
                                vdensity(:, :), vgradient(:, :, :), background_vdensity(:, :), &
                                background_vgradient(:, :, :), tau(:, :), vtau(:, :), background_vtau(:, :)
