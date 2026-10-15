@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add an explicitly chosen orbital-rescaling NLCC kinetic model to a USPP.
 
-The original GIPAW radial core orbitals and user-specified closed-shell
+GIPAW radial core orbitals or a retained Vanderbilt atom.ae file and closed-shell
 occupations define the reference core. A common radial rescaling reproduces
 the supplied nonnegative NLCC charge. This defines auxiliary model orbitals,
 not recovered generator core tau or normalized atomic core eigenstates.
@@ -9,10 +9,12 @@ Original sections are retained, apart from the kinetic-data availability flag.
 """
 
 import argparse
+from bisect import bisect_right
 from hashlib import sha256
 import math
 from pathlib import Path
 import re
+import struct
 import xml.etree.ElementTree as ET
 
 from add_upf_full_waves import flag, real, top_level_spans, values
@@ -90,14 +92,114 @@ def integer(value):
     return int(v)
 
 
-def reference_orbitals(tree, r, rab, occupations):
+def resample(r, u, target):
+    """Natural cubic interpolation, extending only a terminated zero tail by zero."""
+    derivative = slopes(r, u)
+    result = []
+    for x in target:
+        if x > r[-1]:
+            if u[-1] != 0 or u[-2] != 0:
+                raise ValueError("Target mesh exceeds a nonzero reference orbital tail")
+            result.append(0.0)
+            continue
+        i = min(bisect_right(r, x) - 1, len(r) - 2)
+        if i < 0:
+            raise ValueError("Target mesh precedes the reference orbital mesh")
+        h = r[i + 1] - r[i]
+        t = (x - r[i]) / h
+        result.append(
+            (1 + 2 * t) * (1 - t) ** 2 * u[i]
+            + t * (1 - t) ** 2 * h * derivative[i]
+            + t * t * (3 - 2 * t) * u[i + 1]
+            + t * t * (t - 1) * h * derivative[i + 1]
+        )
+    return result
+
+
+def vanderbilt_orbitals(data, z, occupations, target):
+    """Read rwae's sequential records with four-byte markers and eight-byte reals."""
+    if len(data) < 8:
+        raise ValueError("Truncated Vanderbilt atomic state")
+    endian = "<" if struct.unpack_from("<i", data)[0] == 56 else ">"
+    offset = 0
+
+    def record(fmt=None):
+        nonlocal offset
+        if offset + 8 > len(data):
+            raise ValueError("Truncated Vanderbilt record")
+        size = struct.unpack_from(endian + "i", data, offset)[0]
+        if not 0 < size <= len(data) - offset - 8:
+            raise ValueError("Invalid Vanderbilt record size")
+        end = offset + 4 + size
+        if struct.unpack_from(endian + "i", data, end)[0] != size:
+            raise ValueError("Inconsistent Vanderbilt record markers")
+        raw = data[offset + 4 : end]
+        offset = end + 4
+        if fmt is None:
+            return raw
+        if size != struct.calcsize(endian + fmt):
+            raise ValueError("Unsupported Vanderbilt record layout")
+        return struct.unpack(endian + fmt, raw)
+
+    charge, ion, xc, mesh, relativity, aasf, bbsf, rmax = record("dddiiddd")
+    if (
+        charge != z
+        or relativity not in (0, 2)
+        or mesh < 5
+        or mesh % 2 != 1
+        or bbsf <= 0
+        or rmax <= 0
+        or not all(math.isfinite(x) for x in (charge, ion, xc, aasf, bbsf, rmax))
+    ):
+        raise ValueError("Invalid or incompatible scalar Vanderbilt atomic state")
+    (count,) = record("i")
+    if count <= 0 or count != len(occupations):
+        raise ValueError(
+            "Supply one core occupation for every Vanderbilt orbital index"
+        )
+    shells = [record("idd") for _ in range(count)]
+    if len(record()) != 8 * mesh:
+        raise ValueError("Invalid Vanderbilt radial potential size")
+    a, b = math.exp(-aasf) / z, 1 / bbsf
+    r = [a * (math.exp(b * i) - 1) for i in range(mesh)]
+    if (
+        not all(math.isfinite(x) for x in r)
+        or any(y <= x for x, y in zip(r, r[1:]))
+        or r[-1] < rmax
+    ):
+        raise ValueError("Invalid Vanderbilt radial mesh")
+    quadrature = weights([b * (x + a) for x in r])
+    orbitals = []
+    for (label, occupied, energy), selected in zip(shells, occupations):
+        raw = record()
+        if len(raw) < 4:
+            raise ValueError("Truncated Vanderbilt orbital")
+        (size,) = struct.unpack_from(endian + "i", raw)
+        if not 0 < size <= mesh or len(raw) != 4 + 8 * size:
+            raise ValueError("Invalid Vanderbilt orbital size")
+        u = list(struct.unpack_from(endian + str(size) + "d", raw, 4))
+        u.extend([0.0] * (mesh - size))
+        if not all(math.isfinite(x) for x in (*u, occupied, energy)) or occupied < 0:
+            raise ValueError("Invalid Vanderbilt orbital values")
+        if selected and (
+            selected != occupied
+            or abs(math.fsum(w * v * v for w, v in zip(quadrature, u)) - 1) > 1e-4
+        ):
+            raise ValueError("Vanderbilt core occupation or normalization check failed")
+        orbitals.append(
+            (
+                label // 100,
+                label % 100 // 10,
+                resample(r, u, target) if selected else [],
+            )
+        )
+    if offset != len(data):
+        raise ValueError("Unexpected trailing Vanderbilt records")
+    return orbitals
+
+
+def reference_orbitals(tree, r, rab, occupations, vanderbilt=None):
     header = tree.find("PP_HEADER")
-    table = tree.find("PP_GIPAW/PP_GIPAW_CORE_ORBITALS")
-    if table is None:
-        raise ValueError("Missing original GIPAW core orbital table")
-    count = int(table.get("number_of_core_orbitals", "-1"))
-    if len(occupations) != count or len(table) != count:
-        raise ValueError("Supply one core occupation for every original GIPAW index")
     symbol = header.get("element", "").strip()
     if symbol not in ELEMENTS:
         raise ValueError("Unknown element")
@@ -106,6 +208,31 @@ def reference_orbitals(tree, r, rab, occupations):
         raise ValueError(
             "Core occupations must sum to Z minus the explicit valence charge"
         )
+    if vanderbilt is not None:
+        orbitals = vanderbilt_orbitals(
+            vanderbilt, ELEMENTS.index(symbol) + 1, occupations, r
+        )
+    else:
+        table = tree.find("PP_GIPAW/PP_GIPAW_CORE_ORBITALS")
+        if table is None:
+            raise ValueError("Missing original GIPAW core orbital table")
+        count = int(table.get("number_of_core_orbitals", "-1"))
+        if len(occupations) != count or len(table) != count:
+            raise ValueError(
+                "Supply one core occupation for every original GIPAW index"
+            )
+        orbitals = []
+        for i in range(1, count + 1):
+            node = table.find(f"PP_GIPAW_CORE_ORBITAL.{i}")
+            if node is None or integer(node.get("index", "-1")) != i:
+                raise ValueError("Invalid GIPAW core indexing")
+            orbitals.append(
+                (
+                    integer(node.get("n", "-1")),
+                    integer(node.get("l", "-1")),
+                    values(node),
+                )
+            )
     valence = set()
     for wave in tree.findall("PP_PSWFC/*"):
         if real(wave.get("occupation", "0")) <= 0:
@@ -120,13 +247,9 @@ def reference_orbitals(tree, r, rab, occupations):
         raise ValueError("Missing occupied atomic valence-state labels")
     w = weights(rab)
     selected, seen = [], set()
-    for i, occupation in enumerate(occupations, 1):
-        node = table.find(f"PP_GIPAW_CORE_ORBITAL.{i}")
-        if node is None or integer(node.get("index", "-1")) != i:
-            raise ValueError("Invalid GIPAW core indexing")
-        l, n = integer(node.get("l", "-1")), integer(node.get("n", "-1"))
+    for (n, l, u), occupation in zip(orbitals, occupations):
         if l < 0 or n <= l or (n, l) in seen:
-            raise ValueError("Invalid or repeated GIPAW orbital quantum numbers")
+            raise ValueError("Invalid or repeated reference orbital quantum numbers")
         seen.add((n, l))
         if occupation not in (0, 2 * (2 * l + 1)):
             raise ValueError(
@@ -138,7 +261,6 @@ def reference_orbitals(tree, r, rab, occupations):
             raise ValueError(
                 "An occupied valence state cannot be assigned to the frozen core"
             )
-        u = values(node)
         if (
             len(u) != len(r)
             or abs(math.fsum(a * b * b for a, b in zip(w, u)) - 1) > 1e-4
@@ -201,7 +323,7 @@ def model_kinetic(r, density, orbitals):
     return kinetic
 
 
-def enrich(data, occupations):
+def enrich(data, occupations, vanderbilt=None):
     tree = ET.fromstring(data)
     header = tree.find("PP_HEADER")
     if tree.tag != "UPF" or tree.get("version") != "2.0.1" or header is None:
@@ -237,7 +359,9 @@ def enrich(data, occupations):
         raise ValueError(
             "This orbital-rescaling model requires a nonzero nonnegative NLCC density"
         )
-    kinetic = model_kinetic(r, density, reference_orbitals(tree, r, rab, occupations))
+    kinetic = model_kinetic(
+        r, density, reference_orbitals(tree, r, rab, occupations, vanderbilt)
+    )
     spans, end = top_level_spans(data)
     first, last = spans["PP_HEADER"]
     old = data[first:last]
@@ -249,10 +373,15 @@ def enrich(data, occupations):
         if marker < 0:
             raise ValueError("Requires a self-closing UPF header")
         updated = old[:marker] + b' with_metagga_info="T"' + old[marker:]
+    source = (
+        "Original GIPAW"
+        if vanderbilt is None
+        else f"Vanderbilt atom.ae SHA256 {sha256(vanderbilt).hexdigest()}\nVanderbilt"
+    )
     provenance = (
         "\n<!-- CP2K auxiliary NLCC core kinetic model ORBITAL_RESCALE\n"
         f"Source SHA256 {sha256(data).hexdigest()}\n"
-        f"Original GIPAW index occupations {' '.join(map(str, occupations))}\n"
+        f"{source} index occupations {' '.join(map(str, occupations))}\n"
         "Natural cubic reference-orbital slopes and shape-preserving NLCC slopes.\n"
         "Common orbital rescaling preserves the supplied NLCC charge.\n"
         "This field is a specified model, not recovered original generator tau. -->\n"
@@ -277,13 +406,19 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--model", choices=["orbital-rescale"], required=True)
     parser.add_argument("--core-occupations", nargs="+", type=int, required=True)
+    parser.add_argument(
+        "--vanderbilt-ae",
+        type=Path,
+        help="Use a retained Vanderbilt atom.ae file instead of UPF GIPAW core orbitals",
+    )
     args = parser.parse_args()
     try:
         original = args.original.read_bytes()
-        output = enrich(original, args.core_occupations)
+        vanderbilt = args.vanderbilt_ae.read_bytes() if args.vanderbilt_ae else None
+        output = enrich(original, args.core_occupations, vanderbilt)
         with args.output.open("xb") as stream:
             stream.write(output)
-    except (OSError, ValueError, AttributeError, ET.ParseError) as error:
+    except (OSError, ValueError, OverflowError, AttributeError, ET.ParseError) as error:
         parser.exit(1, f"Core kinetic preparation failed: {error}\n")
     print(f"Prepared auxiliary model core tau: {args.output}")
     print(f"Original SHA256: {sha256(original).hexdigest()}")

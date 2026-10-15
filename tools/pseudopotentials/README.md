@@ -78,6 +78,14 @@ python3 tools/pseudopotentials/add_upf_core_tau.py \
   --model orbital-rescale --core-occupations 2 2 6 0
 ```
 
+For GBRV data, `--vanderbilt-ae /path/to/atom.ae` instead reads the retained Vanderbilt all-electron
+state. Supply one occupation for every orbital in that file, assigning zero to each valence orbital.
+The reader supports nonrelativistic and scalar-relativistic states with four-byte Fortran record
+markers and eight-byte real values in either byte order. It checks the nuclear charge, closed-shell
+occupations and normalization before and after natural cubic interpolation onto the unchanged UPF
+radial mesh. The atomic-state hash is recorded in the output. A new generator run is unnecessary
+when this state is already available.
+
 The common rescaling of the selected core orbitals reproduces the supplied nonnegative NLCC density.
 It defines `tau_model = tau_W[n_model] + n_model * (tau_AE - tau_W[n_AE]) / n_AE`, where
 `tau_W[n] = |grad(n)|^2/(8*n)`. The Pauli remainder is evaluated as positive orbital squares. This
