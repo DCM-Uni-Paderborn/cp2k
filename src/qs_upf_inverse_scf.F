@@ -103,7 +103,8 @@ MODULE qs_upf_inverse_scf
    USE upf_inverse,                     ONLY: upf_inverse_fields_init,&
                                               upf_inverse_kinetic_init
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
-                                              upf_local_init
+                                              upf_local_init,&
+                                              upf_local_prepare_fourier
    USE upf_radial_fields,               ONLY: upf_radial_fields_type
    USE upf_types,                       ONLY: upf_nlcc_kinetic
 #include "./base/base_uses.f90"
@@ -1126,6 +1127,7 @@ CONTAINS
             IF (potential%upf_local%radial%degree < 0) THEN
                CALL upf_local_init(potential%upf_data, potential%alpha_core_charge, 0, potential%upf_local)
             END IF
+            CALL upf_local_prepare_fourier(potential%upf_local, grid%g)
             IF (PRESENT(local_response)) THEN
                CALL upf_local_fourier(potential%upf_local, grid%g, positions(:, atom), grid%vol, ionic_g, &
                                       center_derivative, reciprocal_derivative)

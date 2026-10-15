@@ -13,7 +13,9 @@
 ! **************************************************************************************************
 MODULE upf_local_integrals
    USE bessel_lib,                      ONLY: bessel0
-   USE kinds,                           ONLY: dp
+   USE cp_array_sort,                   ONLY: cp_1d_r_sort
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
    USE mathlib,                         ONLY: binomial
@@ -33,9 +35,13 @@ MODULE upf_local_integrals
    TYPE upf_local_type
       TYPE(upf_projector_type) :: radial
       REAL(KIND=dp) :: eps = 0.0_dp
+      INTEGER(int_8) :: fourier_budget = -1_int_8
+      INTEGER, ALLOCATABLE :: fourier_map(:)
+      REAL(dp), ALLOCATABLE :: fourier_norm(:), fourier_radial(:), fourier_derivative(:)
    END TYPE upf_local_type
 
    PUBLIC :: upf_local_type, upf_local_init, upf_local_matrix, upf_local_ri, upf_local_fourier
+   PUBLIC :: upf_local_prepare_fourier
 
 CONTAINS
 
@@ -64,6 +70,10 @@ CONTAINS
       CPASSERT(SIZE(pot%r) == SIZE(pot%vlocal))
       CPASSERT(SIZE(pot%r) >= 3)
       IF (PRESENT(eps)) local%eps = eps
+      IF (ALLOCATED(local%fourier_norm)) THEN
+         DEALLOCATE (local%fourier_norm, local%fourier_map, local%fourier_radial, local%fourier_derivative)
+      END IF
+      local%fourier_budget = -1_int_8
       CPASSERT(local%eps >= 0.0_dp)
       ALLOCATE (short_range(SIZE(pot%vlocal)))
       short_range(:) = pot%vlocal
@@ -99,6 +109,103 @@ CONTAINS
    END SUBROUTINE upf_local_init
 
 ! **************************************************************************************************
+!> \brief Reuse radial transforms at exactly equal reciprocal-vector lengths.
+!>        Only scalar radial values and derivatives are retained. Phases and volume remain live.
+!>        Missing or stale entries use the original quadrature. Prepare outside parallel regions.
+!> \param local Prepared radial potential, with its owned cache updated in place.
+!> \param gvecs Local reciprocal vectors in their current ordering.
+!> \param max_bytes Retained-memory budget per potential and rank, default 64 MiB.
+! **************************************************************************************************
+   SUBROUTINE upf_local_prepare_fourier(local, gvecs, max_bytes)
+      TYPE(upf_local_type), INTENT(INOUT)                :: local
+      REAL(dp), INTENT(IN)                               :: gvecs(:, :)
+      INTEGER(int_8), INTENT(IN), OPTIONAL               :: max_bytes
+
+      INTEGER                                            :: capacity, ig, index, ng, unique
+      INTEGER(int_8)                                     :: budget, entry_bytes, index_bytes
+      INTEGER, ALLOCATABLE                               :: order(:)
+      REAL(dp)                                           :: derivative, previous, radial
+      REAL(dp), ALLOCATABLE                              :: norms(:), sorted(:)
+
+      CPASSERT(SIZE(gvecs, 1) == 3)
+      budget = 64_int_8*1024*1024
+      IF (PRESENT(max_bytes)) budget = max_bytes
+      CPASSERT(budget >= 0_int_8)
+      ng = SIZE(gvecs, 2)
+      index_bytes = INT(ng, int_8)*(STORAGE_SIZE(0.0_dp) + STORAGE_SIZE(0))/8
+      entry_bytes = 2_int_8*STORAGE_SIZE(0.0_dp)/8
+      capacity = INT(MIN(INT(ng, int_8), MAX(0_int_8, (budget - index_bytes)/entry_bytes)))
+      IF (capacity > 0) THEN
+         ALLOCATE (norms(ng))
+         DO ig = 1, ng
+            norms(ig) = SQRT(SUM(gvecs(:, ig)**2))
+         END DO
+         IF (ALLOCATED(local%fourier_norm) .AND. local%fourier_budget == budget) THEN
+            IF (SIZE(local%fourier_norm) == ng) THEN
+               IF (ALL(local%fourier_norm == norms)) RETURN
+            END IF
+         END IF
+      END IF
+      IF (ALLOCATED(local%fourier_norm)) THEN
+         DEALLOCATE (local%fourier_norm, local%fourier_map, local%fourier_radial, local%fourier_derivative)
+      END IF
+      local%fourier_budget = budget
+      IF (capacity == 0) RETURN
+      ALLOCATE (local%fourier_norm, SOURCE=norms)
+      ALLOCATE (local%fourier_map(ng), order(ng), sorted(ng))
+      local%fourier_map = 0
+      sorted(:) = norms
+      CALL cp_1d_r_sort(sorted, ng, order)
+      unique = 0
+      previous = -1.0_dp
+      DO ig = 1, ng
+         IF (sorted(ig) == 0.0_dp) CYCLE
+         IF (sorted(ig) /= previous) unique = unique + 1
+         previous = sorted(ig)
+      END DO
+      capacity = MIN(capacity, unique)
+      ALLOCATE (local%fourier_radial(capacity), local%fourier_derivative(capacity))
+      index = 0
+      previous = -1.0_dp
+      DO ig = 1, ng
+         IF (sorted(ig) == 0.0_dp) CYCLE
+         IF (sorted(ig) /= previous) THEN
+            IF (index == capacity) EXIT
+            index = index + 1
+            previous = sorted(ig)
+            CALL local_radial(local, previous, radial, derivative)
+            local%fourier_radial(index) = radial
+            local%fourier_derivative(index) = derivative
+         END IF
+         local%fourier_map(order(ig)) = index
+      END DO
+   END SUBROUTINE upf_local_prepare_fourier
+
+! **************************************************************************************************
+!> \brief Original complete-mesh radial quadrature shared by cached and direct transforms.
+!> \param local ...
+!> \param norm_g Reciprocal-vector length.
+!> \param radial Scalar radial transform.
+!> \param derivative Optional derivative with respect to norm_g.
+! **************************************************************************************************
+   SUBROUTINE local_radial(local, norm_g, radial, derivative)
+      TYPE(upf_local_type), INTENT(IN)                   :: local
+      REAL(dp), INTENT(IN)                               :: norm_g
+      REAL(dp), INTENT(OUT)                              :: radial
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: derivative
+
+      IF (norm_g == 0.0_dp) THEN
+         radial = SUM(local%radial%weighted_beta(:, 1))
+         IF (PRESENT(derivative)) derivative = 0.0_dp
+      ELSE
+         radial = DOT_PRODUCT(bessel0(norm_g*local%radial%r, 0), local%radial%weighted_beta(:, 1))
+         IF (PRESENT(derivative)) THEN
+            derivative = -SUM(local%radial%r*bessel0(norm_g*local%radial%r, 1)*local%radial%weighted_beta(:, 1))
+         END IF
+      END IF
+   END SUBROUTINE local_radial
+
+! **************************************************************************************************
 !> \brief Fourier transform of the same short-range potential used in the AO integrals.
 !>        USPP augmentation must couple to the local potentials of all ionic centers.
 !>        The Gaussian-core Coulomb contribution is excluded here to avoid double counting.
@@ -118,7 +225,7 @@ CONTAINS
       COMPLEX(KIND=dp), INTENT(OUT), OPTIONAL            :: dv_position(:, :), dv_g(:, :)
 
       COMPLEX(KIND=dp)                                   :: phase
-      INTEGER                                            :: ig
+      INTEGER                                            :: cached, ig
       REAL(KIND=dp)                                      :: norm_g, radial, radial_derivative
 
       CPASSERT(volume > 0.0_dp)
@@ -134,18 +241,25 @@ CONTAINS
          norm_g = SQRT(SUM(gvecs(:, ig)**2))
          ! weighted_beta contains sqrt(4*pi)*r^2*V_sr(r) times radial weights.
          phase = SQRT(fourpi)/volume*EXP(CMPLX(0.0_dp, -DOT_PRODUCT(gvecs(:, ig), position), dp))
-         IF (norm_g == 0.0_dp) THEN
-            radial = SUM(local%radial%weighted_beta(:, 1))
+         cached = 0
+         IF (ALLOCATED(local%fourier_norm)) THEN
+            IF (ig <= SIZE(local%fourier_norm)) THEN
+               IF (local%fourier_norm(ig) == norm_g) cached = local%fourier_map(ig)
+            END IF
+         END IF
+         IF (cached > 0) THEN
+            radial = local%fourier_radial(cached)
+            IF (PRESENT(dv_g)) radial_derivative = local%fourier_derivative(cached)
+         ELSE IF (PRESENT(dv_g)) THEN
+            CALL local_radial(local, norm_g, radial, radial_derivative)
          ELSE
-            radial = DOT_PRODUCT(bessel0(norm_g*local%radial%r, 0), local%radial%weighted_beta(:, 1))
+            CALL local_radial(local, norm_g, radial)
          END IF
          vg(ig) = phase*radial
          IF (PRESENT(dv_position)) dv_position(:, ig) = CMPLX(0.0_dp, -gvecs(:, ig), dp)*vg(ig)
          IF (PRESENT(dv_g)) THEN
             dv_g(:, ig) = CMPLX(0.0_dp, -position, dp)*vg(ig)
             IF (norm_g > 0.0_dp) THEN
-               radial_derivative = -SUM(local%radial%r*bessel0(norm_g*local%radial%r, 1)* &
-                                        local%radial%weighted_beta(:, 1))
                dv_g(:, ig) = dv_g(:, ig) + phase*radial_derivative*gvecs(:, ig)/norm_g
             END IF
          END IF

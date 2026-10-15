@@ -14,14 +14,17 @@ PROGRAM upf_local_integrals_unittest
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: default_path_length,&
-                                              dp
+                                              dp,&
+                                              int_8
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
    USE mathconstants,                   ONLY: pi
    USE orbital_pointers,                ONLY: init_orbital_pointers,&
                                               ncoset
-   USE upf_local_integrals,             ONLY: upf_local_init,&
+   USE upf_local_integrals,             ONLY: upf_local_fourier,&
+                                              upf_local_init,&
                                               upf_local_matrix,&
+                                              upf_local_prepare_fourier,&
                                               upf_local_ri,&
                                               upf_local_type
 
@@ -73,6 +76,7 @@ PROGRAM upf_local_integrals_unittest
       ! The coarse default EPS_PPL may screen neighbors, never radial samples.
       IF (grid == 4) threshold = 1.e-2_dp
       CALL upf_local_init(pot, .8_dp, la + lb + 2, cache, threshold)
+      CALL fourier_control(cache)
       ma = na*ncoset(la)
       mb = nb*ncoset(lb)
       ld = ncoset(2*MAX(la, lb) + 2)
@@ -154,4 +158,65 @@ PROGRAM upf_local_integrals_unittest
    END DO
    DEALLOCATE (v, da, db)
    CALL cp2k_finalize()
+
+CONTAINS
+
+! **************************************************************************************************
+!> \brief ...
+!> \param local ...
+! **************************************************************************************************
+   SUBROUTINE fourier_control(local)
+      TYPE(upf_local_type), INTENT(INOUT)                :: local
+
+      COMPLEX(dp)                                        :: center(3, 8), field(8), phase, &
+                                                            reciprocal(3, 8), ref_center(3, 8), &
+                                                            ref_field(8), ref_reciprocal(3, 8)
+      INTEGER                                            :: budget, ig
+      INTEGER(int_8)                                     :: index_bytes
+      REAL(dp)                                           :: expected, g(3, 8), position(3), volume
+      TYPE(upf_local_type)                               :: direct
+
+      IF (ALLOCATED(local%fourier_norm)) ERROR STOP 'Reinitialized local potential retained a stale Fourier cache'
+      direct = local
+      position = [.2_dp, .4_dp, -.7_dp]
+      volume = 61.0_dp
+      g = RESHAPE([0._dp, 0._dp, 0._dp, .2_dp, 0._dp, 0._dp, -.2_dp, 0._dp, 0._dp, &
+                   0._dp, .2_dp, 0._dp, 1.2_dp, .3_dp, -.2_dp, 2.3_dp, -.1_dp, .4_dp, &
+                   4.2_dp, 2.3_dp, -.7_dp, 0._dp, 0._dp, 0._dp], [3, 8])
+      CALL upf_local_fourier(direct, g, position, volume, ref_field, ref_center, ref_reciprocal)
+      DO ig = 1, 8
+         phase = EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g(:, ig), position), dp))/volume
+         expected = SUM(coeff(1, :)*(pi/gamma)**1.5_dp*EXP(-SUM(g(:, ig)**2)/(4*gamma)))
+         IF (ABS(ref_field(ig) - phase*expected) > 1.e-10_dp) ERROR STOP 'Local Fourier Gaussian reference mismatch'
+      END DO
+      index_bytes = 8_int_8*(STORAGE_SIZE(0.0_dp) + STORAGE_SIZE(0))/8
+      DO budget = 0, 2
+         SELECT CASE (budget)
+         CASE (0)
+            CALL upf_local_prepare_fourier(local, g, 0_int_8)
+         CASE (1)
+            CALL upf_local_prepare_fourier(local, g, index_bytes + 2_int_8*STORAGE_SIZE(0.0_dp)/8)
+            IF (COUNT(local%fourier_map > 0) /= 3) ERROR STOP 'Local Fourier partial-cache coverage mismatch'
+         CASE (2)
+            CALL upf_local_prepare_fourier(local, g)
+         END SELECT
+         CALL upf_local_fourier(local, g, position, volume, field, center, reciprocal)
+         IF (MAXVAL(ABS(field - ref_field)) + MAXVAL(ABS(center - ref_center)) + &
+             MAXVAL(ABS(reciprocal - ref_reciprocal)) > 3.e-12_dp) ERROR STOP 'Local Fourier cache changed an operator'
+      END DO
+      ! Keep the old cache while changing reciprocal lengths, row order, center and volume.
+      g(:, 1) = g(:, 5)
+      g(:, 2) = 1.01_dp*g(:, 2)
+      position = -position
+      volume = 1.13_dp*volume
+      CALL upf_local_fourier(direct, g, position, volume, ref_field, ref_center, ref_reciprocal)
+      CALL upf_local_fourier(local, g, position, volume, field, center, reciprocal)
+      IF (MAXVAL(ABS(field - ref_field)) + MAXVAL(ABS(center - ref_center)) + &
+          MAXVAL(ABS(reciprocal - ref_reciprocal)) > 3.e-12_dp) ERROR STOP 'Stale local Fourier cache changed an operator'
+      CALL upf_local_prepare_fourier(local, g)
+      CALL upf_local_fourier(local, g, position, volume, field, center, reciprocal)
+      IF (MAXVAL(ABS(field - ref_field)) + MAXVAL(ABS(reciprocal - ref_reciprocal)) > 3.e-12_dp) THEN
+         ERROR STOP 'Rebuilt local Fourier cache changed an operator'
+      END IF
+   END SUBROUTINE fourier_control
 END PROGRAM upf_local_integrals_unittest
