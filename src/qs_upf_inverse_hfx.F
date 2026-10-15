@@ -66,6 +66,7 @@ MODULE qs_upf_inverse_hfx
 
    INTEGER, PARAMETER :: max_cached_potential_words = 16*1024**2
    INTEGER, PARAMETER :: max_cached_lattice_field_words = 16*1024**2
+   INTEGER, PARAMETER :: max_cached_lattice_potentials = 4093
 
    ! Scratch fields are recomputed at every radial row and retained only within one center call.
    TYPE inverse_field_workspace_type
@@ -97,6 +98,19 @@ MODULE qs_upf_inverse_hfx
       TYPE(transition_potential_type), ALLOCATABLE :: potential_fields
       INTEGER, POINTER :: potential_budget => NULL()
    END TYPE transition_augmentation_type
+
+   TYPE lattice_potential_entry_type
+      INTEGER :: key(4) = 0
+      TYPE(transition_augmentation_type) :: integrals
+   END TYPE lattice_potential_entry_type
+
+   ! A tensor call fixes the geometry, auxiliary shells, interaction and quadratures.
+   ! Reuse their fields and original Q integrals across AO pairs, with a shared payload budget.
+   TYPE lattice_potential_cache_type
+      TYPE(lattice_potential_entry_type), ALLOCATABLE :: entries(:)
+      INTEGER :: remaining_words = max_cached_potential_words
+      INTEGER :: entry_count = 0
+   END TYPE lattice_potential_cache_type
 
 CONTAINS
 
@@ -778,6 +792,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: radial_weights(:)
       TYPE(gaussian_coulomb_fields_type)                 :: fields
       TYPE(lattice_overlap_type), ALLOCATABLE            :: overlaps(:, :)
+      TYPE(lattice_potential_cache_type), TARGET         :: lattice_potentials
       TYPE(transition_augmentation_type), ALLOCATABLE, &
          TARGET                                          :: qcache(:, :, :)
       TYPE(transition_augmentation_type), POINTER        :: qentry
@@ -917,6 +932,10 @@ CONTAINS
                                     slot = start - start_i(block_i) + 1
                                     qentry => qcache(center, image, slot)
                                     qentry%potential_budget => potential_budget
+                                 ELSE IF (PRESENT(ao_image)) THEN
+                                    CALL lattice_potential_entry(lattice_potentials, [center, image, site, iset], &
+                                                                 transition_augmentation%nproj, fields%nfunction, &
+                                                                 derivatives, qentry)
                                  END IF
                                  IF (derivatives) THEN
                                     IF (PRESENT(ao_image)) THEN
@@ -930,6 +949,7 @@ CONTAINS
                                                                          atom_response, cell_response, &
                                                                          auxiliary_positions_response(:, site), &
                                                                          overlaps=overlaps(center, image), &
+                                                                         augmentation_integrals=qentry, &
                                                                          coefficient_images=coefficient_images, &
                                                                          coupled_coefficients=coupled_coefficients, &
                                                                          coupled_response=coupled_response)
@@ -955,6 +975,7 @@ CONTAINS
                                                                          pot%r, radial_weights, lebedev_grid(rule)%r, &
                                                                          fourpi*lebedev_grid(rule)%w, correction, &
                                                                          overlaps=overlaps(center, image), &
+                                                                         augmentation_integrals=qentry, &
                                                                          coefficient_images=coefficient_images, &
                                                                          coupled_coefficients=coupled_coefficients, &
                                                                          coupled_response=coupled_response)
@@ -1462,7 +1483,57 @@ CONTAINS
    END SUBROUTINE prepare_auxiliary_fields
 
 ! **************************************************************************************************
-!> \brief Original augmentation integrals and gradients at fixed geometry, images and RI shell.
+!> \brief Find a tensor-local field cache entry, retaining the exact original evaluation on a miss.
+!> \param cache Bounded storage shared by the AO pairs in this tensor call.
+!> \param key Center, center-image, auxiliary-site and auxiliary-shell indices.
+!> \param nprojector Number of original augmentation projectors.
+!> \param nauxiliary Complete auxiliary-shell size, including any RI block boundary.
+!> \param derivatives Whether this call needs displacement derivatives.
+!> \param entry Cached integrals or a null pointer when the table or payload budget is exhausted.
+! **************************************************************************************************
+   SUBROUTINE lattice_potential_entry(cache, key, nprojector, nauxiliary, derivatives, ENTRY)
+      TYPE(lattice_potential_cache_type), &
+         INTENT(INOUT), TARGET                           :: cache
+      INTEGER, INTENT(IN)                                :: key(4), nprojector, nauxiliary
+      LOGICAL, INTENT(IN)                                :: derivatives
+      TYPE(transition_augmentation_type), INTENT(OUT), &
+         POINTER                                         :: entry
+
+      INTEGER                                            :: attempt, i, slot
+      INTEGER(int_8)                                     :: hash
+      REAL(dp)                                           :: words
+
+      NULLIFY (ENTRY)
+      IF (.NOT. ALLOCATED(cache%entries)) ALLOCATE (cache%entries(max_cached_lattice_potentials))
+      hash = 0_int_8
+      DO i = 1, SIZE(key)
+         hash = MODULO(31_int_8*hash + INT(key(i), int_8), INT(SIZE(cache%entries), int_8))
+      END DO
+      slot = INT(hash) + 1
+      DO attempt = 1, SIZE(cache%entries)
+         IF (ALL(cache%entries(slot)%key == key)) THEN
+            ENTRY => cache%entries(slot)%integrals
+            RETURN
+         END IF
+         IF (ALL(cache%entries(slot)%key == 0)) THEN
+            ! Keep an empty slot and a bounded load even after many uncached shells.
+            IF (cache%entry_count >= SIZE(cache%entries)/2) RETURN
+            words = REAL(nprojector, dp)**2*REAL(nauxiliary, dp)
+            IF (derivatives) words = 4.0_dp*words
+            IF (words > REAL(cache%remaining_words, dp)) RETURN
+            cache%remaining_words = cache%remaining_words - INT(words)
+            cache%entry_count = cache%entry_count + 1
+            cache%entries(slot)%key = key
+            ENTRY => cache%entries(slot)%integrals
+            entry%potential_budget => cache%remaining_words
+            RETURN
+         END IF
+         slot = MODULO(slot, SIZE(cache%entries)) + 1
+      END DO
+   END SUBROUTINE lattice_potential_entry
+
+! **************************************************************************************************
+!> \brief Integrate the original Q kernel against one auxiliary shell, retaining its derivatives.
 !> \param fields ...
 !> \param augmentation ...
 !> \param displacement ...
@@ -2403,7 +2474,7 @@ CONTAINS
                                            fields, auxiliary_center, augmentation, r, radial_weights, &
                                            directions, angular_weights, integral, response, atom_response, &
                                            cell_response, auxiliary_response, overlaps, &
-                                           coefficient_images, coupled_coefficients, coupled_response)
+                                           coefficient_images, coupled_coefficients, coupled_response, augmentation_integrals)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2), &
                                                             ao_image(3), center_image(3)
@@ -2421,6 +2492,8 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
                                                             coupled_response(:, :, :)
+      TYPE(transition_augmentation_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: augmentation_integrals
 
       COMPLEX(dp), ALLOCATABLE :: block(:, :), cl(:, :), cr(:, :), delta(:, :), dl(:, :), &
          dq(:, :), dr(:, :), dwl(:, :), dwr(:, :), fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), &
@@ -2429,12 +2502,14 @@ CONTAINS
                                                             ir, j, kind, nang, nl, np, nr, &
                                                             zero(3, 1)
       INTEGER(int_8)                                     :: field_words
-      LOGICAL                                            :: cache_fields, cache_ready, derivatives
+      LOGICAL                                            :: cache_fields, cache_ready, &
+                                                            cached_potentials, derivatives
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
-      REAL(dp), ALLOCATABLE :: dpoints(:, :), dqi(:, :, :, :), local_points(:, :), points(:, :), &
-         potential_gradient(:, :, :), potentials(:, :), qi(:, :, :), weighted_potential(:), &
-         weights(:)
+      REAL(dp), ALLOCATABLE :: dpoints(:, :), local_points(:, :), points(:, :), &
+         potential_gradient(:, :, :), potentials(:, :), weighted_potential(:), weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
+      TYPE(transition_augmentation_type), POINTER        :: qi
+      TYPE(transition_augmentation_type), TARGET         :: temporary_augmentation
 
       CPASSERT(center >= 1 .AND. center <= SIZE(frame%center_atoms))
       CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
@@ -2504,7 +2579,13 @@ CONTAINS
          IF (.NOT. derivatives) RETURN
          IF (ALL(dwl == CMPLX(0.0_dp, 0.0_dp, dp)) .AND. ALL(dwr == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
       END IF
+      qi => temporary_augmentation
+      IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
       IF (.NOT. frame%direct .AND. radius > 0.0_dp) THEN
+         CALL prepare_transition_potentials(qi, fields, r, radial_weights, directions, position, auxiliary_center, &
+                                            radius, frame%cell, gradients=derivatives)
+         cached_potentials = ALLOCATED(qi%potential_fields)
+         IF (cached_potentials .AND. derivatives) cached_potentials = ALLOCATED(qi%potential_fields%gradient)
          ! The quadrature and orbital fields are fixed for this AO pair and physical center image.
          ! Auxiliary shells change only their potential. Bound the shared per-pair cache in DP words.
          cache_rows = COUNT(r < radius .AND. radial_weights /= 0.0_dp)
@@ -2588,7 +2669,10 @@ CONTAINS
             END IF
             weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
             DO ia = 1, nang
-               IF (derivatives) THEN
+               IF (cached_potentials) THEN
+                  potentials(ia, :) = qi%potential_fields%values(ia, :, cache_row)
+                  IF (derivatives) potential_gradient(:, :, ia) = qi%potential_fields%gradient(:, :, ia, cache_row)
+               ELSE IF (derivatives) THEN
                   CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, &
                                                         potentials(ia, :), potential_gradient(:, :, ia))
                ELSE
@@ -2635,22 +2719,17 @@ CONTAINS
          END DO
       END IF
       IF (augmentation%nproj == 0) RETURN
-      ALLOCATE (qi(np, np, fields%nfunction), q(np, np))
-      IF (derivatives) THEN
-         ALLOCATE (dqi(np, np, fields%nfunction, 3), dq(np, np))
-         CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                directions, angular_weights, qi, augmentation_derivative=dqi)
-      ELSE
-         CALL upf_inverse_exchange_augmentation(fields, augmentation, position - auxiliary_center, &
-                                                directions, angular_weights, qi)
-      END IF
+      ALLOCATE (q(np, np))
+      IF (derivatives) ALLOCATE (dq(np, np))
+      CALL prepare_transition_augmentation(fields, augmentation, position - auxiliary_center, &
+                                           directions, angular_weights, qi, derivatives, frame%cell)
       DO aux = 1, fields%nfunction
-         q(:, :) = CMPLX(qi(:, :, aux), 0.0_dp, dp)
+         q(:, :) = CMPLX(qi%values(:, :, aux), 0.0_dp, dp)
          integral(:, :, aux) = integral(:, :, aux) + MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(q, wr))
          IF (.NOT. derivatives) CYCLE
          dq = CMPLX(0.0_dp, 0.0_dp, dp)
          DO ia = 1, 3
-            dq(:, :) = dq + dqi(:, :, aux, ia)*(dposition(ia) - auxiliary_response(ia))
+            dq(:, :) = dq + qi%gradient(:, :, aux, ia)*(dposition(ia) - auxiliary_response(ia))
          END DO
          response(:, :, aux) = response(:, :, aux) + MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(dq, wr)) + &
                                MATMUL(CONJG(TRANSPOSE(dwl)), MATMUL(q, wr)) + &
