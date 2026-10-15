@@ -4,7 +4,7 @@
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
-!> \brief Native Gaussian soft-grid source and its complex Bloch AO transpose for inverse GAPW.
+!> \brief Native Gaussian grid source and its complex Bloch AO and geometry transposes.
 MODULE qs_upf_inverse_background
    USE cell_types,                      ONLY: cell_type
    USE cp_dbcsr_api,                    ONLY: &
@@ -52,12 +52,14 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Own native image sparsity and the Bloch phase map for original-coordinate Gaussian AOs.
 !>        Rebuild with native overlap lists and soft task lists after atomic or cell changes.
-!> \param ks_env Live native KS environment with overlap images and Gaussian soft task lists.
+!> \param ks_env Live native KS environment with overlap images and Gaussian task lists.
 !> \param map New owned background map. The native matrices and density state are unchanged.
+!> \param soft_basis Select the GAPW soft basis. False uses the full native Gaussian basis.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_background_prepare(ks_env, map)
+   SUBROUTINE qs_upf_inverse_background_prepare(ks_env, map, soft_basis)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(qs_upf_inverse_background_type), INTENT(OUT)  :: map
+      LOGICAL, INTENT(IN), OPTIONAL                      :: soft_basis
 
       CHARACTER(LEN=1)                                   :: symmetry
       INTEGER                                            :: a, b, ENTRY, image, info, native_cell(3)
@@ -71,6 +73,7 @@ CONTAINS
       TYPE(neighbor_list_set_p_type), POINTER            :: sab(:)
       TYPE(particle_type), POINTER                       :: atoms(:)
 
+      IF (PRESENT(soft_basis)) map%soft_basis = soft_basis
       CALL get_ks_env(ks_env, matrix_s_kp=overlap, kpoints=kpoints, do_kpoints=map%bloch, sab_orb=sab)
       CPASSERT(ASSOCIATED(overlap) .AND. ASSOCIATED(sab))
       CALL dbcsr_get_info(overlap(1, 1)%matrix, row_blk_size=sizes, group=map%comm)
@@ -155,11 +158,11 @@ CONTAINS
       CPASSERT(PRESENT(kinetic) .EQV. PRESENT(kinetic_gspace))
       CALL background_images(map, matrix)
       CALL calculate_rho_elec(matrix_p_kp=map%density, rho=rho, rho_gspace=rho_gspace, &
-                              total_rho=total_rho, ks_env=ks_env, soft_valid=.TRUE.)
+                              total_rho=total_rho, ks_env=ks_env, soft_valid=map%soft_basis)
       IF (PRESENT(kinetic)) THEN
          CPASSERT(ASSOCIATED(kinetic%pw_grid, rho%pw_grid))
          CALL calculate_rho_elec(matrix_p_kp=map%density, rho=kinetic, rho_gspace=kinetic_gspace, &
-                                 ks_env=ks_env, soft_valid=.TRUE., compute_tau=.TRUE.)
+                                 ks_env=ks_env, soft_valid=map%soft_basis, compute_tau=.TRUE.)
       END IF
    END SUBROUTINE qs_upf_inverse_background_collocate
 
@@ -171,14 +174,16 @@ CONTAINS
 !> \param potential Native grid potential, without a grid measure or a mesh weight.
 !> \param ao_operators Overwritten Hermitian AO matrices indexed by global k.
 !> \param kinetic Select the transpose of the soft kinetic density instead of charge.
+!> \param ks_env Native KS owner instead of qs_env.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_background_integrate(map, qs_env, potential, ao_operators, kinetic)
+   SUBROUTINE qs_upf_inverse_background_integrate(map, qs_env, potential, ao_operators, kinetic, ks_env)
       TYPE(qs_upf_inverse_background_type), &
          INTENT(INOUT)                                   :: map
-      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
       COMPLEX(dp), INTENT(OUT)                           :: ao_operators(:, :, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: kinetic
+      TYPE(qs_ks_env_type), INTENT(IN), OPTIONAL         :: ks_env
 
       INTEGER                                            :: image
 
@@ -188,7 +193,7 @@ CONTAINS
          CALL dbcsr_set(map%potential(image)%matrix, 0.0_dp)
       END DO
       CALL integrate_v_rspace(potential, hmat_kp=map%potential, qs_env=qs_env, &
-                              calculate_forces=.FALSE., gapw=.TRUE., compute_tau=kinetic)
+                              calculate_forces=.FALSE., gapw=map%soft_basis, compute_tau=kinetic, ks_env_external=ks_env)
       ! Native integration leaves the auxiliary PW volume element to its caller.
       DO image = 1, SIZE(map%potential)
          CALL dbcsr_scale(map%potential(image)%matrix, potential%pw_grid%dvol)
@@ -306,15 +311,17 @@ CONTAINS
 !> \param forces Replicated atomic forces from this source contribution, including the grid measure.
 !> \param virial Replicated source virial, including the grid measure.
 !> \param kinetic Select the soft kinetic-density response instead of charge.
+!> \param ks_env Native KS owner instead of qs_env.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_background_geometry(map, qs_env, matrix, potential, forces, virial, kinetic)
+   SUBROUTINE qs_upf_inverse_background_geometry(map, qs_env, matrix, potential, forces, virial, kinetic, ks_env)
       TYPE(qs_upf_inverse_background_type), &
          INTENT(INOUT)                                   :: map
-      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
       REAL(dp), INTENT(OUT)                              :: forces(:, :), virial(3, 3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: kinetic
+      TYPE(qs_ks_env_type), INTENT(IN), OPTIONAL         :: ks_env
 
       INTEGER                                            :: image
       TYPE(pw_r3d_rs_type)                               :: weighted
@@ -327,8 +334,8 @@ CONTAINS
       CALL weighted%create(potential%pw_grid)
       weighted%array = potential%pw_grid%dvol*potential%array
       CALL integrate_v_rspace(weighted, hmat_kp=map%potential, pmat_kp=map%density, qs_env=qs_env, &
-                              calculate_forces=.TRUE., gapw=.TRUE., force_response=forces, virial_response=virial, &
-                              compute_tau=kinetic)
+                              calculate_forces=.TRUE., gapw=map%soft_basis, force_response=forces, virial_response=virial, &
+                              compute_tau=kinetic, ks_env_external=ks_env)
       CALL map%comm%sum(forces)
       CALL map%comm%sum(virial)
       ! Native rho_elec stores the energy gradient; return physical forces from this isolated map.

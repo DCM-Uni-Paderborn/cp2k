@@ -103,7 +103,7 @@ MODULE qs_upf_inverse_types
 
    TYPE qs_upf_inverse_background_type
       INTEGER :: nao = 0
-      LOGICAL :: bloch = .FALSE.
+      LOGICAL :: bloch = .FALSE., soft_basis = .TRUE.
       TYPE(mp_comm_type) :: comm
       TYPE(kp_transform_plan_type) :: plan
       TYPE(dbcsr_p_type), POINTER :: density(:) => NULL(), potential(:) => NULL()
