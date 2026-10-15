@@ -108,6 +108,8 @@ MODULE qs_upf_inverse_hfx
    ! Reuse exact fields and Q integrals across AO pairs and images within one payload budget.
    TYPE lattice_potential_cache_type
       TYPE(lattice_potential_entry_type), ALLOCATABLE :: entries(:)
+      INTEGER, POINTER :: auxiliary_images(:, :) => NULL()
+      INTEGER :: natom = 0
       INTEGER :: remaining_words = max_cached_potential_words
       INTEGER :: entry_count = 0
    END TYPE lattice_potential_cache_type
@@ -230,8 +232,8 @@ CONTAINS
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: auxiliary_bases(:)
-      INTEGER, INTENT(IN)                                :: auxiliary_images(:, :), ao_images(:, :), &
-                                                            center_images(:, :)
+      INTEGER, INTENT(IN), TARGET                        :: auxiliary_images(:, :)
+      INTEGER, INTENT(IN)                                :: ao_images(:, :), center_images(:, :)
       TYPE(dbt_type), INTENT(INOUT)                      :: tensors(:)
       TYPE(dbt_type), INTENT(INOUT), OPTIONAL            :: responses(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
@@ -266,6 +268,8 @@ CONTAINS
          CPASSERT(.NOT. PRESENT(atom_response) .AND. .NOT. PRESENT(cell_response))
       END IF
       nsite = natom*SIZE(auxiliary_images, 2)
+      lattice_potentials%natom = natom
+      lattice_potentials%auxiliary_images => auxiliary_images
       ALLOCATE (bases(nsite), positions(3, nsite), factors(nsite))
       factors = CMPLX(1.0_dp, 0.0_dp, dp)
       IF (PRESENT(responses)) THEN
@@ -407,8 +411,8 @@ CONTAINS
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: auxiliary_bases(:)
-      INTEGER, INTENT(IN)                                :: auxiliary_images(:, :), ao_images(:, :), &
-                                                            center_images(:, :)
+      INTEGER, INTENT(IN), TARGET                        :: auxiliary_images(:, :)
+      INTEGER, INTENT(IN)                                :: ao_images(:, :), center_images(:, :)
       TYPE(dbt_type), INTENT(INOUT)                      :: covectors(:)
       INTEGER, INTENT(IN)                                :: coefficient_images(:, :)
       COMPLEX(dp), INTENT(IN)                            :: coupled_coefficients(:, :, :)
@@ -440,6 +444,8 @@ CONTAINS
       END IF
       CPASSERT(ALL(ao_images*SPREAD(frame%periodicity, 2, SIZE(ao_images, 2)) == ao_images))
       nsite = natom*SIZE(auxiliary_images, 2)
+      lattice_potentials%natom = natom
+      lattice_potentials%auxiliary_images => auxiliary_images
       ALLOCATE (bases(nsite), positions(3, nsite), factors(nsite), active(SIZE(covectors)), &
                 local_atoms(3, natom), local_auxiliary(3, nsite))
       ALLOCATE (shared, MOLD=coupled_coefficients)
@@ -1522,7 +1528,7 @@ CONTAINS
 !> \param nprojector Number of original augmentation projectors.
 !> \param nauxiliary Complete auxiliary-shell size, including any RI block boundary.
 !> \param derivatives Whether this call needs displacement derivatives.
-!> \param entry Cached integrals or a null pointer when the table or payload budget is exhausted.
+!> \param ENTRY Cached integrals or a null pointer when the table or payload budget is exhausted.
 ! **************************************************************************************************
    SUBROUTINE lattice_potential_entry(cache, key, nprojector, nauxiliary, derivatives, ENTRY)
       TYPE(lattice_potential_cache_type), &
@@ -1532,19 +1538,30 @@ CONTAINS
       TYPE(transition_augmentation_type), INTENT(OUT), &
          POINTER                                         :: entry
 
-      INTEGER                                            :: attempt, i, slot
+      INTEGER                                            :: attempt, entry_key(6), i, image, slot
       INTEGER(int_8)                                     :: hash
       REAL(dp)                                           :: words
 
       NULLIFY (ENTRY)
+      entry_key = key
+      IF (ASSOCIATED(cache%auxiliary_images)) THEN
+         ! A common lattice translation leaves the original Q integral and auxiliary field
+         ! unchanged. Only the lookup uses the relative translation. Atomic and cell
+         ! contractions still use each center's actual translation and displacement.
+         CPASSERT(cache%natom > 0)
+         image = (key(5) - 1)/cache%natom + 1
+         CPASSERT(image >= 1 .AND. image <= SIZE(cache%auxiliary_images, 2))
+         entry_key(2:4) = key(2:4) - cache%auxiliary_images(:, image)
+         entry_key(5) = MODULO(key(5) - 1, cache%natom) + 1
+      END IF
       IF (.NOT. ALLOCATED(cache%entries)) ALLOCATE (cache%entries(max_cached_lattice_potentials))
       hash = 0_int_8
-      DO i = 1, SIZE(key)
-         hash = MODULO(31_int_8*hash + INT(key(i), int_8), INT(SIZE(cache%entries), int_8))
+      DO i = 1, SIZE(entry_key)
+         hash = MODULO(31_int_8*hash + INT(entry_key(i), int_8), INT(SIZE(cache%entries), int_8))
       END DO
       slot = INT(hash) + 1
       DO attempt = 1, SIZE(cache%entries)
-         IF (ALL(cache%entries(slot)%key == key)) THEN
+         IF (ALL(cache%entries(slot)%key == entry_key)) THEN
             ENTRY => cache%entries(slot)%integrals
             RETURN
          END IF
@@ -1556,7 +1573,7 @@ CONTAINS
             IF (words > REAL(cache%remaining_words, dp)) RETURN
             cache%remaining_words = cache%remaining_words - INT(words)
             cache%entry_count = cache%entry_count + 1
-            cache%entries(slot)%key = key
+            cache%entries(slot)%key = entry_key
             ENTRY => cache%entries(slot)%integrals
             entry%potential_budget => cache%remaining_words
             RETURN
@@ -2513,6 +2530,7 @@ CONTAINS
 !> \param coefficient_images ...
 !> \param coupled_coefficients ...
 !> \param coupled_response ...
+!> \param augmentation_integrals ...
 ! **************************************************************************************************
    SUBROUTINE lattice_center_with_overlaps(frame, center, left_range, right_range, ao_image, center_image, &
                                            fields, auxiliary_center, augmentation, r, radial_weights, &
