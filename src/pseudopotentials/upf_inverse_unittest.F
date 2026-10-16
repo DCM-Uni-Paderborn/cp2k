@@ -49,7 +49,8 @@ PROGRAM upf_inverse_unittest
                                               qs_upf_inverse_paw_operator
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_type
-   USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity
+   USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
+                                              skala_cusp_admissibility
    USE upf_core,                        ONLY: upf_core_fourier,&
                                               upf_core_kinetic_fourier
    USE upf_inverse,                     ONLY: &
@@ -94,6 +95,7 @@ PROGRAM upf_inverse_unittest
    INTEGER :: stop_polls = 0
    CALL check_inverse()
    CALL check_physical_stationarity()
+   CALL check_cusp_normals()
    CALL check_lattice_inverse()
    CALL check_projector_density()
    CALL check_density_residual()
@@ -110,6 +112,48 @@ PROGRAM upf_inverse_unittest
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Retain coincident physical samples and reject unattainable independent branch choices.
+! **************************************************************************************************
+   SUBROUTINE check_cusp_normals()
+      INTEGER                                            :: dependent_sides(3), sides(2)
+      LOGICAL                                            :: admissible(2), dependent_admissible(3), &
+                                                            valid
+      REAL(dp)                                           :: changes(1, 2), dependent_changes(2, 3), &
+                                                            dependent_jacobian(3, 2), &
+                                                            jacobian(2, 1)
+
+      jacobian(:, 1) = [2.e-18_dp, 4.e12_dp]
+      changes(1, :) = [-1.0_dp, -4.0_dp]
+      CALL skala_cusp_admissibility([3.0_dp], changes, jacobian, admissible, sides, valid)
+      IF (.NOT. valid .OR. .NOT. ALL(admissible) .OR. ANY(sides /= 0)) THEN
+         ERROR STOP 'Coincident density normals were discarded or affected by their physical units'
+      END IF
+      jacobian(:, 1) = [1.0_dp, -1.0_dp]
+      changes(1, :) = [-4.0_dp, 2.0_dp]
+      CALL skala_cusp_admissibility([3.0_dp], changes, jacobian, admissible, sides, valid)
+      IF (.NOT. valid .OR. .NOT. ALL(admissible)) ERROR STOP 'Opposite density normals did not switch together'
+      ! Independent weights can cancel -1.5 + 2*lambda_1 + 2*lambda_2. Both attainable
+      ! physical sides have slope +0.5, requiring negative-side descent of the first sample.
+      changes = 2.0_dp
+      CALL skala_cusp_admissibility([-1.5_dp], changes, jacobian, admissible, sides, valid)
+      IF (.NOT. valid .OR. ANY(admissible) .OR. ANY(sides /= [-1, 1])) THEN
+         ERROR STOP 'An unattainable convex cancellation was accepted as a physical minimum'
+      END IF
+      jacobian(:, 1) = [1.0_dp, 2.0_dp]
+      changes(1, :) = [1.0_dp, 1.0_dp]
+      CALL skala_cusp_admissibility([-1.0_dp], changes, jacobian, admissible, sides, valid)
+      IF (.NOT. valid .OR. ANY(admissible) .OR. ANY(sides /= 1)) ERROR STOP 'A concave coincident cusp was accepted'
+      dependent_jacobian(:, 1) = [1.0_dp, 0.0_dp, 1.0_dp]
+      dependent_jacobian(:, 2) = [0.0_dp, 1.0_dp, 1.0_dp]
+      dependent_changes = 0.0_dp
+      CALL skala_cusp_admissibility([0.0_dp, 0.0_dp], dependent_changes, dependent_jacobian, &
+                                    dependent_admissible, dependent_sides, valid)
+      IF (valid .OR. ANY(dependent_admissible) .OR. ANY(dependent_sides /= 0)) THEN
+         ERROR STOP 'Coupled dependent normals were declared independent'
+      END IF
+   END SUBROUTINE check_cusp_normals
+
 ! **************************************************************************************************
 !> \brief A scaled physical coordinate must satisfy its own gradient bound and iteration budget.
 ! **************************************************************************************************

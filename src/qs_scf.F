@@ -932,6 +932,19 @@ CONTAINS
                CYCLE scf_loop
             END IF
 
+            IF (inverse_ot_handled .AND. .NOT. exit_inner_loop) THEN
+               ! The inverse chart replaced the orbitals. Rebuild the ordinary OT reference,
+               ! search history and preconditioner before continuing from that accepted state.
+               DO ispin = 1, SIZE(scf_env%qs_ot_env)
+                  CALL ot_scf_destroy(scf_env%qs_ot_env(ispin))
+               END DO
+               DEALLOCATE (scf_env%qs_ot_env)
+               NULLIFY (scf_env%qs_ot_env)
+               reuse_precond = .FALSE.
+               CALL init_scf_loop(scf_env, qs_env, scf_section, kp_ot_entry_reuse)
+               energy_only = .FALSE.
+            END IF
+
             ! In case we decide to exit we perform few more check to see if this one
             ! is really the last SCF step
             IF (exit_inner_loop) THEN
@@ -1068,7 +1081,8 @@ CONTAINS
 !>        matching MOs, P and energy-weighted W in the original charge metric. Native Skala cusp
 !>        handling requires an active constraint search and uses the existing SCF loop here.
 !>        Rebuild the Cayley chart at its accepted orbitals when a trial leaves the bounded
-!>        coordinate region. All attempted steps still consume the original SCF budget.
+!>        coordinate region or the line search stalls after making progress. All attempted
+!>        steps still consume the original SCF budget.
 !> \param qs_env Native Quickstep environment.
 !> \param scf_env Initialized OT iteration state.
 !> \param scf_control Original SCF limits and occupation settings.
@@ -1130,7 +1144,10 @@ CONTAINS
                                         max_coordinate_norm=1.0_dp, rechart=rechart, retain_progress=.TRUE.)
          iterations = iterations + steps
          remaining = remaining - steps
-         IF (converged .OR. stopped .OR. .NOT. rechart .OR. remaining <= 0) EXIT
+         IF (converged .OR. stopped .OR. remaining <= 0) EXIT
+         ! A stalled finite chart can retain a useful nonstationary state. Rebase before
+         ! falling back to ordinary OT, but do not repeat a chart with no accepted step.
+         IF (.NOT. rechart .AND. steps <= 1) EXIT
          CALL qs_skala_scf_release(state)
          CALL qs_skala_scf_create(state, qs_env, valid)
          IF (.NOT. valid) CPABORT("Could not rebuild the accepted inverse orbital chart.")

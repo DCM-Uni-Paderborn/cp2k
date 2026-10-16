@@ -430,9 +430,9 @@ CONTAINS
 
       INTEGER :: capacity, d, history, i, iteration, j, limit, m, nf, shortening
       INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:)
-      LOGICAL :: accepted, valid, event
+      LOGICAL :: accepted, valid, event, newton_valid, newton_stopped
       REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy, trial_slope
-      REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), &
+      REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
                                old_gradient(:), reduced(:), scales(:), steps(:, :), trial(:), trial_reduced(:), &
                                values(:), x(:), changes(:, :)
 
@@ -442,7 +442,9 @@ CONTAINS
       IF (PRESENT(interrupted)) interrupted = .FALSE.
       m = SIZE(density_tolerances)
       nf = d - m
-      capacity = MAX(7, MIN(nf, 32))
+      ! Use up to 256 KiB for curvature histories in small orbital spaces. Large
+      ! spaces retain 32 entries and linear storage.
+      capacity = MAX(7, MIN(nf, MAX(32, 16384/MAX(1, nf))))
       CPASSERT(d > 0 .AND. m <= d)
       CPASSERT(ALL(ieee_is_finite(coordinate)))
       CPASSERT(ALL(ieee_is_finite(density_tolerances)))
@@ -457,7 +459,7 @@ CONTAINS
       CPASSERT(ieee_is_finite(radius) .AND. radius > 0.0_dp)
       ALLOCATE (x(d), trial(d), values(m), jacobian(m, d), scales(m), dependent(m), free(nf), &
                 g(d), reduced(nf), trial_reduced(nf), direction(nf), motion(nf), &
-                old_gradient(nf), steps(nf, capacity), changes(nf, capacity), pivots(d))
+                old_gradient(nf), steps(nf, capacity), changes(nf, capacity), pivots(d), newton(nf))
       x(:) = coordinate
       CALL constraints(x)
       converged = .FALSE.
@@ -489,6 +491,15 @@ CONTAINS
          IF (DOT_PRODUCT(reduced, direction) >= 0.0_dp) THEN
             history = 0
             direction(:) = -reduced
+         END IF
+         roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), TINY(0.0_dp))
+         IF (m == 0 .AND. history > 0 .AND. &
+             -DOT_PRODUCT(reduced, direction) <= 32.0_dp*roundoff) THEN
+            ! Narrow smooth descriptor transitions can leave useful derivatives below
+            ! the energy resolution. Resolve their curvature without energy differences.
+            CALL newton_direction(x, reduced, newton, newton_valid, newton_stopped)
+            IF (newton_stopped) RETURN
+            IF (newton_valid) direction(:) = newton
          END IF
          IF (NORM2(direction) > radius) direction(:) = direction*(radius/NORM2(direction))
          slope = DOT_PRODUCT(reduced, direction)
@@ -559,6 +570,73 @@ CONTAINS
       END IF
       ! Trial callbacks may update native caches; the returned coordinates remain authoritative.
    CONTAINS
+! **************************************************************************************************
+!> \brief Inexact Newton direction from central differences of the native derivatives.
+!>        Truncated conjugate gradients use linear storage. Indefinite curvature returns
+!>        the current descent direction, or failure if none was found. The outer line search
+!>        retains its original energy and derivative checks.
+!> \param center Accepted orbital coordinates.
+!> \param derivative Derivative at the accepted state.
+!> \param result Candidate free-coordinate descent direction.
+!> \param valid_direction Whether the candidate is a finite descent direction.
+!> \param stopped_direction Whether an external stop interrupted a derivative evaluation.
+! **************************************************************************************************
+      SUBROUTINE newton_direction(center, derivative, RESULT, valid_direction, stopped_direction)
+      REAL(dp), INTENT(IN)                               :: center(:), derivative(:)
+      REAL(dp), INTENT(OUT)                              :: result(:)
+      LOGICAL, INTENT(OUT)                               :: valid_direction, stopped_direction
+
+      INTEGER                                            :: iteration
+      LOGICAL                                            :: valid_trial
+      REAL(dp)                                           :: alpha, beta, curvature, energy_trial, &
+                                                            next_residual2, norm_direction, &
+                                                            residual2, step, TARGET
+      REAL(dp), ALLOCATABLE                              :: gradient_minus(:), gradient_plus(:), &
+                                                            minus(:), plus(:), PRODUCT(:), &
+                                                            residual(:), search(:)
+
+         valid_direction = .FALSE.
+         stopped_direction = .FALSE.
+         RESULT = 0.0_dp
+         ALLOCATE (plus(d), minus(d), gradient_plus(nf), gradient_minus(nf), residual(nf), search(nf), PRODUCT(nf))
+         residual(:) = -derivative
+         search(:) = residual
+         residual2 = DOT_PRODUCT(residual, residual)
+         TARGET = MIN(0.1_dp, SQRT(NORM2(derivative)))*NORM2(derivative)
+         DO iteration = 1, MIN(nf, 64)
+            IF (stop_requested()) THEN
+               stopped_direction = .TRUE.
+               RETURN
+            END IF
+            norm_direction = NORM2(search)
+            IF (norm_direction <= TINY(0.0_dp)) EXIT
+            step = SQRT(EPSILON(0.0_dp))*MAX(1.0_dp, NORM2(center(free)))/norm_direction
+            plus(:) = center
+            minus(:) = center
+            plus(free) = center(free) + step*search
+            minus(free) = center(free) - step*search
+            CALL reduced_evaluation(plus, energy_trial, gradient_plus, valid_trial)
+            IF (.NOT. valid_trial) RETURN
+            IF (stop_requested()) THEN
+               stopped_direction = .TRUE.
+               RETURN
+            END IF
+            CALL reduced_evaluation(minus, energy_trial, gradient_minus, valid_trial)
+            IF (.NOT. valid_trial) RETURN
+            PRODUCT(:) = (gradient_plus - gradient_minus)/(2.0_dp*step)
+            curvature = DOT_PRODUCT(search, product)
+            IF (curvature <= 128.0_dp*EPSILON(0.0_dp)*norm_direction*NORM2(product)) EXIT
+            alpha = residual2/curvature
+            RESULT(:) = RESULT + alpha*search
+            residual(:) = residual - alpha*product
+            next_residual2 = DOT_PRODUCT(residual, residual)
+            IF (SQRT(next_residual2) <= TARGET) EXIT
+            beta = next_residual2/residual2
+            search(:) = residual + beta*search
+            residual2 = next_residual2
+         END DO
+         valid_direction = ALL(ieee_is_finite(RESULT)) .AND. DOT_PRODUCT(derivative, RESULT) < 0.0_dp
+      END SUBROUTINE newton_direction
 ! **************************************************************************************************
 !> \brief Preserve the last accepted feasible coordinates when the caller requests a stop.
 !> \return Whether termination was requested.
@@ -657,30 +735,32 @@ CONTAINS
    END SUBROUTINE skala_constrained_stationarity
 
 ! **************************************************************************************************
-!> \brief Check the two limiting derivatives along each independent physical constraint normal.
+!> \brief Check attainable limiting derivatives along physical constraint normals.
 !>        Gradients and constraint Jacobians use the same orthonormal real orbital tangent chart.
-!>        Each negative change switches that sample alone from the all-positive branch. Dual
-!>        normals retain the other constraints, so their density units do not affect the signs.
+!>        Proportional normals share one variation. Retain every sample and switch their limits
+!>        together, reversing the side of oppositely oriented samples. Dual normals retain the
+!>        other independent groups. Their physical density units do not affect the signs.
 !>        This is a normal admissibility check, not proof of tangential stability or stationarity.
 !> \param positive_gradient Complete all-positive limiting orbital derivative.
 !> \param negative_changes Independent negative-minus-positive changes, one column per constraint.
 !> \param jacobian Physical constraint derivatives, one row per constraint.
 !> \param admissible Whether a convex cusp brackets zero along each positive physical normal.
 !> \param release_side Minus one for a negative-side descent, plus one for a positive-side descent.
-!> \param valid Whether the physical constraint normals are independent.
+!> \param valid Whether the nonzero normals form independent groups of proportional samples.
 ! **************************************************************************************************
    SUBROUTINE skala_cusp_admissibility(positive_gradient, negative_changes, jacobian, &
                                        admissible, release_side, valid)
       REAL(dp), INTENT(IN) :: positive_gradient(:), negative_changes(:, :), jacobian(:, :)
       LOGICAL, INTENT(OUT) :: admissible(:), valid
       INTEGER, INTENT(OUT) :: release_side(:)
-      INTEGER :: d, i, info, lwork, m, rank
-      REAL(dp) :: negative_slope, positive_slope, query(1)
-      REAL(dp), ALLOCATABLE :: matrix(:, :), normals(:, :), scales(:), singular(:), work(:)
+      INTEGER :: d, group, i, info, j, lwork, m, ngroups, rank, side
+      INTEGER, ALLOCATABLE :: groups(:), orientation(:)
+      REAL(dp) :: negative_slope, positive_slope, query(1), roundoff, scale
+      REAL(dp), ALLOCATABLE :: basis(:, :), matrix(:, :), normals(:, :), row(:), singular(:), work(:)
 
       d = SIZE(positive_gradient)
       m = SIZE(jacobian, 1)
-      CPASSERT(m <= d .AND. SIZE(jacobian, 2) == d)
+      CPASSERT(SIZE(jacobian, 2) == d)
       CPASSERT(SIZE(negative_changes, 1) == d)
       CPASSERT(SIZE(negative_changes, 2) == m)
       CPASSERT(SIZE(admissible) == m .AND. SIZE(release_side) == m)
@@ -692,31 +772,68 @@ CONTAINS
       valid = .TRUE.
       IF (m == 0) RETURN
       valid = .FALSE.
-      ALLOCATE (scales(m), matrix(m, d), normals(d, m), singular(m))
-      scales(:) = MAXVAL(ABS(jacobian), DIM=2)
-      IF (ANY(scales <= TINY(0.0_dp))) RETURN
-      matrix(:, :) = jacobian/SPREAD(scales, 2, d)
-      normals = 0.0_dp
+      IF (d == 0) RETURN
+      ALLOCATE (basis(m, d), groups(m), orientation(m), row(d))
+      ngroups = 0
+      roundoff = 64.0_dp*EPSILON(0.0_dp)
       DO i = 1, m
+         scale = MAXVAL(ABS(jacobian(i, :)))
+         IF (scale <= TINY(0.0_dp)) RETURN
+         row(:) = jacobian(i, :)/scale
+         row(:) = row/NORM2(row)
+         group = 0
+         orientation(i) = 1
+         DO j = 1, ngroups
+            IF (NORM2(row - basis(j, :)) <= roundoff) THEN
+               group = j
+               EXIT
+            ELSE IF (NORM2(row + basis(j, :)) <= roundoff) THEN
+               group = j
+               orientation(i) = -1
+               EXIT
+            END IF
+         END DO
+         IF (group == 0) THEN
+            ngroups = ngroups + 1
+            basis(ngroups, :) = row
+            group = ngroups
+         END IF
+         groups(i) = group
+      END DO
+      IF (ngroups > d) RETURN
+      ALLOCATE (matrix(ngroups, d), normals(d, ngroups), singular(ngroups))
+      matrix(:, :) = basis(:ngroups, :)
+      normals = 0.0_dp
+      DO i = 1, ngroups
          normals(i, i) = 1.0_dp
       END DO
-      CALL dgelss(m, d, m, matrix, m, normals, d, singular, EPSILON(0.0_dp), rank, query, -1, info)
+      CALL dgelss(ngroups, d, ngroups, matrix, ngroups, normals, d, singular, EPSILON(0.0_dp), rank, query, -1, info)
       IF (info /= 0) RETURN
       lwork = MAX(1, CEILING(query(1)))
       ALLOCATE (work(lwork))
-      CALL dgelss(m, d, m, matrix, m, normals, d, singular, EPSILON(0.0_dp), rank, work, lwork, info)
-      IF (info /= 0 .OR. rank /= m) RETURN
-      DO i = 1, m
-         normals(:, i) = normals(:, i)/NORM2(normals(:, i))
-         positive_slope = DOT_PRODUCT(positive_gradient, normals(:, i))
-         negative_slope = positive_slope + DOT_PRODUCT(negative_changes(:, i), normals(:, i))
-         admissible(i) = negative_slope <= 0.0_dp .AND. positive_slope >= 0.0_dp
-         IF (admissible(i)) CYCLE
+      CALL dgelss(ngroups, d, ngroups, matrix, ngroups, normals, d, singular, EPSILON(0.0_dp), rank, work, lwork, info)
+      IF (info /= 0 .OR. rank /= ngroups) RETURN
+      DO group = 1, ngroups
+         normals(:, group) = normals(:, group)/NORM2(normals(:, group))
+         positive_slope = DOT_PRODUCT(positive_gradient, normals(:, group))
+         negative_slope = positive_slope
+         DO i = 1, m
+            IF (groups(i) /= group) CYCLE
+            IF (orientation(i) > 0) THEN
+               negative_slope = negative_slope + DOT_PRODUCT(negative_changes(:, i), normals(:, group))
+            ELSE
+               positive_slope = positive_slope + DOT_PRODUCT(negative_changes(:, i), normals(:, group))
+            END IF
+         END DO
+         WHERE (groups == group) admissible = negative_slope <= 0.0_dp .AND. positive_slope >= 0.0_dp
+         IF (negative_slope <= 0.0_dp .AND. positive_slope >= 0.0_dp) CYCLE
+         side = 0
          IF (-positive_slope >= negative_slope .AND. positive_slope < 0.0_dp) THEN
-            release_side(i) = 1
+            side = 1
          ELSE IF (negative_slope > 0.0_dp) THEN
-            release_side(i) = -1
+            side = -1
          END IF
+         WHERE (groups == group) release_side = side*orientation
       END DO
       valid = .TRUE.
    END SUBROUTINE skala_cusp_admissibility

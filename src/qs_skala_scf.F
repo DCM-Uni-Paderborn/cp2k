@@ -645,17 +645,31 @@ CONTAINS
       ELSE
          augmentation => state%inverse%augmentation
          IF (state%bloch) augmentation => state%inverse%bloch%augmentation
+         IF (state%inverse%native_gaussian) THEN
+            IF (descriptor == skala_density_descriptor) THEN
+               CALL qs_upf_inverse_background_integrate(state%inverse%gaussian, state%qs_env, density, operators)
+            ELSE
+               CALL qs_upf_inverse_background_integrate(state%inverse%gaussian, state%qs_env, kinetic, operators, &
+                                                        kinetic=.TRUE.)
+            END IF
+         END IF
          DO ik = 1, nk
             IF (state%bloch) THEN
                CALL qs_upf_inverse_grid_integrate_dense(state%inverse%bloch%frames(ik), density, gradient, kinetic, &
                                                         matrix, augmentation=augmentation, fourier_charge=.TRUE., &
-                                                        kinetic=state%inverse%kinetic_cache)
+                                                        kinetic=state%inverse%kinetic_cache, &
+                                                        orbital_fields=.NOT. state%inverse%native_gaussian)
             ELSE
                CALL qs_upf_inverse_grid_integrate_dense(state%inverse%frame, density, gradient, kinetic, matrix, &
                                                         augmentation=augmentation, fourier_charge=.TRUE., &
-                                                        kinetic=state%inverse%kinetic_cache)
+                                                        kinetic=state%inverse%kinetic_cache, &
+                                                        orbital_fields=.NOT. state%inverse%native_gaussian)
             END IF
-            operators(:, :, ik) = matrix
+            IF (state%inverse%native_gaussian) THEN
+               operators(:, :, ik) = operators(:, :, ik) + matrix
+            ELSE
+               operators(:, :, ik) = matrix
+            END IF
          END DO
       END IF
       CALL density%release()
@@ -1506,15 +1520,16 @@ CONTAINS
    END SUBROUTINE qs_skala_scf_balance
 
 ! **************************************************************************************************
-!> \brief Check native limiting derivatives along independent physical constraint normals.
+!> \brief Check native limiting derivatives along attainable physical constraint normals.
 !>        Retain the original weights and the complete native MOs, P, fields, energy and KS.
-!>        Dependent or excess constraints return invalid. Normal admissibility alone does not
+!>        Proportional samples switch together. Other dependent groups return invalid.
+!>        Normal admissibility alone does not
 !>        establish tangential stationarity, stability or automatic SCF convergence.
 !> \param state Native state with registered physical cusp samples.
 !> \param coordinate Global normalized-orbital coordinates.
 !> \param admissible Whether the one-sided normal derivatives have the signs required for a minimum.
 !> \param release_side Minus one for negative-side descent, plus one for positive-side descent.
-!> \param valid Whether the selected physical normals are independent.
+!> \param valid Whether the selected normals have independent proportional groups.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_admissibility(state, coordinate, admissible, release_side, valid)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
@@ -1536,7 +1551,6 @@ CONTAINS
       valid = .FALSE.
       ALLOCATE (positive(n), changes(n, m), jacobian(m, n))
       CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian)
-      IF (m > n) RETURN
       CALL skala_cusp_admissibility(positive, changes, jacobian, admissible, release_side, valid)
    END SUBROUTINE qs_skala_scf_admissibility
 

@@ -2028,7 +2028,7 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL, INTENT(IN)                                :: ace_active
 
-      INTEGER                                            :: contribution, point
+      INTEGER                                            :: contribution
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(hfx_type), POINTER                            :: exchange(:, :)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -2042,11 +2042,6 @@ CONTAINS
       END IF
       IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          CPASSERT(SIZE(inverse%bloch%frames) > 0)
-         DO point = 1, SIZE(inverse%bloch%frames)
-            IF (.NOT. inverse%bloch%frames(point)%ao%atom_local) THEN
-               CPABORT("General inverse UPF lattice exchange is not implemented yet")
-            END IF
-         END DO
       END IF
       CPASSERT(ASSOCIATED(exchange))
       DO contribution = 1, SIZE(exchange, 1)
