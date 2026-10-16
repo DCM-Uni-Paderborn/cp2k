@@ -2476,7 +2476,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Check finite chart bounds before accepting an ordinary native orbital step.
 !>        Raw crossing requests still inspect each trial. Automatic admission waits for a
-!>        failed line search so accepted descent steps can cross ordinary processing thresholds.
+!>        failed line search or an unresolved energy change above the gradient tolerance.
 !> \param first Last accepted feasible coordinates.
 !> \param last Proposed feasible coordinates.
 !> \param curve Original independent/dependent coordinate partition.
@@ -2507,9 +2507,9 @@ CONTAINS
    END SUBROUTINE check_native_step
 
 ! **************************************************************************************************
-!> \brief Inspect the original feasible trial after a native line search fails to find descent.
+!> \brief Inspect the original feasible trial when descent fails or its energy change is unresolved.
 !> \param first Last accepted feasible coordinates.
-!> \param last First feasible trial of the rejected line search.
+!> \param last First feasible trial before backtracking reduces its interval.
 !> \param curve Original independent/dependent coordinate partition.
 !> \param context Native state and physical boundary admission settings.
 !> \param interrupted Whether a physical boundary or external stop requires the caller.

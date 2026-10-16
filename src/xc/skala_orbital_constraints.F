@@ -416,8 +416,8 @@ CONTAINS
 !> \param check_segment Optional trial-segment check before step acceptance.
 !> \param interrupted Whether that check requests event handling at the last accepted state.
 !> \param retain_progress Return the last accepted feasible coordinates on failure, default false.
-!> \param check_stalled_segment Optional first-feasible-trial check after unsuccessful backtracking.
-!>        Accepted descent steps do not need this more expensive boundary resolution.
+!> \param check_stalled_segment Optional first-feasible-trial check after unsuccessful backtracking
+!>        or an unresolved energy change above the gradient tolerance.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
@@ -442,7 +442,7 @@ CONTAINS
 
       INTEGER :: capacity, d, history, i, iteration, limit, m, nf, r, shortening
       TYPE(skala_constraint_chart_type) :: curve
-      LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment
+      LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment, resolution_checked
       REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
                                old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
@@ -508,6 +508,7 @@ CONTAINS
          accepted = .FALSE.
          fraction = 1.0_dp
          have_segment = .FALSE.
+         resolution_checked = .FALSE.
          DO shortening = 1, DIGITS(1.0_dp)
             IF (stop_requested()) RETURN
             trial(:) = x
@@ -528,6 +529,27 @@ CONTAINS
                END IF
                ! Descent may increase the gradient norm in a region of negative curvature.
                roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+               IF (PRESENT(check_stalled_segment) .AND. .NOT. resolution_checked .AND. &
+                   ABS(trial_energy - energy) <= roundoff .AND. NORM2(trial_reduced) > gradient_tolerance) THEN
+                  ! Small derivative-reducing steps can approach a cusp without exhausting
+                  ! backtracking. Resolve the original feasible segment before further steps.
+                  resolution_checked = .TRUE.
+                  event = .FALSE.
+                  CALL check_stalled_segment(x, stalled_trial, curve, context, event)
+                  IF (event) THEN
+                     coordinate(:) = x
+                     IF (PRESENT(interrupted)) interrupted = .TRUE.
+                     RETURN
+                  END IF
+                  ! A scan can leave native fields at x. Restore the actual trial and retain
+                  ! its original energy/derivative acceptance tests even when no event is found.
+                  CALL reduced_evaluation(trial, trial_energy, trial_reduced, valid)
+                  IF (.NOT. valid) THEN
+                     fraction = 0.5_dp*fraction
+                     CYCLE
+                  END IF
+                  roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+               END IF
                trial_slope = DOT_PRODUCT(trial_reduced, direction)
                IF ((trial_energy < energy - roundoff .AND. &
                     trial_energy <= energy + 1.0e-4_dp*fraction*slope) .OR. &

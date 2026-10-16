@@ -92,6 +92,11 @@ PROGRAM upf_inverse_unittest
                                               uspp_augmentation_prepare_realspace
 
    IMPLICIT NONE
+   TYPE roundoff_cusp_context
+      REAL(dp) :: energy_zero = 1.e8_dp, last_coordinate = 0.0_dp
+      INTEGER :: queries = 0
+      LOGICAL :: interrupt = .TRUE.
+   END TYPE roundoff_cusp_context
    REAL(dp), PARAMETER :: step = 1.e-5_dp
    REAL(dp), PARAMETER :: stationarity_tolerance = 1.e-8_dp
    REAL(dp) :: max_error = 0.0_dp
@@ -340,6 +345,7 @@ CONTAINS
       INTEGER                                            :: iterations
       LOGICAL                                            :: converged, interrupted, stopped
       REAL(dp)                                           :: coordinate(1), empty(0), scale
+      TYPE(roundoff_cusp_context)                        :: cusp
 
       scale = 20.0_dp
       coordinate = 1.e-6_dp
@@ -403,6 +409,26 @@ CONTAINS
                                           check_stalled_segment=stalled_cusp_segment)
       IF (converged .OR. .NOT. interrupted .OR. iterations /= 1 .OR. coordinate(1) /= 0.0_dp) THEN
          ERROR STOP 'A nonsmooth minimum lost the original rejected trial or was declared differentiably stationary'
+      END IF
+      coordinate = 1.e-8_dp
+      CALL skala_constrained_stationarity(empty_constraints, roundoff_cusp_gradient, cusp, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, &
+                                          iterations=iterations, interrupted=interrupted, &
+                                          check_stalled_segment=roundoff_cusp_segment)
+      IF (converged .OR. .NOT. interrupted .OR. iterations /= 1 .OR. &
+          coordinate(1) /= 1.e-8_dp .OR. cusp%queries /= 1) THEN
+         ERROR STOP 'An unresolved energy change hid a physical cusp behind accepted shortened trials'
+      END IF
+      cusp%queries = 0
+      cusp%interrupt = .FALSE.
+      coordinate = 1.e-8_dp
+      CALL skala_constrained_stationarity(empty_constraints, roundoff_cusp_gradient, cusp, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, &
+                                          iterations=iterations, interrupted=interrupted, retain_progress=.TRUE., &
+                                          check_stalled_segment=roundoff_cusp_segment)
+      IF (converged .OR. interrupted .OR. iterations /= 1 .OR. cusp%queries /= 1 .OR. &
+          coordinate(1) == 1.e-8_dp .OR. coordinate(1) /= cusp%last_coordinate) THEN
+         ERROR STOP 'A rejected boundary query lost the accepted native trial state'
       END IF
       scale = 1.e-8_dp
       coordinate = 1.e-12_dp
@@ -479,6 +505,57 @@ CONTAINS
       END IF
       interrupted = .TRUE.
    END SUBROUTINE stalled_cusp_segment
+
+! **************************************************************************************************
+!> \brief A cusp near an independent energy zero, with decreasing gradient norm toward its minimum.
+!> \param coordinate One real orbital coordinate.
+!> \param energy E0+abs(x)+x**2/2.
+!> \param gradient Ordinary one-sided derivative.
+!> \param context Additive energy zero and last evaluated native coordinate.
+! **************************************************************************************************
+   SUBROUTINE roundoff_cusp_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      SELECT TYPE (context)
+      TYPE IS (roundoff_cusp_context)
+         energy = context%energy_zero + ABS(coordinate(1)) + 0.5_dp*coordinate(1)**2
+         gradient(1) = SIGN(1.0_dp, coordinate(1)) + coordinate(1)
+         context%last_coordinate = coordinate(1)
+      CLASS DEFAULT
+         ERROR STOP 'Invalid unresolved-energy cusp context'
+      END SELECT
+   END SUBROUTINE roundoff_cusp_gradient
+
+! **************************************************************************************************
+!> \brief Preserve the original wide segment and model a query restoring the previous native state.
+!> \param first Last accepted coordinate.
+!> \param last First feasible trial before shortening its interval.
+!> \param curve Original physical constraint partition.
+!> \param context Query count, requested interruption and last evaluated native coordinate.
+!> \param interrupted Whether to return the last accepted state for physical boundary treatment.
+! **************************************************************************************************
+   SUBROUTINE roundoff_cusp_segment(first, last, curve, context, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+
+      CLASS(*), INTENT(INOUT)                            :: context
+      LOGICAL, INTENT(OUT)                               :: interrupted
+
+      SELECT TYPE (context)
+      TYPE IS (roundoff_cusp_context)
+         IF (first(1) /= 1.e-8_dp .OR. ABS(last(1) - first(1) + 0.1_dp) > 1.e-14_dp) THEN
+            ERROR STOP 'An unresolved-energy cusp query lost its first feasible segment'
+         END IF
+         context%queries = context%queries + 1
+         context%last_coordinate = first(1)
+         interrupted = context%interrupt
+      CLASS DEFAULT
+         ERROR STOP 'Invalid unresolved-energy cusp context'
+      END SELECT
+   END SUBROUTINE roundoff_cusp_segment
 
 ! **************************************************************************************************
 !> \brief Request termination after the first accepted line-search trial.
