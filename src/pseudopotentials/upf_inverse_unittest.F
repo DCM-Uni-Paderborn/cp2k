@@ -50,6 +50,9 @@ PROGRAM upf_inverse_unittest
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_type
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
+                                              skala_constraint_chart_create,&
+                                              skala_constraint_chart_restore,&
+                                              skala_constraint_chart_type,&
                                               skala_cusp_admissibility
    USE upf_core,                        ONLY: upf_core_fourier,&
                                               upf_core_kinetic_fourier
@@ -121,12 +124,26 @@ CONTAINS
       REAL(dp), PARAMETER :: tolerance = 1.e-11_dp, weights(3) = [1.0_dp, 0.01_dp, 0.0001_dp]
 
       INTEGER                                            :: iterations
-      LOGICAL                                            :: converged
-      REAL(dp)                                           :: coordinate(4), energy_zero
+      LOGICAL                                            :: converged, valid
+      REAL(dp)                                           :: coordinate(4), energy_zero, &
+                                                            jacobian(1, 4), midpoint(4), values(1)
+      TYPE(skala_constraint_chart_type)                  :: curve
 
       coordinate(:3) = [0.01_dp, 0.02_dp, 0.03_dp]
       coordinate(4) = SUM(coordinate(:3)**2)
       energy_zero = 1.e8_dp
+      CALL skala_constraint_chart_create(curved_constraints, energy_zero, coordinate, [1.e-16_dp], curve, valid)
+      IF (.NOT. valid) ERROR STOP 'Could not define the physical constraint curve'
+      ! The midpoint of two feasible orbital-coordinate endpoints is not generally feasible.
+      midpoint(:3) = 1.5_dp*coordinate(:3)
+      midpoint(4) = 2.5_dp*coordinate(4)
+      IF (ABS(midpoint(4) - SUM(midpoint(:3)**2)) < 1.e-5_dp) THEN
+         ERROR STOP 'Linear interpolation did not distinguish the curved physical surface'
+      END IF
+      CALL skala_constraint_chart_restore(curve, curved_constraints, energy_zero, midpoint, values, jacobian, valid)
+      IF (.NOT. valid .OR. ABS(values(1)) > 1.e-16_dp) ERROR STOP 'Constraint curve lost physical feasibility'
+      IF (ANY(midpoint(:3) /= 1.5_dp*coordinate(:3))) ERROR STOP 'Constraint restoration changed free coordinates'
+      IF (ABS(midpoint(4) - SUM(midpoint(:3)**2)) > 1.e-16_dp) ERROR STOP 'Wrong restored physical curve'
       CALL skala_constrained_stationarity(curved_constraints, curved_energy_gradient, energy_zero, coordinate, &
                                           [1.e-16_dp], tolerance, converged, max_iterations=4, iterations=iterations)
       IF (.NOT. converged .OR. iterations > 4 .OR. NORM2(weights*coordinate(:3)) > tolerance) THEN
@@ -380,11 +397,13 @@ CONTAINS
 !> \brief Detect a known threshold along a scaled physical orbital trial.
 !> \param first Last accepted coordinate.
 !> \param last Proposed coordinate.
+!> \param curve Fixed physical constraint chart.
 !> \param context Positive coordinate scale.
 !> \param interrupted Whether the trial crosses the threshold.
 ! **************************************************************************************************
-   SUBROUTINE crossing_segment(first, last, context, interrupted)
+   SUBROUTINE crossing_segment(first, last, curve, context, interrupted)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
 
       CLASS(*), INTENT(INOUT)                            :: context
       LOGICAL, INTENT(OUT)                               :: interrupted

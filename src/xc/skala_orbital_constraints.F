@@ -18,6 +18,7 @@ MODULE skala_orbital_constraints
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'skala_orbital_constraints'
 
    PUBLIC :: skala_constrained_stationarity, skala_cusp_admissibility
+   PUBLIC :: skala_constraint_chart_type, skala_constraint_chart_create, skala_constraint_chart_restore
    PUBLIC :: skala_orbital_chart_type, skala_orbital_chart_create, skala_orbital_chart_release, &
              skala_orbital_chart_size, skala_orbital_chart_evaluate, skala_orbital_chart_derivative
 
@@ -30,6 +31,12 @@ MODULE skala_orbital_constraints
       REAL(dp) :: metric_weight = 1.0_dp
       LOGICAL :: evaluated = .FALSE.
    END TYPE skala_orbital_chart_type
+
+   TYPE skala_constraint_chart_type
+      PRIVATE
+      INTEGER, ALLOCATABLE :: rows(:), dependent(:), free(:)
+      REAL(dp), ALLOCATABLE :: scales(:), tolerances(:)
+   END TYPE skala_constraint_chart_type
 
    ABSTRACT INTERFACE
 ! **************************************************************************************************
@@ -83,12 +90,14 @@ MODULE skala_orbital_constraints
 !> \brief Check a trial segment before accepting a minimization step.
 !> \param first Last accepted feasible coordinates.
 !> \param last Proposed feasible coordinates.
+!> \param curve Fixed independent coordinates and restoration of the original physical constraints.
 !> \param context Borrowed problem state, including any discovered event.
 !> \param interrupted Whether to return the accepted state for caller event handling.
 ! **************************************************************************************************
-      SUBROUTINE orbital_segment(first, last, context, interrupted)
-         IMPORT :: dp
+      SUBROUTINE orbital_segment(first, last, curve, context, interrupted)
+         IMPORT :: dp, skala_constraint_chart_type
          REAL(dp), INTENT(IN) :: first(:), last(:)
+         TYPE(skala_constraint_chart_type), INTENT(IN) :: curve
          CLASS(*), INTENT(INOUT) :: context
          LOGICAL, INTENT(OUT) :: interrupted
       END SUBROUTINE orbital_segment
@@ -428,12 +437,12 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL :: interrupted
       LOGICAL, INTENT(IN), OPTIONAL :: retain_progress
 
-      INTEGER :: capacity, d, history, i, iteration, j, limit, m, nf, r, shortening
-      INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:), rows(:)
+      INTEGER :: capacity, d, history, i, iteration, limit, m, nf, r, shortening
+      TYPE(skala_constraint_chart_type) :: curve
       LOGICAL :: accepted, valid, event, newton_valid, newton_stopped
       REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
-                               old_gradient(:), reduced(:), scales(:), steps(:, :), trial(:), trial_reduced(:), &
+                               old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
                                values(:), x(:), changes(:, :)
 
       d = SIZE(coordinate)
@@ -453,33 +462,18 @@ CONTAINS
       IF (PRESENT(max_step)) radius = max_step
       CPASSERT(limit > 0)
       CPASSERT(ieee_is_finite(radius) .AND. radius > 0.0_dp)
-      ALLOCATE (x(d), trial(d), values(m), jacobian(m, d), scales(m), rows(m), pivots(d))
+      ALLOCATE (x(d), trial(d), values(m), jacobian(m, d))
       x(:) = coordinate
-      CALL constraints(x)
       converged = .FALSE.
-      r = 0
-      IF (m > 0) THEN
-         scales(:) = MAX(MAXVAL(ABS(jacobian), DIM=2), density_tolerances)
-         CALL independent_constraint_rows(jacobian, scales, rows, r, valid)
-         IF (.NOT. valid) RETURN
-         IF (r > 0) THEN
-            CALL constraint_pivots(jacobian(rows(:r), :), scales(rows(:r)), pivots, valid)
-            IF (.NOT. valid) RETURN
-         END IF
-      END IF
-      nf = d - r
+      CALL skala_constraint_chart_create(evaluate_constraints, context, x, density_tolerances, curve, valid)
+      IF (.NOT. valid) RETURN
+      r = SIZE(curve%dependent)
+      nf = SIZE(curve%free)
       ! Use up to 256 KiB for curvature histories in small orbital spaces. Large
       ! spaces retain 32 entries and linear storage.
       capacity = MAX(7, MIN(nf, MAX(32, 16384/MAX(1, nf))))
-      ALLOCATE (dependent(r), free(nf), g(d), reduced(nf), trial_reduced(nf), direction(nf), motion(nf), &
+      ALLOCATE (g(d), reduced(nf), trial_reduced(nf), direction(nf), motion(nf), &
                 old_gradient(nf), steps(nf, capacity), changes(nf, capacity), newton(nf))
-      dependent(:) = pivots(:r)
-      j = 0
-      DO i = 1, d
-         IF (ANY(dependent == i)) CYCLE
-         j = j + 1
-         free(j) = i
-      END DO
       CALL reduced_evaluation(x, energy, reduced, valid)
       IF (.NOT. valid) RETURN
       history = 0
@@ -513,12 +507,12 @@ CONTAINS
          DO shortening = 1, DIGITS(1.0_dp)
             IF (stop_requested()) RETURN
             trial(:) = x
-            trial(free) = x(free) + fraction*direction
-            IF (ALL(trial(free) == x(free))) EXIT
+            trial(curve%free) = x(curve%free) + fraction*direction
+            IF (ALL(trial(curve%free) == x(curve%free))) EXIT
             CALL reduced_evaluation(trial, trial_energy, trial_reduced, valid)
             IF (valid) THEN
                event = .FALSE.
-               IF (PRESENT(check_segment)) CALL check_segment(x, trial, context, event)
+               IF (PRESENT(check_segment)) CALL check_segment(x, trial, curve, context, event)
                IF (event) THEN
                   coordinate(:) = x
                   IF (PRESENT(interrupted)) interrupted = .TRUE.
@@ -546,7 +540,7 @@ CONTAINS
             history = 0
             CYCLE
          END IF
-         motion(:) = trial(free) - x(free)
+         motion(:) = trial(curve%free) - x(curve%free)
          old_gradient(:) = trial_reduced - reduced
          curvature = DOT_PRODUCT(motion, old_gradient)
          IF (curvature > 128.0_dp*EPSILON(0.0_dp)*NORM2(motion)*NORM2(old_gradient)) THEN
@@ -615,11 +609,11 @@ CONTAINS
             END IF
             norm_direction = NORM2(search)
             IF (norm_direction <= TINY(0.0_dp)) EXIT
-            step = SQRT(EPSILON(0.0_dp))*MAX(1.0_dp, NORM2(center(free)))/norm_direction
+            step = SQRT(EPSILON(0.0_dp))*MAX(1.0_dp, NORM2(center(curve%free)))/norm_direction
             plus(:) = center
             minus(:) = center
-            plus(free) = center(free) + step*search
-            minus(free) = center(free) - step*search
+            plus(curve%free) = center(curve%free) + step*search
+            minus(curve%free) = center(curve%free) - step*search
             CALL reduced_evaluation(plus, energy_trial, gradient_plus, valid_trial)
             IF (.NOT. valid_trial) RETURN
             IF (stop_requested()) THEN
@@ -670,18 +664,6 @@ CONTAINS
          IF (PRESENT(verify_stationarity)) CALL verify_stationarity(c, context, converged_trial)
       END FUNCTION stationary
 ! **************************************************************************************************
-!> \brief Refresh the physical constraint values and Jacobian at a trial.
-!> \param c Complete orbital coordinates.
-! **************************************************************************************************
-      SUBROUTINE constraints(c)
-      REAL(dp), INTENT(IN)                               :: c(:)
-
-         CALL evaluate_constraints(c, values, jacobian, context)
-         CPASSERT(ALL(ieee_is_finite(values)))
-         CPASSERT(ALL(ieee_is_finite(jacobian)))
-      END SUBROUTINE constraints
-
-! **************************************************************************************************
 !> \brief Restore the physical targets and eliminate the dependent-coordinate derivatives.
 !> \param c Trial coordinates, including restored dependent coordinates.
 !> \param e Complete energy at the restored trial.
@@ -693,52 +675,142 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: e, rg(:)
       LOGICAL, INTENT(OUT)                               :: success
 
-      INTEGER                                            :: correction, k
       LOGICAL                                            :: solved
-      REAL(dp)                                           :: before, step_fraction
-      REAL(dp), ALLOCATABLE                              :: candidate(:), matrix(:, :), &
-                                                            multiplier(:, :), rhs(:, :)
+      REAL(dp), ALLOCATABLE                              :: matrix(:, :), multiplier(:, :)
 
+         CALL skala_constraint_chart_restore(curve, evaluate_constraints, context, c, values, jacobian, success)
+         IF (.NOT. success) RETURN
          success = .FALSE.
-         CALL constraints(c)
-         IF (r > 0) THEN
-            ALLOCATE (matrix(r, r), rhs(r, 1), candidate(d), multiplier(r, 1))
-            DO correction = 1, 32
-               IF (ALL(ABS(values) <= density_tolerances)) EXIT
-               before = MAXVAL(ABS(values/scales))
-               matrix(:, :) = jacobian(rows(:r), dependent)/SPREAD(scales(rows(:r)), 2, r)
-               rhs(:, 1) = -values(rows(:r))/scales(rows(:r))
-               CALL solve_constraint_system(matrix, rhs, solved)
-               IF (.NOT. solved) RETURN
-               step_fraction = 1.0_dp
-               DO k = 1, 24
-                  candidate(:) = c
-                  candidate(dependent) = c(dependent) + step_fraction*rhs(:, 1)
-                  CALL constraints(candidate)
-                  IF (ALL(ABS(values) <= density_tolerances)) EXIT
-                  IF (MAXVAL(ABS(values/scales)) < before) EXIT
-                  step_fraction = 0.5_dp*step_fraction
-               END DO
-               IF (k > 24) RETURN
-               c(:) = candidate
-            END DO
-         END IF
-         ! Dependent and zero-normal samples retain their own physical feasibility tests.
-         IF (.NOT. ALL(ABS(values) <= density_tolerances)) RETURN
          CALL evaluate_gradient(c, e, g, context)
          CPASSERT(ieee_is_finite(e))
          CPASSERT(ALL(ieee_is_finite(g)))
-         rg(:) = g(free)
+         rg(:) = g(curve%free)
          IF (r > 0) THEN
-            matrix(:, :) = TRANSPOSE(jacobian(rows(:r), dependent)/SPREAD(scales(rows(:r)), 2, r))
-            multiplier(:, 1) = g(dependent)
+            ALLOCATE (matrix(r, r), multiplier(r, 1))
+            matrix(:, :) = TRANSPOSE(jacobian(curve%rows(:r), curve%dependent)/SPREAD(curve%scales(curve%rows(:r)), 2, r))
+            multiplier(:, 1) = g(curve%dependent)
             CALL solve_constraint_system(matrix, multiplier, solved)
             IF (.NOT. solved) RETURN
-            rg(:) = rg - MATMUL(TRANSPOSE(jacobian(rows(:r), free)/SPREAD(scales(rows(:r)), 2, nf)), multiplier(:, 1))
+  rg(:) = rg - MATMUL(TRANSPOSE(jacobian(curve%rows(:r), curve%free)/SPREAD(curve%scales(curve%rows(:r)), 2, nf)), multiplier(:, 1))
          END IF
          success = .TRUE.
       END SUBROUTINE reduced_evaluation
    END SUBROUTINE skala_constrained_stationarity
+
+! **************************************************************************************************
+!> \brief Fix independent coordinates for restoration of simultaneous physical constraints.
+!>        Rank selection uses all original physical residuals. Dependent samples retain their
+!>        individual feasibility tests even when fewer rows determine the restoration.
+!> \param evaluate_constraints Physical residuals and their orbital-coordinate Jacobian.
+!> \param context Borrowed native problem state.
+!> \param coordinate Reference orbital coordinates.
+!> \param tolerances Absolute feasibility window of every original physical sample.
+!> \param chart Fixed independent coordinates, dependent coordinates and physical row scales.
+!> \param valid Whether the independent constraint rows and coordinates could be selected.
+! **************************************************************************************************
+   SUBROUTINE skala_constraint_chart_create(evaluate_constraints, context, coordinate, tolerances, chart, valid)
+      PROCEDURE(physical_constraints) :: evaluate_constraints
+      CLASS(*), INTENT(INOUT) :: context
+      REAL(dp), INTENT(IN) :: coordinate(:), tolerances(:)
+      TYPE(skala_constraint_chart_type), INTENT(OUT) :: chart
+      LOGICAL, INTENT(OUT) :: valid
+
+      INTEGER :: d, i, j, m, r
+      INTEGER, ALLOCATABLE :: pivots(:)
+      REAL(dp), ALLOCATABLE :: values(:), jacobian(:, :)
+
+      d = SIZE(coordinate)
+      m = SIZE(tolerances)
+      CPASSERT(d > 0 .AND. ALL(ieee_is_finite(coordinate)))
+      CPASSERT(ALL(ieee_is_finite(tolerances)) .AND. ALL(tolerances > 0.0_dp))
+      ALLOCATE (chart%tolerances(m), chart%scales(m), chart%rows(m), pivots(d), values(m), jacobian(m, d))
+      chart%tolerances(:) = tolerances
+      CALL evaluate_constraints(coordinate, values, jacobian, context)
+      CPASSERT(ALL(ieee_is_finite(values)))
+      CPASSERT(ALL(ieee_is_finite(jacobian)))
+      r = 0
+      valid = .TRUE.
+      IF (m > 0) THEN
+         chart%scales(:) = MAX(MAXVAL(ABS(jacobian), DIM=2), tolerances)
+         CALL independent_constraint_rows(jacobian, chart%scales, chart%rows, r, valid)
+         IF (.NOT. valid) RETURN
+         IF (r > 0) THEN
+            CALL constraint_pivots(jacobian(chart%rows(:r), :), chart%scales(chart%rows(:r)), pivots, valid)
+            IF (.NOT. valid) RETURN
+         END IF
+      END IF
+      ALLOCATE (chart%dependent(r), chart%free(d - r))
+      chart%dependent(:) = pivots(:r)
+      j = 0
+      DO i = 1, d
+         IF (ANY(chart%dependent == i)) CYCLE
+         j = j + 1
+         chart%free(j) = i
+      END DO
+   END SUBROUTINE skala_constraint_chart_create
+
+! **************************************************************************************************
+!> \brief Restore physical constraints with the same dependent coordinates as orbital minimization.
+!>        Free coordinates remain fixed. Interpolate them between feasible endpoints and restore
+!>        the dependent coordinates to follow the minimizer's implicit constraint curve. Linear
+!>        interpolation of all orbital coordinates need not satisfy the physical constraints.
+!> \param chart Fixed constraint chart selected at minimization initialization.
+!> \param evaluate_constraints Physical residuals and orbital-coordinate Jacobian.
+!> \param context Borrowed native problem state.
+!> \param coordinate Trial coordinates, replaced by the restored coordinates when successful.
+!> \param values Original physical residuals at the returned trial.
+!> \param jacobian Original physical Jacobian at the returned trial.
+!> \param valid Whether every original sample meets its own absolute feasibility window.
+! **************************************************************************************************
+   SUBROUTINE skala_constraint_chart_restore(chart, evaluate_constraints, context, coordinate, values, jacobian, valid)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: chart
+
+      PROCEDURE(physical_constraints) :: evaluate_constraints
+      CLASS(*), INTENT(INOUT) :: context
+      REAL(dp), INTENT(INOUT) :: coordinate(:)
+      REAL(dp), INTENT(OUT) :: values(:), jacobian(:, :)
+      LOGICAL, INTENT(OUT) :: valid
+
+      INTEGER :: correction, d, k, m, r
+      LOGICAL :: solved
+      REAL(dp) :: before, fraction
+      REAL(dp), ALLOCATABLE :: candidate(:), matrix(:, :), rhs(:, :)
+
+      d = SIZE(coordinate)
+      m = SIZE(chart%tolerances)
+      r = SIZE(chart%dependent)
+      CPASSERT(SIZE(chart%free) + r == d)
+      CPASSERT(SIZE(values) == m .AND. ALL(SHAPE(jacobian) == [m, d]))
+      valid = .FALSE.
+      CALL evaluate_constraints(coordinate, values, jacobian, context)
+      CPASSERT(ALL(ieee_is_finite(values)))
+      CPASSERT(ALL(ieee_is_finite(jacobian)))
+      IF (r > 0) THEN
+         ALLOCATE (matrix(r, r), rhs(r, 1), candidate(d))
+         DO correction = 1, 32
+            IF (ALL(ABS(values) <= chart%tolerances)) EXIT
+            before = MAXVAL(ABS(values/chart%scales))
+            matrix(:, :) = jacobian(chart%rows(:r), chart%dependent)/SPREAD(chart%scales(chart%rows(:r)), 2, r)
+            rhs(:, 1) = -values(chart%rows(:r))/chart%scales(chart%rows(:r))
+            CALL solve_constraint_system(matrix, rhs, solved)
+            IF (.NOT. solved) RETURN
+            fraction = 1.0_dp
+            DO k = 1, 24
+               candidate(:) = coordinate
+               candidate(chart%dependent) = coordinate(chart%dependent) + fraction*rhs(:, 1)
+               CALL evaluate_constraints(candidate, values, jacobian, context)
+               CPASSERT(ALL(ieee_is_finite(values)))
+               CPASSERT(ALL(ieee_is_finite(jacobian)))
+               IF (ALL(ABS(values) <= chart%tolerances)) EXIT
+               IF (MAXVAL(ABS(values/chart%scales)) < before) EXIT
+               fraction = 0.5_dp*fraction
+            END DO
+            IF (k > 24) RETURN
+            coordinate(:) = candidate
+         END DO
+      END IF
+      valid = ALL(ABS(values) <= chart%tolerances)
+   END SUBROUTINE skala_constraint_chart_restore
 
 ! **************************************************************************************************
 !> \brief Check attainable limiting derivatives along physical constraint normals.
@@ -756,13 +828,20 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE skala_cusp_admissibility(positive_gradient, negative_changes, jacobian, &
                                        admissible, release_side, valid)
-      REAL(dp), INTENT(IN) :: positive_gradient(:), negative_changes(:, :), jacobian(:, :)
-      LOGICAL, INTENT(OUT) :: admissible(:), valid
-      INTEGER, INTENT(OUT) :: release_side(:)
-      INTEGER :: d, group, i, info, j, lwork, m, ngroups, rank, side
-      INTEGER, ALLOCATABLE :: groups(:), orientation(:)
-      REAL(dp) :: negative_slope, positive_slope, query(1), roundoff, scale
-      REAL(dp), ALLOCATABLE :: basis(:, :), matrix(:, :), normals(:, :), row(:), singular(:), work(:)
+      REAL(dp), INTENT(IN)                               :: positive_gradient(:), &
+                                                            negative_changes(:, :), jacobian(:, :)
+      LOGICAL, INTENT(OUT)                               :: admissible(:)
+      INTEGER, INTENT(OUT)                               :: release_side(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      INTEGER                                            :: d, group, i, info, j, lwork, m, ngroups, &
+                                                            rank, side
+      INTEGER, ALLOCATABLE                               :: groups(:), orientation(:)
+      REAL(dp)                                           :: negative_slope, positive_slope, &
+                                                            query(1), roundoff, scale
+      REAL(dp), ALLOCATABLE                              :: basis(:, :), matrix(:, :), &
+                                                            normals(:, :), row(:), singular(:), &
+                                                            work(:)
 
       d = SIZE(positive_gradient)
       m = SIZE(jacobian, 1)

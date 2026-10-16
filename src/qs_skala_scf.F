@@ -68,6 +68,8 @@ MODULE qs_skala_scf
         skala_fft_domain, skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
         skala_paw_ps_domain
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
+                                              skala_constraint_chart_restore,&
+                                              skala_constraint_chart_type,&
                                               skala_cusp_admissibility,&
                                               skala_orbital_chart_derivative,&
                                               skala_orbital_chart_size
@@ -109,6 +111,7 @@ MODULE qs_skala_scf
    END TYPE qs_skala_scf_type
 
    TYPE qs_skala_scf_crossing_type
+      TYPE(skala_constraint_chart_type) :: curve
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
       REAL(dp), ALLOCATABLE :: first(:), last(:), values(:, :), targets(:)
       LOGICAL :: encountered = .FALSE.
@@ -1310,11 +1313,12 @@ CONTAINS
 !> \param evaluations Optional number of complete native field evaluations.
 !> \param check_external Poll the normal CP2K external stop conditions, false by default.
 !> \param stopped Whether an external stop was requested.
+!> \param curve Optional original minimization chart, restoring active physical constraints at every root trial.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_boundary_root(state, first, last, points, domains, spins, descriptors, &
                                          targets, tolerances, root, values, selected, found, &
-                                         max_iterations, evaluations, check_external, stopped)
-      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+                                         max_iterations, evaluations, check_external, stopped, curve)
+      TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
                                                             descriptors(:)
@@ -1325,13 +1329,16 @@ CONTAINS
       INTEGER, INTENT(OUT), OPTIONAL                     :: evaluations
       LOGICAL, INTENT(IN), OPTIONAL                      :: check_external
       LOGICAL, INTENT(OUT), OPTIONAL                     :: stopped
+      TYPE(skala_constraint_chart_type), INTENT(IN), &
+         OPTIONAL                                        :: curve
 
       INTEGER                                            :: count, iteration, limit, m, n
       INTEGER, ALLOCATABLE                               :: rows(:)
-      LOGICAL                                            :: external, requested
+      LOGICAL                                            :: external, requested, valid
       REAL(dp)                                           :: energy, fraction, left, right
       REAL(dp), ALLOCATABLE                              :: direction(:), gradient(:), initial(:), &
-                                                            sides(:)
+                                                            jacobian(:, :), residuals(:), sides(:)
+      TYPE(physical_constraints_context)                 :: context
 
       n = qs_skala_scf_size(state)
       m = SIZE(targets)
@@ -1348,6 +1355,13 @@ CONTAINS
       IF (PRESENT(stopped)) stopped = .FALSE.
       ALLOCATE (initial(m), sides(m), direction(n), gradient(n))
       ALLOCATE (rows(m), SOURCE=-1)
+      IF (PRESENT(curve)) THEN
+         context%state => state
+         CALL qs_skala_scf_selected(state, context%points, context%domains, context%spins, context%descriptors, &
+                                    context%targets, residuals, valid, require_feasible=.FALSE.)
+         CPASSERT(valid)
+         ALLOCATE (jacobian(SIZE(residuals), n))
+      END IF
       found = .FALSE.
       selected = .FALSE.
       root(:) = first
@@ -1380,6 +1394,11 @@ CONTAINS
                fraction = 0.5_dp*(left + right)
                IF (fraction <= left .OR. fraction >= right) EXIT
                root(:) = first + fraction*direction
+               IF (PRESENT(curve)) THEN
+                  CALL skala_constraint_chart_restore(curve, evaluate_native_constraints, context, root, &
+                                                      residuals, jacobian, valid)
+                  IF (.NOT. valid) EXIT
+               END IF
                CALL qs_skala_scf_evaluate(state, root, energy)
                count = count + 1
                CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
@@ -1536,7 +1555,7 @@ CONTAINS
 !> \param iterations Optional number of attempted orbital minimization iterations.
 !> \param check_external Poll the normal CP2K stop conditions, false by default.
 !> \param stopped Whether an external stop was requested, independent of convergence.
-!> \param crossings Optional physical zero-crossing scan for an unconstrained minimization.
+!> \param crossings Optional physical threshold scan along the current constrained orbital curve.
 !>        Return all endpoint candidates and their trial segment before accepting the step.
 !>        A detected crossing returns the last accepted coordinate with converged false.
 !>        Root location, selection and minimum conditions must be established by the caller.
@@ -1545,7 +1564,7 @@ CONTAINS
 !> \param rechart Whether the coordinate bound requested a new chart, independent of convergence or stop.
 !> \param retain_progress Preserve the last accepted state on failure, default false.
 !> \param crossing_density_floor Optional positive spin-density target for an unconstrained crossing scan.
-!>        Without an override the native XC dispatcher determines whether the Libxc floor applies.
+!>        Without an override the native XC dispatcher supplies all active spin-density floors.
 !>        Kinetic inputs are excluded because the Libxc kinetic projection is smooth at zero.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
@@ -1587,7 +1606,6 @@ CONTAINS
       context%gradient_tolerance = gradient_tolerance
       IF (PRESENT(check_external)) context%check_external = check_external
       IF (PRESENT(crossings)) THEN
-         CPASSERT(m == 0)
          context%crossings => crossings
          xc_section => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC")
          functional_section => section_vals_get_subs_vals(xc_section, "XC_FUNCTIONAL")
@@ -1618,20 +1636,12 @@ CONTAINS
          CPASSERT(ALL(ieee_is_finite(targets)))
          context%targets(:) = targets
       END IF
-      IF (m == 0) THEN
-         CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
-                                             coordinate, physical_tolerances, gradient_tolerance, converged, &
-                                             max_iterations=max_iterations, max_step=max_step, &
-                                             verify_stationarity=evaluate_native_stationarity, iterations=iterations, &
-                                             check_stop=check_native_stop, stopped=stopped, &
-                                             check_segment=check_native_segment, retain_progress=retain_progress)
-      ELSE
-         CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
-                                             coordinate, physical_tolerances, gradient_tolerance, converged, &
-                                             max_iterations=max_iterations, max_step=max_step, iterations=iterations, &
-                                             verify_stationarity=evaluate_native_stationarity, &
-                                             check_stop=check_native_stop, stopped=stopped, retain_progress=retain_progress)
-      END IF
+      CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
+                                          coordinate, physical_tolerances, gradient_tolerance, converged, &
+                                          max_iterations=max_iterations, max_step=max_step, &
+                                          verify_stationarity=evaluate_native_stationarity, iterations=iterations, &
+                                          check_stop=check_native_stop, stopped=stopped, &
+                                          check_segment=check_native_segment, retain_progress=retain_progress)
       ALLOCATE (gradient(SIZE(coordinate)))
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
       IF (PRESENT(rechart)) rechart = context%rechart
@@ -2211,11 +2221,17 @@ CONTAINS
 !>        by the scan. Endpoint signs do not exclude additional interior crossings.
 !> \param first Last accepted feasible orbital coordinates.
 !> \param last Proposed normalized-orbital coordinates.
+!> \param curve ...
 !> \param context Borrowed native state and optional caller crossing output.
 !> \param interrupted Whether physical crossing candidates were found.
 ! **************************************************************************************************
-   SUBROUTINE check_native_segment(first, last, context, interrupted)
+   SUBROUTINE check_native_segment(first, last, curve, context, interrupted)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+
+      INTEGER                                            :: i, j
+      INTEGER, ALLOCATABLE                               :: retained(:)
+      LOGICAL, ALLOCATABLE                               :: keep(:)
 
       CLASS(*), INTENT(INOUT)                            :: context
       LOGICAL, INTENT(OUT)                               :: interrupted
@@ -2243,6 +2259,26 @@ CONTAINS
                                         crossings%spins, crossings%descriptors, crossings%values, &
                                         candidate_targets=crossings%targets)
          END IF
+         ! Existing active samples stay on their original constraint curve. Rounding-scale
+         ! endpoint sign changes within that same window are not new physical events.
+         ALLOCATE (keep(SIZE(crossings%spins)), SOURCE=.TRUE.)
+         DO i = 1, SIZE(crossings%spins)
+            DO j = 1, SIZE(context%spins)
+               IF (crossings%domains(i) /= context%domains(j)) CYCLE
+               IF (crossings%spins(i) /= context%spins(j)) CYCLE
+               IF (crossings%descriptors(i) /= context%descriptors(j)) CYCLE
+               IF (crossings%targets(i) /= context%targets(j)) CYCLE
+               IF (ALL(crossings%points(:, i) == context%points(:, j))) keep(i) = .FALSE.
+            END DO
+         END DO
+         retained = PACK([(i, i=1, SIZE(keep))], keep)
+         crossings%points = crossings%points(:, retained)
+         crossings%domains = crossings%domains(retained)
+         crossings%spins = crossings%spins(retained)
+         crossings%descriptors = crossings%descriptors(retained)
+         crossings%targets = crossings%targets(retained)
+         crossings%values = crossings%values(:, retained)
+         crossings%curve = curve
          interrupted = SIZE(crossings%spins) > 0
          IF (.NOT. interrupted) RETURN
          ALLOCATE (crossings%first(SIZE(first)), crossings%last(SIZE(last)))
