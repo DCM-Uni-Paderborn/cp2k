@@ -8,7 +8,8 @@
 MODULE qs_upf_inverse_density
    USE basis_set_types,                 ONLY: gto_basis_set_type
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE message_passing,                 ONLY: mp_comm_type
    USE paw_basis_types,                 ONLY: get_paw_basis_info
    USE qs_grid_atom,                    ONLY: grid_atom_type
@@ -23,6 +24,7 @@ MODULE qs_upf_inverse_density
                                               qs_upf_inverse_gaussian_pairs_integrate,&
                                               qs_upf_inverse_gaussian_pairs_type
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_density_cache_type,&
                                               qs_upf_inverse_type
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_evaluate,&
                                               upf_inverse_kinetic_type
@@ -38,10 +40,61 @@ MODULE qs_upf_inverse_density
    PUBLIC :: qs_upf_inverse_density_center, qs_upf_inverse_density_integrate
    PUBLIC :: qs_upf_inverse_density_radial, qs_upf_inverse_density_radial_adjoint
    PUBLIC :: qs_upf_inverse_density_gapw, qs_upf_inverse_density_gapw_integrate
+   PUBLIC :: qs_upf_inverse_density_cache_prepare
    PUBLIC :: qs_upf_inverse_kinetic_center, qs_upf_inverse_kinetic_integrate
    PUBLIC :: qs_upf_inverse_kinetic_collocate, qs_upf_inverse_kinetic_operator
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Store immutable home-center fields within the caller's remaining byte budget.
+!>        An empty cache retains streamed evaluation. No density matrix or geometry response is stored.
+!> \param frame Original defining inverse and borrowed live Gaussian basis owner.
+!> \param center Home center in this frame. Zero and DIRECT need no reconstruction cache.
+!> \param kind Native owner of the same replicated radial/angular quadrature.
+!> \param remaining_bytes Shared budget for all centers and Bloch points in one Coulomb map.
+!> \param cache Owned fields, released with that map before the frame or its bases change.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_density_cache_prepare(frame, center, kind, remaining_bytes, cache)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: center
+      TYPE(qs_kind_type), INTENT(IN)                     :: kind
+      INTEGER(int_8), INTENT(INOUT)                      :: remaining_bytes
+      TYPE(qs_upf_inverse_density_cache_type), &
+         INTENT(OUT)                                     :: cache
+
+      INTEGER                                            :: n, nao, np
+      INTEGER(int_8)                                     :: bytes, npoint
+      REAL(dp), ALLOCATABLE                              :: points(:, :)
+      TYPE(grid_atom_type), POINTER                      :: grid
+      TYPE(harmonics_atom_type), POINTER                 :: harmonics
+
+      CPASSERT(remaining_bytes >= 0_int_8)
+      IF (center == 0 .OR. frame%direct) RETURN
+      IF (remaining_bytes == 0_int_8) RETURN
+      CALL get_qs_kind(kind, grid_atom=grid)
+      CPASSERT(ASSOCIATED(grid))
+      CPASSERT(grid%nr > 0 .AND. grid%ng_sphere > 0)
+      npoint = INT(grid%nr, int_8)*grid%ng_sphere
+      nao = SIZE(frame%coefficients, 2)
+      bytes = 16_int_8*(8_int_8*npoint*nao + SIZE(frame%coefficients, KIND=int_8)) + &
+              8_int_8*(3_int_8*npoint + SIZE(frame%positions, KIND=int_8) + 12_int_8) + &
+              INT(STORAGE_SIZE(0)/8, int_8)*SIZE(frame%images, KIND=int_8)
+      IF (bytes > remaining_bytes) RETURN
+      CALL gapw_grid(frame, center, kind, grid, harmonics, n, points)
+      np = SIZE(points, 2)
+      ALLOCATE (cache%left(np, nao), cache%right(np, nao), &
+                cache%left_gradient(np, nao, 3), cache%right_gradient(np, nao, 3))
+      CALL center_fields(frame, center, points, cache%left, cache%right, cache%left_gradient, cache%right_gradient)
+      cache%center = center
+      cache%cell = frame%cell
+      cache%reduced_k = frame%reduced_k
+      ALLOCATE (cache%positions, SOURCE=frame%positions)
+      ALLOCATE (cache%images, SOURCE=frame%images)
+      ALLOCATE (cache%coefficients, SOURCE=frame%coefficients)
+      CALL MOVE_ALLOC(points, cache%points)
+      remaining_bytes = remaining_bytes - bytes
+   END SUBROUTINE qs_upf_inverse_density_cache_prepare
 
 ! **************************************************************************************************
 !> \brief Periodic valence kinetic augmentation and its complete fixed-matrix geometry response.
@@ -396,10 +449,11 @@ CONTAINS
 !> \param reduced_k_response Reduced Bloch-vector response.
 !> \param coefficients_response Complete dW from the original defining inverse quadrature.
 !> \param atom_index Native Gaussian center, required when center is zero and no inverse correction is present.
+!> \param cache Optional immutable point fields. Geometry responses bypass this cache.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_density_gapw(frame, augmentation, center, kind, pairs, matrix, radial, &
                                           response, atom_response, cell_response, reduced_k_response, &
-                                          coefficients_response, atom_index)
+                                          coefficients_response, atom_index, cache)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       INTEGER, INTENT(IN)                                :: center
@@ -414,6 +468,8 @@ CONTAINS
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
       INTEGER, INTENT(IN), OPTIONAL                      :: atom_index
+      TYPE(qs_upf_inverse_density_cache_type), &
+         INTENT(IN), OPTIONAL                            :: cache
 
       INTEGER                                            :: atom, n, nh, np
       LOGICAL                                            :: derive
@@ -461,7 +517,7 @@ CONTAINS
          CALL qs_upf_inverse_gaussian_radial(kind, hard, eh)
          CALL qs_upf_inverse_gaussian_radial(kind, soft, es)
          values = 0.0_dp
-         IF (center > 0) CALL qs_upf_inverse_density_center(frame, augmentation, center, points, matrix, values)
+         IF (center > 0) CALL qs_upf_inverse_density_center(frame, augmentation, center, points, matrix, values, cache=cache)
       END IF
       IF (center == 0) values = 0.0_dp
       CALL qs_upf_inverse_density_radial(grid, harmonics, values, radial, eh, es)
@@ -479,8 +535,10 @@ CONTAINS
 !> \param potential Harmonic radial-measure covector, with no radial weight or k weight included.
 !> \param ao_operator Hermitian AO center contribution, without a mesh weight.
 !> \param atom_index Native Gaussian center, required for center zero without an inverse correction.
+!> \param cache Optional immutable point fields. Geometry responses bypass this cache.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_density_gapw_integrate(frame, augmentation, center, kind, pairs, potential, ao_operator, atom_index)
+   SUBROUTINE qs_upf_inverse_density_gapw_integrate(frame, augmentation, center, kind, pairs, potential, ao_operator, &
+                                                    atom_index, cache)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       INTEGER, INTENT(IN)                                :: center
@@ -490,6 +548,8 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: potential(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: ao_operator(:, :)
       INTEGER, INTENT(IN), OPTIONAL                      :: atom_index
+      TYPE(qs_upf_inverse_density_cache_type), &
+         INTENT(IN), OPTIONAL                            :: cache
 
       COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :)
       INTEGER                                            :: n, nh, np
@@ -514,7 +574,7 @@ CONTAINS
       ! Atom rows are replicated. Only the Gaussian OCE pair transpose performs its native pair sum.
       ao_operator = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (center > 0) THEN
-         CALL qs_upf_inverse_density_integrate(frame, augmentation, center, points, weights, values, ao_operator)
+         CALL qs_upf_inverse_density_integrate(frame, augmentation, center, points, weights, values, ao_operator, cache=cache)
       END IF
       ao_operator = ao_operator + gaussian
    END SUBROUTINE qs_upf_inverse_density_gapw_integrate
@@ -585,10 +645,11 @@ CONTAINS
 !> \param cell_response Physical lattice response.
 !> \param reduced_k_response Reduced Bloch-vector response.
 !> \param coefficients_response Complete dW from the original defining inverse quadrature.
+!> \param cache Optional immutable point fields. Geometry responses bypass this cache.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_density_center(frame, augmentation, center, points, matrix, density, response, &
                                             point_response, atom_response, cell_response, reduced_k_response, &
-                                            coefficients_response)
+                                            coefficients_response, cache)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       INTEGER, INTENT(IN)                                :: center
@@ -601,6 +662,8 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+      TYPE(qs_upf_inverse_density_cache_type), &
+         INTENT(IN), OPTIONAL                            :: cache
 
       COMPLEX(dp), ALLOCATABLE                           :: d(:, :), dd(:, :), de(:, :), e(:, :), &
                                                             gd(:, :, :), ge(:, :, :), &
@@ -644,7 +707,7 @@ CONTAINS
             CALL upf_inverse_cross_density(d, de, ao_density=matrix, density=dq)
             response = response + dq
          ELSE
-            CALL center_fields(frame, center, points, d, e, gd, ge)
+            CALL center_fields(frame, center, points, d, e, gd, ge, cache=cache)
          END IF
          CALL upf_inverse_cross_density(d, e, ao_density=matrix, density=density)
       END IF
@@ -685,14 +748,17 @@ CONTAINS
 !> \param potential Unweighted real density covector.
 !> \param ao_operator Hermitian AO adjoint for one spin and k point, without a k weight.
 !> \param comm Optional communicator distributing point rows. Replicated atom grids omit it.
+!> \param cache Optional immutable point fields. Geometry responses bypass this cache.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_density_integrate(frame, augmentation, center, points, weights, potential, ao_operator, comm)
+   SUBROUTINE qs_upf_inverse_density_integrate(frame, augmentation, center, points, weights, potential, ao_operator, comm, cache)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       INTEGER, INTENT(IN)                                :: center
       REAL(dp), INTENT(IN)                               :: points(:, :), weights(:), potential(:)
       COMPLEX(dp), INTENT(OUT)                           :: ao_operator(:, :)
       TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+      TYPE(qs_upf_inverse_density_cache_type), &
+         INTENT(IN), OPTIONAL                            :: cache
 
       COMPLEX(dp), ALLOCATABLE                           :: d(:, :), e(:, :), gd(:, :, :), &
                                                             ge(:, :, :), qoperator(:, :)
@@ -710,7 +776,7 @@ CONTAINS
       ao_operator = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (.NOT. frame%direct) THEN
          ALLOCATE (d(np, n), e(np, n), gd(np, n, 3), ge(np, n, 3))
-         CALL center_fields(frame, center, points, d, e, gd, ge)
+         CALL center_fields(frame, center, points, d, e, gd, ge, cache=cache)
          CALL upf_inverse_semilocal_pair(d, e, gd, ge, weights, potential, zeros, zero, ao_operator)
          ao_operator = 0.5_dp*(ao_operator + CONJG(TRANSPOSE(ao_operator)))
       END IF
@@ -826,9 +892,10 @@ CONTAINS
 !> \param cell_response ...
 !> \param reduced_k_response ...
 !> \param coefficients_response ...
+!> \param cache Optional immutable point fields. Geometry responses bypass this cache.
 ! **************************************************************************************************
    SUBROUTINE center_fields(frame, center, points, d, e, gd, ge, dd, de, gdd, gde, &
-                            point_response, atom_response, cell_response, reduced_k_response, coefficients_response)
+                            point_response, atom_response, cell_response, reduced_k_response, coefficients_response, cache)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center
       REAL(dp), INTENT(IN)                               :: points(:, :)
@@ -841,6 +908,8 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+      TYPE(qs_upf_inverse_density_cache_type), &
+         INTENT(IN), OPTIONAL                            :: cache
 
       COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :), dgc(:, :, :), &
                                                             gc(:, :, :)
@@ -848,6 +917,29 @@ CONTAINS
 
       n = SIZE(frame%coefficients, 2)
       np = SIZE(points, 2)
+      IF (PRESENT(cache)) THEN
+         IF (ALLOCATED(cache%left) .AND. &
+             .NOT. (PRESENT(dd) .OR. PRESENT(de) .OR. PRESENT(gdd) .OR. PRESENT(gde) .OR. &
+                    PRESENT(point_response) .OR. PRESENT(atom_response) .OR. PRESENT(cell_response) .OR. &
+                    PRESENT(reduced_k_response) .OR. PRESENT(coefficients_response))) THEN
+            CPASSERT(cache%center == center)
+            CPASSERT(ALL(SHAPE(cache%points) == SHAPE(points)))
+            CPASSERT(ALL(SHAPE(cache%positions) == SHAPE(frame%positions)))
+            CPASSERT(ALL(SHAPE(cache%images) == SHAPE(frame%images)))
+            CPASSERT(ALL(SHAPE(cache%coefficients) == SHAPE(frame%coefficients)))
+            CPASSERT(ALL(cache%points == points))
+            CPASSERT(ALL(cache%positions == frame%positions))
+            CPASSERT(ALL(cache%cell == frame%cell))
+            CPASSERT(ALL(cache%reduced_k == frame%reduced_k))
+            CPASSERT(ALL(cache%images == frame%images))
+            CPASSERT(ALL(cache%coefficients == frame%coefficients))
+            d = cache%left
+            e = cache%right
+            gd = cache%left_gradient
+            ge = cache%right_gradient
+            RETURN
+         END IF
+      END IF
       ALLOCATE (chi(np, n), gc(np, n, 3))
       CALL qs_upf_inverse_center_fields(frame, center, points, d, gd, dd, gdd, point_response, &
                                         atom_response, cell_response, reduced_k_response, coefficients_response, [0, 0, 0])

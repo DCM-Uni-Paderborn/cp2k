@@ -110,6 +110,17 @@ MODULE qs_upf_inverse_types
       REAL(dp), ALLOCATABLE :: reduced_k(:, :), weights(:)
    END TYPE qs_upf_inverse_background_type
 
+   ! Owned fields of one immutable Coulomb center and Bloch frame. Geometry responses
+   ! are evaluated independently. Releasing the Coulomb map also releases these fields.
+   TYPE qs_upf_inverse_density_cache_type
+      INTEGER :: center = 0
+      REAL(dp) :: cell(3, 3) = 0.0_dp, reduced_k(3) = 0.0_dp
+      INTEGER, ALLOCATABLE :: images(:, :)
+      REAL(dp), ALLOCATABLE :: points(:, :), positions(:, :)
+      COMPLEX(dp), ALLOCATABLE :: coefficients(:, :), left(:, :), right(:, :), &
+                                  left_gradient(:, :, :), right_gradient(:, :, :)
+   END TYPE qs_upf_inverse_density_cache_type
+
    TYPE qs_upf_inverse_coulomb_type
       LOGICAL :: ready = .FALSE.
       TYPE(qs_upf_inverse_background_type) :: background
@@ -123,6 +134,7 @@ MODULE qs_upf_inverse_types
       REAL(dp), ALLOCATABLE :: weights(:), multiplicity(:), poisson_weights(:), positions(:, :)
       REAL(dp) :: cell(3, 3) = 0.0_dp
       COMPLEX(dp), ALLOCATABLE :: metric(:, :, :)
+      TYPE(qs_upf_inverse_density_cache_type), ALLOCATABLE :: fields(:, :)
    END TYPE qs_upf_inverse_coulomb_type
 
    TYPE qs_upf_inverse_scf_type
@@ -166,6 +178,7 @@ MODULE qs_upf_inverse_types
    PUBLIC :: qs_upf_inverse_xc_type
    PUBLIC :: qs_upf_inverse_background_type, qs_upf_inverse_background_release
    PUBLIC :: qs_upf_inverse_coulomb_type, qs_upf_inverse_coulomb_release
+   PUBLIC :: qs_upf_inverse_density_cache_type
 
 CONTAINS
 

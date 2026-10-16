@@ -9,7 +9,8 @@ MODULE qs_upf_inverse_coulomb
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type,&
                                               dbcsr_type
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_para_env_type
@@ -58,7 +59,8 @@ MODULE qs_upf_inverse_coulomb
                                               qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
                                               qs_upf_inverse_background_prepare
-   USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_density_gapw,&
+   USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_density_cache_prepare,&
+                                              qs_upf_inverse_density_gapw,&
                                               qs_upf_inverse_density_gapw_integrate
    USE qs_upf_inverse_gaussian_pairs,   ONLY: qs_upf_inverse_gaussian_pairs_has_derivatives,&
                                               qs_upf_inverse_gaussian_pairs_prepare
@@ -262,6 +264,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: ao_operator(:, :)
       INTEGER                                            :: a, atom, b, channel, k, kind, nao, &
                                                             ncenter, nh, nr
+      INTEGER(int_8)                                     :: remaining_bytes
       LOGICAL                                            :: paw_atom
       REAL(dp)                                           :: alpha, tolerance, total
       REAL(dp), ALLOCATABLE                              :: unit(:, :)
@@ -344,7 +347,9 @@ CONTAINS
          IF (paw_atom) ncenter = ncenter + 1
       END DO
       ALLOCATE (map%centers(ncenter), map%pairs(ncenter), map%center_atoms(ncenter), &
-                map%center_kinds(ncenter), map%inverse_centers(ncenter))
+                map%center_kinds(ncenter), map%inverse_centers(ncenter), map%fields(ncenter, SIZE(map%weights)))
+      ! Bound replicated point fields across all centers and Bloch points in this map.
+      remaining_bytes = 64_int_8*1024_int_8*1024_int_8
       ncenter = SIZE(frame%center_atoms)
       map%center_atoms(:ncenter) = frame%center_atoms
       map%center_kinds(:ncenter) = frame%center_kinds
@@ -390,8 +395,10 @@ CONTAINS
          unit(:, 1) = SQRT(fourpi)
          DO k = 1, SIZE(map%weights)
             CALL select_frame(state, k, frame, augmentation)
+            CALL qs_upf_inverse_density_cache_prepare(frame, map%inverse_centers(a), kinds(kind), remaining_bytes, &
+                                                      map%fields(a, k))
             CALL qs_upf_inverse_density_gapw_integrate(frame, augmentation, map%inverse_centers(a), kinds(kind), &
-                                                       map%pairs(a), unit, ao_operator, map%center_atoms(a))
+                                                       map%pairs(a), unit, ao_operator, map%center_atoms(a), map%fields(a, k))
             map%metric(:, :, k) = map%metric(:, :, k) + ao_operator
          END DO
          DEALLOCATE (unit)
@@ -449,7 +456,8 @@ CONTAINS
             CALL select_frame(state, k, frame, augmentation)
             kind = map%center_kinds(a)
             CALL qs_upf_inverse_density_gapw(frame, augmentation, map%inverse_centers(a), kinds(kind), &
-                                             map%pairs(a), matrix(:, :, k), radial, atom_index=map%center_atoms(a))
+                                             map%pairs(a), matrix(:, :, k), radial, atom_index=map%center_atoms(a), &
+                                             cache=map%fields(a, k))
             map%centers(a)%density(:, :) = map%centers(a)%density + map%weights(k)*radial
          END DO
          electronic_charge = electronic_charge + SQRT(fourpi)*SUM(map%centers(a)%weights*map%centers(a)%density(:, 1))
@@ -475,7 +483,8 @@ CONTAINS
          DO a = 1, SIZE(map%centers)
             kind = map%center_kinds(a)
             CALL qs_upf_inverse_density_gapw_integrate(frame, augmentation, map%inverse_centers(a), kinds(kind), &
-                                                       map%pairs(a), potentials(a)%values, ao_operator, map%center_atoms(a))
+                                                       map%pairs(a), potentials(a)%values, ao_operator, map%center_atoms(a), &
+                                                       map%fields(a, k))
             ao_operators(:, :, k) = ao_operators(:, :, k) + ao_operator
          END DO
       END DO
