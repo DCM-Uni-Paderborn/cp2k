@@ -169,7 +169,7 @@ CONTAINS
    END SUBROUTINE dependent_constraints
 
 ! **************************************************************************************************
-!> \brief A quadratic with its constrained minimum at (1,-1).
+!> \brief A quadratic with free minimum (2,0) and constrained minimum (1,-1).
 !> \param coordinate Complete trial coordinates.
 !> \param energy Complete energy.
 !> \param gradient Energy derivative in the same coordinates.
@@ -187,7 +187,7 @@ CONTAINS
       CLASS DEFAULT
          ERROR STOP 'Invalid dependent-constraint energy context'
       END SELECT
-      gradient(:) = coordinate - [1.0_dp, -1.0_dp]
+      gradient(:) = coordinate - [2.0_dp, 0.0_dp]
       energy = 0.5_dp*SUM(gradient**2)
    END SUBROUTINE dependent_energy_gradient
 
