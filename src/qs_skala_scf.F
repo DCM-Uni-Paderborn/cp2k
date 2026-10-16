@@ -69,6 +69,7 @@ MODULE qs_skala_scf
         skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
         skala_paw_ps_domain
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
+                                              skala_constraint_chart_create,&
                                               skala_constraint_chart_restore,&
                                               skala_constraint_chart_type,&
                                               skala_cusp_admissibility,&
@@ -91,6 +92,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_crossing_type
    PUBLIC :: qs_skala_scf_select, qs_skala_scf_selected, qs_skala_scf_limiting, qs_skala_scf_balance
    PUBLIC :: qs_skala_scf_admissibility, qs_skala_scf_classify
+   PUBLIC :: qs_skala_scf_release_cusp
    PUBLIC :: qs_skala_scf_accept
    INTEGER, PARAMETER, PUBLIC :: qs_skala_positive_density_sum = -2
 
@@ -1954,6 +1956,138 @@ CONTAINS
       CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian, hold_orbitals)
       CALL skala_cusp_admissibility(positive, changes, jacobian, admissible, release_side, valid)
    END SUBROUTINE qs_skala_scf_admissibility
+
+! **************************************************************************************************
+!> \brief Release one nonminimum group of active physical samples after tangential minimization.
+!>        Proportional samples leave together in the direction selected by their coupled limiting
+!>        covectors. Restore every remaining physical constraint on its original implicit curve.
+!>        Accept only a finite step outside the released windows that lowers the complete native
+!>        energy beyond its rounding resolution. On failure restore the full original selection.
+!> \param state Native normalized orbital chart and active physical samples.
+!> \param coordinate Current tangentially stationary coordinates, replaced only on release.
+!> \param max_step Original maximum orbital-coordinate step, or zero for a query without release.
+!> \param released Whether a nonminimum group was removed and a descent step accepted.
+!> \param valid Whether the normal test and any required finite release succeeded.
+!> \param check_external Monitor original CP2K stop and runtime controls, default false.
+!> \param stopped Whether an external stop was requested.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_release_cusp(state, coordinate, max_step, released, valid, check_external, stopped)
+      TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
+      REAL(dp), INTENT(INOUT)                            :: coordinate(:)
+      REAL(dp), INTENT(IN)                               :: max_step
+      LOGICAL, INTENT(OUT)                               :: released, valid
+      LOGICAL, INTENT(IN), OPTIONAL                      :: check_external
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: stopped
+
+      INTEGER                                            :: i, info, lwork, m, n, rank, shortening
+      INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), groups(:), &
+                                                            points(:, :), rows(:), sides(:), &
+                                                            spins(:)
+      LOGICAL                                            :: feasible, requested
+      LOGICAL, ALLOCATABLE                               :: admissible(:), drop(:)
+      REAL(dp)                                           :: energy, fraction, kinetic_probe, &
+                                                            kinetic_tolerance, probe, query(1), &
+                                                            roundoff, tolerance, trial_energy
+      REAL(dp), ALLOCATABLE :: changes(:, :), direction(:), jacobian(:, :), matrix(:, :), &
+         physical(:, :), positive(:), residual(:), rhs(:, :), scales(:), singular(:), targets(:), &
+         tolerances(:), trial(:), values(:), weights(:), work(:)
+      TYPE(physical_constraints_context)                 :: context
+      TYPE(skala_constraint_chart_type)                  :: curve
+
+      released = .FALSE.
+      valid = .FALSE.
+      IF (PRESENT(stopped)) stopped = .FALSE.
+      n = qs_skala_scf_size(state)
+      CPASSERT(SIZE(coordinate) == n .AND. ieee_is_finite(max_step) .AND. max_step >= 0.0_dp)
+      CALL qs_skala_scf_evaluate(state, coordinate, energy)
+      CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, feasible)
+      IF (.NOT. feasible) RETURN
+      m = SIZE(spins)
+      valid = .TRUE.
+      IF (m == 0) RETURN
+      ALLOCATE (positive(n), changes(n, m), physical(m, n), admissible(m), sides(m), groups(m), drop(m))
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, physical)
+      CALL skala_cusp_admissibility(positive, changes, physical, admissible, sides, valid, group_ids=groups)
+      IF (.NOT. valid .OR. ALL(admissible)) RETURN
+      valid = .FALSE.
+      IF (max_step == 0.0_dp) RETURN
+      i = FINDLOC(admissible, .FALSE., DIM=1)
+      IF (sides(i) == 0) RETURN
+      drop(:) = groups == groups(i)
+      ALLOCATE (values(m), jacobian(m, n), matrix(m, n), scales(m), &
+                rhs(MAX(m, n), 1), singular(MIN(m, n)), direction(n), trial(n))
+      CALL qs_skala_scf_constraints(state, coordinate, points, domains, spins, descriptors, values, jacobian, &
+                                    targets=targets)
+      scales(:) = SQRT(SUM(jacobian**2, DIM=2))
+      IF (ANY(scales <= TINY(0.0_dp))) RETURN
+      matrix(:, :) = jacobian/SPREAD(scales, 2, n)
+      rhs = 0.0_dp
+      WHERE (drop) rhs(:m, 1) = REAL(sides, dp)
+      CALL dgelss(m, n, 1, matrix, m, rhs, MAX(m, n), singular, &
+                  64.0_dp*EPSILON(0.0_dp), rank, query, -1, info)
+      IF (info /= 0) RETURN
+      lwork = MAX(1, CEILING(query(1)))
+      ALLOCATE (work(lwork))
+      CALL dgelss(m, n, 1, matrix, m, rhs, MAX(m, n), singular, &
+                  64.0_dp*EPSILON(0.0_dp), rank, work, lwork, info)
+      IF (info /= 0 .OR. rank /= MAXVAL(groups)) RETURN
+      direction(:) = rhs(:n, 1)
+      residual = MATMUL(jacobian/SPREAD(scales, 2, n), direction)
+      WHERE (drop) residual = residual - REAL(sides, dp)
+      IF (MAXVAL(ABS(residual)) > 128.0_dp*EPSILON(0.0_dp)) RETURN
+      IF (NORM2(direction) <= TINY(0.0_dp)) RETURN
+      direction(:) = direction/NORM2(direction)
+      CALL skala_density_constraints_get(state%constraints, points, spins, weights, probe, tolerance, &
+                                         descriptors=descriptors, domains=domains, targets=targets, &
+                                         kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
+      rows = PACK([(i, i=1, m)],.NOT. drop)
+      IF (SIZE(rows) > 0) THEN
+         CALL qs_skala_scf_select(state, points(:, rows), domains(rows), spins(rows), descriptors(rows), weights(rows), &
+                                  probe, tolerance, kinetic_probe, kinetic_tolerance, targets=targets(rows))
+      ELSE
+         CALL skala_density_constraints_reset(state%constraints)
+      END IF
+      context%state => state
+      IF (PRESENT(check_external)) context%check_external = check_external
+      context%points = points(:, rows)
+      context%domains = domains(rows)
+      context%spins = spins(rows)
+      context%descriptors = descriptors(rows)
+      context%targets = targets(rows)
+      DEALLOCATE (physical, residual)
+      ALLOCATE (physical(SIZE(rows), n), residual(SIZE(rows)))
+      CALL skala_constraint_chart_create(evaluate_native_constraints, context, coordinate, tolerances(rows), curve, feasible)
+      fraction = max_step
+      DO shortening = 1, DIGITS(1.0_dp)
+         IF (.NOT. feasible) EXIT
+         CALL check_native_stop(context, requested)
+         IF (requested) THEN
+            IF (PRESENT(stopped)) stopped = .TRUE.
+            EXIT
+         END IF
+         trial(:) = coordinate + fraction*direction
+         IF (ALL(trial == coordinate)) EXIT
+         CALL skala_constraint_chart_restore(curve, evaluate_native_constraints, context, trial, residual, physical, feasible)
+         IF (feasible) THEN
+            CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values)
+            IF (ALL(REAL(sides, dp)*(values - targets) > tolerances .OR. .NOT. drop)) THEN
+               CALL qs_skala_scf_evaluate(state, trial, trial_energy)
+               roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+               IF (trial_energy < energy - roundoff) THEN
+                  coordinate(:) = trial
+                  released = .TRUE.
+                  valid = .TRUE.
+                  RETURN
+               END IF
+            END IF
+         END IF
+         fraction = 0.5_dp*fraction
+         feasible = .TRUE.
+      END DO
+      CALL qs_skala_scf_select(state, points, domains, spins, descriptors, weights, &
+                               probe, tolerance, kinetic_probe, kinetic_tolerance, targets=targets)
+      CALL qs_skala_scf_evaluate(state, coordinate, energy)
+   END SUBROUTINE qs_skala_scf_release_cusp
 
 ! **************************************************************************************************
 !> \brief Classify candidate continuous density boundaries with the existing active physical samples.

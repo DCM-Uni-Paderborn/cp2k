@@ -241,8 +241,8 @@ MODULE qs_scf
    USE qs_skala_scf,                    ONLY: &
         qs_skala_scf_accept, qs_skala_scf_balance, qs_skala_scf_classify, qs_skala_scf_create, &
         qs_skala_scf_crossing_type, qs_skala_scf_evaluate, qs_skala_scf_inspect, &
-        qs_skala_scf_release, qs_skala_scf_selected, qs_skala_scf_size, qs_skala_scf_stationarity, &
-        qs_skala_scf_type
+        qs_skala_scf_release, qs_skala_scf_release_cusp, qs_skala_scf_selected, qs_skala_scf_size, &
+        qs_skala_scf_stationarity, qs_skala_scf_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_core
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc_atom,                     ONLY: gapw_cdft_one_center
@@ -1105,7 +1105,7 @@ CONTAINS
                                                             points(:, :), reached(:), &
                                                             release_side(:), spins(:)
       LOGICAL                                            :: accepted, balanced, converged, rechart, &
-                                                            valid
+                                                            released, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
@@ -1183,6 +1183,26 @@ CONTAINS
             CYCLE
          END IF
          IF (converged .AND. SIZE(tolerances) > 0) THEN
+            CALL qs_skala_scf_release_cusp(state, coordinate, MERGE(0.1_dp, 0.0_dp, remaining > 0), released, valid, &
+                                           check_external=.TRUE., stopped=stopped)
+            IF (.NOT. valid .OR. stopped) EXIT
+            IF (released) THEN
+               ! A normal release is an accepted orbital step within the original SCF budget.
+               iterations = iterations + 1
+               remaining = remaining - 1
+               CALL qs_skala_scf_release(state)
+               CALL qs_skala_scf_create(state, qs_env, valid)
+               IF (.NOT. valid) CPABORT("Could not rebuild the released inverse orbital state.")
+               CPASSERT(qs_skala_scf_size(state) == n)
+               coordinate = 0.0_dp
+               CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, &
+                                          require_feasible=.FALSE.)
+               IF (.NOT. valid) EXIT
+               IF (ALLOCATED(coordinate_bound)) DEALLOCATE (coordinate_bound)
+               IF (SIZE(tolerances) == 0) ALLOCATE (coordinate_bound, SOURCE=1.0_dp)
+               IF (remaining <= 0) EXIT
+               CYCLE
+            END IF
             CALL qs_skala_scf_balance(state, coordinate, scf_control%eps_scf, physical, balanced)
             converged = balanced
          END IF

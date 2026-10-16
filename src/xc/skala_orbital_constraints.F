@@ -844,14 +844,16 @@ CONTAINS
 !> \param admissible Whether a convex cusp brackets zero along each positive physical normal.
 !> \param release_side Minus one for a negative-side descent, plus one for a positive-side descent.
 !> \param valid Whether the nonzero normals form independent groups of proportional samples.
+!> \param group_ids Optional grouping of proportional normals, valid only on success.
 ! **************************************************************************************************
    SUBROUTINE skala_cusp_admissibility(positive_gradient, negative_changes, jacobian, &
-                                       admissible, release_side, valid)
+                                       admissible, release_side, valid, group_ids)
       REAL(dp), INTENT(IN)                               :: positive_gradient(:), &
                                                             negative_changes(:, :), jacobian(:, :)
       LOGICAL, INTENT(OUT)                               :: admissible(:)
       INTEGER, INTENT(OUT)                               :: release_side(:)
       LOGICAL, INTENT(OUT)                               :: valid
+      INTEGER, INTENT(OUT), OPTIONAL                     :: group_ids(:)
 
       INTEGER                                            :: d, group, i, info, j, lwork, m, ngroups, &
                                                             rank, side
@@ -868,6 +870,10 @@ CONTAINS
       CPASSERT(SIZE(negative_changes, 1) == d)
       CPASSERT(SIZE(negative_changes, 2) == m)
       CPASSERT(SIZE(admissible) == m .AND. SIZE(release_side) == m)
+      IF (PRESENT(group_ids)) THEN
+         CPASSERT(SIZE(group_ids) == m)
+         group_ids = 0
+      END IF
       CPASSERT(ALL(ieee_is_finite(positive_gradient)))
       CPASSERT(ALL(ieee_is_finite(negative_changes)))
       CPASSERT(ALL(ieee_is_finite(jacobian)))
@@ -939,6 +945,7 @@ CONTAINS
          END IF
          WHERE (groups == group) release_side = side*orientation
       END DO
+      IF (PRESENT(group_ids)) group_ids = groups
       valid = .TRUE.
    END SUBROUTINE skala_cusp_admissibility
 

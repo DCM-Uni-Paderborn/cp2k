@@ -284,12 +284,11 @@ CONTAINS
 !> \brief Retain coincident physical samples and reject unattainable independent branch choices.
 ! **************************************************************************************************
    SUBROUTINE check_cusp_normals()
-      INTEGER                                            :: dependent_sides(3), sides(2)
+      INTEGER                                            :: dependent_sides(3), groups(2), sides(2)
       LOGICAL                                            :: admissible(2), dependent_admissible(3), &
                                                             valid
-      REAL(dp)                                           :: changes(1, 2), dependent_changes(2, 3), &
-                                                            dependent_jacobian(3, 2), &
-                                                            jacobian(2, 1)
+      REAL(dp) :: changes(1, 2), coupled_changes(2, 2), coupled_jacobian(2, 2), &
+         dependent_changes(2, 3), dependent_jacobian(3, 2), jacobian(2, 1)
 
       jacobian(:, 1) = [2.e-18_dp, 4.e12_dp]
       changes(1, :) = [-1.0_dp, -4.0_dp]
@@ -312,6 +311,18 @@ CONTAINS
       changes(1, :) = [1.0_dp, 1.0_dp]
       CALL skala_cusp_admissibility([-1.0_dp], changes, jacobian, admissible, sides, valid)
       IF (.NOT. valid .OR. ANY(admissible) .OR. ANY(sides /= 1)) ERROR STOP 'A concave coincident cusp was accepted'
+      ! Dual normals of x and x+y preserve the other sample. The first cusp brackets
+      ! zero, while the second admits positive-side descent without releasing the first.
+      coupled_jacobian(1, :) = [1.0_dp, 0.0_dp]
+      coupled_jacobian(2, :) = [1.0_dp, 1.0_dp]
+      coupled_changes(:, 1) = [-2.0_dp, 0.0_dp]
+      coupled_changes(:, 2) = [0.0_dp, -1.0_dp]
+      CALL skala_cusp_admissibility([-1.0_dp, -2.0_dp], coupled_changes, coupled_jacobian, &
+                                    admissible, sides, valid, group_ids=groups)
+      IF (.NOT. valid .OR. .NOT. admissible(1) .OR. admissible(2) .OR. &
+          ANY(sides /= [0, 1]) .OR. ANY(groups /= [1, 2])) THEN
+         ERROR STOP 'A coupled normal release changed an admissible independent sample'
+      END IF
       dependent_jacobian(:, 1) = [1.0_dp, 0.0_dp, 1.0_dp]
       dependent_jacobian(:, 2) = [0.0_dp, 1.0_dp, 1.0_dp]
       dependent_changes = 0.0_dp
