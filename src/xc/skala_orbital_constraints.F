@@ -829,24 +829,30 @@ CONTAINS
       IF (r > 0) THEN
          ALLOCATE (matrix(r, r), rhs(r, 1), candidate(d))
          DO correction = 1, 32
-            IF (ALL(ABS(values) <= chart%tolerances)) EXIT
+            ! A small field residual can still displace a weak-normal implicit curve.
+            ! Refine the target while representable Newton corrections reduce that residual.
             before = MAXVAL(ABS(values/chart%scales))
+            IF (before == 0.0_dp) EXIT
             matrix(:, :) = jacobian(chart%rows(:r), chart%dependent)/SPREAD(chart%scales(chart%rows(:r)), 2, r)
             rhs(:, 1) = -values(chart%rows(:r))/chart%scales(chart%rows(:r))
             CALL solve_constraint_system(matrix, rhs, solved)
-            IF (.NOT. solved) RETURN
+            IF (.NOT. solved) EXIT
             fraction = 1.0_dp
             DO k = 1, 24
                candidate(:) = coordinate
                candidate(chart%dependent) = coordinate(chart%dependent) + fraction*rhs(:, 1)
+               IF (ALL(candidate == coordinate)) EXIT
                CALL evaluate_constraints(candidate, values, jacobian, context)
                CPASSERT(ALL(ieee_is_finite(values)))
                CPASSERT(ALL(ieee_is_finite(jacobian)))
-               IF (ALL(ABS(values) <= chart%tolerances)) EXIT
                IF (MAXVAL(ABS(values/chart%scales)) < before) EXIT
                fraction = 0.5_dp*fraction
             END DO
-            IF (k > 24) RETURN
+            IF (k > 24 .OR. ALL(candidate == coordinate)) THEN
+               ! Rejected trial callbacks must not leave fields at a different coordinate.
+               CALL evaluate_constraints(coordinate, values, jacobian, context)
+               EXIT
+            END IF
             coordinate(:) = candidate
          END DO
       END IF

@@ -131,7 +131,8 @@ CONTAINS
       INTEGER                                            :: iterations
       LOGICAL                                            :: converged, valid
       REAL(dp)                                           :: coordinate(4), energy_zero, &
-                                                            jacobian(1, 4), midpoint(4), values(1)
+                                                            implicit_derivative, jacobian(1, 4), &
+                                                            midpoint(4), values(1)
       TYPE(skala_constraint_chart_type)                  :: curve
 
       coordinate(:3) = [0.01_dp, 0.02_dp, 0.03_dp]
@@ -157,6 +158,17 @@ CONTAINS
       IF (ABS(coordinate(4) - SUM(coordinate(:3)**2)) > 1.e-16_dp) THEN
          ERROR STOP 'Reduced-gradient curvature changed the physical constraint'
       END IF
+      ! Feasibility in field units alone does not resolve a weak-normal orbital curve.
+      coordinate = [0.2_dp, 0.0_dp, 0.0_dp, 0.04_dp + 1.e-10_dp]
+      CALL skala_constraint_chart_create(scaled_curved_constraints, energy_zero, coordinate, [1.e-17_dp], curve, valid)
+      IF (.NOT. valid) ERROR STOP 'Could not define the scaled physical constraint curve'
+      CALL skala_constraint_chart_restore(curve, scaled_curved_constraints, energy_zero, coordinate, values, jacobian, valid)
+      IF (.NOT. valid .OR. ABS(values(1)) > 1.e-17_dp) ERROR STOP 'Scaled constraint lost physical feasibility'
+      ! E=1e4*(h**2-|u|**4)+|u|**2/2 has reduced derivative u on h=|u|**2.
+      implicit_derivative = coordinate(1) + 4.e4_dp*coordinate(1)*(coordinate(4) - SUM(coordinate(:3)**2))
+      IF (ABS(implicit_derivative - coordinate(1)) > 1.e-11_dp) THEN
+         ERROR STOP 'Feasible field windows did not resolve implicit-curve derivatives'
+      END IF
    END SUBROUTINE check_constrained_curvature
 
 ! **************************************************************************************************
@@ -181,6 +193,24 @@ CONTAINS
          ERROR STOP 'Invalid curved-constraint context'
       END SELECT
    END SUBROUTINE curved_constraints
+
+! **************************************************************************************************
+!> \brief The same physical curve expressed in small field units.
+!> \param coordinate Complete trial coordinates (u,h).
+!> \param values Scaled physical residual.
+!> \param jacobian Scaled physical Jacobian.
+!> \param context Additive energy zero of the same analytical problem.
+! **************************************************************************************************
+   SUBROUTINE scaled_curved_constraints(coordinate, values, jacobian, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: values(:), jacobian(:, :)
+
+      CLASS(*), INTENT(INOUT) :: context
+
+      CALL curved_constraints(coordinate, values, jacobian, context)
+      values = 1.e-8_dp*values
+      jacobian = 1.e-8_dp*jacobian
+   END SUBROUTINE scaled_curved_constraints
 
 ! **************************************************************************************************
 !> \brief A reduced quadratic with a nonzero normal derivative and an independent energy zero.
