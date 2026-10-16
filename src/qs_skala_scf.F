@@ -14,7 +14,10 @@ MODULE qs_skala_scf
    USE cp_external_control,             ONLY: external_control
    USE cp_fm_types,                     ONLY: cp_fm_set_all
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE input_section_types,             ONLY: section_get_ival
+   USE input_section_types,             ONLY: section_get_ival,&
+                                              section_get_rval,&
+                                              section_vals_get_subs_vals,&
+                                              section_vals_type
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
@@ -69,7 +72,10 @@ MODULE qs_skala_scf
                                               skala_orbital_chart_derivative,&
                                               skala_orbital_chart_size
    USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair
+   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
    USE xc_input_constants,              ONLY: xc_rho_no_smooth
+   USE xc_libxc,                        ONLY: libxc_density_floor
+   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_util,                         ONLY: xc_pw_smooth
 #include "./base/base_uses.f90"
 
@@ -1510,6 +1516,7 @@ CONTAINS
 !> \param rechart Whether the coordinate bound requested a new chart, independent of convergence or stop.
 !> \param retain_progress Preserve the last accepted state on failure, default false.
 !> \param crossing_density_floor Optional positive spin-density target for an unconstrained crossing scan.
+!>        Without an override the native XC dispatcher determines whether the Libxc floor applies.
 !>        Kinetic inputs are excluded because the Libxc kinetic projection is smooth at zero.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
@@ -1537,9 +1544,11 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: crossing_density_floor
 
       INTEGER                                            :: m
-      LOGICAL                                            :: valid
+      LOGICAL                                            :: spin_density_floor, valid
       REAL(dp), ALLOCATABLE                              :: gradient(:)
       TYPE(physical_constraints_context)                 :: context
+      TYPE(section_vals_type), POINTER                   :: functional_section, xc_section
+      TYPE(xc_rho_cflags_type)                           :: needs
 
       m = SIZE(physical_tolerances)
       valid = SIZE(coordinate) == qs_skala_scf_size(state) .AND. ALL(SHAPE(points) == [3, m])
@@ -1552,6 +1561,13 @@ CONTAINS
       IF (PRESENT(crossings)) THEN
          CPASSERT(m == 0)
          context%crossings => crossings
+         xc_section => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC")
+         functional_section => section_vals_get_subs_vals(xc_section, "XC_FUNCTIONAL")
+         needs = xc_functionals_get_needs(functional_section, SIZE(state%orbitals, 2) == 2, &
+                                          spin_density_floor=spin_density_floor)
+         IF (spin_density_floor) THEN
+            context%density_floor = libxc_density_floor(section_get_rval(xc_section, "DENSITY_CUTOFF"))
+         END IF
       END IF
       IF (PRESENT(crossing_density_floor)) THEN
          CPASSERT(PRESENT(crossings))

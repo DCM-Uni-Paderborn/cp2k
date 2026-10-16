@@ -143,21 +143,24 @@ CONTAINS
 !>        functional are set to true (the flags not needed aren't touched)
 !> \param max_deriv the maximal derivative available
 !> \param print_warn whether to print warnings (mainly relevant for libxc)
+!> \param spin_density_floor Whether this evaluation uses the Libxc individual-spin density projection.
 !> \author fawzi
 ! **************************************************************************************************
    SUBROUTINE xc_functional_get_info(functional, lsd, reference, shortform, &
-                                     needs, max_deriv, print_warn)
+                                     needs, max_deriv, print_warn, spin_density_floor)
       TYPE(section_vals_type), POINTER                   :: functional
       LOGICAL, INTENT(in)                                :: lsd
       CHARACTER(LEN=*), INTENT(OUT), OPTIONAL            :: reference, shortform
       TYPE(xc_rho_cflags_type), INTENT(inout), OPTIONAL  :: needs
       INTEGER, INTENT(out), OPTIONAL                     :: max_deriv
       LOGICAL, INTENT(IN), OPTIONAL                      :: print_warn
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor
 
       INTEGER                                            :: i_param
       REAL(kind=dp)                                      :: r_param
 
       CPASSERT(ASSOCIATED(functional))
+      IF (PRESENT(spin_density_floor)) spin_density_floor = .FALSE.
       SELECT CASE (functional%section%name)
       CASE ("BECKE97")
          IF (lsd) THEN
@@ -284,6 +287,7 @@ CONTAINS
          END IF
       CASE ("GAUXC")
          IF (gauxc_model_none_selected(functional)) THEN
+            IF (PRESENT(spin_density_floor)) spin_density_floor = lsd
             CALL gauxc_model_none_xc_info(functional, lsd, reference, shortform, &
                                           needs, max_deriv, print_warn)
          ELSE
@@ -323,6 +327,10 @@ CONTAINS
          END IF
       CASE default
          ! If the functional has not been implemented internally, it's from LibXC
+         IF (PRESENT(spin_density_floor)) THEN
+            CALL section_vals_val_get(functional, "SCALE", r_val=r_param)
+            spin_density_floor = lsd .AND. r_param /= 0.0_dp
+         END IF
          IF (lsd) THEN
             CALL libxc_spin_polarized_info(functional, reference, shortform, needs, max_deriv, print_warn)
          ELSE
@@ -766,18 +774,21 @@ CONTAINS
 !> \param lsd if a local spin desnity is performed
 !> \param calc_potential set, if potential calculation will be carried out later.
 !>        helps to save memory and flops. defaults to false.
+!> \param spin_density_floor Whether an active component uses the individual-spin Libxc floor.
 !> \return ...
 !> \author fawzi
 ! **************************************************************************************************
-   FUNCTION xc_functionals_get_needs(functionals, lsd, calc_potential) &
+   FUNCTION xc_functionals_get_needs(functionals, lsd, calc_potential, spin_density_floor) &
       RESULT(needs)
       TYPE(section_vals_type), POINTER                   :: functionals
       LOGICAL, INTENT(in)                                :: lsd
       LOGICAL, INTENT(in), OPTIONAL                      :: calc_potential
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor
       TYPE(xc_rho_cflags_type)                           :: needs
 
       INTEGER                                            :: ifun
-      LOGICAL                                            :: my_calc_potential
+      LOGICAL                                            :: component_floor, fun_active, &
+                                                            my_calc_potential
       TYPE(section_vals_type), POINTER                   :: xc_fun
 
       my_calc_potential = .FALSE.
@@ -785,13 +796,18 @@ CONTAINS
 
       CPASSERT(ASSOCIATED(functionals))
       CALL xc_rho_cflags_setall(needs, .FALSE.)
+      IF (PRESENT(spin_density_floor)) spin_density_floor = .FALSE.
 
       ifun = 0
       DO
          ifun = ifun + 1
          xc_fun => section_vals_get_subs_vals2(functionals, i_section=ifun)
          IF (.NOT. ASSOCIATED(xc_fun)) EXIT
-         CALL xc_functional_get_info(xc_fun, lsd=lsd, needs=needs)
+         CALL xc_functional_get_info(xc_fun, lsd=lsd, needs=needs, spin_density_floor=component_floor)
+         IF (PRESENT(spin_density_floor)) THEN
+            CALL section_vals_val_get(xc_fun, "_SECTION_PARAMETERS_", l_val=fun_active)
+            spin_density_floor = spin_density_floor .OR. (fun_active .AND. component_floor)
+         END IF
       END DO
 
       IF (my_calc_potential) THEN

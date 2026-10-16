@@ -404,10 +404,31 @@ CONTAINS
                                                             weight = 0.37_dp
 
       INTEGER                                            :: family, side
+      LOGICAL                                            :: spin_density_floor
       REAL(dp)                                           :: energy, error, first, gradient(7), &
                                                             hessian(7, 7), limits(7, 2), selected, &
                                                             trial(7), values(2), x(7)
+      TYPE(section_vals_type), POINTER                   :: combination
+      TYPE(xc_rho_cflags_type)                           :: needs
 
+      NULLIFY (combination)
+      CALL section_vals_create(combination, specification)
+      CALL section_vals_val_set(combination, 'PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      needs = xc_functionals_get_needs(combination, .TRUE., spin_density_floor=spin_density_floor)
+      IF (spin_density_floor) ERROR STOP 'Native PBE incorrectly reports a Libxc spin floor'
+      CALL section_vals_val_set(combination, 'GGA_C_PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      needs = xc_functionals_get_needs(combination, .TRUE., spin_density_floor=spin_density_floor)
+      IF (.NOT. spin_density_floor) ERROR STOP 'Active Libxc component lost its spin floor'
+      needs = xc_functionals_get_needs(combination, .FALSE., spin_density_floor=spin_density_floor)
+      IF (spin_density_floor) ERROR STOP 'Unpolarized Libxc incorrectly reports an individual-spin floor'
+      CALL section_vals_val_set(combination, 'GGA_C_PBE%SCALE', r_val=0.0_dp)
+      needs = xc_functionals_get_needs(combination, .TRUE., spin_density_floor=spin_density_floor)
+      IF (spin_density_floor) ERROR STOP 'Zero-scaled Libxc component reports an active floor'
+      CALL section_vals_val_set(combination, 'GGA_C_PBE%SCALE', r_val=1.0_dp)
+      CALL section_vals_val_set(combination, 'GGA_C_PBE%_SECTION_PARAMETERS_', l_val=.FALSE.)
+      needs = xc_functionals_get_needs(combination, .TRUE., spin_density_floor=spin_density_floor)
+      IF (spin_density_floor) ERROR STOP 'Inactive Libxc component reports an active floor'
+      CALL section_vals_release(combination)
       error = 0.0_dp
       x = [0.4_dp, libxc_density_floor(cutoff), 0.7_dp, 0.6_dp, 0.2_dp, 0.3_dp, -0.02_dp]
       DO family = 1, SIZE(names)
