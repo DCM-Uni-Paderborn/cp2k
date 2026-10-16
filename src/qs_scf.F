@@ -1195,7 +1195,9 @@ CONTAINS
          CPASSERT(qs_skala_scf_size(state) == n)
          coordinate = 0.0_dp
          CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
-         CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid)
+         ! Restore any rounding-scale constraint displacement in the rebuilt chart.
+         CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, &
+                                    require_feasible=.FALSE.)
          IF (.NOT. valid) THEN
             scf_env%iter_delta = HUGE(0.0_dp)
             EXIT
