@@ -622,21 +622,32 @@ CONTAINS
       CPASSERT(derive .EQV. PRESENT(cell_response))
       CPASSERT(derive .EQV. PRESENT(reduced_k_response))
       CPASSERT(derive .EQV. PRESENT(coefficients_response))
-      ALLOCATE (d(np, n), e(np, n), gd(np, n, 3), ge(np, n, 3), &
-                q(np), qgradient(3, np), projected(nproj, nproj))
+      ALLOCATE (q(np), qgradient(3, np), projected(nproj, nproj))
+      density = 0.0_dp
       IF (derive) THEN
          CPASSERT(SIZE(response) == np)
-         ALLOCATE (dd(np, n), de(np, n), dq(np))
-         CALL center_fields(frame, center, points, d, e, gd, ge, dd, de, &
-                            point_response=point_response, atom_response=atom_response, cell_response=cell_response, &
-                            reduced_k_response=reduced_k_response, coefficients_response=coefficients_response)
-         CALL upf_inverse_cross_density(dd, e, ao_density=matrix, density=response)
-         CALL upf_inverse_cross_density(d, de, ao_density=matrix, density=dq)
-         response = response + dq
-      ELSE
-         CALL center_fields(frame, center, points, d, e, gd, ge)
+         CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
+         CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
+         CPASSERT(ALL(SHAPE(coefficients_response) == SHAPE(frame%coefficients)))
+         response = 0.0_dp
       END IF
-      CALL upf_inverse_cross_density(d, e, ao_density=matrix, density=density)
+      ! DIRECT has Delta=0. Its reconstruction density and every geometry response vanish.
+      ! The original Q density and its projector and geometry responses remain below.
+      IF (.NOT. frame%direct) THEN
+         ALLOCATE (d(np, n), e(np, n), gd(np, n, 3), ge(np, n, 3))
+         IF (derive) THEN
+            ALLOCATE (dd(np, n), de(np, n), dq(np))
+            CALL center_fields(frame, center, points, d, e, gd, ge, dd, de, &
+                               point_response=point_response, atom_response=atom_response, cell_response=cell_response, &
+                               reduced_k_response=reduced_k_response, coefficients_response=coefficients_response)
+            CALL upf_inverse_cross_density(dd, e, ao_density=matrix, density=response)
+            CALL upf_inverse_cross_density(d, de, ao_density=matrix, density=dq)
+            response = response + dq
+         ELSE
+            CALL center_fields(frame, center, points, d, e, gd, ge)
+         END IF
+         CALL upf_inverse_cross_density(d, e, ao_density=matrix, density=density)
+      END IF
       atom = frame%center_atoms(center)
       kind = frame%center_kinds(center)
       IF (augmentation%kinds(kind)%nproj == 0) RETURN
@@ -693,12 +704,16 @@ CONTAINS
       n = SIZE(frame%coefficients, 2)
       CPASSERT(SIZE(weights) == np .AND. SIZE(potential) == np)
       CPASSERT(ALL(SHAPE(ao_operator) == [n, n]))
-      ALLOCATE (d(np, n), e(np, n), gd(np, n, 3), ge(np, n, 3), zero(np), zeros(np, 3))
-      CALL center_fields(frame, center, points, d, e, gd, ge)
+      ALLOCATE (zero(np), zeros(np, 3))
       zero = 0.0_dp
       zeros = 0.0_dp
-      CALL upf_inverse_semilocal_pair(d, e, gd, ge, weights, potential, zeros, zero, ao_operator)
-      ao_operator = 0.5_dp*(ao_operator + CONJG(TRANSPOSE(ao_operator)))
+      ao_operator = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (.NOT. frame%direct) THEN
+         ALLOCATE (d(np, n), e(np, n), gd(np, n, 3), ge(np, n, 3))
+         CALL center_fields(frame, center, points, d, e, gd, ge)
+         CALL upf_inverse_semilocal_pair(d, e, gd, ge, weights, potential, zeros, zero, ao_operator)
+         ao_operator = 0.5_dp*(ao_operator + CONJG(TRANSPOSE(ao_operator)))
+      END IF
       atom = frame%center_atoms(center)
       kind = frame%center_kinds(center)
       IF (augmentation%kinds(kind)%nproj /= 0) THEN
