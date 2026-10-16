@@ -100,11 +100,17 @@ CONTAINS
             pot%econf(0:3) = pot%econf(0:3) - ptable(2)%e_conv(0:3)
          CASE (10)
             pot%econf(0:3) = pot%econf(0:3) - ptable(10)%e_conv(0:3)
+         CASE (12)
+            ! [Ne] 3s2 core, with 3p semicore in the valence (e.g. GBRV Ga).
+            pot%econf(0:3) = pot%econf(0:3) - ptable(10)%e_conv(0:3) - [2, 0, 0, 0]
          CASE (18)
             pot%econf(0:3) = pot%econf(0:3) - ptable(18)%e_conv(0:3)
          CASE (28)
             pot%econf(0:3) = pot%econf(0:3) - ptable(18)%e_conv(0:3)
             pot%econf(2) = pot%econf(2) - 10
+         CASE (30)
+            ! [Ar] 3d10 4s2 core, with 4p semicore in the valence (e.g. GBRV Pd).
+            pot%econf(0:3) = pot%econf(0:3) - ptable(18)%e_conv(0:3) - [2, 0, 10, 0]
          CASE (36)
             pot%econf(0:3) = pot%econf(0:3) - ptable(36)%e_conv(0:3)
          CASE (46)
