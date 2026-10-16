@@ -243,6 +243,8 @@ CONTAINS
                   exponential = EXP(-primitive%alpha*s)
                   last_alpha = primitive%alpha
                END IF
+               ! A vanished exponential contributes exact zeros for this radial power.
+               IF (exponential == 0.0_dp .AND. primitive%power == 0) CYCLE
                h = s**primitive%power*exponential
                dh = -primitive%alpha*h
                IF (primitive%power > 0) dh = dh + primitive%power*s**(primitive%power - 1)*exponential
