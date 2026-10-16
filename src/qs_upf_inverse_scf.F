@@ -158,6 +158,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), POINTER             :: previous, state
       TYPE(qs_uspp_type), POINTER                        :: uspp
 
+      NULLIFY (metric, metric_k)
       CALL get_ks_env(ks_env, upf_inverse=previous, matrix_s_kp=overlap_k, uspp=uspp, &
                       dft_control=control, do_kpoints=do_kpoints, qs_kind_set=kinds)
       CPASSERT(.NOT. ASSOCIATED(previous))
