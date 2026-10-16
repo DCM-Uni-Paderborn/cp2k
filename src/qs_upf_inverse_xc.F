@@ -12,66 +12,64 @@
 !>        Keep complete scalar descriptors for nonlocal XC, but evaluate orbitals in bounded blocks.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_xc
-   USE cell_types, ONLY: cell_type
-   USE input_section_types, ONLY: section_get_rval, &
-                                  section_vals_get_subs_vals, &
-                                  section_vals_type
-   USE kinds, ONLY: dp, &
-                    int_8
-   USE message_passing, ONLY: mp_comm_type
-   USE pw_grid_types, ONLY: PW_MODE_LOCAL, &
-                            pw_grid_type
-   USE pw_methods, ONLY: pw_derive, &
-                         pw_transfer
-   USE pw_types, ONLY: pw_c1d_gs_type, &
-                       pw_r3d_rs_type
-   USE qs_native_grid_interpolation, ONLY: interpolate_native_grid_batch, &
-                                           native_grid_batch_adjoint, &
-                                           native_grid_batch_response
-   USE qs_upf_inverse, ONLY: qs_upf_inverse_block_size, &
-                             qs_upf_inverse_evaluate
-   USE qs_upf_inverse_atom_grid, ONLY: qs_upf_inverse_atom_grid_type
-   USE qs_upf_inverse_augmentation, ONLY: qs_upf_inverse_augmentation_collocate, &
-                                          qs_upf_inverse_augmentation_integrate, &
-                                          qs_upf_inverse_augmentation_response
-   USE qs_upf_inverse_density, ONLY: qs_upf_inverse_kinetic_collocate, &
-                                     qs_upf_inverse_kinetic_operator
-   USE qs_upf_inverse_paw, ONLY: qs_upf_inverse_paw_collocate, &
-                                 qs_upf_inverse_paw_operator
-   USE qs_upf_inverse_types, ONLY: qs_upf_inverse_augmentation_type, &
-                                   qs_upf_inverse_type, &
-                                   qs_upf_inverse_xc_type
-   USE skala_density_constraints, ONLY: skala_atom_domain, &
-                                        skala_background_domain, &
-                                        skala_density_constraints_count, &
-                                        skala_density_constraints_matches, &
-                                        skala_density_constraints_type, &
-                                        skala_density_samples_active, &
-                                        skala_density_samples_put
-   USE skala_gpw_functional, ONLY: skala_gapw_atom_composite_energy, &
-                                   xc_section_uses_native_skala_evaluator
-   USE upf_inverse, ONLY: upf_inverse_kinetic_type
-   USE upf_inverse_quadrature, ONLY: upf_inverse_projector_density, &
-                                     upf_inverse_semilocal_pair, &
-                                     upf_inverse_semilocal_response, &
-                                     upf_inverse_smooth_density
-   USE xc_atom, ONLY: fill_rho_set, &
-                      vxc_of_r_new, &
-                      xc_rho_set_atom_update
-   USE xc_derivative_set_types, ONLY: xc_derivative_set_type, &
-                                      xc_dset_create, &
-                                      xc_dset_get_derivative, &
-                                      xc_dset_release
-   USE xc_derivative_types, ONLY: xc_derivative_get, &
-                                  xc_derivative_type
-   USE xc_derivatives, ONLY: xc_functionals_get_needs
-   USE xc_rho_cflags_types, ONLY: xc_rho_cflags_type
-   USE xc_rho_set_types, ONLY: xc_rho_set_create, &
-                               xc_rho_set_release, &
-                               xc_rho_set_type
-#if defined(__LIBXC)
-   USE xc_libxc, ONLY: libxc_select_floor_limits
-#endif
+   USE cell_types,                      ONLY: cell_type
+   USE input_section_types,             ONLY: section_get_rval,&
+                                              section_vals_get_subs_vals,&
+                                              section_vals_type
+   USE kinds,                           ONLY: dp,&
+                                              int_8
+   USE message_passing,                 ONLY: mp_comm_type
+   USE pw_grid_types,                   ONLY: PW_MODE_LOCAL,&
+                                              pw_grid_type
+   USE pw_methods,                      ONLY: pw_derive,&
+                                              pw_transfer
+   USE pw_types,                        ONLY: pw_c1d_gs_type,&
+                                              pw_r3d_rs_type
+   USE qs_native_grid_interpolation,    ONLY: interpolate_native_grid_batch,&
+                                              native_grid_batch_adjoint,&
+                                              native_grid_batch_response
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_block_size,&
+                                              qs_upf_inverse_evaluate
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_type
+   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_collocate,&
+                                              qs_upf_inverse_augmentation_integrate,&
+                                              qs_upf_inverse_augmentation_response
+   USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_kinetic_collocate,&
+                                              qs_upf_inverse_kinetic_operator
+   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_collocate,&
+                                              qs_upf_inverse_paw_operator
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_type,&
+                                              qs_upf_inverse_xc_type
+   USE skala_density_constraints,       ONLY: skala_atom_domain,&
+                                              skala_background_domain,&
+                                              skala_density_constraints_count,&
+                                              skala_density_constraints_matches,&
+                                              skala_density_constraints_type,&
+                                              skala_density_samples_active,&
+                                              skala_density_samples_put
+   USE skala_gpw_functional,            ONLY: skala_gapw_atom_composite_energy,&
+                                              xc_section_uses_native_skala_evaluator
+   USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
+   USE upf_inverse_quadrature,          ONLY: upf_inverse_projector_density,&
+                                              upf_inverse_semilocal_pair,&
+                                              upf_inverse_semilocal_response,&
+                                              upf_inverse_smooth_density
+   USE xc_atom,                         ONLY: fill_rho_set,&
+                                              vxc_of_r_new,&
+                                              xc_rho_set_atom_update
+   USE xc_derivative_set_types,         ONLY: xc_derivative_set_type,&
+                                              xc_dset_create,&
+                                              xc_dset_get_derivative,&
+                                              xc_dset_release
+   USE xc_derivative_types,             ONLY: xc_derivative_get,&
+                                              xc_derivative_type
+   USE xc_derivatives,                  ONLY: xc_functionals_get_needs,&
+                                              xc_functionals_select_floor_limits
+   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
+   USE xc_rho_set_types,                ONLY: xc_rho_set_create,&
+                                              xc_rho_set_release,&
+                                              xc_rho_set_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -617,13 +615,13 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: kinetic_density(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: vkinetic(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: kinetic_available
-      TYPE(skala_density_constraints_type), OPTIONAL, POINTER :: density_constraints
-      TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN), OPTIONAL :: atom_grid
+      TYPE(skala_density_constraints_type), OPTIONAL, &
+         POINTER                                         :: density_constraints
+      TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN), &
+         OPTIONAL                                        :: atom_grid
 
       INTEGER                                            :: bounds(2, 3), np, nspin, spin
-#if defined(__LIBXC)
       INTEGER, ALLOCATABLE                               :: keys(:, :)
-#endif
       LOGICAL                                            :: have_kinetic
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: drho(:, :, :, :), rho(:, :, :), &
@@ -681,7 +679,6 @@ CONTAINS
                              tau_cutoff=section_get_rval(xc_section, "TAU_CUTOFF"))
       CALL xc_rho_set_atom_update(fields, needs, nspin, bounds)
       CALL fill_rho_set(fields, lsd, nspin, needs, rho, drho, tau, np, 1)
-#if defined(__LIBXC)
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             IF (skala_density_constraints_count(density_constraints, domain) > 0) THEN
@@ -691,11 +688,10 @@ CONTAINS
                keys(1, :) = atom_grid%atoms
                keys(2, :) = atom_grid%atom_rows
                keys(3, :) = 1
-               CALL libxc_select_floor_limits(density_constraints, fields, nspin, domain, keys)
+               CALL xc_functionals_select_floor_limits(functional, density_constraints, fields, nspin, domain, keys)
             END IF
          END IF
       END IF
-#endif
       CALL xc_dset_create(derivatives, local_bounds=bounds)
       CALL vxc_of_r_new(functional, fields, derivatives, 1, needs, weights, lsd, np, 1, energy, vxc, vxg, vtau)
       energy_term => xc_dset_get_derivative(derivatives, [INTEGER::])

@@ -54,6 +54,7 @@ MODULE xc_pbe
                                         c = 0.2533_dp, d = 0.349_dp
 
    PUBLIC :: pbe_lda_info, pbe_lsd_info, pbe_lda_eval, pbe_lsd_eval
+   REAL(dp), PARAMETER, PUBLIC :: pbe_spin_density_floor = EPSILON(0.0_dp)*1.e4_dp
 CONTAINS
 
 ! **************************************************************************************************
@@ -1315,6 +1316,7 @@ CONTAINS
 
       INTEGER                                            :: handle, npoints, param
       INTEGER, DIMENSION(2, 3)                           :: bo
+      LOGICAL                                            :: valid_selection
       REAL(kind=dp)                                      :: epsilon_rho, scale_ec, scale_ex
       REAL(kind=dp), CONTIGUOUS, DIMENSION(:, :, :), POINTER :: dummy, e_0, e_ndr, e_ndr_ndr, &
          e_ndr_ra, e_ndr_rb, e_ndra, e_ndra_ndra, e_ndra_ra, e_ndrb, e_ndrb_ndrb, e_ndrb_rb, e_ra, &
@@ -1330,6 +1332,18 @@ CONTAINS
                           rho_cutoff=epsilon_rho, &
                           local_bounds=bo)
       npoints = (bo(2, 1) - bo(1, 1) + 1)*(bo(2, 2) - bo(1, 2) + 1)*(bo(2, 3) - bo(1, 3) + 1)
+
+      IF (ALLOCATED(rho_set%pbe_spin_floor_slopes)) THEN
+         CPASSERT(ALL(SHAPE(rho_set%pbe_spin_floor_slopes) == [2, npoints]))
+         valid_selection = ALL(rho_set%pbe_spin_floor_slopes == -1.0_dp .OR. &
+                               (rho_set%pbe_spin_floor_slopes >= 0.0_dp .AND. rho_set%pbe_spin_floor_slopes <= 1.0_dp))
+         CPASSERT(valid_selection)
+         valid_selection = rho_set%spin_floor_tolerance >= 0.0_dp .AND. rho_set%spin_floor_tolerance < HUGE(0.0_dp)
+         CPASSERT(valid_selection)
+         IF (ANY(rho_set%pbe_spin_floor_slopes >= 0.0_dp) .AND. grad_deriv > 1) THEN
+            CPABORT("Higher derivatives at selected PBE spin-density floors are not defined.")
+         END IF
+      END IF
 
       dummy => rhoa
       e_0 => dummy
@@ -1413,7 +1427,7 @@ CONTAINS
 !$OMP SHARED(rhoa,rhob,norm_drho,norm_drhoa,norm_drhob,e_0,e_ra,e_rb,e_ndra_ra),&
 !$OMP SHARED(e_ndrb_rb,e_ndr_ndr,e_ndra_ndra,e_ndrb_ndrb,e_ndr,e_ndra,e_ndrb),&
 !$OMP SHARED(e_ra_ra,e_ra_rb,e_rb_rb,e_ndr_ra,e_ndr_rb,grad_deriv,npoints),&
-!$OMP SHARED(epsilon_rho,param,scale_ec,scale_ex)
+!$OMP SHARED(epsilon_rho,param,scale_ec,scale_ex,rho_set)
       CALL pbe_lsd_calc( &
          rhoa=rhoa, rhob=rhob, norm_drho=norm_drho, norm_drhoa=norm_drhoa, &
          norm_drhob=norm_drhob, e_0=e_0, e_ra=e_ra, e_rb=e_rb, &
@@ -1425,7 +1439,8 @@ CONTAINS
          e_rb_ndr=e_ndr_rb, &
          grad_deriv=grad_deriv, npoints=npoints, &
          epsilon_rho=epsilon_rho, &
-         param=param, scale_ec=scale_ec, scale_ex=scale_ex)
+         param=param, scale_ec=scale_ec, scale_ex=scale_ex, &
+         floor_slopes=rho_set%pbe_spin_floor_slopes, floor_tolerance=rho_set%spin_floor_tolerance)
 !$OMP END PARALLEL
 
       CALL timestop(handle)
@@ -1462,13 +1477,15 @@ CONTAINS
 !> \param param ...
 !> \param scale_ec ...
 !> \param scale_ex ...
+!> \param floor_slopes Optional positive-side weights for satisfied spin-density floor constraints.
+!> \param floor_tolerance Physical density window for the selected constraints.
 !> \author fawzi
 ! **************************************************************************************************
    SUBROUTINE pbe_lsd_calc(rhoa, rhob, norm_drho, norm_drhoa, norm_drhob, &
                            e_0, e_ra, e_rb, e_ra_ndra, e_rb_ndrb, e_ndr_ndr, &
                            e_ndra_ndra, e_ndrb_ndrb, e_ndr, &
                            e_ndra, e_ndrb, e_ra_ra, e_ra_rb, e_rb_rb, e_ra_ndr, e_rb_ndr, &
-                           grad_deriv, npoints, epsilon_rho, param, scale_ec, scale_ex)
+                           grad_deriv, npoints, epsilon_rho, param, scale_ec, scale_ex, floor_slopes, floor_tolerance)
       REAL(kind=dp), DIMENSION(*), INTENT(in)            :: rhoa, rhob, norm_drho, norm_drhoa, &
                                                             norm_drhob
       REAL(kind=dp), DIMENSION(*), INTENT(inout) :: e_0, e_ra, e_rb, e_ra_ndra, e_rb_ndrb, &
@@ -1478,10 +1495,13 @@ CONTAINS
       REAL(kind=dp), INTENT(in)                          :: epsilon_rho
       INTEGER, INTENT(in)                                :: param
       REAL(kind=dp), INTENT(in)                          :: scale_ec, scale_ex
+      REAL(dp), INTENT(IN), OPTIONAL                     :: floor_slopes(:, :)
+      REAL(dp), INTENT(IN)                               :: floor_tolerance
 
-      REAL(dp), PARAMETER :: spin_floor = EPSILON(0.0_dp)*1.e4_dp
+      REAL(dp), PARAMETER :: spin_floor = pbe_spin_density_floor
 
       INTEGER                                            :: ii
+      REAL(dp)                                           :: slope_a, slope_b
       REAL(kind=dp) :: A, A1rhoa, A1rhob, A_1, A_2, A_3, alpha_1_1, alpha_1_2, alpha_1_3, alpha_c, &
          alpha_c1rhoa, alpha_c1rhob, alpha_crhoa, alpha_crhob, Arhoa, Arhoarhoa, Arhoarhob, Arhob, &
          Arhobrhob, beta, beta_1_1, beta_1_2, beta_1_3, beta_2_1, beta_2_2, beta_2_3, beta_3_1, &
@@ -1592,6 +1612,20 @@ CONTAINS
          IF (my_rho > epsilon_rho) THEN
             ! Differentiate the same clipped spin densities used by the energy.
             ! Gradient norms remain independent; preserve accumulated contributions.
+            slope_a = 0.0_dp
+            slope_b = 0.0_dp
+            IF (rhoa(ii) > spin_floor) slope_a = 1.0_dp
+            IF (rhob(ii) > spin_floor) slope_b = 1.0_dp
+            IF (PRESENT(floor_slopes)) THEN
+               IF (floor_slopes(1, ii) >= 0.0_dp) THEN
+                  CPASSERT(ABS(rhoa(ii) - spin_floor) <= floor_tolerance)
+                  slope_a = floor_slopes(1, ii)
+               END IF
+               IF (floor_slopes(2, ii) >= 0.0_dp) THEN
+                  CPASSERT(ABS(rhob(ii) - spin_floor) <= floor_tolerance)
+                  slope_b = floor_slopes(2, ii)
+               END IF
+            END IF
             my_rhoa = MAX(spin_floor, my_rhoa)
             my_rhob = MAX(spin_floor, my_rhob)
             my_rho = my_rhoa + my_rhob
@@ -1833,11 +1867,11 @@ CONTAINS
                Fx_arhoa = 0.2e1_dp*t346*s_a*s_arhoa
                t350 = my_rhoa*ex_unif_arhoa
 
-               IF (rhoa(ii) > spin_floor) THEN
+               IF (slope_a /= 0.0_dp) THEN
                   e_ra(ii) = e_ra(ii) + &
-                             scale_ex*(0.2e1_dp*ex_unif_a*Fx_a + 0.2e1_dp* &
-                                       t350*Fx_a + 0.2e1_dp*t140*Fx_arhoa)/0.2e1_dp + scale_ec*( &
-                             epsilon_cGGA + my_rho*epsilon_cGGArhoa)
+                             slope_a*(scale_ex*(0.2e1_dp*ex_unif_a*Fx_a + 0.2e1_dp* &
+                                                t350*Fx_a + 0.2e1_dp*t140*Fx_arhoa)/0.2e1_dp + scale_ec*( &
+                                      epsilon_cGGA + my_rho*epsilon_cGGArhoa))
                END IF
 
                chirhob = -t2 - t164
@@ -1898,11 +1932,11 @@ CONTAINS
                Fx_brhob = 0.2e1_dp*t477*s_b*s_brhob
                t481 = my_rhob*ex_unif_brhob
 
-               IF (rhob(ii) > spin_floor) THEN
+               IF (slope_b /= 0.0_dp) THEN
                   e_rb(ii) = e_rb(ii) + &
-                             scale_ex*(0.2e1_dp*ex_unif_b*Fx_b + 0.2e1_dp* &
-                                       t481*Fx_b + 0.2e1_dp*t156*Fx_brhob)/0.2e1_dp + scale_ec*( &
-                             epsilon_cGGA + my_rho*epsilon_cGGArhob)
+                             slope_b*(scale_ex*(0.2e1_dp*ex_unif_b*Fx_b + 0.2e1_dp* &
+                                                t481*Fx_b + 0.2e1_dp*t156*Fx_brhob)/0.2e1_dp + scale_ec*( &
+                                      epsilon_cGGA + my_rho*epsilon_cGGArhob))
                END IF
 
                t488 = t95*t97

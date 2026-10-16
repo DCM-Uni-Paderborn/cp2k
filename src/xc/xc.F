@@ -63,10 +63,10 @@ MODULE xc
    USE xc_derivative_types, ONLY: xc_derivative_get, &
                                   xc_derivative_type
    USE xc_derivatives, ONLY: xc_functionals_eval, &
-                             xc_functionals_get_needs
+                             xc_functionals_get_needs, xc_functionals_select_floor_limits
    USE xc_gauxc_functional, ONLY: xc_section_uses_gauxc
 #if defined(__LIBXC)
-   USE xc_libxc, ONLY: libxc_set_backend, libxc_select_floor_limits
+   USE xc_libxc, ONLY: libxc_set_backend
 #endif
    USE xc_rho_cflags_types, ONLY: xc_rho_cflags_type
    USE xc_rho_set_types, ONLY: xc_rho_set_create, &
@@ -213,9 +213,7 @@ CONTAINS
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             CALL record_fft_descriptors(density_constraints, rho_set, nspins)
-#if defined(__LIBXC)
-            CALL libxc_select_floor_limits(density_constraints, rho_set, nspins, skala_fft_domain)
-#endif
+            CALL xc_functionals_select_floor_limits(xc_fun_sections, density_constraints, rho_set, nspins, skala_fft_domain)
          END IF
       END IF
 

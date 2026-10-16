@@ -97,7 +97,8 @@ MODULE xc_rho_set_types
       ! Optional first-derivative selections at physical spin-density floor constraints.
       ! Shape (2, local point count), with -1 for an unselected sample and [0,1] for
       ! the positive-side weight. The caller must satisfy the original density constraint.
-      REAL(dp), ALLOCATABLE :: spin_floor_slopes(:, :)
+      ! Separate selections for components with different physical density floors.
+      REAL(dp), ALLOCATABLE :: spin_floor_slopes(:, :), pbe_spin_floor_slopes(:, :)
       REAL(dp) :: spin_floor_tolerance = 0.0_dp
    END TYPE xc_rho_set_type
 
@@ -118,6 +119,7 @@ CONTAINS
       REAL(kind=dp), INTENT(in), OPTIONAL                :: rho_cutoff, drho_cutoff, tau_cutoff
 
       IF (ALLOCATED(rho_set%spin_floor_slopes)) DEALLOCATE (rho_set%spin_floor_slopes)
+      IF (ALLOCATED(rho_set%pbe_spin_floor_slopes)) DEALLOCATE (rho_set%pbe_spin_floor_slopes)
       rho_set%spin_floor_tolerance = 0.0_dp
       IF (PRESENT(rho_cutoff)) rho_set%rho_cutoff = rho_cutoff
       IF (PRESENT(drho_cutoff)) rho_set%drho_cutoff = drho_cutoff
@@ -139,6 +141,7 @@ CONTAINS
       INTEGER                                            :: i
 
       IF (ALLOCATED(rho_set%spin_floor_slopes)) DEALLOCATE (rho_set%spin_floor_slopes)
+      IF (ALLOCATED(rho_set%pbe_spin_floor_slopes)) DEALLOCATE (rho_set%pbe_spin_floor_slopes)
       IF (PRESENT(pw_pool)) THEN
          IF (ASSOCIATED(pw_pool)) THEN
             CALL xc_rho_set_clean(rho_set, pw_pool)

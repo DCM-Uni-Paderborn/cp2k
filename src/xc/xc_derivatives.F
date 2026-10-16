@@ -8,117 +8,122 @@
 ! **************************************************************************************************
 MODULE xc_derivatives
 
-   USE input_section_types,             ONLY: section_vals_get_subs_vals2,&
-                                              section_vals_type,&
-                                              section_vals_val_get
-   USE kinds,                           ONLY: default_string_length,&
-                                              dp
-   USE string_utilities,                ONLY: uppercase
-   USE xc_b97,                          ONLY: b97_lda_eval,&
-                                              b97_lda_info,&
-                                              b97_lsd_eval,&
-                                              b97_lsd_info
-   USE xc_cs1,                          ONLY: cs1_lda_eval,&
-                                              cs1_lda_info,&
-                                              cs1_lsd_eval,&
-                                              cs1_lsd_info
-   USE xc_derivative_set_types,         ONLY: xc_derivative_set_type
-   USE xc_exchange_gga,                 ONLY: xgga_eval,&
-                                              xgga_info
-   USE xc_gauxc_functional,             ONLY: skala_info
-   USE xc_hcth,                         ONLY: hcth_lda_eval,&
-                                              hcth_lda_info
-   USE xc_ke_gga,                       ONLY: ke_gga_info,&
-                                              ke_gga_lda_eval,&
-                                              ke_gga_lsd_eval
-   USE xc_libxc,                        ONLY: libxc_spin_polarized_eval,&
-                                              libxc_spin_polarized_info,&
-                                              libxc_spin_unpolarized_eval,&
-                                              libxc_spin_unpolarized_info
-   USE xc_lyp,                          ONLY: lyp_lda_eval,&
-                                              lyp_lda_info,&
-                                              lyp_lsd_eval,&
-                                              lyp_lsd_info
-   USE xc_lyp_adiabatic,                ONLY: lyp_adiabatic_lda_eval,&
-                                              lyp_adiabatic_lda_info,&
-                                              lyp_adiabatic_lsd_eval,&
-                                              lyp_adiabatic_lsd_info
-   USE xc_optx,                         ONLY: optx_lda_eval,&
-                                              optx_lda_info,&
-                                              optx_lsd_eval,&
-                                              optx_lsd_info
-   USE xc_pade,                         ONLY: pade_info,&
-                                              pade_init,&
-                                              pade_lda_pw_eval,&
-                                              pade_lsd_pw_eval
-   USE xc_pbe,                          ONLY: pbe_lda_eval,&
-                                              pbe_lda_info,&
-                                              pbe_lsd_eval,&
-                                              pbe_lsd_info
-   USE xc_perdew86,                     ONLY: p86_lda_eval,&
-                                              p86_lda_info
-   USE xc_perdew_wang,                  ONLY: perdew_wang_info,&
-                                              perdew_wang_lda_eval,&
-                                              perdew_wang_lsd_eval
-   USE xc_perdew_zunger,                ONLY: pz_info,&
-                                              pz_lda_eval,&
-                                              pz_lsd_eval
-   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_setall,&
-                                              xc_rho_cflags_type
-   USE xc_rho_set_types,                ONLY: xc_rho_set_get,&
-                                              xc_rho_set_type
-   USE xc_tfw,                          ONLY: tfw_lda_eval,&
-                                              tfw_lda_info,&
-                                              tfw_lsd_eval,&
-                                              tfw_lsd_info
-   USE xc_thomas_fermi,                 ONLY: thomas_fermi_info,&
-                                              thomas_fermi_lda_eval,&
-                                              thomas_fermi_lsd_eval
-   USE xc_tpss,                         ONLY: tpss_lda_eval,&
-                                              tpss_lda_info
-   USE xc_vwn,                          ONLY: vwn_lda_eval,&
-                                              vwn_lda_info,&
-                                              vwn_lsd_eval,&
-                                              vwn_lsd_info
-   USE xc_xalpha,                       ONLY: xalpha_info,&
-                                              xalpha_lda_eval,&
-                                              xalpha_lsd_eval
-   USE xc_xbecke88,                     ONLY: xb88_lda_eval,&
-                                              xb88_lda_info,&
-                                              xb88_lsd_eval,&
-                                              xb88_lsd_info
-   USE xc_xbecke88_long_range,          ONLY: xb88_lr_lda_eval,&
-                                              xb88_lr_lda_info,&
-                                              xb88_lr_lsd_eval,&
-                                              xb88_lr_lsd_info
-   USE xc_xbecke88_lr_adiabatic,        ONLY: xb88_lr_adiabatic_lda_eval,&
-                                              xb88_lr_adiabatic_lda_info,&
-                                              xb88_lr_adiabatic_lsd_eval,&
-                                              xb88_lr_adiabatic_lsd_info
-   USE xc_xbecke_roussel,               ONLY: xbecke_roussel_lda_eval,&
-                                              xbecke_roussel_lda_info,&
-                                              xbecke_roussel_lsd_eval,&
-                                              xbecke_roussel_lsd_info
-   USE xc_xbeef,                        ONLY: xbeef_lda_eval,&
-                                              xbeef_lda_info,&
-                                              xbeef_lsd_eval,&
-                                              xbeef_lsd_info
-   USE xc_xbr_pbe_lda_hole_t_c_lr,      ONLY: xbr_pbe_lda_hole_tc_lr_lda_eval,&
-                                              xbr_pbe_lda_hole_tc_lr_lda_info,&
-                                              xbr_pbe_lda_hole_tc_lr_lsd_eval,&
-                                              xbr_pbe_lda_hole_tc_lr_lsd_info
-   USE xc_xlda_hole_t_c_lr,             ONLY: xlda_hole_t_c_lr_lda_eval,&
-                                              xlda_hole_t_c_lr_lda_info,&
-                                              xlda_hole_t_c_lr_lsd_eval,&
-                                              xlda_hole_t_c_lr_lsd_info
-   USE xc_xpbe_hole_t_c_lr,             ONLY: xpbe_hole_t_c_lr_lda_eval,&
-                                              xpbe_hole_t_c_lr_lda_info,&
-                                              xpbe_hole_t_c_lr_lsd_eval,&
-                                              xpbe_hole_t_c_lr_lsd_info
-   USE xc_xwpbe,                        ONLY: xwpbe_lda_eval,&
-                                              xwpbe_lda_info,&
-                                              xwpbe_lsd_eval,&
-                                              xwpbe_lsd_info
+   USE input_section_types, ONLY: section_vals_get_subs_vals2, &
+                                  section_vals_type, &
+                                  section_vals_val_get
+   USE kinds, ONLY: default_string_length, &
+                    dp
+   USE skala_density_constraints, ONLY: skala_density_constraints_count, skala_density_constraints_get, &
+                                        skala_density_constraints_type, skala_density_descriptor, skala_fft_domain
+   USE string_utilities, ONLY: uppercase
+   USE xc_b97, ONLY: b97_lda_eval, &
+                     b97_lda_info, &
+                     b97_lsd_eval, &
+                     b97_lsd_info
+   USE xc_cs1, ONLY: cs1_lda_eval, &
+                     cs1_lda_info, &
+                     cs1_lsd_eval, &
+                     cs1_lsd_info
+   USE xc_derivative_set_types, ONLY: xc_derivative_set_type
+   USE xc_exchange_gga, ONLY: xgga_eval, &
+                              xgga_info
+   USE xc_gauxc_functional, ONLY: skala_info
+   USE xc_hcth, ONLY: hcth_lda_eval, &
+                      hcth_lda_info
+   USE xc_ke_gga, ONLY: ke_gga_info, &
+                        ke_gga_lda_eval, &
+                        ke_gga_lsd_eval
+   USE xc_libxc, ONLY: libxc_spin_polarized_eval, &
+                       libxc_spin_polarized_info, &
+                       libxc_spin_unpolarized_eval, &
+                       libxc_spin_unpolarized_info
+#if defined(__LIBXC)
+   USE xc_libxc, ONLY: libxc_density_floor
+#endif
+   USE xc_lyp, ONLY: lyp_lda_eval, &
+                     lyp_lda_info, &
+                     lyp_lsd_eval, &
+                     lyp_lsd_info
+   USE xc_lyp_adiabatic, ONLY: lyp_adiabatic_lda_eval, &
+                               lyp_adiabatic_lda_info, &
+                               lyp_adiabatic_lsd_eval, &
+                               lyp_adiabatic_lsd_info
+   USE xc_optx, ONLY: optx_lda_eval, &
+                      optx_lda_info, &
+                      optx_lsd_eval, &
+                      optx_lsd_info
+   USE xc_pade, ONLY: pade_info, &
+                      pade_init, &
+                      pade_lda_pw_eval, &
+                      pade_lsd_pw_eval
+   USE xc_pbe, ONLY: pbe_lda_eval, &
+                     pbe_lda_info, &
+                     pbe_lsd_eval, &
+                     pbe_lsd_info, pbe_spin_density_floor
+   USE xc_perdew86, ONLY: p86_lda_eval, &
+                          p86_lda_info
+   USE xc_perdew_wang, ONLY: perdew_wang_info, &
+                             perdew_wang_lda_eval, &
+                             perdew_wang_lsd_eval
+   USE xc_perdew_zunger, ONLY: pz_info, &
+                               pz_lda_eval, &
+                               pz_lsd_eval
+   USE xc_rho_cflags_types, ONLY: xc_rho_cflags_setall, &
+                                  xc_rho_cflags_type
+   USE xc_rho_set_types, ONLY: xc_rho_set_get, &
+                               xc_rho_set_type
+   USE xc_tfw, ONLY: tfw_lda_eval, &
+                     tfw_lda_info, &
+                     tfw_lsd_eval, &
+                     tfw_lsd_info
+   USE xc_thomas_fermi, ONLY: thomas_fermi_info, &
+                              thomas_fermi_lda_eval, &
+                              thomas_fermi_lsd_eval
+   USE xc_tpss, ONLY: tpss_lda_eval, &
+                      tpss_lda_info
+   USE xc_vwn, ONLY: vwn_lda_eval, &
+                     vwn_lda_info, &
+                     vwn_lsd_eval, &
+                     vwn_lsd_info
+   USE xc_xalpha, ONLY: xalpha_info, &
+                        xalpha_lda_eval, &
+                        xalpha_lsd_eval
+   USE xc_xbecke88, ONLY: xb88_lda_eval, &
+                          xb88_lda_info, &
+                          xb88_lsd_eval, &
+                          xb88_lsd_info
+   USE xc_xbecke88_long_range, ONLY: xb88_lr_lda_eval, &
+                                     xb88_lr_lda_info, &
+                                     xb88_lr_lsd_eval, &
+                                     xb88_lr_lsd_info
+   USE xc_xbecke88_lr_adiabatic, ONLY: xb88_lr_adiabatic_lda_eval, &
+                                       xb88_lr_adiabatic_lda_info, &
+                                       xb88_lr_adiabatic_lsd_eval, &
+                                       xb88_lr_adiabatic_lsd_info
+   USE xc_xbecke_roussel, ONLY: xbecke_roussel_lda_eval, &
+                                xbecke_roussel_lda_info, &
+                                xbecke_roussel_lsd_eval, &
+                                xbecke_roussel_lsd_info
+   USE xc_xbeef, ONLY: xbeef_lda_eval, &
+                       xbeef_lda_info, &
+                       xbeef_lsd_eval, &
+                       xbeef_lsd_info
+   USE xc_xbr_pbe_lda_hole_t_c_lr, ONLY: xbr_pbe_lda_hole_tc_lr_lda_eval, &
+                                         xbr_pbe_lda_hole_tc_lr_lda_info, &
+                                         xbr_pbe_lda_hole_tc_lr_lsd_eval, &
+                                         xbr_pbe_lda_hole_tc_lr_lsd_info
+   USE xc_xlda_hole_t_c_lr, ONLY: xlda_hole_t_c_lr_lda_eval, &
+                                  xlda_hole_t_c_lr_lda_info, &
+                                  xlda_hole_t_c_lr_lsd_eval, &
+                                  xlda_hole_t_c_lr_lsd_info
+   USE xc_xpbe_hole_t_c_lr, ONLY: xpbe_hole_t_c_lr_lda_eval, &
+                                  xpbe_hole_t_c_lr_lda_info, &
+                                  xpbe_hole_t_c_lr_lsd_eval, &
+                                  xpbe_hole_t_c_lr_lsd_info
+   USE xc_xwpbe, ONLY: xwpbe_lda_eval, &
+                       xwpbe_lda_info, &
+                       xwpbe_lsd_eval, &
+                       xwpbe_lsd_info
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -129,6 +134,7 @@ MODULE xc_derivatives
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'xc_derivatives'
 
    PUBLIC :: xc_functional_get_info, xc_functionals_eval, xc_functionals_get_needs
+   PUBLIC :: xc_functionals_select_floor_limits
 
 CONTAINS
 
@@ -144,23 +150,25 @@ CONTAINS
 !> \param max_deriv the maximal derivative available
 !> \param print_warn whether to print warnings (mainly relevant for libxc)
 !> \param spin_density_floor Whether this evaluation uses the Libxc individual-spin density projection.
+!> \param pbe_density_floor Whether this evaluation uses the native PBE spin-density projection.
 !> \author fawzi
 ! **************************************************************************************************
    SUBROUTINE xc_functional_get_info(functional, lsd, reference, shortform, &
-                                     needs, max_deriv, print_warn, spin_density_floor)
+                                     needs, max_deriv, print_warn, spin_density_floor, pbe_density_floor)
       TYPE(section_vals_type), POINTER                   :: functional
       LOGICAL, INTENT(in)                                :: lsd
       CHARACTER(LEN=*), INTENT(OUT), OPTIONAL            :: reference, shortform
       TYPE(xc_rho_cflags_type), INTENT(inout), OPTIONAL  :: needs
       INTEGER, INTENT(out), OPTIONAL                     :: max_deriv
       LOGICAL, INTENT(IN), OPTIONAL                      :: print_warn
-      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor, pbe_density_floor
 
       INTEGER                                            :: i_param
-      REAL(kind=dp)                                      :: r_param
+      REAL(kind=dp)                                      :: r_param, scale_c, scale_x
 
       CPASSERT(ASSOCIATED(functional))
       IF (PRESENT(spin_density_floor)) spin_density_floor = .FALSE.
+      IF (PRESENT(pbe_density_floor)) pbe_density_floor = .FALSE.
       SELECT CASE (functional%section%name)
       CASE ("BECKE97")
          IF (lsd) THEN
@@ -280,6 +288,11 @@ CONTAINS
             CALL tpss_lda_info(functional, reference, shortform, needs, max_deriv)
          END IF
       CASE ("PBE")
+         IF (PRESENT(pbe_density_floor)) THEN
+            CALL section_vals_val_get(functional, "SCALE_C", r_val=scale_c)
+            CALL section_vals_val_get(functional, "SCALE_X", r_val=scale_x)
+            pbe_density_floor = lsd .AND. (scale_c /= 0.0_dp .OR. scale_x /= 0.0_dp)
+         END IF
          IF (lsd) THEN
             CALL pbe_lsd_info(functional, reference, shortform, needs, max_deriv)
          ELSE
@@ -775,20 +788,21 @@ CONTAINS
 !> \param calc_potential set, if potential calculation will be carried out later.
 !>        helps to save memory and flops. defaults to false.
 !> \param spin_density_floor Whether an active component uses the individual-spin Libxc floor.
+!> \param pbe_density_floor Whether an active component uses the native PBE spin-density floor.
 !> \return ...
 !> \author fawzi
 ! **************************************************************************************************
-   FUNCTION xc_functionals_get_needs(functionals, lsd, calc_potential, spin_density_floor) &
+   FUNCTION xc_functionals_get_needs(functionals, lsd, calc_potential, spin_density_floor, pbe_density_floor) &
       RESULT(needs)
       TYPE(section_vals_type), POINTER                   :: functionals
       LOGICAL, INTENT(in)                                :: lsd
       LOGICAL, INTENT(in), OPTIONAL                      :: calc_potential
-      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor, pbe_density_floor
       TYPE(xc_rho_cflags_type)                           :: needs
 
       INTEGER                                            :: ifun
-      LOGICAL                                            :: component_floor, fun_active, &
-                                                            my_calc_potential
+      LOGICAL                                            :: component_floor, component_pbe_floor, &
+                                                            fun_active, my_calc_potential
       TYPE(section_vals_type), POINTER                   :: xc_fun
 
       my_calc_potential = .FALSE.
@@ -797,16 +811,21 @@ CONTAINS
       CPASSERT(ASSOCIATED(functionals))
       CALL xc_rho_cflags_setall(needs, .FALSE.)
       IF (PRESENT(spin_density_floor)) spin_density_floor = .FALSE.
+      IF (PRESENT(pbe_density_floor)) pbe_density_floor = .FALSE.
 
       ifun = 0
       DO
          ifun = ifun + 1
          xc_fun => section_vals_get_subs_vals2(functionals, i_section=ifun)
          IF (.NOT. ASSOCIATED(xc_fun)) EXIT
-         CALL xc_functional_get_info(xc_fun, lsd=lsd, needs=needs, spin_density_floor=component_floor)
+         CALL xc_functional_get_info(xc_fun, lsd=lsd, needs=needs, spin_density_floor=component_floor, &
+                                     pbe_density_floor=component_pbe_floor)
+         CALL section_vals_val_get(xc_fun, "_SECTION_PARAMETERS_", l_val=fun_active)
          IF (PRESENT(spin_density_floor)) THEN
-            CALL section_vals_val_get(xc_fun, "_SECTION_PARAMETERS_", l_val=fun_active)
             spin_density_floor = spin_density_floor .OR. (fun_active .AND. component_floor)
+         END IF
+         IF (PRESENT(pbe_density_floor)) THEN
+            pbe_density_floor = pbe_density_floor .OR. (fun_active .AND. component_pbe_floor)
          END IF
       END DO
 
@@ -826,5 +845,103 @@ CONTAINS
          END IF
       END IF
    END FUNCTION xc_functionals_get_needs
+
+! **************************************************************************************************
+!> \brief Apply owned first-derivative weights at satisfied physical spin-density floors.
+!>        Every batch clears previous weights, including absent atoms and PAW padding rows.
+!>        Away from a selected surface the original differentiable branch is used.
+!> \param functionals Actual functional combination, including activation and scaling.
+!> \param state Physical descriptor constraints owned by the KS environment.
+!> \param rho_set Actual XC fields on this rank or atomic batch.
+!> \param nspins Number of physical density columns.
+!> \param domain Physical evaluation domain.
+!> \param keys Optional global sample keys in Fortran field order, required outside FFT.
+! **************************************************************************************************
+   SUBROUTINE xc_functionals_select_floor_limits(functionals, state, rho_set, nspins, domain, keys)
+      TYPE(section_vals_type), POINTER                   :: functionals
+      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      TYPE(xc_rho_set_type), INTENT(INOUT)               :: rho_set
+      INTEGER, INTENT(IN)                                :: nspins, domain
+      INTEGER, INTENT(IN), OPTIONAL                      :: keys(:, :)
+
+      INTEGER                                            :: bounds(2, 3), c, extent(3), n, point(3), &
+                                                            row
+      INTEGER, ALLOCATABLE                               :: descriptors(:), points(:, :), spins(:)
+      LOGICAL                                            :: active_libxc, active_pbe, select_libxc, &
+                                                            select_pbe
+      REAL(dp)                                           :: kinetic_probe, kinetic_tolerance, &
+                                                            libxc_floor, probe, tolerance, value
+      REAL(dp), ALLOCATABLE                              :: targets(:), weights(:)
+      TYPE(xc_rho_cflags_type)                           :: needs
+
+      IF (ALLOCATED(rho_set%spin_floor_slopes)) DEALLOCATE (rho_set%spin_floor_slopes)
+      IF (ALLOCATED(rho_set%pbe_spin_floor_slopes)) DEALLOCATE (rho_set%pbe_spin_floor_slopes)
+      rho_set%spin_floor_tolerance = 0.0_dp
+      n = skala_density_constraints_count(state, domain)
+      IF (n == 0) RETURN
+      CALL skala_density_constraints_get(state, points, spins, weights, probe, tolerance, &
+                                         descriptors=descriptors, kinetic_probe=kinetic_probe, &
+                                         kinetic_tolerance=kinetic_tolerance, domain=domain, targets=targets)
+      IF (ALL(targets == 0.0_dp)) RETURN
+      needs = xc_functionals_get_needs(functionals, nspins == 2, spin_density_floor=active_libxc, &
+                                       pbe_density_floor=active_pbe)
+      libxc_floor = 0.0_dp
+#if defined(__LIBXC)
+      IF (active_libxc) libxc_floor = libxc_density_floor(rho_set%rho_cutoff)
+#endif
+      CPASSERT(nspins == 2)
+      CPASSERT(ASSOCIATED(rho_set%rhoa) .AND. ASSOCIATED(rho_set%rhob))
+      bounds = rho_set%local_bounds
+      extent = MAX(0, bounds(2, :) - bounds(1, :) + 1)
+      IF (PRESENT(keys)) THEN
+         CPASSERT(ALL(SHAPE(keys) == [3, PRODUCT(extent)]))
+      ELSE
+         CPASSERT(domain == skala_fft_domain)
+      END IF
+      DO c = 1, n
+         IF (targets(c) == 0.0_dp) CYCLE
+         select_libxc = active_libxc .AND. targets(c) == libxc_floor
+         select_pbe = active_pbe .AND. targets(c) == pbe_spin_density_floor
+         IF (descriptors(c) /= skala_density_descriptor .OR. .NOT. (select_libxc .OR. select_pbe)) THEN
+            CPABORT("This physical descriptor target has no implemented limiting XC derivative.")
+         END IF
+         CPASSERT(spins(c) >= 1 .AND. spins(c) <= 2)
+         point = points(:, c)
+         IF (PRESENT(keys)) THEN
+            DO row = 1, PRODUCT(extent)
+               IF (ALL(keys(:, row) == point)) EXIT
+            END DO
+            IF (row > PRODUCT(extent)) CYCLE
+            point(1) = bounds(1, 1) + MODULO(row - 1, extent(1))
+            point(2) = bounds(1, 2) + MODULO((row - 1)/extent(1), extent(2))
+            point(3) = bounds(1, 3) + (row - 1)/(extent(1)*extent(2))
+         ELSE
+            IF (ANY(point < bounds(1, :)) .OR. ANY(point > bounds(2, :))) CYCLE
+            row = 1 + point(1) - bounds(1, 1) + extent(1)*(point(2) - bounds(1, 2) + &
+                                                           extent(2)*(point(3) - bounds(1, 3)))
+         END IF
+         IF (spins(c) == 1) THEN
+            value = rho_set%rhoa(point(1), point(2), point(3))
+         ELSE
+            value = rho_set%rhob(point(1), point(2), point(3))
+         END IF
+         IF (ABS(value - targets(c)) > tolerance) CYCLE
+         rho_set%spin_floor_tolerance = tolerance
+         IF (select_libxc) THEN
+            IF (.NOT. ALLOCATED(rho_set%spin_floor_slopes)) THEN
+               ALLOCATE (rho_set%spin_floor_slopes(2, PRODUCT(extent)))
+               rho_set%spin_floor_slopes = -1.0_dp
+            END IF
+            rho_set%spin_floor_slopes(spins(c), row) = 1.0_dp - weights(c)
+         END IF
+         IF (select_pbe) THEN
+            IF (.NOT. ALLOCATED(rho_set%pbe_spin_floor_slopes)) THEN
+               ALLOCATE (rho_set%pbe_spin_floor_slopes(2, PRODUCT(extent)))
+               rho_set%pbe_spin_floor_slopes = -1.0_dp
+            END IF
+            rho_set%pbe_spin_floor_slopes(spins(c), row) = 1.0_dp - weights(c)
+         END IF
+      END DO
+   END SUBROUTINE xc_functionals_select_floor_limits
 
 END MODULE xc_derivatives

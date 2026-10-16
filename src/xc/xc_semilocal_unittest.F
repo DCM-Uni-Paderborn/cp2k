@@ -18,6 +18,8 @@ PROGRAM xc_semilocal_unittest
    USE libcp2k, ONLY: cp2k_finalize, &
                       cp2k_init
    USE mathconstants, ONLY: pi
+   USE skala_density_constraints, ONLY: skala_density_constraints_type, skala_density_constraints_set, &
+                                        skala_density_constraints_reset, skala_fft_domain, skala_last_sample_domain
    USE xc_atom, ONLY: xc_rho_set_atom_update
    USE xc_derivative_desc, ONLY: deriv_norm_drho, &
                                  deriv_norm_drhoa, &
@@ -33,21 +35,20 @@ PROGRAM xc_semilocal_unittest
    USE xc_derivative_types, ONLY: xc_derivative_get, &
                                   xc_derivative_type
    USE xc_derivatives, ONLY: xc_functionals_eval, &
-                             xc_functionals_get_needs
+                             xc_functionals_get_needs, xc_functionals_select_floor_limits
    USE xc_input_constants, ONLY: xc_pbe_orig, &
                                  xc_pbe_rev, &
                                  xc_pbe_sol
+   USE xc_pbe, ONLY: pbe_spin_density_floor
    USE xc_rho_cflags_types, ONLY: xc_rho_cflags_type
    USE xc_rho_set_types, ONLY: xc_rho_set_create, &
                                xc_rho_set_release, &
                                xc_rho_set_type
 #if defined (__LIBXC)
-   USE skala_density_constraints, ONLY: skala_density_constraints_type, skala_density_constraints_set, &
-                                        skala_density_constraints_reset, skala_fft_domain, skala_last_sample_domain
    USE xc_derivative_desc, ONLY: deriv_gamma, deriv_gamma_aa, deriv_gamma_ab, deriv_gamma_bb, &
                                  deriv_tau_a, &
                                  deriv_tau_b
-   USE xc_libxc, ONLY: libxc_density_floor, libxc_select_floor_limits, libxc_spin_polarized_eval, &
+   USE xc_libxc, ONLY: libxc_density_floor, libxc_spin_polarized_eval, &
                        libxc_spin_unpolarized_eval
 #endif
 
@@ -93,6 +94,8 @@ PROGRAM xc_semilocal_unittest
    WRITE (*, '(A,2ES15.6)') 'PBE spin-floor first/second derivative errors:', energy_error, hessian_error
    IF (energy_error > 2.e-8_dp) ERROR STOP 'PBE potential is not the derivative of its clamped-density energy'
    IF (hessian_error > 2.e-7_dp) ERROR STOP 'PBE kernel is not the derivative of its clamped-density potential'
+   CALL check_pbe_floor_limits()
+   CALL check_xc_floor_selection()
    CALL section_vals_val_set(functional, 'PBE%_SECTION_PARAMETERS_', l_val=.FALSE.)
    CALL section_vals_val_set(functional, 'TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
    CALL check_tpss_zero_gradient()
@@ -108,7 +111,6 @@ PROGRAM xc_semilocal_unittest
    CALL check_libxc_c2_rounding()
    CALL check_libxc_individual_floor()
    CALL check_libxc_floor_limits()
-   CALL check_libxc_floor_selection()
    CALL check_libxc_spin_powers()
 #endif
    CALL section_vals_release(functional)
@@ -459,58 +461,6 @@ CONTAINS
    END SUBROUTINE check_libxc_floor_limits
 
 ! **************************************************************************************************
-!> \brief Check physical domain keys, field flattening and clearing selections between batches.
-! **************************************************************************************************
-   SUBROUTINE check_libxc_floor_selection()
-      INTEGER                                            :: bounds(2, 3), domain, keys(3, 4), &
-                                                            point(3, 1)
-      REAL(dp)                                           :: hmat(3, 3), level
-      TYPE(skala_density_constraints_type)               :: constraints
-      TYPE(xc_rho_cflags_type)                           :: needs
-      TYPE(xc_rho_set_type)                              :: fields
-
-      bounds(:, 1) = [-1, 0]
-      bounds(:, 2) = [2, 3]
-      bounds(:, 3) = [4, 4]
-      hmat = 0.0_dp
-      hmat(1, 1) = 1.0_dp
-      hmat(2, 2) = 1.0_dp
-      hmat(3, 3) = 1.0_dp
-      needs%rho_spin = .TRUE.
-      CALL xc_rho_set_create(fields, bounds, rho_cutoff=0.05_dp)
-      CALL xc_rho_set_atom_update(fields, needs, 2, bounds)
-      level = libxc_density_floor(fields%rho_cutoff)
-      fields%rhoa = 0.4_dp
-      fields%rhob = 0.3_dp
-      DO domain = skala_fft_domain, skala_last_sample_domain
-         fields%rhob(0, 2, 4) = level
-         point(:, 1) = [2, 4, 1]
-         IF (domain == skala_fft_domain) point(:, 1) = [0, 2, 4]
-         IF (domain > 2) point(:, 1) = [2, 4, 2]
-         keys = 0
-         keys(:, 2) = point(:, 1)
-         CALL skala_density_constraints_set(constraints, point, [2], [0.37_dp], 1.e-14_dp, 1.e-20_dp, &
-                                            2, [2, 2, 1], bounds, hmat, RESHAPE([REAL(dp)::0, 0, 0, 1, 0, 0], [3, 2]), &
-                                            domains=[domain], atomic_sizes=[0, 6], targets=[level], &
-                                            paw_sizes=RESHAPE([0, 0, 6, 3], [2, 2]))
-         IF (domain == skala_fft_domain) THEN
-            CALL libxc_select_floor_limits(constraints, fields, 2, domain)
-         ELSE
-            CALL libxc_select_floor_limits(constraints, fields, 2, domain, keys)
-         END IF
-         IF (.NOT. ALLOCATED(fields%spin_floor_slopes)) ERROR STOP 'Missing selected floor derivative'
-         IF (ABS(fields%spin_floor_slopes(2, 2) - 0.63_dp) > 1.e-15_dp) ERROR STOP 'Wrong selected floor row'
-         fields%spin_floor_slopes(2, 2) = -1.0_dp
-         IF (ANY(fields%spin_floor_slopes /= -1.0_dp)) ERROR STOP 'Selected an unrelated physical sample'
-         fields%rhob(0, 2, 4) = 2.0_dp*level
-         CALL libxc_select_floor_limits(constraints, fields, 2, domain, keys)
-         IF (ALLOCATED(fields%spin_floor_slopes)) ERROR STOP 'A stale floor derivative survived an off-surface batch'
-         CALL skala_density_constraints_reset(constraints)
-      END DO
-      CALL xc_rho_set_release(fields)
-   END SUBROUTINE check_libxc_floor_selection
-
-! **************************************************************************************************
 !> \brief Check correlation potentials where a small spin power multiplies a large reduced tau.
 ! **************************************************************************************************
    SUBROUTINE check_libxc_spin_powers()
@@ -713,17 +663,153 @@ CONTAINS
 #endif
 
 ! **************************************************************************************************
+!> \brief Check one-sided native PBE energy derivatives without moving its original density floor.
+! **************************************************************************************************
+   SUBROUTINE check_pbe_floor_limits()
+      REAL(dp), PARAMETER                                :: level = pbe_spin_density_floor, &
+                                                            step = level*1.e-3_dp, weight = 0.37_dp
+
+      INTEGER                                            :: side, spin, variant
+      LOGICAL                                            :: active
+      REAL(dp)                                           :: energy, error, first, gradient(5), &
+                                                            hessian(5, 5), limits(5, 2), selected, &
+                                                            slopes(2), trial(5), values(2), x(5)
+      TYPE(xc_rho_cflags_type)                           :: needs
+
+      needs = xc_functionals_get_needs(functional, .TRUE., pbe_density_floor=active)
+      IF (.NOT. active) ERROR STOP 'Native PBE lost its physical spin floor'
+      needs = xc_functionals_get_needs(functional, .FALSE., pbe_density_floor=active)
+      IF (active) ERROR STOP 'Unpolarized PBE reports an individual-spin floor'
+      CALL section_vals_val_set(functional, 'PBE%SCALE_X', r_val=0.0_dp)
+      CALL section_vals_val_set(functional, 'PBE%SCALE_C', r_val=0.0_dp)
+      needs = xc_functionals_get_needs(functional, .TRUE., pbe_density_floor=active)
+      IF (active) ERROR STOP 'Zero-scaled PBE reports an active spin floor'
+      CALL section_vals_val_set(functional, 'PBE%SCALE_X', r_val=1.0_dp)
+      CALL section_vals_val_set(functional, 'PBE%SCALE_C', r_val=1.0_dp)
+      error = 0.0_dp
+      DO variant = 1, SIZE(variants)
+         CALL section_vals_val_set(functional, 'PBE%PARAMETRIZATION', i_val=variants(variant))
+         DO spin = 1, 2
+            x(1:2) = 2.0_dp*level
+            x(spin) = level
+            x(3:5) = [0.7_dp, 0.4_dp, 0.3_dp]*level**(4.0_dp/3.0_dp)
+            CALL evaluate(x, energy, gradient, hessian, derivative_order=1)
+            DO side = 1, 2
+               slopes = -1.0_dp
+               slopes(spin) = REAL(side - 1, dp)
+               CALL evaluate(x, selected, limits(:, side), hessian, derivative_order=1, floor_slopes=slopes)
+               IF (selected /= energy) ERROR STOP 'A native PBE floor selection changed the energy'
+               trial = x
+               trial(spin) = x(spin) + REAL(2*side - 3, dp)*step
+               CALL evaluate(trial, values(1), gradient, hessian, derivative_order=1)
+               trial(spin) = x(spin) + REAL(2*side - 3, dp)*step*0.5_dp
+               CALL evaluate(trial, values(2), gradient, hessian, derivative_order=1)
+               first = REAL(2*side - 3, dp)*(4.0_dp*values(2) - values(1) - 3.0_dp*energy)/step
+               error = MAX(error, ABS(first - limits(spin, side)))
+            END DO
+            slopes(spin) = weight
+            CALL evaluate(x, selected, gradient, hessian, derivative_order=1, floor_slopes=slopes)
+            IF (MAXVAL(ABS(gradient - ((1.0_dp - weight)*limits(:, 1) + weight*limits(:, 2)))) > 1.e-12_dp) THEN
+               ERROR STOP 'Native PBE did not preserve accumulated contributions and independent gradient derivatives'
+            END IF
+         END DO
+      END DO
+      WRITE (*, '(A,ES15.6)') 'Native PBE selected spin-floor energy derivative error:', error
+      IF (error > 2.e-8_dp) ERROR STOP 'A native PBE floor limit is not a one-sided energy derivative'
+   END SUBROUTINE check_pbe_floor_limits
+
+! **************************************************************************************************
+!> \brief Check component-specific floor routing, physical keys and clearing between atomic batches.
+! **************************************************************************************************
+   SUBROUTINE check_xc_floor_selection()
+      INTEGER                                            :: bounds(2, 3), domain, families, family, &
+                                                            keys(3, 4), point(3, 1)
+      REAL(dp)                                           :: hmat(3, 3), level
+      TYPE(section_vals_type), POINTER                   :: combination
+      TYPE(skala_density_constraints_type)               :: constraints
+      TYPE(xc_rho_cflags_type)                           :: needs
+      TYPE(xc_rho_set_type)                              :: fields
+
+      NULLIFY (combination)
+      CALL section_vals_create(combination, specification)
+      CALL section_vals_val_set(combination, 'PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      families = 1
+#if defined(__LIBXC)
+      CALL section_vals_val_set(combination, 'GGA_C_PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      families = 2
+#endif
+      bounds(:, 1) = [-1, 0]
+      bounds(:, 2) = [2, 3]
+      bounds(:, 3) = [4, 4]
+      hmat = 0.0_dp
+      hmat(1, 1) = 1.0_dp
+      hmat(2, 2) = 1.0_dp
+      hmat(3, 3) = 1.0_dp
+      needs%rho_spin = .TRUE.
+      CALL xc_rho_set_create(fields, bounds, rho_cutoff=0.05_dp)
+      CALL xc_rho_set_atom_update(fields, needs, 2, bounds)
+      fields%rhoa = 0.4_dp
+      fields%rhob = 0.3_dp
+      DO family = 1, families
+         level = pbe_spin_density_floor
+#if defined(__LIBXC)
+         IF (family == 2) level = libxc_density_floor(fields%rho_cutoff)
+#endif
+         DO domain = skala_fft_domain, skala_last_sample_domain
+            fields%rhob(0, 2, 4) = level
+            point(:, 1) = [2, 4, 1]
+            IF (domain == skala_fft_domain) point(:, 1) = [0, 2, 4]
+            IF (domain > 2) point(:, 1) = [2, 4, 2]
+            keys = 0
+            keys(:, 2) = point(:, 1)
+            CALL skala_density_constraints_set(constraints, point, [2], [0.37_dp], 1.e-14_dp, 1.e-20_dp, &
+                                               2, [2, 2, 1], bounds, hmat, RESHAPE([REAL(dp)::0, 0, 0, 1, 0, 0], [3, 2]), &
+                                               domains=[domain], atomic_sizes=[0, 6], targets=[level], &
+                                               paw_sizes=RESHAPE([0, 0, 6, 3], [2, 2]))
+            IF (domain == skala_fft_domain) THEN
+               CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, domain)
+            ELSE
+               CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, domain, keys)
+            END IF
+            IF (family == 1) THEN
+               IF (.NOT. ALLOCATED(fields%pbe_spin_floor_slopes)) ERROR STOP 'Missing native PBE floor derivative'
+               IF (ALLOCATED(fields%spin_floor_slopes)) ERROR STOP 'PBE floor selected a Libxc derivative'
+               IF (ABS(fields%pbe_spin_floor_slopes(2, 2) - 0.63_dp) > 1.e-15_dp) ERROR STOP 'Wrong PBE floor row'
+               fields%pbe_spin_floor_slopes(2, 2) = -1.0_dp
+               IF (ANY(fields%pbe_spin_floor_slopes /= -1.0_dp)) ERROR STOP 'PBE selected an unrelated sample'
+            ELSE
+               IF (.NOT. ALLOCATED(fields%spin_floor_slopes)) ERROR STOP 'Missing Libxc floor derivative'
+               IF (ALLOCATED(fields%pbe_spin_floor_slopes)) ERROR STOP 'Libxc floor selected a PBE derivative'
+               IF (ABS(fields%spin_floor_slopes(2, 2) - 0.63_dp) > 1.e-15_dp) ERROR STOP 'Wrong Libxc floor row'
+               fields%spin_floor_slopes(2, 2) = -1.0_dp
+               IF (ANY(fields%spin_floor_slopes /= -1.0_dp)) ERROR STOP 'Libxc selected an unrelated sample'
+            END IF
+            fields%rhob(0, 2, 4) = 2.0_dp*level
+            CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, domain, keys)
+            IF (ALLOCATED(fields%spin_floor_slopes) .OR. ALLOCATED(fields%pbe_spin_floor_slopes)) THEN
+               ERROR STOP 'A stale floor derivative survived an off-surface batch'
+            END IF
+            CALL skala_density_constraints_reset(constraints)
+         END DO
+      END DO
+      CALL xc_rho_set_release(fields)
+      CALL section_vals_release(combination)
+   END SUBROUTINE check_xc_floor_selection
+
+! **************************************************************************************************
 !> \brief Evaluate native PBE in its independent spin-density and gradient-norm variables.
 !> \param x Two spin densities followed by total, alpha and beta gradient norms.
 !> \param energy Energy density.
 !> \param gradient First derivatives, with the accumulation of another functional preserved.
 !> \param hessian Second derivatives in the same independent variables.
 !> \param derivative_order ...
+!> \param floor_slopes Optional first-derivative weights at the native PBE spin floor.
 ! **************************************************************************************************
-   SUBROUTINE evaluate(x, energy, gradient, hessian, derivative_order)
+   SUBROUTINE evaluate(x, energy, gradient, hessian, derivative_order, floor_slopes)
       REAL(dp), INTENT(IN)                               :: x(5)
       REAL(dp), INTENT(OUT)                              :: energy, gradient(5), hessian(5, 5)
       INTEGER, INTENT(IN), OPTIONAL                      :: derivative_order
+      REAL(dp), INTENT(IN), OPTIONAL                     :: floor_slopes(2)
 
       INTEGER                                            :: bounds(2, 3), i, j, order
       REAL(dp), POINTER                                  :: values(:, :, :)
@@ -747,6 +833,11 @@ CONTAINS
       rho_set%has%rho_spin = .TRUE.
       rho_set%has%norm_drho = .TRUE.
       rho_set%has%norm_drho_spin = .TRUE.
+      IF (PRESENT(floor_slopes)) THEN
+         ALLOCATE (rho_set%pbe_spin_floor_slopes(2, 1))
+         rho_set%pbe_spin_floor_slopes(:, 1) = floor_slopes
+         rho_set%spin_floor_tolerance = 1.e-20_dp
+      END IF
       CALL xc_dset_create(derivatives, local_bounds=bounds)
       ! Seed every first/second derivative to catch overwriting earlier functional contributions.
       DO i = 1, 5
