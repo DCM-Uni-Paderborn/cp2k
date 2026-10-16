@@ -249,7 +249,6 @@ MODULE qs_scf
    USE qs_wf_history_methods,           ONLY: wfi_purge_history,&
                                               wfi_update
    USE scf_control_types,               ONLY: scf_control_type
-   USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_grid
    USE smeagol_interface,               ONLY: run_smeagol_bulktrans,&
                                               run_smeagol_emtrans
    USE tblite_interface,                ONLY: tb_get_energy,&
@@ -1078,8 +1077,8 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Minimize fixed-occupation inverse orbitals after initializing the native OT state.
 !>        Count the bounded minimization against the original SCF limit. Acceptance reconstructs
-!>        matching MOs, P and energy-weighted W in the original charge metric. Native Skala cusp
-!>        handling requires an active constraint search and uses the existing SCF loop here.
+!>        matching MOs, P and energy-weighted W in the original charge metric. Physical density
+!>        and kinetic-density boundaries use the shared active constraint search.
 !>        Rebuild the Cayley chart at its accepted orbitals when a trial leaves the bounded
 !>        coordinate region or the line search stalls after making progress. All attempted
 !>        steps still consume the original SCF budget.
@@ -1116,7 +1115,6 @@ CONTAINS
       TYPE(qs_skala_scf_crossing_type)                   :: event
       TYPE(qs_skala_scf_type)                            :: state
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
-      TYPE(section_vals_type), POINTER                   :: input, xc_section
 
       handled = .FALSE.
       stopped = .FALSE.
@@ -1128,13 +1126,11 @@ CONTAINS
       IF (scf_control%smear%do_smear .OR. scf_control%outer_scf%have_scf) RETURN
       remaining = scf_control%max_scf - scf_env%iter_count
       IF (remaining <= 0) RETURN
-      CALL get_qs_env(qs_env, dft_control=dft_control, input=input, kpoints=kpoints)
+      CALL get_qs_env(qs_env, dft_control=dft_control, kpoints=kpoints)
       IF (dft_control%qs_control%cdft .OR. dft_control%roks) RETURN
       CALL get_ks_env(qs_env%ks_env, upf_inverse=inverse)
       IF (.NOT. ASSOCIATED(inverse)) RETURN
       IF (.NOT. inverse%enabled) RETURN
-      xc_section => section_vals_get_subs_vals(input, "DFT%XC")
-      IF (xc_section_uses_native_skala_grid(xc_section)) RETURN
       CALL qs_skala_scf_create(state, qs_env, valid)
       IF (.NOT. valid) RETURN
       n = qs_skala_scf_size(state)
