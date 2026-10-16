@@ -82,8 +82,7 @@ MODULE qs_upf_inverse_hfx
    ! Each entry lives only within one physical image, AO block pair and geometry call.
    TYPE lattice_overlap_type
       COMPLEX(dp), ALLOCATABLE :: left(:, :), right(:, :), dleft(:, :), dright(:, :)
-      COMPLEX(dp), ALLOCATABLE :: cl(:, :, :), dl(:, :, :), cr(:, :, :), dr(:, :, :), &
-                                  fcl(:, :, :), fdl(:, :, :), fcr(:, :, :), fdr(:, :, :)
+      COMPLEX(dp), ALLOCATABLE :: cl(:, :, :), cr(:, :, :), fcl(:, :, :), fcr(:, :, :)
       INTEGER, POINTER :: field_budget => NULL()
    END TYPE lattice_overlap_type
 
@@ -2655,14 +2654,13 @@ CONTAINS
          cache_ready = ALLOCATED(overlaps%cl)
          cache_fields = cache_ready
          IF (.NOT. cache_fields .AND. ASSOCIATED(overlaps%field_budget)) THEN
-            field_words = 4_int_8*INT(nang, int_8)*(INT(nl, int_8) + INT(nr, int_8))*INT(cache_rows, int_8)
+            ! Projector moments need only the complete orbital fields and their responses.
+            field_words = 2_int_8*INT(nang, int_8)*(INT(nl, int_8) + INT(nr, int_8))*INT(cache_rows, int_8)
             IF (derivatives) field_words = 2_int_8*field_words
             IF (field_words <= INT(overlaps%field_budget, int_8)) THEN
-               ALLOCATE (overlaps%cl(nang, nl, cache_rows), overlaps%dl(nang, nl, cache_rows), &
-                         overlaps%cr(nang, nr, cache_rows), overlaps%dr(nang, nr, cache_rows))
+               ALLOCATE (overlaps%cl(nang, nl, cache_rows), overlaps%cr(nang, nr, cache_rows))
                IF (derivatives) THEN
-                  ALLOCATE (overlaps%fcl(nang, nl, cache_rows), overlaps%fdl(nang, nl, cache_rows), &
-                            overlaps%fcr(nang, nr, cache_rows), overlaps%fdr(nang, nr, cache_rows))
+                  ALLOCATE (overlaps%fcl(nang, nl, cache_rows), overlaps%fcr(nang, nr, cache_rows))
                END IF
                overlaps%field_budget = overlaps%field_budget - INT(field_words)
                cache_fields = .TRUE.
@@ -2707,14 +2705,10 @@ CONTAINS
                                             [0.0_dp, 0.0_dp, 0.0_dp], delta)
             IF (cache_ready) THEN
                cl(:, :) = overlaps%cl(:, :, cache_row)
-               dl(:, :) = overlaps%dl(:, :, cache_row)
                cr(:, :) = overlaps%cr(:, :, cache_row)
-               dr(:, :) = overlaps%dr(:, :, cache_row)
                IF (derivatives) THEN
                   fcl(:, :) = overlaps%fcl(:, :, cache_row)
-                  fdl(:, :) = overlaps%fdl(:, :, cache_row)
                   fcr(:, :) = overlaps%fcr(:, :, cache_row)
-                  fdr(:, :) = overlaps%fdr(:, :, cache_row)
                END IF
             ELSE
                CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, &
@@ -2725,14 +2719,10 @@ CONTAINS
                                             coefficient_images, coupled_coefficients, coupled_response)
                IF (cache_fields) THEN
                   overlaps%cl(:, :, cache_row) = cl
-                  overlaps%dl(:, :, cache_row) = dl
                   overlaps%cr(:, :, cache_row) = cr
-                  overlaps%dr(:, :, cache_row) = dr
                   IF (derivatives) THEN
                      overlaps%fcl(:, :, cache_row) = fcl
-                     overlaps%fdl(:, :, cache_row) = fdl
                      overlaps%fcr(:, :, cache_row) = fcr
-                     overlaps%fdr(:, :, cache_row) = fdr
                   END IF
                END IF
             END IF
