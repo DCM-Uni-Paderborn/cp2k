@@ -75,6 +75,8 @@ MODULE qs_upf_inverse_xc
    IMPLICIT NONE
    PRIVATE
 
+   INTEGER(KIND=int_8), PARAMETER :: max_xc_field_bytes = 64_int_8*1024*1024
+
    TYPE qs_upf_inverse_frame_ref_type
       TYPE(qs_upf_inverse_type), POINTER :: frame => NULL()
    END TYPE qs_upf_inverse_frame_ref_type
@@ -137,10 +139,12 @@ CONTAINS
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
 
-      COMPLEX(dp), ALLOCATABLE :: kinetic_operator(:, :), orbital_gradient(:, :, :), &
-         partial(:, :), projected(:, :), qoperator(:, :), soft(:, :)
+      COMPLEX(dp), ALLOCATABLE :: cached_gradient(:, :, :, :), cached_soft(:, :, :), &
+         kinetic_operator(:, :), orbital_gradient(:, :, :), partial(:, :), projected(:, :), &
+         qoperator(:, :), soft(:, :)
       INTEGER                                            :: block, hi, ik, lo, m, nao, nk, np, &
                                                             nproj, nspin, spin
+      LOGICAL                                            :: store_fields
       REAL(dp), ALLOCATABLE :: ebackground(:), gradient(:, :), integration_weights(:), &
          reconstruction_density(:), reconstruction_gradient(:, :), rho(:), tau(:), &
          tau_augmentation(:)
@@ -169,6 +173,10 @@ CONTAINS
          CPASSERT(ALL(SHAPE(core_tau) == [np, nspin]))
       END IF
       block = qs_upf_inverse_block_size(frames(1)%frame)
+      ! Reuse only the orbital fields shared by the density and operator in this call.
+      ! Larger point sets retain the original bounded-block evaluation.
+      store_fields = np > 0 .AND. 64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes
+      IF (store_fields) ALLOCATE (cached_soft(np, nao, nk), cached_gradient(np, nao, 3, nk))
       ALLOCATE (soft(block, nao), orbital_gradient(block, nao, 3), partial(nao, nao), &
                 state%operators(nao, nao, nk, nspin), state%density(np, nspin), &
                 state%density_gradient(np, 3, nspin), state%energy_density(np), &
@@ -189,6 +197,10 @@ CONTAINS
             hi = MIN(np, lo + block - 1)
             m = hi - lo + 1
             CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), orbital_gradient(:m, :, :))
+            IF (store_fields) THEN
+               cached_soft(lo:hi, :, ik) = soft(:m, :)
+               cached_gradient(lo:hi, :, :, ik) = orbital_gradient(:m, :, :)
+            END IF
             DO spin = 1, nspin
                CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
                                                matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi))
@@ -259,7 +271,12 @@ CONTAINS
          DO lo = 1, np, block
             hi = MIN(np, lo + block - 1)
             m = hi - lo + 1
-            CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), orbital_gradient(:m, :, :))
+            IF (store_fields) THEN
+               soft(:m, :) = cached_soft(lo:hi, :, ik)
+               orbital_gradient(:m, :, :) = cached_gradient(lo:hi, :, :, ik)
+            ELSE
+               CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), orbital_gradient(:m, :, :))
+            END IF
             DO spin = 1, nspin
                CALL upf_inverse_semilocal_pair(soft(:m, :), soft(:m, :), &
                                                orbital_gradient(:m, :, :), orbital_gradient(:m, :, :), &
