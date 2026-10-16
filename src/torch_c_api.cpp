@@ -695,8 +695,8 @@ void torch_c_dict_clone(const torch_c_dict_t *dict, torch_c_dict_t **dict_out) {
  *        Omit the tensor that the caller will replace by a new leaf.
  ******************************************************************************/
 void torch_c_dict_clone_detached(const torch_c_dict_t *dict,
-                                const char *exclude,
-                                torch_c_dict_t **dict_out) {
+                                 const char *exclude,
+                                 torch_c_dict_t **dict_out) {
   assert(*dict_out == NULL);
   auto *clone = new c10::Dict<std::string, torch::Tensor>();
   const std::string excluded_key(exclude);
@@ -831,6 +831,7 @@ void torch_c_model_forward_mol_tensor(torch_c_model_t *model,
                                       const torch_c_dict_t *inputs,
                                       torch_c_tensor_t **output) {
 
+  TorchFloatingPointMaskGuard fpe_guard;
   c10::OptionalDeviceGuard guard;
   get_device_with_guard(guard);
   assert(*output == NULL);
