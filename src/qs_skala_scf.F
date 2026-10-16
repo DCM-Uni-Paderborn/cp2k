@@ -1745,18 +1745,20 @@ CONTAINS
 !> \param positive_gradient Complete all-positive physical limiting covector.
 !> \param negative_changes Negative-minus-positive changes, one column per registered sample.
 !> \param physical_jacobian Optional physical sample covectors, one constraint per row.
+!> \param hold_orbitals Keep the evaluated native MOs and density fixed while selecting KS limits.
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_scf_limiting(state, coordinate, positive_gradient, negative_changes, physical_jacobian)
+   SUBROUTINE qs_skala_scf_limiting(state, coordinate, positive_gradient, negative_changes, physical_jacobian, hold_orbitals)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       REAL(dp), INTENT(OUT)                              :: positive_gradient(:), &
                                                             negative_changes(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_jacobian(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals
 
       INTEGER                                            :: i, m, n
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             points(:, :), spins(:)
-      LOGICAL                                            :: valid
+      LOGICAL                                            :: fixed_orbitals, valid
       REAL(dp)                                           :: energy, kinetic_probe, &
                                                             kinetic_tolerance, probe, tolerance, &
                                                             value
@@ -1764,6 +1766,8 @@ CONTAINS
                                                             physical(:), targets(:), weights(:)
 
       n = qs_skala_scf_size(state)
+      fixed_orbitals = .FALSE.
+      IF (PRESENT(hold_orbitals)) fixed_orbitals = hold_orbitals
       m = skala_density_constraints_count(state%constraints)
       CPASSERT(SIZE(coordinate) == n .AND. SIZE(positive_gradient) == n)
       CPASSERT(ALL(SHAPE(negative_changes) == [n, m]))
@@ -1773,7 +1777,7 @@ CONTAINS
       END IF
       negative_changes = 0.0_dp
       IF (m == 0) THEN
-         CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=positive_gradient)
+         CALL evaluate_limiting_state(state, coordinate, energy, positive_gradient, fixed_orbitals)
          RETURN
       END IF
       CALL skala_density_constraints_get(state%constraints, points, spins, original_weights, &
@@ -1782,7 +1786,7 @@ CONTAINS
       ALLOCATE (weights(m), gradient(n), physical(n))
       weights = 0.0_dp
       CALL skala_density_constraints_update_weights(state%constraints, weights)
-      CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=positive_gradient)
+      CALL evaluate_limiting_state(state, coordinate, energy, positive_gradient, fixed_orbitals)
       DO i = 1, m
          CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), value)
          IF (descriptors(i) == skala_density_descriptor) THEN
@@ -1800,13 +1804,44 @@ CONTAINS
       DO i = 1, m
          weights(i) = 1.0_dp
          CALL skala_density_constraints_update_weights(state%constraints, weights)
-         CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=physical)
+         CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
          negative_changes(:, i) = physical - positive_gradient
          weights(i) = 0.0_dp
       END DO
       CALL skala_density_constraints_update_weights(state%constraints, original_weights)
-      CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=physical)
+      CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
    END SUBROUTINE qs_skala_scf_limiting
+
+! **************************************************************************************************
+!> \brief Evaluate a selected KS limit, optionally preserving the installed native orbital state.
+!>        A canonical state must be tested without installing newly normalized chart orbitals.
+!>        Only the XC derivative selection changes in the held case. Rebuild KS and physical
+!>        samples from the same native density, including all atomic corrections.
+!> \param state Evaluated native orbital state.
+!> \param coordinate Current orbital coordinates, unchanged when holding native orbitals.
+!> \param energy Complete native energy.
+!> \param physical_gradient Complete native KS covector in the normalized physical tangent.
+!> \param hold_orbitals Reevaluate KS without changing MOs or rebuilding the density.
+! **************************************************************************************************
+   SUBROUTINE evaluate_limiting_state(state, coordinate, energy, physical_gradient, hold_orbitals)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, physical_gradient(:)
+      LOGICAL, INTENT(IN)                                :: hold_orbitals
+
+      IF (.NOT. hold_orbitals) THEN
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=physical_gradient)
+         RETURN
+      END IF
+      CPASSERT(state%evaluated)
+      CPASSERT(ALL(state%coordinate == coordinate))
+      CALL skala_density_samples_begin(state%constraints)
+      CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
+      CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.FALSE., print_active=.FALSE.)
+      CALL skala_density_samples_end(state%constraints)
+      energy = state%energy%total
+      CALL native_orbital_covectors(state, physical_gradient=physical_gradient)
+   END SUBROUTINE evaluate_limiting_state
 
 ! **************************************************************************************************
 !> \brief Determine convex weights from complete native physical limiting covectors.
@@ -1849,13 +1884,15 @@ CONTAINS
 !> \param admissible Whether the one-sided normal derivatives have the signs required for a minimum.
 !> \param release_side Minus one for negative-side descent, plus one for positive-side descent.
 !> \param valid Whether the selected normals have independent proportional groups.
+!> \param hold_orbitals Keep native MOs and density fixed while evaluating the normal limits.
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_scf_admissibility(state, coordinate, admissible, release_side, valid)
+   SUBROUTINE qs_skala_scf_admissibility(state, coordinate, admissible, release_side, valid, hold_orbitals)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       LOGICAL, INTENT(OUT)                               :: admissible(:)
       INTEGER, INTENT(OUT)                               :: release_side(:)
       LOGICAL, INTENT(OUT)                               :: valid
+      LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals
 
       INTEGER                                            :: m, n
       REAL(dp), ALLOCATABLE                              :: changes(:, :), jacobian(:, :), &
@@ -1869,7 +1906,7 @@ CONTAINS
       release_side = 0
       valid = .FALSE.
       ALLOCATE (positive(n), changes(n, m), jacobian(m, n))
-      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian)
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian, hold_orbitals)
       CALL skala_cusp_admissibility(positive, changes, jacobian, admissible, release_side, valid)
    END SUBROUTINE qs_skala_scf_admissibility
 
@@ -1988,14 +2025,15 @@ CONTAINS
       CALL qs_skala_scf_create(canonical, state%qs_env, valid)
       IF (valid) THEN
          ALLOCATE (canonical_coordinate(qs_skala_scf_size(canonical)), SOURCE=0.0_dp)
-         CALL qs_skala_scf_evaluate(canonical, canonical_coordinate, energy, physical_gradient=gradient)
+         CALL qs_skala_scf_inspect(canonical, energy, gradient)
          CALL qs_skala_scf_selected(canonical, selected_points, selected_domains, selected_spins, &
                                     selected_descriptors, selected_targets, selected_tolerances, valid)
          valid = valid .AND. NORM2(gradient) <= tolerance
          IF (valid .AND. m > 0) THEN
-            CALL qs_skala_scf_admissibility(canonical, canonical_coordinate, admissible, release_side, valid)
+            CALL qs_skala_scf_admissibility(canonical, canonical_coordinate, admissible, release_side, valid, &
+                                            hold_orbitals=.TRUE.)
             valid = valid .AND. ALL(admissible)
-            CALL qs_skala_scf_evaluate(canonical, canonical_coordinate, energy, physical_gradient=gradient)
+            CALL native_orbital_covectors(canonical, physical_gradient=gradient)
             valid = valid .AND. NORM2(gradient) <= tolerance
          END IF
       END IF
