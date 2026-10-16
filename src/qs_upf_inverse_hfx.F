@@ -2557,9 +2557,10 @@ CONTAINS
       TYPE(transition_augmentation_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: augmentation_integrals
 
-      COMPLEX(dp), ALLOCATABLE :: block(:, :), cl(:, :), cr(:, :), delta(:, :), dl(:, :), &
-         dq(:, :), dr(:, :), dwl(:, :), dwr(:, :), fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), &
-         q(:, :), wl(:, :), work(:, :), wr(:, :)
+      COMPLEX(dp), ALLOCATABLE :: cl(:, :), cr(:, :), delta(:, :), dl(:, :), dq(:, :), dr(:, :), &
+         dwl(:, :), dwr(:, :), fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), moment_left(:, :, :), &
+         moment_right(:, :, :), q(:, :), response_left(:, :, :), response_right(:, :, :), &
+         wl(:, :), work(:, :), wr(:, :)
       INTEGER                                            :: atom, aux, cache_row, cache_rows, ia, &
                                                             ir, j, kind, nang, nl, np, nr, &
                                                             zero(3, 1)
@@ -2675,11 +2676,17 @@ CONTAINS
             END IF
          END IF
          ALLOCATE (points(3, nang), local_points(3, nang), potentials(nang, fields%nfunction), &
-                   weights(nang), weighted_potential(nang), delta(nang, np), work(nang, nr), &
-                   block(nl, nr), cl(nang, nl), dl(nang, nl), cr(nang, nr), dr(nang, nr))
+                   weights(nang), weighted_potential(nang), delta(nang, np), work(nang, np), &
+                   cl(nang, nl), dl(nang, nl), cr(nang, nr), dr(nang, nr), &
+                   moment_left(np, nl, fields%nfunction), moment_right(np, nr, fields%nfunction))
+         moment_left = CMPLX(0.0_dp, 0.0_dp, dp)
+         moment_right = CMPLX(0.0_dp, 0.0_dp, dp)
          IF (derivatives) THEN
             ALLOCATE (potential_gradient(3, fields%nfunction, nang), dpoints(3, nang), &
-                      fcl(nang, nl), fdl(nang, nl), fcr(nang, nr), fdr(nang, nr))
+                      fcl(nang, nl), fdl(nang, nl), fcr(nang, nr), fdr(nang, nr), &
+                      response_left(np, nl, fields%nfunction), response_right(np, nr, fields%nfunction))
+            response_left = CMPLX(0.0_dp, 0.0_dp, dp)
+            response_right = CMPLX(0.0_dp, 0.0_dp, dp)
             DO ia = 1, nang
                dpoints(:, ia) = dposition
             END DO
@@ -2695,6 +2702,9 @@ CONTAINS
             END DO
             ! The integration coordinates move with the reconstruction center. Delta and
             ! its radial/angular measure therefore have no geometry response on this sphere.
+            CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
+                                            [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
+                                            [0.0_dp, 0.0_dp, 0.0_dp], delta)
             IF (cache_ready) THEN
                cl(:, :) = overlaps%cl(:, :, cache_row)
                dl(:, :) = overlaps%dl(:, :, cache_row)
@@ -2707,9 +2717,6 @@ CONTAINS
                   fdr(:, :) = overlaps%fdr(:, :, cache_row)
                END IF
             ELSE
-               CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
-                                               [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
-                                               [0.0_dp, 0.0_dp, 0.0_dp], delta)
                CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, &
                                             left_fields, fcl, fdl, dwl, atom_response, cell_response, dpoints, derivatives, &
                                             coefficient_images, coupled_coefficients, coupled_response)
@@ -2741,43 +2748,34 @@ CONTAINS
                   CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :))
                END IF
             END DO
+            ! The local difference is -Delta W. Keep the small projector dimension
+            ! through the quadrature and contract W only after the radial sum.
             DO aux = 1, fields%nfunction
                weighted_potential(:) = weights*potentials(:, aux)
-               DO j = 1, nr
-                  work(:, j) = cr(:, j)*weighted_potential
+               DO j = 1, np
+                  work(:, j) = delta(:, j)*weighted_potential
                END DO
-               CALL field_product(dl, work, block, .FALSE., .TRUE., .FALSE.)
-               DO j = 1, nr
-                  work(:, j) = dr(:, j)*weighted_potential
-               END DO
-               integral(:, :, aux) = integral(:, :, aux) + block
-               CALL field_product(cl, work, integral(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               CALL field_product(work, cl, moment_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               CALL field_product(work, cr, moment_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
                IF (.NOT. derivatives) CYCLE
-               CALL field_product(fcl, work, block, .FALSE., .TRUE., .FALSE.)
-               DO j = 1, nr
-                  work(:, j) = fdr(:, j)*weighted_potential
-               END DO
-               CALL field_product(cl, work, block, .TRUE., .TRUE., .FALSE.)
-               DO j = 1, nr
-                  work(:, j) = cr(:, j)*weighted_potential
-               END DO
-               CALL field_product(fdl, work, block, .TRUE., .TRUE., .FALSE.)
-               DO j = 1, nr
-                  work(:, j) = fcr(:, j)*weighted_potential
-               END DO
-               CALL field_product(dl, work, block, .TRUE., .TRUE., .FALSE.)
+               CALL field_product(work, fcl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               CALL field_product(work, fcr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
                DO ia = 1, nang
                   scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
-                  work(ia, :) = scale*cr(ia, :)
+                  work(ia, :) = scale*delta(ia, :)
                END DO
-               CALL field_product(dl, work, block, .TRUE., .TRUE., .FALSE.)
-               DO ia = 1, nang
-                  scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
-                  work(ia, :) = scale*dr(ia, :)
-               END DO
-               response(:, :, aux) = response(:, :, aux) + block
-               CALL field_product(cl, work, response(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               CALL field_product(work, cl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               CALL field_product(work, cr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
             END DO
+         END DO
+         DO aux = 1, fields%nfunction
+            CALL field_product(wl, moment_right(:, :, aux), integral(:, :, aux), .TRUE., .TRUE., .FALSE., -1.0_dp)
+            CALL field_product(moment_left(:, :, aux), wr, integral(:, :, aux), .TRUE., .TRUE., .FALSE., -1.0_dp)
+            IF (.NOT. derivatives) CYCLE
+            CALL field_product(dwl, moment_right(:, :, aux), response(:, :, aux), .TRUE., .TRUE., .FALSE., -1.0_dp)
+            CALL field_product(wl, response_right(:, :, aux), response(:, :, aux), .TRUE., .TRUE., .FALSE., -1.0_dp)
+            CALL field_product(response_left(:, :, aux), wr, response(:, :, aux), .TRUE., .TRUE., .FALSE., -1.0_dp)
+            CALL field_product(moment_left(:, :, aux), dwr, response(:, :, aux), .TRUE., .TRUE., .FALSE., -1.0_dp)
          END DO
       END IF
       IF (augmentation%nproj == 0) RETURN
