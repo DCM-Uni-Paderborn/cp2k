@@ -1313,7 +1313,7 @@ CONTAINS
 !> \param values Actual physical inputs at the returned state.
 !> \param selected All candidates satisfying their physical window at the root.
 !> \param found Whether the returned boundary satisfies the original physical criteria.
-!> \param max_iterations Maximum shared bisection steps, defaults to 100.
+!> \param max_iterations Maximum shared bracket refinements, defaults to 100.
 !> \param evaluations Optional number of complete native field evaluations.
 !> \param check_external Poll the normal CP2K external stop conditions, false by default.
 !> \param stopped Whether an external stop was requested.
@@ -1336,11 +1336,13 @@ CONTAINS
       TYPE(skala_constraint_chart_type), INTENT(IN), &
          OPTIONAL                                        :: curve
 
-      INTEGER                                            :: count, iteration, limit, m, n
+      INTEGER                                            :: count, i, iteration, limit, m, n
       INTEGER, ALLOCATABLE                               :: rows(:)
-      LOGICAL                                            :: external, requested, valid
-      REAL(dp)                                           :: energy, fraction, left, right
-      REAL(dp), ALLOCATABLE                              :: direction(:), gradient(:), initial(:), &
+      LOGICAL                                            :: bracketed, EXTERNAL, requested, valid
+      REAL(dp)                                           :: energy, fraction, left, right, scale, &
+                                                            trial_fraction
+      REAL(dp), ALLOCATABLE                              :: direction(:), edge_values(:, :), &
+                                                            gradient(:), initial(:), &
                                                             jacobian(:, :), residuals(:), sides(:)
       TYPE(physical_constraints_context)                 :: context
 
@@ -1357,7 +1359,7 @@ CONTAINS
       IF (PRESENT(check_external)) EXTERNAL = check_external
       requested = .FALSE.
       IF (PRESENT(stopped)) stopped = .FALSE.
-      ALLOCATE (initial(m), sides(m), direction(n), gradient(n))
+      ALLOCATE (initial(m), sides(m), edge_values(2, m), direction(n), gradient(n))
       ALLOCATE (rows(m), SOURCE=-1)
       IF (PRESENT(curve)) THEN
          context%state => state
@@ -1389,13 +1391,28 @@ CONTAINS
          IF (ALL(sides*(values - targets) <= tolerances)) THEN
             left = 0.0_dp
             right = 1.0_dp
+            edge_values(1, :) = sides*(initial - targets)
+            edge_values(2, :) = sides*(values - targets)
             DO iteration = 1, limit
                IF (EXTERNAL) THEN
                   CALL external_control(requested, "SCF", target_time=state%qs_env%target_time, &
                                         start_time=state%qs_env%start_time)
                   IF (requested) EXIT
                END IF
-               fraction = 0.5_dp*(left + right)
+               ! Predict the earliest bracketed crossing from actual endpoint fields.
+               ! Safeguarding retains interval contraction. Only native fields accept a root.
+               trial_fraction = 1.0_dp
+               bracketed = .FALSE.
+               DO i = 1, m
+                  IF (edge_values(2, i) > 0.0_dp) CYCLE
+                  bracketed = .TRUE.
+                  scale = MAX(ABS(edge_values(1, i)), ABS(edge_values(2, i)))
+                  trial_fraction = MIN(trial_fraction, (edge_values(1, i)/scale)/ &
+                                       ((edge_values(1, i)/scale) - (edge_values(2, i)/scale)))
+               END DO
+               IF (.NOT. bracketed) trial_fraction = 0.5_dp
+               trial_fraction = MAX(0.1_dp, MIN(0.9_dp, trial_fraction))
+               fraction = (1.0_dp - trial_fraction)*left + trial_fraction*right
                IF (fraction <= left .OR. fraction >= right) EXIT
                root(:) = first + fraction*direction
                IF (PRESENT(curve)) THEN
@@ -1417,8 +1434,10 @@ CONTAINS
                END IF
                IF (ANY(sides*(values - targets) < -tolerances)) THEN
                   right = fraction
+                  edge_values(2, :) = sides*(values - targets)
                ELSE
                   left = fraction
+                  edge_values(1, :) = sides*(values - targets)
                END IF
             END DO
          END IF
