@@ -239,9 +239,10 @@ MODULE qs_scf
         general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, &
         smeagol_method_nr, special_diag_method_nr
    USE qs_skala_scf,                    ONLY: &
-        qs_skala_scf_accept, qs_skala_scf_balance, qs_skala_scf_create, qs_skala_scf_evaluate, &
-        qs_skala_scf_inspect, qs_skala_scf_release, qs_skala_scf_selected, qs_skala_scf_size, &
-        qs_skala_scf_stationarity, qs_skala_scf_type
+        qs_skala_scf_accept, qs_skala_scf_balance, qs_skala_scf_classify, qs_skala_scf_create, &
+        qs_skala_scf_crossing_type, qs_skala_scf_evaluate, qs_skala_scf_inspect, &
+        qs_skala_scf_release, qs_skala_scf_selected, qs_skala_scf_size, qs_skala_scf_stationarity, &
+        qs_skala_scf_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_core
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc_atom,                     ONLY: gapw_cdft_one_center
@@ -1099,17 +1100,20 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: iterations
       LOGICAL, INTENT(OUT)                               :: stopped
 
-      INTEGER                                            :: n, remaining, steps
+      INTEGER                                            :: i, n, remaining, steps
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
-                                                            points(:, :), spins(:)
+                                                            points(:, :), reached(:), &
+                                                            release_side(:), spins(:)
       LOGICAL                                            :: accepted, balanced, converged, rechart, &
                                                             valid
+      LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
                                                             gradient(:), physical(:), targets(:), &
                                                             tolerances(:)
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_skala_scf_crossing_type)                   :: event
       TYPE(qs_skala_scf_type)                            :: state
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: input, xc_section
@@ -1156,9 +1160,28 @@ CONTAINS
                                         scf_control%eps_scf, energy, converged, max_iterations=remaining, &
                                         max_step=0.1_dp, iterations=steps, check_external=.TRUE., stopped=stopped, &
                                         targets=targets, max_coordinate_norm=coordinate_bound, &
-                                        rechart=rechart, retain_progress=.TRUE.)
+                                        rechart=rechart, retain_progress=.TRUE., crossings=event, admit_crossings=.TRUE.)
          iterations = iterations + steps
          remaining = remaining - steps
+         IF (event%encountered .AND. .NOT. stopped) THEN
+            IF (.NOT. event%resolved) EXIT
+            reached = PACK([(i, i=1, SIZE(event%spins))], event%selected)
+            ALLOCATE (admissible(SIZE(reached)), release_side(SIZE(reached)))
+            CALL qs_skala_scf_classify(state, event%root, event%points(:, reached), event%domains(reached), &
+                                       event%spins(reached), event%descriptors(reached), event%targets(reached), &
+                                       admissible, release_side, valid, retain=.TRUE.)
+            IF (.NOT. valid .OR. .NOT. ALL(admissible)) THEN
+               CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
+               EXIT
+            END IF
+            coordinate(:) = event%root
+            DEALLOCATE (admissible, release_side)
+            CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid)
+            CPASSERT(valid)
+            IF (ALLOCATED(coordinate_bound)) DEALLOCATE (coordinate_bound)
+            IF (remaining <= 0) EXIT
+            CYCLE
+         END IF
          IF (converged .AND. SIZE(tolerances) > 0) THEN
             CALL qs_skala_scf_balance(state, coordinate, scf_control%eps_scf, physical, balanced)
             converged = balanced

@@ -416,16 +416,19 @@ CONTAINS
 !> \param check_segment Optional trial-segment check before step acceptance.
 !> \param interrupted Whether that check requests event handling at the last accepted state.
 !> \param retain_progress Return the last accepted feasible coordinates on failure, default false.
+!> \param check_stalled_segment Optional first-feasible-trial check after unsuccessful backtracking.
+!>        Accepted descent steps do not need this more expensive boundary resolution.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
                                              max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped, &
-                                             check_segment, interrupted, retain_progress)
+                                             check_segment, interrupted, retain_progress, check_stalled_segment)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
       PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
       PROCEDURE(orbital_stop), OPTIONAL :: check_stop
       PROCEDURE(orbital_segment), OPTIONAL :: check_segment
+      PROCEDURE(orbital_segment), OPTIONAL :: check_stalled_segment
       CLASS(*), INTENT(INOUT) :: context
       REAL(dp), INTENT(INOUT) :: coordinate(:)
       REAL(dp), INTENT(IN) :: density_tolerances(:), gradient_tolerance
@@ -439,11 +442,11 @@ CONTAINS
 
       INTEGER :: capacity, d, history, i, iteration, limit, m, nf, r, shortening
       TYPE(skala_constraint_chart_type) :: curve
-      LOGICAL :: accepted, valid, event, newton_valid, newton_stopped
+      LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment
       REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
                                old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
-                               values(:), x(:), changes(:, :)
+                               values(:), x(:), changes(:, :), stalled_trial(:)
 
       d = SIZE(coordinate)
       IF (PRESENT(iterations)) iterations = 0
@@ -462,7 +465,7 @@ CONTAINS
       IF (PRESENT(max_step)) radius = max_step
       CPASSERT(limit > 0)
       CPASSERT(ieee_is_finite(radius) .AND. radius > 0.0_dp)
-      ALLOCATE (x(d), trial(d), values(m), jacobian(m, d))
+      ALLOCATE (x(d), trial(d), values(m), jacobian(m, d), stalled_trial(d))
       x(:) = coordinate
       converged = .FALSE.
       CALL skala_constraint_chart_create(evaluate_constraints, context, x, density_tolerances, curve, valid)
@@ -504,6 +507,7 @@ CONTAINS
          slope = DOT_PRODUCT(reduced, direction)
          accepted = .FALSE.
          fraction = 1.0_dp
+         have_segment = .FALSE.
          DO shortening = 1, DIGITS(1.0_dp)
             IF (stop_requested()) RETURN
             trial(:) = x
@@ -511,6 +515,10 @@ CONTAINS
             IF (ALL(trial(curve%free) == x(curve%free))) EXIT
             CALL reduced_evaluation(trial, trial_energy, trial_reduced, valid)
             IF (valid) THEN
+               IF (.NOT. have_segment) THEN
+                  stalled_trial(:) = trial
+                  have_segment = .TRUE.
+               END IF
                event = .FALSE.
                IF (PRESENT(check_segment)) CALL check_segment(x, trial, curve, context, event)
                IF (event) THEN
@@ -535,6 +543,17 @@ CONTAINS
             fraction = 0.5_dp*fraction
          END DO
          IF (.NOT. accepted) THEN
+            IF (PRESENT(check_stalled_segment) .AND. have_segment) THEN
+               ! A rejected wide trial can enclose a downhill cusp. Keep its original
+               ! feasible endpoints rather than the last nearly coincident shortened trial.
+               event = .FALSE.
+               CALL check_stalled_segment(x, stalled_trial, curve, context, event)
+               IF (event) THEN
+                  coordinate(:) = x
+                  IF (PRESENT(interrupted)) interrupted = .TRUE.
+                  RETURN
+               END IF
+            END IF
             IF (history == 0) EXIT
             ! Retry with steepest descent when the stored curvature gives no acceptable step.
             history = 0

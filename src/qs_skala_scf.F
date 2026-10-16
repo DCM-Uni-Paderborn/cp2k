@@ -61,11 +61,12 @@ MODULE qs_skala_scf
    USE skala_density_constraints,       ONLY: &
         skala_background_domain, skala_density_constraints_balance, &
         skala_density_constraints_count, skala_density_constraints_get, &
-        skala_density_constraints_matches, skala_density_constraints_set, &
-        skala_density_constraints_type, skala_density_constraints_update_weights, &
-        skala_density_crossings, skala_density_descriptor, skala_density_root, &
-        skala_density_samples_begin, skala_density_samples_end, skala_density_samples_get, &
-        skala_fft_domain, skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
+        skala_density_constraints_matches, skala_density_constraints_reset, &
+        skala_density_constraints_set, skala_density_constraints_type, &
+        skala_density_constraints_update_weights, skala_density_crossings, &
+        skala_density_descriptor, skala_density_root, skala_density_samples_begin, &
+        skala_density_samples_end, skala_density_samples_get, skala_fft_domain, &
+        skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
         skala_paw_ps_domain
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
                                               skala_constraint_chart_restore,&
@@ -89,7 +90,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
    PUBLIC :: qs_skala_scf_crossing_type
    PUBLIC :: qs_skala_scf_select, qs_skala_scf_selected, qs_skala_scf_limiting, qs_skala_scf_balance
-   PUBLIC :: qs_skala_scf_admissibility
+   PUBLIC :: qs_skala_scf_admissibility, qs_skala_scf_classify
    PUBLIC :: qs_skala_scf_accept
    INTEGER, PARAMETER, PUBLIC :: qs_skala_positive_density_sum = -2
 
@@ -113,8 +114,9 @@ MODULE qs_skala_scf
    TYPE qs_skala_scf_crossing_type
       TYPE(skala_constraint_chart_type) :: curve
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
-      REAL(dp), ALLOCATABLE :: first(:), last(:), values(:, :), targets(:)
-      LOGICAL :: encountered = .FALSE.
+      REAL(dp), ALLOCATABLE :: first(:), last(:), values(:, :), targets(:), root(:)
+      LOGICAL, ALLOCATABLE :: selected(:)
+      LOGICAL :: encountered = .FALSE., resolved = .FALSE.
    END TYPE qs_skala_scf_crossing_type
 
    TYPE physical_root_context
@@ -137,7 +139,7 @@ MODULE qs_skala_scf
       REAL(dp) :: gradient_tolerance = 0.0_dp
       REAL(dp) :: max_coordinate_norm = 0.0_dp
       LOGICAL :: rechart = .FALSE.
-      LOGICAL :: check_external = .FALSE.
+      LOGICAL :: check_external = .FALSE., admit_crossings = .FALSE., external_stopped = .FALSE.
    END TYPE physical_constraints_context
 
 CONTAINS
@@ -1566,11 +1568,13 @@ CONTAINS
 !> \param crossing_density_floor Optional positive spin-density target for an unconstrained crossing scan.
 !>        Without an override the native XC dispatcher supplies all active spin-density floors.
 !>        Kinetic inputs are excluded because the Libxc kinetic projection is smooth at zero.
+!> \param admit_crossings Resolve continuous-floor candidates after failed line searches and admit downhill normal minima.
+!>        Default false preserves the raw endpoint scan. Admission does not prove tangential stationarity.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
                                         physical_tolerances, gradient_tolerance, energy, converged, &
                                         max_iterations, max_step, targets, iterations, check_external, stopped, crossings, &
-                                        max_coordinate_norm, rechart, retain_progress, crossing_density_floor)
+                                        max_coordinate_norm, rechart, retain_progress, crossing_density_floor, admit_crossings)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(INOUT)                            :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -1590,6 +1594,7 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL                     :: rechart
       LOGICAL, INTENT(IN), OPTIONAL                      :: retain_progress
       REAL(dp), INTENT(IN), OPTIONAL                     :: crossing_density_floor
+      LOGICAL, INTENT(IN), OPTIONAL                      :: admit_crossings
 
       INTEGER                                            :: m
       LOGICAL                                            :: valid
@@ -1604,6 +1609,7 @@ CONTAINS
       CPASSERT(valid)
       context%state => state
       context%gradient_tolerance = gradient_tolerance
+      IF (PRESENT(admit_crossings)) context%admit_crossings = admit_crossings
       IF (PRESENT(check_external)) context%check_external = check_external
       IF (PRESENT(crossings)) THEN
          context%crossings => crossings
@@ -1641,10 +1647,12 @@ CONTAINS
                                           max_iterations=max_iterations, max_step=max_step, &
                                           verify_stationarity=evaluate_native_stationarity, iterations=iterations, &
                                           check_stop=check_native_stop, stopped=stopped, &
-                                          check_segment=check_native_segment, retain_progress=retain_progress)
+                                          check_segment=check_native_step, retain_progress=retain_progress, &
+                                          check_stalled_segment=check_native_stall)
       ALLOCATE (gradient(SIZE(coordinate)))
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
       IF (PRESENT(rechart)) rechart = context%rechart
+      IF (PRESENT(stopped)) stopped = stopped .OR. context%external_stopped
    END SUBROUTINE qs_skala_scf_stationarity
 
 ! **************************************************************************************************
@@ -1948,6 +1956,123 @@ CONTAINS
    END SUBROUTINE qs_skala_scf_admissibility
 
 ! **************************************************************************************************
+!> \brief Classify candidate continuous density boundaries with the existing active physical samples.
+!>        Evaluate complete native limiting covectors and coupled normal minimum conditions.
+!>        A zero covector change does not add an orbital constraint. Restore original selected
+!>        weights and the full native state at coordinate. Optionally retain admissible new samples.
+!>        These normal conditions do not establish energy continuity or tangential stationarity.
+!> \param state Evaluated native state with its original selected samples.
+!> \param coordinate Feasible boundary coordinates in the original normalized orbital chart.
+!> \param points Candidate global physical sample keys.
+!> \param domains Original evaluation domain of each candidate.
+!> \param spins Original physical spin selector.
+!> \param descriptors Density or kinetic-density selector.
+!> \param targets Original physical target of each candidate.
+!> \param admissible Whether a nonzero limiting change satisfies the coupled normal conditions.
+!> \param release_side Negative or positive physical side permitting descent for a rejected candidate.
+!> \param valid Whether all physical windows and the coupled normal grouping are valid.
+!> \param retain Retain the candidates only if every one is admissible, default false.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_classify(state, coordinate, points, domains, spins, descriptors, targets, &
+                                    admissible, release_side, valid, retain)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), INTENT(IN)                               :: targets(:)
+      LOGICAL, INTENT(OUT)                               :: admissible(:)
+      INTEGER, INTENT(OUT)                               :: release_side(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+      LOGICAL, INTENT(IN), OPTIONAL                      :: retain
+
+      INTEGER                                            :: i, m, n, old, total
+      INTEGER, ALLOCATABLE :: all_descriptors(:), all_domains(:), all_points(:, :), all_spins(:), &
+         old_descriptors(:), old_domains(:), old_points(:, :), old_spins(:), rows(:), sides(:)
+      LOGICAL                                            :: feasible, keep
+      LOGICAL, ALLOCATABLE                               :: normal_admissible(:), selected(:)
+      REAL(dp)                                           :: energy, kinetic_probe, &
+                                                            kinetic_tolerance, probe, tolerance
+      REAL(dp), ALLOCATABLE :: all_targets(:), changes(:, :), jacobian(:, :), old_targets(:), &
+         old_weights(:), positive(:), values(:), weights(:)
+
+      n = qs_skala_scf_size(state)
+      m = SIZE(targets)
+      valid = SIZE(coordinate) == n .AND. ALL(SHAPE(points) == [3, m])
+      CPASSERT(valid)
+      CPASSERT(SIZE(domains) == m)
+      CPASSERT(SIZE(spins) == m)
+      CPASSERT(SIZE(descriptors) == m)
+      CPASSERT(SIZE(admissible) == m)
+      CPASSERT(SIZE(release_side) == m)
+      admissible = .FALSE.
+      release_side = 0
+      valid = .FALSE.
+      keep = .FALSE.
+      IF (PRESENT(retain)) keep = retain
+      CALL qs_skala_scf_evaluate(state, coordinate, energy)
+      CALL qs_skala_scf_selected(state, old_points, old_domains, old_spins, old_descriptors, &
+                                 old_targets, values, feasible)
+      IF (.NOT. feasible) RETURN
+      old = SIZE(old_spins)
+      ! These are the qualified absolute native density windows, not relative energy tolerances.
+      probe = 1.0e-14_dp
+      tolerance = 1.0e-17_dp
+      kinetic_probe = 1.0e-14_dp
+      kinetic_tolerance = 1.0e-17_dp
+      IF (old > 0) THEN
+         CALL skala_density_constraints_get(state%constraints, old_points, old_spins, old_weights, probe, tolerance, &
+                                            descriptors=old_descriptors, domains=old_domains, targets=old_targets, &
+                                            kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
+      ELSE
+         ALLOCATE (old_weights(0))
+      END IF
+      DEALLOCATE (values)
+      ALLOCATE (values(m))
+      CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values)
+      feasible = ALL(ABS(values - targets) <= MERGE(tolerance, kinetic_tolerance, descriptors == skala_density_descriptor))
+      IF (.NOT. feasible) RETURN
+      total = old + m
+      ALLOCATE (all_points(3, total), all_domains(total), all_spins(total), all_descriptors(total), &
+                all_targets(total), weights(total), normal_admissible(total), sides(total), &
+                positive(n), changes(n, total), jacobian(total, n), selected(total))
+      all_points(:, :old) = old_points
+      all_points(:, old + 1:) = points
+      all_domains(:old) = old_domains
+      all_domains(old + 1:) = domains
+      all_spins(:old) = old_spins
+      all_spins(old + 1:) = spins
+      all_descriptors(:old) = old_descriptors
+      all_descriptors(old + 1:) = descriptors
+      all_targets(:old) = old_targets
+      all_targets(old + 1:) = targets
+      weights = 0.0_dp
+      weights(:old) = old_weights
+      CALL qs_skala_scf_select(state, all_points, all_domains, all_spins, all_descriptors, weights, &
+                               probe, tolerance, kinetic_probe, kinetic_tolerance, targets=all_targets)
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian)
+      CALL skala_cusp_admissibility(positive, changes, jacobian, normal_admissible, sides, valid)
+      IF (valid) THEN
+         admissible(:) = normal_admissible(old + 1:)
+         release_side(:) = sides(old + 1:)
+         DO i = 1, m
+            IF (ALL(changes(:, old + i) == 0.0_dp)) admissible(i) = .FALSE.
+         END DO
+      END IF
+      selected = .FALSE.
+      selected(:old) = .TRUE.
+      IF (valid .AND. keep .AND. ALL(admissible)) selected(old + 1:) = .TRUE.
+      ALLOCATE (rows, SOURCE=PACK([(i, i=1, total)], selected))
+      IF (SIZE(rows) > 0) THEN
+         CALL qs_skala_scf_select(state, all_points(:, rows), all_domains(rows), all_spins(rows), &
+                                  all_descriptors(rows), weights(rows), probe, tolerance, kinetic_probe, kinetic_tolerance, &
+                                  targets=all_targets(rows))
+      ELSE
+         CALL skala_density_constraints_reset(state%constraints)
+      END IF
+      CALL qs_skala_scf_evaluate(state, coordinate, energy)
+   END SUBROUTINE qs_skala_scf_classify
+
+! **************************************************************************************************
 !> \brief Accept a stationary native trial with matching canonical MOs, P, W, fields, energy and KS.
 !>        Check complete physical stationarity and the independent cusp-normal minimum conditions
 !>        before changing native eigenvalues or W. On rejection the evaluated trial remains live.
@@ -2215,6 +2340,63 @@ CONTAINS
    END SUBROUTINE check_native_stop
 
 ! **************************************************************************************************
+!> \brief Check finite chart bounds before accepting an ordinary native orbital step.
+!>        Raw crossing requests still inspect each trial. Automatic admission waits for a
+!>        failed line search so accepted descent steps can cross ordinary processing thresholds.
+!> \param first Last accepted feasible coordinates.
+!> \param last Proposed feasible coordinates.
+!> \param curve Original independent/dependent coordinate partition.
+!> \param context Native state and caller event output.
+!> \param interrupted Whether the caller must rebuild the chart or handle a raw event.
+! **************************************************************************************************
+   SUBROUTINE check_native_step(first, last, curve, context, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+
+      CLASS(*), INTENT(INOUT) :: context
+      LOGICAL, INTENT(OUT) :: interrupted
+
+      interrupted = .FALSE.
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         IF (.NOT. context%admit_crossings) THEN
+            CALL check_native_segment(first, last, curve, context, interrupted)
+         ELSE IF (context%max_coordinate_norm > 0.0_dp) THEN
+            IF (NORM2(last) > context%max_coordinate_norm) THEN
+               context%rechart = .TRUE.
+               interrupted = .TRUE.
+            END IF
+         END IF
+      CLASS DEFAULT
+         CPABORT("Invalid native orbital step context.")
+      END SELECT
+   END SUBROUTINE check_native_step
+
+! **************************************************************************************************
+!> \brief Inspect the original feasible trial after a native line search fails to find descent.
+!> \param first Last accepted feasible coordinates.
+!> \param last First feasible trial of the rejected line search.
+!> \param curve Original independent/dependent coordinate partition.
+!> \param context Native state and physical boundary admission settings.
+!> \param interrupted Whether a physical boundary or external stop requires the caller.
+! **************************************************************************************************
+   SUBROUTINE check_native_stall(first, last, curve, context, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+
+      CLASS(*), INTENT(INOUT) :: context
+      LOGICAL, INTENT(OUT) :: interrupted
+
+      interrupted = .FALSE.
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         IF (context%admit_crossings) CALL check_native_segment(first, last, curve, context, interrupted)
+      CLASS DEFAULT
+         CPABORT("Invalid native orbital stall context.")
+      END SELECT
+   END SUBROUTINE check_native_stall
+
+! **************************************************************************************************
 !> \brief Return physical zero crossings from a native normalized-orbital trial segment.
 !>        An optional coordinate-norm bound returns the accepted state for a new Cayley chart.
 !>        Preserve all candidate keys and endpoint values. The first native state is restored
@@ -2250,6 +2432,14 @@ CONTAINS
          END IF
          IF (.NOT. ASSOCIATED(context%crossings)) RETURN
          crossings => context%crossings
+         ! A classified candidate can be released without interrupting the minimizer.
+         ! Its next trial must start with a fresh event rather than reallocate saved endpoints.
+         crossings%encountered = .FALSE.
+         crossings%resolved = .FALSE.
+         IF (ALLOCATED(crossings%first)) DEALLOCATE (crossings%first)
+         IF (ALLOCATED(crossings%last)) DEALLOCATE (crossings%last)
+         IF (ALLOCATED(crossings%root)) DEALLOCATE (crossings%root)
+         IF (ALLOCATED(crossings%selected)) DEALLOCATE (crossings%selected)
          IF (SIZE(context%density_floors) > 0) THEN
             CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
                                         crossings%spins, crossings%descriptors, crossings%values, density_only=.TRUE., &
@@ -2285,10 +2475,86 @@ CONTAINS
          crossings%first(:) = first
          crossings%last(:) = last
          crossings%encountered = .TRUE.
+         IF (context%admit_crossings) THEN
+            CALL classify_native_segment(first, last, context)
+            interrupted = crossings%encountered .OR. context%external_stopped
+         END IF
       CLASS DEFAULT
          CPABORT("Invalid native orbital crossing context.")
       END SELECT
    END SUBROUTINE check_native_segment
+
+! **************************************************************************************************
+!> \brief Resolve and classify further continuous-floor candidates before interrupting minimization.
+!>        Keep the original selected samples and physical windows. Reject an uphill boundary or
+!>        one permitting normal descent, then inspect the remaining endpoint candidates. An
+!>        unresolved root or dependent normal grouping remains an event for the caller.
+!> \param first Last accepted feasible coordinates.
+!> \param last Proposed feasible coordinates.
+!> \param context Native state, original constraint curve and optional crossing output.
+! **************************************************************************************************
+   SUBROUTINE classify_native_segment(first, last, context)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(physical_constraints_context), INTENT(INOUT)  :: context
+
+      INTEGER                                            :: i, old
+      INTEGER, ALLOCATABLE                               :: old_descriptors(:), old_domains(:), &
+                                                            old_points(:, :), old_spins(:), &
+                                                            pending(:), reached(:), sides(:)
+      LOGICAL                                            :: found, stopped, valid
+      LOGICAL, ALLOCATABLE                               :: admissible(:), selected(:)
+      REAL(dp)                                           :: energy, first_energy, kinetic_probe, &
+                                                            kinetic_tolerance, probe, roundoff, &
+                                                            tolerance
+      REAL(dp), ALLOCATABLE                              :: root(:), targets(:), values(:), &
+                                                            weights(:), windows(:)
+      TYPE(qs_skala_scf_crossing_type), POINTER          :: event
+
+      event => context%crossings
+      old = skala_density_constraints_count(context%state%constraints)
+      tolerance = 1.0e-17_dp
+      kinetic_tolerance = 1.0e-17_dp
+      IF (old > 0) THEN
+         CALL skala_density_constraints_get(context%state%constraints, old_points, old_spins, weights, probe, tolerance, &
+                                            descriptors=old_descriptors, domains=old_domains, &
+                                            targets=targets, kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
+      END IF
+      ALLOCATE (pending(SIZE(event%spins)), root(SIZE(first)))
+      pending(:) = [(i, i=1, SIZE(pending))]
+      CALL qs_skala_scf_evaluate(context%state, first, first_energy)
+      DO WHILE (SIZE(pending) > 0)
+         ALLOCATE (selected(SIZE(pending)), values(SIZE(pending)), windows(SIZE(pending)))
+         windows(:) = MERGE(tolerance, kinetic_tolerance, event%descriptors(pending) == skala_density_descriptor)
+         CALL qs_skala_scf_boundary_root(context%state, first, last, event%points(:, pending), &
+                                         event%domains(pending), event%spins(pending), event%descriptors(pending), &
+                                         event%targets(pending), windows, root, values, selected, found, &
+                                         check_external=context%check_external, stopped=stopped, curve=event%curve)
+         IF (stopped) THEN
+            context%external_stopped = .TRUE.
+            EXIT
+         END IF
+         IF (.NOT. found) EXIT
+         reached = PACK(pending, selected)
+         ALLOCATE (admissible(SIZE(reached)), sides(SIZE(reached)))
+         CALL qs_skala_scf_classify(context%state, root, event%points(:, reached), event%domains(reached), &
+                                    event%spins(reached), event%descriptors(reached), event%targets(reached), &
+                                    admissible, sides, valid)
+         IF (.NOT. valid) EXIT
+         CALL qs_skala_scf_evaluate(context%state, root, energy)
+         roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
+         IF (ANY(admissible) .AND. energy <= first_energy + roundoff) THEN
+            ALLOCATE (event%selected(SIZE(event%spins)), SOURCE=.FALSE.)
+            event%selected(PACK(reached, admissible)) = .TRUE.
+            ALLOCATE (event%root, SOURCE=root)
+            event%resolved = .TRUE.
+            EXIT
+         END IF
+         pending = PACK(pending,.NOT. selected)
+         DEALLOCATE (selected, values, windows, admissible, sides)
+      END DO
+      IF (SIZE(pending) == 0) event%encountered = .FALSE.
+      CALL qs_skala_scf_evaluate(context%state, first, energy)
+   END SUBROUTINE classify_native_segment
 
 ! **************************************************************************************************
 !> \brief Evaluate one physical descriptor along an orbital trial segment.

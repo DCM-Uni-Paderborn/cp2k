@@ -384,6 +384,15 @@ CONTAINS
       IF (ABS(coordinate(1) - (1.0_dp - 1.0_dp/scale**2)) > 1.e-14_dp) THEN
          ERROR STOP 'A crossing event lost the last accepted feasible state'
       END IF
+      scale = 1.0_dp
+      coordinate = 0.0_dp
+      CALL skala_constrained_stationarity(empty_constraints, absolute_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=4, &
+                                          iterations=iterations, interrupted=interrupted, &
+                                          check_stalled_segment=stalled_cusp_segment)
+      IF (converged .OR. .NOT. interrupted .OR. iterations /= 1 .OR. coordinate(1) /= 0.0_dp) THEN
+         ERROR STOP 'A nonsmooth minimum lost the original rejected trial or was declared differentiably stationary'
+      END IF
       scale = 1.e-8_dp
       coordinate = 1.e-12_dp
       CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
@@ -416,6 +425,49 @@ CONTAINS
       END SELECT
       interrupted = first(1) > 0.9_dp .AND. last(1) <= 0.9_dp
    END SUBROUTINE crossing_segment
+
+! **************************************************************************************************
+!> \brief Absolute-value energy whose ordinary derivative cannot vanish at its minimum.
+!> \param coordinate One real orbital coordinate.
+!> \param energy Exact nonsmooth energy.
+!> \param gradient Positive-side derivative at zero and the ordinary derivative elsewhere.
+!> \param context Positive energy scale.
+! **************************************************************************************************
+   SUBROUTINE absolute_energy_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         energy = context*ABS(coordinate(1))
+         gradient(1) = SIGN(context, coordinate(1))
+      CLASS DEFAULT
+         ERROR STOP 'Invalid absolute-value context'
+      END SELECT
+   END SUBROUTINE absolute_energy_gradient
+
+! **************************************************************************************************
+!> \brief A failed line search must retain its first feasible segment around the cusp.
+!> \param first Accepted physical cusp coordinate.
+!> \param last Original feasible trial, before backtracking collapses its interval.
+!> \param curve Original physical constraint partition.
+!> \param context Positive energy scale.
+!> \param interrupted Return the original accepted coordinate for boundary treatment.
+! **************************************************************************************************
+   SUBROUTINE stalled_cusp_segment(first, last, curve, context, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+
+      CLASS(*), INTENT(INOUT) :: context
+      LOGICAL, INTENT(OUT) :: interrupted
+
+      IF (first(1) /= 0.0_dp .OR. ABS(last(1) + 0.1_dp) > 1.e-14_dp) THEN
+         ERROR STOP 'Stalled cusp search discarded its original feasible trial segment'
+      END IF
+      interrupted = .TRUE.
+   END SUBROUTINE stalled_cusp_segment
 
 ! **************************************************************************************************
 !> \brief Request termination after the first accepted line-search trial.
