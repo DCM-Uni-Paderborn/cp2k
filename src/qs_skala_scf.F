@@ -18,7 +18,8 @@ MODULE qs_skala_scf
                                               section_get_rval,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
    USE message_passing,                 ONLY: mp_comm_type,&
@@ -96,6 +97,14 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_accept
    INTEGER, PARAMETER, PUBLIC :: qs_skala_positive_density_sum = -2
 
+   INTEGER(KIND=int_8), PARAMETER :: max_point_operator_bytes = 64_int_8*1024*1024
+   INTEGER, PARAMETER :: max_point_operator_entries = 32
+
+   TYPE physical_point_operator
+      INTEGER :: domain = 0, point(3) = 0, descriptor = 0
+      COMPLEX(dp), ALLOCATABLE :: matrix(:, :, :)
+   END TYPE physical_point_operator
+
    TYPE qs_skala_scf_type
       PRIVATE
       TYPE(qs_environment_type), POINTER :: qs_env => NULL()
@@ -107,6 +116,8 @@ MODULE qs_skala_scf
       TYPE(kpoint_type), POINTER :: kpoints => NULL()
       TYPE(mp_para_env_type), POINTER :: para_env => NULL()
       TYPE(qs_skala_orbitals_type), ALLOCATABLE :: orbitals(:, :)
+      TYPE(physical_point_operator), ALLOCATABLE :: point_operators(:)
+      INTEGER(KIND=int_8) :: point_operator_bytes = 0_int_8
       INTEGER, ALLOCATABLE :: dimensions(:, :), offsets(:, :)
       REAL(dp), ALLOCATABLE :: coordinate(:), positions(:, :)
       REAL(dp) :: hmat(3, 3) = 0.0_dp
@@ -270,6 +281,8 @@ CONTAINS
          DEALLOCATE (state%orbitals, state%dimensions, state%offsets, state%positions)
       END IF
       IF (ALLOCATED(state%coordinate)) DEALLOCATE (state%coordinate)
+      IF (ALLOCATED(state%point_operators)) DEALLOCATE (state%point_operators)
+      state%point_operator_bytes = 0_int_8
       NULLIFY (state%qs_env, state%ks_env, state%rho, state%energy, state%inverse, state%constraints, &
                state%kpoints, state%para_env)
       state%hmat = 0.0_dp
@@ -614,13 +627,7 @@ CONTAINS
          last_spin = ns
          scale = 1.0_dp
       END IF
-      IF (domain == skala_fft_domain .OR. domain == skala_background_domain) THEN
-         CALL grid_point_operators(state, domain, point, descriptor, operators)
-      ELSE IF (domain == skala_paw_ae_domain .OR. domain == skala_paw_ps_domain) THEN
-         CALL paw_point_operators(state, domain, point, descriptor, operators)
-      ELSE
-         CALL atom_point_operators(state, point, descriptor, operators)
-      END IF
+      CALL point_operators(state, domain, point, descriptor, operators)
       owner = state%para_env%mepos == 0
       IF (state%bloch) owner = state%kpoints%para_env_kp%mepos == 0
       ALLOCATE (matrix(SIZE(operators, 1), SIZE(operators, 2)))
@@ -651,6 +658,62 @@ CONTAINS
       CALL state%para_env%sum(derivative)
       IF (PRESENT(physical_derivative)) CALL state%para_env%sum(physical_derivative)
    END SUBROUTINE qs_skala_scf_point_derivative
+
+! **************************************************************************************************
+!> \brief Reuse fixed-geometry descriptor matrices, retaining fresh orbital and spin derivatives.
+!>        Every rank keeps the same keys and numeric budget. A full or oversized cache retains
+!>        the original collective construction. Release together with the owning orbital charts.
+!> \param state Native orbital state at its defining geometry.
+!> \param domain Actual physical evaluation domain.
+!> \param point Original FFT or atomic sample key.
+!> \param descriptor Density or kinetic-density selector.
+!> \param operators Globally reduced matrices in the original AO and k-point ordering.
+! **************************************************************************************************
+   SUBROUTINE point_operators(state, domain, point, descriptor, operators)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      INTEGER, INTENT(IN)                                :: domain, point(3), descriptor
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
+
+      INTEGER                                            :: entry, free_entry
+      INTEGER(KIND=int_8)                                :: bytes
+
+      free_entry = 0
+      IF (ALLOCATED(state%point_operators)) THEN
+         DO ENTRY = 1, SIZE(state%point_operators)
+            ASSOCIATE (cached => state%point_operators(ENTRY))
+               IF (.NOT. ALLOCATED(cached%matrix)) THEN
+                  IF (free_entry == 0) free_entry = ENTRY
+                  CYCLE
+               END IF
+               IF (cached%domain /= domain .OR. cached%descriptor /= descriptor) CYCLE
+               IF (.NOT. ALL(cached%point == point)) CYCLE
+               operators = cached%matrix
+               RETURN
+            END ASSOCIATE
+         END DO
+      END IF
+      IF (domain == skala_fft_domain .OR. domain == skala_background_domain) THEN
+         CALL grid_point_operators(state, domain, point, descriptor, operators)
+      ELSE IF (domain == skala_paw_ae_domain .OR. domain == skala_paw_ps_domain) THEN
+         CALL paw_point_operators(state, domain, point, descriptor, operators)
+      ELSE
+         CALL atom_point_operators(state, point, descriptor, operators)
+      END IF
+      bytes = 16_int_8*SIZE(operators, KIND=int_8)
+      IF (bytes > max_point_operator_bytes - state%point_operator_bytes) RETURN
+      IF (.NOT. ALLOCATED(state%point_operators)) THEN
+         ALLOCATE (state%point_operators(max_point_operator_entries))
+         free_entry = 1
+      END IF
+      IF (free_entry == 0) RETURN
+      ASSOCIATE (cached => state%point_operators(free_entry))
+         cached%domain = domain
+         cached%point = point
+         cached%descriptor = descriptor
+         cached%matrix = operators
+      END ASSOCIATE
+      state%point_operator_bytes = state%point_operator_bytes + bytes
+   END SUBROUTINE point_operators
 
 ! **************************************************************************************************
 !> \brief Construct descriptor operators for one sample on the original FFT grid.
