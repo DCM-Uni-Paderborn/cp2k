@@ -148,6 +148,7 @@ MODULE xc_libxc
 
 #if defined (__LIBXC)
    PUBLIC :: libxc_set_backend
+   PUBLIC :: libxc_density_floor
 
 ! **************************************************************************************************
 !> \brief All threads' workers for one distinct functional setup, together with
@@ -1241,7 +1242,7 @@ CONTAINS
       CHARACTER(LEN=default_string_length)     :: func_name
       INTEGER                                  :: handle, iw, npoints
       INTEGER, DIMENSION(2, 3)                 :: bo
-      LOGICAL                                  :: has_laplace
+      LOGICAL                                  :: has_laplace, valid_selection
       REAL(KIND=dp)                            :: epsilon_rho, epsilon_tau, func_scale
       TYPE(libxc_worker_set_type), POINTER     :: workers
       TYPE(section_vals_type), POINTER         :: no_params
@@ -1303,6 +1304,17 @@ CONTAINS
                           tau_a=tau_a, tau_b=tau_b, local_bounds=bo)
 
       npoints = (bo(2, 1) - bo(1, 1) + 1)*(bo(2, 2) - bo(1, 2) + 1)*(bo(2, 3) - bo(1, 3) + 1)
+      IF (ALLOCATED(rho_set%spin_floor_slopes)) THEN
+         CPASSERT(ALL(SHAPE(rho_set%spin_floor_slopes) == [2, npoints]))
+         valid_selection = ALL(rho_set%spin_floor_slopes == -1.0_dp .OR. &
+                               (rho_set%spin_floor_slopes >= 0.0_dp .AND. rho_set%spin_floor_slopes <= 1.0_dp))
+         CPASSERT(valid_selection)
+         valid_selection = rho_set%spin_floor_tolerance >= 0.0_dp .AND. rho_set%spin_floor_tolerance < HUGE(0.0_dp)
+         CPASSERT(valid_selection)
+         IF (ANY(rho_set%spin_floor_slopes >= 0.0_dp) .AND. grad_deriv > 1) THEN
+            CPABORT("Higher derivatives at selected Libxc spin-density floors are not defined.")
+         END IF
+      END IF
 
       ! One functional object per thread, kept across calls. The cutoffs are part
       ! of the worker setup because LibXC does the screening itself.
@@ -1766,7 +1778,7 @@ CONTAINS
 !$OMP SHARED(e_${'_'.join(descs)}$),&
       #:endfor
 !$OMP SHARED(grad_deriv,npoints),&
-!$OMP SHARED(func_name,func_scale,workers)
+!$OMP SHARED(func_name,func_scale,workers,rho_set)
 
       CALL libxc_spin_polarized_calc(rhoa=rhoa, rhob=rhob, norm_drho=norm_drho, &
                                      norm_drhoa=norm_drhoa, norm_drhob=norm_drhob, laplace_rhoa=laplace_rhoa, &
@@ -1814,7 +1826,8 @@ CONTAINS
                                      e_${'_'.join(descs)}$=e_${'_'.join(descs)}$, &
                                       #:endfor
                                      grad_deriv=grad_deriv, npoints=npoints, &
-                                     func_name=func_name, sc=func_scale, workers=workers)
+                                     func_name=func_name, sc=func_scale, workers=workers, &
+                                     floor_slopes=rho_set%spin_floor_slopes, floor_tolerance=rho_set%spin_floor_tolerance)
 
 !$OMP END PARALLEL
 
@@ -1892,6 +1905,20 @@ CONTAINS
    END SUBROUTINE libxc_c2_maximum
 
 ! **************************************************************************************************
+!> \brief Positive density floor above Libxc's closed per-spin screening threshold.
+!>        Exchange kernels can vanish at the threshold itself. Its next representable
+!>        value selects the positive limiting branch and gives a continuous extension.
+!> \param epsilon_rho Original Libxc density screening threshold.
+!> \return Common density floor for normalization and the kinetic denominator.
+! **************************************************************************************************
+   PURE FUNCTION libxc_density_floor(epsilon_rho) RESULT(floor)
+      REAL(dp), INTENT(IN) :: epsilon_rho
+      REAL(dp) :: floor
+
+      floor = NEAREST(MAX(epsilon_rho, TINY(0.0_dp)), 1.0_dp)
+   END FUNCTION libxc_density_floor
+
+! **************************************************************************************************
 !> \brief C2 kinetic projection and its full derivatives in rho, sigma and raw tau.
 !> \param rho Density used in the bounded denominator.
 !> \param sigma Same-spin gradient contraction.
@@ -1902,10 +1929,14 @@ CONTAINS
 !> \param second Optional second derivatives.
 !> \param active Optional projection activity, independent of rounding of the value.
 !> \param third Optional third derivatives inside each smooth branch.
+!> \param density_slope Optional positive-side weight at a satisfied density-floor constraint.
+!>        A negative value retains the ordinary branch. Only a first derivative is selected.
 !> \return Projected kinetic density.
 ! **************************************************************************************************
-   FUNCTION libxc_c2_project_tau(rho, sigma, raw_tau, epsilon_rho, epsilon_tau, first, second, active, third) RESULT(value)
+   FUNCTION libxc_c2_project_tau(rho, sigma, raw_tau, epsilon_rho, epsilon_tau, first, second, active, third, &
+                                 density_slope) RESULT(value)
       REAL(dp), INTENT(IN) :: rho, sigma, raw_tau, epsilon_rho, epsilon_tau
+      REAL(dp), INTENT(IN), OPTIONAL :: density_slope
       REAL(dp), INTENT(OUT), OPTIONAL :: first(3), second(3, 3), third(3, 3, 3)
       LOGICAL, INTENT(OUT), OPTIONAL :: active
       LOGICAL :: projection_active
@@ -1915,7 +1946,7 @@ CONTAINS
                   inner_first(2, 3), inner_second(3, 3), inner_third(3, 3, 3)
       INTEGER :: i, j, k, a, b, c
 
-      denominator = MAX(rho, epsilon_rho, TINY(0.0_dp))
+      denominator = MAX(rho, libxc_density_floor(epsilon_rho))
       tau_w = sigma/(8.0_dp*denominator)
       CALL libxc_c2_maximum(tau_w, MAX(epsilon_tau, EPSILON(0.0_dp)), lower, lower_first, lower_second)
       CALL libxc_c2_maximum(raw_tau, lower, value, final_first, final_second, projection_active)
@@ -1929,11 +1960,14 @@ CONTAINS
       IF (.NOT. PRESENT(first) .AND. .NOT. PRESENT(second) .AND. .NOT. PRESENT(third)) RETURN
       w_first = [0.0_dp, 1.0_dp/(8.0_dp*denominator)]
       w_second = 0.0_dp
-      IF (rho > epsilon_rho) THEN
+      IF (rho >= libxc_density_floor(epsilon_rho)) THEN
          w_first(1) = -tau_w/denominator
          w_second(1, 1) = 2.0_dp*tau_w/denominator**2
          w_second(1, 2) = -w_first(2)/denominator
          w_second(2, 1) = w_second(1, 2)
+      END IF
+      IF (PRESENT(density_slope)) THEN
+         IF (density_slope >= 0.0_dp) w_first(1) = -density_slope*tau_w/denominator
       END IF
       IF (PRESENT(first)) THEN
          first(1:2) = final_first(2)*lower_first(1)*w_first
@@ -1959,7 +1993,7 @@ CONTAINS
                                lower_first, lower_second, third=lower_third)
          CALL libxc_c2_maximum(raw_tau, lower, value, final_first, final_second, third=final_third)
          w_third = 0.0_dp
-         IF (rho > epsilon_rho) THEN
+         IF (rho >= libxc_density_floor(epsilon_rho)) THEN
             w_third(1, 1, 1) = -6.0_dp*tau_w/denominator**3
             w_third(1, 1, 2) = 2.0_dp*w_first(2)/denominator**2
             w_third(1, 2, 1) = w_third(1, 1, 2)
@@ -2012,13 +2046,15 @@ CONTAINS
 !> \param has_laplace Whether the functional uses the density Laplacian.
 !> \param epsilon_rho Density cutoff used in the projection denominator.
 !> \param epsilon_tau Kinetic-density cutoff used as a positive floor.
+!> \param positive_slopes Optional first-derivative selection at each spin-density floor.
 ! **************************************************************************************************
    SUBROUTINE libxc_mgga_tau_pullback(w, point, raw_tau, nspin, grad_deriv, has_laplace, &
-                                      epsilon_rho, epsilon_tau)
+                                      epsilon_rho, epsilon_tau, positive_slopes)
       TYPE(libxc_worker_type), INTENT(INOUT)             :: w
       INTEGER, INTENT(IN)                                :: point, nspin, grad_deriv
       REAL(dp), INTENT(IN)                               :: raw_tau(nspin), epsilon_rho, epsilon_tau
       LOGICAL, INTENT(IN)                                :: has_laplace
+      REAL(dp), INTENT(IN), OPTIONAL                     :: positive_slopes(nspin)
 
       INTEGER                                            :: channel, i, irho, isigma, itau, nvar
       REAL(dp)                                           :: projected, tau_first(3), tau_second(3, 3), tau_third(3, 3, 3)
@@ -2053,8 +2089,14 @@ CONTAINS
             isigma = 2*channel + 1
             itau = 7 + channel
          END IF
-         projected = libxc_c2_project_tau(w%rho(channel, point), w%sigma(isigma - nspin, point), &
-                                          raw_tau(channel), epsilon_rho, epsilon_tau, tau_first, tau_second, active(channel))
+         IF (PRESENT(positive_slopes)) THEN
+            projected = libxc_c2_project_tau(w%rho(channel, point), w%sigma(isigma - nspin, point), &
+                                             raw_tau(channel), epsilon_rho, epsilon_tau, tau_first, tau_second, active(channel), &
+                                             density_slope=positive_slopes(channel))
+         ELSE
+            projected = libxc_c2_project_tau(w%rho(channel, point), w%sigma(isigma - nspin, point), &
+                                             raw_tau(channel), epsilon_rho, epsilon_tau, tau_first, tau_second, active(channel))
+         END IF
          IF (.NOT. active(channel)) CYCLE
          IF (grad_deriv >= 3) THEN
             projected = libxc_c2_project_tau(w%rho(channel, point), w%sigma(isigma - nspin, point), &
@@ -2288,29 +2330,38 @@ CONTAINS
 !> \param grad_deriv Highest evaluated derivative order.
 !> \param has_laplace Whether the functional uses the density Laplacian.
 !> \param epsilon_rho Libxc density cutoff.
-!> \note Libxc returns derivatives of F at m_s=MAX(rho_s,epsilon_rho), whereas CP2K
+!> \param positive_slopes Optional first-derivative selection at each spin-density floor.
+!> \note Libxc returns derivatives of F at the strictly positive per-spin floor, whereas CP2K
 !>       accumulates E=n*exc=(n/m)*F with n=SUM(rho_s) and m=SUM(m_s). This pullback
 !>       leaves that energy unchanged, including its original-density normalization.
 ! **************************************************************************************************
-   SUBROUTINE libxc_spin_floor_pullback(w, point, grad_deriv, has_laplace, epsilon_rho)
+   SUBROUTINE libxc_spin_floor_pullback(w, point, grad_deriv, has_laplace, epsilon_rho, positive_slopes)
       TYPE(libxc_worker_type), INTENT(INOUT) :: w
       INTEGER, INTENT(IN) :: point, grad_deriv
       LOGICAL, INTENT(IN) :: has_laplace
       REAL(dp), INTENT(IN) :: epsilon_rho
+      REAL(dp), INTENT(IN), OPTIONAL :: positive_slopes(2)
 
       INTEGER :: i, j
+      LOGICAL :: selected
       REAL(dp) :: n, m, ratio, functional, third_ratio
       REAL(dp) :: diagonal(9), dn(9), dm(9), first_ratio(9), second_ratio(9, 9), &
                   gradient(9), hessian(9, 9)
 
-      IF (grad_deriv < 1 .OR. ALL(w%rho(:, point) >= epsilon_rho)) RETURN
+      selected = .FALSE.
+      IF (PRESENT(positive_slopes)) selected = ANY(positive_slopes >= 0.0_dp)
+      IF (grad_deriv < 1) RETURN
+      IF (ALL(w%rho(:, point) >= libxc_density_floor(epsilon_rho)) .AND. .NOT. selected) RETURN
       n = SUM(w%rho(:, point))
       IF (n < epsilon_rho) RETURN ! Libxc screened this point to zero.
-      m = SUM(MAX(w%rho(:, point), epsilon_rho))
+      m = SUM(MAX(w%rho(:, point), libxc_density_floor(epsilon_rho)))
       ratio = n/m
       functional = m*w%exc(point)
       diagonal = 1.0_dp
-      diagonal(1:2) = MERGE(1.0_dp, 0.0_dp, w%rho(:, point) >= epsilon_rho)
+      diagonal(1:2) = MERGE(1.0_dp, 0.0_dp, w%rho(:, point) >= libxc_density_floor(epsilon_rho))
+      IF (PRESENT(positive_slopes)) THEN
+         WHERE (positive_slopes >= 0.0_dp) diagonal(1:2) = positive_slopes
+      END IF
       dn = 0.0_dp
       dn(1:2) = 1.0_dp
       dm = 0.0_dp
@@ -2743,7 +2794,7 @@ SUBROUTINE libxc_spin_polarized_calc(rhoa, rhob, norm_drho, norm_drhoa, &
                                         #:for descs, arr, idx in mgga_all
                                      e_${'_'.join(descs)}$, &
                                         #:endfor
-                                     grad_deriv, npoints, func_name, sc, workers)
+                                     grad_deriv, npoints, func_name, sc, workers, floor_slopes, floor_tolerance)
 
 REAL(KIND=dp), DIMENSION(*), INTENT(IN)            :: rhoa, rhob, norm_drho, norm_drhoa, &
                                                       norm_drhob, laplace_rhoa, &
@@ -2768,6 +2819,8 @@ INTEGER, INTENT(in)                                :: grad_deriv, npoints
 CHARACTER(LEN=default_string_length), INTENT(IN)   :: func_name
 REAL(KIND=dp), INTENT(in)                          :: sc
 TYPE(libxc_worker_set_type), INTENT(INOUT)         :: workers
+REAL(dp), INTENT(IN), OPTIONAL :: floor_slopes(:, :)
+REAL(dp), INTENT(IN) :: floor_tolerance
 
 INTEGER                                            :: bsize, family, i, i0, ib, ii, ithread, &
                                                       nb, nblocks, nthreads
@@ -2810,6 +2863,17 @@ ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace,
          ii = i0 + i
          w%rho(1, i) = MAX(rhoa(ii), 0.0_dp)
          w%rho(2, i) = MAX(rhob(ii), 0.0_dp)
+         IF (PRESENT(floor_slopes)) THEN
+            IF (floor_slopes(1, ii) >= 0.0_dp) THEN
+               CPASSERT(ABS(rhoa(ii) - libxc_density_floor(eps_rho)) <= floor_tolerance)
+            END IF
+            IF (floor_slopes(2, ii) >= 0.0_dp) THEN
+               CPASSERT(ABS(rhob(ii) - libxc_density_floor(eps_rho)) <= floor_tolerance)
+            END IF
+         END IF
+         ! Keep the original total-density screen, but evaluate active spin floors
+         ! on the positive branch of Libxc's internal per-spin exchange screen.
+         IF (SUM(w%rho(:, i)) >= eps_rho) w%rho(:, i) = MAX(w%rho(:, i), libxc_density_floor(eps_rho))
       END DO
       IF (is_gga) THEN
          ! CP2K works with gradient norms, LibXC with their contractions.
@@ -2840,15 +2904,27 @@ ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace,
 
       ! one LibXC call for the whole block, on the host or the device
       CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
+      DO i = 1, nb
+         w%rho(:, i) = MAX([rhoa(i0 + i), rhob(i0 + i)], 0.0_dp)
+      END DO
       IF (grad_deriv >= 1 .AND. .NOT. no_exc) THEN
          DO i = 1, nb
-            CALL libxc_spin_floor_pullback(w, i, grad_deriv, has_laplace, eps_rho)
+            IF (PRESENT(floor_slopes)) THEN
+               CALL libxc_spin_floor_pullback(w, i, grad_deriv, has_laplace, eps_rho, floor_slopes(:, i0 + i))
+            ELSE
+               CALL libxc_spin_floor_pullback(w, i, grad_deriv, has_laplace, eps_rho)
+            END IF
          END DO
       END IF
       IF (is_mgga .AND. grad_deriv >= 1) THEN
          DO i = 1, nb
-            CALL libxc_mgga_tau_pullback(w, i, [tau_a(i0 + i), tau_b(i0 + i)], 2, &
-                                         grad_deriv, has_laplace, eps_rho, eps_tau)
+            IF (PRESENT(floor_slopes)) THEN
+               CALL libxc_mgga_tau_pullback(w, i, [tau_a(i0 + i), tau_b(i0 + i)], 2, &
+                                            grad_deriv, has_laplace, eps_rho, eps_tau, floor_slopes(:, i0 + i))
+            ELSE
+               CALL libxc_mgga_tau_pullback(w, i, [tau_a(i0 + i), tau_b(i0 + i)], 2, &
+                                            grad_deriv, has_laplace, eps_rho, eps_tau)
+            END IF
          END DO
       END IF
       IF (grad_deriv >= 1) THEN

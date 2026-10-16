@@ -45,7 +45,7 @@ PROGRAM xc_semilocal_unittest
    USE xc_derivative_desc, ONLY: deriv_gamma, deriv_gamma_aa, deriv_gamma_ab, deriv_gamma_bb, &
                                  deriv_tau_a, &
                                  deriv_tau_b
-   USE xc_libxc, ONLY: libxc_spin_polarized_eval, &
+   USE xc_libxc, ONLY: libxc_density_floor, libxc_spin_polarized_eval, &
                        libxc_spin_unpolarized_eval
 #endif
 
@@ -105,6 +105,7 @@ PROGRAM xc_semilocal_unittest
    CALL check_libxc_c2_window()
    CALL check_libxc_c2_rounding()
    CALL check_libxc_individual_floor()
+   CALL check_libxc_floor_limits()
    CALL check_libxc_spin_powers()
 #endif
    CALL section_vals_release(functional)
@@ -391,6 +392,49 @@ CONTAINS
    END SUBROUTINE check_libxc_individual_floor
 
 ! **************************************************************************************************
+!> \brief Compare both floor limits with independent one-sided energy differences.
+! **************************************************************************************************
+   SUBROUTINE check_libxc_floor_limits()
+      CHARACTER(len=24), PARAMETER :: &
+         names(3) = [CHARACTER(len=24) :: 'MGGA_X_R2SCAN', 'MGGA_C_R2SCAN', 'GGA_C_PBE']
+      REAL(dp), PARAMETER                                :: cutoff = 0.05_dp, step = 1.e-6_dp, &
+                                                            weight = 0.37_dp
+
+      INTEGER                                            :: family, side
+      REAL(dp)                                           :: energy, error, first, gradient(7), &
+                                                            hessian(7, 7), limits(7, 2), selected, &
+                                                            trial(7), values(2), x(7)
+
+      error = 0.0_dp
+      x = [0.4_dp, libxc_density_floor(cutoff), 0.7_dp, 0.6_dp, 0.2_dp, 0.3_dp, -0.02_dp]
+      DO family = 1, SIZE(names)
+         CALL evaluate_libxc_point(TRIM(names(family)), x, energy, gradient, hessian, cutoff)
+         DO side = 1, 2
+            CALL evaluate_libxc_point(TRIM(names(family)), x, selected, limits(:, side), hessian, cutoff, &
+                                      floor_slopes=[-1.0_dp, REAL(side - 1, dp)])
+            IF (ABS(selected - energy) > 1.e-14_dp) ERROR STOP 'A floor derivative selection changed the energy'
+            trial = x
+            trial(2) = x(2) + REAL(2*side - 3, dp)*step
+            CALL evaluate_libxc_point(TRIM(names(family)), trial, values(1), gradient, hessian, cutoff)
+            trial(2) = x(2) + REAL(2*side - 3, dp)*step*0.5_dp
+            CALL evaluate_libxc_point(TRIM(names(family)), trial, values(2), gradient, hessian, cutoff)
+            first = REAL(2*side - 3, dp)*(4.0_dp*values(2) - values(1) - 3.0_dp*energy)/step
+            error = MAX(error, ABS(first - limits(2, side)))
+            IF (ABS(first - limits(2, side)) > 1.e-7_dp) THEN
+               WRITE (*, '(A,A,I3,3ES22.13)') 'Libxc floor limit ', TRIM(names(family)), side, &
+                  first, limits(2, side), ABS(first - limits(2, side))
+            END IF
+         END DO
+         CALL evaluate_libxc_point(TRIM(names(family)), x, selected, gradient, hessian, cutoff, &
+                                   floor_slopes=[-1.0_dp, weight])
+         IF (MAXVAL(ABS(gradient - ((1.0_dp - weight)*limits(:, 1) + weight*limits(:, 2)))) > 1.e-12_dp) THEN
+            ERROR STOP 'Spin and kinetic density floors used different limiting weights'
+         END IF
+      END DO
+      IF (error > 1.e-7_dp) ERROR STOP 'A selected spin-floor limit is not a one-sided energy derivative'
+   END SUBROUTINE check_libxc_floor_limits
+
+! **************************************************************************************************
 !> \brief Check correlation potentials where a small spin power multiplies a large reduced tau.
 ! **************************************************************************************************
    SUBROUTINE check_libxc_spin_powers()
@@ -434,8 +478,10 @@ CONTAINS
 !> \param third_rho Optional third derivatives in the two spin densities.
 !> \param third_all Optional third derivatives in every independent variable.
 !> \param contractions Use Libxc gradient contractions instead of CP2K gradient norms.
+!> \param floor_slopes Optional first-derivative weights at an exact spin-density floor.
 ! **************************************************************************************************
-   SUBROUTINE evaluate_libxc_point(name, x, energy, gradient, hessian, density_cutoff, third_rho, third_all, contractions)
+   SUBROUTINE evaluate_libxc_point(name, x, energy, gradient, hessian, density_cutoff, third_rho, third_all, contractions, &
+                                   floor_slopes)
       CHARACTER(len=*), INTENT(IN)                       :: name
       REAL(dp), INTENT(IN)                               :: x(:)
       REAL(dp), INTENT(OUT)                              :: energy, gradient(SIZE(x)), &
@@ -443,6 +489,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: density_cutoff
       REAL(dp), INTENT(OUT), OPTIONAL :: third_rho(2, 2, 2), third_all(SIZE(x), SIZE(x), SIZE(x))
       LOGICAL, INTENT(IN), OPTIONAL                      :: contractions
+      REAL(dp), INTENT(IN), OPTIONAL                     :: floor_slopes(2)
 
       INTEGER                                            :: bounds(2, 3), i, j, k, labels(7), &
                                                             nspins, order
@@ -508,6 +555,11 @@ CONTAINS
          END IF
       END IF
       rho_set%has = needs
+      IF (PRESENT(floor_slopes)) THEN
+         IF (nspins /= 2 .OR. PRESENT(third_rho) .OR. PRESENT(third_all)) ERROR STOP 'Invalid first-order floor control'
+         ALLOCATE (rho_set%spin_floor_slopes(2, 1))
+         rho_set%spin_floor_slopes(:, 1) = floor_slopes
+      END IF
       CALL xc_dset_create(derivatives, local_bounds=bounds)
       DO i = 1, SIZE(x)
          derivative => xc_dset_get_derivative(derivatives, [labels(i)], allocate_deriv=.TRUE.)
@@ -520,6 +572,7 @@ CONTAINS
          END DO
       END DO
       order = 2
+      IF (PRESENT(floor_slopes)) order = 1
       IF (PRESENT(third_rho) .OR. PRESENT(third_all)) THEN
          IF (PRESENT(third_rho) .AND. nspins /= 2) ERROR STOP 'Spin third-derivative oracle requires two spins'
          order = 3
