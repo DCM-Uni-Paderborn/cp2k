@@ -1089,13 +1089,14 @@ CONTAINS
 !> \param spins Physical spin selectors.
 !> \param descriptors Density or kinetic density for each candidate.
 !> \param converged Whether each supplied root was located successfully.
-!> \param tolerances Absolute density and kinetic-density zero tolerances in atomic units.
+!> \param tolerances Absolute density and kinetic-density tolerances in atomic units.
 !> \param root Selected coordinates, or first on failure.
 !> \param selected Candidates meeting their original tolerance at the selected root.
-!> \param found Whether a complete supplied search yields a verified physical zero.
+!> \param found Whether a complete supplied search yields a verified physical target.
+!> \param targets Fixed physical target of each candidate, zero by default.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_choose_root(state, first, last, coordinates, points, domains, spins, &
-                                       descriptors, converged, tolerances, root, selected, found)
+                                       descriptors, converged, tolerances, root, selected, found, targets)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:), coordinates(:, :)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -1105,9 +1106,10 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: root(:)
       LOGICAL, ALLOCATABLE, INTENT(OUT)                  :: selected(:)
       LOGICAL, INTENT(OUT)                               :: found
+      REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
 
       INTEGER                                            :: earliest, i, m, n
-      REAL(dp)                                           :: energy, length2, roundoff, value
+      REAL(dp)                                           :: energy, length2, level, roundoff, value
       REAL(dp), ALLOCATABLE                              :: direction(:), gradient(:), steps(:)
 
       n = qs_skala_scf_size(state)
@@ -1118,6 +1120,10 @@ CONTAINS
       CPASSERT(ALL(descriptors >= 1 .AND. descriptors <= 2))
       CPASSERT(ALL(ieee_is_finite(coordinates)))
       CPASSERT(ALL(ieee_is_finite(tolerances)) .AND. ALL(tolerances > 0.0_dp))
+      IF (PRESENT(targets)) THEN
+         CPASSERT(SIZE(targets) == m)
+         CPASSERT(ALL(ieee_is_finite(targets)))
+      END IF
       ALLOCATE (selected(m), direction(n), gradient(n), steps(m))
       selected = .FALSE.
       found = .FALSE.
@@ -1138,7 +1144,9 @@ CONTAINS
       CALL qs_skala_scf_evaluate(state, root, energy, gradient)
       DO i = 1, m
          CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), value)
-         selected(i) = ABS(value) <= tolerances(descriptors(i))
+         level = 0.0_dp
+         IF (PRESENT(targets)) level = targets(i)
+         selected(i) = ABS(value - level) <= tolerances(descriptors(i))
       END DO
       found = selected(earliest)
       IF (.NOT. found) THEN
@@ -1371,15 +1379,17 @@ CONTAINS
 !> \param density_tolerance Absolute physical density window in bohr^-3.
 !> \param kinetic_probe Positive physical kinetic-density displacement in bohr^-5.
 !> \param kinetic_tolerance Absolute physical kinetic-density window in bohr^-5.
+!> \param targets Fixed physical descriptor values, zero by default.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_select(state, points, domains, spins, descriptors, negative_weights, &
-                                  density_probe, density_tolerance, kinetic_probe, kinetic_tolerance)
+                                  density_probe, density_tolerance, kinetic_probe, kinetic_tolerance, targets)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
                                                             descriptors(:)
       REAL(dp), INTENT(IN)                               :: negative_weights(:), density_probe, &
                                                             density_tolerance, kinetic_probe, &
                                                             kinetic_tolerance
+      REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
 
       INTEGER                                            :: domain, i, m
       INTEGER, ALLOCATABLE                               :: atomic_sizes(:), keys(:, :)
@@ -1412,7 +1422,7 @@ CONTAINS
                                          grid%npts, grid%bounds, state%hmat, state%positions, &
                                          descriptors=descriptors, kinetic_probe=kinetic_probe, &
                                          kinetic_tolerance=kinetic_tolerance, domains=domains, &
-                                         atomic_sizes=atomic_sizes)
+                                         atomic_sizes=atomic_sizes, targets=targets)
    END SUBROUTINE qs_skala_scf_select
 
 ! **************************************************************************************************
@@ -1442,7 +1452,7 @@ CONTAINS
                                                             kinetic_tolerance, probe, tolerance, &
                                                             value
       REAL(dp), ALLOCATABLE                              :: gradient(:), original_weights(:), &
-                                                            physical(:), weights(:)
+                                                            physical(:), targets(:), weights(:)
 
       n = qs_skala_scf_size(state)
       m = skala_density_constraints_count(state%constraints)
@@ -1459,7 +1469,7 @@ CONTAINS
       END IF
       CALL skala_density_constraints_get(state%constraints, points, spins, original_weights, &
                                          probe, tolerance, descriptors=descriptors, domains=domains, &
-                                         kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
+                                         kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance, targets=targets)
       ALLOCATE (weights(m), gradient(n), physical(n))
       weights = 0.0_dp
       CALL skala_density_constraints_update_weights(state%constraints, weights)
@@ -1467,10 +1477,10 @@ CONTAINS
       DO i = 1, m
          CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), value)
          IF (descriptors(i) == skala_density_descriptor) THEN
-            CPASSERT(ABS(value) <= tolerance)
+            CPASSERT(ABS(value - targets(i)) <= tolerance)
          ELSE
             CPASSERT(descriptors(i) == skala_kinetic_descriptor)
-            CPASSERT(ABS(value) <= kinetic_tolerance)
+            CPASSERT(ABS(value - targets(i)) <= kinetic_tolerance)
          END IF
          IF (PRESENT(physical_jacobian)) THEN
             CALL qs_skala_scf_point_derivative(state, domains(i), points(:, i), spins(i), descriptors(i), &

@@ -66,7 +66,9 @@ MODULE xc
                              xc_functionals_get_needs
    USE xc_gauxc_functional, ONLY: xc_section_uses_gauxc
 #if defined(__LIBXC)
-   USE xc_libxc, ONLY: libxc_set_backend
+   USE skala_density_constraints, ONLY: skala_density_constraints_count, skala_density_constraints_get, &
+                                       skala_density_descriptor
+   USE xc_libxc, ONLY: libxc_set_backend, libxc_density_floor
 #endif
    USE xc_rho_cflags_types, ONLY: xc_rho_cflags_type
    USE xc_rho_set_types, ONLY: xc_rho_set_create, &
@@ -213,6 +215,9 @@ CONTAINS
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             CALL record_fft_descriptors(density_constraints, rho_set, nspins)
+#if defined(__LIBXC)
+            CALL select_fft_floor_limits(density_constraints, rho_set, nspins)
+#endif
          END IF
       END IF
 
@@ -292,6 +297,62 @@ CONTAINS
          CALL skala_density_samples_put(state, skala_fft_domain, points, density)
       END IF
    END SUBROUTINE record_fft_descriptors
+
+#if defined(__LIBXC)
+! **************************************************************************************************
+!> \brief Apply owned first-derivative weights only at satisfied FFT spin-density floors.
+!>        Off the selected physical surface the original differentiable branch is used.
+!>        Sampling can be inactive during force evaluation while the selection remains owned.
+!> \param state Physical descriptor constraints owned by the KS environment.
+!> \param rho_set Actual XC fields on this rank, with their original global index bounds.
+!> \param ns Number of physical density columns.
+! **************************************************************************************************
+   SUBROUTINE select_fft_floor_limits(state, rho_set, ns)
+      TYPE(skala_density_constraints_type), INTENT(IN) :: state
+      TYPE(xc_rho_set_type), INTENT(INOUT) :: rho_set
+      INTEGER, INTENT(IN) :: ns
+
+      INTEGER :: bounds(2, 3), c, extent(3), n, point(3), row
+      INTEGER, ALLOCATABLE :: descriptors(:), points(:, :), spins(:)
+      REAL(dp) :: kinetic_probe, kinetic_tolerance, probe, tolerance, value
+      REAL(dp), ALLOCATABLE :: targets(:), weights(:)
+
+      n = skala_density_constraints_count(state, skala_fft_domain)
+      IF (n == 0) RETURN
+      CALL skala_density_constraints_get(state, points, spins, weights, probe, tolerance, &
+                                         descriptors=descriptors, kinetic_probe=kinetic_probe, &
+                                         kinetic_tolerance=kinetic_tolerance, domain=skala_fft_domain, targets=targets)
+      IF (ALL(targets == 0.0_dp)) RETURN
+      CPASSERT(ns == 2)
+      CPASSERT(ASSOCIATED(rho_set%rhoa) .AND. ASSOCIATED(rho_set%rhob))
+      bounds = rho_set%local_bounds
+      extent = MAX(0, bounds(2, :) - bounds(1, :) + 1)
+      DO c = 1, n
+         IF (targets(c) == 0.0_dp) CYCLE
+         IF (descriptors(c) /= skala_density_descriptor .OR. &
+             targets(c) /= libxc_density_floor(rho_set%rho_cutoff)) THEN
+            CPABORT("This FFT descriptor target has no implemented limiting XC derivative.")
+         END IF
+         CPASSERT(spins(c) >= 1 .AND. spins(c) <= 2)
+         point = points(:, c)
+         IF (ANY(point < bounds(1, :)) .OR. ANY(point > bounds(2, :))) CYCLE
+         IF (spins(c) == 1) THEN
+            value = rho_set%rhoa(point(1), point(2), point(3))
+         ELSE
+            value = rho_set%rhob(point(1), point(2), point(3))
+         END IF
+         IF (ABS(value - targets(c)) > tolerance) CYCLE
+         IF (.NOT. ALLOCATED(rho_set%spin_floor_slopes)) THEN
+            ALLOCATE (rho_set%spin_floor_slopes(2, PRODUCT(extent)))
+            rho_set%spin_floor_slopes = -1.0_dp
+            rho_set%spin_floor_tolerance = tolerance
+         END IF
+         row = 1 + point(1) - bounds(1, 1) + extent(1)*(point(2) - bounds(1, 2) + &
+                                                       extent(2)*(point(3) - bounds(1, 3)))
+         rho_set%spin_floor_slopes(spins(c), row) = 1.0_dp - weights(c)
+      END DO
+   END SUBROUTINE select_fft_floor_limits
+#endif
 
 ! **************************************************************************************************
 !> \brief smooths the cutoff on rho with a function smoothderiv_rho that is 0
