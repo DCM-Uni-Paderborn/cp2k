@@ -58,11 +58,11 @@ MODULE qs_skala_scf
    USE skala_density_constraints,       ONLY: &
         skala_background_domain, skala_density_constraints_balance, &
         skala_density_constraints_count, skala_density_constraints_get, &
-        skala_density_constraints_set, skala_density_constraints_type, &
-        skala_density_constraints_update_weights, skala_density_crossings, &
-        skala_density_descriptor, skala_density_root, skala_density_samples_begin, &
-        skala_density_samples_end, skala_density_samples_get, skala_fft_domain, &
-        skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
+        skala_density_constraints_matches, skala_density_constraints_set, &
+        skala_density_constraints_type, skala_density_constraints_update_weights, &
+        skala_density_crossings, skala_density_descriptor, skala_density_root, &
+        skala_density_samples_begin, skala_density_samples_end, skala_density_samples_get, &
+        skala_fft_domain, skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
         skala_paw_ps_domain
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
                                               skala_cusp_admissibility,&
@@ -82,7 +82,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_choose_root, qs_skala_scf_boundary_root
    PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
    PUBLIC :: qs_skala_scf_crossing_type
-   PUBLIC :: qs_skala_scf_select, qs_skala_scf_limiting, qs_skala_scf_balance
+   PUBLIC :: qs_skala_scf_select, qs_skala_scf_selected, qs_skala_scf_limiting, qs_skala_scf_balance
    PUBLIC :: qs_skala_scf_admissibility
    PUBLIC :: qs_skala_scf_accept
    INTEGER, PARAMETER, PUBLIC :: qs_skala_positive_density_sum = -2
@@ -1632,6 +1632,59 @@ CONTAINS
    END SUBROUTINE qs_skala_scf_select
 
 ! **************************************************************************************************
+!> \brief Read owned constraints and verify their current physical feasibility.
+!>        An empty selection is valid. Do not reuse a selection from another geometry or FFT layout.
+!> \param state Evaluated native orbital state with its original physical sample keys.
+!> \param points Global physical sample keys.
+!> \param domains Evaluation domain per selected sample.
+!> \param spins Physical spin selectors.
+!> \param descriptors Density or kinetic density per sample.
+!> \param targets Original prescribed physical values.
+!> \param tolerances Original absolute physical feasibility windows.
+!> \param valid Whether every selected physical value remains within its original window.
+!> \param require_feasible Check current values, default true. False permits restoring the same
+!>        owned constraints before minimization, but still requires the original geometry and layout.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, require_feasible)
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: targets(:), tolerances(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+      LOGICAL, INTENT(IN), OPTIONAL                      :: require_feasible
+
+      INTEGER                                            :: m
+      REAL(dp)                                           :: kinetic_probe, kinetic_tolerance, probe, &
+                                                            tolerance
+      REAL(dp), ALLOCATABLE                              :: values(:), weights(:)
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type), POINTER                      :: rho_r(:)
+
+      CPASSERT(state%evaluated)
+      m = skala_density_constraints_count(state%constraints)
+      valid = .TRUE.
+      IF (m == 0) THEN
+         ALLOCATE (points(3, 0), domains(0), spins(0), descriptors(0), targets(0), tolerances(0))
+         RETURN
+      END IF
+      CALL skala_density_constraints_get(state%constraints, points, spins, weights, probe, tolerance, &
+                                         descriptors=descriptors, domains=domains, targets=targets, &
+                                         kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
+      ALLOCATE (values(m), tolerances(m))
+      tolerances(:) = MERGE(tolerance, kinetic_tolerance, descriptors == skala_density_descriptor)
+      CALL qs_rho_get(state%rho, rho_r=rho_r)
+      grid => rho_r(1)%pw_grid
+      valid = skala_density_constraints_matches(state%constraints, SIZE(state%orbitals, 2), &
+                                                grid%npts, grid%bounds, state%hmat, state%positions)
+      IF (.NOT. valid) RETURN
+      IF (PRESENT(require_feasible)) THEN
+         IF (.NOT. require_feasible) RETURN
+      END IF
+      CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values)
+      valid = ALL(ABS(values - targets) <= tolerances)
+   END SUBROUTINE qs_skala_scf_selected
+
+! **************************************************************************************************
 !> \brief Evaluate complete native limiting covectors at the registered physical cusp samples.
 !>        Columns switch one selected descriptor from its positive to its negative limit. All
 !>        other native energy derivatives remain present. Covectors use the orthonormal physical
@@ -1774,6 +1827,8 @@ CONTAINS
 !> \brief Accept a stationary native trial with matching canonical MOs, P, W, fields, energy and KS.
 !>        Check complete physical stationarity and the independent cusp-normal minimum conditions
 !>        before changing native eigenvalues or W. On rejection the evaluated trial remains live.
+!>        Recheck the actual canonical state in a fresh normalized chart. A rejected canonical
+!>        state remains in the native environment so a caller can rechart and refine it.
 !>        Success consumes the orbital charts because canonicalization changes their reference.
 !>        This does not establish tangential stability or perform an automatic SCF search.
 !> \param state Native charts, released only on successful acceptance.
@@ -1788,14 +1843,21 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: hamiltonian(:, :)
       INTEGER                                            :: component, failed, ik, local, m, spin
-      INTEGER, ALLOCATABLE                               :: release_side(:)
+      INTEGER, ALLOCATABLE                               :: release_side(:), &
+                                                            selected_descriptors(:), &
+                                                            selected_domains(:), &
+                                                            selected_points(:, :), &
+                                                            selected_spins(:)
       LOGICAL                                            :: valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy
-      REAL(dp), ALLOCATABLE                              :: gradient(:)
+      REAL(dp), ALLOCATABLE                              :: canonical_coordinate(:), gradient(:), &
+                                                            selected_targets(:), &
+                                                            selected_tolerances(:)
       TYPE(dbcsr_p_type), POINTER                        :: densities(:, :), matrices(:, :), &
                                                             weighted(:)
       TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(qs_skala_scf_type)                            :: canonical
 
       accepted = .FALSE.
       CPASSERT(ieee_is_finite(tolerance) .AND. tolerance > 0.0_dp)
@@ -1873,6 +1935,25 @@ CONTAINS
       CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
       CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.FALSE., print_active=.FALSE.)
       CALL skala_density_samples_end(state%constraints)
+      CALL qs_skala_scf_create(canonical, state%qs_env, valid)
+      IF (valid) THEN
+         ALLOCATE (canonical_coordinate(qs_skala_scf_size(canonical)), SOURCE=0.0_dp)
+         CALL qs_skala_scf_evaluate(canonical, canonical_coordinate, energy, physical_gradient=gradient)
+         CALL qs_skala_scf_selected(canonical, selected_points, selected_domains, selected_spins, &
+                                    selected_descriptors, selected_targets, selected_tolerances, valid)
+         valid = valid .AND. NORM2(gradient) <= tolerance
+         IF (valid .AND. m > 0) THEN
+            CALL qs_skala_scf_admissibility(canonical, canonical_coordinate, admissible, release_side, valid)
+            valid = valid .AND. ALL(admissible)
+            CALL qs_skala_scf_evaluate(canonical, canonical_coordinate, energy, physical_gradient=gradient)
+            valid = valid .AND. NORM2(gradient) <= tolerance
+         END IF
+      END IF
+      CALL qs_skala_scf_release(canonical)
+      IF (.NOT. valid) THEN
+         state%evaluated = .FALSE.
+         RETURN
+      END IF
       CALL qs_skala_scf_release(state)
       accepted = .TRUE.
    END SUBROUTINE qs_skala_scf_accept

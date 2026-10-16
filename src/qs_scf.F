@@ -238,13 +238,10 @@ MODULE qs_scf
         block_davidson_diag_method_nr, block_krylov_diag_method_nr, filter_matrix_diag_method_nr, &
         general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, &
         smeagol_method_nr, special_diag_method_nr
-   USE qs_skala_scf,                    ONLY: qs_skala_scf_accept,&
-                                              qs_skala_scf_create,&
-                                              qs_skala_scf_evaluate,&
-                                              qs_skala_scf_release,&
-                                              qs_skala_scf_size,&
-                                              qs_skala_scf_stationarity,&
-                                              qs_skala_scf_type
+   USE qs_skala_scf,                    ONLY: &
+        qs_skala_scf_accept, qs_skala_scf_balance, qs_skala_scf_create, qs_skala_scf_evaluate, &
+        qs_skala_scf_release, qs_skala_scf_selected, qs_skala_scf_size, qs_skala_scf_stationarity, &
+        qs_skala_scf_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_core
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc_atom,                     ONLY: gapw_cdft_one_center
@@ -1083,6 +1080,8 @@ CONTAINS
 !>        Rebuild the Cayley chart at its accepted orbitals when a trial leaves the bounded
 !>        coordinate region or the line search stalls after making progress. All attempted
 !>        steps still consume the original SCF budget.
+!>        Retain feasible owned physical constraints across SCF initialization. Canonicalization
+!>        must also satisfy the original physical gradient bound, otherwise refine a new chart.
 !> \param qs_env Native Quickstep environment.
 !> \param scf_env Initialized OT iteration state.
 !> \param scf_control Original SCF limits and occupation settings.
@@ -1099,10 +1098,13 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: stopped
 
       INTEGER                                            :: n, remaining, steps
-      INTEGER, ALLOCATABLE                               :: indices(:), points(:, :)
-      LOGICAL                                            :: accepted, converged, rechart, valid
+      INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
+                                                            points(:, :), spins(:)
+      LOGICAL                                            :: accepted, balanced, converged, rechart, &
+                                                            valid
       REAL(dp)                                           :: energy
-      REAL(dp), ALLOCATABLE                              :: coordinate(:), gradient(:), physical(:), &
+      REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
+                                                            gradient(:), physical(:), targets(:), &
                                                             tolerances(:)
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -1135,16 +1137,46 @@ CONTAINS
          RETURN
       END IF
       handled = .TRUE.
-      ALLOCATE (coordinate(n), gradient(n), physical(n), points(3, 0), indices(0), tolerances(0))
+      accepted = .FALSE.
+      ALLOCATE (coordinate(n), gradient(n), physical(n))
       coordinate = 0.0_dp
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
+      CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, &
+                                 require_feasible=.FALSE.)
+      IF (.NOT. valid .OR. SIZE(tolerances) > n) THEN
+         CALL qs_skala_scf_release(state)
+         handled = .FALSE.
+         RETURN
+      END IF
+      IF (SIZE(tolerances) == 0) ALLOCATE (coordinate_bound, SOURCE=1.0_dp)
       DO
-         CALL qs_skala_scf_stationarity(state, coordinate, points, indices, indices, indices, tolerances, &
+         CALL qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, tolerances, &
                                         scf_control%eps_scf, energy, converged, max_iterations=remaining, &
                                         max_step=0.1_dp, iterations=steps, check_external=.TRUE., stopped=stopped, &
-                                        max_coordinate_norm=1.0_dp, rechart=rechart, retain_progress=.TRUE.)
+                                        targets=targets, max_coordinate_norm=coordinate_bound, &
+                                        rechart=rechart, retain_progress=.TRUE.)
          iterations = iterations + steps
          remaining = remaining - steps
-         IF (converged .OR. stopped .OR. remaining <= 0) EXIT
+         IF (converged .AND. SIZE(tolerances) > 0) THEN
+            CALL qs_skala_scf_balance(state, coordinate, scf_control%eps_scf, physical, balanced)
+            converged = balanced
+         END IF
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
+         scf_env%iter_delta = MAX(NORM2(gradient), NORM2(physical))
+         IF (converged) THEN
+            CALL qs_skala_scf_accept(state, coordinate, scf_control%eps_scf, accepted)
+            IF (accepted) EXIT
+            ! The canonical density can differ at rounding scale near an active physical boundary.
+            ! Its rejected gradient must not inherit the pre-rotation convergence flag.
+            scf_env%iter_delta = HUGE(0.0_dp)
+            IF (steps == 0) THEN
+               ! A failed canonical trial consumes budget even if its original chart was stationary.
+               iterations = iterations + 1
+               remaining = remaining - 1
+            END IF
+            rechart = .TRUE.
+         END IF
+         IF (stopped .OR. remaining <= 0) EXIT
          ! A stalled finite chart can retain a useful nonstationary state. Rebase before
          ! falling back to ordinary OT, but do not repeat a chart with no accepted step.
          IF (.NOT. rechart .AND. steps <= 1) EXIT
@@ -1153,13 +1185,14 @@ CONTAINS
          IF (.NOT. valid) CPABORT("Could not rebuild the accepted inverse orbital chart.")
          CPASSERT(qs_skala_scf_size(state) == n)
          coordinate = 0.0_dp
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
+         CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid)
+         IF (.NOT. valid) THEN
+            scf_env%iter_delta = HUGE(0.0_dp)
+            EXIT
+         END IF
       END DO
-      CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
-      scf_env%iter_delta = MAX(NORM2(gradient), NORM2(physical))
-      IF (converged) THEN
-         CALL qs_skala_scf_accept(state, coordinate, scf_control%eps_scf, accepted)
-         IF (.NOT. accepted) CPABORT("Could not accept the stationary inverse orbital state.")
-      END IF
+      IF (.NOT. accepted) scf_env%iter_delta = HUGE(0.0_dp)
       CALL qs_skala_scf_release(state)
       IF (ASSOCIATED(kpoints)) THEN
          IF (ALLOCATED(kpoints%native_density)) THEN
