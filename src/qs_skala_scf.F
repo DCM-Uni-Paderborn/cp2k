@@ -2031,8 +2031,16 @@ CONTAINS
 
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
-         CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient, &
-                                    sample_inputs=SIZE(context%points, 2) > 0)
+         IF (SIZE(context%points, 2) > 0) THEN
+            ! The immediately preceding constraint callback evaluated this same trial,
+            ! including its complete KS operator and the original physical samples.
+            CPASSERT(context%state%evaluated)
+            CPASSERT(ALL(context%state%coordinate == coordinate))
+            energy = context%state%energy%total
+            CALL native_orbital_covectors(context%state, gradient=gradient)
+         ELSE
+            CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient, sample_inputs=.FALSE.)
+         END IF
       CLASS DEFAULT
          CPABORT("Invalid native Skala gradient context.")
       END SELECT
