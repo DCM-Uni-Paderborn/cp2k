@@ -220,7 +220,7 @@ CONTAINS
       INTEGER                                            :: axis, block, l, m
       LOGICAL                                            :: angular_ready(0:max_cached_l)
       REAL(dp) :: angular, cached_angular((max_cached_l + 1)**2), &
-         cached_gradient(3, (max_cached_l + 1)**2), dangular(3), dh, exponential, h, s
+         cached_gradient(3, (max_cached_l + 1)**2), dangular(3), dh, exponential, h, last_alpha, s
 
       CPASSERT(ALLOCATED(fields%primitives))
       CPASSERT(SIZE(potential) == fields%nfunction)
@@ -232,12 +232,17 @@ CONTAINS
       END IF
       s = SUM(displacement**2)
       angular_ready = .FALSE.
+      last_alpha = -1.0_dp
       DO block = 1, SIZE(fields%primitives)
          ASSOCIATE (primitive => fields%primitives(block))
             IF (.NOT. ANY(primitive%coefficients /= 0.0_dp)) CYCLE
             l = primitive%l
             IF (fields%identity) THEN
-               exponential = EXP(-primitive%alpha*s)
+               ! Angular components of one primitive share the same exponential.
+               IF (primitive%alpha /= last_alpha) THEN
+                  exponential = EXP(-primitive%alpha*s)
+                  last_alpha = primitive%alpha
+               END IF
                h = s**primitive%power*exponential
                dh = -primitive%alpha*h
                IF (primitive%power > 0) dh = dh + primitive%power*s**(primitive%power - 1)*exponential
