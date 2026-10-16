@@ -497,10 +497,11 @@ CONTAINS
             direction(:) = -reduced
          END IF
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), TINY(0.0_dp))
-         IF (m == 0 .AND. history > 0 .AND. &
+         IF (history > 0 .AND. &
              -DOT_PRODUCT(reduced, direction) <= 32.0_dp*roundoff) THEN
-            ! Narrow smooth descriptor transitions can leave useful derivatives below
-            ! the energy resolution. Resolve their curvature without energy differences.
+            ! Resolve curvature below the energy resolution from reduced derivatives.
+            ! Each perturbed trial restores the same physical constraints, retaining
+            ! the curvature of the eliminated coordinates.
             CALL newton_direction(x, reduced, newton, newton_valid, newton_stopped)
             IF (newton_stopped) RETURN
             IF (newton_valid) direction(:) = newton

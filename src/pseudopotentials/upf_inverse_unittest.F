@@ -95,6 +95,7 @@ PROGRAM upf_inverse_unittest
    INTEGER :: stop_polls = 0
    CALL check_inverse()
    CALL check_physical_stationarity()
+   CALL check_constrained_curvature()
    CALL check_dependent_constraints()
    CALL check_cusp_normals()
    CALL check_lattice_inverse()
@@ -113,6 +114,77 @@ PROGRAM upf_inverse_unittest
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Resolve an anisotropic quadratic on a curved constraint below the energy resolution.
+! **************************************************************************************************
+   SUBROUTINE check_constrained_curvature()
+      REAL(dp), PARAMETER :: tolerance = 1.e-11_dp, weights(3) = [1.0_dp, 0.01_dp, 0.0001_dp]
+
+      INTEGER                                            :: iterations
+      LOGICAL                                            :: converged
+      REAL(dp)                                           :: coordinate(4), energy_zero
+
+      coordinate(:3) = [0.01_dp, 0.02_dp, 0.03_dp]
+      coordinate(4) = SUM(coordinate(:3)**2)
+      energy_zero = 1.e8_dp
+      CALL skala_constrained_stationarity(curved_constraints, curved_energy_gradient, energy_zero, coordinate, &
+                                          [1.e-16_dp], tolerance, converged, max_iterations=4, iterations=iterations)
+      IF (.NOT. converged .OR. iterations > 4 .OR. NORM2(weights*coordinate(:3)) > tolerance) THEN
+         ERROR STOP 'Implicit constrained curvature was not resolved below energy resolution'
+      END IF
+      IF (ABS(coordinate(4) - SUM(coordinate(:3)**2)) > 1.e-16_dp) THEN
+         ERROR STOP 'Reduced-gradient curvature changed the physical constraint'
+      END IF
+   END SUBROUTINE check_constrained_curvature
+
+! **************************************************************************************************
+!> \brief A curved surface h=sum(u**2), with u the first three coordinates.
+!> \param coordinate Complete trial coordinates (u,h).
+!> \param values Original constraint residual.
+!> \param jacobian Derivative of the residual.
+!> \param context Additive energy zero of the same analytical problem.
+! **************************************************************************************************
+   SUBROUTINE curved_constraints(coordinate, values, jacobian, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: values(:), jacobian(:, :)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         values(1) = coordinate(4) - SUM(coordinate(:3)**2)
+         jacobian(1, :3) = -2.0_dp*coordinate(:3)
+         jacobian(1, 4) = 1.0_dp
+      CLASS DEFAULT
+         ERROR STOP 'Invalid curved-constraint context'
+      END SELECT
+   END SUBROUTINE curved_constraints
+
+! **************************************************************************************************
+!> \brief A reduced quadratic with a nonzero normal derivative and an independent energy zero.
+!> \param coordinate Complete trial coordinates (u,h).
+!> \param energy E0+sum(weights*u**2)/2+normal*(h-sum(u**2)).
+!> \param gradient Complete energy derivative before eliminating h.
+!> \param context Additive energy zero E0.
+! **************************************************************************************************
+   SUBROUTINE curved_energy_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+      REAL(dp), PARAMETER :: weights(3) = [1.0_dp, 0.01_dp, 0.0001_dp], normal = 0.25_dp
+
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         energy = context + 0.5_dp*SUM(weights*coordinate(:3)**2) &
+                  + normal*(coordinate(4) - SUM(coordinate(:3)**2))
+         gradient(:3) = weights*coordinate(:3) - 2.0_dp*normal*coordinate(:3)
+         gradient(4) = normal
+      CLASS DEFAULT
+         ERROR STOP 'Invalid curved-energy context'
+      END SELECT
+   END SUBROUTINE curved_energy_gradient
+
 ! **************************************************************************************************
 !> \brief Retain every physical residual when several samples share an independent condition.
 ! **************************************************************************************************
