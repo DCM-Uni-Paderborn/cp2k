@@ -76,10 +76,10 @@ MODULE qs_skala_scf
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
-   PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_value, qs_skala_scf_root
+   PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_value, qs_skala_scf_values, qs_skala_scf_root
    PUBLIC :: qs_skala_scf_point_derivative
    PUBLIC :: qs_skala_scf_crossings, qs_skala_scf_crossing_roots
-   PUBLIC :: qs_skala_scf_choose_root
+   PUBLIC :: qs_skala_scf_choose_root, qs_skala_scf_boundary_root
    PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
    PUBLIC :: qs_skala_scf_crossing_type
    PUBLIC :: qs_skala_scf_select, qs_skala_scf_limiting, qs_skala_scf_balance
@@ -107,6 +107,7 @@ MODULE qs_skala_scf
    TYPE qs_skala_scf_crossing_type
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
       REAL(dp), ALLOCATABLE :: first(:), last(:), values(:, :)
+      REAL(dp) :: density_floor = 0.0_dp
       LOGICAL :: encountered = .FALSE.
    END TYPE qs_skala_scf_crossing_type
 
@@ -129,6 +130,7 @@ MODULE qs_skala_scf
       REAL(dp), ALLOCATABLE :: targets(:)
       REAL(dp) :: gradient_tolerance = 0.0_dp
       REAL(dp) :: max_coordinate_norm = 0.0_dp
+      REAL(dp) :: density_floor = 0.0_dp
       LOGICAL :: rechart = .FALSE.
       LOGICAL :: check_external = .FALSE.
    END TYPE physical_constraints_context
@@ -418,56 +420,108 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: domain, point(3), spin, descriptor
       REAL(dp), INTENT(OUT)                              :: value
 
-      INTEGER                                            :: column, i, owners
-      INTEGER, ALLOCATABLE                               :: points(:, :)
+      REAL(dp)                                           :: field(1)
+
+      CALL qs_skala_scf_values(state, [domain], RESHAPE(point, [3, 1]), [spin], [descriptor], field)
+      value = field(1)
+   END SUBROUTINE qs_skala_scf_value
+
+! **************************************************************************************************
+!> \brief Read physical samples with one domain copy and one collective per output array.
+!>        Every sample retains exactly one distributed owner. No AO fields are cached.
+!> \param state Evaluated native orbital and physical field state.
+!> \param domains Physical evaluation domain per sample.
+!> \param points Global FFT or original atomic sample keys, one column per sample.
+!> \param spins Physical spin selectors, with the same sum conventions as qs_skala_scf_value.
+!> \param descriptors Density or kinetic density per sample.
+!> \param values Actual physical inputs, including native core and density processing.
+!> \param rows Optional local row cache for the same physical keys and geometry, initialized to -1.
+!>        Positive rows are checked against their physical keys. Zero denotes no local owner.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      INTEGER, INTENT(IN)                                :: domains(:), points(:, :), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), INTENT(OUT)                              :: values(:)
+      INTEGER, INTENT(INOUT), OPTIONAL                   :: rows(:)
+
+      INTEGER                                            :: c, column, domain, first_row, i, &
+                                                            last_row, m
+      INTEGER, ALLOCATABLE                               :: keys(:, :), owners(:)
       LOGICAL                                            :: available, valid
       REAL(dp), ALLOCATABLE                              :: density(:, :), kinetic(:, :)
 
       CPASSERT(state%evaluated)
-      valid = domain >= skala_fft_domain .AND. domain <= skala_last_sample_domain
+      m = SIZE(values)
+      CPASSERT(SIZE(domains) == m .AND. SIZE(spins) == m .AND. SIZE(descriptors) == m)
+      CPASSERT(ALL(SHAPE(points) == [3, m]))
+      CPASSERT(ALL(domains >= skala_fft_domain .AND. domains <= skala_last_sample_domain))
+      valid = ALL(descriptors >= skala_density_descriptor .AND. descriptors <= skala_kinetic_descriptor)
       CPASSERT(valid)
-      valid = descriptor == skala_density_descriptor .OR. descriptor == skala_kinetic_descriptor
-      CPASSERT(valid)
-      IF (spin == qs_skala_positive_density_sum) THEN
-         CPASSERT(descriptor == skala_density_descriptor)
+      IF (PRESENT(rows)) THEN
+         CPASSERT(SIZE(rows) == m .AND. ALL(rows >= -1))
       END IF
-      CALL skala_density_samples_get(state%constraints, domain, points, density, kinetic, available)
-      owners = 0
-      value = 0.0_dp
-      IF (available) THEN
-         column = spin
-         IF (SIZE(density, 2) == 1) THEN
-            CPASSERT(spin == 0 .OR. spin == -1 .OR. spin == qs_skala_positive_density_sum)
-            column = 1
-         END IF
-         valid = spin == -1 .OR. spin == qs_skala_positive_density_sum .OR. &
-                 (column >= 1 .AND. column <= SIZE(density, 2))
-         CPASSERT(valid)
-         DO i = 1, SIZE(points, 2)
-            IF (.NOT. ALL(points(:, i) == point)) CYCLE
-            owners = owners + 1
-            IF (descriptor == skala_density_descriptor) THEN
-               IF (spin == qs_skala_positive_density_sum) THEN
-                  value = SUM(MAX(density(i, :), 0.0_dp))*2.0_dp/REAL(SIZE(density, 2), dp)
-               ELSE IF (spin == -1) THEN
-                  value = SUM(density(i, :))*2.0_dp/REAL(SIZE(density, 2), dp)
+      values = 0.0_dp
+      IF (m == 0) RETURN
+      ALLOCATE (owners(m), SOURCE=0)
+      DO domain = skala_fft_domain, skala_last_sample_domain
+         IF (.NOT. ANY(domains == domain)) CYCLE
+         CALL skala_density_samples_get(state%constraints, domain, keys, density, kinetic, available)
+         IF (.NOT. available) CYCLE
+         DO c = 1, m
+            IF (domains(c) /= domain) CYCLE
+            IF (spins(c) == qs_skala_positive_density_sum) THEN
+               valid = descriptors(c) == skala_density_descriptor
+               CPASSERT(valid)
+            END IF
+            column = spins(c)
+            IF (SIZE(density, 2) == 1) THEN
+               valid = spins(c) == 0 .OR. spins(c) == -1 .OR. spins(c) == qs_skala_positive_density_sum
+               CPASSERT(valid)
+               column = 1
+            END IF
+            valid = spins(c) == -1 .OR. spins(c) == qs_skala_positive_density_sum .OR. &
+                    (column >= 1 .AND. column <= SIZE(density, 2))
+            CPASSERT(valid)
+            first_row = 1
+            last_row = SIZE(keys, 2)
+            IF (PRESENT(rows)) THEN
+               IF (rows(c) >= 0) THEN
+                  first_row = rows(c)
+                  last_row = rows(c)
+                  IF (first_row == 0) CYCLE
+                  CPASSERT(first_row <= SIZE(keys, 2))
                ELSE
-                  value = density(i, column)
-               END IF
-            ELSE
-               CPASSERT(SIZE(kinetic, 2) == SIZE(density, 2))
-               IF (spin == -1) THEN
-                  value = SUM(kinetic(i, :))*2.0_dp/REAL(SIZE(kinetic, 2), dp)
-               ELSE
-                  value = kinetic(i, column)
+                  rows(c) = 0
                END IF
             END IF
+            DO i = first_row, last_row
+               IF (.NOT. ALL(keys(:, i) == points(:, c))) CYCLE
+               owners(c) = owners(c) + 1
+               IF (PRESENT(rows)) rows(c) = i
+               IF (descriptors(c) == skala_density_descriptor) THEN
+                  IF (spins(c) == qs_skala_positive_density_sum) THEN
+                     values(c) = SUM(MAX(density(i, :), 0.0_dp))*2.0_dp/REAL(SIZE(density, 2), dp)
+                  ELSE IF (spins(c) == -1) THEN
+                     values(c) = SUM(density(i, :))*2.0_dp/REAL(SIZE(density, 2), dp)
+                  ELSE
+                     values(c) = density(i, column)
+                  END IF
+               ELSE
+                  CPASSERT(SIZE(kinetic, 2) == SIZE(density, 2))
+                  IF (spins(c) == -1) THEN
+                     values(c) = SUM(kinetic(i, :))*2.0_dp/REAL(SIZE(kinetic, 2), dp)
+                  ELSE
+                     values(c) = kinetic(i, column)
+                  END IF
+               END IF
+            END DO
          END DO
-      END IF
+      END DO
       CALL state%para_env%sum(owners)
-      CPASSERT(owners == 1)
-      CALL state%para_env%sum(value)
-   END SUBROUTINE qs_skala_scf_value
+      CPASSERT(ALL(owners == 1))
+      CALL state%para_env%sum(values)
+   END SUBROUTINE qs_skala_scf_values
 
 ! **************************************************************************************************
 !> \brief Differentiate one actual physical rho/tau input without changing the native KS operator.
@@ -876,9 +930,10 @@ CONTAINS
 !> \param targets Density and kinetic-density thresholds, both zero by default.
 !> \param total_targets Optional thresholds for the sum of both physical spins.
 !> \param positive_density_target Optional cutoff for the sum of the positive spin densities.
+!> \param density_only Scan density inputs only, excluding kinetic-density samples, false by default.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_crossings(state, first, last, points, domains, spins, descriptors, &
-                                     endpoint_values, targets, total_targets, positive_density_target)
+                                     endpoint_values, targets, total_targets, positive_density_target, density_only)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), domains(:), spins(:), &
@@ -886,11 +941,12 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: endpoint_values(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(2), total_targets(2), &
                                                             positive_density_target
+      LOGICAL, INTENT(IN), OPTIONAL                      :: density_only
 
       INTEGER                                            :: descriptor, domain, i, local_count, &
                                                             offset, row, selection, spin, total
       INTEGER, ALLOCATABLE                               :: counts(:), keys(:, :)
-      LOGICAL                                            :: valid
+      LOGICAL                                            :: only_density, valid
       LOGICAL, ALLOCATABLE                               :: mask(:, :)
       REAL(dp)                                           :: energy, level, levels(2), &
                                                             positive_level, total_levels(2)
@@ -901,6 +957,8 @@ CONTAINS
 
       valid = SIZE(first) == qs_skala_scf_size(state) .AND. SIZE(last) == SIZE(first)
       CPASSERT(valid)
+      only_density = .FALSE.
+      IF (PRESENT(density_only)) only_density = density_only
       levels = 0.0_dp
       IF (PRESENT(targets)) levels = targets
       CPASSERT(ALL(ieee_is_finite(levels)))
@@ -932,6 +990,7 @@ CONTAINS
          valid = ALL(SHAPE(initial(domain)%kinetic) == SHAPE(final(domain)%kinetic))
          CPASSERT(valid)
          DO descriptor = skala_density_descriptor, skala_kinetic_descriptor
+            IF (only_density .AND. descriptor /= skala_density_descriptor) CYCLE
             IF (descriptor == skala_kinetic_descriptor .AND. SIZE(initial(domain)%kinetic, 2) == 0) CYCLE
             DO selection = 0, 2
                IF (selection == 1 .AND. .NOT. PRESENT(total_targets)) CYCLE
@@ -955,6 +1014,7 @@ CONTAINS
       DO domain = skala_fft_domain, skala_last_sample_domain
          IF (.NOT. initial(domain)%available) CYCLE
          DO descriptor = skala_density_descriptor, skala_kinetic_descriptor
+            IF (only_density .AND. descriptor /= skala_density_descriptor) CYCLE
             IF (descriptor == skala_kinetic_descriptor .AND. SIZE(initial(domain)%kinetic, 2) == 0) CYCLE
             DO selection = 0, 2
                IF (selection == 1 .AND. .NOT. PRESENT(total_targets)) CYCLE
@@ -1034,10 +1094,11 @@ CONTAINS
 !> \param targets Optional density and kinetic thresholds, zero by default.
 !> \param total_targets Optional thresholds for the physical spin sums.
 !> \param positive_density_target Optional threshold for the sum of positive spin densities.
+!> \param density_only Scan density inputs only, false by default.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_crossing_roots(state, first, last, tolerances, points, domains, spins, &
                                           descriptors, coordinates, values, converged, targets, &
-                                          total_targets, positive_density_target)
+                                          total_targets, positive_density_target, density_only)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:), tolerances(2)
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), domains(:), spins(:), &
@@ -1046,6 +1107,7 @@ CONTAINS
       LOGICAL, ALLOCATABLE, INTENT(OUT)                  :: converged(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(2), total_targets(2), &
                                                             positive_density_target
+      LOGICAL, INTENT(IN), OPTIONAL                      :: density_only
 
       INTEGER                                            :: i, m
       REAL(dp)                                           :: energy, level, levels(2), &
@@ -1060,7 +1122,7 @@ CONTAINS
       IF (PRESENT(total_targets)) total_levels = total_targets
       IF (PRESENT(positive_density_target)) positive_level = positive_density_target
       CALL qs_skala_scf_crossings(state, first, last, points, domains, spins, descriptors, endpoints, &
-                                  targets, total_targets, positive_density_target)
+                                  targets, total_targets, positive_density_target, density_only)
       m = SIZE(spins)
       ALLOCATE (coordinates(SIZE(first), m), values(m), converged(m), gradient(SIZE(first)))
       DO i = 1, m
@@ -1155,6 +1217,130 @@ CONTAINS
          CALL qs_skala_scf_evaluate(state, first, energy, gradient)
       END IF
    END SUBROUTINE qs_skala_scf_choose_root
+
+! **************************************************************************************************
+!> \brief Resolve a shared physical endpoint bracket with all supplied candidate fields.
+!>        Each trial evaluates all candidates together. No unselected candidate can lie
+!>        strictly on its opposite side at the returned boundary. Endpoint brackets do not
+!>        exclude additional interior crossings. Energy acceptance and minimum conditions
+!>        remain separate from this physical root search. Failure restores the first state.
+!> \param state Native normalized-orbital state.
+!> \param first Initial orbital coordinates.
+!> \param last Final orbital coordinates.
+!> \param points Original global sample keys, one column per candidate.
+!> \param domains Physical evaluation domains.
+!> \param spins Physical spin selectors.
+!> \param descriptors Density or kinetic density per candidate.
+!> \param targets Fixed physical target per candidate.
+!> \param tolerances Absolute physical feasibility window per candidate.
+!> \param root Returned coordinates, or first on failure.
+!> \param values Actual physical inputs at the returned state.
+!> \param selected All candidates satisfying their physical window at the root.
+!> \param found Whether the returned boundary satisfies the original physical criteria.
+!> \param max_iterations Maximum shared bisection steps, defaults to 100.
+!> \param evaluations Optional number of complete native field evaluations.
+!> \param check_external Poll the normal CP2K external stop conditions, false by default.
+!> \param stopped Whether an external stop was requested.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_boundary_root(state, first, last, points, domains, spins, descriptors, &
+                                         targets, tolerances, root, values, selected, found, &
+                                         max_iterations, evaluations, check_external, stopped)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), INTENT(IN)                               :: targets(:), tolerances(:)
+      REAL(dp), INTENT(OUT)                              :: root(:), values(:)
+      LOGICAL, INTENT(OUT)                               :: selected(:), found
+      INTEGER, INTENT(IN), OPTIONAL                      :: max_iterations
+      INTEGER, INTENT(OUT), OPTIONAL                     :: evaluations
+      LOGICAL, INTENT(IN), OPTIONAL                      :: check_external
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: stopped
+
+      INTEGER                                            :: count, iteration, limit, m, n
+      INTEGER, ALLOCATABLE                               :: rows(:)
+      LOGICAL                                            :: external, requested
+      REAL(dp)                                           :: energy, fraction, left, right
+      REAL(dp), ALLOCATABLE                              :: direction(:), gradient(:), initial(:), &
+                                                            sides(:)
+
+      n = qs_skala_scf_size(state)
+      m = SIZE(targets)
+      CPASSERT(SIZE(first) == n .AND. SIZE(last) == n .AND. SIZE(root) == n)
+      CPASSERT(SIZE(values) == m .AND. SIZE(selected) == m .AND. SIZE(tolerances) == m)
+      CPASSERT(ALL(ieee_is_finite(targets)) .AND. ALL(ieee_is_finite(tolerances)))
+      CPASSERT(ALL(tolerances > 0.0_dp))
+      limit = 100
+      IF (PRESENT(max_iterations)) limit = max_iterations
+      CPASSERT(limit > 0)
+      EXTERNAL = .FALSE.
+      IF (PRESENT(check_external)) EXTERNAL = check_external
+      requested = .FALSE.
+      IF (PRESENT(stopped)) stopped = .FALSE.
+      ALLOCATE (initial(m), sides(m), direction(n), gradient(n))
+      ALLOCATE (rows(m), SOURCE=-1)
+      found = .FALSE.
+      selected = .FALSE.
+      root(:) = first
+      CALL qs_skala_scf_evaluate(state, first, energy, gradient)
+      count = 1
+      CALL qs_skala_scf_values(state, domains, points, spins, descriptors, initial, rows)
+      values(:) = initial
+      IF (m == 0) THEN
+         IF (PRESENT(evaluations)) evaluations = count
+         RETURN
+      END IF
+      selected(:) = ABS(values - targets) <= tolerances
+      IF (ANY(selected)) THEN
+         found = .TRUE.
+      ELSE IF (m > 0) THEN
+         sides(:) = SIGN(1.0_dp, initial - targets)
+         direction(:) = last - first
+         CALL qs_skala_scf_evaluate(state, last, energy)
+         count = count + 1
+         CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
+         IF (ALL(sides*(values - targets) <= tolerances)) THEN
+            left = 0.0_dp
+            right = 1.0_dp
+            DO iteration = 1, limit
+               IF (EXTERNAL) THEN
+                  CALL external_control(requested, "SCF", target_time=state%qs_env%target_time, &
+                                        start_time=state%qs_env%start_time)
+                  IF (requested) EXIT
+               END IF
+               fraction = 0.5_dp*(left + right)
+               IF (fraction <= left .OR. fraction >= right) EXIT
+               root(:) = first + fraction*direction
+               CALL qs_skala_scf_evaluate(state, root, energy)
+               count = count + 1
+               CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
+               selected(:) = ABS(values - targets) <= tolerances
+               IF (ANY(selected) .AND. ALL(sides*(values - targets) >= -tolerances)) THEN
+                  CALL qs_skala_scf_evaluate(state, root, energy, gradient)
+                  count = count + 1
+                  CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
+                  selected(:) = ABS(values - targets) <= tolerances
+                  found = ANY(selected) .AND. ALL(sides*(values - targets) >= -tolerances)
+                  IF (found) EXIT
+               END IF
+               IF (ANY(sides*(values - targets) < -tolerances)) THEN
+                  right = fraction
+               ELSE
+                  left = fraction
+               END IF
+            END DO
+         END IF
+      END IF
+      IF (.NOT. found) THEN
+         root(:) = first
+         selected = .FALSE.
+         CALL qs_skala_scf_evaluate(state, first, energy, gradient)
+         count = count + 1
+         CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
+      END IF
+      IF (PRESENT(evaluations)) evaluations = count
+      IF (PRESENT(stopped)) stopped = requested
+   END SUBROUTINE qs_skala_scf_boundary_root
 
 ! **************************************************************************************************
 !> \brief Select the requested density or kinetic-density values from recorded samples.
@@ -1289,11 +1475,13 @@ CONTAINS
 !>        A trial exceeding this bound returns the accepted state for rebuilding its Cayley chart.
 !> \param rechart Whether the coordinate bound requested a new chart, independent of convergence or stop.
 !> \param retain_progress Preserve the last accepted state on failure, default false.
+!> \param crossing_density_floor Optional positive spin-density target for an unconstrained crossing scan.
+!>        Kinetic inputs are excluded because the Libxc kinetic projection is smooth at zero.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
                                         physical_tolerances, gradient_tolerance, energy, converged, &
                                         max_iterations, max_step, targets, iterations, check_external, stopped, crossings, &
-                                        max_coordinate_norm, rechart, retain_progress)
+                                        max_coordinate_norm, rechart, retain_progress, crossing_density_floor)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(INOUT)                            :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -1312,6 +1500,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: max_coordinate_norm
       LOGICAL, INTENT(OUT), OPTIONAL                     :: rechart
       LOGICAL, INTENT(IN), OPTIONAL                      :: retain_progress
+      REAL(dp), INTENT(IN), OPTIONAL                     :: crossing_density_floor
 
       INTEGER                                            :: m
       LOGICAL                                            :: valid
@@ -1329,6 +1518,12 @@ CONTAINS
       IF (PRESENT(crossings)) THEN
          CPASSERT(m == 0)
          context%crossings => crossings
+      END IF
+      IF (PRESENT(crossing_density_floor)) THEN
+         CPASSERT(PRESENT(crossings))
+         CPASSERT(SIZE(state%orbitals, 2) == 2)
+         CPASSERT(ieee_is_finite(crossing_density_floor) .AND. crossing_density_floor > 0.0_dp)
+         context%density_floor = crossing_density_floor
       END IF
       IF (PRESENT(max_coordinate_norm)) THEN
          CPASSERT(m == 0)
@@ -1834,8 +2029,15 @@ CONTAINS
          END IF
          IF (.NOT. ASSOCIATED(context%crossings)) RETURN
          crossings => context%crossings
-         CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
-                                     crossings%spins, crossings%descriptors, crossings%values)
+         IF (context%density_floor > 0.0_dp) THEN
+            CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
+                                        crossings%spins, crossings%descriptors, crossings%values, &
+                                        targets=[context%density_floor, 0.0_dp], density_only=.TRUE.)
+            crossings%density_floor = context%density_floor
+         ELSE
+            CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
+                                        crossings%spins, crossings%descriptors, crossings%values)
+         END IF
          interrupted = SIZE(crossings%spins) > 0
          IF (.NOT. interrupted) RETURN
          ALLOCATE (crossings%first(SIZE(first)), crossings%last(SIZE(last)))
