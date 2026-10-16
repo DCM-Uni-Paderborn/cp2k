@@ -47,6 +47,7 @@ MODULE qs_upf_inverse_xc
                                               skala_density_constraints_matches,&
                                               skala_density_constraints_type,&
                                               skala_density_samples_active,&
+                                              skala_density_samples_only,&
                                               skala_density_samples_put
    USE skala_gpw_functional,            ONLY: skala_gapw_atom_composite_energy,&
                                               xc_section_uses_native_skala_evaluator
@@ -176,6 +177,11 @@ CONTAINS
       ! Reuse only the orbital fields shared by the density and operator in this call.
       ! Larger point sets retain the original bounded-block evaluation.
       store_fields = np > 0 .AND. 64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints)) THEN
+            IF (skala_density_samples_only(density_constraints)) store_fields = .FALSE.
+         END IF
+      END IF
       IF (store_fields) ALLOCATE (cached_soft(np, nao, nk), cached_gradient(np, nao, 3, nk))
       ALLOCATE (soft(block, nao), orbital_gradient(block, nao, 3), partial(nao, nao), &
                 state%operators(nao, nao, nk, nspin), state%density(np, nspin), &
@@ -237,6 +243,27 @@ CONTAINS
          END DO
          DEALLOCATE (projected)
       END DO
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints)) THEN
+            IF (skala_density_samples_only(density_constraints)) THEN
+               energy = 0.0_dp
+               state%operators = CMPLX(0.0_dp, 0.0_dp, dp)
+               state%energy_density = 0.0_dp
+               state%vdensity = 0.0_dp
+               state%vgradient = 0.0_dp
+               state%vtau = 0.0_dp
+               state%background_vdensity = 0.0_dp
+               state%background_vgradient = 0.0_dp
+               state%background_vtau = 0.0_dp
+               state%weighted_adjoint = xc_section_uses_native_skala_evaluator(xc_section)
+               IF (state%weighted_adjoint) THEN
+                  ALLOCATE (state%point_derivative(3, np), state%weight_derivative(np), &
+                            state%atom_derivative(3, SIZE(frames(1)%frame%positions, 2)), SOURCE=0.0_dp)
+               END IF
+               RETURN
+            END IF
+         END IF
+      END IF
       ALLOCATE (integration_weights(np))
       integration_weights(:) = weights
       IF (xc_section_uses_native_skala_evaluator(xc_section)) THEN
@@ -825,6 +852,11 @@ CONTAINS
          END DO
          IF (PRESENT(kinetic)) tau(:, spin) = values(:, stride*spin)
       END DO
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints)) THEN
+            IF (skala_density_samples_only(density_constraints)) selected_constraints => density_constraints
+         END IF
+      END IF
       CALL qs_upf_inverse_xc_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                       background, gradient, core_density, core_gradient, xc_section, &
                                       lsd, comm, state, energy, kinetic, tau, core_tau, atom_grid, paw_reconstruction, &

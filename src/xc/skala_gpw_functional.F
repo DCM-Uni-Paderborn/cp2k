@@ -36,8 +36,8 @@ MODULE skala_gpw_functional
    USE skala_density_constraints,       ONLY: &
         skala_density_constraints_count, skala_density_constraints_get, &
         skala_density_constraints_matches, skala_density_constraints_type, &
-        skala_density_descriptor, skala_density_samples_active, skala_density_samples_put, &
-        skala_fft_domain, skala_kinetic_descriptor
+        skala_density_descriptor, skala_density_samples_active, skala_density_samples_only, &
+        skala_density_samples_put, skala_fft_domain, skala_kinetic_descriptor
    USE skala_gpw_features,              ONLY: &
         skala_gpw_atom_partition_hard, skala_gpw_atom_partition_smooth, &
         skala_gpw_atom_subchunk_count, skala_gpw_atom_subchunk_layout, skala_gpw_feature_build, &
@@ -549,6 +549,15 @@ CONTAINS
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             CALL record_fft_descriptors(density_constraints, rho_set, rho_r)
+            IF (skala_density_samples_only(density_constraints)) THEN
+               CPASSERT(my_just_energy)
+               CPASSERT(.NOT. compute_virial)
+               CPASSERT(.NOT. needs_atom_force)
+               CALL xc_rho_set_release(rho_set, pw_pool=pw_pool)
+               CALL torch_use_cuda(.TRUE.)
+               CALL omp_set_num_threads(omp_max_threads_restore)
+               RETURN
+            END IF
          END IF
       END IF
 

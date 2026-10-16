@@ -22,7 +22,7 @@ MODULE skala_density_constraints
              skala_density_constraints_matches, skala_density_constraints_get, &
              skala_density_constraints_balance, skala_density_crossings, skala_density_root
    PUBLIC :: skala_density_samples_begin, skala_density_samples_end, skala_density_samples_active, &
-             skala_density_samples_put, skala_density_samples_get
+             skala_density_samples_put, skala_density_samples_get, skala_density_samples_only
    PUBLIC :: skala_density_constraints_update_weights
    INTEGER, PARAMETER, PUBLIC :: skala_density_descriptor = 1, skala_kinetic_descriptor = 2
    INTEGER, PARAMETER, PUBLIC :: skala_fft_domain = 0, skala_atom_domain = 1, skala_background_domain = 2
@@ -57,7 +57,7 @@ MODULE skala_density_constraints
       REAL(dp) :: hmat(3, 3) = 0.0_dp, probe = 0.0_dp, tolerance = 0.0_dp
       REAL(dp) :: kinetic_probe = 0.0_dp, kinetic_tolerance = 0.0_dp
       REAL(dp), ALLOCATABLE :: positions(:, :), negative_weights(:), targets(:)
-      LOGICAL :: sampling = .FALSE.
+      LOGICAL :: sampling = .FALSE., descriptors_only = .FALSE.
       INTEGER :: sample_nspins = 0
       TYPE(skala_density_samples_type) :: samples(skala_fft_domain:skala_last_sample_domain)
    END TYPE skala_density_constraints_type
@@ -70,12 +70,16 @@ CONTAINS
 !>        RKS stores one column containing the half density and half kinetic density.
 !>        Every trial must begin a new sample. No orbital history or root is inferred here.
 !> \param state ...
+!> \param descriptors_only Record the native fields without evaluating XC, false by default.
 ! **************************************************************************************************
-   SUBROUTINE skala_density_samples_begin(state)
+   SUBROUTINE skala_density_samples_begin(state, descriptors_only)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
+      LOGICAL, INTENT(IN), OPTIONAL                      :: descriptors_only
 
       CALL clear_samples(state)
+      state%descriptors_only = .FALSE.
+      IF (PRESENT(descriptors_only)) state%descriptors_only = descriptors_only
       state%sampling = .TRUE.
    END SUBROUTINE skala_density_samples_begin
 
@@ -88,6 +92,7 @@ CONTAINS
          INTENT(INOUT)                                   :: state
 
       state%sampling = .FALSE.
+      state%descriptors_only = .FALSE.
    END SUBROUTINE skala_density_samples_end
 
 ! **************************************************************************************************
@@ -101,6 +106,18 @@ CONTAINS
 
       active = state%sampling
    END FUNCTION skala_density_samples_active
+
+! **************************************************************************************************
+!> \brief Whether this traversal requests physical descriptors without an XC energy or operator.
+!> \param state ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION skala_density_samples_only(state) RESULT(ONLY)
+      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      LOGICAL                                            :: only
+
+      ONLY = state%sampling .AND. state%descriptors_only
+   END FUNCTION skala_density_samples_only
 
 ! **************************************************************************************************
 !> \brief Record unchanged local rho and tau inputs before nonlinear model features.

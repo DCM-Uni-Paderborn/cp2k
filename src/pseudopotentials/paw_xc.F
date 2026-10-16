@@ -31,6 +31,7 @@ MODULE paw_xc
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
                                               skala_density_constraints_type,&
                                               skala_density_samples_active,&
+                                              skala_density_samples_only,&
                                               skala_density_samples_put,&
                                               skala_paw_ae_domain,&
                                               skala_paw_ps_domain
@@ -562,6 +563,7 @@ CONTAINS
             END DO
             IF (record_samples) THEN
                CALL record_xc_samples(grid, first, side, rho, tau, samples, atom, use_tau)
+               IF (skala_density_samples_only(samples)) CYCLE
             END IF
             IF (PRESENT(samples)) THEN
                IF (ASSOCIATED(samples)) THEN

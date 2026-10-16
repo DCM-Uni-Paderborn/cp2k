@@ -121,7 +121,7 @@ MODULE qs_skala_scf
       INTEGER, ALLOCATABLE :: dimensions(:, :), offsets(:, :)
       REAL(dp), ALLOCATABLE :: coordinate(:), positions(:, :)
       REAL(dp) :: hmat(3, 3) = 0.0_dp
-      LOGICAL :: bloch = .FALSE., evaluated = .FALSE.
+      LOGICAL :: bloch = .FALSE., evaluated = .FALSE., operator_current = .FALSE.
    END TYPE qs_skala_scf_type
 
    TYPE qs_skala_scf_crossing_type
@@ -288,6 +288,7 @@ CONTAINS
       state%hmat = 0.0_dp
       state%bloch = .FALSE.
       state%evaluated = .FALSE.
+      state%operator_current = .FALSE.
    END SUBROUTINE qs_skala_scf_release
 
 ! **************************************************************************************************
@@ -322,12 +323,41 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:), physical_gradient(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: sample_inputs
 
+      LOGICAL                                            :: need_gradient, record_inputs
+
+      CALL install_native_trial(state, coordinate)
+      record_inputs = .TRUE.
+      IF (PRESENT(sample_inputs)) record_inputs = sample_inputs
+      CALL skala_density_samples_begin(state%constraints)
+      IF (.NOT. record_inputs) CALL skala_density_samples_end(state%constraints)
+      CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
+      need_gradient = PRESENT(gradient) .OR. PRESENT(physical_gradient)
+      CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., &
+                               just_energy=.NOT. need_gradient, print_active=.FALSE.)
+      CALL skala_density_samples_end(state%constraints)
+      energy = state%energy%total
+      state%operator_current = need_gradient
+      IF (need_gradient) CALL native_orbital_covectors(state, gradient, physical_gradient)
+      state%coordinate(:) = coordinate
+      state%evaluated = .TRUE.
+   END SUBROUTINE qs_skala_scf_evaluate
+
+! **************************************************************************************************
+!> \brief Install the original normalized orbital trial and rebuild its native rho/tau sources.
+!> \param state ...
+!> \param coordinate ...
+! **************************************************************************************************
+   SUBROUTINE install_native_trial(state, coordinate)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+
       INTEGER                                            :: first, ik, last, local, spin
-      LOGICAL                                            :: need_gradient, record_inputs, valid
+      LOGICAL                                            :: valid
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: densities(:, :)
       TYPE(particle_type), POINTER                       :: particles(:)
 
+      state%operator_current = .FALSE.
       CPASSERT(ASSOCIATED(state%qs_env))
       CPASSERT(SIZE(coordinate) == qs_skala_scf_size(state))
       CPASSERT(ALL(ieee_is_finite(coordinate)))
@@ -363,20 +393,27 @@ CONTAINS
       END DO
       CALL qs_rho_set(state%rho, rho_r_valid=.FALSE., rho_g_valid=.FALSE., tau_r_valid=.FALSE., tau_g_valid=.FALSE.)
       CALL qs_rho_update_rho(state%rho, state%qs_env)
-      record_inputs = .TRUE.
-      IF (PRESENT(sample_inputs)) record_inputs = sample_inputs
-      CALL skala_density_samples_begin(state%constraints)
-      IF (.NOT. record_inputs) CALL skala_density_samples_end(state%constraints)
+   END SUBROUTINE install_native_trial
+
+! **************************************************************************************************
+!> \brief Sample the original physical fields without evaluating the learned XC model.
+!>        The partial energy and KS operator are invalid. A later energy callback rebuilds both.
+!> \param state ...
+!> \param coordinate ...
+! **************************************************************************************************
+   SUBROUTINE sample_native_constraints(state, coordinate)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+
+      CALL install_native_trial(state, coordinate)
+      CALL skala_density_samples_begin(state%constraints, descriptors_only=.TRUE.)
       CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
-      need_gradient = PRESENT(gradient) .OR. PRESENT(physical_gradient)
-      CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., &
-                               just_energy=.NOT. need_gradient, print_active=.FALSE.)
+      CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.TRUE., print_active=.FALSE.)
       CALL skala_density_samples_end(state%constraints)
-      energy = state%energy%total
-      IF (need_gradient) CALL native_orbital_covectors(state, gradient, physical_gradient)
       state%coordinate(:) = coordinate
       state%evaluated = .TRUE.
-   END SUBROUTINE qs_skala_scf_evaluate
+      state%operator_current = .FALSE.
+   END SUBROUTINE sample_native_constraints
 
 ! **************************************************************************************************
 !> \brief Inspect a fresh native orbital chart without changing MOs, density, fields or KS.
@@ -393,6 +430,7 @@ CONTAINS
 
       CPASSERT(ASSOCIATED(state%qs_env) .AND. .NOT. state%evaluated)
       CPASSERT(ALL(state%coordinate == 0.0_dp))
+      state%operator_current = .TRUE.
       CALL native_orbital_covectors(state, physical_gradient=physical_gradient)
       energy = state%energy%total
       state%evaluated = .TRUE.
@@ -414,6 +452,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: block_gradient(:)
       TYPE(dbcsr_p_type), POINTER                        :: matrices(:, :)
 
+      CPASSERT(state%operator_current)
       IF (PRESENT(gradient)) THEN
          CPASSERT(SIZE(gradient) == qs_skala_scf_size(state))
          gradient = 0.0_dp
@@ -969,7 +1008,7 @@ CONTAINS
    END SUBROUTINE paw_point_operators
 
 ! **************************************************************************************************
-!> \brief Find a physical root along a normalized orbital curve by complete native reevaluations.
+!> \brief Find a physical root along a normalized orbital curve from the original native fields.
 !>        Density matrices and physical fields are never interpolated. On failure restore the
 !>        previously evaluated coordinate. On success all native caches describe the returned root.
 !> \param state ...
@@ -1091,12 +1130,12 @@ CONTAINS
       positive_level = 0.0_dp
       IF (PRESENT(positive_density_target)) positive_level = positive_density_target
       CPASSERT(ieee_is_finite(positive_level) .AND. positive_level >= 0.0_dp)
-      CALL qs_skala_scf_evaluate(state, first, energy)
+      CALL sample_native_constraints(state, first)
       DO domain = skala_fft_domain, skala_last_sample_domain
          CALL skala_density_samples_get(state%constraints, domain, initial(domain)%points, &
                                         initial(domain)%density, initial(domain)%kinetic, initial(domain)%available)
       END DO
-      CALL qs_skala_scf_evaluate(state, last, energy)
+      CALL sample_native_constraints(state, last)
       local_count = 0
       DO domain = skala_fft_domain, skala_last_sample_domain
          CALL skala_density_samples_get(state%constraints, domain, final(domain)%points, &
@@ -1448,7 +1487,7 @@ CONTAINS
       ELSE IF (m > 0) THEN
          sides(:) = SIGN(1.0_dp, initial - targets)
          direction(:) = last - first
-         CALL qs_skala_scf_evaluate(state, last, energy)
+         CALL sample_native_constraints(state, last)
          count = count + 1
          CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
          IF (ALL(sides*(values - targets) <= tolerances)) THEN
@@ -1483,7 +1522,7 @@ CONTAINS
                                                       residuals, jacobian, valid)
                   IF (.NOT. valid) EXIT
                END IF
-               CALL qs_skala_scf_evaluate(state, root, energy)
+               CALL sample_native_constraints(state, root)
                count = count + 1
                CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
                selected(:) = ABS(values - targets) <= tolerances
@@ -1555,8 +1594,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Evaluate several actual physical constraints and their joint native orbital Jacobian.
-!>        The complete native energy and KS operator describe the requested orbital state on
-!>        return. Density and kinetic constraints retain their distinct physical units. No
+!>        Only the physical fields and their point Jacobians are current on return. An energy
+!>        or KS consumer must reevaluate the complete functional. Density and kinetic constraints
+!>        retain their distinct physical units. No
 !>        interpolation of fields, feature rows or previously accepted Jacobians is used.
 !> \param state ...
 !> \param coordinate Global normalized-orbital coordinates.
@@ -1581,7 +1621,6 @@ CONTAINS
 
       INTEGER                                            :: i, m, n
       LOGICAL                                            :: valid
-      REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: derivative(:), physical_derivative(:)
 
       m = SIZE(values)
@@ -1601,7 +1640,7 @@ CONTAINS
          ALLOCATE (physical_derivative(n))
       END IF
       ALLOCATE (derivative(n))
-      CALL qs_skala_scf_evaluate(state, coordinate, energy, derivative)
+      CALL sample_native_constraints(state, coordinate)
       DO i = 1, m
          CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), values(i))
          IF (PRESENT(targets)) values(i) = values(i) - targets(i)
@@ -1969,6 +2008,7 @@ CONTAINS
       CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.FALSE., print_active=.FALSE.)
       CALL skala_density_samples_end(state%constraints)
       energy = state%energy%total
+      state%operator_current = .TRUE.
       CALL native_orbital_covectors(state, physical_gradient=physical_gradient)
    END SUBROUTINE evaluate_limiting_state
 
@@ -2463,16 +2503,8 @@ CONTAINS
 
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
-         IF (SIZE(context%points, 2) > 0) THEN
-            ! The immediately preceding constraint callback evaluated this same trial,
-            ! including its complete KS operator and the original physical samples.
-            CPASSERT(context%state%evaluated)
-            CPASSERT(ALL(context%state%coordinate == coordinate))
-            energy = context%state%energy%total
-            CALL native_orbital_covectors(context%state, gradient=gradient)
-         ELSE
-            CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient, sample_inputs=.FALSE.)
-         END IF
+         CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient, &
+                                    sample_inputs=SIZE(context%points, 2) > 0)
       CLASS DEFAULT
          CPABORT("Invalid native Skala gradient context.")
       END SELECT
@@ -2784,14 +2816,13 @@ CONTAINS
 
       CLASS(*), INTENT(INOUT)                           :: context
 
-      REAL(dp)                                         :: energy
       REAL(dp), ALLOCATABLE                            :: coordinate(:)
 
       SELECT TYPE (context)
       TYPE IS (physical_root_context)
          ALLOCATE (coordinate(SIZE(context%first)))
          coordinate(:) = context%first + step*context%direction
-         CALL qs_skala_scf_evaluate(context%state, coordinate, energy)
+         CALL sample_native_constraints(context%state, coordinate)
          CALL qs_skala_scf_value(context%state, context%domain, context%point, context%spin, context%descriptor, value)
       CLASS DEFAULT
          CPABORT("Invalid native Skala root context.")
