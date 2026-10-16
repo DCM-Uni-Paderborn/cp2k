@@ -714,6 +714,10 @@ CONTAINS
          IF (PRESENT(ext_xc_section)) xc_section => ext_xc_section
       END IF
 
+      ! PAW core terms and smooth exchange use the same effective HF section.
+      hfx_sections => section_vals_get_subs_vals(xc_section, "HF")
+      CALL section_vals_get(hfx_sections, explicit=do_hfx)
+
       IF (gapw_xc) THEN
          CALL get_qs_env(qs_env=qs_env, rho_xc=rho_struct)
       ELSE
@@ -1137,9 +1141,6 @@ CONTAINS
       END IF
 
       ! *** Add Hartree-Fock contribution if required ***
-      hfx_sections => section_vals_get_subs_vals(xc_section, "HF")
-      CALL section_vals_get(hfx_sections, explicit=do_hfx)
-
       ace_active = .FALSE.
       ace_rebuild_frequency = 1
 
