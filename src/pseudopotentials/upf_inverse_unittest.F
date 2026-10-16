@@ -95,6 +95,7 @@ PROGRAM upf_inverse_unittest
    INTEGER :: stop_polls = 0
    CALL check_inverse()
    CALL check_physical_stationarity()
+   CALL check_dependent_constraints()
    CALL check_cusp_normals()
    CALL check_lattice_inverse()
    CALL check_projector_density()
@@ -112,6 +113,84 @@ PROGRAM upf_inverse_unittest
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Retain every physical residual when several samples share an independent condition.
+! **************************************************************************************************
+   SUBROUTINE check_dependent_constraints()
+      REAL(dp), PARAMETER :: initial(2) = [0.2_dp, -0.1_dp], &
+         tolerances(4) = [1.e-30_dp, 2.0_dp, 3.e-12_dp, 1.e-12_dp]
+
+      INTEGER                                            :: case_index, problem
+      LOGICAL                                            :: converged
+      REAL(dp)                                           :: coordinate(2), jacobian(4, 2), values(4)
+
+      DO case_index = 0, 2
+         problem = case_index
+         coordinate = initial
+         CALL skala_constrained_stationarity(dependent_constraints, dependent_energy_gradient, problem, coordinate, &
+                                             tolerances, stationarity_tolerance, converged, max_iterations=40)
+         IF (problem == 0) THEN
+            CALL dependent_constraints(coordinate, values, jacobian, problem)
+            IF (.NOT. converged .OR. ANY(ABS(values) > tolerances)) THEN
+               ERROR STOP 'Redundant physical samples lost their original feasibility checks'
+            END IF
+            IF (NORM2(coordinate - [1.0_dp, -1.0_dp]) > stationarity_tolerance) THEN
+               ERROR STOP 'Rank reduction changed the constrained stationary point'
+            END IF
+         ELSE IF (converged .OR. ANY(coordinate /= initial)) THEN
+            ERROR STOP 'An incompatible dependent or zero-normal constraint was discarded'
+         END IF
+      END DO
+   END SUBROUTINE check_dependent_constraints
+
+! **************************************************************************************************
+!> \brief Supply three proportional samples with different units and a constant fourth sample.
+!> \param coordinate Two independent orbital coordinates.
+!> \param values All four original physical residuals.
+!> \param jacobian Derivative of each residual.
+!> \param context Zero for compatible samples, one or two for incompatible dependent or constant data.
+! **************************************************************************************************
+   SUBROUTINE dependent_constraints(coordinate, values, jacobian, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: values(:), jacobian(:, :)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+      REAL(dp), PARAMETER                                :: factors(4) = [1.e-18_dp, 2.e12_dp, -3.0_dp, 0.0_dp]
+
+      values(:) = factors*SUM(coordinate)
+      jacobian(:, :) = SPREAD(factors, 2, SIZE(coordinate))
+      SELECT TYPE (context)
+      TYPE IS (INTEGER)
+         IF (context == 1) values(2) = values(2) + 20.0_dp
+         IF (context == 2) values(4) = 1.e-11_dp
+      CLASS DEFAULT
+         ERROR STOP 'Invalid dependent-constraint control'
+      END SELECT
+   END SUBROUTINE dependent_constraints
+
+! **************************************************************************************************
+!> \brief A quadratic with its constrained minimum at (1,-1).
+!> \param coordinate Complete trial coordinates.
+!> \param energy Complete energy.
+!> \param gradient Energy derivative in the same coordinates.
+!> \param context The same physical-residual control used by dependent_constraints.
+! **************************************************************************************************
+   SUBROUTINE dependent_energy_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      SELECT TYPE (context)
+      TYPE IS (INTEGER)
+         IF (context < 0 .OR. context > 2) ERROR STOP 'Invalid dependent-constraint energy control'
+      CLASS DEFAULT
+         ERROR STOP 'Invalid dependent-constraint energy context'
+      END SELECT
+      gradient(:) = coordinate - [1.0_dp, -1.0_dp]
+      energy = 0.5_dp*SUM(gradient**2)
+   END SUBROUTINE dependent_energy_gradient
+
 ! **************************************************************************************************
 !> \brief Retain coincident physical samples and reject unattainable independent branch choices.
 ! **************************************************************************************************

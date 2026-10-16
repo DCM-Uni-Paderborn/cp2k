@@ -1143,7 +1143,7 @@ CONTAINS
       CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
       CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, &
                                  require_feasible=.FALSE.)
-      IF (.NOT. valid .OR. SIZE(tolerances) > n) THEN
+      IF (.NOT. valid) THEN
          CALL qs_skala_scf_release(state)
          handled = .FALSE.
          RETURN

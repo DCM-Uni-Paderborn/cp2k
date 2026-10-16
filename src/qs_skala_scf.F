@@ -2007,7 +2007,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Verify physical orbital stationarity, retaining only tangent motion for constrained trials.
 !>        Project in the orthonormal physical orbital metric, using fresh sample covectors.
-!>        Independent constraints and their original physical tolerances remain required.
+!>        Project onto the span of every original normal, including dependent physical samples.
 !> \param coordinate Complete normalized orbital coordinates.
 !> \param context Native orbital and constraint state.
 !> \param converged Whether the physical gradient meets the original tolerance.
@@ -2028,15 +2028,13 @@ CONTAINS
       TYPE IS (physical_constraints_context)
          n = SIZE(coordinate)
          m = SIZE(context%points, 2)
-         CPASSERT(m <= n)
          ALLOCATE (gradient(n))
          IF (m > 0) THEN
             ALLOCATE (values(m), jacobian(m, n), physical(m, n), scales(m), &
-                      matrix(n, m), normals(n, m), coefficients(n, 1), singular(m))
+                      matrix(n, m), normals(n, m), coefficients(MAX(n, m), 1), singular(MIN(n, m)))
             CALL qs_skala_scf_constraints(context%state, coordinate, context%points, context%domains, &
                                           context%spins, context%descriptors, values, jacobian, physical, context%targets)
-            scales(:) = MAXVAL(ABS(physical), DIM=2)
-            IF (ANY(scales <= TINY(0.0_dp))) RETURN
+            scales(:) = MAX(MAXVAL(ABS(physical), DIM=2), TINY(0.0_dp))
             normals(:, :) = TRANSPOSE(physical/SPREAD(scales, 2, n))
          END IF
          CALL qs_skala_scf_evaluate(context%state, coordinate, energy, physical_gradient=gradient, sample_inputs=.FALSE.)
@@ -2044,13 +2042,16 @@ CONTAINS
             ! The fitted normal component is removed from the physical covector, not from
             ! its Cayley-coordinate derivative. Scaling each constraint preserves its units.
             matrix(:, :) = normals
-            coefficients(:, 1) = gradient
-            CALL dgelss(n, m, 1, matrix, n, coefficients, n, singular, EPSILON(0.0_dp), rank, query, -1, info)
+            coefficients = 0.0_dp
+            coefficients(:n, 1) = gradient
+            CALL dgelss(n, m, 1, matrix, n, coefficients, MAX(n, m), singular, &
+                        64.0_dp*EPSILON(0.0_dp), rank, query, -1, info)
             IF (info /= 0) RETURN
             lwork = MAX(1, CEILING(query(1)))
             ALLOCATE (work(lwork))
-            CALL dgelss(n, m, 1, matrix, n, coefficients, n, singular, EPSILON(0.0_dp), rank, work, lwork, info)
-            IF (info /= 0 .OR. rank /= m) RETURN
+            CALL dgelss(n, m, 1, matrix, n, coefficients, MAX(n, m), singular, &
+                        64.0_dp*EPSILON(0.0_dp), rank, work, lwork, info)
+            IF (info /= 0) RETURN
             gradient(:) = gradient - MATMUL(normals, coefficients(:m, 1))
          END IF
          converged = NORM2(gradient) <= context%gradient_tolerance

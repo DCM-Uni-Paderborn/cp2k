@@ -6,7 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 
 ! **************************************************************************************************
-!> \brief Solve orbital stationarity on independent physical descriptor constraints.
+!> \brief Solve orbital stationarity with physical descriptor constraints.
 ! **************************************************************************************************
 MODULE skala_orbital_constraints
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
@@ -395,7 +395,7 @@ CONTAINS
 !> \param coordinate Initial coordinates, replaced on convergence, a stop or a segment event.
 !>        A stop or event returns the last accepted feasible trial. Other failures retain the initial state
 !>        unless retain_progress is requested.
-!> \param density_tolerances Absolute physical tolerance for each independent constraint.
+!> \param density_tolerances Absolute physical tolerance for every original constraint.
 !> \param gradient_tolerance Absolute tolerance for the norm of the implicit free derivative.
 !> \param converged Whether physical constraints and tangential stationarity meet their tolerances.
 !> \param max_iterations Maximum BFGS iterations, defaults to 200.
@@ -428,8 +428,8 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL :: interrupted
       LOGICAL, INTENT(IN), OPTIONAL :: retain_progress
 
-      INTEGER :: capacity, d, history, i, iteration, j, limit, m, nf, shortening
-      INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:)
+      INTEGER :: capacity, d, history, i, iteration, j, limit, m, nf, r, shortening
+      INTEGER, ALLOCATABLE :: dependent(:), free(:), pivots(:), rows(:)
       LOGICAL :: accepted, valid, event, newton_valid, newton_stopped
       REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
@@ -441,11 +441,7 @@ CONTAINS
       IF (PRESENT(stopped)) stopped = .FALSE.
       IF (PRESENT(interrupted)) interrupted = .FALSE.
       m = SIZE(density_tolerances)
-      nf = d - m
-      ! Use up to 256 KiB for curvature histories in small orbital spaces. Large
-      ! spaces retain 32 entries and linear storage.
-      capacity = MAX(7, MIN(nf, MAX(32, 16384/MAX(1, nf))))
-      CPASSERT(d > 0 .AND. m <= d)
+      CPASSERT(d > 0)
       CPASSERT(ALL(ieee_is_finite(coordinate)))
       CPASSERT(ALL(ieee_is_finite(density_tolerances)))
       CPASSERT(ALL(density_tolerances > 0.0_dp))
@@ -457,19 +453,27 @@ CONTAINS
       IF (PRESENT(max_step)) radius = max_step
       CPASSERT(limit > 0)
       CPASSERT(ieee_is_finite(radius) .AND. radius > 0.0_dp)
-      ALLOCATE (x(d), trial(d), values(m), jacobian(m, d), scales(m), dependent(m), free(nf), &
-                g(d), reduced(nf), trial_reduced(nf), direction(nf), motion(nf), &
-                old_gradient(nf), steps(nf, capacity), changes(nf, capacity), pivots(d), newton(nf))
+      ALLOCATE (x(d), trial(d), values(m), jacobian(m, d), scales(m), rows(m), pivots(d))
       x(:) = coordinate
       CALL constraints(x)
       converged = .FALSE.
+      r = 0
       IF (m > 0) THEN
-         scales(:) = MAXVAL(ABS(jacobian), DIM=2)
-         IF (ANY(scales <= TINY(0.0_dp))) RETURN
-         CALL constraint_pivots(jacobian, scales, pivots, valid)
+         scales(:) = MAX(MAXVAL(ABS(jacobian), DIM=2), density_tolerances)
+         CALL independent_constraint_rows(jacobian, scales, rows, r, valid)
          IF (.NOT. valid) RETURN
-         dependent(:) = pivots(:m)
+         IF (r > 0) THEN
+            CALL constraint_pivots(jacobian(rows(:r), :), scales(rows(:r)), pivots, valid)
+            IF (.NOT. valid) RETURN
+         END IF
       END IF
+      nf = d - r
+      ! Use up to 256 KiB for curvature histories in small orbital spaces. Large
+      ! spaces retain 32 entries and linear storage.
+      capacity = MAX(7, MIN(nf, MAX(32, 16384/MAX(1, nf))))
+      ALLOCATE (dependent(r), free(nf), g(d), reduced(nf), trial_reduced(nf), direction(nf), motion(nf), &
+                old_gradient(nf), steps(nf, capacity), changes(nf, capacity), newton(nf))
+      dependent(:) = pivots(:r)
       j = 0
       DO i = 1, d
          IF (ANY(dependent == i)) CYCLE
@@ -577,13 +581,13 @@ CONTAINS
 !>        retains its original energy and derivative checks.
 !> \param center Accepted orbital coordinates.
 !> \param derivative Derivative at the accepted state.
-!> \param result Candidate free-coordinate descent direction.
+!> \param newton_step Candidate free-coordinate descent direction.
 !> \param valid_direction Whether the candidate is a finite descent direction.
 !> \param stopped_direction Whether an external stop interrupted a derivative evaluation.
 ! **************************************************************************************************
-      SUBROUTINE newton_direction(center, derivative, RESULT, valid_direction, stopped_direction)
+      SUBROUTINE newton_direction(center, derivative, newton_step, valid_direction, stopped_direction)
       REAL(dp), INTENT(IN)                               :: center(:), derivative(:)
-      REAL(dp), INTENT(OUT)                              :: result(:)
+      REAL(dp), INTENT(OUT)                              :: newton_step(:)
       LOGICAL, INTENT(OUT)                               :: valid_direction, stopped_direction
 
       INTEGER                                            :: iteration
@@ -597,7 +601,7 @@ CONTAINS
 
          valid_direction = .FALSE.
          stopped_direction = .FALSE.
-         RESULT = 0.0_dp
+         newton_step = 0.0_dp
          ALLOCATE (plus(d), minus(d), gradient_plus(nf), gradient_minus(nf), residual(nf), search(nf), PRODUCT(nf))
          residual(:) = -derivative
          search(:) = residual
@@ -627,7 +631,7 @@ CONTAINS
             curvature = DOT_PRODUCT(search, product)
             IF (curvature <= 128.0_dp*EPSILON(0.0_dp)*norm_direction*NORM2(product)) EXIT
             alpha = residual2/curvature
-            RESULT(:) = RESULT + alpha*search
+            newton_step(:) = newton_step + alpha*search
             residual(:) = residual - alpha*product
             next_residual2 = DOT_PRODUCT(residual, residual)
             IF (SQRT(next_residual2) <= TARGET) EXIT
@@ -635,7 +639,7 @@ CONTAINS
             search(:) = residual + beta*search
             residual2 = next_residual2
          END DO
-         valid_direction = ALL(ieee_is_finite(RESULT)) .AND. DOT_PRODUCT(derivative, RESULT) < 0.0_dp
+         valid_direction = ALL(ieee_is_finite(newton_step)) .AND. DOT_PRODUCT(derivative, newton_step) < 0.0_dp
       END SUBROUTINE newton_direction
 ! **************************************************************************************************
 !> \brief Preserve the last accepted feasible coordinates when the caller requests a stop.
@@ -696,13 +700,13 @@ CONTAINS
 
          success = .FALSE.
          CALL constraints(c)
-         IF (m > 0) THEN
-            ALLOCATE (matrix(m, m), rhs(m, 1), candidate(d), multiplier(m, 1))
+         IF (r > 0) THEN
+            ALLOCATE (matrix(r, r), rhs(r, 1), candidate(d), multiplier(r, 1))
             DO correction = 1, 32
                IF (ALL(ABS(values) <= density_tolerances)) EXIT
                before = MAXVAL(ABS(values/scales))
-               matrix(:, :) = jacobian(:, dependent)/SPREAD(scales, 2, m)
-               rhs(:, 1) = -values/scales
+               matrix(:, :) = jacobian(rows(:r), dependent)/SPREAD(scales(rows(:r)), 2, r)
+               rhs(:, 1) = -values(rows(:r))/scales(rows(:r))
                CALL solve_constraint_system(matrix, rhs, solved)
                IF (.NOT. solved) RETURN
                step_fraction = 1.0_dp
@@ -717,18 +721,19 @@ CONTAINS
                IF (k > 24) RETURN
                c(:) = candidate
             END DO
-            IF (.NOT. ALL(ABS(values) <= density_tolerances)) RETURN
          END IF
+         ! Dependent and zero-normal samples retain their own physical feasibility tests.
+         IF (.NOT. ALL(ABS(values) <= density_tolerances)) RETURN
          CALL evaluate_gradient(c, e, g, context)
          CPASSERT(ieee_is_finite(e))
          CPASSERT(ALL(ieee_is_finite(g)))
          rg(:) = g(free)
-         IF (m > 0) THEN
-            matrix(:, :) = TRANSPOSE(jacobian(:, dependent)/SPREAD(scales, 2, m))
+         IF (r > 0) THEN
+            matrix(:, :) = TRANSPOSE(jacobian(rows(:r), dependent)/SPREAD(scales(rows(:r)), 2, r))
             multiplier(:, 1) = g(dependent)
             CALL solve_constraint_system(matrix, multiplier, solved)
             IF (.NOT. solved) RETURN
-            rg(:) = rg - MATMUL(TRANSPOSE(jacobian(:, free)/SPREAD(scales, 2, nf)), multiplier(:, 1))
+            rg(:) = rg - MATMUL(TRANSPOSE(jacobian(rows(:r), free)/SPREAD(scales(rows(:r)), 2, nf)), multiplier(:, 1))
          END IF
          success = .TRUE.
       END SUBROUTINE reduced_evaluation
@@ -837,6 +842,47 @@ CONTAINS
       END DO
       valid = .TRUE.
    END SUBROUTINE skala_cusp_admissibility
+
+! **************************************************************************************************
+!> \brief Select independent rows without discarding any physical residual checks.
+!>        Column-pivoted QR of the transposed, row-scaled Jacobian determines its numerical rank.
+!> \param jacobian All original physical constraint derivatives in the same orbital coordinates.
+!> \param scales Positive physical row scales.
+!> \param rows Permutation with the independent physical samples first.
+!> \param rank Number of independent rows at the current regular point.
+!> \param success Whether the rank-revealing factorization completed.
+! **************************************************************************************************
+   SUBROUTINE independent_constraint_rows(jacobian, scales, rows, rank, success)
+      REAL(dp), INTENT(IN)                               :: jacobian(:, :), scales(:)
+      INTEGER, INTENT(OUT)                               :: rows(:), rank
+      LOGICAL, INTENT(OUT)                               :: success
+
+      INTEGER                                            :: i, info, lwork, m, n
+      REAL(dp)                                           :: query(1), threshold
+      REAL(dp), ALLOCATABLE                              :: matrix(:, :), tau(:), work(:)
+
+      m = SIZE(jacobian, 1)
+      n = SIZE(jacobian, 2)
+      CPASSERT(m > 0 .AND. n > 0 .AND. SIZE(rows) == m .AND. SIZE(scales) == m)
+      CPASSERT(ALL(scales > 0.0_dp))
+      ALLOCATE (matrix(n, m), tau(MIN(m, n)))
+      matrix(:, :) = TRANSPOSE(jacobian/SPREAD(scales, 2, n))
+      rows = 0
+      rank = 0
+      CALL dgeqp3(n, m, matrix, n, rows, tau, query, -1, info)
+      success = info == 0
+      IF (.NOT. success) RETURN
+      lwork = MAX(1, CEILING(query(1)))
+      ALLOCATE (work(lwork))
+      CALL dgeqp3(n, m, matrix, n, rows, tau, work, lwork, info)
+      success = info == 0
+      IF (.NOT. success) RETURN
+      threshold = 64.0_dp*EPSILON(0.0_dp)*ABS(matrix(1, 1))
+      DO i = 1, MIN(m, n)
+         IF (ABS(matrix(i, i)) <= threshold) EXIT
+         rank = rank + 1
+      END DO
+   END SUBROUTINE independent_constraint_rows
 
 ! **************************************************************************************************
 !> \brief Select dependent coordinates from the scaled physical constraint Jacobian.
