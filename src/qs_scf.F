@@ -240,8 +240,8 @@ MODULE qs_scf
         smeagol_method_nr, special_diag_method_nr
    USE qs_skala_scf,                    ONLY: &
         qs_skala_scf_accept, qs_skala_scf_balance, qs_skala_scf_create, qs_skala_scf_evaluate, &
-        qs_skala_scf_release, qs_skala_scf_selected, qs_skala_scf_size, qs_skala_scf_stationarity, &
-        qs_skala_scf_type
+        qs_skala_scf_inspect, qs_skala_scf_release, qs_skala_scf_selected, qs_skala_scf_size, &
+        qs_skala_scf_stationarity, qs_skala_scf_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_core
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc_atom,                     ONLY: gapw_cdft_one_center
@@ -653,7 +653,22 @@ CONTAINS
             adiis_step_delta = scf_env%step_norm
             scf_env%adiis_validated = .FALSE.
 
-            IF (scf_control%diagonalization%update_method == diag_update_method_adiis) THEN
+            inverse_ot_handled = .FALSE.
+            inverse_ot_stopped = .FALSE.
+            IF (.NOT. just_energy .AND. scf_env%iter_count == 1) THEN
+               ! Check the normalized native state before an ordinary OT update can move it.
+               CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, inverse_ot_stopped)
+               IF (inverse_ot_handled) THEN
+                  scf_env%iter_count = scf_env%iter_count + inverse_ot_steps
+                  iter_count = iter_count + inverse_ot_steps
+                  total_steps = total_steps + inverse_ot_steps
+                  CALL cp_iterate(logger%iter_info, last=.FALSE., iter_nr=iter_count)
+               END IF
+            END IF
+
+            IF (inverse_ot_handled) THEN
+               energy_only = .FALSE.
+            ELSE IF (scf_control%diagonalization%update_method == diag_update_method_adiis) THEN
                NULLIFY (subspace_density, subspace_fock)
                IF (do_kpoints) THEN
                   IF (ALLOCATED(kpoints%lowdin_q)) THEN
@@ -826,19 +841,6 @@ CONTAINS
             IF (do_kpoints .AND. scf_env%method == ot_method_nr .AND. &
                 qs_scf_kp_search_endpoint(scf_env%iter_method)) THEN
                accepted_ot_kp_searches = accepted_ot_kp_searches + 1
-            END IF
-
-            inverse_ot_handled = .FALSE.
-            inverse_ot_stopped = .FALSE.
-            IF (.NOT. just_energy .AND. scf_env%iter_count == 1) THEN
-               CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, inverse_ot_stopped)
-               IF (inverse_ot_handled) THEN
-                  scf_env%iter_count = scf_env%iter_count + inverse_ot_steps
-                  iter_count = iter_count + inverse_ot_steps
-                  total_steps = total_steps + inverse_ot_steps
-                  CALL cp_iterate(logger%iter_info, last=.FALSE., iter_nr=iter_count)
-                  energy_only = .FALSE.
-               END IF
             END IF
 
             ! Print requested MO information (can be computationally expensive with OT)
@@ -1165,7 +1167,14 @@ CONTAINS
          scf_env%iter_delta = MAX(NORM2(gradient), NORM2(physical))
          IF (converged) THEN
             CALL qs_skala_scf_accept(state, coordinate, scf_control%eps_scf, accepted)
-            IF (accepted) EXIT
+            IF (accepted) THEN
+               CALL qs_skala_scf_create(state, qs_env, valid)
+               IF (.NOT. valid) CPABORT("Could not inspect the accepted inverse orbital state.")
+               CALL qs_skala_scf_inspect(state, energy, physical)
+               scf_env%iter_delta = NORM2(physical)
+               accepted = scf_env%iter_delta <= scf_control%eps_scf
+               IF (accepted) EXIT
+            END IF
             ! The canonical density can differ at rounding scale near an active physical boundary.
             ! Its rejected gradient must not inherit the pre-rotation convergence flag.
             scf_env%iter_delta = HUGE(0.0_dp)

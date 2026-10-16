@@ -76,7 +76,7 @@ MODULE qs_skala_scf
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
-   PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_value, qs_skala_scf_values, qs_skala_scf_root
+   PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_inspect, qs_skala_scf_value, qs_skala_scf_values, qs_skala_scf_root
    PUBLIC :: qs_skala_scf_point_derivative
    PUBLIC :: qs_skala_scf_crossings, qs_skala_scf_crossing_roots
    PUBLIC :: qs_skala_scf_choose_root, qs_skala_scf_boundary_root
@@ -300,13 +300,10 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:), physical_gradient(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: sample_inputs
 
-      COMPLEX(dp), ALLOCATABLE                           :: hamiltonian(:, :)
       INTEGER                                            :: first, ik, last, local, spin
-      LOGICAL                                            :: need_gradient, owner, record_inputs, &
-                                                            valid
-      REAL(dp), ALLOCATABLE                              :: block_gradient(:)
+      LOGICAL                                            :: need_gradient, record_inputs, valid
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(dbcsr_p_type), POINTER                        :: densities(:, :), matrices(:, :)
+      TYPE(dbcsr_p_type), POINTER                        :: densities(:, :)
       TYPE(particle_type), POINTER                       :: particles(:)
 
       CPASSERT(ASSOCIATED(state%qs_env))
@@ -354,56 +351,93 @@ CONTAINS
                                just_energy=.NOT. need_gradient, print_active=.FALSE.)
       CALL skala_density_samples_end(state%constraints)
       energy = state%energy%total
-      IF (PRESENT(gradient)) THEN
-         CPASSERT(SIZE(gradient) == SIZE(coordinate))
-         gradient = 0.0_dp
-      END IF
-      IF (PRESENT(physical_gradient)) THEN
-         CPASSERT(SIZE(physical_gradient) == SIZE(coordinate))
-         physical_gradient = 0.0_dp
-      END IF
-      IF (need_gradient) THEN
-         owner = state%para_env%mepos == 0
-         IF (state%bloch) THEN
-            owner = state%kpoints%para_env_kp%mepos == 0
-         ELSE
-            CALL get_ks_env(state%ks_env, matrix_ks_kp=matrices)
-         END IF
-         DO spin = 1, SIZE(state%orbitals, 2)
-            DO local = 1, SIZE(state%orbitals, 1)
-               IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
-               ik = 1
-               IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
-               first = state%offsets(ik, spin) + 1
-               last = first + state%dimensions(ik, spin) - 1
-               IF (state%bloch) THEN
-                  IF (ALLOCATED(hamiltonian)) DEALLOCATE (hamiltonian)
-                  ALLOCATE (hamiltonian(SIZE(state%inverse%ks_k, 1), SIZE(state%inverse%ks_k, 2)))
-                  hamiltonian(:, :) = state%inverse%ks_k(:, :, ik, spin)
-               ELSE
-                  CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
-               END IF
-               IF (.NOT. owner) CYCLE
-               ALLOCATE (block_gradient(last - first + 1))
-               hamiltonian = state%orbitals(local, spin)%weight*hamiltonian
-               IF (PRESENT(gradient)) THEN
-                  CALL skala_orbital_chart_derivative(state%orbitals(local, spin)%chart, hamiltonian, block_gradient)
-                  gradient(first:last) = block_gradient
-               END IF
-               IF (PRESENT(physical_gradient)) THEN
-                  CALL skala_orbital_chart_derivative(state%orbitals(local, spin)%chart, hamiltonian, &
-                                                      block_gradient, physical_tangent=.TRUE.)
-                  physical_gradient(first:last) = block_gradient
-               END IF
-               DEALLOCATE (block_gradient)
-            END DO
-         END DO
-         IF (PRESENT(gradient)) CALL state%para_env%sum(gradient)
-         IF (PRESENT(physical_gradient)) CALL state%para_env%sum(physical_gradient)
-      END IF
+      IF (need_gradient) CALL native_orbital_covectors(state, gradient, physical_gradient)
       state%coordinate(:) = coordinate
       state%evaluated = .TRUE.
    END SUBROUTINE qs_skala_scf_evaluate
+
+! **************************************************************************************************
+!> \brief Inspect a fresh native orbital chart without changing MOs, density, fields or KS.
+!>        The caller supplies an already evaluated native state. Chart construction supplies
+!>        only its normalized tangent basis. No orbital installation or XC reevaluation is
+!>        performed, since renormalization can change a physical boundary at rounding scale.
+!> \param state Fresh chart from qs_skala_scf_create, borrowing the current native state.
+!> \param energy Current native total energy.
+!> \param physical_gradient Complete current KS covector in the physical orbital tangent.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_inspect(state, energy, physical_gradient)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(OUT)                              :: energy, physical_gradient(:)
+
+      CPASSERT(ASSOCIATED(state%qs_env) .AND. .NOT. state%evaluated)
+      CPASSERT(ALL(state%coordinate == 0.0_dp))
+      CALL native_orbital_covectors(state, physical_gradient=physical_gradient)
+      energy = state%energy%total
+      state%evaluated = .TRUE.
+   END SUBROUTINE qs_skala_scf_inspect
+
+! **************************************************************************************************
+!> \brief Contract the current native KS operator with orbital-coordinate or physical tangents.
+!> \param state Current charts and native KS matrices, unchanged by this contraction.
+!> \param gradient Optional derivative in the current chart coordinates.
+!> \param physical_gradient Optional covector in the orthonormal physical orbital tangent.
+! **************************************************************************************************
+   SUBROUTINE native_orbital_covectors(state, gradient, physical_gradient)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:), physical_gradient(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: hamiltonian(:, :)
+      INTEGER                                            :: first, ik, last, local, spin
+      LOGICAL                                            :: owner
+      REAL(dp), ALLOCATABLE                              :: block_gradient(:)
+      TYPE(dbcsr_p_type), POINTER                        :: matrices(:, :)
+
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(SIZE(gradient) == qs_skala_scf_size(state))
+         gradient = 0.0_dp
+      END IF
+      IF (PRESENT(physical_gradient)) THEN
+         CPASSERT(SIZE(physical_gradient) == qs_skala_scf_size(state))
+         physical_gradient = 0.0_dp
+      END IF
+      owner = state%para_env%mepos == 0
+      IF (state%bloch) THEN
+         owner = state%kpoints%para_env_kp%mepos == 0
+      ELSE
+         CALL get_ks_env(state%ks_env, matrix_ks_kp=matrices)
+      END IF
+      DO spin = 1, SIZE(state%orbitals, 2)
+         DO local = 1, SIZE(state%orbitals, 1)
+            IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
+            ik = 1
+            IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+            first = state%offsets(ik, spin) + 1
+            last = first + state%dimensions(ik, spin) - 1
+            IF (state%bloch) THEN
+               IF (ALLOCATED(hamiltonian)) DEALLOCATE (hamiltonian)
+               ALLOCATE (hamiltonian(SIZE(state%inverse%ks_k, 1), SIZE(state%inverse%ks_k, 2)))
+               hamiltonian(:, :) = state%inverse%ks_k(:, :, ik, spin)
+            ELSE
+               CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
+            END IF
+            IF (.NOT. owner) CYCLE
+            ALLOCATE (block_gradient(last - first + 1))
+            hamiltonian = state%orbitals(local, spin)%weight*hamiltonian
+            IF (PRESENT(gradient)) THEN
+               CALL skala_orbital_chart_derivative(state%orbitals(local, spin)%chart, hamiltonian, block_gradient)
+               gradient(first:last) = block_gradient
+            END IF
+            IF (PRESENT(physical_gradient)) THEN
+               CALL skala_orbital_chart_derivative(state%orbitals(local, spin)%chart, hamiltonian, &
+                                                   block_gradient, physical_tangent=.TRUE.)
+               physical_gradient(first:last) = block_gradient
+            END IF
+            DEALLOCATE (block_gradient)
+         END DO
+      END DO
+      IF (PRESENT(gradient)) CALL state%para_env%sum(gradient)
+      IF (PRESENT(physical_gradient)) CALL state%para_env%sum(physical_gradient)
+   END SUBROUTINE native_orbital_covectors
 
 ! **************************************************************************************************
 !> \brief Read one actual physical model input, requiring exactly one distributed owner.
