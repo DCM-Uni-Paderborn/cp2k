@@ -56,6 +56,7 @@ MODULE qs_energy_init
    USE qs_ks_methods,                   ONLY: qs_ks_allocate_basics
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type,&
+                                              qs_ks_release_w,&
                                               set_ks_env
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_neighbor_lists,               ONLY: build_qs_neighbor_lists
@@ -138,6 +139,8 @@ CONTAINS
          nspin = dft_control%nspins
          nimg = dft_control%nimages
          matrix => matrix_s(1, 1)%matrix
+         ! An earlier canonical energy evaluation can already own a W matrix.
+         CALL qs_ks_release_w(ks_env)
          CALL dbcsr_allocate_matrix_set(matrix_w, nspin, nimg)
          DO ispin = 1, nspin
             DO img = 1, nimg

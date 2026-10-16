@@ -78,6 +78,7 @@ MODULE qs_ks_types
 
    PUBLIC :: qs_ks_env_type, qs_ks_env_create, qs_ks_did_change
    PUBLIC :: qs_ks_release, qs_ks_part_release, get_ks_env, set_ks_env
+   PUBLIC :: qs_ks_release_w
 
 ! **************************************************************************************************
 !> \brief calculation environment to calculate the ks matrix,
@@ -917,6 +918,17 @@ CONTAINS
       CALL cp_blacs_env_release(ks_env%blacs_env)
 
    END SUBROUTINE qs_ks_release
+
+! **************************************************************************************************
+!> \brief Releases the owned energy-weighted density matrix in its original allocation layout.
+!> \param ks_env KS environment owning the matrix
+! **************************************************************************************************
+   SUBROUTINE qs_ks_release_w(ks_env)
+      TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
+
+      CALL kpoint_transitional_release(ks_env%matrix_w)
+
+   END SUBROUTINE qs_ks_release_w
 
 ! **************************************************************************************************
 !> \brief releases part of the ks_env
