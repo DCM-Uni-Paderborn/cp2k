@@ -35,7 +35,7 @@ PROGRAM xc_semilocal_unittest
    USE xc_derivative_types, ONLY: xc_derivative_get, &
                                   xc_derivative_type
    USE xc_derivatives, ONLY: xc_functionals_eval, &
-                             xc_functionals_get_needs, xc_functionals_select_floor_limits
+                             xc_functionals_get_needs, xc_functionals_select_floor_limits, xc_functionals_spin_floors
    USE xc_input_constants, ONLY: xc_pbe_orig, &
                                  xc_pbe_rev, &
                                  xc_pbe_sol
@@ -418,18 +418,26 @@ CONTAINS
       CALL section_vals_val_set(combination, 'PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
       needs = xc_functionals_get_needs(combination, .TRUE., spin_density_floor=spin_density_floor)
       IF (spin_density_floor) ERROR STOP 'Native PBE incorrectly reports a Libxc spin floor'
+      CALL check_spin_floor_targets(combination, .TRUE., [pbe_spin_density_floor])
       CALL section_vals_val_set(combination, 'GGA_C_PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
       needs = xc_functionals_get_needs(combination, .TRUE., spin_density_floor=spin_density_floor)
       IF (.NOT. spin_density_floor) ERROR STOP 'Active Libxc component lost its spin floor'
+      CALL check_spin_floor_targets(combination, .TRUE., [pbe_spin_density_floor, libxc_density_floor(cutoff)])
       needs = xc_functionals_get_needs(combination, .FALSE., spin_density_floor=spin_density_floor)
       IF (spin_density_floor) ERROR STOP 'Unpolarized Libxc incorrectly reports an individual-spin floor'
+      CALL check_spin_floor_targets(combination, .FALSE., [REAL(dp)::])
       CALL section_vals_val_set(combination, 'GGA_C_PBE%SCALE', r_val=0.0_dp)
       needs = xc_functionals_get_needs(combination, .TRUE., spin_density_floor=spin_density_floor)
       IF (spin_density_floor) ERROR STOP 'Zero-scaled Libxc component reports an active floor'
+      CALL check_spin_floor_targets(combination, .TRUE., [pbe_spin_density_floor])
       CALL section_vals_val_set(combination, 'GGA_C_PBE%SCALE', r_val=1.0_dp)
       CALL section_vals_val_set(combination, 'GGA_C_PBE%_SECTION_PARAMETERS_', l_val=.FALSE.)
       needs = xc_functionals_get_needs(combination, .TRUE., spin_density_floor=spin_density_floor)
       IF (spin_density_floor) ERROR STOP 'Inactive Libxc component reports an active floor'
+      CALL check_spin_floor_targets(combination, .TRUE., [pbe_spin_density_floor])
+      CALL section_vals_val_set(combination, 'GGA_C_PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      CALL section_vals_val_set(combination, 'PBE%_SECTION_PARAMETERS_', l_val=.FALSE.)
+      CALL check_spin_floor_targets(combination, .TRUE., [libxc_density_floor(cutoff)])
       CALL section_vals_release(combination)
       error = 0.0_dp
       x = [0.4_dp, libxc_density_floor(cutoff), 0.7_dp, 0.6_dp, 0.2_dp, 0.3_dp, -0.02_dp]
@@ -663,6 +671,27 @@ CONTAINS
 #endif
 
 ! **************************************************************************************************
+!> \brief Check that actual physical floor values retain all active components exactly once.
+!> \param combination Actual functional combination.
+!> \param lsd Whether the physical density is spin polarized.
+!> \param expected Distinct expected physical target values.
+! **************************************************************************************************
+   SUBROUTINE check_spin_floor_targets(combination, lsd, expected)
+      TYPE(section_vals_type), POINTER                   :: combination
+      LOGICAL, INTENT(IN)                                :: lsd
+      REAL(dp), INTENT(IN)                               :: expected(:)
+
+      INTEGER                                            :: i
+      REAL(dp), ALLOCATABLE                              :: actual(:)
+
+      ALLOCATE (actual, SOURCE=xc_functionals_spin_floors(combination, lsd, 0.05_dp))
+      IF (SIZE(actual) /= SIZE(expected)) ERROR STOP 'Wrong number of component-dependent spin-density floors'
+      DO i = 1, SIZE(expected)
+         IF (COUNT(actual == expected(i)) /= 1) ERROR STOP 'Lost or duplicated an actual physical spin-density floor'
+      END DO
+   END SUBROUTINE check_spin_floor_targets
+
+! **************************************************************************************************
 !> \brief Check one-sided native PBE energy derivatives without moving its original density floor.
 ! **************************************************************************************************
    SUBROUTINE check_pbe_floor_limits()
@@ -678,12 +707,15 @@ CONTAINS
 
       needs = xc_functionals_get_needs(functional, .TRUE., pbe_density_floor=active)
       IF (.NOT. active) ERROR STOP 'Native PBE lost its physical spin floor'
+      CALL check_spin_floor_targets(functional, .TRUE., [pbe_spin_density_floor])
       needs = xc_functionals_get_needs(functional, .FALSE., pbe_density_floor=active)
       IF (active) ERROR STOP 'Unpolarized PBE reports an individual-spin floor'
+      CALL check_spin_floor_targets(functional, .FALSE., [REAL(dp)::])
       CALL section_vals_val_set(functional, 'PBE%SCALE_X', r_val=0.0_dp)
       CALL section_vals_val_set(functional, 'PBE%SCALE_C', r_val=0.0_dp)
       needs = xc_functionals_get_needs(functional, .TRUE., pbe_density_floor=active)
       IF (active) ERROR STOP 'Zero-scaled PBE reports an active spin floor'
+      CALL check_spin_floor_targets(functional, .TRUE., [REAL(dp)::])
       CALL section_vals_val_set(functional, 'PBE%SCALE_X', r_val=1.0_dp)
       CALL section_vals_val_set(functional, 'PBE%SCALE_C', r_val=1.0_dp)
       error = 0.0_dp

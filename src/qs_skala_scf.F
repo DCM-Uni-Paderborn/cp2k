@@ -72,10 +72,8 @@ MODULE qs_skala_scf
                                               skala_orbital_chart_derivative,&
                                               skala_orbital_chart_size
    USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair
-   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
+   USE xc_derivatives,                  ONLY: xc_functionals_spin_floors
    USE xc_input_constants,              ONLY: xc_rho_no_smooth
-   USE xc_libxc,                        ONLY: libxc_density_floor
-   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_util,                         ONLY: xc_pw_smooth
 #include "./base/base_uses.f90"
 
@@ -112,8 +110,7 @@ MODULE qs_skala_scf
 
    TYPE qs_skala_scf_crossing_type
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
-      REAL(dp), ALLOCATABLE :: first(:), last(:), values(:, :)
-      REAL(dp) :: density_floor = 0.0_dp
+      REAL(dp), ALLOCATABLE :: first(:), last(:), values(:, :), targets(:)
       LOGICAL :: encountered = .FALSE.
    END TYPE qs_skala_scf_crossing_type
 
@@ -133,10 +130,9 @@ MODULE qs_skala_scf
       TYPE(qs_skala_scf_type), POINTER :: state => NULL()
       TYPE(qs_skala_scf_crossing_type), POINTER :: crossings => NULL()
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
-      REAL(dp), ALLOCATABLE :: targets(:)
+      REAL(dp), ALLOCATABLE :: targets(:), density_floors(:)
       REAL(dp) :: gradient_tolerance = 0.0_dp
       REAL(dp) :: max_coordinate_norm = 0.0_dp
-      REAL(dp) :: density_floor = 0.0_dp
       LOGICAL :: rechart = .FALSE.
       LOGICAL :: check_external = .FALSE.
    END TYPE physical_constraints_context
@@ -971,9 +967,12 @@ CONTAINS
 !> \param total_targets Optional thresholds for the sum of both physical spins.
 !> \param positive_density_target Optional cutoff for the sum of the positive spin densities.
 !> \param density_only Scan density inputs only, excluding kinetic-density samples, false by default.
+!> \param spin_density_targets Distinct spin-density thresholds replacing the density entry of targets.
+!> \param candidate_targets Actual threshold of each returned physical candidate.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_crossings(state, first, last, points, domains, spins, descriptors, &
-                                     endpoint_values, targets, total_targets, positive_density_target, density_only)
+                                     endpoint_values, targets, total_targets, positive_density_target, density_only, &
+                                     spin_density_targets, candidate_targets)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), domains(:), spins(:), &
@@ -982,16 +981,20 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(2), total_targets(2), &
                                                             positive_density_target
       LOGICAL, INTENT(IN), OPTIONAL                      :: density_only
+      REAL(dp), INTENT(IN), OPTIONAL                     :: spin_density_targets(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL       :: candidate_targets(:)
 
-      INTEGER                                            :: descriptor, domain, i, local_count, &
-                                                            offset, row, selection, spin, total
+      INTEGER                                            :: descriptor, domain, i, level_index, &
+                                                            local_count, nlevels, offset, row, &
+                                                            selection, spin, total
       INTEGER, ALLOCATABLE                               :: counts(:), keys(:, :)
       LOGICAL                                            :: only_density, valid
       LOGICAL, ALLOCATABLE                               :: mask(:, :)
       REAL(dp)                                           :: energy, level, levels(2), &
                                                             positive_level, total_levels(2)
-      REAL(dp), ALLOCATABLE                              :: first_field(:, :), gradient(:), &
-                                                            last_field(:, :), values(:, :)
+      REAL(dp), ALLOCATABLE                              :: density_levels(:), first_field(:, :), &
+                                                            gradient(:), last_field(:, :), &
+                                                            local_targets(:), values(:, :)
       TYPE(physical_domain_samples) :: final(skala_fft_domain:skala_last_sample_domain), &
          initial(skala_fft_domain:skala_last_sample_domain)
 
@@ -1002,6 +1005,16 @@ CONTAINS
       levels = 0.0_dp
       IF (PRESENT(targets)) levels = targets
       CPASSERT(ALL(ieee_is_finite(levels)))
+      IF (PRESENT(spin_density_targets)) THEN
+         CPASSERT(ALL(ieee_is_finite(spin_density_targets)))
+         ALLOCATE (density_levels(SIZE(spin_density_targets)))
+         density_levels(:) = spin_density_targets
+         DO i = 2, SIZE(density_levels)
+            CPASSERT(ALL(density_levels(:i - 1) /= density_levels(i)))
+         END DO
+      ELSE
+         ALLOCATE (density_levels(1), SOURCE=levels(skala_density_descriptor))
+      END IF
       total_levels = 0.0_dp
       IF (PRESENT(total_targets)) total_levels = total_targets
       CPASSERT(ALL(ieee_is_finite(total_levels)))
@@ -1040,16 +1053,21 @@ CONTAINS
                CALL sample_descriptor(initial(domain), descriptor, selection, first_field)
                CALL sample_descriptor(final(domain), descriptor, selection, last_field)
                ALLOCATE (mask(SIZE(first_field, 1), SIZE(first_field, 2)))
-               level = levels(descriptor)
-               IF (selection == 1) level = total_levels(descriptor)
-               IF (selection == 2) level = positive_level
-               CALL skala_density_crossings(first_field, last_field, mask, level)
-               local_count = local_count + COUNT(mask)
+               nlevels = 1
+               IF (selection == 0 .AND. descriptor == skala_density_descriptor) nlevels = SIZE(density_levels)
+               DO level_index = 1, nlevels
+                  level = levels(descriptor)
+                  IF (selection == 0 .AND. descriptor == skala_density_descriptor) level = density_levels(level_index)
+                  IF (selection == 1) level = total_levels(descriptor)
+                  IF (selection == 2) level = positive_level
+                  CALL skala_density_crossings(first_field, last_field, mask, level)
+                  local_count = local_count + COUNT(mask)
+               END DO
                DEALLOCATE (mask, first_field, last_field)
             END DO
          END DO
       END DO
-      ALLOCATE (keys(6, local_count), values(2, local_count))
+      ALLOCATE (keys(6, local_count), values(2, local_count), local_targets(local_count))
       row = 0
       DO domain = skala_fft_domain, skala_last_sample_domain
          IF (.NOT. initial(domain)%available) CYCLE
@@ -1064,22 +1082,28 @@ CONTAINS
                CALL sample_descriptor(initial(domain), descriptor, selection, first_field)
                CALL sample_descriptor(final(domain), descriptor, selection, last_field)
                ALLOCATE (mask(SIZE(first_field, 1), SIZE(first_field, 2)))
-               level = levels(descriptor)
-               IF (selection == 1) level = total_levels(descriptor)
-               IF (selection == 2) level = positive_level
-               CALL skala_density_crossings(first_field, last_field, mask, level)
-               DO spin = 1, SIZE(mask, 2)
-                  DO i = 1, SIZE(mask, 1)
-                     IF (.NOT. mask(i, spin)) CYCLE
-                     row = row + 1
-                     keys(1, row) = domain
-                     keys(2:4, row) = initial(domain)%points(:, i)
-                     keys(5, row) = spin
-                     IF (SIZE(mask, 2) == 1) keys(5, row) = 0
-                     IF (selection == 1) keys(5, row) = -1
-                     IF (selection == 2) keys(5, row) = qs_skala_positive_density_sum
-                     keys(6, row) = descriptor
-                     values(:, row) = [first_field(i, spin), last_field(i, spin)]
+               nlevels = 1
+               IF (selection == 0 .AND. descriptor == skala_density_descriptor) nlevels = SIZE(density_levels)
+               DO level_index = 1, nlevels
+                  level = levels(descriptor)
+                  IF (selection == 0 .AND. descriptor == skala_density_descriptor) level = density_levels(level_index)
+                  IF (selection == 1) level = total_levels(descriptor)
+                  IF (selection == 2) level = positive_level
+                  CALL skala_density_crossings(first_field, last_field, mask, level)
+                  DO spin = 1, SIZE(mask, 2)
+                     DO i = 1, SIZE(mask, 1)
+                        IF (.NOT. mask(i, spin)) CYCLE
+                        row = row + 1
+                        keys(1, row) = domain
+                        keys(2:4, row) = initial(domain)%points(:, i)
+                        keys(5, row) = spin
+                        IF (SIZE(mask, 2) == 1) keys(5, row) = 0
+                        IF (selection == 1) keys(5, row) = -1
+                        IF (selection == 2) keys(5, row) = qs_skala_positive_density_sum
+                        keys(6, row) = descriptor
+                        values(:, row) = [first_field(i, spin), last_field(i, spin)]
+                        local_targets(row) = level
+                     END DO
                   END DO
                END DO
                DEALLOCATE (mask, first_field, last_field)
@@ -1104,12 +1128,17 @@ CONTAINS
       spins(offset + 1:offset + local_count) = keys(5, :)
       descriptors(offset + 1:offset + local_count) = keys(6, :)
       endpoint_values(:, offset + 1:offset + local_count) = values
+      IF (PRESENT(candidate_targets)) THEN
+         ALLOCATE (candidate_targets(total), SOURCE=0.0_dp)
+         candidate_targets(offset + 1:offset + local_count) = local_targets
+      END IF
       IF (total > 0) THEN
          CALL state%para_env%sum(points)
          CALL state%para_env%sum(domains)
          CALL state%para_env%sum(spins)
          CALL state%para_env%sum(descriptors)
          CALL state%para_env%sum(endpoint_values)
+         IF (PRESENT(candidate_targets)) CALL state%para_env%sum(candidate_targets)
       END IF
       ALLOCATE (gradient(SIZE(first)))
       CALL qs_skala_scf_evaluate(state, first, energy, gradient)
@@ -1544,11 +1573,10 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: crossing_density_floor
 
       INTEGER                                            :: m
-      LOGICAL                                            :: spin_density_floor, valid
+      LOGICAL                                            :: valid
       REAL(dp), ALLOCATABLE                              :: gradient(:)
       TYPE(physical_constraints_context)                 :: context
       TYPE(section_vals_type), POINTER                   :: functional_section, xc_section
-      TYPE(xc_rho_cflags_type)                           :: needs
 
       m = SIZE(physical_tolerances)
       valid = SIZE(coordinate) == qs_skala_scf_size(state) .AND. ALL(SHAPE(points) == [3, m])
@@ -1563,17 +1591,16 @@ CONTAINS
          context%crossings => crossings
          xc_section => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC")
          functional_section => section_vals_get_subs_vals(xc_section, "XC_FUNCTIONAL")
-         needs = xc_functionals_get_needs(functional_section, SIZE(state%orbitals, 2) == 2, &
-                                          spin_density_floor=spin_density_floor)
-         IF (spin_density_floor) THEN
-            context%density_floor = libxc_density_floor(section_get_rval(xc_section, "DENSITY_CUTOFF"))
-         END IF
+         ALLOCATE (context%density_floors, &
+                   SOURCE=xc_functionals_spin_floors(functional_section, SIZE(state%orbitals, 2) == 2, &
+                                                     section_get_rval(xc_section, "DENSITY_CUTOFF")))
       END IF
       IF (PRESENT(crossing_density_floor)) THEN
          CPASSERT(PRESENT(crossings))
          CPASSERT(SIZE(state%orbitals, 2) == 2)
          CPASSERT(ieee_is_finite(crossing_density_floor) .AND. crossing_density_floor > 0.0_dp)
-         context%density_floor = crossing_density_floor
+         DEALLOCATE (context%density_floors)
+         ALLOCATE (context%density_floors(1), SOURCE=crossing_density_floor)
       END IF
       IF (PRESENT(max_coordinate_norm)) THEN
          CPASSERT(m == 0)
@@ -2207,14 +2234,14 @@ CONTAINS
          END IF
          IF (.NOT. ASSOCIATED(context%crossings)) RETURN
          crossings => context%crossings
-         IF (context%density_floor > 0.0_dp) THEN
+         IF (SIZE(context%density_floors) > 0) THEN
             CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
-                                        crossings%spins, crossings%descriptors, crossings%values, &
-                                        targets=[context%density_floor, 0.0_dp], density_only=.TRUE.)
-            crossings%density_floor = context%density_floor
+                                        crossings%spins, crossings%descriptors, crossings%values, density_only=.TRUE., &
+                                        spin_density_targets=context%density_floors, candidate_targets=crossings%targets)
          ELSE
             CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
-                                        crossings%spins, crossings%descriptors, crossings%values)
+                                        crossings%spins, crossings%descriptors, crossings%values, &
+                                        candidate_targets=crossings%targets)
          END IF
          interrupted = SIZE(crossings%spins) > 0
          IF (.NOT. interrupted) RETURN

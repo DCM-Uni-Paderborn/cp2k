@@ -135,6 +135,7 @@ MODULE xc_derivatives
 
    PUBLIC :: xc_functional_get_info, xc_functionals_eval, xc_functionals_get_needs
    PUBLIC :: xc_functionals_select_floor_limits
+   PUBLIC :: xc_functionals_spin_floors
 
 CONTAINS
 
@@ -845,6 +846,44 @@ CONTAINS
          END IF
       END IF
    END FUNCTION xc_functionals_get_needs
+
+! **************************************************************************************************
+!> \brief Distinct physical spin-density floors of the active functional combination.
+!>        Inactive, zero-scaled and unpolarized components introduce no spin-density floor.
+!> \param functionals Actual functional combination.
+!> \param lsd Whether the physical density has two spin channels.
+!> \param density_cutoff Original XC density screening threshold in atomic units.
+!> \return Unique floor values in atomic density units, empty when no component uses one.
+! **************************************************************************************************
+   FUNCTION xc_functionals_spin_floors(functionals, lsd, density_cutoff) RESULT(floors)
+      TYPE(section_vals_type), POINTER                   :: functionals
+      LOGICAL, INTENT(IN)                                :: lsd
+      REAL(dp), INTENT(IN)                               :: density_cutoff
+      REAL(dp), ALLOCATABLE                              :: floors(:)
+
+      INTEGER                                            :: n
+      LOGICAL                                            :: active_libxc, active_pbe
+      REAL(dp)                                           :: values(2)
+      TYPE(xc_rho_cflags_type)                           :: needs
+
+      needs = xc_functionals_get_needs(functionals, lsd, spin_density_floor=active_libxc, &
+                                       pbe_density_floor=active_pbe)
+      n = 0
+      IF (active_pbe) THEN
+         n = n + 1
+         values(n) = pbe_spin_density_floor
+      END IF
+#if defined(__LIBXC)
+      IF (active_libxc) THEN
+         IF (ALL(values(:n) /= libxc_density_floor(density_cutoff))) THEN
+            n = n + 1
+            values(n) = libxc_density_floor(density_cutoff)
+         END IF
+      END IF
+#endif
+      ALLOCATE (floors(n))
+      floors(:) = values(:n)
+   END FUNCTION xc_functionals_spin_floors
 
 ! **************************************************************************************************
 !> \brief Apply owned first-derivative weights at satisfied physical spin-density floors.
