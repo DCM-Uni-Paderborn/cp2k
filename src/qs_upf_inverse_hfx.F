@@ -66,7 +66,7 @@ MODULE qs_upf_inverse_hfx
 
    INTEGER, PARAMETER :: max_cached_potential_words = 16*1024**2
    INTEGER, PARAMETER :: max_cached_lattice_field_words = 16*1024**2
-   INTEGER, PARAMETER :: max_cached_lattice_potentials = 4093
+   INTEGER, PARAMETER :: max_cached_lattice_potentials = 32749
 
    ! Scratch fields are recomputed at every radial row and retained only within one center call.
    TYPE inverse_field_workspace_type
@@ -109,7 +109,9 @@ MODULE qs_upf_inverse_hfx
       TYPE(lattice_potential_entry_type), ALLOCATABLE :: entries(:)
       INTEGER, POINTER :: auxiliary_images(:, :) => NULL()
       INTEGER :: natom = 0
-      INTEGER :: remaining_words = max_cached_potential_words
+      ! Reserve the small Q tables independently of the larger point-potential arrays.
+      INTEGER :: remaining_words = max_cached_potential_words/8
+      INTEGER :: potential_words = max_cached_potential_words - max_cached_potential_words/8
       INTEGER :: entry_count = 0
    END TYPE lattice_potential_cache_type
 
@@ -1574,7 +1576,7 @@ CONTAINS
             cache%entry_count = cache%entry_count + 1
             cache%entries(slot)%key = entry_key
             ENTRY => cache%entries(slot)%integrals
-            entry%potential_budget => cache%remaining_words
+            entry%potential_budget => cache%potential_words
             RETURN
          END IF
          slot = MODULO(slot, SIZE(cache%entries)) + 1
