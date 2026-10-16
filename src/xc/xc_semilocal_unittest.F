@@ -42,10 +42,12 @@ PROGRAM xc_semilocal_unittest
                                xc_rho_set_release, &
                                xc_rho_set_type
 #if defined (__LIBXC)
+   USE skala_density_constraints, ONLY: skala_density_constraints_type, skala_density_constraints_set, &
+                                        skala_density_constraints_reset, skala_fft_domain, skala_last_sample_domain
    USE xc_derivative_desc, ONLY: deriv_gamma, deriv_gamma_aa, deriv_gamma_ab, deriv_gamma_bb, &
                                  deriv_tau_a, &
                                  deriv_tau_b
-   USE xc_libxc, ONLY: libxc_density_floor, libxc_spin_polarized_eval, &
+   USE xc_libxc, ONLY: libxc_density_floor, libxc_select_floor_limits, libxc_spin_polarized_eval, &
                        libxc_spin_unpolarized_eval
 #endif
 
@@ -106,6 +108,7 @@ PROGRAM xc_semilocal_unittest
    CALL check_libxc_c2_rounding()
    CALL check_libxc_individual_floor()
    CALL check_libxc_floor_limits()
+   CALL check_libxc_floor_selection()
    CALL check_libxc_spin_powers()
 #endif
    CALL section_vals_release(functional)
@@ -433,6 +436,58 @@ CONTAINS
       END DO
       IF (error > 1.e-7_dp) ERROR STOP 'A selected spin-floor limit is not a one-sided energy derivative'
    END SUBROUTINE check_libxc_floor_limits
+
+! **************************************************************************************************
+!> \brief Check physical domain keys, field flattening and clearing selections between batches.
+! **************************************************************************************************
+   SUBROUTINE check_libxc_floor_selection()
+      INTEGER                                            :: bounds(2, 3), domain, keys(3, 4), &
+                                                            point(3, 1)
+      REAL(dp)                                           :: hmat(3, 3), level
+      TYPE(skala_density_constraints_type)               :: constraints
+      TYPE(xc_rho_cflags_type)                           :: needs
+      TYPE(xc_rho_set_type)                              :: fields
+
+      bounds(:, 1) = [-1, 0]
+      bounds(:, 2) = [2, 3]
+      bounds(:, 3) = [4, 4]
+      hmat = 0.0_dp
+      hmat(1, 1) = 1.0_dp
+      hmat(2, 2) = 1.0_dp
+      hmat(3, 3) = 1.0_dp
+      needs%rho_spin = .TRUE.
+      CALL xc_rho_set_create(fields, bounds, rho_cutoff=0.05_dp)
+      CALL xc_rho_set_atom_update(fields, needs, 2, bounds)
+      level = libxc_density_floor(fields%rho_cutoff)
+      fields%rhoa = 0.4_dp
+      fields%rhob = 0.3_dp
+      DO domain = skala_fft_domain, skala_last_sample_domain
+         fields%rhob(0, 2, 4) = level
+         point(:, 1) = [2, 4, 1]
+         IF (domain == skala_fft_domain) point(:, 1) = [0, 2, 4]
+         IF (domain > 2) point(:, 1) = [2, 4, 2]
+         keys = 0
+         keys(:, 2) = point(:, 1)
+         CALL skala_density_constraints_set(constraints, point, [2], [0.37_dp], 1.e-14_dp, 1.e-20_dp, &
+                                            2, [2, 2, 1], bounds, hmat, RESHAPE([REAL(dp)::0, 0, 0, 1, 0, 0], [3, 2]), &
+                                            domains=[domain], atomic_sizes=[0, 6], targets=[level], &
+                                            paw_sizes=RESHAPE([0, 0, 6, 3], [2, 2]))
+         IF (domain == skala_fft_domain) THEN
+            CALL libxc_select_floor_limits(constraints, fields, 2, domain)
+         ELSE
+            CALL libxc_select_floor_limits(constraints, fields, 2, domain, keys)
+         END IF
+         IF (.NOT. ALLOCATED(fields%spin_floor_slopes)) ERROR STOP 'Missing selected floor derivative'
+         IF (ABS(fields%spin_floor_slopes(2, 2) - 0.63_dp) > 1.e-15_dp) ERROR STOP 'Wrong selected floor row'
+         fields%spin_floor_slopes(2, 2) = -1.0_dp
+         IF (ANY(fields%spin_floor_slopes /= -1.0_dp)) ERROR STOP 'Selected an unrelated physical sample'
+         fields%rhob(0, 2, 4) = 2.0_dp*level
+         CALL libxc_select_floor_limits(constraints, fields, 2, domain, keys)
+         IF (ALLOCATED(fields%spin_floor_slopes)) ERROR STOP 'A stale floor derivative survived an off-surface batch'
+         CALL skala_density_constraints_reset(constraints)
+      END DO
+      CALL xc_rho_set_release(fields)
+   END SUBROUTINE check_libxc_floor_selection
 
 ! **************************************************************************************************
 !> \brief Check correlation potentials where a small spin power multiplies a large reduced tau.

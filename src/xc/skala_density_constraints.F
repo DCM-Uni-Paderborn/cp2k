@@ -53,6 +53,7 @@ MODULE skala_density_constraints
       PRIVATE
       INTEGER :: nspins = 0, npts(3) = 0, bounds(2, 3) = 0
       INTEGER, ALLOCATABLE :: points(:, :), spins(:), descriptors(:), domains(:), atomic_sizes(:)
+      INTEGER, ALLOCATABLE :: paw_sizes(:, :)
       REAL(dp) :: hmat(3, 3) = 0.0_dp, probe = 0.0_dp, tolerance = 0.0_dp
       REAL(dp) :: kinetic_probe = 0.0_dp, kinetic_tolerance = 0.0_dp
       REAL(dp), ALLOCATABLE :: positions(:, :), negative_weights(:), targets(:)
@@ -239,7 +240,7 @@ CONTAINS
 !> \param first Physical spin densities at the first orbital state.
 !> \param last Physical spin densities at the last orbital state.
 !> \param crossings Candidate mask with the same physical point/spin layout.
-!> \param target Physical threshold, zero by default.
+!> \param TARGET ...
 ! **************************************************************************************************
    SUBROUTINE skala_density_crossings(first, last, crossings, TARGET)
       REAL(dp), INTENT(IN)                               :: first(:, :), last(:, :)
@@ -274,7 +275,7 @@ CONTAINS
 !> \param value Its actual physical spin density.
 !> \param converged Whether the physical density meets the requested tolerance.
 !> \param max_iterations Maximum safeguarded interpolation steps, defaults to 100.
-!> \param target Physical threshold, zero by default. Value retains the actual physical input.
+!> \param TARGET ...
 ! **************************************************************************************************
    SUBROUTINE skala_density_root(evaluate, context, first_step, last_step, tolerance, step, value, &
                                  converged, max_iterations, TARGET)
@@ -366,6 +367,7 @@ CONTAINS
       IF (ALLOCATED(state%descriptors)) DEALLOCATE (state%descriptors)
       IF (ALLOCATED(state%domains)) DEALLOCATE (state%domains)
       IF (ALLOCATED(state%atomic_sizes)) DEALLOCATE (state%atomic_sizes)
+      IF (ALLOCATED(state%paw_sizes)) DEALLOCATE (state%paw_sizes)
       IF (ALLOCATED(state%positions)) DEALLOCATE (state%positions)
       IF (ALLOCATED(state%negative_weights)) DEALLOCATE (state%negative_weights)
       IF (ALLOCATED(state%targets)) DEALLOCATE (state%targets)
@@ -400,10 +402,11 @@ CONTAINS
 !> \param domains FFT, exact atomic or interpolated atomic-background evaluation, defaults to FFT.
 !> \param atomic_sizes Complete row count per global atom, required for atomic constraints.
 !> \param targets Fixed physical descriptor values, zero by default.
+!> \param paw_sizes Original radial and angular counts per global atom, required for PAW constraints.
 ! **************************************************************************************************
    SUBROUTINE skala_density_constraints_set(state, points, spins, negative_weights, &
                                             probe, tolerance, nspins, npts, bounds, hmat, positions, &
-                                            descriptors, kinetic_probe, kinetic_tolerance, domains, atomic_sizes, targets)
+                                           descriptors, kinetic_probe, kinetic_tolerance, domains, atomic_sizes, targets, paw_sizes)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
       INTEGER, INTENT(IN)                                :: points(:, :), spins(:)
@@ -414,6 +417,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: kinetic_probe, kinetic_tolerance
       INTEGER, INTENT(IN), OPTIONAL                      :: domains(:), atomic_sizes(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
+      INTEGER, INTENT(IN), OPTIONAL                      :: paw_sizes(:, :)
 
       INTEGER                                            :: i, j
       INTEGER, ALLOCATABLE                               :: selected_descriptors(:), &
@@ -441,14 +445,19 @@ CONTAINS
       selected_domains = skala_fft_domain
       IF (PRESENT(domains)) THEN
          CPASSERT(SIZE(domains) == SIZE(spins))
-         valid = ALL(domains >= skala_fft_domain .AND. domains <= skala_background_domain)
+         valid = ALL(domains >= skala_fft_domain .AND. domains <= skala_last_sample_domain)
          CPASSERT(valid)
          selected_domains(:) = domains
       END IF
-      IF (ANY(selected_domains /= skala_fft_domain)) THEN
+      IF (ANY(selected_domains == skala_atom_domain .OR. selected_domains == skala_background_domain)) THEN
          CPASSERT(PRESENT(atomic_sizes))
          CPASSERT(SIZE(atomic_sizes) == SIZE(positions, 2))
          CPASSERT(ALL(atomic_sizes >= 0))
+      END IF
+      IF (ANY(selected_domains == skala_paw_ae_domain .OR. selected_domains == skala_paw_ps_domain)) THEN
+         CPASSERT(PRESENT(paw_sizes))
+         CPASSERT(ALL(SHAPE(paw_sizes) == [2, SIZE(positions, 2)]))
+         CPASSERT(ALL(paw_sizes >= 0))
       END IF
       IF (PRESENT(descriptors)) THEN
          CPASSERT(SIZE(descriptors) == SIZE(spins))
@@ -475,12 +484,17 @@ CONTAINS
          IF (selected_domains(i) == skala_fft_domain) THEN
             CPASSERT(ALL(points(:, i) >= bounds(1, :)))
             CPASSERT(ALL(points(:, i) <= bounds(2, :)))
-         ELSE
+         ELSE IF (selected_domains(i) == skala_atom_domain .OR. selected_domains(i) == skala_background_domain) THEN
             valid = points(1, i) >= 1 .AND. points(1, i) <= SIZE(atomic_sizes)
             CPASSERT(valid)
             valid = points(2, i) >= 1 .AND. points(2, i) <= atomic_sizes(points(1, i))
             CPASSERT(valid)
             CPASSERT(points(3, i) == 1)
+         ELSE
+            valid = points(1, i) >= 1 .AND. points(1, i) <= SIZE(paw_sizes, 2)
+            CPASSERT(valid)
+            CPASSERT(ALL(points(2:3, i) >= 1))
+            CPASSERT(ALL(points(2:3, i) <= paw_sizes(:, points(1, i))))
          END IF
          DO j = 1, i - 1
             IF (ALL(points(:, i) == points(:, j)) .AND. spins(i) == spins(j) .AND. &
@@ -507,9 +521,13 @@ CONTAINS
       state%spins(:) = spins
       state%descriptors(:) = selected_descriptors
       state%domains(:) = selected_domains
-      IF (ANY(selected_domains /= skala_fft_domain)) THEN
+      IF (PRESENT(atomic_sizes)) THEN
          ALLOCATE (state%atomic_sizes(SIZE(atomic_sizes)))
          state%atomic_sizes(:) = atomic_sizes
+      END IF
+      IF (PRESENT(paw_sizes)) THEN
+         ALLOCATE (state%paw_sizes(2, SIZE(paw_sizes, 2)))
+         state%paw_sizes(:, :) = paw_sizes
       END IF
       state%negative_weights(:) = negative_weights
       state%targets = 0.0_dp
@@ -542,13 +560,14 @@ CONTAINS
 !> \param hmat ...
 !> \param positions ...
 !> \param atomic_sizes Optional current atomic layout, also required to validate atomic selections.
+!> \param paw_sizes Optional original radial and angular layout per global atom.
 !> \return ...
 ! **************************************************************************************************
-   FUNCTION skala_density_constraints_matches(state, nspins, npts, bounds, hmat, positions, atomic_sizes) RESULT(matches)
+   FUNCTION skala_density_constraints_matches(state, nspins, npts, bounds, hmat, positions, atomic_sizes, paw_sizes) RESULT(matches)
       TYPE(skala_density_constraints_type), INTENT(IN)   :: state
       INTEGER, INTENT(IN)                                :: nspins, npts(3), bounds(2, 3)
       REAL(dp), INTENT(IN)                               :: hmat(3, 3), positions(:, :)
-      INTEGER, INTENT(IN), OPTIONAL                      :: atomic_sizes(:)
+      INTEGER, INTENT(IN), OPTIONAL                      :: atomic_sizes(:), paw_sizes(:, :)
       LOGICAL                                            :: matches
 
       matches = .FALSE.
@@ -560,6 +579,11 @@ CONTAINS
          IF (.NOT. ALLOCATED(state%atomic_sizes)) RETURN
          IF (SIZE(state%atomic_sizes) /= SIZE(atomic_sizes)) RETURN
          IF (ANY(state%atomic_sizes /= atomic_sizes)) RETURN
+      END IF
+      IF (PRESENT(paw_sizes)) THEN
+         IF (.NOT. ALLOCATED(state%paw_sizes)) RETURN
+         IF (ANY(SHAPE(state%paw_sizes) /= SHAPE(paw_sizes))) RETURN
+         IF (ANY(state%paw_sizes /= paw_sizes)) RETURN
       END IF
       matches = ALL(state%positions == positions)
    END FUNCTION skala_density_constraints_matches

@@ -49,6 +49,8 @@ MODULE xc_libxc
                                xc_rho_set_type
 #include "../base/base_uses.f90"
 #if defined (__LIBXC)
+   USE skala_density_constraints, ONLY: skala_density_constraints_count, skala_density_constraints_get, &
+                                        skala_density_constraints_type, skala_density_descriptor, skala_fft_domain
    USE input_keyword_types, ONLY: keyword_create, &
                                   keyword_release, &
                                   keyword_type
@@ -148,7 +150,7 @@ MODULE xc_libxc
 
 #if defined (__LIBXC)
    PUBLIC :: libxc_set_backend
-   PUBLIC :: libxc_density_floor
+   PUBLIC :: libxc_density_floor, libxc_select_floor_limits
 
 ! **************************************************************************************************
 !> \brief All threads' workers for one distinct functional setup, together with
@@ -1917,6 +1919,80 @@ CONTAINS
 
       floor = NEAREST(MAX(epsilon_rho, TINY(0.0_dp)), 1.0_dp)
    END FUNCTION libxc_density_floor
+
+! **************************************************************************************************
+!> \brief Apply owned first-derivative weights at satisfied physical spin-density floors.
+!>        Every batch clears previous weights, including absent atoms and PAW padding rows.
+!>        Away from a selected surface the original differentiable branch is used.
+!> \param state Physical descriptor constraints owned by the KS environment.
+!> \param rho_set Actual XC fields on this rank or atomic batch.
+!> \param nspins Number of physical density columns.
+!> \param domain Physical evaluation domain.
+!> \param keys Optional global sample keys in Fortran field order, required outside FFT.
+! **************************************************************************************************
+   SUBROUTINE libxc_select_floor_limits(state, rho_set, nspins, domain, keys)
+      TYPE(skala_density_constraints_type), INTENT(IN) :: state
+      TYPE(xc_rho_set_type), INTENT(INOUT) :: rho_set
+      INTEGER, INTENT(IN) :: nspins, domain
+      INTEGER, INTENT(IN), OPTIONAL :: keys(:, :)
+
+      INTEGER :: bounds(2, 3), c, extent(3), n, point(3), row
+      INTEGER, ALLOCATABLE :: descriptors(:), points(:, :), spins(:)
+      REAL(dp) :: kinetic_probe, kinetic_tolerance, probe, tolerance, value
+      REAL(dp), ALLOCATABLE :: targets(:), weights(:)
+
+      IF (ALLOCATED(rho_set%spin_floor_slopes)) DEALLOCATE (rho_set%spin_floor_slopes)
+      rho_set%spin_floor_tolerance = 0.0_dp
+      n = skala_density_constraints_count(state, domain)
+      IF (n == 0) RETURN
+      CALL skala_density_constraints_get(state, points, spins, weights, probe, tolerance, &
+                                         descriptors=descriptors, kinetic_probe=kinetic_probe, &
+                                         kinetic_tolerance=kinetic_tolerance, domain=domain, targets=targets)
+      IF (ALL(targets == 0.0_dp)) RETURN
+      CPASSERT(nspins == 2)
+      CPASSERT(ASSOCIATED(rho_set%rhoa) .AND. ASSOCIATED(rho_set%rhob))
+      bounds = rho_set%local_bounds
+      extent = MAX(0, bounds(2, :) - bounds(1, :) + 1)
+      IF (PRESENT(keys)) THEN
+         CPASSERT(ALL(SHAPE(keys) == [3, PRODUCT(extent)]))
+      ELSE
+         CPASSERT(domain == skala_fft_domain)
+      END IF
+      DO c = 1, n
+         IF (targets(c) == 0.0_dp) CYCLE
+         IF (descriptors(c) /= skala_density_descriptor .OR. &
+             targets(c) /= libxc_density_floor(rho_set%rho_cutoff)) THEN
+            CPABORT("This physical descriptor target has no implemented limiting XC derivative.")
+         END IF
+         CPASSERT(spins(c) >= 1 .AND. spins(c) <= 2)
+         point = points(:, c)
+         IF (PRESENT(keys)) THEN
+            DO row = 1, PRODUCT(extent)
+               IF (ALL(keys(:, row) == point)) EXIT
+            END DO
+            IF (row > PRODUCT(extent)) CYCLE
+            point(1) = bounds(1, 1) + MODULO(row - 1, extent(1))
+            point(2) = bounds(1, 2) + MODULO((row - 1)/extent(1), extent(2))
+            point(3) = bounds(1, 3) + (row - 1)/(extent(1)*extent(2))
+         ELSE
+            IF (ANY(point < bounds(1, :)) .OR. ANY(point > bounds(2, :))) CYCLE
+            row = 1 + point(1) - bounds(1, 1) + extent(1)*(point(2) - bounds(1, 2) + &
+                                                           extent(2)*(point(3) - bounds(1, 3)))
+         END IF
+         IF (spins(c) == 1) THEN
+            value = rho_set%rhoa(point(1), point(2), point(3))
+         ELSE
+            value = rho_set%rhob(point(1), point(2), point(3))
+         END IF
+         IF (ABS(value - targets(c)) > tolerance) CYCLE
+         IF (.NOT. ALLOCATED(rho_set%spin_floor_slopes)) THEN
+            ALLOCATE (rho_set%spin_floor_slopes(2, PRODUCT(extent)))
+            rho_set%spin_floor_slopes = -1.0_dp
+            rho_set%spin_floor_tolerance = tolerance
+         END IF
+         rho_set%spin_floor_slopes(spins(c), row) = 1.0_dp - weights(c)
+      END DO
+   END SUBROUTINE libxc_select_floor_limits
 
 ! **************************************************************************************************
 !> \brief C2 kinetic projection and its full derivatives in rho, sigma and raw tau.

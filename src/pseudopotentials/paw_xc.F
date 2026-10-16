@@ -10,44 +10,48 @@
 !>        Evaluates AE minus compensated-PS densities, including the corresponding frozen cores.
 ! **************************************************************************************************
 MODULE paw_xc
-   USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE input_section_types,             ONLY: section_vals_type
-   USE kinds,                           ONLY: dp
-   USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
-                                              lebedev_grid
-   USE mathconstants,                   ONLY: fourpi
-   USE orbital_pointers,                ONLY: indco,&
-                                              init_orbital_pointers,&
-                                              nco,&
-                                              ncoset
-   USE orbital_transformation_matrices, ONLY: init_spherical_harmonics,&
+   USE ieee_arithmetic, ONLY: ieee_is_finite
+   USE input_section_types, ONLY: section_vals_type
+   USE kinds, ONLY: dp
+   USE lebedev, ONLY: get_number_of_lebedev_grid, &
+                      lebedev_grid
+   USE mathconstants, ONLY: fourpi
+   USE orbital_pointers, ONLY: indco, &
+                               init_orbital_pointers, &
+                               nco, &
+                               ncoset
+   USE orbital_transformation_matrices, ONLY: init_spherical_harmonics, &
                                               orbtramat
-   USE paw_core_kinetic,                ONLY: paw_core_kinetic_init,&
-                                              paw_core_radial_slopes,&
-                                              paw_core_radial_value,&
-                                              paw_xc_build_ae_core_tau => paw_core_kinetic_build_ae
-   USE paw_onecenter,                   ONLY: paw_onecenter_type
-   USE paw_types,                       ONLY: paw_xc_type
-   USE skala_density_constraints,       ONLY: skala_density_constraints_type,&
-                                              skala_density_samples_active,&
-                                              skala_density_samples_put,&
-                                              skala_paw_ae_domain,&
-                                              skala_paw_ps_domain
-   USE splines,                         ONLY: spline3ders
-   USE upf_types,                       ONLY: atom_upfpot_type,&
-                                              upf_radial_weights
-   USE xc_atom,                         ONLY: fill_rho_set,&
-                                              vxc_of_r_new,&
-                                              xc_rho_set_atom_update
-   USE xc_derivative_set_types,         ONLY: xc_derivative_set_type,&
-                                              xc_dset_create,&
-                                              xc_dset_release,&
-                                              xc_dset_zero_all
-   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
-   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
-   USE xc_rho_set_types,                ONLY: xc_rho_set_create,&
-                                              xc_rho_set_release,&
-                                              xc_rho_set_type
+   USE paw_core_kinetic, ONLY: paw_core_kinetic_init, &
+                               paw_core_radial_slopes, &
+                               paw_core_radial_value, &
+                               paw_xc_build_ae_core_tau => paw_core_kinetic_build_ae
+   USE paw_onecenter, ONLY: paw_onecenter_type
+   USE paw_types, ONLY: paw_xc_type
+   USE skala_density_constraints, ONLY: skala_density_constraints_type, &
+                                        skala_density_samples_active, &
+                                        skala_density_samples_put, &
+                                        skala_paw_ae_domain, &
+                                        skala_paw_ps_domain
+   USE splines, ONLY: spline3ders
+   USE upf_types, ONLY: atom_upfpot_type, &
+                        upf_radial_weights
+   USE xc_atom, ONLY: fill_rho_set, &
+                      vxc_of_r_new, &
+                      xc_rho_set_atom_update
+   USE xc_derivative_set_types, ONLY: xc_derivative_set_type, &
+                                      xc_dset_create, &
+                                      xc_dset_release, &
+                                      xc_dset_zero_all
+   USE xc_derivatives, ONLY: xc_functionals_get_needs
+   USE xc_rho_cflags_types, ONLY: xc_rho_cflags_type
+   USE xc_rho_set_types, ONLY: xc_rho_set_create, &
+                               xc_rho_set_release, &
+                               xc_rho_set_type
+#if defined(__LIBXC)
+   USE skala_density_constraints, ONLY: skala_density_constraints_count
+   USE xc_libxc, ONLY: libxc_select_floor_limits
+#endif
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -476,7 +480,7 @@ CONTAINS
       LOGICAL                                            :: lsd, record_samples, use_tau
       REAL(dp)                                           :: batch_energy, sign
       REAL(dp), ALLOCATABLE :: angular_value(:), drho(:, :, :, :), kinetic_value(:), &
-         radial_value(:), rho(:, :, :), tau(:, :, :), weights(:, :)
+                               radial_value(:), rho(:, :, :), tau(:, :, :), weights(:, :)
       REAL(dp), POINTER                                  :: vtau(:, :, :), vxc(:, :, :), &
                                                             vxg(:, :, :, :)
       REAL(dp) :: &
@@ -485,6 +489,10 @@ CONTAINS
       TYPE(xc_derivative_set_type)                       :: derivatives
       TYPE(xc_rho_cflags_type)                           :: needs
       TYPE(xc_rho_set_type)                              :: rho_set
+#if defined(__LIBXC)
+      INTEGER                                            :: angular, domain
+      INTEGER, ALLOCATABLE                               :: selected_keys(:, :)
+#endif
 
       CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
       CPASSERT(ALL(SHAPE(potential) == SHAPE(density)))
@@ -560,6 +568,29 @@ CONTAINS
             IF (record_samples) THEN
                CALL record_xc_samples(grid, first, side, rho, tau, samples, atom, use_tau)
             END IF
+#if defined(__LIBXC)
+            IF (PRESENT(samples)) THEN
+               IF (ASSOCIATED(samples)) THEN
+                  domain = skala_paw_ae_domain
+                  IF (side == 2) domain = skala_paw_ps_domain
+                  IF (skala_density_constraints_count(samples, domain) > 0) THEN
+                     CPASSERT(PRESENT(atom))
+                     CPASSERT(atom > 0)
+                     IF (.NOT. ALLOCATED(selected_keys)) ALLOCATE (selected_keys(3, na*nr))
+                     selected_keys = 0
+                     DO jr = 1, MIN(nr, grid%nr - first + 1)
+                        ir = first + jr - 1
+                        IF (grid%r(ir) <= 0.0_dp .OR. grid%wr(ir) == 0.0_dp) CYCLE
+                        DO angular = 1, na
+                           IF (grid%wa(angular) == 0.0_dp) CYCLE
+                           selected_keys(:, (jr - 1)*na + angular) = [atom, ir, angular]
+                        END DO
+                     END DO
+                  END IF
+                  CALL libxc_select_floor_limits(samples, rho_set, nspin, domain, selected_keys)
+               END IF
+            END IF
+#endif
             CALL xc_dset_zero_all(derivatives)
             vxc = 0.0_dp
             vxg = 0.0_dp
@@ -611,12 +642,24 @@ CONTAINS
       DEALLOCATE (vxc, vxg, vtau)
    END SUBROUTINE paw_xc_evaluate
 
+! **************************************************************************************************
+!> \brief ...
+!> \param grid ...
+!> \param first ...
+!> \param side ...
+!> \param rho ...
+!> \param tau ...
+!> \param samples ...
+!> \param atom ...
+!> \param use_tau ...
+! **************************************************************************************************
    SUBROUTINE record_xc_samples(grid, first, side, rho, tau, samples, atom, use_tau)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
-      INTEGER, INTENT(IN)                                :: first, side, atom
+      INTEGER, INTENT(IN)                                :: first, side
       REAL(dp), INTENT(IN)                               :: rho(:, :, :), tau(:, :, :)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: samples
+      INTEGER, INTENT(IN)                                :: atom
       LOGICAL, INTENT(IN)                                :: use_tau
 
       INTEGER                                            :: angular, domain, ir, jr, np, nspin, row

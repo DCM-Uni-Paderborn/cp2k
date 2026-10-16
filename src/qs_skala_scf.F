@@ -1391,12 +1391,14 @@ CONTAINS
                                                             kinetic_tolerance
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
 
-      INTEGER                                            :: domain, i, m
-      INTEGER, ALLOCATABLE                               :: atomic_sizes(:), keys(:, :)
+      INTEGER                                            :: atom, center, domain, i, ikind, m
+      INTEGER, ALLOCATABLE                               :: atomic_sizes(:), keys(:, :), &
+                                                            paw_sizes(:, :)
       LOGICAL                                            :: available, valid
       REAL(dp), ALLOCATABLE                              :: density(:, :), kinetic(:, :)
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type), POINTER                      :: rho_r(:)
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
 
       CPASSERT(state%evaluated)
       m = SIZE(negative_weights)
@@ -1417,12 +1419,21 @@ CONTAINS
          END DO
       END DO
       CALL state%para_env%max(atomic_sizes)
+      ALLOCATE (paw_sizes(2, SIZE(state%positions, 2)), SOURCE=0)
+      frame => state%inverse%frame%ao
+      IF (state%bloch) frame => state%inverse%bloch%frames(1)%ao
+      DO center = 1, SIZE(frame%center_atoms)
+         ikind = frame%center_kinds(center)
+         IF (.NOT. state%inverse%paw(ikind)%active) CYCLE
+         atom = frame%center_atoms(center)
+         paw_sizes(:, atom) = [state%inverse%paw(ikind)%xcgrid%nr, state%inverse%paw(ikind)%xcgrid%na]
+      END DO
       CALL skala_density_constraints_set(state%constraints, points, spins, negative_weights, &
                                          density_probe, density_tolerance, SIZE(state%orbitals, 2), &
                                          grid%npts, grid%bounds, state%hmat, state%positions, &
                                          descriptors=descriptors, kinetic_probe=kinetic_probe, &
                                          kinetic_tolerance=kinetic_tolerance, domains=domains, &
-                                         atomic_sizes=atomic_sizes, targets=targets)
+                                         atomic_sizes=atomic_sizes, targets=targets, paw_sizes=paw_sizes)
    END SUBROUTINE qs_skala_scf_select
 
 ! **************************************************************************************************
