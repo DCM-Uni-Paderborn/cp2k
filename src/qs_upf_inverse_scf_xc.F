@@ -12,7 +12,8 @@ MODULE qs_upf_inverse_scf_xc
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE input_section_types,             ONLY: section_get_ival,&
                                               section_vals_type
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE lebedev,                         ONLY: deallocate_lebedev_grids,&
                                               get_number_of_lebedev_grid,&
                                               init_lebedev_grids,&
@@ -34,7 +35,9 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_response
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_block_size,&
+                                              qs_upf_inverse_evaluate,&
+                                              qs_upf_inverse_response
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_prepare,&
                                               qs_upf_inverse_atom_grid_ref_type,&
                                               qs_upf_inverse_atom_grid_response
@@ -61,6 +64,8 @@ MODULE qs_upf_inverse_scf_xc
    PRIVATE
    PUBLIC :: qs_upf_inverse_scf_xc_evaluate, qs_upf_inverse_scf_xc_response
 
+   INTEGER(KIND=int_8), PARAMETER :: max_xc_field_bytes = 64_int_8*1024*1024
+
 CONTAINS
 
 ! **************************************************************************************************
@@ -83,7 +88,7 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: kinetic_potential(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), matrix(:, :, :)
-      INTEGER                                            :: nao, nk, np, ns, spin
+      INTEGER                                            :: block, hi, ik, lo, nao, nk, np, ns, spin
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), core(:, :), &
                                                             core_gradient(:, :, :), core_tau(:, :)
       TYPE(cell_type), POINTER                           :: cell
@@ -128,6 +133,24 @@ CONTAINS
       IF (.NOT. ALLOCATED(state%atom_grid%points)) CALL prepare_atom_grid(ks_env, state, frames(1)%frame, &
                                                                           xc_section_uses_native_skala_evaluator(xc_section))
       np = SIZE(state%atom_grid%weights)
+      IF (.NOT. ALLOCATED(state%atom_grid%inverse_values) .AND. np > 0) THEN
+         ! Reuse fixed-geometry fields across orbital trials. The inverse SCF reset
+         ! releases this quadrature together with its defining frames. Larger sets
+         ! keep the existing bounded-block evaluation without a persistent cache.
+         IF (64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes) THEN
+            ALLOCATE (state%atom_grid%inverse_values(np, nao, nk), &
+                      state%atom_grid%inverse_gradients(np, nao, 3, nk))
+            block = qs_upf_inverse_block_size(frames(1)%frame)
+            DO ik = 1, nk
+               DO lo = 1, np, block
+                  hi = MIN(np, lo + block - 1)
+                  CALL qs_upf_inverse_evaluate(frames(ik)%frame, state%atom_grid%points(:, lo:hi), &
+                                               state%atom_grid%inverse_values(lo:hi, :, ik), &
+                                               state%atom_grid%inverse_gradients(lo:hi, :, :, ik))
+               END DO
+            END DO
+         END IF
+      END IF
       IF (ALLOCATED(state%xc_matrices)) DEALLOCATE (state%xc_matrices)
       ALLOCATE (state%xc_matrices(nao, nao, nk, ns))
       IF (.NOT. ASSOCIATED(state%bloch%kpoints)) CALL qs_rho_get(rho, rho_ao_kp=density_ao)

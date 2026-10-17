@@ -145,7 +145,7 @@ CONTAINS
          qoperator(:, :), soft(:, :)
       INTEGER                                            :: block, hi, ik, lo, m, nao, nk, np, &
                                                             nproj, nspin, spin
-      LOGICAL                                            :: store_fields
+      LOGICAL                                            :: geometry_fields, store_fields
       REAL(dp), ALLOCATABLE :: ebackground(:), gradient(:, :), integration_weights(:), &
          reconstruction_density(:), reconstruction_gradient(:, :), rho(:), tau(:), &
          tau_augmentation(:)
@@ -174,9 +174,20 @@ CONTAINS
          CPASSERT(ALL(SHAPE(core_tau) == [np, nspin]))
       END IF
       block = qs_upf_inverse_block_size(frames(1)%frame)
+      geometry_fields = .FALSE.
+      IF (PRESENT(atom_grid)) THEN
+         geometry_fields = ALLOCATED(atom_grid%inverse_values)
+         CPASSERT(geometry_fields .EQV. ALLOCATED(atom_grid%inverse_gradients))
+         IF (geometry_fields) THEN
+            CPASSERT(ALL(SHAPE(atom_grid%inverse_values) == [np, nao, nk]))
+            CPASSERT(ALL(SHAPE(atom_grid%inverse_gradients) == [np, nao, 3, nk]))
+            CPASSERT(ALL(SHAPE(atom_grid%points) == SHAPE(points)))
+            CPASSERT(ALL(atom_grid%points == points))
+         END IF
+      END IF
       ! Reuse only the orbital fields shared by the density and operator in this call.
       ! Larger point sets retain the original bounded-block evaluation.
-      store_fields = np > 0 .AND. 64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes
+      store_fields = .NOT. geometry_fields .AND. np > 0 .AND. 64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             IF (skala_density_samples_only(density_constraints)) store_fields = .FALSE.
@@ -202,7 +213,12 @@ CONTAINS
          DO lo = 1, np, block
             hi = MIN(np, lo + block - 1)
             m = hi - lo + 1
-            CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), orbital_gradient(:m, :, :))
+            IF (geometry_fields) THEN
+               soft(:m, :) = atom_grid%inverse_values(lo:hi, :, ik)
+               orbital_gradient(:m, :, :) = atom_grid%inverse_gradients(lo:hi, :, :, ik)
+            ELSE
+               CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), orbital_gradient(:m, :, :))
+            END IF
             IF (store_fields) THEN
                cached_soft(lo:hi, :, ik) = soft(:m, :)
                cached_gradient(lo:hi, :, :, ik) = orbital_gradient(:m, :, :)
@@ -298,7 +314,10 @@ CONTAINS
          DO lo = 1, np, block
             hi = MIN(np, lo + block - 1)
             m = hi - lo + 1
-            IF (store_fields) THEN
+            IF (geometry_fields) THEN
+               soft(:m, :) = atom_grid%inverse_values(lo:hi, :, ik)
+               orbital_gradient(:m, :, :) = atom_grid%inverse_gradients(lo:hi, :, :, ik)
+            ELSE IF (store_fields) THEN
                soft(:m, :) = cached_soft(lo:hi, :, ik)
                orbital_gradient(:m, :, :) = cached_gradient(lo:hi, :, :, ik)
             ELSE

@@ -32,6 +32,8 @@ MODULE qs_upf_inverse_atom_grid
       ! Row within the complete atom quadrature, independent of MPI distribution.
       INTEGER, ALLOCATABLE :: atom_rows(:)
       REAL(dp), ALLOCATABLE :: points(:, :), weights(:), base_weights(:)
+      ! Native inverse frames and this quadrature share one geometry lifetime.
+      COMPLEX(dp), ALLOCATABLE :: inverse_values(:, :, :), inverse_gradients(:, :, :, :)
       TYPE(atom_image_layout_type), ALLOCATABLE :: layouts(:)
    END TYPE qs_upf_inverse_atom_grid_type
 
@@ -68,8 +70,8 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: image_shell(3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_blocks
 
-      INTEGER                                            :: atom, atom_row, ia, idir, ir, kind, nlocal, row, &
-                                                            shell(3)
+      INTEGER                                            :: atom, atom_row, ia, idir, ir, kind, &
+                                                            nlocal, row, shell(3)
       LOGICAL                                            :: complete_atoms, owned
       REAL(dp)                                           :: radius, taper, u, weight
       TYPE(grid_atom_type), POINTER                      :: grid
