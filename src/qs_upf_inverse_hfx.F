@@ -89,6 +89,8 @@ MODULE qs_upf_inverse_hfx
    TYPE lattice_overlap_type
       COMPLEX(dp), ALLOCATABLE :: left(:, :), right(:, :), dleft(:, :), dright(:, :)
       COMPLEX(dp), ALLOCATABLE :: cl(:, :, :), cr(:, :, :), delta(:, :, :), fcl(:, :, :), fcr(:, :, :)
+      ! Pure Gaussian fields have a different meaning from the complete soft fields above.
+      COMPLEX(dp), ALLOCATABLE :: gaussian_left(:, :, :), gaussian_right(:, :, :)
       INTEGER, POINTER :: field_budget => NULL()
    END TYPE lattice_overlap_type
 
@@ -2822,14 +2824,16 @@ CONTAINS
                   CALL lattice_factored_moment(frame, center, center_image, left_range, [0, 0, 0], fields, &
                                                auxiliary_center, r, radial_weights, directions, angular_weights, &
                                                coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
-                                               moment_key, left_fields, moment_left, valid_moment)
+                                               moment_key, left_fields, overlaps%gaussian_left, overlaps%field_budget, &
+                                               moment_left, valid_moment)
                   factored = factored .AND. valid_moment
                END IF
                IF (right_compute) THEN
                   CALL lattice_factored_moment(frame, center, center_image, right_range, ao_image, fields, &
                                                auxiliary_center, r, radial_weights, directions, angular_weights, &
                                                coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
-                                               moment_key, right_fields, moment_right, valid_moment)
+                                               moment_key, right_fields, overlaps%gaussian_right, overlaps%field_budget, &
+                                               moment_right, valid_moment)
                   factored = factored .AND. valid_moment
                END IF
             END IF
@@ -3045,12 +3049,14 @@ CONTAINS
 !> \param cache Existing assembly-local moment storage.
 !> \param key Auxiliary atom, relative image and shell.
 !> \param workspace Reusable original Gaussian scratch arrays.
+!> \param gaussian_fields Twice the original Gaussian values on fixed center-image, AO-pair quadrature rows.
+!> \param field_budget Existing shared payload bound for this AO pair and center-image batch.
 !> \param moment Linear moment in original projector, Gaussian and auxiliary order.
 !> \param valid Whether the bounded scratch allocation permits this evaluation.
 ! **************************************************************************************************
    SUBROUTINE lattice_factored_moment(frame, center, center_image, ao_range, ao_image, fields, auxiliary_center, &
                                       r, radial_weights, directions, angular_weights, coefficient_images, coefficients, &
-                                      own_fields, potentials, cache, key, workspace, moment, valid)
+                                      own_fields, potentials, cache, key, workspace, gaussian_fields, field_budget, moment, valid)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, center_image(3), ao_range(2), &
                                                             ao_image(3)
@@ -3067,6 +3073,8 @@ CONTAINS
          TARGET                                          :: cache
       INTEGER, INTENT(IN)                                :: key(5)
       TYPE(inverse_field_workspace_type), INTENT(INOUT)  :: workspace
+      COMPLEX(dp), ALLOCATABLE, INTENT(INOUT)            :: gaussian_fields(:, :, :)
+      INTEGER, INTENT(INOUT), POINTER                    :: field_budget
       COMPLEX(dp), INTENT(OUT)                           :: moment(:, :, :)
       LOGICAL, INTENT(OUT)                               :: valid
 
@@ -3076,7 +3084,8 @@ CONTAINS
                                                             kind, last, lo, nang, nao, np, nproj, &
                                                             nrow, row, single_image(3, 1), &
                                                             zero(3, 1)
-      INTEGER(int_8)                                     :: words
+      INTEGER(int_8)                                     :: gaussian_words, words
+      LOGICAL                                            :: cached_gaussian
       REAL(dp)                                           :: bounds(3, 2), position(3), radius
       REAL(dp), ALLOCATABLE                              :: coordinates(:, :, :), &
                                                             local_points(:, :), potential(:, :), &
@@ -3098,6 +3107,18 @@ CONTAINS
       moment = CMPLX(0.0_dp, 0.0_dp, dp)
       valid = .TRUE.
       IF (nrow == 0) RETURN
+      ! The overlap entry fixes all Gaussian arguments across auxiliary shells. Retain their
+      ! values within its original lifetime, sharing the budget with the other point fields.
+      cached_gaussian = ALLOCATED(gaussian_fields)
+      IF (cached_gaussian) THEN
+         CPASSERT(ALL(SHAPE(gaussian_fields) == [nang, nao, nrow]))
+      ELSE IF (ASSOCIATED(field_budget)) THEN
+         gaussian_words = 2_int_8*INT(nang, int_8)*INT(nao, int_8)*INT(nrow, int_8)
+         IF (gaussian_words <= INT(field_budget, int_8)) THEN
+            ALLOCATE (gaussian_fields(nang, nao, nrow))
+            field_budget = field_budget - INT(gaussian_words)
+         END IF
+      END IF
       position = frame%positions(:, frame%center_atoms(center)) + MATMUL(frame%cell, REAL(center_image, dp))
       ALLOCATE (coordinates(3, nang, nrow), local_points(3, nang), weighted(nang, nproj, fields%nfunction, nrow), &
                 potential(nang, fields%nfunction), weights(nang), delta(nang, MAX(np, nproj)), &
@@ -3136,19 +3157,24 @@ CONTAINS
                weighted(:, j, aux, row) = delta(:, j)*(weights*potential(:, aux))
             END DO
          END DO
-         phi = CMPLX(0.0_dp, 0.0_dp, dp)
-         DO atom = 1, SIZE(frame%bases)
-            first = frame%ao_first(atom)
-            last = frame%ao_last(atom)
-            lo = MAX(first, ao_range(1))
-            hi = MIN(last, ao_range(2))
-            IF (hi < lo) CYCLE
-            CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, coordinates(:, :, row), &
-                                                frame%positions(:, atom), frame%cell, single_image, &
-                                                [0.0_dp, 0.0_dp, 0.0_dp], gaussian(:, :last - first + 1), &
-                                                workspace=workspace%gaussian(atom))
-            phi(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = 2.0_dp*gaussian(:, lo - first + 1:hi - first + 1)
-         END DO
+         IF (cached_gaussian) THEN
+            phi(:, :) = gaussian_fields(:, :, row)
+         ELSE
+            phi = CMPLX(0.0_dp, 0.0_dp, dp)
+            DO atom = 1, SIZE(frame%bases)
+               first = frame%ao_first(atom)
+               last = frame%ao_last(atom)
+               lo = MAX(first, ao_range(1))
+               hi = MIN(last, ao_range(2))
+               IF (hi < lo) CYCLE
+               CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, coordinates(:, :, row), &
+                                                   frame%positions(:, atom), frame%cell, single_image, &
+                                                   [0.0_dp, 0.0_dp, 0.0_dp], gaussian(:, :last - first + 1), &
+                                                   workspace=workspace%gaussian(atom))
+               phi(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = 2.0_dp*gaussian(:, lo - first + 1:hi - first + 1)
+            END DO
+            IF (ALLOCATED(gaussian_fields)) gaussian_fields(:, :, row) = phi
+         END IF
          DO aux = 1, fields%nfunction
             CALL field_product(weighted(:, :, aux, row), phi, moment(:, :, aux), .TRUE., .TRUE., .FALSE.)
          END DO
