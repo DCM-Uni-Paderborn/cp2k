@@ -520,13 +520,9 @@ CONTAINS
                IF (primitive%power > 0) dh = dh + primitive%power*squared_radius**(primitive%power - 1)*exponential
             END IF
             IF (.NOT. angular_ready(l)) THEN
-               DO m = 1, 2*l + 1
-                  slot = l*l + m
-                  DO point = 1, npoint
-                     CALL native_solid_harmonic(l, m, displacement(:, point), PRESENT(gradient), &
-                                                angular(point, slot), angular_gradient(:, point, slot))
-                  END DO
-               END DO
+               CALL native_solid_harmonics_batch(l, displacement, PRESENT(gradient), &
+                                                 angular(:, l*l + 1:(l + 1)**2), &
+                                                 angular_gradient(:, :, l*l + 1:(l + 1)**2))
                angular_ready(l) = .TRUE.
             END IF
             DO m = 1, 2*l + 1
@@ -544,6 +540,58 @@ CONTAINS
          END ASSOCIATE
       END DO
    END SUBROUTINE gaussian_coulomb_fields_evaluate_batch
+
+! **************************************************************************************************
+!> \brief Share Cartesian powers and monomials across a batch of native solid harmonics.
+!>        The Cartesian summation order and normalization match the scalar evaluation.
+!> \param l Angular momentum.
+!> \param displacement Point-minus-center coordinates, indexed (axis,point).
+!> \param derivatives Whether point gradients are required.
+!> \param angular Solid harmonics, indexed (point,magnetic index).
+!> \param gradient Point gradients, indexed (axis,point,magnetic index).
+! **************************************************************************************************
+   SUBROUTINE native_solid_harmonics_batch(l, displacement, derivatives, angular, gradient)
+      INTEGER, INTENT(IN)                                :: l
+      REAL(dp), INTENT(IN)                               :: displacement(:, :)
+      LOGICAL, INTENT(IN)                                :: derivatives
+      REAL(dp), INTENT(OUT)                              :: angular(:, :), gradient(:, :, :)
+
+      INTEGER                                            :: a, axis, degree, m, powers(3), reduced(3)
+      REAL(dp) :: factor, monomial_gradient(SIZE(displacement, 2), 3), &
+         monomial(SIZE(displacement, 2)), coordinate_power(SIZE(displacement, 2), 3, 0:l)
+
+      coordinate_power(:, :, 0) = 1.0_dp
+      DO degree = 1, l
+         DO axis = 1, 3
+            coordinate_power(:, axis, degree) = coordinate_power(:, axis, degree - 1)*displacement(axis, :)
+         END DO
+      END DO
+      angular = 0.0_dp
+      gradient = 0.0_dp
+      DO a = 1, nco(l)
+         powers = indco(:, ncoset(l - 1) + a)
+         monomial = coordinate_power(:, 1, powers(1))*coordinate_power(:, 2, powers(2))* &
+                    coordinate_power(:, 3, powers(3))
+         IF (derivatives) THEN
+            monomial_gradient = 0.0_dp
+            DO axis = 1, 3
+               IF (powers(axis) == 0) CYCLE
+               reduced = powers
+               reduced(axis) = reduced(axis) - 1
+               monomial_gradient(:, axis) = REAL(powers(axis), dp)*coordinate_power(:, 1, reduced(1))* &
+                                            coordinate_power(:, 2, reduced(2))*coordinate_power(:, 3, reduced(3))
+            END DO
+         END IF
+         DO m = 1, 2*l + 1
+            factor = orbtramat(l)%slm(m, a)
+            angular(:, m) = angular(:, m) + factor*monomial
+            IF (.NOT. derivatives) CYCLE
+            DO axis = 1, 3
+               gradient(axis, :, m) = gradient(axis, :, m) + factor*monomial_gradient(:, axis)
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE native_solid_harmonics_batch
 
 ! **************************************************************************************************
 !> \brief Native solid harmonic and Cartesian point gradient in the original polynomial order.
