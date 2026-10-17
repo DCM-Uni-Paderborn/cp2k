@@ -2578,7 +2578,8 @@ CONTAINS
       INTEGER(int_8)                                     :: field_words
       LOGICAL                                            :: cache_fields, cache_ready, &
                                                             cached_potentials, derivatives, &
-                                                            left_zero, right_zero
+                                                            left_needed, left_zero, right_needed, &
+                                                            right_zero
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
       REAL(dp), ALLOCATABLE :: dpoints(:, :), local_points(:, :), points(:, :), &
          potential_gradient(:, :, :), potentials(:, :), weighted_potential(:), weights(:)
@@ -2656,6 +2657,14 @@ CONTAINS
          IF (.NOT. derivatives) RETURN
          IF (ALL(dwl == CMPLX(0.0_dp, 0.0_dp, dp)) .AND. ALL(dwr == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
       END IF
+      ! Each linear moment multiplies the opposite projector coefficient. A vanished
+      ! coefficient still needs that moment when its geometry response is nonzero.
+      left_needed = .NOT. right_zero
+      right_needed = .NOT. left_zero
+      IF (derivatives) THEN
+         left_needed = left_needed .OR. ANY(dwr /= CMPLX(0.0_dp, 0.0_dp, dp))
+         right_needed = right_needed .OR. ANY(dwl /= CMPLX(0.0_dp, 0.0_dp, dp))
+      END IF
       qi => temporary_augmentation
       IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
       IF (.NOT. frame%direct .AND. radius > 0.0_dp) THEN
@@ -2730,12 +2739,30 @@ CONTAINS
                CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
                                                [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
                                                [0.0_dp, 0.0_dp, 0.0_dp], delta)
-               CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, &
-                                            left_fields, fcl, fdl, dwl, atom_response, cell_response, dpoints, derivatives, &
-                                            coefficient_images, coupled_coefficients, coupled_response)
-               CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, &
-                                            right_fields, fcr, fdr, dwr, atom_response, cell_response, dpoints, derivatives, &
-                                            coefficient_images, coupled_coefficients, coupled_response)
+               IF (left_needed) THEN
+                  CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, &
+                                               left_fields, fcl, fdl, dwl, atom_response, cell_response, dpoints, derivatives, &
+                                               coefficient_images, coupled_coefficients, coupled_response)
+               ELSE
+                  cl = CMPLX(0.0_dp, 0.0_dp, dp)
+                  dl = CMPLX(0.0_dp, 0.0_dp, dp)
+                  IF (derivatives) THEN
+                     fcl = CMPLX(0.0_dp, 0.0_dp, dp)
+                     fdl = CMPLX(0.0_dp, 0.0_dp, dp)
+                  END IF
+               END IF
+               IF (right_needed) THEN
+                  CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, &
+                                               right_fields, fcr, fdr, dwr, atom_response, cell_response, dpoints, derivatives, &
+                                               coefficient_images, coupled_coefficients, coupled_response)
+               ELSE
+                  cr = CMPLX(0.0_dp, 0.0_dp, dp)
+                  dr = CMPLX(0.0_dp, 0.0_dp, dp)
+                  IF (derivatives) THEN
+                     fcr = CMPLX(0.0_dp, 0.0_dp, dp)
+                     fdr = CMPLX(0.0_dp, 0.0_dp, dp)
+                  END IF
+               END IF
                IF (cache_fields) THEN
                   overlaps%delta(:, :, cache_row) = delta
                   overlaps%cl(:, :, cache_row) = cl
@@ -2765,17 +2792,17 @@ CONTAINS
                DO j = 1, np
                   work(:, j) = delta(:, j)*weighted_potential
                END DO
-               CALL field_product(work, cl, moment_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
-               CALL field_product(work, cr, moment_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               IF (left_needed) CALL field_product(work, cl, moment_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               IF (right_needed) CALL field_product(work, cr, moment_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
                IF (.NOT. derivatives) CYCLE
-               CALL field_product(work, fcl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
-               CALL field_product(work, fcr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               IF (left_needed) CALL field_product(work, fcl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               IF (right_needed) CALL field_product(work, fcr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
                DO ia = 1, nang
                   scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
                   work(ia, :) = scale*delta(ia, :)
                END DO
-               CALL field_product(work, cl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
-               CALL field_product(work, cr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               IF (left_needed) CALL field_product(work, cl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               IF (right_needed) CALL field_product(work, cr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
             END DO
          END DO
          DO aux = 1, fields%nfunction
