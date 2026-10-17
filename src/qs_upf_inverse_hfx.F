@@ -70,6 +70,7 @@ MODULE qs_upf_inverse_hfx
    INTEGER, PARAMETER :: max_cached_potential_words = 16*1024**2
    INTEGER, PARAMETER :: max_cached_lattice_field_words = 16*1024**2
    INTEGER, PARAMETER :: max_cached_lattice_potentials = 32749
+   INTEGER, PARAMETER :: max_cached_lattice_moments = 131071
 
    ! Scratch fields are recomputed at every radial row and retained only within one center call.
    TYPE inverse_field_workspace_type
@@ -106,10 +107,26 @@ MODULE qs_upf_inverse_hfx
       TYPE(transition_augmentation_type) :: integrals
    END TYPE lattice_potential_entry_type
 
+   TYPE linear_moment_type
+      COMPLEX(dp), ALLOCATABLE :: values(:, :, :)
+   END TYPE linear_moment_type
+
+   TYPE lattice_moment_entry_type
+      INTEGER :: key(11) = 0
+      TYPE(linear_moment_type) :: integrals
+   END TYPE lattice_moment_entry_type
+
+   ! Fixed-geometry moments retain the complete soft fields and coupled inverse coefficients.
+   TYPE lattice_moment_cache_type
+      TYPE(lattice_moment_entry_type), ALLOCATABLE :: entries(:)
+      INTEGER :: remaining_words = 0, entry_count = 0
+   END TYPE lattice_moment_cache_type
+
    ! The assembly fixes the geometry, auxiliary shells, interaction and quadratures.
    ! Reuse exact fields and Q integrals across AO pairs and images within one payload budget.
    TYPE lattice_potential_cache_type
       TYPE(lattice_potential_entry_type), ALLOCATABLE :: entries(:)
+      TYPE(lattice_moment_cache_type) :: moments
       INTEGER, POINTER :: auxiliary_images(:, :) => NULL()
       INTEGER :: natom = 0
       ! Reserve the small Q tables independently of the larger point-potential arrays.
@@ -277,6 +294,11 @@ CONTAINS
       nsite = natom*SIZE(auxiliary_images, 2)
       lattice_potentials%natom = natom
       lattice_potentials%auxiliary_images => auxiliary_images
+      IF (.NOT. frame%direct .AND. .NOT. PRESENT(responses)) THEN
+         ! Share the original payload bound between Q tables, point fields and integrated moments.
+         lattice_potentials%moments%remaining_words = max_cached_potential_words/2
+         lattice_potentials%potential_words = max_cached_potential_words/2 - lattice_potentials%remaining_words
+      END IF
       ALLOCATE (bases(nsite), positions(3, nsite), factors(nsite))
       factors = CMPLX(1.0_dp, 0.0_dp, dp)
       IF (PRESENT(responses)) THEN
@@ -798,10 +820,10 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: correction(:, :, :), dc(:, :, :), &
                                                             dn(:, :, :), native(:, :, :)
-      INTEGER :: batch_first, batch_last, batch_size, block_i, block_j, block_k, center, &
-         center_first, center_last, first, image, image_first, image_last, inner, iset, kind, &
-         last, maxl, nblks(3), nentries, nimages, ninner, nl, nouter, nr, outer, owner, rule, &
-         site, slot, start, STOP
+      INTEGER :: auxiliary_image, batch_first, batch_last, batch_size, block_i, block_j, block_k, &
+         center, center_first, center_last, first, image, image_first, image_last, inner, iset, &
+         kind, last, maxl, moment_key(5), nblks(3), nentries, nimages, ninner, nl, nouter, nr, &
+         outer, owner, rule, site, slot, start, STOP
       INTEGER, ALLOCATABLE                               :: auxiliary_start(:), sizes_i(:), &
                                                             sizes_j(:), sizes_k(:), start_i(:), &
                                                             start_j(:), start_k(:)
@@ -809,6 +831,7 @@ CONTAINS
       LOGICAL                                            :: derivatives
       REAL(dp), ALLOCATABLE                              :: radial_weights(:)
       TYPE(gaussian_coulomb_fields_type)                 :: fields
+      TYPE(lattice_moment_cache_type), POINTER           :: linear_cache
       TYPE(lattice_overlap_type), ALLOCATABLE            :: overlaps(:, :)
       TYPE(lattice_potential_cache_type), POINTER        :: lattice_potentials
       TYPE(lattice_potential_cache_type), TARGET         :: local_potentials
@@ -961,6 +984,18 @@ CONTAINS
                                                                  transition_augmentation%nproj, fields%nfunction, &
                                                                  derivatives, qentry)
                                  END IF
+                                 NULLIFY (linear_cache)
+                                 moment_key = 0
+                                 IF (.NOT. derivatives .AND. PRESENT(ao_image)) THEN
+                                    IF (ASSOCIATED(lattice_potentials%auxiliary_images)) THEN
+                                       CPASSERT(lattice_potentials%natom > 0)
+                                       auxiliary_image = (site - 1)/lattice_potentials%natom + 1
+                                       linear_cache => lattice_potentials%moments
+                                       moment_key = [MODULO(site - 1, lattice_potentials%natom) + 1, &
+                                                lattice_potentials%auxiliary_images(:, auxiliary_image) - center_images(:, image), &
+                                                     iset]
+                                    END IF
+                                 END IF
                                  IF (derivatives) THEN
                                     IF (PRESENT(ao_image)) THEN
                                        CALL lattice_center_with_overlaps(left_frame, center, &
@@ -1002,7 +1037,8 @@ CONTAINS
                                                                          augmentation_integrals=qentry, &
                                                                          coefficient_images=coefficient_images, &
                                                                          coupled_coefficients=coupled_coefficients, &
-                                                                         coupled_response=coupled_response)
+                                                                         coupled_response=coupled_response, &
+                                                                         moment_cache=linear_cache, moment_key=moment_key)
                                     ELSE
                                        CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
                                                                       [start_j(block_j), start_j(block_j + 1) - 1], &
@@ -1592,6 +1628,60 @@ CONTAINS
          slot = MODULO(slot, SIZE(cache%entries)) + 1
       END DO
    END SUBROUTINE lattice_potential_entry
+
+! **************************************************************************************************
+!> \brief Find a fixed-geometry linear moment using relative Gaussian and auxiliary images.
+!>        Keys contain the reconstruction center, Gaussian range and image, and auxiliary atom,
+!>        relative image and shell. A full table or exhausted payload uses the original evaluation.
+!> \param cache Assembly-local moments with fixed geometry, coefficients, interaction and quadrature.
+!> \param key Complete integer identifiers for one translated three-center moment.
+!> \param nprojector Number of original reconstruction functions.
+!> \param ngaussian Number of selected Gaussian functions.
+!> \param nauxiliary Complete auxiliary-shell size.
+!> \param ENTRY Cached moment or a null pointer when no entry can be retained.
+! **************************************************************************************************
+   SUBROUTINE lattice_moment_entry(cache, key, nprojector, ngaussian, nauxiliary, ENTRY)
+      TYPE(lattice_moment_cache_type), INTENT(INOUT), &
+         TARGET                                          :: cache
+      INTEGER, INTENT(IN)                                :: key(11), nprojector, ngaussian, &
+                                                            nauxiliary
+      TYPE(linear_moment_type), INTENT(OUT), POINTER     :: entry
+
+      INTEGER                                            :: attempt, i, slot
+      INTEGER(int_8)                                     :: hash
+      REAL(dp)                                           :: words
+
+      NULLIFY (ENTRY)
+      IF (.NOT. ALLOCATED(cache%entries)) THEN
+         IF (cache%remaining_words <= 0) RETURN
+         ALLOCATE (cache%entries(max_cached_lattice_moments))
+      END IF
+      hash = 0_int_8
+      DO i = 1, SIZE(key)
+         hash = MODULO(31_int_8*hash + INT(key(i), int_8), INT(SIZE(cache%entries), int_8))
+      END DO
+      slot = INT(hash) + 1
+      DO attempt = 1, SIZE(cache%entries)
+         IF (ALL(cache%entries(slot)%key == key)) THEN
+            ENTRY => cache%entries(slot)%integrals
+            IF (ALLOCATED(entry%values)) THEN
+               CPASSERT(ALL(SHAPE(entry%values) == [nprojector, ngaussian, nauxiliary]))
+            END IF
+            RETURN
+         END IF
+         IF (ALL(cache%entries(slot)%key == 0)) THEN
+            IF (cache%entry_count >= SIZE(cache%entries)/2) RETURN
+            words = 2.0_dp*REAL(nprojector, dp)*REAL(ngaussian, dp)*REAL(nauxiliary, dp)
+            IF (words > REAL(cache%remaining_words, dp)) RETURN
+            cache%remaining_words = cache%remaining_words - INT(words)
+            cache%entry_count = cache%entry_count + 1
+            cache%entries(slot)%key = key
+            ENTRY => cache%entries(slot)%integrals
+            RETURN
+         END IF
+         slot = MODULO(slot, SIZE(cache%entries)) + 1
+      END DO
+   END SUBROUTINE lattice_moment_entry
 
 ! **************************************************************************************************
 !> \brief Integrate the original Q kernel against one auxiliary shell, retaining its derivatives.
@@ -2542,12 +2632,15 @@ CONTAINS
 !> \param coupled_coefficients ...
 !> \param coupled_response ...
 !> \param augmentation_integrals ...
+!> \param moment_cache Optional assembly-local moments with fixed inverse coefficients and geometry.
+!> \param moment_key Auxiliary atom, relative image and native shell for the moment cache.
 ! **************************************************************************************************
    SUBROUTINE lattice_center_with_overlaps(frame, center, left_range, right_range, ao_image, center_image, &
                                            fields, auxiliary_center, augmentation, r, radial_weights, &
                                            directions, angular_weights, integral, response, atom_response, &
                                            cell_response, auxiliary_response, overlaps, &
-                                           coefficient_images, coupled_coefficients, coupled_response, augmentation_integrals)
+                                           coefficient_images, coupled_coefficients, coupled_response, augmentation_integrals, &
+                                           moment_cache, moment_key)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2), &
                                                             ao_image(3), center_image(3)
@@ -2567,6 +2660,9 @@ CONTAINS
                                                             coupled_response(:, :, :)
       TYPE(transition_augmentation_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: augmentation_integrals
+      TYPE(lattice_moment_cache_type), INTENT(INOUT), &
+         OPTIONAL, TARGET                                :: moment_cache
+      INTEGER, INTENT(IN), OPTIONAL                      :: moment_key(5)
 
       COMPLEX(dp), ALLOCATABLE :: cl(:, :), cr(:, :), delta(:, :), dl(:, :), dq(:, :), dr(:, :), &
          dwl(:, :), dwr(:, :), fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), moment_left(:, :, :), &
@@ -2576,14 +2672,13 @@ CONTAINS
                                                             ir, j, kind, nang, nl, np, nr, &
                                                             zero(3, 1)
       INTEGER(int_8)                                     :: field_words
-      LOGICAL                                            :: cache_fields, cache_ready, &
-                                                            cached_potentials, derivatives, &
-                                                            left_needed, left_zero, right_needed, &
-                                                            right_zero
+      LOGICAL :: cache_fields, cache_ready, cached_potentials, derivatives, left_compute, &
+         left_needed, left_zero, right_compute, right_needed, right_zero
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
       REAL(dp), ALLOCATABLE :: dpoints(:, :), local_points(:, :), points(:, :), &
          potential_gradient(:, :, :), potentials(:, :), weighted_potential(:), weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
+      TYPE(linear_moment_type), POINTER                  :: left_integrals, right_integrals
       TYPE(transition_augmentation_type), POINTER        :: qi
       TYPE(transition_augmentation_type), TARGET         :: temporary_augmentation
 
@@ -2668,143 +2763,181 @@ CONTAINS
       qi => temporary_augmentation
       IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
       IF (.NOT. frame%direct .AND. radius > 0.0_dp) THEN
-         CALL prepare_transition_potentials(qi, fields, r, radial_weights, directions, position, auxiliary_center, &
-                                            radius, frame%cell, gradients=derivatives)
-         cached_potentials = ALLOCATED(qi%potential_fields)
-         IF (cached_potentials .AND. derivatives) cached_potentials = ALLOCATED(qi%potential_fields%gradient)
-         ! The quadrature and orbital fields are fixed for this AO pair and physical center image.
-         ! Auxiliary shells change only their potential. Bound the shared per-pair cache in DP words.
-         cache_rows = COUNT(r < radius .AND. radial_weights /= 0.0_dp)
-         cache_ready = ALLOCATED(overlaps%cl)
-         cache_fields = cache_ready
-         IF (.NOT. cache_fields .AND. ASSOCIATED(overlaps%field_budget)) THEN
-            ! The own-center difference field is rigid in these moving integration coordinates.
-            field_words = 2_int_8*INT(nang, int_8)*(INT(nl, int_8) + INT(nr, int_8))*INT(cache_rows, int_8)
-            IF (derivatives) field_words = 2_int_8*field_words
-            field_words = field_words + 2_int_8*INT(nang, int_8)*INT(np, int_8)*INT(cache_rows, int_8)
-            IF (field_words <= INT(overlaps%field_budget, int_8)) THEN
-               ALLOCATE (overlaps%cl(nang, nl, cache_rows), overlaps%cr(nang, nr, cache_rows), &
-                         overlaps%delta(nang, np, cache_rows))
-               IF (derivatives) THEN
-                  ALLOCATE (overlaps%fcl(nang, nl, cache_rows), overlaps%fcr(nang, nr, cache_rows))
-               END IF
-               overlaps%field_budget = overlaps%field_budget - INT(field_words)
-               cache_fields = .TRUE.
-            END IF
-         END IF
-         IF (cache_ready) THEN
-            CPASSERT(ALL(SHAPE(overlaps%cl) == [nang, nl, cache_rows]))
-            CPASSERT(ALL(SHAPE(overlaps%cr) == [nang, nr, cache_rows]))
-            CPASSERT(ALL(SHAPE(overlaps%delta) == [nang, np, cache_rows]))
-            IF (derivatives) THEN
-               CPASSERT(ALLOCATED(overlaps%fcl))
-            END IF
-         END IF
-         ALLOCATE (points(3, nang), local_points(3, nang), potentials(nang, fields%nfunction), &
-                   weights(nang), weighted_potential(nang), delta(nang, np), work(nang, np), &
-                   cl(nang, nl), dl(nang, nl), cr(nang, nr), dr(nang, nr), &
-                   moment_left(np, nl, fields%nfunction), moment_right(np, nr, fields%nfunction))
+         ALLOCATE (moment_left(np, nl, fields%nfunction), moment_right(np, nr, fields%nfunction))
          moment_left = CMPLX(0.0_dp, 0.0_dp, dp)
          moment_right = CMPLX(0.0_dp, 0.0_dp, dp)
-         IF (derivatives) THEN
-            ALLOCATE (potential_gradient(3, fields%nfunction, nang), dpoints(3, nang), &
-                      fcl(nang, nl), fdl(nang, nl), fcr(nang, nr), fdr(nang, nr), &
-                      response_left(np, nl, fields%nfunction), response_right(np, nr, fields%nfunction))
-            response_left = CMPLX(0.0_dp, 0.0_dp, dp)
-            response_right = CMPLX(0.0_dp, 0.0_dp, dp)
-            DO ia = 1, nang
-               dpoints(:, ia) = dposition
+         left_compute = left_needed
+         right_compute = right_needed
+         NULLIFY (left_integrals, right_integrals)
+         IF (.NOT. derivatives .AND. PRESENT(moment_cache)) THEN
+            CPASSERT(PRESENT(moment_key))
+            IF (left_needed) THEN
+               CALL lattice_moment_entry(moment_cache, [center, left_range, -center_image, moment_key], &
+                                         np, nl, fields%nfunction, left_integrals)
+               IF (ASSOCIATED(left_integrals)) THEN
+                  IF (ALLOCATED(left_integrals%values)) THEN
+                     moment_left(:, :, :) = left_integrals%values
+                     left_compute = .FALSE.
+                  END IF
+               END IF
+            END IF
+            IF (right_needed) THEN
+               CALL lattice_moment_entry(moment_cache, [center, right_range, ao_image - center_image, moment_key], &
+                                         np, nr, fields%nfunction, right_integrals)
+               IF (ASSOCIATED(right_integrals)) THEN
+                  IF (ALLOCATED(right_integrals%values)) THEN
+                     moment_right(:, :, :) = right_integrals%values
+                     right_compute = .FALSE.
+                  END IF
+               END IF
+            END IF
+         END IF
+         IF (left_compute .OR. right_compute) THEN
+            CALL prepare_transition_potentials(qi, fields, r, radial_weights, directions, position, auxiliary_center, &
+                                               radius, frame%cell, gradients=derivatives)
+            cached_potentials = ALLOCATED(qi%potential_fields)
+            IF (cached_potentials .AND. derivatives) cached_potentials = ALLOCATED(qi%potential_fields%gradient)
+            ! The quadrature and orbital fields are fixed for this AO pair and physical center image.
+            ! Auxiliary shells change only their potential. Bound the shared per-pair cache in DP words.
+            cache_rows = COUNT(r < radius .AND. radial_weights /= 0.0_dp)
+            cache_ready = ALLOCATED(overlaps%cl)
+            cache_fields = cache_ready
+            IF (.NOT. cache_fields .AND. ASSOCIATED(overlaps%field_budget)) THEN
+               ! The own-center difference field is rigid in these moving integration coordinates.
+               field_words = 2_int_8*INT(nang, int_8)*(INT(nl, int_8) + INT(nr, int_8))*INT(cache_rows, int_8)
+               IF (derivatives) field_words = 2_int_8*field_words
+               field_words = field_words + 2_int_8*INT(nang, int_8)*INT(np, int_8)*INT(cache_rows, int_8)
+               IF (field_words <= INT(overlaps%field_budget, int_8)) THEN
+                  ALLOCATE (overlaps%cl(nang, nl, cache_rows), overlaps%cr(nang, nr, cache_rows), &
+                            overlaps%delta(nang, np, cache_rows))
+                  IF (derivatives) THEN
+                     ALLOCATE (overlaps%fcl(nang, nl, cache_rows), overlaps%fcr(nang, nr, cache_rows))
+                  END IF
+                  overlaps%field_budget = overlaps%field_budget - INT(field_words)
+                  cache_fields = .TRUE.
+               END IF
+            END IF
+            IF (cache_ready) THEN
+               CPASSERT(ALL(SHAPE(overlaps%cl) == [nang, nl, cache_rows]))
+               CPASSERT(ALL(SHAPE(overlaps%cr) == [nang, nr, cache_rows]))
+               CPASSERT(ALL(SHAPE(overlaps%delta) == [nang, np, cache_rows]))
+               IF (derivatives) THEN
+                  CPASSERT(ALLOCATED(overlaps%fcl))
+               END IF
+            END IF
+            ALLOCATE (points(3, nang), local_points(3, nang), potentials(nang, fields%nfunction), &
+                      weights(nang), weighted_potential(nang), delta(nang, np), work(nang, np), &
+                      cl(nang, nl), dl(nang, nl), cr(nang, nr), dr(nang, nr))
+            IF (derivatives) THEN
+               ALLOCATE (potential_gradient(3, fields%nfunction, nang), dpoints(3, nang), &
+                         fcl(nang, nl), fdl(nang, nl), fcr(nang, nr), fdr(nang, nr), &
+                         response_left(np, nl, fields%nfunction), response_right(np, nr, fields%nfunction))
+               response_left = CMPLX(0.0_dp, 0.0_dp, dp)
+               response_right = CMPLX(0.0_dp, 0.0_dp, dp)
+               DO ia = 1, nang
+                  dpoints(:, ia) = dposition
+               END DO
+            END IF
+            zero = 0
+            cache_row = 0
+            DO ir = 1, SIZE(r)
+               IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
+               cache_row = cache_row + 1
+               local_points(:, :) = r(ir)*directions
+               DO ia = 1, nang
+                  points(:, ia) = position + local_points(:, ia)
+               END DO
+               ! The integration coordinates move with the reconstruction center. Delta and
+               ! its radial/angular measure therefore have no geometry response on this sphere.
+               IF (cache_ready) THEN
+                  delta(:, :) = overlaps%delta(:, :, cache_row)
+                  cl(:, :) = overlaps%cl(:, :, cache_row)
+                  cr(:, :) = overlaps%cr(:, :, cache_row)
+                  IF (derivatives) THEN
+                     fcl(:, :) = overlaps%fcl(:, :, cache_row)
+                     fcr(:, :) = overlaps%fcr(:, :, cache_row)
+                  END IF
+               ELSE
+                  CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
+                                                  [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
+                                                  [0.0_dp, 0.0_dp, 0.0_dp], delta)
+                  IF (left_needed) THEN
+                     CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, &
+                                                  left_fields, fcl, fdl, dwl, atom_response, cell_response, dpoints, derivatives, &
+                                                  coefficient_images, coupled_coefficients, coupled_response)
+                  ELSE
+                     cl = CMPLX(0.0_dp, 0.0_dp, dp)
+                     dl = CMPLX(0.0_dp, 0.0_dp, dp)
+                     IF (derivatives) THEN
+                        fcl = CMPLX(0.0_dp, 0.0_dp, dp)
+                        fdl = CMPLX(0.0_dp, 0.0_dp, dp)
+                     END IF
+                  END IF
+                  IF (right_needed) THEN
+                     CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, &
+                                                  right_fields, fcr, fdr, dwr, atom_response, cell_response, dpoints, derivatives, &
+                                                  coefficient_images, coupled_coefficients, coupled_response)
+                  ELSE
+                     cr = CMPLX(0.0_dp, 0.0_dp, dp)
+                     dr = CMPLX(0.0_dp, 0.0_dp, dp)
+                     IF (derivatives) THEN
+                        fcr = CMPLX(0.0_dp, 0.0_dp, dp)
+                        fdr = CMPLX(0.0_dp, 0.0_dp, dp)
+                     END IF
+                  END IF
+                  IF (cache_fields) THEN
+                     overlaps%delta(:, :, cache_row) = delta
+                     overlaps%cl(:, :, cache_row) = cl
+                     overlaps%cr(:, :, cache_row) = cr
+                     IF (derivatives) THEN
+                        overlaps%fcl(:, :, cache_row) = fcl
+                        overlaps%fcr(:, :, cache_row) = fcr
+                     END IF
+                  END IF
+               END IF
+               weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
+               IF (cached_potentials) THEN
+                  DO ia = 1, nang
+                     potentials(ia, :) = qi%potential_fields%values(ia, :, cache_row)
+                     IF (derivatives) potential_gradient(:, :, ia) = qi%potential_fields%gradient(:, :, ia, cache_row)
+                  END DO
+               ELSE IF (derivatives) THEN
+                  CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), &
+                                                              potentials, potential_gradient)
+               ELSE
+                  CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), potentials)
+               END IF
+               ! The local difference is -Delta W. Keep the small projector dimension
+               ! through the quadrature and contract W only after the radial sum.
+               DO aux = 1, fields%nfunction
+                  weighted_potential(:) = weights*potentials(:, aux)
+                  DO j = 1, np
+                     work(:, j) = delta(:, j)*weighted_potential
+                  END DO
+                  IF (left_compute) CALL field_product(work, cl, moment_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                  IF (right_compute) CALL field_product(work, cr, moment_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                  IF (.NOT. derivatives) CYCLE
+                  IF (left_compute) CALL field_product(work, fcl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                  IF (right_compute) CALL field_product(work, fcr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                  DO ia = 1, nang
+                     scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
+                     work(ia, :) = scale*delta(ia, :)
+                  END DO
+                  IF (left_compute) CALL field_product(work, cl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                  IF (right_compute) CALL field_product(work, cr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
+               END DO
             END DO
          END IF
-         zero = 0
-         cache_row = 0
-         DO ir = 1, SIZE(r)
-            IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
-            cache_row = cache_row + 1
-            local_points(:, :) = r(ir)*directions
-            DO ia = 1, nang
-               points(:, ia) = position + local_points(:, ia)
-            END DO
-            ! The integration coordinates move with the reconstruction center. Delta and
-            ! its radial/angular measure therefore have no geometry response on this sphere.
-            IF (cache_ready) THEN
-               delta(:, :) = overlaps%delta(:, :, cache_row)
-               cl(:, :) = overlaps%cl(:, :, cache_row)
-               cr(:, :) = overlaps%cr(:, :, cache_row)
-               IF (derivatives) THEN
-                  fcl(:, :) = overlaps%fcl(:, :, cache_row)
-                  fcr(:, :) = overlaps%fcr(:, :, cache_row)
-               END IF
-            ELSE
-               CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
-                                               [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
-                                               [0.0_dp, 0.0_dp, 0.0_dp], delta)
-               IF (left_needed) THEN
-                  CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, &
-                                               left_fields, fcl, fdl, dwl, atom_response, cell_response, dpoints, derivatives, &
-                                               coefficient_images, coupled_coefficients, coupled_response)
-               ELSE
-                  cl = CMPLX(0.0_dp, 0.0_dp, dp)
-                  dl = CMPLX(0.0_dp, 0.0_dp, dp)
-                  IF (derivatives) THEN
-                     fcl = CMPLX(0.0_dp, 0.0_dp, dp)
-                     fdl = CMPLX(0.0_dp, 0.0_dp, dp)
-                  END IF
-               END IF
-               IF (right_needed) THEN
-                  CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, &
-                                               right_fields, fcr, fdr, dwr, atom_response, cell_response, dpoints, derivatives, &
-                                               coefficient_images, coupled_coefficients, coupled_response)
-               ELSE
-                  cr = CMPLX(0.0_dp, 0.0_dp, dp)
-                  dr = CMPLX(0.0_dp, 0.0_dp, dp)
-                  IF (derivatives) THEN
-                     fcr = CMPLX(0.0_dp, 0.0_dp, dp)
-                     fdr = CMPLX(0.0_dp, 0.0_dp, dp)
-                  END IF
-               END IF
-               IF (cache_fields) THEN
-                  overlaps%delta(:, :, cache_row) = delta
-                  overlaps%cl(:, :, cache_row) = cl
-                  overlaps%cr(:, :, cache_row) = cr
-                  IF (derivatives) THEN
-                     overlaps%fcl(:, :, cache_row) = fcl
-                     overlaps%fcr(:, :, cache_row) = fcr
-                  END IF
-               END IF
+         IF (ASSOCIATED(left_integrals)) THEN
+            IF (left_compute .AND. .NOT. ALLOCATED(left_integrals%values)) THEN
+               ALLOCATE (left_integrals%values, SOURCE=moment_left)
             END IF
-            weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
-            IF (cached_potentials) THEN
-               DO ia = 1, nang
-                  potentials(ia, :) = qi%potential_fields%values(ia, :, cache_row)
-                  IF (derivatives) potential_gradient(:, :, ia) = qi%potential_fields%gradient(:, :, ia, cache_row)
-               END DO
-            ELSE IF (derivatives) THEN
-               CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), &
-                                                           potentials, potential_gradient)
-            ELSE
-               CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), potentials)
+         END IF
+         IF (ASSOCIATED(right_integrals)) THEN
+            IF (right_compute .AND. .NOT. ALLOCATED(right_integrals%values)) THEN
+               ALLOCATE (right_integrals%values, SOURCE=moment_right)
             END IF
-            ! The local difference is -Delta W. Keep the small projector dimension
-            ! through the quadrature and contract W only after the radial sum.
-            DO aux = 1, fields%nfunction
-               weighted_potential(:) = weights*potentials(:, aux)
-               DO j = 1, np
-                  work(:, j) = delta(:, j)*weighted_potential
-               END DO
-               IF (left_needed) CALL field_product(work, cl, moment_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
-               IF (right_needed) CALL field_product(work, cr, moment_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
-               IF (.NOT. derivatives) CYCLE
-               IF (left_needed) CALL field_product(work, fcl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
-               IF (right_needed) CALL field_product(work, fcr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
-               DO ia = 1, nang
-                  scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
-                  work(ia, :) = scale*delta(ia, :)
-               END DO
-               IF (left_needed) CALL field_product(work, cl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
-               IF (right_needed) CALL field_product(work, cr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
-            END DO
-         END DO
+         END IF
          DO aux = 1, fields%nfunction
             CALL field_product(wl, moment_right(:, :, aux), integral(:, :, aux), .TRUE., .TRUE., .FALSE., -1.0_dp)
             CALL field_product(moment_left(:, :, aux), wr, integral(:, :, aux), .TRUE., .TRUE., .FALSE., -1.0_dp)
