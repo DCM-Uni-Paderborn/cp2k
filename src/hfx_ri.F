@@ -926,11 +926,11 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Add original inverse transition-charge derivatives to native RI forces and virial.
-!>        The full RI covector includes the exchange fraction and spin occupations before any
-!>        restriction to Gaussian derivative blocks. Gaussian and fitting-metric derivatives
-!>        remain native. The defining inverse projection and explicit augmentation derivatives
-!>        are contracted together. Replicated gradients enter the final force reduction once.
+!>        Contract the full RI energy derivative, including exchange and spin factors, with both
+!>        the defining inverse and explicit augmentation responses. Gaussian and fitting-metric
+!>        derivatives remain native. Replicated gradients enter the final force reduction once.
 !> \param qs_env Native force arrays and the current original inverse frame.
+!> \param ri_data Native fitting interaction and RI controls.
 !> \param basis_set_RI Auxiliary Gaussian bases indexed by kind.
 !> \param atoms Native atoms and auxiliary centers.
 !> \param kinds Original radial data and atomic quadrature controls.
@@ -3033,11 +3033,6 @@ CONTAINS
                                      batch_range_2=batch_ranges, batch_range_3=batch_ranges)
       CALL dbt_batched_contract_init(t_3c_sparse, batch_range_1=batch_ranges_RI, &
                                      batch_range_2=batch_ranges, batch_range_3=batch_ranges)
-      IF (inverse_exchange) THEN
-         CALL dbt_batched_contract_init(t_3c_inverse_covector, batch_range_1=batch_ranges_RI, &
-                                        batch_range_2=batch_ranges, batch_range_3=batch_ranges)
-      END IF
-
       DO i_spin = 1, nspins
 
          !Prepare Pmat in tensor format
@@ -3108,6 +3103,9 @@ CONTAINS
                CALL dbt_copy(t_3c_int, t_3c_int_2, order=[2, 1, 3], bounds=bounds_cpy)
                CALL dbt_copy(t_3c_1, t_3c_3, order=[2, 1, 3], move_data=.TRUE.)
 
+               ijbounds(:, 1) = ibounds(:, 1)
+               ijbounds(:, 2) = jbounds(:, 1)
+
                DO k_mem = 1, n_mem_RI
                   kbounds(:, 1) = [batch_start_RI(k_mem), batch_end_RI(k_mem)]
 
@@ -3122,23 +3120,18 @@ CONTAINS
                                     contract_1=[2], notcontract_1=[1], &
                                     contract_2=[1], notcontract_2=[2, 3], &
                                     map_1=[1], map_2=[2, 3], filter_eps=ri_data%filter_eps, &
-                                    retain_sparsity=.TRUE., unit_nr=unit_nr_dbcsr, flop=nflop)
+                                    bounds_2=kbounds, bounds_3=ijbounds, &
+                                    retain_sparsity=.NOT. inverse_exchange, unit_nr=unit_nr_dbcsr, flop=nflop)
                   ri_data%dbcsr_nflop = ri_data%dbcsr_nflop + nflop
                   IF (inverse_exchange) THEN
                      ! Augmentation derivatives may extend beyond the Gaussian derivative blocks.
-                     CALL dbt_contract(-hf_fraction*spin_fac, t_SVS, t_3c_3, 1.0_dp, t_3c_inverse_covector, &
-                                       contract_1=[2], notcontract_1=[1], &
-                                       contract_2=[1], notcontract_2=[2, 3], &
-                                       map_1=[1], map_2=[2, 3], filter_eps=ri_data%filter_eps, &
-                                       bounds_3=kbounds, unit_nr=unit_nr_dbcsr, flop=nflop)
-                     ri_data%dbcsr_nflop = ri_data%dbcsr_nflop + nflop
+                     ! Reuse the complete product, with every free index restricted to this batch.
+                     ! The copy completes deferred products and restores the native distribution.
+                     CALL dbt_copy(t_3c_4, t_3c_inverse_covector, summation=.TRUE.)
                   END IF
                   CALL dbt_batched_contract_finalize(t_SVS)
 
                   CALL dbt_copy(t_3c_4, t_3c_5, summation=.TRUE., move_data=.TRUE.)
-
-                  ijbounds(:, 1) = ibounds(:, 1)
-                  ijbounds(:, 2) = jbounds(:, 1)
 
                   !Contract R_PS = (acP) M_acS
                   CALL dbt_batched_contract_init(t_R)
@@ -3282,7 +3275,7 @@ CONTAINS
       END DO !i_spin
 
       IF (inverse_exchange) THEN
-         CALL dbt_batched_contract_finalize(t_3c_inverse_covector)
+         CALL dbt_scale(t_3c_inverse_covector, -hf_fraction*spin_fac)
          CALL inverse_3c_forces(qs_env, ri_data, basis_set_RI, particle_set, qs_kind_set, t_3c_inverse_covector, &
                                 use_virial_prv)
          CALL dbt_destroy(t_3c_inverse_covector)
