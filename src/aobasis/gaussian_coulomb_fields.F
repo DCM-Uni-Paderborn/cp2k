@@ -471,8 +471,8 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: max_cached_l = 4
 
-      INTEGER                                            :: axis, block, column, l, m, npoint, &
-                                                            point, slot
+      INTEGER                                            :: angular_count, axis, block, column, l, &
+                                                            m, npoint, point, slot
       LOGICAL                                            :: angular_ready(0:max_cached_l)
       REAL(dp)                                           :: last_alpha
       REAL(dp), ALLOCATABLE                              :: angular(:, :), &
@@ -498,7 +498,8 @@ CONTAINS
          END DO
          RETURN
       END IF
-      ALLOCATE (angular(npoint, (max_cached_l + 1)**2), angular_gradient(3, npoint, (max_cached_l + 1)**2), &
+      angular_count = (MAX(0, MAXVAL(fields%primitives%l)) + 1)**2
+      ALLOCATE (angular(npoint, angular_count), angular_gradient(3, npoint, angular_count), &
                 squared_radius(npoint), exponential(npoint), h(npoint), dh(npoint))
       potential = 0.0_dp
       IF (PRESENT(gradient)) gradient = 0.0_dp
