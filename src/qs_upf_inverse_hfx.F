@@ -122,11 +122,18 @@ MODULE qs_upf_inverse_hfx
       INTEGER :: remaining_words = 0, entry_count = 0
    END TYPE lattice_moment_cache_type
 
+   ! Original own-center difference fields are rigid on the moving atomic quadrature.
+   TYPE radial_difference_fields_type
+      REAL(dp), ALLOCATABLE :: radii(:), directions(:, :)
+      COMPLEX(dp), ALLOCATABLE :: values(:, :, :)
+   END TYPE radial_difference_fields_type
+
    ! The assembly fixes the geometry, auxiliary shells, interaction and quadratures.
    ! Reuse exact fields and Q integrals across AO pairs and images within one payload budget.
    TYPE lattice_potential_cache_type
       TYPE(lattice_potential_entry_type), ALLOCATABLE :: entries(:)
       TYPE(lattice_moment_cache_type) :: moments
+      TYPE(radial_difference_fields_type), ALLOCATABLE :: radial_fields(:)
       INTEGER, POINTER :: auxiliary_images(:, :) => NULL()
       INTEGER :: natom = 0
       ! Reserve the small Q tables independently of the larger point-potential arrays.
@@ -1011,7 +1018,8 @@ CONTAINS
                                                                          augmentation_integrals=qentry, &
                                                                          coefficient_images=coefficient_images, &
                                                                          coupled_coefficients=coupled_coefficients, &
-                                                                         coupled_response=coupled_response)
+                                                                         coupled_response=coupled_response, &
+                                                                         difference_cache=lattice_potentials)
                                     ELSE
                                        CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
                                                                       [start_j(block_j), start_j(block_j + 1) - 1], &
@@ -1038,7 +1046,8 @@ CONTAINS
                                                                          coefficient_images=coefficient_images, &
                                                                          coupled_coefficients=coupled_coefficients, &
                                                                          coupled_response=coupled_response, &
-                                                                         moment_cache=linear_cache, moment_key=moment_key)
+                                                                         moment_cache=linear_cache, moment_key=moment_key, &
+                                                                         difference_cache=lattice_potentials)
                                     ELSE
                                        CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
                                                                       [start_j(block_j), start_j(block_j + 1) - 1], &
@@ -2634,13 +2643,14 @@ CONTAINS
 !> \param augmentation_integrals ...
 !> \param moment_cache Optional assembly-local moments with fixed inverse coefficients and geometry.
 !> \param moment_key Auxiliary atom, relative image and native shell for the moment cache.
+!> \param difference_cache Assembly-local own-center fields, sharing the existing payload budget.
 ! **************************************************************************************************
    SUBROUTINE lattice_center_with_overlaps(frame, center, left_range, right_range, ao_image, center_image, &
                                            fields, auxiliary_center, augmentation, r, radial_weights, &
                                            directions, angular_weights, integral, response, atom_response, &
                                            cell_response, auxiliary_response, overlaps, &
                                            coefficient_images, coupled_coefficients, coupled_response, augmentation_integrals, &
-                                           moment_cache, moment_key)
+                                           moment_cache, moment_key, difference_cache)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2), &
                                                             ao_image(3), center_image(3)
@@ -2663,6 +2673,8 @@ CONTAINS
       TYPE(lattice_moment_cache_type), INTENT(INOUT), &
          OPTIONAL, TARGET                                :: moment_cache
       INTEGER, INTENT(IN), OPTIONAL                      :: moment_key(5)
+      TYPE(lattice_potential_cache_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: difference_cache
 
       COMPLEX(dp), ALLOCATABLE :: cl(:, :), cr(:, :), delta(:, :), dl(:, :), dq(:, :), dr(:, :), &
          dwl(:, :), dwr(:, :), fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), moment_left(:, :, :), &
@@ -2679,6 +2691,7 @@ CONTAINS
          potential_gradient(:, :, :), potentials(:, :), weighted_potential(:), weights(:)
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
       TYPE(linear_moment_type), POINTER                  :: left_integrals, right_integrals
+      TYPE(radial_difference_fields_type), POINTER       :: own_fields
       TYPE(transition_augmentation_type), POINTER        :: qi
       TYPE(transition_augmentation_type), TARGET         :: temporary_augmentation
 
@@ -2793,6 +2806,10 @@ CONTAINS
             END IF
          END IF
          IF (left_compute .OR. right_compute) THEN
+            NULLIFY (own_fields)
+            IF (PRESENT(difference_cache)) THEN
+               CALL lattice_difference_fields(frame, kind, r, radial_weights, directions, difference_cache, own_fields)
+            END IF
             CALL prepare_transition_potentials(qi, fields, r, radial_weights, directions, position, auxiliary_center, &
                                                radius, frame%cell, gradients=derivatives)
             cached_potentials = ALLOCATED(qi%potential_fields)
@@ -2858,9 +2875,13 @@ CONTAINS
                      fcr(:, :) = overlaps%fcr(:, :, cache_row)
                   END IF
                ELSE
-                  CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
-                                                  [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
-                                                  [0.0_dp, 0.0_dp, 0.0_dp], delta)
+                  IF (ASSOCIATED(own_fields)) THEN
+                     delta(:, :) = own_fields%values(:, :, cache_row)
+                  ELSE
+                     CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
+                                                     [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
+                                                     [0.0_dp, 0.0_dp, 0.0_dp], delta)
+                  END IF
                   IF (left_needed) THEN
                      CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, &
                                                   left_fields, fcl, fdl, dwl, atom_response, cell_response, dpoints, derivatives, &
@@ -2974,6 +2995,67 @@ CONTAINS
                                MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(q, dwr))
       END DO
    END SUBROUTINE lattice_center_with_overlaps
+
+! **************************************************************************************************
+!> \brief Reuse rigid original difference fields across AO pairs, images and auxiliary shells.
+!>        The enclosing tensor assembly fixes the radial tables. Actual radial and angular
+!>        nodes are checked before reuse. An unavailable or oversized entry retains evaluation.
+!> \param frame Original reconstruction data for this assembly.
+!> \param kind Original atomic-kind index.
+!> \param r Original radial nodes.
+!> \param radial_weights Original radial measures, selecting the active rows.
+!> \param directions Original angular nodes.
+!> \param cache Assembly-local fields and remaining shared payload budget, in DP words.
+!> \param fields Reusable entry or null when the original evaluation must be retained.
+! **************************************************************************************************
+   SUBROUTINE lattice_difference_fields(frame, kind, r, radial_weights, directions, cache, fields)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: kind
+      REAL(dp), INTENT(IN)                               :: r(:), radial_weights(:), directions(:, :)
+      TYPE(lattice_potential_cache_type), &
+         INTENT(INOUT), TARGET                           :: cache
+      TYPE(radial_difference_fields_type), INTENT(OUT), &
+         POINTER                                         :: fields
+
+      INTEGER                                            :: ir, nang, np, nrow, row, zero(3, 1)
+      INTEGER(int_8)                                     :: words
+      REAL(dp) :: radius, local_points(3, SIZE(directions, 2))
+      LOGICAL                                            :: active(SIZE(r))
+
+      NULLIFY (fields)
+      radius = frame%delta_cache(kind)%radius
+      active = r < radius .AND. radial_weights /= 0.0_dp
+      nang = SIZE(directions, 2)
+      np = frame%delta_cache(kind)%nproj
+      nrow = COUNT(active)
+      IF (.NOT. ALLOCATED(cache%radial_fields)) ALLOCATE (cache%radial_fields(SIZE(frame%delta_cache)))
+      ASSOCIATE (ENTRY => cache%radial_fields(kind))
+         IF (ALLOCATED(entry%values)) THEN
+            IF (.NOT. ALL(SHAPE(entry%values) == [nang, np, nrow])) RETURN
+            IF (.NOT. ALL(entry%radii == PACK(r, active))) RETURN
+            IF (.NOT. ALL(entry%directions == directions)) RETURN
+         ELSE
+            words = 2_int_8*INT(nang, int_8)*INT(np, int_8)*INT(nrow, int_8) + &
+                    INT(nrow, int_8) + SIZE(directions, KIND=int_8)
+            IF (words > INT(cache%potential_words, int_8)) RETURN
+            ALLOCATE (entry%values(nang, np, nrow))
+            ALLOCATE (entry%radii, SOURCE=PACK(r, active))
+            ALLOCATE (entry%directions, SOURCE=directions)
+            cache%potential_words = cache%potential_words - INT(words)
+            row = 0
+            zero = 0
+            DO ir = 1, SIZE(r)
+               IF (.NOT. active(ir)) CYCLE
+               row = row + 1
+               local_points(:, :) = r(ir)*directions
+               CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
+                                               [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
+                                               [0.0_dp, 0.0_dp, 0.0_dp], entry%values(:, :, row))
+            END DO
+         END IF
+      END ASSOCIATE
+      fields => cache%radial_fields(kind)
+   END SUBROUTINE lattice_difference_fields
 
 ! **************************************************************************************************
 !> \brief Form or accumulate a complex field product without transpose or result temporaries.
