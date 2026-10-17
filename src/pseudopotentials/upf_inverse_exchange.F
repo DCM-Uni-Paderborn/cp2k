@@ -12,7 +12,7 @@
 !>        projection, symmetry packing or occupation factor is applied here.
 ! **************************************************************************************************
 MODULE upf_inverse_exchange
-   USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
+   USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate_batch,&
                                               gaussian_coulomb_fields_periodic,&
                                               gaussian_coulomb_fields_type
    USE kinds,                           ONLY: dp
@@ -244,11 +244,12 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: auxiliary_images(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: cell_derivative(:, :, :, :, :)
 
-      INTEGER                                            :: auxiliary, axis, i, ia, ir, j, l, lm, m, n, naux, &
-                                                            p, pair, q
+      INTEGER                                            :: auxiliary, axis, i, ia, ir, j, l, lm, m, &
+                                                            n, naux, p, pair, q
       LOGICAL                                            :: derivatives
       REAL(dp)                                           :: point(3), radial
-      REAL(dp), ALLOCATABLE :: cell_gradient(:, :, :), cell_projected(:, :, :, :), &
+      REAL(dp), ALLOCATABLE :: angular_points(:, :), batch_gradient(:, :, :), &
+         batch_potential(:, :), cell_gradient(:, :, :), cell_projected(:, :, :, :), &
          d_integrals(:, :, :, :), d_projected(:, :, :), gradient(:, :), harmonics(:, :), &
          potential(:), projected(:, :), values(:)
 
@@ -289,6 +290,10 @@ CONTAINS
       IF (PRESENT(cell_derivative)) THEN
          ALLOCATE (cell_gradient(3, 3, naux), cell_projected((augmentation%lmax + 1)**2, naux, 3, 3))
       END IF
+      IF (.NOT. PRESENT(auxiliary_images)) THEN
+         ALLOCATE (angular_points(3, SIZE(weights)), batch_potential(SIZE(weights), naux))
+         IF (derivatives) ALLOCATE (batch_gradient(3, naux, SIZE(weights)))
+      END IF
       DO l = 0, augmentation%lmax
          DO m = -l, l
             lm = l*l + l + m + 1
@@ -301,6 +306,14 @@ CONTAINS
          projected(:, :) = 0.0_dp
          IF (derivatives) d_projected(:, :, :) = 0.0_dp
          IF (PRESENT(cell_derivative)) cell_projected(:, :, :, :) = 0.0_dp
+         IF (.NOT. PRESENT(auxiliary_images)) THEN
+            angular_points = SPREAD(displacement, 2, SIZE(weights)) + augmentation%r(ir)*directions
+            IF (derivatives) THEN
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, angular_points, batch_potential, batch_gradient)
+            ELSE
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, angular_points, batch_potential)
+            END IF
+         END IF
          DO ia = 1, SIZE(weights)
             point = displacement + augmentation%r(ir)*directions(:, ia)
             IF (derivatives) THEN
@@ -313,7 +326,7 @@ CONTAINS
                            DO auxiliary = 1, naux
                               DO lm = 1, SIZE(harmonics, 2)
                                  cell_projected(lm, auxiliary, axis, j) = cell_projected(lm, auxiliary, axis, j) + &
-                                                                        harmonics(ia, lm)*cell_gradient(axis, j, auxiliary)
+                                                                          harmonics(ia, lm)*cell_gradient(axis, j, auxiliary)
                               END DO
                            END DO
                         END DO
@@ -322,7 +335,8 @@ CONTAINS
                      CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, potential, gradient)
                   END IF
                ELSE
-                  CALL gaussian_coulomb_fields_evaluate(fields, point, potential, gradient)
+                  potential(:) = batch_potential(ia, :)
+                  gradient(:, :) = batch_gradient(:, :, ia)
                END IF
                DO axis = 1, 3
                   DO auxiliary = 1, naux
@@ -336,7 +350,7 @@ CONTAINS
                IF (PRESENT(auxiliary_images)) THEN
                   CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, potential)
                ELSE
-                  CALL gaussian_coulomb_fields_evaluate(fields, point, potential)
+                  potential(:) = batch_potential(ia, :)
                END IF
             END IF
             DO auxiliary = 1, naux
