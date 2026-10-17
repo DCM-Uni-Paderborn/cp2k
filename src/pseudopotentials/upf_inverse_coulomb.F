@@ -332,6 +332,9 @@ CONTAINS
                   END DO
                END DO
                IF (.NOT. derive) CYCLE
+               ! The map already supplies both density covectors. Transposed pairs have
+               ! the same joint geometry contraction, so integrate that derivative once.
+               IF (b < a) CYCLE
             END IF
             nb = SIZE(centers(b)%radii)
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
@@ -364,7 +367,7 @@ CONTAINS
                      DO channel = 1, SIZE(centers(a)%l)
                         DO nr = 1, na
                            IF (PRESENT(map)) THEN
-                              dpair = dpair + 0.5_dp*work(a)%q(nr, channel)* &
+                              dpair = dpair + MERGE(0.5_dp, 1.0_dp, a == b)*work(a)%q(nr, channel)* &
                                       SUM(dkernel(nr, channel, :, :)*work(b)%q)
                               CYCLE
                            END IF
