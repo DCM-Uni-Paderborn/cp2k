@@ -97,6 +97,7 @@ MODULE pw_env_methods
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              has_uspp,&
                                               qs_kind_type
    USE qs_rho0_types,                   ONLY: get_rho0_mpole,&
                                               rho0_mpole_type
@@ -791,16 +792,18 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'compute_max_radius'
       CHARACTER(LEN=8), DIMENSION(10), PARAMETER :: sbas = ["ORB     ", "AUX     ", "RI_AUX  ", &
          "MAO     ", "HARRIS  ", "RI_HXC  ", "RI_K    ", "LRI_AUX ", "RHOIN   ", "NUC     "]
-      CHARACTER(LEN=8), DIMENSION(5), PARAMETER :: &
-         pbas = ["ORB     ", "AUX_FIT ", "MAO     ", "HARRIS  ", "NUC     "]
+      CHARACTER(LEN=8), DIMENSION(6), PARAMETER :: &
+         pbas = ["ORB     ", "AUX_FIT ", "MAO     ", "HARRIS  ", "NUC     ", "ORB_SOFT"]
       REAL(KIND=dp), PARAMETER                           :: safety_factor = 1.015_dp
 
       INTEGER :: handle, ibasis_set_type, igrid_level, igrid_zet0_s, ikind, ipgf, iset, ishell, &
          jkind, jpgf, jset, jshell, la, lb, lgrid_level, ngrid_level, nkind, nseta, nsetb
       INTEGER, DIMENSION(:), POINTER                     :: npgfa, npgfb, nshella, nshellb
       INTEGER, DIMENSION(:, :), POINTER                  :: lshella, lshellb
-      REAL(KIND=dp)                                      :: alpha, core_charge, eps_gvg, eps_rho, &
-                                                            max_rpgf0_s, maxradius, zet0_h, zetp
+      LOGICAL                                            :: accurate_soft
+      REAL(KIND=dp)                                      :: alpha, core_charge, eps_gvg, &
+                                                            eps_product, eps_rho, max_rpgf0_s, &
+                                                            maxradius, zet0_h, zetp
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: zeta, zetb
       TYPE(cneo_potential_type), POINTER                 :: cneo_potential
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -821,6 +824,7 @@ CONTAINS
 
       eps_rho = dft_control%qs_control%eps_rho_rspace
       eps_gvg = dft_control%qs_control%eps_gvg_rspace
+      accurate_soft = dft_control%qs_control%gapw .AND. has_uspp(qs_kind_set)
 
       IF (dft_control%qs_control%gapw) THEN
          CALL get_qs_env(qs_env=qs_env, rho0_mpole=rho0_mpole)
@@ -889,6 +893,13 @@ CONTAINS
          END DO
          ! loop over basis sets that are used in product function grid collocation
          DO ibasis_set_type = 1, SIZE(pbas)
+            IF (pbas(ibasis_set_type) == "ORB_SOFT" .AND. .NOT. accurate_soft) CYCLE
+            eps_product = eps_rho
+            IF (pbas(ibasis_set_type) == "ORB_SOFT") THEN
+               ! Match the charge-metric task tolerance in qs_create_task_list.
+               ! Distributed halos and cached sphere bounds need the same range.
+               eps_product = MIN(eps_rho, EPSILON(1.0_dp))
+            END IF
             DO ikind = 1, nkind
                qs_kind => qs_kind_set(ikind)
                NULLIFY (orb_basis_set)
@@ -917,9 +928,9 @@ CONTAINS
                         lgrid_level = gaussian_gridlevel(pw_env%gridlevel_info, zetp)
                         IF (lgrid_level == igrid_level) THEN
                            ! density (scale is at most 2)
-                           maxradius = MAX(maxradius, exp_radius(lb, zetp, eps_rho, 2.0_dp, rlow=maxradius))
+                           maxradius = MAX(maxradius, exp_radius(lb, zetp, eps_product, 2.0_dp, rlow=maxradius))
                            ! tau, properties?
-                           maxradius = MAX(maxradius, exp_radius(lb + 1, zetp, eps_rho, 2.0_dp, rlow=maxradius))
+                           maxradius = MAX(maxradius, exp_radius(lb + 1, zetp, eps_product, 2.0_dp, rlow=maxradius))
                            ! potential
                            maxradius = MAX(maxradius, exp_radius(lb, zetp, eps_gvg, 2.0_dp, rlow=maxradius))
                            ! forces

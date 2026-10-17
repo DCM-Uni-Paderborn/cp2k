@@ -35,6 +35,8 @@ MODULE qs_update_s_mstruct
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
                                               set_qs_env
+   USE qs_kind_types,                   ONLY: has_uspp,&
+                                              qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_did_change,&
                                               qs_ks_env_type,&
@@ -197,14 +199,16 @@ CONTAINS
       INTEGER                                            :: handle, isub
       LOGICAL :: composite_direct_ao, composite_reference, native_grid_diagnostics, &
          paw_one_center, skip_load_balance_distributed, soft_valid
+      REAL(dp)                                           :: soft_tail_tolerance
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(section_vals_type), POINTER                   :: gauxc_section, input, xc_section
       TYPE(task_list_type), POINTER                      :: task_list
 
       CALL timeset(routineN, handle)
       NULLIFY (ks_env, dft_control, gauxc_section, input, xc_section)
-      CALL get_qs_env(qs_env, ks_env=ks_env, dft_control=dft_control, input=input)
+      CALL get_qs_env(qs_env, ks_env=ks_env, dft_control=dft_control, input=input, qs_kind_set=qs_kind_set)
 
       soft_valid = (dft_control%qs_control%gapw .OR. dft_control%qs_control%gapw_xc)
       xc_section => section_vals_get_subs_vals(input, "DFT%XC")
@@ -236,6 +240,13 @@ CONTAINS
          END IF
          ! generate the soft task list
          IF (dft_control%qs_control%gapw .OR. dft_control%qs_control%gapw_xc) THEN
+            soft_tail_tolerance = dft_control%qs_control%eps_rho_rspace
+            IF (dft_control%qs_control%gapw .AND. has_uspp(qs_kind_set)) THEN
+               ! This source also defines the USPP/PAW charge metric. Support switches
+               ! enter its energy-weighted geometry derivative, so retain primitive
+               ! tails to roundoff rather than the ordinary density-screening level.
+               soft_tail_tolerance = MIN(soft_tail_tolerance, EPSILON(1.0_dp))
+            END IF
             CALL get_ks_env(ks_env, task_list_soft=task_list)
             IF (.NOT. ASSOCIATED(task_list)) THEN
                CALL allocate_task_list(task_list)
@@ -243,7 +254,8 @@ CONTAINS
             END IF
             CALL generate_qs_task_list(ks_env, task_list, basis_type="ORB_SOFT", &
                                        reorder_rs_grid_ranks=.TRUE., &
-                                       skip_load_balance_distributed=skip_load_balance_distributed)
+                                       skip_load_balance_distributed=skip_load_balance_distributed, &
+                                       eps_rho_rspace=soft_tail_tolerance)
          END IF
       END IF
 

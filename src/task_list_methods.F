@@ -103,6 +103,7 @@ CONTAINS
 !> \param pw_env_external ...
 !> \param sab_orb_external ...
 !> \param ext_kpoints ...
+!> \param eps_rho_rspace Optional primitive-product tail tolerance for this task list.
 !> \par History
 !>      01.2008 factored out of calculate_rho_elec [Joost VandeVondele]
 !>      04.2010 divides tasks into grid levels and atom pairs for integrate/collocate [Iain Bethune]
@@ -116,7 +117,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE generate_qs_task_list(ks_env, task_list, basis_type, &
                                     reorder_rs_grid_ranks, skip_load_balance_distributed, &
-                                    pw_env_external, sab_orb_external, ext_kpoints)
+                                    pw_env_external, sab_orb_external, ext_kpoints, eps_rho_rspace)
 
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(task_list_type), POINTER                      :: task_list
@@ -127,6 +128,7 @@ CONTAINS
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          OPTIONAL, POINTER                               :: sab_orb_external
       TYPE(kpoint_type), OPTIONAL, POINTER               :: ext_kpoints
+      REAL(dp), INTENT(IN), OPTIONAL                     :: eps_rho_rspace
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'generate_qs_task_list'
       INTEGER, PARAMETER                                 :: max_tasks = 2000
@@ -289,7 +291,7 @@ CONTAINS
                                    rs_descs, dft_control, cube_info, gridlevel_info, cindex, &
                                    iatom, jatom, rpgfa, rpgfb, zeta, zetb, kind_radius_b, &
                                    set_radius_a, set_radius_b, ra, rab, &
-                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb)
+                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb, eps_rho_rspace)
 
       END DO
 !!$OMP END PARALLEL
@@ -653,13 +655,14 @@ CONTAINS
 !> \param npgfb ...
 !> \param nseta ...
 !> \param nsetb ...
+!> \param eps_rho_rspace Optional primitive-product tail tolerance, otherwise the QS value.
 !> \par History
 !>      Joost VandeVondele: 10.2008 refactored
 ! **************************************************************************************************
    SUBROUTINE task_list_inner_loop(tasks, ntasks, curr_tasks, rs_descs, dft_control, &
                                    cube_info, gridlevel_info, cindex, &
                                    iatom, jatom, rpgfa, rpgfb, zeta, zetb, kind_radius_b, set_radius_a, set_radius_b, ra, rab, &
-                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb)
+                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb, eps_rho_rspace)
 
       TYPE(task_type), DIMENSION(:), POINTER             :: tasks
       INTEGER                                            :: ntasks, curr_tasks
@@ -676,11 +679,15 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: la_max, la_min, lb_max, lb_min, npgfa, &
                                                             npgfb
       INTEGER                                            :: nseta, nsetb
+      REAL(dp), INTENT(IN), OPTIONAL                     :: eps_rho_rspace
 
       INTEGER                                            :: cube_center(3), igrid_level, ipgf, iset, &
                                                             jpgf, jset, lb_cube(3), ub_cube(3)
-      REAL(KIND=dp)                                      :: dab, rab2, radius, zetp
+      REAL(KIND=dp)                                      :: dab, rab2, radius, tail_tolerance, zetp
 
+      tail_tolerance = dft_control%qs_control%eps_rho_rspace
+      IF (PRESENT(eps_rho_rspace)) tail_tolerance = eps_rho_rspace
+      CPASSERT(tail_tolerance > 0.0_dp)
       rab2 = rab(1)*rab(1) + rab(2)*rab(2) + rab(3)*rab(3)
       dab = SQRT(rab2)
 
@@ -707,7 +714,7 @@ CONTAINS
                                               rs_descs(igrid_level)%rs_desc, cube_info(igrid_level), &
                                               la_max(iset), zeta(ipgf, iset), la_min(iset), &
                                               lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
-                                              ra, rab, rab2, dft_control%qs_control%eps_rho_rspace)
+                                              ra, rab, rab2, tail_tolerance)
 
                   CALL pgf_to_tasks(tasks, ntasks, curr_tasks, &
                                     rab, cindex, iatom, jatom, iset, jset, ipgf, jpgf, &
