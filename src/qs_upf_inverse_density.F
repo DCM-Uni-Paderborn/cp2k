@@ -7,7 +7,6 @@
 !> \brief Home-center inverse density and its finite Gaussian GAPW angular map.
 MODULE qs_upf_inverse_density
    USE basis_set_types,                 ONLY: gto_basis_set_type
-   USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE message_passing,                 ONLY: mp_comm_type
@@ -913,7 +912,7 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :), dgc(:, :, :), &
                                                             gc(:, :, :)
-      INTEGER                                            :: atom, first, last, n, np
+      INTEGER                                            :: n, np
 
       n = SIZE(frame%coefficients, 2)
       np = SIZE(points, 2)
@@ -943,32 +942,13 @@ CONTAINS
       ALLOCATE (chi(np, n), gc(np, n, 3))
       CALL qs_upf_inverse_center_fields(frame, center, points, d, gd, dd, gdd, point_response, &
                                         atom_response, cell_response, reduced_k_response, coefficients_response, [0, 0, 0])
-      CALL qs_upf_inverse_evaluate(frame, points, e, ge, de, gde, point_response, atom_response, &
-                                   cell_response, reduced_k_response, coefficients_response, chi, gc)
-      ! The inverse evaluation already returns the same untransformed Gaussian values and gradients.
-      ! Only their geometry responses require a separate evaluation.
       IF (PRESENT(de)) THEN
          ALLOCATE (dchi(np, n))
          IF (PRESENT(gde)) ALLOCATE (dgc(np, n, 3))
-         DO atom = 1, SIZE(frame%bases)
-            first = frame%ao_first(atom)
-            last = frame%ao_last(atom)
-            IF (PRESENT(gde)) THEN
-               CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                                                   frame%cell, frame%images, frame%reduced_k, &
-                                                   chi(:, first:last), gc(:, first:last, :), &
-                                                   dchi(:, first:last), dgc(:, first:last, :), &
-                                                   point_response, atom_response(:, atom), &
-                                                   cell_response, reduced_k_response)
-            ELSE
-               CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                                                   frame%cell, frame%images, frame%reduced_k, chi(:, first:last), &
-                                                   gc(:, first:last, :), response=dchi(:, first:last), &
-                                                   point_response=point_response, center_response=atom_response(:, atom), &
-                                                   cell_response=cell_response, reduced_k_response=reduced_k_response)
-            END IF
-         END DO
       END IF
+      ! Reuse the original Gaussian fields and their joint response before inverse reconstruction.
+      CALL qs_upf_inverse_evaluate(frame, points, e, ge, de, gde, point_response, atom_response, &
+                                   cell_response, reduced_k_response, coefficients_response, chi, gc, dchi, dgc)
       e = e + chi
       ge = ge + gc
       IF (PRESENT(de)) THEN

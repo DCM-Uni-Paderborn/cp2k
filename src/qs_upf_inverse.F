@@ -764,10 +764,13 @@ CONTAINS
 !> \param coefficients_response Optional dW from the original frame's quadrature response.
 !> \param gaussian Optional untransformed Gaussian values at the same points.
 !> \param gaussian_gradient Optional physical Gaussian gradients at the same points.
+!> \param gaussian_response Optional Gaussian response from the same joint geometry evaluation.
+!> \param gaussian_gradient_response Optional Gaussian-gradient response, requiring gradient_response.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_evaluate(frame, points, soft, gradient, soft_response, gradient_response, &
                                       point_response, atom_response, cell_response, reduced_k_response, &
-                                      coefficients_response, gaussian, gaussian_gradient)
+                                      coefficients_response, gaussian, gaussian_gradient, &
+                                      gaussian_response, gaussian_gradient_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: soft(:, :), gradient(:, :, :)
@@ -778,8 +781,8 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
-      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gaussian(:, :), &
-                                                            gaussian_gradient(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL :: gaussian(:, :), gaussian_gradient(:, :, :), &
+         gaussian_response(:, :), gaussian_gradient_response(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :), ddelta(:, :), &
                                                             delta(:, :), dgc(:, :, :), &
@@ -798,7 +801,8 @@ CONTAINS
       calculate_response = PRESENT(soft_response) .OR. PRESENT(gradient_response) .OR. &
                            PRESENT(point_response) .OR. PRESENT(atom_response) .OR. &
                            PRESENT(cell_response) .OR. PRESENT(reduced_k_response) .OR. &
-                           PRESENT(coefficients_response)
+                           PRESENT(coefficients_response) .OR. PRESENT(gaussian_response) .OR. &
+                           PRESENT(gaussian_gradient_response)
       IF (calculate_response) THEN
          CPASSERT(PRESENT(soft_response))
          CPASSERT(PRESENT(point_response) .AND. PRESENT(atom_response))
@@ -843,6 +847,15 @@ CONTAINS
       IF (PRESENT(gaussian_gradient)) THEN
          CPASSERT(ALL(SHAPE(gaussian_gradient) == [npoint, nao, 3]))
          gaussian_gradient = gc
+      END IF
+      IF (PRESENT(gaussian_response)) THEN
+         CPASSERT(ALL(SHAPE(gaussian_response) == [npoint, nao]))
+         gaussian_response = dchi
+      END IF
+      IF (PRESENT(gaussian_gradient_response)) THEN
+         CPASSERT(PRESENT(gradient_response))
+         CPASSERT(ALL(SHAPE(gaussian_gradient_response) == [npoint, nao, 3]))
+         gaussian_gradient_response = dgc
       END IF
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
