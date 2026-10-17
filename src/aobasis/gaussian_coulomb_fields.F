@@ -514,7 +514,13 @@ CONTAINS
                exponential = EXP(-primitive%alpha*squared_radius)
                last_alpha = primitive%alpha
             END IF
-            h = squared_radius**primitive%power*exponential
+            IF (primitive%power == 0) THEN
+               ! Match the scalar evaluator when the complete exponential batch vanishes.
+               IF (ALL(exponential == 0.0_dp)) CYCLE
+               h = exponential
+            ELSE
+               h = squared_radius**primitive%power*exponential
+            END IF
             IF (PRESENT(gradient)) THEN
                dh = -primitive%alpha*h
                IF (primitive%power > 0) dh = dh + primitive%power*squared_radius**(primitive%power - 1)*exponential
