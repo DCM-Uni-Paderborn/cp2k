@@ -2577,7 +2577,8 @@ CONTAINS
                                                             zero(3, 1)
       INTEGER(int_8)                                     :: field_words
       LOGICAL                                            :: cache_fields, cache_ready, &
-                                                            cached_potentials, derivatives
+                                                            cached_potentials, derivatives, &
+                                                            left_zero, right_zero
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
       REAL(dp), ALLOCATABLE :: dpoints(:, :), local_points(:, :), points(:, :), &
          potential_gradient(:, :, :), potentials(:, :), weighted_potential(:), weights(:)
@@ -2649,7 +2650,9 @@ CONTAINS
       CPASSERT(r(SIZE(r)) >= radius)
       ! A zero correction can have a nonzero response through its coefficients.
       ! Skip the radial integrals only when that response is zero as well.
-      IF (ALL(wl == CMPLX(0.0_dp, 0.0_dp, dp)) .AND. ALL(wr == CMPLX(0.0_dp, 0.0_dp, dp))) THEN
+      left_zero = ALL(wl == CMPLX(0.0_dp, 0.0_dp, dp))
+      right_zero = ALL(wr == CMPLX(0.0_dp, 0.0_dp, dp))
+      IF (left_zero .AND. right_zero) THEN
          IF (.NOT. derivatives) RETURN
          IF (ALL(dwl == CMPLX(0.0_dp, 0.0_dp, dp)) .AND. ALL(dwr == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
       END IF
@@ -2786,6 +2789,14 @@ CONTAINS
          END DO
       END IF
       IF (augmentation%nproj == 0) RETURN
+      ! Only the quadratic augmentation vanishes when one coefficient factor is zero.
+      ! A zero factor with a nonzero response must still retain its Q integral.
+      IF (left_zero .OR. right_zero) THEN
+         IF (.NOT. derivatives) RETURN
+         IF (left_zero .AND. right_zero) RETURN
+         IF (left_zero .AND. ALL(dwl == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
+         IF (right_zero .AND. ALL(dwr == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
+      END IF
       ALLOCATE (q(np, np))
       IF (derivatives) ALLOCATE (dq(np, np))
       CALL prepare_transition_augmentation(fields, augmentation, position - auxiliary_center, &
