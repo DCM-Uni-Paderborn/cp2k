@@ -2184,16 +2184,16 @@ CONTAINS
    SUBROUTINE check_gaussian_fields()
       INTEGER, PARAMETER                                 :: nb = 11, nf = 5
 
-      COMPLEX(dp) :: dg(nf, nb, 3), dv(nf, nb), g(nf, nb, 3), gss(nf, nb, 3, 2), other(nf, nb), &
+      COMPLEX(dp) :: box_cell_gradient(nf, nb, 3, 3), dg(nf, nb, 3), dv(nf, nb), g(nf, nb, 3), &
+         gss(nf, nb, 3, 2), other(nf, nb), phase, reference_cell_gradient(nf, nb, 3, 3), &
          small(2, nb), v(nf, nb), vs(nf, nb, 2)
-      INTEGER                                            :: axis, column, ico, image, images(3, 3), &
-                                                            kernel, point, row, side, &
-                                                            translated_images(3, 3), unit
-      REAL(dp) :: batch_gradient(3, 8, nf), batch_values(nf, 8), bloch(3), cell(3, 3), center(3), &
-         cg(3, 8), cm(8), cp(8), cv(8), cx(3), dc(3, 3), dcenter(3), dk(3), dpnt(3, nf), expected, &
-         gradient(nf, nb, 3), gs(nf, nb, 3, 2), hh(nf, nb, 3, 3), lattice_gradient(3, 3, 8), &
-         lg(3, 8), lv(8), omega, radius, samples(nf, nb, 2), sg(3, 8), shift, shifted_cell(3, 3), &
-         sv(8), value(nf, nb), width(2), x(3, nf), xp(3, nf)
+      INTEGER :: axis, box_images(3, 27), column, ico, image, images(3, 3), ix, iy, iz, kernel, &
+         point, row, side, translated_images(3, 3), unit
+      REAL(dp) :: batch_gradient(3, 8, nf), batch_values(nf, 8), bloch(3), box_cell(3, 3), &
+         cell(3, 3), center(3), cg(3, 8), cm(8), cp(8), cv(8), cx(3), dc(3, 3), dcenter(3), dk(3), &
+         dpnt(3, nf), expected, gradient(nf, nb, 3), gs(nf, nb, 3, 2), hh(nf, nb, 3, 3), &
+         lattice_gradient(3, 3, 8), lg(3, 8), lv(8), omega, radius, samples(nf, nb, 2), sg(3, 8), &
+         shift, shifted_cell(3, 3), sv(8), value(nf, nb), width(2), x(3, nf), xp(3, nf)
       TYPE(gaussian_basis_workspace_type)                :: workspace
       TYPE(gaussian_coulomb_fields_type)                 :: coulomb, identity, long_range, &
                                                             periodic_fields, short_range, truncated
@@ -2305,6 +2305,48 @@ CONTAINS
       END DO
       CALL gaussian_coulomb_fields_evaluate_batch(identity, x, batch_values)
       CALL check(MAXVAL(ABS(batch_values - value(:, :8))), 'batched value-only overlap RI fields')
+      box_cell = 0.0_dp
+      DO axis = 1, 3
+         box_cell(axis, axis) = 2.0_dp + 0.3_dp*REAL(axis, dp)
+      END DO
+      image = 0
+      DO iz = -1, 1
+      DO iy = -1, 1
+      DO ix = -1, 1
+         image = image + 1
+         box_images(:, image) = [ix, iy, iz]
+      END DO
+      END DO
+      END DO
+      CALL gaussian_basis_fields_periodic(basis, x, center, box_cell, box_images, bloch, v, g, &
+                                          cell_gradient=box_cell_gradient)
+      other = CMPLX(0.0_dp, 0.0_dp, dp)
+      dg = CMPLX(0.0_dp, 0.0_dp, dp)
+      reference_cell_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO image = 1, SIZE(box_images, 2)
+         xp = x - SPREAD(center + MATMUL(box_cell, REAL(box_images(:, image), dp)), 2, nf)
+         CALL gaussian_basis_fields_evaluate(basis, xp, value, gradient)
+         phase = EXP(CMPLX(0.0_dp, 2*pi*DOT_PRODUCT(bloch, REAL(box_images(:, image), dp)), dp))
+         other = other + phase*value
+         dg = dg + phase*gradient
+         DO column = 1, 3
+            reference_cell_gradient(:, :, :, column) = reference_cell_gradient(:, :, :, column) - &
+                                                       phase*gradient*REAL(box_images(column, image), dp)
+         END DO
+      END DO
+      CALL check(MAXVAL(ABS(v - other)) + MAXVAL(ABS(g - dg)), 'factored Gaussian value and spatial gradient')
+      CALL check(MAXVAL(ABS(box_cell_gradient - reference_cell_gradient)), 'factored Gaussian full cell gradient')
+      DO column = 1, 3
+         DO axis = 1, 3
+            DO side = 1, 2
+               shifted_cell = box_cell
+               shifted_cell(axis, column) = shifted_cell(axis, column) + REAL(2*side - 3, dp)*step
+               CALL gaussian_basis_fields_periodic(basis, x, center, shifted_cell, box_images, bloch, vs(:, :, side))
+            END DO
+            CALL check(MAXVAL(ABS((vs(:, :, 2) - vs(:, :, 1))/(2*step) - box_cell_gradient(:, :, axis, column))), &
+                       'factored Gaussian diagonal and shear cell differences', 2.e-8_dp)
+         END DO
+      END DO
       CALL deallocate_gto_basis_set(basis)
       omega = .31_dp
       width = SQRT([.4_dp, .9_dp]*omega**2/([.4_dp, .9_dp] + omega**2))

@@ -11,7 +11,8 @@
 ! **************************************************************************************************
 MODULE gaussian_basis_fields
    USE basis_set_types,                 ONLY: gto_basis_set_type
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE mathconstants,                   ONLY: twopi
    USE orbital_pointers,                ONLY: indco,&
                                               ncoset
@@ -232,7 +233,7 @@ CONTAINS
 
       COMPLEX(dp)                                        :: phase, phase_response
       INTEGER                                            :: ao, axis, axis2, image, npoint, point
-      LOGICAL                                            :: need_geometry, need_gradient, &
+      LOGICAL                                            :: factored, need_geometry, need_gradient, &
                                                             need_hessian
       REAL(dp)                                           :: dc(3, 3), dcenter(3), dk(3), dshift(3), &
                                                             lattice(3), shift(3)
@@ -262,6 +263,11 @@ CONTAINS
       IF (PRESENT(cell_gradient)) THEN
          CPASSERT(ALL(SHAPE(cell_gradient) == [npoint, basis%nsgf, 3, 3]))
          cell_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (.NOT. need_geometry .AND. .NOT. need_hessian) THEN
+         CALL periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
+                                         value, gradient, cell_gradient, factored)
+         IF (factored) RETURN
       END IF
       dc = 0.0_dp
       dcenter = 0.0_dp
@@ -334,6 +340,150 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE gaussian_basis_fields_periodic
+
+! **************************************************************************************************
+!> \brief Factor a complete Cartesian translation box in an orthorhombic cell.
+!>        Products of one-dimensional Gaussian moments retain every supplied image and phase.
+!>        Image-weighted moments give all nine cell derivatives, including shear at this cell.
+!>        Other cells and image layouts return without changing the caller's fields.
+!> \param basis Original native contraction and Cartesian monomial ordering.
+!> \param points Evaluation coordinates, indexed (axis,point).
+!> \param center Physical Gaussian center.
+!> \param cell Lattice vectors in columns.
+!> \param images Exact image box in the native x-fast ordering.
+!> \param reduced_k Fixed reduced Bloch vector.
+!> \param value New fields if factored, indexed (point,AO).
+!> \param gradient Optional spatial gradients, indexed (point,AO,axis).
+!> \param cell_gradient Optional cell derivatives, indexed (point,AO,axis,column).
+!> \param factored Whether the supplied cell and image list permit this factorization.
+! **************************************************************************************************
+   SUBROUTINE periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
+                                         value, gradient, cell_gradient, factored)
+      TYPE(gto_basis_set_type), INTENT(IN)               :: basis
+      REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
+      INTEGER, INTENT(IN)                                :: images(:, :)
+      REAL(dp), INTENT(IN)                               :: reduced_k(3)
+      COMPLEX(dp), INTENT(INOUT)                         :: value(:, :)
+      COMPLEX(dp), INTENT(INOUT), OPTIONAL               :: gradient(:, :, :), &
+                                                            cell_gradient(:, :, :, :)
+      LOGICAL, INTENT(OUT)                               :: factored
+
+      COMPLEX(dp)                                        :: phase
+      COMPLEX(dp), ALLOCATABLE :: derivative(:, :), image_moments(:, :, :), moments(:, :, :), &
+         primitive_cell(:, :, :), primitive_gradient(:, :), primitive_value(:)
+      INTEGER :: axis, column, degree, expected(3), first, ico, image, ipgf, irow, iset, isgf, &
+         ishell, l, last, lower(3), maxl, ncart, npoint, other, powers(3), translation, upper(3), &
+         width(3)
+      LOGICAL                                            :: derivatives
+      REAL(dp)                                           :: alpha, weight
+      REAL(dp), ALLOCATABLE                              :: displacement(:), exponential(:), power(:)
+
+      factored = .FALSE.
+      IF (SIZE(images, 2) < 8) RETURN
+      DO column = 1, 3
+         DO axis = 1, 3
+            IF (axis /= column .AND. cell(axis, column) /= 0.0_dp) RETURN
+         END DO
+      END DO
+      lower = MINVAL(images, DIM=2)
+      upper = MAXVAL(images, DIM=2)
+      width = upper - lower + 1
+      IF (ANY(width > SIZE(images, 2))) RETURN
+      IF (INT(width(1), int_8)*INT(width(2), int_8)*INT(width(3), int_8) /= SIZE(images, 2, KIND=int_8)) RETURN
+      DO image = 1, SIZE(images, 2)
+         expected = lower + [MODULO(image - 1, width(1)), &
+                             MODULO((image - 1)/width(1), width(2)), (image - 1)/(width(1)*width(2))]
+         IF (ANY(images(:, image) /= expected)) RETURN
+      END DO
+      CPASSERT(basis%nset > 0 .AND. basis%nsgf > 0)
+      CPASSERT(ASSOCIATED(basis%sphi) .AND. ASSOCIATED(basis%zet))
+      maxl = MAXVAL(basis%lmax)
+      CPASSERT(UBOUND(ncoset, 1) >= maxl)
+      npoint = SIZE(points, 2)
+      derivatives = PRESENT(gradient) .OR. PRESENT(cell_gradient)
+      ALLOCATE (moments(npoint, 0:maxl + 1, 3), image_moments(npoint, 0:maxl + 1, 3), &
+                derivative(npoint, 3), primitive_value(npoint), primitive_gradient(npoint, 3), &
+                primitive_cell(npoint, 3, 3), displacement(npoint), exponential(npoint), power(npoint))
+      value = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(gradient)) gradient = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(cell_gradient)) cell_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO iset = 1, basis%nset
+         ncart = ncoset(basis%lmax(iset))
+         DO ipgf = 1, basis%npgf(iset)
+            alpha = basis%zet(ipgf, iset)
+            moments = CMPLX(0.0_dp, 0.0_dp, dp)
+            image_moments = CMPLX(0.0_dp, 0.0_dp, dp)
+            DO axis = 1, 3
+               DO translation = lower(axis), upper(axis)
+                  phase = EXP(CMPLX(0.0_dp, twopi*reduced_k(axis)*REAL(translation, dp), dp))
+                  displacement = points(axis, :) - center(axis) - cell(axis, axis)*REAL(translation, dp)
+                  exponential = EXP(-alpha*displacement**2)
+                  power = 1.0_dp
+                  WHERE (exponential == 0.0_dp) power = 0.0_dp
+                  DO degree = 0, maxl + 1
+                     moments(:, degree, axis) = moments(:, degree, axis) + phase*power*exponential
+                     IF (PRESENT(cell_gradient)) THEN
+                        image_moments(:, degree, axis) = image_moments(:, degree, axis) + &
+                                                         REAL(translation, dp)*phase*power*exponential
+                     END IF
+                     power = power*displacement
+                  END DO
+               END DO
+            END DO
+            DO ishell = 1, basis%nshell(iset)
+               l = basis%l(ishell, iset)
+               first = basis%first_sgf(ishell, iset)
+               last = basis%last_sgf(ishell, iset)
+               DO ico = ncoset(l - 1) + 1, ncoset(l)
+                  irow = (ipgf - 1)*ncart + ico
+                  powers = indco(:, ico)
+                  primitive_value = moments(:, powers(1), 1)*moments(:, powers(2), 2)*moments(:, powers(3), 3)
+                  IF (derivatives) THEN
+                     DO axis = 1, 3
+                        derivative(:, axis) = -2.0_dp*alpha*moments(:, powers(axis) + 1, axis)
+                        IF (powers(axis) > 0) THEN
+                           derivative(:, axis) = derivative(:, axis) + powers(axis)*moments(:, powers(axis) - 1, axis)
+                        END IF
+                        primitive_gradient(:, axis) = derivative(:, axis)
+                        DO other = 1, 3
+                           IF (other == axis) CYCLE
+                           primitive_gradient(:, axis) = primitive_gradient(:, axis)*moments(:, powers(other), other)
+                        END DO
+                     END DO
+                  END IF
+                  IF (PRESENT(cell_gradient)) THEN
+                     DO column = 1, 3
+                        DO axis = 1, 3
+                           IF (axis == column) THEN
+                              primitive_cell(:, axis, column) = 2.0_dp*alpha*image_moments(:, powers(axis) + 1, axis)
+                              IF (powers(axis) > 0) THEN
+                                 primitive_cell(:, axis, column) = primitive_cell(:, axis, column) - &
+                                                                   powers(axis)*image_moments(:, powers(axis) - 1, axis)
+                              END IF
+                           ELSE
+                              primitive_cell(:, axis, column) = -derivative(:, axis)*image_moments(:, powers(column), column)
+                           END IF
+                           DO other = 1, 3
+                              IF (other == axis .OR. other == column) CYCLE
+                              primitive_cell(:, axis, column) = primitive_cell(:, axis, column)*moments(:, powers(other), other)
+                           END DO
+                        END DO
+                     END DO
+                  END IF
+                  DO isgf = first, last
+                     weight = basis%sphi(irow, isgf)
+                     IF (weight == 0.0_dp) CYCLE
+                     value(:, isgf) = value(:, isgf) + weight*primitive_value
+                     IF (PRESENT(gradient)) gradient(:, isgf, :) = gradient(:, isgf, :) + weight*primitive_gradient
+                     IF (PRESENT(cell_gradient)) cell_gradient(:, isgf, :, :) = cell_gradient(:, isgf, :, :) + &
+                                                                                weight*primitive_cell
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      factored = .TRUE.
+   END SUBROUTINE periodic_cartesian_product
 
 ! **************************************************************************************************
 !> \brief Retain only scratch storage. No geometry or field values are reused.
