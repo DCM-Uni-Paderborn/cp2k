@@ -534,6 +534,7 @@ CONTAINS
             DO m = 1, 2*l + 1
                slot = l*l + m
                DO column = 1, fields%nfunction
+                  IF (primitive%coefficients(m, column) == 0.0_dp) CYCLE
                   potential(:, column) = potential(:, column) + h*angular(:, slot)*primitive%coefficients(m, column)
                   IF (.NOT. PRESENT(gradient)) CYCLE
                   DO axis = 1, 3
