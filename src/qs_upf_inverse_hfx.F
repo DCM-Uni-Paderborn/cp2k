@@ -21,6 +21,7 @@ MODULE qs_upf_inverse_hfx
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic,&
                                               gaussian_basis_workspace_type
    USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
+                                              gaussian_coulomb_fields_evaluate_batch,&
                                               gaussian_coulomb_fields_init,&
                                               gaussian_coulomb_fields_periodic,&
                                               gaussian_coulomb_fields_prepare,&
@@ -2743,17 +2744,17 @@ CONTAINS
                END IF
             END IF
             weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
-            DO ia = 1, nang
-               IF (cached_potentials) THEN
+            IF (cached_potentials) THEN
+               DO ia = 1, nang
                   potentials(ia, :) = qi%potential_fields%values(ia, :, cache_row)
                   IF (derivatives) potential_gradient(:, :, ia) = qi%potential_fields%gradient(:, :, ia, cache_row)
-               ELSE IF (derivatives) THEN
-                  CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, &
-                                                        potentials(ia, :), potential_gradient(:, :, ia))
-               ELSE
-                  CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :))
-               END IF
-            END DO
+               END DO
+            ELSE IF (derivatives) THEN
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), &
+                                                           potentials, potential_gradient)
+            ELSE
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), potentials)
+            END IF
             ! The local difference is -Delta W. Keep the small projector dimension
             ! through the quadrature and contract W only after the radial sum.
             DO aux = 1, fields%nfunction

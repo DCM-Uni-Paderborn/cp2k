@@ -51,6 +51,7 @@ MODULE gaussian_coulomb_fields
 
    PUBLIC :: gaussian_coulomb_fields_type, gaussian_coulomb_fields_init
    PUBLIC :: gaussian_coulomb_fields_prepare, gaussian_coulomb_fields_evaluate
+   PUBLIC :: gaussian_coulomb_fields_evaluate_batch
    PUBLIC :: gaussian_coulomb_fields_screen
    PUBLIC :: gaussian_coulomb_fields_truncate
    PUBLIC :: gaussian_coulomb_fields_periodic
@@ -452,6 +453,96 @@ CONTAINS
          END ASSOCIATE
       END DO
    END SUBROUTINE gaussian_coulomb_fields_evaluate
+
+! **************************************************************************************************
+!> \brief Evaluate a point batch with the original native Gaussian potential and gradient conventions.
+!>        Overlap fields reuse radial exponentials and angular polynomials across the point batch.
+!>        Other kernels and higher angular orders retain the scalar evaluation.
+!> \param fields Prepared native shell-set cache.
+!> \param displacement Evaluation points minus the Gaussian center, indexed (axis,point).
+!> \param potential New potentials, indexed (point,function).
+!> \param gradient Optional Cartesian point gradients, indexed (axis,function,point).
+! **************************************************************************************************
+   SUBROUTINE gaussian_coulomb_fields_evaluate_batch(fields, displacement, potential, gradient)
+      TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
+      REAL(dp), INTENT(IN)                               :: displacement(:, :)
+      REAL(dp), INTENT(OUT)                              :: potential(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :, :)
+
+      INTEGER, PARAMETER                                 :: max_cached_l = 4
+
+      INTEGER                                            :: axis, block, column, l, m, npoint, &
+                                                            point, slot
+      LOGICAL                                            :: angular_ready(0:max_cached_l)
+      REAL(dp)                                           :: last_alpha
+      REAL(dp), ALLOCATABLE                              :: angular(:, :), &
+                                                            angular_gradient(:, :, :), dh(:), &
+                                                            exponential(:), h(:), squared_radius(:)
+
+      CPASSERT(ALLOCATED(fields%primitives))
+      npoint = SIZE(displacement, 2)
+      CPASSERT(SIZE(displacement, 1) == 3)
+      CPASSERT(ALL(SHAPE(potential) == [npoint, fields%nfunction]))
+      CPASSERT(ALL(ieee_is_finite(displacement)))
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(ALL(SHAPE(gradient) == [3, fields%nfunction, npoint]))
+      END IF
+      IF (.NOT. fields%identity .OR. fields%cutoff_radius > 0.0_dp .OR. &
+          ANY(fields%primitives%l > max_cached_l)) THEN
+         DO point = 1, npoint
+            IF (PRESENT(gradient)) THEN
+               CALL gaussian_coulomb_fields_evaluate(fields, displacement(:, point), potential(point, :), gradient(:, :, point))
+            ELSE
+               CALL gaussian_coulomb_fields_evaluate(fields, displacement(:, point), potential(point, :))
+            END IF
+         END DO
+         RETURN
+      END IF
+      ALLOCATE (angular(npoint, (max_cached_l + 1)**2), angular_gradient(3, npoint, (max_cached_l + 1)**2), &
+                squared_radius(npoint), exponential(npoint), h(npoint), dh(npoint))
+      potential = 0.0_dp
+      IF (PRESENT(gradient)) gradient = 0.0_dp
+      squared_radius = SUM(displacement**2, DIM=1)
+      angular_ready = .FALSE.
+      last_alpha = -1.0_dp
+      DO block = 1, SIZE(fields%primitives)
+         ASSOCIATE (primitive => fields%primitives(block))
+            IF (.NOT. ANY(primitive%coefficients /= 0.0_dp)) CYCLE
+            l = primitive%l
+            IF (primitive%alpha /= last_alpha) THEN
+               exponential = EXP(-primitive%alpha*squared_radius)
+               last_alpha = primitive%alpha
+            END IF
+            h = squared_radius**primitive%power*exponential
+            IF (PRESENT(gradient)) THEN
+               dh = -primitive%alpha*h
+               IF (primitive%power > 0) dh = dh + primitive%power*squared_radius**(primitive%power - 1)*exponential
+            END IF
+            IF (.NOT. angular_ready(l)) THEN
+               DO m = 1, 2*l + 1
+                  slot = l*l + m
+                  DO point = 1, npoint
+                     CALL native_solid_harmonic(l, m, displacement(:, point), PRESENT(gradient), &
+                                                angular(point, slot), angular_gradient(:, point, slot))
+                  END DO
+               END DO
+               angular_ready(l) = .TRUE.
+            END IF
+            DO m = 1, 2*l + 1
+               slot = l*l + m
+               DO column = 1, fields%nfunction
+                  potential(:, column) = potential(:, column) + h*angular(:, slot)*primitive%coefficients(m, column)
+                  IF (.NOT. PRESENT(gradient)) CYCLE
+                  DO axis = 1, 3
+                     gradient(axis, column, :) = gradient(axis, column, :) + &
+                                           (2.0_dp*displacement(axis, :)*dh*angular(:, slot) + h*angular_gradient(axis, :, slot))* &
+                                                 primitive%coefficients(m, column)
+                  END DO
+               END DO
+            END DO
+         END ASSOCIATE
+      END DO
+   END SUBROUTINE gaussian_coulomb_fields_evaluate_batch
 
 ! **************************************************************************************************
 !> \brief Native solid harmonic and Cartesian point gradient in the original polynomial order.

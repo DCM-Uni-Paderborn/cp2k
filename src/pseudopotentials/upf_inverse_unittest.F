@@ -19,6 +19,7 @@ PROGRAM upf_inverse_unittest
                                               gaussian_basis_fields_periodic,&
                                               gaussian_basis_workspace_type
    USE gaussian_coulomb_fields,         ONLY: gaussian_coulomb_fields_evaluate,&
+                                              gaussian_coulomb_fields_evaluate_batch,&
                                               gaussian_coulomb_fields_init,&
                                               gaussian_coulomb_fields_periodic,&
                                               gaussian_coulomb_fields_prepare,&
@@ -2188,11 +2189,11 @@ CONTAINS
       INTEGER                                            :: axis, column, ico, image, images(3, 3), &
                                                             kernel, point, row, side, &
                                                             translated_images(3, 3), unit
-      REAL(dp) :: bloch(3), cell(3, 3), center(3), cg(3, 8), cm(8), cp(8), cv(8), cx(3), dc(3, 3), &
-         dcenter(3), dk(3), dpnt(3, nf), expected, gradient(nf, nb, 3), gs(nf, nb, 3, 2), &
-         hh(nf, nb, 3, 3), lattice_gradient(3, 3, 8), lg(3, 8), lv(8), omega, radius, &
-         samples(nf, nb, 2), sg(3, 8), shift, shifted_cell(3, 3), sv(8), value(nf, nb), width(2), &
-         x(3, nf), xp(3, nf)
+      REAL(dp) :: batch_gradient(3, 8, nf), batch_values(nf, 8), bloch(3), cell(3, 3), center(3), &
+         cg(3, 8), cm(8), cp(8), cv(8), cx(3), dc(3, 3), dcenter(3), dk(3), dpnt(3, nf), expected, &
+         gradient(nf, nb, 3), gs(nf, nb, 3, 2), hh(nf, nb, 3, 3), lattice_gradient(3, 3, 8), &
+         lg(3, 8), lv(8), omega, radius, samples(nf, nb, 2), sg(3, 8), shift, shifted_cell(3, 3), &
+         sv(8), value(nf, nb), width(2), x(3, nf), xp(3, nf)
       TYPE(gaussian_basis_workspace_type)                :: workspace
       TYPE(gaussian_coulomb_fields_type)                 :: coulomb, identity, long_range, &
                                                             periodic_fields, short_range, truncated
@@ -2296,6 +2297,14 @@ CONTAINS
                         MAXVAL(ABS(cg - TRANSPOSE(gradient(point, :8, :)))))
       END DO
       CALL check(expected, 'overlap RI field and independent Cartesian Gaussian gradient')
+      CALL gaussian_coulomb_fields_evaluate_batch(identity, x, batch_values, batch_gradient)
+      CALL check(MAXVAL(ABS(batch_values - value(:, :8))), 'batched overlap RI fields')
+      DO point = 1, nf
+         CALL check(MAXVAL(ABS(batch_gradient(:, :, point) - TRANSPOSE(gradient(point, :8, :)))), &
+                    'batched overlap RI field gradients')
+      END DO
+      CALL gaussian_coulomb_fields_evaluate_batch(identity, x, batch_values)
+      CALL check(MAXVAL(ABS(batch_values - value(:, :8))), 'batched value-only overlap RI fields')
       CALL deallocate_gto_basis_set(basis)
       omega = .31_dp
       width = SQRT([.4_dp, .9_dp]*omega**2/([.4_dp, .9_dp] + omega**2))
@@ -2350,6 +2359,17 @@ CONTAINS
       IF (comm%mepos == 0) CALL close_file(unit)
       truncated = coulomb
       CALL gaussian_coulomb_fields_truncate(truncated, 2.3_dp)
+      DO kernel = 1, 3
+         periodic_fields = coulomb
+         IF (kernel == 2) periodic_fields = short_range
+         IF (kernel == 3) periodic_fields = truncated
+         CALL gaussian_coulomb_fields_evaluate_batch(periodic_fields, x, batch_values, batch_gradient)
+         DO point = 1, nf
+            CALL gaussian_coulomb_fields_evaluate(periodic_fields, x(:, point), cv, cg)
+            CALL check(MAXVAL(ABS(batch_values(point, :) - cv)) + MAXVAL(ABS(batch_gradient(:, :, point) - cg)), &
+                       'batched interaction fields and gradients')
+         END DO
+      END DO
       DO point = 1, 4
          cx = REAL(point - 1, dp)*[1.15_dp, .13_dp, .07_dp]
          radius = NORM2(cx)
