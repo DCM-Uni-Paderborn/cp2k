@@ -511,7 +511,7 @@ CONTAINS
       hfx_section => section_vals_get_subs_vals(qs_env%input, "DFT%XC%HF%RI")
       CALL section_vals_val_get(hfx_section, "KP_NGROUPS", i_val=ngroups)
       CALL section_vals_val_get(hfx_section, "KP_STACK_SIZE", i_val=batch_size)
-      CALL section_vals_val_get(hfx_section, "KP_USE_DELTA_P", l_val=use_delta_p)
+      CALL section_vals_val_get(ri_data%ri_section, "KP_USE_DELTA_P", l_val=use_delta_p)
       ri_data%kp_stack_size = batch_size
       ri_data%kp_ngroups = ngroups
 

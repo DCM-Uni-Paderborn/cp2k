@@ -600,11 +600,10 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="KP_USE_DELTA_P", &
-                          description="This kweyword controls whether the KS matrix at each SCF cycle "// &
-                          "is built by adding the contribution of the denisty difference (wrt to previous step) "// &
-                          "to the KS matrix of the previous step. As the SCF converges, the density fluctuations "// &
-                          "get smaller and sparsity increases, leading to faster SCF steps. Not always "// &
-                          "numerically stable => turn off if SCF struggles to converge.", &
+                          description="Build the RI-RHO exchange matrix incrementally from density differences "// &
+                          "at Gamma and k-points. Set FALSE to rebuild it from the full density matrix at each "// &
+                          "SCF step. Incremental updates can be faster near convergence, but screening small "// &
+                          "density changes can limit the accuracy of the accumulated exchange matrix.", &
                           variants=s2a("USE_DELTA_P", "KP_USE_P_DIFF", "USE_P_DIFF"), &
                           usage="KP_USE_DELTA_P {logical}", &
                           repeats=.FALSE., &

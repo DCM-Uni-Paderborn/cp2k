@@ -1857,6 +1857,7 @@ CONTAINS
       INTEGER, DIMENSION(2, 1)                           :: bounds_i
       INTEGER, DIMENSION(2, 2)                           :: bounds_ij, bounds_j
       INTEGER, DIMENSION(3)                              :: dims_3c
+      LOGICAL                                            :: use_delta_p
       REAL(dp)                                           :: memory_3c, occ, occ_3c, occ_3c_1, &
                                                             occ_3c_2, occ_ks, occ_rho, t1, t2, &
                                                             unused
@@ -1875,6 +1876,8 @@ CONTAINS
       unit_nr = ri_data%unit_nr
 
       CALL get_qs_env(qs_env, para_env=para_env)
+
+      CALL section_vals_val_get(ri_data%ri_section, "KP_USE_DELTA_P", l_val=use_delta_p)
 
       CPASSERT(SIZE(ks_matrix, 2) == 1)
 
@@ -1931,8 +1934,14 @@ CONTAINS
 
          CALL dbt_copy_matrix_to_tensor(rho_ao(ispin, 1)%matrix, rho_ao_tmp)
 
-         !We work with Delta P: the diff between previous SCF step and this one, for increased sparsity
-         CALL dbt_scale(ri_data%rho_ao_t(ispin, 1), -1.0_dp)
+         ! Incremental updates can discard small density changes through tensor screening.
+         ! Rebuild both the density and exchange matrix when full-density updates are requested.
+         IF (use_delta_p) THEN
+            CALL dbt_scale(ri_data%rho_ao_t(ispin, 1), -1.0_dp)
+         ELSE
+            CALL dbt_scale(ri_data%rho_ao_t(ispin, 1), 0.0_dp)
+            CALL dbt_scale(ri_data%ks_t(ispin, 1), 0.0_dp)
+         END IF
          CALL dbt_copy(rho_ao_tmp, ri_data%rho_ao_t(ispin, 1), summation=.TRUE., move_data=.TRUE.)
 
          CALL get_tensor_occupancy(ri_data%rho_ao_t(ispin, 1), nze_rho, occ_rho)
@@ -2033,7 +2042,7 @@ CONTAINS
 
          CALL get_tensor_occupancy(ks_t, nze_ks, occ_ks)
 
-         !rho_ao_t holds the density difference, and ks_t is built upon it => need the full picture
+         ! Retain the full current density for the next incremental or full-density update.
          CALL dbt_copy_matrix_to_tensor(rho_ao(ispin, 1)%matrix, rho_ao_tmp)
          CALL dbt_copy(rho_ao_tmp, ri_data%rho_ao_t(ispin, 1), move_data=.TRUE.)
          CALL dbt_copy(ks_t, ri_data%ks_t(ispin, 1), summation=.TRUE., move_data=.TRUE.)
