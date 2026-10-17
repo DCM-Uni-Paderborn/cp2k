@@ -1649,6 +1649,33 @@ CONTAINS
                                            map=map)
          CALL check(ABS(cached_response - trace), "Cached fixed-shell density response", 3.e-12_dp)
          DO side = 1, 2
+            changed = derivative
+            DO a = 1, SIZE(changed)
+               changed(a)%radii = 0.0_dp
+            END DO
+            IF (side == 1) changed(2)%position = changed(1)%position
+            CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, exact, &
+                                              potential, adjoint, response=trace, center_response=changed, &
+                                              cell_response=REAL(side - 1, dp)*dcell, gvecs_response=dg, &
+                                              volume_response=dvolume, background_response=db, &
+                                              poisson_weights_response=dkw, periodicity=periodicity)
+            CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
+                                              cached_potential, cached_adjoint, response=cached_response, &
+                                              center_response=changed, cell_response=REAL(side - 1, dp)*dcell, &
+                                              gvecs_response=dg, volume_response=dvolume, background_response=db, &
+                                              poisson_weights_response=dkw, map=map)
+            CALL check(ABS(cached_energy - exact), "Cached moving-center Coulomb energy", 3.e-12_dp)
+            CALL check(ABS(cached_response - trace), "Cached moving-center Coulomb response", 3.e-12_dp)
+            DO a = 1, SIZE(centers)
+               CALL check(MAXVAL(ABS(cached_potential(a)%values - potential(a)%values)), &
+                          "Cached moving-center Coulomb adjoint", 3.e-12_dp)
+            END DO
+         END DO
+         trace = REAL(SUM(CONJG(db)*adjoint), dp)
+         DO a = 1, 2
+            trace = trace + SUM(SPREAD(centers(a)%weights, 2, 1)*derivative(a)%density*potential(a)%values)
+         END DO
+         DO side = 1, 2
             shift = REAL(2*side - 3, dp)*step
             changed = centers
             DO a = 1, 2

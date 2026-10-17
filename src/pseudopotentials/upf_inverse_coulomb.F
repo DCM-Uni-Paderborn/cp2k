@@ -203,7 +203,7 @@ CONTAINS
       INTEGER                                            :: a, b, channel, i, image(3), info, j, &
                                                             limits(2, 3), na, nb, ng, nh, nr, &
                                                             REPEAT(3)
-      LOGICAL                                            :: derive, fixed_pair
+      LOGICAL                                            :: derive
       REAL(dp)                                           :: ddisplacement(3), displacement(3), &
                                                             dmoment, dnorm, dpair, dpw, epair, &
                                                             inverse_cell(3, 3), moment, norm, &
@@ -319,25 +319,19 @@ CONTAINS
          na = SIZE(centers(a)%radii)
          DO b = 1, SIZE(centers)
             IF (PRESENT(map)) THEN
-               fixed_pair = .NOT. derive
-               IF (derive) THEN
-                  fixed_pair = ALL(cell_response == 0.0_dp) .AND. &
-                               ALL(center_response(a)%position == center_response(b)%position) .AND. &
-                               ALL(center_response(a)%radii == 0.0_dp) .AND. ALL(center_response(b)%radii == 0.0_dp)
-               END IF
-               IF (fixed_pair) THEN
-                  DO channel = 1, SIZE(centers(a)%l)
-                     DO nr = 1, na
-                        norm = SUM(map%pairs(a, b)%values(nr, channel, :, :)*work(b)%q)
-                        work(a)%potential(nr, channel) = work(a)%potential(nr, channel) + norm
-                        epair = epair + 0.5_dp*work(a)%q(nr, channel)*norm
-                        IF (.NOT. derive) CYCLE
-                        dpair = dpair + 0.5_dp*(work(a)%dq(nr, channel)*norm + work(a)%q(nr, channel)* &
-                                                SUM(map%pairs(a, b)%values(nr, channel, :, :)*work(b)%dq))
-                     END DO
+               ! The immutable map also supplies the primal and density response during motion.
+               ! Only the explicit shell-kernel derivative needs to be integrated again.
+               DO channel = 1, SIZE(centers(a)%l)
+                  DO nr = 1, na
+                     norm = SUM(map%pairs(a, b)%values(nr, channel, :, :)*work(b)%q)
+                     work(a)%potential(nr, channel) = work(a)%potential(nr, channel) + norm
+                     epair = epair + 0.5_dp*work(a)%q(nr, channel)*norm
+                     IF (.NOT. derive) CYCLE
+                     dpair = dpair + 0.5_dp*(work(a)%dq(nr, channel)*norm + work(a)%q(nr, channel)* &
+                                             SUM(map%pairs(a, b)%values(nr, channel, :, :)*work(b)%dq))
                   END DO
-                  CYCLE
-               END IF
+               END DO
+               IF (.NOT. derive) CYCLE
             END IF
             nb = SIZE(centers(b)%radii)
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
@@ -354,6 +348,10 @@ CONTAINS
                      IF (derive) THEN
                         ddisplacement = center_response(a)%position - center_response(b)%position - &
                                         MATMUL(cell_response, REAL(image, dp))
+                        IF (PRESENT(map)) THEN
+                           IF (ALL(ddisplacement == 0.0_dp) .AND. ALL(center_response(a)%radii == 0.0_dp) .AND. &
+                               ALL(center_response(b)%radii == 0.0_dp)) CYCLE
+                        END IF
                         CALL upf_inverse_coulomb_pair_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
                                                              centers(b)%radii, centers(b)%l, centers(b)%indices, &
                                                              displacement, kernel, dkernel, center_response(a)%radii, &
@@ -365,6 +363,11 @@ CONTAINS
                      END IF
                      DO channel = 1, SIZE(centers(a)%l)
                         DO nr = 1, na
+                           IF (PRESENT(map)) THEN
+                              dpair = dpair + 0.5_dp*work(a)%q(nr, channel)* &
+                                      SUM(dkernel(nr, channel, :, :)*work(b)%q)
+                              CYCLE
+                           END IF
                            norm = SUM(kernel(nr, channel, :, :)*work(b)%q)
                            work(a)%potential(nr, channel) = work(a)%potential(nr, channel) + norm
                            epair = epair + 0.5_dp*work(a)%q(nr, channel)*norm
