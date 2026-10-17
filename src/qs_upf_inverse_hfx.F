@@ -82,7 +82,7 @@ MODULE qs_upf_inverse_hfx
    ! Each entry lives only within one physical image, AO block pair and geometry call.
    TYPE lattice_overlap_type
       COMPLEX(dp), ALLOCATABLE :: left(:, :), right(:, :), dleft(:, :), dright(:, :)
-      COMPLEX(dp), ALLOCATABLE :: cl(:, :, :), cr(:, :, :), fcl(:, :, :), fcr(:, :, :)
+      COMPLEX(dp), ALLOCATABLE :: cl(:, :, :), cr(:, :, :), delta(:, :, :), fcl(:, :, :), fcr(:, :, :)
       INTEGER, POINTER :: field_budget => NULL()
    END TYPE lattice_overlap_type
 
@@ -1079,7 +1079,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: derivatives
       INTEGER                                            :: batch_size
 
-      INTEGER                                            :: center, kind, lmax, nrows, rule
+      INTEGER                                            :: center, kind, lmax, nproj, nrows, rule
       INTEGER(int_8)                                     :: largest, words
 
       batch_size = MAX(1, SIZE(frame%center_atoms)*nimages)
@@ -1098,6 +1098,8 @@ CONTAINS
          END ASSOCIATE
          words = 4_int_8*INT(SIZE(lebedev_grid(rule)%w), int_8)*(INT(nl, int_8) + INT(nr, int_8))*INT(nrows, int_8)
          IF (derivatives) words = 2_int_8*words
+         nproj = frame%projector_last(center) - frame%projector_first(center) + 1
+         words = words + 4_int_8*INT(SIZE(lebedev_grid(rule)%w), int_8)*INT(nproj, int_8)*INT(nrows, int_8)
          largest = MAX(largest, words)
       END DO
       IF (largest > 0_int_8) THEN
@@ -2656,11 +2658,13 @@ CONTAINS
          cache_ready = ALLOCATED(overlaps%cl)
          cache_fields = cache_ready
          IF (.NOT. cache_fields .AND. ASSOCIATED(overlaps%field_budget)) THEN
-            ! Projector moments need only the complete orbital fields and their responses.
+            ! The own-center difference field is rigid in these moving integration coordinates.
             field_words = 2_int_8*INT(nang, int_8)*(INT(nl, int_8) + INT(nr, int_8))*INT(cache_rows, int_8)
             IF (derivatives) field_words = 2_int_8*field_words
+            field_words = field_words + 2_int_8*INT(nang, int_8)*INT(np, int_8)*INT(cache_rows, int_8)
             IF (field_words <= INT(overlaps%field_budget, int_8)) THEN
-               ALLOCATE (overlaps%cl(nang, nl, cache_rows), overlaps%cr(nang, nr, cache_rows))
+               ALLOCATE (overlaps%cl(nang, nl, cache_rows), overlaps%cr(nang, nr, cache_rows), &
+                         overlaps%delta(nang, np, cache_rows))
                IF (derivatives) THEN
                   ALLOCATE (overlaps%fcl(nang, nl, cache_rows), overlaps%fcr(nang, nr, cache_rows))
                END IF
@@ -2671,6 +2675,7 @@ CONTAINS
          IF (cache_ready) THEN
             CPASSERT(ALL(SHAPE(overlaps%cl) == [nang, nl, cache_rows]))
             CPASSERT(ALL(SHAPE(overlaps%cr) == [nang, nr, cache_rows]))
+            CPASSERT(ALL(SHAPE(overlaps%delta) == [nang, np, cache_rows]))
             IF (derivatives) THEN
                CPASSERT(ALLOCATED(overlaps%fcl))
             END IF
@@ -2702,10 +2707,8 @@ CONTAINS
             END DO
             ! The integration coordinates move with the reconstruction center. Delta and
             ! its radial/angular measure therefore have no geometry response on this sphere.
-            CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
-                                            [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
-                                            [0.0_dp, 0.0_dp, 0.0_dp], delta)
             IF (cache_ready) THEN
+               delta(:, :) = overlaps%delta(:, :, cache_row)
                cl(:, :) = overlaps%cl(:, :, cache_row)
                cr(:, :) = overlaps%cr(:, :, cache_row)
                IF (derivatives) THEN
@@ -2713,6 +2716,9 @@ CONTAINS
                   fcr(:, :) = overlaps%fcr(:, :, cache_row)
                END IF
             ELSE
+               CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
+                                               [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
+                                               [0.0_dp, 0.0_dp, 0.0_dp], delta)
                CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, &
                                             left_fields, fcl, fdl, dwl, atom_response, cell_response, dpoints, derivatives, &
                                             coefficient_images, coupled_coefficients, coupled_response)
@@ -2720,6 +2726,7 @@ CONTAINS
                                             right_fields, fcr, fdr, dwr, atom_response, cell_response, dpoints, derivatives, &
                                             coefficient_images, coupled_coefficients, coupled_response)
                IF (cache_fields) THEN
+                  overlaps%delta(:, :, cache_row) = delta
                   overlaps%cl(:, :, cache_row) = cl
                   overlaps%cr(:, :, cache_row) = cr
                   IF (derivatives) THEN
