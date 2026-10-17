@@ -264,17 +264,21 @@ CONTAINS
          CPASSERT(ALL(SHAPE(cell_gradient) == [npoint, basis%nsgf, 3, 3]))
          cell_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
-      IF (.NOT. need_geometry .AND. .NOT. need_hessian) THEN
-         CALL periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
-                                         value, gradient, cell_gradient, factored)
-         IF (factored) RETURN
-      END IF
       dc = 0.0_dp
       dcenter = 0.0_dp
       dk = 0.0_dp
       IF (PRESENT(cell_response)) dc = cell_response
       IF (PRESENT(center_response)) dcenter = center_response
       IF (PRESENT(reduced_k_response)) dk = reduced_k_response
+      IF (PRESENT(point_response)) THEN
+         CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
+      END IF
+      IF (.NOT. need_hessian) THEN
+         CALL periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
+                                         value, gradient, cell_gradient, factored, &
+                                         response, point_response, dcenter, dc, dk)
+         IF (factored) RETURN
+      END IF
       scratch => local_workspace
       IF (PRESENT(workspace)) scratch => workspace
       CALL prepare_workspace(scratch, npoint, basis%nsgf, need_geometry, need_gradient, need_hessian)
@@ -284,9 +288,6 @@ CONTAINS
       IF (need_geometry) ddisplacement => scratch%ddisplacement
       IF (need_gradient) g => scratch%gradient
       IF (need_hessian) h => scratch%hessian
-      IF (PRESENT(point_response)) THEN
-         CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
-      END IF
       value = CMPLX(0.0_dp, 0.0_dp, dp)
       DO image = 1, SIZE(images, 2)
          lattice = REAL(images(:, image), dp)
@@ -356,9 +357,15 @@ CONTAINS
 !> \param gradient Optional spatial gradients, indexed (point,AO,axis).
 !> \param cell_gradient Optional cell derivatives, indexed (point,AO,axis,column).
 !> \param factored Whether the supplied cell and image list permit this factorization.
+!> \param response Optional joint first response of the fields.
+!> \param point_response Optional motion of the evaluation points.
+!> \param center_response Motion of the Gaussian center.
+!> \param cell_response Lattice derivative at fixed reduced Bloch coordinates.
+!> \param reduced_k_response Reduced Bloch-vector derivative.
 ! **************************************************************************************************
    SUBROUTINE periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
-                                         value, gradient, cell_gradient, factored)
+                                         value, gradient, cell_gradient, factored, &
+                                         response, point_response, center_response, cell_response, reduced_k_response)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -367,14 +374,20 @@ CONTAINS
       COMPLEX(dp), INTENT(INOUT), OPTIONAL               :: gradient(:, :, :), &
                                                             cell_gradient(:, :, :, :)
       LOGICAL, INTENT(OUT)                               :: factored
+      COMPLEX(dp), INTENT(INOUT), OPTIONAL               :: response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :)
+      REAL(dp), INTENT(IN)                               :: center_response(3), cell_response(3, 3), &
+                                                            reduced_k_response(3)
 
       COMPLEX(dp)                                        :: phase
       COMPLEX(dp), ALLOCATABLE :: derivative(:, :), image_moments(:, :, :), moments(:, :, :), &
-         primitive_cell(:, :, :), primitive_gradient(:, :), primitive_value(:)
+         phase_moment(:), primitive_cell(:, :, :), primitive_gradient(:, :), &
+         primitive_response(:), primitive_value(:)
       INTEGER :: axis, column, degree, expected(3), first, ico, image, ipgf, irow, iset, isgf, &
          ishell, l, last, lower(3), maxl, ncart, npoint, other, powers(3), translation, upper(3), &
          width(3)
-      LOGICAL                                            :: derivatives
+      LOGICAL                                            :: cell_derivatives, derivatives, &
+                                                            image_derivatives
       REAL(dp)                                           :: alpha, weight
       REAL(dp), ALLOCATABLE                              :: displacement(:), exponential(:), power(:)
 
@@ -400,13 +413,21 @@ CONTAINS
       maxl = MAXVAL(basis%lmax)
       CPASSERT(UBOUND(ncoset, 1) >= maxl)
       npoint = SIZE(points, 2)
-      derivatives = PRESENT(gradient) .OR. PRESENT(cell_gradient)
+      cell_derivatives = PRESENT(cell_gradient)
+      IF (PRESENT(response)) cell_derivatives = cell_derivatives .OR. ANY(cell_response /= 0.0_dp)
+      image_derivatives = cell_derivatives
+      IF (PRESENT(response)) image_derivatives = image_derivatives .OR. ANY(reduced_k_response /= 0.0_dp)
+      derivatives = PRESENT(gradient) .OR. cell_derivatives .OR. PRESENT(response)
       ALLOCATE (moments(npoint, 0:maxl + 1, 3), image_moments(npoint, 0:maxl + 1, 3), &
                 derivative(npoint, 3), primitive_value(npoint), primitive_gradient(npoint, 3), &
                 primitive_cell(npoint, 3, 3), displacement(npoint), exponential(npoint), power(npoint))
       value = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (PRESENT(gradient)) gradient = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (PRESENT(cell_gradient)) cell_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(response)) THEN
+         ALLOCATE (primitive_response(npoint), phase_moment(npoint))
+         response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
       DO iset = 1, basis%nset
          ncart = ncoset(basis%lmax(iset))
          DO ipgf = 1, basis%npgf(iset)
@@ -422,7 +443,7 @@ CONTAINS
                   WHERE (exponential == 0.0_dp) power = 0.0_dp
                   DO degree = 0, maxl + 1
                      moments(:, degree, axis) = moments(:, degree, axis) + phase*power*exponential
-                     IF (PRESENT(cell_gradient)) THEN
+                     IF (image_derivatives) THEN
                         image_moments(:, degree, axis) = image_moments(:, degree, axis) + &
                                                          REAL(translation, dp)*phase*power*exponential
                      END IF
@@ -451,7 +472,7 @@ CONTAINS
                         END DO
                      END DO
                   END IF
-                  IF (PRESENT(cell_gradient)) THEN
+                  IF (cell_derivatives) THEN
                      DO column = 1, 3
                         DO axis = 1, 3
                            IF (axis == column) THEN
@@ -470,6 +491,29 @@ CONTAINS
                         END DO
                      END DO
                   END IF
+                  IF (PRESENT(response)) THEN
+                     primitive_response = CMPLX(0.0_dp, 0.0_dp, dp)
+                     DO axis = 1, 3
+                        primitive_response = primitive_response - center_response(axis)*primitive_gradient(:, axis)
+                        IF (PRESENT(point_response)) THEN
+                           primitive_response = primitive_response + point_response(axis, :)*primitive_gradient(:, axis)
+                        END IF
+                        IF (cell_derivatives) THEN
+                           DO column = 1, 3
+                              primitive_response = primitive_response + cell_response(axis, column)*primitive_cell(:, axis, column)
+                           END DO
+                        END IF
+                        IF (reduced_k_response(axis) /= 0.0_dp) THEN
+                           phase_moment = image_moments(:, powers(axis), axis)
+                           DO other = 1, 3
+                              IF (other == axis) CYCLE
+                              phase_moment = phase_moment*moments(:, powers(other), other)
+                           END DO
+                           primitive_response = primitive_response + &
+                                                CMPLX(0.0_dp, twopi*reduced_k_response(axis), dp)*phase_moment
+                        END IF
+                     END DO
+                  END IF
                   DO isgf = first, last
                      weight = basis%sphi(irow, isgf)
                      IF (weight == 0.0_dp) CYCLE
@@ -477,6 +521,7 @@ CONTAINS
                      IF (PRESENT(gradient)) gradient(:, isgf, :) = gradient(:, isgf, :) + weight*primitive_gradient
                      IF (PRESENT(cell_gradient)) cell_gradient(:, isgf, :, :) = cell_gradient(:, isgf, :, :) + &
                                                                                 weight*primitive_cell
+                     IF (PRESENT(response)) response(:, isgf) = response(:, isgf) + weight*primitive_response
                   END DO
                END DO
             END DO
