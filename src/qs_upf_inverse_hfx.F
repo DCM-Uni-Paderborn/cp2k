@@ -46,9 +46,11 @@ MODULE qs_upf_inverse_hfx
    USE paw_onecenter,                   ONLY: paw_valence_augmentation_init
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_overlap
-   USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_lattice_field_adjoint,&
+   USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_lattice_delta_fields,&
+                                              qs_upf_inverse_lattice_field_adjoint,&
                                               qs_upf_inverse_lattice_fields,&
-                                              qs_upf_inverse_lattice_geometry_adjoint
+                                              qs_upf_inverse_lattice_geometry_adjoint,&
+                                              qs_upf_inverse_lattice_intersects
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
    USE upf_inverse_exchange,            ONLY: upf_inverse_exchange_augmentation
    USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
@@ -2684,8 +2686,9 @@ CONTAINS
                                                             ir, j, kind, nang, nl, np, nr, &
                                                             zero(3, 1)
       INTEGER(int_8)                                     :: field_words
-      LOGICAL :: cache_fields, cache_ready, cached_potentials, derivatives, left_compute, &
-         left_needed, left_zero, right_compute, right_needed, right_zero
+      LOGICAL :: cache_fields, cache_ready, cached_potentials, derivatives, factored, &
+         left_compute, left_needed, left_zero, right_compute, right_needed, right_zero, &
+         valid_moment
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
       REAL(dp), ALLOCATABLE :: dpoints(:, :), local_points(:, :), points(:, :), &
          potential_gradient(:, :, :), potentials(:, :), weighted_potential(:), weights(:)
@@ -2805,6 +2808,7 @@ CONTAINS
                END IF
             END IF
          END IF
+         factored = .FALSE.
          IF (left_compute .OR. right_compute) THEN
             NULLIFY (own_fields)
             IF (PRESENT(difference_cache)) THEN
@@ -2812,6 +2816,27 @@ CONTAINS
             END IF
             CALL prepare_transition_potentials(qi, fields, r, radial_weights, directions, position, auxiliary_center, &
                                                radius, frame%cell, gradients=derivatives)
+            IF (.NOT. derivatives .AND. .NOT. frame%atom_local .AND. PRESENT(moment_cache)) THEN
+               factored = .TRUE.
+               IF (left_compute) THEN
+                  CALL lattice_factored_moment(frame, center, center_image, left_range, [0, 0, 0], fields, &
+                                               auxiliary_center, r, radial_weights, directions, angular_weights, &
+                                               coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
+                                               moment_key, left_fields, moment_left, valid_moment)
+                  factored = factored .AND. valid_moment
+               END IF
+               IF (right_compute) THEN
+                  CALL lattice_factored_moment(frame, center, center_image, right_range, ao_image, fields, &
+                                               auxiliary_center, r, radial_weights, directions, angular_weights, &
+                                               coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
+                                               moment_key, right_fields, moment_right, valid_moment)
+                  factored = factored .AND. valid_moment
+               END IF
+            END IF
+         END IF
+         IF ((left_compute .OR. right_compute) .AND. .NOT. factored) THEN
+            IF (left_compute) moment_left = CMPLX(0.0_dp, 0.0_dp, dp)
+            IF (right_compute) moment_right = CMPLX(0.0_dp, 0.0_dp, dp)
             cached_potentials = ALLOCATED(qi%potential_fields)
             IF (cached_potentials .AND. derivatives) cached_potentials = ALLOCATED(qi%potential_fields%gradient)
             ! The quadrature and orbital fields are fixed for this AO pair and physical center image.
@@ -2995,6 +3020,165 @@ CONTAINS
                                MATMUL(CONJG(TRANSPOSE(wl)), MATMUL(q, dwr))
       END DO
    END SUBROUTINE lattice_center_with_overlaps
+
+! **************************************************************************************************
+!> \brief Integrate primitive Gaussian and difference products before contracting the inverse.
+!>        For m=2*chi-Delta*W, form <Delta_a|V|2*chi> and subtract each original
+!>        <Delta_a|V|Delta_T>*W_Q with T=R-Q. The primitive difference integrals
+!>        are independent of the selected AO columns and share the existing moment budget.
+!>        All original coefficient images and interatomic products are retained.
+!> \param frame Original coupled inverse frame.
+!> \param center Reconstruction center defining the moving radial quadrature.
+!> \param center_image Its original physical translation.
+!> \param ao_range Selected original Gaussian columns.
+!> \param ao_image Their original physical translation R.
+!> \param fields Original auxiliary shell and fitting interaction.
+!> \param auxiliary_center Original physical auxiliary center.
+!> \param r Original radial nodes.
+!> \param radial_weights Original radial measures including r**2.
+!> \param directions Original angular nodes.
+!> \param angular_weights Their original measures.
+!> \param coefficient_images Original physical solution translations Q.
+!> \param coefficients Full coupled W_Q in original projector and AO order.
+!> \param own_fields Optional retained own-center difference values.
+!> \param potentials Original auxiliary fields on these quadrature rows.
+!> \param cache Existing assembly-local moment storage.
+!> \param key Auxiliary atom, relative image and shell.
+!> \param workspace Reusable original Gaussian scratch arrays.
+!> \param moment Linear moment in original projector, Gaussian and auxiliary order.
+!> \param valid Whether the bounded scratch allocation permits this evaluation.
+! **************************************************************************************************
+   SUBROUTINE lattice_factored_moment(frame, center, center_image, ao_range, ao_image, fields, auxiliary_center, &
+                                      r, radial_weights, directions, angular_weights, coefficient_images, coefficients, &
+                                      own_fields, potentials, cache, key, workspace, moment, valid)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: center, center_image(3), ao_range(2), &
+                                                            ao_image(3)
+      TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
+      REAL(dp), INTENT(IN)                               :: auxiliary_center(3), r(:), &
+                                                            radial_weights(:), directions(:, :), &
+                                                            angular_weights(:)
+      INTEGER, INTENT(IN)                                :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :, :)
+      TYPE(radial_difference_fields_type), INTENT(IN), &
+         POINTER                                         :: own_fields
+      TYPE(transition_augmentation_type), INTENT(IN)     :: potentials
+      TYPE(lattice_moment_cache_type), INTENT(INOUT), &
+         TARGET                                          :: cache
+      INTEGER, INTENT(IN)                                :: key(5)
+      TYPE(inverse_field_workspace_type), INTENT(INOUT)  :: workspace
+      COMPLEX(dp), INTENT(OUT)                           :: moment(:, :, :)
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      COMPLEX(dp), ALLOCATABLE                           :: delta(:, :), gaussian(:, :), phi(:, :), &
+                                                            weighted(:, :, :, :)
+      INTEGER                                            :: atom, aux, first, hi, ia, image, ir, j, &
+                                                            kind, last, lo, nang, nao, np, nproj, &
+                                                            nrow, row, single_image(3, 1), &
+                                                            zero(3, 1)
+      INTEGER(int_8)                                     :: words
+      REAL(dp)                                           :: bounds(3, 2), position(3), radius
+      REAL(dp), ALLOCATABLE                              :: coordinates(:, :, :), &
+                                                            local_points(:, :), potential(:, :), &
+                                                            weights(:)
+      TYPE(linear_moment_type), POINTER                  :: entry, retained
+      TYPE(linear_moment_type), TARGET                   :: temporary
+
+      valid = .FALSE.
+      kind = frame%center_kinds(center)
+      radius = frame%delta_cache(kind)%radius
+      nang = SIZE(angular_weights)
+      nrow = COUNT(r < radius .AND. radial_weights /= 0.0_dp)
+      np = SIZE(frame%coefficients, 1)
+      nproj = frame%projector_last(center) - frame%projector_first(center) + 1
+      nao = ao_range(2) - ao_range(1) + 1
+      words = INT(nang, int_8)*INT(nrow, int_8)*(2_int_8*INT(nproj, int_8)*INT(fields%nfunction, int_8) + 3_int_8)
+      words = words + 2_int_8*INT(nproj, int_8)*INT(np, int_8)*INT(fields%nfunction, int_8)
+      IF (words > INT(max_cached_lattice_field_words, int_8)) RETURN
+      moment = CMPLX(0.0_dp, 0.0_dp, dp)
+      valid = .TRUE.
+      IF (nrow == 0) RETURN
+      position = frame%positions(:, frame%center_atoms(center)) + MATMUL(frame%cell, REAL(center_image, dp))
+      ALLOCATE (coordinates(3, nang, nrow), local_points(3, nang), weighted(nang, nproj, fields%nfunction, nrow), &
+                potential(nang, fields%nfunction), weights(nang), delta(nang, MAX(np, nproj)), &
+                gaussian(nang, MAXVAL(frame%ao_last - frame%ao_first + 1)), phi(nang, nao))
+      IF (.NOT. ALLOCATED(workspace%gaussian)) ALLOCATE (workspace%gaussian(SIZE(frame%bases)))
+      bounds(:, 1) = HUGE(0.0_dp)
+      bounds(:, 2) = -HUGE(0.0_dp)
+      row = 0
+      zero = 0
+      single_image(:, 1) = ao_image
+      DO ir = 1, SIZE(r)
+         IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
+         row = row + 1
+         local_points(:, :) = r(ir)*directions
+         DO ia = 1, nang
+            coordinates(:, ia, row) = position + local_points(:, ia)
+         END DO
+         bounds(:, 1) = MIN(bounds(:, 1), MINVAL(coordinates(:, :, row), DIM=2))
+         bounds(:, 2) = MAX(bounds(:, 2), MAXVAL(coordinates(:, :, row), DIM=2))
+         IF (ASSOCIATED(own_fields)) THEN
+            delta(:, :nproj) = own_fields%values(:, :, row)
+         ELSE
+            CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
+                                            [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
+                                            [0.0_dp, 0.0_dp, 0.0_dp], delta(:, :nproj))
+         END IF
+         IF (ALLOCATED(potentials%potential_fields)) THEN
+            potential(:, :) = potentials%potential_fields%values(:, :, row)
+         ELSE
+            CALL gaussian_coulomb_fields_evaluate_batch(fields, &
+                                                        coordinates(:, :, row) - SPREAD(auxiliary_center, 2, nang), potential)
+         END IF
+         weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
+         DO aux = 1, fields%nfunction
+            DO j = 1, nproj
+               weighted(:, j, aux, row) = delta(:, j)*(weights*potential(:, aux))
+            END DO
+         END DO
+         phi = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO atom = 1, SIZE(frame%bases)
+            first = frame%ao_first(atom)
+            last = frame%ao_last(atom)
+            lo = MAX(first, ao_range(1))
+            hi = MIN(last, ao_range(2))
+            IF (hi < lo) CYCLE
+            CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, coordinates(:, :, row), &
+                                                frame%positions(:, atom), frame%cell, single_image, &
+                                                [0.0_dp, 0.0_dp, 0.0_dp], gaussian(:, :last - first + 1), &
+                                                workspace=workspace%gaussian(atom))
+            phi(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = 2.0_dp*gaussian(:, lo - first + 1:hi - first + 1)
+         END DO
+         DO aux = 1, fields%nfunction
+            CALL field_product(weighted(:, :, aux, row), phi, moment(:, :, aux), .TRUE., .TRUE., .FALSE.)
+         END DO
+      END DO
+      DO image = 1, SIZE(coefficient_images, 2)
+         single_image(:, 1) = ao_image - coefficient_images(:, image)
+         IF (.NOT. qs_upf_inverse_lattice_intersects(frame, bounds, single_image(:, 1))) CYCLE
+         ! A zero Gaussian range marks primitive difference integrals, disjoint from
+         ! the positive native AO ranges used for the complete linear moments.
+         CALL lattice_moment_entry(cache, [center, 0, 0, single_image(:, 1) - center_image, key], &
+                                   nproj, np, fields%nfunction, retained)
+         ENTRY => temporary
+         IF (ASSOCIATED(retained)) ENTRY => retained
+         IF (.NOT. ALLOCATED(entry%values)) THEN
+            ALLOCATE (entry%values(nproj, np, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+            DO row = 1, nrow
+               CALL qs_upf_inverse_lattice_delta_fields(frame, coordinates(:, :, row), single_image(:, 1), delta(:, :np))
+               DO aux = 1, fields%nfunction
+                  CALL field_product(weighted(:, :, aux, row), delta(:, :np), entry%values(:, :, aux), &
+                                     .TRUE., .TRUE., .FALSE.)
+               END DO
+            END DO
+         END IF
+         DO aux = 1, fields%nfunction
+            CALL field_product(entry%values(:, :, aux), coefficients(:, ao_range(1):ao_range(2), image), &
+                               moment(:, :, aux), .TRUE., .FALSE., .FALSE., -1.0_dp)
+         END DO
+         IF (.NOT. ASSOCIATED(retained)) DEALLOCATE (temporary%values)
+      END DO
+   END SUBROUTINE lattice_factored_moment
 
 ! **************************************************************************************************
 !> \brief Reuse rigid original difference fields across AO pairs, images and auxiliary shells.

@@ -36,6 +36,7 @@ MODULE qs_upf_inverse_lattice
    PUBLIC :: qs_upf_inverse_lattice_fields, qs_upf_inverse_lattice_field_adjoint
    PUBLIC :: qs_upf_inverse_lattice_geometry_adjoint
    PUBLIC :: qs_upf_inverse_lattice_prepare, qs_upf_inverse_lattice_adjoint
+   PUBLIC :: qs_upf_inverse_lattice_delta_fields, qs_upf_inverse_lattice_intersects
 
 CONTAINS
 
@@ -322,10 +323,10 @@ CONTAINS
       END IF
       DO q = 1, SIZE(coefficient_images, 2)
          IF (n == 0) CYCLE
-         IF (.NOT. delta_image_intersects(frame, point_bounds, ao_image - coefficient_images(:, q))) CYCLE
-         CALL lattice_delta_fields(frame, points, ao_image - coefficient_images(:, q), delta, &
-                                   delta_gradient, delta_response, delta_gradient_response, &
-                                   point_response, atom_response, cell_response)
+         IF (.NOT. qs_upf_inverse_lattice_intersects(frame, point_bounds, ao_image - coefficient_images(:, q))) CYCLE
+         CALL qs_upf_inverse_lattice_delta_fields(frame, points, ao_image - coefficient_images(:, q), delta, &
+                                                  delta_gradient, delta_response, delta_gradient_response, &
+                                                  point_response, atom_response, cell_response)
          CALL subtract_product(delta, coefficients(:, :, q), value)
          IF (derivative) THEN
             CALL subtract_product(delta_response, coefficients(:, :, q), response)
@@ -435,8 +436,8 @@ CONTAINS
       END IF
       DO q = 1, SIZE(coefficient_images, 2)
          IF (n == 0) CYCLE
-         IF (.NOT. delta_image_intersects(frame, point_bounds, ao_image - coefficient_images(:, q))) CYCLE
-         CALL lattice_delta_fields(frame, points, ao_image - coefficient_images(:, q), delta, gradient)
+         IF (.NOT. qs_upf_inverse_lattice_intersects(frame, point_bounds, ao_image - coefficient_images(:, q))) CYCLE
+         CALL qs_upf_inverse_lattice_delta_fields(frame, points, ao_image - coefficient_images(:, q), delta, gradient)
          CALL subtract_product(delta, covector, coefficients_covector(:, :, q), left_adjoint=.TRUE.)
          DO axis = 1, 3
             IF (.NOT. PRESENT(gradient_covector)) CYCLE
@@ -542,8 +543,8 @@ CONTAINS
       DO q = 1, SIZE(coefficient_images, 2)
          IF (n == 0) CYCLE
          image = ao_image - coefficient_images(:, q)
-         IF (.NOT. delta_image_intersects(frame, point_bounds, image)) CYCLE
-         CALL lattice_delta_fields(frame, points, image, delta, delta_gradient)
+         IF (.NOT. qs_upf_inverse_lattice_intersects(frame, point_bounds, image)) CYCLE
+         CALL qs_upf_inverse_lattice_delta_fields(frame, points, image, delta, delta_gradient)
          IF (ALL(delta_gradient == CMPLX(0.0_dp, 0.0_dp, dp))) CYCLE
          delta_covector = CMPLX(0.0_dp, 0.0_dp, dp)
          CALL subtract_product(covector, coefficients(:, :, q), delta_covector, right_adjoint=.TRUE.)
@@ -574,7 +575,7 @@ CONTAINS
 !> \param image Physical integer translation.
 !> \return Whether an original radial support may contain an evaluation point.
 ! **************************************************************************************************
-   FUNCTION delta_image_intersects(frame, bounds, image) RESULT(intersects)
+   FUNCTION qs_upf_inverse_lattice_intersects(frame, bounds, image) RESULT(intersects)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: bounds(3, 2)
       INTEGER, INTENT(IN)                                :: image(3)
@@ -595,7 +596,7 @@ CONTAINS
             RETURN
          END IF
       END DO
-   END FUNCTION delta_image_intersects
+   END FUNCTION qs_upf_inverse_lattice_intersects
 
 ! **************************************************************************************************
 !> \brief Evaluate all original Delta columns at one unphased physical image.
@@ -610,8 +611,8 @@ CONTAINS
 !> \param atom_response ...
 !> \param cell_response ...
 ! **************************************************************************************************
-   SUBROUTINE lattice_delta_fields(frame, points, image, value, gradient, response, gradient_response, &
-                                   point_response, atom_response, cell_response)
+   SUBROUTINE qs_upf_inverse_lattice_delta_fields(frame, points, image, value, gradient, response, gradient_response, &
+                                                  point_response, atom_response, cell_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       INTEGER, INTENT(IN)                                :: image(3)
@@ -679,7 +680,7 @@ CONTAINS
             END IF
          END IF
       END DO
-   END SUBROUTINE lattice_delta_fields
+   END SUBROUTINE qs_upf_inverse_lattice_delta_fields
 
 ! **************************************************************************************************
 !> \brief Require distinct physical coefficient images in the original periodic subspace.
@@ -959,7 +960,7 @@ CONTAINS
             IF (q > SIZE(kernel_images, 2)) THEN
                CPABORT("Missing original defining lattice image difference")
             END IF
-            CALL lattice_delta_fields(frame, frame%points, frame%images(:, j), delta, delta_gradient)
+            CALL qs_upf_inverse_lattice_delta_fields(frame, frame%points, frame%images(:, j), delta, delta_gradient)
             single_image(:, 1) = frame%images(:, j)
             DO atom = 1, SIZE(frame%bases)
                first = frame%ao_first(atom)
