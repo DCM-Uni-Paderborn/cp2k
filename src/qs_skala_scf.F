@@ -1955,6 +1955,8 @@ CONTAINS
       weights = 0.0_dp
       CALL skala_density_constraints_update_weights(state%constraints, weights)
       CALL evaluate_limiting_state(state, coordinate, energy, positive_gradient, fixed_orbitals)
+      ! Only the derivative selection changes from here. Keep the same installed MOs and density.
+      fixed_orbitals = .TRUE.
       DO i = 1, m
          CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), value)
          IF (descriptors(i) == skala_density_descriptor) THEN
