@@ -19,6 +19,7 @@ MODULE qs_upf_inverse_background
    USE mathconstants,                   ONLY: twopi
    USE mathlib,                         ONLY: invmat
    USE particle_types,                  ONLY: particle_type
+   USE pw_methods,                      ONLY: pw_transfer
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_collocate_density,            ONLY: calculate_rho_elec
@@ -159,10 +160,14 @@ CONTAINS
       CALL background_images(map, matrix)
       CALL calculate_rho_elec(matrix_p_kp=map%density, rho=rho, rho_gspace=rho_gspace, &
                               total_rho=total_rho, ks_env=ks_env, soft_valid=map%soft_basis)
+      ! Multigrid remapping can leave unpaired Fourier components on even grids.
+      ! Coulomb and XC must use the same returned real Gaussian density.
+      CALL pw_transfer(rho, rho_gspace)
       IF (PRESENT(kinetic)) THEN
          CPASSERT(ASSOCIATED(kinetic%pw_grid, rho%pw_grid))
          CALL calculate_rho_elec(matrix_p_kp=map%density, rho=kinetic, rho_gspace=kinetic_gspace, &
                                  ks_env=ks_env, soft_valid=map%soft_basis, compute_tau=.TRUE.)
+         CALL pw_transfer(kinetic, kinetic_gspace)
       END IF
    END SUBROUTINE qs_upf_inverse_background_collocate
 
