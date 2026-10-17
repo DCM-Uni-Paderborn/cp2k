@@ -70,7 +70,7 @@ MODULE qs_upf_inverse_hfx
    INTEGER, PARAMETER :: max_cached_potential_words = 16*1024**2
    INTEGER, PARAMETER :: max_cached_lattice_field_words = 16*1024**2
    INTEGER, PARAMETER :: max_cached_lattice_potentials = 32749
-   INTEGER, PARAMETER :: max_cached_lattice_moments = 131071
+   INTEGER, PARAMETER :: max_cached_lattice_moments = 524287
 
    ! Scratch fields are recomputed at every radial row and retained only within one center call.
    TYPE inverse_field_workspace_type
