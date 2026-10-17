@@ -25,11 +25,13 @@ MODULE qs_upf_inverse_hfx
                                               gaussian_coulomb_fields_periodic,&
                                               gaussian_coulomb_fields_prepare,&
                                               gaussian_coulomb_fields_screen,&
+                                              gaussian_coulomb_fields_truncate,&
                                               gaussian_coulomb_fields_type
    USE input_constants,                 ONLY: do_potential_coulomb,&
                                               do_potential_id,&
                                               do_potential_long,&
-                                              do_potential_short
+                                              do_potential_short,&
+                                              do_potential_truncated
    USE integral_library_types,          ONLY: coulomb_operator_type
    USE kinds,                           ONLY: dp,&
                                               int_8
@@ -127,7 +129,7 @@ CONTAINS
 !> \param kinds Original radial datasets.
 !> \param augmentation Supplied USPP Q, distinct from PAW valence transitions.
 !> \param auxiliary_bases Native RI bases in atom order with their native screening radii.
-!> \param metric Native overlap or erfc fitting interaction, with its prescribed screening range.
+!> \param metric Native overlap, erfc or truncated fitting interaction, with its prescribed range.
 !> \param images Fixed auxiliary translations, including zero.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_gamma_images(frame, kinds, augmentation, auxiliary_bases, metric, images)
@@ -156,6 +158,9 @@ CONTAINS
       CASE (do_potential_short)
          CPASSERT(metric%omega > 0.0_dp .AND. metric%cutoff_radius > 0.0_dp)
          interaction_range = cutoff_screen_factor*metric%cutoff_radius
+      CASE (do_potential_truncated)
+         CPASSERT(metric%cutoff_radius > 0.0_dp)
+         interaction_range = cutoff_screen_factor*metric%cutoff_radius
       CASE (do_potential_id)
          ! The overlap field has the native auxiliary Gaussian range.
          interaction_range = 0.0_dp
@@ -163,7 +168,7 @@ CONTAINS
             CPASSERT(auxiliary_bases(atom)%gto_basis_set%kind_radius > 0.0_dp)
          END DO
       CASE DEFAULT
-         CPABORT("Periodic Gamma UPF fitting currently requires erfc or identity")
+         CPABORT("Periodic Gamma UPF fitting requires erfc, truncated Coulomb or identity")
       END SELECT
       inverse_cell = inv_3x3(frame%cell)
       CALL prepare_paw_transitions(kinds, frame, paw_augmentation)
@@ -1519,6 +1524,8 @@ CONTAINS
       CASE (do_potential_coulomb, do_potential_id)
       CASE (do_potential_long, do_potential_short)
          CALL gaussian_coulomb_fields_screen(fields, metric%omega, metric%potential_type == do_potential_short)
+      CASE (do_potential_truncated)
+         CALL gaussian_coulomb_fields_truncate(fields, metric%cutoff_radius)
       CASE DEFAULT
          CPABORT("Inverse UPF fitting interaction is not implemented yet")
       END SELECT

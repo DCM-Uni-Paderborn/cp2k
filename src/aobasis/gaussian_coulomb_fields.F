@@ -14,17 +14,23 @@
 MODULE gaussian_coulomb_fields
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_type
+   USE gamma,                           ONLY: fgamma_0
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: dfac,&
+                                              fac,&
                                               fourpi,&
                                               pi
-   USE orbital_pointers,                ONLY: indco,&
+   USE orbital_pointers,                ONLY: coset,&
+                                              indco,&
                                               init_orbital_pointers,&
                                               nco,&
                                               ncoset
    USE orbital_transformation_matrices, ONLY: init_spherical_harmonics,&
                                               orbtramat
+   USE t_c_g0,                          ONLY: get_lmax_init,&
+                                              t_c_g0_n,&
+                                              t_c_g0_response
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -33,18 +39,20 @@ MODULE gaussian_coulomb_fields
    TYPE gaussian_coulomb_primitive_type
       REAL(dp) :: alpha = 0.0_dp
       INTEGER :: l = 0, power = 0
-      REAL(dp), ALLOCATABLE :: coefficients(:, :)
+      REAL(dp), ALLOCATABLE :: coefficients(:, :), hermite(:, :)
    END TYPE gaussian_coulomb_primitive_type
 
    TYPE gaussian_coulomb_fields_type
       INTEGER :: nfunction = 0
       LOGICAL :: identity = .FALSE.
+      REAL(dp) :: cutoff_radius = 0.0_dp
       TYPE(gaussian_coulomb_primitive_type), ALLOCATABLE :: primitives(:)
    END TYPE gaussian_coulomb_fields_type
 
    PUBLIC :: gaussian_coulomb_fields_type, gaussian_coulomb_fields_init
    PUBLIC :: gaussian_coulomb_fields_prepare, gaussian_coulomb_fields_evaluate
    PUBLIC :: gaussian_coulomb_fields_screen
+   PUBLIC :: gaussian_coulomb_fields_truncate
    PUBLIC :: gaussian_coulomb_fields_periodic
 
 CONTAINS
@@ -149,6 +157,7 @@ CONTAINS
 
       CPASSERT(ALLOCATED(fields%primitives))
       CPASSERT(.NOT. fields%identity)
+      CPASSERT(fields%cutoff_radius == 0.0_dp)
       CPASSERT(ieee_is_finite(omega) .AND. omega >= 0.0_dp)
       IF (omega == 0.0_dp) THEN
          IF (.NOT. short_range) THEN
@@ -201,6 +210,162 @@ CONTAINS
    END SUBROUTINE gaussian_coulomb_fields_screen
 
 ! **************************************************************************************************
+!> \brief Prepare native Gaussian charges for the truncated Coulomb interaction.
+!>        Hermite coefficients retain the complete Cartesian contraction. Values and point
+!>        gradients use the native moment interpolants and their actual T derivatives.
+!> \param fields Owned original Gaussian charge cache.
+!> \param cutoff_radius Fixed physical interaction radius in bohr.
+! **************************************************************************************************
+   SUBROUTINE gaussian_coulomb_fields_truncate(fields, cutoff_radius)
+      TYPE(gaussian_coulomb_fields_type), INTENT(INOUT)  :: fields
+      REAL(dp), INTENT(IN)                               :: cutoff_radius
+
+      INTEGER                                            :: block
+
+      CPASSERT(ALLOCATED(fields%primitives) .AND. .NOT. fields%identity)
+      CPASSERT(ieee_is_finite(cutoff_radius) .AND. cutoff_radius > 0.0_dp)
+      fields%cutoff_radius = cutoff_radius
+      DO block = 1, SIZE(fields%primitives)
+         CALL prepare_hermite_charge(fields%primitives(block))
+      END DO
+   END SUBROUTINE gaussian_coulomb_fields_truncate
+
+! **************************************************************************************************
+!> \brief Expand a Gaussian solid harmonic times a radial power in Cartesian Hermite charges.
+!> \param primitive ...
+! **************************************************************************************************
+   SUBROUTINE prepare_hermite_charge(primitive)
+      TYPE(gaussian_coulomb_primitive_type), &
+         INTENT(INOUT)                                   :: primitive
+
+      INTEGER                                            :: a, ax, ay, az, degree, m, order, &
+                                                            powers(3), row, tx, ty, tz
+      REAL(dp) :: coefficient, &
+         monomials(ncoset(primitive%l + 2*primitive%power), SIZE(primitive%coefficients, 2)), &
+         expansion(0:primitive%l + 2*primitive%power, 0:primitive%l + 2*primitive%power)
+
+      degree = primitive%l + 2*primitive%power
+      expansion = 0.0_dp
+      expansion(0, 0) = 1.0_dp
+      DO order = 0, degree - 1
+         DO tx = 0, order + 1
+            IF (tx > 0) expansion(order + 1, tx) = expansion(order, tx - 1)/(2.0_dp*primitive%alpha)
+            IF (tx < order) expansion(order + 1, tx) = expansion(order + 1, tx) + (tx + 1)*expansion(order, tx + 1)
+         END DO
+      END DO
+      monomials = 0.0_dp
+      DO a = 1, nco(primitive%l)
+         DO ax = 0, primitive%power
+            DO ay = 0, primitive%power - ax
+               az = primitive%power - ax - ay
+               powers = indco(:, ncoset(primitive%l - 1) + a) + 2*[ax, ay, az]
+               row = coset(powers(1), powers(2), powers(3))
+               coefficient = fac(primitive%power)/(fac(ax)*fac(ay)*fac(az))
+               DO m = 1, 2*primitive%l + 1
+                  monomials(row, :) = monomials(row, :) + coefficient*orbtramat(primitive%l)%slm(m, a)* &
+                                      primitive%coefficients(m, :)
+               END DO
+            END DO
+         END DO
+      END DO
+      IF (ALLOCATED(primitive%hermite)) DEALLOCATE (primitive%hermite)
+      ALLOCATE (primitive%hermite(ncoset(degree), SIZE(primitive%coefficients, 2)), SOURCE=0.0_dp)
+      DO a = 1, ncoset(degree)
+         IF (.NOT. ANY(monomials(a, :) /= 0.0_dp)) CYCLE
+         powers = indco(:, a)
+         DO tx = 0, powers(1)
+         DO ty = 0, powers(2)
+         DO tz = 0, powers(3)
+            coefficient = REAL((-1)**(tx + ty + tz), dp)*expansion(powers(1), tx)* &
+                          expansion(powers(2), ty)*expansion(powers(3), tz)
+            row = coset(tx, ty, tz)
+            primitive%hermite(row, :) = primitive%hermite(row, :) + coefficient*monomials(a, :)
+         END DO
+         END DO
+         END DO
+      END DO
+   END SUBROUTINE prepare_hermite_charge
+
+! **************************************************************************************************
+!> \brief Contract the native truncated moments with one complete Hermite Gaussian charge.
+!>        Differentiating the actual recurrence retains dF_n/dT independently of -F_(n+1).
+!> \param primitive ...
+!> \param cutoff_radius ...
+!> \param displacement ...
+!> \param potential Accumulated contracted potentials.
+!> \param gradient Optional accumulated Cartesian point gradients.
+! **************************************************************************************************
+   SUBROUTINE truncated_primitive(primitive, cutoff_radius, displacement, potential, gradient)
+      TYPE(gaussian_coulomb_primitive_type), INTENT(IN)  :: primitive
+      REAL(dp), INTENT(IN)                               :: cutoff_radius, displacement(3)
+      REAL(dp), INTENT(INOUT)                            :: potential(:)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: gradient(:, :)
+
+      INTEGER                                            :: axis, degree, first_axis, last, n, &
+                                                            previous, reduced(3), row, second
+      LOGICAL                                            :: use_gamma
+      REAL(dp) :: alpha, factor, r, t, &
+         values(ncoset(primitive%l + 2*primitive%power), 0:primitive%l + 2*primitive%power), &
+         response(0:primitive%l + 2*primitive%power), &
+         moments(0:primitive%l + 2*primitive%power + 1), &
+         derivatives(3, ncoset(primitive%l + 2*primitive%power), 0:primitive%l + 2*primitive%power)
+
+      last = primitive%l + 2*primitive%power
+      CPASSERT(ALLOCATED(primitive%hermite))
+      CPASSERT(get_lmax_init() >= last)
+      alpha = primitive%alpha
+      r = cutoff_radius*SQRT(alpha)
+      t = alpha*SUM(displacement**2)
+      IF (PRESENT(gradient)) THEN
+         CALL t_c_g0_response(moments, response, use_gamma, r, t, last)
+      ELSE
+         CALL t_c_g0_n(moments, use_gamma, r, t, last)
+      END IF
+      IF (use_gamma) THEN
+         CALL fgamma_0(last + 1, t, moments)
+         IF (PRESENT(gradient)) response = -moments(1:last + 1)
+      END IF
+      values = 0.0_dp
+      IF (PRESENT(gradient)) derivatives = 0.0_dp
+      factor = 1.0_dp
+      DO n = 0, last
+         values(1, n) = factor*moments(n)
+         IF (PRESENT(gradient)) derivatives(:, 1, n) = (factor*2.0_dp*alpha*response(n))*displacement
+         factor = -2.0_dp*alpha*factor
+      END DO
+      DO degree = 1, last
+         DO row = ncoset(degree - 1) + 1, ncoset(degree)
+            reduced = indco(:, row)
+            first_axis = FINDLOC(reduced > 0, .TRUE., DIM=1)
+            reduced(first_axis) = reduced(first_axis) - 1
+            previous = coset(reduced(1), reduced(2), reduced(3))
+            second = 0
+            IF (reduced(first_axis) > 0) THEN
+               reduced(first_axis) = reduced(first_axis) - 1
+               second = coset(reduced(1), reduced(2), reduced(3))
+               reduced(first_axis) = reduced(first_axis) + 1
+            END IF
+            DO n = 0, last - degree
+               values(row, n) = displacement(first_axis)*values(previous, n + 1)
+               IF (second > 0) values(row, n) = values(row, n) + reduced(first_axis)*values(second, n + 1)
+               IF (.NOT. PRESENT(gradient)) CYCLE
+               derivatives(:, row, n) = displacement(first_axis)*derivatives(:, previous, n + 1)
+               derivatives(first_axis, row, n) = derivatives(first_axis, row, n) + values(previous, n + 1)
+               IF (second > 0) derivatives(:, row, n) = derivatives(:, row, n) + &
+                                                        reduced(first_axis)*derivatives(:, second, n + 1)
+            END DO
+         END DO
+      END DO
+      factor = 2.0_dp*pi/alpha
+      potential = potential + factor*MATMUL(values(:, 0), primitive%hermite)
+      IF (PRESENT(gradient)) THEN
+         DO axis = 1, 3
+            gradient(axis, :) = gradient(axis, :) + factor*MATMUL(derivatives(axis, :, 0), primitive%hermite)
+         END DO
+      END IF
+   END SUBROUTINE truncated_primitive
+
+! **************************************************************************************************
 !> \brief Evaluate full native Gaussian Coulomb potentials and their evaluation-point gradients.
 !>        A Gaussian-center displacement has the opposite derivative. Image translations and
 !>        Bloch phases belong to the caller. The cache and shared angular tables are read only.
@@ -229,6 +394,13 @@ CONTAINS
       IF (PRESENT(gradient)) THEN
          CPASSERT(ALL(SHAPE(gradient) == [3, fields%nfunction]))
          gradient = 0.0_dp
+      END IF
+      IF (fields%cutoff_radius > 0.0_dp) THEN
+         DO block = 1, SIZE(fields%primitives)
+            IF (.NOT. ANY(fields%primitives(block)%coefficients /= 0.0_dp)) CYCLE
+            CALL truncated_primitive(fields%primitives(block), fields%cutoff_radius, displacement, potential, gradient)
+         END DO
+         RETURN
       END IF
       s = SUM(displacement**2)
       angular_ready = .FALSE.

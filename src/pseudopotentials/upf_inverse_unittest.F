@@ -13,6 +13,8 @@ PROGRAM upf_inverse_unittest
    USE basis_set_types,                 ONLY: allocate_gto_basis_set,&
                                               deallocate_gto_basis_set,&
                                               gto_basis_set_type
+   USE cp_files,                        ONLY: close_file,&
+                                              open_file
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_evaluate,&
                                               gaussian_basis_fields_periodic,&
                                               gaussian_basis_workspace_type
@@ -21,12 +23,16 @@ PROGRAM upf_inverse_unittest
                                               gaussian_coulomb_fields_periodic,&
                                               gaussian_coulomb_fields_prepare,&
                                               gaussian_coulomb_fields_screen,&
+                                              gaussian_coulomb_fields_truncate,&
                                               gaussian_coulomb_fields_type
    USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
                                               ieee_value
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_world_finalize,&
+                                              mp_world_init
    USE orbital_pointers,                ONLY: init_orbital_pointers,&
                                               ncoset
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_ae_cartesian,&
@@ -54,6 +60,8 @@ PROGRAM upf_inverse_unittest
                                               skala_constraint_chart_restore,&
                                               skala_constraint_chart_type,&
                                               skala_cusp_admissibility
+   USE t_c_g0,                          ONLY: free_C0,&
+                                              init_truncated => init
    USE upf_core,                        ONLY: upf_core_fourier,&
                                               upf_core_kinetic_fourier
    USE upf_inverse,                     ONLY: &
@@ -2178,8 +2186,8 @@ CONTAINS
       COMPLEX(dp) :: dg(nf, nb, 3), dv(nf, nb), g(nf, nb, 3), gss(nf, nb, 3, 2), other(nf, nb), &
          small(2, nb), v(nf, nb), vs(nf, nb, 2)
       INTEGER                                            :: axis, column, ico, image, images(3, 3), &
-                                                            point, row, side, &
-                                                            translated_images(3, 3)
+                                                            kernel, point, row, side, &
+                                                            translated_images(3, 3), unit
       REAL(dp) :: bloch(3), cell(3, 3), center(3), cg(3, 8), cm(8), cp(8), cv(8), cx(3), dc(3, 3), &
          dcenter(3), dk(3), dpnt(3, nf), expected, gradient(nf, nb, 3), gs(nf, nb, 3, 2), &
          hh(nf, nb, 3, 3), lattice_gradient(3, 3, 8), lg(3, 8), lv(8), omega, radius, &
@@ -2187,8 +2195,9 @@ CONTAINS
          x(3, nf), xp(3, nf)
       TYPE(gaussian_basis_workspace_type)                :: workspace
       TYPE(gaussian_coulomb_fields_type)                 :: coulomb, identity, long_range, &
-                                                            short_range
+                                                            periodic_fields, short_range, truncated
       TYPE(gto_basis_set_type), POINTER                  :: basis
+      TYPE(mp_comm_type)                                 :: comm
 
       NULLIFY (basis)
       CALL init_orbital_pointers(3)
@@ -2334,30 +2343,70 @@ CONTAINS
             CALL check(MAXVAL(ABS((cp - cm)/(2*step) - sg(axis, :))), 'Gaussian erfc gradient', 2.e-8_dp)
          END DO
       END DO
-      cx = [.23_dp, -.41_dp, .37_dp]
-      CALL gaussian_coulomb_fields_periodic(short_range, cx, cell, images, sv, sg, lattice_gradient)
-      cv = 0.0_dp
-      DO image = 1, SIZE(images, 2)
-         CALL gaussian_coulomb_fields_evaluate(short_range, cx - MATMUL(cell, REAL(images(:, image), dp)), cp)
-         cv = cv + cp
-      END DO
-      CALL check(MAXVAL(ABS(sv - cv)), 'Gaussian auxiliary image ordering')
-      DO column = 1, 3
+      CALL mp_world_init(comm)
+      unit = -1
+      IF (comm%mepos == 0) CALL open_file(file_name='t_c_g.dat', unit_number=unit)
+      CALL init_truncated(3, unit, comm%mepos, comm)
+      IF (comm%mepos == 0) CALL close_file(unit)
+      truncated = coulomb
+      CALL gaussian_coulomb_fields_truncate(truncated, 2.3_dp)
+      DO point = 1, 4
+         cx = REAL(point - 1, dp)*[1.15_dp, .13_dp, .07_dp]
+         radius = NORM2(cx)
+         CALL gaussian_coulomb_fields_evaluate(truncated, cx, sv, sg)
+         IF (radius == 0.0_dp) THEN
+            expected = 2*pi*(.6_dp*(1 - EXP(-.4_dp*2.3_dp**2))/.4_dp - &
+                             .2_dp*(1 - EXP(-.9_dp*2.3_dp**2))/.9_dp)
+         ELSE
+            expected = pi**1.5_dp/(2*radius)* &
+                       (.6_dp*(2*ERF(SQRT(.4_dp)*radius) + ERF(SQRT(.4_dp)*(2.3_dp - radius)) - &
+                               ERF(SQRT(.4_dp)*(2.3_dp + radius)))/.4_dp**1.5_dp - &
+                        .2_dp*(2*ERF(SQRT(.9_dp)*radius) + ERF(SQRT(.9_dp)*(2.3_dp - radius)) - &
+                               ERF(SQRT(.9_dp)*(2.3_dp + radius)))/.9_dp**1.5_dp)
+         END IF
+         CALL check(ABS(sv(1) - expected), 'Signed truncated Gaussian potential', 3.e-8_dp)
          DO axis = 1, 3
-            shifted_cell = cell
-            shifted_cell(axis, column) = shifted_cell(axis, column) + step
-            CALL gaussian_coulomb_fields_periodic(short_range, cx, shifted_cell, images, cp)
-            shifted_cell(axis, column) = shifted_cell(axis, column) - 2*step
-            CALL gaussian_coulomb_fields_periodic(short_range, cx, shifted_cell, images, cm)
-            CALL check(MAXVAL(ABS((cp - cm)/(2*step) - lattice_gradient(axis, column, :))), &
-                       'Gaussian auxiliary cell gradient', 2.e-8_dp)
+            cx(axis) = cx(axis) + step
+            CALL gaussian_coulomb_fields_evaluate(truncated, cx, cp)
+            cx(axis) = cx(axis) - 2*step
+            CALL gaussian_coulomb_fields_evaluate(truncated, cx, cm)
+            cx(axis) = cx(axis) + step
+            CALL check(MAXVAL(ABS((cp - cm)/(2*step) - sg(axis, :))), 'Truncated Gaussian gradient', 2.e-8_dp)
          END DO
       END DO
-      CALL gaussian_coulomb_fields_periodic(short_range, cx + cell(:, 1), cell, images + &
-                                            SPREAD([1, 0, 0], 2, SIZE(images, 2)), cp)
-      CALL check(MAXVAL(ABS(cp - sv)), 'Gaussian auxiliary lattice representative')
-      CALL gaussian_coulomb_fields_periodic(short_range, cx, cell, images(:, :0), cp, lg, lattice_gradient)
-      CALL check(MAXVAL(ABS(cp)) + MAXVAL(ABS(lg)) + MAXVAL(ABS(lattice_gradient)), 'Empty auxiliary image sum')
+      long_range = coulomb
+      CALL gaussian_coulomb_fields_truncate(long_range, 100.0_dp)
+      CALL gaussian_coulomb_fields_evaluate(long_range, cx, lv, lg)
+      CALL gaussian_coulomb_fields_evaluate(coulomb, cx, cv, cg)
+      CALL check(MAXVAL(ABS(lv - cv)) + MAXVAL(ABS(lg - cg)), 'Truncated Gaussian full-Coulomb limit', 3.e-12_dp)
+      DO kernel = 1, 2
+         periodic_fields = short_range
+         IF (kernel == 2) periodic_fields = truncated
+         cx = [.23_dp, -.41_dp, .37_dp]
+         CALL gaussian_coulomb_fields_periodic(periodic_fields, cx, cell, images, sv, sg, lattice_gradient)
+         cv = 0.0_dp
+         DO image = 1, SIZE(images, 2)
+            CALL gaussian_coulomb_fields_evaluate(periodic_fields, cx - MATMUL(cell, REAL(images(:, image), dp)), cp)
+            cv = cv + cp
+         END DO
+         CALL check(MAXVAL(ABS(sv - cv)), 'Gaussian auxiliary image ordering')
+         DO column = 1, 3
+            DO axis = 1, 3
+               shifted_cell = cell
+               shifted_cell(axis, column) = shifted_cell(axis, column) + step
+               CALL gaussian_coulomb_fields_periodic(periodic_fields, cx, shifted_cell, images, cp)
+               shifted_cell(axis, column) = shifted_cell(axis, column) - 2*step
+               CALL gaussian_coulomb_fields_periodic(periodic_fields, cx, shifted_cell, images, cm)
+               CALL check(MAXVAL(ABS((cp - cm)/(2*step) - lattice_gradient(axis, column, :))), &
+                          'Gaussian auxiliary cell gradient', 2.e-8_dp)
+            END DO
+         END DO
+         CALL gaussian_coulomb_fields_periodic(periodic_fields, cx + cell(:, 1), cell, images + &
+                                               SPREAD([1, 0, 0], 2, SIZE(images, 2)), cp)
+         CALL check(MAXVAL(ABS(cp - sv)), 'Gaussian auxiliary lattice representative')
+         CALL gaussian_coulomb_fields_periodic(periodic_fields, cx, cell, images(:, :0), cp, lg, lattice_gradient)
+         CALL check(MAXVAL(ABS(cp)) + MAXVAL(ABS(lg)) + MAXVAL(ABS(lattice_gradient)), 'Empty auxiliary image sum')
+      END DO
       long_range = coulomb
       short_range = coulomb
       CALL gaussian_coulomb_fields_screen(long_range, 0.0_dp, .FALSE.)
@@ -2367,6 +2416,8 @@ CONTAINS
       CALL gaussian_coulomb_fields_evaluate(coulomb, cx, cv, cg)
       CALL check(MAXVAL(ABS(lv)) + MAXVAL(ABS(lg)), 'Zero-screening erf field')
       CALL check(MAXVAL(ABS(sv - cv)) + MAXVAL(ABS(sg - cg)), 'Zero-screening erfc field')
+      CALL free_C0()
+      CALL mp_world_finalize()
    END SUBROUTINE check_gaussian_fields
 
 ! **************************************************************************************************

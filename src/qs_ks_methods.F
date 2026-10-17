@@ -61,14 +61,10 @@ MODULE qs_ks_methods
                                               hfx_ks_matrix,&
                                               hfx_ks_matrix_kp
    USE hfx_types,                       ONLY: hfx_type
-   USE input_constants,                 ONLY: do_potential_coulomb,&
-                                              do_potential_id,&
-                                              do_potential_long,&
-                                              do_potential_short,&
-                                              do_ppl_grid,&
-                                              outer_scf_becke_constraint,&
-                                              outer_scf_hirshfeld_constraint,&
-                                              smeagol_runtype_emtransport
+   USE input_constants,                 ONLY: &
+        do_potential_coulomb, do_potential_id, do_potential_long, do_potential_short, &
+        do_potential_truncated, do_ppl_grid, outer_scf_becke_constraint, &
+        outer_scf_hirshfeld_constraint, smeagol_runtype_emtransport
    USE input_cp2k_hfx,                  ONLY: ri_pmat
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
@@ -2056,14 +2052,15 @@ CONTAINS
             END IF
             IF (.NOT. ASSOCIATED(inverse%bloch%kpoints)) THEN
                IF (ANY(inverse%frame%ao%periodicity /= 0) .AND. &
-                   ri%ri_metric%potential_type /= do_potential_short .AND. ri%ri_metric%potential_type /= do_potential_id) THEN
-                  CPABORT("Periodic Gamma UPF fitting currently requires erfc or identity")
+                   ri%ri_metric%potential_type /= do_potential_short .AND. &
+                   ri%ri_metric%potential_type /= do_potential_truncated .AND. ri%ri_metric%potential_type /= do_potential_id) THEN
+                  CPABORT("Periodic Gamma UPF fitting requires erfc, truncated Coulomb or identity")
                END IF
             END IF
             ! Augmented transition integrals use the same fitting interaction as the
             ! native Gaussian integrals. The native contraction selects the exchange kernel.
             SELECT CASE (ri%ri_metric%potential_type)
-            CASE (do_potential_coulomb, do_potential_long, do_potential_short, do_potential_id)
+            CASE (do_potential_coulomb, do_potential_long, do_potential_short, do_potential_truncated, do_potential_id)
             CASE DEFAULT
                CPABORT("Inverse UPF fitting interaction is not implemented yet")
             END SELECT
