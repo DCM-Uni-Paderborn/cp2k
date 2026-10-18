@@ -25,6 +25,7 @@ MODULE qs_skala_orbitals
                                               skala_orbital_chart_derivative,&
                                               skala_orbital_chart_evaluate,&
                                               skala_orbital_chart_release,&
+                                              skala_orbital_chart_set_occupations,&
                                               skala_orbital_chart_size,&
                                               skala_orbital_chart_type
 #include "./base/base_uses.f90"
@@ -41,7 +42,7 @@ MODULE qs_skala_orbitals
       COMPLEX(dp), ALLOCATABLE :: coefficients(:, :)
       REAL(dp), ALLOCATABLE :: occupations(:), eigenvalues(:)
       REAL(dp) :: weight = 1.0_dp
-      LOGICAL :: canonicalized = .FALSE.
+      LOGICAL :: canonicalized = .FALSE., variable_occupations = .FALSE.
    END TYPE qs_skala_orbitals_type
 
 CONTAINS
@@ -56,13 +57,14 @@ CONTAINS
 !> \param weight Positive k-point weight, applied once to physical tangent derivatives.
 !> \param valid Whether the complete requested charge space is positive.
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_orbitals_create(state, native, metric, complex_orbitals, weight, valid)
+   SUBROUTINE qs_skala_orbitals_create(state, native, metric, complex_orbitals, weight, valid, variable_occupations)
       TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
       TYPE(mo_set_type), INTENT(INOUT), TARGET           :: native
       COMPLEX(dp), INTENT(IN)                            :: metric(:, :)
       LOGICAL, INTENT(IN)                                :: complex_orbitals
       REAL(dp), INTENT(IN)                               :: weight
       LOGICAL, INTENT(OUT)                               :: valid
+      LOGICAL, INTENT(IN), OPTIONAL                      :: variable_occupations
 
       COMPLEX(dp), ALLOCATABLE                           :: completed(:, :), reference(:, :)
       INTEGER                                            :: i, n, nreference
@@ -70,6 +72,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: real_part(:, :), zero(:)
 
       CALL qs_skala_orbitals_release(state)
+      IF (PRESENT(variable_occupations)) state%variable_occupations = variable_occupations
       n = native%nao
       nreference = native%nmo
       valid = n > 0 .AND. nreference > 0 .AND. nreference <= n
@@ -91,7 +94,8 @@ CONTAINS
          reference(:, :) = CMPLX(real_part, 0.0_dp, dp)
       END IF
       CALL skala_orbital_chart_create(reference, metric, native%occupation_numbers(:nreference), &
-                                      complex_orbitals, state%chart, valid, metric_weight=weight, complete_space=.TRUE.)
+                                      complex_orbitals, state%chart, valid, metric_weight=weight, complete_space=.TRUE., &
+                                      variable_occupations=state%variable_occupations)
       IF (.NOT. valid) THEN
          ! A density-only restart can leave virtual or empty-spin MO columns uninitialized.
          ! Complete the occupied span in the original metric, preserving native occupations.
@@ -118,7 +122,8 @@ CONTAINS
             END IF
             DEALLOCATE (zero)
             CALL skala_orbital_chart_create(reference, metric, native%occupation_numbers(:nreference), &
-                                            complex_orbitals, state%chart, valid, metric_weight=weight, complete_space=.TRUE.)
+                                            complex_orbitals, state%chart, valid, metric_weight=weight, complete_space=.TRUE., &
+                                            variable_occupations=state%variable_occupations)
          END IF
       END IF
       IF (.NOT. valid) RETURN
@@ -145,6 +150,7 @@ CONTAINS
       NULLIFY (state%native)
       state%weight = 1.0_dp
       state%canonicalized = .FALSE.
+      state%variable_occupations = .FALSE.
    END SUBROUTINE qs_skala_orbitals_release
 
 ! **************************************************************************************************
@@ -152,11 +158,24 @@ CONTAINS
 !> \param state ...
 !> \param coordinate ...
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_orbitals_evaluate(state, coordinate)
+   SUBROUTINE qs_skala_orbitals_evaluate(state, coordinate, occupations, energies)
       TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: occupations(:), energies(:)
 
       CPASSERT(ASSOCIATED(state%native))
+      IF (PRESENT(occupations)) THEN
+         CPASSERT(state%variable_occupations)
+         CPASSERT(SIZE(occupations) == state%native%nmo)
+         state%occupations = 0.0_dp
+         state%occupations(:SIZE(occupations)) = occupations
+         CALL skala_orbital_chart_set_occupations(state%chart, state%occupations)
+      END IF
+      IF (PRESENT(energies)) THEN
+         CPASSERT(state%variable_occupations)
+         CPASSERT(SIZE(energies) == state%native%nmo)
+         state%eigenvalues(:SIZE(energies)) = energies
+      END IF
       CALL skala_orbital_chart_evaluate(state%chart, coordinate, state%coefficients)
       state%canonicalized = .FALSE.
    END SUBROUTINE qs_skala_orbitals_evaluate
@@ -308,7 +327,7 @@ CONTAINS
    SUBROUTINE write_native_mos(state)
       TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
 
-      INTEGER                                            :: nreference
+      INTEGER                                            :: i, nreference
       REAL(dp)                                           :: defect, tolerance
 
       CPASSERT(ASSOCIATED(state%native))
@@ -324,7 +343,19 @@ CONTAINS
             CALL copy_fm_to_dbcsr(state%native%mo_coeff, state%native%mo_coeff_b)
          END IF
       END IF
-      IF (state%canonicalized) state%native%eigenvalues(:nreference) = state%eigenvalues(:nreference)
+      IF (state%variable_occupations) THEN
+         state%native%occupation_numbers(:nreference) = state%occupations(:nreference)
+         state%native%eigenvalues(:nreference) = state%eigenvalues(:nreference)
+         state%native%homo = 0
+         state%native%lfomo = nreference + 1
+         DO i = 1, nreference
+            IF (state%occupations(i) > 0.0_dp) state%native%homo = i
+            IF (state%occupations(i) < state%native%maxocc) state%native%lfomo = MIN(state%native%lfomo, i)
+         END DO
+         state%native%uniform_occupation = ALL(state%occupations(:nreference) == state%occupations(1))
+      ELSE IF (state%canonicalized) THEN
+         state%native%eigenvalues(:nreference) = state%eigenvalues(:nreference)
+      END IF
    END SUBROUTINE write_native_mos
 
 ! **************************************************************************************************

@@ -130,15 +130,25 @@ CONTAINS
 
       INTEGER                                            :: axis, configuration, family, nconfig, &
                                                             nvar, spin_case
+      LOGICAL                                            :: kinetic_boundary
       REAL(dp)                                           :: energy, first_error, minus, plus, &
                                                             second_error
       REAL(dp), ALLOCATABLE                              :: gm(:), gp(:), gradient(:), &
                                                             hessian(:, :), scratch(:, :), &
                                                             trial(:), x(:)
+      TYPE(section_vals_type), POINTER                   :: combination
+      TYPE(xc_rho_cflags_type)                           :: needs
 
       first_error = 0.0_dp
       second_error = 0.0_dp
+      NULLIFY (combination)
+      CALL section_vals_create(combination, specification)
+      CALL section_vals_val_set(combination, 'MGGA_X_R2SCAN%_SECTION_PARAMETERS_', l_val=.TRUE.)
       DO spin_case = 1, 2
+         needs = xc_functionals_get_needs(combination, spin_case == 2, kinetic_density_boundary=kinetic_boundary)
+         IF (.NOT. (needs%tau .OR. needs%tau_spin) .OR. kinetic_boundary) THEN
+            ERROR STOP 'Smooth Libxc kinetic projection introduced a sign-boundary constraint'
+         END IF
          nvar = 3
          nconfig = 3
          IF (spin_case == 2) THEN
@@ -189,6 +199,13 @@ CONTAINS
          END DO
          DEALLOCATE (x, trial, gradient, gp, gm, hessian, scratch)
       END DO
+      CALL section_vals_val_set(combination, 'TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      needs = xc_functionals_get_needs(combination, .FALSE., kinetic_density_boundary=kinetic_boundary)
+      IF (.NOT. kinetic_boundary) ERROR STOP 'A projected component hid an active native kinetic input'
+      CALL section_vals_val_set(combination, 'TPSS%_SECTION_PARAMETERS_', l_val=.FALSE.)
+      needs = xc_functionals_get_needs(combination, .FALSE., kinetic_density_boundary=kinetic_boundary)
+      IF (kinetic_boundary) ERROR STOP 'Inactive native kinetic component retained a sign boundary'
+      CALL section_vals_release(combination)
       WRITE (*, '(A,2ES15.6)') 'Libxc projected-tau first/second derivative errors:', first_error, second_error
       IF (first_error > 3.e-8_dp) ERROR STOP 'Libxc projected-tau potential is not the energy derivative'
       IF (second_error > 2.e-6_dp) ERROR STOP 'Libxc projected-tau kernel is not the potential derivative'

@@ -152,17 +152,19 @@ CONTAINS
 !> \param print_warn whether to print warnings (mainly relevant for libxc)
 !> \param spin_density_floor Whether this evaluation uses the Libxc individual-spin density projection.
 !> \param pbe_density_floor Whether this evaluation uses the native PBE spin-density projection.
+!> \param smooth_tau_projection Whether raw kinetic density uses the C2 Libxc projection.
 !> \author fawzi
 ! **************************************************************************************************
    SUBROUTINE xc_functional_get_info(functional, lsd, reference, shortform, &
-                                     needs, max_deriv, print_warn, spin_density_floor, pbe_density_floor)
+                                     needs, max_deriv, print_warn, spin_density_floor, pbe_density_floor, smooth_tau_projection)
       TYPE(section_vals_type), POINTER                   :: functional
       LOGICAL, INTENT(in)                                :: lsd
       CHARACTER(LEN=*), INTENT(OUT), OPTIONAL            :: reference, shortform
       TYPE(xc_rho_cflags_type), INTENT(inout), OPTIONAL  :: needs
       INTEGER, INTENT(out), OPTIONAL                     :: max_deriv
       LOGICAL, INTENT(IN), OPTIONAL                      :: print_warn
-      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor, pbe_density_floor
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor, pbe_density_floor, &
+                                                            smooth_tau_projection
 
       INTEGER                                            :: i_param
       REAL(kind=dp)                                      :: r_param, scale_c, scale_x
@@ -170,6 +172,7 @@ CONTAINS
       CPASSERT(ASSOCIATED(functional))
       IF (PRESENT(spin_density_floor)) spin_density_floor = .FALSE.
       IF (PRESENT(pbe_density_floor)) pbe_density_floor = .FALSE.
+      IF (PRESENT(smooth_tau_projection)) smooth_tau_projection = .FALSE.
       SELECT CASE (functional%section%name)
       CASE ("BECKE97")
          IF (lsd) THEN
@@ -301,6 +304,7 @@ CONTAINS
          END IF
       CASE ("GAUXC")
          IF (gauxc_model_none_selected(functional)) THEN
+            IF (PRESENT(smooth_tau_projection)) smooth_tau_projection = .TRUE.
             IF (PRESENT(spin_density_floor)) spin_density_floor = lsd
             CALL gauxc_model_none_xc_info(functional, lsd, reference, shortform, &
                                           needs, max_deriv, print_warn)
@@ -341,6 +345,7 @@ CONTAINS
          END IF
       CASE default
          ! If the functional has not been implemented internally, it's from LibXC
+         IF (PRESENT(smooth_tau_projection)) smooth_tau_projection = .TRUE.
          IF (PRESENT(spin_density_floor)) THEN
             CALL section_vals_val_get(functional, "SCALE", r_val=r_param)
             spin_density_floor = lsd .AND. r_param /= 0.0_dp
@@ -790,21 +795,26 @@ CONTAINS
 !>        helps to save memory and flops. defaults to false.
 !> \param spin_density_floor Whether an active component uses the individual-spin Libxc floor.
 !> \param pbe_density_floor Whether an active component uses the native PBE spin-density floor.
+!> \param kinetic_density_boundary Whether an active kinetic component lacks the C2 raw-tau projection.
 !> \return ...
 !> \author fawzi
 ! **************************************************************************************************
-   FUNCTION xc_functionals_get_needs(functionals, lsd, calc_potential, spin_density_floor, pbe_density_floor) &
+   FUNCTION xc_functionals_get_needs(functionals, lsd, calc_potential, spin_density_floor, pbe_density_floor, &
+                                     kinetic_density_boundary) &
       RESULT(needs)
       TYPE(section_vals_type), POINTER                   :: functionals
       LOGICAL, INTENT(in)                                :: lsd
       LOGICAL, INTENT(in), OPTIONAL                      :: calc_potential
-      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor, pbe_density_floor
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: spin_density_floor, pbe_density_floor, &
+                                                            kinetic_density_boundary
       TYPE(xc_rho_cflags_type)                           :: needs
 
       INTEGER                                            :: ifun
       LOGICAL                                            :: component_floor, component_pbe_floor, &
-                                                            fun_active, my_calc_potential
+                                                            fun_active, my_calc_potential, &
+                                                            smooth_tau
       TYPE(section_vals_type), POINTER                   :: xc_fun
+      TYPE(xc_rho_cflags_type)                           :: component_needs
 
       my_calc_potential = .FALSE.
       IF (PRESENT(calc_potential)) my_calc_potential = calc_potential
@@ -813,6 +823,7 @@ CONTAINS
       CALL xc_rho_cflags_setall(needs, .FALSE.)
       IF (PRESENT(spin_density_floor)) spin_density_floor = .FALSE.
       IF (PRESENT(pbe_density_floor)) pbe_density_floor = .FALSE.
+      IF (PRESENT(kinetic_density_boundary)) kinetic_density_boundary = .FALSE.
 
       ifun = 0
       DO
@@ -820,8 +831,16 @@ CONTAINS
          xc_fun => section_vals_get_subs_vals2(functionals, i_section=ifun)
          IF (.NOT. ASSOCIATED(xc_fun)) EXIT
          CALL xc_functional_get_info(xc_fun, lsd=lsd, needs=needs, spin_density_floor=component_floor, &
-                                     pbe_density_floor=component_pbe_floor)
+                                     pbe_density_floor=component_pbe_floor, smooth_tau_projection=smooth_tau)
          CALL section_vals_val_get(xc_fun, "_SECTION_PARAMETERS_", l_val=fun_active)
+         IF (PRESENT(kinetic_density_boundary)) THEN
+            IF (fun_active .AND. .NOT. smooth_tau) THEN
+               ! The accumulated needs can contain tau from a different component.
+               CALL xc_rho_cflags_setall(component_needs, .FALSE.)
+               CALL xc_functional_get_info(xc_fun, lsd=lsd, needs=component_needs)
+               kinetic_density_boundary = kinetic_density_boundary .OR. component_needs%tau .OR. component_needs%tau_spin
+            END IF
+         END IF
          IF (PRESENT(spin_density_floor)) THEN
             spin_density_floor = spin_density_floor .OR. (fun_active .AND. component_floor)
          END IF

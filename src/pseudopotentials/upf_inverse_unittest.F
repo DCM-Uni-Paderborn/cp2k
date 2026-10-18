@@ -137,11 +137,10 @@ CONTAINS
    SUBROUTINE check_constrained_curvature()
       REAL(dp), PARAMETER :: tolerance = 1.e-11_dp, weights(3) = [1.0_dp, 0.01_dp, 0.0001_dp]
 
-      INTEGER                                            :: iterations
+      INTEGER                                            :: i, iterations
       LOGICAL                                            :: converged, valid
-      REAL(dp)                                           :: coordinate(4), energy_zero, &
-                                                            implicit_derivative, jacobian(1, 4), &
-                                                            midpoint(4), values(1)
+      REAL(dp) :: anisotropic(9), coordinate(4), derivative(9), empty(0), energy, energy_zero, &
+         implicit_derivative, jacobian(1, 4), midpoint(4), values(1)
       TYPE(skala_constraint_chart_type)                  :: curve
 
       coordinate(:3) = [0.01_dp, 0.02_dp, 0.03_dp]
@@ -178,7 +177,53 @@ CONTAINS
       IF (ABS(implicit_derivative - coordinate(1)) > 1.e-11_dp) THEN
          ERROR STOP 'Feasible field windows did not resolve implicit-curve derivatives'
       END IF
+      ! Resolve a rotated quadratic before its energy changes reach roundoff.
+      DO i = 1, SIZE(anisotropic)
+         anisotropic(i) = 0.3_dp*COS(1.7_dp*REAL(i, dp))
+      END DO
+      energy_zero = 0.0_dp
+      CALL skala_constrained_stationarity(empty_constraints, anisotropic_energy_gradient, energy_zero, &
+                                          anisotropic, empty, tolerance, converged, max_iterations=200, iterations=iterations)
+      CALL anisotropic_energy_gradient(anisotropic, energy, derivative, energy_zero)
+      IF (.NOT. converged .OR. iterations > 200 .OR. NORM2(derivative) > tolerance .OR. NORM2(anisotropic) > 1.e-7_dp) THEN
+         ERROR STOP 'Anisotropic curvature did not reach the original gradient tolerance'
+      END IF
    END SUBROUTINE check_constrained_curvature
+
+! **************************************************************************************************
+!> \brief Positive quadratic with rotated axes, eigenvalues 1e-3 through 1e3 and exact minimum zero.
+!> \param coordinate Trial coordinates.
+!> \param energy Original quadratic energy, including its independent zero.
+!> \param gradient Exact analytical gradient.
+!> \param context Additive energy zero.
+! **************************************************************************************************
+   SUBROUTINE anisotropic_energy_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+
+      INTEGER :: i, j, n
+      REAL(dp) :: axes(SIZE(coordinate), SIZE(coordinate)), eigenvalues(SIZE(coordinate)), &
+                  matrix(SIZE(coordinate), SIZE(coordinate))
+
+      n = SIZE(coordinate)
+      DO j = 1, n
+         eigenvalues(j) = 10.0_dp**(-3.0_dp + 6.0_dp*REAL(j - 1, dp)/REAL(n - 1, dp))
+         DO i = 1, n
+            axes(i, j) = SQRT(2.0_dp/REAL(n, dp))*COS(pi*(REAL(i, dp) - 0.5_dp)*REAL(j - 1, dp)/REAL(n, dp))
+         END DO
+      END DO
+      axes(:, 1) = axes(:, 1)/SQRT(2.0_dp)
+      matrix = MATMUL(axes*SPREAD(eigenvalues, 1, n), TRANSPOSE(axes))
+      gradient = MATMUL(matrix, coordinate)
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         energy = context + 0.5_dp*DOT_PRODUCT(coordinate, gradient)
+      CLASS DEFAULT
+         ERROR STOP 'Invalid anisotropic quadratic context'
+      END SELECT
+   END SUBROUTINE anisotropic_energy_gradient
 
 ! **************************************************************************************************
 !> \brief A curved surface h=sum(u**2), with u the first three coordinates.
@@ -383,7 +428,8 @@ CONTAINS
    SUBROUTINE check_physical_stationarity()
       INTEGER                                            :: iterations
       LOGICAL                                            :: converged, interrupted, stopped
-      REAL(dp)                                           :: coordinate(1), empty(0), scale
+      REAL(dp)                                           :: coordinate(1), cusp_coordinate(2), &
+                                                            empty(0), pair(2), scale
       TYPE(roundoff_cusp_context)                        :: cusp
 
       scale = 20.0_dp
@@ -400,7 +446,8 @@ CONTAINS
       END IF
       CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=8, &
-                                          verify_stationarity=scaled_physical_gradient, iterations=iterations)
+                                          verify_stationarity=scaled_physical_gradient, iterations=iterations, &
+                                          curvature_steps=.TRUE., precondition=scaled_inverse_curvature)
       IF (.NOT. converged .OR. iterations <= 0 .OR. iterations > 8 .OR. ABS(coordinate(1)) > 1.e-12_dp) THEN
          ERROR STOP 'Known physical minimum was not established'
       END IF
@@ -449,6 +496,17 @@ CONTAINS
       IF (converged .OR. .NOT. interrupted .OR. iterations /= 1 .OR. coordinate(1) /= 0.0_dp) THEN
          ERROR STOP 'A nonsmooth minimum lost the original rejected trial or was declared differentiably stationary'
       END IF
+      ! Detect the first directional reversal across a tilted cusp while its shallow
+      ! tangential energy decrease is still resolved, before the smooth search stalls.
+      scale = 1.e-3_dp
+      cusp_coordinate = [0.7_dp, 0.5_dp]
+      CALL skala_constrained_stationarity(empty_constraints, absolute_energy_gradient, scale, cusp_coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=4, &
+                                          iterations=iterations, interrupted=interrupted, &
+                                          check_stalled_segment=crossing_segment)
+      IF (converged .OR. .NOT. interrupted) THEN
+         ERROR STOP 'A persistent cusp derivative exhausted the smooth search before boundary detection'
+      END IF
       coordinate = 1.e-8_dp
       CALL skala_constrained_stationarity(empty_constraints, roundoff_cusp_gradient, cusp, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=1, &
@@ -476,6 +534,36 @@ CONTAINS
       IF (.NOT. converged .OR. iterations > 8 .OR. NORM2(coordinate)/scale**2 > stationarity_tolerance) THEN
          ERROR STOP 'A steep quadratic exhausted its line search above coordinate resolution'
       END IF
+      ! A numerical coordinate map must preserve the original derivative bound.
+      scale = 1.e-6_dp
+      coordinate = 0.5_dp*stationarity_tolerance*scale
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, iterations=iterations, &
+                                          coordinate_scales=[1.0_dp/scale])
+      IF (.NOT. converged .OR. iterations /= 0) ERROR STOP 'Preconditioning changed the original stopping bound'
+      scale = 1.e6_dp
+      coordinate = 2.0_dp*stationarity_tolerance*scale
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, iterations=iterations, &
+                                          coordinate_scales=[1.0_dp/scale])
+      IF (converged .OR. iterations /= 1) ERROR STOP 'Small scaled gradients hid a nonstationary original coordinate'
+      scale = 1.0_dp
+      coordinate = 1.0_dp
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, &
+                                          iterations=iterations, interrupted=interrupted, curvature_steps=.TRUE., &
+                                          check_curvature_segment=interrupt_curvature_probe)
+      IF (converged .OR. .NOT. interrupted .OR. iterations /= 1 .OR. coordinate(1) /= 1.0_dp) THEN
+         ERROR STOP 'A coupled-curvature boundary lost the accepted point or bypassed its iteration budget'
+      END IF
+      scale = 1.0_dp
+      pair = [0.3_dp, -0.2_dp]
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, pair, &
+                                          empty, stationarity_tolerance, converged, max_iterations=8, max_step=1.0_dp, &
+                                          curvature_steps=.TRUE., precondition=extreme_inverse_curvature)
+      IF (.NOT. converged .OR. NORM2(pair) > stationarity_tolerance) THEN
+         ERROR STOP 'An unresolved inverse response prevented a known coupled minimum'
+      END IF
    END SUBROUTINE check_physical_stationarity
 
 ! **************************************************************************************************
@@ -486,6 +574,45 @@ CONTAINS
 !> \param context Positive coordinate scale.
 !> \param interrupted Whether the trial crosses the threshold.
 ! **************************************************************************************************
+   SUBROUTINE scaled_inverse_curvature(coordinate, context, inverse_diagonal, available)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+      REAL(dp), INTENT(OUT) :: inverse_diagonal(:)
+      LOGICAL, INTENT(OUT) :: available
+
+      available = .TRUE.
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         inverse_diagonal = context**2
+      CLASS DEFAULT
+         ERROR STOP 'Invalid curvature-preconditioner context'
+      END SELECT
+   END SUBROUTINE scaled_inverse_curvature
+
+   SUBROUTINE extreme_inverse_curvature(coordinate, context, inverse_diagonal, available)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+      REAL(dp), INTENT(OUT) :: inverse_diagonal(:)
+      LOGICAL, INTENT(OUT) :: available
+
+      IF (SIZE(coordinate) /= 2) ERROR STOP 'Wrong coupled inverse-response control'
+      inverse_diagonal = [1.0_dp, HUGE(1.0_dp)/2.0_dp]
+      available = .TRUE.
+   END SUBROUTINE extreme_inverse_curvature
+
+   SUBROUTINE interrupt_curvature_probe(first, last, curve, context, smooth, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+
+      CLASS(*), INTENT(INOUT) :: context
+      LOGICAL, INTENT(OUT) :: smooth, interrupted
+
+      smooth = .FALSE.
+      interrupted = ANY(first /= last)
+   END SUBROUTINE interrupt_curvature_probe
+
    SUBROUTINE crossing_segment(first, last, curve, context, interrupted)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
@@ -499,15 +626,19 @@ CONTAINS
       CLASS DEFAULT
          ERROR STOP 'Wrong crossing coordinate scale'
       END SELECT
-      interrupted = first(1) > 0.9_dp .AND. last(1) <= 0.9_dp
+      IF (SIZE(first) == 2) THEN
+         interrupted = (first(2) - 0.3_dp*first(1))*(last(2) - 0.3_dp*last(1)) <= 0.0_dp
+      ELSE
+         interrupted = first(1) > 0.9_dp .AND. last(1) <= 0.9_dp
+      END IF
    END SUBROUTINE crossing_segment
 
 ! **************************************************************************************************
 !> \brief Absolute-value energy whose ordinary derivative cannot vanish at its minimum.
-!> \param coordinate One real orbital coordinate.
+!> \param coordinate One absolute-value coordinate or two with a tilted cusp and shallow tangential curvature.
 !> \param energy Exact nonsmooth energy.
 !> \param gradient Positive-side derivative at zero and the ordinary derivative elsewhere.
-!> \param context Positive energy scale.
+!> \param context Positive absolute-value scale in one dimension, tangential curvature in two.
 ! **************************************************************************************************
    SUBROUTINE absolute_energy_gradient(coordinate, energy, gradient, context)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
@@ -517,8 +648,14 @@ CONTAINS
 
       SELECT TYPE (context)
       TYPE IS (REAL(dp))
-         energy = context*ABS(coordinate(1))
-         gradient(1) = SIGN(context, coordinate(1))
+         IF (SIZE(coordinate) == 2) THEN
+            energy = 0.5_dp*context*coordinate(1)**2 + ABS(coordinate(2) - 0.3_dp*coordinate(1))
+            gradient(2) = SIGN(1.0_dp, coordinate(2) - 0.3_dp*coordinate(1))
+            gradient(1) = context*coordinate(1) - 0.3_dp*gradient(2)
+         ELSE
+            energy = context*ABS(coordinate(1))
+            gradient(1) = SIGN(context, coordinate(1))
+         END IF
       CLASS DEFAULT
          ERROR STOP 'Invalid absolute-value context'
       END SELECT
@@ -616,11 +753,11 @@ CONTAINS
    END SUBROUTINE stop_after_first_step
 
 ! **************************************************************************************************
-!> \brief Supply an unconstrained scaled-coordinate problem.
-!> \param coordinate Trial coordinate.
+!> \brief Supply an unconstrained coordinate problem.
+!> \param coordinate Trial coordinates.
 !> \param values Empty residuals.
 !> \param jacobian Empty residual derivatives.
-!> \param context Positive coordinate scale.
+!> \param context Energy-problem data, unused by the empty constraints.
 ! **************************************************************************************************
    SUBROUTINE empty_constraints(coordinate, values, jacobian, context)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
@@ -628,11 +765,9 @@ CONTAINS
 
       CLASS(*), INTENT(INOUT) :: context
 
-      IF (SIZE(coordinate) /= 1 .OR. SIZE(values) /= 0) ERROR STOP 'Wrong scaled-coordinate control'
-      SELECT TYPE (context)
-      TYPE IS (REAL(dp))
-         IF (context <= 0.0_dp) ERROR STOP 'Nonpositive physical coordinate scale'
-      END SELECT
+      IF (SIZE(coordinate) < 1 .OR. SIZE(values) /= 0 .OR. ANY(SHAPE(jacobian) /= [0, SIZE(coordinate)])) THEN
+         ERROR STOP 'Wrong unconstrained-coordinate control'
+      END IF
       values = 0.0_dp
       jacobian = 0.0_dp
    END SUBROUTINE empty_constraints
@@ -1018,15 +1153,15 @@ CONTAINS
    SUBROUTINE check_atomic_projectors()
       INTEGER, PARAMETER                                 :: nb = 3, np = 5, nr = 33
 
-      COMPLEX(dp) :: coefficient_overlap(np, 2), coefficient_response(np, 2)
-      COMPLEX(dp) :: delta_kinetic(np, 2), delta_overlap(np, 2), exact_operator(2, 2), &
-         identity(nb, nb), kinetic_overlap(np, 2), kinetic_response(np, 2), &
-                     kinetic_samples(np, 2, 2), laplacian(np, 2), local_samples(2, 2, 2), &
-                     metric_samples(2, 2, 2), mixed(2, 2), overlap(np, 2), response(np, 2), rotation(nb, nb), &
-                     samples(np, 2, 2), shifted_overlap(np, 2)
+      COMPLEX(dp) :: coefficient_overlap(np, 2), coefficient_response(np, 2), &
+         delta_kinetic(np, 2), delta_overlap(np, 2), exact_operator(2, 2), identity(nb, nb), &
+         kinetic_overlap(np, 2), kinetic_response(np, 2), kinetic_samples(np, 2, 2), &
+         laplacian(np, 2), local_samples(2, 2, 2), metric_samples(2, 2, 2), mixed(2, 2), &
+         overlap(np, 2), response(np, 2), rotation(nb, nb), samples(np, 2, 2), &
+         shifted_overlap(np, 2)
       COMPLEX(dp), ALLOCATABLE :: kinetic_residual(:, :), local_kinetic(:, :), &
-                                  local_kinetic_response(:, :), local_metric(:, :), local_metric_response(:, :), &
-                                                            metric_residual(:, :)
+         local_kinetic_response(:, :), local_metric(:, :), local_metric_response(:, :), &
+         metric_residual(:, :)
       INTEGER                                            :: axis, i, images(3, 3), info, ir, j, side
       REAL(dp) :: ao_center(3), cell(3, 3), center(3), dao(3), dc(3, 3), dcenter(3), delta, &
          directions(3, 6), displacement(3), dk(3), expected(np, np), full_kinetic(np, np), &
@@ -1213,8 +1348,8 @@ CONTAINS
                               MATMUL(atomic%difference_overlap + frame%q, frame%coefficients))
       CALL check(MAXVAL(ABS(local_metric - exact_operator)), 'Native atomic metric correction retains the supplied original q')
       CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
-                                            local_kinetic_response, local_metric_response, &
-                                            RESHAPE(dcenter, [3, 1]), 0.0_dp*cell, 0.0_dp*reduced_k)
+                                           local_kinetic_response, local_metric_response, &
+                                           RESHAPE(dcenter, [3, 1]), 0.0_dp*cell, 0.0_dp*reduced_k)
       CALL check(MAXVAL(ABS(local_kinetic_response)) + MAXVAL(ABS(local_metric_response)), &
                  'Rigid translation leaves atom-local kinetic and metric corrections unchanged', 0.0_dp)
       CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, center, cell, images, reduced_k, &
@@ -1225,8 +1360,8 @@ CONTAINS
       local_samples(:, :, 1) = local_kinetic_response
       metric_samples(:, :, 1) = local_metric_response
       CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
-                                            local_kinetic_response, local_metric_response, &
-                                            RESHAPE(dcenter, [3, 1]), dc, dk)
+                                           local_kinetic_response, local_metric_response, &
+                                           RESHAPE(dcenter, [3, 1]), dc, dk)
       CALL check(MAXVAL(ABS(local_kinetic_response - local_samples(:, :, 1))) + &
                  MAXVAL(ABS(local_metric_response - metric_samples(:, :, 1))), &
                  'Reused coefficients preserve nonzero lattice and Bloch operator responses', 0.0_dp)
@@ -1261,13 +1396,13 @@ CONTAINS
       CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, ao_center, cell, images, reduced_k, &
                                          frame%coefficients(:, 3:4))
       CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
-                                            local_kinetic_response, local_metric_response, &
-                                            SPREAD(dcenter, 2, 2), 0.0_dp*cell, 0.0_dp*reduced_k)
+                                           local_kinetic_response, local_metric_response, &
+                                           SPREAD(dcenter, 2, 2), 0.0_dp*cell, 0.0_dp*reduced_k)
       CALL check(MAXVAL(ABS(local_kinetic_response)) + MAXVAL(ABS(local_metric_response)), &
                  'Common translation with a separate Gaussian center', 0.0_dp)
       CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
-                                            local_kinetic_response, local_metric_response, &
-                                            RESHAPE([dcenter, dao], [3, 2]), 0.0_dp*cell, 0.0_dp*reduced_k)
+                                           local_kinetic_response, local_metric_response, &
+                                           RESHAPE([dcenter, dao], [3, 2]), 0.0_dp*cell, 0.0_dp*reduced_k)
       DO side = 1, 2
          delta = REAL(2*side - 3, dp)*step
          shifted_frame = frame

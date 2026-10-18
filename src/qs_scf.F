@@ -70,10 +70,12 @@ MODULE qs_scf
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_init_random,&
                                               cp_fm_release,&
+                                              cp_fm_set_all,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_add_default_logger,&
                                               cp_get_default_logger,&
+                                              cp_logger_get_default_unit_nr,&
                                               cp_logger_release,&
                                               cp_logger_type,&
                                               cp_rm_default_logger,&
@@ -657,7 +659,8 @@ CONTAINS
             inverse_ot_stopped = .FALSE.
             IF (.NOT. just_energy .AND. scf_env%iter_count == 1) THEN
                ! Check the normalized native state before an ordinary OT update can move it.
-               CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, inverse_ot_stopped)
+               CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, &
+                                      inverse_ot_stopped, output_unit)
                IF (inverse_ot_handled) THEN
                   scf_env%iter_count = scf_env%iter_count + inverse_ot_steps
                   iter_count = iter_count + inverse_ot_steps
@@ -889,6 +892,22 @@ CONTAINS
                   scf_env%iter_param = dft_control%qs_control%xtb_control%tblite_mixer_damping
                END IF
             END IF
+            IF (.NOT. inverse_ot_handled .AND. scf_control%smear%do_smear .AND. &
+                scf_env%method == ot_method_nr .AND. scf_env%iter_delta < scf_control%eps_scf) THEN
+               ! Certify the complete physical thermal state before reporting convergence.
+               ! The original OT candidate norm only triggers this final refinement.
+               CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, &
+                                      inverse_ot_stopped, output_unit, refine_final=.TRUE.)
+               IF (inverse_ot_handled) THEN
+                  scf_env%iter_count = scf_env%iter_count + inverse_ot_steps
+                  iter_count = iter_count + inverse_ot_steps
+                  total_steps = total_steps + inverse_ot_steps
+                  CALL cp_iterate(logger%iter_info, last=.FALSE., iter_nr=iter_count)
+                  density_full_step = .TRUE.
+                  energy_only = .FALSE.
+                  just_energy = .FALSE.
+               END IF
+            END IF
             scf_env%step_norm = scf_env%iter_delta
 
             t2 = m_walltime()
@@ -1075,7 +1094,7 @@ CONTAINS
    END SUBROUTINE scf_env_do_scf
 
 ! **************************************************************************************************
-!> \brief Minimize fixed-occupation inverse orbitals after initializing the native OT state.
+!> \brief Minimize inverse orbitals and optional Fermi occupations after initializing native OT.
 !>        Count the bounded minimization against the original SCF limit. Acceptance reconstructs
 !>        matching MOs, P and energy-weighted W in the original charge metric. Physical density
 !>        and kinetic-density boundaries use the shared active constraint search.
@@ -1090,23 +1109,28 @@ CONTAINS
 !> \param handled Whether the normalized inverse minimization was attempted.
 !> \param iterations Number of attempted minimization iterations.
 !> \param stopped Whether the minimization received an external stop request.
+!> \param output_unit Native SCF output stream for automatic virtual-space growth.
+!> \param refine_final Refine a thermal candidate after ordinary OT, independent of its minimizer.
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_inverse_ot(qs_env, scf_env, scf_control, handled, iterations, stopped)
+   SUBROUTINE qs_scf_inverse_ot(qs_env, scf_env, scf_control, handled, iterations, stopped, output_unit, refine_final)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
       LOGICAL, INTENT(OUT)                               :: handled
       INTEGER, INTENT(OUT)                               :: iterations
       LOGICAL, INTENT(OUT)                               :: stopped
+      INTEGER, INTENT(IN)                                :: output_unit
+      LOGICAL, INTENT(IN), OPTIONAL                      :: refine_final
 
-      INTEGER                                            :: i, n, remaining, steps
+      INTEGER                                            :: i, inner_limit, n, remaining, steps
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             points(:, :), reached(:), &
                                                             release_side(:), spins(:)
-      LOGICAL                                            :: accepted, balanced, converged, rechart, &
-                                                            released, valid
+      LOGICAL                                            :: accepted, balanced, converged, &
+                                                            do_kpoints, final_stage, rechart, &
+                                                            released, space_grown, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
-      REAL(dp)                                           :: energy
+      REAL(dp)                                           :: energy, omitted_charge, step_radius
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
                                                             gradient(:), physical(:), targets(:), &
                                                             tolerances(:)
@@ -1115,23 +1139,32 @@ CONTAINS
       TYPE(qs_skala_scf_crossing_type)                   :: event
       TYPE(qs_skala_scf_type)                            :: state
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+      TYPE(section_vals_type), POINTER                   :: scf_section
 
       handled = .FALSE.
       stopped = .FALSE.
       iterations = 0
+      final_stage = .FALSE.
+      IF (PRESENT(refine_final)) final_stage = refine_final
       IF (scf_env%method /= ot_method_nr) RETURN
       IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) RETURN
       IF (SIZE(scf_env%qs_ot_env) == 0) RETURN
-      IF (scf_env%qs_ot_env(1)%settings%ot_method /= "LBFG") RETURN
-      IF (scf_control%smear%do_smear .OR. scf_control%outer_scf%have_scf) RETURN
+      IF (scf_env%qs_ot_env(1)%settings%ot_method /= "LBFG") THEN
+         IF (.NOT. final_stage .OR. .NOT. scf_control%smear%do_smear) RETURN
+      END IF
+      IF (scf_control%outer_scf%have_scf .OR. scf_control%gce%do_gce) RETURN
+      IF (scf_control%smear%do_smear) THEN
+         IF (scf_control%smear%method /= smear_fermi_dirac) RETURN
+         IF (scf_control%smear%electronic_temperature <= 0.0_dp) RETURN
+      END IF
       remaining = scf_control%max_scf - scf_env%iter_count
-      IF (remaining <= 0) RETURN
-      CALL get_qs_env(qs_env, dft_control=dft_control, kpoints=kpoints)
+      IF (remaining < 0) RETURN
+      CALL get_qs_env(qs_env, dft_control=dft_control, kpoints=kpoints, do_kpoints=do_kpoints)
       IF (dft_control%qs_control%cdft .OR. dft_control%roks) RETURN
       CALL get_ks_env(qs_env%ks_env, upf_inverse=inverse)
       IF (.NOT. ASSOCIATED(inverse)) RETURN
       IF (.NOT. inverse%enabled) RETURN
-      CALL qs_skala_scf_create(state, qs_env, valid)
+      CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
       IF (.NOT. valid) RETURN
       n = qs_skala_scf_size(state)
       IF (n == 0) THEN
@@ -1150,11 +1183,59 @@ CONTAINS
          handled = .FALSE.
          RETURN
       END IF
+      IF (final_stage .AND. remaining > 0 .AND. do_kpoints .AND. SIZE(tolerances) == 0) THEN
+         ! Reuse the physical metallic-OT subspace refresh before the final coupled check.
+         ! Original active density constraints keep their existing orbital representation.
+         CALL qs_skala_scf_release(state)
+         DO i = 1, SIZE(scf_env%qs_ot_env)
+            CALL ot_scf_destroy(scf_env%qs_ot_env(i))
+         END DO
+         DEALLOCATE (scf_env%qs_ot_env)
+         NULLIFY (scf_env%qs_ot_env)
+         reuse_precond = .FALSE.
+         scf_section => section_vals_get_subs_vals(qs_env%input, "DFT%SCF")
+         CALL init_scf_loop(scf_env, qs_env, scf_section, kp_ot_entry_refresh)
+         iterations = iterations + 1
+         remaining = remaining - 1
+         CALL qs_skala_scf_create(state, qs_env, valid, thermal=.TRUE.)
+         IF (.NOT. valid) CPABORT("Could not inspect the refreshed inverse thermal state.")
+         n = qs_skala_scf_size(state)
+         DEALLOCATE (coordinate, gradient, physical)
+         ALLOCATE (coordinate(n), gradient(n), physical(n))
+         coordinate = 0.0_dp
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
+         CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, &
+                                    require_feasible=.FALSE.)
+         CPASSERT(valid)
+      END IF
       IF (SIZE(tolerances) == 0) ALLOCATE (coordinate_bound, SOURCE=1.0_dp)
-      DO
+      step_radius = 0.1_dp
+      IF (scf_control%smear%do_smear) step_radius = scf_env%qs_ot_env(1)%settings%ds_min
+      IF (remaining == 0) THEN
+         ! Verification at the last permitted step must not spend another minimization step.
+         scf_env%iter_delta = HUGE(0.0_dp)
+         balanced = NORM2(physical) <= scf_control%eps_scf
+         IF (SIZE(tolerances) > 0) THEN
+            CALL qs_skala_scf_balance(state, coordinate, scf_control%eps_scf, physical, balanced)
+         END IF
+         IF (balanced) CALL qs_skala_scf_accept(state, coordinate, scf_control%eps_scf, accepted, omitted_charge)
+         IF (accepted) THEN
+            CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
+            IF (.NOT. valid) CPABORT("Could not inspect the final inverse orbital state.")
+            CALL qs_skala_scf_inspect(state, energy, physical)
+            scf_env%iter_delta = NORM2(physical)
+            accepted = scf_env%iter_delta <= scf_control%eps_scf
+         END IF
+      END IF
+      DO WHILE (remaining > 0 .AND. .NOT. accepted)
+         space_grown = .FALSE.
+         inner_limit = remaining
+         ! The occupation-weighted model uses a fresh reference after each accepted step.
+         IF (scf_control%smear%do_smear .AND. &
+             scf_env%qs_ot_env(1)%settings%occupation_preconditioner) inner_limit = 1
          CALL qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, tolerances, &
-                                        scf_control%eps_scf, energy, converged, max_iterations=remaining, &
-                                        max_step=0.1_dp, iterations=steps, check_external=.TRUE., stopped=stopped, &
+                                        scf_control%eps_scf, energy, converged, max_iterations=inner_limit, &
+                                        max_step=step_radius, iterations=steps, check_external=.TRUE., stopped=stopped, &
                                         targets=targets, max_coordinate_norm=coordinate_bound, &
                                         rechart=rechart, retain_progress=.TRUE., crossings=event, admit_crossings=.TRUE.)
          iterations = iterations + steps
@@ -1178,7 +1259,7 @@ CONTAINS
             IF (remaining <= 0) EXIT
             CYCLE
          END IF
-         IF (converged .AND. SIZE(tolerances) > 0) THEN
+         IF ((converged .OR. rechart) .AND. SIZE(tolerances) > 0) THEN
             CALL qs_skala_scf_release_cusp(state, coordinate, MERGE(0.1_dp, 0.0_dp, remaining > 0), released, valid, &
                                            check_external=.TRUE., stopped=stopped)
             IF (.NOT. valid .OR. stopped) EXIT
@@ -1187,10 +1268,11 @@ CONTAINS
                iterations = iterations + 1
                remaining = remaining - 1
                CALL qs_skala_scf_release(state)
-               CALL qs_skala_scf_create(state, qs_env, valid)
+               CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
                IF (.NOT. valid) CPABORT("Could not rebuild the released inverse orbital state.")
                CPASSERT(qs_skala_scf_size(state) == n)
                coordinate = 0.0_dp
+               CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
                CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, &
                                           require_feasible=.FALSE.)
                IF (.NOT. valid) EXIT
@@ -1199,15 +1281,29 @@ CONTAINS
                IF (remaining <= 0) EXIT
                CYCLE
             END IF
-            CALL qs_skala_scf_balance(state, coordinate, scf_control%eps_scf, physical, balanced)
-            converged = balanced
+            IF (converged) THEN
+               CALL qs_skala_scf_balance(state, coordinate, scf_control%eps_scf, physical, balanced)
+               converged = balanced
+            END IF
          END IF
          CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
          scf_env%iter_delta = MAX(NORM2(gradient), NORM2(physical))
          IF (converged) THEN
-            CALL qs_skala_scf_accept(state, coordinate, scf_control%eps_scf, accepted)
+            CALL qs_skala_scf_accept(state, coordinate, scf_control%eps_scf, accepted, omitted_charge)
+            IF (.NOT. accepted .AND. omitted_charge > scf_control%smear%eps_fermi_dirac) THEN
+               IF (.NOT. do_kpoints .OR. .NOT. ANY(scf_control%added_mos_auto(1:dft_control%nspins))) THEN
+                  CPABORT("The inverse thermal state needs additional MOs. Increase ADDED_MOS.")
+               END IF
+               IF (stopped .OR. remaining <= 0) EXIT
+               ! Grow only after physical stationarity exposes omitted thermal charge.
+               CALL qs_skala_scf_release(state)
+               CALL qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit)
+               iterations = iterations + 1
+               remaining = remaining - 1
+               space_grown = .TRUE.
+            END IF
             IF (accepted) THEN
-               CALL qs_skala_scf_create(state, qs_env, valid)
+               CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
                IF (.NOT. valid) CPABORT("Could not inspect the accepted inverse orbital state.")
                CALL qs_skala_scf_inspect(state, energy, physical)
                scf_env%iter_delta = NORM2(physical)
@@ -1217,7 +1313,7 @@ CONTAINS
             ! The canonical density can differ at rounding scale near an active physical boundary.
             ! Its rejected gradient must not inherit the pre-rotation convergence flag.
             scf_env%iter_delta = HUGE(0.0_dp)
-            IF (steps == 0) THEN
+            IF (steps == 0 .AND. .NOT. space_grown) THEN
                ! A failed canonical trial consumes budget even if its original chart was stationary.
                iterations = iterations + 1
                remaining = remaining - 1
@@ -1229,9 +1325,16 @@ CONTAINS
          ! falling back to ordinary OT, but do not repeat a chart with no accepted step.
          IF (.NOT. rechart .AND. steps <= 1) EXIT
          CALL qs_skala_scf_release(state)
-         CALL qs_skala_scf_create(state, qs_env, valid)
+         CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
          IF (.NOT. valid) CPABORT("Could not rebuild the accepted inverse orbital chart.")
-         CPASSERT(qs_skala_scf_size(state) == n)
+         IF (space_grown) THEN
+            n = qs_skala_scf_size(state)
+            DEALLOCATE (coordinate, gradient, physical)
+            ALLOCATE (coordinate(n), gradient(n), physical(n))
+            IF (ALLOCATED(coordinate_bound)) DEALLOCATE (coordinate_bound)
+         ELSE
+            CPASSERT(qs_skala_scf_size(state) == n)
+         END IF
          coordinate = 0.0_dp
          CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
          ! Restore any rounding-scale constraint displacement in the rebuilt chart.
@@ -1241,6 +1344,7 @@ CONTAINS
             scf_env%iter_delta = HUGE(0.0_dp)
             EXIT
          END IF
+         IF (space_grown .AND. SIZE(tolerances) == 0) ALLOCATE (coordinate_bound, SOURCE=1.0_dp)
       END DO
       IF (.NOT. accepted) scf_env%iter_delta = HUGE(0.0_dp)
       CALL qs_skala_scf_release(state)
@@ -1404,11 +1508,18 @@ CONTAINS
                          occupation_numbers=old_occupation_numbers)
 
          old_nmo = old_mos(ispin)%nmo
-         CALL cp_fm_init_random(mo_coeff, mos(ispin)%nmo)
-         IF (has_unit_metric) THEN
-            CALL make_basis_simple(mo_coeff, mos(ispin)%nmo)
+         IF (ALLOCATED(kpoints%native_density)) THEN
+            ! The master MOs supply dimensions, not a physical Bloch normalization.
+            ! Native image-space metric matrices are placeholders. The complete
+            ! generalized solve below normalizes each k-point in its own metric.
+            CALL cp_fm_set_all(mo_coeff, 0.0_dp, 1.0_dp)
          ELSE
-            CALL make_basis_sm(mo_coeff, mos(ispin)%nmo, matrix_s(1, 1)%matrix)
+            CALL cp_fm_init_random(mo_coeff, mos(ispin)%nmo)
+            IF (has_unit_metric) THEN
+               CALL make_basis_simple(mo_coeff, mos(ispin)%nmo)
+            ELSE
+               CALL make_basis_sm(mo_coeff, mos(ispin)%nmo, matrix_s(1, 1)%matrix)
+            END IF
          END IF
 
          eigenvalues(1:old_nmo) = old_eigenvalues(1:old_nmo)
@@ -1524,8 +1635,8 @@ CONTAINS
       INTEGER                                            :: entry_reason, handle, ikind, ispin, &
                                                             nkpoint, nmo, nspin_ot
       INTEGER, DIMENSION(2)                              :: kp_range
-      LOGICAL :: do_adiis, do_kpoints, do_rotation, fixed_density_prepared, has_unit_metric, &
-         kp_diis_step, kpoint_mos_initialized
+      LOGICAL :: added_mos_auto_grow, do_adiis, do_kpoints, do_rotation, fixed_density_prepared, &
+         has_unit_metric, kp_diis_step, kpoint_mos_initialized
       REAL(KIND=dp)                                      :: u_ramping
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
@@ -1578,8 +1689,15 @@ CONTAINS
             IF (.NOT. kpoints%native_density_seeded) THEN
                CALL qs_upf_inverse_scf_core(qs_env%ks_env)
                CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks_kp, matrix_metric_kp=matrix_s_kp)
-               kp_diis_step = .FALSE.
-               CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, scf_control, .TRUE., kp_diis_step)
+               DO
+                  kp_diis_step = .FALSE.
+                  CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, scf_control, .TRUE., kp_diis_step, &
+                                          added_mos_auto_grow=added_mos_auto_grow)
+                  IF (.NOT. added_mos_auto_grow) EXIT
+                  ! No trial density exists until the requested virtual-space growth succeeds.
+                  CALL qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, &
+                                                     cp_logger_get_default_unit_nr(local=.FALSE., skip_not_ionode=.TRUE.))
+               END DO
                CALL kpoint_density_state_accept(kpoints, 1.0_dp)
                kpoints%native_density_seeded = .TRUE.
                CALL qs_rho_update_rho(rho, qs_env=qs_env)

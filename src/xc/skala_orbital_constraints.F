@@ -20,16 +20,18 @@ MODULE skala_orbital_constraints
    PUBLIC :: skala_constrained_stationarity, skala_cusp_admissibility
    PUBLIC :: skala_constraint_chart_type, skala_constraint_chart_create, skala_constraint_chart_restore
    PUBLIC :: skala_orbital_chart_type, skala_orbital_chart_create, skala_orbital_chart_release, &
-             skala_orbital_chart_size, skala_orbital_chart_evaluate, skala_orbital_chart_derivative
+             skala_orbital_chart_size, skala_orbital_chart_evaluate, skala_orbital_chart_derivative, &
+             skala_orbital_chart_set_occupations, skala_orbital_chart_precondition, skala_orbital_chart_scales, &
+             skala_orbital_chart_response_inverse
 
    TYPE skala_orbital_chart_type
       PRIVATE
       COMPLEX(dp), ALLOCATABLE :: base(:, :), coefficients(:, :), inverse(:, :), rotation(:, :), &
                                   work(:, :), transformed(:, :)
-      REAL(dp), ALLOCATABLE :: occupations(:), coordinate(:)
+      REAL(dp), ALLOCATABLE :: occupations(:), coordinate(:), coordinate_scale(:)
       INTEGER, ALLOCATABLE :: pairs(:, :), component(:), pivots(:)
       REAL(dp) :: metric_weight = 1.0_dp
-      LOGICAL :: evaluated = .FALSE.
+      LOGICAL :: evaluated = .FALSE., variable_occupations = .FALSE.
    END TYPE skala_orbital_chart_type
 
    TYPE skala_constraint_chart_type
@@ -101,6 +103,29 @@ MODULE skala_orbital_constraints
          CLASS(*), INTENT(INOUT) :: context
          LOGICAL, INTENT(OUT) :: interrupted
       END SUBROUTINE orbital_segment
+! **************************************************************************************************
+!> \brief Check a restored curvature probe for additional physical thresholds.
+!> \param first Accepted feasible coordinates.
+!> \param last Restored probe coordinates.
+!> \param curve Current independent/dependent coordinate partition.
+!> \param context Borrowed physical state and boundary admission settings.
+!> \param smooth Whether no additional physical threshold is crossed.
+!> \param interrupted Whether boundary or external-stop handling is required.
+! **************************************************************************************************
+      SUBROUTINE orbital_curvature_segment(first, last, curve, context, smooth, interrupted)
+         IMPORT :: dp, skala_constraint_chart_type
+         REAL(dp), INTENT(IN) :: first(:), last(:)
+         TYPE(skala_constraint_chart_type), INTENT(IN) :: curve
+         CLASS(*), INTENT(INOUT) :: context
+         LOGICAL, INTENT(OUT) :: smooth, interrupted
+      END SUBROUTINE orbital_curvature_segment
+      SUBROUTINE orbital_preconditioner(coordinate, context, inverse_diagonal, available)
+         IMPORT :: dp
+         REAL(dp), INTENT(IN) :: coordinate(:)
+         CLASS(*), INTENT(INOUT) :: context
+         REAL(dp), INTENT(OUT) :: inverse_diagonal(:)
+         LOGICAL, INTENT(OUT) :: available
+      END SUBROUTINE orbital_preconditioner
    END INTERFACE
 
 CONTAINS
@@ -122,23 +147,27 @@ CONTAINS
 !>        By default only the supplied orbital span is retained.
 ! **************************************************************************************************
    SUBROUTINE skala_orbital_chart_create(coefficients, metric, occupations, complex_orbitals, chart, valid, &
-                                         metric_weight, complete_space)
+                                         metric_weight, complete_space, variable_occupations)
       COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :), metric(:, :)
       REAL(dp), INTENT(IN)                               :: occupations(:)
       LOGICAL, INTENT(IN)                                :: complex_orbitals
       TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
       LOGICAL, INTENT(OUT)                               :: valid
       REAL(dp), INTENT(IN), OPTIONAL                     :: metric_weight
-      LOGICAL, INTENT(IN), OPTIONAL                      :: complete_space
+      LOGICAL, INTENT(IN), OPTIONAL                      :: complete_space, variable_occupations
 
       COMPLEX(dp), ALLOCATABLE                           :: gram(:, :)
       INTEGER                                            :: a, b, count, i, info, n, nreference, rows
+      LOGICAL                                            :: varying
       REAL(dp), ALLOCATABLE                              :: full_occupations(:)
 
       CALL skala_orbital_chart_release(chart)
       rows = SIZE(coefficients, 1)
       nreference = SIZE(coefficients, 2)
       n = nreference
+      varying = .FALSE.
+      IF (PRESENT(variable_occupations)) varying = variable_occupations
+      chart%variable_occupations = varying
       IF (PRESENT(complete_space)) THEN
          IF (complete_space) n = rows
       END IF
@@ -164,13 +193,17 @@ CONTAINS
       count = 0
       DO b = 2, n
          DO a = 1, b - 1
-            IF (full_occupations(a) == full_occupations(b)) CYCLE
+            IF (varying) THEN
+               IF (a > nreference .AND. b > nreference) CYCLE
+            ELSE
+               IF (full_occupations(a) == full_occupations(b)) CYCLE
+            END IF
             count = count + MERGE(2, 1, complex_orbitals)
          END DO
       END DO
       ALLOCATE (chart%base(rows, n), chart%coefficients(rows, n), chart%inverse(n, n), &
                 chart%rotation(n, n), chart%work(n, n), chart%transformed(n, n), &
-                chart%occupations(n), chart%coordinate(count), chart%pairs(2, count), &
+                chart%occupations(n), chart%coordinate(count), chart%coordinate_scale(count), chart%pairs(2, count), &
                 chart%component(count), chart%pivots(n))
       chart%base(:, :nreference) = coefficients
       CALL ztrsm('R', 'L', 'C', 'N', rows, nreference, CMPLX(1.0_dp, 0.0_dp, dp), &
@@ -183,10 +216,15 @@ CONTAINS
          END IF
       END IF
       chart%occupations(:) = full_occupations
+      chart%coordinate_scale = 1.0_dp
       i = 0
       DO b = 2, n
          DO a = 1, b - 1
-            IF (full_occupations(a) == full_occupations(b)) CYCLE
+            IF (varying) THEN
+               IF (a > nreference .AND. b > nreference) CYCLE
+            ELSE
+               IF (full_occupations(a) == full_occupations(b)) CYCLE
+            END IF
             i = i + 1
             chart%pairs(:, i) = [a, b]
             chart%component(i) = 1
@@ -198,6 +236,116 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE skala_orbital_chart_create
+
+! **************************************************************************************************
+!> \brief Update physical occupations without changing the retained orbital coordinates.
+!>        Variable-occupation charts retain equal-occupation rotations because later thermal
+!>        updates can make them physical. Only rotations between permanently omitted columns
+!>        are excluded. The original charge metric and Cayley factors stay unchanged.
+!> \param chart Evaluated or unevaluated variable-occupation chart.
+!> \param occupations Complete occupation vector, including zero occupations in its complement.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_set_occupations(chart, occupations)
+      TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
+      REAL(dp), INTENT(IN)                               :: occupations(:)
+
+      CPASSERT(chart%variable_occupations)
+      CPASSERT(SIZE(occupations) == SIZE(chart%occupations))
+      CPASSERT(ALL(ieee_is_finite(occupations)) .AND. ALL(occupations >= 0.0_dp))
+      chart%occupations(:) = occupations
+   END SUBROUTINE skala_orbital_chart_set_occupations
+
+! **************************************************************************************************
+!> \brief Freeze a positive diagonal approximation to the one-electron rotation Hessian.
+!>        Energies are Rayleigh values in the normalized reference. The occupation metric and
+!>        temperature regularize equal-occupation rotations. The map stays fixed during a search.
+!> \param chart Variable-occupation chart at its reference coordinate.
+!> \param energies Complete reference Rayleigh energies, in hartree.
+!> \param temperature Positive kBT, in hartree.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_precondition(chart, energies, temperature)
+      TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
+      REAL(dp), INTENT(IN)                               :: energies(:), temperature
+
+      INTEGER                                            :: a, b, i
+      REAL(dp)                                           :: curvature, floor, metric, peak
+
+      CPASSERT(chart%variable_occupations)
+      CPASSERT(SIZE(energies) == SIZE(chart%occupations))
+      CPASSERT(ALL(ieee_is_finite(energies)))
+      CPASSERT(ieee_is_finite(temperature) .AND. temperature > 0.0_dp)
+      IF (chart%evaluated) THEN
+         CPASSERT(ALL(chart%coordinate == 0.0_dp))
+      END IF
+      IF (SIZE(chart%coordinate_scale) == 0) RETURN
+      peak = MAXVAL(chart%occupations)
+      DO i = 1, SIZE(chart%coordinate_scale)
+         a = chart%pairs(1, i)
+         b = chart%pairs(2, i)
+         ! Nearly empty reference pairs can acquire occupation during the same search.
+         metric = chart%metric_weight*MAX(peak, chart%occupations(a) + chart%occupations(b))
+         curvature = 2.0_dp*chart%metric_weight*ABS(chart%occupations(a) - chart%occupations(b))* &
+                     MAX(ABS(energies(a) - energies(b)), temperature)
+         chart%coordinate_scale(i) = MAX(curvature, temperature*metric)
+      END DO
+      floor = 64.0_dp*EPSILON(1.0_dp)*MAX(MAXVAL(chart%coordinate_scale), temperature*chart%metric_weight)
+      WHERE (chart%coordinate_scale > 0.0_dp)
+         chart%coordinate_scale = 1.0_dp/SQRT(MAX(chart%coordinate_scale, floor))
+      ELSEWHERE
+         chart%coordinate_scale = 1.0_dp
+      END WHERE
+      chart%evaluated = .FALSE.
+   END SUBROUTINE skala_orbital_chart_precondition
+
+! **************************************************************************************************
+!> \brief Positive inverse of the current occupation-weighted one-electron rotation model.
+!>        Exact pair coordinates coincide with physical rotations at the reference point.
+!>        The original fixed coordinate scales remain part of the model curvature.
+!> \param chart Evaluated variable-occupation chart.
+!> \param energies Current orbital Rayleigh energies in hartree.
+!> \param temperature Positive kBT in hartree.
+!> \param inverse_diagonal Positive inverse curvature for each independent coordinate.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_response_inverse(chart, energies, temperature, inverse_diagonal)
+      TYPE(skala_orbital_chart_type), INTENT(IN)         :: chart
+      REAL(dp), INTENT(IN)                               :: energies(:), temperature
+      REAL(dp), INTENT(OUT)                              :: inverse_diagonal(:)
+
+      INTEGER                                            :: a, b, i
+      REAL(dp)                                           :: curvature, log_inverse, metric
+
+      CPASSERT(chart%evaluated)
+      CPASSERT(SIZE(energies) == SIZE(chart%occupations))
+      CPASSERT(SIZE(inverse_diagonal) == SIZE(chart%coordinate_scale))
+      CPASSERT(ALL(ieee_is_finite(energies)))
+      CPASSERT(temperature > 0.0_dp)
+      inverse_diagonal = 1.0_dp
+      DO i = 1, SIZE(inverse_diagonal)
+         a = chart%pairs(1, i)
+         b = chart%pairs(2, i)
+         metric = chart%metric_weight*(chart%occupations(a) + chart%occupations(b))
+         curvature = 2.0_dp*chart%metric_weight*ABS(chart%occupations(a) - chart%occupations(b))* &
+                     MAX(ABS(energies(a) - energies(b)), temperature)
+         curvature = MAX(curvature, temperature*metric)
+         IF (curvature <= 0.0_dp) CYCLE
+         log_inverse = -LOG(curvature) - 2.0_dp*LOG(chart%coordinate_scale(i))
+         inverse_diagonal(i) = EXP(MAX(LOG(TINY(1.0_dp)), &
+                                       MIN(LOG(HUGE(1.0_dp)) - LOG(2.0_dp), log_inverse)))
+      END DO
+   END SUBROUTINE skala_orbital_chart_response_inverse
+
+! **************************************************************************************************
+!> \brief Read the fixed diagonal map from chart coordinates to Cayley generators.
+!> \param chart Original chart and its unchanged reference map.
+!> \param scales Positive scale of every independent real coordinate.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_scales(chart, scales)
+      TYPE(skala_orbital_chart_type), INTENT(IN)         :: chart
+      REAL(dp), INTENT(OUT)                              :: scales(:)
+
+      CPASSERT(SIZE(scales) == SIZE(chart%coordinate_scale))
+      scales = chart%coordinate_scale
+   END SUBROUTINE skala_orbital_chart_scales
 
 ! **************************************************************************************************
 !> \brief Complete normalized reference columns in the original positive charge metric.
@@ -256,11 +404,12 @@ CONTAINS
 
       IF (ALLOCATED(chart%base)) THEN
          DEALLOCATE (chart%base, chart%coefficients, chart%inverse, chart%rotation, &
-                     chart%work, chart%transformed, chart%occupations, chart%coordinate, &
+                     chart%work, chart%transformed, chart%occupations, chart%coordinate, chart%coordinate_scale, &
                      chart%pairs, chart%component, chart%pivots)
       END IF
       chart%evaluated = .FALSE.
       chart%metric_weight = 1.0_dp
+      chart%variable_occupations = .FALSE.
    END SUBROUTINE skala_orbital_chart_release
 
 ! **************************************************************************************************
@@ -317,6 +466,7 @@ CONTAINS
          b = chart%pairs(2, i)
          element = CMPLX(coordinate(i), 0.0_dp, dp)
          IF (chart%component(i) == 2) element = CMPLX(0.0_dp, coordinate(i), dp)
+         element = chart%coordinate_scale(i)*element
          chart%work(a, b) = chart%work(a, b) - 0.5_dp*element
          chart%work(b, a) = chart%work(b, a) + 0.5_dp*CONJG(element)
       END DO
@@ -376,6 +526,10 @@ CONTAINS
          a = chart%pairs(1, i)
          b = chart%pairs(2, i)
          IF (physical) THEN
+            IF (chart%occupations(a) + chart%occupations(b) == 0.0_dp) THEN
+               derivative(i) = 0.0_dp
+               CYCLE
+            END IF
             IF (chart%component(i) == 1) THEN
                value = REAL(chart%transformed(a, b), dp)
             ELSE
@@ -388,6 +542,7 @@ CONTAINS
          ELSE
             derivative(i) = -2.0_dp*AIMAG(chart%transformed(b, a) + chart%transformed(a, b))
          END IF
+         IF (.NOT. physical) derivative(i) = chart%coordinate_scale(i)*derivative(i)
       END DO
    END SUBROUTINE skala_orbital_chart_derivative
 
@@ -418,17 +573,26 @@ CONTAINS
 !> \param retain_progress Return the last accepted feasible coordinates on failure, default false.
 !> \param check_stalled_segment Optional first-feasible-trial check after unsuccessful backtracking
 !>        or an unresolved energy change above the gradient tolerance.
+!> \param precondition Optional current positive diagonal inverse for coupled steps.
+!>        The returned inverse stays fixed throughout each Newton solve.
+!> \param curvature_steps Attempt coupled inexact Newton directions at every iteration, default false.
+!> \param check_curvature_segment Optional branch check of every restored Hessian probe.
+!> \param coordinate_scales Optional constant diagonal map to original coordinates for stopping tests.
+!>        Search directions use optimizer coordinates. The original unscaled gradient bound is retained.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
                                              max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped, &
-                                             check_segment, interrupted, retain_progress, check_stalled_segment)
+                                             check_segment, interrupted, retain_progress, check_stalled_segment, &
+                                             coordinate_scales, curvature_steps, check_curvature_segment, precondition)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
       PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
       PROCEDURE(orbital_stop), OPTIONAL :: check_stop
       PROCEDURE(orbital_segment), OPTIONAL :: check_segment
       PROCEDURE(orbital_segment), OPTIONAL :: check_stalled_segment
+      PROCEDURE(orbital_curvature_segment), OPTIONAL :: check_curvature_segment
+      PROCEDURE(orbital_preconditioner), OPTIONAL :: precondition
       CLASS(*), INTENT(INOUT) :: context
       REAL(dp), INTENT(INOUT) :: coordinate(:)
       REAL(dp), INTENT(IN) :: density_tolerances(:), gradient_tolerance
@@ -439,16 +603,23 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL :: stopped
       LOGICAL, INTENT(OUT), OPTIONAL :: interrupted
       LOGICAL, INTENT(IN), OPTIONAL :: retain_progress
+      REAL(dp), INTENT(IN), OPTIONAL :: coordinate_scales(:)
+      LOGICAL, INTENT(IN), OPTIONAL :: curvature_steps
 
-      INTEGER :: capacity, d, history, i, iteration, limit, m, nf, r, shortening
+      INTEGER :: capacity, d, history, i, iteration, last_progress_check, limit, m, nf, r, shortening
       TYPE(skala_constraint_chart_type) :: curve
-      LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment, resolution_checked
-      REAL(dp) :: curvature, energy, fraction, radius, roundoff, slope, trial_energy, trial_slope
+      LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment, resolution_checked, &
+          coupled_curvature, have_curvature_check, curvature_interrupted, active_preconditioner, resolved_descent, curvature_stalled
+      REAL(dp) :: curvature, energy, fraction, progress_norm, radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
                                old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
-                               values(:), x(:), changes(:, :), stalled_trial(:)
+                               values(:), x(:), changes(:, :), stalled_trial(:), &
+                               inverse_diagonal(:), free_inverse(:)
 
       d = SIZE(coordinate)
+      coupled_curvature = .FALSE.
+      IF (PRESENT(curvature_steps)) coupled_curvature = curvature_steps
+      have_curvature_check = PRESENT(check_curvature_segment)
       IF (PRESENT(iterations)) iterations = 0
       IF (PRESENT(stopped)) stopped = .FALSE.
       IF (PRESENT(interrupted)) interrupted = .FALSE.
@@ -459,6 +630,11 @@ CONTAINS
       CPASSERT(ALL(density_tolerances > 0.0_dp))
       CPASSERT(ieee_is_finite(gradient_tolerance))
       CPASSERT(gradient_tolerance > 0.0_dp)
+      IF (PRESENT(coordinate_scales)) THEN
+         CPASSERT(SIZE(coordinate_scales) == d)
+         CPASSERT(ALL(ieee_is_finite(coordinate_scales)))
+         CPASSERT(ALL(coordinate_scales > 0.0_dp))
+      END IF
       limit = 200
       IF (PRESENT(max_iterations)) limit = max_iterations
       radius = 0.1_dp
@@ -476,10 +652,13 @@ CONTAINS
       ! spaces retain 32 entries and linear storage.
       capacity = MAX(7, MIN(nf, MAX(32, 16384/MAX(1, nf))))
       ALLOCATE (g(d), reduced(nf), trial_reduced(nf), direction(nf), motion(nf), &
-                old_gradient(nf), steps(nf, capacity), changes(nf, capacity), newton(nf))
+                old_gradient(nf), steps(nf, capacity), changes(nf, capacity), newton(nf), &
+                inverse_diagonal(d), free_inverse(nf))
       CALL reduced_evaluation(x, energy, reduced, valid)
       IF (.NOT. valid) RETURN
       history = 0
+      progress_norm = NORM2(reduced)
+      last_progress_check = 1
       DO iteration = 1, limit
          IF (stop_requested()) RETURN
          IF (stationary(x, reduced)) THEN
@@ -488,20 +667,81 @@ CONTAINS
             RETURN
          END IF
          IF (PRESENT(iterations)) iterations = iteration
-         CALL bfgs_direction(reduced, steps, changes, history, direction)
+         curvature_stalled = .FALSE.
+         IF (iteration - last_progress_check >= MAX(8, capacity)) THEN
+            curvature_stalled = NORM2(reduced) > 0.5_dp*progress_norm
+            progress_norm = NORM2(reduced)
+            last_progress_check = iteration
+         END IF
+         active_preconditioner = .FALSE.
+         IF (coupled_curvature .AND. PRESENT(precondition)) THEN
+            CALL precondition(x, context, inverse_diagonal, active_preconditioner)
+            IF (active_preconditioner) THEN
+               CPASSERT(ALL(ieee_is_finite(inverse_diagonal)))
+               CPASSERT(ALL(inverse_diagonal > 0.0_dp))
+               free_inverse = inverse_diagonal(curve%free)
+               ! Nearly empty bands can yield an unresolvable inverse response. Bound
+               ! only the search metric, leaving the original energy and stopping tests.
+               free_inverse = MIN(free_inverse, MIN(1.0_dp, MINVAL(free_inverse))/SQRT(EPSILON(1.0_dp)))
+            END IF
+         END IF
+         IF (active_preconditioner) THEN
+            CALL bfgs_direction(reduced, steps, changes, history, direction, diagonal=free_inverse)
+         ELSE
+            CALL bfgs_direction(reduced, steps, changes, history, direction)
+         END IF
          IF (DOT_PRODUCT(reduced, direction) >= 0.0_dp) THEN
             history = 0
             direction(:) = -reduced
          END IF
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), TINY(0.0_dp))
-         IF (history > 0 .AND. &
-             -DOT_PRODUCT(reduced, direction) <= 32.0_dp*roundoff) THEN
-            ! Resolve curvature below the energy resolution from reduced derivatives.
-            ! Each perturbed trial restores the same physical constraints, retaining
-            ! the curvature of the eliminated coordinates.
-            CALL newton_direction(x, reduced, newton, newton_valid, newton_stopped)
-            IF (newton_stopped) RETURN
-            IF (newton_valid) direction(:) = newton
+         resolved_descent = .FALSE.
+         IF (coupled_curvature .OR. curvature_stalled .OR. (history > 0 .AND. &
+                                                            -DOT_PRODUCT(reduced, direction) <= 32.0_dp*roundoff)) THEN
+            IF (PRESENT(check_stalled_segment) .AND. .NOT. coupled_curvature) THEN
+               ! Resolve a physical boundary on the feasible BFGS segment before
+               ! estimating smooth curvature. The callback retains its admission tests.
+               fraction = 1.0_dp
+               IF (NORM2(direction) > radius) fraction = radius/NORM2(direction)
+               trial(:) = x
+               trial(curve%free) = x(curve%free) + fraction*direction
+               IF (ANY(trial(curve%free) /= x(curve%free))) THEN
+                  CALL reduced_evaluation(trial, trial_energy, trial_reduced, valid)
+                  IF (valid) THEN
+                     roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+                     resolved_descent = trial_energy < energy - roundoff .AND. &
+                                        trial_energy <= energy + 1.0e-4_dp*fraction*DOT_PRODUCT(reduced, direction)
+                     IF (.NOT. resolved_descent) THEN
+                        event = .FALSE.
+                        CALL check_stalled_segment(x, trial, curve, context, event)
+                        IF (event) THEN
+                           coordinate(:) = x
+                           IF (PRESENT(interrupted)) interrupted = .TRUE.
+                           RETURN
+                        END IF
+                     END IF
+                  END IF
+                  ! A boundary scan can restore the native fields at a different point.
+                  CALL reduced_evaluation(x, energy, reduced, valid)
+                  IF (.NOT. valid) RETURN
+               END IF
+            END IF
+            ! A resolved descent can increase the gradient in a region of negative curvature.
+            ! Keep that original BFGS proposal for the ordinary acceptance checks below.
+            ! Probe curvature only when that proposal has not already established descent.
+            ! The extra probe is bounded to one per history-length interval. Every trial
+            ! restores the same physical constraints and uses the original line search.
+            IF (coupled_curvature .OR. .NOT. resolved_descent) THEN
+               curvature_interrupted = .FALSE.
+               CALL newton_direction(x, reduced, newton, newton_valid, newton_stopped)
+               IF (curvature_interrupted) THEN
+                  coordinate(:) = x
+                  IF (PRESENT(interrupted)) interrupted = .TRUE.
+                  RETURN
+               END IF
+               IF (newton_stopped) RETURN
+               IF (newton_valid) direction(:) = newton
+            END IF
          END IF
          IF (NORM2(direction) > radius) direction(:) = direction*(radius/NORM2(direction))
          slope = DOT_PRODUCT(reduced, direction)
@@ -529,13 +769,20 @@ CONTAINS
                END IF
                ! Descent may increase the gradient norm in a region of negative curvature.
                roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+               trial_slope = DOT_PRODUCT(trial_reduced, direction)
                IF (PRESENT(check_stalled_segment) .AND. .NOT. resolution_checked .AND. &
-                   ABS(trial_energy - energy) <= roundoff .AND. NORM2(trial_reduced) > gradient_tolerance) THEN
-                  ! Small derivative-reducing steps can approach a cusp without exhausting
-                  ! backtracking. Resolve the original feasible segment before further steps.
+                   ((curvature_stalled .AND. .NOT. resolved_descent) .OR. ABS(trial_energy - energy) <= roundoff .OR. &
+                    (trial_slope >= 0.0_dp .AND. trial_energy < energy - roundoff)) .AND. &
+                   free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
+                  ! A reversed directional derivative can bracket a cusp while the energy
+                  ! decrease remains resolved. Inspect that feasible interval immediately.
                   resolution_checked = .TRUE.
                   event = .FALSE.
-                  CALL check_stalled_segment(x, stalled_trial, curve, context, event)
+                  IF (trial_slope >= 0.0_dp .AND. trial_energy < energy - roundoff) THEN
+                     CALL check_stalled_segment(x, trial, curve, context, event)
+                  ELSE
+                     CALL check_stalled_segment(x, stalled_trial, curve, context, event)
+                  END IF
                   IF (event) THEN
                      coordinate(:) = x
                      IF (PRESENT(interrupted)) interrupted = .TRUE.
@@ -549,8 +796,8 @@ CONTAINS
                      CYCLE
                   END IF
                   roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+                  trial_slope = DOT_PRODUCT(trial_reduced, direction)
                END IF
-               trial_slope = DOT_PRODUCT(trial_reduced, direction)
                IF ((trial_energy < energy - roundoff .AND. &
                     trial_energy <= energy + 1.0e-4_dp*fraction*slope) .OR. &
                    (ABS(trial_energy - energy) <= roundoff .AND. &
@@ -612,7 +859,8 @@ CONTAINS
    CONTAINS
 ! **************************************************************************************************
 !> \brief Inexact Newton direction from central differences of the native derivatives.
-!>        Truncated conjugate gradients use linear storage. Indefinite curvature returns
+!>        Truncated conjugate gradients reuse the positive BFGS inverse as a fixed preconditioner
+!>        and retain linear storage. Indefinite curvature returns
 !>        the current descent direction, or failure if none was found. The outer line search
 !>        retains its original energy and derivative checks.
 !> \param center Accepted orbital coordinates.
@@ -628,55 +876,155 @@ CONTAINS
 
       INTEGER                                            :: iteration
       LOGICAL                                            :: valid_trial
-      REAL(dp)                                           :: alpha, beta, curvature, energy_trial, &
-                                                            next_residual2, norm_direction, &
-                                                            residual2, step, TARGET
-      REAL(dp), ALLOCATABLE                              :: gradient_minus(:), gradient_plus(:), &
-                                                            minus(:), plus(:), PRODUCT(:), &
+      REAL(dp)                                           :: alpha, beta, curvature, next_residual2, &
+                                                            next_residual_dot, norm_direction, &
+                                                            residual_dot, TARGET
+      REAL(dp), ALLOCATABLE                              :: preconditioned(:), PRODUCT(:), &
                                                             residual(:), search(:)
 
          valid_direction = .FALSE.
          stopped_direction = .FALSE.
          newton_step = 0.0_dp
-         ALLOCATE (plus(d), minus(d), gradient_plus(nf), gradient_minus(nf), residual(nf), search(nf), PRODUCT(nf))
+         ALLOCATE (residual(nf), search(nf), PRODUCT(nf), preconditioned(nf))
          residual(:) = -derivative
-         search(:) = residual
-         residual2 = DOT_PRODUCT(residual, residual)
+         IF (active_preconditioner) THEN
+            CALL bfgs_direction(residual, steps, changes, history, preconditioned, diagonal=free_inverse)
+         ELSE
+            CALL bfgs_direction(residual, steps, changes, history, preconditioned)
+         END IF
+         preconditioned(:) = -preconditioned
+         residual_dot = DOT_PRODUCT(residual, preconditioned)
+         IF (.NOT. ieee_is_finite(residual_dot) .OR. residual_dot <= 0.0_dp) RETURN
+         search(:) = preconditioned
          TARGET = MIN(0.1_dp, SQRT(NORM2(derivative)))*NORM2(derivative)
-         DO iteration = 1, MIN(nf, 64)
+         ! Finite-precision CG can need more than nf steps after conjugacy is lost.
+         DO iteration = 1, MIN(2*nf, 64)
             IF (stop_requested()) THEN
                stopped_direction = .TRUE.
                RETURN
             END IF
             norm_direction = NORM2(search)
             IF (norm_direction <= TINY(0.0_dp)) EXIT
-            step = SQRT(EPSILON(0.0_dp))*MAX(1.0_dp, NORM2(center(curve%free)))/norm_direction
-            plus(:) = center
-            minus(:) = center
-            plus(curve%free) = center(curve%free) + step*search
-            minus(curve%free) = center(curve%free) - step*search
-            CALL reduced_evaluation(plus, energy_trial, gradient_plus, valid_trial)
-            IF (.NOT. valid_trial) RETURN
-            IF (stop_requested()) THEN
-               stopped_direction = .TRUE.
-               RETURN
-            END IF
-            CALL reduced_evaluation(minus, energy_trial, gradient_minus, valid_trial)
-            IF (.NOT. valid_trial) RETURN
-            PRODUCT(:) = (gradient_plus - gradient_minus)/(2.0_dp*step)
+            CALL reduced_hessian_product(center, search, PRODUCT, valid_trial, stopped_direction)
+            IF (.NOT. valid_trial .OR. stopped_direction) RETURN
             curvature = DOT_PRODUCT(search, product)
             IF (curvature <= 128.0_dp*EPSILON(0.0_dp)*norm_direction*NORM2(product)) EXIT
-            alpha = residual2/curvature
+            alpha = residual_dot/curvature
             newton_step(:) = newton_step + alpha*search
             residual(:) = residual - alpha*product
             next_residual2 = DOT_PRODUCT(residual, residual)
             IF (SQRT(next_residual2) <= TARGET) EXIT
-            beta = next_residual2/residual2
-            search(:) = residual + beta*search
-            residual2 = next_residual2
+            IF (active_preconditioner) THEN
+               CALL bfgs_direction(residual, steps, changes, history, preconditioned, diagonal=free_inverse)
+            ELSE
+               CALL bfgs_direction(residual, steps, changes, history, preconditioned)
+            END IF
+            preconditioned(:) = -preconditioned
+            next_residual_dot = DOT_PRODUCT(residual, preconditioned)
+            IF (.NOT. ieee_is_finite(next_residual_dot) .OR. next_residual_dot <= 0.0_dp) EXIT
+            beta = next_residual_dot/residual_dot
+            search(:) = preconditioned + beta*search
+            residual_dot = next_residual_dot
          END DO
          valid_direction = ALL(ieee_is_finite(newton_step)) .AND. DOT_PRODUCT(derivative, newton_step) < 0.0_dp
       END SUBROUTINE newton_direction
+! **************************************************************************************************
+!> \brief Resolve a native reduced Hessian product across narrow smooth XC projections.
+!>        Refine central differences to one-percent agreement. If coordinate resolution prevents
+!>        agreement, retain the estimate with the smallest relative change. This constructs a trial
+!>        direction. The original energy, constraint and stationarity tests remain authoritative.
+!> \param center Accepted orbital coordinates.
+!> \param direction Free-coordinate direction.
+!> \param PRODUCT Estimated reduced Hessian applied to direction.
+!> \param valid_product Whether finite native differences supplied an estimate.
+!> \param stopped_product Whether the caller requested a stop.
+! **************************************************************************************************
+      SUBROUTINE reduced_hessian_product(center, direction, PRODUCT, valid_product, stopped_product)
+      REAL(dp), INTENT(IN)                               :: center(:), direction(:)
+      REAL(dp), INTENT(OUT)                              :: PRODUCT(:)
+      LOGICAL, INTENT(OUT)                               :: valid_product, stopped_product
+
+      INTEGER                                            :: refinement
+      LOGICAL                                            :: have_previous, have_product, smooth, &
+                                                            valid_trial
+      REAL(dp)                                           :: best_error, difference, energy_trial, &
+                                                            relative_error, scale, step
+      REAL(dp), ALLOCATABLE                              :: candidate(:), gradient_minus(:), &
+                                                            gradient_plus(:), minus(:), plus(:), &
+                                                            previous(:)
+
+         valid_product = .FALSE.
+         stopped_product = .FALSE.
+         PRODUCT = 0.0_dp
+         scale = NORM2(direction)
+         IF (scale <= TINY(0.0_dp)) RETURN
+         ! Central differences balance quadratic truncation against derivative roundoff.
+         step = EPSILON(0.0_dp)**(1.0_dp/3.0_dp)*MAX(1.0_dp, NORM2(center(curve%free)))/scale
+         best_error = HUGE(0.0_dp)
+         have_previous = .FALSE.
+         have_product = .FALSE.
+         ALLOCATE (plus(d), minus(d), gradient_plus(nf), gradient_minus(nf), candidate(nf), previous(nf))
+         DO refinement = 1, DIGITS(0.0_dp)
+            plus(:) = center
+            minus(:) = center
+            plus(curve%free) = center(curve%free) + step*direction
+            minus(curve%free) = center(curve%free) - step*direction
+            IF (ALL(plus(curve%free) == center(curve%free)) .OR. &
+                ALL(minus(curve%free) == center(curve%free))) EXIT
+            IF (stop_requested()) THEN
+               stopped_product = .TRUE.
+               RETURN
+            END IF
+            CALL reduced_evaluation(plus, energy_trial, gradient_plus, valid_trial)
+            IF (.NOT. valid_trial) RETURN
+            IF (have_curvature_check) THEN
+               CALL check_curvature_segment(center, plus, curve, context, smooth, curvature_interrupted)
+               IF (curvature_interrupted) RETURN
+               IF (.NOT. smooth) THEN
+                  have_previous = .FALSE.
+                  have_product = .FALSE.
+                  best_error = HUGE(0.0_dp)
+                  step = 0.5_dp*step
+                  CYCLE
+               END IF
+            END IF
+            IF (stop_requested()) THEN
+               stopped_product = .TRUE.
+               RETURN
+            END IF
+            CALL reduced_evaluation(minus, energy_trial, gradient_minus, valid_trial)
+            IF (.NOT. valid_trial) RETURN
+            IF (have_curvature_check) THEN
+               CALL check_curvature_segment(center, minus, curve, context, smooth, curvature_interrupted)
+               IF (curvature_interrupted) RETURN
+               IF (.NOT. smooth) THEN
+                  have_previous = .FALSE.
+                  have_product = .FALSE.
+                  best_error = HUGE(0.0_dp)
+                  step = 0.5_dp*step
+                  CYCLE
+               END IF
+            END IF
+            candidate(:) = (gradient_plus - gradient_minus)/(2.0_dp*step)
+            IF (.NOT. ALL(ieee_is_finite(candidate))) RETURN
+            IF (.NOT. have_previous) THEN
+               PRODUCT(:) = candidate
+            ELSE
+               have_product = .TRUE.
+               difference = NORM2(candidate - previous)
+               relative_error = difference/MAX(NORM2(candidate), NORM2(previous), TINY(0.0_dp))
+               IF (relative_error < best_error) THEN
+                  best_error = relative_error
+                  PRODUCT(:) = candidate
+               END IF
+               IF (relative_error <= 0.01_dp) EXIT
+            END IF
+            previous(:) = candidate
+            have_previous = .TRUE.
+            step = 0.5_dp*step
+         END DO
+         valid_product = have_product
+      END SUBROUTINE reduced_hessian_product
 ! **************************************************************************************************
 !> \brief Preserve the last accepted feasible coordinates when the caller requests a stop.
 !> \return Whether termination was requested.
@@ -700,10 +1048,25 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: c(:), rg(:)
       LOGICAL                                            :: converged_trial
 
-         converged_trial = NORM2(rg) <= gradient_tolerance
+         converged_trial = free_gradient_norm(rg) <= gradient_tolerance
          IF (.NOT. converged_trial) RETURN
          IF (PRESENT(verify_stationarity)) CALL verify_stationarity(c, context, converged_trial)
       END FUNCTION stationary
+! **************************************************************************************************
+!> \brief Test stationarity in the original coordinates independently of preconditioning.
+!> \param derivative Derivative in the optimizer's free coordinates.
+!> \return Norm in the original unscaled free-coordinate units.
+! **************************************************************************************************
+      FUNCTION free_gradient_norm(derivative) RESULT(value)
+      REAL(dp), INTENT(IN)                               :: derivative(:)
+      REAL(dp)                                           :: value
+
+         IF (PRESENT(coordinate_scales)) THEN
+            value = NORM2(derivative/coordinate_scales(curve%free))
+         ELSE
+            value = NORM2(derivative)
+         END IF
+      END FUNCTION free_gradient_norm
 ! **************************************************************************************************
 !> \brief Restore the physical targets and eliminate the dependent-coordinate derivatives.
 !> \param c Trial coordinates, including restored dependent coordinates.
@@ -1085,10 +1448,11 @@ CONTAINS
 !> \param history ...
 !> \param direction ...
 ! **************************************************************************************************
-   SUBROUTINE bfgs_direction(gradient, steps, changes, history, direction)
+   SUBROUTINE bfgs_direction(gradient, steps, changes, history, direction, diagonal)
       REAL(dp), INTENT(IN)                               :: gradient(:), steps(:, :), changes(:, :)
       INTEGER, INTENT(IN)                                :: history
       REAL(dp), INTENT(OUT)                              :: direction(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: diagonal(:)
 
       INTEGER                                            :: i
       REAL(dp) :: beta, scale, inverse_curvature(SIZE(steps, 2)), alpha(SIZE(steps, 2))
@@ -1102,7 +1466,12 @@ CONTAINS
       scale = 1.0_dp
       IF (history > 0) scale = DOT_PRODUCT(steps(:, history), changes(:, history))/ &
                                DOT_PRODUCT(changes(:, history), changes(:, history))
-      direction(:) = scale*direction
+      IF (PRESENT(diagonal)) THEN
+         CPASSERT(SIZE(diagonal) == SIZE(direction))
+         direction(:) = diagonal*direction
+      ELSE
+         direction(:) = scale*direction
+      END IF
       DO i = 1, history
          beta = inverse_curvature(i)*DOT_PRODUCT(changes(:, i), direction)
          direction(:) = direction + steps(:, i)*(alpha(i) - beta)
