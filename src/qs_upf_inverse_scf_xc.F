@@ -88,7 +88,9 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: kinetic_potential(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), matrix(:, :, :)
-      INTEGER                                            :: block, hi, ik, lo, nao, nk, np, ns, spin
+      INTEGER                                            :: block, core_components, hi, ik, lo, nao, &
+                                                            nk, np, ns, spin
+      INTEGER(KIND=int_8)                                :: core_bytes, retained_bytes
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), core(:, :), &
                                                             core_gradient(:, :, :), core_tau(:, :)
       TYPE(cell_type), POINTER                           :: cell
@@ -167,7 +169,32 @@ CONTAINS
       CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic)
       ALLOCATE (core(np, ns), core_gradient(np, 3, ns))
       IF (PRESENT(kinetic)) ALLOCATE (core_tau(np, ns))
-      CALL core_fields(ks_env, state, core, core_gradient, kinetic=core_tau)
+      core_components = 4
+      IF (PRESENT(kinetic)) core_components = 5
+      IF (ALLOCATED(state%xc_core)) THEN
+         IF (ANY(SHAPE(state%xc_core) /= [np, core_components, ns])) DEALLOCATE (state%xc_core)
+      END IF
+      IF (ALLOCATED(state%xc_core)) THEN
+         core = state%xc_core(:, 1, :)
+         core_gradient = state%xc_core(:, 2:4, :)
+         IF (PRESENT(kinetic)) core_tau = state%xc_core(:, 5, :)
+      ELSE
+         CALL core_fields(ks_env, state, core, core_gradient, kinetic=core_tau)
+         retained_bytes = 0_int_8
+         IF (ALLOCATED(state%atom_grid%inverse_values)) THEN
+            retained_bytes = 16_int_8*(SIZE(state%atom_grid%inverse_values, KIND=int_8) + &
+                                       SIZE(state%atom_grid%inverse_gradients, KIND=int_8))
+         END IF
+         core_bytes = 8_int_8*np*core_components*ns
+         ! Share the existing fixed-geometry field budget. Oversized cases recompute.
+         ! Geometry derivatives still evaluate the original radial response below.
+         IF (core_bytes <= max_xc_field_bytes - retained_bytes) THEN
+            ALLOCATE (state%xc_core(np, core_components, ns))
+            state%xc_core(:, 1, :) = core
+            state%xc_core(:, 2:4, :) = core_gradient
+            IF (PRESENT(kinetic)) state%xc_core(:, 5, :) = core_tau
+         END IF
+      END IF
       CALL qs_upf_inverse_xc_grid_evaluate(frames, augmentation, state%xc_matrices, state%xc_kweights, &
                                            state%atom_grid%points, state%atom_grid%weights, state%xc_fields, &
                                            state%xc_grid, cell, core, core_gradient, xc_section, ns == 2, &
@@ -214,16 +241,15 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: response
-
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
 
-      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_coefficients(:, :, :)
-      COMPLEX(dp), POINTER                              :: coefficients(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_coefficients(:, :, :)
+      COMPLEX(dp), POINTER                               :: coefficients(:, :, :)
       INTEGER                                            :: axis, ik, nao, nk, np, nproj, ns, other, &
                                                             stride
       REAL(dp)                                           :: strain(3, 3)
       REAL(dp), ALLOCATABLE :: core(:, :), core_gradient(:, :, :), core_tau(:, :), &
-                               defining_points(:, :), defining_weights(:), fields(:, :, :, :), points(:, :), weights(:)
+         defining_points(:, :), defining_weights(:), fields(:, :, :, :), points(:, :), weights(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(mp_comm_type)                                 :: comm
       TYPE(mp_para_env_type), POINTER                    :: para_env

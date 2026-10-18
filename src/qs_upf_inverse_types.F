@@ -168,6 +168,9 @@ MODULE qs_upf_inverse_types
       TYPE(pw_grid_type), POINTER :: xc_grid => NULL()
       TYPE(upf_radial_fields_type), ALLOCATABLE :: core_cache(:), core_kinetic_cache(:)
       INTEGER, ALLOCATABLE :: core_images(:, :)
+      ! Fixed core density, gradients and optional tau on the owned atom quadrature.
+      ! Released with the defining inverse frames at every geometry rebuild.
+      REAL(dp), ALLOCATABLE :: xc_core(:, :, :)
       REAL(dp), ALLOCATABLE :: xc_fields(:, :, :, :), xc_kweights(:)
       COMPLEX(dp), ALLOCATABLE :: xc_matrices(:, :, :, :)
    END TYPE qs_upf_inverse_scf_type
