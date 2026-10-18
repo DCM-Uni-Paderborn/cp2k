@@ -1018,16 +1018,14 @@ CONTAINS
    SUBROUTINE check_atomic_projectors()
       INTEGER, PARAMETER                                 :: nb = 3, np = 5, nr = 33
 
-      COMPLEX(dp) :: local_samples(2, 2, 2), metric_samples(2, 2, 2), &
-         delta_kinetic(np, 2), delta_overlap(np, 2), exact_operator(2, 2), &
+      COMPLEX(dp) :: coefficient_overlap(np, 2), coefficient_response(np, 2)
+      COMPLEX(dp) :: delta_kinetic(np, 2), delta_overlap(np, 2), exact_operator(2, 2), &
          identity(nb, nb), kinetic_overlap(np, 2), kinetic_response(np, 2), &
-         kinetic_samples(np, 2, 2), laplacian(np, 2), mixed(2, 2), overlap(np, 2), &
-         response(np, 2), rotation(nb, nb), samples(np, 2, 2), shifted_overlap(np, 2)
-      COMPLEX(dp), ALLOCATABLE                           :: kinetic_residual(:, :), &
-                                                            local_kinetic(:, :), &
-                                                            local_kinetic_response(:, :), &
-                                                            local_metric(:, :), &
-                                                            local_metric_response(:, :), &
+                     kinetic_samples(np, 2, 2), laplacian(np, 2), local_samples(2, 2, 2), &
+                     metric_samples(2, 2, 2), mixed(2, 2), overlap(np, 2), response(np, 2), rotation(nb, nb), &
+                     samples(np, 2, 2), shifted_overlap(np, 2)
+      COMPLEX(dp), ALLOCATABLE :: kinetic_residual(:, :), local_kinetic(:, :), &
+                                  local_kinetic_response(:, :), local_metric(:, :), local_metric_response(:, :), &
                                                             metric_residual(:, :)
       INTEGER                                            :: axis, i, images(3, 3), info, ir, j, side
       REAL(dp) :: ao_center(3), cell(3, 3), center(3), dao(3), dc(3, 3), dcenter(3), delta, &
@@ -1219,9 +1217,19 @@ CONTAINS
                                             RESHAPE(dcenter, [3, 1]), 0.0_dp*cell, 0.0_dp*reduced_k)
       CALL check(MAXVAL(ABS(local_kinetic_response)) + MAXVAL(ABS(local_metric_response)), &
                  'Rigid translation leaves atom-local kinetic and metric corrections unchanged', 0.0_dp)
+      CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, center, cell, images, reduced_k, &
+                                         coefficient_overlap, coefficient_response, dcenter, dcenter, dc, dk)
+      CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
+                                           local_kinetic_response, local_metric_response, &
+                                           RESHAPE(dcenter, [3, 1]), dc, dk, coefficient_response)
+      local_samples(:, :, 1) = local_kinetic_response
+      metric_samples(:, :, 1) = local_metric_response
       CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
                                             local_kinetic_response, local_metric_response, &
                                             RESHAPE(dcenter, [3, 1]), dc, dk)
+      CALL check(MAXVAL(ABS(local_kinetic_response - local_samples(:, :, 1))) + &
+                 MAXVAL(ABS(local_metric_response - metric_samples(:, :, 1))), &
+                 'Reused coefficients preserve nonzero lattice and Bloch operator responses', 0.0_dp)
       DO side = 1, 2
          delta = REAL(2*side - 3, dp)*step
          shifted_frame = frame

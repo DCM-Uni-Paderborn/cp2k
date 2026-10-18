@@ -552,9 +552,10 @@ CONTAINS
 !> \param cell_response Cell response with fixed fractional grid coordinates.
 !> \param reduced_k_response Response of the reduced Bloch vectors, one per global k point.
 !> \param derivative Energy response. Rigid atomic quadratures have no additional measure response.
+!> \param coefficients_response Optional responses of the same frames and geometry variation, in global k order.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_paw_response(frames, density, kweights, potential, atom_response, cell_response, &
-                                          reduced_k_response, derivative)
+                                          reduced_k_response, derivative, coefficients_response)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
       COMPLEX(dp), INTENT(IN)                            :: density(:, :, :, :)
       REAL(dp), INTENT(IN)                               :: kweights(:)
@@ -564,7 +565,11 @@ CONTAINS
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: derivative
 
-      COMPLEX(dp), ALLOCATABLE                           :: dw(:, :), projected(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_dw(:, :)
+      COMPLEX(dp), POINTER                              :: dw(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
       INTEGER                                            :: center, first, ik, info, last, nao, nk, &
                                                             nproj, ns, spin
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
@@ -582,22 +587,31 @@ CONTAINS
       CPASSERT(ALL(SHAPE(reduced_k_response) == [3, nk]))
       CPASSERT(ALL(ieee_is_finite(kweights)) .AND. ALL(kweights >= 0.0_dp))
       CPASSERT(ABS(SUM(kweights) - 1.0_dp) < 1.e-12_dp)
-      ALLOCATE (dw(nproj, nao))
+      IF (PRESENT(coefficients_response)) THEN
+         CPASSERT(ALL(SHAPE(coefficients_response) == [nproj, nao, nk]))
+      ELSE
+         ALLOCATE (owned_dw(nproj, nao))
+      END IF
       derivative = 0.0_dp
       DO ik = 1, nk
          CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frames(ik)%ao%positions)))
-         inverse_cell = frames(ik)%ao%cell
-         CALL invmat(inverse_cell, info)
-         CPASSERT(info == 0)
-         strain = MATMUL(cell_response, inverse_cell)
-         volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
-         ALLOCATE (points_response(3, SIZE(frames(ik)%ao%weights)), &
-                   weights_response(SIZE(frames(ik)%ao%weights)))
-         points_response(:, :) = MATMUL(strain, frames(ik)%ao%points)
-         weights_response(:) = volume_response*frames(ik)%ao%weights
-         CALL qs_upf_inverse_response(frames(ik)%ao, points_response, atom_response, cell_response, &
-                                      reduced_k_response(:, ik), weights_response, dw)
-         DEALLOCATE (points_response, weights_response)
+         IF (PRESENT(coefficients_response)) THEN
+            dw => coefficients_response(:, :, ik)
+         ELSE
+            dw => owned_dw
+            inverse_cell = frames(ik)%ao%cell
+            CALL invmat(inverse_cell, info)
+            CPASSERT(info == 0)
+            strain = MATMUL(cell_response, inverse_cell)
+            volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
+            ALLOCATE (points_response(3, SIZE(frames(ik)%ao%weights)), &
+                      weights_response(SIZE(frames(ik)%ao%weights)))
+            points_response(:, :) = MATMUL(strain, frames(ik)%ao%points)
+            weights_response(:) = volume_response*frames(ik)%ao%weights
+            CALL qs_upf_inverse_response(frames(ik)%ao, points_response, atom_response, cell_response, &
+                                         reduced_k_response(:, ik), weights_response, dw)
+            DEALLOCATE (points_response, weights_response)
+         END IF
          DO center = 1, SIZE(potential)
             IF (.NOT. ALLOCATED(potential(center)%matrix)) CYCLE
             first = frames(ik)%ao%projector_first(center)

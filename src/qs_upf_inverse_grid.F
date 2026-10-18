@@ -468,11 +468,14 @@ CONTAINS
 !> \param projector_operator Optional original geometry-independent operator, e.g. Dion.
 !> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
 !> \param orbital_fields ...
+!> \param known_coefficients_response Optional response for this defining frame and the same geometry variation.
+!> \param saved_coefficients_response Optional owned coefficient response for reuse within this variation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_response(frame, augmentation, projector_metric, vdensity, vgradient, vtau, &
                                            atom_response, cell_response, reduced_k_response, vdensity_response, &
                                            vgradient_response, vtau_response, operator_response, metric_response, &
-                                           projector_operator, kinetic, orbital_fields)
+                                           projector_operator, kinetic, orbital_fields, &
+                                           known_coefficients_response, saved_coefficients_response)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT)                                   :: augmentation
@@ -490,9 +493,14 @@ CONTAINS
          OPTIONAL                                        :: kinetic(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
-      COMPLEX(dp), ALLOCATABLE :: coefficients_response(:, :), gradient(:, :, :), &
-         gradient_response(:, :, :), kinetic_operator(:, :), kinetic_response(:, :), &
-         partial(:, :), projected(:, :), projected_response(:, :), soft(:, :), soft_response(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: known_coefficients_response(:, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: saved_coefficients_response(:, :)
+
+      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_dw(:, :)
+      COMPLEX(dp), POINTER                              :: dw(:, :)
+      COMPLEX(dp), ALLOCATABLE :: gradient(:, :, :), &
+                                  gradient_response(:, :, :), kinetic_operator(:, :), kinetic_response(:, :), &
+                                  partial(:, :), projected(:, :), projected_response(:, :), soft(:, :), soft_response(:, :)
       INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
                                                             nproj
       LOGICAL                                            :: use_orbitals
@@ -511,7 +519,6 @@ CONTAINS
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
       block = qs_upf_inverse_block_size(frame%ao)
       ALLOCATE (dn(n), dg(n, 3), dt(n), dvn(n), dvg(n, 3), dvt(n), points_response(3, n), weights_response(n), &
-                coefficients_response(nproj, nao), &
                 projected(nproj, nproj), projected_response(nproj, nproj), &
                 operator_response(nao, nao), metric_response(nao, nao))
       cell_inverse = frame%ao%cell
@@ -521,8 +528,15 @@ CONTAINS
       volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
       points_response(:, :) = MATMUL(strain, frame%ao%points)
       weights_response(:) = volume_response*frame%ao%weights
-      CALL qs_upf_inverse_response(frame%ao, points_response, atom_response, cell_response, reduced_k_response, &
-                                   weights_response, coefficients_response)
+      IF (PRESENT(known_coefficients_response)) THEN
+         CPASSERT(ALL(SHAPE(known_coefficients_response) == [nproj, nao]))
+         dw => known_coefficients_response
+      ELSE
+         ALLOCATE (owned_dw(nproj, nao))
+         dw => owned_dw
+         CALL qs_upf_inverse_response(frame%ao, points_response, atom_response, cell_response, reduced_k_response, &
+                                      weights_response, dw)
+      END IF
       CALL pack_grid(frame, vdensity, dn)
       CALL pack_grid(frame, vtau, dt)
       CALL pack_grid(frame, vdensity_response, dvn)
@@ -542,14 +556,14 @@ CONTAINS
             IF (ANY(dg(lo:hi, :) /= 0.0_dp) .OR. ANY(dt(lo:hi) /= 0.0_dp)) THEN
                CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
                                             soft_response(:m, :), gradient_response(:m, :, :), points_response(:, lo:hi), &
-                                            atom_response, cell_response, reduced_k_response, coefficients_response)
+                                            atom_response, cell_response, reduced_k_response, dw)
             ELSE
                ! Gradient responses enter only through the unperturbed gradient and tau potentials.
                gradient_response(:m, :, :) = CMPLX(0.0_dp, 0.0_dp, dp)
                CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
                                             soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
                                             atom_response=atom_response, cell_response=cell_response, &
-                                            reduced_k_response=reduced_k_response, coefficients_response=coefficients_response)
+                                            reduced_k_response=reduced_k_response, coefficients_response=dw)
             END IF
             CALL upf_inverse_semilocal_response(soft(:m, :), soft(:m, :), gradient(:m, :, :), gradient(:m, :, :), &
                                                 frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), &
@@ -569,7 +583,7 @@ CONTAINS
          CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt, &
                                               kinetic_operator, frame%ao%point_comm, &
                                               kinetic_response, points_response, atom_response, cell_response, &
-                                              coefficients_response, weights_response, dvt)
+                                              dw, weights_response, dvt)
          operator_response(:, :) = operator_response + kinetic_response
       END IF
       CALL qs_upf_inverse_augmentation_fourier_integrate(frame%ao, augmentation, vdensity, vgradient, projected)
@@ -582,12 +596,19 @@ CONTAINS
       END IF
       operator_response(:, :) = operator_response + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), &
                                                            MATMUL(projected_response, frame%ao%coefficients))
-      operator_response(:, :) = operator_response + MATMUL(CONJG(TRANSPOSE(coefficients_response)), &
+      operator_response(:, :) = operator_response + MATMUL(CONJG(TRANSPOSE(dw)), &
                                                            MATMUL(projected, frame%ao%coefficients)) + &
-                                MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, coefficients_response))
-      metric_response(:, :) = metric_response + MATMUL(CONJG(TRANSPOSE(coefficients_response)), &
+                                MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, dw))
+      metric_response(:, :) = metric_response + MATMUL(CONJG(TRANSPOSE(dw)), &
                                                        MATMUL(projector_metric, frame%ao%coefficients)) + &
-                              MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_metric, coefficients_response))
+                              MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_metric, dw))
+      IF (PRESENT(saved_coefficients_response)) THEN
+         IF (ALLOCATED(owned_dw)) THEN
+            CALL MOVE_ALLOC(owned_dw, saved_coefficients_response)
+         ELSE
+            ALLOCATE (saved_coefficients_response, SOURCE=dw)
+         END IF
+      END IF
    END SUBROUTINE qs_upf_inverse_grid_response
 
 ! **************************************************************************************************

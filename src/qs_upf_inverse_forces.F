@@ -64,7 +64,8 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential(:)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic_potential(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: spin_density(:, :, :, :), &
+      COMPLEX(dp), ALLOCATABLE                           :: coefficients_response(:, :, :), &
+                                                            spin_density(:, :, :, :), &
                                                             total_density(:, :, :), &
                                                             total_weighted(:, :, :)
       INTEGER                                            :: atom, axis, index, kind, nk, nspin, &
@@ -152,13 +153,16 @@ CONTAINS
             atom_response(axis, atom) = 1.0_dp
             IF (complete_coulomb) THEN
                CALL complete_response(qs_env, ks_env, state, total_density, total_weighted, vgradient, vgradient(1, :), &
-                                      atom_response, 0.0_dp*cell%hmat, reduced_k_response, response, metric_response)
+                                      atom_response, 0.0_dp*cell%hmat, reduced_k_response, response, metric_response, &
+                                      coefficients_response)
                response = response - SUM(source_forces*atom_response)
             ELSE
                CALL qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, &
-                                                0.0_dp*cell%hmat, reduced_k_response, response, metric_response)
+                                                0.0_dp*cell%hmat, reduced_k_response, response, metric_response, &
+                                                coefficients_response)
             END IF
-            CALL qs_upf_inverse_scf_xc_response(ks_env, atom_response, 0.0_dp*cell%hmat, reduced_k_response, xc_response)
+            CALL qs_upf_inverse_scf_xc_response(ks_env, atom_response, 0.0_dp*cell%hmat, reduced_k_response, &
+                                                xc_response, coefficients_response)
             response = response + xc_response
             IF (para_env%is_source()) THEN
                force(kind)%all_potential(axis, index) = force(kind)%all_potential(axis, index) + response - metric_response
@@ -196,15 +200,17 @@ CONTAINS
                atom_response(:, :) = MATMUL(strain, positions)
                IF (complete_coulomb) THEN
                   CALL complete_response(qs_env, ks_env, state, total_density, total_weighted, vgradient, vgradient(1, :), &
-                                         atom_response, MATMUL(strain, cell%hmat), reduced_k_response, response, metric_response)
+                                         atom_response, MATMUL(strain, cell%hmat), reduced_k_response, response, metric_response, &
+                                         coefficients_response)
                   ! The folded XC source has fixed fractional rows. Native XC owns its explicit measure.
                   response = response - SUM(source_virial*strain)
                ELSE
                   CALL qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, &
-                                                   MATMUL(strain, cell%hmat), reduced_k_response, response, metric_response)
+                                                   MATMUL(strain, cell%hmat), reduced_k_response, response, metric_response, &
+                                                   coefficients_response)
                END IF
                CALL qs_upf_inverse_scf_xc_response(ks_env, atom_response, MATMUL(strain, cell%hmat), &
-                                                   reduced_k_response, xc_response)
+                                                   reduced_k_response, xc_response, coefficients_response)
                response = response + xc_response
                IF (axis == other .AND. .NOT. complete_coulomb) response = response - field_measure
                IF (para_env%is_source()) THEN
@@ -289,7 +295,7 @@ CONTAINS
 !> \param metric_response Signed complete Pulay contribution, already included in response.
 ! **************************************************************************************************
    SUBROUTINE complete_response(qs_env, ks_env, state, density, weighted, zeros, zero, atom_response, cell_response, &
-                                reduced_k_response, response, metric_response)
+                                reduced_k_response, response, metric_response, coefficients_response)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
@@ -300,16 +306,19 @@ CONTAINS
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: response, metric_response
 
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: coefficients_response(:, :, :)
+
       REAL(dp)                                           :: coulomb_response, radial_metric
 
       CPASSERT(ALL(reduced_k_response == 0.0_dp))
       CALL qs_upf_inverse_scf_response(ks_env, zero, zeros, zero, atom_response, cell_response, reduced_k_response, &
-                                       response, radial_metric)
+                                       response, radial_metric, coefficients_response)
       CALL qs_upf_inverse_coulomb_metric_response(qs_env, state, state%coulomb, weighted, atom_response, cell_response, &
-                                                  metric_response)
+                                                  metric_response, coefficients_response)
       metric_response = -metric_response
       response = response - radial_metric + metric_response
-      CALL qs_upf_inverse_coulomb_response(qs_env, state, state%coulomb, density, atom_response, cell_response, coulomb_response)
+      CALL qs_upf_inverse_coulomb_response(qs_env, state, state%coulomb, density, atom_response, cell_response, &
+                                           coulomb_response, coefficients_response=coefficients_response)
       response = response + coulomb_response
    END SUBROUTINE complete_response
 

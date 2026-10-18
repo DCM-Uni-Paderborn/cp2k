@@ -205,19 +205,25 @@ CONTAINS
 !> \param cell_response ...
 !> \param reduced_k_response ...
 !> \param response Globally reduced additional energy gradient.
+!> \param coefficients_response Optional defining-frame responses in global k order for this geometry variation.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_scf_xc_response(ks_env, atom_response, cell_response, reduced_k_response, response)
+   SUBROUTINE qs_upf_inverse_scf_xc_response(ks_env, atom_response, cell_response, reduced_k_response, response, &
+                                             coefficients_response)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), &
                                                             cell_response(3, 3), &
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: response
 
-      COMPLEX(dp), ALLOCATABLE                           :: coefficients(:, :, :)
-      INTEGER                                            :: axis, ik, nk, np, ns, other, stride
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_coefficients(:, :, :)
+      COMPLEX(dp), POINTER                              :: coefficients(:, :, :)
+      INTEGER                                            :: axis, ik, nao, nk, np, nproj, ns, other, &
+                                                            stride
       REAL(dp)                                           :: strain(3, 3)
       REAL(dp), ALLOCATABLE :: core(:, :), core_gradient(:, :, :), core_tau(:, :), &
-         defining_points(:, :), defining_weights(:), fields(:, :, :, :), points(:, :), weights(:)
+                               defining_points(:, :), defining_weights(:), fields(:, :, :, :), points(:, :), weights(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(mp_comm_type)                                 :: comm
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -234,24 +240,32 @@ CONTAINS
       CALL frame_refs(state, frames, augmentation)
       frame => frames(1)%frame
       nk = SIZE(frames)
+      nao = SIZE(frame%coefficients, 2)
+      nproj = SIZE(frame%coefficients, 1)
       np = SIZE(state%atom_grid%weights)
       ns = SIZE(state%xc_matrices, 4)
       stride = 4
       IF (state%xc%kinetic) stride = 5
-      ALLOCATE (points(3, np), weights(np), core(np, ns), core_gradient(np, 3, ns), &
-                coefficients(SIZE(frame%coefficients, 1), SIZE(frame%coefficients, 2), nk))
+      ALLOCATE (points(3, np), weights(np), core(np, ns), core_gradient(np, 3, ns))
       IF (state%xc%kinetic) ALLOCATE (core_tau(np, ns))
       CALL qs_upf_inverse_atom_grid_response(state%atom_grid, atom_response, cell_response, points, weights)
       strain = MATMUL(cell_response, cell%h_inv)
-      DO ik = 1, nk
-         frame => frames(ik)%frame
-         ALLOCATE (defining_points(3, SIZE(frame%weights)), defining_weights(SIZE(frame%weights)))
-         defining_points(:, :) = MATMUL(strain, frame%points)
-         defining_weights(:) = (strain(1, 1) + strain(2, 2) + strain(3, 3))*frame%weights
-         CALL qs_upf_inverse_response(frame, defining_points, atom_response, cell_response, reduced_k_response(:, ik), &
-                                      defining_weights, coefficients(:, :, ik))
-         DEALLOCATE (defining_points, defining_weights)
-      END DO
+      IF (PRESENT(coefficients_response)) THEN
+         CPASSERT(ALL(SHAPE(coefficients_response) == [nproj, nao, nk]))
+         coefficients => coefficients_response
+      ELSE
+         ALLOCATE (owned_coefficients(nproj, nao, nk))
+         coefficients => owned_coefficients
+         DO ik = 1, nk
+            frame => frames(ik)%frame
+            ALLOCATE (defining_points(3, SIZE(frame%weights)), defining_weights(SIZE(frame%weights)))
+            defining_points(:, :) = MATMUL(strain, frame%points)
+            defining_weights(:) = (strain(1, 1) + strain(2, 2) + strain(3, 3))*frame%weights
+            CALL qs_upf_inverse_response(frame, defining_points, atom_response, cell_response, reduced_k_response(:, ik), &
+                                         defining_weights, coefficients(:, :, ik))
+            DEALLOCATE (defining_points, defining_weights)
+         END DO
+      END IF
       ALLOCATE (fields, MOLD=state%xc_fields)
       fields = 0.0_dp
       DO ik = 1, ns

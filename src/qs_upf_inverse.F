@@ -669,9 +669,10 @@ CONTAINS
 !> \param atom_response Optional nuclear and Gaussian-center displacement.
 !> \param cell_response Optional lattice displacement.
 !> \param reduced_k_response Optional reduced Bloch-vector displacement.
+!> \param coefficients_response Optional precomputed coefficient response for this frame and geometry variation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_atomic_operators(frame, projector_metric, kinetic, metric, kinetic_response, metric_response, &
-                                              atom_response, cell_response, reduced_k_response)
+                                              atom_response, cell_response, reduced_k_response, coefficients_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: kinetic(:, :), metric(:, :)
@@ -681,8 +682,12 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
 
-      COMPLEX(dp), ALLOCATABLE :: dl(:, :), dw(:, :), dz(:, :), laplacian(:, :), overlaps(:, :), &
-         rs(:, :), rt(:, :), z(:, :), zero_ao(:, :), zero_projectors(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :)
+
+      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_dw(:, :)
+      COMPLEX(dp), POINTER                              :: dw(:, :)
+      COMPLEX(dp), ALLOCATABLE :: dl(:, :), dz(:, :), laplacian(:, :), overlaps(:, :), &
+                                  rs(:, :), rt(:, :), z(:, :), zero_ao(:, :), zero_projectors(:, :)
       INTEGER                                            :: atom, b, center, first, ikind, last, n, &
                                                             np, p, q
       LOGICAL                                            :: calculate_response
@@ -706,9 +711,16 @@ CONTAINS
       END IF
       IF (frame%direct) RETURN
       IF (calculate_response) THEN
-         ALLOCATE (dw(np, n), overlaps(np, n), zero_ao(n, n))
+         ALLOCATE (zero_ao(n, n))
          zero_ao = CMPLX(0.0_dp, 0.0_dp, dp)
-         CALL atomic_coefficients(frame, overlaps, dw, atom_response, cell_response, reduced_k_response)
+         IF (PRESENT(coefficients_response)) THEN
+            CPASSERT(ALL(SHAPE(coefficients_response) == [np, n]))
+            dw => coefficients_response
+         ELSE
+            ALLOCATE (owned_dw(np, n), overlaps(np, n))
+            dw => owned_dw
+            CALL atomic_coefficients(frame, overlaps, dw, atom_response, cell_response, reduced_k_response)
+         END IF
       END IF
       DO center = 1, SIZE(frame%center_atoms)
          ikind = frame%center_kinds(center)

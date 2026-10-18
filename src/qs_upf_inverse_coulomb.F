@@ -503,13 +503,15 @@ CONTAINS
 !> \param cell_response Physical lattice derivative, with lattice vectors in columns.
 !> \param response Coulomb energy derivative, excluding separate native ionic self/overlap corrections.
 !> \param charge_response Optional derivative of the same complete electronic charge metric contraction.
+!> \param coefficients_response Optional defining-frame responses at fixed reduced k for this geometry variation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_coulomb_response(qs_env, state, map, matrix, atom_response, cell_response, &
-                                              response, charge_response)
+                                              response, charge_response, coefficients_response)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: response
       REAL(dp), INTENT(OUT), OPTIONAL                    :: charge_response
@@ -557,7 +559,8 @@ CONTAINS
                            SUM(virial*strain) + trace_strain*pw_integral_ab(map%source, unit)
          CALL unit%release()
       END IF
-      CALL center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response)
+      CALL center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response, &
+                                   coefficients_response)
       IF (PRESENT(charge_response)) THEN
          DO a = 1, SIZE(centers_response)
             charge_response = charge_response + SQRT(fourpi)* &
@@ -606,12 +609,15 @@ CONTAINS
 !> \param atom_response Physical atomic motion.
 !> \param cell_response Physical lattice derivative at fixed reduced Bloch coordinates.
 !> \param response Derivative of sum_k w_k Tr(matrix_k M_k), without the Pulay minus sign.
+!> \param coefficients_response Optional defining-frame responses at fixed reduced k for this geometry variation.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_coulomb_metric_response(qs_env, state, map, matrix, atom_response, cell_response, response)
+   SUBROUTINE qs_upf_inverse_coulomb_metric_response(qs_env, state, map, matrix, atom_response, cell_response, response, &
+                                                     coefficients_response)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: response
 
@@ -643,7 +649,8 @@ CONTAINS
       CALL qs_upf_inverse_background_geometry(map%background, qs_env, matrix, unit, forces, virial)
       response = -SUM(forces*(atom_response - MATMUL(strain, map%positions))) - SUM(virial*strain) + &
                  trace_strain*pw_integral_ab(background, unit)
-      CALL center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response)
+      CALL center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response, &
+                                   coefficients_response)
       DO a = 1, SIZE(centers_response)
          response = response + SQRT(fourpi)*SUM(map%centers(a)%weights*centers_response(a)%density(:, 1))
       END DO
@@ -661,8 +668,10 @@ CONTAINS
 !> \param atom_response Physical atomic motion.
 !> \param cell_response Physical lattice derivative.
 !> \param centers_response New center layout with density and position responses.
+!> \param known_coefficients_response Optional defining-frame responses for the same variation and global k order.
 ! **************************************************************************************************
-   SUBROUTINE center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response)
+   SUBROUTINE center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response, &
+                                      known_coefficients_response)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(IN)      :: map
@@ -671,8 +680,11 @@ CONTAINS
       TYPE(upf_inverse_coulomb_center_type), &
          ALLOCATABLE, INTENT(OUT)                        :: centers_response(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: coefficients_response(:, :)
-      INTEGER                                            :: a, info, k, kind
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: known_coefficients_response(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_coefficients(:, :)
+      COMPLEX(dp), POINTER                              :: coefficients_response(:, :)
+      INTEGER                                            :: a, info, k, kind, nao, nk, nproj
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
                                                             trace_strain
       REAL(dp), ALLOCATABLE                              :: point_response(:, :), radial(:, :), &
@@ -697,14 +709,27 @@ CONTAINS
          centers_response(a)%shapes = 0.0_dp
          centers_response(a)%density = 0.0_dp
       END DO
+      nao = SIZE(frame%coefficients, 2)
+      nproj = SIZE(frame%coefficients, 1)
+      nk = SIZE(map%weights)
+      IF (PRESENT(known_coefficients_response)) THEN
+         CPASSERT(ALL(SHAPE(known_coefficients_response) == [nproj, nao, nk]))
+      ELSE
+         ALLOCATE (owned_coefficients, MOLD=frame%coefficients)
+      END IF
       DO k = 1, SIZE(map%weights)
          CALL select_frame(state, k, frame, augmentation)
-         ALLOCATE (coefficients_response, MOLD=frame%coefficients)
-         ALLOCATE (point_response(3, SIZE(frame%weights)), weights_response(SIZE(frame%weights)))
-         point_response(:, :) = MATMUL(strain, frame%points)
-         weights_response(:) = trace_strain*frame%weights
-         CALL qs_upf_inverse_response(frame, point_response, atom_response, cell_response, &
-                                      [0.0_dp, 0.0_dp, 0.0_dp], weights_response, coefficients_response)
+         IF (PRESENT(known_coefficients_response)) THEN
+            coefficients_response => known_coefficients_response(:, :, k)
+         ELSE
+            coefficients_response => owned_coefficients
+            ALLOCATE (point_response(3, SIZE(frame%weights)), weights_response(SIZE(frame%weights)))
+            point_response(:, :) = MATMUL(strain, frame%points)
+            weights_response(:) = trace_strain*frame%weights
+            CALL qs_upf_inverse_response(frame, point_response, atom_response, cell_response, &
+                                         [0.0_dp, 0.0_dp, 0.0_dp], weights_response, coefficients_response)
+            DEALLOCATE (point_response, weights_response)
+         END IF
          DO a = 1, SIZE(centers_response)
             kind = map%center_kinds(a)
             ALLOCATE (radial, MOLD=map%centers(a)%density)
@@ -715,7 +740,6 @@ CONTAINS
             centers_response(a)%density(:, :) = centers_response(a)%density + map%weights(k)*radial_response
             DEALLOCATE (radial, radial_response)
          END DO
-         DEALLOCATE (point_response, weights_response, coefficients_response)
       END DO
    END SUBROUTINE center_density_response
 
