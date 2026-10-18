@@ -893,9 +893,14 @@ CONTAINS
                END IF
             END IF
             IF (.NOT. inverse_ot_handled .AND. scf_control%smear%do_smear .AND. &
-                scf_env%method == ot_method_nr .AND. scf_env%iter_delta < scf_control%eps_scf) THEN
+                scf_env%method == ot_method_nr .AND. &
+                (scf_env%iter_delta < scf_control%eps_scf .OR. &
+                 (.NOT. just_energy .AND. scf_env%iter_count > 1 .AND. &
+                  ABS(energy%total - energy%tot_old) <= 64.0_dp*EPSILON(1.0_dp)* &
+                  MAX(ABS(energy%total), ABS(energy%tot_old), TINY(1.0_dp))))) THEN
                ! Certify the complete physical thermal state before reporting convergence.
-               ! The original OT candidate norm only triggers this final refinement.
+               ! A small OT norm or an energy change below roundoff triggers refinement.
+               ! Neither is a substitute for the original physical stationarity bound.
                CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, &
                                       inverse_ot_stopped, output_unit, refine_final=.TRUE.)
                IF (inverse_ot_handled) THEN
