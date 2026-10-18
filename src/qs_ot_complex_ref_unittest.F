@@ -2047,7 +2047,8 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(k, k)                  :: direction_a, generator, gradient_a, &
                                                             inverse_sqrt, rotation
       COMPLEX(KIND=dp), DIMENSION(n, k)                  :: c_dense, c_reference, direction_x, &
-                                                            gradient_x, hc_dense, q_dense, x_dense
+                                                            gradient_x, hc_dense, q_dense, &
+                                                            x_current, x_dense
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: hamiltonian, overlap
       INTEGER                                            :: i, j
       INTEGER, DIMENSION(:), POINTER                     :: col_dist, col_k, col_n, row_dist, row_k, &
@@ -2056,6 +2057,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: error_c, error_ref, error_rot, fd_ref, &
                                                             fd_rot, hstep, predicted_ref, &
                                                             predicted_rot
+      REAL(KIND=dp), DIMENSION(3)                        :: search_error
       REAL(KIND=dp), DIMENSION(k)                        :: occupation
       REAL(KIND=dp), DIMENSION(k), TARGET                :: rotation_evals
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
@@ -2248,6 +2250,28 @@ CONTAINS
          WRITE (io_unit, '(A,3(1X,ES13.6))') 'complex finite rotation slope fd/predicted/error', &
             fd_rot, predicted_rot, error_rot
       END IF
+
+      ! The third-point Mermin search must not normalize its second trial coordinate.
+      rotation_env%settings%ot_method = 'CG'
+      rotation_env%settings%line_search_method = '2PNT'
+      DO i = 1, SIZE(search_error)
+         CALL put_complex_pair(x_re, x_im, x_dense)
+         rotation_env%line_search_count = MERGE(3, 2, i == 2)
+         rotation_env%line_search_might_be_done = i /= 1
+         rotation_env%energy_only = i == 1
+         CALL qs_ot_get_orbitals_ref_complex(c_re_p, c_im_p, s_re_p, s_im_p, rotation_env)
+         CALL get_complex_pair(x_re, x_im, x_current)
+         IF (i == 1) THEN
+            search_error(i) = MAXVAL(ABS(x_current - x_dense))
+         ELSE
+            search_error(i) = MAXVAL(ABS(x_current - q_dense))
+         END IF
+         CALL get_complex_pair(c_re, c_im, c_dense)
+         search_error(i) = MAX(search_error(i), MAXVAL(ABS(c_dense - c_reference)))
+      END DO
+      IF (MAXVAL(search_error) > 5.0E-11_dp) nfail = nfail + 1
+      IF (para_env%is_source()) WRITE (io_unit, '(A,3(1X,ES13.6))') &
+         'complex REF trial, extended and ordinary endpoint errors', search_error
 
       DO i = 1, SIZE(rot_matrix)
          CALL dbcsr_release(rot_matrix(i))

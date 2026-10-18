@@ -1451,7 +1451,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_ot_precondition_complex(qs_ot_env, matrix_in, matrix_in_im, matrix_out, matrix_out_im)
       TYPE(qs_ot_type)                                   :: qs_ot_env
-      TYPE(dbcsr_type)                                   :: matrix_in, matrix_in_im, matrix_out, matrix_out_im
+      TYPE(dbcsr_type)                                   :: matrix_in, matrix_in_im, matrix_out, &
+                                                            matrix_out_im
 
       INTEGER                                            :: k
 
@@ -1926,7 +1927,9 @@ CONTAINS
       CASE ("CG", "SD")
          SELECT CASE (qs_ot_env1%settings%line_search_method)
          CASE ("2PNT")
-            IF (qs_ot_env1%line_search_count == 2) update = .TRUE.
+            ! Complex Mermin OT may add trial points to a nominal two-point search.
+            ! Preserve its coordinates until the search has selected its next endpoint.
+            update = qs_ot_env1%line_search_might_be_done .AND. .NOT. qs_ot_env1%energy_only
          CASE DEFAULT
             CPABORT("NYI")
          END SELECT
