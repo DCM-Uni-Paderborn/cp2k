@@ -890,6 +890,11 @@ CONTAINS
                      CALL record_atom_descriptors(density_constraints, atom_grid, state, background)
                   END IF
                END IF
+               IF (skala_density_samples_only(density_constraints)) THEN
+                  ! Pure descriptor sampling has zero XC covectors. No transpose is needed.
+                  ALLOCATE (grid_adjoint(SIZE(fields, 1), SIZE(fields, 2), SIZE(fields, 3), SIZE(fields, 4)), SOURCE=0.0_dp)
+                  RETURN
+               END IF
             END IF
          END IF
       END IF
