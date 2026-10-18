@@ -1654,18 +1654,27 @@ CONTAINS
       found = .FALSE.
       selected = .FALSE.
       root(:) = first
-      CALL qs_skala_scf_evaluate(state, first, energy, gradient)
       count = 1
-      CALL qs_skala_scf_values(state, domains, points, spins, descriptors, initial, rows)
-      values(:) = initial
       IF (m == 0) THEN
+         CALL qs_skala_scf_evaluate(state, first, energy, gradient)
          IF (PRESENT(evaluations)) evaluations = count
          RETURN
       END IF
+      ! Initialize the bracket from physical fields alone. Every accepted root,
+      ! including an initial endpoint, still receives a complete functional check.
+      CALL sample_native_constraints(state, first)
+      CALL qs_skala_scf_values(state, domains, points, spins, descriptors, initial, rows)
+      values(:) = initial
       selected(:) = ABS(values - targets) <= tolerances
       IF (ANY(selected)) THEN
-         found = .TRUE.
-      ELSE IF (m > 0) THEN
+         CALL qs_skala_scf_evaluate(state, first, energy, gradient)
+         count = count + 1
+         CALL qs_skala_scf_values(state, domains, points, spins, descriptors, initial, rows)
+         values(:) = initial
+         selected(:) = ABS(values - targets) <= tolerances
+         found = ANY(selected)
+      END IF
+      IF (.NOT. found) THEN
          sides(:) = SIGN(1.0_dp, initial - targets)
          direction(:) = last - first
          CALL sample_native_constraints(state, last)
