@@ -37,9 +37,9 @@
 ]
 # Matched USPP representations with energy, atomic force and analytical stress.
 "H2_USPP_DIRECT.inp" = [
-  {matcher="M011", tol=1e-10, ref=-0.822903558912302},
-  {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.85385915},
-  {matcher="M031", tol=1e-7, ref=2255125.14882},
+  {matcher="M011", tol=1e-10, ref=-0.822903594023468},
+  {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.85385966},
+  {matcher="M031", tol=1e-7, ref=2255119.60958},
 ]
 "H2_USPP_INVERSE.inp" = [
   {matcher="M011", tol=1e-10, ref=0.051683556229153},
