@@ -13,15 +13,19 @@ PROGRAM qs_ot_minimizer_unittest
    USE qs_ot_minimizer,                 ONLY: &
         broyden_history_restart_required, cg_history_restart_required, &
         lbfgs_curvature_damping_shift, lbfgs_history_restart_required, &
-        lbfgs_response_secant_parameters, lbfgs_step_restart_required, ot_mermin_response_assess, &
-        ot_mermin_response_candidate_preferred, ot_mermin_response_compare, &
-        ot_mermin_response_preparation_needed, ot_mermin_response_probe, &
-        ot_mermin_response_shadow_followup, ot_mermin_secant_curvature, ot_two_point_search_step
+        lbfgs_response_secant_parameters, lbfgs_step_restart_required, ot_derivative_search_step, &
+        ot_mermin_response_assess, ot_mermin_response_candidate_preferred, &
+        ot_mermin_response_compare, ot_mermin_response_preparation_needed, &
+        ot_mermin_response_probe, ot_mermin_response_shadow_followup, ot_mermin_secant_curvature, &
+        ot_two_point_search_step
    USE qs_scf_loop_utils,               ONLY: qs_scf_kp_ref_refresh_ready,&
                                               qs_scf_kp_search_endpoint
 
    IMPLICIT NONE
 
+   INTEGER :: trial
+   REAL(dp) :: line_positions(20), line_derivatives(20), line_energies(20), next_position
+   LOGICAL :: line_accepted
    LOGICAL                                            :: curvature_valid, response_good, valid_response
    REAL(KIND=dp)                                      :: baseline_drop, damping_shift, infinity, &
                                                          mixed_curvature, &
@@ -47,6 +51,29 @@ PROGRAM qs_ot_minimizer_unittest
        32.0_dp*EPSILON(1.0_dp)) THEN
       ERROR STOP "Nonpositive derivative curvature changed the energy fallback"
    END IF
+
+   ! The complete nonlinear energy rounds to one, while its derivative remains resolved.
+   line_positions(1) = 0._dp
+   line_derivatives(1) = -1.0E-20_dp
+   line_energies(1) = 1._dp
+   next_position = 0.03_dp
+   line_accepted = .FALSE.
+   DO trial = 2, SIZE(line_positions)
+      line_positions(trial) = next_position
+      line_derivatives(trial) = 1.0E-20_dp*(-1._dp + next_position + next_position**3)
+      line_energies(trial) = 1._dp + 1.0E-20_dp*(-next_position + 0.5_dp*next_position**2 + 0.25_dp*next_position**4)
+      IF (line_energies(trial) /= 1._dp) ERROR STOP "Derivative search unit energy is resolved"
+      CALL ot_derivative_search_step(line_positions(:trial), line_derivatives(:trial), line_energies(:trial), &
+                                     16._dp*EPSILON(1._dp), next_position, line_accepted)
+      IF (line_accepted) EXIT
+   END DO
+   IF (.NOT. line_accepted) ERROR STOP "Derivative search did not minimize the unresolved nonlinear energy"
+   IF (next_position /= line_positions(trial) .OR. ABS(line_derivatives(trial)) > 1.0E-21_dp) &
+      ERROR STOP "Derivative search accepted an unevaluated or nonstationary point"
+   CALL ot_derivative_search_step([0._dp, 1._dp], [-1.0E-20_dp, -1.0E-20_dp], [1._dp, 1.1_dp], &
+                                  16._dp*EPSILON(1._dp), next_position, line_accepted)
+   IF (line_accepted .OR. next_position <= 0._dp .OR. next_position >= 1._dp) &
+      ERROR STOP "Derivative search did not reject a resolved energy increase"
 
    IF (.NOT. broyden_history_restart_required(.TRUE., .FALSE., .TRUE.)) THEN
       ERROR STOP "Mermin Broyden did not restart a non-descent product history"

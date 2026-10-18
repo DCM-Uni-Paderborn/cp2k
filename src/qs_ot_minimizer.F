@@ -50,6 +50,7 @@ MODULE qs_ot_minimizer
               lbfgs_history_restart_required, &
               lbfgs_response_secant_parameters, &
               lbfgs_step_restart_required, &
+              ot_derivative_search_step, &
               ot_mermin_response_assess, &
               ot_mermin_response_candidate_preferred, &
               ot_mermin_response_compare, &
@@ -1193,22 +1194,55 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'do_line_search_3pnt'
 
       INTEGER                                            :: best_index, count, handle, i
-      REAL(KIND=dp)                                      :: best_energy, denom, ds, fa, fb, fc, nom, &
+      LOGICAL                                            :: derivative_accepted, trial_gradient_available
+      REAL(KIND=dp)                                      :: best_energy, denom, ds, energy_resolution, &
+                                                            fa, fb, fc, nom, &
                                                             pos, tol, val, xa, xb, xc
 
       CALL timeset(routineN, handle)
 
+      trial_gradient_available = .NOT. qs_ot_env(1)%energy_only
       qs_ot_env(1)%line_search_might_be_done = .FALSE.
       qs_ot_env(1)%energy_only = .TRUE.
 
       ! a three point interpolation based on the energy
       qs_ot_env(1)%line_search_count = qs_ot_env(1)%line_search_count + 1
       count = qs_ot_env(1)%line_search_count
+      IF (count >= SIZE(qs_ot_env(1)%ot_pos)) THEN
+         CPABORT("Mermin derivative line search exceeded its trial limit")
+      END IF
       qs_ot_env(1)%ot_energy(count) = qs_ot_env(1)%etotal
+      energy_resolution = 16.0_dp*EPSILON(1.0_dp)* &
+                          MAX(1.0_dp, ABS(qs_ot_env(1)%ot_energy(1)), ABS(qs_ot_env(1)%etotal))
+      IF (count == 1) THEN
+         qs_ot_env(1)%ot_grad(1) = 0.0_dp
+         IF (use_three_point_mermin_search(qs_ot_env)) THEN
+            IF (qs_ot_env(1)%gradient < 0.0_dp .AND. &
+                ABS(qs_ot_env(1)%gradient*qs_ot_env(1)%ds_min*0.8_dp) <= energy_resolution) THEN
+               qs_ot_env(1)%ot_grad(1) = qs_ot_env(1)%gradient
+            END IF
+         END IF
+      END IF
+      IF (count > 1 .AND. qs_ot_env(1)%ot_grad(1) < 0.0_dp) THEN
+         CPASSERT(trial_gradient_available)
+         CPASSERT(ieee_is_finite(qs_ot_env(1)%gradient))
+         qs_ot_env(1)%ot_grad(count) = qs_ot_env(1)%gradient
+         CALL ot_derivative_search_step(qs_ot_env(1)%ot_pos(1:count), &
+                                        qs_ot_env(1)%ot_grad(1:count), qs_ot_env(1)%ot_energy(1:count), energy_resolution, &
+                                        qs_ot_env(1)%ot_pos(count + 1), derivative_accepted)
+         qs_ot_env(1)%energy_only = .FALSE.
+         qs_ot_env(1)%line_search_might_be_done = derivative_accepted
+         ds = qs_ot_env(1)%OT_pos(count + 1) - qs_ot_env(1)%OT_pos(count)
+         qs_ot_env(1)%ds_min = qs_ot_env(1)%OT_pos(count + 1)
+         CALL take_step(ds, qs_ot_env)
+         CALL timestop(handle)
+         RETURN
+      END IF
       SELECT CASE (count)
       CASE (1)
          qs_ot_env(1)%ot_pos(count) = 0.0_dp
          qs_ot_env(1)%ot_pos(count + 1) = qs_ot_env(1)%ds_min*0.8_dp
+         IF (qs_ot_env(1)%ot_grad(1) < 0.0_dp) qs_ot_env(1)%energy_only = .FALSE.
       CASE (2)
          IF (qs_ot_env(1)%OT_energy(count) > qs_ot_env(1)%OT_energy(count - 1)) THEN
             qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%ds_min*0.5_dp
@@ -1261,6 +1295,65 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE do_line_search_3pnt
+
+! **************************************************************************************************
+!> \brief Bracket a line minimum with derivatives when energy differences are unresolved.
+!> \param positions evaluated nonnegative positions, starting at zero
+!> \param derivatives directional derivatives, with a negative initial slope
+!> \param energies energies at the same evaluated positions
+!> \param energy_resolution absolute energy roundoff allowance
+!> \param next_position next trial, or the current position when accepted
+!> \param accepted current point meets sufficient-decrease and curvature conditions
+! **************************************************************************************************
+   PURE SUBROUTINE ot_derivative_search_step(positions, derivatives, energies, energy_resolution, &
+                                             next_position, accepted)
+      REAL(KIND=dp), INTENT(IN)                          :: positions(:), derivatives(:), &
+                                                            energies(:), energy_resolution
+      REAL(KIND=dp), INTENT(OUT)                         :: next_position
+      LOGICAL, INTENT(OUT)                               :: accepted
+
+      INTEGER                                            :: i, left, n, right
+      REAL(KIND=dp)                                      :: fraction, secant_position, &
+                                                            sufficient_decrease
+
+      n = SIZE(positions)
+      sufficient_decrease = energies(1) + energy_resolution + 1.0E-4_dp*positions(n)*derivatives(1)
+      accepted = ABS(derivatives(n)) <= 0.1_dp*ABS(derivatives(1)) .AND. energies(n) <= sufficient_decrease
+      next_position = positions(n)
+      IF (accepted) RETURN
+      right = 0
+      DO i = 2, n
+         sufficient_decrease = energies(1) + energy_resolution + 1.0E-4_dp*positions(i)*derivatives(1)
+         IF (derivatives(i) >= 0._dp .OR. energies(i) > sufficient_decrease) THEN
+            IF (right == 0) THEN
+               right = i
+            ELSE IF (positions(i) < positions(right)) THEN
+               right = i
+            END IF
+         END IF
+      END DO
+      IF (right == 0) THEN
+         next_position = 2._dp*MAXVAL(positions)
+         ! Positive measured curvature permits a safeguarded secant extrapolation.
+         IF (derivatives(n) > derivatives(n - 1) .AND. positions(n) > positions(n - 1)) THEN
+            secant_position = positions(n) - derivatives(n)* &
+                              (positions(n) - positions(n - 1))/(derivatives(n) - derivatives(n - 1))
+            next_position = MIN(4._dp*MAXVAL(positions), MAX(1.1_dp*MAXVAL(positions), secant_position))
+         END IF
+         RETURN
+      END IF
+      left = 1
+      DO i = 2, n
+         IF (positions(i) > positions(left) .AND. positions(i) < positions(right) .AND. derivatives(i) < 0._dp) THEN
+            sufficient_decrease = energies(1) + energy_resolution + 1.0E-4_dp*positions(i)*derivatives(1)
+            IF (energies(i) <= sufficient_decrease) left = i
+         END IF
+      END DO
+      fraction = 0.5_dp
+      IF (derivatives(right) > derivatives(left)) fraction = -derivatives(left)/(derivatives(right) - derivatives(left))
+      fraction = MAX(0.1_dp, MIN(0.9_dp, fraction))
+      next_position = positions(left) + fraction*(positions(right) - positions(left))
+   END SUBROUTINE ot_derivative_search_step
 
 ! **************************************************************************************************
 !> \brief Minimize the two-point quadratic relative to the initial energy.
@@ -1757,7 +1850,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'ot_new_cg_direction'
 
       INTEGER                                            :: handle, ispin, itmp, k, n, nener, nspin
-      LOGICAL                                            :: do_ener, do_ks, &
+      LOGICAL                                            :: derivative_search_done, do_ener, do_ks, &
                                                             preceding_response_candidate, &
                                                             use_response_candidate
       REAL(KIND=dp)                                      :: baseline_delta, baseline_gnorm, beta_pr, &
@@ -2052,9 +2145,15 @@ CONTAINS
          beta_pr = 0.0_dp
       END IF
       IF (preceding_response_candidate) beta_pr = 0.0_dp
+      ! A verified derivative search supplies curvature even when energies round to the same value.
+      derivative_search_done = .FALSE.
+      IF (use_three_point_mermin_search(qs_ot_env) .AND. &
+          qs_ot_env(1)%line_search_count >= 2 .AND. qs_ot_env(1)%line_search_might_be_done) THEN
+         derivative_search_done = qs_ot_env(1)%ot_grad(1) < 0.0_dp
+      END IF
       IF (cg_history_restart_required( &
           qs_ot_env(1)%settings%occupation_preconditioner, qs_ot_env(1)%etotal, &
-          qs_ot_env(1)%response_reference_energy)) beta_pr = 0.0_dp
+          qs_ot_env(1)%response_reference_energy) .AND. .NOT. derivative_search_done) beta_pr = 0.0_dp
       beta_pr = MAX(beta_pr, 0.0_dp) ! reset to SD
 
       test_down = 0.0_dp
