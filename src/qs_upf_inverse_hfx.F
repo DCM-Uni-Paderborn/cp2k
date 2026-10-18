@@ -3106,7 +3106,36 @@ CONTAINS
       IF (words > INT(max_cached_lattice_field_words, int_8)) RETURN
       moment = CMPLX(0.0_dp, 0.0_dp, dp)
       valid = .TRUE.
-      IF (nrow == 0) RETURN
+      IF (nrow == 0 .OR. nproj == 0) RETURN
+      position = frame%positions(:, frame%center_atoms(center)) + MATMUL(frame%cell, REAL(center_image, dp))
+      ALLOCATE (coordinates(3, nang, nrow), local_points(3, nang), weighted(nang, nproj, fields%nfunction, nrow), &
+                potential(nang, fields%nfunction), weights(nang))
+      bounds(:, 1) = HUGE(0.0_dp)
+      bounds(:, 2) = -HUGE(0.0_dp)
+      row = 0
+      DO ir = 1, SIZE(r)
+         IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
+         row = row + 1
+         local_points(:, :) = r(ir)*directions
+         DO ia = 1, nang
+            coordinates(:, ia, row) = position + local_points(:, ia)
+         END DO
+         bounds(:, 1) = MIN(bounds(:, 1), MINVAL(coordinates(:, :, row), DIM=2))
+         bounds(:, 2) = MAX(bounds(:, 2), MAXVAL(coordinates(:, :, row), DIM=2))
+         IF (ALLOCATED(potentials%potential_fields)) THEN
+            potential(:, :) = potentials%potential_fields%values(:, :, row)
+         ELSE
+            CALL gaussian_coulomb_fields_evaluate_batch(fields, &
+                                                        coordinates(:, :, row) - SPREAD(auxiliary_center, 2, nang), potential)
+         END IF
+         ! Reuse the first projector plane until the original difference products are formed.
+         DO aux = 1, fields%nfunction
+            weighted(:, 1, aux, row) = CMPLX(potential(:, aux), 0.0_dp, dp)
+         END DO
+      END DO
+      ! Exact zeros require no Gaussian or coupled difference fields. In particular, leave
+      ! the shared Gaussian cache unallocated rather than exposing uninitialized rows later.
+      IF (ALL(weighted(:, 1, :, :) == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
       ! The overlap entry fixes all Gaussian arguments across auxiliary shells. Retain their
       ! values within its original lifetime, sharing the budget with the other point fields.
       cached_gaussian = ALLOCATED(gaussian_fields)
@@ -3119,13 +3148,9 @@ CONTAINS
             field_budget = field_budget - INT(gaussian_words)
          END IF
       END IF
-      position = frame%positions(:, frame%center_atoms(center)) + MATMUL(frame%cell, REAL(center_image, dp))
-      ALLOCATE (coordinates(3, nang, nrow), local_points(3, nang), weighted(nang, nproj, fields%nfunction, nrow), &
-                potential(nang, fields%nfunction), weights(nang), delta(nang, MAX(np, nproj)), &
+      ALLOCATE (delta(nang, MAX(np, nproj)), &
                 gaussian(nang, MAXVAL(frame%ao_last - frame%ao_first + 1)), phi(nang, nao))
       IF (.NOT. ALLOCATED(workspace%gaussian)) ALLOCATE (workspace%gaussian(SIZE(frame%bases)))
-      bounds(:, 1) = HUGE(0.0_dp)
-      bounds(:, 2) = -HUGE(0.0_dp)
       row = 0
       zero = 0
       single_image(:, 1) = ao_image
@@ -3133,11 +3158,6 @@ CONTAINS
          IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
          row = row + 1
          local_points(:, :) = r(ir)*directions
-         DO ia = 1, nang
-            coordinates(:, ia, row) = position + local_points(:, ia)
-         END DO
-         bounds(:, 1) = MIN(bounds(:, 1), MINVAL(coordinates(:, :, row), DIM=2))
-         bounds(:, 2) = MAX(bounds(:, 2), MAXVAL(coordinates(:, :, row), DIM=2))
          IF (ASSOCIATED(own_fields)) THEN
             delta(:, :nproj) = own_fields%values(:, :, row)
          ELSE
@@ -3145,12 +3165,7 @@ CONTAINS
                                             [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
                                             [0.0_dp, 0.0_dp, 0.0_dp], delta(:, :nproj))
          END IF
-         IF (ALLOCATED(potentials%potential_fields)) THEN
-            potential(:, :) = potentials%potential_fields%values(:, :, row)
-         ELSE
-            CALL gaussian_coulomb_fields_evaluate_batch(fields, &
-                                                        coordinates(:, :, row) - SPREAD(auxiliary_center, 2, nang), potential)
-         END IF
+         potential(:, :) = REAL(weighted(:, 1, :, row), dp)
          weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
          DO aux = 1, fields%nfunction
             DO j = 1, nproj
