@@ -2445,6 +2445,7 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'compute_Sigma_c'
 
+      CHARACTER(LEN=32)                                  :: sigma_label, suffix
       INTEGER                                            :: handle, i_t, ispin
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: pan_first, pan_last
       INTEGER, DIMENSION(:), POINTER                     :: blk_aux, dist_row_aux
@@ -2525,6 +2526,20 @@ CONTAINS
          CALL dbcsr_release(matrix_W_aux)
 
       END DO ! i_t
+
+      ! Sparsity report of Σ^c_μν(±iτ) for the first time point
+      IF (bs_env%unit_nr > 0) WRITE (bs_env%unit_nr, '(A)') ' '
+      suffix = ' for time point 1'
+      DO ispin = 1, bs_env%n_spin
+         sigma_label = 'Σ^c'
+         IF (bs_env%n_spin == 2 .AND. ispin == 1) sigma_label = 'Σ^c_α'
+         IF (bs_env%n_spin == 2 .AND. ispin == 2) sigma_label = 'Σ^c_β'
+         CALL print_matrix_occupation(mat_Sigma_pos_tau(1, ispin)%matrix, &
+                                      TRIM(sigma_label)//'(iτ)', bs_env, suffix=TRIM(suffix))
+         CALL print_matrix_occupation(mat_Sigma_neg_tau(1, ispin)%matrix, &
+                                      TRIM(sigma_label)//'(-iτ)', bs_env, suffix=TRIM(suffix))
+      END DO
+      IF (bs_env%unit_nr > 0) WRITE (bs_env%unit_nr, '(A)') ' '
 
       ! -------------------------------------------------------------------------
       ! 3. FINALIZE AND CLEANUP
