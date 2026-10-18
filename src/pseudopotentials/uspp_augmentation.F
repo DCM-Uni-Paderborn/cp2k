@@ -282,13 +282,15 @@ CONTAINS
                   reduced(axis) = reduced(axis) - 1
                   term = factor*REAL(powers(axis), dp)
                   dharmonics(axis, lm) = dharmonics(axis, lm) + term*PRODUCT(displacement**reduced)
-                  DO axis2 = 1, 3
-                     IF (reduced(axis2) == 0) CYCLE
-                     reduced(axis2) = reduced(axis2) - 1
-                     ddharmonics(axis, axis2, lm) = ddharmonics(axis, axis2, lm) + &
-                                                    term*REAL(reduced(axis2) + 1, dp)*PRODUCT(displacement**reduced)
-                     reduced(axis2) = reduced(axis2) + 1
-                  END DO
+                  IF (PRESENT(hessian)) THEN
+                     DO axis2 = 1, 3
+                        IF (reduced(axis2) == 0) CYCLE
+                        reduced(axis2) = reduced(axis2) - 1
+                        ddharmonics(axis, axis2, lm) = ddharmonics(axis, axis2, lm) + &
+                                                       term*REAL(reduced(axis2) + 1, dp)*PRODUCT(displacement**reduced)
+                        reduced(axis2) = reduced(axis2) + 1
+                     END DO
+                  END IF
                END DO
             END DO
          END DO
@@ -318,7 +320,7 @@ CONTAINS
                END IF
                radial = c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*c5))))
                radial_d = (c1 + t*(2.0_dp*c2 + t*(3.0_dp*c3 + t*(4.0_dp*c4 + t*5.0_dp*c5))))/h
-               radial_dd = (2.0_dp*c2 + t*(6.0_dp*c3 + t*(12.0_dp*c4 + t*20.0_dp*c5)))/h**2
+               IF (PRESENT(hessian)) radial_dd = (2.0_dp*c2 + t*(6.0_dp*c3 + t*(12.0_dp*c4 + t*20.0_dp*c5)))/h**2
                angular = 0.0_dp
                angular_gradient = 0.0_dp
                angular_hessian = 0.0_dp
@@ -326,7 +328,7 @@ CONTAINS
                   factor = augmentation%gaunt(p, q, lm)
                   angular = angular + factor*harmonics(lm)
                   angular_gradient = angular_gradient + factor*dharmonics(:, lm)
-                  angular_hessian = angular_hessian + factor*ddharmonics(:, :, lm)
+                  IF (PRESENT(hessian)) angular_hessian = angular_hessian + factor*ddharmonics(:, :, lm)
                END DO
                value = radial*angular
                qr(p, q) = qr(p, q) + value
