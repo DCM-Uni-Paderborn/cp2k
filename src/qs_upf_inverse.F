@@ -623,6 +623,16 @@ CONTAINS
       IF (PRESENT(response)) THEN
          CPASSERT(PRESENT(atom_response))
          CPASSERT(PRESENT(cell_response) .AND. PRESENT(reduced_k_response))
+         ! A rigid common translation leaves the prepared hard-projector coefficients unchanged.
+         IF (frame%atom_local .AND. SIZE(atom_response, 2) > 0 .AND. &
+             ALL(cell_response == 0.0_dp) .AND. ALL(reduced_k_response == 0.0_dp)) THEN
+            IF (ALL(atom_response == SPREAD(atom_response(:, 1), 2, SIZE(atom_response, 2)))) THEN
+               CPASSERT(ALL(SHAPE(overlaps) == SHAPE(frame%coefficients)))
+               overlaps(:, :) = frame%coefficients
+               response = CMPLX(0.0_dp, 0.0_dp, dp)
+               RETURN
+            END IF
+         END IF
       END IF
       DO center = 1, SIZE(frame%center_atoms)
          ikind = frame%center_kinds(center)

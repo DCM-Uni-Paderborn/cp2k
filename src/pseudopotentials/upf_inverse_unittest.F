@@ -1018,13 +1018,16 @@ CONTAINS
    SUBROUTINE check_atomic_projectors()
       INTEGER, PARAMETER                                 :: nb = 3, np = 5, nr = 33
 
-      COMPLEX(dp) :: delta_kinetic(np, 2), delta_overlap(np, 2), exact_operator(2, 2), &
+      COMPLEX(dp) :: local_samples(2, 2, 2), metric_samples(2, 2, 2), &
+         delta_kinetic(np, 2), delta_overlap(np, 2), exact_operator(2, 2), &
          identity(nb, nb), kinetic_overlap(np, 2), kinetic_response(np, 2), &
          kinetic_samples(np, 2, 2), laplacian(np, 2), mixed(2, 2), overlap(np, 2), &
          response(np, 2), rotation(nb, nb), samples(np, 2, 2), shifted_overlap(np, 2)
       COMPLEX(dp), ALLOCATABLE                           :: kinetic_residual(:, :), &
                                                             local_kinetic(:, :), &
+                                                            local_kinetic_response(:, :), &
                                                             local_metric(:, :), &
+                                                            local_metric_response(:, :), &
                                                             metric_residual(:, :)
       INTEGER                                            :: axis, i, images(3, 3), info, ir, j, side
       REAL(dp) :: ao_center(3), cell(3, 3), center(3), dao(3), dc(3, 3), dcenter(3), delta, &
@@ -1034,7 +1037,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: radial_kinetic(:, :), weights(:)
       TYPE(atom_upfpot_type)                             :: pot
       TYPE(gto_basis_set_type), POINTER                  :: basis
-      TYPE(qs_upf_inverse_type)                          :: frame
+      TYPE(qs_upf_inverse_type)                          :: frame, shifted_frame
       TYPE(upf_inverse_atomic_type)                      :: atomic
       TYPE(upf_inverse_kinetic_type)                     :: kinetic
       TYPE(upf_projector_type)                           :: original
@@ -1211,6 +1214,71 @@ CONTAINS
                        MATMUL(CONJG(TRANSPOSE(frame%coefficients)), &
                               MATMUL(atomic%difference_overlap + frame%q, frame%coefficients))
       CALL check(MAXVAL(ABS(local_metric - exact_operator)), 'Native atomic metric correction retains the supplied original q')
+      CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
+                                            local_kinetic_response, local_metric_response, &
+                                            RESHAPE(dcenter, [3, 1]), 0.0_dp*cell, 0.0_dp*reduced_k)
+      CALL check(MAXVAL(ABS(local_kinetic_response)) + MAXVAL(ABS(local_metric_response)), &
+                 'Rigid translation leaves atom-local kinetic and metric corrections unchanged', 0.0_dp)
+      CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
+                                            local_kinetic_response, local_metric_response, &
+                                            RESHAPE(dcenter, [3, 1]), dc, dk)
+      DO side = 1, 2
+         delta = REAL(2*side - 3, dp)*step
+         shifted_frame = frame
+         shifted_frame%positions(:, 1) = center + delta*dcenter
+         shifted_frame%cell = cell + delta*dc
+         shifted_frame%reduced_k = reduced_k + delta*dk
+         CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, shifted_frame%positions(:, 1), &
+                                            shifted_frame%positions(:, 1), shifted_frame%cell, images, &
+                                            shifted_frame%reduced_k, shifted_frame%coefficients)
+         CALL qs_upf_inverse_atomic_operators(shifted_frame, shifted_frame%q, local_kinetic, local_metric)
+         local_samples(:, :, side) = local_kinetic
+         metric_samples(:, :, side) = local_metric
+      END DO
+      CALL check(MAXVAL(ABS((local_samples(:, :, 2) - local_samples(:, :, 1))/(2.0_dp*step) - &
+                            local_kinetic_response)), 'Nonzero lattice and Bloch kinetic response after rigid motion', 3.e-9_dp)
+      CALL check(MAXVAL(ABS((metric_samples(:, :, 2) - metric_samples(:, :, 1))/(2.0_dp*step) - &
+                            local_metric_response)), 'Nonzero lattice and Bloch metric response after rigid motion', 3.e-9_dp)
+      ! A second Gaussian center without a projector tests relative motion independently of lattice motion.
+      DEALLOCATE (frame%bases, frame%positions, frame%ao_first, frame%ao_last, frame%coefficients)
+      ALLOCATE (frame%bases(2), frame%positions(3, 2), frame%ao_first(2), frame%ao_last(2), frame%coefficients(np, 4))
+      frame%bases(1)%gto_basis_set => basis
+      frame%bases(2)%gto_basis_set => basis
+      frame%positions(:, 1) = center
+      frame%positions(:, 2) = ao_center
+      frame%ao_first = [1, 3]
+      frame%ao_last = [2, 4]
+      CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, center, cell, images, reduced_k, &
+                                         frame%coefficients(:, 1:2))
+      CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, ao_center, cell, images, reduced_k, &
+                                         frame%coefficients(:, 3:4))
+      CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
+                                            local_kinetic_response, local_metric_response, &
+                                            SPREAD(dcenter, 2, 2), 0.0_dp*cell, 0.0_dp*reduced_k)
+      CALL check(MAXVAL(ABS(local_kinetic_response)) + MAXVAL(ABS(local_metric_response)), &
+                 'Common translation with a separate Gaussian center', 0.0_dp)
+      CALL qs_upf_inverse_atomic_operators(frame, frame%q, local_kinetic, local_metric, &
+                                            local_kinetic_response, local_metric_response, &
+                                            RESHAPE([dcenter, dao], [3, 2]), 0.0_dp*cell, 0.0_dp*reduced_k)
+      DO side = 1, 2
+         delta = REAL(2*side - 3, dp)*step
+         shifted_frame = frame
+         shifted_frame%positions(:, 1) = center + delta*dcenter
+         shifted_frame%positions(:, 2) = ao_center + delta*dao
+         CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, shifted_frame%positions(:, 1), &
+                                            shifted_frame%positions(:, 1), cell, images, reduced_k, &
+                                            shifted_frame%coefficients(:, 1:2))
+         CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, shifted_frame%positions(:, 1), &
+                                            shifted_frame%positions(:, 2), cell, images, reduced_k, &
+                                            shifted_frame%coefficients(:, 3:4))
+         CALL qs_upf_inverse_atomic_operators(shifted_frame, shifted_frame%q, local_kinetic, local_metric)
+         local_samples(:, :, side) = local_kinetic(3:4, 3:4)
+         metric_samples(:, :, side) = local_metric(3:4, 3:4)
+      END DO
+      CALL check(MAXVAL(ABS((local_samples(:, :, 2) - local_samples(:, :, 1))/(2.0_dp*step) - &
+                            local_kinetic_response(3:4, 3:4))), 'Relative Gaussian-center kinetic response', 3.e-9_dp)
+      CALL check(MAXVAL(ABS((metric_samples(:, :, 2) - metric_samples(:, :, 1))/(2.0_dp*step) - &
+                            local_metric_response(3:4, 3:4))), 'Relative Gaussian-center metric response', 3.e-9_dp)
       CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, ao_center, cell, images, -reduced_k, samples(:, :, 1))
       CALL check(MAXVAL(ABS(samples(:, :, 1) - CONJG(overlap))), 'Atomic hard projector time reversal')
       CALL deallocate_gto_basis_set(basis)
