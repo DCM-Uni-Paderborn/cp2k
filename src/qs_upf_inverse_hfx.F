@@ -3078,7 +3078,7 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: moment(:, :, :)
       LOGICAL, INTENT(OUT)                               :: valid
 
-      COMPLEX(dp), ALLOCATABLE                           :: delta(:, :), gaussian(:, :), phi(:, :), &
+      COMPLEX(dp), ALLOCATABLE                           :: batch_delta(:, :), delta(:, :), gaussian(:, :), phi(:, :), &
                                                             weighted(:, :, :, :)
       INTEGER                                            :: atom, aux, first, hi, ia, image, ir, j, &
                                                             kind, last, lo, nang, nao, np, nproj, &
@@ -3087,8 +3087,9 @@ CONTAINS
       INTEGER(int_8)                                     :: gaussian_words, words
       LOGICAL                                            :: cached_gaussian
       REAL(dp)                                           :: bounds(3, 2), position(3), radius
-      REAL(dp), ALLOCATABLE                              :: coordinates(:, :, :), &
-                                                            local_points(:, :), potential(:, :), &
+      REAL(dp), ALLOCATABLE, TARGET                      :: coordinates(:, :, :)
+      REAL(dp), POINTER                                 :: batch_points(:, :)
+      REAL(dp), ALLOCATABLE                              :: local_points(:, :), potential(:, :), &
                                                             weights(:)
       TYPE(linear_moment_type), POINTER                  :: entry, retained
       TYPE(linear_moment_type), TARGET                   :: temporary
@@ -3103,6 +3104,7 @@ CONTAINS
       nao = ao_range(2) - ao_range(1) + 1
       words = INT(nang, int_8)*INT(nrow, int_8)*(2_int_8*INT(nproj, int_8)*INT(fields%nfunction, int_8) + 3_int_8)
       words = words + 2_int_8*INT(nproj, int_8)*INT(np, int_8)*INT(fields%nfunction, int_8)
+      words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)*INT(np, int_8)
       IF (words > INT(max_cached_lattice_field_words, int_8)) RETURN
       moment = CMPLX(0.0_dp, 0.0_dp, dp)
       valid = .TRUE.
@@ -3194,6 +3196,7 @@ CONTAINS
             CALL field_product(weighted(:, :, aux, row), phi, moment(:, :, aux), .TRUE., .TRUE., .FALSE.)
          END DO
       END DO
+      batch_points(1:3, 1:nang*nrow) => coordinates
       DO image = 1, SIZE(coefficient_images, 2)
          single_image(:, 1) = ao_image - coefficient_images(:, image)
          IF (.NOT. qs_upf_inverse_lattice_intersects(frame, bounds, single_image(:, 1))) CYCLE
@@ -3205,8 +3208,12 @@ CONTAINS
          IF (ASSOCIATED(retained)) ENTRY => retained
          IF (.NOT. ALLOCATED(entry%values)) THEN
             ALLOCATE (entry%values(nproj, np, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+            ! The original fields are independent at each quadrature point. Evaluate one
+            ! complete image batch, retaining the radial-row order of every contraction.
+            IF (.NOT. ALLOCATED(batch_delta)) ALLOCATE (batch_delta(nang*nrow, np))
+            CALL qs_upf_inverse_lattice_delta_fields(frame, batch_points, single_image(:, 1), batch_delta)
             DO row = 1, nrow
-               CALL qs_upf_inverse_lattice_delta_fields(frame, coordinates(:, :, row), single_image(:, 1), delta(:, :np))
+               delta(:, :np) = batch_delta((row - 1)*nang + 1:row*nang, :)
                DO aux = 1, fields%nfunction
                   CALL field_product(weighted(:, :, aux, row), delta(:, :np), entry%values(:, :, aux), &
                                      .TRUE., .TRUE., .FALSE.)
