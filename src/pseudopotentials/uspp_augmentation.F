@@ -379,11 +379,16 @@ CONTAINS
       CPASSERT(ALL(SHAPE(density) == n))
       CPASSERT(ALL(SHAPE(displacements) == [3, SIZE(rho)]))
       CPASSERT(ALL(SHAPE(gradient) == SHAPE(displacements)))
+      IF (SIZE(rho) > 0) THEN
+         CPASSERT(ALLOCATED(augmentation%radial_x))
+      END IF
       ALLOCATE (qr(n, n), dqr(n, n, 3))
       ALLOCATE (harmonics((augmentation%lmax + 1)**2), &
                 dharmonics(3, (augmentation%lmax + 1)**2), &
                 ddharmonics(3, 3, (augmentation%lmax + 1)**2))
       DO point = 1, SIZE(rho)
+         ! The point kernel is exactly zero outside the original radial support.
+         IF (SUM(displacements(:, point)**2) > augmentation%realspace_radius**2) CYCLE
          CALL realspace_with_workspace(augmentation, displacements(:, point), qr, dqr, &
                                        harmonics=harmonics, dharmonics=dharmonics, ddharmonics=ddharmonics)
          rho(point) = rho(point) + SUM(density*qr)
@@ -444,6 +449,8 @@ CONTAINS
       DO point = 1, SIZE(weights)
          IF (weights(point) == 0.0_dp) CYCLE
          IF (v_rho(point) == 0.0_dp .AND. ALL(v_gradient(:, point) == 0.0_dp)) CYCLE
+         CPASSERT(ALLOCATED(augmentation%radial_x))
+         IF (SUM(displacements(:, point)**2) > augmentation%realspace_radius**2) CYCLE
          IF (ALLOCATED(ddqr)) THEN
             CALL realspace_with_workspace(augmentation, displacements(:, point), qr, dqr, ddqr, &
                                           harmonics, dharmonics, ddharmonics)
