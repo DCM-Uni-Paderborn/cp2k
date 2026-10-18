@@ -60,7 +60,8 @@ MODULE qs_ot_minimizer
               ot_mermin_secant_curvature, &
               ot_mini, &
               ot_mini_prepare_gradient, &
-              ot_two_point_search_step
+              ot_two_point_search_step, &
+              ot_three_point_interpolate
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot_minimizer'
 
@@ -1195,9 +1196,8 @@ CONTAINS
 
       INTEGER                                            :: best_index, count, handle, i
       LOGICAL                                            :: derivative_accepted, trial_gradient_available
-      REAL(KIND=dp)                                      :: best_energy, denom, ds, energy_resolution, &
-                                                            fa, fb, fc, nom, &
-                                                            pos, tol, val, xa, xb, xc
+      REAL(KIND=dp)                                      :: best_energy, ds, energy_resolution, &
+                                                            pos, tol, val
 
       CALL timeset(routineN, handle)
 
@@ -1250,22 +1250,7 @@ CONTAINS
             qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%ds_min*1.4_dp
          END IF
       CASE (3)
-         xa = qs_ot_env(1)%OT_pos(1)
-         xb = qs_ot_env(1)%OT_pos(2)
-         xc = qs_ot_env(1)%OT_pos(3)
-         fa = qs_ot_env(1)%OT_energy(1)
-         fb = qs_ot_env(1)%OT_energy(2)
-         fc = qs_ot_env(1)%OT_energy(3)
-         nom = (xb - xa)**2*(fb - fc) - (xb - xc)**2*(fb - fa)
-         denom = (xb - xa)*(fb - fc) - (xb - xc)*(fb - fa)
-         IF (ABS(denom) <= 1.0E-18_dp*MAX(ABS(fb - fc), ABS(fb - fa))) THEN
-            pos = xb
-         ELSE
-            pos = xb - 0.5_dp*nom/denom ! position of the stationary point
-         END IF
-         val = (pos - xa)*(pos - xb)*fc/((xc - xa)*(xc - xb)) + &
-               (pos - xb)*(pos - xc)*fa/((xa - xb)*(xa - xc)) + &
-               (pos - xc)*(pos - xa)*fb/((xb - xc)*(xb - xa))
+         CALL ot_three_point_interpolate(qs_ot_env(1)%ot_pos(1:3), qs_ot_env(1)%ot_energy(1:3), pos, val)
          best_index = 1
          DO i = 2, count
             IF (qs_ot_env(1)%OT_energy(i) < qs_ot_env(1)%OT_energy(best_index)) best_index = i
@@ -1273,9 +1258,10 @@ CONTAINS
          best_energy = qs_ot_env(1)%OT_energy(best_index)
          tol = 10.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(best_energy))
          IF (use_three_point_mermin_search(qs_ot_env) .AND. best_index /= 1 .AND. &
-             val >= best_energy - tol) THEN
+             val >= best_energy - qs_ot_env(1)%ot_energy(1) - tol) THEN
             qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(best_index)
-         ELSE IF (val < fa .AND. val <= fb .AND. val <= fc) THEN ! OK, we go to a minimum
+         ELSE IF (val < 0.0_dp .AND. val <= qs_ot_env(1)%ot_energy(2) - qs_ot_env(1)%ot_energy(1) .AND. &
+                  val <= qs_ot_env(1)%ot_energy(3) - qs_ot_env(1)%ot_energy(1)) THEN ! Go to the fitted minimum.
             ! we take a guard against too large steps
             qs_ot_env(1)%OT_pos(count + 1) = MAX(MAXVAL(qs_ot_env(1)%OT_pos(1:3))*0.01_dp, &
                                                  MIN(pos, MAXVAL(qs_ot_env(1)%OT_pos(1:3))*4.0_dp))
@@ -1295,6 +1281,35 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE do_line_search_3pnt
+
+! **************************************************************************************************
+!> \brief Interpolate a quadratic using energy differences from its first sample.
+!> \param positions Three distinct line-search positions.
+!> \param energies Energies at the same positions.
+!> \param position Fitted stationary point, or the middle point for unresolved curvature.
+!> \param energy_change Interpolated energy relative to the first sample.
+! **************************************************************************************************
+   PURE SUBROUTINE ot_three_point_interpolate(positions, energies, position, energy_change)
+      REAL(KIND=dp), INTENT(IN)                          :: positions(3), energies(3)
+      REAL(KIND=dp), INTENT(OUT)                         :: position, energy_change
+
+      REAL(KIND=dp)                                      :: denom, fb, fc, nom, xa, xb, xc
+
+      xa = positions(1)
+      xb = positions(2)
+      xc = positions(3)
+      fb = energies(2) - energies(1)
+      fc = energies(3) - energies(1)
+      nom = (xb - xa)**2*(fb - fc) - (xb - xc)**2*fb
+      denom = (xb - xa)*(fb - fc) - (xb - xc)*fb
+      IF (ABS(denom) <= 1.0E-18_dp*MAX(ABS(fb - fc), ABS(fb))) THEN
+         position = xb
+      ELSE
+         position = xb - 0.5_dp*nom/denom
+      END IF
+      energy_change = (position - xa)*((position - xb)*fc/((xc - xa)*(xc - xb)) + &
+                                       (position - xc)*fb/((xb - xa)*(xb - xc)))
+   END SUBROUTINE ot_three_point_interpolate
 
 ! **************************************************************************************************
 !> \brief Bracket a line minimum with derivatives when energy differences are unresolved.

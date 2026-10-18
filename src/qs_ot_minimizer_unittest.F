@@ -17,13 +17,15 @@ PROGRAM qs_ot_minimizer_unittest
         ot_mermin_response_assess, ot_mermin_response_candidate_preferred, &
         ot_mermin_response_compare, ot_mermin_response_preparation_needed, &
         ot_mermin_response_probe, ot_mermin_response_shadow_followup, ot_mermin_secant_curvature, &
-        ot_two_point_search_step
+        ot_two_point_search_step, ot_three_point_interpolate
    USE qs_scf_loop_utils,               ONLY: qs_scf_kp_ref_refresh_ready,&
                                               qs_scf_kp_search_endpoint
 
    IMPLICIT NONE
 
    INTEGER :: trial
+   REAL(dp), PARAMETER :: quadratic_scale = 2.0_dp**(-30)
+   REAL(dp) :: interpolated_change
    REAL(dp) :: line_positions(20), line_derivatives(20), line_energies(20), next_position
    LOGICAL :: line_accepted
    LOGICAL                                            :: curvature_valid, response_good, valid_response
@@ -51,6 +53,18 @@ PROGRAM qs_ot_minimizer_unittest
        32.0_dp*EPSILON(1.0_dp)) THEN
       ERROR STOP "Nonpositive derivative curvature changed the energy fallback"
    END IF
+
+   ! The parabola q(x)=a*(x*x-4*x)/3 has its minimum at x=2 and q(2)=-4*a/3.
+   ! Exactly representable offsets must leave this small energy change unchanged.
+   DO trial = -1, 1
+      CALL ot_three_point_interpolate([0.0_dp, 1.0_dp, 3.0_dp], &
+                                       16.0_dp*REAL(trial, dp) + quadratic_scale*[0.0_dp, -1.0_dp, -1.0_dp], &
+                                       next_position, interpolated_change)
+      IF (ABS(next_position - 2.0_dp) > 32.0_dp*EPSILON(1.0_dp)) &
+         ERROR STOP "Three-point search changed the quadratic minimum under an energy offset"
+      IF (ABS(interpolated_change + 4.0_dp*quadratic_scale/3.0_dp) > 32.0_dp*EPSILON(1.0_dp)*quadratic_scale) &
+         ERROR STOP "Three-point interpolation lost the relative energy under an energy offset"
+   END DO
 
    ! The complete nonlinear energy rounds to one, while its derivative remains resolved.
    line_positions(1) = 0._dp
