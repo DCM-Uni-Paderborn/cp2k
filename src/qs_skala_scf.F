@@ -639,64 +639,109 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: derivative(:)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_derivative(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), operators(:, :, :)
-      INTEGER                                            :: first, first_spin, ik, last, last_spin, &
-                                                            local, ns, sample_spin, selected_spin
-      LOGICAL                                            :: owner
-      REAL(dp)                                           :: scale, spin_scale, value
+      REAL(dp)                                           :: values(1)
+      REAL(dp), ALLOCATABLE                              :: jacobian(:, :), physical(:, :)
 
-      CALL qs_skala_scf_value(state, domain, point, spin, descriptor, value)
       CPASSERT(SIZE(derivative) == qs_skala_scf_size(state))
-      derivative = 0.0_dp
+      ALLOCATE (jacobian(1, SIZE(derivative)))
       IF (PRESENT(physical_derivative)) THEN
          CPASSERT(SIZE(physical_derivative) == SIZE(derivative))
-         physical_derivative = 0.0_dp
+         ALLOCATE (physical(1, SIZE(derivative)))
+         CALL sampled_point_derivatives(state, [domain], RESHAPE(point, [3, 1]), [spin], [descriptor], &
+                                        values, jacobian, physical)
+         physical_derivative(:) = physical(1, :)
+      ELSE
+         CALL sampled_point_derivatives(state, [domain], RESHAPE(point, [3, 1]), [spin], [descriptor], &
+                                        values, jacobian)
       END IF
+      derivative(:) = jacobian(1, :)
+   END SUBROUTINE qs_skala_scf_point_derivative
+
+! **************************************************************************************************
+!> \brief Differentiate sampled physical inputs with one collective per output matrix.
+!>        Each orbital coordinate has one owning k-point/spin block. Read each domain once for
+!>        the values and once per spin needed by positive-part sums. Preserve the scalar
+!>        sample ownership checks, physical interpolation adjoints and original charge metric.
+!> \param state Evaluated native orbital and physical field state.
+!> \param domains Physical evaluation domains.
+!> \param points Global physical sample keys.
+!> \param spins Physical spin selectors, including total and positive-part density sums.
+!> \param descriptors Density or kinetic density per sample.
+!> \param values Actual sampled inputs, including fixed cores.
+!> \param jacobian Derivatives in the supplied Cayley coordinates, one sample per row.
+!> \param physical_jacobian Optional covectors in the orthonormal physical orbital tangent.
+! **************************************************************************************************
+   SUBROUTINE sampled_point_derivatives(state, domains, points, spins, descriptors, values, jacobian, physical_jacobian)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      INTEGER, INTENT(IN)                                :: domains(:), points(:, :), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), INTENT(OUT)                              :: values(:), jacobian(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_jacobian(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), operators(:, :, :)
+      INTEGER                                            :: c, first, i, ik, last, local, m, n, ns, &
+                                                            spin
+      INTEGER, ALLOCATABLE                               :: positive(:), sample_spins(:)
+      LOGICAL                                            :: owner
+      REAL(dp), ALLOCATABLE                              :: density(:), scales(:, :)
+
+      m = SIZE(values)
+      n = qs_skala_scf_size(state)
+      CPASSERT(ALL(SHAPE(jacobian) == [m, n]))
+      IF (PRESENT(physical_jacobian)) THEN
+         CPASSERT(ALL(SHAPE(physical_jacobian) == [m, n]))
+         physical_jacobian = 0.0_dp
+      END IF
+      CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values)
+      jacobian = 0.0_dp
+      IF (m == 0) RETURN
       ns = SIZE(state%orbitals, 2)
-      first_spin = spin
-      last_spin = spin
-      scale = 1.0_dp
-      IF (ns == 1) THEN
-         first_spin = 1
-         last_spin = 1
-         scale = 0.5_dp
+      ALLOCATE (scales(ns, m), SOURCE=0.0_dp)
+      DO c = 1, m
+         IF (spins(c) == -1 .OR. spins(c) == qs_skala_positive_density_sum) THEN
+            scales(:, c) = 1.0_dp
+         ELSE IF (ns == 1) THEN
+            scales(1, c) = 0.5_dp
+         ELSE
+            scales(spins(c), c) = 1.0_dp
+         END IF
+      END DO
+      positive = PACK([(i, i=1, m)], spins == qs_skala_positive_density_sum)
+      IF (SIZE(positive) > 0) THEN
+         ALLOCATE (density(SIZE(positive)), sample_spins(SIZE(positive)))
+         DO spin = 1, ns
+            sample_spins(:) = MERGE(0, spin, ns == 1)
+            CALL qs_skala_scf_values(state, domains(positive), points(:, positive), sample_spins, &
+                                     descriptors(positive), density)
+            WHERE (density <= 0.0_dp) scales(spin, positive) = 0.0_dp
+         END DO
       END IF
-      IF (spin == -1 .OR. spin == qs_skala_positive_density_sum) THEN
-         first_spin = 1
-         last_spin = ns
-         scale = 1.0_dp
-      END IF
-      CALL point_operators(state, domain, point, descriptor, operators)
       owner = state%para_env%mepos == 0
       IF (state%bloch) owner = state%kpoints%para_env_kp%mepos == 0
-      ALLOCATE (matrix(SIZE(operators, 1), SIZE(operators, 2)))
-      DO selected_spin = first_spin, last_spin
-         spin_scale = scale
-         IF (spin == qs_skala_positive_density_sum) THEN
-            sample_spin = selected_spin
-            IF (ns == 1) sample_spin = 0
-            CALL qs_skala_scf_value(state, domain, point, sample_spin, skala_density_descriptor, value)
-            IF (value <= 0.0_dp) spin_scale = 0.0_dp
-         END IF
-         DO local = 1, SIZE(state%orbitals, 1)
-            IF (.NOT. ASSOCIATED(state%orbitals(local, selected_spin)%native)) CYCLE
-            ik = 1
-            IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
-            first = state%offsets(ik, selected_spin) + 1
-            last = first + state%dimensions(ik, selected_spin) - 1
-            IF (.NOT. owner) CYCLE
-            matrix(:, :) = spin_scale*state%orbitals(local, selected_spin)%weight*operators(:, :, ik)
-            CALL skala_orbital_chart_derivative(state%orbitals(local, selected_spin)%chart, &
-                                                matrix, derivative(first:last))
-            IF (PRESENT(physical_derivative)) THEN
-               CALL skala_orbital_chart_derivative(state%orbitals(local, selected_spin)%chart, &
-                                                   matrix, physical_derivative(first:last), physical_tangent=.TRUE.)
-            END IF
+      DO c = 1, m
+         CALL point_operators(state, domains(c), points(:, c), descriptors(c), operators)
+         IF (.NOT. ALLOCATED(matrix)) ALLOCATE (matrix(SIZE(operators, 1), SIZE(operators, 2)))
+         DO spin = 1, ns
+            IF (scales(spin, c) == 0.0_dp) CYCLE
+            DO local = 1, SIZE(state%orbitals, 1)
+               IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
+               ik = 1
+               IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+               first = state%offsets(ik, spin) + 1
+               last = first + state%dimensions(ik, spin) - 1
+               IF (.NOT. owner) CYCLE
+               matrix(:, :) = scales(spin, c)*state%orbitals(local, spin)%weight*operators(:, :, ik)
+               CALL skala_orbital_chart_derivative(state%orbitals(local, spin)%chart, matrix, jacobian(c, first:last))
+               IF (PRESENT(physical_jacobian)) THEN
+                  CALL skala_orbital_chart_derivative(state%orbitals(local, spin)%chart, matrix, &
+                                                      physical_jacobian(c, first:last), physical_tangent=.TRUE.)
+               END IF
+            END DO
          END DO
       END DO
-      CALL state%para_env%sum(derivative)
-      IF (PRESENT(physical_derivative)) CALL state%para_env%sum(physical_derivative)
-   END SUBROUTINE qs_skala_scf_point_derivative
+      CALL state%para_env%sum(jacobian)
+      IF (PRESENT(physical_jacobian)) CALL state%para_env%sum(physical_jacobian)
+   END SUBROUTINE sampled_point_derivatives
 
 ! **************************************************************************************************
 !> \brief Reuse fixed-geometry descriptor matrices, retaining fresh orbital and spin derivatives.
@@ -1619,9 +1664,8 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_jacobian(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
 
-      INTEGER                                            :: i, m, n
+      INTEGER                                            :: m, n
       LOGICAL                                            :: valid
-      REAL(dp), ALLOCATABLE                              :: derivative(:), physical_derivative(:)
 
       m = SIZE(values)
       n = qs_skala_scf_size(state)
@@ -1637,22 +1681,10 @@ CONTAINS
       IF (PRESENT(physical_jacobian)) THEN
          valid = ALL(SHAPE(physical_jacobian) == [m, n])
          CPASSERT(valid)
-         ALLOCATE (physical_derivative(n))
       END IF
-      ALLOCATE (derivative(n))
       CALL sample_native_constraints(state, coordinate)
-      DO i = 1, m
-         CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), values(i))
-         IF (PRESENT(targets)) values(i) = values(i) - targets(i)
-         IF (PRESENT(physical_jacobian)) THEN
-            CALL qs_skala_scf_point_derivative(state, domains(i), points(:, i), spins(i), descriptors(i), &
-                                               derivative, physical_derivative)
-            physical_jacobian(i, :) = physical_derivative
-         ELSE
-            CALL qs_skala_scf_point_derivative(state, domains(i), points(:, i), spins(i), descriptors(i), derivative)
-         END IF
-         jacobian(i, :) = derivative
-      END DO
+      CALL sampled_point_derivatives(state, domains, points, spins, descriptors, values, jacobian, physical_jacobian)
+      IF (PRESENT(targets)) values(:) = values - targets
    END SUBROUTINE qs_skala_scf_constraints
 
 ! **************************************************************************************************
