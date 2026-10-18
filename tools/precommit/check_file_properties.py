@@ -204,6 +204,10 @@ def check_file(path: pathlib.Path) -> List[str]:
 
     fn_ext = path.suffix
     abspath = path.resolve()
+    try:
+        path = abspath.relative_to(CP2K_DIR)
+    except ValueError:
+        pass
     basefn = path.name
     is_executable = os.access(abspath, os.X_OK)
 
