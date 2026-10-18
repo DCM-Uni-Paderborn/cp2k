@@ -46,8 +46,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Prepare each actual Bloch vector on the same physical-cell PW grid.
-!>        All world ranks participate in the same point-integral sequence. A full unreduced
-!>        mesh is required until the inverse density's space-group rotations are connected.
+!>        All world ranks participate in the same point-integral sequence. Time-reversed
+!>        pairs share a real density contribution. Spatial symmetry rotations are not implemented.
 !> \param ks_env Live native KS environment with initialized k-point groups and bases.
 !> \param grid Native physical-cell grid.
 !> \param images Fixed physical-cell images of the Gaussian and original radial fields.
@@ -71,9 +71,11 @@ CONTAINS
       CALL get_ks_env(ks_env, kpoints=kpoints)
       CPASSERT(ASSOCIATED(kpoints))
       CPASSERT(kpoints%nkp > 0)
-      IF (kpoints%symmetry .OR. .NOT. kpoints%full_grid) THEN
-         CPABORT("Inverse Bloch bridge requires a full unreduced mesh")
-      END IF
+      DO ik = 1, kpoints%nkp
+         IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry) THEN
+            CPABORT("Spatial k-point symmetry is not implemented")
+         END IF
+      END DO
       CPASSERT(ASSOCIATED(kpoints%kp_env))
       CPASSERT(ASSOCIATED(kpoints%para_env_kp))
       CPASSERT(ALL(kpoints%wkp >= 0.0_dp))

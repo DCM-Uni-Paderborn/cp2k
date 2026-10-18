@@ -93,6 +93,7 @@ registry["FIST_atom_1_force_x"] = GenericMatcher(
     r"^\s*FORCES\|\s+1\s+([-+0-9.EeDd]+)", col=1, regex=True, first=True
 )
 registry["N_special_kpoints"] = GenericMatcher(r"Number of Special K-points:", col=5)
+registry["Kpoint_count"] = GenericMatcher(r"BRILLOUIN| List of Kpoints", col=7)
 registry["QS_number_of_molecular_orbitals"] = GenericMatcher(
     r"Number of molecular orbitals:", col=5
 )

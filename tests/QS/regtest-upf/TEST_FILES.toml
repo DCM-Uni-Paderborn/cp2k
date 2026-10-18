@@ -28,6 +28,13 @@
   {matcher="Atomic_force_1_z", tol=1e-7, ref=0.942684424},
   {matcher="M031", tol=1e-7, ref=1737256.15412},
 ]
+# Native time-reversal reduction retains the density, metric and geometry derivatives.
+"H2_inverse_GPW_time_reversal.inp" = [
+  {matcher="Kpoint_count", tol=0, ref=2},
+  {matcher="M011", tol=1e-10, ref=-1.192319075964030},
+  {matcher="Atomic_force_1_z", tol=1e-7, ref=0.9397444171},
+  {matcher="M031", tol=1e-7, ref=1741437.60762},
+]
 # Matched USPP representations with energy, atomic force and analytical stress.
 "H2_USPP_DIRECT.inp" = [
   {matcher="M011", tol=1e-10, ref=-0.822903558912302},

@@ -63,7 +63,8 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: soft_basis
 
       CHARACTER(LEN=1)                                   :: symmetry
-      INTEGER                                            :: a, b, ENTRY, image, info, native_cell(3)
+      INTEGER                                            :: a, b, ENTRY, ik, image, info, &
+                                                            native_cell(3)
       INTEGER, POINTER                                   :: sizes(:)
       REAL(dp)                                           :: image_error, inverse_lattice(3, 3), &
                                                             rab(3), tolerance
@@ -92,9 +93,13 @@ CONTAINS
       END DO
       IF (map%bloch) THEN
          CPASSERT(ASSOCIATED(kpoints))
-         IF (kpoints%symmetry .OR. .NOT. kpoints%full_grid) THEN
-            CPABORT("Inverse Gaussian background requires an unreduced mesh")
-         END IF
+         DO ik = 1, kpoints%nkp
+            IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry) THEN
+               CPABORT("Spatial k-point symmetry is not implemented")
+            END IF
+         END DO
+         ! Time-reversed partners have identical real density and geometry contractions.
+         ! Their combined native weight needs no additional spatial transformation.
          CALL kp_transform_plan_create(map%plan, sab, kpoints%cell_to_index, SIZE(overlap, 2), &
                                        block_template=overlap(1, 1)%matrix)
          CPASSERT(map%plan%symmetric)
