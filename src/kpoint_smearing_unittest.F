@@ -74,10 +74,41 @@ PROGRAM kpoint_smearing_unittest
    END IF
 
    CALL test_empty_spin()
+   CALL test_particle_count_precision()
    CALL test_fixed_n_smearing_response()
    CALL remove_all_references()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Both Fermi-level solvers must resolve the prescribed particle count near roundoff.
+! **************************************************************************************************
+   SUBROUTINE test_particle_count_precision()
+      REAL(KIND=dp), PARAMETER :: particle_targets(2) = [2.3_dp, 6.0_dp], sigma = 0.1_dp
+
+      INTEGER                                            :: itarget
+      REAL(KIND=dp)                                      :: eigenvalue(3, 2, 2), kTS, mu, nel, &
+                                                            occupation(3, 2, 2), tolerance, &
+                                                            weight(2)
+
+      weight = [0.37_dp, 0.63_dp]
+      eigenvalue(:, 1, 1) = [-0.3_dp, 0.1_dp, 0.5_dp]
+      eigenvalue(:, 2, 1) = [-0.2_dp, 0.2_dp, 0.6_dp]
+      eigenvalue(:, :, 2) = eigenvalue(:, :, 1) + 0.071_dp
+      DO itarget = 1, SIZE(particle_targets)
+         nel = particle_targets(itarget)
+         tolerance = 64.0_dp*EPSILON(1.0_dp)*nel
+         CALL Smearkp(occupation(:, :, 1), mu, kTS, eigenvalue(:, :, 1), nel, weight, sigma, &
+                      2.0_dp, smear_fermi_dirac)
+         IF (ABS(SUM(weight*SUM(occupation(:, :, 1), DIM=1)) - nel) > tolerance) THEN
+            ERROR STOP "Single-channel Fermi solver left a resolvable particle-count error"
+         END IF
+         CALL Smearkp2(occupation, mu, kTS, eigenvalue, nel, weight, sigma, smear_fermi_dirac)
+         IF (ABS(SUM(SPREAD(weight, 2, 2)*SUM(occupation, DIM=1)) - nel) > tolerance) THEN
+            ERROR STOP "Shared-spin Fermi solver left a resolvable particle-count error"
+         END IF
+      END DO
+   END SUBROUTINE test_particle_count_precision
 
 ! **************************************************************************************************
 !> \brief An empty spin channel must remain empty at every k point.

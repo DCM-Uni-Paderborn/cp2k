@@ -505,7 +505,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: sigma, maxocc
       INTEGER, INTENT(IN)                                :: method
 
-      REAL(KIND=dp), PARAMETER                           :: epsocc = 1.0e-12_dp
+      REAL(KIND=dp), PARAMETER :: epsocc = 1.0e-12_dp, epsroot = 8.0_dp*EPSILON(1.0_dp)
 
       INTEGER                                            :: bisect_method, iback, ik, is, iter, nkp, &
                                                             nmo
@@ -530,7 +530,7 @@ CONTAINS
       ! Initial bracket
       SELECT CASE (bisect_method)
       CASE (smear_fermi_dirac)
-         de = sigma*LOG((1.0_dp - epsocc)/epsocc)
+         de = sigma*LOG((1.0_dp - epsroot)/epsroot)
       CASE DEFAULT
          de = 10.0_dp*sigma
       END SELECT
@@ -546,13 +546,21 @@ CONTAINS
       ! Bisection with bisect_method
       mu_min = MINVAL(e) - de
       mu_max = MAXVAL(e) + de
+      mu_best = (mu_max + mu_min)/2.0_dp
+      res_best = HUGE(1.0_dp)
       iter = 0
-      DO WHILE (mu_max - mu_min > EPSILON(mu)*MAX(1.0_dp, ABS(mu_max), ABS(mu_min)))
+      DO
          iter = iter + 1
          mu = (mu_max + mu_min)/2.0_dp
          CALL Smear2(f, N_now, kTS, e, mu, wk, sigma, maxocc, bisect_method)
 
-         IF (ABS(N_now - nel) < nel*epsocc) EXIT
+         res_now = ABS(N_now - nel)
+         IF (res_now < res_best) THEN
+            res_best = res_now
+            mu_best = mu
+         END IF
+         ! Keep number errors below the accuracy needed by the nested orbital minimizer.
+         IF (res_now < nel*epsroot .OR. mu == mu_min .OR. mu == mu_max) EXIT
 
          IF (N_now <= nel) THEN
             mu_min = mu
@@ -565,7 +573,7 @@ CONTAINS
             EXIT
          END IF
       END DO
-      mu = (mu_max + mu_min)/2.0_dp
+      mu = mu_best
 
       ! Damped Newton refinement for non-monotonic methods.  Accept only
       ! residual-reducing steps and limit the displacement from the local
@@ -577,7 +585,7 @@ CONTAINS
          mu_best = mu
          DO iter = 1, NEWTON_MAX_ITER
             res_now = ABS(N_now - nel)
-            IF (res_now < nel*epsocc) EXIT
+            IF (res_now < nel*epsroot) EXIT
 
             ! Compute dN/dmu = sum_{ik} wk * g_i(k)  inline
             dNdmu = 0.0_dp
@@ -656,7 +664,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: sigma
       INTEGER, INTENT(IN)                                :: method
 
-      REAL(KIND=dp), PARAMETER                           :: epsocc = 1.0e-12_dp
+      REAL(KIND=dp), PARAMETER :: epsocc = 1.0e-12_dp, epsroot = 8.0_dp*EPSILON(1.0_dp)
 
       INTEGER                                            :: bisect_method, iback, ik, is, ispin, &
                                                             iter, nkp, nmo
@@ -679,7 +687,7 @@ CONTAINS
 
       SELECT CASE (bisect_method)
       CASE (smear_fermi_dirac)
-         de = sigma*LOG((1.0_dp - epsocc)/epsocc)
+         de = sigma*LOG((1.0_dp - epsroot)/epsroot)
       CASE DEFAULT
          de = 10.0_dp*sigma
       END SELECT
@@ -695,15 +703,23 @@ CONTAINS
       ! Bisection with bisect_method
       mu_min = MINVAL(e) - de
       mu_max = MAXVAL(e) + de
+      mu_best = (mu_max + mu_min)/2.0_dp
+      res_best = HUGE(1.0_dp)
       iter = 0
-      DO WHILE (mu_max - mu_min > EPSILON(mu)*MAX(1.0_dp, ABS(mu_max), ABS(mu_min)))
+      DO
          iter = iter + 1
          mu = (mu_max + mu_min)/2.0_dp
          CALL Smear2(f(:, :, 1), na, kTSa, e(:, :, 1), mu, wk, sigma, 1.0_dp, bisect_method)
          CALL Smear2(f(:, :, 2), nb, kTSb, e(:, :, 2), mu, wk, sigma, 1.0_dp, bisect_method)
          N_now = na + nb
 
-         IF (ABS(N_now - nel) < nel*epsocc) EXIT
+         res_now = ABS(N_now - nel)
+         IF (res_now < res_best) THEN
+            res_best = res_now
+            mu_best = mu
+         END IF
+         ! Keep number errors below the accuracy needed by the nested orbital minimizer.
+         IF (res_now < nel*epsroot .OR. mu == mu_min .OR. mu == mu_max) EXIT
 
          IF (N_now <= nel) THEN
             mu_min = mu
@@ -716,7 +732,7 @@ CONTAINS
             EXIT
          END IF
       END DO
-      mu = (mu_max + mu_min)/2.0_dp
+      mu = mu_best
 
       ! Damped Newton refinement for non-monotonic methods.  Accept only
       ! residual-reducing steps and limit the displacement from the local
@@ -730,7 +746,7 @@ CONTAINS
          mu_best = mu
          DO iter = 1, NEWTON_MAX_ITER
             res_now = ABS(N_now - nel)
-            IF (res_now < nel*epsocc) EXIT
+            IF (res_now < nel*epsroot) EXIT
 
             ! dN/dmu across both spin channels (maxocc=1 per spin)
             dNdmu = 0.0_dp
