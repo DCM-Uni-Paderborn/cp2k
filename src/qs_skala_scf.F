@@ -1259,10 +1259,12 @@ CONTAINS
 !> \param density_only Scan density inputs only, excluding kinetic-density samples, false by default.
 !> \param spin_density_targets Distinct spin-density thresholds replacing the density entry of targets.
 !> \param candidate_targets Actual threshold of each returned physical candidate.
+!> \param restore_operator Restore the complete first energy and KS operator, default true.
+!>        Curvature scans can restore only its fields before the next complete evaluation.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_crossings(state, first, last, points, domains, spins, descriptors, &
                                      endpoint_values, targets, total_targets, positive_density_target, density_only, &
-                                     spin_density_targets, candidate_targets)
+                                     spin_density_targets, candidate_targets, restore_operator)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), domains(:), spins(:), &
@@ -1270,7 +1272,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: endpoint_values(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(2), total_targets(2), &
                                                             positive_density_target
-      LOGICAL, INTENT(IN), OPTIONAL                      :: density_only
+      LOGICAL, INTENT(IN), OPTIONAL                      :: density_only, restore_operator
       REAL(dp), INTENT(IN), OPTIONAL                     :: spin_density_targets(:)
       REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL       :: candidate_targets(:)
 
@@ -1429,6 +1431,12 @@ CONTAINS
          CALL state%para_env%sum(descriptors)
          CALL state%para_env%sum(endpoint_values)
          IF (PRESENT(candidate_targets)) CALL state%para_env%sum(candidate_targets)
+      END IF
+      IF (PRESENT(restore_operator)) THEN
+         IF (.NOT. restore_operator) THEN
+            CALL sample_native_constraints(state, first)
+            RETURN
+         END IF
       END IF
       ALLOCATE (gradient(SIZE(first)))
       CALL qs_skala_scf_evaluate(state, first, energy, gradient)
@@ -2984,11 +2992,11 @@ CONTAINS
 
       LOGICAL :: crossed
 
-      CALL check_native_segment(first, last, curve, context, interrupted, crossed)
+      CALL check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator=.FALSE.)
       smooth = .NOT. crossed
    END SUBROUTINE check_native_curvature
 
-   SUBROUTINE check_native_segment(first, last, curve, context, interrupted, crossed)
+   SUBROUTINE check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
 
@@ -2999,6 +3007,7 @@ CONTAINS
       CLASS(*), INTENT(INOUT)                            :: context
       LOGICAL, INTENT(OUT)                               :: interrupted
       LOGICAL, INTENT(OUT), OPTIONAL                     :: crossed
+      LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator
 
       TYPE(qs_skala_scf_crossing_type), POINTER         :: crossings
 
@@ -3027,11 +3036,13 @@ CONTAINS
             CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
                                         crossings%spins, crossings%descriptors, crossings%values, &
                                         density_only=.NOT. context%kinetic_boundaries, &
-                                        spin_density_targets=context%density_floors, candidate_targets=crossings%targets)
+                                        spin_density_targets=context%density_floors, candidate_targets=crossings%targets, &
+                                        restore_operator=restore_operator)
          ELSE
             CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
                                         crossings%spins, crossings%descriptors, crossings%values, &
-                                        density_only=.NOT. context%kinetic_boundaries, candidate_targets=crossings%targets)
+                                        density_only=.NOT. context%kinetic_boundaries, candidate_targets=crossings%targets, &
+                                        restore_operator=restore_operator)
          END IF
          ! Existing active samples stay on their original constraint curve. Rounding-scale
          ! endpoint sign changes within that same window are not new physical events.
