@@ -139,9 +139,9 @@ CONTAINS
       REAL(KIND=dp)                                      :: denominator
 
       denominator = fixed_n_curvature_sum
-      IF (ABS(denominator) <= EPSILON(denominator)) denominator = local_curvature_sum
+      IF (ABS(denominator) <= TINY(denominator)) denominator = local_curvature_sum
       mu_shift = 0.0_dp
-      IF (ABS(denominator) > EPSILON(denominator)) mu_shift = weighted_energy_response/denominator
+      IF (ABS(denominator) > TINY(denominator)) mu_shift = weighted_energy_response/denominator
 
    END FUNCTION qs_ot_fixed_n_response_mu_shift
 
@@ -165,8 +165,9 @@ CONTAINS
 
       REAL(KIND=dp)                                      :: fixed_n_mean
 
+      ! Preserve the fixed-N projection for small nonzero occupation responses.
       fixed_n_mean = 0.0_dp
-      IF (ABS(fixed_n_weight_sum) > EPSILON(fixed_n_weight_sum)) THEN
+      IF (ABS(fixed_n_weight_sum) > TINY(fixed_n_weight_sum)) THEN
          fixed_n_mean = fixed_n_weighted_residual/fixed_n_weight_sum
       END IF
       gradient(:) = response_weight(:)* &
@@ -195,11 +196,11 @@ CONTAINS
       DO i = 1, n
          hessian(i, i) = response_weight(i)
       END DO
-      IF (ABS(fixed_n_weight_sum) > EPSILON(fixed_n_weight_sum)) THEN
+      IF (ABS(fixed_n_weight_sum) > TINY(fixed_n_weight_sum)) THEN
          DO j = 1, n
             DO i = 1, n
                hessian(i, j) = hessian(i, j) - &
-                               response_weight(i)*response_weight(j)/fixed_n_weight_sum
+                               response_weight(i)*(response_weight(j)/fixed_n_weight_sum)
             END DO
          END DO
       END IF

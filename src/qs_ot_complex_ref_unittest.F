@@ -76,10 +76,11 @@ PROGRAM qs_ot_complex_ref_unittest
         qs_ot_density_secant_orbital_overlaps, qs_ot_density_secant_projected_hessian, &
         qs_ot_density_tangent, qs_ot_finite_rotation_response, qs_ot_fixed_n_energy_gradient, &
         qs_ot_fixed_n_energy_hessian, qs_ot_fixed_n_multigroup_schur_block, &
-        qs_ot_fixed_n_projector_frechet, qs_ot_fixed_n_schur_block, qs_ot_generate_rotation, &
-        qs_ot_get_derivative_complex, qs_ot_get_derivative_ref_complex, &
-        qs_ot_get_orbitals_ref_complex, qs_ot_get_p_complex, qs_ot_projected_response_update, &
-        qs_ot_rot_mat_derivative, qs_ot_symmetric_abs_solve, qs_ot_symmetric_sr1_update
+        qs_ot_fixed_n_projector_frechet, qs_ot_fixed_n_response_mu_shift, &
+        qs_ot_fixed_n_schur_block, qs_ot_generate_rotation, qs_ot_get_derivative_complex, &
+        qs_ot_get_derivative_ref_complex, qs_ot_get_orbitals_ref_complex, qs_ot_get_p_complex, &
+        qs_ot_projected_response_update, qs_ot_rot_mat_derivative, qs_ot_symmetric_abs_solve, &
+        qs_ot_symmetric_sr1_update
    USE qs_ot_types,                     ONLY: qs_ot_kpoint_preconditioner_scale,&
                                               qs_ot_kpoint_preconditioner_solver_supported,&
                                               qs_ot_kpoint_preconditioner_supported,&
@@ -605,13 +606,13 @@ CONTAINS
                                                             target_electrons = 2.25_dp, &
                                                             temperature = 0.07_dp
 
-      REAL(KIND=dp)                                      :: fd_slope, gradient_error, hessian_error, &
-                                                            mu, predicted_slope, response_sum, &
-                                                            weighted_residual
+      INTEGER                                            :: iscale
+      REAL(KIND=dp) :: fd_slope, gradient_error, hessian_error, mu, predicted_slope, &
+         response_scale, response_sum, scale_error, weighted_residual
       REAL(KIND=dp), DIMENSION(nbands) :: direction, energies, gradient, gradient_minus, &
          gradient_plus, hessian_action, occupation, rayleigh, response, response_minus, &
          response_plus, weights
-      REAL(KIND=dp), DIMENSION(nbands, nbands)           :: hessian
+      REAL(KIND=dp), DIMENSION(nbands, nbands)           :: hessian, hessian_reference
 
       energies(:) = [-0.24_dp, -0.05_dp, 0.08_dp, 0.31_dp]
       rayleigh(:) = [-0.19_dp, -0.02_dp, 0.04_dp, 0.27_dp]
@@ -632,6 +633,24 @@ CONTAINS
                                        target_electrons, temperature, maxocc))/(2.0_dp*fd_step)
       predicted_slope = DOT_PRODUCT(gradient, direction)
       gradient_error = MAX(ABS(fd_slope - predicted_slope), ABS(SUM(gradient)))
+
+      ! A common response scale must preserve the number constraint and energy gauge.
+      CALL qs_ot_fixed_n_energy_hessian(response, response_sum, hessian_reference)
+      scale_error = 0._dp
+      DO iscale = 0, 2
+         response_scale = 10.0_dp**(-100*iscale)
+         CALL qs_ot_fixed_n_energy_gradient(rayleigh, energies, response*response_scale, &
+                                            response_sum*response_scale, weighted_residual*response_scale, gradient_plus)
+         CALL qs_ot_fixed_n_energy_hessian(response*response_scale, &
+                                           response_sum*response_scale, hessian)
+         scale_error = MAX(scale_error, MAXVAL(ABS(gradient_plus/response_scale - gradient)), &
+                           MAXVAL(ABS(hessian/response_scale - hessian_reference)), &
+                           ABS(qs_ot_fixed_n_response_mu_shift( &
+                               DOT_PRODUCT(response, direction)*response_scale, 0.5_dp*response_sum*response_scale, &
+                               response_sum*response_scale) - DOT_PRODUCT(response, direction)/response_sum))
+      END DO
+      IF (scale_error > 1.0E-12_dp) nfail = nfail + 1
+      IF (mynode == 0) WRITE (io_unit, '(A,ES13.6)') 'fixed-N response scale error: ', scale_error
 
       ! At the canonical point h_i=e_i, the exact local Hessian is the dense fixed-N projector.
       rayleigh(:) = energies(:)

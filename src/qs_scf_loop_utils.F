@@ -2122,7 +2122,7 @@ CONTAINS
                energy_start = 1
                IF (restricted_roks) energy_start = (ispin - 1)*nmo + 1
                fixed_n_mean = 0.0_dp
-               IF (ABS(fixed_n_weight(group)) > EPSILON(fixed_n_weight(group))) THEN
+               IF (ABS(fixed_n_weight(group)) > TINY(fixed_n_weight(group))) THEN
                   fixed_n_mean = fixed_n_residual(group)/fixed_n_weight(group)
                END IF
                local_ot_env(local_channel)%ener_preconditioned_gx( &
