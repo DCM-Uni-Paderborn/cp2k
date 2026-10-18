@@ -896,7 +896,9 @@ CONTAINS
          residual_dot = DOT_PRODUCT(residual, preconditioned)
          IF (.NOT. ieee_is_finite(residual_dot) .OR. residual_dot <= 0.0_dp) RETURN
          search(:) = preconditioned
-         TARGET = MIN(0.1_dp, SQRT(NORM2(derivative)))*NORM2(derivative)
+         ! Match the inner solve to the one-percent resolution of numerical Hessian products.
+         ! The original unscaled physical gradient still determines final convergence.
+         TARGET = MAX(0.01_dp, MIN(0.1_dp, SQRT(NORM2(derivative))))*NORM2(derivative)
          ! Finite-precision CG can need more than nf steps after conjugacy is lost.
          DO iteration = 1, MIN(2*nf, 64)
             IF (stop_requested()) THEN
