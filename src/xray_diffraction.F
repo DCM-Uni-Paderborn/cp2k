@@ -36,6 +36,7 @@ MODULE xray_diffraction
                                               qs_environment_type
    USE qs_rho_atom_types,               ONLY: rho_atom_type
    USE qs_rho_types,                    ONLY: qs_rho_type
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_paw_density
    USE util,                            ONLY: sort
 #include "./base/base_uses.f90"
 
@@ -74,6 +75,7 @@ CONTAINS
       INTEGER, DIMENSION(3)                              :: npts
       INTEGER, DIMENSION(:), POINTER                     :: aux_index, ng_shell, ng_shell_gather, &
                                                             nshell_pe, offset_pe
+      LOGICAL                                            :: inverse_density
       REAL(KIND=dp)                                      :: cutoff, f, f2, q, rho_hard, rho_soft, &
                                                             rho_total
       REAL(KIND=dp), DIMENSION(3)                        :: dg, dr
@@ -152,12 +154,15 @@ CONTAINS
 
       ! Build the total electronic density in reciprocal space
 
-      CALL calculate_rhotot_elec_gspace(qs_env=qs_env, &
-                                        auxbas_pw_pool=auxbas_pw_pool, &
-                                        rhotot_elec_gspace=rhotot_elec_gspace, &
-                                        q_max=q_max, &
-                                        rho_hard=rho_hard, &
-                                        rho_soft=rho_soft)
+      CALL qs_upf_inverse_paw_density(qs_env, rhotot_elec_gspace, q_max, rho_hard, rho_soft, inverse_density)
+      IF (.NOT. inverse_density) THEN
+         CALL calculate_rhotot_elec_gspace(qs_env=qs_env, &
+                                           auxbas_pw_pool=auxbas_pw_pool, &
+                                           rhotot_elec_gspace=rhotot_elec_gspace, &
+                                           q_max=q_max, &
+                                           rho_hard=rho_hard, &
+                                           rho_soft=rho_soft)
+      END IF
 
       rho_total = rho_hard + rho_soft
 

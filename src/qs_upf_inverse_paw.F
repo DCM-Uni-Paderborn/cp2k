@@ -20,6 +20,7 @@ MODULE qs_upf_inverse_paw
                                               do_potential_truncated
    USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: dp
+   USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_type
    USE paw_onecenter,                   ONLY: paw_onecenter_core_exchange,&
@@ -38,6 +39,7 @@ MODULE qs_upf_inverse_paw
    USE skala_density_constraints,       ONLY: skala_density_constraints_type
    USE upf_inverse,                     ONLY: upf_inverse_density_evaluate,&
                                               upf_inverse_kinetic_type
+   USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_fourier_kernel
    USE upf_projector_integrals,         ONLY: upf_projector_type
    USE upf_types,                       ONLY: atom_upfpot_type
    USE uspp_augmentation,               ONLY: uspp_augmentation_realspace,&
@@ -51,8 +53,85 @@ MODULE qs_upf_inverse_paw
    PUBLIC :: qs_upf_inverse_paw_init, qs_upf_inverse_paw_evaluate, qs_upf_inverse_paw_response
    PUBLIC :: qs_upf_inverse_paw_core_prepare
    PUBLIC :: qs_upf_inverse_paw_collocate, qs_upf_inverse_paw_operator
+   PUBLIC :: qs_upf_inverse_paw_density_fourier
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Fourier coefficients of the original PAW AE-minus-compensated-PS density and AE core.
+!>        Evaluate on the original radial mesh, without an intervening real-space FFT projection.
+!>        The core is shared equally between physical spins and contributes once to their sum.
+!> \param kind Prepared original PAW radial products and magnetic-projector Gaunt tensor.
+!> \param projected Hermitian spin projector occupations, with k weights already applied once.
+!> \param gvecs Local reciprocal vectors, without half-space multiplicities.
+!> \param position Home atomic center. The Fourier phase represents its periodic image sum.
+!> \param volume Physical cell volume defining the Fourier normalization.
+!> \param density Overwritten spin corrections, including the frozen core and zero mode.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_paw_density_fourier(kind, projected, gvecs, position, volume, density)
+      TYPE(paw_kind_type), INTENT(IN)                    :: kind
+      COMPLEX(dp), INTENT(IN)                            :: projected(:, :, :)
+      REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
+      COMPLEX(dp), INTENT(OUT)                           :: density(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: kernel(:, :, :)
+      INTEGER                                            :: first, gh, gl, l, lm, nh, nr, ns, p, &
+                                                            pair, q, rh, rl, spin
+      REAL(dp), ALLOCATABLE                              :: coefficient(:, :), radial(:, :, :)
+
+      CPASSERT(kind%active)
+      ns = SIZE(projected, 3)
+      CPASSERT(ns == 1 .OR. ns == 2)
+      CPASSERT(ALL(SHAPE(projected(:, :, 1)) == kind%onecenter%nproj))
+      CPASSERT(SIZE(gvecs, 1) == 3)
+      CPASSERT(ALL(SHAPE(density) == [SIZE(gvecs, 2), ns]))
+      CPASSERT(ALL(ieee_is_finite(ABS(projected))))
+      ASSOCIATE (grid => kind%xcgrid, onecenter => kind%onecenter)
+         CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
+         nr = grid%nr
+         nh = SIZE(onecenter%gaunt, 3)
+         first = 1
+         IF (grid%r(1) == 0.0_dp) first = 2
+         ALLOCATE (radial(nr, nh, ns), SOURCE=0.0_dp)
+         ALLOCATE (coefficient(grid%npair, ns))
+         DO lm = 1, nh
+            l = INT(SQRT(REAL(lm - 1, dp)))
+            coefficient = 0.0_dp
+            DO q = 1, onecenter%nproj
+               DO p = 1, onecenter%nproj
+                  pair = onecenter%pair_index(p, q)
+                  DO spin = 1, ns
+                     coefficient(pair, spin) = coefficient(pair, spin) + &
+                                               onecenter%gaunt(p, q, lm)*REAL(projected(p, q, spin), dp)
+                  END DO
+               END DO
+            END DO
+            radial(:grid%nval, lm, :) = MATMUL(grid%radial(:, :, l, 1) - grid%radial(:, :, l, 2), coefficient)
+         END DO
+         DO spin = 1, ns
+            radial(:, 1, spin) = radial(:, 1, spin) + SQRT(fourpi)*grid%core(:, 1)/REAL(ns, dp)
+         END DO
+         density = CMPLX(0.0_dp, 0.0_dp, dp)
+         ! Bound the temporary kernel independently of grid size and radial mesh length.
+         DO gl = 1, SIZE(gvecs, 2), 128
+            gh = MIN(SIZE(gvecs, 2), gl + 127)
+            DO rl = first, nr, 64
+               rh = MIN(nr, rl + 63)
+               ALLOCATE (kernel(gh - gl + 1, rh - rl + 1, 1))
+               DO lm = 1, nh
+                  l = INT(SQRT(REAL(lm - 1, dp)))
+                  CALL upf_inverse_coulomb_fourier_kernel(grid%r(rl:rh), [l], [lm], gvecs(:, gl:gh), &
+                                                          position, volume, kernel)
+                  DO spin = 1, ns
+                     density(gl:gh, spin) = density(gl:gh, spin) + &
+                                            MATMUL(kernel(:, :, 1), grid%wr(rl:rh)*radial(rl:rh, lm, spin))
+                  END DO
+               END DO
+               DEALLOCATE (kernel)
+            END DO
+         END DO
+      END ASSOCIATE
+   END SUBROUTINE qs_upf_inverse_paw_density_fourier
 
 ! **************************************************************************************************
 !> \brief Closed-core exchange with the same physical interactions as the native valence exchange.
@@ -564,12 +643,11 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: derivative
-
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
 
-      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_dw(:, :)
-      COMPLEX(dp), POINTER                              :: dw(:, :)
       COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
+      COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: center, first, ik, info, last, nao, nk, &
                                                             nproj, ns, spin
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &

@@ -46,6 +46,7 @@ PROGRAM upf_inverse_unittest
                                               paw_core_kinetic_type,&
                                               paw_core_radial_slopes,&
                                               paw_core_radial_value
+   USE paw_types,                       ONLY: paw_kind_type
    USE paw_xc,                          ONLY: paw_xc_ae_core_cartesian,&
                                               paw_xc_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
@@ -63,6 +64,7 @@ PROGRAM upf_inverse_unittest
                                               qs_upf_inverse_kinetic_integrate,&
                                               qs_upf_inverse_kinetic_operator
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_collocate,&
+                                              qs_upf_inverse_paw_density_fourier,&
                                               qs_upf_inverse_paw_operator
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_type
@@ -138,6 +140,7 @@ PROGRAM upf_inverse_unittest
    CALL check_fourier_coulomb()
    CALL check_core_fourier()
    CALL check_paw_core_fields()
+   CALL check_paw_density_fourier()
    CALL check_nc_fields()
    CALL check_kinetic_fields()
    CALL check_gaussian_fields()
@@ -1159,6 +1162,59 @@ CONTAINS
       CALL check(ABS(density) + MAXVAL(ABS(gradient)) + MAXVAL(ABS(hessian)) + &
                  ABS(tau) + MAXVAL(ABS(tau_gradient)), "Core-free AE origin", 0.0_dp)
    END SUBROUTINE check_paw_core_fields
+
+! **************************************************************************************************
+!> \brief PAW charge correction, frozen-core counting and phases on a finite spherical shell rule.
+! **************************************************************************************************
+   SUBROUTINE check_paw_density_fourier()
+      COMPLEX(dp)                                        :: density(3, 2), expected, phase, &
+                                                            projected(1, 1, 2), restricted(3, 1)
+      INTEGER                                            :: ig, spin
+      REAL(dp)                                           :: g(3, 3), norm_g, position(3), radial(4)
+      TYPE(paw_kind_type)                                :: kind
+
+      kind%active = .TRUE.
+      kind%onecenter%nproj = 1
+      kind%onecenter%npair = 1
+      kind%onecenter%lmax = 0
+      ALLOCATE (kind%onecenter%pair_index(1, 1), SOURCE=1)
+      ALLOCATE (kind%onecenter%gaunt(1, 1, 1), SOURCE=1.0_dp/SQRT(fourpi))
+      ASSOCIATE (grid => kind%xcgrid)
+         grid%nr = 4
+         grid%nval = 4
+         grid%npair = 1
+         grid%lmax = 0
+         ALLOCATE (grid%r(4), grid%wr(4), grid%core(4, 2), grid%radial(4, 1, 0:0, 2))
+         grid%r = [0.0_dp, 0.2_dp, 0.6_dp, 1.1_dp]
+         grid%wr = [0.0_dp, 0.11_dp, 0.21_dp, 0.31_dp]
+         grid%core(:, 1) = 0.4_dp*EXP(-grid%r)
+         grid%core(:, 2) = 0.0_dp
+         grid%radial(:, 1, 0, 1) = EXP(-grid%r)
+         grid%radial(:, 1, 0, 2) = 0.7_dp*EXP(-2.0_dp*grid%r)
+         projected(1, 1, :) = [0.7_dp, 0.2_dp]
+         position = [0.3_dp, -0.2_dp, 0.1_dp]
+         g(:, 1) = 0.0_dp
+         g(:, 2) = [0.7_dp, -0.4_dp, 0.2_dp]
+         g(:, 3) = -g(:, 2)
+         CALL qs_upf_inverse_paw_density_fourier(kind, projected, g, position, 11.0_dp, density)
+         DO ig = 1, 3
+            norm_g = NORM2(g(:, ig))
+            radial = 1.0_dp
+            IF (norm_g > 0.0_dp) radial(2:) = SIN(norm_g*grid%r(2:))/(norm_g*grid%r(2:))
+            phase = EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g(:, ig), position), dp))/11.0_dp
+            DO spin = 1, 2
+               expected = phase*SUM(grid%wr*radial*(REAL(projected(1, 1, spin), dp)* &
+                                                    (grid%radial(:, 1, 0, 1) - grid%radial(:, 1, 0, 2)) + &
+                                                    fourpi*grid%core(:, 1)/2.0_dp))
+               CALL check(ABS(density(ig, spin) - expected), 'PAW Fourier density and core', 3.e-13_dp)
+            END DO
+         END DO
+         projected(:, :, 1) = SUM(projected, DIM=3)
+         CALL qs_upf_inverse_paw_density_fourier(kind, projected(:, :, :1), g, position, 11.0_dp, restricted)
+         CALL check(MAXVAL(ABS(restricted(:, 1) - SUM(density, DIM=2))), 'PAW Fourier spin sum', 3.e-13_dp)
+         CALL qs_upf_inverse_paw_density_fourier(kind, projected, g(:, :0), position, 11.0_dp, density(:0, :))
+      END ASSOCIATE
+   END SUBROUTINE check_paw_density_fourier
 ! **************************************************************************************************
 !> \brief Atomic hard-projector orientation, full kinetic matrix and exact NC reduction.
 ! **************************************************************************************************
