@@ -1693,7 +1693,8 @@ CONTAINS
       values(:) = initial
       selected(:) = ABS(values - targets) <= tolerances
       IF (ANY(selected)) THEN
-         CALL qs_skala_scf_evaluate(state, first, energy, gradient)
+         ! Keep the fields that passed the physical window while rebuilding full KS.
+         CALL evaluate_limiting_state(state, first, energy, gradient, .TRUE.)
          count = count + 1
          CALL qs_skala_scf_values(state, domains, points, spins, descriptors, initial, rows)
          values(:) = initial
@@ -1743,7 +1744,7 @@ CONTAINS
                CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
                selected(:) = ABS(values - targets) <= tolerances
                IF (ANY(selected) .AND. ALL(sides*(values - targets) >= -tolerances)) THEN
-                  CALL qs_skala_scf_evaluate(state, root, energy, gradient)
+                  CALL evaluate_limiting_state(state, root, energy, gradient, .TRUE.)
                   count = count + 1
                   CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
                   selected(:) = ABS(values - targets) <= tolerances
@@ -2458,8 +2459,8 @@ CONTAINS
 !> \brief Classify candidate continuous density boundaries with the existing active physical samples.
 !>        Evaluate complete native limiting covectors and coupled normal minimum conditions.
 !>        A zero covector change does not add an orbital constraint. Restore original selected
-!>        weights, orbitals, fields and energy at coordinate. KS remains invalid until evaluated
-!>        with derivatives. Optionally retain admissible new samples.
+!>        weights and complete KS at coordinate without reinstalling an already checked native
+!>        density. Optionally retain admissible new samples.
 !>        These normal conditions do not establish energy continuity or tangential stationarity.
 !> \param state Evaluated native state with its original selected samples.
 !> \param coordinate Feasible boundary coordinates in the original normalized orbital chart.
@@ -2488,7 +2489,7 @@ CONTAINS
       INTEGER                                            :: i, m, n, old, total
       INTEGER, ALLOCATABLE :: all_descriptors(:), all_domains(:), all_points(:, :), all_spins(:), &
          old_descriptors(:), old_domains(:), old_points(:, :), old_spins(:), rows(:), sides(:)
-      LOGICAL                                            :: feasible, keep
+      LOGICAL                                            :: feasible, keep, hold_orbitals
       LOGICAL, ALLOCATABLE                               :: normal_admissible(:), selected(:)
       REAL(dp)                                           :: energy, kinetic_probe, &
                                                             kinetic_tolerance, probe, tolerance
@@ -2509,7 +2510,14 @@ CONTAINS
       valid = .FALSE.
       keep = .FALSE.
       IF (PRESENT(retain)) keep = retain
-      CALL qs_skala_scf_evaluate(state, coordinate, energy)
+      ALLOCATE (positive(n))
+      hold_orbitals = state%evaluated
+      IF (hold_orbitals) hold_orbitals = ALL(state%coordinate == coordinate)
+      IF (hold_orbitals .AND. state%operator_current) THEN
+         energy = state%energy%total
+      ELSE
+         CALL evaluate_limiting_state(state, coordinate, energy, positive, hold_orbitals)
+      END IF
       CALL qs_skala_scf_selected(state, old_points, old_domains, old_spins, old_descriptors, &
                                  old_targets, values, feasible)
       IF (.NOT. feasible) RETURN
@@ -2534,7 +2542,7 @@ CONTAINS
       total = old + m
       ALLOCATE (all_points(3, total), all_domains(total), all_spins(total), all_descriptors(total), &
                 all_targets(total), weights(total), normal_admissible(total), sides(total), &
-                positive(n), changes(n, total), jacobian(total, n), selected(total))
+                changes(n, total), jacobian(total, n), selected(total))
       all_points(:, :old) = old_points
       all_points(:, old + 1:) = points
       all_domains(:old) = old_domains
@@ -2569,7 +2577,7 @@ CONTAINS
       ELSE
          CALL skala_density_constraints_reset(state%constraints)
       END IF
-      CALL qs_skala_scf_evaluate(state, coordinate, energy)
+      CALL evaluate_limiting_state(state, coordinate, energy, positive, .TRUE.)
    END SUBROUTINE qs_skala_scf_classify
 
 ! **************************************************************************************************
@@ -3177,7 +3185,9 @@ CONTAINS
          END IF
          ! An uphill boundary cannot be accepted, regardless of its limiting derivatives.
          ! Reject it before rebuilding every normal limit of the complete XC operator.
-         CALL qs_skala_scf_evaluate(context%state, root, energy)
+         CPASSERT(context%state%evaluated .AND. context%state%operator_current)
+         CPASSERT(ALL(context%state%coordinate == root))
+         energy = context%state%energy%total
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
          IF (energy > first_energy + roundoff) THEN
             pending = PACK(pending,.NOT. selected)
