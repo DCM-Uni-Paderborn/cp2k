@@ -74,6 +74,7 @@ MODULE qs_upf_inverse_coulomb
                                               qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type
    USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_center_type,&
+                                              upf_inverse_coulomb_density,&
                                               upf_inverse_coulomb_periodic,&
                                               upf_inverse_coulomb_potential_type,&
                                               upf_inverse_coulomb_prepare
@@ -89,8 +90,83 @@ MODULE qs_upf_inverse_coulomb
    PUBLIC :: qs_upf_inverse_coulomb_xc_integrate
    PUBLIC :: qs_upf_inverse_coulomb_ionic_geometry
    PUBLIC :: qs_upf_inverse_coulomb_response, qs_upf_inverse_coulomb_metric_response
+   PUBLIC :: qs_upf_inverse_coulomb_density
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Complete spin valence densities projected onto the existing auxiliary grid.
+!>        Combine the accepted soft Gaussian density with every signed center contribution,
+!>        including original Q. The SCF's soft fields and Coulomb state are not replaced.
+!>        All ranks must participate. Atomic densities are replicated, Fourier rows retain
+!>        their original distribution, and Bloch weights enter once. The result has the
+!>        auxiliary grid's spatial resolution and excludes ions and frozen-core densities.
+!> \param qs_env Native owner of the accepted occupation matrices and full-GAPW source map.
+!> \param density Owned real-space spin fields. Unallocated when no inverse GAPW map is active.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_coulomb_density(qs_env, density)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(pw_r3d_rs_type), ALLOCATABLE, INTENT(OUT)     :: density(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: center_g(:), gamma(:, :), matrix(:, :, :)
+      INTEGER                                            :: a, k, kind, spin
+      LOGICAL                                            :: rho_g_valid
+      REAL(dp), ALLOCATABLE                              :: radial(:, :)
+      TYPE(dbcsr_p_type), POINTER                        :: matrices(:, :)
+      TYPE(pw_c1d_gs_type)                               :: physical_g
+      TYPE(pw_c1d_gs_type), POINTER                      :: soft_g(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: centers(:)
+
+      CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho, qs_kind_set=kinds)
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      IF (.NOT. ASSOCIATED(state)) RETURN
+      IF (.NOT. state%enabled .OR. .NOT. state%gaussian_background) RETURN
+      CPASSERT(ASSOCIATED(state%coulomb))
+      CPASSERT(state%coulomb%ready)
+      CALL qs_rho_get(rho, rho_ao_kp=matrices, rho_g=soft_g, rho_g_valid=rho_g_valid)
+      CPASSERT(rho_g_valid)
+      CPASSERT(SIZE(soft_g) == SIZE(matrices, 1))
+      ALLOCATE (density(SIZE(soft_g)))
+      ALLOCATE (centers, SOURCE=state%coulomb%centers)
+      CALL physical_g%create(state%coulomb%grid)
+      ALLOCATE (center_g(SIZE(physical_g%array)))
+      DO spin = 1, SIZE(soft_g)
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_kpoints_density(state%bloch, spin, matrix)
+         ELSE
+            CALL qs_upf_inverse_matrix_gather(state%frame%ao, matrices(spin, 1)%matrix, gamma)
+            ALLOCATE (matrix(SIZE(gamma, 1), SIZE(gamma, 2), 1))
+            matrix(:, :, 1) = gamma
+            DEALLOCATE (gamma)
+         END IF
+         DO a = 1, SIZE(centers)
+            ALLOCATE (radial, MOLD=centers(a)%density)
+            centers(a)%density = 0.0_dp
+            kind = state%coulomb%center_kinds(a)
+            DO k = 1, SIZE(matrix, 3)
+               CALL select_frame(state, k, frame, augmentation)
+               CALL qs_upf_inverse_density_gapw(frame, augmentation, state%coulomb%inverse_centers(a), kinds(kind), &
+                                                state%coulomb%pairs(a), matrix(:, :, k), radial, &
+                                                atom_index=state%coulomb%center_atoms(a), cache=state%coulomb%fields(a, k))
+               centers(a)%density(:, :) = centers(a)%density + state%coulomb%weights(k)*radial
+            END DO
+            DEALLOCATE (radial)
+         END DO
+         CALL upf_inverse_coulomb_density(centers, state%coulomb%cell, state%coulomb%grid%g, &
+                                          state%coulomb%grid%vol, center_g, state%coulomb%maps)
+         physical_g%array = soft_g(spin)%array + center_g
+         CALL density(spin)%create(state%coulomb%grid)
+         CALL pw_transfer(physical_g, density(spin))
+         DEALLOCATE (matrix)
+      END DO
+      CALL physical_g%release()
+   END SUBROUTINE qs_upf_inverse_coulomb_density
 
 ! **************************************************************************************************
 !> \brief Geometry adjoint of every native Gaussian ionic charge on the actual auxiliary grid.
@@ -511,10 +587,10 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
-      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: response
       REAL(dp), INTENT(OUT), OPTIONAL                    :: charge_response
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: adjoint(:), background(:), &
                                                             background_response(:), &
@@ -617,9 +693,9 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
-      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: response
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
 
       INTEGER                                            :: a, info
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
@@ -679,11 +755,10 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       TYPE(upf_inverse_coulomb_center_type), &
          ALLOCATABLE, INTENT(OUT)                        :: centers_response(:)
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET :: known_coefficients_response(:, :, :)
 
-      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: known_coefficients_response(:, :, :)
-
-      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_coefficients(:, :)
-      COMPLEX(dp), POINTER                              :: coefficients_response(:, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_coefficients(:, :)
+      COMPLEX(dp), POINTER                               :: coefficients_response(:, :)
       INTEGER                                            :: a, info, k, kind, nao, nk, nproj
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
                                                             trace_strain

@@ -85,11 +85,11 @@ PROGRAM upf_inverse_unittest
         upf_inverse_project_adjoint, upf_inverse_project_response, upf_inverse_type
    USE upf_inverse_coulomb,             ONLY: &
         upf_inverse_coulomb_center_type, upf_inverse_coulomb_compensate, &
-        upf_inverse_coulomb_compensation_adjoint, upf_inverse_coulomb_fourier_kernel, &
-        upf_inverse_coulomb_map_type, upf_inverse_coulomb_pair_kernel, &
-        upf_inverse_coulomb_periodic, upf_inverse_coulomb_potential_type, &
-        upf_inverse_coulomb_prepare, upf_inverse_coulomb_radial, &
-        upf_inverse_coulomb_radial_response
+        upf_inverse_coulomb_compensation_adjoint, upf_inverse_coulomb_density, &
+        upf_inverse_coulomb_fourier_kernel, upf_inverse_coulomb_map_type, &
+        upf_inverse_coulomb_pair_kernel, upf_inverse_coulomb_periodic, &
+        upf_inverse_coulomb_potential_type, upf_inverse_coulomb_prepare, &
+        upf_inverse_coulomb_radial, upf_inverse_coulomb_radial_response
    USE upf_inverse_lattice,             ONLY: &
         upf_inverse_lattice_adjoint, upf_inverse_lattice_bloch, upf_inverse_lattice_bound, &
         upf_inverse_lattice_error_bounds, upf_inverse_lattice_init, upf_inverse_lattice_project, &
@@ -1887,7 +1887,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE check_periodic_coulomb()
       COMPLEX(dp)                                        :: adjoint(3), background(3), &
-                                                            cached_adjoint(3), db(3)
+                                                            cached_adjoint(3), db(3), &
+                                                            density_g(3), exact_density(3)
       INTEGER                                            :: a, b, boundary, i, ix, iy, iz, j, &
                                                             periodicity(3), side
       REAL(dp) :: cached_energy, cached_response, cell(3, 3), dcell(3, 3), dg(3, 3), &
@@ -1979,6 +1980,21 @@ CONTAINS
                                            gvecs_response=dg, volume_response=dvolume, background_response=db, &
                                            poisson_weights_response=dkw, periodicity=periodicity)
          CALL upf_inverse_coulomb_prepare(centers, cell, g, volume, map, periodicity)
+         CALL upf_inverse_coulomb_density(centers, cell, g, volume, density_g, map)
+         exact_density = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO a = 1, SIZE(centers)
+            exact_density(1) = exact_density(1) + SQRT(fourpi)/volume* &
+                               SUM(centers(a)%weights*centers(a)%density(:, 1))
+            DO i = 2, SIZE(g, 2)
+               distance = SQRT(SUM(g(:, i)**2))
+               exact_density(i) = exact_density(i) + SQRT(fourpi)/volume* &
+                                  EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g(:, i), centers(a)%position), dp))* &
+                                  SUM(centers(a)%weights*centers(a)%density(:, 1)* &
+                                      SIN(distance*centers(a)%radii)/(distance*centers(a)%radii))
+            END DO
+         END DO
+         CALL check(MAXVAL(ABS(density_g - exact_density)), "Complete signed density shell form factors", 3.e-15_dp)
+         CALL check(ABS(density_g(2) - CONJG(density_g(3))), "Complete signed density Fourier conjugacy", 3.e-15_dp)
          CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
                                            cached_potential, cached_adjoint, map=map)
          CALL check(ABS(cached_energy - energy), "Cached periodic Coulomb energy", 3.e-12_dp)

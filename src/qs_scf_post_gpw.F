@@ -221,6 +221,7 @@ MODULE qs_scf_post_gpw
    USE qs_spectral_localizer,           ONLY: qs_scf_post_localizer
    USE qs_subsys_types,                 ONLY: qs_subsys_get,&
                                               qs_subsys_type
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_density
    USE qs_wannier90,                    ONLY: wannier90_interface
    USE s_square_methods,                ONLY: compute_s_square
    USE scf_control_types,               ONLY: scf_control_type
@@ -3675,6 +3676,7 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(mpole_rho_atom), DIMENSION(:), POINTER        :: mp_rho
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
+      TYPE(pw_r3d_rs_type), ALLOCATABLE                  :: physical_density(:)
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(rho0_mpole_type), POINTER                     :: rho0_mpole
@@ -3735,15 +3737,16 @@ CONTAINS
       END SELECT
       !
       charges = 0.0_dp
+      CALL qs_upf_inverse_coulomb_density(qs_env, physical_density)
       IF (hirshfeld_env%iterative) THEN
          ! Hirshfeld-I charges
-         CALL comp_hirshfeld_i_charges(qs_env, hirshfeld_env, charges, unit_nr)
+         CALL comp_hirshfeld_i_charges(qs_env, hirshfeld_env, charges, unit_nr, density=physical_density)
       ELSE
          ! Hirshfeld charges
-         CALL comp_hirshfeld_charges(qs_env, hirshfeld_env, charges)
+         CALL comp_hirshfeld_charges(qs_env, hirshfeld_env, charges, density=physical_density)
       END IF
       CALL get_qs_env(qs_env, particle_set=particle_set, dft_control=dft_control)
-      IF (dft_control%qs_control%gapw) THEN
+      IF (dft_control%qs_control%gapw .AND. .NOT. ALLOCATED(physical_density)) THEN
          ! GAPW: add core charges (rho_hard - rho_soft)
          CALL get_qs_env(qs_env, rho0_mpole=rho0_mpole)
          CALL get_rho0_mpole(rho0_mpole, mp_rho=mp_rho)
@@ -3755,6 +3758,12 @@ CONTAINS
                charges(iat, 1:nspin) = charges(iat, 1:nspin) + mp_rho(iat)%q0(1:nspin)
             END IF
          END DO
+      END IF
+      IF (ALLOCATED(physical_density)) THEN
+         DO i = 1, SIZE(physical_density)
+            CALL physical_density(i)%release()
+         END DO
+         DEALLOCATE (physical_density)
       END IF
       !
       IF (unit_nr > 0) THEN

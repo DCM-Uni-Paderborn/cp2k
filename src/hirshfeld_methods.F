@@ -267,11 +267,13 @@ CONTAINS
 !> \param qs_env ...
 !> \param hirshfeld_env ...
 !> \param charges ...
+!> \param density Optional complete valence spin fields instead of the native soft density.
 ! **************************************************************************************************
-   SUBROUTINE comp_hirshfeld_charges(qs_env, hirshfeld_env, charges)
+   SUBROUTINE comp_hirshfeld_charges(qs_env, hirshfeld_env, charges, density)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hirshfeld_type), POINTER                      :: hirshfeld_env
       REAL(KIND=dp), DIMENSION(:, :), INTENT(inout)      :: charges
+      TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL, TARGET :: density(:)
 
       INTEGER                                            :: is
       LOGICAL                                            :: rho_r_valid
@@ -291,6 +293,11 @@ CONTAINS
       !
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env, rho=rho)
       CALL qs_rho_get(rho, rho_r=rho_r, rho_r_valid=rho_r_valid)
+      IF (PRESENT(density)) THEN
+         CPASSERT(SIZE(density) == SIZE(rho_r))
+         rho_r => density
+         rho_r_valid = .TRUE.
+      END IF
       CALL pw_env_get(pw_env=pw_env, auxbas_pw_pool=auxbas_pw_pool)
       CALL auxbas_pw_pool%create_pw(rhonorm)
       ! loop over spins
@@ -351,12 +358,14 @@ CONTAINS
 !> \param hirshfeld_env ...
 !> \param charges ...
 !> \param ounit ...
+!> \param density Optional complete valence spin fields instead of the native soft density.
 ! **************************************************************************************************
-   SUBROUTINE comp_hirshfeld_i_charges(qs_env, hirshfeld_env, charges, ounit)
+   SUBROUTINE comp_hirshfeld_i_charges(qs_env, hirshfeld_env, charges, ounit, density)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hirshfeld_type), POINTER                      :: hirshfeld_env
       REAL(KIND=dp), DIMENSION(:, :), INTENT(inout)      :: charges
       INTEGER, INTENT(IN)                                :: ounit
+      TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL, TARGET :: density(:)
 
       INTEGER, PARAMETER                                 :: maxloop = 100
       REAL(KIND=dp), PARAMETER                           :: maxres = 1.0e-2_dp
@@ -379,6 +388,11 @@ CONTAINS
       !
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env, rho=rho)
       CALL qs_rho_get(rho, rho_r=rho_r, rho_r_valid=rho_r_valid)
+      IF (PRESENT(density)) THEN
+         CPASSERT(SIZE(density) == SIZE(rho_r))
+         rho_r => density
+         rho_r_valid = .TRUE.
+      END IF
       CALL pw_env_get(pw_env=pw_env, auxbas_pw_pool=auxbas_pw_pool)
       CALL auxbas_pw_pool%create_pw(rhonorm)
       !

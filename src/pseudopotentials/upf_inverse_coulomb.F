@@ -67,6 +67,7 @@ MODULE upf_inverse_coulomb
    PUBLIC :: upf_inverse_coulomb_center_type, upf_inverse_coulomb_potential_type
    PUBLIC :: upf_inverse_coulomb_periodic
    PUBLIC :: upf_inverse_coulomb_map_type, upf_inverse_coulomb_prepare
+   PUBLIC :: upf_inverse_coulomb_density
    PUBLIC :: upf_inverse_coulomb_radial, upf_inverse_coulomb_radial_response
    PUBLIC :: upf_inverse_coulomb_compensate, upf_inverse_coulomb_compensation_adjoint
    PUBLIC :: upf_inverse_coulomb_fourier_kernel
@@ -144,6 +145,39 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE upf_inverse_coulomb_prepare
+
+! **************************************************************************************************
+!> \brief Fourier coefficients of the complete signed center density, before compensation.
+!>        This is the finite-grid projection for density observables. It includes every supplied
+!>        harmonic and the zero mode, without ions, frozen cores, or a Coulomb kernel.
+!> \param centers Same radial/harmonic geometry as map, with the requested spin density.
+!> \param cell Physical lattice vectors in columns.
+!> \param gvecs Local reciprocal vectors of the observable's Fourier grid.
+!> \param volume Cell volume defining the Fourier normalization.
+!> \param density Overwritten local Fourier coefficients, without mesh multiplicity.
+!> \param map Immutable geometry map shared with the Coulomb functional.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_coulomb_density(centers, cell, gvecs, volume, density, map)
+      TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
+      REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
+      COMPLEX(dp), INTENT(OUT)                           :: density(:)
+      TYPE(upf_inverse_coulomb_map_type), INTENT(IN)     :: map
+
+      INTEGER                                            :: a, channel, ir
+
+      CALL check_map(map, centers, cell, gvecs, volume, map%periodicity)
+      CPASSERT(SIZE(density) == SIZE(gvecs, 2))
+      density = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO a = 1, SIZE(centers)
+         CALL check_radial(centers(a)%radii, centers(a)%weights, centers(a)%l, centers(a)%density)
+         DO channel = 1, SIZE(centers(a)%l)
+            DO ir = 1, SIZE(centers(a)%radii)
+               density(:) = density + map%fourier(a)%values(:, ir, channel)* &
+                            centers(a)%weights(ir)*centers(a)%density(ir, channel)
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE upf_inverse_coulomb_density
 
 ! **************************************************************************************************
 !> \brief Complete periodic Coulomb functional for a Fourier background and signed centered fields.
