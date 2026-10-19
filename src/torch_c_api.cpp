@@ -11,11 +11,13 @@
 #if defined(__LIBTORCH_CUDA)
 #include <ATen/cuda/CUDAContextLight.h>
 #include <c10/cuda/CUDAAllocatorConfig.h>
+#include <c10/util/env.h>
 #endif
 #include <c10/core/DeviceGuard.h>
 #include <torch/csrc/api/include/torch/cuda.h>
 #include <torch/csrc/jit/passes/freeze_module.h>
 #include <torch/csrc/jit/passes/inliner.h>
+#include <torch/csrc/jit/runtime/graph_executor.h>
 #include <torch/script.h>
 
 #include "offload/offload_library.h"
@@ -96,15 +98,43 @@ private:
   bool active_;
 };
 
+// Keep native density derivatives independent of CUDA execution-plan warmup.
+class TorchDifferentialGuard {
+public:
+  explicit TorchDifferentialGuard(bool active)
+      : active_(active), optimize_(torch::jit::getGraphExecutorOptimize()),
+        deterministic_(at::globalContext().deterministicAlgorithms()),
+        warn_only_(at::globalContext().deterministicAlgorithmsWarnOnly()) {
+    if (active_) {
+      torch::jit::setGraphExecutorOptimize(false);
+      at::globalContext().setDeterministicAlgorithms(true, false);
+    }
+  }
+  ~TorchDifferentialGuard() {
+    if (active_) {
+      at::globalContext().setDeterministicAlgorithms(deterministic_,
+                                                     warn_only_);
+      torch::jit::setGraphExecutorOptimize(optimize_);
+    }
+  }
+
+private:
+  bool active_, optimize_, deterministic_, warn_only_;
+};
+
 /*******************************************************************************
  * \brief Internal helper for selecting the CUDA device when available.
  * \author Ole Schuett
  ******************************************************************************/
 static bool use_cuda_if_available = true;
 
-static void enable_expandable_cuda_segments_if_unconfigured() {
+static void initialize_cuda_settings_if_unconfigured() {
 #if defined(__LIBTORCH_CUDA)
   static const bool initialized = []() {
+    const char *workspace = std::getenv("CUBLAS_WORKSPACE_CONFIG");
+    if (workspace == nullptr || workspace[0] == '\0') {
+      c10::utils::set_env("CUBLAS_WORKSPACE_CONFIG", ":4096:8");
+    }
     const char *legacy_config = std::getenv("PYTORCH_CUDA_ALLOC_CONF");
     const char *config = std::getenv("PYTORCH_ALLOC_CONF");
     if ((legacy_config == nullptr || legacy_config[0] == '\0') &&
@@ -153,7 +183,7 @@ static torch::Device get_device() {
   if (!use_cuda_if_available || !torch::cuda::is_available()) {
     return torch::kCPU;
   }
-  enable_expandable_cuda_segments_if_unconfigured();
+  initialize_cuda_settings_if_unconfigured();
   const auto device_count = torch::cuda::device_count();
   if (device_count <= 0) {
     return torch::kCPU;
@@ -580,6 +610,7 @@ void torch_c_tensor_backward_scalar(const torch_c_tensor_t *tensor) {
   TorchFloatingPointMaskGuard fpe_guard;
   c10::OptionalDeviceGuard guard;
   get_device_with_guard(guard);
+  TorchDifferentialGuard differential_guard(tensor->is_cuda());
   tensor->backward();
 }
 
@@ -833,7 +864,8 @@ void torch_c_model_forward_mol_tensor(torch_c_model_t *model,
 
   TorchFloatingPointMaskGuard fpe_guard;
   c10::OptionalDeviceGuard guard;
-  get_device_with_guard(guard);
+  const auto device = get_device_with_guard(guard);
+  TorchDifferentialGuard differential_guard(device.is_cuda());
   assert(*output == NULL);
   *output = new torch_c_tensor_t(
       model->get_method(method_name)({*inputs}).toTensor());
