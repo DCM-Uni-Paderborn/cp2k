@@ -10,9 +10,12 @@
 ! **************************************************************************************************
 PROGRAM upf_inverse_unittest
    USE atom_upf,                        ONLY: atom_upfpot_type
+   USE atomic_kind_types,               ONLY: atomic_kind_type
+   USE basis_set_container_types,       ONLY: add_basis_set_to_container
    USE basis_set_types,                 ONLY: allocate_gto_basis_set,&
                                               deallocate_gto_basis_set,&
                                               gto_basis_set_type
+   USE cell_types,                      ONLY: cell_type
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_evaluate,&
@@ -29,6 +32,8 @@ PROGRAM upf_inverse_unittest
    USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
                                               ieee_value
    USE kinds,                           ONLY: dp
+   USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
+                                              lebedev_grid
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
    USE message_passing,                 ONLY: mp_comm_type,&
@@ -36,6 +41,7 @@ PROGRAM upf_inverse_unittest
                                               mp_world_init
    USE orbital_pointers,                ONLY: init_orbital_pointers,&
                                               ncoset
+   USE particle_types,                  ONLY: particle_type
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_ae_cartesian,&
                                               paw_core_kinetic_type,&
                                               paw_core_radial_slopes,&
@@ -44,8 +50,12 @@ PROGRAM upf_inverse_unittest
                                               paw_xc_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_harmonics_atom,               ONLY: harmonics_atom_type
+   USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_operators,&
-                                              qs_upf_inverse_atomic_overlap
+                                              qs_upf_inverse_atomic_overlap,&
+                                              qs_upf_inverse_evaluate,&
+                                              qs_upf_inverse_prepare,&
+                                              qs_upf_inverse_response
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_density_radial,&
                                               qs_upf_inverse_density_radial_adjoint,&
                                               qs_upf_inverse_kinetic_center,&
@@ -56,6 +66,7 @@ PROGRAM upf_inverse_unittest
                                               qs_upf_inverse_paw_operator
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_type
+   USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
                                               skala_constraint_chart_create,&
                                               skala_constraint_chart_restore,&
@@ -86,6 +97,7 @@ PROGRAM upf_inverse_unittest
         upf_inverse_lattice_response_residual, upf_inverse_lattice_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
                                               upf_inverse_density_residual,&
+                                              upf_inverse_pair,&
                                               upf_inverse_projector_density,&
                                               upf_inverse_semilocal_pair,&
                                               upf_inverse_semilocal_residual,&
@@ -95,6 +107,7 @@ PROGRAM upf_inverse_unittest
                                               upf_projector_overlap,&
                                               upf_projector_type
    USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
+                                              upf_radial_fields_periodic,&
                                               upf_radial_fields_type
    USE upf_types,                       ONLY: upf_radial_weights
    USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
@@ -127,7 +140,6 @@ PROGRAM upf_inverse_unittest
    CALL check_paw_core_fields()
    CALL check_nc_fields()
    CALL check_kinetic_fields()
-   CALL check_atomic_projectors()
    CALL check_gaussian_fields()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
@@ -1150,7 +1162,9 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Atomic hard-projector orientation, full kinetic matrix and exact NC reduction.
 ! **************************************************************************************************
-   SUBROUTINE check_atomic_projectors()
+   SUBROUTINE check_atomic_projectors(comm)
+      TYPE(mp_comm_type), INTENT(IN)                     :: comm
+
       INTEGER, PARAMETER                                 :: nb = 3, np = 5, nr = 33
 
       COMPLEX(dp) :: coefficient_overlap(np, 2), coefficient_response(np, 2), &
@@ -1256,11 +1270,13 @@ CONTAINS
       CALL allocate_gto_basis_set(basis)
       basis%nset = 1
       basis%nsgf = 2
-      ALLOCATE (basis%lmax(1), basis%npgf(1), basis%nshell(1), basis%first_sgf(1, 1), &
+      ALLOCATE (basis%lmax(1), basis%npgf(1), basis%nsgf_set(1), basis%nshell(1), basis%l(1, 1), basis%first_sgf(1, 1), &
                 basis%last_sgf(1, 1), basis%zet(2, 1), basis%sphi(2, 2))
       basis%lmax = 0
       basis%npgf = 2
+      basis%nsgf_set = 2
       basis%nshell = 1
+      basis%l = 0
       basis%first_sgf = 1
       basis%last_sgf = 2
       basis%zet(:, 1) = [0.4_dp, 0.9_dp]
@@ -1424,6 +1440,7 @@ CONTAINS
                             local_metric_response(3:4, 3:4))), 'Relative Gaussian-center metric response', 3.e-9_dp)
       CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, ao_center, cell, images, -reduced_k, samples(:, :, 1))
       CALL check(MAXVAL(ABS(samples(:, :, 1) - CONJG(overlap))), 'Atomic hard projector time reversal')
+      CALL check_nc_atomic_coupling(pot, basis, frame%q, comm)
       CALL deallocate_gto_basis_set(basis)
       pot%pseudo_type = "NC"
       pot%is_ultrasoft = .FALSE.
@@ -1440,6 +1457,144 @@ CONTAINS
                  MAXVAL(ABS(atomic%hard%d - original%d)) + MAXVAL(ABS(atomic%kinetic)) + MAXVAL(ABS(atomic%metric)), &
                  'Atomic inverse reduces exactly to original NC projectors', 0.0_dp)
    END SUBROUTINE check_atomic_projectors
+
+! **************************************************************************************************
+!> \brief Mixed NC projectors retain their overlap with a neighboring periodic reconstruction.
+! **************************************************************************************************
+   SUBROUTINE check_nc_atomic_coupling(pot, basis, metric, comm)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(gto_basis_set_type), POINTER                  :: basis
+      COMPLEX(dp), INTENT(IN)                            :: metric(:, :)
+      TYPE(mp_comm_type), INTENT(IN)                     :: comm
+
+      COMPLEX(dp), ALLOCATABLE :: beta(:, :), chi(:, :), correction(:, :), density(:, :), &
+         dw(:, :), gradient(:, :, :), op(:, :), original(:, :), samples(:, :, :), soft(:, :)
+      INTEGER                                            :: i, images(3, 3), info, ir, j, np, &
+                                                            npoint, row, rule, side
+      REAL(dp)                                           :: atom_response(3, 2), dc(3, 3), &
+                                                            derivative, dk(3), empty_points(3, 0), &
+                                                            empty_weights(0), energies(2), k(3), &
+                                                            shift
+      REAL(dp), ALLOCATABLE                              :: points(:, :), radial_weights(:), &
+                                                            weights(:)
+      TYPE(atomic_kind_type), TARGET                     :: atomic_kinds(2)
+      TYPE(cell_type)                                    :: cell, shifted_cell
+      TYPE(particle_type)                                :: atoms(2)
+      TYPE(qs_kind_type)                                 :: kinds(2)
+      TYPE(qs_upf_inverse_type)                          :: frame, shifted
+      TYPE(qs_uspp_type)                                 :: uspp
+
+      np = SIZE(metric, 1)
+      DO i = 1, 2
+         atomic_kinds(i)%kind_number = i
+         atoms(i)%atomic_kind => atomic_kinds(i)
+         CALL add_basis_set_to_container(kinds(i)%basis_sets, basis, 'ORB')
+         ALLOCATE (kinds(i)%sgp_potential)
+         ALLOCATE (kinds(i)%sgp_potential%upf_data, SOURCE=pot)
+         CALL upf_projector_init(pot, 3, kinds(i)%sgp_potential%upf_projectors)
+      END DO
+      ASSOCIATE (nc => kinds(2)%sgp_potential%upf_data)
+         nc%pseudo_type = 'NC'
+         nc%is_ultrasoft = .FALSE.
+         nc%qij = 0.0_dp
+         DEALLOCATE (nc%partial_waves)
+      END ASSOCIATE
+      ALLOCATE (uspp%center_atoms(1), uspp%center_kinds(1), uspp%augmentation(2))
+      uspp%center_atoms = 1
+      uspp%center_kinds = 1
+      ALLOCATE (uspp%augmentation(1)%q, SOURCE=REAL(metric, dp))
+      cell%hmat = 0.0_dp
+      DO i = 1, 3
+         cell%hmat(i, i) = 3.6_dp + 0.2_dp*i
+      END DO
+      cell%perd = 1
+      atoms(1)%r = [0.2_dp, -0.1_dp, 0.3_dp]
+      atoms(2)%r = atoms(1)%r + [3.4_dp, 0.3_dp, 0.1_dp]
+      images = 0
+      images(1, :) = [-1, 0, 1]
+      k = [0.23_dp, -0.17_dp, 0.11_dp]
+      dk = [0.004_dp, -0.002_dp, 0.003_dp]
+      dc = RESHAPE([(0.002_dp*i, i=1, 9)], [3, 3])
+      atom_response(:, 1) = [0.01_dp, -0.02_dp, 0.03_dp]
+      atom_response(:, 2) = [-0.02_dp, 0.03_dp, 0.01_dp]
+      CALL qs_upf_inverse_prepare(kinds, atoms, cell, uspp, empty_points, empty_weights, images, k, &
+                                  comm, frame, info, atom_local=.TRUE., store_fields=.FALSE.)
+      IF (info /= 0) ERROR STOP 'Mixed NC atomic frame rejected'
+      ALLOCATE (original(np, 4), dw(2*np, 4), samples(2*np, 4, 2), density(4, 4), op(4, 4))
+      DO i = 1, 2
+         CALL qs_upf_inverse_atomic_overlap(basis, frame%atomic_cache(2)%hard, atoms(2)%r, atoms(i)%r, &
+                                            cell%hmat, images, k, original(:, 2*i - 1:2*i))
+      END DO
+      IF (MAXVAL(ABS(original - frame%coefficients(np + 1:, :))) < 1.e-6_dp) ERROR STOP 'NC coupling not exercised'
+      rule = get_number_of_lebedev_grid(n=kinds(1)%ngrid_ang)
+      npoint = SIZE(pot%r)*SIZE(lebedev_grid(rule)%w)
+      ALLOCATE (points(3, npoint), weights(npoint), beta(npoint, np), chi(npoint, 4), soft(npoint, 4), &
+                gradient(npoint, 4, 3), correction(np, 4))
+      radial_weights = upf_radial_weights(pot)*pot%r**2
+      row = 0
+      DO ir = 1, SIZE(pot%r)
+         DO j = 1, SIZE(lebedev_grid(rule)%w)
+            row = row + 1
+            points(:, row) = atoms(1)%r + pot%r(ir)*lebedev_grid(rule)%r(:, j)
+            weights(row) = radial_weights(ir)*fourpi*lebedev_grid(rule)%w(j)
+         END DO
+      END DO
+      CALL upf_radial_fields_periodic(frame%beta_cache(2), points, atoms(2)%r, cell%hmat, images, k, beta)
+      DO i = 1, 2
+         CALL gaussian_basis_fields_periodic(basis, points, atoms(i)%r, cell%hmat, images, k, chi(:, 2*i - 1:2*i))
+      END DO
+      CALL qs_upf_inverse_evaluate(frame, points, soft, gradient)
+      CALL upf_inverse_pair(beta, chi - soft, weights, correction)
+      CALL check(MAXVAL(ABS(original - frame%coefficients(np + 1:, :) - correction)), &
+                 'NC bra agrees with the reconstructed-orbital difference integral')
+      CALL qs_upf_inverse_response(frame, empty_points, atom_response, dc, dk, empty_weights, dw)
+      DO j = 1, 4
+         DO i = 1, 4
+            density(i, j) = CMPLX(0.1_dp*COS(REAL(i - j, dp)), 0.05_dp*SIN(REAL(i - j, dp)), dp)
+         END DO
+         density(j, j) = density(j, j) + 0.8_dp
+      END DO
+      derivative = 2.0_dp*REAL(SUM(CONJG(dw(np + 1:, :))* &
+                                   MATMUL(frame%atomic_cache(2)%hard%d, &
+                                          MATMUL(frame%coefficients(np + 1:, :), density))), dp)
+      DO side = 1, 2
+         shift = REAL(2*side - 3, dp)*step
+         DO i = 1, 2
+            atoms(i)%r = frame%positions(:, i) + shift*atom_response(:, i)
+         END DO
+         shifted_cell = cell
+         shifted_cell%hmat = cell%hmat + shift*dc
+         CALL qs_upf_inverse_prepare(kinds, atoms, shifted_cell, uspp, empty_points, empty_weights, images, k + shift*dk, &
+                                     comm, shifted, info, atom_local=.TRUE., store_fields=.FALSE.)
+         IF (info /= 0) ERROR STOP 'Displaced mixed NC atomic frame rejected'
+         samples(:, :, side) = shifted%coefficients
+         op = MATMUL(CONJG(TRANSPOSE(shifted%coefficients(np + 1:, :))), &
+                     MATMUL(frame%atomic_cache(2)%hard%d, shifted%coefficients(np + 1:, :)))
+         energies(side) = REAL(SUM(density*TRANSPOSE(op)), dp)
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, :, 2) - samples(:, :, 1))/(2.0_dp*step) - dw)), &
+                 'Mixed NC atomic/cell/Bloch coefficient response', 3.e-9_dp)
+      CALL check(ABS((energies(2) - energies(1))/(2.0_dp*step) - derivative), &
+                 'Both transformed NC nonlocal factors contribute to the geometry derivative', 3.e-9_dp)
+      DO i = 1, 2
+         atoms(i)%r = frame%positions(:, i)
+      END DO
+      CALL qs_upf_inverse_prepare(kinds, atoms, cell, uspp, empty_points, empty_weights, images, -k, &
+                                  comm, shifted, info, atom_local=.TRUE., store_fields=.FALSE.)
+      IF (info /= 0) ERROR STOP 'Time-reversed mixed NC frame rejected'
+      CALL check(MAXVAL(ABS(shifted%coefficients - CONJG(frame%coefficients))), 'Mixed NC time reversal')
+      kinds(2)%sgp_potential%upf_data = pot
+      DEALLOCATE (uspp%center_atoms, uspp%center_kinds)
+      ALLOCATE (uspp%center_atoms, SOURCE=[1, 2])
+      ALLOCATE (uspp%center_kinds, SOURCE=[1, 2])
+      ALLOCATE (uspp%augmentation(2)%q, SOURCE=REAL(metric, dp))
+      CALL qs_upf_inverse_prepare(kinds, atoms, cell, uspp, empty_points, empty_weights, images, k, &
+                                  comm, shifted, info, atom_local=.TRUE., store_fields=.FALSE.)
+      IF (info /= -2) ERROR STOP 'Active reconstruction overlap was accepted'
+      DO i = 1, 2
+         DEALLOCATE (kinds(i)%sgp_potential)
+      END DO
+   END SUBROUTINE check_nc_atomic_coupling
 
 ! **************************************************************************************************
 !> \brief Independent kinetic augmentation, noncompact PS support and its Cartesian response.
@@ -2649,6 +2804,7 @@ CONTAINS
          END DO
       END DO
       CALL mp_world_init(comm)
+      CALL check_atomic_projectors(comm)
       unit = -1
       IF (comm%mepos == 0) CALL open_file(file_name='t_c_g.dat', unit_number=unit)
       CALL init_truncated(3, unit, comm%mepos, comm)

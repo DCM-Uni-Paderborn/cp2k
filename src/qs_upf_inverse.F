@@ -15,10 +15,17 @@ MODULE qs_upf_inverse
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
    USE kinds,                           ONLY: dp,&
                                               int_8
-   USE mathconstants,                   ONLY: twopi
+   USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
+                                              init_lebedev_grids,&
+                                              lebedev_grid
+   USE mathconstants,                   ONLY: fourpi,&
+                                              twopi
    USE message_passing,                 ONLY: mp_comm_type
    USE orbital_pointers,                ONLY: coset,&
+                                              indco,&
+                                              nco,&
                                               ncoset
+   USE orbital_transformation_matrices, ONLY: orbtramat
    USE particle_types,                  ONLY: particle_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
@@ -316,6 +323,7 @@ CONTAINS
                              .NOT. pot%is_ultrasoft .AND. .NOT. pot%is_paw .AND. pot%number_of_proj > 0
          END ASSOCIATE
       END DO
+      ALLOCATE (frame%nc_kinds, SOURCE=nc_kind)
       ncenter = SIZE(uspp%center_atoms)
       DO atom = 1, SIZE(particles)
          IF (nc_kind(particles(atom)%atomic_kind%kind_number)) ncenter = ncenter + 1
@@ -407,6 +415,7 @@ CONTAINS
       IF (use_atomic) THEN
          IF (.NOT. frame%direct) CALL check_atomic_domains(frame, info)
          IF (info /= 0) RETURN
+         CALL prepare_nc_coupling_grid(frame, kinds)
          ALLOCATE (overlaps(nproj, nao))
          CALL atomic_coefficients(frame, overlaps)
          frame%coefficients(:, :) = overlaps
@@ -565,7 +574,7 @@ CONTAINS
    END SUBROUTINE defining_pairs
 
 ! **************************************************************************************************
-!> \brief Reject cross-center beta-Delta and Delta-Delta support in the local inverse.
+!> \brief Reject cross-center beta-Delta and Delta-Delta support between reconstructing centers.
 !> \param frame Original native centers, fields and explicitly supplied periodic images.
 !> \param info Zero for nonoverlap, -2 otherwise. No overlap term is silently discarded.
 ! **************************************************************************************************
@@ -584,6 +593,11 @@ CONTAINS
             kb = frame%center_kinds(b)
             rb = frame%delta_cache(kb)%radius
             IF (ra == 0.0_dp .AND. rb == 0.0_dp) CYCLE
+            IF (ALLOCATED(frame%nc_kinds)) THEN
+               ! An NC row has no reconstruction column. Its beta-Delta coupling
+               ! is retained explicitly rather than entering the active atomic inverse.
+               IF (frame%nc_kinds(ka) .OR. frame%nc_kinds(kb)) CYCLE
+            END IF
             radius = ra + rb
             IF (rb > 0.0_dp) radius = MAX(radius, frame%beta_cache(ka)%radius + rb)
             IF (ra > 0.0_dp) radius = MAX(radius, ra + frame%beta_cache(kb)%radius)
@@ -600,8 +614,155 @@ CONTAINS
    END SUBROUTINE check_atomic_domains
 
 ! **************************************************************************************************
+!> \brief Own the angular rule used by the finite NC beta-Delta integrals.
+!>        The active difference uses its original weighted radial nodes. Shifted NC
+!>        projectors use the same radial fields as the general inverse representation.
+!> \param frame Prepared scalar kinds, projector mapping and fixed radial caches.
+!> \param kinds Native requested atomic angular quadratures.
+! **************************************************************************************************
+   SUBROUTINE prepare_nc_coupling_grid(frame, kinds)
+      TYPE(qs_upf_inverse_type), INTENT(INOUT)           :: frame
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+
+      INTEGER                                            :: a, center, i, kind, l, lnc, m, p, &
+                                                            powers(3), rule
+
+      IF (frame%direct .OR. .NOT. ANY(frame%nc_kinds)) RETURN
+      IF (ALL(frame%delta_cache%radius == 0.0_dp)) RETURN
+      CALL init_lebedev_grids()
+      lnc = -1
+      DO kind = 1, SIZE(kinds)
+         IF (frame%nc_kinds(kind)) lnc = MAX(lnc, frame%beta_cache(kind)%lmax)
+      END DO
+      ALLOCATE (frame%nc_coupling_grid(SIZE(kinds)))
+      DO center = 1, SIZE(frame%center_atoms)
+         kind = frame%center_kinds(center)
+         IF (frame%delta_cache(kind)%radius == 0.0_dp) CYCLE
+         IF (ALLOCATED(frame%nc_coupling_grid(kind)%directions)) CYCLE
+         rule = MAX(get_number_of_lebedev_grid(n=kinds(kind)%ngrid_ang), &
+                    get_number_of_lebedev_grid(l=frame%delta_cache(kind)%lmax + lnc + 1))
+         ASSOCIATE (grid => frame%nc_coupling_grid(kind), radial => frame%atomic_cache(kind)%difference)
+            ALLOCATE (grid%directions, SOURCE=lebedev_grid(rule)%r)
+            ALLOCATE (grid%weighted_harmonics(SIZE(lebedev_grid(rule)%w), radial%nproj), SOURCE=0.0_dp)
+            DO p = 1, radial%nproj
+               l = radial%lbeta(radial%radial_index(p))
+               m = radial%angular_index(p) - l*l
+               DO a = 1, nco(l)
+                  powers = indco(:, ncoset(l - 1) + a)
+                  DO i = 1, SIZE(lebedev_grid(rule)%w)
+                     grid%weighted_harmonics(i, p) = grid%weighted_harmonics(i, p) + &
+                                                     orbtramat(l)%slm(m, a)*PRODUCT(grid%directions(:, i)**powers)
+                  END DO
+               END DO
+               grid%weighted_harmonics(:, p) = fourpi*lebedev_grid(rule)%w*grid%weighted_harmonics(:, p)
+            END DO
+         END ASSOCIATE
+      END DO
+   END SUBROUTINE prepare_nc_coupling_grid
+
+! **************************************************************************************************
+!> \brief Retain NC nonlocal projectors in an otherwise atom-local inverse.
+!>        For active W_R and passive NC rows, W_N=B_N-C_NR*W_R with
+!>        C_NR=<beta_N|Delta_R>. Differentiate the same compact atomic integral,
+!>        including its moving center, physical images and Bloch phases.
+!> \param frame Original geometry and owned active-center quadrature.
+!> \param coefficients Atomic hard overlaps, with original NC overlaps on entry.
+!> \param response Optional joint coefficient response, corrected in place.
+!> \param atom_response Nuclear and Gaussian-center motion, required with response.
+!> \param cell_response Cell-vector motion, required with response.
+!> \param reduced_k_response Reduced Bloch-vector motion, required with response.
+! **************************************************************************************************
+   SUBROUTINE nc_projector_correction(frame, coefficients, response, atom_response, cell_response, reduced_k_response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      COMPLEX(dp), INTENT(INOUT)                         :: coefficients(:, :)
+      COMPLEX(dp), INTENT(INOUT), OPTIONAL               :: response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: beta(:, :), coupling(:, :), dbeta(:, :), &
+                                                            dcoupling(:, :)
+      INTEGER                                            :: active, atom, center, first, i, image, &
+                                                            ir, j, kind, last, na, nang, nc_atom, &
+                                                            nc_first, nc_kind, nc_last, nn
+      INTEGER, ALLOCATABLE                               :: images(:, :), selected(:)
+      LOGICAL, ALLOCATABLE                               :: intersects(:)
+      REAL(dp)                                           :: displacement(3), radius
+      REAL(dp), ALLOCATABLE                              :: point_response(:, :), points(:, :), &
+                                                            weighted_delta(:, :)
+
+      IF (.NOT. ALLOCATED(frame%nc_coupling_grid)) RETURN
+      ALLOCATE (intersects(SIZE(frame%images, 2)))
+      DO active = 1, SIZE(frame%center_atoms)
+         kind = frame%center_kinds(active)
+         IF (.NOT. ALLOCATED(frame%nc_coupling_grid(kind)%directions)) CYCLE
+         atom = frame%center_atoms(active)
+         first = frame%projector_first(active)
+         last = frame%projector_last(active)
+         na = last - first + 1
+         nang = SIZE(frame%nc_coupling_grid(kind)%directions, 2)
+         ALLOCATE (points(3, nang), weighted_delta(nang, na))
+         IF (PRESENT(response)) ALLOCATE (point_response(3, nang))
+         DO center = 1, SIZE(frame%center_atoms)
+            nc_kind = frame%center_kinds(center)
+            IF (.NOT. frame%nc_kinds(nc_kind)) CYCLE
+            nc_atom = frame%center_atoms(center)
+            radius = frame%delta_cache(kind)%radius + frame%beta_cache(nc_kind)%radius
+            DO image = 1, SIZE(frame%images, 2)
+               displacement = frame%positions(:, atom) - frame%positions(:, nc_atom) - &
+                              MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+               intersects(image) = SUM(displacement**2) < radius**2
+            END DO
+            IF (.NOT. ANY(intersects)) CYCLE
+            selected = PACK([(i, i=1, SIZE(intersects))], intersects)
+            ALLOCATE (images, SOURCE=frame%images(:, selected))
+            nc_first = frame%projector_first(center)
+            nc_last = frame%projector_last(center)
+            nn = nc_last - nc_first + 1
+            ALLOCATE (beta(nang, nn), coupling(nn, na), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+            IF (PRESENT(response)) ALLOCATE (dbeta(nang, nn), dcoupling(nn, na), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+            ASSOCIATE (grid => frame%nc_coupling_grid(kind), radial => frame%atomic_cache(kind)%difference)
+               DO ir = 1, SIZE(radial%r)
+                  IF (ALL(radial%weighted_beta(ir, :) == 0.0_dp)) CYCLE
+                  DO i = 1, nang
+                     points(:, i) = frame%positions(:, atom) + radial%r(ir)*grid%directions(:, i)
+                  END DO
+                  DO j = 1, na
+                     weighted_delta(:, j) = grid%weighted_harmonics(:, j)*radial%weighted_beta(ir, radial%radial_index(j))
+                  END DO
+                  IF (PRESENT(response)) THEN
+                     point_response(:, :) = SPREAD(atom_response(:, atom), 2, nang)
+                     CALL upf_radial_fields_periodic(frame%beta_cache(nc_kind), points, frame%positions(:, nc_atom), &
+                                                     frame%cell, images, frame%reduced_k, beta, response=dbeta, &
+                                                     points_response=point_response, center_response=atom_response(:, nc_atom), &
+                                                     cell_response=cell_response, reduced_k_response=reduced_k_response)
+                     dcoupling(:, :) = dcoupling + MATMUL(CONJG(TRANSPOSE(dbeta)), weighted_delta)
+                  ELSE
+                     CALL upf_radial_fields_periodic(frame%beta_cache(nc_kind), points, frame%positions(:, nc_atom), &
+                                                     frame%cell, images, frame%reduced_k, beta)
+                  END IF
+                  coupling(:, :) = coupling + MATMUL(CONJG(TRANSPOSE(beta)), weighted_delta)
+               END DO
+            END ASSOCIATE
+            IF (PRESENT(response)) THEN
+               response(nc_first:nc_last, :) = response(nc_first:nc_last, :) - &
+                                               MATMUL(dcoupling, coefficients(first:last, :)) - &
+                                               MATMUL(coupling, response(first:last, :))
+               DEALLOCATE (dbeta, dcoupling)
+            END IF
+            coefficients(nc_first:nc_last, :) = coefficients(nc_first:nc_last, :) - &
+                                                MATMUL(coupling, coefficients(first:last, :))
+            DEALLOCATE (beta, coupling, images)
+         END DO
+         DEALLOCATE (points, weighted_delta)
+         IF (ALLOCATED(point_response)) DEALLOCATE (point_response)
+      END DO
+   END SUBROUTINE nc_projector_correction
+
+! **************************************************************************************************
 !> \brief Native atom-local hard projector coefficients and their common geometry response.
-!>        The radial K is fixed. No grid measure, point motion or global inverse enters W.
+!>        The active radial K is fixed. NC rows also retain their beta-Delta coupling
+!>        and its response. No PW grid measure or additional collective enters W.
 !> \param frame Prepared original kinds, Gaussian bases, centers and physical-cell images.
 !> \param overlaps New hard projector bras against all Gaussian columns.
 !> \param response Optional joint response, required with all three geometry arguments.
@@ -654,6 +815,7 @@ CONTAINS
             END IF
          END DO
       END DO
+      CALL nc_projector_correction(frame, overlaps, response, atom_response, cell_response, reduced_k_response)
    END SUBROUTINE atomic_coefficients
 
 ! **************************************************************************************************

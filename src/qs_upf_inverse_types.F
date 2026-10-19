@@ -42,10 +42,16 @@ MODULE qs_upf_inverse_types
    IMPLICIT NONE
    PRIVATE
 
+   TYPE nc_coupling_grid_type
+      REAL(dp), ALLOCATABLE :: directions(:, :), weighted_harmonics(:, :)
+   END TYPE nc_coupling_grid_type
+
    TYPE qs_upf_inverse_type
       TYPE(upf_inverse_type) :: inverse
       LOGICAL :: atom_local = .FALSE., direct = .FALSE., fields_stored = .TRUE.
       TYPE(upf_inverse_atomic_type), ALLOCATABLE :: atomic_cache(:)
+      LOGICAL, ALLOCATABLE :: nc_kinds(:)
+      TYPE(nc_coupling_grid_type), ALLOCATABLE :: nc_coupling_grid(:)
       TYPE(mp_comm_type) :: point_comm
       ! Bases are borrowed from the live Quickstep environment; radial caches and fields are owned.
       TYPE(gto_basis_set_p_type), ALLOCATABLE :: bases(:)
