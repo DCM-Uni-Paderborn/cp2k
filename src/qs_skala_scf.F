@@ -102,7 +102,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_admissibility, qs_skala_scf_classify
    PUBLIC :: qs_skala_scf_release_cusp
    PUBLIC :: qs_skala_scf_accept
-   PUBLIC :: qs_skala_scf_coordinate_scales
+   PUBLIC :: qs_skala_scf_coordinate_scales, qs_skala_scf_fermi_target
    INTEGER, PARAMETER, PUBLIC :: qs_skala_positive_density_sum = -2
 
    INTEGER(KIND=int_8), PARAMETER :: max_point_operator_bytes = 64_int_8*1024*1024
@@ -3448,6 +3448,45 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: chemical_potentials(:)
       LOGICAL, INTENT(OUT)                               :: valid
 
+      INTEGER                                            :: n, nk, ns
+      REAL(dp)                                           :: error_bound
+      TYPE(scf_control_type), POINTER                    :: control
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+
+      CALL qs_skala_scf_fermi_target(state, fermi_error, omitted_number, chemical_potentials, valid)
+      IF (.NOT. valid) RETURN
+      frame => state%inverse%frame%ao
+      IF (state%bloch) frame => state%inverse%bloch%frames(1)%ao
+      n = SIZE(frame%coefficients, 2)
+      nk = SIZE(state%dimensions, 1)
+      ns = SIZE(state%orbitals, 2)
+      CALL get_qs_env(state%qs_env, scf_control=control)
+      error_bound = MAX(tolerance/state%temperature, 64.0_dp*EPSILON(1.0_dp)*SQRT(REAL(n*nk*ns, dp)))
+      valid = fermi_error <= error_bound .AND. omitted_number <= control%smear%eps_fermi_dirac
+   END SUBROUTINE thermal_density_stationarity
+
+! **************************************************************************************************
+!> \brief Assemble the complete frozen-Hamiltonian Fermi density in the original charge metric.
+!>        Use the same spin/particle-number groups and positive k-point weights as native OT.
+!>        The optional density contains unweighted AO matrices. No MOs, fields, energies or
+!>        convergence criteria are changed. A finite nonlinear trial must still be checked.
+!> \param state Evaluated thermal state with the current native Hamiltonian.
+!> \param fermi_error Weighted Frobenius distance in the complete normalized Gaussian space.
+!> \param omitted_number Fermi charge outside the retained MO spaces.
+!> \param chemical_potentials Fermi levels of the original particle-number groups.
+!> \param valid Whether every full-space diagonalization and filling succeeded.
+!> \param density Optional complete Fermi density, indexed by AO, AO, k point and spin.
+!> \param model_delta Optional frozen-H free-energy change, including the original entropy.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_fermi_target(state, fermi_error, omitted_number, chemical_potentials, valid, &
+                                         density, model_delta)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(OUT)                              :: fermi_error, omitted_number
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: chemical_potentials(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: density(:, :, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                     :: model_delta
+
       COMPLEX(dp), ALLOCATABLE                           :: hamiltonian(:, :), projected(:, :), &
                                                             residual(:, :), vectors(:, :, :, :), &
                                                             weighted(:, :), work(:)
@@ -3457,14 +3496,15 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: dimensions(:, :), groups(:), indices(:), &
                                                             offsets(:, :)
       LOGICAL                                            :: owner
-      REAL(dp)                                           :: correction, error_bound, weight
+      REAL(dp)                                           :: correction, reference_energy, &
+                                                            target_entropy, weight
       REAL(dp), ALLOCATABLE                              :: energies(:, :), filled(:, :), &
                                                             mesh_weights(:), occupations(:), &
                                                             real_work(:), spectrum(:, :, :)
       TYPE(dbcsr_p_type), POINTER                        :: matrices(:, :)
-      TYPE(scf_control_type), POINTER                    :: control
 
-      CPASSERT(state%thermal)
+      CPASSERT(state%thermal .AND. state%evaluated .AND. state%operator_current)
+      IF (PRESENT(model_delta)) model_delta = HUGE(0.0_dp)
       valid = .FALSE.
       fermi_error = 0.0_dp
       omitted_number = 0.0_dp
@@ -3490,6 +3530,7 @@ CONTAINS
          CALL get_ks_env(state%ks_env, matrix_ks_kp=matrices)
       END IF
       failed = 0
+      reference_energy = 0.0_dp
       DO spin = 1, ns
          DO local = 1, nl
             IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
@@ -3503,6 +3544,12 @@ CONTAINS
             IF (.NOT. owner) CYCLE
             projected = MATMUL(CONJG(TRANSPOSE(state%orbitals(local, spin)%coefficients)), &
                                MATMUL(hamiltonian, state%orbitals(local, spin)%coefficients))
+            IF (PRESENT(model_delta)) THEN
+               DO i = 1, n
+                  reference_energy = reference_energy + state%orbitals(local, spin)%weight* &
+                                     state%orbitals(local, spin)%occupations(i)*REAL(projected(i, i), dp)
+               END DO
+            END IF
             vectors(:, :, local, spin) = 0.5_dp*(projected + CONJG(TRANSPOSE(projected)))
             CALL zheev('V', 'U', n, vectors(:, :, local, spin), n, spectrum(:, ik, spin), &
                        work, SIZE(work), real_work, info)
@@ -3512,6 +3559,7 @@ CONTAINS
       END DO
       CALL state%para_env%max(failed)
       IF (failed /= 0) RETURN
+      IF (PRESENT(model_delta)) CALL state%para_env%sum(reference_energy)
       CALL state%para_env%sum(spectrum)
       CALL state%para_env%sum(dimensions)
       count = 0
@@ -3535,15 +3583,20 @@ CONTAINS
             mesh_weights(first:last) = weight
          END DO
       END DO
+      target_entropy = 0.0_dp
       DO group = 1, SIZE(state%thermal_targets)
          indices = PACK([(i, i=1, count)], groups == group)
          ALLOCATE (filled(1, SIZE(indices)))
          CALL Smearkp(filled, chemical_potentials(group), correction, energies(:, indices), state%thermal_targets(group), &
                       mesh_weights(indices), state%temperature, state%maxocc, smear_fermi_dirac)
          occupations(indices) = filled(1, :)
+         target_entropy = target_entropy + correction
          DEALLOCATE (filled)
       END DO
       ALLOCATE (weighted(n, n), residual(n, n))
+      IF (PRESENT(density)) THEN
+         ALLOCATE (density(n, n, nk, ns), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      END IF
       DO spin = 1, ns
          DO local = 1, nl
             IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
@@ -3555,6 +3608,11 @@ CONTAINS
                weighted(:, i) = occupations(first + i - 1)*vectors(:, i, local, spin)
             END DO
             residual = MATMUL(weighted, CONJG(TRANSPOSE(vectors(:, :, local, spin))))
+            IF (PRESENT(density)) THEN
+               density(:, :, ik, spin) = MATMUL(state%orbitals(local, spin)%coefficients, &
+                                               MATMUL(residual, CONJG(TRANSPOSE( &
+                                                                      state%orbitals(local, spin)%coefficients))))
+            END IF
             weight = state%orbitals(local, spin)%weight
             retained = state%orbitals(local, spin)%native%nmo
             DO i = retained + 1, n
@@ -3569,9 +3627,13 @@ CONTAINS
       CALL state%para_env%sum(fermi_error)
       CALL state%para_env%sum(omitted_number)
       fermi_error = SQRT(MAX(0.0_dp, fermi_error))
-      CALL get_qs_env(state%qs_env, scf_control=control)
-      error_bound = MAX(tolerance/state%temperature, 64.0_dp*EPSILON(1.0_dp)*SQRT(REAL(n*nk*ns, dp)))
-      valid = fermi_error <= error_bound .AND. omitted_number <= control%smear%eps_fermi_dirac
-   END SUBROUTINE thermal_density_stationarity
+      IF (PRESENT(density)) CALL state%para_env%sum(density)
+      IF (PRESENT(model_delta)) THEN
+         ! Frozen-H free-energy change. The nonlinear XC energy is evaluated by the caller.
+         model_delta = SUM(mesh_weights*occupations*energies(1, :)) + target_entropy - &
+                       reference_energy - state%entropy
+      END IF
+      valid = .TRUE.
+   END SUBROUTINE qs_skala_scf_fermi_target
 
 END MODULE qs_skala_scf
