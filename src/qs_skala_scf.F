@@ -498,6 +498,23 @@ CONTAINS
    END SUBROUTINE install_native_trial
 
 ! **************************************************************************************************
+!> \brief Check whether the requested coordinates are already installed in the native state.
+!> \param state Native orbital state.
+!> \param coordinate Requested normalized orbital coordinates.
+!> \return Whether the evaluated native state represents these exact coordinates.
+! **************************************************************************************************
+   FUNCTION at_native_coordinate(state, coordinate) RESULT(current)
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      LOGICAL                                            :: current
+
+      current = .FALSE.
+      IF (.NOT. state%evaluated) RETURN
+      IF (SIZE(state%coordinate) /= SIZE(coordinate)) RETURN
+      current = ALL(state%coordinate == coordinate)
+   END FUNCTION at_native_coordinate
+
+! **************************************************************************************************
 !> \brief Sample the original physical fields without evaluating the learned XC model.
 !>        The partial energy and KS operator are invalid. A later energy callback rebuilds both.
 !> \param state ...
@@ -507,7 +524,9 @@ CONTAINS
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
 
-      CALL install_native_trial(state, coordinate)
+      IF (.NOT. at_native_coordinate(state, coordinate)) THEN
+         CALL install_native_trial(state, coordinate)
+      END IF
       CALL skala_density_samples_begin(state%constraints, descriptors_only=.TRUE.)
       CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
       CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.TRUE., print_active=.FALSE.)
@@ -1864,8 +1883,9 @@ CONTAINS
 !>        Every constraint and energy trial reevaluates the original native fields and functional.
 !>        The caller's selected limiting derivatives remain in effect. Convergence does not
 !>        establish normal cusp admissibility, tangential stability or automatic active-set SCF.
-!>        On failure retain the supplied coordinates. A stop or crossing event returns the last
-!>        accepted feasible coordinates. An explicit retain_progress request also keeps the last
+!>        On failure retain the supplied coordinates. A stop or raw crossing returns the last
+!>        accepted feasible coordinates. Automatic admission returns the verified downhill root.
+!>        An explicit retain_progress request also keeps the last
 !>        accepted state on other failures. In each case restore their native MOs, P, fields and
 !>        KS operator. On success these quantities describe the returned stationary coordinates.
 !> \param state ...
@@ -1993,8 +2013,16 @@ CONTAINS
                                           check_stalled_segment=check_native_stall, coordinate_scales=coordinate_scales, &
                                           curvature_steps=state%thermal, check_curvature_segment=check_native_curvature, &
                                           precondition=evaluate_native_preconditioner)
+      IF (context%admit_crossings .AND. ASSOCIATED(context%crossings)) THEN
+         IF (context%crossings%resolved) THEN
+            ! Classification has already verified this downhill root in the native fields.
+            coordinate(:) = context%crossings%root
+            CPASSERT(at_native_coordinate(state, coordinate))
+            CPASSERT(state%operator_current)
+         END IF
+      END IF
       ALLOCATE (gradient(SIZE(coordinate)))
-      CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
+      CALL evaluate_limiting_state(state, coordinate, energy, gradient, at_native_coordinate(state, coordinate))
       IF (PRESENT(rechart)) THEN
          rechart = context%rechart
          IF (state%thermal .AND. ANY(coordinate /= origin)) rechart = .TRUE.
@@ -2511,8 +2539,7 @@ CONTAINS
       keep = .FALSE.
       IF (PRESENT(retain)) keep = retain
       ALLOCATE (positive(n))
-      hold_orbitals = state%evaluated
-      IF (hold_orbitals) hold_orbitals = ALL(state%coordinate == coordinate)
+      hold_orbitals = at_native_coordinate(state, coordinate)
       IF (hold_orbitals .AND. state%operator_current) THEN
          energy = state%energy%total
       ELSE
@@ -2780,8 +2807,13 @@ CONTAINS
 
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
-         CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient, &
-                                    sample_inputs=SIZE(context%points, 2) > 0)
+         IF (SIZE(context%points, 2) > 0 .AND. at_native_coordinate(context%state, coordinate)) THEN
+            CALL evaluate_limiting_state(context%state, coordinate, energy, gradient, .TRUE.)
+            CALL native_orbital_covectors(context%state, gradient=gradient)
+         ELSE
+            CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient, &
+                                       sample_inputs=SIZE(context%points, 2) > 0)
+         END IF
       CLASS DEFAULT
          CPABORT("Invalid native Skala gradient context.")
       END SELECT
@@ -2820,7 +2852,11 @@ CONTAINS
             scales(:) = MAX(MAXVAL(ABS(physical), DIM=2), TINY(0.0_dp))
             normals(:, :) = TRANSPOSE(physical/SPREAD(scales, 2, n))
          END IF
-         CALL qs_skala_scf_evaluate(context%state, coordinate, energy, physical_gradient=gradient, sample_inputs=.FALSE.)
+         IF (m > 0) THEN
+            CALL evaluate_limiting_state(context%state, coordinate, energy, gradient, .TRUE.)
+         ELSE
+            CALL qs_skala_scf_evaluate(context%state, coordinate, energy, physical_gradient=gradient, sample_inputs=.FALSE.)
+         END IF
          IF (m > 0) THEN
             ! The fitted normal component is removed from the physical covector, not from
             ! its Cayley-coordinate derivative. Scaling each constraint preserves its units.
@@ -3214,7 +3250,9 @@ CONTAINS
          DEALLOCATE (selected, values, windows, admissible, sides)
       END DO
       IF (SIZE(pending) == 0) event%encountered = .FALSE.
-      CALL qs_skala_scf_evaluate(context%state, first, energy)
+      IF (.NOT. event%resolved) THEN
+         CALL qs_skala_scf_evaluate(context%state, first, energy)
+      END IF
    END SUBROUTINE classify_native_segment
 
 ! **************************************************************************************************
