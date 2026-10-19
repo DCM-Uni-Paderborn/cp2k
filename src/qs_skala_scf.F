@@ -2144,6 +2144,11 @@ CONTAINS
 
       n = qs_skala_scf_size(state)
       fixed_orbitals = .FALSE.
+      IF (state%evaluated) THEN
+         CPASSERT(SIZE(coordinate) == SIZE(state%coordinate))
+         ! Selecting derivatives must preserve an already checked physical boundary.
+         fixed_orbitals = ALL(state%coordinate == coordinate)
+      END IF
       IF (PRESENT(hold_orbitals)) fixed_orbitals = hold_orbitals
       restore = .TRUE.
       IF (PRESENT(restore_operator)) restore = restore_operator
@@ -2257,7 +2262,7 @@ CONTAINS
       ALLOCATE (positive(n), changes(n, m), predicted(n))
       CALL qs_skala_scf_limiting(state, coordinate, positive, changes, restore_operator=.FALSE.)
       CALL skala_density_constraints_balance(state%constraints, positive, changes, tolerance, predicted, balanced)
-      CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=balanced_gradient)
+      CALL evaluate_limiting_state(state, coordinate, energy, balanced_gradient, .TRUE.)
    END SUBROUTINE qs_skala_scf_balance
 
 ! **************************************************************************************************
