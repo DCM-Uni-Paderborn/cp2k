@@ -2936,7 +2936,7 @@ CONTAINS
       LOGICAL, INTENT(OUT) :: available
 
       COMPLEX(dp), ALLOCATABLE :: hamiltonian(:, :)
-      REAL(dp), ALLOCATABLE :: diagonal(:), block_inverse(:)
+      REAL(dp), ALLOCATABLE :: diagonal(:), block_inverse(:), gradient(:)
       TYPE(dbcsr_p_type), POINTER :: matrices(:, :)
       INTEGER :: i, offset, local, spin, ik, first, last
       LOGICAL :: owner
@@ -2951,7 +2951,11 @@ CONTAINS
          IF (.NOT. ASSOCIATED(context%state%qs_env%scf_env%qs_ot_env)) RETURN
          IF (SIZE(context%state%qs_env%scf_env%qs_ot_env) == 0) RETURN
          IF (.NOT. context%state%qs_env%scf_env%qs_ot_env(1)%settings%occupation_preconditioner) RETURN
-         CALL qs_skala_scf_evaluate(context%state, coordinate, energy)
+         IF (.NOT. context%state%evaluated .OR. .NOT. context%state%operator_current .OR. &
+             ANY(context%state%coordinate /= coordinate)) THEN
+            ALLOCATE (gradient(SIZE(coordinate)))
+            CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient)
+         END IF
          owner = context%state%para_env%mepos == 0
          IF (context%state%bloch) THEN
             owner = context%state%kpoints%para_env_kp%mepos == 0
