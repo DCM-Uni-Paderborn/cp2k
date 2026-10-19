@@ -2021,8 +2021,12 @@ CONTAINS
             CPASSERT(state%operator_current)
          END IF
       END IF
-      ALLOCATE (gradient(SIZE(coordinate)))
-      CALL evaluate_limiting_state(state, coordinate, energy, gradient, at_native_coordinate(state, coordinate))
+      IF (at_native_coordinate(state, coordinate) .AND. state%operator_current) THEN
+         energy = state%energy%total
+      ELSE
+         ALLOCATE (gradient(SIZE(coordinate)))
+         CALL evaluate_limiting_state(state, coordinate, energy, gradient, at_native_coordinate(state, coordinate))
+      END IF
       IF (PRESENT(rechart)) THEN
          rechart = context%rechart
          IF (state%thermal .AND. ANY(coordinate /= origin)) rechart = .TRUE.
