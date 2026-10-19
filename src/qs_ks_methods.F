@@ -154,6 +154,8 @@ MODULE qs_ks_methods
    USE rtp_admm_methods,                ONLY: rtp_admm_calc_rho_aux,&
                                               rtp_admm_merge_ks_matrix
    USE se_fock_matrix,                  ONLY: build_se_fock_matrix
+   USE skala_density_constraints,       ONLY: skala_density_constraints_type,&
+                                              skala_density_samples_only
    USE skala_gpw_functional,            ONLY: &
         ensure_native_skala_grid_scope, get_gauxc_section, &
         native_skala_gapw_atom_composite_requested, native_skala_gapw_composite_direct_ao, &
@@ -232,7 +234,7 @@ CONTAINS
          native_gapw_atom_composite_reference, native_gapw_atom_composite_requested, &
          native_gapw_composite_direct_ao, native_gapw_composite_reference, &
          native_gapw_periodic_atom_composite, native_grid_diagnostics, native_grid_use_cuda, &
-         native_skala_evaluator
+         native_skala_evaluator, skala_fields_only
       LOGICAL :: native_skala_restore_exc, paw_composite_representation, rigpw, use_gauxc_matrix, &
          use_virial
       LOGICAL, SAVE :: native_grid_cpu_kpoints_warned = .FALSE.
@@ -290,6 +292,7 @@ CONTAINS
                                                             adiabatic_rescaling_section, &
                                                             gauxc_section, hfx_sections, input, &
                                                             scf_section, xc_section
+      TYPE(skala_density_constraints_type), POINTER      :: skala_samples
       TYPE(virial_type), POINTER                         :: virial
 
       CALL timeset(routineN, handle)
@@ -369,6 +372,13 @@ CONTAINS
       END IF
 
       CALL qs_rho_get(rho, rho_r=rho_r, rho_ao_kp=rho_ao)
+
+      CALL get_ks_env(ks_env, skala_constraints=skala_samples)
+      skala_fields_only = .FALSE.
+      IF (ASSOCIATED(skala_samples)) skala_fields_only = skala_density_samples_only(skala_samples)
+      IF (skala_fields_only) THEN
+         CPASSERT(just_energy .AND. .NOT. calculate_forces)
+      END IF
 
       nimages = dft_control%nimages
       nspins = dft_control%nspins
@@ -498,8 +508,16 @@ CONTAINS
       END IF
 
       IF (inverse_coulomb) THEN
-         CALL qs_upf_inverse_coulomb_update(qs_env, energy%hartree, electronic_energy=energy%e_hartree)
-         CALL pw_copy(inverse%coulomb%potential_g, v_hartree_gspace)
+         IF (skala_fields_only) THEN
+            ! These probes consume only physical fields. The density counter leaves
+            ! the cached Coulomb operator invalid until the next full evaluation.
+            energy%hartree = 0.0_dp
+            energy%e_hartree = 0.0_dp
+            CALL pw_zero(v_hartree_gspace)
+         ELSE
+            CALL qs_upf_inverse_coulomb_update(qs_env, energy%hartree, electronic_energy=energy%e_hartree)
+            CALL pw_copy(inverse%coulomb%potential_g, v_hartree_gspace)
+         END IF
       ELSE IF (dft_control%do_sccs) THEN
          ! Self-consistent continuum solvation (SCCS) model
          NULLIFY (v_sccs_rspace)
