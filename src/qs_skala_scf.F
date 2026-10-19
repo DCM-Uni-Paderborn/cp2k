@@ -1272,9 +1272,10 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: endpoint_values(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(2), total_targets(2), &
                                                             positive_density_target
-      LOGICAL, INTENT(IN), OPTIONAL                      :: density_only, restore_operator
+      LOGICAL, INTENT(IN), OPTIONAL                      :: density_only
       REAL(dp), INTENT(IN), OPTIONAL                     :: spin_density_targets(:)
       REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL       :: candidate_targets(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator
 
       INTEGER                                            :: descriptor, domain, i, level_index, &
                                                             local_count, nlevels, offset, row, &
@@ -2112,26 +2113,29 @@ CONTAINS
 !>        Columns switch one selected descriptor from its positive to its negative limit. All
 !>        other native energy derivatives remain present. Covectors use the orthonormal physical
 !>        orbital tangent, including occupations and k weights. Retain the original selection
-!>        weights and restore the complete native KS evaluation at the supplied coordinates.
+!>        weights and, by default, restore the complete native KS evaluation at the supplied coordinates.
 !> \param state Native state with the physical samples already registered.
 !> \param coordinate Global normalized-orbital coordinates.
 !> \param positive_gradient Complete all-positive physical limiting covector.
 !> \param negative_changes Negative-minus-positive changes, one column per registered sample.
 !> \param physical_jacobian Optional physical sample covectors, one constraint per row.
 !> \param hold_orbitals Keep the evaluated native MOs and density fixed while selecting KS limits.
+!> \param restore_operator Rebuild KS with the original weights, default true. Otherwise mark it
+!>        invalid until the caller evaluates the restored selection.
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_scf_limiting(state, coordinate, positive_gradient, negative_changes, physical_jacobian, hold_orbitals)
+   SUBROUTINE qs_skala_scf_limiting(state, coordinate, positive_gradient, negative_changes, physical_jacobian, &
+                                    hold_orbitals, restore_operator)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       REAL(dp), INTENT(OUT)                              :: positive_gradient(:), &
                                                             negative_changes(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_jacobian(:, :)
-      LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals
+      LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals, restore_operator
 
       INTEGER                                            :: i, m, n
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             points(:, :), spins(:)
-      LOGICAL                                            :: fixed_orbitals, valid
+      LOGICAL                                            :: fixed_orbitals, restore, valid
       REAL(dp)                                           :: energy, kinetic_probe, &
                                                             kinetic_tolerance, probe, tolerance, &
                                                             value
@@ -2141,6 +2145,8 @@ CONTAINS
       n = qs_skala_scf_size(state)
       fixed_orbitals = .FALSE.
       IF (PRESENT(hold_orbitals)) fixed_orbitals = hold_orbitals
+      restore = .TRUE.
+      IF (PRESENT(restore_operator)) restore = restore_operator
       m = skala_density_constraints_count(state%constraints)
       CPASSERT(SIZE(coordinate) == n .AND. SIZE(positive_gradient) == n)
       CPASSERT(ALL(SHAPE(negative_changes) == [n, m]))
@@ -2184,7 +2190,12 @@ CONTAINS
          weights(i) = 0.0_dp
       END DO
       CALL skala_density_constraints_update_weights(state%constraints, original_weights)
-      CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
+      IF (restore) THEN
+         CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
+      ELSE
+         state%operator_current = .FALSE.
+         CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
+      END IF
    END SUBROUTINE qs_skala_scf_limiting
 
 ! **************************************************************************************************
@@ -2244,7 +2255,7 @@ CONTAINS
       m = skala_density_constraints_count(state%constraints)
       CPASSERT(SIZE(balanced_gradient) == n)
       ALLOCATE (positive(n), changes(n, m), predicted(n))
-      CALL qs_skala_scf_limiting(state, coordinate, positive, changes)
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, restore_operator=.FALSE.)
       CALL skala_density_constraints_balance(state%constraints, positive, changes, tolerance, predicted, balanced)
       CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=balanced_gradient)
    END SUBROUTINE qs_skala_scf_balance
@@ -2425,7 +2436,8 @@ CONTAINS
 !> \brief Classify candidate continuous density boundaries with the existing active physical samples.
 !>        Evaluate complete native limiting covectors and coupled normal minimum conditions.
 !>        A zero covector change does not add an orbital constraint. Restore original selected
-!>        weights and the full native state at coordinate. Optionally retain admissible new samples.
+!>        weights, orbitals, fields and energy at coordinate. KS remains invalid until evaluated
+!>        with derivatives. Optionally retain admissible new samples.
 !>        These normal conditions do not establish energy continuity or tangential stationarity.
 !> \param state Evaluated native state with its original selected samples.
 !> \param coordinate Feasible boundary coordinates in the original normalized orbital chart.
@@ -2515,7 +2527,7 @@ CONTAINS
       weights(:old) = old_weights
       CALL qs_skala_scf_select(state, all_points, all_domains, all_spins, all_descriptors, weights, &
                                probe, tolerance, kinetic_probe, kinetic_tolerance, targets=all_targets)
-      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian)
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian, restore_operator=.FALSE.)
       CALL skala_cusp_admissibility(positive, changes, jacobian, normal_admissible, sides, valid)
       IF (valid) THEN
          admissible(:) = normal_admissible(old + 1:)
@@ -3152,7 +3164,8 @@ CONTAINS
                                     event%spins(reached), event%descriptors(reached), event%targets(reached), &
                                     admissible, sides, valid)
          IF (.NOT. valid) EXIT
-         CALL qs_skala_scf_evaluate(context%state, root, energy)
+         ! Classification already restored the native energy at this same root.
+         energy = context%state%energy%total
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
          IF (ANY(admissible) .AND. energy <= first_energy + roundoff) THEN
             ALLOCATE (event%selected(SIZE(event%spins)), SOURCE=.FALSE.)
