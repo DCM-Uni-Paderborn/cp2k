@@ -977,11 +977,9 @@ CONTAINS
                stopped_product = .TRUE.
                RETURN
             END IF
-            CALL reduced_evaluation(plus, energy_trial, gradient_plus, valid_trial)
-            IF (.NOT. valid_trial) RETURN
+            CALL reduced_evaluation(plus, energy_trial, gradient_plus, valid_trial, center, smooth)
+            IF (curvature_interrupted) RETURN
             IF (have_curvature_check) THEN
-               CALL check_curvature_segment(center, plus, curve, context, smooth, curvature_interrupted)
-               IF (curvature_interrupted) RETURN
                IF (.NOT. smooth) THEN
                   have_previous = .FALSE.
                   have_product = .FALSE.
@@ -990,15 +988,14 @@ CONTAINS
                   CYCLE
                END IF
             END IF
+            IF (.NOT. valid_trial) RETURN
             IF (stop_requested()) THEN
                stopped_product = .TRUE.
                RETURN
             END IF
-            CALL reduced_evaluation(minus, energy_trial, gradient_minus, valid_trial)
-            IF (.NOT. valid_trial) RETURN
+            CALL reduced_evaluation(minus, energy_trial, gradient_minus, valid_trial, center, smooth)
+            IF (curvature_interrupted) RETURN
             IF (have_curvature_check) THEN
-               CALL check_curvature_segment(center, minus, curve, context, smooth, curvature_interrupted)
-               IF (curvature_interrupted) RETURN
                IF (.NOT. smooth) THEN
                   have_previous = .FALSE.
                   have_product = .FALSE.
@@ -1007,6 +1004,7 @@ CONTAINS
                   CYCLE
                END IF
             END IF
+            IF (.NOT. valid_trial) RETURN
             candidate(:) = (gradient_plus - gradient_minus)/(2.0_dp*step)
             IF (.NOT. ALL(ieee_is_finite(candidate))) RETURN
             IF (.NOT. have_previous) THEN
@@ -1075,18 +1073,29 @@ CONTAINS
 !> \param e Complete energy at the restored trial.
 !> \param rg Energy derivative in the independent coordinates.
 !> \param success Whether the constraints and reduced derivative were evaluated successfully.
+!> \param probe_origin Optional center for a field-only branch check before requesting derivatives.
+!> \param probe_smooth Whether that check permits this probe. No derivative is returned on rejection.
 ! **************************************************************************************************
-      SUBROUTINE reduced_evaluation(c, e, rg, success)
+      SUBROUTINE reduced_evaluation(c, e, rg, success, probe_origin, probe_smooth)
       REAL(dp), INTENT(INOUT)                            :: c(:)
       REAL(dp), INTENT(OUT)                              :: e, rg(:)
       LOGICAL, INTENT(OUT)                               :: success
+      REAL(dp), INTENT(IN), OPTIONAL                     :: probe_origin(:)
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: probe_smooth
 
       LOGICAL                                            :: solved
       REAL(dp), ALLOCATABLE                              :: matrix(:, :), multiplier(:, :)
 
+         IF (PRESENT(probe_smooth)) probe_smooth = .TRUE.
          CALL skala_constraint_chart_restore(curve, evaluate_constraints, context, c, values, jacobian, success)
          IF (.NOT. success) RETURN
          success = .FALSE.
+         IF (PRESENT(probe_origin) .AND. have_curvature_check) THEN
+            CPASSERT(PRESENT(probe_smooth))
+            CALL check_curvature_segment(probe_origin, c, curve, context, probe_smooth, curvature_interrupted)
+            IF (curvature_interrupted .OR. .NOT. probe_smooth) RETURN
+         END IF
+         ! A branch check can restore other native fields. Rebuild this trial's gradient afterwards.
          CALL evaluate_gradient(c, e, g, context)
          CPASSERT(ieee_is_finite(e))
          CPASSERT(ALL(ieee_is_finite(g)))
