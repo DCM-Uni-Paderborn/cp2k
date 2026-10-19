@@ -23,7 +23,7 @@ MODULE skala_density_constraints
              skala_density_constraints_balance, skala_density_crossings, skala_density_root
    PUBLIC :: skala_density_samples_begin, skala_density_samples_end, skala_density_samples_active, &
              skala_density_samples_put, skala_density_samples_get, skala_density_samples_only
-   PUBLIC :: skala_density_constraints_update_weights
+   PUBLIC :: skala_density_constraints_update_weights, skala_density_constraints_clear_selection
    INTEGER, PARAMETER, PUBLIC :: skala_density_descriptor = 1, skala_kinetic_descriptor = 2
    INTEGER, PARAMETER, PUBLIC :: skala_fft_domain = 0, skala_atom_domain = 1, skala_background_domain = 2
    INTEGER, PARAMETER, PUBLIC :: skala_paw_ae_domain = 3, skala_paw_ps_domain = 4
@@ -367,7 +367,7 @@ CONTAINS
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
 
-      CALL clear_selection(state)
+      CALL skala_density_constraints_clear_selection(state)
       CALL clear_samples(state)
    END SUBROUTINE skala_density_constraints_reset
 
@@ -375,7 +375,7 @@ CONTAINS
 !> \brief Clear selected derivatives while retaining this trial's physical samples.
 !> \param state ...
 ! **************************************************************************************************
-   SUBROUTINE clear_selection(state)
+   SUBROUTINE skala_density_constraints_clear_selection(state)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
 
@@ -396,7 +396,7 @@ CONTAINS
       state%tolerance = 0.0_dp
       state%kinetic_probe = 0.0_dp
       state%kinetic_tolerance = 0.0_dp
-   END SUBROUTINE clear_selection
+   END SUBROUTINE skala_density_constraints_clear_selection
 
 ! **************************************************************************************************
 !> \brief Store physical grid constraints and their selected convex weights.
@@ -522,7 +522,7 @@ CONTAINS
          END DO
       END DO
 
-      CALL clear_selection(state)
+      CALL skala_density_constraints_clear_selection(state)
       state%nspins = nspins
       state%npts = npts
       state%bounds = bounds

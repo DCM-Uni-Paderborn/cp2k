@@ -64,6 +64,7 @@ MODULE qs_skala_scf
    USE scf_control_types,               ONLY: scf_control_type
    USE skala_density_constraints,       ONLY: &
         skala_background_domain, skala_density_constraints_balance, &
+        skala_density_constraints_clear_selection, &
         skala_density_constraints_count, skala_density_constraints_get, &
         skala_density_constraints_matches, skala_density_constraints_reset, &
         skala_density_constraints_set, skala_density_constraints_type, &
@@ -2505,9 +2506,11 @@ CONTAINS
 !> \param release_side Negative or positive physical side permitting descent for a rejected candidate.
 !> \param valid Whether all physical windows and the coupled normal grouping are valid.
 !> \param retain Retain the candidates only if every one is admissible, default false.
+!> \param restore_operator Restore complete KS after classification, default true.
+!>        False leaves KS invalid until a subsequent complete native evaluation.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_classify(state, coordinate, points, domains, spins, descriptors, targets, &
-                                    admissible, release_side, valid, retain)
+                                    admissible, release_side, valid, retain, restore_operator)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -2516,12 +2519,12 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: admissible(:)
       INTEGER, INTENT(OUT)                               :: release_side(:)
       LOGICAL, INTENT(OUT)                               :: valid
-      LOGICAL, INTENT(IN), OPTIONAL                      :: retain
+      LOGICAL, INTENT(IN), OPTIONAL                      :: retain, restore_operator
 
       INTEGER                                            :: i, m, n, old, total
       INTEGER, ALLOCATABLE :: all_descriptors(:), all_domains(:), all_points(:, :), all_spins(:), &
          old_descriptors(:), old_domains(:), old_points(:, :), old_spins(:), rows(:), sides(:)
-      LOGICAL                                            :: feasible, keep, hold_orbitals
+      LOGICAL                                            :: feasible, hold_orbitals, keep, restore
       LOGICAL, ALLOCATABLE                               :: normal_admissible(:), selected(:)
       REAL(dp)                                           :: energy, kinetic_probe, &
                                                             kinetic_tolerance, probe, tolerance
@@ -2542,6 +2545,8 @@ CONTAINS
       valid = .FALSE.
       keep = .FALSE.
       IF (PRESENT(retain)) keep = retain
+      restore = .TRUE.
+      IF (PRESENT(restore_operator)) restore = restore_operator
       ALLOCATE (positive(n))
       hold_orbitals = at_native_coordinate(state, coordinate)
       IF (hold_orbitals .AND. state%operator_current) THEN
@@ -2606,9 +2611,14 @@ CONTAINS
                                   all_descriptors(rows), weights(rows), probe, tolerance, kinetic_probe, kinetic_tolerance, &
                                   targets=all_targets(rows))
       ELSE
-         CALL skala_density_constraints_reset(state%constraints)
+         CALL skala_density_constraints_clear_selection(state%constraints)
       END IF
-      CALL evaluate_limiting_state(state, coordinate, energy, positive, .TRUE.)
+      IF (restore) THEN
+         CALL evaluate_limiting_state(state, coordinate, energy, positive, .TRUE.)
+      ELSE
+         state%operator_current = .FALSE.
+         CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
+      END IF
    END SUBROUTINE qs_skala_scf_classify
 
 ! **************************************************************************************************
@@ -3189,7 +3199,7 @@ CONTAINS
       REAL(dp)                                           :: energy, first_energy, kinetic_probe, &
                                                             kinetic_tolerance, probe, roundoff, &
                                                             tolerance
-      REAL(dp), ALLOCATABLE                              :: root(:), targets(:), values(:), &
+      REAL(dp), ALLOCATABLE                              :: gradient(:), root(:), targets(:), values(:), &
                                                             weights(:), windows(:)
       TYPE(qs_skala_scf_crossing_type), POINTER          :: event
 
@@ -3202,7 +3212,7 @@ CONTAINS
                                             descriptors=old_descriptors, domains=old_domains, &
                                             targets=targets, kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
       END IF
-      ALLOCATE (pending(SIZE(event%spins)), root(SIZE(first)))
+      ALLOCATE (pending(SIZE(event%spins)), root(SIZE(first)), gradient(SIZE(first)))
       pending(:) = [(i, i=1, SIZE(pending))]
       CALL qs_skala_scf_evaluate(context%state, first, first_energy)
       DO WHILE (SIZE(pending) > 0)
@@ -3238,17 +3248,19 @@ CONTAINS
          ALLOCATE (admissible(SIZE(reached)), sides(SIZE(reached)))
          CALL qs_skala_scf_classify(context%state, root, event%points(:, reached), event%domains(reached), &
                                     event%spins(reached), event%descriptors(reached), event%targets(reached), &
-                                    admissible, sides, valid)
+                                    admissible, sides, valid, restore_operator=.FALSE.)
          IF (.NOT. valid) EXIT
-         ! Classification already restored the native energy at this same root.
-         energy = context%state%energy%total
-         roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
-         IF (ANY(admissible) .AND. energy <= first_energy + roundoff) THEN
-            ALLOCATE (event%selected(SIZE(event%spins)), SOURCE=.FALSE.)
-            event%selected(PACK(reached, admissible)) = .TRUE.
-            ALLOCATE (event%root, SOURCE=root)
-            event%resolved = .TRUE.
-            EXIT
+         IF (ANY(admissible)) THEN
+            ! Restore the original operator only when an admissible root can be returned.
+            CALL evaluate_limiting_state(context%state, root, energy, gradient, .TRUE.)
+            roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
+            IF (energy <= first_energy + roundoff) THEN
+               ALLOCATE (event%selected(SIZE(event%spins)), SOURCE=.FALSE.)
+               event%selected(PACK(reached, admissible)) = .TRUE.
+               ALLOCATE (event%root, SOURCE=root)
+               event%resolved = .TRUE.
+               EXIT
+            END IF
          END IF
          pending = PACK(pending,.NOT. selected)
          DEALLOCATE (selected, values, windows, admissible, sides)
