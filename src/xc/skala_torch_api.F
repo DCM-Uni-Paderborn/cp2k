@@ -214,8 +214,9 @@ CONTAINS
    SUBROUTINE skala_torch_model_density_limits(model, inputs, density, active, probe, negative, positive, energies)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
-      REAL(dp), INTENT(IN)                               :: density(:, :), probe
+      REAL(dp), INTENT(IN)                               :: density(:, :)
       INTEGER, INTENT(IN)                                :: active(:, :)
+      REAL(dp), INTENT(IN)                               :: probe
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: negative(:, :), positive(:, :)
       REAL(dp), INTENT(OUT)                              :: energies(2)
 
@@ -235,23 +236,29 @@ CONTAINS
 !> \param probe Positive physical descriptor magnitude for the one-sided limit.
 !> \param negative New owned weighted descriptor covector on the negative side.
 !> \param positive New owned weighted descriptor covector on the positive side.
-!> \param energies Complete discrete energies of the two limit evaluations.
+!> \param energies Optional complete discrete energies. Requesting them evaluates both branches.
+!> \param branches Optional negative/positive branch selection. Unrequested covectors are zero.
 ! **************************************************************************************************
    SUBROUTINE skala_torch_model_descriptor_limits(model, inputs, feature, values, active, probe, &
-                                                 negative, positive, energies)
+                                                  negative, positive, energies, branches)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
       CHARACTER(len=*), INTENT(IN)                       :: feature
-      REAL(dp), INTENT(IN)                               :: values(:, :), probe
+      REAL(dp), INTENT(IN)                               :: values(:, :)
       INTEGER, INTENT(IN)                                :: active(:, :)
+      REAL(dp), INTENT(IN)                               :: probe
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: negative(:, :), positive(:, :)
-      REAL(dp), INTENT(OUT)                              :: energies(2)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: energies(2)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: branches(2)
 
       INTEGER                                            :: branch, sample
+      LOGICAL                                            :: needed(2)
+      REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: branch_values(:, :)
       REAL(dp), POINTER                                  :: derivative(:, :)
-      TYPE(torch_dict_type)                             :: branch_inputs
-      TYPE(torch_tensor_type)                           :: descriptor_t, weights_t, energy_t, derivative_t
+      TYPE(torch_dict_type)                              :: branch_inputs
+      TYPE(torch_tensor_type)                            :: derivative_t, descriptor_t, energy_t, &
+                                                            weights_t
 
       CPASSERT(feature == "density" .OR. feature == "kin")
       CPASSERT(SIZE(values, 2) == 2)
@@ -261,7 +268,14 @@ CONTAINS
       CPASSERT(probe > 0.0_dp .AND. probe < HUGE(probe))
       ALLOCATE (branch_values(SIZE(values, 1), 2))
       ALLOCATE (negative(SIZE(values, 1), 2), positive(SIZE(values, 1), 2))
+      negative = 0.0_dp
+      positive = 0.0_dp
+      needed = .TRUE.
+      IF (PRESENT(branches)) needed = branches
+      IF (PRESENT(energies)) needed = .TRUE.
+      CPASSERT(ANY(needed))
       DO branch = 1, 2
+         IF (.NOT. needed(branch)) CYCLE
          branch_values(:, :) = values
          DO sample = 1, SIZE(active, 2)
             branch_values(active(1, sample), active(2, sample)) = REAL(2*branch - 3, dp)*probe
@@ -271,7 +285,8 @@ CONTAINS
          CALL torch_tensor_to_device_leaf(descriptor_t, .TRUE.)
          CALL torch_dict_insert(branch_inputs, feature, descriptor_t)
          CALL torch_dict_get(branch_inputs, "grid_weights", weights_t)
-         CALL skala_torch_model_get_exc(model, branch_inputs, weights_t, energy_t, energies(branch))
+         CALL skala_torch_model_get_exc(model, branch_inputs, weights_t, energy_t, energy)
+         IF (PRESENT(energies)) energies(branch) = energy
          CALL torch_tensor_backward_scalar(energy_t)
          CALL torch_tensor_grad(descriptor_t, derivative_t)
          NULLIFY (derivative)

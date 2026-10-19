@@ -1620,8 +1620,9 @@ CONTAINS
       INTEGER                                            :: c, descriptor, first_spin, last_spin, n, &
                                                             row, spin
       INTEGER, ALLOCATABLE                               :: active(:, :)
+      LOGICAL                                            :: branches(2)
       LOGICAL, ALLOCATABLE                               :: selected(:)
-      REAL(dp)                                           :: energies(2), error
+      REAL(dp)                                           :: error
       REAL(dp), ALLOCATABLE                              :: negative(:, :), positive(:, :)
 
       ALLOCATE (selected(SIZE(rows)))
@@ -1657,12 +1658,14 @@ CONTAINS
                active(:, n) = [rows(c) - first_row + 1, spin]
             END DO
          END DO
+         ! Keep the full probe input, but evaluate only covectors used by the selected weights.
+         branches = [ANY(selected .AND. weights /= 0.0_dp), ANY(selected .AND. weights /= 1.0_dp)]
          IF (descriptor == skala_density_descriptor) THEN
             CALL skala_torch_model_descriptor_limits(cached_model, inputs, "density", density, &
-                                                     active, probes(descriptor), negative, positive, energies)
+                                                     active, probes(descriptor), negative, positive, branches=branches)
          ELSE
             CALL skala_torch_model_descriptor_limits(cached_model, inputs, "kin", kinetic, &
-                                                     active, probes(descriptor), negative, positive, energies)
+                                                     active, probes(descriptor), negative, positive, branches=branches)
          END IF
          DO c = 1, SIZE(rows)
             IF (.NOT. selected(c)) CYCLE
@@ -2306,7 +2309,8 @@ CONTAINS
       INTEGER, ALLOCATABLE :: active(:, :), counts(:), descriptors(:), displs(:), &
          global_entries(:), local_entries(:), local_entry_counts(:), local_rows(:), owners(:), &
          points(:, :), spins(:)
-      REAL(dp)                                           :: energies(2), probes(2), tolerances(2)
+      LOGICAL                                            :: branches(2)
+      REAL(dp)                                           :: probes(2), tolerances(2)
       REAL(dp), ALLOCATABLE                              :: constraint_error(:), negative(:, :), &
                                                             negative_weights(:), positive(:, :)
       REAL(dp), POINTER                                  :: covector(:, :)
@@ -2388,13 +2392,20 @@ CONTAINS
             e = e + 1
             active(:, e) = global_entries(4*i - 3:4*i - 2)
          END DO
+         branches = .FALSE.
+         DO i = 1, SIZE(global_entries)/4
+            IF (global_entries(4*i) /= descriptor) CYCLE
+            c = global_entries(4*i - 1)
+            branches(1) = branches(1) .OR. negative_weights(c) /= 0.0_dp
+            branches(2) = branches(2) .OR. negative_weights(c) /= 1.0_dp
+         END DO
          IF (descriptor == skala_density_descriptor) THEN
             CALL skala_torch_model_descriptor_limits(cached_model, features%inputs, "density", features%density, &
-                                                     active, probes(descriptor), negative, positive, energies)
+                                                     active, probes(descriptor), negative, positive, branches=branches)
             covector => density_grad
          ELSE
             CALL skala_torch_model_descriptor_limits(cached_model, features%inputs, "kin", features%kin, &
-                                                     active, probes(descriptor), negative, positive, energies)
+                                                     active, probes(descriptor), negative, positive, branches=branches)
             covector => kin_grad
          END IF
          DO c = 1, n
