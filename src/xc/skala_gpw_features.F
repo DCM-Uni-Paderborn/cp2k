@@ -256,7 +256,8 @@ CONTAINS
 
       nspins = SIZE(rho_r)
       bo = pw_grid%bounds_local
-      nflat_local = pw_grid%ngpts_local
+      ! Features follow the real-space rectangle, which may differ from the reciprocal block.
+      nflat_local = PRODUCT(MAX(0, pw_grid%npts_local))
 
       CALL timeset("skala_gpw_pre_release", phase_handle)
       CALL skala_gpw_feature_release(features)
@@ -527,7 +528,7 @@ CONTAINS
       IF (.NOT. cached_layout%active) RETURN
       IF (cached_layout%atom_partition /= my_atom_partition) RETURN
       IF (cached_layout%natom /= SIZE(particle_set)) RETURN
-      IF (cached_layout%nflat_local /= pw_grid%ngpts_local) RETURN
+      IF (cached_layout%nflat_local /= PRODUCT(MAX(0, pw_grid%npts_local))) RETURN
       IF (cached_layout%nproc /= pw_grid%para%group%num_pe) RETURN
       IF (ANY(cached_layout%bo /= pw_grid%bounds_local)) RETURN
       IF (ANY(cached_layout%bounds /= pw_grid%bounds)) RETURN
@@ -626,7 +627,7 @@ CONTAINS
       IF (PRESENT(atom_partition)) my_atom_partition = atom_partition
       natom = SIZE(particle_set)
       bo = pw_grid%bounds_local
-      nflat_local = pw_grid%ngpts_local
+      nflat_local = PRODUCT(MAX(0, pw_grid%npts_local))
       nproc = pw_grid%para%group%num_pe
       pe_index = pw_grid%para%group%mepos + 1
 
