@@ -19,7 +19,9 @@ MODULE qs_skala_scf
    USE input_section_types,             ONLY: section_get_ival,&
                                               section_get_rval,&
                                               section_vals_get_subs_vals,&
-                                              section_vals_type
+                                              section_vals_get_subs_vals2,&
+                                              section_vals_type,&
+                                              section_vals_val_get
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE kpoint_types,                    ONLY: kpoint_env_type,&
@@ -64,12 +66,12 @@ MODULE qs_skala_scf
    USE scf_control_types,               ONLY: scf_control_type
    USE skala_density_constraints,       ONLY: &
         skala_background_domain, skala_density_constraints_balance, &
-        skala_density_constraints_clear_selection, &
-        skala_density_constraints_count, skala_density_constraints_get, &
-        skala_density_constraints_matches, skala_density_constraints_reset, &
-        skala_density_constraints_set, skala_density_constraints_type, &
-        skala_density_constraints_update_weights, skala_density_crossings, &
-        skala_density_descriptor, skala_density_root, skala_density_samples_begin, &
+        skala_density_constraints_clear_selection, skala_density_constraints_count, &
+        skala_density_constraints_get, skala_density_constraints_matches, &
+        skala_density_constraints_reset, skala_density_constraints_set, &
+        skala_density_constraints_type, skala_density_constraints_update_weights, &
+        skala_density_crossings, skala_density_descriptor, skala_density_jumps_begin, &
+        skala_density_jumps_finish, skala_density_root, skala_density_samples_begin, &
         skala_density_samples_end, skala_density_samples_get, skala_fft_domain, &
         skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
         skala_paw_ps_domain
@@ -2173,25 +2175,31 @@ CONTAINS
 !> \param hold_orbitals Keep the evaluated native MOs and density fixed while selecting KS limits.
 !> \param restore_operator Rebuild KS with the original weights, default true. Otherwise mark it
 !>        invalid until the caller evaluates the restored selection.
+!> \param assemble_jumps Compose qualified jumps from primitive covectors, default true.
+!>        False retains the complete KS reference evaluation for every negative limit.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_limiting(state, coordinate, positive_gradient, negative_changes, physical_jacobian, &
-                                    hold_orbitals, restore_operator)
+                                    hold_orbitals, restore_operator, assemble_jumps)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       REAL(dp), INTENT(OUT)                              :: positive_gradient(:), &
                                                             negative_changes(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_jacobian(:, :)
-      LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals, restore_operator
+      LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals, restore_operator, &
+                                                            assemble_jumps
 
       INTEGER                                            :: i, m, n
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
-                                                            points(:, :), spins(:)
-      LOGICAL                                            :: fixed_orbitals, restore, valid
+                                                            jump_owners(:), points(:, :), spins(:)
+      LOGICAL                                            :: capture_jumps, fixed_orbitals, restore, &
+                                                            valid
+      LOGICAL, ALLOCATABLE                               :: assembled(:)
       REAL(dp)                                           :: energy, kinetic_probe, &
                                                             kinetic_tolerance, probe, tolerance, &
                                                             value
-      REAL(dp), ALLOCATABLE                              :: gradient(:), original_weights(:), &
-                                                            physical(:), targets(:), weights(:)
+      REAL(dp), ALLOCATABLE                              :: gradient(:), jump_values(:), &
+                                                            original_weights(:), physical(:), &
+                                                            targets(:), weights(:)
 
       n = qs_skala_scf_size(state)
       fixed_orbitals = .FALSE.
@@ -2218,10 +2226,23 @@ CONTAINS
       CALL skala_density_constraints_get(state%constraints, points, spins, original_weights, &
                                          probe, tolerance, descriptors=descriptors, domains=domains, &
                                          kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance, targets=targets)
-      ALLOCATE (weights(m), gradient(n), physical(n))
+      ALLOCATE (weights(m), gradient(n), physical(n), assembled(m))
       weights = 0.0_dp
+      assembled = .FALSE.
       CALL skala_density_constraints_update_weights(state%constraints, weights)
+      ! A primitive contribution is the complete jump only for a pure native model.
+      ! Mixed functionals and consumers without unique ownership retain full KS evaluations.
+      capture_jumps = ALL(targets == 0.0_dp) .AND. skala_only_functional(state)
+      IF (PRESENT(assemble_jumps)) capture_jumps = capture_jumps .AND. assemble_jumps
+      IF (capture_jumps) CALL skala_density_jumps_begin(state%constraints)
       CALL evaluate_limiting_state(state, coordinate, energy, positive_gradient, fixed_orbitals)
+      IF (capture_jumps) THEN
+         CALL skala_density_jumps_finish(state%constraints, jump_values, jump_owners)
+         CPASSERT(SIZE(jump_values) == m)
+         CALL state%para_env%sum(jump_values)
+         CALL state%para_env%sum(jump_owners)
+         assembled = jump_owners == 1
+      END IF
       ! Only the derivative selection changes from here. Keep the same installed MOs and density.
       fixed_orbitals = .TRUE.
       DO i = 1, m
@@ -2232,13 +2253,15 @@ CONTAINS
             CPASSERT(descriptors(i) == skala_kinetic_descriptor)
             CPASSERT(ABS(value - targets(i)) <= kinetic_tolerance)
          END IF
-         IF (PRESENT(physical_jacobian)) THEN
+         IF (PRESENT(physical_jacobian) .OR. assembled(i)) THEN
             CALL qs_skala_scf_point_derivative(state, domains(i), points(:, i), spins(i), descriptors(i), &
                                                gradient, physical)
-            physical_jacobian(i, :) = physical
+            IF (PRESENT(physical_jacobian)) physical_jacobian(i, :) = physical
+            IF (assembled(i)) negative_changes(:, i) = jump_values(i)*physical
          END IF
       END DO
       DO i = 1, m
+         IF (assembled(i)) CYCLE
          weights(i) = 1.0_dp
          CALL skala_density_constraints_update_weights(state%constraints, weights)
          CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
@@ -2253,6 +2276,36 @@ CONTAINS
          CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
       END IF
    END SUBROUTINE qs_skala_scf_limiting
+
+! **************************************************************************************************
+!> \brief Require a single active native model before composing complete jumps from its covectors.
+!> \param state Native orbital state.
+!> \return Whether GAUXC is the only active XC functional. Missing model covectors still fall back.
+! **************************************************************************************************
+   FUNCTION skala_only_functional(state) RESULT(skala_only)
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      LOGICAL                                            :: skala_only
+
+      INTEGER                                            :: i, nactive
+      LOGICAL                                            :: active
+      TYPE(section_vals_type), POINTER                   :: functional, functionals
+
+      skala_only = .FALSE.
+      functionals => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC%XC_FUNCTIONAL")
+      IF (.NOT. ASSOCIATED(functionals)) RETURN
+      nactive = 0
+      i = 0
+      DO
+         i = i + 1
+         functional => section_vals_get_subs_vals2(functionals, i_section=i)
+         IF (.NOT. ASSOCIATED(functional)) EXIT
+         CALL section_vals_val_get(functional, "_SECTION_PARAMETERS_", l_val=active)
+         IF (.NOT. active) CYCLE
+         IF (functional%section%name /= "GAUXC") RETURN
+         nactive = nactive + 1
+      END DO
+      skala_only = nactive == 1
+   END FUNCTION skala_only_functional
 
 ! **************************************************************************************************
 !> \brief Evaluate a selected KS limit, optionally preserving the installed native orbital state.
@@ -3199,8 +3252,8 @@ CONTAINS
       REAL(dp)                                           :: energy, first_energy, kinetic_probe, &
                                                             kinetic_tolerance, probe, roundoff, &
                                                             tolerance
-      REAL(dp), ALLOCATABLE                              :: gradient(:), root(:), targets(:), values(:), &
-                                                            weights(:), windows(:)
+      REAL(dp), ALLOCATABLE                              :: gradient(:), root(:), targets(:), &
+                                                            values(:), weights(:), windows(:)
       TYPE(qs_skala_scf_crossing_type), POINTER          :: event
 
       event => context%crossings
@@ -3531,8 +3584,8 @@ CONTAINS
 
       INTEGER                                            :: n, nk, ns
       REAL(dp)                                           :: error_bound
-      TYPE(scf_control_type), POINTER                    :: control
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      TYPE(scf_control_type), POINTER                    :: control
 
       CALL qs_skala_scf_fermi_target(state, fermi_error, omitted_number, chemical_potentials, valid)
       IF (.NOT. valid) RETURN
@@ -3560,13 +3613,13 @@ CONTAINS
 !> \param model_delta Optional frozen-H free-energy change, including the original entropy.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_fermi_target(state, fermi_error, omitted_number, chemical_potentials, valid, &
-                                         density, model_delta)
+                                        density, model_delta)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(OUT)                              :: fermi_error, omitted_number
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: chemical_potentials(:)
       LOGICAL, INTENT(OUT)                               :: valid
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: density(:, :, :, :)
-      REAL(dp), INTENT(OUT), OPTIONAL                     :: model_delta
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: model_delta
 
       COMPLEX(dp), ALLOCATABLE                           :: hamiltonian(:, :), projected(:, :), &
                                                             residual(:, :), vectors(:, :, :, :), &
@@ -3691,8 +3744,8 @@ CONTAINS
             residual = MATMUL(weighted, CONJG(TRANSPOSE(vectors(:, :, local, spin))))
             IF (PRESENT(density)) THEN
                density(:, :, ik, spin) = MATMUL(state%orbitals(local, spin)%coefficients, &
-                                               MATMUL(residual, CONJG(TRANSPOSE( &
-                                                                      state%orbitals(local, spin)%coefficients))))
+                                                MATMUL(residual, CONJG(TRANSPOSE( &
+                                                                       state%orbitals(local, spin)%coefficients))))
             END IF
             weight = state%orbitals(local, spin)%weight
             retained = state%orbitals(local, spin)%native%nmo

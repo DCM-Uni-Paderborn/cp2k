@@ -24,6 +24,8 @@ MODULE skala_density_constraints
    PUBLIC :: skala_density_samples_begin, skala_density_samples_end, skala_density_samples_active, &
              skala_density_samples_put, skala_density_samples_get, skala_density_samples_only
    PUBLIC :: skala_density_constraints_update_weights, skala_density_constraints_clear_selection
+   PUBLIC :: skala_density_jumps_begin, skala_density_jumps_active, &
+             skala_density_jumps_put, skala_density_jumps_finish
    INTEGER, PARAMETER, PUBLIC :: skala_density_descriptor = 1, skala_kinetic_descriptor = 2
    INTEGER, PARAMETER, PUBLIC :: skala_fft_domain = 0, skala_atom_domain = 1, skala_background_domain = 2
    INTEGER, PARAMETER, PUBLIC :: skala_paw_ae_domain = 3, skala_paw_ps_domain = 4
@@ -58,11 +60,112 @@ MODULE skala_density_constraints
       REAL(dp) :: kinetic_probe = 0.0_dp, kinetic_tolerance = 0.0_dp
       REAL(dp), ALLOCATABLE :: positions(:, :), negative_weights(:), targets(:)
       LOGICAL :: sampling = .FALSE., descriptors_only = .FALSE.
+      LOGICAL :: collecting_jumps = .FALSE.
+      REAL(dp), ALLOCATABLE :: jump_values(:)
+      INTEGER, ALLOCATABLE :: jump_owners(:)
       INTEGER :: sample_nspins = 0
       TYPE(skala_density_samples_type) :: samples(skala_fft_domain:skala_last_sample_domain)
    END TYPE skala_density_constraints_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Collect primitive negative-minus-positive covectors during one complete KS evaluation.
+!> \param state Registered physical constraints.
+! **************************************************************************************************
+   SUBROUTINE skala_density_jumps_begin(state)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+
+      INTEGER                                            :: n
+
+      CALL clear_jumps(state)
+      n = skala_density_constraints_count(state)
+      ALLOCATE (state%jump_values(n), state%jump_owners(n))
+      state%jump_values = 0.0_dp
+      state%jump_owners = 0
+      state%collecting_jumps = .TRUE.
+   END SUBROUTINE skala_density_jumps_begin
+
+! **************************************************************************************************
+!> \brief Whether this native evaluation requests primitive covector differences.
+!> \param state Registered physical constraints.
+!> \return Whether collection is active.
+! **************************************************************************************************
+   FUNCTION skala_density_jumps_active(state) RESULT(active)
+      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      LOGICAL                                            :: active
+
+      active = state%collecting_jumps
+   END FUNCTION skala_density_jumps_active
+
+! **************************************************************************************************
+!> \brief Record already weighted covectors only on their physical sample owner.
+!> \param state Registered physical constraints.
+!> \param domain Consumer domain.
+!> \param values Covector differences in the domain's constraint order.
+!> \param owned Locally evaluated physical samples in the same order.
+! **************************************************************************************************
+   SUBROUTINE skala_density_jumps_put(state, domain, values, owned)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+      INTEGER, INTENT(IN)                                :: domain
+      REAL(dp), INTENT(IN)                               :: values(:)
+      LOGICAL, INTENT(IN)                                :: owned(:)
+
+      INTEGER                                            :: i, j
+
+      IF (.NOT. state%collecting_jumps) RETURN
+      CPASSERT(SIZE(values) == skala_density_constraints_count(state, domain))
+      CPASSERT(SIZE(owned) == SIZE(values))
+      j = 0
+      DO i = 1, skala_density_constraints_count(state)
+         IF (state%domains(i) /= domain) CYCLE
+         j = j + 1
+         IF (.NOT. owned(j)) CYCLE
+         CPASSERT(ieee_is_finite(values(j)))
+         state%jump_values(i) = state%jump_values(i) + values(j)
+         state%jump_owners(i) = state%jump_owners(i) + 1
+      END DO
+   END SUBROUTINE skala_density_jumps_put
+
+! **************************************************************************************************
+!> \brief Consume this evaluation's local coefficients. The caller reduces values and owners.
+!> \param state Registered physical constraints.
+!> \param values Local covector differences, zero if collection was invalidated.
+!> \param owners Number of local providers for each physical sample.
+! **************************************************************************************************
+   SUBROUTINE skala_density_jumps_finish(state, values, owners)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: values(:)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: owners(:)
+
+      INTEGER                                            :: n
+
+      n = skala_density_constraints_count(state)
+      ALLOCATE (values(n), owners(n))
+      values = 0.0_dp
+      owners = 0
+      IF (state%collecting_jumps) THEN
+         CPASSERT(SIZE(state%jump_values) == n)
+         values = state%jump_values
+         owners = state%jump_owners
+      END IF
+      CALL clear_jumps(state)
+   END SUBROUTINE skala_density_jumps_finish
+
+! **************************************************************************************************
+!> \brief Invalidate transient coefficients when the selected physical samples change.
+!> \param state Registered physical constraints.
+! **************************************************************************************************
+   SUBROUTINE clear_jumps(state)
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+
+      IF (ALLOCATED(state%jump_values)) DEALLOCATE (state%jump_values, state%jump_owners)
+      state%collecting_jumps = .FALSE.
+   END SUBROUTINE clear_jumps
 
 ! **************************************************************************************************
 !> \brief Start one native evaluation, discarding the previous physical descriptor samples.
@@ -247,6 +350,10 @@ CONTAINS
       END DO
       state%sampling = .FALSE.
       state%sample_nspins = 0
+      IF (state%collecting_jumps) THEN
+         state%jump_values = 0.0_dp
+         state%jump_owners = 0
+      END IF
    END SUBROUTINE clear_samples
 
 ! **************************************************************************************************
@@ -379,6 +486,7 @@ CONTAINS
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
 
+      CALL clear_jumps(state)
       IF (ALLOCATED(state%points)) DEALLOCATE (state%points)
       IF (ALLOCATED(state%spins)) DEALLOCATE (state%spins)
       IF (ALLOCATED(state%descriptors)) DEALLOCATE (state%descriptors)

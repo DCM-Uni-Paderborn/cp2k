@@ -34,9 +34,10 @@ MODULE skala_gpw_functional
                                               pw_r3d_rs_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE skala_density_constraints,       ONLY: &
-        skala_density_constraints_count, skala_density_constraints_get, &
-        skala_density_constraints_matches, skala_density_constraints_type, &
-        skala_density_descriptor, skala_density_samples_active, skala_density_samples_only, &
+        skala_atom_domain, skala_background_domain, skala_density_constraints_count, &
+        skala_density_constraints_get, skala_density_constraints_matches, &
+        skala_density_constraints_type, skala_density_descriptor, skala_density_jumps_active, &
+        skala_density_jumps_put, skala_density_samples_active, skala_density_samples_only, &
         skala_density_samples_put, skala_fft_domain, skala_kinetic_descriptor
    USE skala_gpw_features,              ONLY: &
         skala_gpw_atom_partition_hard, skala_gpw_atom_partition_smooth, &
@@ -1225,11 +1226,12 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: selected_rows(:), selected_spins(:), &
                                                             selected_descriptors(:)
       INTEGER(KIND=int_8), ALLOCATABLE, DIMENSION(:, :)  :: atomic_grid_size_bound_shape
-      LOGICAL :: active_rank, native_grid_atom_chunks, native_grid_use_cuda, &
+      LOGICAL :: active_rank, capture_jumps, native_grid_atom_chunks, native_grid_use_cuda, &
                  need_coordinate_derivatives, need_derivatives, use_constraints
       LOGICAL, ALLOCATABLE                               :: selected_applied(:)
       REAL(KIND=dp)                                      :: chunk_exc, probes(2), tolerances(2)
-      REAL(dp), ALLOCATABLE                              :: selected_weights(:), selected_limits(:, :)
+      REAL(dp), ALLOCATABLE                              :: selected_weights(:), selected_limits(:, :), &
+                                                            selected_jumps(:, :), jump_values(:)
       INTEGER                                            :: constraint, first_spin, last_spin
       REAL(KIND=dp), DIMENSION(:), POINTER               :: atomic_grid_weight_grad, grid_weight_grad
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: atom_coord_grad, density_grad, &
@@ -1284,6 +1286,7 @@ CONTAINS
       active_rank = local_natom > 0
       CPASSERT(active_rank .EQV. (local_nrow > 0))
       use_constraints = .FALSE.
+      capture_jumps = .FALSE.
       IF (PRESENT(density_constraints) .AND. need_derivatives) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             CPASSERT(PRESENT(constraint_domain) .AND. PRESENT(atomic_ids))
@@ -1295,6 +1298,14 @@ CONTAINS
                ALLOCATE (selected_limits(SIZE(selected_rows), 2), selected_applied(SIZE(selected_rows)))
                selected_limits = 0.0_dp
                selected_applied = .FALSE.
+               capture_jumps = skala_density_jumps_active(density_constraints) .AND. &
+                               (constraint_domain == skala_atom_domain .OR. &
+                                constraint_domain == skala_background_domain)
+               IF (capture_jumps) THEN
+                  ALLOCATE (selected_jumps(SIZE(selected_rows), 2), jump_values(SIZE(selected_rows)))
+                  selected_jumps = 0.0_dp
+                  jump_values = 0.0_dp
+               END IF
             END IF
          END IF
       END IF
@@ -1429,10 +1440,18 @@ CONTAINS
                CALL timestop(phase_handle)
             END IF
             IF (use_constraints) THEN
-               CALL atom_descriptor_limits(inputs, density(chunk_row_start:chunk_row_start + chunk_row_count - 1, :), &
-                                           kin(chunk_row_start:chunk_row_start + chunk_row_count - 1, :), &
-                                           chunk_row_start, selected_rows, selected_spins, selected_descriptors, &
-                                           selected_weights, probes, tolerances, selected_limits, selected_applied)
+               IF (capture_jumps) THEN
+                  CALL atom_descriptor_limits(inputs, density(chunk_row_start:chunk_row_start + chunk_row_count - 1, :), &
+                                              kin(chunk_row_start:chunk_row_start + chunk_row_count - 1, :), &
+                                              chunk_row_start, selected_rows, selected_spins, selected_descriptors, &
+                                              selected_weights, probes, tolerances, selected_limits, selected_applied, &
+                                              selected_jumps)
+               ELSE
+                  CALL atom_descriptor_limits(inputs, density(chunk_row_start:chunk_row_start + chunk_row_count - 1, :), &
+                                              kin(chunk_row_start:chunk_row_start + chunk_row_count - 1, :), &
+                                              chunk_row_start, selected_rows, selected_spins, selected_descriptors, &
+                                              selected_weights, probes, tolerances, selected_limits, selected_applied)
+               END IF
             END IF
 
             CALL torch_tensor_release(exc_tensor)
@@ -1476,6 +1495,9 @@ CONTAINS
                first_spin = MAX(1, selected_spins(constraint))
                last_spin = selected_spins(constraint)
                IF (last_spin == 0) last_spin = 2
+               IF (capture_jumps) THEN
+                  jump_values(constraint) = SUM(selected_jumps(constraint, first_spin:last_spin))
+               END IF
                IF (selected_descriptors(constraint) == skala_density_descriptor) THEN
                   density_grad_out(selected_rows(constraint), first_spin:last_spin) = &
                      selected_limits(constraint, first_spin:last_spin)
@@ -1484,6 +1506,12 @@ CONTAINS
                      selected_limits(constraint, first_spin:last_spin)
                END IF
             END DO
+            IF (capture_jumps) THEN
+               ! Torch covectors already contain the quadrature weights. The interpolated
+               ! background is subtracted from the full GAPW energy and operator.
+               IF (constraint_domain == skala_background_domain) jump_values = -jump_values
+               CALL skala_density_jumps_put(density_constraints, constraint_domain, jump_values, selected_applied)
+            END IF
          END IF
 
          IF (need_coordinate_derivatives) THEN
@@ -1606,9 +1634,10 @@ CONTAINS
 !> \param tolerances ...
 !> \param limits ...
 !> \param applied ...
+!> \param jumps Optional already weighted negative-minus-positive primitive covectors.
 ! **************************************************************************************************
    SUBROUTINE atom_descriptor_limits(inputs, density, kinetic, first_row, rows, spins, descriptors, &
-                                     weights, probes, tolerances, limits, applied)
+                                     weights, probes, tolerances, limits, applied, jumps)
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
       REAL(dp), INTENT(IN)                               :: density(:, :), kinetic(:, :)
       INTEGER, INTENT(IN)                                :: first_row, rows(:), spins(:), &
@@ -1616,6 +1645,7 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: weights(:), probes(2), tolerances(2)
       REAL(dp), INTENT(INOUT)                            :: limits(:, :)
       LOGICAL, INTENT(INOUT)                             :: applied(:)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: jumps(:, :)
 
       INTEGER                                            :: c, descriptor, first_spin, last_spin, n, &
                                                             row, spin
@@ -1660,6 +1690,7 @@ CONTAINS
          END DO
          ! Keep the full probe input, but evaluate only covectors used by the selected weights.
          branches = [ANY(selected .AND. weights /= 0.0_dp), ANY(selected .AND. weights /= 1.0_dp)]
+         IF (PRESENT(jumps)) branches = .TRUE.
          IF (descriptor == skala_density_descriptor) THEN
             CALL skala_torch_model_descriptor_limits(cached_model, inputs, "density", density, &
                                                      active, probes(descriptor), negative, positive, branches=branches)
@@ -1671,6 +1702,7 @@ CONTAINS
             IF (.NOT. selected(c)) CYCLE
             row = rows(c) - first_row + 1
             limits(c, :) = weights(c)*negative(row, :) + (1.0_dp - weights(c))*positive(row, :)
+            IF (PRESENT(jumps)) jumps(c, :) = negative(row, :) - positive(row, :)
             applied(c) = .TRUE.
          END DO
          DEALLOCATE (active)
@@ -2298,7 +2330,8 @@ CONTAINS
 !> \param kin_grad ...
 ! **************************************************************************************************
    SUBROUTINE apply_descriptor_constraints(state, features, rho_r, density_grad, kin_grad)
-      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
       TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
       REAL(dp), INTENT(INOUT), TARGET                    :: density_grad(:, :), kin_grad(:, :)
@@ -2309,16 +2342,24 @@ CONTAINS
       INTEGER, ALLOCATABLE :: active(:, :), counts(:), descriptors(:), displs(:), &
          global_entries(:), local_entries(:), local_entry_counts(:), local_rows(:), owners(:), &
          points(:, :), spins(:)
-      LOGICAL                                            :: branches(2)
+      LOGICAL                                            :: branches(2), capture_jumps
+      LOGICAL, ALLOCATABLE                               :: jump_owned(:)
       REAL(dp)                                           :: probes(2), tolerances(2)
-      REAL(dp), ALLOCATABLE                              :: constraint_error(:), negative(:, :), &
-                                                            negative_weights(:), positive(:, :)
+      REAL(dp), ALLOCATABLE                              :: constraint_error(:), jump_values(:), &
+                                                            negative(:, :), negative_weights(:), &
+                                                            positive(:, :)
       REAL(dp), POINTER                                  :: covector(:, :)
 
       CPASSERT(.NOT. features%uses_atom_chunks)
       CALL skala_density_constraints_get(state, points, spins, negative_weights, probes(1), tolerances(1), &
                                          descriptors, probes(2), tolerances(2), domain=skala_fft_domain)
       n = SIZE(spins)
+      capture_jumps = skala_density_jumps_active(state)
+      IF (capture_jumps) THEN
+         ALLOCATE (jump_values(n), jump_owned(n))
+         jump_values = 0.0_dp
+         jump_owned = .FALSE.
+      END IF
       bo = rho_r(1)%pw_grid%bounds_local
       ALLOCATE (local_rows(n), owners(n), local_entry_counts(n), constraint_error(n))
       local_rows = 0
@@ -2399,6 +2440,7 @@ CONTAINS
             branches(1) = branches(1) .OR. negative_weights(c) /= 0.0_dp
             branches(2) = branches(2) .OR. negative_weights(c) /= 1.0_dp
          END DO
+         IF (capture_jumps) branches = .TRUE.
          IF (descriptor == skala_density_descriptor) THEN
             CALL skala_torch_model_descriptor_limits(cached_model, features%inputs, "density", features%density, &
                                                      active, probes(descriptor), negative, positive, branches=branches)
@@ -2422,11 +2464,17 @@ CONTAINS
                covector(row, first_spin:last_spin) = covector(row, first_spin:last_spin) + &
                                                      negative_weights(c)*negative(i, first_spin:last_spin) + &
                                                      (1.0_dp - negative_weights(c))*positive(i, first_spin:last_spin)
+               IF (capture_jumps) THEN
+                  jump_values(c) = jump_values(c) + &
+                                   SUM(negative(i, first_spin:last_spin) - positive(i, first_spin:last_spin))
+               END IF
             END DO
+            IF (capture_jumps) jump_owned(c) = .TRUE.
          END DO
          NULLIFY (covector)
          DEALLOCATE (active)
       END DO
+      IF (capture_jumps) CALL skala_density_jumps_put(state, skala_fft_domain, jump_values, jump_owned)
    END SUBROUTINE apply_descriptor_constraints
 
 ! **************************************************************************************************
