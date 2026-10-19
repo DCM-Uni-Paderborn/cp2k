@@ -3078,7 +3078,8 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: moment(:, :, :)
       LOGICAL, INTENT(OUT)                               :: valid
 
-      COMPLEX(dp), ALLOCATABLE                           :: batch_delta(:, :), delta(:, :), gaussian(:, :), phi(:, :), &
+      COMPLEX(dp), ALLOCATABLE                           :: batch_delta(:, :), delta(:, :), &
+                                                            gaussian(:, :), phi(:, :), &
                                                             weighted(:, :, :, :)
       INTEGER                                            :: atom, aux, first, hi, ia, image, ir, j, &
                                                             kind, last, lo, nang, nao, np, nproj, &
@@ -3087,10 +3088,10 @@ CONTAINS
       INTEGER(int_8)                                     :: gaussian_words, words
       LOGICAL                                            :: cached_gaussian
       REAL(dp)                                           :: bounds(3, 2), position(3), radius
-      REAL(dp), ALLOCATABLE, TARGET                      :: coordinates(:, :, :)
-      REAL(dp), POINTER                                 :: batch_points(:, :)
       REAL(dp), ALLOCATABLE                              :: local_points(:, :), potential(:, :), &
                                                             weights(:)
+      REAL(dp), ALLOCATABLE, TARGET                      :: coordinates(:, :, :)
+      REAL(dp), POINTER                                  :: batch_points(:, :)
       TYPE(linear_moment_type), POINTER                  :: entry, retained
       TYPE(linear_moment_type), TARGET                   :: temporary
 
@@ -3112,8 +3113,6 @@ CONTAINS
       position = frame%positions(:, frame%center_atoms(center)) + MATMUL(frame%cell, REAL(center_image, dp))
       ALLOCATE (coordinates(3, nang, nrow), local_points(3, nang), weighted(nang, nproj, fields%nfunction, nrow), &
                 potential(nang, fields%nfunction), weights(nang))
-      bounds(:, 1) = HUGE(0.0_dp)
-      bounds(:, 2) = -HUGE(0.0_dp)
       row = 0
       DO ir = 1, SIZE(r)
          IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
@@ -3122,8 +3121,6 @@ CONTAINS
          DO ia = 1, nang
             coordinates(:, ia, row) = position + local_points(:, ia)
          END DO
-         bounds(:, 1) = MIN(bounds(:, 1), MINVAL(coordinates(:, :, row), DIM=2))
-         bounds(:, 2) = MAX(bounds(:, 2), MAXVAL(coordinates(:, :, row), DIM=2))
          IF (ALLOCATED(potentials%potential_fields)) THEN
             potential(:, :) = potentials%potential_fields%values(:, :, row)
          ELSE
@@ -3197,6 +3194,8 @@ CONTAINS
          END DO
       END DO
       batch_points(1:3, 1:nang*nrow) => coordinates
+      bounds(:, 1) = MINVAL(batch_points, DIM=2)
+      bounds(:, 2) = MAXVAL(batch_points, DIM=2)
       DO image = 1, SIZE(coefficient_images, 2)
          single_image(:, 1) = ao_image - coefficient_images(:, image)
          IF (.NOT. qs_upf_inverse_lattice_intersects(frame, bounds, single_image(:, 1))) CYCLE
