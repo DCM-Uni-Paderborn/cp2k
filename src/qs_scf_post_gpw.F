@@ -2624,7 +2624,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: zcharge
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: bfun
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: aedens, ccdens, ppdens
-      REAL(KIND=dp), DIMENSION(3)                        :: checksum_hr, dr
+      REAL(KIND=dp), DIMENSION(3)                        :: checksum_hr
       REAL(KIND=dp), DIMENSION(:), POINTER               :: my_Q0
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
@@ -2898,8 +2898,7 @@ CONTAINS
             END IF
          END IF
          IF (dft_control%qs_control%gapw .AND. print_density == "TOTAL_DENSITY") THEN
-            ! total density in g-space not implemented for k-points
-            CPASSERT(.NOT. do_kpoints .OR. ALLOCATED(physical_density))
+            ! Native GAPW atom coefficients already contain the Bloch density image sum.
             ! Print total electronic density
             CALL get_qs_env(qs_env=qs_env, &
                             pw_env=pw_env)
@@ -2911,9 +2910,11 @@ CONTAINS
             CALL auxbas_pw_pool%create_pw(pw=rho_elec_gspace)
             CALL pw_zero(rho_elec_gspace)
             CALL get_pw_grid_info(pw_grid=rho_elec_gspace%pw_grid, &
-                                  dr=dr, &
                                   vol=volume)
-            q_max = SQRT(SUM((pi/dr(:))**2))
+            ! Include every reciprocal vector, also for a sheared cell.
+            q_max = SQRT(MAX(0.0_dp, MAXVAL(rho_elec_gspace%pw_grid%gsq)))
+            CALL rho_elec_gspace%pw_grid%para%group%max(q_max)
+            q_max = NEAREST(q_max, 1.0_dp)
             IF (ALLOCATED(physical_density)) THEN
                CALL combine_density_spins(rho_r, physical_density, rho_elec_rspace, rho_soft, rho_hard)
                rho_total = rho_soft + rho_hard
@@ -2923,7 +2924,8 @@ CONTAINS
                                                  rhotot_elec_gspace=rho_elec_gspace, &
                                                  q_max=q_max, &
                                                  rho_hard=rho_hard, &
-                                                 rho_soft=rho_soft)
+                                                 rho_soft=rho_soft, &
+                                                 allow_nonorthorhombic=.TRUE.)
                rho_total = rho_hard + rho_soft
                CALL get_pw_grid_info(pw_grid=rho_elec_gspace%pw_grid, &
                                      vol=volume)
@@ -2985,7 +2987,8 @@ CONTAINS
                                                     q_max=q_max, &
                                                     rho_hard=rho_hard, &
                                                     rho_soft=rho_soft, &
-                                                    fsign=-1.0_dp)
+                                                    fsign=-1.0_dp, &
+                                                    allow_nonorthorhombic=.TRUE.)
                   rho_total = rho_hard + rho_soft
 
                   ! rhotot pw coefficients are by default scaled by grid volume
