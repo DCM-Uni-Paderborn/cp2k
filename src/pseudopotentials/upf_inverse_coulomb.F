@@ -10,6 +10,7 @@
 MODULE upf_inverse_coulomb
    USE bessel_lib,                      ONLY: bessel0
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE kahan_sum,                       ONLY: accurate_sum
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi,&
                                               pi,&
@@ -302,7 +303,8 @@ CONTAINS
          DEALLOCATE (moments)
          IF (derive) DEALLOCATE (dc, de, f, df, dfourier)
       END DO
-      energy = SUM(poisson_weights*(0.5_dp*ABS(h)**2 + REAL(CONJG(h)*e, dp)))
+      ! Preserve small geometry differences when summing the reciprocal energy terms.
+      energy = accurate_sum(poisson_weights*(0.5_dp*ABS(h)**2 + REAL(CONJG(h)*e, dp)))
       dpw = 0.0_dp
       IF (derive) THEN
          dpw = SUM(poisson_weights_response*(0.5_dp*ABS(h)**2 + REAL(CONJG(h)*e, dp)) + &
