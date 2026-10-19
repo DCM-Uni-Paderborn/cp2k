@@ -199,7 +199,8 @@ CONTAINS
                                            state%atom_grid%points, state%atom_grid%weights, state%xc_fields, &
                                            state%xc_grid, cell, core, core_gradient, xc_section, ns == 2, &
                                            comm, state%xc, energy, adjoint, state%kinetic_cache, core_tau, state%atom_grid, &
-                                           state%paw_reconstruction, density_constraints)
+                                           state%paw_reconstruction, density_constraints, &
+                                           just_energy=.NOT. PRESENT(potential))
       IF (PRESENT(potential)) THEN
          CPASSERT(SIZE(potential) == ns)
          ALLOCATE (background_potential(ns))

@@ -115,11 +115,12 @@ CONTAINS
 !> \param atom_grid Complete local atom blocks required by the nonlocal Skala evaluator.
 !> \param paw_reconstruction Optional PAW-only reference caches for the composite AE valence fields.
 !> \param density_constraints Selected exact and background atomic descriptor derivatives for this geometry.
+!> \param just_energy Evaluate the original energy without AO or background derivative assembly.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                          background_density, background_gradient, core_density, core_gradient, &
                                          xc_section, lsd, comm, state, energy, kinetic, background_tau, core_tau, atom_grid, &
-                                         paw_reconstruction, density_constraints)
+                                         paw_reconstruction, density_constraints, just_energy)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -127,6 +128,7 @@ CONTAINS
          background_gradient(:, :, :), core_density(:, :), core_gradient(:, :, :)
       TYPE(section_vals_type), POINTER                   :: xc_section
       LOGICAL, INTENT(IN)                                :: lsd
+      LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_xc_type), INTENT(OUT)          :: state
       REAL(dp), INTENT(OUT)                              :: energy
@@ -145,12 +147,14 @@ CONTAINS
          qoperator(:, :), soft(:, :)
       INTEGER                                            :: block, hi, ik, lo, m, nao, nk, np, &
                                                             nproj, nspin, spin
-      LOGICAL                                            :: geometry_fields, store_fields
+      LOGICAL                                            :: energy_only, geometry_fields, store_fields
       REAL(dp), ALLOCATABLE :: ebackground(:), gradient(:, :), integration_weights(:), &
          reconstruction_density(:), reconstruction_gradient(:, :), rho(:), tau(:), &
          tau_augmentation(:)
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
 
+      energy_only = .FALSE.
+      IF (PRESENT(just_energy)) energy_only = just_energy
       nk = SIZE(frames)
       CPASSERT(nk > 0 .AND. SIZE(kweights) == nk)
       CPASSERT(ALL(kweights >= 0.0_dp))
@@ -187,7 +191,8 @@ CONTAINS
       END IF
       ! Reuse only the orbital fields shared by the density and operator in this call.
       ! Larger point sets retain the original bounded-block evaluation.
-      store_fields = .NOT. geometry_fields .AND. np > 0 .AND. 64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes
+      store_fields = .NOT. energy_only .AND. .NOT. geometry_fields .AND. np > 0 .AND. &
+                     64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             IF (skala_density_samples_only(density_constraints)) store_fields = .FALSE.
@@ -286,7 +291,7 @@ CONTAINS
          CPASSERT(PRESENT(atom_grid) .AND. state%kinetic)
          CALL evaluate_skala_residual(xc_section, comm, state, background_density, background_gradient, &
                                       background_tau, points, weights, atom_grid, frames(1)%frame%positions, energy, &
-                                      density_constraints)
+                                      density_constraints, energy_only)
          ! Skala supplies derivatives of the complete weighted energy. Do not divide by
          ! quadrature weights, including at zero-weight rows used by its nonlocal descriptors.
          integration_weights = 1.0_dp
@@ -305,6 +310,12 @@ CONTAINS
          state%background_vtau = -state%background_vtau
          energy = SUM(weights*state%energy_density)
          CALL comm%sum(energy)
+      END IF
+      IF (energy_only) THEN
+         ! Native energy-only callers leave rho_changed set. The next KS or force
+         ! evaluation must rebuild these operators from the complete functional.
+         state%operators = CMPLX(0.0_dp, 0.0_dp, dp)
+         RETURN
       END IF
       DO ik = 1, nk
          frame => frames(ik)%frame
@@ -374,9 +385,11 @@ CONTAINS
 !> \param positions All original-coordinate atomic positions.
 !> \param energy Globally reduced difference of the two complete functional evaluations.
 !> \param density_constraints ...
+!> \param just_energy Evaluate the original energy without AO or background derivative assembly.
 ! **************************************************************************************************
    SUBROUTINE evaluate_skala_residual(xc_section, comm, state, background_density, background_gradient, &
-                                      background_tau, points, weights, atom_grid, positions, energy, density_constraints)
+                                      background_tau, points, weights, atom_grid, positions, energy, &
+                                      density_constraints, just_energy)
       TYPE(section_vals_type), POINTER                   :: xc_section
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_xc_type), INTENT(INOUT)        :: state
@@ -387,6 +400,7 @@ CONTAINS
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
       REAL(dp), INTENT(IN)                               :: positions(:, :)
       REAL(dp), INTENT(OUT)                              :: energy
+      LOGICAL, INTENT(IN)                                :: just_energy
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
 
@@ -436,46 +450,68 @@ CONTAINS
          gradient(:, :, spin) = scale*state%density_gradient(:, :, MIN(spin, ns))
          tau(:, spin) = scale*state%tau(:, MIN(spin, ns))
       END DO
-      CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
-                                            base_weights, sizes, atom_coords, energy, vdensity, vgradient, vtau, &
-                                            point_derivative, weight_derivative, base_derivative, atom_derivative, &
-                                            density_constraints, skala_atom_domain, local_atoms)
-      DO spin = 1, ns
-         IF (ns == 1) THEN
-            state%vdensity(:, spin) = 0.5_dp*SUM(vdensity, DIM=2)
-            state%vgradient(:, :, spin) = 0.5_dp*SUM(vgradient, DIM=3)
-            state%vtau(:, spin) = 0.5_dp*SUM(vtau, DIM=2)
-         ELSE
-            state%vdensity(:, spin) = vdensity(:, spin)
-            state%vgradient(:, :, spin) = vgradient(:, :, spin)
-            state%vtau(:, spin) = vtau(:, spin)
-         END IF
-      END DO
+      IF (just_energy) THEN
+         CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
+                                               base_weights, sizes, atom_coords, energy)
+      ELSE
+         CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
+                                               base_weights, sizes, atom_coords, energy, vdensity, vgradient, vtau, &
+                                               point_derivative, weight_derivative, base_derivative, atom_derivative, &
+                                               density_constraints, skala_atom_domain, local_atoms)
+         DO spin = 1, ns
+            IF (ns == 1) THEN
+               state%vdensity(:, spin) = 0.5_dp*SUM(vdensity, DIM=2)
+               state%vgradient(:, :, spin) = 0.5_dp*SUM(vgradient, DIM=3)
+               state%vtau(:, spin) = 0.5_dp*SUM(vtau, DIM=2)
+            ELSE
+               state%vdensity(:, spin) = vdensity(:, spin)
+               state%vgradient(:, :, spin) = vgradient(:, :, spin)
+               state%vtau(:, spin) = vtau(:, spin)
+            END IF
+         END DO
+      END IF
       DO spin = 1, 2
          density(:, spin) = scale*background_density(:, MIN(spin, ns))
          gradient(:, :, spin) = scale*background_gradient(:, :, MIN(spin, ns))
          tau(:, spin) = scale*background_tau(:, MIN(spin, ns))
       END DO
-      CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
-                                            base_weights, sizes, atom_coords, background_energy, vdensity, vgradient, vtau, &
-                                            background_point_derivative, background_weight_derivative, &
-                                            background_base_derivative, background_atom_derivative, &
-                                            density_constraints, skala_background_domain, local_atoms)
-      DO spin = 1, ns
-         IF (ns == 1) THEN
-            state%background_vdensity(:, spin) = -0.5_dp*SUM(vdensity, DIM=2)
-            state%background_vgradient(:, :, spin) = -0.5_dp*SUM(vgradient, DIM=3)
-            state%background_vtau(:, spin) = -0.5_dp*SUM(vtau, DIM=2)
-         ELSE
-            state%background_vdensity(:, spin) = -vdensity(:, spin)
-            state%background_vgradient(:, :, spin) = -vgradient(:, :, spin)
-            state%background_vtau(:, spin) = -vtau(:, spin)
-         END IF
-      END DO
+      IF (just_energy) THEN
+         CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
+                                               base_weights, sizes, atom_coords, background_energy)
+      ELSE
+         CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
+                                               base_weights, sizes, atom_coords, background_energy, vdensity, vgradient, vtau, &
+                                               background_point_derivative, background_weight_derivative, &
+                                               background_base_derivative, background_atom_derivative, &
+                                               density_constraints, skala_background_domain, local_atoms)
+         DO spin = 1, ns
+            IF (ns == 1) THEN
+               state%background_vdensity(:, spin) = -0.5_dp*SUM(vdensity, DIM=2)
+               state%background_vgradient(:, :, spin) = -0.5_dp*SUM(vgradient, DIM=3)
+               state%background_vtau(:, spin) = -0.5_dp*SUM(vtau, DIM=2)
+            ELSE
+               state%background_vdensity(:, spin) = -vdensity(:, spin)
+               state%background_vgradient(:, :, spin) = -vgradient(:, :, spin)
+               state%background_vtau(:, spin) = -vtau(:, spin)
+            END IF
+         END DO
+      END IF
       state%weighted_adjoint = .TRUE.
       state%energy_density = 0.0_dp
       energy = energy - background_energy
       ALLOCATE (state%point_derivative(3, np), state%weight_derivative(np), state%atom_derivative(3, SIZE(positions, 2)))
+      IF (just_energy) THEN
+         state%vdensity = 0.0_dp
+         state%vgradient = 0.0_dp
+         state%vtau = 0.0_dp
+         state%background_vdensity = 0.0_dp
+         state%background_vgradient = 0.0_dp
+         state%background_vtau = 0.0_dp
+         state%point_derivative = 0.0_dp
+         state%weight_derivative = 0.0_dp
+         state%atom_derivative = 0.0_dp
+         RETURN
+      END IF
       state%point_derivative(:, :) = point_derivative - background_point_derivative
       state%weight_derivative(:) = weight_derivative - background_weight_derivative
       state%atom_derivative = 0.0_dp
@@ -799,11 +835,12 @@ CONTAINS
 !> \param atom_grid Complete local atom blocks for nonlocal Skala evaluation.
 !> \param paw_reconstruction Optional PAW-only reconstruction caches for the composite fields.
 !> \param density_constraints Owned selected derivatives, invalidated by geometry or atomic-layout changes.
+!> \param just_energy Evaluate the original energy without AO or background derivative assembly.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_grid_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                               fields, grid, cell, core_density, core_gradient, xc_section, &
                                               lsd, comm, state, energy, grid_adjoint, kinetic, core_tau, atom_grid, &
-                                              paw_reconstruction, density_constraints)
+                                              paw_reconstruction, density_constraints, just_energy)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -815,6 +852,7 @@ CONTAINS
                                                             core_gradient(:, :, :)
       TYPE(section_vals_type), POINTER                   :: xc_section
       LOGICAL, INTENT(IN)                                :: lsd
+      LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_xc_type), INTENT(OUT)          :: state
       REAL(dp), INTENT(OUT)                              :: energy
@@ -879,7 +917,7 @@ CONTAINS
       CALL qs_upf_inverse_xc_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                       background, gradient, core_density, core_gradient, xc_section, &
                                       lsd, comm, state, energy, kinetic, tau, core_tau, atom_grid, paw_reconstruction, &
-                                      selected_constraints)
+                                      selected_constraints, just_energy)
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             IF (skala_density_samples_active(density_constraints)) THEN
@@ -896,6 +934,12 @@ CONTAINS
                   RETURN
                END IF
             END IF
+         END IF
+      END IF
+      IF (PRESENT(just_energy)) THEN
+         IF (just_energy) THEN
+            ALLOCATE (grid_adjoint(SIZE(fields, 1), SIZE(fields, 2), SIZE(fields, 3), SIZE(fields, 4)), SOURCE=0.0_dp)
+            RETURN
          END IF
       END IF
       ALLOCATE (integration_weights(np))
