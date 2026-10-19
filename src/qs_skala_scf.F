@@ -106,7 +106,7 @@ MODULE qs_skala_scf
    INTEGER, PARAMETER, PUBLIC :: qs_skala_positive_density_sum = -2
 
    INTEGER(KIND=int_8), PARAMETER :: max_point_operator_bytes = 64_int_8*1024*1024
-   INTEGER, PARAMETER :: max_point_operator_entries = 32
+   INTEGER, PARAMETER :: initial_point_operator_entries = 32
 
    TYPE physical_point_operator
       INTEGER :: domain = 0, point(3) = 0, descriptor = 0
@@ -881,7 +881,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Reuse fixed-geometry descriptor matrices, retaining fresh orbital and spin derivatives.
-!>        Every rank keeps the same keys and numeric budget. A full or oversized cache retains
+!>        Every rank keeps the same keys and memory budget, including empty entry metadata.
+!>        Grow the entry array within that budget. A full or oversized cache retains
 !>        the original collective construction. Release together with the owning orbital charts.
 !> \param state Native orbital state at its defining geometry.
 !> \param domain Actual physical evaluation domain.
@@ -894,8 +895,10 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: domain, point(3), descriptor
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
 
-      INTEGER                                            :: entry, free_entry
-      INTEGER(KIND=int_8)                                :: bytes
+      INTEGER                                            :: capacity, ENTRY, free_entry, growth
+      INTEGER(KIND=int_8)                                :: bytes, entry_bytes
+      TYPE(physical_point_operator)                      :: layout
+      TYPE(physical_point_operator), ALLOCATABLE         :: expanded(:)
 
       free_entry = 0
       IF (ALLOCATED(state%point_operators)) THEN
@@ -921,11 +924,25 @@ CONTAINS
       END IF
       bytes = 16_int_8*SIZE(operators, KIND=int_8)
       IF (bytes > max_point_operator_bytes - state%point_operator_bytes) RETURN
-      IF (.NOT. ALLOCATED(state%point_operators)) THEN
-         ALLOCATE (state%point_operators(max_point_operator_entries))
-         free_entry = 1
+      IF (free_entry == 0) THEN
+         capacity = 0
+         IF (ALLOCATED(state%point_operators)) capacity = SIZE(state%point_operators)
+         entry_bytes = STORAGE_SIZE(layout, KIND=int_8)/8_int_8
+         CPASSERT(entry_bytes > 0_int_8)
+         growth = INT(MIN(INT(MAX(initial_point_operator_entries, capacity), int_8), &
+                          (max_point_operator_bytes - state%point_operator_bytes - bytes)/entry_bytes))
+         IF (growth <= 0) RETURN
+         ALLOCATE (expanded(capacity + growth))
+         DO ENTRY = 1, capacity
+            expanded(ENTRY)%domain = state%point_operators(ENTRY)%domain
+            expanded(ENTRY)%point = state%point_operators(ENTRY)%point
+            expanded(ENTRY)%descriptor = state%point_operators(ENTRY)%descriptor
+            CALL MOVE_ALLOC(state%point_operators(ENTRY)%matrix, expanded(ENTRY)%matrix)
+         END DO
+         CALL MOVE_ALLOC(expanded, state%point_operators)
+         state%point_operator_bytes = state%point_operator_bytes + INT(growth, int_8)*entry_bytes
+         free_entry = capacity + 1
       END IF
-      IF (free_entry == 0) RETURN
       ASSOCIATE (cached => state%point_operators(free_entry))
          cached%domain = domain
          cached%point = point
