@@ -81,6 +81,7 @@ MODULE qs_scf_output
    USE qs_scf_types,                    ONLY: ot_method_nr,&
                                               qs_scf_env_type,&
                                               special_diag_method_nr
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_charges
    USE scf_control_types,               ONLY: scf_control_type
 #include "./base/base_uses.f90"
 
@@ -646,8 +647,10 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_print_scf_summary'
 
       INTEGER                                            :: bc, handle, ispin, psolver
+      REAL(dp), ALLOCATABLE                              :: inverse_electronic(:)
       REAL(kind=dp)                                      :: e_extrapolated, exc1_energy, exc_energy, &
-                                                            implicit_ps_ehartree, tot1_h, tot1_s
+                                                            implicit_ps_ehartree, inverse_ionic, &
+                                                            tot1_h, tot1_s
       REAL(KIND=dp), DIMENSION(:), POINTER               :: tot_rho_r
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(scf_control_type), POINTER                    :: scf_control
@@ -657,21 +660,32 @@ CONTAINS
 
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env, scf_control=scf_control)
       psolver = pw_env%poisson_env%parameters%solver
+      CALL qs_upf_inverse_coulomb_charges(qs_env, inverse_electronic, inverse_ionic)
 
       IF (output_unit > 0) THEN
          CALL qs_rho_get(rho, tot_rho_r=tot_rho_r)
          IF (.NOT. (dft_control%qs_control%semi_empirical .OR. &
                     dft_control%qs_control%xtb .OR. &
                     dft_control%qs_control%dftb)) THEN
-            WRITE (UNIT=output_unit, FMT="(/,(T3,A,T41,2F20.10))") &
-               "Electronic density on regular grids: ", &
-               accurate_sum(tot_rho_r), &
-               accurate_sum(tot_rho_r) + nelectron_total, &
-               "Core density on regular grids:", &
-               qs_charges%total_rho_core_rspace, &
-               qs_charges%total_rho_core_rspace + &
-               qs_charges%total_rho1_hard_nuc - &
-               REAL(nelectron_total + dft_control%charge, dp)
+            IF (ALLOCATED(inverse_electronic)) THEN
+               WRITE (UNIT=output_unit, FMT="(/,(T3,A,T41,2F20.10))") &
+                  "Complete valence electronic charge:", &
+                  -accurate_sum(inverse_electronic), nelectron_total - accurate_sum(inverse_electronic), &
+                  "Ionic Gaussian charge on the grid:", &
+                  inverse_ionic, inverse_ionic - REAL(nelectron_total + dft_control%charge, dp)
+               WRITE (UNIT=output_unit, FMT="(T3,A,T41,F20.10)") &
+                  "Total charge of the complete source:", inverse_ionic - accurate_sum(inverse_electronic)
+            ELSE
+               WRITE (UNIT=output_unit, FMT="(/,(T3,A,T41,2F20.10))") &
+                  "Electronic density on regular grids: ", &
+                  accurate_sum(tot_rho_r), &
+                  accurate_sum(tot_rho_r) + nelectron_total, &
+                  "Core density on regular grids:", &
+                  qs_charges%total_rho_core_rspace, &
+                  qs_charges%total_rho_core_rspace + &
+                  qs_charges%total_rho1_hard_nuc - &
+                  REAL(nelectron_total + dft_control%charge, dp)
+            END IF
 
             IF (dft_control%correct_surf_dip) THEN
                WRITE (UNIT=output_unit, FMT="((T3,A,/,T3,A,T41,F20.10))") &
@@ -688,7 +702,7 @@ CONTAINS
                   qs_env%vacuum_level_below, qs_env%vacuum_level_above
             END IF
 
-            IF (gapw) THEN
+            IF (gapw .AND. .NOT. ALLOCATED(inverse_electronic)) THEN
                tot1_h = qs_charges%total_rho1_hard(1)
                tot1_s = qs_charges%total_rho1_soft(1)
                DO ispin = 2, dft_control%nspins
@@ -721,7 +735,7 @@ CONTAINS
                      qs_charges%total_rho_gspace
                END IF
                ! only add total_rho1_hard_nuc for gapw as cneo requires gapw
-            ELSE
+            ELSE IF (.NOT. ALLOCATED(inverse_electronic)) THEN
                WRITE (UNIT=output_unit, FMT="(T3,A,T41,F20.10)") &
                   "Total charge density on r-space grids:     ", &
                   accurate_sum(tot_rho_r) + &

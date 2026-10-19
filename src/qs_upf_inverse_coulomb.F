@@ -91,6 +91,7 @@ MODULE qs_upf_inverse_coulomb
    PUBLIC :: qs_upf_inverse_coulomb_ionic_geometry
    PUBLIC :: qs_upf_inverse_coulomb_response, qs_upf_inverse_coulomb_metric_response
    PUBLIC :: qs_upf_inverse_coulomb_density
+   PUBLIC :: qs_upf_inverse_coulomb_charges
 
 CONTAINS
 
@@ -103,14 +104,18 @@ CONTAINS
 !>        auxiliary grid's spatial resolution and excludes ions and frozen-core densities.
 !> \param qs_env Native owner of the accepted occupation matrices and full-GAPW source map.
 !> \param density Owned real-space spin fields. Unallocated when no inverse GAPW map is active.
+!> \param monopole_exponent Optional inverse-square width for the native spherical hard-density
+!>        approximation. Each complete center charge is preserved, with higher multipoles omitted.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_coulomb_density(qs_env, density)
+   SUBROUTINE qs_upf_inverse_coulomb_density(qs_env, density, monopole_exponent)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(pw_r3d_rs_type), ALLOCATABLE, INTENT(OUT)     :: density(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: monopole_exponent
 
       COMPLEX(dp), ALLOCATABLE                           :: center_g(:), gamma(:, :), matrix(:, :, :)
       INTEGER                                            :: a, k, kind, spin
       LOGICAL                                            :: rho_g_valid
+      REAL(dp)                                           :: charge
       REAL(dp), ALLOCATABLE                              :: radial(:, :)
       TYPE(dbcsr_p_type), POINTER                        :: matrices(:, :)
       TYPE(pw_c1d_gs_type)                               :: physical_g
@@ -124,6 +129,7 @@ CONTAINS
       TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: centers(:)
 
       CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho, qs_kind_set=kinds)
+      IF (.NOT. ASSOCIATED(ks_env)) RETURN
       CALL get_ks_env(ks_env, upf_inverse=state)
       IF (.NOT. ASSOCIATED(state)) RETURN
       IF (.NOT. state%enabled .OR. .NOT. state%gaussian_background) RETURN
@@ -158,8 +164,19 @@ CONTAINS
             END DO
             DEALLOCATE (radial)
          END DO
-         CALL upf_inverse_coulomb_density(centers, state%coulomb%cell, state%coulomb%grid%g, &
-                                          state%coulomb%grid%vol, center_g, state%coulomb%maps)
+         IF (PRESENT(monopole_exponent)) THEN
+            CPASSERT(monopole_exponent > 0.0_dp)
+            center_g = CMPLX(0.0_dp, 0.0_dp, dp)
+            DO a = 1, SIZE(centers)
+               charge = SQRT(fourpi)*SUM(centers(a)%weights*centers(a)%density(:, 1))
+               center_g(:) = center_g + charge/state%coulomb%grid%vol* &
+                             EXP(CMPLX(-SUM(state%coulomb%grid%g**2, DIM=1)/(4.0_dp*monopole_exponent), &
+                                       -MATMUL(TRANSPOSE(state%coulomb%grid%g), centers(a)%position), dp))
+            END DO
+         ELSE
+            CALL upf_inverse_coulomb_density(centers, state%coulomb%cell, state%coulomb%grid%g, &
+                                             state%coulomb%grid%vol, center_g, state%coulomb%maps)
+         END IF
          physical_g%array = soft_g(spin)%array + center_g
          CALL density(spin)%create(state%coulomb%grid)
          CALL pw_transfer(physical_g, density(spin))
@@ -167,6 +184,39 @@ CONTAINS
       END DO
       CALL physical_g%release()
    END SUBROUTINE qs_upf_inverse_coulomb_density
+
+! **************************************************************************************************
+!> \brief Complete electronic metric counts and the original ionic Gaussian grid charge.
+!>        All ranks participate in the ionic zero-mode reduction. No density field is rebuilt.
+!> \param qs_env Native owner of the accepted inverse GAPW source.
+!> \param electronic Positive spin electron counts. Unallocated when this source is inactive.
+!> \param ionic Positive ionic Gaussian charge, excluding any NLCC model-core density.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_coulomb_charges(qs_env, electronic, ionic)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: electronic(:)
+      REAL(dp), INTENT(OUT)                              :: ionic
+
+      REAL(dp), POINTER                                  :: total(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      ionic = 0.0_dp
+      CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho)
+      IF (.NOT. ASSOCIATED(ks_env)) RETURN
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      IF (.NOT. ASSOCIATED(state)) RETURN
+      IF (.NOT. state%enabled .OR. .NOT. state%gaussian_background) RETURN
+      CPASSERT(ASSOCIATED(state%coulomb))
+      CPASSERT(state%coulomb%ready)
+      CALL qs_rho_get(rho, tot_rho_r=total)
+      ALLOCATE (electronic, SOURCE=-total)
+      IF (state%coulomb%grid%have_g0) ionic = -state%coulomb%grid%vol*REAL(state%coulomb%ionic%array(1), dp)
+      IF (state%coulomb%grid%para%mode /= PW_MODE_LOCAL) THEN
+         CALL state%coulomb%grid%para%group%mp_comm_type%sum(ionic)
+      END IF
+   END SUBROUTINE qs_upf_inverse_coulomb_charges
 
 ! **************************************************************************************************
 !> \brief Geometry adjoint of every native Gaussian ionic charge on the actual auxiliary grid.

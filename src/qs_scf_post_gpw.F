@@ -2647,6 +2647,7 @@ CONTAINS
       TYPE(pw_pool_p_type), DIMENSION(:), POINTER        :: pw_pools
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
       TYPE(pw_r3d_rs_type)                               :: aux_r, rho_elec_rspace, wf_r
+      TYPE(pw_r3d_rs_type), ALLOCATABLE                  :: physical_density(:)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
       TYPE(pw_r3d_rs_type), POINTER                      :: mb_rho, v_hartree_rspace, vee
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -2888,9 +2889,17 @@ CONTAINS
                                               e_density_section%absolute_section_key)
 
          END IF
+         IF (dft_control%qs_control%gapw .AND. print_density /= "SOFT_DENSITY") THEN
+            IF (print_density == "TOTAL_HARD_APPROX") THEN
+               CALL get_qs_env(qs_env, rho0_mpole=rho0_mpole)
+               CALL qs_upf_inverse_coulomb_density(qs_env, physical_density, monopole_exponent=rho0_mpole%zet0_h)
+            ELSE
+               CALL qs_upf_inverse_coulomb_density(qs_env, physical_density)
+            END IF
+         END IF
          IF (dft_control%qs_control%gapw .AND. print_density == "TOTAL_DENSITY") THEN
             ! total density in g-space not implemented for k-points
-            CPASSERT(.NOT. do_kpoints)
+            CPASSERT(.NOT. do_kpoints .OR. ALLOCATED(physical_density))
             ! Print total electronic density
             CALL get_qs_env(qs_env=qs_env, &
                             pw_env=pw_env)
@@ -2905,20 +2914,25 @@ CONTAINS
                                   dr=dr, &
                                   vol=volume)
             q_max = SQRT(SUM((pi/dr(:))**2))
-            CALL calculate_rhotot_elec_gspace(qs_env=qs_env, &
-                                              auxbas_pw_pool=auxbas_pw_pool, &
-                                              rhotot_elec_gspace=rho_elec_gspace, &
-                                              q_max=q_max, &
-                                              rho_hard=rho_hard, &
-                                              rho_soft=rho_soft)
-            rho_total = rho_hard + rho_soft
-            CALL get_pw_grid_info(pw_grid=rho_elec_gspace%pw_grid, &
-                                  vol=volume)
-            ! rhotot pw coefficients are by default scaled by grid volume
-            ! need to undo this to get proper charge from printed cube
-            CALL pw_scale(rho_elec_gspace, 1.0_dp/volume)
+            IF (ALLOCATED(physical_density)) THEN
+               CALL combine_density_spins(rho_r, physical_density, rho_elec_rspace, rho_soft, rho_hard)
+               rho_total = rho_soft + rho_hard
+            ELSE
+               CALL calculate_rhotot_elec_gspace(qs_env=qs_env, &
+                                                 auxbas_pw_pool=auxbas_pw_pool, &
+                                                 rhotot_elec_gspace=rho_elec_gspace, &
+                                                 q_max=q_max, &
+                                                 rho_hard=rho_hard, &
+                                                 rho_soft=rho_soft)
+               rho_total = rho_hard + rho_soft
+               CALL get_pw_grid_info(pw_grid=rho_elec_gspace%pw_grid, &
+                                     vol=volume)
+               ! rhotot pw coefficients are by default scaled by grid volume
+               ! need to undo this to get proper charge from printed cube
+               CALL pw_scale(rho_elec_gspace, 1.0_dp/volume)
 
-            CALL pw_transfer(rho_elec_gspace, rho_elec_rspace)
+               CALL pw_transfer(rho_elec_gspace, rho_elec_rspace)
+            END IF
             rho_total_rspace = pw_integrate_function(rho_elec_rspace, isign=-1)
             filename = "TOTAL_ELECTRON_DENSITY"
             mpi_io = .TRUE.
@@ -2960,20 +2974,26 @@ CONTAINS
             IF (dft_control%nspins > 1) THEN
                CALL pw_zero(rho_elec_gspace)
                CALL pw_zero(rho_elec_rspace)
-               CALL calculate_rhotot_elec_gspace(qs_env=qs_env, &
-                                                 auxbas_pw_pool=auxbas_pw_pool, &
-                                                 rhotot_elec_gspace=rho_elec_gspace, &
-                                                 q_max=q_max, &
-                                                 rho_hard=rho_hard, &
-                                                 rho_soft=rho_soft, &
-                                                 fsign=-1.0_dp)
-               rho_total = rho_hard + rho_soft
+               IF (ALLOCATED(physical_density)) THEN
+                  CALL combine_density_spins(rho_r, physical_density, rho_elec_rspace, rho_soft, rho_hard, &
+                                             spin_difference=.TRUE.)
+                  rho_total = rho_soft + rho_hard
+               ELSE
+                  CALL calculate_rhotot_elec_gspace(qs_env=qs_env, &
+                                                    auxbas_pw_pool=auxbas_pw_pool, &
+                                                    rhotot_elec_gspace=rho_elec_gspace, &
+                                                    q_max=q_max, &
+                                                    rho_hard=rho_hard, &
+                                                    rho_soft=rho_soft, &
+                                                    fsign=-1.0_dp)
+                  rho_total = rho_hard + rho_soft
 
-               ! rhotot pw coefficients are by default scaled by grid volume
-               ! need to undo this to get proper charge from printed cube
-               CALL pw_scale(rho_elec_gspace, 1.0_dp/volume)
+                  ! rhotot pw coefficients are by default scaled by grid volume
+                  ! need to undo this to get proper charge from printed cube
+                  CALL pw_scale(rho_elec_gspace, 1.0_dp/volume)
 
-               CALL pw_transfer(rho_elec_gspace, rho_elec_rspace)
+                  CALL pw_transfer(rho_elec_gspace, rho_elec_rspace)
+               END IF
                rho_total_rspace = pw_integrate_function(rho_elec_rspace, isign=-1)
                filename = "TOTAL_SPIN_DENSITY"
                mpi_io = .TRUE.
@@ -3130,23 +3150,27 @@ CONTAINS
             ALLOCATE (my_Q0(natom))
             my_Q0 = 0.0_dp
 
-            ! (eta/pi)**3: normalization for 3d gaussian of form exp(-eta*r**2)
-            norm_factor = SQRT((rho0_mpole%zet0_h/pi)**3)
+            IF (ALLOCATED(physical_density)) THEN
+               CALL combine_density_spins(rho_r, physical_density, rho_elec_rspace, rho_soft, rho_hard)
+            ELSE
+               ! (eta/pi)**3: normalization for 3d gaussian of form exp(-eta*r**2)
+               norm_factor = SQRT((rho0_mpole%zet0_h/pi)**3)
 
-            ! store hard part of electronic density in array
-            DO iat = 1, natom
-               my_Q0(iat) = SUM(rho0_mpole%mp_rho(iat)%Q0(1:dft_control%nspins))*norm_factor
-            END DO
-            ! multiply coeff with gaussian and put on realspace grid
-            ! coeff is the gaussian prefactor, eta the gaussian exponent
-            CALL calculate_rho_resp_all(rho_elec_rspace, coeff=my_Q0, natom=natom, eta=rho0_mpole%zet0_h, qs_env=qs_env)
-            rho_hard = pw_integrate_function(rho_elec_rspace, isign=-1)
+               ! store hard part of electronic density in array
+               DO iat = 1, natom
+                  my_Q0(iat) = SUM(rho0_mpole%mp_rho(iat)%Q0(1:dft_control%nspins))*norm_factor
+               END DO
+               ! multiply coeff with gaussian and put on realspace grid
+               ! coeff is the gaussian prefactor, eta the gaussian exponent
+               CALL calculate_rho_resp_all(rho_elec_rspace, coeff=my_Q0, natom=natom, eta=rho0_mpole%zet0_h, qs_env=qs_env)
+               rho_hard = pw_integrate_function(rho_elec_rspace, isign=-1)
 
-            rho_soft = 0.0_dp
-            DO ispin = 1, dft_control%nspins
-               CALL pw_axpy(rho_r(ispin), rho_elec_rspace)
-               rho_soft = rho_soft + pw_integrate_function(rho_r(ispin), isign=-1)
-            END DO
+               rho_soft = 0.0_dp
+               DO ispin = 1, dft_control%nspins
+                  CALL pw_axpy(rho_r(ispin), rho_elec_rspace)
+                  rho_soft = rho_soft + pw_integrate_function(rho_r(ispin), isign=-1)
+               END DO
+            END IF
 
             rho_total_rspace = rho_soft + rho_hard
 
@@ -3187,17 +3211,22 @@ CONTAINS
 
             !------------
             IF (dft_control%nspins > 1) THEN
-            DO iat = 1, natom
-               my_Q0(iat) = (rho0_mpole%mp_rho(iat)%Q0(1) - rho0_mpole%mp_rho(iat)%Q0(2))*norm_factor
-            END DO
-            CALL pw_zero(rho_elec_rspace)
-            CALL calculate_rho_resp_all(rho_elec_rspace, coeff=my_Q0, natom=natom, eta=rho0_mpole%zet0_h, qs_env=qs_env)
-            rho_hard = pw_integrate_function(rho_elec_rspace, isign=-1)
+            IF (ALLOCATED(physical_density)) THEN
+               CALL combine_density_spins(rho_r, physical_density, rho_elec_rspace, rho_soft, rho_hard, &
+                                          spin_difference=.TRUE.)
+            ELSE
+               DO iat = 1, natom
+                  my_Q0(iat) = (rho0_mpole%mp_rho(iat)%Q0(1) - rho0_mpole%mp_rho(iat)%Q0(2))*norm_factor
+               END DO
+               CALL pw_zero(rho_elec_rspace)
+               CALL calculate_rho_resp_all(rho_elec_rspace, coeff=my_Q0, natom=natom, eta=rho0_mpole%zet0_h, qs_env=qs_env)
+               rho_hard = pw_integrate_function(rho_elec_rspace, isign=-1)
 
-            CALL pw_axpy(rho_r(1), rho_elec_rspace)
-            CALL pw_axpy(rho_r(2), rho_elec_rspace, alpha=-1.0_dp)
-            rho_soft = pw_integrate_function(rho_r(1), isign=-1) &
-                       - pw_integrate_function(rho_r(2), isign=-1)
+               CALL pw_axpy(rho_r(1), rho_elec_rspace)
+               CALL pw_axpy(rho_r(2), rho_elec_rspace, alpha=-1.0_dp)
+               rho_soft = pw_integrate_function(rho_r(1), isign=-1) &
+                          - pw_integrate_function(rho_r(2), isign=-1)
+            END IF
 
             rho_total_rspace = rho_soft + rho_hard
 
@@ -3239,6 +3268,12 @@ CONTAINS
             CALL auxbas_pw_pool%give_back_pw(rho_elec_rspace)
             DEALLOCATE (my_Q0)
          END IF ! print_density
+         IF (ALLOCATED(physical_density)) THEN
+            DO ispin = 1, SIZE(physical_density)
+               CALL physical_density(ispin)%release()
+            END DO
+            DEALLOCATE (physical_density)
+         END IF
       END IF ! print key
 
       IF (BTEST(cp_print_key_should_output(logger%iter_info, &
@@ -3649,6 +3684,41 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE write_mo_free_results
+
+! **************************************************************************************************
+!> \brief Combine complete spin fields and report their signed soft and center charges.
+!> \param soft Native soft spin fields, without the center densities.
+!> \param complete Matching complete or Gaussian-monopole-approximated spin fields.
+!> \param density Overwritten sum or magnetization on the same output grid.
+!> \param soft_charge Signed electronic charge in the native soft contribution.
+!> \param center_charge Signed electronic charge of the included centers.
+!> \param spin_difference Subtract the beta field instead of adding it, default false.
+! **************************************************************************************************
+   SUBROUTINE combine_density_spins(soft, complete, density, soft_charge, center_charge, spin_difference)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: soft(:), complete(:)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density
+      REAL(dp), INTENT(OUT)                              :: soft_charge, center_charge
+      LOGICAL, INTENT(IN), OPTIONAL                      :: spin_difference
+
+      INTEGER                                            :: spin
+      REAL(dp)                                           :: sign
+
+      CPASSERT(SIZE(soft) == SIZE(complete))
+      CALL pw_zero(density)
+      soft_charge = 0.0_dp
+      DO spin = 1, SIZE(complete)
+         sign = 1.0_dp
+         IF (PRESENT(spin_difference)) THEN
+            IF (spin_difference) THEN
+               CPASSERT(SIZE(complete) == 2)
+               IF (spin == 2) sign = -1.0_dp
+            END IF
+         END IF
+         CALL pw_axpy(complete(spin), density, alpha=sign)
+         soft_charge = soft_charge + sign*pw_integrate_function(soft(spin), isign=-1)
+      END DO
+      center_charge = pw_integrate_function(density, isign=-1) - soft_charge
+   END SUBROUTINE combine_density_spins
 
 ! **************************************************************************************************
 !> \brief Calculates Hirshfeld charges
