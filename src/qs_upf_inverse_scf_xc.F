@@ -403,7 +403,8 @@ CONTAINS
                   DEALLOCATE (radial)
                END IF
             END IF
-            IF (control%use_kinetic_energy_density) THEN
+            ! Native NC retains its density-only core convention in mixed systems.
+            IF (control%use_kinetic_energy_density .AND. (pot%is_ultrasoft .OR. pot%is_paw)) THEN
                IF (state%paw(ikind)%active) THEN
                   IF (ALLOCATED(core_tau)) DEALLOCATE (core_tau)
                   ALLOCATE (core_tau, SOURCE=state%paw(ikind)%xcgrid%core_kinetic%kinetic(:, 2))

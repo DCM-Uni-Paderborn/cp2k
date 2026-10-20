@@ -73,6 +73,8 @@ CONTAINS
                IF (state%paw(kind)%active) THEN
                   state%has_core_tau = state%has_core_tau .OR. ANY(state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2) /= 0.0_dp)
                ELSE
+                  ! Preserve the native NC density-only core convention.
+                  IF (.NOT. pot%is_ultrasoft) CYCLE
                   IF (.NOT. ALLOCATED(pot%tau_nlcc)) CYCLE
                   state%has_core_tau = state%has_core_tau .OR. ANY(pot%tau_nlcc /= 0.0_dp)
                END IF
@@ -108,9 +110,11 @@ CONTAINS
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, core_g%pw_grid%g, atoms(atom)%r, &
                                              core_g%pw_grid%vol, values, &
                                              core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2))
-            ELSE
+            ELSE IF (kinds(kind)%sgp_potential%upf_data%is_ultrasoft) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, core_g%pw_grid%g, atoms(atom)%r, &
                                              core_g%pw_grid%vol, values)
+            ELSE
+               CYCLE
             END IF
             state%core_tau_g%array = state%core_tau_g%array + values/REAL(control%nspins, dp)
          END IF
@@ -242,6 +246,8 @@ CONTAINS
          IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
          IF (.NOT. kinds(kind)%sgp_potential%upf_data%core_correction) CYCLE
          IF (kinetic) THEN
+            IF (.NOT. kinds(kind)%sgp_potential%upf_data%is_ultrasoft .AND. &
+                .NOT. kinds(kind)%sgp_potential%upf_data%is_paw) CYCLE
             IF (state%paw(kind)%active) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, derivative_g%pw_grid%g, atoms(atom)%r, &
                                              derivative_g%pw_grid%vol, density, dr, dg, &

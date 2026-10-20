@@ -195,7 +195,7 @@ CONTAINS
                IF (.NOT. state%paw(ikind)%xcgrid%core_kinetic%available) THEN
                   CPABORT(TRIM(state%paw(ikind)%xcgrid%core_kinetic%failure_reason))
                END IF
-            ELSE
+            ELSE IF (kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) THEN
                CALL upf_nlcc_kinetic(kinds(ikind)%sgp_potential%upf_data, core_tau, core_available, core_reason)
                IF (.NOT. core_available) CPABORT(TRIM(core_reason))
             END IF
