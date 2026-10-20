@@ -3042,8 +3042,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Keep numerical curvature probes within one physical branch.
-!>        An admissible boundary is returned for normal caller handling. Other
-!>        threshold crossings require smaller probes before estimating curvature.
+!>        A threshold crossing requires a smaller probe, not a minimum classification.
+!>        The ordinary minimization retains its complete boundary admission checks.
 !> \param first Accepted feasible coordinates.
 !> \param last Restored curvature probe.
 !> \param curve Current independent/dependent coordinate partition.
@@ -3141,11 +3141,20 @@ CONTAINS
 
       LOGICAL :: crossed
 
-      CALL check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator=.FALSE.)
+      CALL check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator=.FALSE., &
+                                classify_candidates=.FALSE.)
       smooth = .NOT. crossed
+      IF (crossed) THEN
+         ! Reject this Hessian probe without turning it into an accepted orbital event.
+         SELECT TYPE (context)
+         TYPE IS (physical_constraints_context)
+            context%crossings%encountered = .FALSE.
+         END SELECT
+         interrupted = .FALSE.
+      END IF
    END SUBROUTINE check_native_curvature
 
-   SUBROUTINE check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator)
+   SUBROUTINE check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator, classify_candidates)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
 
@@ -3156,7 +3165,7 @@ CONTAINS
       CLASS(*), INTENT(INOUT)                            :: context
       LOGICAL, INTENT(OUT)                               :: interrupted
       LOGICAL, INTENT(OUT), OPTIONAL                     :: crossed
-      LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator
+      LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator, classify_candidates
 
       TYPE(qs_skala_scf_crossing_type), POINTER         :: crossings
 
@@ -3221,6 +3230,9 @@ CONTAINS
          crossings%last(:) = last
          crossings%encountered = .TRUE.
          IF (context%admit_crossings) THEN
+            IF (PRESENT(classify_candidates)) THEN
+               IF (.NOT. classify_candidates) RETURN
+            END IF
             CALL classify_native_segment(first, last, context)
             interrupted = crossings%encountered .OR. context%external_stopped
          END IF
