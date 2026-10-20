@@ -700,10 +700,16 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(nbands, nbands)        :: dchc, derivative, derivative_fd, &
                                                             hamiltonian, projector_minus, &
                                                             projector_plus, vectors
-      INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: error, mu, trace_error
+      COMPLEX(KIND=dp), DIMENSION(nbands, nbands)        :: derivative2, hamiltonian2, &
+                                                            projector2_minus, projector2_plus, &
+                                                            vectors2, zero
+      INTEGER                                            :: i, sign
+      REAL(KIND=dp)                                      :: error, mu, trace_error, weighted_response
       REAL(KIND=dp), DIMENSION(nbands)                   :: eigenvalues, occupation, response, &
                                                             weights
+      REAL(KIND=dp), DIMENSION(nbands)                   :: eigenvalues2
+      REAL(KIND=dp), DIMENSION(2*nbands)                 :: energies_all, occupation_all, &
+                                                            response_all, weights_all
 
       hamiltonian(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       hamiltonian(1, 1) = CMPLX(-0.22_dp, 0.0_dp, KIND=dp)
@@ -741,6 +747,51 @@ CONTAINS
       DO i = 1, nbands
          trace_error = trace_error + REAL(derivative(i, i), KIND=dp)
       END DO
+      error = MAX(error, ABS(trace_error))
+
+      ! A perturbation of one k point changes the shared chemical potential and
+      ! therefore also the occupations of the unperturbed k point.
+      hamiltonian2 = hamiltonian
+      DO i = 1, nbands
+         hamiltonian2(i, i) = hamiltonian2(i, i) + 0.16_dp
+      END DO
+      zero = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL diag_complex(hamiltonian2, vectors2, eigenvalues2)
+      energies_all(:nbands) = eigenvalues
+      energies_all(nbands + 1:) = eigenvalues2
+      weights_all(:nbands) = kpoint_weight
+      weights_all(nbands + 1:) = 1.0_dp - kpoint_weight
+      CALL fixed_n_fermi_occupations(energies_all, weights_all, target_electrons, temperature, &
+                                     maxocc, occupation_all, mu)
+      response_all = weights_all*occupation_all*(maxocc - occupation_all)/(maxocc*temperature)
+      projector_plus = MATMUL(CONJG(TRANSPOSE(vectors)), MATMUL(dchc, vectors))
+      weighted_response = SUM(response_all(:nbands)*[(REAL(projector_plus(i, i), KIND=dp), i=1, nbands)])
+      CALL qs_ot_fixed_n_projector_frechet(hamiltonian, dchc, occupation_all(:nbands), kpoint_weight, &
+                                           response_all(:nbands), SUM(response_all), derivative, &
+                                           fixed_n_weighted_response=weighted_response)
+      CALL qs_ot_fixed_n_projector_frechet(hamiltonian2, zero, occupation_all(nbands + 1:), 1.0_dp - kpoint_weight, &
+                                           response_all(nbands + 1:), SUM(response_all), derivative2, &
+                                           fixed_n_weighted_response=weighted_response)
+      DO sign = -1, 1, 2
+         CALL diag_complex(hamiltonian + REAL(sign, KIND=dp)*fd_step*dchc, vectors, eigenvalues)
+         energies_all(:nbands) = eigenvalues
+         CALL fixed_n_fermi_occupations(energies_all, weights_all, target_electrons, temperature, &
+                                        maxocc, occupation_all, mu)
+         IF (sign > 0) THEN
+            projector_plus = kpoint_weight*MATMUL(vectors*SPREAD(occupation_all(:nbands), 1, nbands), &
+                                                   CONJG(TRANSPOSE(vectors)))
+            projector2_plus = (1.0_dp - kpoint_weight)* &
+                              MATMUL(vectors2*SPREAD(occupation_all(nbands + 1:), 1, nbands), CONJG(TRANSPOSE(vectors2)))
+         ELSE
+            projector_minus = kpoint_weight*MATMUL(vectors*SPREAD(occupation_all(:nbands), 1, nbands), &
+                                                    CONJG(TRANSPOSE(vectors)))
+            projector2_minus = (1.0_dp - kpoint_weight)* &
+                               MATMUL(vectors2*SPREAD(occupation_all(nbands + 1:), 1, nbands), CONJG(TRANSPOSE(vectors2)))
+         END IF
+      END DO
+      error = MAX(error, MAXVAL(ABS(derivative - (projector_plus - projector_minus)/(2.0_dp*fd_step))))
+      error = MAX(error, MAXVAL(ABS(derivative2 - (projector2_plus - projector2_minus)/(2.0_dp*fd_step))))
+      trace_error = SUM([(REAL(derivative(i, i) + derivative2(i, i), KIND=dp), i=1, nbands)])
       error = MAX(error, ABS(trace_error))
 
       IF (error > 3.0E-7_dp) nfail = nfail + 1

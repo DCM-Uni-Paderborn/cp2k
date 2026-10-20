@@ -870,10 +870,12 @@ CONTAINS
 !> \param fixed_n_weight_sum susceptibility summed over the complete fixed-N group
 !> \param projector_derivative derivative of the weighted occupation projector
 !> \param density_factor optional representation-dependent density prefactor
+!> \param fixed_n_weighted_response optional sum of chi_i de_i over the complete number group
+!>        Include every coupled k point and spin channel. The default uses this block's response.
 ! **************************************************************************************************
    SUBROUTINE qs_ot_fixed_n_projector_frechet( &
       chc, dchc, occupation, kpoint_weight, response_weight, fixed_n_weight_sum, &
-      projector_derivative, density_factor)
+      projector_derivative, density_factor, fixed_n_weighted_response)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
@@ -881,6 +883,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: fixed_n_weight_sum
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: projector_derivative
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: density_factor
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: fixed_n_weighted_response
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: eigenvectors, kernel, work
       INTEGER                                            :: i, j, n
@@ -914,6 +917,7 @@ CONTAINS
          mu_numerator = mu_numerator + response_weight(i)* &
                         REAL(work(i, i), KIND=dp)
       END DO
+      IF (PRESENT(fixed_n_weighted_response)) mu_numerator = fixed_n_weighted_response
       mu_shift = qs_ot_fixed_n_response_mu_shift(mu_numerator, local_weight_sum, &
                                                  fixed_n_weight_sum)
 
