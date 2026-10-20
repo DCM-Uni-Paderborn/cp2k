@@ -20,6 +20,7 @@ MODULE qs_nlcc_methods
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: get_nlcc_gaussians
+   PUBLIC :: nlcc_gaussian_fields
 
 CONTAINS
 
@@ -75,5 +76,69 @@ CONTAINS
       ALLOCATE (alpha(0), nct(0), cval(0, 0))
 
    END SUBROUTINE get_nlcc_gaussians
+
+! **************************************************************************************************
+!> \brief Native nonlinear core Gaussians and their Cartesian derivatives at explicit points.
+!> \param alpha Original Gaussian widths from get_nlcc_gaussians.
+!> \param nct Number of original radial polynomial coefficients per Gaussian.
+!> \param cval Original normalized coefficients of powers (r/alpha)**2.
+!> \param displacement Point-minus-core-center vectors, indexed (axis,point).
+!> \param density Overwritten positive core-density convention, without spin splitting.
+!> \param gradient Overwritten Cartesian point gradient, indexed (point,axis).
+!> \param hessian Optional Cartesian point Hessian, indexed (point,axis,axis).
+! **************************************************************************************************
+   SUBROUTINE nlcc_gaussian_fields(alpha, nct, cval, displacement, density, gradient, hessian)
+      REAL(dp), INTENT(IN)                               :: alpha(:)
+      INTEGER, INTENT(IN)                                :: nct(:)
+      REAL(dp), INTENT(IN)                               :: cval(:, :), displacement(:, :)
+      REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: hessian(:, :, :)
+
+      INTEGER                                            :: axis, exponent, m, point
+      REAL(dp)                                           :: derivative, e, first, inverse_width2, &
+                                                            polynomial, second, x
+
+      CPASSERT(SIZE(nct) == SIZE(alpha))
+      CPASSERT(SIZE(cval, 2) == SIZE(alpha))
+      CPASSERT(SIZE(displacement, 1) == 3)
+      CPASSERT(SIZE(displacement, 2) == SIZE(density))
+      CPASSERT(ALL(SHAPE(gradient) == [SIZE(density), 3]))
+      density = 0.0_dp
+      gradient = 0.0_dp
+      IF (PRESENT(hessian)) THEN
+         CPASSERT(SIZE(hessian, 1) == SIZE(density))
+         CPASSERT(SIZE(hessian, 2) == 3 .AND. SIZE(hessian, 3) == 3)
+         hessian = 0.0_dp
+      END IF
+      DO exponent = 1, SIZE(alpha)
+         CPASSERT(alpha(exponent) > 0.0_dp)
+         CPASSERT(nct(exponent) >= 0)
+         CPASSERT(nct(exponent) <= SIZE(cval, 1))
+         IF (nct(exponent) == 0) CYCLE
+         inverse_width2 = 1.0_dp/alpha(exponent)**2
+         DO point = 1, SIZE(density)
+            x = SUM(displacement(:, point)**2)*inverse_width2
+            polynomial = cval(nct(exponent), exponent)
+            derivative = 0.0_dp
+            second = 0.0_dp
+            DO m = nct(exponent) - 1, 1, -1
+               second = second*x + 2.0_dp*derivative
+               derivative = derivative*x + polynomial
+               polynomial = polynomial*x + cval(m, exponent)
+            END DO
+            e = EXP(-0.5_dp*x)
+            density(point) = density(point) + e*polynomial
+            first = 2.0_dp*e*inverse_width2*(derivative - 0.5_dp*polynomial)
+            gradient(point, :) = gradient(point, :) + first*displacement(:, point)
+            IF (PRESENT(hessian)) THEN
+               second = 4.0_dp*e*inverse_width2**2*(second - derivative + 0.25_dp*polynomial)
+               DO axis = 1, 3
+                  hessian(point, :, axis) = hessian(point, :, axis) + second*displacement(:, point)*displacement(axis, point)
+                  hessian(point, axis, axis) = hessian(point, axis, axis) + first
+               END DO
+            END IF
+         END DO
+      END DO
+   END SUBROUTINE nlcc_gaussian_fields
 
 END MODULE qs_nlcc_methods
