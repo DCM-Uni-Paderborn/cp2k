@@ -17,6 +17,7 @@ MODULE qs_upf_inverse_grid
         dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_put_block, &
         dbcsr_release, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, &
         dbcsr_type_symmetric
+   USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
    USE kinds,                           ONLY: dp
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_self,&
@@ -61,6 +62,7 @@ MODULE qs_upf_inverse_grid
    PUBLIC :: qs_upf_inverse_grid_collocate_dense, qs_upf_inverse_grid_integrate_dense, qs_upf_inverse_grid_metric_dense
    PUBLIC :: qs_upf_inverse_matrix_gather, qs_upf_inverse_matrix_scatter
    PUBLIC :: qs_upf_inverse_grid_response
+   PUBLIC :: qs_upf_inverse_grid_gaussian_operator
 
 CONTAINS
 
@@ -381,6 +383,112 @@ CONTAINS
          h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_operator, frame%ao%coefficients))
       END IF
    END SUBROUTINE qs_upf_inverse_grid_integrate_dense
+
+! **************************************************************************************************
+!> \brief Full-Gaussian scalar-potential matrix on exactly the defining inverse grid and images.
+!>        This is the Gaussian base alone, independent of W or the reconstruction. It permits a
+!>        native analytic operator to replace its grid base while retaining the complete inverse
+!>        and original Q contributions. Keep the same point ownership and integration measure.
+!> \param frame Native grid coordinates, weights, full Gaussian bases and physical images.
+!> \param potential Scalar potential at the defining grid points.
+!> \param operator Optional new Gaussian matrix, without augmentation or reconstruction terms.
+!> \param response Optional new joint geometry and Bloch response.
+!> \param potential_response Required with response, the potential derivative at moving grid points.
+!> \param atom_response Required with response, motion of the full Gaussian centers.
+!> \param cell_response Required with response, motion of the cell vectors.
+!> \param reduced_k_response Required with response, motion of the reduced Bloch vector.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_grid_gaussian_operator(frame, potential, OPERATOR, response, potential_response, &
+                                                    atom_response, cell_response, reduced_k_response)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: operator(:, :), response(:, :)
+      TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: potential_response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), gaussian_response(:, :), &
+                                                            partial(:, :), weighted(:, :), &
+                                                            weighted_response(:, :)
+      INTEGER                                            :: atom, block, first, hi, info, last, lo, &
+                                                            m, n, nao
+      REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
+                                                            volume_response
+      REAL(dp), ALLOCATABLE                              :: points_response(:, :), values(:), &
+                                                            values_response(:), weights_response(:)
+
+      CPASSERT(PRESENT(OPERATOR) .OR. PRESENT(response))
+      CPASSERT(SIZE(frame%ao%ao_last) > 0)
+      nao = MAXVAL(frame%ao%ao_last)
+      n = SIZE(frame%ao%weights)
+      CPASSERT(SIZE(frame%ao%points, 2) == n)
+      block = qs_upf_inverse_block_size(frame%ao)
+      ALLOCATE (values(n), gaussian(block, nao), weighted(block, nao), partial(nao, nao))
+      CALL pack_grid(frame, potential, values)
+      IF (PRESENT(OPERATOR)) THEN
+         ALLOCATE (OPERATOR(nao, nao), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      END IF
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(potential_response))
+         CPASSERT(PRESENT(atom_response))
+         CPASSERT(PRESENT(cell_response))
+         CPASSERT(PRESENT(reduced_k_response))
+         CPASSERT(SIZE(atom_response, 1) == 3)
+         CPASSERT(SIZE(atom_response, 2) == SIZE(frame%ao%bases))
+         ALLOCATE (response(nao, nao), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+         ALLOCATE (values_response(n), gaussian_response(block, nao), weighted_response(block, nao), &
+                   points_response(3, block), weights_response(block))
+         CALL pack_grid(frame, potential_response, values_response)
+         cell_inverse = frame%ao%cell
+         CALL invmat(cell_inverse, info)
+         CPASSERT(info == 0)
+         strain = MATMUL(cell_response, cell_inverse)
+         volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
+      END IF
+      DO lo = 1, n, block
+         hi = MIN(n, lo + block - 1)
+         m = hi - lo + 1
+         IF (PRESENT(response)) THEN
+            points_response(:, :m) = MATMUL(strain, frame%ao%points(:, lo:hi))
+            weights_response(:m) = volume_response*frame%ao%weights(lo:hi)
+         END IF
+         IF (PRESENT(response) .OR. .NOT. frame%ao%fields_stored) THEN
+            DO atom = 1, SIZE(frame%ao%bases)
+               first = frame%ao%ao_first(atom)
+               last = frame%ao%ao_last(atom)
+               IF (PRESENT(response)) THEN
+                  CALL gaussian_basis_fields_periodic(frame%ao%bases(atom)%gto_basis_set, frame%ao%points(:, lo:hi), &
+                                                  frame%ao%positions(:, atom), frame%ao%cell, frame%ao%images, frame%ao%reduced_k, &
+                                                      gaussian(:m, first:last), response=gaussian_response(:m, first:last), &
+                                                    point_response=points_response(:, :m), center_response=atom_response(:, atom), &
+                                                      cell_response=cell_response, reduced_k_response=reduced_k_response)
+               ELSE
+                  CALL gaussian_basis_fields_periodic(frame%ao%bases(atom)%gto_basis_set, frame%ao%points(:, lo:hi), &
+                                                  frame%ao%positions(:, atom), frame%ao%cell, frame%ao%images, frame%ao%reduced_k, &
+                                                      gaussian(:m, first:last))
+               END IF
+            END DO
+         END IF
+         IF (frame%ao%fields_stored) gaussian(:m, :) = frame%ao%gaussian(lo:hi, :)
+         weighted(:m, :) = SPREAD(values(lo:hi), 2, nao)*gaussian(:m, :)
+         IF (PRESENT(OPERATOR)) THEN
+            CALL upf_inverse_pair(gaussian(:m, :), weighted(:m, :), frame%ao%weights(lo:hi), partial)
+            OPERATOR = OPERATOR + partial
+         END IF
+         IF (PRESENT(response)) THEN
+            weighted_response(:m, :) = SPREAD(values(lo:hi), 2, nao)*gaussian_response(:m, :)
+            CALL upf_inverse_pair_response(gaussian(:m, :), weighted(:m, :), frame%ao%weights(lo:hi), &
+                                           gaussian_response(:m, :), weighted_response(:m, :), weights_response(:m), partial)
+            response = response + partial
+            weighted_response(:m, :) = SPREAD(values_response(lo:hi), 2, nao)*gaussian(:m, :)
+            CALL upf_inverse_pair(gaussian(:m, :), weighted_response(:m, :), frame%ao%weights(lo:hi), partial)
+            response = response + partial
+         END IF
+      END DO
+      IF (PRESENT(OPERATOR)) CALL frame%ao%point_comm%sum(OPERATOR)
+      IF (PRESENT(response)) CALL frame%ao%point_comm%sum(response)
+   END SUBROUTINE qs_upf_inverse_grid_gaussian_operator
 
 ! **************************************************************************************************
 !> \brief Assemble the original generalized metric in the inverse AO variables.
