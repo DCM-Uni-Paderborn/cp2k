@@ -69,6 +69,7 @@ list(
   pseudopotentials/paw_xc.F
   aobasis/gaussian_basis_fields.F
   aobasis/gaussian_coulomb_fields.F
+  pseudopotentials/gth_projector_fields.F
   pseudopotentials/upf_inverse.F
   pseudopotentials/upf_core.F
   pseudopotentials/upf_inverse_coulomb.F
@@ -78,6 +79,7 @@ list(
   pseudopotentials/upf_radial_fields.F
   pseudopotentials/uspp_augmentation.F
   qs_upf_inverse.F
+  qs_upf_inverse_gth.F
   qs_upf_inverse_atom_grid.F
   qs_upf_inverse_augmentation.F
   qs_upf_inverse_density.F

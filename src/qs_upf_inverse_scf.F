@@ -81,6 +81,7 @@ MODULE qs_upf_inverse_scf
         qs_upf_inverse_grid_integrate_dense, qs_upf_inverse_grid_metric, &
         qs_upf_inverse_grid_metric_dense, qs_upf_inverse_grid_prepare, &
         qs_upf_inverse_grid_response, qs_upf_inverse_matrix_gather, qs_upf_inverse_matrix_scatter
+   USE qs_upf_inverse_gth,              ONLY: qs_upf_inverse_gth_nonlocal
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_collocate,&
                                               qs_upf_inverse_kpoints_density,&
                                               qs_upf_inverse_kpoints_integrate,&
@@ -559,10 +560,12 @@ CONTAINS
       INTEGER                                            :: axis
       TYPE(dbcsr_p_type), POINTER                        :: h(:), kinetic(:), overlap(:)
       TYPE(dbcsr_type)                                   :: imaginary, real_part
+      TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_pool_type), POINTER                        :: pool
       TYPE(pw_r3d_rs_type)                               :: local_r, unit_tau, zero_density, zeros(3)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
       CALL get_ks_env(ks_env, upf_inverse=state)
@@ -572,7 +575,8 @@ CONTAINS
          RETURN
       END IF
       CALL get_ks_env(ks_env, upf_inverse=state, &
-                      matrix_h=h, kinetic=kinetic, matrix_s=overlap, pw_env=pw_env)
+                      matrix_h=h, kinetic=kinetic, matrix_s=overlap, pw_env=pw_env, &
+                      qs_kind_set=kinds, particle_set=atoms)
       CPASSERT(ASSOCIATED(state))
       CALL check_geometry(ks_env, state)
       CALL pw_env_get(pw_env, auxbas_pw_pool=pool)
@@ -607,12 +611,13 @@ CONTAINS
                                                   projector_operator=state%frame%ao%dion, augmentation=state%augmentation, &
                                                   fourier_charge=.TRUE., orbital_fields=.FALSE.)
          atomic_t(:, :) = atomic_t + gaussian_local(:, :, 1)
-         CALL qs_upf_inverse_matrix_scatter(state%frame%ao, atomic_t, overlap(1)%matrix, real_part, imaginary)
       ELSE
-         CALL qs_upf_inverse_grid_integrate(state%frame, local_r, zeros, unit_tau, overlap(1)%matrix, &
-                                            real_part, imaginary, projector_operator=state%frame%ao%dion, &
-                                            augmentation=state%augmentation, fourier_charge=.TRUE.)
+         CALL qs_upf_inverse_grid_integrate_dense(state%frame, local_r, zeros, unit_tau, atomic_t, &
+                                                  projector_operator=state%frame%ao%dion, &
+                                                  augmentation=state%augmentation, fourier_charge=.TRUE.)
       END IF
+      CALL qs_upf_inverse_gth_nonlocal(state%frame%ao, kinds, atoms, atomic_t)
+      CALL qs_upf_inverse_matrix_scatter(state%frame%ao, atomic_t, overlap(1)%matrix, real_part, imaginary)
       CALL check_real(state, real_part, imaginary)
       CALL dbcsr_copy(h(1)%matrix, real_part)
       IF (state%frame%ao%atom_local) CALL dbcsr_add(h(1)%matrix, kinetic(1)%matrix, 1.0_dp, 1.0_dp)
@@ -985,15 +990,16 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: core_response(:, :), &
                                                             metric_response(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
-
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: coefficients_response(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: atomic_m(:, :), atomic_t(:, :), &
                                                             dm(:, :), dt(:, :), dw(:, :)
       INTEGER                                            :: axis, info
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3)
+      TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_r3d_rs_type)                               :: local_r, local_response, unit_tau, zero, &
                                                             zeros(3)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
       cell_inverse = frame%ao%cell
       CALL invmat(cell_inverse, info)
@@ -1020,6 +1026,10 @@ CONTAINS
                                               atom_response, cell_response, reduced_k_response, dw)
          core_response(:, :) = core_response + dt
       END IF
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms)
+      CALL qs_upf_inverse_gth_nonlocal(frame%ao, kinds, atoms, response=core_response, coefficients_response=dw, &
+                                       atom_response=atom_response, cell_response=cell_response, &
+                                       reduced_k_response=reduced_k_response)
       IF (PRESENT(coefficients_response)) CALL MOVE_ALLOC(dw, coefficients_response)
       CALL local_r%release()
       CALL local_response%release()
@@ -1527,13 +1537,16 @@ CONTAINS
       INTEGER                                            :: axis, ik, n, nk, spin
       TYPE(dbcsr_p_type), POINTER                        :: kinetic(:, :), source(:, :)
       TYPE(dft_control_type), POINTER                    :: control
+      TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_pool_type), POINTER                        :: pool
       TYPE(pw_r3d_rs_type)                               :: local_r, unit_tau, zero, zeros(3)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
       CALL check_geometry(ks_env, state)
-      CALL get_ks_env(ks_env, dft_control=control, pw_env=pw_env, kinetic_kp=kinetic, matrix_ks_kp=source)
+      CALL get_ks_env(ks_env, dft_control=control, pw_env=pw_env, kinetic_kp=kinetic, matrix_ks_kp=source, &
+                      qs_kind_set=kinds, particle_set=atoms)
       ! KS storage is recreated after the core step when the AO structure changes.
       ! Do not retain an operator provider tied to that released source identity.
       IF (.NOT. ASSOCIATED(source)) THEN
@@ -1573,6 +1586,7 @@ CONTAINS
                                                   projector_operator=state%bloch%frames(ik)%ao%dion, &
                                                   augmentation=state%bloch%augmentation, fourier_charge=.TRUE., &
                                                   orbital_fields=.NOT. state%native_gaussian)
+         CALL qs_upf_inverse_gth_nonlocal(state%bloch%frames(ik)%ao, kinds, atoms, matrix)
          state%core_k(:, :, ik) = matrix
          IF (state%native_gaussian) state%core_k(:, :, ik) = state%core_k(:, :, ik) + gaussian_local(:, :, ik)
          IF (state%bloch%frames(ik)%ao%atom_local) THEN
