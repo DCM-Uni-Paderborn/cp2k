@@ -15,9 +15,14 @@ MODULE qs_upf_inverse_gth_local
    USE core_ppl,                        ONLY: build_core_ppl
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type,&
                                               dbcsr_set
+   USE gth_local_fields,                ONLY: gth_local_fields_evaluate,&
+                                              gth_local_fields_init,&
+                                              gth_local_fields_type
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_type
+   USE mathlib,                         ONLY: invmat
    USE particle_types,                  ONLY: particle_type
+   USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_force_types,                  ONLY: qs_force_type
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
@@ -25,15 +30,181 @@ MODULE qs_upf_inverse_gth_local
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_operator,&
                                               qs_upf_inverse_background_set_density
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_background_type
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_gaussian_operator,&
+                                              qs_upf_inverse_grid_integrate_dense,&
+                                              qs_upf_inverse_grid_response
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_background_type,&
+                                              qs_upf_inverse_grid_type
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_upf_inverse_gth_local_matrix, qs_upf_inverse_gth_local_geometry
+   PUBLIC :: qs_upf_inverse_gth_local_active, qs_upf_inverse_gth_local_field
+   PUBLIC :: qs_upf_inverse_gth_local_residual
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Whether any physical GTH center has native local Gaussian terms.
+   FUNCTION qs_upf_inverse_gth_local_active(kinds) RESULT(active)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      LOGICAL                                            :: active
+
+      INTEGER                                            :: kind
+
+      active = .FALSE.
+      DO kind = 1, SIZE(kinds)
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%gth_potential)) CYCLE
+         ASSOCIATE (pot => kinds(kind)%gth_potential)
+            active = active .OR. pot%nexp_ppl > 0
+            IF (pot%lpotextended) active = active .OR. pot%nexp_lpot > 0
+         END ASSOCIATE
+      END DO
+   END FUNCTION qs_upf_inverse_gth_local_active
+
+! **************************************************************************************************
+!> \brief Original local GTH Gaussians on the defining inverse grid and physical image set.
+!>        Local potentials carry no orbital Bloch phase. Use only the supplied physical images,
+!>        including for isolated and partially periodic cells. The ionic charge stays separate.
+!> \param ks_env Original potential data, without modification.
+!> \param frame Native point ordering, physical centers, cell and fixed image membership.
+!> \param potential Allocated scalar grid field, overwritten.
+!> \param response Optional derivative at moving fractional-grid points.
+!> \param atom_response Cartesian motion of every original atomic center.
+!> \param cell_response Motion of the physical cell vectors and image centers.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_gth_local_field(ks_env, frame, potential, response, atom_response, cell_response)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: potential
+      TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+
+      INTEGER                                            :: atom, image, info, kind, n
+      REAL(dp)                                           :: cell_inverse(3, 3), center(3), &
+                                                            motion(3), strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: displacement(:, :), gradient(:, :), &
+                                                            points_response(:, :), total(:), &
+                                                            total_response(:), values(:)
+      TYPE(gth_local_fields_type)                        :: fields
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms)
+      n = SIZE(frame%ao%weights)
+      CPASSERT(SIZE(potential%array) == n)
+      ALLOCATE (displacement(3, n), values(n), total(n), SOURCE=0.0_dp)
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(atom_response))
+         CPASSERT(PRESENT(cell_response))
+         CPASSERT(SIZE(response%array) == n)
+         CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%ao%positions)))
+         cell_inverse = frame%ao%cell
+         CALL invmat(cell_inverse, info)
+         CPASSERT(info == 0)
+         strain = MATMUL(cell_response, cell_inverse)
+         points_response = MATMUL(strain, frame%ao%points)
+         ALLOCATE (gradient(n, 3), total_response(n), SOURCE=0.0_dp)
+      END IF
+      DO atom = 1, SIZE(atoms)
+         kind = atoms(atom)%atomic_kind%kind_number
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%gth_potential)) CYCLE
+         CALL gth_local_fields_init(kinds(kind)%gth_potential, fields)
+         DO image = 1, SIZE(frame%ao%images, 2)
+            center = frame%ao%positions(:, atom) + MATMUL(frame%ao%cell, REAL(frame%ao%images(:, image), dp))
+            displacement = frame%ao%points - SPREAD(center, 2, n)
+            IF (PRESENT(response)) THEN
+               motion = atom_response(:, atom) + MATMUL(cell_response, REAL(frame%ao%images(:, image), dp))
+               CALL gth_local_fields_evaluate(fields, displacement, values, gradient)
+               total_response = total_response + SUM(gradient*TRANSPOSE(points_response - SPREAD(motion, 2, n)), DIM=2)
+            ELSE
+               CALL gth_local_fields_evaluate(fields, displacement, values)
+            END IF
+            total = total + values
+         END DO
+      END DO
+      potential%array = RESHAPE(total, SHAPE(potential%array))
+      IF (PRESENT(response)) response%array = RESHAPE(total_response, SHAPE(response%array))
+   END SUBROUTINE qs_upf_inverse_gth_local_field
+
+! **************************************************************************************************
+!> \brief Retain the full inverse and original-Q local terms after removing their Gaussian grid base.
+!>        The caller separately adds the native analytic Gaussian PPL matrix and its adjoint.
+!>        DIRECT with native Gaussian tasks contributes only Q here. All other representations
+!>        subtract precisely the explicit Gaussian base of this same point rule and image set.
+!> \param frame Original inverse fields, without changing W.
+!> \param augmentation Original UPF Q kernels, with their native Fourier charge integration.
+!> \param potential Local GTH scalar field on the defining grid.
+!> \param orbital_fields Include explicit inverse orbitals. False is the native DIRECT base.
+!> \param operator Optional new residual matrix, without occupation or k weights.
+!> \param response Optional joint residual derivative, without a duplicate metric derivative.
+!> \param potential_response Local field derivative at moving grid points.
+!> \param atom_response Motion of every atomic center.
+!> \param cell_response Motion of the physical cell vectors.
+!> \param reduced_k_response Motion of this frame's reduced Bloch vector.
+!> \param coefficients_response Reuse the defining inverse coefficient response for this geometry.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_gth_local_residual(frame, augmentation, potential, orbital_fields, OPERATOR, response, &
+                                                potential_response, atom_response, cell_response, reduced_k_response, &
+                                                coefficients_response)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(qs_upf_inverse_augmentation_type), &
+         INTENT(INOUT)                                   :: augmentation
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      LOGICAL, INTENT(IN)                                :: orbital_fields
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: operator(:, :), response(:, :)
+      TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: potential_response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), metric(:, :)
+      INTEGER                                            :: axis
+      TYPE(pw_r3d_rs_type)                               :: zero, zeros(3)
+
+      CPASSERT(PRESENT(OPERATOR) .OR. PRESENT(response))
+      CALL zero%create(potential%pw_grid)
+      zero%array = 0.0_dp
+      DO axis = 1, 3
+         CALL zeros(axis)%create(potential%pw_grid)
+         zeros(axis)%array = 0.0_dp
+      END DO
+      IF (PRESENT(OPERATOR)) THEN
+         CALL qs_upf_inverse_grid_integrate_dense(frame, potential, zeros, zero, OPERATOR, augmentation=augmentation, &
+                                                  fourier_charge=.TRUE., orbital_fields=orbital_fields)
+         IF (orbital_fields) THEN
+            CALL qs_upf_inverse_grid_gaussian_operator(frame, potential, gaussian)
+            OPERATOR = OPERATOR - gaussian
+         END IF
+      END IF
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(potential_response))
+         CPASSERT(PRESENT(atom_response))
+         CPASSERT(PRESENT(cell_response))
+         CPASSERT(PRESENT(reduced_k_response))
+         CPASSERT(PRESENT(coefficients_response))
+         CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, potential, zeros, zero, &
+                                           atom_response, cell_response, reduced_k_response, potential_response, zeros, zero, &
+                                           response, metric, orbital_fields=orbital_fields, &
+                                           known_coefficients_response=coefficients_response)
+         IF (orbital_fields) THEN
+            CALL qs_upf_inverse_grid_gaussian_operator(frame, potential, response=gaussian, &
+                                                       potential_response=potential_response, atom_response=atom_response, &
+                                                       cell_response=cell_response, reduced_k_response=reduced_k_response)
+            response = response - gaussian
+         END IF
+      END IF
+      CALL zero%release()
+      DO axis = 1, 3
+         CALL zeros(axis)%release()
+      END DO
+   END SUBROUTINE qs_upf_inverse_gth_local_residual
 
 ! **************************************************************************************************
 !> \brief Read the original native GTH PPL integral matrices in the physical Bloch AO ordering.
