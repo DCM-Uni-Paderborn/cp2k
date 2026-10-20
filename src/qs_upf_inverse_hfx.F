@@ -91,6 +91,7 @@ MODULE qs_upf_inverse_hfx
       COMPLEX(dp), ALLOCATABLE :: cl(:, :, :), cr(:, :, :), delta(:, :, :), fcl(:, :, :), fcr(:, :, :)
       ! Pure Gaussian fields have a different meaning from the complete soft fields above.
       COMPLEX(dp), ALLOCATABLE :: gaussian_left(:, :, :), gaussian_right(:, :, :)
+      INTEGER, ALLOCATABLE :: support_left(:), support_right(:)
       INTEGER, POINTER :: field_budget => NULL()
    END TYPE lattice_overlap_type
 
@@ -2825,7 +2826,7 @@ CONTAINS
                                                auxiliary_center, r, radial_weights, directions, angular_weights, &
                                                coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
                                                moment_key, left_fields, overlaps%gaussian_left, overlaps%field_budget, &
-                                               moment_left, valid_moment)
+                                               moment_left, valid_moment, overlaps%support_left)
                   factored = factored .AND. valid_moment
                END IF
                IF (right_compute) THEN
@@ -2833,7 +2834,7 @@ CONTAINS
                                                auxiliary_center, r, radial_weights, directions, angular_weights, &
                                                coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
                                                moment_key, right_fields, overlaps%gaussian_right, overlaps%field_budget, &
-                                               moment_right, valid_moment)
+                                               moment_right, valid_moment, overlaps%support_right)
                   factored = factored .AND. valid_moment
                END IF
             END IF
@@ -3053,10 +3054,12 @@ CONTAINS
 !> \param field_budget Existing shared payload bound for this AO pair and center-image batch.
 !> \param moment Linear moment in original projector, Gaussian and auxiliary order.
 !> \param valid Whether the bounded scratch allocation permits this evaluation.
+!> \param support_indices Ordered coefficient images intersecting these fixed quadrature rows.
 ! **************************************************************************************************
    SUBROUTINE lattice_factored_moment(frame, center, center_image, ao_range, ao_image, fields, auxiliary_center, &
                                       r, radial_weights, directions, angular_weights, coefficient_images, coefficients, &
-                                      own_fields, potentials, cache, key, workspace, gaussian_fields, field_budget, moment, valid)
+                                      own_fields, potentials, cache, key, workspace, gaussian_fields, field_budget, moment, valid, &
+                                      support_indices)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, center_image(3), ao_range(2), &
                                                             ao_image(3)
@@ -3077,16 +3080,18 @@ CONTAINS
       INTEGER, INTENT(INOUT), POINTER                    :: field_budget
       COMPLEX(dp), INTENT(OUT)                           :: moment(:, :, :)
       LOGICAL, INTENT(OUT)                               :: valid
+      INTEGER, ALLOCATABLE, INTENT(INOUT)                :: support_indices(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: batch_delta(:, :), delta(:, :), &
                                                             gaussian(:, :), phi(:, :), &
                                                             weighted(:, :, :, :)
-      INTEGER                                            :: atom, aux, first, hi, ia, image, ir, j, &
-                                                            kind, last, lo, nang, nao, np, nproj, &
-                                                            nrow, row, single_image(3, 1), &
+      INTEGER                                            :: atom, aux, first, hi, ia, image, index, ir, j, &
+                                                            kind, last, lo, nang, nao, nimage, np, nproj, &
+                                                            nrow, nsupport, row, single_image(3, 1), &
                                                             zero(3, 1)
-      INTEGER(int_8)                                     :: gaussian_words, words
-      LOGICAL                                            :: cached_gaussian
+      INTEGER, ALLOCATABLE                               :: selected_images(:)
+      INTEGER(int_8)                                     :: gaussian_words, support_words, words
+      LOGICAL                                            :: cached_gaussian, cached_support, collect_support
       REAL(dp)                                           :: bounds(3, 2), position(3), radius
       REAL(dp), ALLOCATABLE                              :: local_points(:, :), potential(:, :), &
                                                             weights(:)
@@ -3107,6 +3112,14 @@ CONTAINS
       words = words + 2_int_8*INT(nproj, int_8)*INT(np, int_8)*INT(fields%nfunction, int_8)
       words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)*INT(np, int_8)
       IF (words > INT(max_cached_lattice_field_words, int_8)) RETURN
+      cached_support = ALLOCATED(support_indices)
+      collect_support = .FALSE.
+      IF (.NOT. cached_support) THEN
+         IF (ASSOCIATED(field_budget)) collect_support = field_budget > 0
+      END IF
+      support_words = (INT(SIZE(coefficient_images, 2), int_8)*STORAGE_SIZE(0) + &
+                       STORAGE_SIZE(0.0_dp) - 1)/STORAGE_SIZE(0.0_dp)
+      IF (words + support_words > INT(max_cached_lattice_field_words, int_8)) collect_support = .FALSE.
       moment = CMPLX(0.0_dp, 0.0_dp, dp)
       valid = .TRUE.
       IF (nrow == 0 .OR. nproj == 0) RETURN
@@ -3194,11 +3207,26 @@ CONTAINS
          END DO
       END DO
       batch_points(1:3, 1:nang*nrow) => coordinates
-      bounds(:, 1) = MINVAL(batch_points, DIM=2)
-      bounds(:, 2) = MAXVAL(batch_points, DIM=2)
-      DO image = 1, SIZE(coefficient_images, 2)
+      nimage = SIZE(coefficient_images, 2)
+      IF (cached_support) THEN
+         nimage = SIZE(support_indices)
+      ELSE
+         bounds(:, 1) = MINVAL(batch_points, DIM=2)
+         bounds(:, 2) = MAXVAL(batch_points, DIM=2)
+      END IF
+      IF (collect_support) ALLOCATE (selected_images(nimage))
+      nsupport = 0
+      DO index = 1, nimage
+         image = index
+         IF (cached_support) image = support_indices(index)
          single_image(:, 1) = ao_image - coefficient_images(:, image)
-         IF (.NOT. qs_upf_inverse_lattice_intersects(frame, bounds, single_image(:, 1))) CYCLE
+         IF (.NOT. cached_support) THEN
+            IF (.NOT. qs_upf_inverse_lattice_intersects(frame, bounds, single_image(:, 1))) CYCLE
+            IF (collect_support) THEN
+               nsupport = nsupport + 1
+               selected_images(nsupport) = image
+            END IF
+         END IF
          ! A zero Gaussian range marks primitive difference integrals, disjoint from
          ! the positive native AO ranges used for the complete linear moments.
          CALL lattice_moment_entry(cache, [center, 0, 0, single_image(:, 1) - center_image, key], &
@@ -3225,6 +3253,15 @@ CONTAINS
          END DO
          IF (.NOT. ASSOCIATED(retained)) DEALLOCATE (temporary%values)
       END DO
+      IF (collect_support) THEN
+         ! This overlap fixes the geometry, AO image and quadrature across auxiliary shells.
+         ! Retain only the original support decisions, in the original coefficient order.
+         support_words = (INT(nsupport, int_8)*STORAGE_SIZE(0) + STORAGE_SIZE(0.0_dp) - 1)/STORAGE_SIZE(0.0_dp)
+         IF (support_words <= INT(field_budget, int_8)) THEN
+            ALLOCATE (support_indices, SOURCE=selected_images(:nsupport))
+            field_budget = field_budget - INT(support_words)
+         END IF
+      END IF
    END SUBROUTINE lattice_factored_moment
 
 ! **************************************************************************************************
