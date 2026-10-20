@@ -47,6 +47,11 @@ MODULE qs_upf_inverse_background
    PUBLIC :: qs_upf_inverse_background_integrate, qs_upf_inverse_background_operator
    PUBLIC :: qs_upf_inverse_background_geometry
    PUBLIC :: qs_upf_inverse_background_gaussian_geometry
+   PUBLIC :: qs_upf_inverse_background_set_density
+
+   INTERFACE qs_upf_inverse_background_set_density
+      MODULE PROCEDURE background_images
+   END INTERFACE qs_upf_inverse_background_set_density
 
 CONTAINS
 

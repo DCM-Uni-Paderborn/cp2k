@@ -93,10 +93,13 @@ CONTAINS
 !> \param basis_type ...
 !> \param deltaR Weighting factors of the derivatives wrt. nuclear positions
 !> \param atcore ...
+!> \param kind_mask Optional selection of potential-center kinds, retaining all orbital centers.
+!> \param force_response Optional rank-local Cartesian energy gradients instead of native force accumulation.
+!> \param virial_response Optional rank-local native virial instead of native virial accumulation.
 ! **************************************************************************************************
    SUBROUTINE build_core_ppl(matrix_h, matrix_p, force, virial, calculate_forces, use_virial, nder, &
                              qs_kind_set, atomic_kind_set, particle_set, sab_orb, sac_ppl, &
-                             nimages, cell_to_index, basis_type, deltaR, atcore)
+                             nimages, cell_to_index, basis_type, deltaR, atcore, kind_mask, force_response, virial_response)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_h, matrix_p
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
@@ -116,6 +119,9 @@ CONTAINS
          OPTIONAL                                        :: deltaR
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT), &
          OPTIONAL                                        :: atcore
+      LOGICAL, INTENT(IN), OPTIONAL                      :: kind_mask(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: force_response(:, :), &
+                                                            virial_response(3, 3)
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'build_core_ppl'
       INTEGER, PARAMETER                                 :: nexp_max = 30
@@ -190,6 +196,19 @@ CONTAINS
 
       nkind = SIZE(atomic_kind_set)
       natom = SIZE(particle_set)
+      IF (PRESENT(kind_mask)) THEN
+         CPASSERT(SIZE(kind_mask) == nkind)
+      END IF
+      IF (PRESENT(force_response)) THEN
+         CPASSERT(calculate_forces)
+         CPASSERT(SIZE(force_response, 1) == 3)
+         CPASSERT(SIZE(force_response, 2) == natom)
+         force_response = 0.0_dp
+      END IF
+      IF (PRESENT(virial_response)) THEN
+         CPASSERT(calculate_forces)
+         virial_response = 0.0_dp
+      END IF
 
       dokp = (nimages > 1)
 
@@ -252,7 +271,7 @@ CONTAINS
 !$OMP          matrix_h, matrix_p, atomic_kind_set, qs_kind_set, particle_set, &
 !$OMP          sab_orb, sac_ppl, nthread, ncoset, nkind, cell_to_index, &
 !$OMP          ldsab,  maxnset, maxder, do_dR, deltaR, doat, libgrpp_local, &
-!$OMP          maxlgto, nder, maxco, dokp, locks, natom, have_upf) &
+!$OMP          maxlgto, nder, maxco, dokp, locks, natom, have_upf, kind_mask) &
 !$OMP PRIVATE (ikind, jkind, iatom, jatom, rab, basis_set_a, basis_set_b, &
 !$OMP          first_sgfa, la_max, la_min, npgfa, nsgfa, sphi_a, &
 !$OMP          zeta, first_sgfb, lb_max, lb_min, npgfb, nsetb, rpgfb, set_radius_b, sphi_b, &
@@ -412,6 +431,9 @@ CONTAINS
 
          ! loop over all kinds for pseudopotential atoms
          DO kkind = 1, nkind
+            IF (PRESENT(kind_mask)) THEN
+               IF (.NOT. kind_mask(kkind)) CYCLE
+            END IF
 
             CALL get_qs_kind(qs_kind_set(kkind), gth_potential=gth_potential, &
                              sgp_potential=sgp_potential)
@@ -795,23 +817,31 @@ CONTAINS
       END IF
 
       IF (calculate_forces) THEN
-         CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
+         IF (PRESENT(force_response)) THEN
+            force_response = force_thread
+         ELSE
+            CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
 !$OMP DO
-         DO iatom = 1, natom
-            atom_a = atom_of_kind(iatom)
-            ikind = kind_of(iatom)
-            force(ikind)%gth_ppl(:, atom_a) = force(ikind)%gth_ppl(:, atom_a) + force_thread(:, iatom)
-         END DO
+            DO iatom = 1, natom
+               atom_a = atom_of_kind(iatom)
+               ikind = kind_of(iatom)
+               force(ikind)%gth_ppl(:, atom_a) = force(ikind)%gth_ppl(:, atom_a) + force_thread(:, iatom)
+            END DO
 !$OMP END DO
-         DEALLOCATE (atom_of_kind, kind_of)
+            DEALLOCATE (atom_of_kind, kind_of)
+         END IF
       END IF
       IF (doat) THEN
          atcore(1:natom) = atcore(1:natom) + at_thread(1:natom)
       END IF
 
       IF (calculate_forces .AND. use_virial) THEN
-         virial%pv_ppl = virial%pv_ppl + pv_thread
-         virial%pv_virial = virial%pv_virial + pv_thread
+         IF (PRESENT(virial_response)) THEN
+            virial_response = pv_thread
+         ELSE
+            virial%pv_ppl = virial%pv_ppl + pv_thread
+            virial%pv_virial = virial%pv_virial + pv_thread
+         END IF
       END IF
 
       CALL timestop(handle)
