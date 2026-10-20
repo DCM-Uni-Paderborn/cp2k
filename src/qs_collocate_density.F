@@ -150,12 +150,16 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief computes the density of the non-linear core correction on the grid
 !> \param rho_nlcc ...
-!> \param qs_env ...
+!> \param qs_env Full Quickstep environment, used when ks_env is absent.
+!> \param ks_env KS environment, used when qs_env is absent.
+!> \param kind_mask Optional selection of atomic kinds contributing to this core field.
 ! **************************************************************************************************
-   SUBROUTINE calculate_rho_nlcc(rho_nlcc, qs_env)
+   SUBROUTINE calculate_rho_nlcc(rho_nlcc, qs_env, ks_env, kind_mask)
 
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                       :: rho_nlcc
-      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_environment_type), POINTER, OPTIONAL       :: qs_env
+      TYPE(qs_ks_env_type), INTENT(IN), OPTIONAL          :: ks_env
+      LOGICAL, INTENT(IN), OPTIONAL                      :: kind_mask(:)
 
       CHARACTER(len=*), PARAMETER :: routineN = 'calculate_rho_nlcc'
 
@@ -183,13 +187,22 @@ CONTAINS
       NULLIFY (cell, dft_control, pab, particle_set, atomic_kind_set, &
                qs_kind_set, atom_list, pw_env, rs_rho, auxbas_pw_pool, cores)
 
-      CALL get_qs_env(qs_env=qs_env, &
-                      atomic_kind_set=atomic_kind_set, &
-                      qs_kind_set=qs_kind_set, &
-                      cell=cell, &
-                      dft_control=dft_control, &
-                      particle_set=particle_set, &
-                      pw_env=pw_env)
+      CPASSERT(PRESENT(qs_env) .NEQV. PRESENT(ks_env))
+      IF (PRESENT(qs_env)) THEN
+         CALL get_qs_env(qs_env=qs_env, &
+                         atomic_kind_set=atomic_kind_set, &
+                         qs_kind_set=qs_kind_set, &
+                         cell=cell, &
+                         dft_control=dft_control, &
+                         particle_set=particle_set, &
+                         pw_env=pw_env)
+      ELSE
+         CALL get_ks_env(ks_env, atomic_kind_set=atomic_kind_set, qs_kind_set=qs_kind_set, &
+                         cell=cell, dft_control=dft_control, particle_set=particle_set, pw_env=pw_env)
+      END IF
+      IF (PRESENT(kind_mask)) THEN
+         CPASSERT(SIZE(kind_mask) == SIZE(atomic_kind_set))
+      END IF
       CALL pw_env_get(pw_env, auxbas_rs_grid=rs_rho, &
                       auxbas_pw_pool=auxbas_pw_pool)
       ! be careful in parallel nsmax is chosen with multigrid in mind!
@@ -198,6 +211,9 @@ CONTAINS
       eps_rho_rspace = dft_control%qs_control%eps_rho_rspace
 
       DO ikind = 1, SIZE(atomic_kind_set)
+         IF (PRESENT(kind_mask)) THEN
+            IF (.NOT. kind_mask(ikind)) CYCLE
+         END IF
          CALL get_atomic_kind(atomic_kind_set(ikind), natom=natom, atom_list=atom_list)
          CALL get_nlcc_gaussians(qs_kind_set(ikind), alpha_nlcc, nct_nlcc, cval_nlcc)
          nexp_nlcc = SIZE(alpha_nlcc)

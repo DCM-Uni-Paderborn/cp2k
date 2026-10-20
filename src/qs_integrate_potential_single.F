@@ -293,12 +293,14 @@ CONTAINS
 !> \param debug_forces ...
 !> \param debug_stress ...
 !> \param iotag ...
+!> \param kind_mask Optional selection matching the collocated core field.
 ! **************************************************************************************************
-   SUBROUTINE integrate_rho_nlcc(rho_rspace, qs_env, debug_forces, debug_stress, iotag)
+   SUBROUTINE integrate_rho_nlcc(rho_rspace, qs_env, debug_forces, debug_stress, iotag, kind_mask)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: rho_rspace
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL, INTENT(IN), OPTIONAL                      :: debug_forces, debug_stress
       CHARACTER(len=*), OPTIONAL                         :: iotag
+      LOGICAL, INTENT(IN), OPTIONAL                      :: kind_mask(:)
 
       CHARACTER(len=*), PARAMETER :: routineN = 'integrate_rho_nlcc'
 
@@ -375,9 +377,13 @@ CONTAINS
       IF (debstr) stdeb = virial%pv_nlcc
 
       eps_rho_rspace = dft_control%qs_control%eps_rho_rspace
-
+      IF (PRESENT(kind_mask)) THEN
+         CPASSERT(SIZE(kind_mask) == SIZE(atomic_kind_set))
+      END IF
       DO ikind = 1, SIZE(atomic_kind_set)
-
+         IF (PRESENT(kind_mask)) THEN
+            IF (.NOT. kind_mask(ikind)) CYCLE
+         END IF
          CALL get_atomic_kind(atomic_kind_set(ikind), natom=natom, atom_list=atom_list)
          CALL get_nlcc_gaussians(qs_kind_set(ikind), alpha_nlcc, nct_nlcc, cval_nlcc)
          nexp_nlcc = SIZE(alpha_nlcc)

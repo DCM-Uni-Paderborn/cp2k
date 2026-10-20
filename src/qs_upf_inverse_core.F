@@ -17,9 +17,11 @@ MODULE qs_upf_inverse_core
                                               pw_transfer
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
+   USE qs_collocate_density,            ONLY: calculate_rho_nlcc
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_force_types,                  ONLY: qs_force_type
+   USE qs_integrate_potential_single,   ONLY: integrate_rho_nlcc
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
@@ -37,7 +39,7 @@ MODULE qs_upf_inverse_core
 CONTAINS
 
 ! **************************************************************************************************
-!> \brief Replace the auxiliary Gaussian core fit by the original core's native Fourier image.
+!> \brief Replace UPF core fits by original radial cores and retain native GTH core fields.
 !>        Called once for each newly prepared inverse geometry. Real and reciprocal core sources
 !>        share the native real-field projection and prescribed spin split.
 !> \param ks_env Live inverse KS environment with allocated native partial-core storage.
@@ -47,10 +49,12 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: values(:)
       INTEGER                                            :: atom, kind
+      LOGICAL, ALLOCATABLE                               :: native_kinds(:)
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_c1d_gs_type), POINTER                      :: core_g
       TYPE(pw_r3d_rs_type), POINTER                      :: core_r
+      TYPE(pw_r3d_rs_type)                               :: native_core
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
@@ -63,6 +67,8 @@ CONTAINS
       IF (control%use_kinetic_energy_density) THEN
          DO kind = 1, SIZE(kinds)
             IF (kinds(kind)%ghost) CYCLE
+            IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+            IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
             ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
                IF (state%paw(kind)%active) THEN
                   state%has_core_tau = state%has_core_tau .OR. ANY(state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2) /= 0.0_dp)
@@ -79,10 +85,21 @@ CONTAINS
          END IF
       END IF
       ALLOCATE (values(SIZE(core_g%array)))
+      ALLOCATE (native_kinds(SIZE(kinds)), SOURCE=.FALSE.)
+      DO kind = 1, SIZE(kinds)
+         IF (kinds(kind)%ghost) CYCLE
+         IF (ASSOCIATED(kinds(kind)%gth_potential)) native_kinds(kind) = kinds(kind)%gth_potential%nlcc
+      END DO
+      IF (ANY(native_kinds)) THEN
+         CALL native_core%create(core_r%pw_grid)
+         CALL calculate_rho_nlcc(native_core, ks_env=ks_env, kind_mask=native_kinds)
+      END IF
       core_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
       DO atom = 1, SIZE(atoms)
          kind = atoms(atom)%atomic_kind%kind_number
          IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
          CALL upf_core_fourier(kinds(kind)%sgp_potential%upf_data, core_g%pw_grid%g, atoms(atom)%r, &
                                core_g%pw_grid%vol, values)
          core_g%array = core_g%array + values/REAL(control%nspins, dp)
@@ -99,6 +116,11 @@ CONTAINS
          END IF
       END DO
       CALL pw_transfer(core_g, core_r)
+      IF (ANY(native_kinds)) THEN
+         ! Preserve the native real-space source and its existing collocation adjoint.
+         core_r%array = core_r%array + native_core%array
+         CALL native_core%release()
+      END IF
       CALL pw_transfer(core_r, core_g)
       IF (state%has_core_tau) THEN
          CALL pw_transfer(state%core_tau_g, state%core_tau_r)
@@ -153,6 +175,21 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential(:)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic_potential(:)
 
+      INTEGER                                            :: kind, spin
+      LOGICAL, ALLOCATABLE                               :: native_kinds(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      CALL get_qs_env(qs_env, qs_kind_set=kinds)
+      ALLOCATE (native_kinds(SIZE(kinds)), SOURCE=.FALSE.)
+      DO kind = 1, SIZE(kinds)
+         IF (kinds(kind)%ghost) CYCLE
+         IF (ASSOCIATED(kinds(kind)%gth_potential)) native_kinds(kind) = kinds(kind)%gth_potential%nlcc
+      END DO
+      IF (ANY(native_kinds)) THEN
+         DO spin = 1, SIZE(potential)
+            CALL integrate_rho_nlcc(potential(spin), qs_env, kind_mask=native_kinds)
+         END DO
+      END IF
       CALL core_field_force(qs_env, potential, .FALSE.)
       IF (PRESENT(kinetic_potential)) THEN
          CPASSERT(SIZE(kinetic_potential) == SIZE(potential))
@@ -201,6 +238,8 @@ CONTAINS
          kind = kind_of(atom)
          index = atom_of_kind(atom)
          IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
          IF (.NOT. kinds(kind)%sgp_potential%upf_data%core_correction) CYCLE
          IF (kinetic) THEN
             IF (state%paw(kind)%active) THEN
