@@ -6,6 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 !> \brief Native SCF consumers of the inverse atom-centered XC residual.
 MODULE qs_upf_inverse_scf_xc
+   USE ao_util,                         ONLY: exp_radius
    USE basis_set_types,                 ONLY: gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
@@ -33,6 +34,8 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
+   USE qs_nlcc_methods,                 ONLY: get_nlcc_gaussians,&
+                                              nlcc_gaussian_fields
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_block_size,&
@@ -356,11 +359,14 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: atom_blocks
 
       CHARACTER(LEN=256)                                 :: core_reason
-      INTEGER                                            :: atom, ikind, ll, na, nr, quadrature
-      INTEGER, ALLOCATABLE                               :: kind_of(:)
+      INTEGER                                            :: atom, exponent, ikind, ll, m, na, nr, &
+                                                            quadrature
+      INTEGER, ALLOCATABLE                               :: kind_of(:), nct(:)
       LOGICAL                                            :: core_available
       REAL(dp)                                           :: ae_radius, core_radius
-      REAL(dp), ALLOCATABLE                              :: core_tau(:), radial(:, :), support(:)
+      REAL(dp), ALLOCATABLE                              :: coefficients(:, :), core_tau(:), &
+                                                            native_radius(:), radial(:, :), &
+                                                            support(:), widths(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(grid_atom_type), POINTER                      :: grid
@@ -378,6 +384,7 @@ CONTAINS
       quadrature = control%qs_control%gapw_control%quadrature
       ALLOCATE (grids(SIZE(kinds)), state%core_cache(SIZE(kinds)), state%core_kinetic_cache(SIZE(kinds)), &
                 kind_of(SIZE(atoms)), support(SIZE(atoms)))
+      ALLOCATE (native_radius(SIZE(kinds)), SOURCE=0.0_dp)
       CALL init_lebedev_grids()
       DO ikind = 1, SIZE(kinds)
          CALL get_qs_kind(kinds(ikind), grid_atom=grid, ngrid_ang=na, ngrid_rad=nr)
@@ -394,6 +401,21 @@ CONTAINS
          END IF
          grids(ikind)%grid => grid
          IF (kinds(ikind)%ghost) CYCLE
+         IF (ASSOCIATED(kinds(ikind)%gth_potential)) THEN
+            ! Retain the original Gaussian core, rather than tabulating or refitting it.
+            ! Its kinetic-density convention remains the existing native NC convention.
+            CALL get_nlcc_gaussians(kinds(ikind), widths, nct, coefficients)
+            DO exponent = 1, SIZE(widths)
+               DO m = 1, nct(exponent)
+                  IF (coefficients(m, exponent) == 0.0_dp) CYCLE
+                  native_radius(ikind) = MAX(native_radius(ikind), &
+                                             exp_radius(2*m - 2, 1.0_dp/(2.0_dp*widths(exponent)**2), &
+                                                        control%qs_control%eps_rho_rspace, &
+                                                        coefficients(m, exponent)/widths(exponent)**(2*m - 2)))
+               END DO
+            END DO
+            CYCLE
+         END IF
          ASSOCIATE (pot => kinds(ikind)%sgp_potential%upf_data)
             IF (ALLOCATED(pot%rho_nlcc)) THEN
                IF (ANY(pot%rho_nlcc /= 0.0_dp)) THEN
@@ -422,14 +444,14 @@ CONTAINS
          END ASSOCIATE
       END DO
       CALL deallocate_lebedev_grids()
-      core_radius = MAX(MAXVAL(state%core_cache%radius), MAXVAL(state%core_kinetic_cache%radius))
+      core_radius = MAX(MAXVAL(state%core_cache%radius), MAXVAL(state%core_kinetic_cache%radius), MAXVAL(native_radius))
       DO atom = 1, SIZE(atoms)
          ikind = atoms(atom)%atomic_kind%kind_number
          kind_of(atom) = ikind
          CALL get_qs_kind(kinds(ikind), basis_set=basis, basis_type='ORB')
          support(atom) = MAX(basis%kind_radius, frame%beta_cache(ikind)%radius, &
                              frame%delta_cache(ikind)%radius, state%core_cache(ikind)%radius, &
-                             state%core_kinetic_cache(ikind)%radius)
+                             state%core_kinetic_cache(ikind)%radius, native_radius(ikind))
          IF (ALLOCATED(state%paw_reconstruction) .AND. state%paw(ikind)%active) THEN
             ae_radius = state%paw(ikind)%xcgrid%core_kinetic%ae_support_radius
             IF (state%paw(ikind)%xcgrid%has_ae_core) THEN
@@ -511,15 +533,20 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: dg(:, :, :), dv(:, :), spatial(:, :, :), &
                                                             value(:, :)
-      INTEGER                                            :: atom, ikind, image, np, point, spin
+      INTEGER                                            :: atom, axis, block, hi, ikind, image, lo, &
+                                                            m, np, point, spin
+      INTEGER, ALLOCATABLE                               :: nct(:)
       LOGICAL                                            :: reconstruct_core
       REAL(dp)                                           :: displacement(3), motion(3), rho, &
                                                             rho_gradient(3), rho_hessian(3, 3), &
                                                             tau, tau_gradient(3)
+      REAL(dp), ALLOCATABLE :: coefficients(:, :), native_density(:), native_gradient(:, :), &
+         native_hessian(:, :, :), native_points(:, :), widths(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
-      CALL get_ks_env(ks_env, particle_set=atoms, cell=cell)
+      CALL get_ks_env(ks_env, particle_set=atoms, cell=cell, qs_kind_set=kinds)
       np = SIZE(density, 1)
       density = 0.0_dp
       gradient = 0.0_dp
@@ -528,11 +555,49 @@ CONTAINS
          kinetic = 0.0_dp
       END IF
       ALLOCATE (value(np, 1), spatial(np, 1, 3), dv(np, 1), dg(np, 1, 3))
+      block = MAX(1, MIN(1024, np))
+      ALLOCATE (native_points(3, block), native_density(block), native_gradient(block, 3))
+      IF (PRESENT(point_response)) ALLOCATE (native_hessian(block, 3, 3))
       DO atom = 1, SIZE(atoms)
          ikind = atoms(atom)%atomic_kind%kind_number
          reconstruct_core = ALLOCATED(state%paw_reconstruction) .AND. state%paw(ikind)%active
-         IF (state%core_cache(ikind)%nproj == 0 .AND. .NOT. reconstruct_core) CYCLE
-         IF (reconstruct_core) THEN
+         IF (ASSOCIATED(kinds(ikind)%gth_potential)) THEN
+            IF (kinds(ikind)%ghost) CYCLE
+            CALL get_nlcc_gaussians(kinds(ikind), widths, nct, coefficients)
+            IF (SIZE(widths) == 0) CYCLE
+            value = CMPLX(0.0_dp, 0.0_dp, dp)
+            spatial = CMPLX(0.0_dp, 0.0_dp, dp)
+            DO image = 1, SIZE(state%core_images, 2)
+               displacement = atoms(atom)%r + MATMUL(cell%hmat, REAL(state%core_images(:, image), dp))
+               IF (PRESENT(point_response)) THEN
+                  CPASSERT(PRESENT(atom_response))
+                  CPASSERT(PRESENT(cell_response))
+                  motion = atom_response(:, atom) + MATMUL(cell_response, REAL(state%core_images(:, image), dp))
+               END IF
+               DO lo = 1, np, block
+                  hi = MIN(np, lo + block - 1)
+                  m = hi - lo + 1
+                  native_points(:, :m) = state%atom_grid%points(:, lo:hi) - SPREAD(displacement, 2, m)
+                  IF (PRESENT(point_response)) THEN
+                     CALL nlcc_gaussian_fields(widths, nct, coefficients, native_points(:, :m), native_density(:m), &
+                                               native_gradient(:m, :), native_hessian(:m, :, :))
+                     native_points(:, :m) = point_response(:, lo:hi) - SPREAD(motion, 2, m)
+                     value(lo:hi, 1) = value(lo:hi, 1) + SUM(native_gradient(:m, :)*TRANSPOSE(native_points(:, :m)), DIM=2)
+                     DO axis = 1, 3
+                        spatial(lo:hi, 1, axis) = spatial(lo:hi, 1, axis) + &
+                                                  SUM(native_hessian(:m, axis, :)*TRANSPOSE(native_points(:, :m)), DIM=2)
+                     END DO
+                  ELSE
+                     CALL nlcc_gaussian_fields(widths, nct, coefficients, native_points(:, :m), native_density(:m), &
+                                               native_gradient(:m, :))
+                     value(lo:hi, 1) = value(lo:hi, 1) + native_density(:m)
+                     spatial(lo:hi, 1, :) = spatial(lo:hi, 1, :) + native_gradient(:m, :)
+                  END IF
+               END DO
+            END DO
+         ELSE IF (state%core_cache(ikind)%nproj == 0 .AND. .NOT. reconstruct_core) THEN
+            CYCLE
+         ELSE IF (reconstruct_core) THEN
             value = CMPLX(0.0_dp, 0.0_dp, dp)
             spatial = CMPLX(0.0_dp, 0.0_dp, dp)
             DO image = 1, SIZE(state%core_images, 2)

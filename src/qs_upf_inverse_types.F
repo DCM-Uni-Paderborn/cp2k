@@ -147,6 +147,7 @@ MODULE qs_upf_inverse_types
       LOGICAL :: enabled = .FALSE.
       LOGICAL :: gaussian_background = .FALSE.
       LOGICAL :: native_gaussian = .FALSE.
+      LOGICAL :: native_gth_local = .FALSE.
       INTEGER :: density_evaluations = 0, operator_evaluations = 0
       TYPE(qs_upf_inverse_grid_type) :: frame
       TYPE(qs_upf_inverse_lattice_type) :: lattice

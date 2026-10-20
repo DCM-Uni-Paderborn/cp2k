@@ -82,6 +82,11 @@ MODULE qs_upf_inverse_scf
         qs_upf_inverse_grid_metric_dense, qs_upf_inverse_grid_prepare, &
         qs_upf_inverse_grid_response, qs_upf_inverse_matrix_gather, qs_upf_inverse_matrix_scatter
    USE qs_upf_inverse_gth,              ONLY: qs_upf_inverse_gth_nonlocal
+   USE qs_upf_inverse_gth_local,        ONLY: qs_upf_inverse_gth_local_active,&
+                                              qs_upf_inverse_gth_local_field,&
+                                              qs_upf_inverse_gth_local_geometry,&
+                                              qs_upf_inverse_gth_local_matrix,&
+                                              qs_upf_inverse_gth_local_residual
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_collocate,&
                                               qs_upf_inverse_kpoints_density,&
                                               qs_upf_inverse_kpoints_integrate,&
@@ -146,7 +151,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: gaussian_metric(:, :, :), &
                                                             metric_part(:, :)
       INTEGER                                            :: ikind, img
-      LOGICAL                                            :: core_available, do_kpoints, use_atomic
+      LOGICAL                                            :: core_available, do_kpoints, has_gth, use_atomic
       REAL(dp), ALLOCATABLE                              :: core_tau(:)
       TYPE(cp_cfm_type), ALLOCATABLE                     :: native_metric(:)
       TYPE(dbcsr_p_type), POINTER                        :: kinetic_k(:, :), metric(:), &
@@ -177,8 +182,17 @@ CONTAINS
       ALLOCATE (state)
       ALLOCATE (state%paw(SIZE(kinds)))
       CALL init_lebedev_grids()
+      state%native_gth_local = qs_upf_inverse_gth_local_active(kinds)
+      has_gth = .FALSE.
       DO ikind = 1, SIZE(kinds)
          IF (kinds(ikind)%ghost) CYCLE
+         IF (ASSOCIATED(kinds(ikind)%gth_potential)) THEN
+            has_gth = .TRUE.
+            IF (kinds(ikind)%gth_potential%soc .OR. kinds(ikind)%gth_potential%lsdpot) THEN
+               CPABORT("Mixed GTH needs scalar spin-independent data")
+            END IF
+            CYCLE
+         END IF
          CPASSERT(ASSOCIATED(kinds(ikind)%sgp_potential))
          CPASSERT(ALLOCATED(kinds(ikind)%sgp_potential%upf_data))
          IF (kinds(ikind)%sgp_potential%upf_data%is_paw) THEN
@@ -202,6 +216,9 @@ CONTAINS
          END IF
       END DO
       CALL deallocate_lebedev_grids()
+      IF (has_gth .AND. ANY(state%paw%active)) THEN
+         CPABORT("Mixed GTH and PAW local contributions are not implemented")
+      END IF
       IF (control%use_gauxc .AND. ANY(state%paw%active)) THEN
          IF (.NOT. control%use_kinetic_energy_density) THEN
             CPABORT("Inverse PAW learned XC requires the native kinetic-density evaluator")
@@ -218,8 +235,10 @@ CONTAINS
          IF (direct) use_atomic = .TRUE.
          state%native_gaussian = direct .AND. .NOT. control%qs_control%gapw
       END IF
-      IF (use_atomic) THEN
+      IF (use_atomic .OR. state%native_gth_local) THEN
          CALL qs_upf_inverse_background_prepare(ks_env, state%gaussian, soft_basis=control%qs_control%gapw)
+      END IF
+      IF (use_atomic) THEN
          CALL get_ks_env(ks_env, kinetic_kp=kinetic_k)
          CPASSERT(ASSOCIATED(kinetic_k))
          ALLOCATE (state%gaussian_kinetic(state%gaussian%nao, state%gaussian%nao, SIZE(state%gaussian%weights)))
@@ -239,6 +258,7 @@ CONTAINS
             IF (kinds(ikind)%ghost) CYCLE
             ! PAW uses smooth PS tau and a separate AE-minus-PS one-center functional.
             IF (state%paw(ikind)%active) CYCLE
+            IF (ASSOCIATED(kinds(ikind)%gth_potential)) CYCLE
             IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) CYCLE
             CALL upf_inverse_kinetic_init(kinds(ikind)%sgp_potential%upf_data, state%kinetic_cache(ikind))
          END DO
@@ -556,7 +576,9 @@ CONTAINS
    SUBROUTINE qs_upf_inverse_scf_core(ks_env)
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
 
-      COMPLEX(dp), ALLOCATABLE                           :: atomic_t(:, :), gaussian_local(:, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: atomic_t(:, :), gaussian_local(:, :, :), &
+                                                            gth_operator(:, :, :), &
+                                                            gth_residual(:, :)
       INTEGER                                            :: axis
       TYPE(dbcsr_p_type), POINTER                        :: h(:), kinetic(:), overlap(:)
       TYPE(dbcsr_type)                                   :: imaginary, real_part
@@ -564,7 +586,8 @@ CONTAINS
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_pool_type), POINTER                        :: pool
-      TYPE(pw_r3d_rs_type)                               :: local_r, unit_tau, zero_density, zeros(3)
+      TYPE(pw_r3d_rs_type)                               :: gth_r, local_r, unit_tau, zero_density, &
+                                                            zeros(3)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
@@ -617,6 +640,16 @@ CONTAINS
                                                   augmentation=state%augmentation, fourier_charge=.TRUE.)
       END IF
       CALL qs_upf_inverse_gth_nonlocal(state%frame%ao, kinds, atoms, atomic_t)
+      IF (state%native_gth_local) THEN
+         ALLOCATE (gth_operator(state%gaussian%nao, state%gaussian%nao, SIZE(state%gaussian%weights)))
+         CALL qs_upf_inverse_gth_local_matrix(ks_env, state%gaussian, gth_operator)
+         CALL gth_r%create(grid)
+         CALL qs_upf_inverse_gth_local_field(ks_env, state%frame, gth_r)
+         CALL qs_upf_inverse_gth_local_residual(state%frame, state%augmentation, gth_r, &
+                                                .NOT. state%native_gaussian, OPERATOR=gth_residual)
+         atomic_t = atomic_t + gth_operator(:, :, 1) + gth_residual
+         CALL gth_r%release()
+      END IF
       CALL qs_upf_inverse_matrix_scatter(state%frame%ao, atomic_t, overlap(1)%matrix, real_part, imaginary)
       CALL check_real(state, real_part, imaginary)
       CALL dbcsr_copy(h(1)%matrix, real_part)
@@ -995,12 +1028,15 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: atomic_m(:, :), atomic_t(:, :), &
                                                             dm(:, :), dt(:, :), dw(:, :)
       INTEGER                                            :: axis, info
+      LOGICAL                                            :: use_orbitals
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3)
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_r3d_rs_type)                               :: local_r, local_response, unit_tau, zero, &
                                                             zeros(3)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
+      use_orbitals = .TRUE.
+      IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
       cell_inverse = frame%ao%cell
       CALL invmat(cell_inverse, info)
       CPASSERT(info == 0)
@@ -1030,6 +1066,14 @@ CONTAINS
       CALL qs_upf_inverse_gth_nonlocal(frame%ao, kinds, atoms, response=core_response, coefficients_response=dw, &
                                        atom_response=atom_response, cell_response=cell_response, &
                                        reduced_k_response=reduced_k_response)
+      IF (qs_upf_inverse_gth_local_active(kinds)) THEN
+         CALL qs_upf_inverse_gth_local_field(ks_env, frame, local_r, local_response, atom_response, cell_response)
+         CALL qs_upf_inverse_gth_local_residual(frame, augmentation, local_r, use_orbitals, response=dt, &
+                                                potential_response=local_response, atom_response=atom_response, &
+                                                cell_response=cell_response, reduced_k_response=reduced_k_response, &
+                                                coefficients_response=dw)
+         core_response = core_response + dt
+      END IF
       IF (PRESENT(coefficients_response)) CALL MOVE_ALLOC(dw, coefficients_response)
       CALL local_r%release()
       CALL local_response%release()
@@ -1064,15 +1108,14 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: response, metric_response
-
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: coefficients_response(:, :, :)
 
-      COMPLEX(dp), ALLOCATABLE :: dw(:, :), dw_all(:, :, :), core(:, :, :), density(:, :, :), energy_weighted(:, :, :), &
-                                  matrix(:, :), metric(:, :, :), metric_part(:, :)
+      COMPLEX(dp), ALLOCATABLE :: core(:, :, :), density(:, :, :), dw(:, :), dw_all(:, :, :), &
+         energy_weighted(:, :, :), matrix(:, :), metric(:, :, :), metric_part(:, :)
       INTEGER                                            :: active_potential, axis, component, ik, &
                                                             info, nk, nspin
       REAL(dp) :: cell_inverse(3, 3), gaussian_virial(3, 3), native_metric, native_response, &
-                  paw_response, strain(3, 3), weight
+         paw_response, strain(3, 3), weight
       REAL(dp), ALLOCATABLE                              :: gaussian_gradients(:, :), &
                                                             relative_motion(:, :)
       TYPE(dbcsr_p_type), POINTER                        :: density_gamma(:, :), energy_gamma(:)
@@ -1098,7 +1141,7 @@ CONTAINS
       nk = 1
       IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
       CPASSERT(ALL(SHAPE(reduced_k_response) == [3, nk]))
-      IF (ALLOCATED(state%gaussian_kinetic)) THEN
+      IF (ALLOCATED(state%gaussian_kinetic) .OR. state%native_gth_local) THEN
          CPASSERT(ALL(reduced_k_response == 0.0_dp))
          native_ks => ks_env
          ALLOCATE (gaussian_gradients(3, SIZE(atom_response, 2)), relative_motion(3, SIZE(atom_response, 2)))
@@ -1164,6 +1207,10 @@ CONTAINS
          IF (ALLOCATED(state%gaussian_kinetic)) THEN
             CALL qs_upf_inverse_background_gaussian_geometry(state%gaussian, native_ks, density, .TRUE., &
                                                              gaussian_gradients, gaussian_virial)
+            response = response + SUM(gaussian_gradients*relative_motion) - SUM(gaussian_virial*strain)
+         END IF
+         IF (state%native_gth_local) THEN
+            CALL qs_upf_inverse_gth_local_geometry(ks_env, state%gaussian, density, gaussian_gradients, gaussian_virial)
             response = response + SUM(gaussian_gradients*relative_motion) - SUM(gaussian_virial*strain)
          END IF
          IF (state%native_gaussian) THEN
@@ -1356,6 +1403,7 @@ CONTAINS
       DO atom = 1, SIZE(atoms)
          ikind = atoms(atom)%atomic_kind%kind_number
          IF (kinds(ikind)%ghost) CYCLE
+         IF (ASSOCIATED(kinds(ikind)%gth_potential)) CYCLE
          ASSOCIATE (potential => kinds(ikind)%sgp_potential)
             IF (potential%upf_local%radial%degree < 0) THEN
                CALL upf_local_init(potential%upf_data, potential%alpha_core_charge, 0, potential%upf_local)
@@ -1533,7 +1581,9 @@ CONTAINS
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT)       :: state
 
-      COMPLEX(dp), ALLOCATABLE                           :: gaussian_local(:, :, :), matrix(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: gaussian_local(:, :, :), &
+                                                            gth_operator(:, :, :), &
+                                                            gth_residual(:, :), matrix(:, :)
       INTEGER                                            :: axis, ik, n, nk, spin
       TYPE(dbcsr_p_type), POINTER                        :: kinetic(:, :), source(:, :)
       TYPE(dft_control_type), POINTER                    :: control
@@ -1541,7 +1591,7 @@ CONTAINS
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_pool_type), POINTER                        :: pool
-      TYPE(pw_r3d_rs_type)                               :: local_r, unit_tau, zero, zeros(3)
+      TYPE(pw_r3d_rs_type)                               :: gth_r, local_r, unit_tau, zero, zeros(3)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
       CALL check_geometry(ks_env, state)
@@ -1570,6 +1620,12 @@ CONTAINS
          CALL qs_upf_inverse_background_integrate(state%gaussian, potential=local_r, &
                                                   ao_operators=gaussian_local, ks_env=ks_env)
       END IF
+      IF (state%native_gth_local) THEN
+         ALLOCATE (gth_operator(state%gaussian%nao, state%gaussian%nao, SIZE(state%gaussian%weights)))
+         CALL qs_upf_inverse_gth_local_matrix(ks_env, state%gaussian, gth_operator)
+         CALL gth_r%create(grid)
+         CALL qs_upf_inverse_gth_local_field(ks_env, state%bloch%frames(1), gth_r)
+      END IF
       n = state%bloch%nao
       nk = SIZE(state%bloch%weights)
       IF (.NOT. ALLOCATED(state%core_k)) THEN
@@ -1587,6 +1643,11 @@ CONTAINS
                                                   augmentation=state%bloch%augmentation, fourier_charge=.TRUE., &
                                                   orbital_fields=.NOT. state%native_gaussian)
          CALL qs_upf_inverse_gth_nonlocal(state%bloch%frames(ik)%ao, kinds, atoms, matrix)
+         IF (state%native_gth_local) THEN
+            CALL qs_upf_inverse_gth_local_residual(state%bloch%frames(ik), state%bloch%augmentation, gth_r, &
+                                                   .NOT. state%native_gaussian, OPERATOR=gth_residual)
+            matrix = matrix + gth_operator(:, :, ik) + gth_residual
+         END IF
          state%core_k(:, :, ik) = matrix
          IF (state%native_gaussian) state%core_k(:, :, ik) = state%core_k(:, :, ik) + gaussian_local(:, :, ik)
          IF (state%bloch%frames(ik)%ao%atom_local) THEN
@@ -1598,6 +1659,7 @@ CONTAINS
       END DO
       CALL register_bloch(state, kinetic, kpoint_slot_t, state%kinetic_k)
       IF (ASSOCIATED(source)) CALL register_bloch_spin(state, source)
+      IF (state%native_gth_local) CALL gth_r%release()
       CALL local_r%release()
       CALL zero%release()
       CALL unit_tau%release()
@@ -1709,6 +1771,10 @@ CONTAINS
       radial_radius = 0.0_dp
       DO ikind = 1, SIZE(kinds)
          IF (kinds(ikind)%ghost) CYCLE
+         IF (ASSOCIATED(kinds(ikind)%gth_potential)) THEN
+            radial_radius(ikind) = MAX(kinds(ikind)%gth_potential%ppl_radius, kinds(ikind)%gth_potential%ppnl_radius)
+            CYCLE
+         END IF
          IF (.NOT. ASSOCIATED(kinds(ikind)%sgp_potential)) THEN
             CPABORT("Inverse USPP mixed potentials are not implemented")
          END IF
