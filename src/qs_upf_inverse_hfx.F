@@ -96,6 +96,8 @@ MODULE qs_upf_inverse_hfx
    END TYPE lattice_overlap_type
 
    TYPE transition_potential_type
+      INTEGER :: shape(3) = 0
+      LOGICAL :: zero_values = .FALSE.
       REAL(dp), ALLOCATABLE :: values(:, :, :), gradient(:, :, :, :), cell_gradient(:, :, :, :, :)
    END TYPE transition_potential_type
 
@@ -309,7 +311,8 @@ CONTAINS
       IF (.NOT. frame%direct .AND. .NOT. PRESENT(responses)) THEN
          ! Share the original payload bound between Q tables, point fields and integrated moments.
          lattice_potentials%moments%remaining_words = max_cached_potential_words/2
-         lattice_potentials%potential_words = max_cached_potential_words/2 - lattice_potentials%remaining_words
+         lattice_potentials%potential_words = max_cached_potential_words - lattice_potentials%remaining_words - &
+                                              lattice_potentials%moments%remaining_words
       END IF
       ALLOCATE (bases(nsite), positions(3, nsite), factors(nsite))
       factors = CMPLX(1.0_dp, 0.0_dp, dp)
@@ -1781,7 +1784,7 @@ CONTAINS
 
       INTEGER                                            :: ia, ir, nang, naux, ncomponent, nrow, row
       LOGICAL                                            :: new_gradients, new_values
-      REAL(dp)                                           :: point(3), words
+      REAL(dp)                                           :: point(3), value_words, words
 
       IF (.NOT. ASSOCIATED(cache%potential_budget)) RETURN
       CPASSERT(cache%potential_budget >= 0)
@@ -1792,8 +1795,9 @@ CONTAINS
       new_values = .NOT. ALLOCATED(cache%potential_fields)
       new_gradients = gradients
       IF (.NOT. new_values) THEN
-         CPASSERT(ALL(SHAPE(cache%potential_fields%values) == [nang, naux, nrow]))
+         CPASSERT(ALL(cache%potential_fields%shape == [nang, naux, nrow]))
          new_gradients = gradients .AND. .NOT. ALLOCATED(cache%potential_fields%gradient)
+         IF (cache%potential_fields%zero_values .AND. new_gradients) new_values = .TRUE.
       END IF
       IF (.NOT. (new_values .OR. new_gradients)) RETURN
       ncomponent = 0
@@ -1803,10 +1807,13 @@ CONTAINS
          IF (PRESENT(auxiliary_images)) ncomponent = ncomponent + 9
       END IF
       ! Compare before converting to an integer, avoiding overflow for an uncached large shell.
-      words = REAL(nang, dp)*REAL(naux, dp)*REAL(nrow, dp)*REAL(ncomponent, dp)
+      value_words = REAL(nang, dp)*REAL(naux, dp)*REAL(nrow, dp)
+      words = value_words*REAL(ncomponent, dp)
       IF (words > REAL(cache%potential_budget, dp)) RETURN
       IF (new_values) THEN
-         ALLOCATE (cache%potential_fields)
+         IF (.NOT. ALLOCATED(cache%potential_fields)) ALLOCATE (cache%potential_fields)
+         cache%potential_fields%shape = [nang, naux, nrow]
+         cache%potential_fields%zero_values = .FALSE.
          ALLOCATE (cache%potential_fields%values(nang, naux, nrow))
       END IF
       IF (new_gradients) THEN
@@ -1839,7 +1846,35 @@ CONTAINS
             END IF
          END DO
       END DO
+      ! Only value-only tables are compressed. A derivative request restores the ordinary
+      ! storage above or falls back to the original uncached evaluation when it does not fit.
+      IF (.NOT. gradients) THEN
+         IF (ALL(cache%potential_fields%values == 0.0_dp)) THEN
+            DEALLOCATE (cache%potential_fields%values)
+            cache%potential_fields%zero_values = .TRUE.
+            cache%potential_budget = cache%potential_budget + INT(value_words)
+         END IF
+      END IF
    END SUBROUTINE prepare_transition_potentials
+
+! **************************************************************************************************
+!> \brief Read a retained potential, including a compact table of exact zeros.
+!> \param cache Prepared potential table at the fixed geometry and quadrature.
+!> \param point Angular point index.
+!> \param row Radial row index.
+!> \param values Complete auxiliary-shell values at this point.
+! **************************************************************************************************
+   PURE SUBROUTINE transition_potential_point(cache, point, row, values)
+      TYPE(transition_potential_type), INTENT(IN)        :: cache
+      INTEGER, INTENT(IN)                                :: point, row
+      REAL(dp), INTENT(OUT)                              :: values(:)
+
+      IF (cache%zero_values) THEN
+         values = 0.0_dp
+      ELSE
+         values(:) = cache%values(point, :, row)
+      END IF
+   END SUBROUTINE transition_potential_point
 
 ! **************************************************************************************************
 !> \brief Prepare PAW valence transition kernels without changing original compensation data.
@@ -2126,7 +2161,7 @@ CONTAINS
          DO ia = 1, nang
             IF (derivatives) THEN
                IF (cached) THEN
-                  potentials(ia, :) = qi%potential_fields%values(ia, :, row)
+                  CALL transition_potential_point(qi%potential_fields, ia, row, potentials(ia, :))
                   potential_gradients(:, :, ia) = qi%potential_fields%gradient(:, :, ia, row)
                   IF (PRESENT(auxiliary_images)) THEN
                      potential_cell_gradients(:, :, :, ia) = qi%potential_fields%cell_gradient(:, :, :, ia, row)
@@ -2150,7 +2185,7 @@ CONTAINS
                END IF
             ELSE
                IF (cached) THEN
-                  potentials(ia, :) = qi%potential_fields%values(ia, :, row)
+                  CALL transition_potential_point(qi%potential_fields, ia, row, potentials(ia, :))
                ELSE IF (PRESENT(auxiliary_images)) THEN
                   CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
                                                         auxiliary_images, potentials(ia, :))
@@ -2507,7 +2542,7 @@ CONTAINS
             DO ia = 1, nang
                points(:, ia) = position + local_points(:, ia)
                IF (cached_potentials) THEN
-                  potentials(ia, :) = qi%potential_fields%values(ia, :, cache_row)
+                  CALL transition_potential_point(qi%potential_fields, ia, cache_row, potentials(ia, :))
                   IF (geometry) potential_gradient(:, :, ia) = qi%potential_fields%gradient(:, :, ia, cache_row)
                ELSE IF (geometry) THEN
                   CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :), &
@@ -2949,7 +2984,7 @@ CONTAINS
                weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
                IF (cached_potentials) THEN
                   DO ia = 1, nang
-                     potentials(ia, :) = qi%potential_fields%values(ia, :, cache_row)
+                     CALL transition_potential_point(qi%potential_fields, ia, cache_row, potentials(ia, :))
                      IF (derivatives) potential_gradient(:, :, ia) = qi%potential_fields%gradient(:, :, ia, cache_row)
                   END DO
                ELSE IF (derivatives) THEN
@@ -3123,6 +3158,11 @@ CONTAINS
       moment = CMPLX(0.0_dp, 0.0_dp, dp)
       valid = .TRUE.
       IF (nrow == 0 .OR. nproj == 0) RETURN
+      IF (ALLOCATED(potentials%potential_fields)) THEN
+         IF (potentials%potential_fields%zero_values) THEN
+            RETURN
+         END IF
+      END IF
       position = frame%positions(:, frame%center_atoms(center)) + MATMUL(frame%cell, REAL(center_image, dp))
       ALLOCATE (coordinates(3, nang, nrow), local_points(3, nang), weighted(nang, nproj, fields%nfunction, nrow), &
                 potential(nang, fields%nfunction), weights(nang))
@@ -3761,7 +3801,7 @@ CONTAINS
             IF (full_geometry) THEN
                field_cell_gradient = 0.0_dp
                IF (cached) THEN
-                  potentials(ia, :) = qi%potential_fields%values(ia, :, row)
+                  CALL transition_potential_point(qi%potential_fields, ia, row, potentials(ia, :))
                   field_gradient(:, :) = qi%potential_fields%gradient(:, :, ia, row)
                   IF (PRESENT(auxiliary_images)) THEN
                      field_cell_gradient(:, :, :) = qi%potential_fields%cell_gradient(:, :, :, ia, row)
@@ -3778,7 +3818,7 @@ CONTAINS
                   potential_cell_gradient(ia, :, :, column) = TRANSPOSE(field_cell_gradient(:, column, :))
                END DO
             ELSE IF (cached) THEN
-               potentials(ia, :) = qi%potential_fields%values(ia, :, row)
+               CALL transition_potential_point(qi%potential_fields, ia, row, potentials(ia, :))
             ELSE IF (PRESENT(auxiliary_images)) THEN
                CALL gaussian_coulomb_fields_periodic(fields, points(:, ia) - auxiliary_center, left_frame%cell, &
                                                      auxiliary_images, potentials(ia, :))
