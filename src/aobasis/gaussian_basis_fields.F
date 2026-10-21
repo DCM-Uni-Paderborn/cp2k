@@ -273,12 +273,10 @@ CONTAINS
       IF (PRESENT(point_response)) THEN
          CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
       END IF
-      IF (.NOT. need_hessian) THEN
-         CALL periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
-                                         value, gradient, cell_gradient, factored, &
-                                         response, point_response, dcenter, dc, dk)
-         IF (factored) RETURN
-      END IF
+      CALL periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
+                                      value, gradient, cell_gradient, factored, &
+                                      response, point_response, dcenter, dc, dk, gradient_response)
+      IF (factored) RETURN
       scratch => local_workspace
       IF (PRESENT(workspace)) scratch => workspace
       CALL prepare_workspace(scratch, npoint, basis%nsgf, need_geometry, need_gradient, need_hessian)
@@ -358,6 +356,7 @@ CONTAINS
 !> \param cell_gradient Optional cell derivatives, indexed (point,AO,axis,column).
 !> \param factored Whether the supplied cell and image list permit this factorization.
 !> \param response Optional joint first response of the fields.
+!> \param gradient_response Optional joint response of the spatial gradients.
 !> \param point_response Optional motion of the evaluation points.
 !> \param center_response Motion of the Gaussian center.
 !> \param cell_response Lattice derivative at fixed reduced Bloch coordinates.
@@ -365,7 +364,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
                                          value, gradient, cell_gradient, factored, &
-                                         response, point_response, center_response, cell_response, reduced_k_response)
+                                         response, point_response, center_response, cell_response, reduced_k_response, &
+                                         gradient_response)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -378,14 +378,15 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :)
       REAL(dp), INTENT(IN)                               :: center_response(3), cell_response(3, 3), &
                                                             reduced_k_response(3)
+      COMPLEX(dp), INTENT(INOUT), OPTIONAL               :: gradient_response(:, :, :)
 
       COMPLEX(dp)                                        :: phase
-      COMPLEX(dp), ALLOCATABLE :: derivative(:, :), image_moments(:, :, :), moments(:, :, :), &
-         phase_moment(:), primitive_cell(:, :, :), primitive_gradient(:, :), &
-         primitive_response(:), primitive_value(:)
+      COMPLEX(dp), ALLOCATABLE :: derivative(:, :), hessian_component(:), image_moments(:, :, :), &
+         moments(:, :, :), phase_moment(:), primitive_cell(:, :, :), primitive_gradient(:, :), &
+         primitive_gradient_response(:, :), primitive_response(:), primitive_value(:)
       INTEGER :: axis, column, degree, expected(3), first, ico, image, ipgf, irow, iset, isgf, &
-         ishell, l, last, lower(3), maxl, ncart, npoint, other, powers(3), translation, upper(3), &
-         width(3)
+         ishell, l, last, lower(3), maxl, moment_degree, ncart, npoint, other, powers(3), &
+         translation, upper(3), width(3)
       LOGICAL                                            :: cell_derivatives, derivatives, &
                                                             image_derivatives
       REAL(dp)                                           :: alpha, weight
@@ -415,10 +416,14 @@ CONTAINS
       npoint = SIZE(points, 2)
       cell_derivatives = PRESENT(cell_gradient)
       IF (PRESENT(response)) cell_derivatives = cell_derivatives .OR. ANY(cell_response /= 0.0_dp)
+      ! Gradient responses use image-weighted Hessians and Bloch derivatives of the spatial gradient.
+      IF (PRESENT(gradient_response)) cell_derivatives = .TRUE.
       image_derivatives = cell_derivatives
       IF (PRESENT(response)) image_derivatives = image_derivatives .OR. ANY(reduced_k_response /= 0.0_dp)
       derivatives = PRESENT(gradient) .OR. cell_derivatives .OR. PRESENT(response)
-      ALLOCATE (moments(npoint, 0:maxl + 1, 3), image_moments(npoint, 0:maxl + 1, 3), &
+      moment_degree = maxl + 1
+      IF (PRESENT(gradient_response)) moment_degree = maxl + 2
+      ALLOCATE (moments(npoint, 0:moment_degree, 3), image_moments(npoint, 0:moment_degree, 3), &
                 derivative(npoint, 3), primitive_value(npoint), primitive_gradient(npoint, 3), &
                 primitive_cell(npoint, 3, 3), displacement(npoint), exponential(npoint), power(npoint))
       value = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -427,6 +432,10 @@ CONTAINS
       IF (PRESENT(response)) THEN
          ALLOCATE (primitive_response(npoint), phase_moment(npoint))
          response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (PRESENT(gradient_response)) THEN
+         ALLOCATE (primitive_gradient_response(npoint, 3), hessian_component(npoint))
+         gradient_response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
       DO iset = 1, basis%nset
          ncart = ncoset(basis%lmax(iset))
@@ -441,7 +450,7 @@ CONTAINS
                   exponential = EXP(-alpha*displacement**2)
                   power = 1.0_dp
                   WHERE (exponential == 0.0_dp) power = 0.0_dp
-                  DO degree = 0, maxl + 1
+                  DO degree = 0, moment_degree
                      moments(:, degree, axis) = moments(:, degree, axis) + phase*power*exponential
                      IF (image_derivatives) THEN
                         image_moments(:, degree, axis) = image_moments(:, degree, axis) + &
@@ -514,6 +523,31 @@ CONTAINS
                         END IF
                      END DO
                   END IF
+                  IF (PRESENT(gradient_response)) THEN
+                     primitive_gradient_response = CMPLX(0.0_dp, 0.0_dp, dp)
+                     DO axis = 1, 3
+                        DO other = 1, 3
+                           hessian_component = factored_hessian(moments, image_moments, powers, alpha, axis, other, 0)
+                           primitive_gradient_response(:, axis) = primitive_gradient_response(:, axis) - &
+                                                                  center_response(other)*hessian_component
+                           IF (PRESENT(point_response)) THEN
+                              primitive_gradient_response(:, axis) = primitive_gradient_response(:, axis) + &
+                                                                     point_response(other, :)*hessian_component
+                           END IF
+                           DO column = 1, 3
+                              IF (cell_response(other, column) == 0.0_dp) CYCLE
+                              hessian_component = factored_hessian(moments, image_moments, powers, alpha, axis, other, column)
+                              primitive_gradient_response(:, axis) = primitive_gradient_response(:, axis) - &
+                                                                     cell_response(other, column)*hessian_component
+                           END DO
+                        END DO
+                        DO column = 1, 3
+                           IF (reduced_k_response(column) == 0.0_dp) CYCLE
+                           primitive_gradient_response(:, axis) = primitive_gradient_response(:, axis) - &
+                                                 CMPLX(0.0_dp, twopi*reduced_k_response(column), dp)*primitive_cell(:, axis, column)
+                        END DO
+                     END DO
+                  END IF
                   DO isgf = first, last
                      weight = basis%sphi(irow, isgf)
                      IF (weight == 0.0_dp) CYCLE
@@ -522,6 +556,8 @@ CONTAINS
                      IF (PRESENT(cell_gradient)) cell_gradient(:, isgf, :, :) = cell_gradient(:, isgf, :, :) + &
                                                                                 weight*primitive_cell
                      IF (PRESENT(response)) response(:, isgf) = response(:, isgf) + weight*primitive_response
+                     IF (PRESENT(gradient_response)) gradient_response(:, isgf, :) = gradient_response(:, isgf, :) + &
+                                                                                     weight*primitive_gradient_response
                   END DO
                END DO
             END DO
@@ -529,6 +565,49 @@ CONTAINS
       END DO
       factored = .TRUE.
    END SUBROUTINE periodic_cartesian_product
+
+! **************************************************************************************************
+!> \brief Cartesian second derivative of a separable periodic primitive, optionally weighted by an image index.
+!> \param moments One-dimensional periodic Gaussian polynomial moments.
+!> \param image_moments The same moments multiplied by their integer image coordinate.
+!> \param powers Cartesian polynomial degrees of the primitive.
+!> \param alpha Primitive Gaussian exponent.
+!> \param first First Cartesian differentiation axis.
+!> \param second Second Cartesian differentiation axis.
+!> \param image_axis Image coordinate for weighting, or zero for an unweighted Hessian.
+!> \return Sum over the original image product, including its Bloch phase.
+! **************************************************************************************************
+   FUNCTION factored_hessian(moments, image_moments, powers, alpha, first, second, image_axis) RESULT(value)
+      COMPLEX(dp), INTENT(IN), TARGET                    :: moments(:, 0:, :), &
+                                                            image_moments(:, 0:, :)
+      INTEGER, INTENT(IN)                                :: powers(3)
+      REAL(dp), INTENT(IN)                               :: alpha
+      INTEGER, INTENT(IN)                                :: first, second, image_axis
+      COMPLEX(dp)                                        :: value(SIZE(moments, 1))
+
+      COMPLEX(dp)                                        :: factor(SIZE(moments, 1))
+      COMPLEX(dp), POINTER                               :: source(:, :)
+      INTEGER                                            :: axis, degree, order
+
+      value = CMPLX(1.0_dp, 0.0_dp, dp)
+      DO axis = 1, 3
+         source(1:, 0:) => moments(:, :, axis)
+         IF (axis == image_axis) source(1:, 0:) => image_moments(:, :, axis)
+         degree = powers(axis)
+         order = MERGE(1, 0, axis == first) + MERGE(1, 0, axis == second)
+         SELECT CASE (order)
+         CASE (0)
+            factor = source(:, degree)
+         CASE (1)
+            factor = -2.0_dp*alpha*source(:, degree + 1)
+            IF (degree > 0) factor = factor + degree*source(:, degree - 1)
+         CASE (2)
+            factor = 4.0_dp*alpha**2*source(:, degree + 2) - 2.0_dp*alpha*(2*degree + 1)*source(:, degree)
+            IF (degree > 1) factor = factor + degree*(degree - 1)*source(:, degree - 2)
+         END SELECT
+         value = value*factor
+      END DO
+   END FUNCTION factored_hessian
 
 ! **************************************************************************************************
 !> \brief Retain only scratch storage. No geometry or field values are reused.

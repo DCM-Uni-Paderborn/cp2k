@@ -2883,16 +2883,26 @@ CONTAINS
       dg = CMPLX(0.0_dp, 0.0_dp, dp)
       reference_cell_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
       dv = CMPLX(0.0_dp, 0.0_dp, dp)
+      gss(:, :, :, 1) = CMPLX(0.0_dp, 0.0_dp, dp)
       DO image = 1, SIZE(box_images, 2)
          xp = x - SPREAD(center + MATMUL(box_cell, REAL(box_images(:, image), dp)), 2, nf)
-         CALL gaussian_basis_fields_evaluate(basis, xp, value, gradient)
+         CALL gaussian_basis_fields_evaluate(basis, xp, value, gradient, hh)
          phase = EXP(CMPLX(0.0_dp, 2*pi*DOT_PRODUCT(bloch, REAL(box_images(:, image), dp)), dp))
          other = other + phase*value
          dg = dg + phase*gradient
+         gss(:, :, :, 1) = gss(:, :, :, 1) + &
+                           CMPLX(0.0_dp, 2*pi*DOT_PRODUCT(dk, REAL(box_images(:, image), dp)), dp)*phase*gradient
          dv = dv + CMPLX(0.0_dp, 2*pi*DOT_PRODUCT(dk, REAL(box_images(:, image), dp)), dp)*phase*value
          DO axis = 1, 3
             dv = dv + phase*gradient(:, :, axis)*SPREAD(dpnt(axis, :) - dcenter(axis) - &
                                                         DOT_PRODUCT(dc(axis, :), REAL(box_images(:, image), dp)), 2, nb)
+         END DO
+         DO axis = 1, 3
+            DO column = 1, 3
+               gss(:, :, axis, 1) = gss(:, :, axis, 1) + phase*hh(:, :, axis, column)* &
+                                    SPREAD(dpnt(column, :) - dcenter(column) - &
+                                           DOT_PRODUCT(dc(column, :), REAL(box_images(:, image), dp)), 2, nb)
+            END DO
          END DO
          DO column = 1, 3
             reference_cell_gradient(:, :, :, column) = reference_cell_gradient(:, :, :, column) - &
@@ -2902,7 +2912,13 @@ CONTAINS
       CALL check(MAXVAL(ABS(v - other)) + MAXVAL(ABS(g - dg)), 'factored Gaussian value and spatial gradient')
       CALL check(MAXVAL(ABS(box_cell_gradient - reference_cell_gradient)), 'factored Gaussian full cell gradient')
       CALL gaussian_basis_fields_periodic(basis, x, center, box_cell, box_images, bloch, v, response=other, &
-                                          point_response=dpnt, center_response=dcenter, cell_response=dc, reduced_k_response=dk)
+                                          gradient_response=gss(:, :, :, 2), point_response=dpnt, center_response=dcenter, &
+                                          cell_response=dc, reduced_k_response=dk)
+      CALL check(MAXVAL(ABS(gss(:, :, :, 2) - gss(:, :, :, 1))), 'factored Gaussian joint gradient response')
+      CALL gaussian_basis_fields_periodic(basis, x, center, box_cell, box_images, bloch, v, &
+                                          gradient_response=gss(:, :, :, 2), point_response=dpnt, center_response=dcenter, &
+                                          cell_response=dc, reduced_k_response=dk)
+      CALL check(MAXVAL(ABS(gss(:, :, :, 2) - gss(:, :, :, 1))), 'factored Gaussian gradient-only joint response')
       CALL check(MAXVAL(ABS(other - dv)), 'factored Gaussian joint point center cell and Bloch response')
       dv = CMPLX(0.0_dp, 0.0_dp, dp)
       DO axis = 1, 3
